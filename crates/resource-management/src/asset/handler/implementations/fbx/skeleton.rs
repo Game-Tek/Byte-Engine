@@ -4,14 +4,11 @@ pub(crate) fn load_fbx_scene(data: &[u8], filename: &str) -> Result<ufbx::SceneR
 	load_fbx_scene_with(data, filename, false)
 }
 
-/// Parses an FBX for its textures only, skipping geometry and animation data.
+/// Parses an FBX in the engine's left-handed, meter-scaled basis.
 ///
-/// Elements keep the indices a full parse gives them, so texture IDs match [`load_fbx_scene`].
-pub(crate) fn load_fbx_scene_textures(data: &[u8], filename: &str) -> Result<ufbx::SceneRoot, FbxImportError> {
-	load_fbx_scene_with(data, filename, true)
-}
-
-fn load_fbx_scene_with(data: &[u8], filename: &str, textures_only: bool) -> Result<ufbx::SceneRoot, FbxImportError> {
+/// With `textures_only`, the parse skips geometry and animation data. Elements keep the indices a full parse gives
+/// them, so texture IDs match [`load_fbx_scene`].
+pub(crate) fn load_fbx_scene_with(data: &[u8], filename: &str, textures_only: bool) -> Result<ufbx::SceneRoot, FbxImportError> {
 	ufbx::load_memory(
 		data,
 		ufbx::LoadOpts {
@@ -131,24 +128,18 @@ pub(crate) fn import_fbx_animation(
 		let target = remap_skeleton_node(source_to_skeleton, node.typed_id)?;
 
 		let translation = import_linear_curve(&node.translation_keys, |key| {
-			Ok((
-				finite_f32(key.time, "animation key time")?,
-				Vector::from_array(vec3_to_f32(key.value, "animation translation")?),
-			))
+			(
+				key.time,
+				vec3_to_f32(key.value, "animation translation").map(Vector::from_array),
+			)
 		})?;
 
 		let rotation = import_linear_curve(&node.rotation_keys, |key| {
-			Ok((
-				finite_f32(key.time, "animation key time")?,
-				quat_to_orientation(key.value, "animation quaternion")?,
-			))
+			(key.time, quat_to_orientation(key.value, "animation quaternion"))
 		})?;
 
 		let scale = import_linear_curve(&node.scale_keys, |key| {
-			Ok((
-				finite_f32(key.time, "animation key time")?,
-				Scale::from_array(vec3_to_f32(key.value, "animation scale")?),
-			))
+			(key.time, vec3_to_f32(key.value, "animation scale").map(Scale::from_array))
 		})?;
 
 		if translation.is_some() || rotation.is_some() || scale.is_some() {
@@ -216,23 +207,20 @@ pub(crate) fn select_animation_stack<'a>(
 
 /// Resolves a source typed ID through the dense hierarchy remap shared by clips and skins.
 pub(crate) fn remap_skeleton_node(source_to_skeleton: &[u32], source_node: u32) -> Result<u32, FbxImportError> {
-	let mapped = source_to_skeleton
+	source_to_skeleton
 		.get(source_node as usize)
 		.copied()
-		.ok_or(FbxImportError::InvalidSkeletonNode)?;
-
-	(mapped != u32::MAX)
-		.then_some(mapped)
+		.filter(|mapped| *mapped != u32::MAX)
 		.ok_or(FbxImportError::InvalidSkeletonNode)
 }
 
 /// Converts baked keys directly into a persistent linear curve without transient keyframe objects.
 ///
-/// `key` returns one key's checked time and converted value, so translation, rotation, and scale share this path.
-/// Check the time before converting the value, so a key with both defects reports its time first.
+/// `key` returns one key's time and its converted value, so translation, rotation, and scale share this path. The
+/// time is checked before the value, so a key with both defects reports its time first.
 pub(crate) fn import_linear_curve<K, V, T>(
 	keys: &[K],
-	mut key: impl FnMut(&K) -> Result<(f32, V), FbxImportError>,
+	mut key: impl FnMut(&K) -> (f64, Result<V, FbxImportError>),
 ) -> Result<Option<Curve<V, T>>, FbxImportError> {
 	if keys.is_empty() {
 		return Ok(None);
@@ -243,11 +231,11 @@ pub(crate) fn import_linear_curve<K, V, T>(
 	let mut values = Vec::with_capacity(keys.len());
 
 	for source in keys {
-		let (time, value) = key(source)?;
+		let (time, value) = key(source);
 
-		times.push(time);
+		times.push(finite_f32(time, "animation key time")?);
 
-		values.push(value);
+		values.push(value?);
 	}
 
 	Ok(Some(Curve::Linear { times, values }))

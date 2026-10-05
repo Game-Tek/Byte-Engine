@@ -60,25 +60,32 @@ pub(super) fn record_compute_stages<const N: usize>(
 	}
 }
 
-/// The `PhasePipelines` struct holds one raster pipeline per opaque-layer work range, so the visibility and shadow
-/// passes pair them with [`PhaseDispatches::opaque_layer`] the same way.
-pub(super) struct PhasePipelines([crate::rendering::PipelineRef; 4]);
+/// The `Pipelines` struct holds the fixed pipelines one visibility pass draws or dispatches with, so every pass
+/// requests them at creation and resolves them each frame the same way.
+pub(super) struct Pipelines<const N: usize>([crate::rendering::PipelineRef; N]);
 
-impl PhasePipelines {
-	/// Requests the pipeline assets named by `names`: solid, masked, double-sided, and double-sided masked.
-	pub(super) fn request(pipeline_manager: &PipelineManagerClient, names: [&str; 4]) -> Self {
-		Self(names.map(|name| pipeline_manager.request_pipeline(name)))
+impl<const N: usize> Pipelines<N> {
+	/// Requests the pipeline asset `byte-engine/rendering/visibility/{name}.pipeline` for each name. Next, call
+	/// [`Self::resolve`] each frame.
+	pub(super) fn request(pipeline_manager: &PipelineManagerClient, names: [&str; N]) -> Self {
+		Self(names.map(|name| pipeline_manager.request_pipeline(&format!("byte-engine/rendering/visibility/{name}.pipeline"))))
 	}
 
 	/// Returns the compiled pipelines in request order, or `None` while any is still compiling.
-	pub(super) fn resolve(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; 4]> {
-		let [solid, masked, double_sided, double_sided_masked] = self.0;
-		Some([
-			pipeline_manager.pipeline(solid)?,
-			pipeline_manager.pipeline(masked)?,
-			pipeline_manager.pipeline(double_sided)?,
-			pipeline_manager.pipeline(double_sided_masked)?,
-		])
+	pub(super) fn resolve(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; N]> {
+		let pipelines = self.0.map(|pipeline| pipeline_manager.pipeline(pipeline));
+		pipelines.iter().all(Option::is_some).then(|| pipelines.map(Option::unwrap))
+	}
+}
+
+impl Pipelines<4> {
+	/// Requests one raster pipeline per opaque-layer work range: the solid, masked, double-sided, and double-sided masked
+	/// variants of `stem`, such as `double-sided-masked-{stem}`. The visibility and shadow passes pair them with
+	/// [`PhaseDispatches::opaque_layer`] the same way.
+	pub(super) fn phases(pipeline_manager: &PipelineManagerClient, stem: &str) -> Self {
+		Self(["", "masked-", "double-sided-", "double-sided-masked-"].map(|variant| {
+			pipeline_manager.request_pipeline(&format!("byte-engine/rendering/visibility/{variant}{stem}.pipeline"))
+		}))
 	}
 }
 
@@ -109,14 +116,14 @@ pub(super) fn record_meshlet_dispatches(
 			c.write_push_constant(
 				0,
 				[
-					dispatch.work_item_base(),
+					dispatch.work_item_base,
 					(view_base + first_layer) as u32,
 					first_layer as u32,
 					batch_views as u32,
 					occlusion as u32,
 				],
 			);
-			c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
+			c.dispatch_meshes(dispatch.workgroup_count, 1, 1);
 		}
 	}
 }
@@ -129,7 +136,7 @@ pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
-use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
+use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
 use self::reflections::ScreenSpaceReflections;
@@ -143,14 +150,15 @@ use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
 	depth_pyramid::screen_view_data,
+	occlusion::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH},
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
 use super::layout::{
 	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, CONTACT_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING,
 	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, INDIRECT_DIFFUSE_MAP_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING,
 	LIT_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_TASK_VIEWS, POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING,
-	TRIANGLE_INDEX_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS,
+	POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING, TRIANGLE_INDEX_BINDING,
 };
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
@@ -172,17 +180,6 @@ pub(crate) struct SinkTargets {
 	pub(crate) contact_shadows: ContactShadowTargets,
 	/// The light opaque material evaluation writes for next frame's reflection rays.
 	pub(crate) radiance_history: ghi::DynamicImageHandle,
-}
-
-/// The `FrameWork` struct names the work one sink records for the whole frame: deforming skinned meshes and drawing
-/// the shadow maps every sink samples.
-///
-/// The visibility pipeline manager passes it to the first sink's [`VisibilityRenderPass::prepare`], whose camera the
-/// shadow views were made for, so that sink also fits the cascades to its surfaces.
-#[derive(Clone, Copy)]
-pub(crate) struct FrameWork<'a> {
-	pub(crate) skinning: &'a SkinningPass,
-	pub(crate) shadow_maps: &'a ShadowMaps,
 }
 
 /// The `SinkHistory` struct describes what the previous frame's history images hold for one sink.
@@ -228,14 +225,24 @@ impl VisibilityRenderPass {
 		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
-		gtao_settings: GtaoSettings,
-		ssgi_settings: SsgiSettings,
-		contact_shadow_settings: ContactShadowSettings,
 	) -> Self {
 		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
 		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
-		let material_buffers = MaterialBuffers::new(context);
-		let shadow_map_images = shadow_maps.images;
+		// The material prepasses write these buffers, and material evaluation reads them.
+		let material_buffer = |name, extra_uses| {
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses)
+				.name(name)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+		};
+		let material_count = context.build_buffer(material_buffer("Material Count", ghi::Uses::empty()));
+		let material_offset: ghi::BufferHandle<[u32; MAX_MATERIALS]> =
+			context.build_buffer(material_buffer("Material Offset", ghi::Uses::empty()));
+		let material_offset_scratch: ghi::BufferHandle<[u32; MAX_MATERIALS]> =
+			context.build_buffer(material_buffer("Material Offset Scratch", ghi::Uses::empty()));
+		let evaluation_dispatches =
+			context.build_buffer(material_buffer("Material Evaluation Dispatches", ghi::Uses::Indirect));
+		let pixel_mapping: ghi::BufferHandle<[[u16; 2]; MAX_PIXEL_MAPPING_ENTRIES]> =
+			context.build_buffer(material_buffer("Material XY", ghi::Uses::empty()));
 		let ao_map = context.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::R8UNORM,
@@ -244,31 +251,16 @@ impl VisibilityRenderPass {
 			.name("Occlusion Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let linear_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
-				.max_lod(0f32),
-		);
+		let linear_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.min_lod(0f32)
-				.max_lod(0f32),
+				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
 		let depth_pyramid_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::Max)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0.0)
 				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let sampled = |binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle, sampler| {
@@ -286,10 +278,9 @@ impl VisibilityRenderPass {
 			context,
 			&pipeline_manager,
 			targets.depth,
-			depth_pyramid.depth_pyramid(),
-			depth_pyramid.view_data(),
+			depth_pyramid.depth_pyramid,
+			depth_pyramid.view_data,
 			targets.ssgi,
-			ssgi_settings,
 		);
 		let light_clusters = LightClusterPass::new(
 			context,
@@ -300,24 +291,21 @@ impl VisibilityRenderPass {
 		let reflections = ScreenSpaceReflections::new(
 			context,
 			material_evaluation_descriptor_set,
-			depth_pyramid.depth_pyramid(),
+			depth_pyramid.depth_pyramid,
 			targets.radiance_history,
 		);
 		let visibility_buffer = |binding: ghi::ShaderResourceDescriptor, buffer: ghi::BaseBufferHandle| {
 			ghi::DescriptorWrite::buffer(visibility_descriptor_set, binding.slot(), buffer)
 		};
+		let storage = |set, binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle| {
+			ghi::DescriptorWrite::image(set, binding.slot(), image, ghi::Layouts::General)
+		};
 		context.write(&[
-			ghi::DescriptorWrite::image(
+			storage(material_evaluation_descriptor_set, LIT_BINDING, targets.lit),
+			storage(
 				material_evaluation_descriptor_set,
-				LIT_BINDING.slot(),
-				targets.lit,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::image(
-				material_evaluation_descriptor_set,
-				DIFFUSE_RADIANCE_HISTORY_BINDING.slot(),
-				targets.ssgi.diffuse_radiance_history,
-				ghi::Layouts::General,
+				DIFFUSE_RADIANCE_HISTORY_BINDING,
+				targets.ssgi.diffuse_radiance_history.into(),
 			),
 			ghi::DescriptorWrite::buffer(
 				material_evaluation_descriptor_set,
@@ -328,95 +316,62 @@ impl VisibilityRenderPass {
 			sampled(INDIRECT_DIFFUSE_MAP_BINDING, targets.ssgi.indirect_diffuse, linear_sampler),
 			// Point sampling keeps a shadow edge from bleeding one pixel onto the lit surface beside it.
 			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows.filtered, depth_sampler),
-			sampled(SHADOW_MAP_BINDING, shadow_map_images.directional, depth_sampler),
+			sampled(SHADOW_MAP_BINDING, shadow_maps.directional, depth_sampler),
 			sampled(
 				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
-				shadow_map_images.directional_depth_pyramid,
+				shadow_maps.directional_depth_pyramid,
 				depth_pyramid_sampler,
 			),
-			sampled(CONE_SHADOW_MAP_BINDING, shadow_map_images.cone, depth_sampler),
-			sampled(POINT_SHADOW_MAP_BINDING, shadow_map_images.point, depth_sampler),
-			visibility_buffer(MATERIAL_COUNT_BINDING, material_buffers.count.into()),
-			visibility_buffer(MATERIAL_OFFSET_BINDING, material_buffers.offset.into()),
-			visibility_buffer(MATERIAL_OFFSET_SCRATCH_BINDING, material_buffers.offset_scratch.into()),
-			visibility_buffer(
-				MATERIAL_EVALUATION_DISPATCHES_BINDING,
-				material_buffers.evaluation_dispatches.into(),
-			),
-			visibility_buffer(MATERIAL_XY_BINDING, material_buffers.pixel_mapping.into()),
-			ghi::DescriptorWrite::image(
-				visibility_descriptor_set,
-				TRIANGLE_INDEX_BINDING.slot(),
-				targets.primitive_index,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::image(
-				visibility_descriptor_set,
-				INSTANCE_ID_BINDING.slot(),
-				targets.instance_id,
-				ghi::Layouts::General,
-			),
+			sampled(CONE_SHADOW_MAP_BINDING, shadow_maps.cone, depth_sampler),
+			sampled(POINT_SHADOW_MAP_BINDING, shadow_maps.point, depth_sampler),
+			visibility_buffer(MATERIAL_COUNT_BINDING, material_count.into()),
+			visibility_buffer(MATERIAL_OFFSET_BINDING, material_offset.into()),
+			visibility_buffer(MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_scratch.into()),
+			visibility_buffer(MATERIAL_EVALUATION_DISPATCHES_BINDING, evaluation_dispatches.into()),
+			visibility_buffer(MATERIAL_XY_BINDING, pixel_mapping.into()),
+			storage(visibility_descriptor_set, TRIANGLE_INDEX_BINDING, targets.primitive_index),
+			storage(visibility_descriptor_set, INSTANCE_ID_BINDING, targets.instance_id),
 		]);
 
 		Self {
 			cascade_fit: CascadeFitPass::new(context, &pipeline_manager, base_descriptor_set, targets.depth),
 			light_clusters,
-			visibility: VisibilityPass::new(
-				&pipeline_manager,
-				[base_descriptor_set, occlusion.descriptor_set()],
-				targets.primitive_index,
-				targets.instance_id,
-				targets.depth,
-			),
+			visibility: VisibilityPass {
+				descriptor_sets: [base_descriptor_set, occlusion.descriptor_set],
+				pipelines: Pipelines::phases(&pipeline_manager, "visibility"),
+				primitive_index: targets.primitive_index,
+				instance_id: targets.instance_id,
+				depth: targets.depth,
+			},
 			occlusion,
-			material_prepasses: MaterialPrepasses::new(
-				&pipeline_manager,
-				base_descriptor_set,
-				visibility_descriptor_set,
-				material_buffers.count,
-			),
+			material_prepasses: MaterialPrepasses {
+				descriptor_sets: [base_descriptor_set, visibility_descriptor_set],
+				count_buffer: material_count,
+				pipelines: Pipelines::request(&pipeline_manager, ["material-count", "material-offset", "pixel-mapping"]),
+			},
 			gtao: GtaoPass::new(
 				context,
 				&pipeline_manager,
 				targets.depth,
-				depth_pyramid.depth_pyramid(),
-				depth_pyramid.view_data(),
+				depth_pyramid.depth_pyramid,
+				depth_pyramid.view_data,
 				ao_map.into(),
-				gtao_settings,
 			),
-			contact_shadows: ContactShadowPass::new(
-				context,
-				&pipeline_manager,
-				targets.depth,
-				targets.contact_shadows,
-				contact_shadow_settings,
-			),
+			contact_shadows: ContactShadowPass::new(context, &pipeline_manager, targets.depth, targets.contact_shadows),
 			depth_pyramid,
 			ssgi,
 			reflections,
-			material_evaluation: MaterialEvaluationPass::new(
-				targets.lit,
-				targets.ssgi.diffuse_radiance_history,
-				targets.radiance_history,
+			material_evaluation: MaterialEvaluationPass {
+				lit: targets.lit,
+				diffuse_radiance_history: targets.ssgi.diffuse_radiance_history,
+				radiance_history: targets.radiance_history,
 				base_descriptor_set,
 				visibility_descriptor_set,
-				material_evaluation_descriptor_set,
-				material_buffers.evaluation_dispatches,
-			),
+				descriptor_set: material_evaluation_descriptor_set,
+				evaluation_dispatches,
+			},
 			pipeline_manager,
 		}
-	}
-
-	pub(crate) fn set_gtao_settings(&mut self, settings: GtaoSettings) {
-		self.gtao.set_settings(settings);
-	}
-
-	pub(crate) fn set_ssgi_settings(&mut self, settings: SsgiSettings) {
-		self.ssgi.set_settings(settings);
-	}
-
-	pub(crate) fn set_contact_shadow_settings(&mut self, settings: ContactShadowSettings) {
-		self.contact_shadows.set_settings(settings);
 	}
 
 	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
@@ -426,69 +381,76 @@ impl VisibilityRenderPass {
 
 	/// Prepares one opaque visibility layer, the scene `background`, and one nearest-surface transparent layer.
 	///
-	/// Returns `None` while any fixed pipeline is still compiling. Only the first sink passes `frame_work`, so it runs
-	/// once per frame. `history` describes how this pass recorded the sink in the previous
-	/// frame at the same extent, or is `None` when the previous frame's images do not hold this sink's data.
+	/// Returns `None` while any fixed pipeline is still compiling. `frame_work` is the work one sink records for the
+	/// whole frame: deforming skinned meshes and drawing the shadow maps every sink samples. The visibility pipeline
+	/// manager passes it only to the first sink, whose camera the shadow views were made for, so that sink also fits the
+	/// cascades to its surfaces. `history` describes how this pass recorded the sink in the previous frame at the same
+	/// extent, or is `None` when the previous frame's images do not hold this sink's data. `exposure` is the shared
+	/// lighting exposure uploaded for every sink in this frame. `gtao_settings`, `ssgi_settings`, and
+	/// `contact_shadow_settings` are the runtime controls the visibility pipeline manager holds.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		frame_work: Option<FrameWork<'a>>,
+		frame_work: Option<(&'a SkinningPass, &'a ShadowMaps)>,
 		dispatches: PhaseDispatches,
 		render_info: &'a RenderInfo,
 		shadow_work: ShadowWork,
 		history: Option<SinkHistory>,
 		exposure: f32,
+		gtao_settings: GtaoSettings,
+		ssgi_settings: SsgiSettings,
+		contact_shadow_settings: ContactShadowSettings,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
 		// The cascades were made for the camera of the sink that records the frame-wide work, so only its surfaces
 		// can fit them.
-		let shadow_work = match frame_work {
-			Some(_) => shadow_work,
-			None => ShadowWork {
-				receiver_fit: None,
-				..shadow_work
-			},
+		let shadow_work = ShadowWork {
+			receiver_fit: shadow_work.receiver_fit.filter(|_| frame_work.is_some()),
+			..shadow_work
 		};
 		let (skinning, shadows) = match frame_work {
-			Some(work) => (
-				Some((work.skinning, pipeline_manager.pipeline(work.skinning.pipeline())?)),
-				Some(work.shadow_maps.prepare(
+			Some((skinning, shadow_maps)) => (
+				Some((skinning, pipeline_manager.pipeline(skinning.pipeline)?)),
+				Some(shadow_maps.prepare(
 					frame,
 					pipeline_manager,
 					dispatches,
 					shadow_work,
-					self.occlusion.descriptor_set(),
+					self.visibility.descriptor_sets,
 				)?),
 			),
 			None => (None, None),
 		};
-		let visibility_pipelines = self.visibility.pipelines(pipeline_manager)?;
-		let prepass_pipelines = self.material_prepasses.pipelines(pipeline_manager)?;
+		let visibility_pipelines = self.visibility.pipelines.resolve(pipeline_manager)?;
+		let prepass_pipelines = self.material_prepasses.pipelines.resolve(pipeline_manager)?;
 		let cascade_fit = self.cascade_fit.prepare(frame, pipeline_manager, shadow_work, sink)?;
 		let fits_receivers = shadow_work.receiver_fit.is_some();
-		let light_cluster_pipeline = self.light_clusters.pipeline(pipeline_manager)?;
-		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
-		let occlusion_pipelines = self.occlusion.pipelines(pipeline_manager)?;
-		let contact_shadow_pipelines = self.contact_shadows.pipelines(pipeline_manager)?;
+		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;
+		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
+		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
+		let contact_shadow_pipelines = self.contact_shadows.pipelines.resolve(pipeline_manager)?;
 		// A disabled pass neither records nor holds the frame back while its pipelines compile.
-		let gtao_pipelines = match self.gtao.enabled() {
-			true => Some(self.gtao.pipelines(pipeline_manager)?),
+		let gtao_pipelines = match gtao_settings.enabled {
+			true => Some(self.gtao.pipelines.resolve(pipeline_manager)?),
 			false => None,
 		};
-		let ssgi_pipelines = match self.ssgi.enabled() {
-			true => Some(self.ssgi.pipelines(pipeline_manager)?),
+		let ssgi_pipelines = match ssgi_settings.enabled {
+			true => Some(self.ssgi.pipelines.resolve(pipeline_manager)?),
 			false => None,
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
-		let occlusion_pyramid = self.occlusion.prepare(occlusion_pipelines);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
-		let contact_shadows = self
-			.contact_shadows
-			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipelines);
-		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, pipelines));
+		let contact_shadows = self.contact_shadows.prepare(
+			frame,
+			sink,
+			shadow_work.directional,
+			contact_shadow_settings,
+			contact_shadow_pipelines,
+		);
+		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, gtao_settings, pipelines));
 		// SSGI history exists only if the pass also ran last frame.
 		let ssgi_history = history.filter(|history| history.ssgi);
 		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
@@ -514,8 +476,6 @@ impl VisibilityRenderPass {
 		// frame instead of holding the scene back.
 		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
-		let visibility = &self.visibility;
-		let material_prepasses = &self.material_prepasses;
 
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::CommonCommandBufferMode as _;
@@ -533,13 +493,14 @@ impl VisibilityRenderPass {
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
 			// pass draws what was unoccluded last frame, and the late pass draws what that depth does not hide.
-			let opaque = |c: &mut ghi::implementation::CommandBufferRecording, occlusion| {
-				visibility.record(c, extent, VisibilityPhase::Opaque, dispatches, visibility_pipelines, occlusion);
+			let draw = |c: &mut ghi::implementation::CommandBufferRecording, phase, occlusion| {
+				self.visibility
+					.record(c, extent, phase, dispatches, visibility_pipelines, occlusion);
 			};
-			opaque(c, OcclusionPhase::Early);
+			draw(c, VisibilityPhase::Opaque, OcclusionPhase::Early);
 			occlusion_pyramid(c);
-			opaque(c, OcclusionPhase::Late);
-			material_prepasses.record(c, extent, prepass_pipelines);
+			draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late);
+			self.material_prepasses.record(c, extent, prepass_pipelines);
 			cascade_fit(c);
 			if fits_receivers && let Some(shadows) = &shadows {
 				shadows(c);
@@ -562,15 +523,8 @@ impl VisibilityRenderPass {
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.
 			if !dispatches.transparent.is_empty() {
-				visibility.record(
-					c,
-					extent,
-					VisibilityPhase::Transparent,
-					dispatches,
-					visibility_pipelines,
-					OcclusionPhase::Test,
-				);
-				material_prepasses.record(c, extent, prepass_pipelines);
+				draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
+				self.material_prepasses.record(c, extent, prepass_pipelines);
 				transparent_materials(c);
 			}
 			c.end_region();

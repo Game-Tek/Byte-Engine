@@ -26,7 +26,7 @@ impl Device {
 			for &key in &retired_backbuffers {
 				self.image_states.remove(&key);
 			}
-			let proxy = self.swapchains[swapchain_handle.0 as usize].images[0];
+			let proxy = self.swapchains[swapchain_handle.0 as usize].image;
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 			// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
 			swapchain.backbuffers = std::array::from_fn(|_| None);

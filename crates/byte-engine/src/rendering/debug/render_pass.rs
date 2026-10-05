@@ -100,11 +100,6 @@ impl DebugMeshRenderPass {
 
 		(depth_draws.into_bump_slice(), overlay_draws.into_bump_slice())
 	}
-
-	/// Applies this frame's pending retained-mesh changes even when the pass is bypassed.
-	fn update_scene(&self, frame: &ghi::implementation::Frame) {
-		self.scene.borrow_mut().debug_meshes(frame.key()).for_each(drop);
-	}
 }
 
 impl RenderPass for DebugMeshRenderPass {
@@ -124,18 +119,18 @@ impl RenderPass for DebugMeshRenderPass {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
 
-		let depth_pipeline = if depth_draws.is_empty() {
-			None
-		} else if let Some(pipeline) = self.pipeline_manager.pipeline(self.depth_pipeline) {
-			Some(pipeline)
-		} else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+		// `Some(None)`: no draw needs the pipeline. `None`: a draw needs it, but it is still compiling.
+		let pipeline = |draws: &[PreparedDraw], reference| {
+			if draws.is_empty() {
+				Some(None)
+			} else {
+				self.pipeline_manager.pipeline(reference).map(Some)
+			}
 		};
-		let overlay_pipeline = if overlay_draws.is_empty() {
-			None
-		} else if let Some(pipeline) = self.pipeline_manager.pipeline(self.overlay_pipeline) {
-			Some(pipeline)
-		} else {
+		let (Some(depth_pipeline), Some(overlay_pipeline)) = (
+			pipeline(depth_draws, self.depth_pipeline),
+			pipeline(overlay_draws, self.overlay_pipeline),
+		) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let Some(source_copy) = self.source_copy.prepare(frame, sink, frame_allocator) else {
@@ -145,58 +140,45 @@ impl RenderPass for DebugMeshRenderPass {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let extent = sink.extent();
-		let working_color = self.working_color;
-		let depth = self.depth;
+		let attachments = [
+			ghi::AttachmentInformation::new(
+				self.working_color,
+				ghi::Layouts::RenderTarget,
+				ghi::LoadOp::Load,
+				ghi::StoreOp::Store,
+			),
+			// Load scene depth for testing but never store it: depth-aware debug
+			// geometry reads the scene pipeline's `depth` image without modifying it.
+			ghi::AttachmentInformation::new(
+				self.depth,
+				ghi::Layouts::RenderTarget,
+				ghi::LoadOp::Load,
+				ghi::StoreOp::Discard,
+			),
+		];
 
 		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|label| label.write_str("Debug Meshes"),
 				|command_buffer| {
 					source_copy(command_buffer);
-
-					if let Some(pipeline) = depth_pipeline {
-						let attachments = [
-							ghi::AttachmentInformation::new(
-								working_color,
-								ghi::Layouts::RenderTarget,
-								ghi::LoadOp::Load,
-								ghi::StoreOp::Store,
-							),
-							// Load scene depth for testing but never store it: depth-aware debug
-							// geometry reads the scene pipeline's `depth` image without modifying it.
-							ghi::AttachmentInformation::new(
-								depth,
-								ghi::Layouts::RenderTarget,
-								ghi::LoadOp::Load,
-								ghi::StoreOp::Discard,
-							),
-						];
-						let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+					// Depth-ignored geometry is recorded last, without the depth attachment, so it also overlays
+					// depth-aware diagnostics.
+					for (pipeline, draws, attachments) in [
+						(depth_pipeline, depth_draws, &attachments[..]),
+						(overlay_pipeline, overlay_draws, &attachments[..1]),
+					] {
+						let Some(pipeline) = pipeline else {
+							continue;
+						};
+						let command_buffer = command_buffer.start_render_pass(extent, attachments);
 						let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
-						for draw in depth_draws {
+						for draw in draws {
 							command_buffer.write_push_constant(0, draw.push_constants);
 							command_buffer.draw_mesh(&draw.mesh);
 						}
 						command_buffer.end_render_pass();
 					}
-
-					// Depth-ignored geometry is recorded last so it also overlays depth-aware diagnostics.
-					if let Some(pipeline) = overlay_pipeline {
-						let attachments = [ghi::AttachmentInformation::new(
-							working_color,
-							ghi::Layouts::RenderTarget,
-							ghi::LoadOp::Load,
-							ghi::StoreOp::Store,
-						)];
-						let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-						let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
-						for draw in overlay_draws {
-							command_buffer.write_push_constant(0, draw.push_constants);
-							command_buffer.draw_mesh(&draw.mesh);
-						}
-						command_buffer.end_render_pass();
-					}
-
 					output_copy(command_buffer);
 				},
 			);
@@ -209,22 +191,31 @@ impl RenderPass for DebugMeshRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.update_scene(frame);
+		// Applies this frame's pending retained-mesh changes even when the pass is bypassed.
+		self.scene.borrow_mut().debug_meshes(frame.key()).for_each(drop);
 		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
 
 /// Visits the one to three unit meshes that form a semantic debug shape.
 fn for_each_shape_instance(shape: DebugShape, mut visit: impl FnMut(MeshKind, Matrix)) {
+	let sphere = |center: Point, radius: f32| {
+		model_matrix(
+			center,
+			Orientation::identity().into_matrix(),
+			Vec3f::new(radius, radius, radius),
+		)
+	};
+	// The +Z unit cylinder spans `axis` from `start` once it is centered and stretched along the axis.
+	let cylinder = |start: Point, axis: Vector, direction: UnitVector, length: f32, radius: f32| {
+		model_matrix(
+			start + axis * 0.5,
+			orientation_from_direction(direction).into_matrix(),
+			Vec3f::new(radius, radius, length * 0.5),
+		)
+	};
 	match shape {
-		DebugShape::Sphere { center, radius } => visit(
-			MeshKind::Sphere,
-			model_matrix(
-				center,
-				Orientation::identity().into_matrix(),
-				Vec3f::new(radius, radius, radius),
-			),
-		),
+		DebugShape::Sphere { center, radius } => visit(MeshKind::Sphere, sphere(center, radius)),
 		DebugShape::Box {
 			center,
 			half_extents,
@@ -234,38 +225,12 @@ fn for_each_shape_instance(shape: DebugShape, mut visit: impl FnMut(MeshKind, Ma
 			model_matrix(center, orientation.into_matrix(), half_extents.into_maths()),
 		),
 		DebugShape::Capsule { start, end, radius } => {
+			// A zero-length capsule is still a well-defined sphere.
+			visit(MeshKind::Sphere, sphere(start, radius));
 			let axis = end - start;
 			if let Ok((direction, length)) = axis.normalize_with_length() {
-				visit(
-					MeshKind::Sphere,
-					model_matrix(
-						start,
-						Orientation::identity().into_matrix(),
-						Vec3f::new(radius, radius, radius),
-					),
-				);
-				visit(
-					MeshKind::Cylinder,
-					model_matrix(
-						start + axis * 0.5,
-						orientation_from_direction(direction).into_matrix(),
-						Vec3f::new(radius, radius, length * 0.5),
-					),
-				);
-				visit(
-					MeshKind::Sphere,
-					model_matrix(end, Orientation::identity().into_matrix(), Vec3f::new(radius, radius, radius)),
-				);
-			} else {
-				// A zero-length capsule is still a well-defined sphere.
-				visit(
-					MeshKind::Sphere,
-					model_matrix(
-						start,
-						Orientation::identity().into_matrix(),
-						Vec3f::new(radius, radius, radius),
-					),
-				);
+				visit(MeshKind::Cylinder, cylinder(start, axis, direction, length, radius));
+				visit(MeshKind::Sphere, sphere(end, radius));
 			}
 		}
 		DebugShape::Segment { start, end } => {
@@ -273,14 +238,7 @@ fn for_each_shape_instance(shape: DebugShape, mut visit: impl FnMut(MeshKind, Ma
 			let (direction, length) = axis.normalize_with_length().expect(
 				"Debug segment direction is invalid. The most likely cause is that shape expansion ran before message validation.",
 			);
-			visit(
-				MeshKind::Cylinder,
-				model_matrix(
-					start + axis * 0.5,
-					orientation_from_direction(direction).into_matrix(),
-					Vec3f::new(SEGMENT_RADIUS, SEGMENT_RADIUS, length * 0.5),
-				),
-			);
+			visit(MeshKind::Cylinder, cylinder(start, axis, direction, length, SEGMENT_RADIUS));
 		}
 	}
 }
@@ -324,27 +282,12 @@ mod tests {
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{
-		builtin_position_buffer, compile, input_buffer, output_buffer, push_constant_buffer, run_at,
+		IDENTITY_MATRIX, builtin_position_buffer, compile, input_buffer, link_program, output_buffer, push_constant_buffer,
+		run_at,
 	};
 
 	const DEBUG_VERTEX_BESL: &str = include_str!("../../../assets/rendering/debug/vertex.besl");
 	const DEBUG_FRAGMENT_BESL: &str = include_str!("../../../assets/rendering/debug/fragment.besl");
-	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-
-	/// Links one checked-in debug shader through the same BESL frontend used by production baking.
-	///
-	/// Returns the program rather than its `main`, because the program owns every function it calls.
-	fn debug_program(source: &str, name: &str) -> besl::NodeReference {
-		let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
-			panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in debug shader.")
-		});
-		program.get_main().unwrap_or_else(|| {
-			panic!(
-				"Missing {name} entry point. The most likely cause is that the checked-in debug shader has no `main` function."
-			)
-		});
-		program
-	}
 
 	/// Collects only mesh kinds so semantic expansion remains independent of native GHI handles.
 	fn mesh_kinds(shape: DebugShape) -> Vec<MeshKind> {
@@ -410,7 +353,7 @@ mod tests {
 	/// Executes both checked-in stages through the BESL VM to verify the raster interface and color path.
 	#[test]
 	fn debug_vertex_and_fragment_vm_preserve_position_and_color() {
-		let vertex = compile(debug_program(DEBUG_VERTEX_BESL, "debug vertex shader"));
+		let vertex = compile(link_program(DEBUG_VERTEX_BESL, "debug vertex shader"));
 		let mut push_constant = push_constant_buffer(&vertex);
 		let mut vertex_input = input_buffer(&vertex, 0);
 		let mut position = builtin_position_buffer(&vertex);
@@ -441,7 +384,7 @@ mod tests {
 			Ok(Value::Vec4F([0.1, 0.2, 0.3, 0.4]))
 		);
 
-		let fragment = compile(debug_program(DEBUG_FRAGMENT_BESL, "debug fragment shader"));
+		let fragment = compile(link_program(DEBUG_FRAGMENT_BESL, "debug fragment shader"));
 		let mut fragment_color = input_buffer(&fragment, 0);
 		let mut output = output_buffer(&fragment, 0);
 		fragment_color
@@ -469,7 +412,7 @@ use ghi::{
 	},
 	frame::Frame as _,
 };
-use math::{Matrix, Orientation, Point, orientation_from_direction};
+use math::{Matrix, Orientation, Point, UnitVector, Vector, orientation_from_direction};
 use maths_rs::{
 	Vec3f,
 	mat::{MatScale as _, MatTranslate as _},

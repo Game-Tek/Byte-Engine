@@ -76,7 +76,7 @@ fn encode_entries(entries: Vec<[f32; 3]>) -> Box<[u8]> {
 mod tests {
 	use crate::{
 		asset::ResourceId,
-		processors::processor::implementations::lut::{LutDescription, process_lut},
+		processors::lut::{LutDescription, process_lut},
 		resources::lut::LutKind,
 	};
 

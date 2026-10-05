@@ -1,18 +1,6 @@
 use super::*;
 
 impl Context {
-	// Acquires one reusable native command from the selected queue's context-local pool.
-	pub(super) fn create_metal_command_buffer(
-		&mut self,
-		queue_handle: graphics_hardware_interface::QueueHandle,
-		label: Option<&str>,
-	) -> queue::NativeCommand {
-		let queue = self.queues.get_mut(queue_handle.0 as usize).expect(
-			"Metal command queue is missing. The most likely cause is that the queue handle came from another context.",
-		);
-		queue.acquire_native_command(label, self.settings.debug_labels)
-	}
-
 	/// Waits for and releases one upload slot during frame retirement or a cross-queue handoff.
 	pub(super) fn retire_internal_uploads(&mut self, sequence_index: u8) {
 		if self.internal_upload_queues[sequence_index as usize].take().is_none() {
@@ -34,21 +22,8 @@ impl Context {
 			}
 			let synchronizer =
 				synchronizer_for_sequence(&self.synchronizers, self.internal_upload_synchronizer, sequence_index as u8);
-			let (finished, error) = self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues);
-			if let Some(error) = error {
-				panic!("{error}");
-			}
-			if finished {
+			if self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues) {
 				self.internal_upload_queues[sequence_index] = None;
-			}
-		}
-	}
-
-	/// Waits only for outstanding internal uploads submitted to another Metal queue.
-	pub(super) fn synchronize_internal_upload_queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) {
-		for sequence_index in 0..self.internal_upload_queues.len() {
-			if self.internal_upload_queues[sequence_index].is_some_and(|owner| owner != queue_handle) {
-				self.retire_internal_uploads(sequence_index as u8);
 			}
 		}
 	}
@@ -58,7 +33,20 @@ impl Context {
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
-		let compiler = create_metal4_compiler(device.as_ref(), settings.debug_labels)?;
+		let compiler_descriptor = mtl::MTL4CompilerDescriptor::new();
+		if cfg!(debug_assertions) && settings.debug_labels {
+			compiler_descriptor.setLabel(Some(&NSString::from_str("Byte Engine")));
+		}
+		// The context's factory and every factory it creates share this compiler.
+		let compiler = device
+			.newCompilerWithDescriptor_error(&compiler_descriptor)
+			.map_err(|error| {
+				eprintln!(
+					"Metal 4 compiler creation failed: {}. The most likely cause is that Metal could not allocate a compiler for this device.",
+					error.localizedDescription(),
+				);
+				"Metal 4 compiler creation failed. The most likely cause is that Metal could not allocate a compiler for this device."
+			})?;
 		let mut counter_heaps = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 		for sequence_index in 0..MAX_FRAMES_IN_FLIGHT {
 			counter_heaps.push(create_counter_heap(device.as_ref(), settings.debug_labels, sequence_index)?);
@@ -71,10 +59,10 @@ impl Context {
 		let mut synchronizers = ResourceCollection::with_capacity(32);
 		// The context does not exist yet, so the internal upload synchronizer is built like `create_synchronizer` does.
 		let internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle =
-			synchronizers.add_chain((0..frames).map(|_| synchronizer::Synchronizer::new()));
-		let context = Context {
+			synchronizers.add_chain((0..frames).map(|_| Synchronizer::default()));
+		Ok(Context {
+			factory: Factory::new(device.clone(), compiler, settings),
 			device,
-			compiler,
 			frames,
 			queues,
 			buffers: ResourceCollection::with_capacity(1024),
@@ -84,7 +72,6 @@ impl Context {
 			descriptor_sets: ResourceCollection::default(),
 			meshes: Vec::new(),
 			acceleration_structures: Vec::new(),
-			shaders: Vec::new(),
 			pipelines: Vec::new(),
 			command_buffers: Vec::new(),
 			synchronizers,
@@ -103,11 +90,10 @@ impl Context {
 			upload_arenas: (0..=MAX_FRAMES_IN_FLIGHT)
 				.map(|_| command_buffer::UploadArena::new(settings.debug_labels))
 				.collect(),
-			argument_tables: command_buffer::CommandArgumentTables::default(),
+			argument_tables: Default::default(),
 			image_groups: crate::image_group::ImageGroups::default(),
 			next_group_heap_serial: 0,
-		};
-		Ok(context)
+		})
 	}
 
 	pub(super) fn create_buffer_resource(
@@ -116,7 +102,7 @@ impl Context {
 		size: usize,
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
-	) -> buffer::Buffer {
+	) -> Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
 		let name = crate::debug_name(name);
 		let buffer = self
@@ -124,30 +110,22 @@ impl Context {
 			.newBufferWithLength_options(size as _, options)
 			.expect("Metal buffer creation failed. The most likely cause is that the device is out of memory.");
 
-		let staging = if device_accesses == crate::DeviceAccesses::DeviceOnly {
-			Some(
-				self.device
-					.newBufferWithLength_options(size as _, mtl::MTLResourceOptions::StorageModeShared)
-					.expect("Metal staging buffer creation failed. The most likely cause is that the device is out of memory."),
-			)
-		} else {
-			None
-		};
+		let staging = (device_accesses == crate::DeviceAccesses::DeviceOnly).then(|| {
+			self.device
+				.newBufferWithLength_options(size as _, mtl::MTLResourceOptions::StorageModeShared)
+				.expect("Metal staging buffer creation failed. The most likely cause is that the device is out of memory.")
+		});
 
 		#[cfg(debug_assertions)]
-		if self.settings.debug_labels {
-			if let Some(name) = name.as_deref() {
-				buffer.setLabel(Some(&NSString::from_str(name)));
-				if let Some(staging) = staging.as_ref() {
-					staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
-				}
+		if let Some(name) = name.as_deref().filter(|_| self.settings.debug_labels) {
+			buffer.setLabel(Some(&NSString::from_str(name)));
+			if let Some(staging) = staging.as_ref() {
+				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
 			}
 		}
 
-		let pointer = staging
-			.as_ref()
-			.map(|staging| staging.contents().as_ptr() as *mut u8)
-			.unwrap_or_else(|| buffer.contents().as_ptr() as *mut u8);
+		// A device-only buffer is mapped through its staging copy.
+		let pointer = staging.as_ref().unwrap_or(&buffer).contents().as_ptr().cast::<u8>();
 		if size != 0 && !pointer.is_null() {
 			// Typed buffer APIs expose the mapped bytes as zeroable POD values, so initialize the complete representation.
 			unsafe { std::ptr::write_bytes(pointer, 0, size) };
@@ -155,7 +133,7 @@ impl Context {
 		let gpu_address = buffer.gpuAddress();
 		let staging = staging.map(|staging| {
 			self.buffers
-				.add(buffer::Buffer {
+				.add(Buffer {
 					name: name.as_ref().map(|name| format!("{name}_staging")),
 					staging: None,
 					buffer: staging,
@@ -168,7 +146,7 @@ impl Context {
 				.1
 		});
 
-		buffer::Buffer {
+		Buffer {
 			name,
 			buffer,
 			staging,
@@ -221,7 +199,6 @@ impl Context {
 		set_handle: DescriptorSetHandle,
 		slot: crate::shader::ResourceSlot,
 		descriptor: Descriptor,
-		frame_index: u8,
 		array_element: u32,
 	) {
 		let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
@@ -236,7 +213,7 @@ impl Context {
 		descriptor_set.version = descriptor_set.version.wrapping_add(1);
 
 		// Keep the reverse index in step so replacing a resource's backing can invalidate every set that binds it.
-		let binding = (set_handle, slot, array_element, frame_index);
+		let binding = (set_handle, slot, array_element);
 		if let Some(resource) = previous.and_then(Descriptor::tracked_resource)
 			&& let Some(bindings) = self.resource_to_descriptor.get_mut(&resource)
 		{
@@ -293,8 +270,7 @@ impl Context {
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
 				sampler: SamplerHandle(handle.0),
 			}),
-			crate::descriptors::WriteData::StaticSamplers => None,
-			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
+			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { handle } => {
 				Some(Descriptor::AccelerationStructure { handle })
 			}
@@ -324,15 +300,11 @@ impl Context {
 				continue;
 			}
 
-			match task.task {
-				Tasks::ResizeImage { handle, extent } => {
-					let handle = self
-						.images
-						.nth_handle(handle, sequence_index as usize)
-						.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
-					self.resize_image_internal(handle, extent);
-				}
-			}
+			let handle = self
+				.images
+				.nth_handle(task.handle, sequence_index as usize)
+				.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
+			self.resize_image_internal(handle, task.extent);
 		}
 	}
 
@@ -346,7 +318,7 @@ impl Context {
 			return false;
 		}
 
-		let description = image::ImageDescription {
+		let description = ImageDescription {
 			extent,
 			..image.description
 		};
@@ -372,33 +344,25 @@ impl Context {
 		};
 
 		// Describe each member at its requested extent and ask Metal how much heap memory it needs.
-		let members = requests
+		let (members, requirements): (Vec<_>, Vec<_>) = requests
 			.iter()
 			.map(|request| {
 				let handle = ImageHandle(request.image.0);
-				let description = image::ImageDescription {
+				let description = ImageDescription {
 					extent: request.extent,
 					..self.images.resource(handle).description
 				};
-				(handle, description, build_texture_descriptor(description))
+				let descriptor = build_texture_descriptor(description);
+				let size_and_align = self.device.heapTextureSizeAndAlignWithDescriptor(&descriptor);
+				let memory = crate::image_group::MemoryRequirements {
+					size: size_and_align.size as u64,
+					alignment: size_and_align.align as u64,
+					// Every member lives in private storage, so any member can share a heap with any other.
+					category: 0,
+				};
+				((handle, description, descriptor), (memory, request.lifetime.clone()))
 			})
-			.collect::<Vec<_>>();
-		let requirements = members
-			.iter()
-			.zip(&requests)
-			.map(|((_, _, descriptor), request)| {
-				let size_and_align = self.device.heapTextureSizeAndAlignWithDescriptor(descriptor);
-				(
-					crate::image_group::MemoryRequirements {
-						size: size_and_align.size as u64,
-						alignment: size_and_align.align as u64,
-						// Every member lives in private storage, so any member can share a heap with any other.
-						category: 0,
-					},
-					request.lifetime.clone(),
-				)
-			})
-			.collect::<Vec<_>>();
+			.unzip();
 		let placement = crate::image_group::pack(&requirements);
 
 		let group_name = self.image_groups.group(group).name.clone();
@@ -438,12 +402,12 @@ impl Context {
 				texture.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
 			}
 			// In-flight commands retained the previous texture and heap, so replacing them here is safe.
-			*image = image::Image {
+			*image = Image {
 				name: image.name.take(),
 				texture,
 				description,
 				staging: None,
-				slot: Some(image::GroupSlot {
+				slot: Some(GroupSlot {
 					heap: heap.clone(),
 					heap_serial: *heap_serial,
 					offset: slot.offset as usize,
@@ -455,21 +419,6 @@ impl Context {
 
 		self.image_groups.commit(group, requests, placement);
 	}
-
-	/// Defers resize work until each other frame-local image can be replaced safely.
-	pub(crate) fn resize_image_on_other_frames(
-		&mut self,
-		handle: graphics_hardware_interface::BaseImageHandle,
-		extent: Extent,
-		current_frame: u8,
-	) {
-		for offset in 1..self.frames {
-			self.tasks.push(Task {
-				task: Tasks::ResizeImage { handle, extent },
-				frame: (current_frame + offset) % self.frames,
-			});
-		}
-	}
 }
 
 /// Returns the private synchronizer a frame sequence signals for one public synchronizer.
@@ -478,7 +427,7 @@ impl Context {
 /// [`crate::metal::command_buffer::RecordingCommit`] can call it while other context fields are borrowed.
 pub(crate) fn synchronizer_for_sequence(
 	synchronizers: &ResourceCollection<
-		synchronizer::Synchronizer,
+		Synchronizer,
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,

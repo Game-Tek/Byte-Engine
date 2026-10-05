@@ -18,11 +18,11 @@ pub(crate) struct Sun {
 	transforms: DefaultListener<TransformationUpdate>,
 	light: Option<Handle>,
 	/// The RGB illuminance in lux of the newest directional light. It stays black until a light is created.
-	illuminance: Vec3f,
+	pub(super) illuminance: Vec3f,
 	/// The angular radius of the newest directional light's disk.
-	angular_radius: Radians,
+	pub(super) angular_radius: Radians,
 	/// The direction toward the sun, or `None` until the light's first transform arrives.
-	direction: Option<UnitVector>,
+	pub(super) direction: Option<UnitVector>,
 }
 
 impl Sun {
@@ -41,37 +41,22 @@ impl Sun {
 		}
 	}
 
-	/// Adopts the newest directional light and its latest orientation. Returns whether the sun's direction changed.
-	pub(crate) fn update(&mut self) -> bool {
+	/// Adopts the newest directional light and its latest orientation. Returns the sun's new direction when it moved.
+	pub(crate) fn update(&mut self) -> Option<UnitVector> {
 		while let Some(message) = self.lights.read() {
 			self.light = Some(message.handle());
 			self.illuminance = message.data().color;
 			self.angular_radius = message.data().angular_radius;
 		}
 
-		let mut moved = false;
+		let mut moved = None;
 		while let Some(message) = self.transforms.read() {
 			if self.light == Some(message.handle()) {
 				// Directional-light orientation points along ray travel; scattering needs the direction toward the sun.
 				self.direction = Some(-math::direction_from_orientation(message.transform().get_orientation()));
-				moved = true;
+				moved = self.direction;
 			}
 		}
 		moved
-	}
-
-	/// Returns the sun's RGB illuminance in lux, black until a directional light exists.
-	pub(crate) fn illuminance(&self) -> Vec3f {
-		self.illuminance
-	}
-
-	/// Returns the angular radius of the sun's disk.
-	pub(crate) fn angular_radius(&self) -> Radians {
-		self.angular_radius
-	}
-
-	/// Returns the direction toward the sun, or `None` until the light's transform arrives.
-	pub(crate) fn direction(&self) -> Option<UnitVector> {
-		self.direction
 	}
 }

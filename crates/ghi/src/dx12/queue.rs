@@ -1,4 +1,5 @@
 use super::context::{Device, Execution};
+use crate::frame::Frame as _;
 use crate::{CommandBufferHandle, PresentKey, QueueHandle, SynchronizerHandle};
 
 /// The `Queue` struct provides borrowed DX12 queue submission through the shared GHI queue API.
@@ -9,29 +10,19 @@ pub struct Queue<'a> {
 
 impl Execution<'_> {
 	/// Completes one queue execution after the recording closure releases its command-buffer borrows.
-	fn finish(mut self, synchronizer: SynchronizerHandle, sequence_index: Option<u8>, present_keys: &[PresentKey]) {
+	fn finish(mut self, synchronizer: SynchronizerHandle, sequence_index: u8, present_keys: &[PresentKey]) {
 		let frame = self.frame.as_mut().expect(
 			"Frame is required to finish a recorded DX12 execution. The most likely cause is that a frameless execution accepted a command buffer.",
 		);
-		let device = frame.device_mut();
-		let sequence_index = sequence_index.expect(
-			"Missing DX12 frame sequence. The most likely cause is that frame execution finalization lost its frame request.",
-		);
-		device.validate_present_keys(self.queue_handle, sequence_index, present_keys);
-		device.validate_present_preparation(&self.prepared_present_keys, present_keys);
 		// Keep the handles until the whole batch enters the native queue so unwinding restores journals in reverse order.
-		let readbacks = device.execute_command_buffers(self.queue_handle, &self.command_buffers, sequence_index);
-		for &present_key in present_keys {
-			device.present_swapchain(present_key);
-		}
-		device.complete_command_buffer_execution(
+		frame.device().submit_execution(
 			self.queue_handle,
 			&self.command_buffers,
+			&self.prepared_present_keys,
 			synchronizer,
 			sequence_index,
-			readbacks,
+			present_keys,
 		);
-		device.complete_present_submission(!present_keys.is_empty());
 		self.command_buffers.clear();
 		self.prepared_present_keys.clear();
 	}
@@ -46,16 +37,6 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 
 	fn completed_frame(&self) -> Option<crate::FrameKey> {
 		self.completed_frame
-	}
-
-	fn record<'record>(
-		&'record mut self,
-		command_buffer_handle: CommandBufferHandle,
-		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
-	) where
-		Self::Frame: 'record,
-	{
-		self.record_with_present_keys(command_buffer_handle, &[], record);
 	}
 
 	fn record_with_present_keys<'record>(
@@ -86,10 +67,10 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		);
 		let sequence_index = crate::frame::Frame::key(frame).sequence_index;
 		frame
-			.device_mut()
+			.device()
 			.validate_present_keys(self.queue_handle, sequence_index, present_keys);
 		frame
-			.device_mut()
+			.device()
 			.validate_command_buffer_for_execution(command_buffer_handle, self.queue_handle);
 		self.prepared_present_keys.extend_from_slice(present_keys);
 		let mut command_buffer = frame.create_command_buffer_recording(command_buffer_handle);
@@ -157,7 +138,7 @@ impl crate::queue::Queue for Queue<'_> {
 					queue_handle: self.queue_handle,
 				};
 				let present_keys = execute(&mut execution);
-				execution.finish(_synchronizer, Some(sequence_index), present_keys.as_ref());
+				execution.finish(_synchronizer, sequence_index, present_keys.as_ref());
 			}
 			None => {
 				let mut execution = Execution {
@@ -172,17 +153,15 @@ impl crate::queue::Queue for Queue<'_> {
 					execution.command_buffers.is_empty(),
 					"Frameless DX12 execution recorded a command buffer. The most likely cause is that the recording API bypassed its frame requirement."
 				);
-				self.device.validate_present_keys(self.queue_handle, 0, present_keys.as_ref());
-				self.device
-					.validate_present_preparation(&execution.prepared_present_keys, present_keys.as_ref());
-				drop(execution);
-				let readbacks = self.device.execute_command_buffers(self.queue_handle, &[], 0);
-				for &present_key in present_keys.as_ref() {
-					self.device.present_swapchain(present_key);
-				}
-				self.device
-					.complete_command_buffer_execution(self.queue_handle, &[], _synchronizer, 0, readbacks);
-				self.device.complete_present_submission(!present_keys.as_ref().is_empty());
+				// Dropping a frameless execution does nothing, so it can outlive the submission.
+				self.device.submit_execution(
+					self.queue_handle,
+					&[],
+					&execution.prepared_present_keys,
+					_synchronizer,
+					0,
+					present_keys.as_ref(),
+				);
 			}
 		}
 	}

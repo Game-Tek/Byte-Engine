@@ -36,9 +36,9 @@ impl Device {
 		}
 	}
 
-	/// Resolves a frame-aware index using the optional frame offset.
-	pub(crate) fn frame_index_with_offset(&self, frame_index: usize, frame_offset: Option<i32>, total_frames: usize) -> usize {
-		crate::frame_resources::frame_index_with_offset(frame_index, frame_offset.unwrap_or(0), total_frames)
+	/// Resolves the frame sequence that a frame offset selects relative to `sequence_index`.
+	pub(crate) fn frame_index_with_offset(&self, sequence_index: u8, frame_offset: i32) -> u8 {
+		crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize) as u8
 	}
 
 	pub(crate) fn descriptor_set_for_sequence(
@@ -72,7 +72,9 @@ impl Device {
 		let descriptor_set = self.descriptor_set_for_sequence(descriptor_set, sequence_index)?;
 		let descriptors = self.descriptor_sets[descriptor_set.0 as usize].descriptors.get(&slot)?;
 		let retained = descriptors.get(&0).or_else(|| descriptors.values().next())?;
-		Some(self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize))
+		Some(usize::from(
+			self.frame_index_with_offset(sequence_index, retained.frame_offset),
+		))
 	}
 
 	/// Selects the shader synchronization scope for the active pipeline and command-list class.
@@ -181,8 +183,7 @@ impl Device {
 			return;
 		};
 		let slot = base_offset + offset + array_element;
-		let resource_sequence =
-			self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize) as u8;
+		let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
 
 		if sampler_heap {
 			let sampler = match retained.descriptor {
@@ -261,7 +262,7 @@ impl Device {
 		};
 		let heap_kind = self
 			.buffer_heap_kind_for_sequence(handle, sequence_index)
-			.unwrap_or(buffer.heap_kind);
+			.unwrap_or(buffer.memory.heap_kind);
 		assert!(
 			heap_kind != BufferHeapKind::Readback,
 			"Invalid DX12 shader buffer descriptor. The most likely cause is that a readback-heap resource reached native CBV, SRV, or UAV materialization. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
@@ -335,7 +336,7 @@ impl Device {
 			}
 			_ => return,
 		}
-		self.descriptor_write_count += 1;
+		self.counters.descriptor_write_count += 1;
 	}
 
 	/// Validates and rounds one logical uniform-buffer range for a native CBV.
@@ -397,8 +398,8 @@ impl Device {
 			self.device
 				.CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 		}
-		self.descriptor_write_count += 1;
-		self.acceleration_structure_descriptor_write_count += 1;
+		self.counters.descriptor_write_count += 1;
+		self.counters.acceleration_structure_descriptor_write_count += 1;
 	}
 
 	/// Writes one native image descriptor using the active shader resource representation.
@@ -447,7 +448,7 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				self.image_uav_descriptor_write_count += 1;
+				self.counters.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
 					format,
@@ -459,10 +460,10 @@ impl Device {
 					mip_level,
 				);
 				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
-				self.image_srv_descriptor_write_count += 1;
+				self.counters.image_srv_descriptor_write_count += 1;
 			}
 		}
-		self.descriptor_write_count += 1;
+		self.counters.descriptor_write_count += 1;
 	}
 
 	pub(crate) fn write_native_sampler_descriptor(
@@ -504,15 +505,17 @@ impl Device {
 		}
 		#[cfg(test)]
 		{
-			self.sampler_descriptor_write_records.push(SamplerDescriptorWriteRecord {
-				filter,
-				address_mode,
-				max_anisotropy,
-				min_lod: sampler.min_lod,
-				max_lod: sampler.max_lod,
-			});
+			self.counters
+				.sampler_descriptor_write_records
+				.push(SamplerDescriptorWriteRecord {
+					filter,
+					address_mode,
+					max_anisotropy,
+					min_lod: sampler.min_lod,
+					max_lod: sampler.max_lod,
+				});
 		}
-		self.descriptor_write_count += 1;
+		self.counters.descriptor_write_count += 1;
 	}
 
 	pub(crate) fn sampler_filter(sampler: &Sampler) -> D3D12_FILTER {

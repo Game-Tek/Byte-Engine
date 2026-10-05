@@ -111,11 +111,7 @@ impl Device {
 		copy: &crate::BufferImageCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(copy.destination_image, sequence_index);
@@ -196,11 +192,7 @@ impl Device {
 		data: &[RGBAu8],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
@@ -298,11 +290,7 @@ impl Device {
 		sequence_index: u8,
 		region: Option<crate::image::Region>,
 	) -> bool {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return false;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
@@ -371,7 +359,9 @@ impl Device {
 		unsafe {
 			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
 		}
-		self.debug_region_begin_count.set(self.debug_region_begin_count.get() + 1);
+		self.counters
+			.debug_region_begin_count
+			.set(self.counters.debug_region_begin_count.get() + 1);
 	}
 
 	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
@@ -386,7 +376,9 @@ impl Device {
 		unsafe {
 			command_list.EndEvent();
 		}
-		self.debug_region_end_count.set(self.debug_region_end_count.get() + 1);
+		self.counters
+			.debug_region_end_count
+			.set(self.counters.debug_region_end_count.get() + 1);
 	}
 
 	pub(crate) fn record_image_upload(

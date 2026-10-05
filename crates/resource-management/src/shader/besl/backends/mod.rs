@@ -1,3 +1,29 @@
+/// Asserts that a generated shader contains `needle`, and prints the shader when it does not.
+#[cfg(test)]
+macro_rules! assert_string_contains {
+	($haystack:expr, $needle:expr) => {
+		assert!(
+			$haystack.contains($needle),
+			"Expected string to contain '{}', but it did not. String: '{}'",
+			$needle,
+			$haystack
+		);
+	};
+}
+
+/// Asserts that a generated shader does not contain `needle`, and prints the shader when it does.
+#[cfg(test)]
+macro_rules! assert_string_does_not_contain {
+	($haystack:expr, $needle:expr) => {
+		assert!(
+			!$haystack.contains($needle),
+			"Expected string not to contain '{}', but it did. String: '{}'",
+			$needle,
+			$haystack
+		);
+	};
+}
+
 pub mod glsl;
 pub mod hlsl;
 pub mod msl;
@@ -54,6 +80,113 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	main: fn (input: StageInput, pipeline_input: interface { index: u32, uv: vec2f }) -> output { color: vec4f } {
 		let color: vec4f = shade(pipeline_input.index, pipeline_input.uv);
 		return { color };
+	}
+"#;
+
+/// Uses every subgroup ballot operation in a compute shader.
+#[cfg(test)]
+const SUBGROUP_COMPUTE: &str = r#"
+	main: fn () -> void {
+		let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+		let leader: u32 = subgroup_ballot_find_lsb(mask);
+		let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+		let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
+		if (subgroup_ballot_any(remaining)) {
+			let count: u32 = subgroup_ballot_count(remaining);
+			count;
+		}
+	}
+"#;
+
+/// Reads the vertex invocation indices inside a helper function.
+#[cfg(test)]
+const VERTEX_BUILTIN_HELPER: &str = r#"
+	invocation_sum: fn () -> u32 {
+		return vertex_index + instance_index;
+	}
+	out_value: output<u32, 0>;
+	main: fn () -> void {
+		out_value = invocation_sum();
+	}
+"#;
+
+/// Returns, passes, and indexes short scalar arrays, which backends lower to vectors.
+#[cfg(test)]
+const SHORT_SCALAR_ARRAYS: &str = r#"
+	scalar_f32: fn () -> f32[3] {
+		return f32[3](0.5, 0.25, 0.125);
+	}
+	scalar_u16: fn () -> u16[3] {
+		return u16[3](1, 2, 3);
+	}
+	scalar_u32: fn () -> u32[3] {
+		return u32[3](4, 5, 6);
+	}
+	mirror_indices: fn (indices: u32[3]) -> u32[3] {
+		return indices;
+	}
+	main: fn () -> void {
+		let floats: f32[3] = scalar_f32();
+		let shorts: u16[3] = scalar_u16();
+		let indices: u32[3] = mirror_indices(scalar_u32());
+		let sum: f32 = floats[1] + f32(u32(shorts[1])) + f32(indices[1]);
+		sum;
+	}
+"#;
+
+/// Chains `else if` and `else` branches.
+#[cfg(test)]
+const ELSE_CHAIN: &str = r#"
+	main: fn () -> void {
+		let n: u32 = 0;
+		if (n < 1) {
+			n = 2;
+		} else if (n < 4) {
+			n = 3;
+		} else {
+			n = 4;
+		}
+	}
+"#;
+
+/// Finds the lowest set bit of an unsigned value.
+#[cfg(test)]
+const FIND_LSB: &str = r#"
+	main: fn () -> void {
+		let bits: u32 = 40;
+		let lowest: u32 = find_lsb(bits);
+		lowest;
+	}
+"#;
+
+/// Reads a module-level constant array.
+#[cfg(test)]
+const CONST_ARRAY: &str = r#"
+	WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+
+	main: fn () -> void {
+		let value: f32 = WEIGHTS[1];
+		value;
+	}
+"#;
+
+/// Matches on a loop counter, with a `break` in one arm, and on a narrow integer.
+#[cfg(test)]
+const MATCH_IN_LOOP: &str = r#"
+	main: fn () -> void {
+		let n: u32 = 0;
+		let small: u16 = u16(n);
+		for (let i: u32 = 0; i < 4; i = i + 1) {
+			match i {
+				0 => n = 1,
+				1 | 2 => break,
+				_ => {}
+			}
+		}
+		match small {
+			65535 => n = 2,
+			_ => n = 3,
+		}
 	}
 "#;
 
@@ -175,11 +308,53 @@ const SUBGROUP_INTRINSICS: [&str; 8] = [
 	"subgroup_broadcast_f32",
 ];
 
-/// Reports whether any node in `order` uses one of BESL's compute-only subgroup operations.
-fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-	order.iter().any(|node| {
+/// The `IntrinsicRequirements` struct records which intrinsics a shader calls, so each backend declares only the
+/// helpers, extensions, and builtins the shader needs. Build it with [`intrinsic_requirements`].
+#[derive(Default)]
+pub(crate) struct IntrinsicRequirements {
+	pub(crate) uses_atomic_compare_exchange: bool,
+	pub(crate) uses_sincos: bool,
+	pub(crate) uses_find_lsb: bool,
+	pub(crate) uses_fma: bool,
+	/// The shader converts to `f16` or a `vecNf16`.
+	pub(crate) uses_f16: bool,
+	pub(crate) uses_subgroup_intrinsics: bool,
+	pub(crate) uses_simd_lane_id: bool,
+	pub(crate) uses_downsample_min: bool,
+	pub(crate) uses_downsample_max: bool,
+	pub(crate) uses_render_target_array_index: bool,
+}
+
+/// Records the intrinsics that the code of every node in `order` calls, walking each body once.
+///
+/// It does not search the bodies of called functions, so pass every emitted function, as
+/// [`crate::shader::generator::ordered_shader_nodes`] returns them.
+fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
+	let mut requirements = IntrinsicRequirements::default();
+	for node in order {
 		any_code_node(node, false, &mut |node| {
-			SUBGROUP_INTRINSICS.iter().any(|intrinsic| is_intrinsic_call(node, intrinsic))
-		})
-	})
+			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
+				&& let Some(name) = intrinsic.borrow().get_name()
+			{
+				match name {
+					"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
+					"sincos" => requirements.uses_sincos = true,
+					"find_lsb" => requirements.uses_find_lsb = true,
+					"fma" => requirements.uses_fma = true,
+					"f16" | "vec2f16" | "vec3f16" | "vec4f16" => requirements.uses_f16 = true,
+					"subgroup_lane_index" => {
+						requirements.uses_subgroup_intrinsics = true;
+						requirements.uses_simd_lane_id = true;
+					}
+					name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
+					"downsample_min" => requirements.uses_downsample_min = true,
+					"downsample_max" => requirements.uses_downsample_max = true,
+					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
+					_ => {}
+				}
+			}
+			false
+		});
+	}
+	requirements
 }

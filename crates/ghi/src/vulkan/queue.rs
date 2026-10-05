@@ -1,8 +1,8 @@
 use utils::hash::HashMap;
 
 use super::{BufferTransitionState, Handles, TransitionState, context::Context};
-use crate::frame::Frame as _;
 use crate::vulkan::Frame;
+use crate::{context::Context as _, frame::Frame as _};
 
 /// The `Queue` struct provides borrowed Vulkan submission while its context remains borrowed.
 pub struct Queue<'a> {
@@ -44,16 +44,6 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 
 	fn completed_frame(&self) -> Option<crate::FrameKey> {
 		self.completed_frame
-	}
-
-	fn record<'record>(
-		&'record mut self,
-		command_buffer_handle: crate::CommandBufferHandle,
-		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
-	) where
-		Self::Frame: 'record,
-	{
-		self.record_with_present_keys(command_buffer_handle, &[], record);
 	}
 
 	fn record_with_present_keys<'record>(

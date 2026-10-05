@@ -4,7 +4,7 @@ use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	frame::Frame as _,
 };
-use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage};
+use resource_management::resources::material::{Binding, BindingKind};
 use smallvec::SmallVec;
 use utils::Extent;
 
@@ -272,7 +272,7 @@ impl ReadyPass {
 	}
 }
 
-fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str> {
+fn validate_binding_schema(bindings: &[Binding]) -> Result<(), &'static str> {
 	for (index, binding) in bindings.iter().enumerate() {
 		if binding.count != 1 {
 			return Err(
@@ -296,7 +296,7 @@ fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str
 	Ok(())
 }
 
-fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Result<(), String> {
+fn validate_resources(bindings: &[Binding], resources: &[Resource]) -> Result<(), String> {
 	if let Some(resource) = resources
 		.iter()
 		.find(|resource| !resource.is_planned() && !bindings.iter().any(|binding| binding.name == resource.name()))
@@ -332,12 +332,12 @@ fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Resu
 
 #[cfg(test)]
 mod tests {
-	use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
+	use resource_management::resources::material::{Binding, BindingKind, TextureView};
 
 	use super::{Resource, validate_binding_schema, validate_resources};
 
-	fn binding(name: &str, kind: BindingKind, slot: u32, read: bool, write: bool) -> BindingUsage {
-		BindingUsage {
+	fn binding(name: &str, kind: BindingKind, slot: u32, read: bool, write: bool) -> Binding {
+		Binding {
 			name: name.to_string(),
 			kind,
 			count: 1,

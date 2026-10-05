@@ -27,8 +27,8 @@ impl Drop for Context {
 				self.device.destroy_buffer(buffer, None);
 			}
 			if let Some(heaps) = &self.descriptor_heaps {
-				self.device.destroy_buffer(heaps.resource().buffer, None);
-				self.device.destroy_buffer(heaps.sampler().buffer, None);
+				self.device.destroy_buffer(heaps.resource.buffer, None);
+				self.device.destroy_buffer(heaps.sampler.buffer, None);
 			}
 			// Unconsumed readbacks own dedicated mapped memory outside the general allocation registry.
 			for readback in self.texture_readbacks.values() {

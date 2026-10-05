@@ -1,7 +1,7 @@
 //! Curve sampling shared by resource and packed animation clips.
 
 use math::{Orientation, Scale, Vector};
-use resource_management::resources::ParentSpace;
+use resource_management::resources::{ParentSpace, animation::CurveComponents};
 
 /// Evaluates one cubic Hermite span, scaling the tangents by the span duration.
 ///
@@ -38,24 +38,17 @@ pub(crate) enum CurveInterpolation {
 	CubicSpline = 2,
 }
 
-/// The `CurveComponents` trait reads a curve value or tangent as the `N` components cubic interpolation works on.
-pub(crate) trait CurveComponents<const N: usize>: Copy {
-	fn components(self) -> [f32; N];
-}
-
 /// The `CurveValue` trait lets [`sample_curve`] blend translations and scales component by component and
 /// rotations as unit quaternions.
 pub(crate) trait CurveValue<const N: usize>: CurveComponents<N> {
 	/// Builds a value from interpolated or stored components, which is how rotations stay unit length.
 	fn from_components(components: [f32; N]) -> Self;
+	/// Rebuilds a stored key whose components already passed through [`Self::from_components`].
+	fn from_key(components: [f32; N]) -> Self {
+		Self::from_components(components)
+	}
 	/// Blends two linear keys.
 	fn lerp(self, other: Self, factor: f32) -> Self;
-}
-
-impl CurveComponents<3> for Vector<ParentSpace> {
-	fn components(self) -> [f32; 3] {
-		self.to_array()
-	}
 }
 
 impl CurveValue<3> for Vector<ParentSpace> {
@@ -65,12 +58,6 @@ impl CurveValue<3> for Vector<ParentSpace> {
 
 	fn lerp(self, other: Self, factor: f32) -> Self {
 		Vector::lerp(self, other, factor)
-	}
-}
-
-impl CurveComponents<3> for Scale {
-	fn components(self) -> [f32; 3] {
-		self.to_array()
 	}
 }
 
@@ -84,27 +71,19 @@ impl CurveValue<3> for Scale {
 	}
 }
 
-impl CurveComponents<4> for Orientation {
-	fn components(self) -> [f32; 4] {
-		self.to_array()
-	}
-}
-
 impl CurveValue<4> for Orientation {
 	/// A cubic blend can pass through zero length only for degenerate tangents, which fall back to identity.
 	fn from_components(components: [f32; 4]) -> Self {
 		Self::try_from_array(components).unwrap_or_default()
 	}
 
+	/// Packed keys are stored normalized, so reading one back skips a second normalization.
+	fn from_key(components: [f32; 4]) -> Self {
+		Self::from_unit_array_unchecked(components)
+	}
+
 	fn lerp(self, other: Self, factor: f32) -> Self {
 		self.nlerp(other, factor)
-	}
-}
-
-/// Rotation tangents are quaternion derivatives, which are already raw components.
-impl CurveComponents<4> for [f32; 4] {
-	fn components(self) -> [f32; 4] {
-		self
 	}
 }
 

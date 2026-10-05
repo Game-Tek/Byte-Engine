@@ -16,190 +16,73 @@ GTAO_BLUR_AO_TILE_SIZE: const u32 = 96;
 GTAO_BLUR_DEPTH_HALO_X: const u32 = 2;
 GTAO_BLUR_DEPTH_HALO_Y: const u32 = 1;
 GTAO_BLUR_AO_HALO_X: const u32 = 2;
-GTAO_BLUR_SPATIAL_WEIGHTS: const f32[3] = f32[3](
-	0.4026199469,
-	0.2442013420,
-	0.0544886845
-);
+GTAO_BLUR_SPATIAL_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
 GTAO_BLUR_BASE_RELATIVE_SIGMA: const f32 = 0.03;
 GTAO_BLUR_MIN_RELATIVE_SIGMA: const f32 = 0.004;
 GTAO_BLUR_SIGMA_VARIANCE_SCALE: const f32 = 32.0;
 GTAO_BLUR_VARIANCE_BLEND_SCALE: const f32 = 96.0;
 
-clamp_subtract: fn (value: u32, offset: u32) -> u32 {
-	if (value < offset) {
-		return 0;
-	}
-
-	return value - offset;
-}
-
-clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
-	let maximum: u32 = extent - 1;
-	if (value + offset > maximum) {
-		return maximum;
-	}
-
-	return value + offset;
-}
-
 relative_depth_delta: fn (center_linear_depth: f32, sample_linear_depth: f32) -> f32 {
 	return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 0.0001);
 }
 
+// Returns `origin + tile_coordinate - halo` clamped to the image, for a tile texel `tile_coordinate` steps along one axis
+// from the halo's first texel. Offsets are unsigned, so the lower clamp happens before subtracting the halo.
 tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, extent: u32) -> u32 {
-	if (tile_coordinate < halo) {
-		return clamp_subtract(origin, halo - tile_coordinate);
+	return min(max(origin + tile_coordinate, halo) - halo, extent - 1);
+}
+
+// Returns the variance of the relative depth differences between the center and the nonzero texels of its 3x3
+// neighborhood, or zero with fewer than two of them. `center_index` is the center's index in the depth tile.
+compute_local_depth_variance: fn (center_index: u32, center_linear_depth: f32) -> f32 {
+	let mean: f32 = 0.0;
+	let mean_sq: f32 = 0.0;
+	// The nonzero center always counts, with a zero delta that leaves both sums unchanged, so the loop skips it.
+	let sample_count: f32 = 1.0;
+	// The neighborhood starts one row above and one texel left of the center.
+	let first_index: u32 = center_index - GTAO_BLUR_DEPTH_TILE_WIDTH - 1;
+	for (let y: u32 = 0; y < 3; y = y + 1) {
+		for (let x: u32 = 0; x < 3; x = x + 1) {
+			if (x == 1 && y == 1) {
+				continue;
+			}
+			let sample_linear_depth: f32 = shared_linear_depth[first_index + y * GTAO_BLUR_DEPTH_TILE_WIDTH + x];
+			if (sample_linear_depth != 0.0) {
+				let delta: f32 = relative_depth_delta(center_linear_depth, sample_linear_depth);
+				mean = mean + delta;
+				mean_sq = mean_sq + delta * delta;
+				sample_count = sample_count + 1.0;
+			}
+		}
 	}
-
-	return clamp_add(origin, tile_coordinate - halo, extent);
-}
-
-// The raw AO map and depth-pyramid mip zero have the same extent.
-fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f(
-		(f32(coordinate.x) + 0.5) / f32(extent.x),
-		(f32(coordinate.y) + 0.5) / f32(extent.y)
-	);
-	return texture_lod(linear_depth, uv, 0.0).x;
-}
-
-shared_depth_at: fn (coordinate: vec2u) -> f32 {
-	return shared_linear_depth[coordinate.y * GTAO_BLUR_DEPTH_TILE_WIDTH + coordinate.x];
-}
-
-shared_ao_at: fn (coordinate: vec2u) -> f32 {
-	return shared_ao[coordinate.y * GTAO_BLUR_AO_TILE_WIDTH + coordinate.x];
-}
-
-blur_sample_coordinate: fn (pixel: vec2u, offset: u32, negative: u32) -> vec2u {
-	if (negative == 1) {
-		return vec2u(pixel.x - offset, pixel.y);
-	}
-
-	return vec2u(pixel.x + offset, pixel.y);
-}
-
-neighbor_depth: fn (
-	pixel: vec2u,
-	offset_x: u32,
-	offset_y: u32,
-	negative_x: u32,
-	negative_y: u32
-) -> f32 {
-	let sample_x: u32 = pixel.x + offset_x;
-	let sample_y: u32 = pixel.y + offset_y;
-	if (negative_x == 1) {
-		sample_x = pixel.x - offset_x;
-	}
-	if (negative_y == 1) {
-		sample_y = pixel.y - offset_y;
-	}
-	return shared_depth_at(vec2u(sample_x, sample_y));
-}
-
-neighbor_stats: fn (
-	pixel: vec2u,
-	center_linear_depth: f32,
-	offset_x: u32,
-	offset_y: u32,
-	negative_x: u32,
-	negative_y: u32
-) -> vec3f {
-	let sample_linear_depth: f32 = neighbor_depth(pixel, offset_x, offset_y, negative_x, negative_y);
-	if (sample_linear_depth == 0.0) {
-		return vec3f(0.0, 0.0, 0.0);
-	}
-
-	let delta: f32 = relative_depth_delta(center_linear_depth, sample_linear_depth);
-	return vec3f(delta, delta * delta, 1.0);
-}
-
-compute_local_depth_variance: fn (pixel: vec2u, center_linear_depth: f32) -> f32 {
-	let sample_aa: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 1);
-	let sample_ab: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 1);
-	let sample_ac: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 1);
-	let sample_ba: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 1, 0);
-	let sample_bb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 0, 0, 0);
-	let sample_bc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 0, 0);
-	let sample_ca: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 0);
-	let sample_cb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 0);
-	let sample_cc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 0);
-
-	let mean: f32 = sample_aa.x;
-	mean = mean + sample_ab.x;
-	mean = mean + sample_ac.x;
-	mean = mean + sample_ba.x;
-	mean = mean + sample_bb.x;
-	mean = mean + sample_bc.x;
-	mean = mean + sample_ca.x;
-	mean = mean + sample_cb.x;
-	mean = mean + sample_cc.x;
-
-	let mean_sq: f32 = sample_aa.y;
-	mean_sq = mean_sq + sample_ab.y;
-	mean_sq = mean_sq + sample_ac.y;
-	mean_sq = mean_sq + sample_ba.y;
-	mean_sq = mean_sq + sample_bb.y;
-	mean_sq = mean_sq + sample_bc.y;
-	mean_sq = mean_sq + sample_ca.y;
-	mean_sq = mean_sq + sample_cb.y;
-	mean_sq = mean_sq + sample_cc.y;
-
-	let sample_count: f32 = sample_aa.z;
-	sample_count = sample_count + sample_ab.z;
-	sample_count = sample_count + sample_ac.z;
-	sample_count = sample_count + sample_ba.z;
-	sample_count = sample_count + sample_bb.z;
-	sample_count = sample_count + sample_bc.z;
-	sample_count = sample_count + sample_ca.z;
-	sample_count = sample_count + sample_cb.z;
-	sample_count = sample_count + sample_cc.z;
 
 	if (sample_count <= 1.0) {
 		return 0.0;
 	}
 
 	let normalized_mean: f32 = mean / sample_count;
-	let normalized_mean_sq: f32 = mean_sq / sample_count;
-	return max(normalized_mean_sq - normalized_mean * normalized_mean, 0.0);
-}
-
-compute_bilateral_weight: fn (relative_depth_difference: f32, inverse_depth_variance_scale: f32) -> f32 {
-	let exponent_value: f32 = relative_depth_difference * relative_depth_difference * inverse_depth_variance_scale;
-	return exp(0.0 - exponent_value);
+	return max(mean_sq / sample_count - normalized_mean * normalized_mean, 0.0);
 }
 
 main: fn (input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
 	let extent: vec2u = image_size(ao_output);
-	let workgroup_origin: vec2u = vec2u(
-		coord.x - coord.x % GTAO_BLUR_WORKGROUP_WIDTH,
-		coord.y - coord.y % GTAO_BLUR_WORKGROUP_HEIGHT
-	);
+	let workgroup_origin: vec2u = coord - coord % vec2u(GTAO_BLUR_WORKGROUP_WIDTH, GTAO_BLUR_WORKGROUP_HEIGHT);
 	let lane: u32 = input.thread_idx;
 
 	// The depth pyramid already stores positive linear depth at the same
 	// half-resolution extent as the raw AO input.
 	for (let index: u32 = lane; index < GTAO_BLUR_DEPTH_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
-		let tile_coordinate: vec2u = vec2u(
-			index % GTAO_BLUR_DEPTH_TILE_WIDTH,
-			index / GTAO_BLUR_DEPTH_TILE_WIDTH
-		);
 		let source_coordinate: vec2u = vec2u(
-			tiled_source_coordinate(workgroup_origin.x, tile_coordinate.x, GTAO_BLUR_DEPTH_HALO_X, extent.x),
-			tiled_source_coordinate(workgroup_origin.y, tile_coordinate.y, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
+			tiled_source_coordinate(workgroup_origin.x, index % GTAO_BLUR_DEPTH_TILE_WIDTH, GTAO_BLUR_DEPTH_HALO_X, extent.x),
+			tiled_source_coordinate(workgroup_origin.y, index / GTAO_BLUR_DEPTH_TILE_WIDTH, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
 		);
-		shared_linear_depth[index] = fetch_linear_depth(source_coordinate, extent);
+		shared_linear_depth[index] = fetch(linear_depth, source_coordinate).x;
 	}
 	for (let index: u32 = lane; index < GTAO_BLUR_AO_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
-		let tile_coordinate: vec2u = vec2u(
-			index % GTAO_BLUR_AO_TILE_WIDTH,
-			index / GTAO_BLUR_AO_TILE_WIDTH
-		);
 		let source_coordinate: vec2u = vec2u(
-			tiled_source_coordinate(workgroup_origin.x, tile_coordinate.x, GTAO_BLUR_AO_HALO_X, extent.x),
-			tiled_source_coordinate(workgroup_origin.y, tile_coordinate.y, 0, extent.y)
+			tiled_source_coordinate(workgroup_origin.x, index % GTAO_BLUR_AO_TILE_WIDTH, GTAO_BLUR_AO_HALO_X, extent.x),
+			tiled_source_coordinate(workgroup_origin.y, index / GTAO_BLUR_AO_TILE_WIDTH, 0, extent.y)
 		);
 		shared_ao[index] = fetch(ao_source, source_coordinate).x;
 	}
@@ -207,30 +90,22 @@ main: fn (input: StageInput) -> void {
 
 	// Partial edge workgroups must synchronize before their out-of-bounds lanes return.
 	guard_image_bounds(ao_output, coord);
-	let local_coordinate: vec2u = coord - workgroup_origin;
-	let depth_coordinate: vec2u = vec2u(
-		local_coordinate.x + GTAO_BLUR_DEPTH_HALO_X,
-		local_coordinate.y + GTAO_BLUR_DEPTH_HALO_Y
-	);
-	let ao_coordinate: vec2u = vec2u(
-		local_coordinate.x + GTAO_BLUR_AO_HALO_X,
-		local_coordinate.y
-	);
+	let local: vec2u = coord - workgroup_origin;
+	let depth_index: u32 = (local.y + GTAO_BLUR_DEPTH_HALO_Y) * GTAO_BLUR_DEPTH_TILE_WIDTH + local.x + GTAO_BLUR_DEPTH_HALO_X;
+	let ao_index: u32 = local.y * GTAO_BLUR_AO_TILE_WIDTH + local.x + GTAO_BLUR_AO_HALO_X;
 
-	let center_linear_depth: f32 = shared_depth_at(depth_coordinate);
+	let center_linear_depth: f32 = shared_linear_depth[depth_index];
 	if (center_linear_depth == 0.0) {
 		write(ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 
-	let center_ao: f32 = shared_ao_at(ao_coordinate);
-	let local_depth_variance: f32 = compute_local_depth_variance(depth_coordinate, center_linear_depth);
-	let local_depth_stddev: f32 = sqrt(local_depth_variance);
+	let center_ao: f32 = shared_ao[ao_index];
+	let local_depth_stddev: f32 = sqrt(compute_local_depth_variance(depth_index, center_linear_depth));
 	let blur_mix: f32 = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
 	// Reuse the pixel-invariant bilateral scale across every depth tap.
 	let sigma_scale: f32 = 1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE;
-	let sigma_candidate: f32 = GTAO_BLUR_BASE_RELATIVE_SIGMA / sigma_scale;
-	let sigma: f32 = max(GTAO_BLUR_MIN_RELATIVE_SIGMA, sigma_candidate);
+	let sigma: f32 = max(GTAO_BLUR_MIN_RELATIVE_SIGMA, GTAO_BLUR_BASE_RELATIVE_SIGMA / sigma_scale);
 	let inverse_depth_variance_scale: f32 = 1.0 / max(2.0 * sigma * sigma, 0.000001);
 
 	let filtered_ao: f32 = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
@@ -238,25 +113,15 @@ main: fn (input: StageInput) -> void {
 
 	for (let offset: u32 = 1; offset <= GTAO_BLUR_RADIUS; offset = offset + 1) {
 		let spatial_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
-
-		let positive_depth_coord: vec2u = blur_sample_coordinate(depth_coordinate, offset, 0);
-		let positive_ao_coord: vec2u = blur_sample_coordinate(ao_coordinate, offset, 0);
-		let positive_linear_depth: f32 = shared_depth_at(positive_depth_coord);
-		if (positive_linear_depth != 0.0) {
-			let positive_difference: f32 = abs(relative_depth_delta(center_linear_depth, positive_linear_depth));
-			let positive_weight: f32 = spatial_weight * compute_bilateral_weight(positive_difference, inverse_depth_variance_scale);
-			filtered_ao = filtered_ao + shared_ao_at(positive_ao_coord) * positive_weight;
-			total_weight = total_weight + positive_weight;
-		}
-
-		let negative_depth_coord: vec2u = blur_sample_coordinate(depth_coordinate, offset, 1);
-		let negative_ao_coord: vec2u = blur_sample_coordinate(ao_coordinate, offset, 1);
-		let negative_linear_depth: f32 = shared_depth_at(negative_depth_coord);
-		if (negative_linear_depth != 0.0) {
-			let negative_difference: f32 = abs(relative_depth_delta(center_linear_depth, negative_linear_depth));
-			let negative_weight: f32 = spatial_weight * compute_bilateral_weight(negative_difference, inverse_depth_variance_scale);
-			filtered_ao = filtered_ao + shared_ao_at(negative_ao_coord) * negative_weight;
-			total_weight = total_weight + negative_weight;
+		// The first side reads the tap `offset` texels to the right of the center, and the second the tap to its left.
+		for (let side: u32 = 0; side < 2; side = side + 1) {
+			let sample_linear_depth: f32 = shared_linear_depth[depth_index + offset - 2 * offset * side];
+			if (sample_linear_depth != 0.0) {
+				let difference: f32 = abs(relative_depth_delta(center_linear_depth, sample_linear_depth));
+				let weight: f32 = spatial_weight * exp(0.0 - difference * difference * inverse_depth_variance_scale);
+				filtered_ao = filtered_ao + shared_ao[ao_index + offset - 2 * offset * side] * weight;
+				total_weight = total_weight + weight;
+			}
 		}
 	}
 

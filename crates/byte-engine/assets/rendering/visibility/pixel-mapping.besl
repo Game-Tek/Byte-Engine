@@ -47,16 +47,6 @@ ballot_word_from_lane: fn (lane: u32, first_lane: u32) -> u32 {
 	return INVALID_INDEX << (lane - first_lane);
 }
 
-// Returns the ballot mask of `lane` and every later lane. Removing it from a ballot leaves the earlier lanes.
-ballot_from_lane: fn (lane: u32) -> vec4u {
-	return vec4u(
-		ballot_word_from_lane(lane, 0),
-		ballot_word_from_lane(lane, 32),
-		ballot_word_from_lane(lane, 64),
-		ballot_word_from_lane(lane, 96)
-	);
-}
-
 main: fn (input: StageInput) -> void {
 	// Each 32-thread group covers an 8x4 block of the 16x16 tile instead of two 16-pixel rows. The pixels one subgroup
 	// maps for a material then sit close together, and material evaluation shades neighbors in the same subgroup, which
@@ -74,13 +64,10 @@ main: fn (input: StageInput) -> void {
 	// The pixel's mapping index when the tile histogram had no slot left for its material.
 	let fallback_mapping_index: u32 = INVALID_INDEX;
 
-	if (coord.x < extent.x) {
-		if (coord.y < extent.y) {
-			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
-
-			if (pixel_instance_index < INVALID_INDEX && pixel_instance_index < 1024) {
-				material_index = mesh_data.meshes[pixel_instance_index].material_index;
-			}
+	if (coord.x < extent.x && coord.y < extent.y) {
+		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+		if (pixel_instance_index < 1024) {
+			material_index = mesh_data.meshes[pixel_instance_index].material_index;
 		}
 	}
 
@@ -93,7 +80,13 @@ main: fn (input: StageInput) -> void {
 	// A subgroup elects one leader per material. The leader reserves a run of ranks for every matching pixel with one
 	// atomic, and each pixel takes the run's base plus the number of matching lanes before it.
 	let lane: u32 = subgroup_lane_index();
-	let earlier_lanes_excluded: vec4u = ballot_from_lane(lane);
+	// The ballot mask of this lane and every later lane. Removing it from a ballot leaves the earlier lanes.
+	let earlier_lanes_excluded: vec4u = vec4u(
+		ballot_word_from_lane(lane, 0),
+		ballot_word_from_lane(lane, 32),
+		ballot_word_from_lane(lane, 64),
+		ballot_word_from_lane(lane, 96)
+	);
 	let remaining: vec4u = subgroup_ballot(material_index < 1024);
 	for (
 		let has_remaining: bool = subgroup_ballot_any(remaining);
@@ -115,20 +108,13 @@ main: fn (input: StageInput) -> void {
 			) {
 				let slot: u32 = (leader_material_index + probe) & 31;
 				let key: u32 = atomic_load(tile_histogram_keys[slot]);
-
-				// Most later leaders find an established key and avoid a contended compare-exchange.
-				if (key == leader_material_index) {
+				// Most later leaders find an established key and avoid a contended compare-exchange. An empty slot is
+				// claimed, unless another leader claims it first.
+				if (key == INVALID_INDEX) {
+					key = atomic_compare_exchange(tile_histogram_keys[slot], INVALID_INDEX, leader_material_index);
+				}
+				if (key == INVALID_INDEX || key == leader_material_index) {
 					leader_run = (atomic_add(tile_histogram_counts[slot], matching_count) << 5) | slot;
-				} else if (key == INVALID_INDEX) {
-					let previous_key: u32 = atomic_compare_exchange(
-						tile_histogram_keys[slot],
-						INVALID_INDEX,
-						leader_material_index
-					);
-
-					if (previous_key == INVALID_INDEX || previous_key == leader_material_index) {
-						leader_run = (atomic_add(tile_histogram_counts[slot], matching_count) << 5) | slot;
-					}
 				}
 			}
 
@@ -170,17 +156,12 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	if (material_index < 1024) {
-		let pixel_mapping_index: u32 = fallback_mapping_index;
-
-		if (packed_tile_mapping < INVALID_INDEX) {
-			let tile_slot: u32 = packed_tile_mapping & 31;
-			let tile_rank: u32 = packed_tile_mapping >> 5;
-			pixel_mapping_index = tile_mapping_bases[tile_slot] + tile_rank;
-		}
-
-		if (pixel_mapping_index < PIXEL_MAPPING_CAPACITY) {
-			pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
-		}
+	// A pixel without a material keeps both indices invalid, which fails the capacity test.
+	let pixel_mapping_index: u32 = fallback_mapping_index;
+	if (packed_tile_mapping < INVALID_INDEX) {
+		pixel_mapping_index = tile_mapping_bases[packed_tile_mapping & 31] + (packed_tile_mapping >> 5);
+	}
+	if (pixel_mapping_index < PIXEL_MAPPING_CAPACITY) {
+		pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 	}
 }

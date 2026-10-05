@@ -173,12 +173,13 @@ pub(crate) fn make_point_shadow_view(
 	View::new_perspective_with_up(math::Degrees::new(90.0), 1.0, near, far, transform.position(), direction, up)
 }
 
-/// Returns the estimated screen coverage of a cone-shadow candidate in one sink.
+/// Returns the estimated screen coverage of a cone-shadow candidate in one sink whose view has `frustum` planes.
 pub(crate) fn cone_shadow_importance(
 	light: &ConeLight,
 	transform: &Transform,
 	intensity_scale_candela: f32,
 	sink: &Sink,
+	frustum: &[math::Plane; 6],
 ) -> Option<f32> {
 	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
 	let cosine = light.outer_angle.cos();
@@ -187,27 +188,28 @@ pub(crate) fn cone_shadow_importance(
 		transform.position() + math::direction_from_orientation(transform.orientation()) * enclosing_radius,
 		enclosing_radius,
 	);
-	shadow_view_importance(bounds, sink)
+	shadow_view_importance(bounds, sink, frustum)
 }
 
-/// Returns the estimated screen coverage of a point-shadow candidate in one sink.
+/// Returns the estimated screen coverage of a point-shadow candidate in one sink whose view has `frustum` planes.
 pub(crate) fn point_shadow_importance(
 	light: &PointLight,
 	transform: &Transform,
 	intensity_scale_candela: f32,
 	sink: &Sink,
+	frustum: &[math::Plane; 6],
 ) -> Option<f32> {
 	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
-	shadow_view_importance(math::Sphere::new(transform.position(), far), sink)
+	shadow_view_importance(math::Sphere::new(transform.position(), far), sink, frustum)
 }
 
 /// Returns the estimated number of sink pixels covered by a local light's conservative bound, or `None` when culled.
 ///
 /// This projection is only a ranking proxy for assigning existing shadow views. It does not alter light
 /// culling, shadow-map dimensions, or a light's shadow projection.
-fn shadow_view_importance(bounds: math::Sphere, sink: &Sink) -> Option<f32> {
+fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Plane; 6]) -> Option<f32> {
 	let view = sink.view();
-	if !math::collision::sphere_in_frustum(&bounds, &view.get_frustum_planes()) {
+	if !math::collision::sphere_in_frustum(&bounds, frustum) {
 		return None;
 	}
 	let radius = bounds.radius();
@@ -336,6 +338,11 @@ pub(crate) fn select_shadow_lights<'a>(
 		.iter()
 		.map(|_| SinkRanking::new(point_pool_capacity))
 		.collect::<SmallVec<[SinkRanking<'a, PointLight>; 4]>>();
+	// Each sink's frustum planes depend only on its view, so the first candidate a sink ranks extracts them for all.
+	let mut frusta = sinks
+		.iter()
+		.map(|_| None)
+		.collect::<SmallVec<[Option<[math::Plane; 6]>; 4]>>();
 
 	for (index, (light, transform)) in lights.take(MAX_LIGHTS).enumerate() {
 		let scale = intensity_scale_candela(index);
@@ -345,16 +352,16 @@ pub(crate) fn select_shadow_lights<'a>(
 			}
 			Lights::Cone(light) if has_brightness(&light.emission, scale) && light.supports_shadow_mapping() => {
 				let candidate = Candidate { index, light, transform };
-				if rank(&mut cone_rankings, sinks, candidate, |sink| {
-					cone_shadow_importance(light, transform, scale, sink)
+				if rank(&mut cone_rankings, sinks, &mut frusta, candidate, |sink, frustum| {
+					cone_shadow_importance(light, transform, scale, sink, frustum)
 				}) {
 					selection.eligible_cone_count += 1;
 				}
 			}
 			Lights::Point(light) if has_brightness(&light.emission, scale) => {
 				let candidate = Candidate { index, light, transform };
-				if rank(&mut point_rankings, sinks, candidate, |sink| {
-					point_shadow_importance(light, transform, scale, sink)
+				if rank(&mut point_rankings, sinks, &mut frusta, candidate, |sink, frustum| {
+					point_shadow_importance(light, transform, scale, sink, frustum)
 				}) {
 					selection.eligible_point_count += 1;
 				}
@@ -370,15 +377,19 @@ pub(crate) fn select_shadow_lights<'a>(
 }
 
 /// Ranks one candidate for every sink that sees it, and returns whether any sink does.
+///
+/// `frusta` caches each sink's frustum planes, extracted the first time any candidate needs them.
 fn rank<'a, T>(
 	rankings: &mut [SinkRanking<'a, T>],
 	sinks: &[Sink],
+	frusta: &mut [Option<[math::Plane; 6]>],
 	candidate: Candidate<'a, T>,
-	importance: impl Fn(&Sink) -> Option<f32>,
+	importance: impl Fn(&Sink, &[math::Plane; 6]) -> Option<f32>,
 ) -> bool {
 	let mut visible = false;
-	for (ranking, sink) in rankings.iter_mut().zip(sinks) {
-		if let Some(importance) = importance(sink) {
+	for ((ranking, sink), frustum) in rankings.iter_mut().zip(sinks).zip(frusta) {
+		let frustum = frustum.get_or_insert_with(|| sink.view().get_frustum_planes());
+		if let Some(importance) = importance(sink, frustum) {
 			ranking.insert(importance, candidate);
 			visible = true;
 		}
@@ -568,16 +579,14 @@ mod tests {
 		let transforms = [light_transform(100.0), light_transform(500.0)];
 		let sinks = [sink(Point::origin()), sink(Point::new(100.0, 0.0, 0.0))];
 
-		assert!(
-			sinks
-				.iter()
-				.any(|sink| cone_shadow_importance(&visible_in_second_sink, &transforms[0], 1.0, sink).is_some())
-		);
-		assert!(
-			sinks
-				.iter()
-				.all(|sink| cone_shadow_importance(&outside_all_sinks, &transforms[1], 1.0, sink).is_none())
-		);
+		assert!(sinks.iter().any(|sink| {
+			let frustum = sink.view().get_frustum_planes();
+			cone_shadow_importance(&visible_in_second_sink, &transforms[0], 1.0, sink, &frustum).is_some()
+		}));
+		assert!(sinks.iter().all(|sink| {
+			let frustum = sink.view().get_frustum_planes();
+			cone_shadow_importance(&outside_all_sinks, &transforms[1], 1.0, sink, &frustum).is_none()
+		}));
 
 		let selection = select(
 			&lights,

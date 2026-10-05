@@ -2,11 +2,10 @@
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use super::declarations::Precedence;
 use super::declarations::{AtomRecordField, Atoms, ExpressionParser, ExpressionParserResult, FeatureParserResult};
-use super::declarations::{make_member, make_scope};
 use super::iterator::ParserIterator;
 use super::*;
+use crate::lexer::BufferMemoryClass;
 
 mod declarations;
 mod dispatch;

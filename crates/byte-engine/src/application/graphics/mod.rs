@@ -189,7 +189,7 @@ impl GraphicsApplication {
 		let mut storage = None;
 		let mut services = None;
 		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
-		let (graphics_device, mut renderer) = alley
+		let (graphics_device, mut renderer, pipeline_compilation_servers) = alley
 			.join_with_mut(
 				(&mut storage, &mut services),
 				|lane, (storage, services)| {
@@ -276,43 +276,27 @@ impl GraphicsApplication {
 				},
 				|| {
 					let graphics_device = rendering::GraphicsDevice::new(&application);
-					let renderer = rendering::renderer::Renderer::new(
+					let (renderer, servers) = rendering::renderer::Renderer::new(
 						&graphics_device,
 						&application,
 						&configuration,
 						Arc::clone(&metrics),
 					);
-					(graphics_device, renderer)
+					(graphics_device, renderer, servers)
 				},
 			)
 			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 		let resource_storage = storage.unwrap();
-		let Services {
-			input,
-			actions,
-			application_events,
-			cameras_listener,
-			physics_transforms_listener,
-			renderer_transforms_listener,
-			http_inspector,
-			screenshot_broker,
-			waker,
-			window_factory,
-			window_factory_listener,
-			generator_factory,
-			window_events,
-		} = services.unwrap();
-		// HID initialization stays deferred until the first presented frame.
-		let gamepad_system = None;
+		let services = services.unwrap();
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		renderer.set_resource_manager(&resource_manager);
 		// Every server compiles from the first request on, so no setup function has to start them.
 		let mut threads = SmallVec::new();
-		for server in renderer.take_pipeline_compilation_servers() {
+		for server in pipeline_compilation_servers {
 			let resources = resource_manager.clone();
-			threads.push(Thread::new(application_events.0.listener(), move |mut events| {
+			threads.push(Thread::new(services.application_events.0.listener(), move |mut events| {
 				let runtime = defaults::build_single_threaded_async_runtime();
 
 				runtime.enter(|| {
@@ -321,19 +305,15 @@ impl GraphicsApplication {
 				});
 			}));
 		}
-		let present_interval = application
-			.get_parameter("max-frame-rate")
-			.and_then(|parameter| parameter.parse::<f64>().ok())
-			.filter(|rate| *rate > 0.0)
-			.map(|max_frame_rate| std::time::Duration::from_secs_f64(1.0 / max_frame_rate));
-		if present_interval.is_some() {
-			renderer.set_present_interval(present_interval);
-		}
-		let simulation_step = application
-			.get_parameter("simulation-rate")
-			.and_then(|parameter| parameter.parse::<f64>().ok())
-			.filter(|rate| *rate > 0.0)
-			.map(|simulation_rate| MediaTime::from_seconds_f64(1.0 / simulation_rate));
+		let positive_rate = |name| {
+			application
+				.get_parameter(name)
+				.and_then(|parameter| parameter.parse::<f64>().ok())
+				.filter(|rate| *rate > 0.0)
+		};
+		let present_interval = positive_rate("max-frame-rate").map(|rate| std::time::Duration::from_secs_f64(1.0 / rate));
+		renderer.set_present_interval(present_interval);
+		let simulation_step = positive_rate("simulation-rate").map(|rate| MediaTime::from_seconds_f64(1.0 / rate));
 		let render_on_demand = application
 			.get_parameter("render-on-demand")
 			.is_some_and(|parameter| parameter.as_bool_simple());
@@ -351,25 +331,26 @@ impl GraphicsApplication {
 			application,
 			message_bus,
 			messages,
-			window_events,
+			window_events: services.window_events,
 
-			application_events,
-			_http_inspector: http_inspector,
-			screenshot_broker,
+			application_events: services.application_events,
+			_http_inspector: services.http_inspector,
+			screenshot_broker: services.screenshot_broker,
 			configuration,
 
-			window_factory: (window_factory, window_factory_listener),
+			window_factory: (services.window_factory, services.window_factory_listener),
 
-			generator_factory,
+			generator_factory: services.generator_factory,
 
 			world,
-			cameras_listener,
-			physics_transforms_listener,
-			renderer_transforms_listener,
+			cameras_listener: services.cameras_listener,
+			physics_transforms_listener: services.physics_transforms_listener,
+			renderer_transforms_listener: services.renderer_transforms_listener,
 
-			input,
-			actions,
-			gamepad_system,
+			input: services.input,
+			actions: services.actions,
+			// HID initialization stays deferred until the first presented frame.
+			gamepad_system: None,
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
@@ -395,7 +376,7 @@ impl GraphicsApplication {
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
 			rendering_active: true,
-			waker,
+			waker: services.waker,
 			platform_waker_set: false,
 			requested_tick: None,
 
@@ -449,11 +430,7 @@ impl GraphicsApplication {
 		let (delta, advance) = match (present_time, self.last_present_time) {
 			(Some(current), Some(previous)) if current > previous => {
 				let target = self.elapsed_at_last_present + MediaTime::from_std(current - previous);
-				let delta = if target > self.elapsed {
-					target - self.elapsed
-				} else {
-					MediaTime::ZERO
-				};
+				let delta = target.max(self.elapsed) - self.elapsed;
 				(delta, delta)
 			}
 			_ if waited => (wall_delta.min(MediaTime::from_std(self.skipped_frame_pace)), wall_delta),
@@ -476,8 +453,7 @@ impl GraphicsApplication {
 	/// Window state changes request a frame, including a window becoming visible again, since frames skip windows
 	/// that cannot be seen. Input events do not: their consumers publish what changed.
 	fn process_window_events(&mut self, wait: ghi::window::Wait) -> bool {
-		let span = debug_span!("GraphicsApplication::process_window_events");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::process_window_events").entered();
 		let mut close = false;
 		let mut redraw = false;
 		let mut display_changed = false;
@@ -551,8 +527,7 @@ impl GraphicsApplication {
 
 	/// Polls newly connected gamepads and records their trigger values into the collector.
 	fn process_gamepad_events(&mut self) {
-		let span = debug_span!("GraphicsApplication::process_gamepad_events");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::process_gamepad_events").entered();
 		if self.tick_count > 0 && self.gamepad_system.is_none() {
 			self.gamepad_system = input::gamepad::GamepadSystem::new()
 				.map_err(|error| log::warn!("{}", error))
@@ -593,8 +568,7 @@ impl GraphicsApplication {
 
 	/// Adopts newly created windows and cameras before renderer preparation.
 	fn prepare_renderer_state(&mut self) {
-		let span = debug_span!("GraphicsApplication::prepare_renderer_state");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::prepare_renderer_state").entered();
 		while let Some(message) = self.window_factory.1.read() {
 			self.renderer.create_window(message.into_data());
 		}
@@ -608,8 +582,7 @@ impl GraphicsApplication {
 	/// Every capture of every request is read from this one frame. Transports encode the readbacks on their own
 	/// threads, so encoding never delays the next frame.
 	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) -> u64 {
-		let span = debug_span!("GraphicsApplication::render_frame");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::render_frame").entered();
 		let captures = requests
 			.iter()
 			.flat_map(|request| request.captures.iter().map(|selection| (selection.sink, &selection.capture)))
@@ -644,8 +617,7 @@ impl GraphicsApplication {
 
 	/// Advances physics by `time`, then marks the step's end for the renderer.
 	fn update_world(&mut self, time: Time) {
-		let span = debug_span!("GraphicsApplication::update_world");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::update_world").entered();
 		self.world.update(
 			time,
 			&mut self.physics_transforms_listener,
@@ -683,8 +655,7 @@ impl GraphicsApplication {
 		let (steps, remainder) = simulation_steps(self.simulation_pending, step, MAX_SIMULATION_STEPS_PER_FRAME);
 		self.simulation_pending = remainder;
 		for _ in 0..steps {
-			let span = debug_span!("GraphicsApplication::simulation_step");
-			let _enter = span.enter();
+			let _span = debug_span!("GraphicsApplication::simulation_step").entered();
 			self.simulation_elapsed += step;
 			let time = Time::new(self.simulation_elapsed, step);
 			self.drain_physics_transforms();
@@ -707,11 +678,7 @@ impl GraphicsApplication {
 		self.assert_tied_simulation_rate();
 		self.tick_internal(|application, time| {
 			application.drain_physics_transforms();
-			let result = {
-				let span = debug_span!("GraphicsApplication::user_tick");
-				let _enter = span.enter();
-				f(application, time)
-			};
+			let result = debug_span!("GraphicsApplication::user_tick").in_scope(|| f(application, time));
 			application.update_world(time);
 			application.simulation_alpha = 1.0;
 			result
@@ -735,8 +702,7 @@ impl GraphicsApplication {
 	) -> Option<R> {
 		self.tick_internal(move |application, time| {
 			application.run_simulation_steps(time.delta, &mut simulate);
-			let span = debug_span!("GraphicsApplication::user_tick");
-			let _enter = span.enter();
+			let _span = debug_span!("GraphicsApplication::user_tick").entered();
 			frame(application, time)
 		})
 	}
@@ -768,15 +734,10 @@ impl GraphicsApplication {
 
 	/// Runs one tick inside its span and reports what the tick's metrics row records about it.
 	fn tick_span<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> (Option<R>, TickClock) {
-		let span = debug_span!("GraphicsApplication::tick");
-		let _enter = span.enter();
+		let _span = debug_span!("GraphicsApplication::tick").entered();
 
 		self.message_bus.begin_tick();
-		{
-			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
-			let _enter = span.enter();
-			self.application.frame_allocator.reset();
-		}
+		debug_span!("GraphicsApplication::reset_frame_allocator").in_scope(|| self.application.frame_allocator.reset());
 		let wait = self.event_wait();
 		let waited = wait != ghi::window::Wait::Immediate;
 		let mut close = self.process_window_events(wait);
@@ -801,16 +762,12 @@ impl GraphicsApplication {
 			std::thread::sleep(self.skipped_frame_pace);
 		}
 		let time = self.sample_frame_time(present_time, waited);
-		let dt = time.delta;
 
 		self.process_gamepad_events();
 
-		{
-			let span = debug_span!("GraphicsApplication::update_input");
-			let _enter = span.enter();
-			// The world's sink is the only sink here, so it captures nothing.
-			self.actions.pull(&mut self.input, |_| input::Capture::Passed);
-		}
+		// The world's sink is the only sink here, so it captures nothing.
+		debug_span!("GraphicsApplication::update_input")
+			.in_scope(|| self.actions.pull(&mut self.input, |_| input::Capture::Passed));
 
 		let result = run(self, time);
 
@@ -825,17 +782,13 @@ impl GraphicsApplication {
 		// Rendering may acquire more than the tick's start did, such as a hidden window a screenshot captures.
 		let presented = frame.is_some_and(|frame| self.renderer.frame_acquired(frame));
 
-		{
-			let span = debug_span!("GraphicsApplication::flush_world_deletions");
-			let _enter = span.enter();
-			self.world.flush_deletions();
-		}
+		debug_span!("GraphicsApplication::flush_world_deletions").in_scope(|| self.world.flush_deletions());
 
 		let clock = TickClock {
 			tick: self.tick_count,
 			frame,
 			time: self.start_time.elapsed(),
-			delta: dt.to_std(),
+			delta: time.delta.to_std(),
 			presented,
 		};
 		self.tick_count += 1;
@@ -1098,7 +1051,7 @@ fn resolve_application_directory(parameter: Option<&Parameter>, default_director
 		// Cargo provides the application manifest directory while running development binaries.
 		#[cfg(debug_assertions)]
 		if let Some(manifest_directory) = std::env::var_os("CARGO_MANIFEST_DIR") {
-			return default_application_directory(Some(std::path::Path::new(&manifest_directory)), None, default_directory);
+			return std::path::Path::new(&manifest_directory).join(default_directory);
 		}
 
 		let executable = std::env::current_exe().unwrap_or_else(|error| {
@@ -1106,24 +1059,15 @@ fn resolve_application_directory(parameter: Option<&Parameter>, default_director
 				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
 			)
 		});
-		default_application_directory(None, Some(&executable), default_directory)
+		executable
+			.parent()
+			.unwrap_or_else(|| {
+				panic!(
+					"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
+				)
+			})
+			.join(default_directory)
 	})
-}
-
-/// Builds a default directory from a Cargo manifest when available, then from the executable.
-fn default_application_directory(
-	manifest_directory: Option<&std::path::Path>,
-	executable: Option<&std::path::Path>,
-	directory: &str,
-) -> std::path::PathBuf {
-	manifest_directory
-		.or_else(|| executable.and_then(std::path::Path::parent))
-		.unwrap_or_else(|| {
-			panic!(
-				"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
-			)
-		})
-		.join(directory)
 }
 /// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
 /// refresh rate is known.

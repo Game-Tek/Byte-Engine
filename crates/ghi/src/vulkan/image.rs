@@ -33,6 +33,21 @@ pub(crate) struct Image {
 	pub(crate) owns_image: bool,
 }
 
+impl Image {
+	/// Describes this image, so a resize or a new frame copy rebuilds it with the same parameters.
+	pub(crate) fn builder(&self) -> crate::image::Builder<'static> {
+		crate::image::Builder {
+			extent: self.extent,
+			device_accesses: self.access,
+			mip_levels: self.mip_levels,
+			array_layers: self.layers,
+			cube_compatible: self.cube_compatible,
+			cube_array_compatible: self.cube_array_compatible,
+			..crate::image::Builder::new(self.format_, self.uses)
+		}
+	}
+}
+
 impl Next for Image {
 	type Handle = ImageHandle;
 

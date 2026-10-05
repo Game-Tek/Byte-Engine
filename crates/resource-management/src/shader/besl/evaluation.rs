@@ -5,8 +5,8 @@ mod reflection;
 use std::collections::HashSet;
 
 pub use opacity::OpacityEvaluation;
+pub(crate) use reflection::collect_bindings;
 pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
-pub(crate) use reflection::{BindingRecord, collect_bindings};
 #[cfg(test)]
 use reflection::{
 	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_array_buffer_stride_for_target,

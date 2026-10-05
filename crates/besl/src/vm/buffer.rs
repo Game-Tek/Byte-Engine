@@ -236,9 +236,21 @@ impl Buffer {
 				});
 			}
 			ValueType::Struct { fields, .. } => {
-				let mut values = Vec::with_capacity(fields.len());
-				for field in fields {
-					values.push(self.read_value(offset + field.offset(), field.value_type())?);
+				// Mapping the field slice keeps the iterator's exact length, so the fields read straight into one Arc
+				// allocation. Reads have no side effects, so the first failure is returned after the remaining fields.
+				let mut error = None;
+				let values = fields
+					.iter()
+					.map(|field| {
+						self.read_value(offset + field.offset(), field.value_type())
+							.unwrap_or_else(|failure| {
+								error.get_or_insert(failure);
+								Value::Bool(false)
+							})
+					})
+					.collect();
+				if let Some(error) = error {
+					return Err(error);
 				}
 				Value::Struct {
 					value_type: value_type.clone(),

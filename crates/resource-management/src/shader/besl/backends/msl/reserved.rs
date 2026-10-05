@@ -43,41 +43,38 @@ fn is_keyword(name: &str) -> bool {
 /// instead of listing each spelling.
 fn is_numeric_type(name: &str) -> bool {
 	let unpacked = name.strip_prefix("packed_").unwrap_or(name);
-	// Accept the scalar itself, a vector size, or a matrix `CxR` size.
-	let is_dimension = |value: &str| matches!(value, "2" | "3" | "4");
-	let is_size = |size: &str| match size.split_once('x') {
-		Some((columns, rows)) => is_dimension(columns) && is_dimension(rows),
-		None => size.is_empty() || is_dimension(size),
+	// Split off a vector size `N` or a matrix `CxR` size, with every size in 2 to 4. No scalar name ends in a digit, so
+	// the suffix is unambiguous and one lookup checks the rest.
+	let is_dimension = |byte: &u8| (b'2'..=b'4').contains(byte);
+	let scalar = match unpacked.as_bytes() {
+		[.., columns, b'x', rows] if is_dimension(columns) && is_dimension(rows) => &unpacked[..unpacked.len() - 3],
+		[.., size] if is_dimension(size) => &unpacked[..unpacked.len() - 1],
+		_ => unpacked,
 	};
-	[
-		"bool",
-		"char",
-		"uchar",
-		"short",
-		"ushort",
-		"int",
-		"uint",
-		"long",
-		"ulong",
-		"half",
-		"float",
-		"bfloat",
-		"double",
-		"size_t",
-		"ptrdiff_t",
-		"int8_t",
-		"uint8_t",
-		"int16_t",
-		"uint16_t",
-		"int32_t",
-		"uint32_t",
-		"int64_t",
-		"uint64_t",
-		"intptr_t",
-		"uintptr_t",
-	]
-	.iter()
-	.any(|scalar| unpacked.strip_prefix(scalar).is_some_and(is_size))
+
+	matches!(
+		scalar,
+		"bool"
+			| "char" | "uchar"
+			| "short" | "ushort"
+			| "int" | "uint"
+			| "long" | "ulong"
+			| "half" | "float"
+			| "bfloat"
+			| "double"
+			| "size_t"
+			| "ptrdiff_t"
+			| "int8_t"
+			| "uint8_t"
+			| "int16_t"
+			| "uint16_t"
+			| "int32_t"
+			| "uint32_t"
+			| "int64_t"
+			| "uint64_t"
+			| "intptr_t"
+			| "uintptr_t"
+	)
 }
 
 /// Opaque, atomic, and SIMD-group type names from `metal_stdlib`.

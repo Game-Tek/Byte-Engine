@@ -1,5 +1,4 @@
 use std::{
-	alloc::{Allocator, Global},
 	fs,
 	path::{Path, PathBuf},
 	time::{SystemTime, UNIX_EPOCH},
@@ -7,56 +6,25 @@ use std::{
 
 pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
-	besl::{
-		backends::msl::MSLTranspiler,
-		evaluation::{BindingKind, BindingRecord, collect_bindings},
-	},
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
+	besl::{backends::msl::MSLTranspiler, evaluation::collect_bindings},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings},
 };
 
 /// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
-pub struct Compiler<A: Allocator + Clone = Global> {
-	allocator: A,
-	msl_transpiler: MSLTranspiler<A>,
+pub struct Compiler {
+	msl_transpiler: MSLTranspiler,
 }
 
-impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
-
-impl BindingRecord for CompiledShaderBinding {
-	fn from_usage(
-		_name: &str,
-		kind: BindingKind,
-		count: u32,
-		slot: u32,
-		buffer_stride: Option<u32>,
-		read: bool,
-		write: bool,
-	) -> Self {
-		Self::new(slot, kind, count, buffer_stride, read, write)
-	}
-
-	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {
-		(self.slot, self.kind, self.count, self.read, self.write)
-	}
-}
-
-impl Default for Compiler<Global> {
+impl Default for Compiler {
 	fn default() -> Self {
 		Self::new()
 	}
 }
 
-impl Compiler<Global> {
+impl Compiler {
 	pub fn new() -> Self {
-		Self::new_in(Global)
-	}
-}
-
-impl<A: Allocator + Clone> Compiler<A> {
-	pub fn new_in(allocator: A) -> Self {
 		Self {
-			allocator: allocator.clone(),
-			msl_transpiler: MSLTranspiler::new_in(allocator),
+			msl_transpiler: MSLTranspiler::new(),
 		}
 	}
 
@@ -65,56 +33,21 @@ impl<A: Allocator + Clone> Compiler<A> {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		program: &besl::NodeReference,
 	) -> Result<GeneratedShader, String> {
-		self.generate_in(shader_compilation_settings, program, self.allocator.clone())
-			.await
-	}
-
-	/// Lowers `program` to the MSL source that [`compile_msl_source_to_metallib`] compiles.
-	pub fn transpile(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-	) -> Result<String, String> {
-		self.transpile_in(shader_compilation_settings, program, self.allocator.clone())
-	}
-
-	/// Lowers `program` to MSL source using `allocator` for one-call source-generation scratch.
-	fn transpile_in(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-		allocator: A,
-	) -> Result<String, String> {
-		self.msl_transpiler
-			.generate_program_in(shader_compilation_settings, program, allocator)
-			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))
-	}
-
-	/// Generates a compiled Metal shader using `allocator` for one-call source-generation scratch.
-	pub async fn generate_in(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-		allocator: A,
-	) -> Result<GeneratedShader, String> {
-		let msl_shader = self.transpile_in(shader_compilation_settings, program, allocator)?;
+		let msl_shader = self
+			.msl_transpiler
+			.generate_program(shader_compilation_settings, program)
+			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))?;
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 
-		let bindings = collect_bindings::<CompiledShaderBinding>(program)?;
-
-		Ok(CompiledShader::new(
+		Ok(CompiledShader {
 			binary,
-			bindings,
-			reflected_workgroup_extent(shader_compilation_settings),
-		))
-	}
-}
-
-fn reflected_workgroup_extent(settings: &ShaderGenerationSettings) -> Option<utils::Extent> {
-	match &settings.stage {
-		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => Some(*local_size),
-		Stages::Vertex | Stages::Fragment => None,
+			bindings: collect_bindings(program)?
+				.into_iter()
+				.map(CompiledShaderBinding::from)
+				.collect(),
+			extent: shader_compilation_settings.stage.local_size(),
+		})
 	}
 }
 
@@ -169,14 +102,7 @@ fn metal_build_arguments() -> &'static [&'static str] {
 /// Describes the installed Metal compiler and the flags [`compile_msl_source_to_metallib`] passes.
 ///
 /// Baked shader reuse hashes this text, so a stored Metal library is only reused by the toolchain that produced it.
-/// The version query runs once per process.
 pub async fn metal_compiler_identity() -> Result<String, String> {
-	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-	if let Some(identity) = IDENTITY.get() {
-		return Ok(identity.clone());
-	}
-
 	let mut version_cmd = crate::r#async::Command::new("xcrun");
 	version_cmd.args(["-sdk", "macosx", "metal", "--version"]);
 	version_cmd
@@ -186,39 +112,21 @@ pub async fn metal_compiler_identity() -> Result<String, String> {
 		.stderr(std::process::Stdio::piped())
 		.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
 
-	let output = version_cmd.output().await.map_err(|_| {
-		error(
-			"Failed to invoke the Metal compiler",
-			"The Xcode command line tools may be missing",
-		)
-	})?;
+	let output = version_cmd.output().await.map_err(invoke_error)?;
 
 	if !output.status.success() {
-		let exit_status = output
-			.status
-			.code()
-			.map_or_else(|| output.status.to_string(), |code| code.to_string());
-		let cause = if metal_toolchain_missing(&output.stderr) {
-			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`"
-		} else {
-			"The Metal compiler could not report its version"
-		};
 		return Err(format_tool_failure(
 			"Failed to query the Metal compiler version",
-			cause,
-			&exit_status,
-			&output.stdout,
-			&output.stderr,
+			"The Metal compiler could not report its version",
+			&output,
 		));
 	}
 
-	let identity = format!(
+	Ok(format!(
 		"{}; arguments={:?}",
 		String::from_utf8_lossy(&output.stdout).trim(),
 		metal_build_arguments()
-	);
-
-	Ok(IDENTITY.get_or_init(|| identity).clone())
+	))
 }
 
 /// Compiles Metal Shading Language source into a Metal library binary.
@@ -254,12 +162,7 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 		.stderr(std::process::Stdio::piped())
 		.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
 
-	let mut metal_process = metal_cmd.spawn().map_err(|_| {
-		error(
-			"Failed to invoke the Metal compiler",
-			"The Xcode command line tools may be missing",
-		)
-	})?;
+	let mut metal_process = metal_cmd.spawn().map_err(invoke_error)?;
 
 	if let Some(mut stdin) = metal_process.stdin.take() {
 		use compio::io::AsyncWriteExt;
@@ -270,33 +173,13 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 			.map_err(|_| error("Failed to write MSL source to Metal compiler", "Stdin write failed"))?;
 	}
 
-	let metal_output = metal_process.wait_with_output().await.map_err(|_| {
-		error(
-			"Failed to invoke the Metal compiler",
-			"The Xcode command line tools may be missing",
-		)
-	})?;
+	let metal_output = metal_process.wait_with_output().await.map_err(invoke_error)?;
 
 	if !metal_output.status.success() {
-		let exit_status = metal_output
-			.status
-			.code()
-			.map_or_else(|| metal_output.status.to_string(), |code| code.to_string());
-		if metal_toolchain_missing(&metal_output.stderr) {
-			return Err(format_tool_failure(
-				"Failed to compile MSL shader",
-				"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
-				&exit_status,
-				&metal_output.stdout,
-				&metal_output.stderr,
-			));
-		}
 		return Err(format_tool_failure(
 			"Failed to compile MSL shader",
 			"The Metal compiler reported an error",
-			&exit_status,
-			&metal_output.stdout,
-			&metal_output.stderr,
+			&metal_output,
 		));
 	}
 
@@ -310,40 +193,50 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 	Ok(binary.into_boxed_slice())
 }
 
-/// Detects the missing optional Metal compiler component in `xcrun` diagnostics.
-fn metal_toolchain_missing(stderr: &[u8]) -> bool {
-	let stderr = String::from_utf8_lossy(stderr);
-	stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'")
-}
-
 fn sanitize_shader_name(name: &str) -> String {
-	let mut sanitized = String::with_capacity(name.len());
-
-	for ch in name.chars() {
-		if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-			sanitized.push(ch);
-		} else {
-			sanitized.push('_');
-		}
-	}
-
+	let sanitized: String = name
+		.chars()
+		.map(|ch| {
+			if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+				ch
+			} else {
+				'_'
+			}
+		})
+		.collect();
 	let trimmed = sanitized.trim_matches('_');
-	if trimmed.is_empty() {
-		"shader".to_string()
-	} else {
-		trimmed.to_string()
-	}
+	if trimmed.is_empty() { "shader" } else { trimmed }.to_string()
 }
 
 fn error(message: &str, cause: &str) -> String {
 	format!("{message}. {cause}.")
 }
 
-fn format_tool_failure(message: &str, cause: &str, exit_status: &str, stdout: &[u8], stderr: &[u8]) -> String {
-	let stdout = String::from_utf8_lossy(stdout);
+/// Reports that the Metal compiler process could not be started or awaited.
+fn invoke_error<E>(_: E) -> String {
+	error(
+		"Failed to invoke the Metal compiler",
+		"The Xcode command line tools may be missing",
+	)
+}
+
+/// Formats a failed Metal tool run with its exit status and output.
+///
+/// `cause` is replaced when the `xcrun` diagnostics report that the optional Metal Toolchain component is missing.
+fn format_tool_failure(message: &str, cause: &str, output: &std::process::Output) -> String {
+	let exit_status = output
+		.status
+		.code()
+		.map_or_else(|| output.status.to_string(), |code| code.to_string());
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	let cause = if stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'") {
+		"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`"
+	} else {
+		cause
+	};
+	let stdout = String::from_utf8_lossy(&output.stdout);
 	let stdout = stdout.trim();
 	let stdout = if stdout.is_empty() { "<empty>" } else { stdout };
-	let stderr = String::from_utf8_lossy(stderr);
 	let stderr = stderr.trim();
 	let stderr = if stderr.is_empty() { "<empty>" } else { stderr };
 
@@ -354,27 +247,15 @@ pub use Compiler as MSLShaderCompiler;
 
 #[cfg(test)]
 mod tests {
-	use super::CompiledShaderBinding;
-	use crate::shader::besl::evaluation::{BindingRecord, BindingUsage, collect_bindings};
+	use crate::shader::{
+		besl::evaluation::{BindingUsage, collect_bindings},
+		generator::tests::sampled_binding as binding,
+	};
 
-	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
-		besl::Node::binding(
-			name,
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			slot,
-			read,
-			write,
-		)
-		.into()
-	}
-
-	fn usage<T: BindingRecord>(bindings: &[T]) -> Vec<(u32, bool, bool)> {
+	fn usage(bindings: &[BindingUsage]) -> Vec<(u32, bool, bool)> {
 		bindings
 			.iter()
-			.map(|binding| {
-				let (slot, _, _, read, write) = binding.usage();
-				(slot, read, write)
-			})
+			.map(|binding| (binding.slot, binding.read, binding.write))
 			.collect()
 	}
 
@@ -400,13 +281,9 @@ mod tests {
 		.into();
 		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
 
-		let compiled = collect_bindings::<CompiledShaderBinding>(&main).expect("Expected instantiated flat resource metadata");
+		let bindings = collect_bindings(&main).expect("Expected instantiated flat resource metadata");
 
-		assert_eq!(usage(&compiled), vec![(100, true, false)]);
-
-		let evaluated = collect_bindings::<BindingUsage>(&main).expect("Expected instantiated flat resource metadata");
-
-		assert_eq!(usage(&evaluated), vec![(100, true, false)]);
+		assert_eq!(usage(&bindings), vec![(100, true, false)]);
 	}
 
 	#[test]
@@ -417,7 +294,7 @@ mod tests {
 		let main: besl::NodeReference =
 			besl::Node::function("main", Vec::new(), void_type, vec![shared.clone(), shared]).into();
 
-		let bindings = collect_bindings::<BindingUsage>(&main).expect("Expected one shared flat resource declaration");
+		let bindings = collect_bindings(&main).expect("Expected one shared flat resource declaration");
 
 		assert_eq!(usage(&bindings), vec![(3, true, false)]);
 	}
@@ -434,7 +311,7 @@ mod tests {
 		)
 		.into();
 
-		let error = collect_bindings::<BindingUsage>(&main).expect_err("Expected distinct same-slot declarations to fail");
+		let error = collect_bindings(&main).expect_err("Expected distinct same-slot declarations to fail");
 
 		assert!(error.contains("Duplicate resource declaration at slot 3"));
 	}

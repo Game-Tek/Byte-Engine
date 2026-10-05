@@ -18,10 +18,7 @@ use objc2_foundation::{
 };
 
 use crate::window::input::{Keys, MouseKeys};
-use crate::window::{
-	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
-	os::{AppLike, WindowLike},
-};
+use crate::window::{AppEvents, Event, Events, Features, Seat, Wait, WindowId};
 
 /// Events shared by the pump and the AppKit delegates, in arrival order.
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
@@ -266,11 +263,7 @@ impl WindowDelegate {
 
 	/// Publishes the drawable pixel size so layout matches the swapchain after resize or display changes.
 	fn update_window_state(&self, notification: &NSNotification) {
-		let Some(window) = notification.object() else {
-			return;
-		};
-
-		let Ok(window) = window.downcast::<NSWindow>() else {
+		let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) else {
 			return;
 		};
 		if let Some(view) = window.contentView() {
@@ -282,14 +275,8 @@ impl WindowDelegate {
 		}
 
 		let is_zoomed = window.isZoomed();
-		let was_zoomed = self.ivars().zoomed.get();
-
-		if is_zoomed != was_zoomed {
-			self.ivars().zoomed.set(is_zoomed);
-
-			if is_zoomed {
-				self.push(Events::Maximize);
-			}
+		if self.ivars().zoomed.replace(is_zoomed) != is_zoomed && is_zoomed {
+			self.push(Events::Maximize);
 		}
 	}
 }
@@ -366,17 +353,6 @@ fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NS
 	)
 }
 
-/// Appends relative and normalized absolute motion from one AppKit mouse event.
-fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
-	push(Events::MouseMove {
-		seat: Seat::stub(),
-		dx: event.deltaX() as f32,
-		dy: event.deltaY() as f32,
-		time,
-	});
-	append_mouse_position(window, event, time, push);
-}
-
 /// Maps an AppKit mouse-button event type to the button it changes and whether it was pressed.
 ///
 /// Returns `None` for every other event type.
@@ -448,10 +424,9 @@ fn append_modifier_event(modifier_state: &mut ModifierState, event: &NSEvent, pu
 	});
 }
 
-impl AppLike for App {
-	type Window = Window;
-
-	fn try_new(_: &str) -> Result<Self, String> {
+impl App {
+	/// Connects to the windowing system; see [`crate::window::App::new`].
+	pub(crate) fn try_new(_: &str) -> Result<Self, String> {
 		let mtm = MainThreadMarker::new()
 			.ok_or("Failed to create MainThreadMarker. The app is probably being created on a non-main thread.")?;
 
@@ -470,7 +445,8 @@ impl AppLike for App {
 		})
 	}
 
-	fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
+	/// Creates and shows a native window; see [`crate::window::App::create_window`].
+	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
 		// SAFETY: Window construction is confined to the main thread and the pool is drained before returning.
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
@@ -510,14 +486,11 @@ impl AppLike for App {
 		window.setAcceptsMouseMovedEvents(true);
 
 		// The first window is centered; every later one cascades from the point the previous window returned.
-		let seed = if let Some(seed) = self.next_window_cascade_top_left {
-			seed
-		} else {
+		let seed = self.next_window_cascade_top_left.unwrap_or_else(|| {
 			window.center();
-
 			let frame = window.frame();
 			(frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64)
-		};
+		});
 		let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
 		self.next_window_cascade_top_left = Some((next.x as f64, next.y as f64));
 
@@ -542,21 +515,20 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
+	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		let app = NSApp(self.mtm);
 
-		// Only the first dequeue waits; a nil date drains what is queued without waiting.
+		// Only the first dequeue waits; a nil date drains what is queued without waiting. Events queued by delegates
+		// before the wait must not sleep behind it.
 		let mut expiration = match wait {
 			Wait::Immediate => None,
 			Wait::Until(deadline) => Some(NSDate::dateWithTimeIntervalSinceNow(
 				deadline.saturating_duration_since(std::time::Instant::now()).as_secs_f64(),
 			)),
 			Wait::Forever => Some(NSDate::distantFuture()),
-		};
-		// Events queued by delegates before the wait must not sleep behind it.
-		if !self.events.borrow().is_empty() {
-			expiration = None;
 		}
+		.filter(|_| self.events.borrow().is_empty());
 
 		while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
@@ -565,7 +537,9 @@ impl AppLike for App {
 			unsafe { NSDefaultRunLoopMode },
 			true,
 		) {
-			if event.r#type() == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
+			// Each read is an Objective-C message send, and the type cannot change while this event is handled.
+			let event_type = event.r#type();
+			if event_type == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
 				continue;
 			}
 
@@ -576,7 +550,6 @@ impl AppLike for App {
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
-				let event_type = event.r#type();
 				if let Some((button, pressed)) = mouse_button(event_type) {
 					// The position goes first so the button event lands at the drag endpoint.
 					append_mouse_position(&window, &event, time, push);
@@ -591,7 +564,14 @@ impl AppLike for App {
 					| NSEventType::LeftMouseDragged
 					| NSEventType::RightMouseDragged
 					| NSEventType::OtherMouseDragged => {
-						append_mouse_motion(&window, &event, time, push);
+						// Motion reports both the relative movement and the normalized position.
+						push(Events::MouseMove {
+							seat: Seat::stub(),
+							dx: event.deltaX() as f32,
+							dy: event.deltaY() as f32,
+							time,
+						});
+						append_mouse_position(&window, &event, time, push);
 					}
 					NSEventType::ScrollWheel => {
 						let dx = event.scrollingDeltaX() as f32;
@@ -622,7 +602,7 @@ impl AppLike for App {
 			// Keyboard events are consumed here because the default responder chain
 			// treats unhandled key presses as errors and plays the system beep.
 			if !matches!(
-				event.r#type(),
+				event_type,
 				NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
 			) {
 				app.sendEvent(&event);
@@ -632,27 +612,27 @@ impl AppLike for App {
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
 	}
 
-	fn waker(&self) -> AppWaker {
+	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker
 	}
 }
 
-impl WindowLike for Window {
-	fn id(&self) -> WindowId {
+impl Window {
+	pub(crate) fn id(&self) -> WindowId {
 		window_id(&self.window)
 	}
 
-	fn handles(&self) -> Handles {
+	pub(crate) fn handles(&self) -> Handles {
 		Handles {
 			view: self.window.contentView().unwrap().retain(),
 		}
 	}
 
-	fn refresh_interval(&self) -> Option<std::time::Duration> {
+	pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
 		screen_refresh_interval(&self.window)
 	}
 
-	fn is_visible(&self) -> bool {
+	pub(crate) fn is_visible(&self) -> bool {
 		window_is_visible(&self.window)
 	}
 }
@@ -680,69 +660,36 @@ struct ModifierState {
 }
 
 impl ModifierState {
+	/// Applies one modifier key event and returns the key's new pressed state when it changed.
 	fn update(&mut self, key: Keys, flags: NSEventModifierFlags) -> Option<bool> {
-		match key {
-			Keys::ShiftLeft => update_modifier_side(
-				&mut self.shift_left,
-				&mut self.shift_right,
-				flags.contains(NSEventModifierFlags::Shift),
-			),
-			Keys::ShiftRight => update_modifier_side(
-				&mut self.shift_right,
-				&mut self.shift_left,
-				flags.contains(NSEventModifierFlags::Shift),
-			),
-			Keys::ControlLeft => update_modifier_side(
-				&mut self.control_left,
-				&mut self.control_right,
-				flags.contains(NSEventModifierFlags::Control),
-			),
-			Keys::ControlRight => update_modifier_side(
-				&mut self.control_right,
-				&mut self.control_left,
-				flags.contains(NSEventModifierFlags::Control),
-			),
-			Keys::AltLeft => update_modifier_side(
-				&mut self.alt_left,
-				&mut self.alt_right,
-				flags.contains(NSEventModifierFlags::Option),
-			),
-			Keys::AltRight => update_modifier_side(
-				&mut self.alt_right,
-				&mut self.alt_left,
-				flags.contains(NSEventModifierFlags::Option),
-			),
-			Keys::CapsLock => {
-				let pressed = flags.contains(NSEventModifierFlags::CapsLock);
+		use NSEventModifierFlags as Flags;
 
-				if pressed == self.caps_lock {
-					None
-				} else {
-					self.caps_lock = pressed;
-					Some(pressed)
-				}
+		let (current, other, flag) = match key {
+			Keys::ShiftLeft => (&mut self.shift_left, &mut self.shift_right, Flags::Shift),
+			Keys::ShiftRight => (&mut self.shift_right, &mut self.shift_left, Flags::Shift),
+			Keys::ControlLeft => (&mut self.control_left, &mut self.control_right, Flags::Control),
+			Keys::ControlRight => (&mut self.control_right, &mut self.control_left, Flags::Control),
+			Keys::AltLeft => (&mut self.alt_left, &mut self.alt_right, Flags::Option),
+			Keys::AltRight => (&mut self.alt_right, &mut self.alt_left, Flags::Option),
+			Keys::CapsLock => {
+				let pressed = flags.contains(Flags::CapsLock);
+				return (std::mem::replace(&mut self.caps_lock, pressed) != pressed).then_some(pressed);
 			}
-			_ => None,
-		}
+			_ => return None,
+		};
+		update_modifier_side(current, other, flags.contains(flag))
 	}
 }
 
+/// Updates one side of a modifier pair from the flag both sides share and returns its new state when it changed.
+///
+/// While the opposite side is held, the shared flag stays on, so another event for this side toggles it.
 fn update_modifier_side(current: &mut bool, other: &mut bool, flag_on: bool) -> Option<bool> {
-	let next = if !flag_on {
+	if !flag_on {
 		*other = false;
-		false
-	} else if !*other {
-		true
-	} else {
-		!*current
-	};
-
-	if *current == next {
-		return None;
 	}
-
-	*current = next;
-	Some(next)
+	let next = flag_on && !(*other && *current);
+	(std::mem::replace(current, next) != next).then_some(next)
 }
 
 fn modifier_keycode_to_key(code: u16) -> Option<Keys> {

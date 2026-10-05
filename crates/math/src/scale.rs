@@ -1,12 +1,9 @@
-use std::{
-	convert::Infallible,
-	ops::{Add, Div, Mul, Sub},
-};
+use std::ops::{Add, Div, Mul, Sub};
 
 use maths_rs::Vec3f;
 
 use crate::Vector;
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::serialization::serialize_as_array;
 
 /// The `Scale` struct represents non-spatial scale factors for transforms.
 ///
@@ -77,20 +74,7 @@ impl Default for Scale {
 	}
 }
 
-impl ArrayForm<3> for Scale {
-	type Array = [f32; 3];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		Scale::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_array(array))
-	}
-}
-
-serialize_as_array!(Scale, 3);
+serialize_as_array!(Scale, [f32; 3], to_array, from: Scale::from_array);
 
 /// Adds scale factors axis by axis, such as an offset that eases one scale toward another.
 impl Add for Scale {

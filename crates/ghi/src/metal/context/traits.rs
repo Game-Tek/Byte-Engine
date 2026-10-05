@@ -1,10 +1,9 @@
-use super::resources::SWAPCHAIN_FORMAT;
 use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_vertex_format};
 use super::*;
+use crate::device::Device as _;
 
 impl crate::context::Context for Context {
 	type Queue<'a> = crate::metal::queue::Queue<'a>;
-	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
@@ -24,14 +23,11 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn command_buffer<'a>(
-		&'a mut self,
+	fn create_command_buffer_recording(
+		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> super::CommandBuffer<'a> {
-		super::CommandBuffer {
-			device: self,
-			command_buffer_handle,
-		}
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		Context::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -74,13 +70,7 @@ impl crate::context::Context for Context {
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
 		let handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
-		let image = self.images.resource_mut(handle);
-
-		let Some(staging) = image.staging.as_mut() else {
-			return &mut [];
-		};
-
-		staging.as_mut_slice()
+		self.images.resource_mut(handle).staging.as_deref_mut().unwrap_or_default()
 	}
 
 	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
@@ -90,9 +80,7 @@ impl crate::context::Context for Context {
 
 	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
 		let image_handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
-		let image = self.images.resource_mut(image_handle);
-
-		let Some(staging) = image.staging.as_mut() else {
+		let Some(staging) = self.images.resource_mut(image_handle).staging.as_mut() else {
 			return;
 		};
 
@@ -115,7 +103,7 @@ impl crate::context::Context for Context {
 			for (sequence_index, set_handle) in set_handles.into_iter().enumerate() {
 				let sequence_index = sequence_index as u8;
 				if let Some(descriptor) = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset) {
-					self.update_descriptor_slot(set_handle, write.slot, descriptor, sequence_index, write.array_element);
+					self.update_descriptor_slot(set_handle, write.slot, descriptor, write.array_element);
 				}
 			}
 		}
@@ -194,23 +182,14 @@ impl crate::context::Context for Context {
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(utils::to_pixel_format(SWAPCHAIN_FORMAT));
 
-		let display_sync_enabled = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::Inmediate => false,
-			graphics_hardware_interface::PresentationModes::FIFO | graphics_hardware_interface::PresentationModes::Mailbox => {
-				true
-			}
+		let (display_sync_enabled, drawable_count) = match presentation_mode {
+			graphics_hardware_interface::PresentationModes::Inmediate => (false, 2),
+			graphics_hardware_interface::PresentationModes::FIFO => (true, 2),
+			graphics_hardware_interface::PresentationModes::Mailbox => (true, 3),
 		};
-
 		layer.setDisplaySyncEnabled(display_sync_enabled);
-
-		let desired_drawable_count = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::Inmediate
-			| graphics_hardware_interface::PresentationModes::FIFO => 2,
-			graphics_hardware_interface::PresentationModes::Mailbox => 3,
-		};
-
 		// A value other than 2 or 3 causes an exception
-		layer.setMaximumDrawableCount(desired_drawable_count);
+		layer.setMaximumDrawableCount(drawable_count);
 
 		// Frames render into per-sequence images and presentation blits them into the drawable, so the drawable is
 		// never a render target and cannot be framebuffer-only.
@@ -277,21 +256,30 @@ impl crate::context::Context for Context {
 		let pointer = readback.buffer.contents().as_ptr().cast::<u8>();
 		let layout = &readback.layout;
 		let native_bytes_per_image = readback.native_bytes_per_row * layout.row_count;
-		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact authoritative layout.
+		debug_assert_eq!(
+			layout.bytes_per_image,
+			layout.bytes_per_row * layout.row_count,
+			"Metal readback rows do not tile the compact image. The most likely cause is a copy layout with row padding.",
+		);
+		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact
+		// authoritative layout, writing into the bytes the transfer reserved.
+		let destination = readback.bytes.spare_capacity_mut().as_mut_ptr().cast::<u8>();
 		for image in 0..layout.depth_slices {
-			// SAFETY: The transfer sized the mapped buffer for every padded row and the owned vector for every compact
-			// row of each image, and the two allocations are distinct.
+			// SAFETY: The transfer sized the mapped buffer for every padded row and reserved the owned vector for every
+			// compact row of each image, and the two allocations are distinct.
 			unsafe {
 				utils::copy_rows(
 					pointer.add(image * native_bytes_per_image),
 					readback.native_bytes_per_row,
-					readback.bytes.as_mut_ptr().add(image * layout.bytes_per_image),
+					destination.add(image * layout.bytes_per_image),
 					layout.bytes_per_row,
 					layout.bytes_per_row,
 					layout.row_count,
 				);
 			}
 		}
+		// SAFETY: Each image's rows tile its compact bytes, so the copies initialized every byte of the reserved size.
+		unsafe { readback.bytes.set_len(layout.bytes_per_image * layout.depth_slices) };
 
 		Ok(crate::TextureReadback {
 			bytes: readback.bytes,
@@ -314,9 +302,7 @@ impl crate::context::Context for Context {
 			return;
 		}
 
-		let uses = buffer.uses;
-		let access = buffer.access;
-		let name = buffer.name.clone();
+		let (uses, access, name) = (buffer.uses, buffer.access, buffer.name.clone());
 
 		// Dynamic buffers have one materialized resource per in-flight frame. Resize every existing resource so command recording cannot resolve an older allocation for a nonzero sequence.
 		for frame_index in 0..self.frames as usize {
@@ -350,11 +336,7 @@ impl crate::context::Context for Context {
 		let mut complete = true;
 		for frame_index in 0..self.frames as usize {
 			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
-			let (finished, error) = self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
-			if let Some(error) = error {
-				panic!("{error}");
-			}
-			complete &= finished;
+			complete &= self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
 		}
 		complete
 	}
@@ -362,9 +344,7 @@ impl crate::context::Context for Context {
 	fn wait(&mut self) {
 		let mut first_error = None;
 		for synchronizer in self.synchronizers.iter_mut() {
-			if let Some(error) = synchronizer.wait(&mut self.queues) {
-				first_error.get_or_insert(error);
-			}
+			first_error = first_error.or(synchronizer.wait(&mut self.queues));
 		}
 		if let Some(error) = first_error {
 			panic!("{error}");
@@ -421,12 +401,10 @@ impl crate::context::ContextCreate for Context {
 	) -> graphics_hardware_interface::MeshHandle {
 		// Split interleaved vertices into one packed stream per Metal vertex binding.
 		let options = mtl::MTLResourceOptions::StorageModeShared;
-		let index_ptr = NonNull::new(indices.as_ptr() as *mut std::ffi::c_void)
-			.expect("Index data pointer was null. The most likely cause is an empty index slice.");
-		// SAFETY: `index_ptr` references `indices.len()` initialized bytes for the duration of buffer creation.
+		// SAFETY: `indices` holds `indices.len()` initialized bytes for the duration of buffer creation.
 		let index_buffer = unsafe {
 			self.device
-				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
+				.newBufferWithBytes_length_options(NonNull::from(indices).cast(), indices.len() as _, options)
 		}
 		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
 		// Meshes carry no name, so labels identify them by handle.
@@ -439,9 +417,8 @@ impl crate::context::ContextCreate for Context {
 		let vertex_size: usize = vertex_layout.iter().map(|element| element.format.size()).sum();
 		let max_binding = vertex_layout
 			.iter()
-			.map(|element| element.binding)
+			.map(|element| element.binding as usize + 1)
 			.max()
-			.map(|binding| binding as usize + 1)
 			.unwrap_or(0);
 		let mut binding_spans = vec![Vec::<(usize, usize, usize)>::new(); max_binding];
 		let mut source_offset = 0usize;
@@ -449,10 +426,7 @@ impl crate::context::ContextCreate for Context {
 		for element in vertex_layout {
 			let element_size = element.format.size();
 			let binding = element.binding as usize;
-			let destination_offset = binding_spans[binding]
-				.last()
-				.map(|(_, destination_offset, size)| destination_offset + size)
-				.unwrap_or(0);
+			let destination_offset = binding_spans[binding].last().map_or(0, |&(_, offset, size)| offset + size);
 			binding_spans[binding].push((source_offset, destination_offset, element_size));
 			source_offset += element_size;
 		}
@@ -461,44 +435,38 @@ impl crate::context::ContextCreate for Context {
 			.iter()
 			.enumerate()
 			.map(|(_binding, spans)| {
-				if spans.is_empty() {
-					return None;
-				}
+				(!spans.is_empty()).then(|| {
+					let binding_stride = spans.last().map_or(0, |&(_, offset, size)| offset + size);
+					let mut binding_vertices = vec![0u8; binding_stride * vertex_count as usize];
 
-				let binding_stride = spans
-					.last()
-					.map(|(_, destination_offset, size)| destination_offset + size)
-					.unwrap_or(0);
-				let mut binding_vertices = vec![0u8; binding_stride * vertex_count as usize];
-
-				for vertex_index in 0..vertex_count as usize {
-					let source_vertex_offset = vertex_index * vertex_size;
-					let destination_vertex_offset = vertex_index * binding_stride;
-
-					for &(span_source_offset, span_destination_offset, span_size) in spans {
-						let source_range =
-							source_vertex_offset + span_source_offset..source_vertex_offset + span_source_offset + span_size;
-						let destination_range = destination_vertex_offset + span_destination_offset
-							..destination_vertex_offset + span_destination_offset + span_size;
-						binding_vertices[destination_range].copy_from_slice(&vertices[source_range]);
+					for vertex_index in 0..vertex_count as usize {
+						let source_vertex_offset = vertex_index * vertex_size;
+						let destination_vertex_offset = vertex_index * binding_stride;
+						for &(span_source_offset, span_destination_offset, span_size) in spans {
+							let source = source_vertex_offset + span_source_offset;
+							let destination = destination_vertex_offset + span_destination_offset;
+							binding_vertices[destination..destination + span_size]
+								.copy_from_slice(&vertices[source..source + span_size]);
+						}
 					}
-				}
 
-				let vertex_ptr = NonNull::new(binding_vertices.as_ptr() as *mut std::ffi::c_void)
-					.expect("Vertex data pointer was null. The most likely cause is an empty vertex slice.");
-				// SAFETY: `vertex_ptr` references the initialized packed binding bytes for the duration of buffer creation.
-				let buffer = unsafe {
-					self.device
-						.newBufferWithBytes_length_options(vertex_ptr, binding_vertices.len() as _, options)
-				}
-				.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory.");
-				#[cfg(debug_assertions)]
-				if self.settings.debug_labels {
-					buffer.setLabel(Some(&NSString::from_str(&format!(
-						"Mesh {mesh_index} Vertices (binding {_binding})"
-					))));
-				}
-				Some(buffer)
+					// SAFETY: `binding_vertices` holds the initialized packed binding bytes for the duration of buffer creation.
+					let buffer = unsafe {
+						self.device.newBufferWithBytes_length_options(
+							NonNull::from(&binding_vertices[..]).cast(),
+							binding_vertices.len() as _,
+							options,
+						)
+					}
+					.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory.");
+					#[cfg(debug_assertions)]
+					if self.settings.debug_labels {
+						buffer.setLabel(Some(&NSString::from_str(&format!(
+							"Mesh {mesh_index} Vertices (binding {_binding})"
+						))));
+					}
+					buffer
+				})
 			})
 			.collect::<Vec<_>>();
 
@@ -518,64 +486,38 @@ impl crate::context::ContextCreate for Context {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		add_shader(
-			&mut self.shaders,
-			&self.device,
-			name,
-			shader_source_type,
-			stage,
-			shader_resource_descriptors,
-			self.settings.debug_labels,
-		)
+		self.factory
+			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
 	/// Creates one retained logical descriptor set per in-flight frame without allocating a native layout.
 	fn create_descriptor_set(&mut self, _name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
-		self.descriptor_sets
-			.add_chain((0..self.frames).map(|_| descriptor_set::DescriptorSet {
-				version: 0,
-				descriptors: HashMap::default(),
-				argument_buffers: Vec::new(),
-			}))
+		self.descriptor_sets.add_chain((0..self.frames).map(|_| DescriptorSet {
+			version: 0,
+			descriptors: HashMap::default(),
+			argument_buffers: Vec::new(),
+		}))
 	}
 
 	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_raster_pipeline(
-			&self.device,
-			&self.compiler,
-			&self.shaders,
-			self.settings.debug_labels,
-			builder,
-		);
-		self.intern_raster_pipeline(pipeline)
+		let pipeline = self.factory.create_raster_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
 
 	fn create_compute_pipeline(
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_compute_pipeline(
-			&self.device,
-			&self.compiler,
-			&self.shaders,
-			self.settings.debug_labels,
-			builder,
-		);
-		self.intern_raster_pipeline(pipeline)
+		let pipeline = self.factory.create_compute_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_ray_tracing_pipeline(
-			&self.device,
-			&self.compiler,
-			&self.shaders,
-			self.settings.debug_labels,
-			builder,
-		);
-		self.intern_raster_pipeline(pipeline)
+		let pipeline = self.factory.create_ray_tracing_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
 
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(
@@ -607,7 +549,7 @@ impl crate::context::ContextCreate for Context {
 
 	fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		crate::image_group::ImageGroups::reject_dynamic_member(&builder);
-		let description = image::ImageDescription::new(&builder);
+		let description = ImageDescription::new(&builder);
 		// Create every frame sequence's image up front, like dynamic buffers, so frames in flight never share one.
 		let master = self.images.add_chain(
 			(0..self.frames).map(|_| build_image(&self.device, builder.get_name(), description, self.settings.debug_labels)),
@@ -625,7 +567,7 @@ impl crate::context::ContextCreate for Context {
 		let image = build_image(
 			&self.device,
 			builder.get_name(),
-			image::ImageDescription::new(&builder),
+			ImageDescription::new(&builder),
 			self.settings.debug_labels,
 		);
 		let (handle, _) = self.images.add(image);
@@ -708,7 +650,7 @@ impl crate::context::ContextCreate for Context {
 	/// Metal synchronizers are signaled whenever they have no pending work, so the initial state needs no storage.
 	fn create_synchronizer(&mut self, _name: Option<&str>, _signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		self.synchronizers
-			.add_chain((0..self.frames).map(|_| synchronizer::Synchronizer::new()))
+			.add_chain((0..self.frames).map(|_| Synchronizer::default()))
 	}
 
 	/// Metal counters share one timestamp heap, so a counter is only a slot owner and needs no native object.

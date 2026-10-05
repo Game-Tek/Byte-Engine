@@ -34,6 +34,7 @@ mod tests {
 		RasterizationRenderPassMode as _,
 	};
 	use crate::context::Context as _;
+	use crate::frame::Frame as _;
 	use crate::queue::{Queue as _, QueueExecution as _};
 
 	/// Reports the test message by panicking with it, since a plain `fn(&str)` log callback has no state to record into.
@@ -47,6 +48,10 @@ mod tests {
 	fn create_default_device_setup() -> Option<(Instance, Device, crate::QueueHandle)> {
 		let features = crate::device::Features::new().validation(false);
 		create_device_setup_with_features(features)
+	}
+
+	fn create_validated_device_setup() -> Option<(Instance, Device, crate::QueueHandle)> {
+		create_device_setup_with_features(crate::device::Features::new().validation(true))
 	}
 
 	fn create_device_setup_with_features(features: crate::device::Features) -> Option<(Instance, Device, crate::QueueHandle)> {
@@ -64,22 +69,89 @@ mod tests {
 		Some((instance, device, queue_handle?))
 	}
 
+	/// Times `operation` while `blocker` stalls the queue, then releases the queue.
+	///
+	/// A watchdog releases the queue after five seconds, so a regression that waits on the blocked work fails instead of
+	/// hanging.
+	fn time_with_blocked_queue(
+		blocker: &windows::Win32::Graphics::Direct3D12::ID3D12Fence,
+		operation: impl FnOnce(),
+	) -> std::time::Duration {
+		let watchdog_fence = blocker.clone();
+		let (cancel_watchdog, watchdog_cancelled) = std::sync::mpsc::channel();
+		let watchdog = std::thread::spawn(move || {
+			if watchdog_cancelled.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+				unsafe { watchdog_fence.Signal(1) }.expect(
+					"Failed to release the DX12 test queue. The most likely cause is that the test device was removed.",
+				);
+			}
+		});
+		let start = std::time::Instant::now();
+		operation();
+		let elapsed = start.elapsed();
+
+		unsafe { blocker.Signal(1) }
+			.expect("Failed to release the DX12 test queue. The most likely cause is that the test device was removed.");
+		let _ = cancel_watchdog.send(());
+		watchdog.join().expect(
+			"DX12 queue watchdog panicked. The most likely cause is that the test fence could not release blocked work.",
+		);
+		elapsed
+	}
+
+	/// Creates a device with one compute queue and one transfer queue, or returns `None` where DX12 is unavailable.
+	fn create_compute_transfer_device_setup(
+		features: crate::device::Features,
+	) -> Option<(Instance, Device, crate::QueueHandle, crate::QueueHandle)> {
+		let mut instance = Instance::new(features).ok()?;
+		let mut compute_queue = None;
+		let mut transfer_queue = None;
+		let device = instance
+			.create_device(
+				features,
+				&mut [
+					(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut compute_queue),
+					(
+						crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER),
+						&mut transfer_queue,
+					),
+				],
+			)
+			.ok()?;
+		Some((
+			instance,
+			device,
+			compute_queue.expect("DX12 compute queue creation must return its GHI handle."),
+			transfer_queue.expect("DX12 transfer queue creation must return its GHI handle."),
+		))
+	}
+
+	/// Builds a compute pipeline from SPIR-V-less shader metadata, so descriptor tests exercise only the binding layout.
+	fn create_metadata_compute_pipeline(
+		device: &mut Device,
+		push_constant_ranges: &[crate::pipelines::PushConstantRange],
+		resources: impl IntoIterator<Item = crate::ShaderResourceDescriptor>,
+	) -> crate::PipelineHandle {
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				resources,
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			push_constant_ranges,
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		))
+	}
+
 	#[test]
 	fn debug_info_queue_messages_use_device_log_function() {
 		let features = crate::device::Features::new()
 			.validation(true)
 			.debug_log_function(panic_on_dx12_debug_test_message);
-		let Ok(mut instance) = Instance::new(features) else {
-			return;
-		};
-		let mut queue_handle = None;
-		let Ok(device) = instance.create_device(
-			features,
-			&mut [(
-				crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
-				&mut queue_handle,
-			)],
-		) else {
+		let Some((_instance, device, _queue_handle)) = create_device_setup_with_features(features) else {
 			return;
 		};
 
@@ -138,8 +210,7 @@ mod tests {
 
 	#[test]
 	fn dropped_render_target_recording_restores_the_next_barrier_origin() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(1, 1);
@@ -357,18 +428,7 @@ mod tests {
 			1024,
 			crate::AccessPolicies::READ,
 		);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 
 		assert_eq!(device.pipeline_descriptor_counts(pipeline), Some((1024, 1024)));
 		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1023, false), Some(1023));
@@ -392,18 +452,7 @@ mod tests {
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
 		device.queue_texture_sync_for_sequence(image.into(), 0);
 		device.queue_texture_sync_for_sequence(image.into(), 1);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let expected_state = TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING);
 		let synchronizer = device.create_synchronizer(None, false);
@@ -470,30 +519,8 @@ mod tests {
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, first_slot, image, crate::Layouts::General)]);
-		let first_shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[first_resource],
-			)
-			.expect("Failed to create first DX12 shader metadata.");
-		let second_shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[second_resource],
-			)
-			.expect("Failed to create second DX12 shader metadata.");
-		let first_pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&first_shader, crate::ShaderTypes::Compute),
-		));
-		let second_pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&second_shader, crate::ShaderTypes::Compute),
-		));
+		let first_pipeline = create_metadata_compute_pipeline(&mut device, &[], [first_resource]);
+		let second_pipeline = create_metadata_compute_pipeline(&mut device, &[], [second_resource]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -535,18 +562,7 @@ mod tests {
 			crate::DescriptorWrite::image(set, active_slot, active_image, crate::Layouts::General),
 			crate::DescriptorWrite::image(set, inactive_slot, inactive_image, crate::Layouts::General),
 		]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[active_resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [active_resource]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		{
@@ -571,18 +587,7 @@ mod tests {
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, camera.into())]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		for frame_index in 0..512 {
@@ -618,18 +623,7 @@ mod tests {
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let bind = |device: &mut crate::dx12::Device| {
 			device.begin_command_buffer(command_buffer, 0);
@@ -843,18 +837,8 @@ void main() {
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[crate::pipelines::PushConstantRange::new(0, 16)],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline =
+			create_metadata_compute_pipeline(&mut device, &[crate::pipelines::PushConstantRange::new(0, 16)], [resource]);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -1170,13 +1154,7 @@ void main() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let shader = device
-			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
-			.expect("Failed to create DX12 compute shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], []);
 		let indirect_buffer = device.build_dynamic_buffer::<[[u32; 3]; 2]>(
 			crate::buffer::Builder::new(crate::Uses::Indirect).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -1317,18 +1295,7 @@ void main() {
 			),
 		]);
 
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				resources,
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], resources);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording
@@ -1361,28 +1328,11 @@ void main() {
 	#[test]
 	fn transfer_queue_consumes_compute_output_with_enhanced_barriers() {
 		let features = crate::device::Features::new().validation(true).mesh_shading(false);
-		let Ok(mut instance) = Instance::new(features) else {
+		let Some((_instance, mut device, compute_queue_handle, transfer_queue_handle)) =
+			create_compute_transfer_device_setup(features)
+		else {
 			return;
 		};
-		let mut compute_queue_handle = None;
-		let mut transfer_queue_handle = None;
-		let Ok(mut device) = instance.create_device(
-			features,
-			&mut [
-				(
-					crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE),
-					&mut compute_queue_handle,
-				),
-				(
-					crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER),
-					&mut transfer_queue_handle,
-				),
-			],
-		) else {
-			return;
-		};
-		let compute_queue_handle = compute_queue_handle.expect("DX12 compute queue creation must return its GHI handle.");
-		let transfer_queue_handle = transfer_queue_handle.expect("DX12 transfer queue creation must return its GHI handle.");
 		let source_slot = crate::ResourceSlot::new(0);
 		let output_slot = crate::ResourceSlot::new(1);
 		let resources = [
@@ -1471,8 +1421,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let slot = crate::ResourceSlot::new(7);
@@ -1484,18 +1433,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
@@ -1545,18 +1483,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[resource],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [resource]);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -1569,8 +1496,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn render_pass_clears_u32_render_targets_with_integer_values() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let image = device.build_image(
@@ -1786,9 +1712,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn queue_batch_signals_once_after_nonempty_and_empty_lists_and_allows_immediate_reuse() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -1864,29 +1787,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn queue_execution_rejects_a_foreign_command_buffer_before_mutation() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
 		let features = crate::device::Features::new().validation(false).mesh_shading(false);
-		let Ok(mut instance) = Instance::new(features) else {
+		let Some((_instance, mut device, compute_queue, transfer_queue)) = create_compute_transfer_device_setup(features)
+		else {
 			return;
 		};
-		let mut compute_queue = None;
-		let mut transfer_queue = None;
-		let Ok(mut device) = instance.create_device(
-			features,
-			&mut [
-				(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut compute_queue),
-				(
-					crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER),
-					&mut transfer_queue,
-				),
-			],
-		) else {
-			return;
-		};
-		let compute_queue = compute_queue.expect("DX12 compute queue creation must return its GHI handle.");
-		let transfer_queue = transfer_queue.expect("DX12 transfer queue creation must return its GHI handle.");
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(Some("compute-owned list"), compute_queue);
 
@@ -1919,9 +1824,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn queue_execution_rejects_duplicate_command_buffers_before_submission_and_remains_reusable() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -1959,9 +1861,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn frame_sequence_waits_its_previous_synchronizer_when_the_master_changes() {
-		use crate::context::Context as _;
-		use crate::queue::Queue as _;
-
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -2015,9 +1914,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn storage_present_requires_recorded_preparation_before_submission() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -2078,8 +1974,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn clear_device_only_buffer_records_native_uav_clear() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let buffer = device.build_buffer::<[u32; 4]>(
@@ -2105,8 +2000,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn uav_clears_reuse_retained_cpu_descriptors() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let first_buffer = device.build_buffer::<[u32; 4]>(
@@ -2148,8 +2042,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn resized_buffers_recycle_retained_clear_descriptors() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
@@ -2185,8 +2078,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn reusing_command_buffer_waits_for_previous_submission_before_allocator_reset() {
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		let buffer = device.build_buffer::<[u32; 4]>(
@@ -2211,11 +2103,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn reusing_logical_command_buffer_on_the_next_sequence_does_not_wait_for_the_previous_sequence() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		device.set_frames_in_flight(2);
@@ -2235,34 +2123,18 @@ void main(uint3 id : SV_DispatchThreadID) {
 			},
 		);
 
-		// Release a broken single-allocator implementation after a bounded delay so the regression fails instead of hanging.
-		let watchdog_fence = blocker.clone();
-		let (cancel_watchdog, watchdog_cancelled) = std::sync::mpsc::channel();
-		let watchdog = std::thread::spawn(move || {
-			if watchdog_cancelled.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
-				unsafe { watchdog_fence.Signal(1) }.expect(
-					"Failed to release the DX12 test queue. The most likely cause is that the test device was removed.",
-				);
-			}
+		// A broken single-allocator implementation waits on the blocked first sequence.
+		let elapsed = time_with_blocked_queue(&blocker, || {
+			device.queue(queue_handle).execute(
+				Some(crate::queue::FrameRequest::new(1, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					execution.record(command_buffer, |_| {});
+					[]
+				},
+			);
 		});
-		let start = std::time::Instant::now();
-		device.queue(queue_handle).execute(
-			Some(crate::queue::FrameRequest::new(1, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |_| {});
-				[]
-			},
-		);
-		let elapsed = start.elapsed();
-
-		unsafe { blocker.Signal(1) }
-			.expect("Failed to release the DX12 test queue. The most likely cause is that the test device was removed.");
-		let _ = cancel_watchdog.send(());
-		watchdog.join().expect(
-			"DX12 queue watchdog panicked. The most likely cause is that the test fence could not release blocked work.",
-		);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert!(
@@ -2274,11 +2146,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 	#[test]
 	fn later_sequence_submission_does_not_reassign_a_completed_texture_readback() {
-		use crate::context::Context as _;
-		use crate::queue::{Queue as _, QueueExecution as _};
-
-		let features = crate::device::Features::new().validation(true);
-		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
 		device.set_frames_in_flight(2);
@@ -2331,26 +2199,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 			},
 		);
 
-		// Release a bad completion reassignment after a bounded delay so the regression fails instead of hanging.
-		let watchdog_fence = blocker.clone();
-		let (cancel_watchdog, watchdog_cancelled) = std::sync::mpsc::channel();
-		let watchdog = std::thread::spawn(move || {
-			if watchdog_cancelled.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
-				unsafe { watchdog_fence.Signal(1) }.expect(
-					"Failed to release the DX12 test queue. The most likely cause is that the test device was removed.",
-				);
-			}
-		});
-		let start = std::time::Instant::now();
-		device.wait_for_texture_copy_readback(first_copy);
-		let elapsed = start.elapsed();
-
-		unsafe { blocker.Signal(1) }
-			.expect("Failed to release the DX12 test queue. The most likely cause is that the test device was removed.");
-		let _ = cancel_watchdog.send(());
-		watchdog.join().expect(
-			"DX12 queue watchdog panicked. The most likely cause is that the test fence could not release blocked work.",
-		);
+		// A bad completion reassignment waits on the blocked second sequence.
+		let elapsed = time_with_blocked_queue(&blocker, || device.wait_for_texture_copy_readback(first_copy));
 		device.wait_for_synchronizer(synchronizer);
 		let _ = device
 			.get_image_data(first_copy)
@@ -2573,22 +2423,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 		let set = device.create_descriptor_set(None);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[crate::ShaderResourceDescriptor::single(
-					slot,
-					crate::ResourceKind::SampledImage,
-					crate::AccessPolicies::READ,
-				)],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[crate::ShaderResourceDescriptor::single(
+				slot,
+				crate::ResourceKind::SampledImage,
+				crate::AccessPolicies::READ,
+			)],
+		);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2610,22 +2453,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[crate::ShaderResourceDescriptor::single(
-					slot,
-					crate::ResourceKind::UniformBuffer,
-					crate::AccessPolicies::READ,
-				)],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[crate::ShaderResourceDescriptor::single(
+				slot,
+				crate::ResourceKind::UniformBuffer,
+				crate::AccessPolicies::READ,
+			)],
+		);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2644,22 +2480,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[crate::ShaderResourceDescriptor::single(
-					slot,
-					crate::ResourceKind::UniformBuffer,
-					crate::AccessPolicies::READ,
-				)],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[crate::ShaderResourceDescriptor::single(
+				slot,
+				crate::ResourceKind::UniformBuffer,
+				crate::AccessPolicies::READ,
+			)],
+		);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
@@ -2748,29 +2577,22 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::DescriptorWrite::buffer(set, read_slot, buffer.into()),
 			crate::DescriptorWrite::buffer(set, write_slot, buffer.into()),
 		]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[
-					crate::ShaderResourceDescriptor::single(
-						read_slot,
-						crate::ResourceKind::StorageBuffer,
-						crate::AccessPolicies::READ,
-					),
-					crate::ShaderResourceDescriptor::single(
-						write_slot,
-						crate::ResourceKind::StorageBuffer,
-						crate::AccessPolicies::WRITE,
-					),
-				],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[
+				crate::ShaderResourceDescriptor::single(
+					read_slot,
+					crate::ResourceKind::StorageBuffer,
+					crate::AccessPolicies::READ,
+				),
+				crate::ShaderResourceDescriptor::single(
+					write_slot,
+					crate::ResourceKind::StorageBuffer,
+					crate::AccessPolicies::WRITE,
+				),
+			],
+		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline);
@@ -2800,29 +2622,22 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::DescriptorWrite::image(set, read_slot, image, crate::Layouts::Read),
 			crate::DescriptorWrite::image(set, write_slot, image, crate::Layouts::General),
 		]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[
-					crate::ShaderResourceDescriptor::single(
-						read_slot,
-						crate::ResourceKind::SampledImage,
-						crate::AccessPolicies::READ,
-					),
-					crate::ShaderResourceDescriptor::single(
-						write_slot,
-						crate::ResourceKind::StorageImage,
-						crate::AccessPolicies::WRITE,
-					),
-				],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[
+				crate::ShaderResourceDescriptor::single(
+					read_slot,
+					crate::ResourceKind::SampledImage,
+					crate::AccessPolicies::READ,
+				),
+				crate::ShaderResourceDescriptor::single(
+					write_slot,
+					crate::ResourceKind::StorageImage,
+					crate::AccessPolicies::WRITE,
+				),
+			],
+		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline);
@@ -2848,22 +2663,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
-		let shader = device
-			.create_shader(
-				None,
-				crate::shader::Sources::SPIRV(&[]),
-				crate::ShaderTypes::Compute,
-				[crate::ShaderResourceDescriptor::single(
-					slot,
-					crate::ResourceKind::SampledImage,
-					crate::AccessPolicies::READ,
-				)],
-			)
-			.expect("Failed to create DX12 shader metadata.");
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let pipeline = create_metadata_compute_pipeline(
+			&mut device,
 			&[],
-			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+			[crate::ShaderResourceDescriptor::single(
+				slot,
+				crate::ResourceKind::SampledImage,
+				crate::AccessPolicies::READ,
+			)],
+		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);

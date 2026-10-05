@@ -34,11 +34,7 @@ impl Device {
 			}
 		}
 
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
@@ -64,7 +60,7 @@ impl Device {
 				gpu_clear_buffers.push((buffer_handle, buffer.resource));
 			}
 		}
-		Self::submit_resource_barriers(&command_list, &clear_barriers);
+		clear_barriers.submit(&command_list);
 
 		for &buffer_handle in buffer_handles {
 			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
@@ -150,11 +146,7 @@ impl Device {
 		copy: &crate::BufferCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(source) = self.copy_buffer_info_for_sequence(copy.source_buffer, sequence_index) else {
@@ -216,7 +208,7 @@ impl Device {
 			BufferBarrierState::COMMON,
 		);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.buffer_copy_count += 1;
+		self.counters.buffer_copy_count += 1;
 	}
 
 	pub(crate) fn record_buffer_clear(
@@ -226,11 +218,7 @@ impl Device {
 		sequence_index: u8,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(destination_buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
@@ -265,7 +253,7 @@ impl Device {
 				command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[0, 0, 0, 0], &[]);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.buffer_clear_count += 1;
+			self.counters.buffer_clear_count += 1;
 			return;
 		}
 		let (Some(upload), mapped, _) = self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice) else {
@@ -288,7 +276,7 @@ impl Device {
 		self.transition_tracked_buffer(&command_list, buffer_handle, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
-		self.buffer_clear_count += 1;
+		self.counters.buffer_clear_count += 1;
 	}
 
 	pub(crate) fn copy_buffer_info_for_sequence(

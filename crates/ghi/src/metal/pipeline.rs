@@ -32,32 +32,6 @@ pub(crate) fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent
 	)
 }
 
-/// Applies one GHI specialization constant entry to a Metal function constant table.
-pub(crate) fn apply_specialization_map_entry(
-	constant_values: &mtl::MTLFunctionConstantValues,
-	specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
-) {
-	let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-	let value = NonNull::new(value).expect(
-		"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-	);
-	let (data_type, count) = match specialization_map_entry.get_type().as_str() {
-		"bool" => (mtl::MTLDataType::Bool, 1),
-		"i32" => (mtl::MTLDataType::Int, 1),
-		"u32" => (mtl::MTLDataType::UInt, 1),
-		"f32" => (mtl::MTLDataType::Float, 1),
-		"vec2f" => (mtl::MTLDataType::Float, 2),
-		"vec3f" => (mtl::MTLDataType::Float, 3),
-		"vec4f" => (mtl::MTLDataType::Float, 4),
-		_ => panic!(
-			"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
-		),
-	};
-	let range = NSRange::new(specialization_map_entry.get_constant_id() as usize, count);
-	// SAFETY: The specialization entry owns `count` contiguous values of `data_type` for the duration of this call.
-	unsafe { constant_values.setConstantValues_type_withRange(value, data_type, range) };
-}
-
 /// Rejects vertex attributes that overlap the fixed push-constant and nested argument-buffer bindings.
 pub(crate) fn validate_vertex_binding(binding: u32) {
 	assert!(
@@ -104,9 +78,9 @@ fn build_vertex_descriptor(vertex_elements: &[crate::pipelines::VertexElement]) 
 pub(crate) fn build_image(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	name: Option<&str>,
-	description: image::ImageDescription,
+	description: ImageDescription,
 	debug_labels: bool,
-) -> image::Image {
+) -> Image {
 	let texture = device
 		.newTextureWithDescriptor(&build_texture_descriptor(description))
 		.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
@@ -125,7 +99,7 @@ pub(crate) fn build_image(
 			vec![0u8; bytes_per_image * description.extent.depth().max(1) as usize * description.array_layers as usize]
 		});
 
-	image::Image {
+	Image {
 		name: crate::debug_name(name),
 		texture,
 		description,
@@ -136,7 +110,7 @@ pub(crate) fn build_image(
 
 /// Builds a Metal texture descriptor from GHI image creation parameters.
 pub(crate) fn build_texture_descriptor(
-	image::ImageDescription {
+	ImageDescription {
 		extent,
 		format,
 		uses,
@@ -145,7 +119,7 @@ pub(crate) fn build_texture_descriptor(
 		cube_compatible,
 		cube_array_compatible,
 		mip_levels,
-	}: image::ImageDescription,
+	}: ImageDescription,
 ) -> Retained<mtl::MTLTextureDescriptor> {
 	if cube_compatible {
 		assert!(
@@ -182,7 +156,7 @@ pub(crate) fn build_texture_descriptor(
 		descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
 	}
 	descriptor.setUsage(utils::texture_usage_from_uses(uses));
-	descriptor.setStorageMode(utils::storage_mode_from_access(access));
+	descriptor.setResourceOptions(utils::resource_options_from_access(access));
 	let array_length = if cube_compatible {
 		1
 	} else if cube_array_compatible {
@@ -198,13 +172,23 @@ pub(crate) fn build_texture_descriptor(
 	descriptor
 }
 
-/// Builds a Metal sampler descriptor from a GHI sampler builder.
-pub(crate) fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Retained<mtl::MTLSamplerDescriptor> {
+/// Creates the Metal sampler state that recordings bind through descriptor writes.
+pub(crate) fn build_sampler(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	builder: &crate::sampler::Builder,
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
+) -> Retained<ProtocolObject<dyn mtl::MTLSamplerState>> {
 	let descriptor = mtl::MTLSamplerDescriptor::new();
 	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
-	descriptor.setReductionMode(utils::sampler_reduction_mode(builder.reduction_mode));
+	// A device that cannot execute sampler reductions falls back to standard sampling, without changing the
+	// cross-backend sampler contract.
+	descriptor.setReductionMode(if device.supportsFamily(mtl::MTLGPUFamily::Apple10) {
+		utils::sampler_reduction_mode(builder.reduction_mode)
+	} else {
+		mtl::MTLSamplerReductionMode::WeightedAverage
+	});
 	descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
@@ -215,17 +199,6 @@ pub(crate) fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Ret
 	if let Some(anisotropy) = builder.anisotropy {
 		descriptor.setMaxAnisotropy(anisotropy as _);
 	}
-
-	descriptor
-}
-
-/// Creates a Metal sampler, falling back to standard sampling when the device cannot execute sampler reductions.
-pub(crate) fn build_sampler(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	builder: &crate::sampler::Builder,
-	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
-) -> sampler::Sampler {
-	let descriptor = build_sampler_descriptor(builder);
 	// Samplers carry no name, so the label spells out the state that distinguishes them.
 	#[cfg(debug_assertions)]
 	if debug_labels {
@@ -235,45 +208,10 @@ pub(crate) fn build_sampler(
 		);
 		descriptor.setLabel(Some(&NSString::from_str(&label)));
 	}
-	let reduction_mode =
-		sampler_reduction_mode_for_device(descriptor.reductionMode(), device.supportsFamily(mtl::MTLGPUFamily::Apple10));
-	descriptor.setReductionMode(reduction_mode);
 
-	sampler::Sampler {
-		sampler: device
-			.newSamplerStateWithDescriptor(&descriptor)
-			.expect("Metal sampler creation failed. The most likely cause is that the device is out of sampler resources."),
-	}
-}
-
-/// Selects the native Metal sampler mode without changing the cross-backend sampler contract.
-pub(crate) fn sampler_reduction_mode_for_device(
-	requested: mtl::MTLSamplerReductionMode,
-	supports_reduction: bool,
-) -> mtl::MTLSamplerReductionMode {
-	if supports_reduction {
-		requested
-	} else {
-		mtl::MTLSamplerReductionMode::WeightedAverage
-	}
-}
-
-/// Creates the compiler shared by context-local and detached Metal 4 pipeline builds.
-pub(crate) fn create_metal4_compiler(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	debug_labels: bool,
-) -> Result<Retained<ProtocolObject<dyn mtl::MTL4Compiler>>, &'static str> {
-	let descriptor = mtl::MTL4CompilerDescriptor::new();
-	if cfg!(debug_assertions) && debug_labels {
-		descriptor.setLabel(Some(&NSString::from_str("Byte Engine")));
-	}
-	device.newCompilerWithDescriptor_error(&descriptor).map_err(|error| {
-		eprintln!(
-			"Metal 4 compiler creation failed: {}. The most likely cause is that Metal could not allocate a compiler for this device.",
-			error.localizedDescription(),
-		);
-		"Metal 4 compiler creation failed. The most likely cause is that Metal could not allocate a compiler for this device."
-	})
+	device
+		.newSamplerStateWithDescriptor(&descriptor)
+		.expect("Metal sampler creation failed. The most likely cause is that the device is out of sampler resources.")
 }
 
 /// Builds a Metal 4 function descriptor and applies any pipeline specialization constants.
@@ -292,37 +230,33 @@ fn build_metal4_function_descriptor(
 	}
 
 	let constant_values = mtl::MTLFunctionConstantValues::new();
-	for specialization in specialization_map {
-		apply_specialization_map_entry(&constant_values, specialization);
+	for entry in specialization_map {
+		let (data_type, count) = match entry.r#type {
+			"bool" => (mtl::MTLDataType::Bool, 1),
+			"i32" => (mtl::MTLDataType::Int, 1),
+			"u32" => (mtl::MTLDataType::UInt, 1),
+			"f32" => (mtl::MTLDataType::Float, 1),
+			"vec2f" => (mtl::MTLDataType::Float, 2),
+			"vec3f" => (mtl::MTLDataType::Float, 3),
+			"vec4f" => (mtl::MTLDataType::Float, 4),
+			_ => panic!(
+				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
+			),
+		};
+		// SAFETY: The specialization entry owns `count` contiguous values of `data_type` for the duration of this call.
+		unsafe {
+			constant_values.setConstantValues_type_withRange(
+				NonNull::from(&*entry.value).cast(),
+				data_type,
+				NSRange::new(entry.constant_id as usize, count),
+			)
+		};
 	}
 	let specialized_function = mtl::MTL4SpecializedFunctionDescriptor::new();
 	specialized_function.setFunctionDescriptor(Some(&library_function));
 	specialized_function.setConstantValues(Some(&constant_values));
 	// SAFETY: MTL4SpecializedFunctionDescriptor conforms to the MTL4FunctionDescriptor protocol.
 	unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(specialized_function) }
-}
-
-/// Configures one Metal 4 color attachment with the GHI format and blend mode.
-fn configure_metal4_color_attachment(
-	color_attachment: &mtl::MTL4RenderPipelineColorAttachmentDescriptor,
-	attachment: &crate::pipelines::raster::AttachmentDescriptor,
-) {
-	color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-	let source_color_factor = match attachment.blend {
-		crate::pipelines::raster::BlendMode::None => {
-			color_attachment.setBlendingState(mtl::MTL4BlendState::Disabled);
-			return;
-		}
-		crate::pipelines::raster::BlendMode::Alpha => mtl::MTLBlendFactor::SourceAlpha,
-		crate::pipelines::raster::BlendMode::Premultiplied => mtl::MTLBlendFactor::One,
-	};
-	color_attachment.setBlendingState(mtl::MTL4BlendState::Enabled);
-	color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-	color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-	color_attachment.setSourceRGBBlendFactor(source_color_factor);
-	color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-	color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-	color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
 }
 
 /// Configures the packed color outputs shared by Metal 4 vertex and mesh render descriptors.
@@ -337,61 +271,23 @@ fn configure_metal4_render_targets(
 	{
 		// SAFETY: The index is bounded by the filtered render-target slice and Metal exposes at least that many attachment slots.
 		let color_attachment = unsafe { color_attachments.objectAtIndexedSubscript(index as _) };
-		configure_metal4_color_attachment(&color_attachment, attachment);
+		color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
+		let source_color_factor = match attachment.blend {
+			crate::pipelines::raster::BlendMode::None => {
+				color_attachment.setBlendingState(mtl::MTL4BlendState::Disabled);
+				continue;
+			}
+			crate::pipelines::raster::BlendMode::Alpha => mtl::MTLBlendFactor::SourceAlpha,
+			crate::pipelines::raster::BlendMode::Premultiplied => mtl::MTLBlendFactor::One,
+		};
+		color_attachment.setBlendingState(mtl::MTL4BlendState::Enabled);
+		color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
+		color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
+		color_attachment.setSourceRGBBlendFactor(source_color_factor);
+		color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+		color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
+		color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
 	}
-}
-
-/// Compiles one Metal 4 vertex/fragment render pipeline.
-fn compile_metal4_render_pipeline(
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	name: Option<&str>,
-	vertex_function: &mtl::MTL4FunctionDescriptor,
-	fragment_function: Option<&mtl::MTL4FunctionDescriptor>,
-	vertex_descriptor: Option<&mtl::MTLVertexDescriptor>,
-	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
-) -> Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>> {
-	let descriptor = mtl::MTL4RenderPipelineDescriptor::new();
-	descriptor.setLabel(name.map(NSString::from_str).as_deref());
-	descriptor.setVertexFunctionDescriptor(Some(vertex_function));
-	descriptor.setFragmentFunctionDescriptor(fragment_function);
-	descriptor.setVertexDescriptor(vertex_descriptor);
-	descriptor.setInputPrimitiveTopology(mtl::MTLPrimitiveTopologyClass::Triangle);
-	configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
-
-	compiler
-		.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
-		.unwrap_or_else(|error| {
-			panic!(
-				"Metal 4 raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the pipeline descriptor.",
-				error.localizedDescription(),
-			)
-		})
-}
-
-/// Compiles one Metal 4 object/mesh/fragment render pipeline.
-fn compile_metal4_mesh_pipeline(
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	name: Option<&str>,
-	object_function: Option<&mtl::MTL4FunctionDescriptor>,
-	mesh_function: &mtl::MTL4FunctionDescriptor,
-	fragment_function: Option<&mtl::MTL4FunctionDescriptor>,
-	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
-) -> Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>> {
-	let descriptor = mtl::MTL4MeshRenderPipelineDescriptor::new();
-	descriptor.setLabel(name.map(NSString::from_str).as_deref());
-	descriptor.setObjectFunctionDescriptor(object_function);
-	descriptor.setMeshFunctionDescriptor(Some(mesh_function));
-	descriptor.setFragmentFunctionDescriptor(fragment_function);
-	configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
-
-	compiler
-		.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
-		.unwrap_or_else(|error| {
-			panic!(
-				"Metal 4 mesh pipeline creation failed: {}. The most likely cause is invalid object, mesh, or fragment shader state in the pipeline descriptor.",
-				error.localizedDescription(),
-			)
-		})
 }
 
 /// Compiles one Metal 4 compute pipeline.
@@ -480,19 +376,15 @@ impl StageArgumentBinding {
 
 impl ArgumentBindingSlots {
 	/// Visits each native argument range without allocating a flattened list of array elements.
-	fn for_each_metal_argument(&self, mut visit: impl FnMut(u32, u32, mtl::MTLDataType)) {
-		let mut visit_range = |range: ArgumentSlotRange, data_type| {
-			visit(range.base, range.count, data_type);
-		};
-
-		match self {
-			Self::Buffer(range) => visit_range(*range, mtl::MTLDataType::Pointer),
-			Self::Texture(range) => visit_range(*range, mtl::MTLDataType::Texture),
-			Self::Sampler(range) => visit_range(*range, mtl::MTLDataType::Sampler),
-			Self::AccelerationStructure(range) => visit_range(*range, mtl::MTLDataType::InstanceAccelerationStructure),
+	fn for_each_metal_argument(&self, mut visit: impl FnMut(ArgumentSlotRange, mtl::MTLDataType)) {
+		match *self {
+			Self::Buffer(range) => visit(range, mtl::MTLDataType::Pointer),
+			Self::Texture(range) => visit(range, mtl::MTLDataType::Texture),
+			Self::Sampler(range) => visit(range, mtl::MTLDataType::Sampler),
+			Self::AccelerationStructure(range) => visit(range, mtl::MTLDataType::InstanceAccelerationStructure),
 			Self::CombinedImageSampler { textures, samplers } => {
-				visit_range(*textures, mtl::MTLDataType::Texture);
-				visit_range(*samplers, mtl::MTLDataType::Sampler);
+				visit(textures, mtl::MTLDataType::Texture);
+				visit(samplers, mtl::MTLDataType::Sampler);
 			}
 		}
 	}
@@ -539,8 +431,14 @@ pub(crate) struct DescriptorBindingKey {
 #[derive(Clone)]
 pub(crate) struct Materialization {
 	pub(crate) key: DescriptorBindingKey,
-	/// One encoded range per stage layout: the stage, its backing buffer, and the range's byte offset.
-	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize); 5]>,
+	/// One encoded range per stage layout: the stage, its backing buffer, and the range's GPU address.
+	pub(crate) argument_buffers: SmallVec<
+		[(
+			crate::Stages,
+			Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+			mtl::MTLGPUAddress,
+		); 5],
+	>,
 	pub(crate) resource_uses: synchronization::DescriptorUses,
 	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
 	pub(crate) _texture_views: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,
@@ -623,11 +521,8 @@ pub(crate) fn resource_ranges_overlap(
 	left: crate::shader::ShaderResourceDescriptor,
 	right: crate::shader::ShaderResourceDescriptor,
 ) -> bool {
-	let left_start = left.slot().index();
-	let left_end = resource_range_end(left);
-	let right_start = right.slot().index();
-	let right_end = resource_range_end(right);
-	left_start < right_end && right_start < left_end
+	let (left_end, right_end) = (resource_range_end(left), resource_range_end(right));
+	left.slot().index() < right_end && right.slot().index() < left_end
 }
 
 pub(crate) fn resource_range_end(descriptor: crate::shader::ShaderResourceDescriptor) -> u32 {
@@ -642,9 +537,8 @@ pub(crate) fn resource_accepts_retained_slot_key(
 	descriptor: crate::shader::ShaderResourceDescriptor,
 	stored_slot: crate::shader::ResourceSlot,
 ) -> bool {
-	let base = descriptor.slot().index();
 	let stored = stored_slot.index();
-	stored <= base || stored >= resource_range_end(descriptor)
+	stored <= descriptor.slot().index() || stored >= resource_range_end(descriptor)
 }
 
 pub(crate) fn resource_representations_match(
@@ -703,12 +597,13 @@ pub(crate) fn canonicalize_stage_resources(
 	canonical
 }
 
-/// Maps one logical flat-slot interval to its stable Metal argument-ID reservation.
-pub(crate) fn fixed_argument_slot_ranges(
-	slot: crate::shader::ResourceSlot,
-	count: u32,
-) -> (ArgumentSlotRange, ArgumentSlotRange) {
-	let primary = slot.index().checked_mul(2).expect(
+/// Assigns stable Metal argument IDs from one flat GHI resource interval.
+///
+/// Slot `n` reserves IDs from `2n`: the primary range first, then a secondary range of the same length that only
+/// combined image samplers use for their samplers.
+pub(crate) fn allocate_argument_binding_slots(descriptor: crate::shader::ShaderResourceDescriptor) -> ArgumentBindingSlots {
+	let count = descriptor.count();
+	let primary = descriptor.slot().index().checked_mul(2).expect(
 		"Metal argument index overflowed. The most likely cause is a flat resource slot too large for the fixed Metal ABI.",
 	);
 	let secondary = primary
@@ -717,15 +612,10 @@ pub(crate) fn fixed_argument_slot_ranges(
 	secondary.checked_add(count).expect(
 		"Metal argument reservation overflowed. The most likely cause is a flat resource range too large for the fixed Metal ABI.",
 	);
-	(
+	let (primary, secondary) = (
 		ArgumentSlotRange { base: primary, count },
 		ArgumentSlotRange { base: secondary, count },
-	)
-}
-
-/// Assigns stable Metal argument IDs from one flat GHI resource interval.
-pub(crate) fn allocate_argument_binding_slots(descriptor: crate::shader::ShaderResourceDescriptor) -> ArgumentBindingSlots {
-	let (primary, secondary) = fixed_argument_slot_ranges(descriptor.slot(), descriptor.count());
+	);
 	match descriptor.kind() {
 		crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer => {
 			ArgumentBindingSlots::Buffer(primary)
@@ -759,12 +649,12 @@ pub(crate) fn build_stage_argument_layout(
 				mtl::MTLBindingAccess::ReadOnly
 			};
 			let argument_slots = allocate_argument_binding_slots(resource);
-			argument_slots.for_each_metal_argument(|slot, count, data_type| {
+			argument_slots.for_each_metal_argument(|range, data_type| {
 				let descriptor = mtl::MTLArgumentDescriptor::argumentDescriptor();
 				descriptor.setDataType(data_type);
-				descriptor.setIndex(slot as _);
-				if count > 1 {
-					descriptor.setArrayLength(count as _);
+				descriptor.setIndex(range.base as _);
+				if range.count > 1 {
+					descriptor.setArrayLength(range.count as _);
 				}
 				descriptor.setAccess(access);
 				if data_type == mtl::MTLDataType::Texture {
@@ -786,11 +676,7 @@ pub(crate) fn build_stage_argument_layout(
 			}
 		})
 		.collect::<Vec<_>>();
-	let argument_descriptor_refs = metal_argument_descriptors
-		.iter()
-		.map(|descriptor| descriptor.as_ref())
-		.collect::<Vec<_>>();
-	let argument_descriptors = NSArray::from_slice(&argument_descriptor_refs);
+	let argument_descriptors = NSArray::from_retained_slice(&metal_argument_descriptors);
 	let argument_encoder = device
 		.newArgumentEncoderWithArguments(&argument_descriptors)
 		.expect("Metal argument layout creation failed. The most likely cause is an unsupported shader resource interface.");
@@ -804,20 +690,23 @@ pub(crate) fn build_stage_argument_layout(
 }
 
 /// Builds the private Metal pipeline layout from the packed resource interface of each shader stage.
-fn build_pipeline_layout<'a>(
+///
+/// `parameters` select the stage shaders from `shaders`, the shaders of the factory that builds the pipeline.
+fn build_pipeline_layout(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	shaders: impl IntoIterator<Item = &'a Shader>,
+	shaders: &[Shader],
+	parameters: &[crate::pipelines::ShaderParameter],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 ) -> PipelineLayout {
 	let mut resources = Vec::<PipelineResourceDescriptor>::new();
 	let mut stage_argument_layouts = Vec::<StageArgumentLayout>::new();
 
-	for Shader {
-		stage,
-		shader_resource_descriptors,
-		..
-	} in shaders
-	{
+	for parameter in parameters {
+		let Shader {
+			stage,
+			shader_resource_descriptors,
+			..
+		} = &shaders[parameter.handle.0 as usize];
 		let stage_descriptors = canonicalize_stage_resources(shader_resource_descriptors);
 		if !stage_descriptors.is_empty() {
 			if let Some(existing) = stage_argument_layouts.iter_mut().find(|layout| {
@@ -875,227 +764,239 @@ fn build_pipeline_layout<'a>(
 	}
 }
 
-/// Loads or compiles one Metal shader library, records the resource interface it declares, and adds it to `shaders`.
-///
-/// Both [`Context`] and [`Factory`] create shaders through this function. Pipelines built from the same `shaders`
-/// refer to the result by the returned handle.
-pub(crate) fn add_shader(
-	shaders: &mut Vec<Shader>,
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	name: Option<&str>,
-	source: crate::shader::Sources,
-	stage: crate::ShaderTypes,
-	shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
-	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
-) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-	let (library, entry_point, threadgroup_size) = match source {
-		crate::shader::Sources::SPIRV(_) => {
-			eprintln!(
-				"Metal shader creation failed for {:?} shader {:?}. The most likely cause is that SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
-				stage,
-				name.unwrap_or("<unnamed>"),
-			);
-			return Err(());
+/// A [`Factory`] compiles every shader and pipeline, both detached ones and those a [`Context`] creates through
+/// the factory it owns. Pipelines refer to shaders by the handles their own factory returned.
+impl crate::device::Device for Factory {
+	type Context = crate::metal::context::Context;
+	type Allocator = std::alloc::Global;
+	type RasterPipeline = Pipeline;
+	type ComputePipeline = ComputePipeline;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&std::alloc::Global
+	}
+
+	#[cfg(any(debug_assertions, test))]
+	fn has_errors(&self) -> bool {
+		false
+	}
+
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
+		Err(
+			"Detached Metal factory cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.",
+		)
+	}
+
+	/// Loads or compiles one Metal shader library and records the resource interface it declares.
+	fn create_shader(
+		&mut self,
+		name: Option<&str>,
+		source: crate::shader::Sources,
+		stage: crate::ShaderTypes,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
+		let (library, entry_point, threadgroup_size) = match source {
+			crate::shader::Sources::SPIRV(_) => {
+				eprintln!(
+					"Metal shader creation failed for {:?} shader {:?}. The most likely cause is that SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
+					stage,
+					name.unwrap_or("<unnamed>"),
+				);
+				return Err(());
+			}
+			crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
+			crate::shader::Sources::MTLB {
+				binary,
+				entry_point,
+				threadgroup_size,
+			} => {
+				let library = self
+					.device
+					.newLibraryWithData_error(&DispatchData::from_bytes(binary))
+					.map_err(|error| eprintln!("Metal shader library load failed: {}", error.localizedDescription()))?;
+				(library, entry_point, threadgroup_size)
+			}
+			crate::shader::Sources::MTL { source, entry_point } => {
+				let threadgroup_size = matches!(
+					stage,
+					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh | crate::ShaderTypes::Compute
+				)
+				.then(|| utils::parse_threadgroup_size_metadata(source))
+				.flatten();
+				let library = self
+					.device
+					.newLibraryWithSource_options_error(&NSString::from_str(source), Some(&mtl::MTLCompileOptions::new()))
+					.map_err(|error| eprintln!("Metal shader compilation failed: {}", error.localizedDescription()))?;
+				(library, entry_point, threadgroup_size)
+			}
+		};
+
+		// Every generated entry point is `besl_main`, so the library label is what tells shaders apart in captures.
+		#[cfg(debug_assertions)]
+		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
+			library.setLabel(Some(&NSString::from_str(name)));
 		}
-		crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
-		crate::shader::Sources::MTLB {
-			binary,
-			entry_point,
+
+		self.shaders.push(Shader {
+			name: crate::debug_name(name),
+			stage: stage.into(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			library,
+			entry_point: entry_point.to_owned(),
 			threadgroup_size,
-		} => {
-			let library = device
-				.newLibraryWithData_error(&DispatchData::from_bytes(binary))
-				.map_err(|error| eprintln!("Metal shader library load failed: {}", error.localizedDescription()))?;
-			(library, entry_point, threadgroup_size)
+		});
+		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
+	}
+
+	/// Compiles a raster pipeline from this factory's shaders, as a vertex or a mesh pipeline.
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		let mut object_function = None;
+		let mut vertex_function = None;
+		let mut mesh_function = None;
+		let mut fragment_function = None;
+		let mut object_threadgroup_size = None;
+		let mut mesh_threadgroup_size = None;
+		for shader_parameter in builder.shaders.iter() {
+			let shader = &self.shaders[shader_parameter.handle.0 as usize];
+			let function = Some(build_metal4_function_descriptor(shader, shader_parameter.specialization_map));
+			match shader_parameter.stage {
+				crate::ShaderTypes::Task => {
+					object_function = function;
+					object_threadgroup_size = Some(shader.threadgroup_size.unwrap_or(Extent::new(1, 1, 1)));
+				}
+				crate::ShaderTypes::Vertex => vertex_function = function,
+				crate::ShaderTypes::Mesh => {
+					mesh_function = function;
+					mesh_threadgroup_size = shader.threadgroup_size;
+				}
+				crate::ShaderTypes::Fragment => fragment_function = function,
+				_ => {}
+			}
 		}
-		crate::shader::Sources::MTL { source, entry_point } => {
-			let threadgroup_size = matches!(
-				stage,
-				crate::ShaderTypes::Task | crate::ShaderTypes::Mesh | crate::ShaderTypes::Compute
-			)
-			.then(|| utils::parse_threadgroup_size_metadata(source))
+
+		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let render_targets = builder.render_targets;
+		let pipeline = if let Some(mesh_function) = mesh_function.as_deref() {
+			let descriptor = mtl::MTL4MeshRenderPipelineDescriptor::new();
+			descriptor.setLabel(name.map(NSString::from_str).as_deref());
+			descriptor.setObjectFunctionDescriptor(object_function.as_deref());
+			descriptor.setMeshFunctionDescriptor(Some(mesh_function));
+			descriptor.setFragmentFunctionDescriptor(fragment_function.as_deref());
+			configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
+			self.compiler
+				.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal 4 mesh pipeline creation failed: {}. The most likely cause is invalid object, mesh, or fragment shader state in the pipeline descriptor.",
+						error.localizedDescription(),
+					)
+				})
+		} else if let Some(vertex_function) = vertex_function.as_deref() {
+			let vertex_descriptor = build_vertex_descriptor(builder.vertex_elements);
+			let descriptor = mtl::MTL4RenderPipelineDescriptor::new();
+			descriptor.setLabel(name.map(NSString::from_str).as_deref());
+			descriptor.setVertexFunctionDescriptor(Some(vertex_function));
+			descriptor.setFragmentFunctionDescriptor(fragment_function.as_deref());
+			descriptor.setVertexDescriptor(vertex_descriptor.as_deref());
+			descriptor.setInputPrimitiveTopology(mtl::MTLPrimitiveTopologyClass::Triangle);
+			configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
+			self.compiler
+				.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal 4 raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the pipeline descriptor.",
+						error.localizedDescription(),
+					)
+				})
+		} else {
+			panic!(
+				"Metal raster pipeline creation failed because no vertex or mesh shader was supplied. The most likely cause is that the raster pipeline builder received only task or fragment shaders. Pipeline: {:?}",
+				builder.name,
+			);
+		};
+
+		let has_depth_attachment = render_targets
+			.iter()
+			.any(|attachment| attachment.format.channel_layout() == crate::ChannelLayout::Depth);
+		let depth_stencil_state = has_depth_attachment
+			.then(|| {
+				let descriptor = mtl::MTLDepthStencilDescriptor::new();
+				descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
+				descriptor.setDepthWriteEnabled(builder.depth_write);
+				#[cfg(debug_assertions)]
+				if self.settings.debug_labels {
+					descriptor.setLabel(builder.name.map(NSString::from_str).as_deref());
+				}
+				self.device.newDepthStencilStateWithDescriptor(&descriptor)
+			})
 			.flatten();
-			let library = device
-				.newLibraryWithSource_options_error(&NSString::from_str(source), Some(&mtl::MTLCompileOptions::new()))
-				.map_err(|error| eprintln!("Metal shader compilation failed: {}", error.localizedDescription()))?;
-			(library, entry_point, threadgroup_size)
-		}
-	};
 
-	// Every generated entry point is `besl_main`, so the library label is what tells shaders apart in captures.
-	#[cfg(debug_assertions)]
-	if let Some(name) = name.filter(|_| debug_labels) {
-		library.setLabel(Some(&NSString::from_str(name)));
-	}
-
-	shaders.push(Shader {
-		name: crate::debug_name(name),
-		stage: stage.into(),
-		shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
-		library,
-		entry_point: entry_point.to_owned(),
-		threadgroup_size,
-	});
-	Ok(graphics_hardware_interface::ShaderHandle((shaders.len() - 1) as u64))
-}
-
-/// Compiles a raster pipeline from shaders created by the same [`Context`] or [`Factory`].
-pub(crate) fn build_raster_pipeline(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	shaders: &[Shader],
-	debug_labels: bool,
-	builder: crate::pipelines::raster::Builder,
-) -> Pipeline {
-	let mut object_function = None;
-	let mut vertex_function = None;
-	let mut mesh_function = None;
-	let mut fragment_function = None;
-	let mut object_threadgroup_size = None;
-	let mut mesh_threadgroup_size = None;
-	for shader_parameter in builder.shaders.iter() {
-		let shader = &shaders[shader_parameter.handle.0 as usize];
-		let function = Some(build_metal4_function_descriptor(shader, shader_parameter.specialization_map));
-		match shader_parameter.stage {
-			crate::ShaderTypes::Task => {
-				object_function = function;
-				object_threadgroup_size = Some(shader.threadgroup_size.unwrap_or(Extent::new(1, 1, 1)));
-			}
-			crate::ShaderTypes::Vertex => vertex_function = function,
-			crate::ShaderTypes::Mesh => {
-				mesh_function = function;
-				mesh_threadgroup_size = shader.threadgroup_size;
-			}
-			crate::ShaderTypes::Fragment => fragment_function = function,
-			_ => {}
+		Pipeline {
+			pipeline: PipelineState::Raster(RasterState {
+				state: pipeline,
+				depth_stencil_state,
+				face_winding: builder.face_winding,
+				cull_mode: builder.cull_mode,
+				fill_mode: builder.fill_mode,
+				object_threadgroup_size,
+				mesh_threadgroup_size,
+			}),
+			layout: build_pipeline_layout(&self.device, &self.shaders, builder.shaders, builder.push_constant_ranges),
 		}
 	}
 
-	let name = builder.name.filter(|_| cfg!(debug_assertions) && debug_labels);
-	let render_targets = builder.render_targets.as_ref();
-	let pipeline = if let Some(mesh_function) = mesh_function.as_deref() {
-		compile_metal4_mesh_pipeline(
-			compiler,
-			name,
-			object_function.as_deref(),
-			mesh_function,
-			fragment_function.as_deref(),
-			render_targets,
-		)
-	} else if let Some(vertex_function) = vertex_function.as_deref() {
-		let vertex_descriptor = build_vertex_descriptor(builder.vertex_elements.as_ref());
-		compile_metal4_render_pipeline(
-			compiler,
-			name,
-			vertex_function,
-			fragment_function.as_deref(),
-			vertex_descriptor.as_deref(),
-			render_targets,
-		)
-	} else {
-		panic!(
-			"Metal raster pipeline creation failed because no vertex or mesh shader was supplied. The most likely cause is that the raster pipeline builder received only task or fragment shaders. Pipeline: {:?}",
-			builder.name,
+	/// Compiles a compute pipeline from one of this factory's compute shaders.
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		let shader = &self.shaders[builder.shader.handle.0 as usize];
+		assert!(
+			shader.stage == crate::Stages::COMPUTE,
+			"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 		);
-	};
+		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
+		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
 
-	let has_depth_attachment = render_targets
-		.iter()
-		.any(|attachment| attachment.format.channel_layout() == crate::ChannelLayout::Depth);
-	let depth_stencil_state = has_depth_attachment
-		.then(|| {
-			let descriptor = mtl::MTLDepthStencilDescriptor::new();
-			descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
-			descriptor.setDepthWriteEnabled(builder.depth_write);
-			#[cfg(debug_assertions)]
-			if debug_labels {
-				descriptor.setLabel(builder.name.map(NSString::from_str).as_deref());
-			}
-			device.newDepthStencilStateWithDescriptor(&descriptor)
-		})
-		.flatten();
-
-	Pipeline {
-		pipeline: PipelineState::Raster(RasterState {
-			state: pipeline,
-			depth_stencil_state,
-			face_winding: builder.face_winding,
-			cull_mode: builder.cull_mode,
-			fill_mode: builder.fill_mode,
-			object_threadgroup_size,
-			mesh_threadgroup_size,
-		}),
-		layout: build_pipeline_layout(
-			device,
-			builder
-				.shaders
-				.iter()
-				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
-			builder.push_constant_ranges.as_ref(),
-		),
+		Pipeline {
+			pipeline: PipelineState::Compute {
+				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
+				threadgroup_size: shader.threadgroup_size,
+			},
+			layout: build_pipeline_layout(
+				&self.device,
+				&self.shaders,
+				std::slice::from_ref(&builder.shader),
+				builder.push_constant_ranges,
+			),
+		}
 	}
 }
 
-/// Compiles a compute pipeline from a shader created by the same [`Context`] or [`Factory`].
-pub(crate) fn build_compute_pipeline(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	shaders: &[Shader],
-	debug_labels: bool,
-	builder: crate::pipelines::compute::Builder,
-) -> Pipeline {
-	let shader = &shaders[builder.shader.handle.0 as usize];
-	assert!(
-		shader.stage == crate::Stages::COMPUTE,
-		"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
-	);
-	let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
-	let name = builder.name.filter(|_| cfg!(debug_assertions) && debug_labels);
+impl Factory {
+	/// Compiles a ray-tracing pipeline into the compute state Metal dispatches for its ray-generation shader.
+	///
+	/// Metal resolves hit and miss behaviour inside the ray-generation function through the bound acceleration
+	/// structure, so only that shader becomes pipeline state. Every shader still contributes to the resource layout.
+	pub(crate) fn create_ray_tracing_pipeline(&self, builder: crate::pipelines::ray_tracing::Builder) -> Pipeline {
+		let raygen = builder
+			.shaders
+			.iter()
+			.find(|shader_parameter| matches!(shader_parameter.stage, crate::ShaderTypes::RayGen))
+			.expect(
+				"Metal ray tracing pipeline creation requires a ray generation shader. The most likely cause is that ray_tracing::Builder received only hit or miss shaders.",
+			);
+		let shader = &self.shaders[raygen.handle.0 as usize];
+		let function = build_metal4_function_descriptor(shader, raygen.specialization_map);
+		let name = shader
+			.name
+			.as_deref()
+			.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
 
-	Pipeline {
-		pipeline: PipelineState::Compute {
-			state: compile_metal4_compute_pipeline(compiler, name, &function),
-			threadgroup_size: shader.threadgroup_size,
-		},
-		layout: build_pipeline_layout(device, [shader], builder.push_constant_ranges),
-	}
-}
-
-/// Compiles a ray-tracing pipeline into the compute state Metal dispatches for its ray-generation shader.
-///
-/// Metal resolves hit and miss behaviour inside the ray-generation function through the bound acceleration
-/// structure, so only that shader becomes pipeline state. Every shader still contributes to the resource layout.
-pub(crate) fn build_ray_tracing_pipeline(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	shaders: &[Shader],
-	debug_labels: bool,
-	builder: crate::pipelines::ray_tracing::Builder,
-) -> Pipeline {
-	let raygen = builder
-		.shaders
-		.iter()
-		.find(|shader_parameter| matches!(shader_parameter.stage, crate::ShaderTypes::RayGen))
-		.expect(
-			"Metal ray tracing pipeline creation requires a ray generation shader. The most likely cause is that ray_tracing::Builder received only hit or miss shaders.",
-		);
-	let shader = &shaders[raygen.handle.0 as usize];
-	let function = build_metal4_function_descriptor(shader, raygen.specialization_map);
-	let name = shader.name.as_deref().filter(|_| cfg!(debug_assertions) && debug_labels);
-
-	Pipeline {
-		pipeline: PipelineState::Compute {
-			state: compile_metal4_compute_pipeline(compiler, name, &function),
-			threadgroup_size: shader.threadgroup_size,
-		},
-		layout: build_pipeline_layout(
-			device,
-			builder
-				.shaders
-				.iter()
-				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
-			builder.push_constant_ranges.as_ref(),
-		),
+		Pipeline {
+			pipeline: PipelineState::Compute {
+				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
+				threadgroup_size: shader.threadgroup_size,
+			},
+			layout: build_pipeline_layout(&self.device, &self.shaders, builder.shaders, builder.push_constant_ranges),
+		}
 	}
 }
 

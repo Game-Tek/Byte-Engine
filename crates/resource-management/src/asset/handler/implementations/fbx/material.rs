@@ -25,7 +25,13 @@ pub(crate) async fn resolve_fbx_materials(
 				MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
 			};
 
-			match fbx_material_override(spec, material) {
+			// Unnamed materials use the `default` override key.
+			let name = material
+				.map(|material| material.element.name.as_ref())
+				.filter(|name| !name.is_empty())
+				.unwrap_or("default");
+
+			match bead_material_override(spec, name) {
 				Some(override_id) => MaterialSource::Override(override_id),
 				None => MaterialSource::Generated(GeneratedMaterial {
 					base_id: generated_fbx_material_base_id(url, key, material),
@@ -51,15 +57,7 @@ pub(crate) fn used_material_keys<'a>(scene: &ufbx::Scene, allocator: &'a dyn All
 
 	let mut seen = HashSet::with_capacity(scene.materials.len().saturating_add(1));
 
-	for node in &scene.nodes {
-		let Some(mesh) = node.mesh.as_ref() else {
-			continue;
-		};
-
-		if mesh.num_indices == 0 || mesh.num_faces == 0 || mesh.num_triangles == 0 {
-			continue;
-		}
-
+	for (node, mesh) in fbx_mesh_instances(scene) {
 		let material_node = authored_material_node(node);
 
 		// Keep first-use ordering stable so generated fallback materials stay deterministic across reimports.
@@ -72,12 +70,7 @@ pub(crate) fn used_material_keys<'a>(scene: &ufbx::Scene, allocator: &'a dyn All
 		};
 
 		if mesh.material_parts.is_empty() {
-			if mesh
-				.faces
-				.iter()
-				.enumerate()
-				.any(|(index, _)| is_visible_polygon_face(mesh, index))
-			{
+			if (0..mesh.faces.len()).any(|index| is_visible_polygon_face(mesh, index)) {
 				record_slot(0);
 			}
 		} else {
@@ -125,50 +118,6 @@ pub(crate) fn authored_material_node(mut node: &ufbx::Node) -> &ufbx::Node {
 	}
 
 	node
-}
-
-/// Reads an optional `.fbx.bead` material override by authored material name or the `default` key.
-pub(crate) fn fbx_material_override(spec: Option<&Value>, material: Option<&ufbx::Material>) -> Option<String> {
-	let key = material
-		.map(|material| material.element.name.as_ref())
-		.filter(|name| !name.is_empty())
-		.unwrap_or("default");
-
-	bead_material_override(spec, key)
-}
-
-/// Loads an embedded or file-local FBX texture, processes its RGBA pixels, and stores its image resource.
-pub(crate) async fn load_and_store_fbx_texture(
-	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	id: &str,
-	texture: &ufbx::Texture,
-	mip_generator: Option<&MipGenerator>,
-) -> Result<(), LoadErrors> {
-	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
-
-	let description = ImageDescription {
-		semantic: Semantic::Albedo,
-		gamma: gamma_from_semantic(Semantic::Albedo),
-		generate_mipmaps: mip_generator.is_some(),
-	};
-	let source = ImageSource::new(
-		Extent::rectangle(width, height),
-		SourceChannels::RGBA,
-		SourceEncoding::U8,
-		&pixels,
-	);
-
-	let (resource, data) = process_image_with_mips_in(
-		ResourceId::new(id),
-		description,
-		source,
-		context.allocator(),
-		mip_generator.unwrap_or(&MipGenerator::Cpu),
-	)
-	.await?;
-
-	context.store_resource(resource, &data).await.map(|_| ())
 }
 
 /// Decodes a texture embedded in the FBX or resolves its file-local image through the current asset backend.
@@ -223,15 +172,10 @@ pub(crate) fn decode_fbx_texture_image(bytes: &[u8]) -> Result<(Box<[u8]>, u32, 
 
 /// Selects the file-local path that remains usable when an FBX omits embedded texture bytes.
 pub(crate) fn fbx_texture_source_path(texture: &ufbx::Texture) -> Option<&str> {
-	if !texture.relative_filename.is_empty() {
-		Some(texture.relative_filename.as_ref())
-	} else if !texture.filename.is_empty() {
-		Some(texture.filename.as_ref())
-	} else if !texture.absolute_filename.is_empty() {
-		Some(texture.absolute_filename.as_ref())
-	} else {
-		None
-	}
+	[&texture.relative_filename, &texture.filename, &texture.absolute_filename]
+		.into_iter()
+		.find(|path| !path.is_empty())
+		.map(|path| path.as_ref())
 }
 
 /// Resolves a FBX file-local texture path relative to its source asset while accepting Windows-authored separators.
@@ -276,9 +220,9 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 	let (name, base_color, base_color_texture, metallic, roughness, emission, double_sided) = if let Some(material) = material {
 		let base_factor = material_map_scalar(&material.pbr.base_factor, 1.0).clamp(0.0, 1.0);
 
-		let mut base_color = material_map_vec4(
+		let mut base_color = material_map_vec(
 			&material.pbr.base_color,
-			material_map_vec4(&material.fbx.diffuse_color, [1.0; 4]),
+			material_map_vec(&material.fbx.diffuse_color, [1.0; 4]),
 		);
 
 		for component in &mut base_color[..3] {
@@ -290,9 +234,9 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 		let emission_factor = material_map_scalar(&material.pbr.emission_factor, 1.0).max(0.0);
 
 		let emission = multiply_vec3(
-			material_map_vec3(
+			material_map_vec(
 				&material.pbr.emission_color,
-				material_map_vec3(&material.fbx.emission_color, [0.0; 3]),
+				material_map_vec(&material.fbx.emission_color, [0.0; 3]),
 			),
 			[emission_factor; 3],
 		);
@@ -300,7 +244,8 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 		(
 			non_empty_name(&material.element.name),
 			base_color,
-			fbx_base_color_texture(material),
+			// Prefer the normalized PBR map, then its legacy FBX diffuse fallback.
+			material_map_texture(&material.pbr.base_color).or_else(|| material_map_texture(&material.fbx.diffuse_color)),
 			material_map_scalar(&material.pbr.metalness, 0.0).clamp(0.0, 1.0),
 			material_map_scalar(&material.pbr.roughness, 1.0).clamp(0.0, 1.0),
 			emission,
@@ -341,17 +286,12 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 	}));
 
 	let alpha_mode = if base_color[3] < 0.999 {
-		BrdfAlphaMode::Blend
+		AlphaMode::Blend
 	} else {
-		BrdfAlphaMode::Opaque
+		AlphaMode::Opaque
 	};
 
 	builder.finish(name, surface, double_sided, alpha_mode)
-}
-
-/// Selects the base-color texture from normalized PBR maps or their legacy FBX diffuse fallback.
-pub(crate) fn fbx_base_color_texture(material: &ufbx::Material) -> Option<&ufbx::Texture> {
-	material_map_texture(&material.pbr.base_color).or_else(|| material_map_texture(&material.fbx.diffuse_color))
 }
 
 /// Returns a material texture only when ufbx reports its source map as enabled.
@@ -365,8 +305,11 @@ pub(crate) fn material_opacity(material: &ufbx::Material) -> f32 {
 		return material_map_scalar(&material.pbr.opacity, 1.0).clamp(0.0, 1.0);
 	}
 
-	if let Some(opacity) = explicit_fbx_opacity(material) {
-		return opacity;
+	// Read the authored FBX `Opacity` property when ufbx does not normalize it into the PBR opacity map.
+	if let Some(property) = material.element.props.find_prop("Opacity")
+		&& matches!(property.type_, ufbx::PropType::Number | ufbx::PropType::Integer)
+	{
+		return finite_material_component(property.value_vec4.x, 1.0).clamp(0.0, 1.0);
 	}
 
 	let transparency = if material.pbr.transmission_factor.has_value {
@@ -378,70 +321,30 @@ pub(crate) fn material_opacity(material: &ufbx::Material) -> f32 {
 	(1.0 - transparency).clamp(0.0, 1.0)
 }
 
-/// Reads the authored FBX `Opacity` property when ufbx does not normalize it into the PBR opacity map.
-pub(crate) fn explicit_fbx_opacity(material: &ufbx::Material) -> Option<f32> {
-	let property = material.element.props.find_prop("Opacity")?;
-
-	match property.type_ {
-		ufbx::PropType::Number | ufbx::PropType::Integer => {
-			Some(finite_material_component(property.value_vec4.x, 1.0).clamp(0.0, 1.0))
-		}
-		_ => None,
-	}
-}
-
 /// Reads the scalar x component used by ufbx material factor maps.
 pub(crate) fn material_map_scalar(map: &ufbx::MaterialMap, default: f32) -> f32 {
-	if map.has_value {
-		finite_material_component(map.value_vec4.x, default)
-	} else {
-		default
-	}
+	material_map_vec(map, [default])[0]
 }
 
-/// Reads a three-component ufbx material color with finite fallbacks per component.
-pub(crate) fn material_map_vec3(map: &ufbx::MaterialMap, default: [f32; 3]) -> [f32; 3] {
-	if map.has_value {
-		[
-			finite_material_component(map.value_vec4.x, default[0]),
-			finite_material_component(map.value_vec4.y, default[1]),
-			finite_material_component(map.value_vec4.z, default[2]),
-		]
-	} else {
-		default
+/// Reads the first `N` components of a ufbx material color with finite fallbacks per component.
+pub(crate) fn material_map_vec<const N: usize>(map: &ufbx::MaterialMap, default: [f32; N]) -> [f32; N] {
+	if !map.has_value {
+		return default;
 	}
-}
 
-/// Reads a four-component ufbx material color with finite fallbacks per component.
-pub(crate) fn material_map_vec4(map: &ufbx::MaterialMap, default: [f32; 4]) -> [f32; 4] {
-	if map.has_value {
-		[
-			finite_material_component(map.value_vec4.x, default[0]),
-			finite_material_component(map.value_vec4.y, default[1]),
-			finite_material_component(map.value_vec4.z, default[2]),
-			finite_material_component(map.value_vec4.w, default[3]),
-		]
-	} else {
-		default
-	}
+	let value = [map.value_vec4.x, map.value_vec4.y, map.value_vec4.z, map.value_vec4.w];
+
+	std::array::from_fn(|index| finite_material_component(value[index], default[index]))
 }
 
 /// Converts a material component without allowing f64 values that overflow the engine's f32 representation.
 pub(crate) fn finite_material_component(value: f64, default: f32) -> f32 {
-	if value.is_finite() && value >= f32::MIN as f64 && value <= f32::MAX as f64 {
-		value as f32
-	} else {
-		default
-	}
+	finite_f32(value, "material component").unwrap_or(default)
 }
 
 /// Multiplies non-negative material colors while replacing overflow with a safe fallback.
 pub(crate) fn multiply_vec3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	[
-		finite_material_product(left[0].max(0.0), right[0].max(0.0), 0.0),
-		finite_material_product(left[1].max(0.0), right[1].max(0.0), 0.0),
-		finite_material_product(left[2].max(0.0), right[2].max(0.0), 0.0),
-	]
+	std::array::from_fn(|index| finite_material_product(left[index].max(0.0), right[index].max(0.0), 0.0))
 }
 
 /// Computes a material factor product at f64 precision before checking that it fits in f32.

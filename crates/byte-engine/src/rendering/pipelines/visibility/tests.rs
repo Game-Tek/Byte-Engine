@@ -6,10 +6,11 @@ use besl::vm::{
 };
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
-use super::render_pass::OcclusionPhase;
+use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
 use crate::rendering::shader_vm_test::{
-	array_buffer, assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d,
+	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
+	output_buffer, push_constant_buffer, rgba, run_at, texture_2d,
 };
 
 const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -36,23 +37,16 @@ const MESHLET_INSTANCE_BITS: u32 = 12;
 /// Task payload words keep the view's offset into its batch above the meshlet and the 10-bit instance indices.
 const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS + super::layout::MAX_INSTANCES.ilog2();
 const TASK_WORKGROUP_SIZE: u32 = 32;
-const INSTRUCTION_LIMIT: usize = 4_000_000;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
-const GTAO_WORKGROUP_HEIGHT: u32 = 8;
 const GTAO_WORKGROUP_SIZE: usize = 128;
-const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
-const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
-const GTAO_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
-const GTAO_PYRAMID_WORKGROUP_SIZE: usize = 32;
-const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
-const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
-const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE: usize = 32;
-const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
-const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
+/// The 8x4 workgroup of the GTAO and directional-shadow depth pyramids.
+const PYRAMID_WORKGROUP_WIDTH: u32 = 8;
+const PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
+const PYRAMID_WORKGROUP_SIZE: usize = 32;
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
-/// The 8x8 workgroup of the passes that share a tile of their neighborhood: the contact-shadow filter and the SSGI
-/// trace, temporal, and upscale passes.
+/// The 8x8 workgroup most visibility compute passes use, such as the material count, the occlusion pyramid, the GTAO
+/// blur and upscale, the contact-shadow filter, the SSGI trace, temporal, and upscale passes, and the receiver bounds.
 const TILE_WORKGROUP_WIDTH: u32 = 8;
 const TILE_WORKGROUP_SIZE: usize = 64;
 
@@ -89,46 +83,34 @@ macro_rules! asset {
 	};
 }
 
-/// Verifies one checked-in visibility asset compiles with the platform shader compiler, past BESL linking.
+/// Runs one workgroup with one lane per entry of `configs` and fresh workgroup state.
 ///
-/// `settings` mirror the asset's `.bead` file.
-#[cfg(target_os = "macos")]
-async fn assert_lowers_to_the_platform_shader_language(
-	name: &str,
-	source: &str,
-	settings: resource_management::shader::ShaderGenerationSettings,
-) {
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
-
-	let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
-		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
-	PlatformShaderCompiler::new()
-		.generate(&settings.name(name.to_string()), &root)
-		.await
-		.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
-}
-
-/// Builds one workgroup of lane configurations over a 2D tile at `base`.
-fn tile_configs<const N: usize>(width: u32, base: [u32; 2]) -> [ExecutionConfig; N] {
-	std::array::from_fn(|lane| {
-		let lane = lane as u32;
-		ExecutionConfig::new(INSTRUCTION_LIMIT)
-			.with_call_depth_limit(128)
-			.with_thread_idx(lane)
-			.with_thread_id([base[0] + lane % width, base[1] + lane / width])
-	})
-}
-
-/// Runs the whole 8x8 workgroup that holds `pixel`, which shaders sharing a tile across their workgroup need to compute
-/// any one pixel. The caller binds the workgroup state.
-fn run_tile_workgroup_containing(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>, pixel: [u32; 2]) {
-	let configs = tile_configs::<TILE_WORKGROUP_SIZE>(
-		TILE_WORKGROUP_WIDTH,
-		pixel.map(|coordinate| coordinate - coordinate % TILE_WORKGROUP_WIDTH),
+/// Fixtures bind their resources to `descriptors` and hand them over, so their borrows end with the run.
+fn run_workgroup(program: &ExecutableProgram, descriptors: DescriptorBindings<'_>, configs: &[ExecutionConfig]) {
+	let mut workgroup = WorkgroupState::new();
+	// Rebinding shortens the bindings' lifetime to the local workgroup state's.
+	let mut descriptors = descriptors;
+	descriptors.bind_workgroup_state(&mut workgroup);
+	program.run_workgroup(&mut descriptors, configs).expect(
+		"Failed to run a visibility workgroup in the BESL VM. The most likely cause is a shader regression or a missing fixture binding.",
 	);
-	program
-		.run_workgroup(descriptors, &configs)
-		.expect("tile workgroup execution");
+}
+
+/// Runs the whole workgroup of `N` lanes, `width` lanes wide, that holds `pixel`.
+///
+/// Shaders that share a tile across their workgroup need every lane to compute any one pixel.
+fn run_workgroup_containing<const N: usize>(
+	program: &ExecutableProgram,
+	descriptors: DescriptorBindings<'_>,
+	width: u32,
+	pixel: [u32; 2],
+) {
+	let base = [pixel[0] - pixel[0] % width, pixel[1] - pixel[1] % (N as u32 / width)];
+	let configs: [ExecutionConfig; N] = std::array::from_fn(|lane| {
+		let lane = lane as u32;
+		lane_config(lane).with_thread_id([base[0] + lane % width, base[1] + lane / width])
+	});
+	run_workgroup(program, descriptors, &configs);
 }
 
 fn read_u32(buffer: &besl::vm::Buffer, index: usize) -> u32 {
@@ -152,26 +134,12 @@ fn read_vec2u16(buffer: &besl::vm::Buffer, index: usize) -> [u16; 2] {
 	}
 }
 
-/// Reads the first element of a mesh-shader output array.
-fn read_output_u32(buffer: &besl::vm::Buffer, member: &str) -> u32 {
-	match buffer.read_indexed(member, 0).expect("VM mesh output element") {
-		Value::U32(value) => value,
-		value => panic!("Unexpected mesh output value: {value:?}."),
-	}
-}
-
 /// Verifies both masked fragment assets parse and link through the source-owned BESL seam.
 #[test]
 fn masked_fragment_assets_parse_and_link_with_structural_interfaces() {
 	for source in [
-		include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/masked-fragment.besl"
-		)),
-		include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/masked-depth-fragment.besl"
-		)),
+		asset_source!("masked-fragment.besl"),
+		asset_source!("masked-depth-fragment.besl"),
 	] {
 		asset_program(source);
 	}
@@ -181,12 +149,10 @@ fn masked_fragment_assets_parse_and_link_with_structural_interfaces() {
 #[test]
 fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 	let program = asset!("visibility-fragment.besl");
-	let layout =
-		|layout: Option<&besl::vm::BufferLayout>| besl::vm::Buffer::new(layout.expect("visibility fragment interface").clone());
-	let mut instance_input = layout(program.input_layout(0));
-	let mut primitive_input = layout(program.input_layout(1));
-	let mut primitive_output = layout(program.output_layout(0));
-	let mut instance_output = layout(program.output_layout(1));
+	let mut instance_input = input_buffer(&program, 0);
+	let mut primitive_input = input_buffer(&program, 1);
+	let mut primitive_output = output_buffer(&program, 0);
+	let mut instance_output = output_buffer(&program, 1);
 	instance_input
 		.write("_besl_interface_instance_index", Value::U32(37))
 		.expect("instance input");
@@ -214,31 +180,14 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 	);
 }
 
-/// A column-major identity matrix in the BESL VM representation.
-const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-
-/// Returns a column-major affine identity matrix in the BESL VM representation.
-fn identity_affine_matrix() -> [f32; 12] {
-	[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-}
+/// A column-major affine identity matrix in the BESL VM representation.
+const IDENTITY_AFFINE_MATRIX: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 
 /// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
 fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 	let mut matrix = IDENTITY_MATRIX;
 	matrix[12] = translation;
 	matrix
-}
-
-/// Packs the production task payload without allowing its meshlet and instance indices to diverge.
-///
-/// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
-fn meshlet_instance(relative_meshlet_index: u32, instance_index: u32) -> u32 {
-	relative_meshlet_index | (instance_index << MESHLET_INSTANCE_BITS)
-}
-
-/// The payload of the fixture instance's first meshlet, which lives at [`FIXTURE_MESHLET_INDEX`] scene-wide.
-fn fixture_meshlet_instance() -> Value {
-	Value::U32(meshlet_instance(0, FIXTURE_INSTANCE_INDEX as u32))
 }
 
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
@@ -269,10 +218,10 @@ impl Default for TaskMeshFixture {
 /// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets, culling
 /// against `view_count` views from `view_base`.
 ///
-/// With `occlusion`, the workgroup also culls by occlusion as the camera's passes do, and view zero is
-/// [`occlusion_fixture_camera`].
+/// View `i` draws with `view_projections[i]`. With `occlusion`, the workgroup also culls by occlusion as the camera's
+/// passes do, and view zero is [`fixture_camera`] at an aspect ratio of two.
 fn run_meshlet_task_workgroup(
-	view_projections: &[(usize, [f32; 16])],
+	view_projections: &[[f32; 16]],
 	[view_base, view_count]: [u32; 2],
 	center_radii: &[[f32; 4]],
 	mesh: TaskMeshFixture,
@@ -286,16 +235,16 @@ fn run_meshlet_task_workgroup(
 		"Task meshlet fixture must hold between one meshlet and one workgroup of meshlets."
 	);
 	let mut views = buffer(&program, VIEWS_SLOT);
-	for (view_index, view_projection) in view_projections.iter().copied() {
+	for (view_index, view_projection) in view_projections.iter().copied().enumerate() {
 		views
 			.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
 			.expect("task view");
 		views
-			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
+			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 			.expect("task inverse view");
 	}
 	if occlusion.is_some() {
-		let camera = occlusion_fixture_camera();
+		let camera = fixture_camera(2.0);
 		for (member, value) in [
 			("view_projection", Value::Mat4F(column_major(camera.view_projection()))),
 			("view", Value::Mat4x3F(bytemuck::cast(ghi::pod::Mat4x3f::from(camera.view())))),
@@ -307,7 +256,7 @@ fn run_meshlet_task_workgroup(
 	}
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("task mesh transform");
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "bounding_sphere", Value::Vec4F(mesh.bounding_sphere))
@@ -345,7 +294,7 @@ fn run_meshlet_task_workgroup(
 			.write_array_member(meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
 			.expect("task cone axis");
 	}
-	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("task push constants").clone());
+	let mut push_constant = push_constant_buffer(&program);
 	for (member, value) in [
 		("work_item_base", 0),
 		("view_base", view_base),
@@ -353,13 +302,15 @@ fn run_meshlet_task_workgroup(
 		("view_count", view_count),
 		(
 			"occlusion_phase",
-			occlusion.as_ref().map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
+			occlusion
+				.as_ref()
+				.map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
 		),
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
 	let mut mesh_dispatch_work = buffer(&program, MESH_DISPATCH_WORK_SLOT);
-	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
+	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");
@@ -372,36 +323,24 @@ fn run_meshlet_task_workgroup(
 	}
 
 	let mut task_outputs = TaskOutputs::new();
-	let mut workgroup_state = WorkgroupState::new();
 	let configs = (0..TASK_WORKGROUP_SIZE)
-		.map(|lane| {
-			ExecutionConfig::new(INSTRUCTION_LIMIT)
-				.with_call_depth_limit(128)
-				.with_thread_idx(lane)
-				.with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane)
-		})
+		.map(|lane| lane_config(lane).with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane))
 		.collect::<Vec<_>>();
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
-		descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
-		descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
-		let record = occlusion.map(|occlusion| {
-			descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
-			descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
-			occlusion.record
-		});
-		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_task_outputs(&mut task_outputs);
-		descriptors.bind_workgroup_state(&mut workgroup_state);
-		program
-			.run_workgroup(&mut descriptors, &configs)
-			.expect("production task workgroup execution");
-		drop(descriptors);
-		if let Some(record) = record {
-			*record = read_u32(&occlusion_visibility, packed_work as usize);
-		}
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+	descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
+	descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
+	descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
+	let record = occlusion.map(|occlusion| {
+		descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
+		descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
+		occlusion.record
+	});
+	descriptors.bind_push_constant(&mut push_constant);
+	descriptors.bind_task_outputs(&mut task_outputs);
+	run_workgroup(&program, descriptors, &configs);
+	if let Some(record) = record {
+		*record = read_u32(&occlusion_visibility, packed_work as usize);
 	}
 	task_outputs
 }
@@ -409,7 +348,7 @@ fn run_meshlet_task_workgroup(
 /// Runs one task workgroup against the camera, view zero, and returns every payload word it emitted.
 fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgroup_index: u32) -> Vec<Value> {
 	task_payload(&run_meshlet_task_workgroup(
-		&[(0, IDENTITY_MATRIX)],
+		&[IDENTITY_MATRIX],
 		[0, 1],
 		center_radii,
 		mesh,
@@ -431,8 +370,14 @@ fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
 }
 
 /// The payload a task emits for a fixture meshlet seen by the view `view_offset` steps into its batch.
+///
+/// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
 fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
-	Value::U32(meshlet_instance(relative_meshlet_index, FIXTURE_INSTANCE_INDEX as u32) | (view_offset << VIEW_OFFSET_SHIFT))
+	Value::U32(
+		relative_meshlet_index
+			| ((FIXTURE_INSTANCE_INDEX as u32) << MESHLET_INSTANCE_BITS)
+			| (view_offset << VIEW_OFFSET_SHIFT),
+	)
 }
 
 /// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
@@ -440,7 +385,7 @@ fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Va
 fn task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
 	let payload = |center_radius| camera_task_payload(&[center_radius], TaskMeshFixture::default(), 0);
 
-	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [fixture_meshlet_instance()]);
+	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [batched_meshlet_instance(0, 0)]);
 	assert_eq!(payload([4.0, 0.0, 0.5, 0.1]), []);
 }
 
@@ -452,14 +397,7 @@ fn task_main_culls_instances_outside_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(
-		&[(0, IDENTITY_MATRIX), (1, IDENTITY_MATRIX)],
-		[0, 2],
-		&[[0.0, 0.0, 0.5, 0.1]],
-		outside,
-		0,
-		None,
-	);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
 	assert_eq!(task_payload(&output), []);
 }
 
@@ -472,20 +410,14 @@ fn task_workgroup_compacts_mixed_meshlets_in_lane_order() {
 		0,
 	);
 
-	assert_eq!(
-		payload,
-		[
-			fixture_meshlet_instance(),
-			Value::U32(meshlet_instance(2, FIXTURE_INSTANCE_INDEX as u32))
-		]
-	);
+	assert_eq!(payload, [batched_meshlet_instance(0, 0), batched_meshlet_instance(2, 0)]);
 }
 
 /// Verifies culling reads the work item selected by the global dispatch position.
 #[test]
 fn task_main_selects_later_batched_workgroup() {
 	let payload = camera_task_payload(&[[0.0, 0.0, 0.5, 0.1]], TaskMeshFixture::default(), 1);
-	assert_eq!(payload, [fixture_meshlet_instance()]);
+	assert_eq!(payload, [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies posed geometry reaches every view of the batch, whatever its bind-pose bounds.
@@ -496,14 +428,7 @@ fn task_main_keeps_skinned_meshlets_in_every_view() {
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
-	let output = run_meshlet_task_workgroup(
-		&[(0, IDENTITY_MATRIX), (1, IDENTITY_MATRIX)],
-		[0, 2],
-		&[[4.0, 0.0, 0.5, 0.1]],
-		skinned,
-		0,
-		None,
-	);
+	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
 
 	assert_eq!(
 		task_payload(&output),
@@ -531,10 +456,9 @@ fn task_main_keeps_back_facing_meshlets_only_for_double_sided_meshes() {
 /// kept it.
 #[test]
 fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
-	let mut view_projections: [(usize, [f32; 16]); 8] =
-		std::array::from_fn(|view_index| (view_index, horizontally_translated_matrix(4.0)));
-	view_projections[3].1 = IDENTITY_MATRIX;
-	view_projections[5].1 = IDENTITY_MATRIX;
+	let mut view_projections = [horizontally_translated_matrix(4.0); 8];
+	view_projections[3] = IDENTITY_MATRIX;
+	view_projections[5] = IDENTITY_MATRIX;
 	// Views 2 through 5: only the second and fourth see the meshlet.
 	let output = run_meshlet_task_workgroup(
 		&view_projections,
@@ -553,15 +477,12 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 
 /* Occlusion culling */
 
-const OCCLUSION_PYRAMID_WIDTH: u32 = 512;
-const OCCLUSION_PYRAMID_HEIGHT: u32 = 256;
-const OCCLUSION_PYRAMID_MIP_COUNT: u32 = 9;
-
-/// The camera that drew the occlusion fixture pyramids: at the origin, looking down +Z.
-fn occlusion_fixture_camera() -> crate::rendering::View {
+/// The camera of the occlusion and light-cluster fixtures: at the origin, looking down +Z, with a 90 degree field of
+/// view and a 0.1 m to 100 m clip range.
+fn fixture_camera(aspect_ratio: f32) -> crate::rendering::View {
 	crate::rendering::View::new_perspective(
 		math::Degrees::new(90.0),
-		2.0,
+		aspect_ratio,
 		0.1,
 		100.0,
 		math::Point::origin(),
@@ -569,9 +490,9 @@ fn occlusion_fixture_camera() -> crate::rendering::View {
 	)
 }
 
-/// Returns the reversed depth the fixture camera stores for a surface `z` units in front of it.
+/// Returns the reversed depth the occlusion fixture camera stores for a surface `z` units in front of it.
 fn occlusion_fixture_depth(z: f32) -> f32 {
-	let projection = occlusion_fixture_camera().projection();
+	let projection = fixture_camera(2.0).projection();
 	let clip = projection * maths_rs::Vec4f::new(0.0, 0.0, z, 1.0);
 	clip.z / clip.w
 }
@@ -623,13 +544,20 @@ fn camera_occlusion_meshlets(
 		..mesh
 	};
 	let occlusion = CameraOcclusion { phase, pyramid, record };
-	task_payload(&run_meshlet_task_workgroup(&[], [0, 1], center_radii, mesh, 0, Some(occlusion)))
-		.into_iter()
-		.map(|word| match word {
-			Value::U32(word) => word & ((1 << MESHLET_INSTANCE_BITS) - 1),
-			word => panic!("Unexpected task payload word: {word:?}."),
-		})
-		.collect()
+	task_payload(&run_meshlet_task_workgroup(
+		&[],
+		[0, 1],
+		center_radii,
+		mesh,
+		0,
+		Some(occlusion),
+	))
+	.into_iter()
+	.map(|word| match word {
+		Value::U32(word) => word & ((1 << MESHLET_INSTANCE_BITS) - 1),
+		word => panic!("Unexpected task payload word: {word:?}."),
+	})
+	.collect()
 }
 
 /// Returns how many of one meshlet's copies a pass that only tests occlusion keeps.
@@ -665,7 +593,10 @@ fn task_main_keeps_meshlets_seen_through_a_gap_in_the_occlusion_pyramid() {
 	let gap = [OCCLUSION_PYRAMID_WIDTH / 2 + 3, OCCLUSION_PYRAMID_HEIGHT / 2 - 5];
 	let mut pyramid = occlusion_pyramid(|x, y| if [x, y] == gap { 0.0 } else { occlusion_fixture_depth(5.0) });
 
-	assert_eq!(occlusion_tested_meshlets(BEHIND_WALL, TaskMeshFixture::default(), &mut pyramid), 1);
+	assert_eq!(
+		occlusion_tested_meshlets(BEHIND_WALL, TaskMeshFixture::default(), &mut pyramid),
+		1
+	);
 }
 
 /// Verifies geometry that reaches past the screen edge or the near plane is kept, because the pyramid holds nothing
@@ -705,11 +636,17 @@ fn camera_passes_draw_each_unoccluded_meshlet_once_and_record_them() {
 	for previous_record in 0..8u32 {
 		let mut record = previous_record;
 		let early = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Early, &mut wall, &mut record);
-		assert_eq!(record, previous_record, "The early pass must leave the record to the late pass.");
+		assert_eq!(
+			record, previous_record,
+			"The early pass must leave the record to the late pass."
+		);
 		let late = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Late, &mut wall, &mut record);
 
 		let expected_early: Vec<u32> = (0..3).filter(|meshlet| previous_record & (1 << meshlet) != 0).collect();
-		assert_eq!(early, expected_early, "The early pass draws what the previous frame recorded.");
+		assert_eq!(
+			early, expected_early,
+			"The early pass draws what the previous frame recorded."
+		);
 		let mut drawn = [early, late].concat();
 		drawn.sort();
 		assert!(
@@ -740,14 +677,6 @@ fn late_pass_clears_the_record_of_instances_outside_the_view() {
 	assert_eq!(record, 0);
 }
 
-/// Runs one 8x8 workgroup of an occlusion pyramid build stage whose source and destination are already bound.
-fn run_occlusion_pyramid_stage(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>) {
-	let configs = tile_configs::<TILE_WORKGROUP_SIZE>(TILE_WORKGROUP_WIDTH, [0, 0]);
-	program
-		.run_workgroup(descriptors, &configs)
-		.expect("occlusion pyramid stage execution");
-}
-
 /// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
 /// partly covers.
 #[test]
@@ -761,8 +690,7 @@ fn occlusion_pyramid_seed_keeps_the_farthest_depth_under_each_texel() {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut seeded);
-	run_occlusion_pyramid_stage(&program, &mut descriptors);
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 
 	assert_rgba_close(rgba(&seeded, [0, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
 	assert_rgba_close(rgba(&seeded, [1, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
@@ -779,8 +707,7 @@ fn occlusion_pyramid_reduce_keeps_the_farthest_of_four_texels() {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_image(ResourceSlot::new(1033), &mut source);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-	run_occlusion_pyramid_stage(&program, &mut descriptors);
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 
 	assert_rgba_close(rgba(&reduced, [0, 0]), [0.4, 0.0, 0.0, 1.0], 0.0);
 	assert_rgba_close(rgba(&reduced, [1, 0]), [0.2, 0.0, 0.0, 1.0], 0.0);
@@ -814,10 +741,12 @@ fn assert_triangle_mesh_program(
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 ) {
+	// A posed fixture instance's positions start at this element of the skinned-vertex buffer.
+	const SKINNED_BASE_VERTEX: u32 = 7;
 	let mut views = buffer(&program, VIEWS_SLOT);
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("mesh model matrix");
 	for (field, value) in [
 		("base_vertex_index", 0),
@@ -825,7 +754,10 @@ fn assert_triangle_mesh_program(
 		("base_triangle_index", 0),
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 		("meshlet_count", 1),
-		("skinned_base_vertex_index", u32::MAX),
+		(
+			"skinned_base_vertex_index",
+			skinned_positions.map_or(u32::MAX, |_| SKINNED_BASE_VERTEX),
+		),
 	] {
 		meshes
 			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
@@ -863,22 +795,12 @@ fn assert_triangle_mesh_program(
 			.write_array_member(FIXTURE_MESHLET_INDEX, field, Value::U32(value))
 			.expect("meshlet field");
 	}
-	if let Some(skinned_positions) = skinned_positions {
-		const SKINNED_BASE_VERTEX: usize = 7;
-		meshes
-			.write_array_member(
-				FIXTURE_INSTANCE_INDEX,
-				"skinned_base_vertex_index",
-				Value::U32(SKINNED_BASE_VERTEX as u32),
-			)
-			.expect("skinned mesh vertices");
-		for (index, position) in skinned_positions.into_iter().enumerate() {
-			skinned_vertices
-				.write_array_member(SKINNED_BASE_VERTEX + index, "position", Value::Vec4F(position))
-				.expect("skinned mesh vertex");
-		}
+	for (index, position) in skinned_positions.into_iter().flatten().enumerate() {
+		skinned_vertices
+			.write_array_member(SKINNED_BASE_VERTEX as usize + index, "position", Value::Vec4F(position))
+			.expect("skinned mesh vertex");
 	}
-	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("mesh push constant layout").clone());
+	let mut push_constant = push_constant_buffer(&program);
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
 	views
 		.write_array_member(
@@ -918,12 +840,8 @@ fn assert_triangle_mesh_program(
 		descriptors.bind_mesh_outputs(&mut mesh_outputs);
 		// Mesh invocations share their capture just as lanes in one production mesh workgroup share output arrays.
 		for thread_idx in 0..3 {
-			let config = ExecutionConfig::new(INSTRUCTION_LIMIT)
-				.with_call_depth_limit(128)
-				.with_thread_idx(thread_idx)
-				.with_threadgroup_position(0);
 			program
-				.run_main_with_config(&mut descriptors, &config)
+				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
 				.expect("production mesh shader execution");
 		}
 	}
@@ -942,12 +860,16 @@ fn assert_triangle_mesh_program(
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
 	assert_eq!(
-		read_output_u32(&out_instance_indices, "out_instance_index"),
-		FIXTURE_INSTANCE_INDEX as u32
+		out_instance_indices
+			.read_indexed("out_instance_index", 0)
+			.expect("mesh output"),
+		Value::U32(FIXTURE_INSTANCE_INDEX as u32)
 	);
 	assert_eq!(
-		read_output_u32(&out_primitive_indices, "out_primitive_index"),
-		(FIXTURE_MESHLET_INDEX as u32) << 8
+		out_primitive_indices
+			.read_indexed("out_primitive_index", 0)
+			.expect("mesh output"),
+		Value::U32((FIXTURE_MESHLET_INDEX as u32) << 8)
 	);
 }
 
@@ -1003,17 +925,11 @@ fn run_material_count(
 	instance_indices: &mut Texture,
 ) -> besl::vm::Buffer {
 	let mut material_counts = buffer(program, MATERIAL_COUNT_SLOT);
-	let mut workgroup = WorkgroupState::new();
-	let configs = tile_configs::<MATERIAL_COUNT_WORKGROUP_SIZE>(MATERIAL_COUNT_WORKGROUP_WIDTH, [0, 0]);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(MESH_DATA_SLOT, mesh_data);
 	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("material-count workgroup execution");
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
 	material_counts
 }
 
@@ -1025,19 +941,24 @@ fn run_pixel_mapping(
 	instance_indices: &mut Texture,
 ) -> besl::vm::Buffer {
 	let mut pixel_mapping = buffer(program, PIXEL_MAPPING_SLOT);
-	let mut workgroup = WorkgroupState::new();
-	let configs = tile_configs::<PIXEL_MAPPING_WORKGROUP_SIZE>(PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(MESH_DATA_SLOT, mesh_data);
 	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, material_offset_scratch);
 	descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("pixel-mapping workgroup execution");
-	drop(descriptors);
+	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	pixel_mapping
+}
+
+/// Creates the mesh table of a material prepass test, where mesh `i` uses the `i`th of `materials`.
+fn mesh_materials(program: &ExecutableProgram, materials: impl IntoIterator<Item = u32>) -> besl::vm::Buffer {
+	let mut mesh_data = buffer(program, MESH_DATA_SLOT);
+	for (mesh_index, material_index) in materials.into_iter().enumerate() {
+		mesh_data
+			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
+			.expect("VM mesh");
+	}
+	mesh_data
 }
 
 /// Fills a square instance-index image where texel `lane` holds `instance(lane)`.
@@ -1051,34 +972,22 @@ fn instance_texture(width: u32, instance: impl Fn(usize) -> u32) -> Texture {
 	texture
 }
 
-/// The `MaterialOffsets` struct holds the buffers the material-offset pass writes.
-struct MaterialOffsets {
-	offsets: besl::vm::Buffer,
-	scratch: besl::vm::Buffer,
-	dispatches: besl::vm::Buffer,
-}
-
-/// Runs the material-offset pass's one 256-thread workgroup over `material_counts`.
-fn run_material_offset(program: &ExecutableProgram, material_counts: &mut besl::vm::Buffer) -> MaterialOffsets {
+/// Runs the material-offset pass's one 256-thread workgroup over `material_counts`, and returns the buffers it writes:
+/// the offsets, the scratch cursors, and the indirect dispatches.
+fn run_material_offset(
+	program: &ExecutableProgram,
+	material_counts: &mut besl::vm::Buffer,
+) -> (besl::vm::Buffer, besl::vm::Buffer, besl::vm::Buffer) {
 	let mut offsets = buffer(program, MATERIAL_OFFSET_SLOT);
 	let mut scratch = buffer(program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut dispatches = buffer(program, MATERIAL_DISPATCH_SLOT);
-	let mut workgroup = WorkgroupState::new();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, material_counts);
 	descriptors.bind_buffer(MATERIAL_OFFSET_SLOT, &mut offsets);
 	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut scratch);
 	descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut dispatches);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &tile_configs::<256>(256, [0, 0]))
-		.expect("material-offset workgroup execution");
-	drop(descriptors);
-	MaterialOffsets {
-		offsets,
-		scratch,
-		dispatches,
-	}
+	run_workgroup_containing::<256>(program, descriptors, 256, [0, 0]);
+	(offsets, scratch, dispatches)
 }
 
 /// Verifies the offset scan gives every material the exclusive sum of the counts before it, across every thread of its
@@ -1094,11 +1003,7 @@ fn material_offset_scans_every_material_count() {
 			.expect("material count");
 	}
 
-	let MaterialOffsets {
-		offsets,
-		scratch,
-		dispatches,
-	} = run_material_offset(&program, &mut material_counts);
+	let (offsets, scratch, dispatches) = run_material_offset(&program, &mut material_counts);
 
 	let mut expected_offset = 0;
 	for material in 0..super::layout::MAX_MATERIALS {
@@ -1124,19 +1029,9 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	let material_offset_program = asset!("material-offset.besl");
 	let pixel_mapping_program = asset!("pixel-mapping.besl");
 
-	// Three visible instances span two materials; the fourth texel is the renderer's empty-pixel sentinel.
-	let mut mesh_data = buffer(&material_count_program, MESH_DATA_SLOT);
-	for (mesh_index, material_index) in [(0, 2), (1, 5), (2, 2)] {
-		mesh_data
-			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
-			.expect("VM mesh");
-	}
-	let mut instance_indices = Texture::new(2, 2).expect("visibility index fixture");
-	for (coordinate, instance_index) in [([0, 0], 0), ([1, 0], 1), ([0, 1], u32::MAX), ([1, 1], 2)] {
-		instance_indices
-			.write_u32(coordinate, instance_index)
-			.expect("visibility index texel");
-	}
+	// Three visible instances span two materials; the remaining texel is the renderer's empty-pixel sentinel.
+	let mut mesh_data = mesh_materials(&material_count_program, [2, 5, 2]);
+	let mut instance_indices = instance_texture(2, |texel| [0, 1, u32::MAX, 2][texel]);
 
 	let mut material_counts = run_material_count(&material_count_program, &mut mesh_data, &mut instance_indices);
 	assert_eq!(read_u32(&material_counts, 2), 2);
@@ -1144,11 +1039,8 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	assert_eq!(read_u32(&material_counts, 0), 0);
 
 	// The offset pass converts sparse counts into exclusive offsets and one indirect dispatch tuple per material.
-	let MaterialOffsets {
-		offsets: material_offsets,
-		scratch: mut material_offset_scratch,
-		dispatches: material_dispatches,
-	} = run_material_offset(&material_offset_program, &mut material_counts);
+	let (material_offsets, mut material_offset_scratch, material_dispatches) =
+		run_material_offset(&material_offset_program, &mut material_counts);
 	assert_eq!(read_u32(&material_offsets, 2), 0);
 	assert_eq!(read_u32(&material_offsets, 5), 2);
 	assert_eq!(read_u32(&material_offsets, 6), 3);
@@ -1177,10 +1069,7 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 #[test]
 fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
-	mesh_data
-		.write_array_member(0, "material_index", Value::U32(7))
-		.expect("coherent mesh");
+	let mut mesh_data = mesh_materials(&program, [7]);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |_| 0);
 
@@ -1213,12 +1102,9 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 #[test]
 fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+	let mut mesh_data = mesh_materials(&program, 0..33);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	for material_index in 0..33 {
-		mesh_data
-			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
-			.expect("VM mesh");
 		material_offset_scratch
 			.write_array_element(material_index, Value::U32(material_index as u32))
 			.expect("material mapping offset");
@@ -1256,12 +1142,9 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 	// Each material's pixels land in their own range of this many entries, which is more than any material covers.
 	const RANGE: usize = 16;
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+	let mut mesh_data = mesh_materials(&program, 0..MATERIALS as u32);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	for material_index in 0..MATERIALS {
-		mesh_data
-			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
-			.expect("VM mesh");
 		material_offset_scratch
 			.write_array_element(material_index, Value::U32((material_index * RANGE) as u32))
 			.expect("material mapping offset");
@@ -1300,13 +1183,8 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 #[test]
 fn material_count_tile_histogram_preserves_overflowed_materials() {
 	let program = asset!("material-count.besl");
-	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
-	for material_index in 0..33 {
-		mesh_data
-			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
-			.expect("VM mesh");
-	}
-	let mut instance_indices = instance_texture(MATERIAL_COUNT_WORKGROUP_WIDTH, |lane| (lane % 33) as u32);
+	let mut mesh_data = mesh_materials(&program, 0..33);
+	let mut instance_indices = instance_texture(TILE_WORKGROUP_WIDTH, |lane| (lane % 33) as u32);
 
 	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
 
@@ -1324,21 +1202,22 @@ fn material_count_tile_histogram_preserves_overflowed_materials() {
 #[test]
 fn material_count_subgroup_aggregation_counts_a_coherent_tile_once_per_partition() {
 	let program = asset!("material-count.besl");
-	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
-	mesh_data
-		.write_array_member(0, "material_index", Value::U32(7))
-		.expect("coherent mesh");
-	let mut instance_indices = instance_texture(MATERIAL_COUNT_WORKGROUP_WIDTH, |_| 0);
+	let mut mesh_data = mesh_materials(&program, [7]);
+	let mut instance_indices = instance_texture(TILE_WORKGROUP_WIDTH, |_| 0);
 
 	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
 
-	assert_eq!(read_u32(&material_counts, 7), MATERIAL_COUNT_WORKGROUP_SIZE as u32);
+	assert_eq!(read_u32(&material_counts, 7), TILE_WORKGROUP_SIZE as u32);
 }
 
 /* GTAO */
 
 const GTAO_NEAR: f32 = 0.1;
 const GTAO_FAR: f32 = 100.0;
+/// The fixture camera's reversed-depth terms: device depth is `GTAO_DEPTH_NUMERATOR / z - GTAO_DEPTH_OFFSET` for a
+/// surface `z` units in front of the camera.
+const GTAO_DEPTH_NUMERATOR: f32 = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR);
+const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
 
 /// Creates compact camera data for one square GTAO shader fixture.
 fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
@@ -1359,31 +1238,12 @@ fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl:
 		),
 		("projection_pixels_y", Value::F32(height * projection_y * 0.5)),
 		("view_z_sign", Value::F32(1.0)),
-		(
-			"depth_unproject_numerator",
-			Value::F32(GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR)),
-		),
-		(
-			"depth_unproject_denominator_offset",
-			Value::F32(GTAO_NEAR / (GTAO_FAR - GTAO_NEAR)),
-		),
+		("depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
+		("depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),
 	] {
 		view.write(member, value).expect("compact GTAO view data");
 	}
 	view
-}
-
-/// Creates GTAO runtime controls.
-fn gtao_parameters_data(program: &ExecutableProgram, radius: f32, samples_per_ray: u32, radial_rays: u32) -> besl::vm::Buffer {
-	let mut parameters = buffer(program, GTAO_PARAMETERS_SLOT);
-	for (member, value) in [
-		("radius", Value::F32(radius)),
-		("samples_per_ray", Value::U32(samples_per_ray)),
-		("radial_rays", Value::U32(radial_rays)),
-	] {
-		parameters.write(member, value).expect("GTAO runtime parameters");
-	}
-	parameters
 }
 
 /// Reconstructs the positive fixture distance encoded by one reversed device depth.
@@ -1391,8 +1251,16 @@ fn gtao_fixture_linear_depth(depth: f32) -> f32 {
 	if depth == 0.0 {
 		return 0.0;
 	}
-	let range = GTAO_FAR - GTAO_NEAR;
-	(GTAO_NEAR * GTAO_FAR / range) / (depth + GTAO_NEAR / range)
+	GTAO_DEPTH_NUMERATOR / (depth + GTAO_DEPTH_OFFSET)
+}
+
+/// Encodes a positive fixture distance as the reversed device depth that [`gtao_fixture_linear_depth`] decodes. Zero,
+/// the sky, stays zero.
+fn gtao_fixture_device_depth(linear_depth: f32) -> f32 {
+	if linear_depth == 0.0 {
+		return 0.0;
+	}
+	GTAO_DEPTH_NUMERATOR / linear_depth - GTAO_DEPTH_OFFSET
 }
 
 /// Reduces one positive-linear-depth image while ignoring zero-valued background texels.
@@ -1417,40 +1285,37 @@ fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) ->
 	(reduced, reduced_width, reduced_height)
 }
 
-/// Builds a GTAO depth pyramid whose mip zero is `levels[0]` at the fixture extent.
-fn gtao_depth_pyramid(width: u32, height: u32, levels: [&[[f32; 4]]; 3], extents: [(u32, u32); 2]) -> Texture {
-	let mut pyramid = texture_2d(width, height, levels[0]);
-	pyramid.add_mip(texture_2d(extents[0].0, extents[0].1, levels[1]));
-	pyramid.add_mip(texture_2d(extents[1].0, extents[1].1, levels[2]));
-	pyramid
-}
-
-/// Runs one GTAO workgroup containing `coordinate` and reads that pixel.
-fn run_gtao_workgroup(
+/// Runs the GTAO workgroup containing `coordinate` over a `width` by `height` image and reads that pixel.
+///
+/// `levels` holds the linear depth of the pyramid's first three mips, each half as wide and high as the one before.
+/// `controls` holds the radius, the samples per ray, and the radial ray count.
+fn run_gtao(
 	program: &ExecutableProgram,
-	view: &mut besl::vm::Buffer,
-	parameters: &mut besl::vm::Buffer,
-	depth_pyramid: &mut Texture,
-	extent: [u32; 2],
+	[width, height]: [u32; 2],
+	levels: [&[[f32; 4]]; 3],
 	coordinate: [u32; 2],
+	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
 ) -> [f32; 4] {
-	let mut output = empty_image(extent[0], extent[1]);
-	let base = [
-		coordinate[0] / GTAO_WORKGROUP_WIDTH * GTAO_WORKGROUP_WIDTH,
-		coordinate[1] / GTAO_WORKGROUP_HEIGHT * GTAO_WORKGROUP_HEIGHT,
-	];
-	let configs = tile_configs::<GTAO_WORKGROUP_SIZE>(GTAO_WORKGROUP_WIDTH, base);
-	let mut workgroup = WorkgroupState::new();
+	let mut view = gtao_view_data(program, width, height);
+	let mut parameters = buffer(program, GTAO_PARAMETERS_SLOT);
+	for (member, value) in [
+		("radius", Value::F32(radius)),
+		("samples_per_ray", Value::U32(samples_per_ray)),
+		("radial_rays", Value::U32(radial_rays)),
+	] {
+		parameters.write(member, value).expect("GTAO runtime parameters");
+	}
+	let mut depth_pyramid = texture_2d(width, height, levels[0]);
+	for (divisor, texels) in [(2, levels[1]), (4, levels[2])] {
+		depth_pyramid.add_mip(texture_2d((width / divisor).max(1), (height / divisor).max(1), texels));
+	}
+	let mut output = empty_image(width, height);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, view);
-	descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, parameters);
-	descriptors.bind_texture(ResourceSlot::new(1033), depth_pyramid);
+	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("GTAO workgroup execution");
-	drop(descriptors);
+	run_workgroup_containing::<GTAO_WORKGROUP_SIZE>(program, descriptors, GTAO_WORKGROUP_WIDTH, coordinate);
 	rgba(&output, coordinate)
 }
 
@@ -1475,22 +1340,13 @@ fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coord
 		}
 	}
 	let (linear_depth_1, width_1, height_1) = reduce_nearest_nonzero_depth(&linear_depth, EXTENT, EXTENT);
-	let (linear_depth_2, width_2, height_2) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
-	let mut view = gtao_view_data(program, EXTENT, EXTENT);
-	let mut parameters = gtao_parameters_data(program, 1.0, 4, 6);
-	let mut depth_pyramid = gtao_depth_pyramid(
-		EXTENT,
-		EXTENT,
-		[&linear_depth, &linear_depth_1, &linear_depth_2],
-		[(width_1, height_1), (width_2, height_2)],
-	);
-	run_gtao_workgroup(
+	let (linear_depth_2, ..) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
+	run_gtao(
 		program,
-		&mut view,
-		&mut parameters,
-		&mut depth_pyramid,
 		[EXTENT, EXTENT],
+		[&linear_depth, &linear_depth_1, &linear_depth_2],
 		coordinate,
+		(1.0, 4, 6),
 	)
 }
 
@@ -1501,31 +1357,19 @@ fn run_gtao_fixture(
 	height: u32,
 	depth_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
-	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
+	controls: (f32, u32, u32),
 ) -> [f32; 4] {
-	let mut view = gtao_view_data(program, width, height);
-	let mut parameters = gtao_parameters_data(program, radius, samples_per_ray, radial_rays);
 	let linear_depth_texels = depth_texels
 		.iter()
 		.map(|texel| [gtao_fixture_linear_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
-	let extent_1 = ((width / 2).max(1), (height / 2).max(1));
-	let extent_2 = ((width / 4).max(1), (height / 4).max(1));
-	let empty_1 = vec![[0.0, 0.0, 0.0, 1.0]; (extent_1.0 * extent_1.1) as usize];
-	let empty_2 = vec![[0.0, 0.0, 0.0, 1.0]; (extent_2.0 * extent_2.1) as usize];
-	let mut depth_pyramid = gtao_depth_pyramid(
-		width,
-		height,
-		[&linear_depth_texels, &empty_1, &empty_2],
-		[extent_1, extent_2],
-	);
-	run_gtao_workgroup(
+	let empty = |divisor: u32| vec![[0.0, 0.0, 0.0, 1.0]; ((width / divisor).max(1) * (height / divisor).max(1)) as usize];
+	run_gtao(
 		program,
-		&mut view,
-		&mut parameters,
-		&mut depth_pyramid,
 		[width, height],
+		[&linear_depth_texels, &empty(2), &empty(4)],
 		coordinate,
+		controls,
 	)
 }
 
@@ -1536,21 +1380,12 @@ fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_dept
 	let linear_depth_texels = vec![[gtao_fixture_linear_depth(0.35), 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
 	let coarse_1 = vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 64 * 64];
 	let coarse_2 = vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 32 * 32];
-	let mut view = gtao_view_data(program, EXTENT, EXTENT);
-	let mut parameters = gtao_parameters_data(program, 1.0, 4, 6);
-	let mut depth_pyramid = gtao_depth_pyramid(
-		EXTENT,
-		EXTENT,
-		[&linear_depth_texels, &coarse_1, &coarse_2],
-		[(EXTENT / 2, EXTENT / 2), (EXTENT / 4, EXTENT / 4)],
-	);
-	run_gtao_workgroup(
+	run_gtao(
 		program,
-		&mut view,
-		&mut parameters,
-		&mut depth_pyramid,
 		[EXTENT, EXTENT],
+		[&linear_depth_texels, &coarse_1, &coarse_2],
 		CENTER,
+		(1.0, 4, 6),
 	)
 }
 
@@ -1562,8 +1397,6 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 		empty_image((width / 8).max(1), (height / 8).max(1)),
 	];
 	let mut view = gtao_view_data(program, width, height);
-	let mut workgroup = WorkgroupState::new();
-	let configs = tile_configs::<GTAO_PYRAMID_WORKGROUP_SIZE>(GTAO_PYRAMID_WORKGROUP_WIDTH, [0, 0]);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_texture_with_sampler(ResourceSlot::new(1033), source, Sampler::new(SamplerReductionMode::Max));
@@ -1571,11 +1404,7 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 	descriptors.bind_image(ResourceSlot::new(1034), reduced_1);
 	descriptors.bind_image(ResourceSlot::new(1035), reduced_2);
 	descriptors.bind_image(ResourceSlot::new(1036), reduced_3);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("fused GTAO depth pyramid execution");
-	drop(descriptors);
+	run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(program, descriptors, PYRAMID_WORKGROUP_WIDTH, [0, 0]);
 	reduced
 }
 
@@ -1628,18 +1457,15 @@ fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
 		.collect();
 	let (expected_2, ..) = reduce_nearest_nonzero_depth(&expected_1, 8, 4);
 	let (expected_3, ..) = reduce_nearest_nonzero_depth(&expected_2, 4, 2);
-	for y in 0..4 {
-		for x in 0..8 {
-			assert_rgba_close(rgba(&reduced_1, [x, y]), expected_1[(y * 8 + x) as usize], 0.00001);
+	// The expected levels are 8x4, 4x2, and 2x1 texels.
+	for (level, expected, width) in [
+		(&reduced_1, &expected_1, 8),
+		(&reduced_2, &expected_2, 4),
+		(&reduced_3, &expected_3, 2),
+	] {
+		for (index, &texel) in (0..).zip(expected) {
+			assert_rgba_close(rgba(level, [index % width, index / width]), texel, 0.00001);
 		}
-	}
-	for y in 0..2 {
-		for x in 0..4 {
-			assert_rgba_close(rgba(&reduced_2, [x, y]), expected_2[(y * 4 + x) as usize], 0.00001);
-		}
-	}
-	for x in 0..2 {
-		assert_rgba_close(rgba(&reduced_3, [x, 0]), expected_3[x as usize], 0.00001);
 	}
 }
 
@@ -1668,18 +1494,15 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 	}
 	let mut reduced = empty_image(2, 4);
 	for layer in 0..layer_count {
-		let configs = tile_configs::<DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE>(
-			DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
-			[0, layer * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT],
-		);
-		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
 		descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-		descriptors.bind_workgroup_state(&mut workgroup);
-		program
-			.run_workgroup(&mut descriptors, &configs)
-			.expect("fused directional shadow pyramid execution");
+		run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
+			&program,
+			descriptors,
+			PYRAMID_WORKGROUP_WIDTH,
+			[0, layer * PYRAMID_WORKGROUP_HEIGHT],
+		);
 	}
 	for layer in 0..layer_count {
 		for cell_x in 0..2 {
@@ -1736,7 +1559,7 @@ fn gtao_floor_has_no_scale_dependent_normal_seam() {
 	);
 }
 
-/// Runs one complete GTAO blur workgroup and reads the selected output pixel.
+/// Runs the GTAO blur workgroup that holds `coordinate` and reads that output pixel.
 fn run_gtao_blur_fixture(
 	program: &ExecutableProgram,
 	width: u32,
@@ -1748,17 +1571,11 @@ fn run_gtao_blur_fixture(
 	let mut depth = texture_2d(width, height, depth_texels);
 	let mut ao = texture_2d(width, height, ao_texels);
 	let mut output = empty_image(width, height);
-	let mut workgroup = WorkgroupState::new();
-	let configs = tile_configs::<GTAO_BLUR_WORKGROUP_SIZE>(GTAO_BLUR_WORKGROUP_WIDTH, [0, 0]);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
 	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("GTAO blur workgroup execution");
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
 	rgba(&output, coordinate)
 }
 
@@ -1777,23 +1594,13 @@ fn run_gtao_upscale_fixture(
 	let mut linear_depth = texture_2d(low_extent[0], low_extent[1], linear_depth_texels);
 	let mut ao = texture_2d(low_extent[0], low_extent[1], ao_texels);
 	let mut output = empty_image(full_extent[0], full_extent[1]);
-	let mut workgroup = WorkgroupState::new();
-	let base = [
-		coordinate[0] / GTAO_BLUR_WORKGROUP_WIDTH * GTAO_BLUR_WORKGROUP_WIDTH,
-		coordinate[1] / GTAO_BLUR_WORKGROUP_WIDTH * GTAO_BLUR_WORKGROUP_WIDTH,
-	];
-	let configs = tile_configs::<GTAO_BLUR_WORKGROUP_SIZE>(GTAO_BLUR_WORKGROUP_WIDTH, base);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut device_depth);
 	descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
 	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 	descriptors.bind_texture(ResourceSlot::new(1036), &mut linear_depth);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("GTAO upscale workgroup execution");
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
 	rgba(&output, coordinate)
 }
 
@@ -1810,13 +1617,7 @@ fn gtao_half_resolution_blur_preserves_uniform_ao_and_smooths_horizontally() {
 	);
 
 	// Horizontal variation must be reduced before the final reconstruction stage.
-	let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| {
-		if index % 5 == 2 {
-			[1.0, 0.0, 0.0, 1.0]
-		} else {
-			[0.0, 0.0, 0.0, 1.0]
-		}
-	});
+	let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| [if index % 5 == 2 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0]);
 	let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, [2, 2]);
 	assert!(
 		horizontal[0] < 0.8,
@@ -1872,14 +1673,10 @@ const SSGI_EXTENT: u32 = 32;
 /// The uniform diffuse radiance of the previous frame in trace fixtures, as the trace reports it for a hit.
 const SSGI_LIT_COLOR: [f32; 4] = [2.0, 1.0, 0.5, 1.0];
 
-/// Returns the square fixture projection that [`gtao_view_data`] also encodes.
-fn ssgi_projection() -> maths_rs::Mat4f {
+/// Returns the square fixture projection that [`gtao_view_data`] also encodes. The screen-space reflection tests
+/// share it.
+pub(super) fn ssgi_projection() -> maths_rs::Mat4f {
 	math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR)
-}
-
-/// Converts a row-major matrix to the column-major element order the BESL VM multiplies with.
-fn column_major(matrix: maths_rs::Mat4f) -> [f32; 16] {
-	std::array::from_fn(|index| matrix[(index % 4) * 4 + index / 4])
 }
 
 /// Creates SSGI per-frame parameters. `previous_clip` is `None` when the frame has no usable history.
@@ -1903,17 +1700,13 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 	parameters
 }
 
-/// Builds a linear depth pyramid whose mip zero holds `linear_depth` at `width` x `height`.
-fn ssgi_depth_pyramid(width: u32, height: u32, linear_depth: &[[f32; 4]]) -> Texture {
-	texture_2d(width, height, linear_depth)
-}
-
-/// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image.
-fn ssgi_ray_at(x: f32, y: f32, extent: u32) -> [f32; 2] {
+/// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image
+/// `extent` pixels wide, seen through [`ssgi_projection`].
+pub(super) fn ssgi_ray_at(x: u32, y: u32, extent: u32) -> [f32; 2] {
 	let projection = ssgi_projection();
 	[
-		(2.0 * (x + 0.5) / extent as f32 - 1.0) / projection[0],
-		(1.0 - 2.0 * (y + 0.5) / extent as f32) / projection[5],
+		(2.0 * (x as f32 + 0.5) / extent as f32 - 1.0) / projection[0],
+		(1.0 - 2.0 * (y as f32 + 0.5) / extent as f32) / projection[5],
 	]
 }
 
@@ -1929,7 +1722,7 @@ fn ssgi_floor_depth(ray: [f32; 2], wall_z: Option<f32>) -> f32 {
 fn ssgi_scene_images(extent: u32, scene: impl Fn([f32; 2]) -> (f32, [f32; 3])) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
 	let image = |extent: u32| {
 		(0..extent * extent)
-			.map(|index| scene(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent)))
+			.map(|index| scene(ssgi_ray_at(index % extent, index / extent, extent)))
 			.collect::<Vec<_>>()
 	};
 	let depth = image(extent).into_iter().map(|(z, _)| [z, 0.0, 0.0, 1.0]).collect();
@@ -1952,25 +1745,11 @@ fn run_ssgi_trace(
 	pixel: [u32; 2],
 ) -> [f32; 4] {
 	let (depth, radiance) = ssgi_floor_scene(SSGI_EXTENT, wall_z);
-	run_ssgi_trace_with_radiance(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, pixel)
+	run_ssgi_trace_outputs(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, &[pixel], 1.0)[0].0
 }
 
 /// Runs the SSGI trace at `extent` pixels square with a full-resolution previous radiance image, twice the trace
-/// extent on each axis, and returns the raw radiance it writes.
-fn run_ssgi_trace_with_radiance(
-	program: &ExecutableProgram,
-	extent: u32,
-	depth: &[[f32; 4]],
-	radiance: &[[f32; 4]],
-	history: bool,
-	frame_index: u32,
-	pixel: [u32; 2],
-) -> [f32; 4] {
-	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, &[pixel], 1.0)[0].0
-}
-
-/// Runs the SSGI trace like [`run_ssgi_trace_with_radiance`] and returns the raw radiance and the stored normal it
-/// writes at each of `pixels`.
+/// extent on each axis, and returns the raw radiance and the stored normal it writes at each of `pixels`.
 ///
 /// The trace shares a depth tile across its workgroup, so this runs each 8x8 workgroup that holds one of `pixels` once.
 fn run_ssgi_trace_outputs(
@@ -1989,7 +1768,7 @@ fn run_ssgi_trace_outputs(
 	parameters
 		.write("history_exposure_ratio", Value::F32(history_exposure_ratio))
 		.unwrap();
-	let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, depth);
+	let mut depth_pyramid = texture_2d(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
@@ -2007,9 +1786,7 @@ fn run_ssgi_trace_outputs(
 		descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 		descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
 		descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
-		let mut workgroup = WorkgroupState::new();
-		descriptors.bind_workgroup_state(&mut workgroup);
-		run_tile_workgroup_containing(program, &mut descriptors, workgroup_base);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, workgroup_base);
 	}
 	pixels
 		.iter()
@@ -2181,11 +1958,11 @@ impl SsgiTemporalFixture {
 		parameters
 			.write("history_exposure_ratio", Value::F32(self.history_exposure_ratio))
 			.unwrap();
-		let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.depth);
+		let mut depth_pyramid = texture_2d(extent, extent, &self.depth);
 		let mut raw = texture_2d(extent, extent, &self.raw);
 		let mut output = empty_image(extent, extent);
 		let mut previous_history = texture_2d(extent, extent, &vec![self.previous_history; texel_count]);
-		let mut previous_depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.previous_depth);
+		let mut previous_depth_pyramid = texture_2d(extent, extent, &self.previous_depth);
 		let mut normals = texture_2d(extent, extent, &self.normals);
 		let mut previous_normals = texture_2d(extent, extent, &self.previous_normals);
 		let mut descriptors = DescriptorBindings::new();
@@ -2198,10 +1975,7 @@ impl SsgiTemporalFixture {
 		descriptors.bind_texture(ResourceSlot::new(1037), &mut previous_depth_pyramid);
 		descriptors.bind_texture(ResourceSlot::new(1038), &mut normals);
 		descriptors.bind_texture(ResourceSlot::new(1039), &mut previous_normals);
-		let mut workgroup = WorkgroupState::new();
-		descriptors.bind_workgroup_state(&mut workgroup);
-		run_tile_workgroup_containing(&program, &mut descriptors, pixel);
-		drop(descriptors);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 		rgba(&output, pixel)
 	}
 }
@@ -2270,18 +2044,21 @@ fn ssgi_temporal_filter_keeps_light_on_its_own_surface() {
 	assert_rgba_close(fixture.run([half, 4]), [0.0; 4], 0.0001);
 }
 
-/// Returns the depth and view-space normal of the wall at depth `wall_z` standing on the floor of
-/// [`ssgi_floor_depth`], at pixel `(x, y)` of an `extent` square image.
-fn ssgi_contact_surface(x: u32, y: u32, extent: u32, wall_z: f32) -> (f32, [f32; 4]) {
-	let depth = ssgi_floor_depth(ssgi_ray_at(x as f32, y as f32, extent), Some(wall_z));
-	(
-		depth,
-		if depth == wall_z {
-			SSGI_WALL_NORMAL
-		} else {
-			SSGI_FLOOR_NORMAL
-		},
-	)
+/// The depth of the wall that stands on the floor of [`ssgi_floor_depth`] in the contact scene.
+const SSGI_CONTACT_WALL_Z: f32 = 4.0;
+
+/// Renders the contact scene, a wall at [`SSGI_CONTACT_WALL_Z`] standing on the floor of [`ssgi_floor_depth`], into
+/// `extent` square images of its depth, its view-space normals, and its light, which only the wall gathered.
+fn ssgi_contact_images(extent: u32) -> [Vec<[f32; 4]>; 3] {
+	let (mut depth, mut normals, mut light) = (Vec::new(), Vec::new(), Vec::new());
+	for index in 0..extent * extent {
+		let z = ssgi_floor_depth(ssgi_ray_at(index % extent, index / extent, extent), Some(SSGI_CONTACT_WALL_Z));
+		let wall = z == SSGI_CONTACT_WALL_Z;
+		depth.push([z, 0.0, 0.0, 1.0]);
+		normals.push(if wall { SSGI_WALL_NORMAL } else { SSGI_FLOOR_NORMAL });
+		light.push(if wall { [1.0; 4] } else { [0.0; 4] });
+	}
+	[depth, normals, light]
 }
 
 /// Verifies the spatial filter keeps light off a surface that touches the center's surface at the same depth, as a
@@ -2289,28 +2066,21 @@ fn ssgi_contact_surface(x: u32, y: u32, extent: u32, wall_z: f32) -> (f32, [f32;
 #[test]
 fn ssgi_temporal_filter_keeps_light_off_a_touching_surface() {
 	const EXTENT: u32 = 16;
-	const WALL_Z: f32 = 4.0;
 	let mut fixture = SsgiTemporalFixture::uniform([0.0; 4], [0.0; 4], false);
-	let surfaces: Vec<_> = (0..EXTENT * EXTENT)
-		.map(|index| ssgi_contact_surface(index % EXTENT, index / EXTENT, EXTENT, WALL_Z))
-		.collect();
+	let [depth, normals, raw] = ssgi_contact_images(EXTENT);
 	fixture.extent = EXTENT;
-	fixture.depth = surfaces.iter().map(|&(z, _)| [z, 0.0, 0.0, 1.0]).collect();
-	fixture.normals = surfaces.iter().map(|&(_, normal)| normal).collect();
-	fixture.previous_depth = fixture.depth.clone();
-	fixture.previous_normals = fixture.normals.clone();
-	// Only the wall gathered light.
-	fixture.raw = surfaces
-		.iter()
-		.map(|&(z, _)| if z == WALL_Z { [1.0; 4] } else { [0.0; 4] })
-		.collect();
+	fixture.previous_depth = depth.clone();
+	fixture.previous_normals = normals.clone();
+	fixture.depth = depth;
+	fixture.normals = normals;
+	fixture.raw = raw;
 	let column = EXTENT / 2;
 	let floor_row = (0..EXTENT)
-		.find(|&row| surfaces[(row * EXTENT + column) as usize].0 != WALL_Z)
+		.find(|&row| fixture.depth[(row * EXTENT + column) as usize][0] != SSGI_CONTACT_WALL_Z)
 		.expect("the wall stands on the floor");
-	let floor_z = surfaces[(floor_row * EXTENT + column) as usize].0;
+	let floor_z = fixture.depth[(floor_row * EXTENT + column) as usize][0];
 	assert!(
-		(WALL_Z - floor_z) / WALL_Z < 0.02,
+		(SSGI_CONTACT_WALL_Z - floor_z) / SSGI_CONTACT_WALL_Z < 0.02,
 		"The fixture floor next to the wall must share its depth, found {floor_z}."
 	);
 
@@ -2339,7 +2109,7 @@ fn run_ssgi_upscale(
 	let mut visibility_depth = texture_2d(full_extent, full_extent, device_depth);
 	let mut source = texture_2d(low_extent, low_extent, radiance);
 	let mut output = empty_image(full_extent, full_extent);
-	let mut depth_pyramid = ssgi_depth_pyramid(low_extent, low_extent, low_resolution_depth);
+	let mut depth_pyramid = texture_2d(low_extent, low_extent, low_resolution_depth);
 	let mut normals = texture_2d(low_extent, low_extent, low_resolution_normals);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
@@ -2348,10 +2118,7 @@ fn run_ssgi_upscale(
 	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 	descriptors.bind_texture(ResourceSlot::new(1036), &mut depth_pyramid);
 	descriptors.bind_texture(ResourceSlot::new(1037), &mut normals);
-	let mut workgroup = WorkgroupState::new();
-	descriptors.bind_workgroup_state(&mut workgroup);
-	run_tile_workgroup_containing(&program, &mut descriptors, pixel);
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }
 
@@ -2360,21 +2127,17 @@ fn run_ssgi_upscale(
 fn ssgi_upscale_keeps_light_on_its_own_side_of_a_depth_edge() {
 	const FULL: u32 = 16;
 	const LOW: u32 = FULL / 2;
-	let device_depth_for = |linear_depth: f32| {
-		let range = GTAO_FAR - GTAO_NEAR;
-		(GTAO_NEAR * GTAO_FAR / range) / linear_depth - GTAO_NEAR / range
-	};
 	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
 		.map(|index| {
 			let (x, y) = (index % FULL, index / FULL);
-			let depth = if y == FULL - 1 {
+			let z = if y == FULL - 1 {
 				0.0
 			} else if x < FULL / 2 {
-				device_depth_for(2.0)
+				2.0
 			} else {
-				device_depth_for(10.0)
+				10.0
 			};
-			[depth, 0.0, 0.0, 1.0]
+			[gtao_fixture_device_depth(z), 0.0, 0.0, 1.0]
 		})
 		.collect();
 	let low_depth: Vec<[f32; 4]> = (0..LOW * LOW)
@@ -2405,33 +2168,15 @@ fn ssgi_upscale_keeps_light_on_its_own_side_of_a_depth_edge() {
 #[test]
 fn ssgi_upscale_keeps_light_off_a_touching_surface() {
 	const FULL: u32 = 32;
-	const LOW: u32 = FULL / 2;
-	const WALL_Z: f32 = 4.0;
-	let range = GTAO_FAR - GTAO_NEAR;
-	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
-		.map(|index| {
-			let (z, _) = ssgi_contact_surface(index % FULL, index / FULL, FULL, WALL_Z);
-			let depth = if z == 0.0 {
-				0.0
-			} else {
-				(GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range
-			};
-			[depth, 0.0, 0.0, 1.0]
-		})
-		.collect();
-	let low_surfaces: Vec<_> = (0..LOW * LOW)
-		.map(|index| ssgi_contact_surface(index % LOW, index / LOW, LOW, WALL_Z))
-		.collect();
-	let low_depth: Vec<[f32; 4]> = low_surfaces.iter().map(|&(z, _)| [z, 0.0, 0.0, 1.0]).collect();
-	let low_normals: Vec<[f32; 4]> = low_surfaces.iter().map(|&(_, normal)| normal).collect();
-	// Only the wall gathered light.
-	let radiance: Vec<[f32; 4]> = low_surfaces
+	let [full_depth, ..] = ssgi_contact_images(FULL);
+	let device_depth: Vec<[f32; 4]> = full_depth
 		.iter()
-		.map(|&(z, _)| if z == WALL_Z { [1.0; 4] } else { [0.0; 4] })
+		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect();
+	let [low_depth, low_normals, radiance] = ssgi_contact_images(FULL / 2);
 	let column = FULL / 2;
 	let floor_row = (0..FULL)
-		.find(|&row| ssgi_contact_surface(column, row, FULL, WALL_Z).0 != WALL_Z)
+		.find(|&row| full_depth[(row * FULL + column) as usize][0] != SSGI_CONTACT_WALL_Z)
 		.expect("the wall stands on the floor");
 
 	let wall = run_ssgi_upscale(
@@ -2463,14 +2208,11 @@ fn ssgi_trace_finds_a_grazing_floor_that_rays_cross_between_steps() {
 	let pixel = [SSGI_EXTENT / 2, 22];
 	assert_eq!(depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0], 4.0);
 
-	let mut hits = 0;
-	for frame_index in 0..64 {
-		let radiance = run_ssgi_trace(&program, Some(4.0), true, frame_index, pixel);
-		if radiance[3] != 0.0 {
-			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
-			hits += 1;
-		}
-	}
+	let hits = (0..64)
+		.map(|frame_index| run_ssgi_trace(&program, Some(4.0), true, frame_index, pixel))
+		.filter(|radiance| radiance[3] != 0.0)
+		.inspect(|&radiance| assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001))
+		.count();
 	assert!(
 		hits >= 24,
 		"Expected about half the rays to hit the floor, found {hits} hits in 64 frames."
@@ -2491,14 +2233,11 @@ fn ssgi_trace_rays_toward_the_camera_reach_the_floor_in_front_of_a_wall() {
 	let pixel = [EXTENT / 2, 155];
 	assert_eq!(depth[(pixel[1] * EXTENT + pixel[0]) as usize][0], WALL_Z);
 
-	let mut hits = 0;
-	for frame_index in 0..64 {
-		let radiance = run_ssgi_trace_with_radiance(&program, EXTENT, &depth, &radiance, true, frame_index, pixel);
-		if radiance[3] != 0.0 {
-			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
-			hits += 1;
-		}
-	}
+	let hits = (0..64)
+		.map(|frame_index| run_ssgi_trace_outputs(&program, EXTENT, &depth, &radiance, true, frame_index, &[pixel], 1.0)[0].0)
+		.filter(|radiance| radiance[3] != 0.0)
+		.inspect(|&radiance| assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001))
+		.count();
 	// About a third of cosine-weighted rays point down steeply enough to land on the floor within reach.
 	assert!(
 		hits >= 16,
@@ -2506,16 +2245,14 @@ fn ssgi_trace_rays_toward_the_camera_reach_the_floor_in_front_of_a_wall() {
 	);
 }
 
-/// Returns the view-space depth that a ray through `ray` sees in a scene with a floor one unit below the camera
-/// and a pillar whose front face stands at depth three, and whether that surface is the pillar.
-fn ssgi_pillar_scene(ray: [f32; 2]) -> (f32, bool) {
+/// Returns the view-space depth and light that a ray through `ray` sees in a scene with the green floor of
+/// [`ssgi_floor_depth`] and a red pillar whose front face stands at depth three.
+fn ssgi_pillar_scene(ray: [f32; 2]) -> (f32, [f32; 3]) {
 	const PILLAR_Z: f32 = 3.0;
-	let pillar = (ray[0] * PILLAR_Z).abs() <= 0.25 && (-1.0..=0.5).contains(&(ray[1] * PILLAR_Z));
-	if pillar {
-		return (PILLAR_Z, true);
+	if (ray[0] * PILLAR_Z).abs() <= 0.25 && (-1.0..=0.5).contains(&(ray[1] * PILLAR_Z)) {
+		return (PILLAR_Z, [1.0, 0.0, 0.0]);
 	}
-	let floor_z = if ray[1] < 0.0 { -1.0 / ray[1] } else { 0.0 };
-	(if floor_z <= GTAO_FAR { floor_z } else { 0.0 }, false)
+	(ssgi_floor_depth(ray, None), [0.0, 1.0, 0.0])
 }
 
 /// Verifies floor rays that reach a pillar take its light and never read the floor seen past the pillar's edge.
@@ -2524,10 +2261,7 @@ fn ssgi_pillar_scene(ray: [f32; 2]) -> (f32, bool) {
 #[test]
 fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
 	let program = asset!("ssgi-trace.besl");
-	let (depth, radiance) = ssgi_scene_images(SSGI_EXTENT, |ray| {
-		let (z, pillar) = ssgi_pillar_scene(ray);
-		(z, if pillar { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] })
-	});
+	let (depth, radiance) = ssgi_scene_images(SSGI_EXTENT, ssgi_pillar_scene);
 	// Floor pixels just in front of the pillar's base and beside it, where rays that lean forward reach its face.
 	let pillar_columns: Vec<u32> = (0..SSGI_EXTENT)
 		.filter(|&column| depth[(20 * SSGI_EXTENT + column) as usize][0] == 3.0)
@@ -2567,9 +2301,10 @@ const CONTACT_SHADOW_CAMERA_HEIGHT: f32 = 2.0;
 const CONTACT_SHADOW_WALL_Z: f32 = 4.0;
 const CONTACT_SHADOW_WALL_HEIGHT: f32 = 0.25;
 
-/// Returns the depth a pixel ray sees on a floor [`CONTACT_SHADOW_CAMERA_HEIGHT`] below the camera and, optionally,
-/// a low wall facing the camera at [`CONTACT_SHADOW_WALL_Z`], or zero for the sky.
-fn contact_shadow_scene_depth(ray: [f32; 2], wall: bool) -> f32 {
+/// Returns the depth pixel `(x, y)` of the contact-shadow image sees on a floor [`CONTACT_SHADOW_CAMERA_HEIGHT`] below
+/// the camera and, optionally, a low wall facing the camera at [`CONTACT_SHADOW_WALL_Z`], or zero for the sky.
+fn contact_shadow_scene_depth([x, y]: [u32; 2], wall: bool) -> f32 {
+	let ray = ssgi_ray_at(x, y, CONTACT_SHADOW_EXTENT);
 	let wall_height = ray[1] * CONTACT_SHADOW_WALL_Z + CONTACT_SHADOW_CAMERA_HEIGHT;
 	if wall && (0.0..=CONTACT_SHADOW_WALL_HEIGHT).contains(&wall_height) {
 		return CONTACT_SHADOW_WALL_Z;
@@ -2584,16 +2319,10 @@ fn contact_shadow_scene_depth(ray: [f32; 2], wall: bool) -> f32 {
 /// Returns the reversed device depth of every pixel of the floor scene, with or without the low wall.
 fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
 	let extent = CONTACT_SHADOW_EXTENT;
-	let range = GTAO_FAR - GTAO_NEAR;
 	(0..extent * extent)
 		.map(|index| {
-			let z = contact_shadow_scene_depth(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent), wall);
-			let depth = if z == 0.0 {
-				0.0
-			} else {
-				(GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range
-			};
-			[depth, 0.0, 0.0, 1.0]
+			let z = contact_shadow_scene_depth([index % extent, index / extent], wall);
+			[gtao_fixture_device_depth(z), 0.0, 0.0, 1.0]
 		})
 		.collect()
 }
@@ -2640,22 +2369,18 @@ fn run_contact_shadow_filter(trace: impl Fn(u32, u32) -> f32, pixel: [u32; 2]) -
 	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(true));
 	let mut trace = texture_2d(extent, extent, &trace);
 	let mut output = empty_image(extent, extent);
-	let mut workgroup = WorkgroupState::new();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	run_tile_workgroup_containing(&program, &mut descriptors, pixel);
-	drop(descriptors);
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)[0]
 }
 
 /// Returns the floor's depth at a pixel row of the center column, or zero where that row does not see the floor.
 fn contact_shadow_floor_z(row: u32) -> f32 {
-	let ray = ssgi_ray_at((CONTACT_SHADOW_EXTENT / 2) as f32, row as f32, CONTACT_SHADOW_EXTENT);
-	let z = contact_shadow_scene_depth(ray, true);
+	let z = contact_shadow_scene_depth([CONTACT_SHADOW_EXTENT / 2, row], true);
 	if z == CONTACT_SHADOW_WALL_Z { 0.0 } else { z }
 }
 
@@ -2673,36 +2398,31 @@ fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 			.filter(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
 			.collect::<Vec<_>>()
 	};
-	let shadowed_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.09, CONTACT_SHADOW_WALL_Z);
-	let fading_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.18, CONTACT_SHADOW_WALL_Z - 0.12);
-	let lit_rows = rows_at(3.0, CONTACT_SHADOW_WALL_Z - 0.3);
-	assert!(!shadowed_rows.is_empty() && !fading_rows.is_empty() && !lit_rows.is_empty());
+	// Each band of rows, the value every row in it must have, and how the message names that value.
+	let bands: [(_, fn(f32) -> bool, _); 3] = [
+		(
+			rows_at(CONTACT_SHADOW_WALL_Z - 0.09, CONTACT_SHADOW_WALL_Z),
+			|value| value == 0.0,
+			"shadowed",
+		),
+		(
+			rows_at(CONTACT_SHADOW_WALL_Z - 0.18, CONTACT_SHADOW_WALL_Z - 0.12),
+			|value| value > 0.0 && value < 1.0,
+			"partly shadowed",
+		),
+		(rows_at(3.0, CONTACT_SHADOW_WALL_Z - 0.3), |value| value == 1.0, "lit"),
+	];
+	assert!(bands.iter().all(|(rows, ..)| !rows.is_empty()));
 
-	for row in shadowed_rows {
-		let value = run_contact_shadows(true, direction_to_light, [column, row]);
-		assert_eq!(
-			value,
-			0.0,
-			"Expected floor row {row} at z={} to be shadowed.",
-			contact_shadow_floor_z(row)
-		);
-	}
-	for row in fading_rows {
-		let value = run_contact_shadows(true, direction_to_light, [column, row]);
-		assert!(
-			value > 0.0 && value < 1.0,
-			"Expected floor row {row} at z={} to be partly shadowed, got {value}.",
-			contact_shadow_floor_z(row)
-		);
-	}
-	for row in lit_rows {
-		let value = run_contact_shadows(true, direction_to_light, [column, row]);
-		assert_eq!(
-			value,
-			1.0,
-			"Expected floor row {row} at z={} to be lit.",
-			contact_shadow_floor_z(row)
-		);
+	for (rows, expected, state) in bands {
+		for row in rows {
+			let value = run_contact_shadows(true, direction_to_light, [column, row]);
+			assert!(
+				expected(value),
+				"Expected floor row {row} at z={} to be {state}, got {value}.",
+				contact_shadow_floor_z(row)
+			);
+		}
 	}
 }
 
@@ -2723,120 +2443,85 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 	);
 
 	// The wall's top row borders the floor far behind it. Only the floor is shadowed.
+	let on_wall = |x, y| contact_shadow_scene_depth([x, y], true) == CONTACT_SHADOW_WALL_Z;
 	let wall_top_row = (0..CONTACT_SHADOW_EXTENT)
-		.find(|&row| {
-			contact_shadow_scene_depth(ssgi_ray_at(column as f32, row as f32, CONTACT_SHADOW_EXTENT), true)
-				== CONTACT_SHADOW_WALL_Z
-		})
+		.find(|&row| on_wall(column, row))
 		.expect("a wall row");
-	let shadowed_floor = |x: u32, y: u32| {
-		let on_wall =
-			contact_shadow_scene_depth(ssgi_ray_at(x as f32, y as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z;
-		if on_wall { 1.0 } else { 0.0 }
-	};
+	let shadowed_floor = |x, y| if on_wall(x, y) { 1.0 } else { 0.0 };
 	let wall_edge = run_contact_shadow_filter(shadowed_floor, [column, wall_top_row]);
 	assert_eq!(wall_edge, 1.0, "The floor behind the wall darkened the wall's top edge.");
 }
 
-/// Verifies the contact-shadow trace and filter compile with the platform shader compiler, past BESL linking.
+/// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.
+///
+/// Each entry's settings mirror the asset's `.bead` file.
 #[cfg(target_os = "macos")]
 #[compio::test]
-async fn contact_shadows_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
+async fn visibility_assets_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings as Settings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use utils::Extent;
 
-	for (name, source) in [
-		("contact_shadows", asset_source!("contact-shadows.besl")),
-		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl")),
-	] {
-		assert_lowers_to_the_platform_shader_language(
-			name,
-			source,
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		)
-		.await;
-	}
-}
-
-/// Verifies the meshlet culling and rasterization stages, and the material offset and pixel mapping that follow them,
-/// compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
+	let mesh = || Settings::mesh(64, 126, Extent::line(128));
+	let tile = || Settings::compute(Extent::square(8));
 	for (name, source, settings) in [
 		(
 			"meshlet_task",
 			asset_source!("meshlet-task.besl"),
-			ShaderGenerationSettings::task(utils::Extent::line(32), 192),
+			Settings::task(Extent::line(32), 192),
 		),
-		(
-			"visibility_mesh",
-			asset_source!("visibility-mesh.besl"),
-			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-		),
-		(
-			"shadow_mesh",
-			asset_source!("shadow-mesh.besl"),
-			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-		),
+		("visibility_mesh", asset_source!("visibility-mesh.besl"), mesh()),
+		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
+			Settings::fragment(),
 		),
-		(
-			"masked_fragment",
-			asset_source!("masked-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
-		),
+		("masked_fragment", asset_source!("masked-fragment.besl"), Settings::fragment()),
 		(
 			"masked_depth_fragment",
 			asset_source!("masked-depth-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
+			Settings::fragment(),
 		),
 		(
 			"material_offset",
 			asset_source!("material-offset.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::line(256)),
+			Settings::compute(Extent::line(256)),
 		),
 		(
 			"pixel_mapping",
 			asset_source!("pixel-mapping.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(16)),
+			Settings::compute(Extent::square(16)),
+		),
+		("hiz_seed", asset_source!("hiz-seed.besl"), tile()),
+		("hiz_reduce", asset_source!("hiz-reduce.besl"), tile()),
+		("contact_shadows", asset_source!("contact-shadows.besl"), tile()),
+		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl"), tile()),
+		("ssgi_trace", asset_source!("ssgi-trace.besl"), tile()),
+		("ssgi_temporal", asset_source!("ssgi-temporal.besl"), tile()),
+		("ssgi_upscale", asset_source!("ssgi-upscale.besl"), tile()),
+		(
+			"light_clusters",
+			asset_source!("light-clusters.besl"),
+			Settings::compute(Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32)),
 		),
 		(
-			"hiz_seed",
-			asset_source!("hiz-seed.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			"directional_shadow_receiver_bounds",
+			asset_source!("directional-shadow-receiver-bounds.besl"),
+			tile(),
 		),
 		(
-			"hiz_reduce",
-			asset_source!("hiz-reduce.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			"directional_shadow_cascade_fit",
+			asset_source!("directional-shadow-cascade-fit.besl"),
+			Settings::compute(Extent::line(4)),
 		),
 	] {
-		assert_lowers_to_the_platform_shader_language(name, source, settings).await;
-	}
-}
-
-/// Verifies the SSGI trace, denoiser, and upscale compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn ssgi_passes_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
-	for (name, source) in [
-		("ssgi_trace", asset_source!("ssgi-trace.besl")),
-		("ssgi_temporal", asset_source!("ssgi-temporal.besl")),
-		("ssgi_upscale", asset_source!("ssgi-upscale.besl")),
-	] {
-		assert_lowers_to_the_platform_shader_language(
-			name,
-			source,
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		)
-		.await;
+		let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
+			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		PlatformShaderCompiler::new()
+			.generate(&settings.name(name.to_string()), &root)
+			.await
+			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
 }
 
@@ -2889,20 +2574,11 @@ fn light_cluster_fixture_light(cone: bool) -> crate::rendering::lights::Lights {
 	}
 }
 
-/// Runs the light-cluster pass for one cluster and returns its first two mask words.
-///
-/// The camera sits at the origin and looks down +Z with a 90 degree field of view and a 0.1 m to 100 m clip range.
+/// Runs the light-cluster pass for one cluster, seen by [`fixture_camera`] at an aspect ratio of one, and returns its
+/// first two mask words.
 fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, cluster: u32) -> [u32; 2] {
 	let program = asset!("light-clusters.besl");
-	let view = crate::rendering::View::new_perspective(
-		math::Degrees::new(90.0),
-		1.0,
-		0.1,
-		100.0,
-		math::Point::origin(),
-		math::UnitVector::z_axis(),
-	);
-	let parameters = super::shader_data::LightClusterParameters::from(view);
+	let parameters = super::shader_data::LightClusterParameters::from(fixture_camera(1.0));
 	let mut cluster_parameters = buffer(&program, ResourceSlot::new(1));
 	for (field, value) in [
 		("view", Value::Mat4x3F(bytemuck::cast(parameters.view))),
@@ -2933,20 +2609,13 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 		}
 	}
 	let mut masks = buffer(&program, ResourceSlot::new(1033));
-	let configs: [ExecutionConfig; 32] = std::array::from_fn(|lane| {
-		ExecutionConfig::new(INSTRUCTION_LIMIT)
-			.with_call_depth_limit(128)
-			.with_thread_idx(lane as u32)
-			.with_threadgroup_position(cluster)
-	});
+	let configs: [ExecutionConfig; 32] =
+		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(cluster));
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(ResourceSlot::new(0), &mut lighting);
 	descriptors.bind_buffer(ResourceSlot::new(1), &mut cluster_parameters);
 	descriptors.bind_buffer(ResourceSlot::new(1033), &mut masks);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("Failed to run the light-cluster pass in the BESL VM.");
-	drop(descriptors);
+	run_workgroup(&program, descriptors, &configs);
 	let base = cluster as usize * super::layout::LIGHT_CLUSTER_MASK_WORDS;
 	[read_u32(&masks, base), read_u32(&masks, base + 1)]
 }
@@ -2976,9 +2645,10 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 		)
 		.expect("physical directional light"),
 	);
+	// In front of the camera, 20 m away.
+	let in_front = uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward);
 	let mut lights = vec![
-		// In front of the camera, 20 m away.
-		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward),
+		in_front,
 		// Behind the camera, 20 m away.
 		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, -20.0), forward),
 		uploaded_light(sun, Point::origin(), -UnitVector::y_axis()),
@@ -2986,13 +2656,10 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 		uploaded_light(light_cluster_fixture_light(true), Point::new(0.0, 0.0, -5.0), -forward),
 		uploaded_light(light_cluster_fixture_light(true), Point::new(0.0, 0.0, -5.0), forward),
 	];
-	// Lights without reach fill the rest of the first mask word, so the last light lands in the second word.
+	// Lights without reach fill the rest of the first mask word, so the last light, in front again, lands in the second
+	// word.
 	lights.resize(40, super::shader_data::LightData::default());
-	lights.push(uploaded_light(
-		light_cluster_fixture_light(false),
-		Point::new(0.0, 0.0, 20.0),
-		forward,
-	));
+	lights.push(in_front);
 
 	// Slice 18 spans about 17 m to 21 m of view depth, and slice 8 spans 1 m to 1.33 m. Column 8 and row 4 sit just
 	// right of and below the center of the image.
@@ -3007,26 +2674,11 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 	assert_eq!(run_light_clusters(&lights, 1.0, far_cluster), [0b10111, 1 << 8]);
 }
 
-/// Verifies the light-cluster pass compiles with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn light_clusters_lower_to_the_platform_shader_language() {
-	let workgroup = utils::Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32);
-	assert_lowers_to_the_platform_shader_language(
-		"light_clusters",
-		asset_source!("light-clusters.besl"),
-		resource_management::shader::ShaderGenerationSettings::compute(workgroup),
-	)
-	.await;
-}
-
 /* Directional shadow cascade fit */
 
 const RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1034);
 const RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1035);
 const CASCADE_SIZE_STEPS_SLOT: ResourceSlot = ResourceSlot::new(1036);
-const RECEIVER_BOUNDS_WORKGROUP_WIDTH: u32 = 8;
-const RECEIVER_BOUNDS_WORKGROUP_SIZE: usize = 64;
 /// Pixels one receiver-bounds workgroup covers on each side: eight threads of four pixels.
 const RECEIVER_BOUNDS_TILE: u32 = 32;
 const RECEIVER_FIT_EXTENT: u32 = 64;
@@ -3126,8 +2778,32 @@ fn receiver_fit_buffer(program: &ExecutableProgram, data: &super::render_pass::R
 	fit
 }
 
-/// Returns views holding the CPU's frustum-fitted cascades after the camera.
-fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl::vm::Buffer {
+/// Runs the receiver-bounds pass over the whole scene and returns the bounds it found.
+fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
+	let program = asset!("directional-shadow-receiver-bounds.besl");
+	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
+	let mut fit = receiver_fit_buffer(&program, &scene.shader_data);
+	let mut bounds = buffer(&program, RECEIVER_BOUNDS_SLOT);
+	let tiles = RECEIVER_FIT_EXTENT / RECEIVER_BOUNDS_TILE;
+	for tile in 0..tiles * tiles {
+		let base = [tile % tiles * TILE_WORKGROUP_WIDTH, tile / tiles * TILE_WORKGROUP_WIDTH];
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, &mut bounds);
+		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
+		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, base);
+	}
+	bounds
+}
+
+/// Runs the cascade fit on `bounds` over views holding the scene's frustum-fitted cascades after the camera, and
+/// returns the views it wrote.
+fn run_cascade_fit(
+	program: &ExecutableProgram,
+	scene: &ReceiverFitScene,
+	bounds: &mut besl::vm::Buffer,
+	size_steps: &mut besl::vm::Buffer,
+) -> besl::vm::Buffer {
 	let mut views = buffer(program, VIEWS_SLOT);
 	for (cascade, frame) in scene.cascades.iter().enumerate() {
 		let view = frame.view.view();
@@ -3143,61 +2819,14 @@ fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl:
 			views.write_array_member(1 + cascade, field, value).expect("cascade view");
 		}
 	}
-	views
-}
-
-/// Runs the receiver-bounds pass over the whole scene and returns the bounds it found.
-fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
-	let program = asset!("directional-shadow-receiver-bounds.besl");
-	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
-	let mut fit = receiver_fit_buffer(&program, &scene.shader_data);
-	let mut bounds = buffer(&program, RECEIVER_BOUNDS_SLOT);
-	let tiles = RECEIVER_FIT_EXTENT / RECEIVER_BOUNDS_TILE;
-	for tile in 0..tiles * tiles {
-		let base = [
-			tile % tiles * RECEIVER_BOUNDS_WORKGROUP_WIDTH,
-			tile / tiles * RECEIVER_BOUNDS_WORKGROUP_WIDTH,
-		];
-		let configs = tile_configs::<RECEIVER_BOUNDS_WORKGROUP_SIZE>(RECEIVER_BOUNDS_WORKGROUP_WIDTH, base);
-		let mut workgroup = WorkgroupState::new();
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, &mut bounds);
-		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
-		descriptors.bind_workgroup_state(&mut workgroup);
-		program
-			.run_workgroup(&mut descriptors, &configs)
-			.expect("receiver-bounds workgroup execution");
-	}
-	bounds
-}
-
-/// Runs the cascade fit on `bounds` over the scene's frustum-fitted views and returns the views it wrote.
-fn run_cascade_fit(
-	program: &ExecutableProgram,
-	scene: &ReceiverFitScene,
-	bounds: &mut besl::vm::Buffer,
-	size_steps: &mut besl::vm::Buffer,
-) -> besl::vm::Buffer {
-	let mut views = cascade_views(program, scene);
 	let mut fit = receiver_fit_buffer(program, &scene.shader_data);
-	let configs: [ExecutionConfig; 4] = std::array::from_fn(|lane| {
-		ExecutionConfig::new(INSTRUCTION_LIMIT)
-			.with_call_depth_limit(128)
-			.with_thread_idx(lane as u32)
-			.with_thread_id([lane as u32, 0])
-	});
-	let mut workgroup = WorkgroupState::new();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 	descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
 	descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
 	descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
-	descriptors.bind_workgroup_state(&mut workgroup);
-	program
-		.run_workgroup(&mut descriptors, &configs)
-		.expect("cascade-fit workgroup execution");
-	drop(descriptors);
+	// One lane fits each cascade.
+	run_workgroup_containing::<4>(program, descriptors, 4, [0, 0]);
 	views
 }
 
@@ -3360,28 +2989,6 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 	assert_eq!(fit(0.5), fitted, "The original box should grow the cascade back at once.");
 }
 
-/// Verifies the cascade-fit passes compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
-	for (name, source, workgroup) in [
-		(
-			"directional_shadow_receiver_bounds",
-			asset_source!("directional-shadow-receiver-bounds.besl"),
-			utils::Extent::square(RECEIVER_BOUNDS_WORKGROUP_WIDTH),
-		),
-		(
-			"directional_shadow_cascade_fit",
-			asset_source!("directional-shadow-cascade-fit.besl"),
-			utils::Extent::line(4),
-		),
-	] {
-		assert_lowers_to_the_platform_shader_language(name, source, ShaderGenerationSettings::compute(workgroup)).await;
-	}
-}
-
 /// Camera rotation must retain history for a static floor even when its view-space normals differ substantially.
 #[test]
 fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
@@ -3402,7 +3009,7 @@ fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
 		.fill([-sine / normal_length, cosine / normal_length, 0.0, 0.0]);
 	// Intersect both cameras' rays with the same floor, one unit below the camera.
 	for index in 0..texel_count {
-		let ray = ssgi_ray_at((index as u32 % extent) as f32, (index as u32 / extent) as f32, extent);
+		let ray = ssgi_ray_at(index as u32 % extent, index as u32 / extent, extent);
 		let previous_y = -sine * ray[0] + cosine * ray[1];
 		fixture.depth[index][0] = if ray[1] < 0.0 { -1.0 / ray[1] } else { 0.0 };
 		fixture.previous_depth[index][0] = if previous_y < 0.0 { -1.0 / previous_y } else { 0.0 };
@@ -3477,12 +3084,7 @@ main: fn (input: StageInput) -> void {{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_image(ResourceSlot::new(2000), &mut output);
 			program
-				.run_main_with_config(
-					&mut descriptors,
-					&ExecutionConfig::new(INSTRUCTION_LIMIT)
-						.with_thread_id(pixel)
-						.with_thread_idx(frame),
-				)
+				.run_main_with_config(&mut descriptors, &lane_config(frame).with_thread_id(pixel))
 				.unwrap();
 			drop(descriptors);
 			let sample = rgba(&output, pixel);

@@ -18,7 +18,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::gtao::configuration_bool;
-use super::{ComputeStage, SinkHistory, record_compute_stages};
+use super::{ComputeStage, Pipelines, SinkHistory, record_compute_stages};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -130,44 +130,23 @@ const RADIANCE_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// [`RADIANCE_FORMAT`]. The temporal and upscale passes read each normal many times.
 const NORMAL_FORMAT: ghi::Formats = ghi::Formats::RG16SNORM;
 
-const fn buffer(slot: u32) -> ghi::ShaderResourceDescriptor {
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(slot),
-		ghi::ResourceKind::StorageBuffer,
-		ghi::AccessPolicies::READ,
-	)
-}
-const fn sampled(slot: u32) -> ghi::ShaderResourceDescriptor {
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(slot),
-		ghi::ResourceKind::CombinedImageSampler,
-		ghi::AccessPolicies::READ,
-	)
-}
-const fn storage(slot: u32) -> ghi::ShaderResourceDescriptor {
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(slot),
-		ghi::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
-	)
-}
-const VIEW_BINDING: ghi::ShaderResourceDescriptor = buffer(0);
-const PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = buffer(1);
+const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
+const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
 // Every stage reads linear depth at 1033 and writes its output at 1034 or 1035. See each BESL asset for the rest.
-const DEPTH_BINDING: ghi::ShaderResourceDescriptor = sampled(1033);
-const TRACE_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = storage(1034);
-const TRACE_PREVIOUS_RADIANCE_BINDING: ghi::ShaderResourceDescriptor = sampled(1035);
-const TRACE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = storage(1036);
-const TEMPORAL_RAW_BINDING: ghi::ShaderResourceDescriptor = sampled(1034);
-const TEMPORAL_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = storage(1035);
-const TEMPORAL_PREVIOUS_HISTORY_BINDING: ghi::ShaderResourceDescriptor = sampled(1036);
-const TEMPORAL_PREVIOUS_DEPTH_BINDING: ghi::ShaderResourceDescriptor = sampled(1037);
-const TEMPORAL_NORMALS_BINDING: ghi::ShaderResourceDescriptor = sampled(1038);
-const TEMPORAL_PREVIOUS_NORMALS_BINDING: ghi::ShaderResourceDescriptor = sampled(1039);
-const UPSCALE_SOURCE_BINDING: ghi::ShaderResourceDescriptor = sampled(1034);
-const UPSCALE_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = storage(1035);
-const UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ShaderResourceDescriptor = sampled(1036);
-const UPSCALE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = sampled(1037);
+const DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+const TRACE_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const TRACE_PREVIOUS_RADIANCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
+const TRACE_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
+const TEMPORAL_RAW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const TEMPORAL_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
+const TEMPORAL_PREVIOUS_HISTORY_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
+const TEMPORAL_PREVIOUS_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
+const TEMPORAL_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
+const TEMPORAL_PREVIOUS_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1039);
+const UPSCALE_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const UPSCALE_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
+const UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
+const UPSCALE_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
 
 /// The `SsgiShaderParameters` struct carries the per-frame values every SSGI stage needs to use history.
 #[repr(C)]
@@ -197,20 +176,12 @@ fn current_view_to_previous_view(current: View, previous: View) -> Matrix {
 /// the full-resolution result. Opaque material evaluation writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next
 /// frame's rays.
 pub(super) struct SsgiPass {
-	settings: SsgiSettings,
 	trace_descriptor_set: ghi::DescriptorSetHandle,
 	temporal_descriptor_set: ghi::DescriptorSetHandle,
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
-	trace_pipeline: crate::rendering::PipelineRef,
-	temporal_pipeline: crate::rendering::PipelineRef,
-	upscale_pipeline: crate::rendering::PipelineRef,
+	/// The trace, temporal, and upscale pipelines.
+	pub(super) pipelines: Pipelines<3>,
 	parameters: ghi::DynamicBufferHandle<SsgiShaderParameters>,
-}
-
-pub(super) struct SsgiPipelines {
-	trace: ghi::PipelineHandle,
-	temporal: ghi::PipelineHandle,
-	upscale: ghi::PipelineHandle,
 }
 
 impl SsgiPass {
@@ -225,7 +196,6 @@ impl SsgiPass {
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
-		settings: SsgiSettings,
 	) -> Self {
 		let trace_descriptor_set = context.create_descriptor_set(Some("SSGI Trace Descriptor Set"));
 		let temporal_descriptor_set = context.create_descriptor_set(Some("SSGI Temporal Descriptor Set"));
@@ -239,8 +209,6 @@ impl SsgiPass {
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let SsgiTargets {
@@ -250,19 +218,18 @@ impl SsgiPass {
 			indirect_diffuse,
 			diffuse_radiance_history,
 		} = targets;
-		let sampled = |set, binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle, sampler| {
-			ghi::DescriptorWrite::combined_image_sampler(set, binding.slot(), image, sampler, ghi::Layouts::Read)
+		let sampled = |set, slot, image: ghi::BaseImageHandle| {
+			ghi::DescriptorWrite::combined_image_sampler(set, slot, image, point_sampler, ghi::Layouts::Read)
 		};
-		let previous = |set, binding: ghi::ShaderResourceDescriptor, image: ghi::DynamicImageHandle, sampler| {
-			ghi::DescriptorWrite::combined_image_sampler_with_frame(set, binding.slot(), image, sampler, ghi::Layouts::Read, -1)
+		let previous = |set, slot, image| {
+			ghi::DescriptorWrite::combined_image_sampler_with_frame(set, slot, image, point_sampler, ghi::Layouts::Read, -1)
 		};
-		let storage = |set, binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle| {
-			ghi::DescriptorWrite::image(set, binding.slot(), image, ghi::Layouts::General)
-		};
+		let storage =
+			|set, slot, image: ghi::BaseImageHandle| ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(trace_descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			ghi::DescriptorWrite::buffer(trace_descriptor_set, PARAMETERS_BINDING.slot(), parameters.into()),
-			sampled(trace_descriptor_set, DEPTH_BINDING, depth_pyramid.into(), point_sampler),
+			ghi::DescriptorWrite::buffer(trace_descriptor_set, VIEW_BINDING, view_data.into()),
+			ghi::DescriptorWrite::buffer(trace_descriptor_set, PARAMETERS_BINDING, parameters.into()),
+			sampled(trace_descriptor_set, DEPTH_BINDING, depth_pyramid.into()),
 			storage(trace_descriptor_set, TRACE_OUTPUT_BINDING, raw),
 			storage(trace_descriptor_set, TRACE_NORMALS_BINDING, normals.into()),
 			// Point sampling keeps a hit's light from blending with the background next to the hit object.
@@ -270,77 +237,35 @@ impl SsgiPass {
 				trace_descriptor_set,
 				TRACE_PREVIOUS_RADIANCE_BINDING,
 				diffuse_radiance_history,
-				point_sampler,
 			),
-			ghi::DescriptorWrite::buffer(temporal_descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			ghi::DescriptorWrite::buffer(temporal_descriptor_set, PARAMETERS_BINDING.slot(), parameters.into()),
-			sampled(temporal_descriptor_set, DEPTH_BINDING, depth_pyramid.into(), point_sampler),
-			sampled(temporal_descriptor_set, TEMPORAL_RAW_BINDING, raw, point_sampler),
+			ghi::DescriptorWrite::buffer(temporal_descriptor_set, VIEW_BINDING, view_data.into()),
+			ghi::DescriptorWrite::buffer(temporal_descriptor_set, PARAMETERS_BINDING, parameters.into()),
+			sampled(temporal_descriptor_set, DEPTH_BINDING, depth_pyramid.into()),
+			sampled(temporal_descriptor_set, TEMPORAL_RAW_BINDING, raw),
 			storage(temporal_descriptor_set, TEMPORAL_OUTPUT_BINDING, history.into()),
-			previous(
-				temporal_descriptor_set,
-				TEMPORAL_PREVIOUS_HISTORY_BINDING,
-				history,
-				point_sampler,
-			),
-			previous(
-				temporal_descriptor_set,
-				TEMPORAL_PREVIOUS_DEPTH_BINDING,
-				depth_pyramid,
-				point_sampler,
-			),
-			sampled(
-				temporal_descriptor_set,
-				TEMPORAL_NORMALS_BINDING,
-				normals.into(),
-				point_sampler,
-			),
-			previous(
-				temporal_descriptor_set,
-				TEMPORAL_PREVIOUS_NORMALS_BINDING,
-				normals,
-				point_sampler,
-			),
-			ghi::DescriptorWrite::buffer(upscale_descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			sampled(upscale_descriptor_set, DEPTH_BINDING, depth, point_sampler),
-			sampled(upscale_descriptor_set, UPSCALE_SOURCE_BINDING, history.into(), point_sampler),
+			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_HISTORY_BINDING, history),
+			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_DEPTH_BINDING, depth_pyramid),
+			sampled(temporal_descriptor_set, TEMPORAL_NORMALS_BINDING, normals.into()),
+			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_NORMALS_BINDING, normals),
+			ghi::DescriptorWrite::buffer(upscale_descriptor_set, VIEW_BINDING, view_data.into()),
+			sampled(upscale_descriptor_set, DEPTH_BINDING, depth),
+			sampled(upscale_descriptor_set, UPSCALE_SOURCE_BINDING, history.into()),
 			storage(upscale_descriptor_set, UPSCALE_OUTPUT_BINDING, indirect_diffuse),
 			sampled(
 				upscale_descriptor_set,
 				UPSCALE_LOW_RESOLUTION_DEPTH_BINDING,
 				depth_pyramid.into(),
-				point_sampler,
 			),
-			sampled(upscale_descriptor_set, UPSCALE_NORMALS_BINDING, normals.into(), point_sampler),
+			sampled(upscale_descriptor_set, UPSCALE_NORMALS_BINDING, normals.into()),
 		]);
-		let request = |name| pipeline_manager.request_pipeline(name);
 
 		Self {
-			settings,
 			trace_descriptor_set,
 			temporal_descriptor_set,
 			upscale_descriptor_set,
-			trace_pipeline: request("byte-engine/rendering/visibility/ssgi-trace.pipeline"),
-			temporal_pipeline: request("byte-engine/rendering/visibility/ssgi-temporal.pipeline"),
-			upscale_pipeline: request("byte-engine/rendering/visibility/ssgi-upscale.pipeline"),
+			pipelines: Pipelines::request(pipeline_manager, ["ssgi-trace", "ssgi-temporal", "ssgi-upscale"]),
 			parameters,
 		}
-	}
-
-	pub(super) fn set_settings(&mut self, settings: SsgiSettings) {
-		self.settings = settings;
-	}
-
-	pub(super) fn enabled(&self) -> bool {
-		self.settings.enabled
-	}
-
-	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<SsgiPipelines> {
-		Some(SsgiPipelines {
-			trace: pipeline_manager.pipeline(self.trace_pipeline)?,
-			temporal: pipeline_manager.pipeline(self.temporal_pipeline)?,
-			upscale: pipeline_manager.pipeline(self.upscale_pipeline)?,
-		})
 	}
 
 	/// Uploads this frame's reprojection and noise seed, resizes the images, and returns the three-stage recording.
@@ -354,7 +279,7 @@ impl SsgiPass {
 		sink: &Sink,
 		history: Option<SinkHistory>,
 		exposure: f32,
-		pipelines: SsgiPipelines,
+		[trace, temporal, upscale]: [ghi::PipelineHandle; 3],
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
 		let half_extent = extent.scaled_down(2);
@@ -384,19 +309,14 @@ impl SsgiPass {
 			workgroup: Extent::new(8, 8, 1),
 		};
 		let stages = [
-			stage("SSGI Trace", pipelines.trace, self.trace_descriptor_set, half_extent),
+			stage("SSGI Trace", trace, self.trace_descriptor_set, half_extent),
 			stage(
 				"SSGI Denoise and Accumulate",
-				pipelines.temporal,
+				temporal,
 				self.temporal_descriptor_set,
 				half_extent,
 			),
-			stage(
-				"SSGI Depth-Aware Upscale",
-				pipelines.upscale,
-				self.upscale_descriptor_set,
-				extent,
-			),
+			stage("SSGI Depth-Aware Upscale", upscale, self.upscale_descriptor_set, extent),
 		];
 		move |c| record_compute_stages(c, Some("SSGI"), &stages)
 	}

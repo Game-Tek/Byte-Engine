@@ -1,4 +1,4 @@
-use crate::{processors::processor::implementations::image::ChannelPacking, types::AlphaMode};
+use crate::{processors::image::ChannelPacking, types::AlphaMode};
 
 pub mod gltf;
 pub mod shader;
@@ -18,7 +18,7 @@ pub struct BrdfMaterialDescription {
 	pub nodes: Vec<BrdfNode>,
 	pub surface: BrdfNodeId,
 	pub double_sided: bool,
-	pub alpha_mode: BrdfAlphaMode,
+	pub alpha_mode: AlphaMode,
 }
 
 impl BrdfMaterialDescription {
@@ -45,63 +45,42 @@ impl BrdfMaterialDescription {
 		mut packing_for: impl FnMut(u32) -> Option<ChannelPacking>,
 	) -> Result<(), BrdfMaterialValidationError> {
 		for index in 0..self.nodes.len() {
-			let BrdfNode::ExtractChannel { source, channel } = self.nodes[index] else {
-				continue;
-			};
-			let BrdfNode::Texture(texture) = self.node(source)? else {
-				continue;
-			};
-			let Some(packing) = packing_for(texture.image_index) else {
-				continue;
-			};
-			let stored = packing
-				.stored_channel(channel.index())
-				.and_then(BrdfChannel::from_index)
-				.ok_or(BrdfMaterialValidationError::ChannelNotStored {
-					node: BrdfNodeId::new(index as u32),
-					channel,
-				})?;
-			self.nodes[index] = BrdfNode::ExtractChannel { source, channel: stored };
+			if let BrdfNode::ExtractChannel { source, channel } = self.nodes[index]
+				&& let BrdfNode::Texture(texture) = self.node(source)?
+				&& let Some(packing) = packing_for(texture.image_index)
+			{
+				let stored = packing
+					.stored_channel(channel.index())
+					.and_then(BrdfChannel::from_index)
+					.ok_or(BrdfMaterialValidationError::ChannelNotStored {
+						node: BrdfNodeId::new(index as u32),
+						channel,
+					})?;
+				self.nodes[index] = BrdfNode::ExtractChannel { source, channel: stored };
+			}
 		}
 		Ok(())
 	}
 
 	/// Validates that all node references point to existing nodes and that the graph root is a surface node.
 	pub fn validate(&self) -> Result<(), BrdfMaterialValidationError> {
-		self.ensure_node_exists(self.surface)?;
-
-		match self.node(self.surface)? {
-			BrdfNode::MetallicRoughness(_) => {}
-			_ => return Err(BrdfMaterialValidationError::SurfaceNodeMustBeBrdf),
+		if !matches!(self.node(self.surface)?, BrdfNode::MetallicRoughness(_)) {
+			return Err(BrdfMaterialValidationError::SurfaceNodeMustBeBrdf);
 		}
 
 		for (index, node) in self.nodes.iter().enumerate() {
 			let node_id = BrdfNodeId::new(index as u32);
-			match node {
+			match *node {
 				BrdfNode::Constant(_) | BrdfNode::Texture(_) => {}
-				BrdfNode::Multiply { left, right } => {
-					self.ensure_child_node_exists(node_id, *left)?;
-					self.ensure_child_node_exists(node_id, *right)?;
-				}
-				BrdfNode::ExtractChannel { source, .. } => {
-					self.ensure_child_node_exists(node_id, *source)?;
-				}
+				BrdfNode::Multiply { left, right } => self.ensure_children_exist(node_id, [left, right])?,
+				BrdfNode::ExtractChannel { source, .. }
+				| BrdfNode::NormalMap { source, .. }
+				| BrdfNode::Occlusion { source, .. }
+				| BrdfNode::Emission { color: source } => self.ensure_children_exist(node_id, [source])?,
 				BrdfNode::MetallicRoughness(brdf) => {
-					self.ensure_child_node_exists(node_id, brdf.base_color)?;
-					self.ensure_child_node_exists(node_id, brdf.metallic)?;
-					self.ensure_child_node_exists(node_id, brdf.roughness)?;
-					self.ensure_optional_child_node_exists(node_id, brdf.normal)?;
-					self.ensure_optional_child_node_exists(node_id, brdf.occlusion)?;
-					self.ensure_optional_child_node_exists(node_id, brdf.emission)?;
-				}
-				BrdfNode::NormalMap { source, .. } => {
-					self.ensure_child_node_exists(node_id, *source)?;
-				}
-				BrdfNode::Occlusion { source, .. } => {
-					self.ensure_child_node_exists(node_id, *source)?;
-				}
-				BrdfNode::Emission { color } => {
-					self.ensure_child_node_exists(node_id, *color)?;
+					let required = [brdf.base_color, brdf.metallic, brdf.roughness];
+					let optional = [brdf.normal, brdf.occlusion, brdf.emission];
+					self.ensure_children_exist(node_id, required.into_iter().chain(optional.into_iter().flatten()))?;
 				}
 			}
 		}
@@ -115,31 +94,15 @@ impl BrdfMaterialDescription {
 			.ok_or(BrdfMaterialValidationError::MissingNode { id })
 	}
 
-	fn ensure_node_exists(&self, id: BrdfNodeId) -> Result<(), BrdfMaterialValidationError> {
-		if id.index() < self.nodes.len() {
-			Ok(())
-		} else {
-			Err(BrdfMaterialValidationError::MissingNode { id })
-		}
-	}
-
-	fn ensure_child_node_exists(&self, node: BrdfNodeId, child: BrdfNodeId) -> Result<(), BrdfMaterialValidationError> {
-		if child.index() < self.nodes.len() {
-			Ok(())
-		} else {
-			Err(BrdfMaterialValidationError::MissingChildNode { node, child })
-		}
-	}
-
-	fn ensure_optional_child_node_exists(
+	/// Reports the first of `children` that `node` references but the graph doesn't contain.
+	fn ensure_children_exist(
 		&self,
 		node: BrdfNodeId,
-		child: Option<BrdfNodeId>,
+		children: impl IntoIterator<Item = BrdfNodeId>,
 	) -> Result<(), BrdfMaterialValidationError> {
-		if let Some(child) = child {
-			self.ensure_child_node_exists(node, child)
-		} else {
-			Ok(())
+		match children.into_iter().find(|child| child.index() >= self.nodes.len()) {
+			Some(child) => Err(BrdfMaterialValidationError::MissingChildNode { node, child }),
+			None => Ok(()),
 		}
 	}
 }
@@ -244,12 +207,7 @@ pub enum BrdfChannel {
 impl BrdfChannel {
 	/// Returns the channel's position in an RGBA texel.
 	pub fn index(self) -> usize {
-		match self {
-			Self::Red => 0,
-			Self::Green => 1,
-			Self::Blue => 2,
-			Self::Alpha => 3,
-		}
+		self as usize
 	}
 
 	/// Returns the channel at `index` in an RGBA texel.
@@ -269,36 +227,6 @@ pub struct BrdfMetallicRoughness {
 	pub normal: Option<BrdfNodeId>,
 	pub occlusion: Option<BrdfNodeId>,
 	pub emission: Option<BrdfNodeId>,
-}
-
-/// The `BrdfAlphaMode` enum identifies how alpha affects surface visibility.
-#[derive(
-	Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-pub enum BrdfAlphaMode {
-	Opaque,
-	Mask(f32),
-	Blend,
-}
-
-impl From<AlphaMode> for BrdfAlphaMode {
-	fn from(value: AlphaMode) -> Self {
-		match value {
-			AlphaMode::Opaque => BrdfAlphaMode::Opaque,
-			AlphaMode::Mask(cutoff) => BrdfAlphaMode::Mask(cutoff),
-			AlphaMode::Blend => BrdfAlphaMode::Blend,
-		}
-	}
-}
-
-impl From<BrdfAlphaMode> for AlphaMode {
-	fn from(value: BrdfAlphaMode) -> Self {
-		match value {
-			BrdfAlphaMode::Opaque => AlphaMode::Opaque,
-			BrdfAlphaMode::Mask(cutoff) => AlphaMode::Mask(cutoff),
-			BrdfAlphaMode::Blend => AlphaMode::Blend,
-		}
-	}
 }
 
 /// The `BrdfMaterialBuilder` struct builds flat material graphs while assigning stable node ids.
@@ -344,7 +272,7 @@ impl BrdfMaterialBuilder {
 		name: Option<String>,
 		surface: BrdfNodeId,
 		double_sided: bool,
-		alpha_mode: BrdfAlphaMode,
+		alpha_mode: AlphaMode,
 	) -> BrdfMaterialDescription {
 		BrdfMaterialDescription {
 			name,
@@ -383,7 +311,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		let mut material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let mut material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		material
 			.pack_texture_channels(|image| (image == 0).then_some(packing))
@@ -423,7 +351,7 @@ mod tests {
 			nodes: Vec::new(),
 			surface: BrdfNodeId::new(0),
 			double_sided: false,
-			alpha_mode: BrdfAlphaMode::Opaque,
+			alpha_mode: AlphaMode::Opaque,
 		};
 
 		assert_eq!(
@@ -436,7 +364,7 @@ mod tests {
 	fn validation_rejects_non_brdf_surface_node() {
 		let mut builder = BrdfMaterialBuilder::new();
 		let surface = builder.constant(BrdfValue::Scalar(1.0));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		assert_eq!(material.validate(), Err(BrdfMaterialValidationError::SurfaceNodeMustBeBrdf));
 	}
@@ -455,7 +383,7 @@ mod tests {
 			})],
 			surface: BrdfNodeId::new(0),
 			double_sided: false,
-			alpha_mode: BrdfAlphaMode::Opaque,
+			alpha_mode: AlphaMode::Opaque,
 		};
 
 		assert_eq!(

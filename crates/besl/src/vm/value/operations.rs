@@ -1,11 +1,15 @@
 use super::*;
 
 pub(crate) fn lerp_rgba(left: [f32; 4], right: [f32; 4], factor: f32) -> [f32; 4] {
-	let mut value = [0.0; 4];
-	for index in 0..4 {
-		value[index] = left[index] + (right[index] - left[index]) * factor;
+	std::array::from_fn(|index| left[index] + (right[index] - left[index]) * factor)
+}
+
+/// Reports that a `found` value was used where an `expected` one is required.
+pub(crate) fn type_mismatch(expected: &ValueType, found: &ValueType) -> VmError {
+	VmError::TypeMismatch {
+		expected: expected.name().to_string(),
+		found: found.name().to_string(),
 	}
-	value
 }
 
 pub(crate) fn normalized_linear_axis(uv: f32, size: u32) -> (u32, u32, f32) {
@@ -88,10 +92,7 @@ pub(crate) fn binary_result_type(
 	if supports_scalar_broadcast(right) && vector_scalar_type(right).as_ref() == Some(left) {
 		return Ok(right.clone());
 	}
-	Err(VmError::TypeMismatch {
-		expected: left.name().to_string(),
-		found: right.name().to_string(),
-	})
+	Err(type_mismatch(left, right))
 }
 
 pub(crate) fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
@@ -152,91 +153,111 @@ pub(crate) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		(Value::F16(left), Value::F16(right)) => apply_f16_arithmetic(*left, *right, operator).map(Value::F16),
 		(Value::F32(left), Value::F32(right)) => apply_float_arithmetic(*left, *right, operator).map(Value::F32),
 		(Value::Vec2U16(left), Value::Vec2U16(right)) => {
-			apply_integer_array_arithmetic::<u16, 2>(*left, *right, operator).map(Value::Vec2U16)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec2U16)
 		}
 		(Value::Vec4U16(left), Value::Vec4U16(right)) => {
-			apply_integer_array_arithmetic::<u16, 4>(*left, *right, operator).map(Value::Vec4U16)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec4U16)
 		}
 		(Value::Vec2I(left), Value::Vec2I(right)) => {
-			apply_integer_array_arithmetic::<i32, 2>(*left, *right, operator).map(Value::Vec2I)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec2I)
 		}
 		(Value::Vec2U(left), Value::Vec2U(right)) => {
-			apply_integer_array_arithmetic::<u32, 2>(*left, *right, operator).map(Value::Vec2U)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec2U)
 		}
 		(Value::Vec3U(left), Value::Vec3U(right)) => {
-			apply_integer_array_arithmetic::<u32, 3>(*left, *right, operator).map(Value::Vec3U)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec3U)
 		}
 		(Value::Vec4U(left), Value::Vec4U(right)) => {
-			apply_integer_array_arithmetic::<u32, 4>(*left, *right, operator).map(Value::Vec4U)
+			apply_lanes(*left, *right, operator, apply_integer_arithmetic).map(Value::Vec4U)
 		}
 		(Value::Vec2F16(left), Value::Vec2F16(right)) => {
-			apply_f16_array_arithmetic::<2>(*left, *right, operator).map(Value::Vec2F16)
+			apply_lanes(*left, *right, operator, apply_f16_arithmetic).map(Value::Vec2F16)
 		}
 		(Value::Vec3F16(left), Value::Vec3F16(right)) => {
-			apply_f16_array_arithmetic::<3>(*left, *right, operator).map(Value::Vec3F16)
+			apply_lanes(*left, *right, operator, apply_f16_arithmetic).map(Value::Vec3F16)
 		}
 		(Value::Vec4F16(left), Value::Vec4F16(right)) => {
-			apply_f16_array_arithmetic::<4>(*left, *right, operator).map(Value::Vec4F16)
+			apply_lanes(*left, *right, operator, apply_f16_arithmetic).map(Value::Vec4F16)
 		}
 		(Value::Vec2F(left), Value::Vec2F(right)) => {
-			apply_float_array_arithmetic::<2>(*left, *right, operator).map(Value::Vec2F)
+			apply_lanes(*left, *right, operator, apply_float_arithmetic).map(Value::Vec2F)
 		}
 		(Value::Vec3F(left), Value::Vec3F(right)) => {
-			apply_float_array_arithmetic::<3>(*left, *right, operator).map(Value::Vec3F)
+			apply_lanes(*left, *right, operator, apply_float_arithmetic).map(Value::Vec3F)
 		}
 		(Value::Vec4F(left), Value::Vec4F(right)) => {
-			apply_float_array_arithmetic::<4>(*left, *right, operator).map(Value::Vec4F)
+			apply_lanes(*left, *right, operator, apply_float_arithmetic).map(Value::Vec4F)
 		}
 		(Value::Mat4F(left), Value::Mat4F(right)) => {
-			apply_float_array_arithmetic::<16>(*left, *right, operator).map(Value::Mat4F)
+			apply_lanes(*left, *right, operator, apply_float_arithmetic).map(Value::Mat4F)
 		}
 		(Value::Mat4x3F(left), Value::Mat4x3F(right)) => {
-			apply_float_array_arithmetic::<12>(*left, *right, operator).map(Value::Mat4x3F)
+			apply_lanes(*left, *right, operator, apply_float_arithmetic).map(Value::Mat4x3F)
 		}
 		(Value::Vec2F16(left), Value::F16(right)) => {
-			apply_f16_scalar_broadcast::<2>(*left, *right, operator).map(Value::Vec2F16)
+			apply_lanes(*left, [*right; 2], operator, apply_f16_arithmetic).map(Value::Vec2F16)
 		}
 		(Value::Vec3F16(left), Value::F16(right)) => {
-			apply_f16_scalar_broadcast::<3>(*left, *right, operator).map(Value::Vec3F16)
+			apply_lanes(*left, [*right; 3], operator, apply_f16_arithmetic).map(Value::Vec3F16)
 		}
 		(Value::Vec4F16(left), Value::F16(right)) => {
-			apply_f16_scalar_broadcast::<4>(*left, *right, operator).map(Value::Vec4F16)
+			apply_lanes(*left, [*right; 4], operator, apply_f16_arithmetic).map(Value::Vec4F16)
 		}
-		(Value::Vec2F(left), Value::F32(right)) => apply_float_scalar_broadcast::<2>(*left, *right, operator).map(Value::Vec2F),
-		(Value::Vec3F(left), Value::F32(right)) => apply_float_scalar_broadcast::<3>(*left, *right, operator).map(Value::Vec3F),
-		(Value::Vec4F(left), Value::F32(right)) => apply_float_scalar_broadcast::<4>(*left, *right, operator).map(Value::Vec4F),
+		(Value::Vec2F(left), Value::F32(right)) => {
+			apply_lanes(*left, [*right; 2], operator, apply_float_arithmetic).map(Value::Vec2F)
+		}
+		(Value::Vec3F(left), Value::F32(right)) => {
+			apply_lanes(*left, [*right; 3], operator, apply_float_arithmetic).map(Value::Vec3F)
+		}
+		(Value::Vec4F(left), Value::F32(right)) => {
+			apply_lanes(*left, [*right; 4], operator, apply_float_arithmetic).map(Value::Vec4F)
+		}
 		(Value::Mat4F(left), Value::F32(right)) => {
-			apply_float_scalar_broadcast::<16>(*left, *right, operator).map(Value::Mat4F)
+			apply_lanes(*left, [*right; 16], operator, apply_float_arithmetic).map(Value::Mat4F)
 		}
 		(Value::Mat4x3F(left), Value::F32(right)) => {
-			apply_float_scalar_broadcast::<12>(*left, *right, operator).map(Value::Mat4x3F)
+			apply_lanes(*left, [*right; 12], operator, apply_float_arithmetic).map(Value::Mat4x3F)
 		}
 		(Value::F16(left), Value::Vec2F16(right)) => {
-			apply_scalar_f16_broadcast::<2>(*left, *right, operator).map(Value::Vec2F16)
+			apply_lanes([*left; 2], *right, operator, apply_f16_arithmetic).map(Value::Vec2F16)
 		}
 		(Value::F16(left), Value::Vec3F16(right)) => {
-			apply_scalar_f16_broadcast::<3>(*left, *right, operator).map(Value::Vec3F16)
+			apply_lanes([*left; 3], *right, operator, apply_f16_arithmetic).map(Value::Vec3F16)
 		}
 		(Value::F16(left), Value::Vec4F16(right)) => {
-			apply_scalar_f16_broadcast::<4>(*left, *right, operator).map(Value::Vec4F16)
+			apply_lanes([*left; 4], *right, operator, apply_f16_arithmetic).map(Value::Vec4F16)
 		}
-		(Value::F32(left), Value::Vec2F(right)) => apply_scalar_float_broadcast::<2>(*left, *right, operator).map(Value::Vec2F),
-		(Value::F32(left), Value::Vec3F(right)) => apply_scalar_float_broadcast::<3>(*left, *right, operator).map(Value::Vec3F),
-		(Value::F32(left), Value::Vec4F(right)) => apply_scalar_float_broadcast::<4>(*left, *right, operator).map(Value::Vec4F),
+		(Value::F32(left), Value::Vec2F(right)) => {
+			apply_lanes([*left; 2], *right, operator, apply_float_arithmetic).map(Value::Vec2F)
+		}
+		(Value::F32(left), Value::Vec3F(right)) => {
+			apply_lanes([*left; 3], *right, operator, apply_float_arithmetic).map(Value::Vec3F)
+		}
+		(Value::F32(left), Value::Vec4F(right)) => {
+			apply_lanes([*left; 4], *right, operator, apply_float_arithmetic).map(Value::Vec4F)
+		}
 		(Value::F32(left), Value::Mat4F(right)) => {
-			apply_scalar_float_broadcast::<16>(*left, *right, operator).map(Value::Mat4F)
+			apply_lanes([*left; 16], *right, operator, apply_float_arithmetic).map(Value::Mat4F)
 		}
 		(Value::F32(left), Value::Mat4x3F(right)) => {
-			apply_scalar_float_broadcast::<12>(*left, *right, operator).map(Value::Mat4x3F)
+			apply_lanes([*left; 12], *right, operator, apply_float_arithmetic).map(Value::Mat4x3F)
 		}
-		(left, right) => Err(VmError::TypeMismatch {
-			expected: left.value_type().name().to_string(),
-			found: right.value_type().name().to_string(),
-		}),
+		(left, right) => Err(type_mismatch(&left.value_type(), &right.value_type())),
 	}
 }
 
 pub(crate) fn apply_comparison(operator: ComparisonOperator, left: &Value, right: &Value) -> Result<Value, VmError> {
+	/// Orders two scalars of one type, with IEEE semantics for floats.
+	fn compare<T: PartialOrd>(operator: ComparisonOperator, left: T, right: T) -> bool {
+		match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			ComparisonOperator::LessThan => left < right,
+			ComparisonOperator::GreaterThan => left > right,
+			ComparisonOperator::LessThanOrEqual => left <= right,
+			ComparisonOperator::GreaterThanOrEqual => left >= right,
+		}
+	}
 	match (left, right) {
 		(Value::Bool(left), Value::Bool(right)) => Ok(Value::Bool(match operator {
 			ComparisonOperator::Equal => left == right,
@@ -248,42 +269,11 @@ pub(crate) fn apply_comparison(operator: ComparisonOperator, left: &Value, right
 				});
 			}
 		})),
-		(Value::U32(left), Value::U32(right)) => Ok(Value::Bool(match operator {
-			ComparisonOperator::Equal => left == right,
-			ComparisonOperator::NotEqual => left != right,
-			ComparisonOperator::LessThan => left < right,
-			ComparisonOperator::GreaterThan => left > right,
-			ComparisonOperator::LessThanOrEqual => left <= right,
-			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		})),
-		(Value::I32(left), Value::I32(right)) => Ok(Value::Bool(match operator {
-			ComparisonOperator::Equal => left == right,
-			ComparisonOperator::NotEqual => left != right,
-			ComparisonOperator::LessThan => left < right,
-			ComparisonOperator::GreaterThan => left > right,
-			ComparisonOperator::LessThanOrEqual => left <= right,
-			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		})),
-		(Value::F16(left), Value::F16(right)) => Ok(Value::Bool(match operator {
-			ComparisonOperator::Equal => left == right,
-			ComparisonOperator::NotEqual => left != right,
-			ComparisonOperator::LessThan => left < right,
-			ComparisonOperator::GreaterThan => left > right,
-			ComparisonOperator::LessThanOrEqual => left <= right,
-			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		})),
-		(Value::F32(left), Value::F32(right)) => Ok(Value::Bool(match operator {
-			ComparisonOperator::Equal => left == right,
-			ComparisonOperator::NotEqual => left != right,
-			ComparisonOperator::LessThan => left < right,
-			ComparisonOperator::GreaterThan => left > right,
-			ComparisonOperator::LessThanOrEqual => left <= right,
-			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		})),
-		(left, right) => Err(VmError::TypeMismatch {
-			expected: left.value_type().name().to_string(),
-			found: right.value_type().name().to_string(),
-		}),
+		(Value::U32(left), Value::U32(right)) => Ok(Value::Bool(compare(operator, left, right))),
+		(Value::I32(left), Value::I32(right)) => Ok(Value::Bool(compare(operator, left, right))),
+		(Value::F16(left), Value::F16(right)) => Ok(Value::Bool(compare(operator, left, right))),
+		(Value::F32(left), Value::F32(right)) => Ok(Value::Bool(compare(operator, left, right))),
+		(left, right) => Err(type_mismatch(&left.value_type(), &right.value_type())),
 	}
 }
 
@@ -314,31 +304,22 @@ pub(crate) fn apply_float_predicate(predicate: FloatPredicate, value: &Value) ->
 
 /// Applies one relaxed scalar integer read-modify-write operation and returns the replacement value.
 pub(crate) fn apply_atomic_operation(operation: AtomicOperation, previous: &Value, operand: &Value) -> Result<Value, VmError> {
+	fn apply<T: VmInteger + Ord>(operation: AtomicOperation, previous: T, operand: T) -> T {
+		match operation {
+			AtomicOperation::Exchange => operand,
+			AtomicOperation::Add => previous.wrapping_add(operand),
+			AtomicOperation::Subtract => previous.wrapping_sub(operand),
+			AtomicOperation::Min => previous.min(operand),
+			AtomicOperation::Max => previous.max(operand),
+			AtomicOperation::And => previous & operand,
+			AtomicOperation::Or => previous | operand,
+			AtomicOperation::Xor => previous ^ operand,
+		}
+	}
 	match (previous, operand) {
-		(Value::U32(previous), Value::U32(operand)) => Ok(Value::U32(match operation {
-			AtomicOperation::Exchange => *operand,
-			AtomicOperation::Add => previous.wrapping_add(*operand),
-			AtomicOperation::Subtract => previous.wrapping_sub(*operand),
-			AtomicOperation::Min => (*previous).min(*operand),
-			AtomicOperation::Max => (*previous).max(*operand),
-			AtomicOperation::And => *previous & *operand,
-			AtomicOperation::Or => *previous | *operand,
-			AtomicOperation::Xor => *previous ^ *operand,
-		})),
-		(Value::I32(previous), Value::I32(operand)) => Ok(Value::I32(match operation {
-			AtomicOperation::Exchange => *operand,
-			AtomicOperation::Add => previous.wrapping_add(*operand),
-			AtomicOperation::Subtract => previous.wrapping_sub(*operand),
-			AtomicOperation::Min => (*previous).min(*operand),
-			AtomicOperation::Max => (*previous).max(*operand),
-			AtomicOperation::And => *previous & *operand,
-			AtomicOperation::Or => *previous | *operand,
-			AtomicOperation::Xor => *previous ^ *operand,
-		})),
-		(previous, operand) => Err(VmError::TypeMismatch {
-			expected: previous.value_type().name().to_string(),
-			found: operand.value_type().name().to_string(),
-		}),
+		(Value::U32(previous), Value::U32(operand)) => Ok(Value::U32(apply(operation, *previous, *operand))),
+		(Value::I32(previous), Value::I32(operand)) => Ok(Value::I32(apply(operation, *previous, *operand))),
+		(previous, operand) => Err(type_mismatch(&previous.value_type(), &operand.value_type())),
 	}
 }
 
@@ -373,7 +354,9 @@ pub(crate) fn switch_label(value: &Value) -> Result<u32, VmError> {
 }
 
 /// The `VmInteger` trait keeps integer instruction semantics consistent across BESL scalar widths.
-trait VmInteger: Copy + PartialEq + Default {
+trait VmInteger:
+	Copy + PartialEq + Default + std::ops::BitAnd<Output = Self> + std::ops::BitOr<Output = Self> + std::ops::BitXor<Output = Self>
+{
 	fn wrapping_add(self, right: Self) -> Self;
 	fn wrapping_sub(self, right: Self) -> Self;
 	fn wrapping_mul(self, right: Self) -> Self;
@@ -381,9 +364,6 @@ trait VmInteger: Copy + PartialEq + Default {
 	fn wrapping_rem(self, right: Self) -> Self;
 	fn wrapping_shl(self, right: Self) -> Self;
 	fn wrapping_shr(self, right: Self) -> Self;
-	fn bitand(self, right: Self) -> Self;
-	fn bitor(self, right: Self) -> Self;
-	fn bitxor(self, right: Self) -> Self;
 }
 
 macro_rules! impl_vm_integer {
@@ -396,9 +376,6 @@ macro_rules! impl_vm_integer {
 			fn wrapping_rem(self, right: Self) -> Self { self.wrapping_rem(right) }
 			fn wrapping_shl(self, right: Self) -> Self { self.wrapping_shl(right as u32) }
 			fn wrapping_shr(self, right: Self) -> Self { self.wrapping_shr(right as u32) }
-			fn bitand(self, right: Self) -> Self { self & right }
-			fn bitor(self, right: Self) -> Self { self | right }
-			fn bitxor(self, right: Self) -> Self { self ^ right }
 		})+
 	};
 }
@@ -411,41 +388,35 @@ fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: Arithmeti
 		ArithmeticOperator::Add => Ok(left.wrapping_add(right)),
 		ArithmeticOperator::Subtract => Ok(left.wrapping_sub(right)),
 		ArithmeticOperator::Multiply => Ok(left.wrapping_mul(right)),
-		ArithmeticOperator::Divide => {
-			if right == zero {
-				return Err(VmError::ArithmeticError {
-					message: "Division by zero".to_string(),
-				});
-			}
-			Ok(left.wrapping_div(right))
-		}
-		ArithmeticOperator::Modulo => {
-			if right == zero {
-				return Err(VmError::ArithmeticError {
-					message: "Modulo by zero".to_string(),
-				});
-			}
-			Ok(left.wrapping_rem(right))
-		}
+		ArithmeticOperator::Divide if right == zero => Err(VmError::ArithmeticError {
+			message: "Division by zero".to_string(),
+		}),
+		ArithmeticOperator::Modulo if right == zero => Err(VmError::ArithmeticError {
+			message: "Modulo by zero".to_string(),
+		}),
+		ArithmeticOperator::Divide => Ok(left.wrapping_div(right)),
+		ArithmeticOperator::Modulo => Ok(left.wrapping_rem(right)),
 		ArithmeticOperator::ShiftLeft => Ok(left.wrapping_shl(right)),
 		ArithmeticOperator::ShiftRight => Ok(left.wrapping_shr(right)),
-		ArithmeticOperator::BitwiseAnd => Ok(left.bitand(right)),
-		ArithmeticOperator::BitwiseOr => Ok(left.bitor(right)),
-		ArithmeticOperator::BitwiseXor => Ok(left.bitxor(right)),
+		ArithmeticOperator::BitwiseAnd => Ok(left & right),
+		ArithmeticOperator::BitwiseOr => Ok(left | right),
+		ArithmeticOperator::BitwiseXor => Ok(left ^ right),
 		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
 			unreachable!("Logical operations are evaluated before integer arithmetic")
 		}
 	}
 }
 
-fn apply_integer_array_arithmetic<T: VmInteger, const N: usize>(
+/// Applies `apply` lane by lane, as BESL vector arithmetic does. Pass `[scalar; N]` to broadcast a scalar operand.
+fn apply_lanes<T: Copy + Default, const N: usize>(
 	left: [T; N],
 	right: [T; N],
 	operator: ArithmeticOperator,
+	apply: impl Fn(T, T, ArithmeticOperator) -> Result<T, VmError>,
 ) -> Result<[T; N], VmError> {
 	let mut values = [T::default(); N];
 	for index in 0..N {
-		values[index] = apply_integer_arithmetic(left[index], right[index], operator)?;
+		values[index] = apply(left[index], right[index], operator)?;
 	}
 	Ok(values)
 }
@@ -473,42 +444,6 @@ fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> 
 	Ok(f16::from_f32(value))
 }
 
-fn apply_f16_array_arithmetic<const N: usize>(
-	left: [f16; N],
-	right: [f16; N],
-	operator: ArithmeticOperator,
-) -> Result<[f16; N], VmError> {
-	let mut values = [f16::from_f32(0.0); N];
-	for index in 0..N {
-		values[index] = apply_f16_arithmetic(left[index], right[index], operator)?;
-	}
-	Ok(values)
-}
-
-fn apply_f16_scalar_broadcast<const N: usize>(
-	left: [f16; N],
-	right: f16,
-	operator: ArithmeticOperator,
-) -> Result<[f16; N], VmError> {
-	let mut values = [f16::from_f32(0.0); N];
-	for index in 0..N {
-		values[index] = apply_f16_arithmetic(left[index], right, operator)?;
-	}
-	Ok(values)
-}
-
-fn apply_scalar_f16_broadcast<const N: usize>(
-	left: f16,
-	right: [f16; N],
-	operator: ArithmeticOperator,
-) -> Result<[f16; N], VmError> {
-	let mut values = [f16::from_f32(0.0); N];
-	for index in 0..N {
-		values[index] = apply_f16_arithmetic(left, right[index], operator)?;
-	}
-	Ok(values)
-}
-
 pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: ArithmeticOperator) -> Result<f32, VmError> {
 	match operator {
 		ArithmeticOperator::Add => Ok(left + right),
@@ -529,42 +464,6 @@ pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: Arithmetic
 	}
 }
 
-pub(crate) fn apply_float_array_arithmetic<const N: usize>(
-	left: [f32; N],
-	right: [f32; N],
-	operator: ArithmeticOperator,
-) -> Result<[f32; N], VmError> {
-	let mut values = [0.0; N];
-	for index in 0..N {
-		values[index] = apply_float_arithmetic(left[index], right[index], operator)?;
-	}
-	Ok(values)
-}
-
-pub(crate) fn apply_float_scalar_broadcast<const N: usize>(
-	left: [f32; N],
-	right: f32,
-	operator: ArithmeticOperator,
-) -> Result<[f32; N], VmError> {
-	let mut values = [0.0; N];
-	for index in 0..N {
-		values[index] = apply_float_arithmetic(left[index], right, operator)?;
-	}
-	Ok(values)
-}
-
-pub(crate) fn apply_scalar_float_broadcast<const N: usize>(
-	left: f32,
-	right: [f32; N],
-	operator: ArithmeticOperator,
-) -> Result<[f32; N], VmError> {
-	let mut values = [0.0; N];
-	for index in 0..N {
-		values[index] = apply_float_arithmetic(left, right[index], operator)?;
-	}
-	Ok(values)
-}
-
 pub(crate) fn apply_dot_product(left: &Value, right: &Value) -> Result<Value, VmError> {
 	match (left, right) {
 		(Value::Vec2F(left), Value::Vec2F(right)) => Ok(Value::F32(dot_product(*left, *right))),
@@ -582,20 +481,14 @@ pub(crate) fn apply_dot_product(left: &Value, right: &Value) -> Result<Value, Vm
 			left.map(f16::to_f32),
 			right.map(f16::to_f32),
 		)))),
-		(left, right) => Err(VmError::TypeMismatch {
-			expected: left.value_type().name().to_string(),
-			found: right.value_type().name().to_string(),
-		}),
+		(left, right) => Err(type_mismatch(&left.value_type(), &right.value_type())),
 	}
 }
 
 pub(crate) fn apply_cross_product(left: &Value, right: &Value) -> Result<Value, VmError> {
 	match (left, right) {
 		(Value::Vec3F(left), Value::Vec3F(right)) => Ok(Value::Vec3F(cross_product(*left, *right))),
-		(left, right) => Err(VmError::TypeMismatch {
-			expected: left.value_type().name().to_string(),
-			found: right.value_type().name().to_string(),
-		}),
+		(left, right) => Err(type_mismatch(&left.value_type(), &right.value_type())),
 	}
 }
 
@@ -640,176 +533,53 @@ pub(crate) fn apply_reflect(incident: &Value, normal: &Value) -> Result<Value, V
 		(Value::Vec2F(incident), Value::Vec2F(normal)) => reflect_vector(*incident, *normal).map(Value::Vec2F),
 		(Value::Vec3F(incident), Value::Vec3F(normal)) => reflect_vector(*incident, *normal).map(Value::Vec3F),
 		(Value::Vec4F(incident), Value::Vec4F(normal)) => reflect_vector(*incident, *normal).map(Value::Vec4F),
-		(incident, normal) => Err(VmError::TypeMismatch {
-			expected: incident.value_type().name().to_string(),
-			found: normal.value_type().name().to_string(),
-		}),
+		(incident, normal) => Err(type_mismatch(&incident.value_type(), &normal.value_type())),
 	}
 }
 
-// The exhaustive value-shape match keeps scalar and vector unary semantics visibly aligned.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -> Result<Value, VmError> {
-	match operator {
-		ScalarUnaryOperator::FromF16ToF32 => {
-			let Value::F16(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::F16.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F32(value.to_f32()));
-		}
-		ScalarUnaryOperator::FromU32ToF32 => {
-			let Value::U32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F32(*value as f32));
-		}
-		ScalarUnaryOperator::FromI32ToF32 => {
-			let Value::I32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::I32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F32(*value as f32));
-		}
-		ScalarUnaryOperator::FromF32ToF16 => {
-			let Value::F32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::F32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F16(f16::from_f32(*value)));
-		}
-		ScalarUnaryOperator::FromU32ToF16 => {
-			let Value::U32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F16(f16::from_f32(*value as f32)));
-		}
-		ScalarUnaryOperator::FromI32ToF16 => {
-			let Value::I32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::I32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::F16(f16::from_f32(*value as f32)));
-		}
-		ScalarUnaryOperator::FromF32ToU32 => {
-			let Value::F32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::F32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::U32(*value as u32));
-		}
-		ScalarUnaryOperator::FromF16ToU32 => {
-			let Value::F16(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::F16.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			return Ok(Value::U32(value.to_f32() as u32));
-		}
-		ScalarUnaryOperator::FromU8ToU32 => {
-			let Value::U8(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U8.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-			return Ok(Value::U32(u32::from(*value)));
-		}
-		ScalarUnaryOperator::FromU16ToU32 => {
-			let Value::U16(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U16.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-			return Ok(Value::U32(u32::from(*value)));
-		}
-		ScalarUnaryOperator::FromU32ToU16 => {
-			let Value::U32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-			return Ok(Value::U16(*value as u16));
-		}
-		ScalarUnaryOperator::FindLsb => {
-			let Value::U32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-			return Ok(Value::U32(if *value == 0 { u32::MAX } else { value.trailing_zeros() }));
-		}
-		ScalarUnaryOperator::FromI32ToU32 => {
-			let Value::I32(value) = value else {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::I32.name().to_string(),
-					found: value.value_type().name().to_string(),
-				});
-			};
-
-			// Signed-to-unsigned shader casts preserve the low 32 bits for negative inputs.
-			return Ok(Value::U32(*value as u32));
-		}
-		_ => {}
+	use ScalarUnaryOperator as Unary;
+	// A conversion or `find_lsb` reports the scalar type its operator reads when given any other value.
+	let mismatch = |expected: ValueType| Err(type_mismatch(&expected, &value.value_type()));
+	match (operator, value) {
+		(Unary::FromF16ToF32, Value::F16(value)) => Ok(Value::F32(value.to_f32())),
+		(Unary::FromU32ToF32, Value::U32(value)) => Ok(Value::F32(*value as f32)),
+		(Unary::FromI32ToF32, Value::I32(value)) => Ok(Value::F32(*value as f32)),
+		(Unary::FromF32ToF16, Value::F32(value)) => Ok(Value::F16(f16::from_f32(*value))),
+		(Unary::FromU32ToF16, Value::U32(value)) => Ok(Value::F16(f16::from_f32(*value as f32))),
+		(Unary::FromI32ToF16, Value::I32(value)) => Ok(Value::F16(f16::from_f32(*value as f32))),
+		(Unary::FromF32ToU32, Value::F32(value)) => Ok(Value::U32(*value as u32)),
+		(Unary::FromF16ToU32, Value::F16(value)) => Ok(Value::U32(value.to_f32() as u32)),
+		(Unary::FromU8ToU32, Value::U8(value)) => Ok(Value::U32(u32::from(*value))),
+		(Unary::FromU16ToU32, Value::U16(value)) => Ok(Value::U32(u32::from(*value))),
+		(Unary::FromU32ToU16, Value::U32(value)) => Ok(Value::U16(*value as u16)),
+		(Unary::FindLsb, Value::U32(value)) => Ok(Value::U32(if *value == 0 { u32::MAX } else { value.trailing_zeros() })),
+		// Signed-to-unsigned shader casts preserve the low 32 bits for negative inputs.
+		(Unary::FromI32ToU32, Value::I32(value)) => Ok(Value::U32(*value as u32)),
+		(Unary::FromF16ToF32 | Unary::FromF16ToU32, _) => mismatch(ValueType::F16),
+		(Unary::FromF32ToF16 | Unary::FromF32ToU32, _) => mismatch(ValueType::F32),
+		(Unary::FromU8ToU32, _) => mismatch(ValueType::U8),
+		(Unary::FromU16ToU32, _) => mismatch(ValueType::U16),
+		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FindLsb, _) => mismatch(ValueType::U32),
+		(Unary::FromI32ToF32 | Unary::FromI32ToF16 | Unary::FromI32ToU32, _) => mismatch(ValueType::I32),
+		_ => map_float_value(value, |value| match operator {
+			Unary::Abs => value.abs(),
+			Unary::Sqrt => value.sqrt(),
+			Unary::Exp => value.exp(),
+			Unary::Sin => value.sin(),
+			Unary::Cos => value.cos(),
+			Unary::Tan => value.tan(),
+			Unary::Asin => value.asin(),
+			Unary::Floor => value.floor(),
+			Unary::Round => value.round(),
+			Unary::Fract => value - value.floor(),
+			Unary::Radians => value.to_radians(),
+			Unary::InverseSqrt => 1.0 / value.sqrt(),
+			Unary::Log2 => value.log2(),
+			Unary::Fwidth => 0.0,
+			_ => unreachable!("Conversions and find_lsb are matched above"),
+		}),
 	}
-
-	map_float_value(value, |value| match operator {
-		ScalarUnaryOperator::Abs => value.abs(),
-		ScalarUnaryOperator::Sqrt => value.sqrt(),
-		ScalarUnaryOperator::Exp => value.exp(),
-		ScalarUnaryOperator::Sin => value.sin(),
-		ScalarUnaryOperator::Cos => value.cos(),
-		ScalarUnaryOperator::Tan => value.tan(),
-		ScalarUnaryOperator::Asin => value.asin(),
-		ScalarUnaryOperator::Floor => value.floor(),
-		ScalarUnaryOperator::Round => value.round(),
-		ScalarUnaryOperator::Fract => value - value.floor(),
-		ScalarUnaryOperator::Radians => value.to_radians(),
-		ScalarUnaryOperator::InverseSqrt => 1.0 / value.sqrt(),
-		ScalarUnaryOperator::Log2 => value.log2(),
-		ScalarUnaryOperator::Fwidth => 0.0,
-		ScalarUnaryOperator::FromF16ToF32
-		| ScalarUnaryOperator::FromU32ToF32
-		| ScalarUnaryOperator::FromI32ToF32
-		| ScalarUnaryOperator::FromF32ToF16
-		| ScalarUnaryOperator::FromU32ToF16
-		| ScalarUnaryOperator::FromI32ToF16
-		| ScalarUnaryOperator::FromF32ToU32
-		| ScalarUnaryOperator::FromF16ToU32
-		| ScalarUnaryOperator::FromU8ToU32
-		| ScalarUnaryOperator::FromU16ToU32
-		| ScalarUnaryOperator::FromU32ToU16
-		| ScalarUnaryOperator::FromI32ToU32
-		| ScalarUnaryOperator::FindLsb => unreachable!("integer operators return early"),
-	})
 }
 
 pub(crate) fn map_float_value(value: &Value, map: impl Fn(f32) -> f32) -> Result<Value, VmError> {
@@ -847,31 +617,24 @@ pub(crate) fn apply_scalar_binary(operator: ScalarBinaryOperator, left: &Value, 
 		(ScalarBinaryOperator::Max, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(*left.max(right))),
 		_ => {}
 	}
+	// Half-precision lanes compute in f32 and round the result back to f16.
+	let half = |left: f16, right: f16| f16::from_f32(apply(operator, left.to_f32(), right.to_f32()));
 	match (left, right) {
-		(Value::F16(left), Value::F16(right)) => Ok(Value::F16(f16::from_f32(apply(operator, left.to_f32(), right.to_f32())))),
+		(Value::F16(left), Value::F16(right)) => Ok(Value::F16(half(*left, *right))),
 		(Value::F32(left), Value::F32(right)) => Ok(Value::F32(apply(operator, *left, *right))),
-		(Value::Vec2F16(left), Value::Vec2F16(right)) => Ok(Value::Vec2F16(std::array::from_fn(|index| {
-			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
-		}))),
-		(Value::Vec3F16(left), Value::Vec3F16(right)) => Ok(Value::Vec3F16(std::array::from_fn(|index| {
-			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
-		}))),
-		(Value::Vec4F16(left), Value::Vec4F16(right)) => Ok(Value::Vec4F16(std::array::from_fn(|index| {
-			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
-		}))),
-		(Value::Vec2F(left), Value::Vec2F(right)) => Ok(Value::Vec2F(std::array::from_fn(|index| {
-			apply(operator, left[index], right[index])
-		}))),
-		(Value::Vec3F(left), Value::Vec3F(right)) => Ok(Value::Vec3F(std::array::from_fn(|index| {
-			apply(operator, left[index], right[index])
-		}))),
-		(Value::Vec4F(left), Value::Vec4F(right)) => Ok(Value::Vec4F(std::array::from_fn(|index| {
-			apply(operator, left[index], right[index])
-		}))),
-		(left, right) => Err(VmError::TypeMismatch {
-			expected: left.value_type().name().to_string(),
-			found: right.value_type().name().to_string(),
-		}),
+		(Value::Vec2F16(left), Value::Vec2F16(right)) => Ok(Value::Vec2F16(std::array::from_fn(|i| half(left[i], right[i])))),
+		(Value::Vec3F16(left), Value::Vec3F16(right)) => Ok(Value::Vec3F16(std::array::from_fn(|i| half(left[i], right[i])))),
+		(Value::Vec4F16(left), Value::Vec4F16(right)) => Ok(Value::Vec4F16(std::array::from_fn(|i| half(left[i], right[i])))),
+		(Value::Vec2F(left), Value::Vec2F(right)) => {
+			Ok(Value::Vec2F(std::array::from_fn(|i| apply(operator, left[i], right[i]))))
+		}
+		(Value::Vec3F(left), Value::Vec3F(right)) => {
+			Ok(Value::Vec3F(std::array::from_fn(|i| apply(operator, left[i], right[i]))))
+		}
+		(Value::Vec4F(left), Value::Vec4F(right)) => {
+			Ok(Value::Vec4F(std::array::from_fn(|i| apply(operator, left[i], right[i]))))
+		}
+		(left, right) => Err(type_mismatch(&left.value_type(), &right.value_type())),
 	}
 }
 
@@ -978,28 +741,28 @@ pub(crate) fn apply_scalar_ternary(
 		}
 		(Value::F32(first), Value::F32(second), Value::F32(third)) => Ok(Value::F32(apply(operator, *first, *second, *third))),
 		(Value::Vec2F16(first), Value::Vec2F16(second), Value::Vec2F16(third)) => {
-			Ok(Value::Vec2F16(std::array::from_fn(|index| {
-				apply_f16(operator, first[index], second[index], third[index])
+			Ok(Value::Vec2F16(std::array::from_fn(|i| {
+				apply_f16(operator, first[i], second[i], third[i])
 			})))
 		}
 		(Value::Vec3F16(first), Value::Vec3F16(second), Value::Vec3F16(third)) => {
-			Ok(Value::Vec3F16(std::array::from_fn(|index| {
-				apply_f16(operator, first[index], second[index], third[index])
+			Ok(Value::Vec3F16(std::array::from_fn(|i| {
+				apply_f16(operator, first[i], second[i], third[i])
 			})))
 		}
 		(Value::Vec4F16(first), Value::Vec4F16(second), Value::Vec4F16(third)) => {
-			Ok(Value::Vec4F16(std::array::from_fn(|index| {
-				apply_f16(operator, first[index], second[index], third[index])
+			Ok(Value::Vec4F16(std::array::from_fn(|i| {
+				apply_f16(operator, first[i], second[i], third[i])
 			})))
 		}
-		(Value::Vec2F(first), Value::Vec2F(second), Value::Vec2F(third)) => Ok(Value::Vec2F(std::array::from_fn(|index| {
-			apply(operator, first[index], second[index], third[index])
+		(Value::Vec2F(first), Value::Vec2F(second), Value::Vec2F(third)) => Ok(Value::Vec2F(std::array::from_fn(|i| {
+			apply(operator, first[i], second[i], third[i])
 		}))),
-		(Value::Vec3F(first), Value::Vec3F(second), Value::Vec3F(third)) => Ok(Value::Vec3F(std::array::from_fn(|index| {
-			apply(operator, first[index], second[index], third[index])
+		(Value::Vec3F(first), Value::Vec3F(second), Value::Vec3F(third)) => Ok(Value::Vec3F(std::array::from_fn(|i| {
+			apply(operator, first[i], second[i], third[i])
 		}))),
-		(Value::Vec4F(first), Value::Vec4F(second), Value::Vec4F(third)) => Ok(Value::Vec4F(std::array::from_fn(|index| {
-			apply(operator, first[index], second[index], third[index])
+		(Value::Vec4F(first), Value::Vec4F(second), Value::Vec4F(third)) => Ok(Value::Vec4F(std::array::from_fn(|i| {
+			apply(operator, first[i], second[i], third[i])
 		}))),
 		_ => Err(VmError::TypeMismatch {
 			expected: first.value_type().name().to_string(),
@@ -1023,12 +786,8 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec3F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
 		Value::PackedVec4F(value) => value.get(index).copied().map(Value::F32),
-		Value::Mat4F(value) if index < 4 => Some(Value::Vec4F(
-			value[index * 4..index * 4 + 4].try_into().expect("Matrix column size"),
-		)),
-		Value::Mat4x3F(value) if index < 4 => Some(Value::Vec3F(
-			value[index * 3..index * 3 + 3].try_into().expect("Matrix column size"),
-		)),
+		Value::Mat4F(value) => value.as_chunks::<4>().0.get(index).copied().map(Value::Vec4F),
+		Value::Mat4x3F(value) => value.as_chunks::<3>().0.get(index).copied().map(Value::Vec3F),
 		Value::Struct { fields, .. } => fields.get(index).cloned(),
 		_ => None,
 	}
@@ -1036,10 +795,7 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		message: format!("Member index {} is invalid for `{}`", index, value.value_type().name()),
 	})?;
 	if !extracted.matches_type(expected_type) {
-		return Err(VmError::TypeMismatch {
-			expected: expected_type.name().to_string(),
-			found: extracted.value_type().name().to_string(),
-		});
+		return Err(type_mismatch(expected_type, &extracted.value_type()));
 	}
 	Ok(extracted)
 }
@@ -1067,7 +823,8 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 		(Value::Vec4F(slots) | Value::PackedVec4F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
 		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
-		(Value::Struct { fields, .. }, value) => match fields.get_mut(index) {
+		// Copy-on-write: a local store copies the shared fields once, and only when another copy still reads them.
+		(Value::Struct { fields, .. }, value) => match std::sync::Arc::make_mut(fields).get_mut(index) {
 			Some(field) if value.matches_type(&field.value_type()) => {
 				*field = value;
 				true
@@ -1089,8 +846,7 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 
 pub(crate) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 	match value_type {
-		ValueType::Vec2U16 => Some(ValueType::U16),
-		ValueType::Vec4U16 => Some(ValueType::U16),
+		ValueType::Vec2U16 | ValueType::Vec4U16 => Some(ValueType::U16),
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
 		ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16 => Some(ValueType::F16),
@@ -1105,14 +861,8 @@ pub(crate) fn multiply_mat4_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4
 
 pub(crate) fn multiply_mat4(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
 	let mut value = [0.0; 16];
-	for column in 0..4 {
-		let product = multiply_mat4_vec4(
-			left,
-			right[column * 4..column * 4 + 4]
-				.try_into()
-				.expect("Matrix columns contain four values"),
-		);
-		value[column * 4..column * 4 + 4].copy_from_slice(&product);
+	for (product, column) in value.as_chunks_mut::<4>().0.iter_mut().zip(right.as_chunks::<4>().0) {
+		*product = multiply_mat4_vec4(left, *column);
 	}
 	value
 }
@@ -1123,40 +873,28 @@ pub(crate) fn multiply_mat4x3_vec4(matrix: [f32; 12], vector: [f32; 4]) -> [f32;
 
 pub(crate) fn expect_vec2u(value: &Value) -> Result<[u32; 2], VmError> {
 	let &Value::Vec2U(value) = value else {
-		return Err(VmError::TypeMismatch {
-			expected: ValueType::Vec2U.name().to_string(),
-			found: value.value_type().name().to_string(),
-		});
+		return Err(type_mismatch(&ValueType::Vec2U, &value.value_type()));
 	};
 	Ok(value)
 }
 
 pub(crate) fn expect_vec4u(value: &Value) -> Result<[u32; 4], VmError> {
 	let &Value::Vec4U(value) = value else {
-		return Err(VmError::TypeMismatch {
-			expected: ValueType::Vec4U.name().to_string(),
-			found: value.value_type().name().to_string(),
-		});
+		return Err(type_mismatch(&ValueType::Vec4U, &value.value_type()));
 	};
 	Ok(value)
 }
 
 pub(crate) fn expect_bool(value: &Value) -> Result<bool, VmError> {
 	let &Value::Bool(value) = value else {
-		return Err(VmError::TypeMismatch {
-			expected: ValueType::Bool.name().to_string(),
-			found: value.value_type().name().to_string(),
-		});
+		return Err(type_mismatch(&ValueType::Bool, &value.value_type()));
 	};
 	Ok(value)
 }
 
 pub(crate) fn expect_u32(value: &Value) -> Result<u32, VmError> {
 	let &Value::U32(value) = value else {
-		return Err(VmError::TypeMismatch {
-			expected: ValueType::U32.name().to_string(),
-			found: value.value_type().name().to_string(),
-		});
+		return Err(type_mismatch(&ValueType::U32, &value.value_type()));
 	};
 	Ok(value)
 }
@@ -1184,19 +922,10 @@ pub(crate) fn normalize_vector<const N: usize>(value: [f32; N]) -> Result<[f32; 
 			message: "Cannot normalize a zero-length vector".to_string(),
 		});
 	}
-
-	let mut normalized = [0.0; N];
-	for index in 0..N {
-		normalized[index] = value[index] / length;
-	}
-	Ok(normalized)
+	Ok(value.map(|component| component / length))
 }
 
 pub(crate) fn reflect_vector<const N: usize>(incident: [f32; N], normal: [f32; N]) -> Result<[f32; N], VmError> {
 	let scale = 2.0 * dot_product(incident, normal);
-	let mut reflected = [0.0; N];
-	for index in 0..N {
-		reflected[index] = incident[index] - scale * normal[index];
-	}
-	Ok(reflected)
+	Ok(std::array::from_fn(|index| incident[index] - scale * normal[index]))
 }

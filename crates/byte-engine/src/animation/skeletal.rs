@@ -2,11 +2,11 @@ use math::{Matrix, Point};
 use maths_rs::mat::{MatScale as _, MatTranslate as _};
 use resource_management::resources::{
 	ModelSpace,
-	animation::{Animation, Curve},
+	animation::{Animation, Curve, CurveComponents},
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
-use super::math::{CurveComponents, CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 /// Samples one clip into a complete source-skeleton local pose.
 ///
@@ -198,21 +198,16 @@ fn local_matrix(local: LocalTransform) -> Matrix {
 
 /// Samples one validated resource curve at `time`.
 fn sample_resource_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize>(curve: &Curve<V, T>, time: f32) -> V {
-	let (interpolation, times, values, tangents) = match curve {
-		Curve::Step { times, values } => (CurveInterpolation::Step, times, values, None),
-		Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values, None),
+	let (interpolation, tangents) = match curve {
+		Curve::Step { .. } => (CurveInterpolation::Step, None),
+		Curve::Linear { .. } => (CurveInterpolation::Linear, None),
 		Curve::CubicSpline {
-			times,
-			values,
 			in_tangents,
 			out_tangents,
-		} => (
-			CurveInterpolation::CubicSpline,
-			times,
-			values,
-			Some((in_tangents, out_tangents)),
-		),
+			..
+		} => (CurveInterpolation::CubicSpline, Some((in_tangents, out_tangents))),
 	};
+	let (times, values) = (curve.times(), curve.values());
 	sample_curve(
 		interpolation,
 		times.len(),
@@ -297,25 +292,18 @@ mod tests {
 		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
-			skeleton::{LocalTransform, Skeleton, SkeletonNode},
+			skeleton::{LocalTransform, Skeleton},
 		},
 	};
 
 	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_resource_curve};
+	use crate::animation::test_node;
 
 	fn comparison_skeleton(child_name: &str) -> Skeleton {
 		Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("root".to_string()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some(child_name.to_string()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
+				test_node(Some("root"), None, LocalTransform::identity()),
+				test_node(Some(child_name), Some(0), LocalTransform::identity()),
 			],
 		}
 	}

@@ -269,7 +269,7 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::audio::{AudioDescription, process_audio},
+	processors::audio::{AudioDescription, process_audio},
 	types::BitDepths,
 };
 

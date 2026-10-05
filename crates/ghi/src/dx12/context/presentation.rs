@@ -62,8 +62,8 @@ impl Device {
 			image_count,
 			next_image_index: 0,
 			present_mode: presentation_mode,
-			images: std::array::from_fn(|_| None),
-			proxy_uses: std::array::from_fn(|_| Uses::empty()),
+			image: None,
+			proxy_uses: Uses::empty(),
 			proxy_resource_uses: Uses::empty(),
 			backbuffers: std::array::from_fn(|_| None),
 			acquired_image_indices: [0; 8],
@@ -82,26 +82,20 @@ impl Device {
 
 	/// Returns one logical proxy whose dynamic storage resolves to the active frame sequence.
 	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {
-		let (needs_new_proxy, requested_uses, resource_uses) = {
-			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			let requested_uses = swapchain.proxy_uses[0] | uses;
-			// A storage proxy is copied into the native backbuffer before Present. Other proxy uses should not
-			// require optional typed-UAV support or unrelated render/copy capabilities from the BGRA format.
-			let presentation_copy_uses = if requested_uses.intersects(Uses::Storage) {
-				Uses::BlitSource
-			} else {
-				Uses::empty()
-			};
-			let resource_uses = swapchain.proxy_resource_uses | requested_uses | Uses::Image | presentation_copy_uses;
-			(
-				swapchain.images[0].is_none() || !swapchain.proxy_resource_uses.contains(requested_uses),
-				requested_uses,
-				resource_uses,
-			)
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let requested_uses = swapchain.proxy_uses | uses;
+		// A storage proxy is copied into the native backbuffer before Present. Other proxy uses should not
+		// require optional typed-UAV support or unrelated render/copy capabilities from the BGRA format.
+		let presentation_copy_uses = if requested_uses.intersects(Uses::Storage) {
+			Uses::BlitSource
+		} else {
+			Uses::empty()
 		};
+		let resource_uses = swapchain.proxy_resource_uses | requested_uses | Uses::Image | presentation_copy_uses;
+		let needs_new_proxy = swapchain.image.is_none() || !swapchain.proxy_resource_uses.contains(requested_uses);
+		let extent = swapchain.extent;
 
 		if needs_new_proxy {
-			let extent = self.swapchains[swapchain_handle.0 as usize].extent;
 			let image = self.build_image(
 				crate::image::Builder::new(Formats::BGRAu8, resource_uses)
 					.extent(extent)
@@ -110,16 +104,14 @@ impl Device {
 			);
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 			// One dynamic logical image already resolves to distinct native resources for each frame sequence.
-			swapchain.images = [Some(image); 8];
+			swapchain.image = Some(image);
 			swapchain.proxy_resource_uses = resource_uses;
-		}
-		self.swapchains[swapchain_handle.0 as usize].proxy_uses = [requested_uses; 8];
-		if needs_new_proxy {
 			self.invalidate_descriptor_materializations();
 		}
-
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		swapchain.proxy_uses = requested_uses;
 		(
-			self.swapchains[swapchain_handle.0 as usize].images[0].expect(
+			swapchain.image.expect(
 				"Missing DX12 swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
 			),
 			Formats::BGRAu8,
@@ -132,15 +124,9 @@ impl Device {
 		uses: Uses,
 		sequence_index: u8,
 	) -> (ImageHandle, Formats) {
-		self.get_swapchain_image(swapchain_handle, uses);
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let image = self.get_swapchain_image(swapchain_handle, uses);
 		debug_assert!(sequence_index < self.frames);
-		(
-			swapchain.images[0].expect(
-				"Missing DX12 swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
-			),
-			Formats::BGRAu8,
-		)
+		image
 	}
 
 	pub fn get_image_data(
@@ -155,13 +141,7 @@ impl Device {
 		if readback.mapping_failed {
 			return Err(crate::TextureTransferError::MappingFailed);
 		}
-		Ok(crate::TextureReadback {
-			bytes: readback.data.bytes,
-			extent: readback.data.extent,
-			format: readback.data.format,
-			bytes_per_row: readback.data.bytes_per_row,
-			bytes_per_image: readback.data.bytes_per_image,
-		})
+		Ok(readback.data)
 	}
 
 	pub(crate) fn wait_for_texture_copy_readback(&mut self, texture_copy_handle: TextureCopyHandle) {
@@ -210,11 +190,7 @@ impl Device {
 			sequence_index: (index % u64::from(self.frames)) as u8,
 		};
 		assert!(
-			!self.untracked_present_work
-				&& self
-					.command_buffers
-					.iter()
-					.all(|command_buffer| !command_buffer.frames_any(|lifecycle| lifecycle == CommandBufferLifecycle::Poisoned)),
+			!self.has_untracked_submission(),
 			"DX12 frame reuse is unavailable after an untracked native submission. The most likely cause is that presentation or its terminal fence signal failed."
 		);
 		let previous = self.last_frame_synchronizers[frame_key.sequence_index as usize];
@@ -249,10 +225,6 @@ impl Device {
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
-	pub fn set_present_interval(&mut self, swapchain_handle: SwapchainHandle, interval: Option<std::time::Duration>) {
-		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
-	}
-
 	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
 	///
 	/// DXGI always has a current backbuffer, so this never returns `None`.
@@ -261,33 +233,25 @@ impl Device {
 		sequence_index: u8,
 		swapchain_handle: SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		{
-			// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
-			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
-			crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
-		}
-		{
-			let swapchain = self
-				.swapchains
-				.get(swapchain_handle.0 as usize)
-				.expect("Invalid DX12 swapchain handle. The most likely cause is that the handle came from another device.");
-			assert!(
-				swapchain.acquired_sequences.iter().all(|acquired| !acquired),
-				"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
-			);
-		}
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
+		crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		assert!(
+			swapchain.acquired_sequences.iter().all(|acquired| !acquired),
+			"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
+		);
 		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
 		let extent = self.swapchain_extent(swapchain_handle, sequence_index);
 		let image_index = self.next_swapchain_image_index(swapchain_handle);
-		let present_key = PresentKey {
-			image_index,
-			sequence_index,
-			swapchain: swapchain_handle,
-		};
-		self.swapchains[swapchain_handle.0 as usize].acquired_image_indices[sequence_index as usize] = image_index;
-		self.swapchains[swapchain_handle.0 as usize].acquired_sequences[sequence_index as usize] = true;
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		swapchain.acquired_image_indices[sequence_index as usize] = image_index;
+		swapchain.acquired_sequences[sequence_index as usize] = true;
 		Some(crate::frame::SwapchainAcquisition {
-			present_key,
+			present_key: PresentKey {
+				image_index,
+				sequence_index,
+				swapchain: swapchain_handle,
+			},
 			extent,
 			present_time: None,
 		})
@@ -296,58 +260,34 @@ impl Device {
 	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.
 	pub fn resize_buffer<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let (current_size, current_layout, current_access, current_uses) = {
-			let buffer = self.buffer(buffer_handle).expect(
-				"Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.",
-			);
-			(buffer.size, buffer.layout, buffer.access, buffer.uses)
-		};
-
-		if current_size >= size {
+		let buffer = self
+			.buffer(buffer_handle)
+			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
+		if buffer.size >= size {
 			return;
 		}
 
-		let layout = Layout::from_size_align(size, current_layout.align()).unwrap();
-		let data = if layout.size() == 0 {
-			Self::zero_sized_buffer_pointer(layout)
-		} else {
-			unsafe { alloc::alloc_zeroed(layout) }
-		};
-		if layout.size() != 0 && data.is_null() {
-			panic!("Failed to resize buffer storage. The most likely cause is that the system is out of memory.");
-		}
-
+		let layout = Layout::from_size_align(size, buffer.memory.layout.align()).unwrap();
+		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses, "resize");
 		let frame_count = self.frames as usize;
-		let resource_size = Self::buffer_resource_size(size, current_uses);
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, current_access);
-		let (retired_resource, retired_frame_resources, retired_data, retired_layout) = {
-			let buffer = self.buffer_mut(buffer_handle).expect(
-				"Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.",
-			);
-			let retired_resource = std::mem::replace(&mut buffer.resource, resource);
-			let retired_frame_resources = buffer.frame_resources.as_mut().map_or_else(SmallVec::new, |resources| {
-				let mut retired = SmallVec::<[(usize, BufferFrameStorage); crate::MAX_FRAMES_IN_FLIGHT]>::new();
-				for (sequence_index, storage) in resources.iter_mut().enumerate() {
-					if let Some(storage) = storage.take() {
-						retired.push((sequence_index, storage));
-					}
+		let buffer = self
+			.buffer_mut(buffer_handle)
+			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
+		let mut retired = std::mem::replace(&mut buffer.memory, memory);
+		buffer.size = size;
+		let retired_frame_resources = buffer.frame_resources.as_mut().map_or_else(SmallVec::new, |resources| {
+			let mut retired = SmallVec::<[(usize, BufferMemory); crate::MAX_FRAMES_IN_FLIGHT]>::new();
+			for (sequence_index, storage) in resources.iter_mut().enumerate() {
+				if let Some(storage) = storage.take() {
+					retired.push((sequence_index, storage));
 				}
-				resources.resize_with(frame_count, || None);
-				retired
-			});
-			let retired_data = std::mem::replace(&mut buffer.data, data);
-			let retired_layout = std::mem::replace(&mut buffer.layout, layout);
-			buffer.size = size;
-			buffer.host_generation = 1;
-			buffer.uploaded_generation = 0;
-			buffer.mapped = mapped;
-			buffer.heap_kind = heap_kind;
-			(retired_resource, retired_frame_resources, retired_data, retired_layout)
-		};
-		if retired_layout.size() != 0 && !retired_data.is_null() {
-			// SAFETY: The pointer was allocated with retired_layout and ownership moved out of the buffer above.
-			unsafe { alloc::dealloc(retired_data, retired_layout) };
-		}
+			}
+			resources.resize_with(frame_count, || None);
+			retired
+		});
+		// Dropping the retired base storage frees its CPU shadow now. Its native resource retires with sequence 0 below.
+		let retired_resource = retired.resource.take();
+		drop(retired);
 		let mut retired_state_keys = SmallVec::<[usize; 4]>::new();
 		if let Some(resource) = retired_resource {
 			retired_state_keys.push(Self::native_resource_key(&resource));
@@ -364,20 +304,6 @@ impl Device {
 			self.buffer_states.remove(&key);
 		}
 		self.invalidate_descriptor_materializations();
-	}
-
-	pub fn start_frame_capture(&mut self) {
-		self.debugger.start_frame_capture();
-	}
-
-	pub fn end_frame_capture(&mut self) {
-		self.debugger.end_frame_capture();
-	}
-
-	pub fn wait(&self) {
-		for index in 0..self.synchronizers.len() {
-			self.wait_for_private_synchronizer(crate::synchronizer::SynchronizerHandle(index as u64));
-		}
 	}
 
 	/// Establishes and waits for one terminal fence on every distinct native queue.
@@ -503,10 +429,7 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<crate::synchronizer::SynchronizerHandle> {
 		let handles = self.synchronizer_handles(synchronizer_handle);
-		handles
-			.get(sequence_index as usize)
-			.copied()
-			.or_else(|| handles.last().copied())
+		handles.get(sequence_index as usize).or(handles.last()).copied()
 	}
 
 	pub(crate) fn wait_for_private_synchronizer(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
@@ -514,13 +437,6 @@ impl Device {
 			return;
 		};
 		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
-	}
-
-	/// Returns whether one concrete fence reached its captured submission value.
-	fn private_synchronizer_complete(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) -> bool {
-		self.synchronizers
-			.get(synchronizer_handle.0 as usize)
-			.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
 	}
 
 	/// Blocks without polling until one concrete fence reaches the captured submission value.
@@ -546,20 +462,6 @@ impl Device {
 			self.wait_for_private_synchronizer(handle);
 		}
 		self.refresh_readback_texture_copies(None);
-	}
-
-	/// Returns whether every fence of the synchronizer reached its captured submission value, without blocking.
-	///
-	/// A complete synchronizer refreshes readbacks the same way a wait does, so mapping them afterwards is valid.
-	pub(crate) fn poll_synchronizer(&mut self, synchronizer_handle: SynchronizerHandle) -> bool {
-		let complete = self
-			.synchronizer_handles(synchronizer_handle)
-			.into_iter()
-			.all(|handle| self.private_synchronizer_complete(handle));
-		if complete {
-			self.refresh_readback_texture_copies(None);
-		}
-		complete
 	}
 
 	pub(crate) fn wait_for_synchronizer_sequence(&mut self, synchronizer_handle: SynchronizerHandle, sequence_index: u8) {
@@ -622,7 +524,7 @@ impl Device {
 			let uses_storage_proxy = self
 				.swapchains
 				.get(present_key.swapchain.0 as usize)
-				.is_some_and(|swapchain| swapchain.proxy_uses[present_key.sequence_index as usize].intersects(Uses::Storage));
+				.is_some_and(|swapchain| swapchain.proxy_uses.intersects(Uses::Storage));
 			assert!(
 				!uses_storage_proxy || prepared.contains(&present_key),
 				"Missing DX12 storage presentation preparation. The most likely cause is that record_with_present_keys omitted a storage-backed swapchain image."
@@ -633,13 +535,18 @@ impl Device {
 	/// Rejects new work until a global idle boundary recovers any presentation without a terminal fence.
 	pub(crate) fn validate_queue_submission_state(&self) {
 		assert!(
-			!self.untracked_present_work
-				&& self
-					.command_buffers
-					.iter()
-					.all(|command_buffer| !command_buffer.frames_any(|lifecycle| lifecycle == CommandBufferLifecycle::Poisoned)),
+			!self.has_untracked_submission(),
 			"DX12 queue submission is unavailable after untracked native work. The most likely cause is that presentation, command-list closure, or its terminal fence signal failed."
 		);
+	}
+
+	/// Returns whether native work may still run without a terminal fence that tracks its completion.
+	fn has_untracked_submission(&self) -> bool {
+		self.untracked_present_work
+			|| self
+				.command_buffers
+				.iter()
+				.any(|command_buffer| command_buffer.frames_any(|lifecycle| lifecycle == CommandBufferLifecycle::Poisoned))
 	}
 
 	/// Publishes that a successful terminal signal now tracks every presentation in the execution.
@@ -651,15 +558,12 @@ impl Device {
 
 	pub(crate) fn begin_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle, sequence_index: u8) {
 		self.validate_queue_submission_state();
-		self.command_buffers
-			.get_mut(command_buffer_handle.0 as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.")
-			.activate_sequence(sequence_index);
-		let (lifecycle, last_submission) = self
+		let command_buffer = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.map(|command_buffer| (command_buffer.lifecycle, command_buffer.last_submission))
+			.get_mut(command_buffer_handle.0 as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		command_buffer.activate_sequence(sequence_index);
+		let (lifecycle, last_submission) = (command_buffer.lifecycle, command_buffer.last_submission);
 		assert!(
 			matches!(
 				lifecycle,
@@ -675,40 +579,34 @@ impl Device {
 		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
 			return;
 		};
-		if command_buffer.allocator.is_none() || command_buffer.command_list.is_none() {
+		// One deref selects the active frame, so its fields can be borrowed independently below.
+		let frame: &mut CommandBufferFrame = command_buffer;
+		let (Some(allocator), Some(command_list)) = (frame.allocator.as_ref(), frame.command_list.as_ref()) else {
 			return;
-		}
+		};
 
-		if command_buffer.is_open {
-			let close_result = unsafe { command_buffer.command_list.as_ref().unwrap().Close() };
-			if close_result.is_err() {
+		if frame.is_open {
+			if unsafe { command_list.Close() }.is_err() {
 				// Close failure permanently invalidates this native list. Poison the device-facing handle so it is never reset.
-				command_buffer.lifecycle = CommandBufferLifecycle::Poisoned;
+				frame.lifecycle = CommandBufferLifecycle::Poisoned;
 				panic!(
 					"Failed to close an abandoned DX12 command list. The most likely cause is that earlier command recording was invalid."
 				);
 			}
-			command_buffer.is_open = false;
+			frame.is_open = false;
 		}
-		unsafe { command_buffer.allocator.as_ref().unwrap().Reset() }.expect(
+		unsafe { allocator.Reset() }.expect(
 			"Failed to reset a DX12 command allocator. The most likely cause is that its previous GPU submission is still running.",
 		);
-		let reset_result = unsafe {
-			command_buffer
-				.command_list
-				.as_ref()
-				.unwrap()
-				.Reset(command_buffer.allocator.as_ref().unwrap(), None)
-		};
-		reset_result.expect(
+		unsafe { command_list.Reset(allocator, None) }.expect(
 			"Failed to reset a DX12 command list. The most likely cause is that the list was not closed or its allocator is invalid.",
 		);
 		// Reset removes recorded references before fence-complete transient resources and heaps are released.
-		command_buffer.clear_recording_state();
-		command_buffer.sequence_index = sequence_index;
-		command_buffer.rewind_staging_heaps();
-		command_buffer.is_open = true;
-		command_buffer.lifecycle = CommandBufferLifecycle::Recording;
+		frame.clear_recording_state();
+		frame.sequence_index = sequence_index;
+		frame.rewind_staging_heaps();
+		frame.is_open = true;
+		frame.lifecycle = CommandBufferLifecycle::Recording;
 		self.begin_command_buffer_state_transaction(command_buffer_handle);
 	}
 
@@ -723,6 +621,14 @@ impl Device {
 			.get_mut(command_buffer_handle.0 as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		command_buffer.frame_synchronizer = Some(synchronizer_handle);
+	}
+
+	/// Returns the native list that a command buffer records into, or `None` when the handle or its list is missing.
+	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<&ID3D12GraphicsCommandList7> {
+		self.command_buffers
+			.get(command_buffer_handle.0 as usize)?
+			.command_list
+			.as_ref()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.

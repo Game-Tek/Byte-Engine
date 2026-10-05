@@ -215,7 +215,7 @@ impl std::error::Error for MeshProcessingError {}
 pub(super) fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshProcessingError> {
 	let mut seen = [false; 8];
 	for component in vertex_layout {
-		let index = super::vertex_semantic_order(component.semantic);
+		let index = component.semantic as usize;
 		if seen[index] {
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
@@ -230,13 +230,11 @@ pub(super) fn skeleton_node_count(
 ) -> Result<Option<usize>, MeshProcessingError> {
 	skeleton
 		.map(|skeleton| {
-			crate::archived_from_slice::<SkeletonModel>(&skeleton.resource)
-				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)
-				.and_then(|skeleton| {
-					crate::resources::skeleton::validate_archived_nodes(skeleton.nodes.as_slice())
-						.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
-					Ok(skeleton.nodes.len())
-				})
+			let skeleton = crate::archived_from_slice::<SkeletonModel>(&skeleton.resource)
+				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
+			crate::resources::skeleton::validate_archived_nodes(skeleton.nodes.as_slice())
+				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
+			Ok(skeleton.nodes.len())
 		})
 		.transpose()
 }
@@ -249,10 +247,10 @@ pub(super) fn validate_skin_binding(
 	let Some(node_count) = skeleton_nodes else {
 		return Err(MeshProcessingError::SkinWithoutSkeleton);
 	};
-	if skin.len() > u16::MAX as usize + 1 {
+	if skin.entries.len() > u16::MAX as usize + 1 {
 		return Err(MeshProcessingError::SkinPaletteTooLarge {
 			skin: skin_index,
-			joints: skin.len(),
+			joints: skin.entries.len(),
 		});
 	}
 	for (joint_index, entry) in skin.entries.iter().enumerate() {
@@ -338,13 +336,13 @@ pub(super) fn validate_vertex_skin(
 	let mut total = 0.0;
 	for lane in 0..4 {
 		let joint = vertex_skin.joints[lane];
-		if joint as usize >= skin.len() {
+		if joint as usize >= skin.entries.len() {
 			return Err(MeshProcessingError::VertexJointOutOfRange {
 				primitive,
 				vertex,
 				lane,
 				joint,
-				palette_len: skin.len(),
+				palette_len: skin.entries.len(),
 			});
 		}
 		let weight = vertex_skin.weights[lane];

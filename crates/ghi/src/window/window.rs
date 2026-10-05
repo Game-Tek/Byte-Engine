@@ -3,7 +3,7 @@ use utils::Extent;
 use crate::window::{
 	WindowId,
 	input::{Keys, MouseKeys},
-	os::{self, WindowLike as _},
+	os,
 };
 
 /// The `Window` struct keeps a native window alive for presentation. Create it with

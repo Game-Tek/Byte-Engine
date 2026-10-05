@@ -4,16 +4,20 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 
 use super::{ParticleSystemAssetHandler, generator, schema::ParticleSystemSource};
 use crate::{
-	asset::{self, handler::implementations::besl::ShaderCompiler, manager::AssetManager},
-	r#async, resource,
-	resource::resource_manager::ResourceManager,
+	asset::{
+		JsonObject,
+		handler::implementations::{bema::ProgramGenerator, besl::ShaderCompiler},
+		manager::AssetManager,
+		storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
+	},
+	r#async,
+	resource::{resource_manager::ResourceManager, storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend},
 	resources::{
 		material::{Shader, ShaderArtifact, ShaderInterface},
 		particle_system::ParticleSystem,
 		pipeline::{Pipeline, PipelineKind},
 	},
 	shader::ShaderGenerationSettings,
-	types::ShaderTypes,
 };
 
 /// Sparks that leave a point emitter inside a cone whose half angle has a cosine of 0.9, with no forces.
@@ -55,21 +59,16 @@ struct LinkingCompiler;
 impl ShaderCompiler for LinkingCompiler {
 	fn compile<'a>(
 		&'a self,
-		id: &'a str,
 		source: &'a str,
-		_generator: Option<(
-			&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator,
-			&'a crate::asset::JsonObject,
-		)>,
-		stage: ShaderTypes,
-		_settings: ShaderGenerationSettings,
+		_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 		Box::pin(async move {
 			besl::lex(besl::parse(source).map_err(|error| format!("{error:?}"))?).map_err(|error| format!("{error:?}"))?;
 			Ok((
 				Shader {
-					id: id.to_string(),
-					stage,
+					id: settings.name,
+					stage: settings.stage.into(),
 					interface: ShaderInterface {
 						workgroup_size: None,
 						bindings: Vec::new(),
@@ -82,10 +81,7 @@ impl ShaderCompiler for LinkingCompiler {
 	}
 }
 
-fn asset_manager(
-	assets: asset::storage_backend::tests::TestStorageBackend,
-	resources: resource::storage_backend::tests::TestStorageBackend,
-) -> AssetManager {
+fn asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorageBackend) -> AssetManager {
 	let mut asset_manager = AssetManager::new(assets, resources);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler {
 		compiler: Box::new(LinkingCompiler),
@@ -96,8 +92,8 @@ fn asset_manager(
 /// Verifies requesting one generated pipeline bakes the whole system, and that its pipelines name its shaders.
 #[r#async::test]
 async fn baking_a_system_stores_its_pipelines_and_shaders() {
-	let assets = asset::storage_backend::tests::TestStorageBackend::new();
-	let resources = resource::storage_backend::tests::TestStorageBackend::new();
+	let assets = AssetTestStorageBackend::new();
+	let resources = ResourceTestStorageBackend::new();
 	assets.add_file("effects/sparks.particles", SPARKS.as_bytes());
 
 	asset_manager(assets, resources.clone())
@@ -152,9 +148,9 @@ async fn systems_that_cannot_run_are_rejected() {
 		("unknown module", SPARKS.replace("\"cone\"", "\"vortex\"")),
 		("unsorted colors", SPARKS.replace("\"age\": 1.0", "\"age\": 0.0")),
 	] {
-		let assets = asset::storage_backend::tests::TestStorageBackend::new();
+		let assets = AssetTestStorageBackend::new();
 		assets.add_file("bad.particles", source.as_bytes());
-		let result = asset_manager(assets, resource::storage_backend::tests::TestStorageBackend::new())
+		let result = asset_manager(assets, ResourceTestStorageBackend::new())
 			.bake("bad.particles")
 			.await;
 		assert!(result.is_err(), "a system with {name} should not bake");
@@ -278,14 +274,10 @@ impl FrameBuffers {
 	}
 }
 
-fn programs(source: &str) -> generator::ParticlePrograms {
+fn simulation(source: &str) -> ExecutableProgram {
 	let system: ParticleSystemSource = serde_json::from_str(source).expect("the test system should parse");
 	system.validate().expect("the test system should be valid");
-	generator::generate(&system)
-}
-
-fn simulation(source: &str) -> ExecutableProgram {
-	let program = besl::lex(besl::parse(&programs(source).simulate).expect("the generated simulation should parse"))
+	let program = besl::lex(besl::parse(&generator::simulate_program(&system)).expect("the generated simulation should parse"))
 		.expect("the generated simulation should link");
 	ExecutableProgram::compile(program.get_main().expect("the generated simulation should have a main"))
 		.expect("the generated simulation should run in the VM")
@@ -339,8 +331,14 @@ fn new_particles_start_inside_their_box() {
 	}
 	// 64 uniform draws reach well past half of each half-extent, and a zero-sized side stays flat.
 	for (axis, half_size) in [2.0f32, 0.0, 1.0].into_iter().enumerate() {
-		assert!(lowest[axis] >= -half_size && highest[axis] <= half_size, "particles left the box on axis {axis}");
-		assert!(highest[axis] - lowest[axis] >= half_size, "particles bunched up on axis {axis}");
+		assert!(
+			lowest[axis] >= -half_size && highest[axis] <= half_size,
+			"particles left the box on axis {axis}"
+		);
+		assert!(
+			highest[axis] - lowest[axis] >= half_size,
+			"particles bunched up on axis {axis}"
+		);
 	}
 }
 
@@ -368,35 +366,16 @@ fn spent_particles_are_dropped_and_survivors_packed() {
 #[cfg(target_os = "macos")]
 #[r#async::test]
 async fn generated_programs_lower_to_the_platform_shader_language() {
-	use crate::asset::handler::implementations::besl::PlatformShaderCompilerAdapter;
+	let assets = AssetTestStorageBackend::new();
+	assets.add_file("sparks.particles", SPARKS.as_bytes());
+	assets.add_file("smoke.particles", SMOKE.as_bytes());
+	let mut asset_manager = AssetManager::new(assets, ResourceTestStorageBackend::new());
+	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 
-	for (system, source) in [("sparks", SPARKS), ("smoke", SMOKE)] {
-		let programs = programs(source);
-		for (stage, source, kind, settings) in [
-			(
-				"simulate",
-				&programs.simulate,
-				ShaderTypes::Compute,
-				ShaderGenerationSettings::compute(utils::Extent::line(generator::SIMULATION_WORKGROUP_SIZE)),
-			),
-			(
-				"vertex",
-				&programs.vertex,
-				ShaderTypes::Vertex,
-				ShaderGenerationSettings::vertex(),
-			),
-			(
-				"fragment",
-				&programs.fragment,
-				ShaderTypes::Fragment,
-				ShaderGenerationSettings::fragment(),
-			),
-		] {
-			let id = format!("{system}.particles#shaders/{stage}");
-			PlatformShaderCompilerAdapter
-				.compile(&id, source, None, kind, settings.name(id.clone()))
-				.await
-				.unwrap_or_else(|error| panic!("{id} should compile for the platform shader language: {error}"));
-		}
+	for id in ["sparks.particles", "smoke.particles"] {
+		asset_manager
+			.bake(id)
+			.await
+			.unwrap_or_else(|error| panic!("{id} should compile for the platform shader language: {error:?}"));
 	}
 }

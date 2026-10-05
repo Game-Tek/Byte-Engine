@@ -72,6 +72,8 @@ pub mod r#async;
 pub use asset::handler::{AssetHandler, BakeContext};
 #[cfg(debug_assertions)]
 pub use asset::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
+#[cfg(feature = "gpu-processing")]
+pub use gpu_worker::GpuWorkerError;
 pub use model::Model;
 pub use model::{QueryableProperty, QueryableValue};
 pub use reference::Reference;

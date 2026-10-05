@@ -40,13 +40,14 @@ main: fn (
 	},
 ) -> void {
 	let material_index: u32 = meshes.meshes[pipeline_input.instance_index].material_index;
-	let material: Material = materials.materials[material_index];
-	let coverage: f32 = material.coverage_factor;
-	if (material.coverage_texture_slot != 4294967295) {
-		let texture_index: u32 = material.textures[material.coverage_texture_slot];
+	// Read only the material fields the alpha test uses, instead of copying the whole material and its texture slots.
+	let coverage: f32 = materials.materials[material_index].coverage_factor;
+	let coverage_texture_slot: u32 = materials.materials[material_index].coverage_texture_slot;
+	if (coverage_texture_slot != 4294967295) {
+		let texture_index: u32 = materials.materials[material_index].textures[coverage_texture_slot];
 		coverage = coverage * sample(material_textures[texture_index], vec2f(pipeline_input.uv)).w;
 	}
-	if (coverage < material.alpha_cutoff) {
+	if (coverage < materials.materials[material_index].alpha_cutoff) {
 		discard;
 	}
 }

@@ -1,58 +1,5 @@
 use colored::Colorize;
 
-pub struct CompiledShader {
-	artifact: shaderc::CompilationArtifact,
-}
-
-pub fn compile(source_code: &str, shader_name: &str) -> Result<CompiledShader, String> {
-	let compiler = shaderc::Compiler::new().unwrap();
-	let mut options = shaderc::CompileOptions::new().unwrap();
-
-	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
-	if cfg!(debug_assertions) {
-		options.set_generate_debug_info();
-	}
-	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-
-	let binary = compiler.compile_into_spirv(
-		source_code,
-		shaderc::ShaderKind::InferFromSource,
-		shader_name,
-		"main",
-		Some(&options),
-	);
-
-	match binary {
-		Ok(binary) => Ok(CompiledShader { artifact: binary }),
-		Err(err) => Err(pretty_format_glsl_error_lines(&process_glslc_error(
-			shader_name,
-			source_code,
-			err.to_string().as_str(),
-		))),
-	}
-}
-
-impl<'a> std::ops::Deref for CompiledShader {
-	type Target = shaderc::CompilationArtifact;
-
-	fn deref(&self) -> &Self::Target {
-		&self.artifact
-	}
-}
-
-impl<'a> AsRef<[u8]> for CompiledShader {
-	fn as_ref(&self) -> &[u8] {
-		self.artifact.as_binary_u8()
-	}
-}
-
-impl<'a> From<&'a CompiledShader> for &'a [u8] {
-	fn from(val: &'a CompiledShader) -> Self {
-		val.artifact.as_binary_u8()
-	}
-}
-
 pub struct LineError<'a> {
 	pub column: Option<usize>,
 	pub symbol: &'a str,
@@ -146,7 +93,7 @@ pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 	error_string
 }
 
-pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> Option<String> {
+pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> String {
 	let mut source_code_lines = source_code.lines();
 
 	let mut error_string = String::new();
@@ -180,13 +127,11 @@ pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> 
 		error_string.push_str(&format!("{}\n", lines.collect::<Vec<_>>().join("\n")));
 	}
 
-	Some(error_string)
+	error_string
 }
 
 pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str, source_code: &str) -> String {
-	let error_lines = process_glslc_error(shader_name, source_code, error_string);
-
-	pretty_format_glslang_errors(&error_lines, source_code).unwrap_or_else(|| error_string.to_string())
+	pretty_format_glslang_errors(&process_glslc_error(shader_name, source_code, error_string), source_code)
 }
 
 #[cfg(test)]

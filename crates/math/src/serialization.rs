@@ -1,126 +1,58 @@
 //! Serde and rkyv support for math types, stored as plain `f32` arrays.
 //!
-//! Every serializable type is stored as the components of its [`ArrayForm::Array`], so serialized and archived data
-//! looks exactly like the raw arrays resources stored before they used math types. Loading validates the array
-//! through [`ArrayForm::try_from_array`], so data that breaks a type's invariant, such as a zero-length orientation,
-//! fails to deserialize instead of producing an invalid value.
+//! Every serializable type is stored as an `f32` array, so serialized and archived data looks exactly like the raw
+//! arrays resources stored before they used math types. Loading validates the array, so data that breaks a type's
+//! invariant, such as a zero-length orientation, fails to deserialize instead of producing an invalid value.
 
-use rkyv::rancor::Fallible;
-
-/// The `ArrayForm` trait converts a math type to and from the `f32` array it is stored as.
-pub(crate) trait ArrayForm<const N: usize>: Sized {
-	type Array: FlatArray<N>;
-	type Error: std::error::Error + Send + Sync + 'static;
-
-	fn to_array(&self) -> Self::Array;
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error>;
-}
-
-/// The `FlatArray` trait lays an `f32` array of any nesting out as its `N` components in memory order.
-pub(crate) trait FlatArray<const N: usize>: Sized {
-	fn flatten(self) -> [f32; N];
-
-	fn unflatten(components: [f32; N]) -> Self;
-}
-
-impl<const N: usize> FlatArray<N> for [f32; N] {
-	fn flatten(self) -> [f32; N] {
-		self
-	}
-
-	fn unflatten(components: [f32; N]) -> Self {
-		components
-	}
-}
-
-macro_rules! nested_flat_array {
-	($rows:literal, $columns:literal, $count:literal) => {
-		impl FlatArray<$count> for [[f32; $columns]; $rows] {
-			fn flatten(self) -> [f32; $count] {
-				std::array::from_fn(|index| self[index / $columns][index % $columns])
-			}
-
-			fn unflatten(components: [f32; $count]) -> Self {
-				std::array::from_fn(|row| std::array::from_fn(|column| components[row * $columns + column]))
-			}
-		}
-	};
-}
-
-nested_flat_array!(2, 3, 6);
-nested_flat_array!(4, 3, 12);
-
-/// The `ArchivedFloats` struct is the archived form of a math type: its `N` components in memory order.
+/// Implements serde and rkyv for `$type` by storing the `f32` array that its `$to` method returns.
 ///
-/// It has the same bytes as an archived `[f32; N]`, so resources archived as raw arrays still load.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ArchivedFloats<const N: usize>([rkyv::Archived<f32>; N]);
-
-impl<const N: usize> ArchivedFloats<N> {
-	/// Returns the archived components in memory order.
-	pub fn get(&self) -> [f32; N] {
-		self.0.map(|component| component.to_native())
-	}
-}
-
-// SAFETY: `ArchivedFloats` is a transparent wrapper around an array of portable archived floats.
-unsafe impl<const N: usize> rkyv::Portable for ArchivedFloats<N> {}
-
-// SAFETY: `ArchivedFloats` is a transparent wrapper around its array, so validating the array validates the wrapper.
-unsafe impl<C: Fallible + ?Sized, const N: usize> rkyv::bytecheck::CheckBytes<C> for ArchivedFloats<N>
-where
-	[rkyv::Archived<f32>; N]: rkyv::bytecheck::CheckBytes<C>,
-{
-	unsafe fn check_bytes(value: *const Self, context: &mut C) -> Result<(), C::Error> {
-		// SAFETY: The caller guarantees `value` points to readable memory the size of `Self`, which is the array's size.
-		unsafe { <[rkyv::Archived<f32>; N] as rkyv::bytecheck::CheckBytes<C>>::check_bytes(value.cast(), context) }
-	}
-}
-
-/// Implements serde and rkyv for a type through its [`ArrayForm`] with `N` components.
+/// Pass `from:` with a conversion that accepts every array, or `try_from:` with one that validates the array and
+/// returns a `Result`. List the type parameters of `$type` last.
 macro_rules! serialize_as_array {
-	($type:ty, $components:literal $(, $generic:ident)*) => {
+	($type:ty, [$element:ty; $count:literal], $to:ident, from: $from:expr $(, $generic:ident)*) => {
+		$crate::serialization::serialize_as_array!(
+			$type, [$element; $count], $to, try_from: |array| Ok::<_, std::convert::Infallible>(($from)(array)) $(, $generic)*
+		);
+	};
+	($type:ty, [$element:ty; $count:literal], $to:ident, try_from: $try_from:expr $(, $generic:ident)*) => {
 		impl<$($generic),*> serde::Serialize for $type {
 			fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-				serde::Serialize::serialize(&$crate::serialization::ArrayForm::<$components>::to_array(self), serializer)
+				serde::Serialize::serialize(&self.$to(), serializer)
 			}
 		}
 
 		impl<'de, $($generic),*> serde::Deserialize<'de> for $type {
 			fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-				let array = serde::Deserialize::deserialize(deserializer)?;
-				$crate::serialization::ArrayForm::<$components>::try_from_array(array).map_err(serde::de::Error::custom)
+				let array: [$element; $count] = serde::Deserialize::deserialize(deserializer)?;
+				($try_from)(array).map_err(serde::de::Error::custom)
 			}
 		}
 
 		impl<$($generic),*> rkyv::Archive for $type {
-			type Archived = $crate::serialization::ArchivedFloats<$components>;
-			type Resolver = [(); $components];
+			type Archived = [rkyv::Archived<$element>; $count];
+			type Resolver = [rkyv::Resolver<$element>; $count];
 
 			fn resolve(&self, resolver: Self::Resolver, out: rkyv::Place<Self::Archived>) {
-				let components = $crate::serialization::FlatArray::flatten($crate::serialization::ArrayForm::<$components>::to_array(self));
-				// SAFETY: `ArchivedFloats` is a transparent wrapper around the archived array, so both share one layout.
-				let out = unsafe { out.cast_unchecked::<rkyv::Archived<[f32; $components]>>() };
-				rkyv::Archive::resolve(&components, resolver, out);
+				rkyv::Archive::resolve(&self.$to(), resolver, out);
 			}
 		}
 
 		impl<$($generic,)* S: rkyv::rancor::Fallible + ?Sized> rkyv::Serialize<S> for $type {
-			fn serialize(&self, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
-				Ok([(); $components])
+			fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+				rkyv::Serialize::serialize(&self.$to(), serializer)
 			}
 		}
 
-		impl<$($generic,)* D> rkyv::Deserialize<$type, D> for $crate::serialization::ArchivedFloats<$components>
+		// The archived array is spelled out, because coherence cannot see through an `rkyv::Archived` projection and
+		// would report a conflict with rkyv's blanket `Deserialize` impl for `With`.
+		impl<$($generic,)* D> rkyv::Deserialize<$type, D> for [rkyv::Archived<$element>; $count]
 		where
 			D: rkyv::rancor::Fallible + ?Sized,
 			D::Error: rkyv::rancor::Source,
 		{
-			fn deserialize(&self, _deserializer: &mut D) -> Result<$type, D::Error> {
-				let array = $crate::serialization::FlatArray::unflatten(self.get());
-				<$type as $crate::serialization::ArrayForm<$components>>::try_from_array(array).map_err(rkyv::rancor::Source::new)
+			fn deserialize(&self, deserializer: &mut D) -> Result<$type, D::Error> {
+				let array: [$element; $count] = rkyv::Deserialize::deserialize(self, deserializer)?;
+				($try_from)(array).map_err(rkyv::rancor::Source::new)
 			}
 		}
 	};

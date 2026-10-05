@@ -218,11 +218,7 @@ impl Device {
 
 	/// Binds the command buffer's active staged descriptor heaps after transient descriptor writes.
 	pub(crate) fn bind_active_staged_descriptor_heaps(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let Some(command_buffer) = self.command_buffers.get(command_buffer_handle.0 as usize) else {
@@ -269,7 +265,7 @@ impl Device {
 			command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
 			command_buffer.bound_sampler_heap = sampler_identity;
 		}
-		self.descriptor_heap_bind_count += 1;
+		self.counters.descriptor_heap_bind_count += 1;
 	}
 	/// Retains each bound heap until this command buffer's submitted work has completed.
 	pub(crate) fn retain_descriptor_materialization(

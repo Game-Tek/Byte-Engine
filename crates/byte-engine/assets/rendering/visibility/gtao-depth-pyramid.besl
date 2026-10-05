@@ -21,18 +21,6 @@ shared_depth: workgroup<f32, 32>;
 GTAO_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 GTAO_PYRAMID_TILE_LEVEL_1_WIDTH: const u32 = 4;
 
-clamp_coordinate: fn (coordinate: vec2u, extent: vec2u) -> vec2u {
-	let clamped_x: u32 = coordinate.x;
-	let clamped_y: u32 = coordinate.y;
-	if (clamped_x >= extent.x) {
-		clamped_x = extent.x - 1;
-	}
-	if (clamped_y >= extent.y) {
-		clamped_y = extent.y - 1;
-	}
-	return vec2u(clamped_x, clamped_y);
-}
-
 linearize_depth: fn (depth: f32) -> f32 {
 	if (depth == 0.0) {
 		return 0.0;
@@ -56,11 +44,11 @@ main: fn (input: StageInput) -> void {
 	let level_1_coordinate: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
 	let level_1_extent: vec2u = image_size(reduced_depth_1);
-	let valid_level_1_coordinate: vec2u = clamp_coordinate(level_1_coordinate, level_1_extent);
-	let workgroup_origin: vec2u = vec2u(
-		level_1_coordinate.x - level_1_coordinate.x % GTAO_PYRAMID_WORKGROUP_WIDTH,
-		level_1_coordinate.y - level_1_coordinate.y % 4
+	let valid_level_1_coordinate: vec2u = vec2u(
+		min(level_1_coordinate.x, level_1_extent.x - 1),
+		min(level_1_coordinate.y, level_1_extent.y - 1)
 	);
+	let workgroup_origin: vec2u = level_1_coordinate - level_1_coordinate % vec2u(GTAO_PYRAMID_WORKGROUP_WIDTH, 4);
 
 	// Sample at the reduced image's normalized texel centers, including the last source row and column at odd extents.
 	// Reversed depth makes the maximum of the four surrounding source texels the nearest surface.

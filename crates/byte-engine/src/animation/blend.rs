@@ -51,13 +51,12 @@ pub fn blend_local_poses(
 		return Err(BlendError::ZeroWeight);
 	}
 
+	let reference = weights
+		.iter()
+		.position(|weight| *weight > 0.0)
+		.expect("a positive total weight guarantees one reference rotation");
 	for node in 0..output.len() {
-		let reference_rotation = poses
-			.iter()
-			.zip(weights)
-			.find(|(_, weight)| **weight > 0.0)
-			.map(|(pose, _)| pose[node].rotation)
-			.expect("a positive total weight guarantees one reference rotation");
+		let reference_rotation = poses[reference][node].rotation;
 		let mut translation = Vector::zero();
 		let mut rotation = Quaternion::new(0.0, 0.0, 0.0, 0.0);
 		let mut scale = Scale::new(0.0, 0.0, 0.0);
@@ -145,27 +144,22 @@ impl BlendSpace1D {
 	}
 }
 
-/// The `BlendTriangle` struct identifies three sample indices forming one non-degenerate 2D blend region.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BlendTriangle(
-	/// Sample indices ordered around the triangle.
-	pub [usize; 3],
-);
-
 /// The `BlendSpace2D` struct stores validated points and triangles for allocation-free directional blending.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlendSpace2D {
 	positions: Vec<[f32; 2]>,
-	triangles: Vec<BlendTriangle>,
+	/// Sample indices ordered around each non-degenerate triangle.
+	triangles: Vec<[usize; 3]>,
 }
 
 impl BlendSpace2D {
 	/// Creates a triangulated blend space.
 	///
-	/// Triangles may share edges but must not be degenerate. Next, call
-	/// [`Self::write_weights`] to find the containing triangle or the closest
-	/// point on the triangulated boundary.
-	pub fn new(positions: impl Into<Vec<[f32; 2]>>, triangles: impl Into<Vec<BlendTriangle>>) -> Result<Self, BlendSpaceError> {
+	/// Each triangle lists three sample indices in order around it. Triangles may
+	/// share edges but must not be degenerate. Next, call [`Self::write_weights`]
+	/// to find the containing triangle or the closest point on the triangulated
+	/// boundary.
+	pub fn new(positions: impl Into<Vec<[f32; 2]>>, triangles: impl Into<Vec<[usize; 3]>>) -> Result<Self, BlendSpaceError> {
 		let positions = positions.into();
 		let triangles = triangles.into();
 		if positions.len() < 3 {
@@ -177,20 +171,14 @@ impl BlendSpace2D {
 		if triangles.is_empty() {
 			return Err(BlendSpaceError::NoTriangles);
 		}
-		for (triangle_index, BlendTriangle(indices)) in triangles.iter().enumerate() {
+		for (triangle_index, indices) in triangles.iter().enumerate() {
 			if indices.iter().any(|index| *index >= positions.len()) {
 				return Err(BlendSpaceError::TriangleSampleOutOfRange {
 					triangle: triangle_index,
 				});
 			}
-			if barycentric_coordinates(
-				positions[indices[0]],
-				positions[indices[1]],
-				positions[indices[2]],
-				positions[indices[0]],
-			)
-			.is_none()
-			{
+			let [first, second, third] = indices.map(|index| positions[index]);
+			if barycentric_coordinates(first, second, third, first).is_none() {
 				return Err(BlendSpaceError::DegenerateTriangle {
 					triangle: triangle_index,
 				});
@@ -226,12 +214,8 @@ impl BlendSpace2D {
 		output.fill(0.0);
 
 		let mut closest = None;
-		for BlendTriangle(indices) in &self.triangles {
-			let points = [
-				self.positions[indices[0]],
-				self.positions[indices[1]],
-				self.positions[indices[2]],
-			];
+		for indices in &self.triangles {
+			let points = indices.map(|index| self.positions[index]);
 			let weights = barycentric_coordinates(points[0], points[1], points[2], value)
 				.expect("blend-space construction rejects degenerate triangles");
 			if weights.iter().all(|weight| *weight >= -1.0e-5) {
@@ -452,7 +436,7 @@ fn distance_squared2(left: [f32; 2], right: [f32; 2]) -> f32 {
 mod tests {
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{BlendSpace1D, BlendSpace2D, BlendTriangle, blend_local_pose, blend_local_poses};
+	use super::{BlendSpace1D, BlendSpace2D, blend_local_pose, blend_local_poses};
 
 	fn transform(translation: f32, rotation: [f32; 4]) -> LocalTransform {
 		LocalTransform {
@@ -501,8 +485,7 @@ mod tests {
 
 	#[test]
 	fn two_dimensional_weights_use_triangle_barycentrics() {
-		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![BlendTriangle([0, 1, 2])])
-			.expect("expected test value");
+		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![[0, 1, 2]]).expect("expected test value");
 		let mut weights = [0.0; 3];
 		space.write_weights([0.25, 0.25], &mut weights).expect("expected test value");
 
@@ -511,8 +494,7 @@ mod tests {
 
 	#[test]
 	fn two_dimensional_weights_clamp_outside_to_closest_edge() {
-		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![BlendTriangle([0, 1, 2])])
-			.expect("expected test value");
+		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![[0, 1, 2]]).expect("expected test value");
 		let mut weights = [0.0; 3];
 		space.write_weights([0.75, 0.75], &mut weights).expect("expected test value");
 

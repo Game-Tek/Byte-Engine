@@ -1,6 +1,6 @@
 //! CPU mirrors of the GPU records read by the visibility shaders.
 //!
-//! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::VisibilityShaderScope`].
+//! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::visibility_shader_scope`].
 //! The layout tests at the bottom pin the offsets the shaders depend on.
 
 use ghi::pod::{Mat4f, Mat4x3f};
@@ -129,17 +129,9 @@ pub struct LightData {
 impl Default for LightData {
 	fn default() -> Self {
 		Self {
-			position: ShaderVec3::default(),
-			color: ShaderVec3::default(),
-			direction: ShaderVec3::default(),
-			cone_cosines: [0.0; 2],
-			light_type: 0,
-			shadow_views: [0; 8],
-			shadow_layer: 0,
 			ies_profile_texture: NO_IES_PROFILE_TEXTURE,
 			ies_c0_tangent: NEUTRAL_UNIT_VECTOR,
-			reach: 0.0,
-			angular_radius_tangent: 0.0,
+			..bytemuck::Zeroable::zeroed()
 		}
 	}
 }
@@ -206,8 +198,7 @@ impl Default for MaterialData {
 			textures: [u32::MAX; MAX_MATERIAL_TEXTURES],
 			coverage_factor: 1.0,
 			coverage_texture_slot: u32::MAX,
-			alpha_cutoff: 0.0,
-			_padding: 0,
+			..bytemuck::Zeroable::zeroed()
 		}
 	}
 }
@@ -243,16 +234,12 @@ pub(crate) struct ReflectionShaderParameters {
 
 /// The shader-facing structs must keep the exact layouts their GPU buffers are read with.
 ///
-/// The visibility shaders index each buffer by a fixed stride and read fields at fixed offsets, and the
-/// stride constants in [`layout`](crate::rendering::pipelines::visibility::layout) must agree with the
-/// Rust types that fill them.
+/// The visibility shaders index each buffer by a fixed stride and read fields at fixed offsets. The stride
+/// constants in [`layout`](crate::rendering::pipelines::visibility::layout) take their values from these types.
 ///
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
 const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
-const _: () = assert!(
-	std::mem::size_of::<ShaderMesh>() as u32 == crate::rendering::pipelines::visibility::layout::MESH_DATA_BUFFER_STRIDE
-);
 const _: () = assert!(std::mem::align_of::<ShaderMesh>() == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
@@ -260,9 +247,6 @@ const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 76);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, bounding_sphere) == 80);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);
-const _: () = assert!(
-	std::mem::size_of::<ShaderViewData>() as u32 == crate::rendering::pipelines::visibility::layout::VIEW_DATA_BUFFER_STRIDE
-);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, view) == 0);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, view_projection) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, inverse_view) == 112);

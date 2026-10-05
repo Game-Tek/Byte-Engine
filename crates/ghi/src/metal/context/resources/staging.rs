@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::command_buffer::CommonCommandBufferMode as _;
+use crate::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode as _};
 
 impl Context {
 	/// Records every pending buffer and image upload into one Metal 4 submission on `queue_handle`.
@@ -19,7 +19,8 @@ impl Context {
 		let mut buffer_syncs = std::mem::take(&mut self.pending_buffer_syncs);
 		let mut image_syncs = std::mem::take(&mut self.pending_image_syncs);
 		let synchronizer = self.internal_upload_synchronizer;
-		let mut recording = self.begin_recording(queue_handle, Some("Pending Uploads"), frame_key, &std::alloc::Global);
+		let mut recording =
+			CommandBufferRecording::new(self, queue_handle, Some("Pending Uploads"), frame_key, &std::alloc::Global);
 		// The region names the upload encoder in capture tools, as "Compute: Pending Uploads".
 		recording.start_region(|label| label.write_str("Pending Uploads"));
 		for buffer_handle in buffer_syncs.drain(..) {
@@ -30,7 +31,7 @@ impl Context {
 		}
 		recording.end_region();
 		// The synchronizer owns the upload submission and its retained resources through completion.
-		recording.finish(synchronizer);
+		recording.execute(synchronizer);
 
 		self.pending_buffer_syncs = buffer_syncs;
 		self.pending_image_syncs = image_syncs;

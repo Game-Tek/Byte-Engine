@@ -101,7 +101,7 @@ pub(crate) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 			}
 			Ok(Value::Struct {
 				value_type: value_type.clone(),
-				fields: components.to_vec(),
+				fields: components.into(),
 			})
 		}
 		_ => Err(VmError::UnsupportedExpression {

@@ -24,13 +24,11 @@ mod shader_data;
 mod shader_generator;
 mod shadow_selection;
 mod skinning;
-mod slots;
 #[cfg(test)]
 mod tests;
 
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
-pub use loader::MaterialPipelineConfig;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
 	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER,
@@ -38,4 +36,4 @@ pub use manager::{
 	VisibilityPipelineManager, VisibilityPipelineSettings,
 };
 pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX};
-pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator, VisibilityShaderScope};
+pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator};

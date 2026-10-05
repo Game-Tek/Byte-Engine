@@ -1100,7 +1100,7 @@ mod tests {
 	use crate::rendering::{
 		render_pass::simple_compute,
 		shader_vm_test::{
-			array_buffer, assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d,
+			array_buffer, assert_rgba_close, compile as compile_shader_vm, empty_image, link_program, rgba, run_at, texture_2d,
 		},
 	};
 	use crate::ui::{
@@ -1134,22 +1134,6 @@ mod tests {
 	// by production standalone compute shaders.
 	fn compile_ui_blur_shader(source: &str) -> ExecutableProgram {
 		compile_shader_vm(simple_compute::compile_test_program(source))
-	}
-
-	// Links one checked-in raster shader through the production BESL frontend. Returns the program rather than its
-	// `main`, because the program owns every function it calls.
-	fn ui_raster_program(source: &str, shader_name: &str) -> besl::NodeReference {
-		let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
-			panic!(
-				"Failed to link {shader_name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset."
-			)
-		});
-		program.get_main().unwrap_or_else(|| {
-			panic!(
-				"Missing {shader_name} entry point. The most likely cause is that the checked-in BESL asset has no `main` function."
-			)
-		});
-		program
 	}
 
 	/// The `UiVaryings` struct is what the vertex stage hands one fragment.
@@ -1222,7 +1206,7 @@ mod tests {
 
 	impl UiFragmentVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
-			let executable = compile_shader_vm(ui_raster_program(UI_FRAGMENT_BESL, "UI fragment shader"));
+			let executable = compile_shader_vm(link_program(UI_FRAGMENT_BESL, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
@@ -1321,7 +1305,7 @@ mod tests {
 
 	impl UiVertexVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], viewport: [f32; 2]) -> Self {
-			let executable = compile_shader_vm(ui_raster_program(UI_VERTEX_BESL, "UI vertex shader"));
+			let executable = compile_shader_vm(link_program(UI_VERTEX_BESL, "UI vertex shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let masks = vm_masks(&executable, masks);
 			Self {

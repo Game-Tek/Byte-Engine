@@ -2,7 +2,8 @@ use std::fmt;
 
 use maths_rs::Quatf;
 
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::geometry::scaled_normalize;
+use crate::serialization::serialize_as_array;
 use crate::{Matrix, Radians, UnitVector, Vector, orientation_from_direction};
 
 /// Rotation vectors shorter than this are treated as no rotation, where the axis is undefined.
@@ -79,6 +80,20 @@ impl Orientation {
 		Self::try_from_maths(Quatf::new(x, y, z, w))
 	}
 
+	/// Rebuilds an orientation from components that [`Self::to_array`] returned, without normalizing them again.
+	///
+	/// Use it to read back rotations that were stored already validated. Use [`Self::try_from_array`] for any other
+	/// data, because this does not check that the components are finite and unit length.
+	pub fn from_unit_array_unchecked([x, y, z, w]: [f32; 4]) -> Self {
+		debug_assert!(
+			(x * x + y * y + z * z + w * w - 1.0).abs() < 1.0e-3,
+			"Unchecked orientation components are not unit length. The most likely cause is reading data that did not come from Orientation::to_array."
+		);
+		Self {
+			value: Quatf::new(x, y, z, w),
+		}
+	}
+
 	/// Returns the `[x, y, z, w]` components of this orientation's unit quaternion.
 	pub fn to_array(self) -> [f32; 4] {
 		[self.value.x, self.value.y, self.value.z, self.value.w]
@@ -123,9 +138,9 @@ impl Orientation {
 
 	/// Returns the rotation that undoes this one.
 	pub fn inverse(self) -> Self {
-		let Quatf { x, y, z, w } = self.value;
+		// The conjugate inverts a unit quaternion.
 		Self {
-			value: Quatf::new(-x, -y, -z, w),
+			value: self.value.reverse(),
 		}
 	}
 
@@ -134,8 +149,7 @@ impl Orientation {
 	/// A negative result means the quaternions lie in opposite hemispheres, so blending them directly would take the
 	/// longer way around.
 	pub fn dot(self, other: Self) -> f32 {
-		let (left, right) = (self.value, other.value);
-		left.x * right.x + left.y * right.y + left.z * right.z + left.w * right.w
+		maths_rs::dot(self.value, other.value)
 	}
 
 	/// Moves `factor` of the way to `other` along the shorter arc by normalizing a linear quaternion blend.
@@ -144,13 +158,7 @@ impl Orientation {
 	pub fn nlerp(self, other: Self, factor: f32) -> Self {
 		let left = self.value;
 		let right = if self.dot(other) < 0.0 { -other.value } else { other.value };
-		let blended = Quatf::new(
-			left.x + (right.x - left.x) * factor,
-			left.y + (right.y - left.y) * factor,
-			left.z + (right.z - left.z) * factor,
-			left.w + (right.w - left.w) * factor,
-		);
-		Self::try_from_maths(blended).unwrap_or(self)
+		Self::try_from_maths(left + (right - left) * factor).unwrap_or(self)
 	}
 
 	/// Returns this rotation as the shortest rotation vector: its axis scaled by its angle in radians.
@@ -195,22 +203,12 @@ impl Default for Orientation {
 }
 
 fn normalize(value: Quatf) -> Result<Quatf, OrientationError> {
-	if !value.x.is_finite() || !value.y.is_finite() || !value.z.is_finite() || !value.w.is_finite() {
+	let components = [value.x, value.y, value.z, value.w];
+	if !components.iter().all(|component| component.is_finite()) {
 		return Err(OrientationError::NonFiniteQuaternion);
 	}
-
-	// Scaling first prevents overflow and underflow when measuring finite input components.
-	let scale = value.x.abs().max(value.y.abs()).max(value.z.abs()).max(value.w.abs());
-	if scale == 0.0 {
-		return Err(OrientationError::ZeroLengthQuaternion);
-	}
-	let x = value.x / scale;
-	let y = value.y / scale;
-	let z = value.z / scale;
-	let w = value.w / scale;
-	let length = (x * x + y * y + z * z + w * w).sqrt();
-
-	Ok(Quatf::new(x / length, y / length, z / length, w / length))
+	let ([x, y, z, w], _) = scaled_normalize(components).ok_or(OrientationError::ZeroLengthQuaternion)?;
+	Ok(Quatf::new(x, y, z, w))
 }
 
 impl From<UnitVector> for Orientation {
@@ -283,17 +281,4 @@ mod tests {
 	}
 }
 
-impl ArrayForm<4> for Orientation {
-	type Array = [f32; 4];
-	type Error = OrientationError;
-
-	fn to_array(&self) -> Self::Array {
-		Orientation::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Self::try_from_array(array)
-	}
-}
-
-serialize_as_array!(Orientation, 4);
+serialize_as_array!(Orientation, [f32; 4], to_array, try_from: Orientation::try_from_array);

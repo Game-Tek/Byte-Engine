@@ -9,31 +9,28 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
-		self.vulkan_consume_resources(buffer_descriptors.iter().map(|buffer_descriptor| {
+		let handles = buffer_descriptors
+			.iter()
+			.map(|descriptor| self.get_internal_buffer_handle(descriptor.buffer))
+			.collect::<SmallVec<[_; 8]>>();
+		self.vulkan_consume_resources(handles.iter().map(|handle| {
 			vulkan_consumption(
-				self.buffer_resource(buffer_descriptor.buffer),
+				Handles::Buffer(*handle),
 				vk::PipelineStageFlags2::VERTEX_INPUT,
 				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
 			)
 		}))
 		.apply(self);
 
-		let buffers = buffer_descriptors
+		let (buffers, offsets): (SmallVec<[_; 8]>, SmallVec<[_; 8]>) = handles
 			.iter()
-			.map(|buffer_descriptor| {
-				self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer))
-					.buffer
-			})
-			.collect::<Vec<_>>();
-		let offsets = buffer_descriptors
-			.iter()
-			.map(|buffer_descriptor| buffer_descriptor.offset as vk::DeviceSize)
-			.collect::<Vec<_>>();
+			.zip(buffer_descriptors)
+			.map(|(handle, descriptor)| (self.get_buffer(*handle).buffer, descriptor.offset as vk::DeviceSize))
+			.unzip();
 
 		// TODO: implement slot splitting
 		unsafe {
 			self.device
-				.device
 				.cmd_bind_vertex_buffers(self.get_command_buffer().command_buffer, 0, &buffers, &offsets);
 		}
 	}
@@ -59,7 +56,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		};
 
 		unsafe {
-			self.device.device.cmd_bind_index_buffer(
+			self.device.cmd_bind_index_buffer(
 				self.get_command_buffer().command_buffer,
 				self.get_buffer(buffer_handle).buffer,
 				buffer_descriptor.offset as _,
@@ -77,7 +74,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.device.cmd_set_scissor(command_buffer, 0, &[rect]);
+			self.device.cmd_set_scissor(command_buffer, 0, &[rect]);
 		}
 	}
 
@@ -90,7 +87,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			"No Vulkan render pass is active. The most likely cause is that end_render_pass was called without start_render_pass.",
 		);
 		unsafe {
-			self.device.device.cmd_end_rendering(self.get_command_buffer().command_buffer);
+			self.device.cmd_end_rendering(self.get_command_buffer().command_buffer);
 		}
 		self.active_rendering = false;
 	}
@@ -125,11 +122,15 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		self.bound_pipeline.expect(
 			"No Vulkan pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		// Binding replaces the complete flat set union; no implicit set index or prior binding survives.
-		self.bound_descriptor_set_handles.clear();
-		self.bound_descriptor_set_handles.extend_from_slice(sets);
-		self.current_descriptor_materialization = None;
-		self.descriptor_materialization_dirty = true;
+		// Binding replaces the complete flat set union; no implicit set index or prior binding survives. A recording
+		// cannot write descriptors, bump epochs, or acquire images, so rebinding the same sets keeps their
+		// materialization; their read-only resources are still consumed again before the next draw or dispatch.
+		if self.bound_descriptor_set_handles != sets {
+			self.bound_descriptor_set_handles.clear();
+			self.bound_descriptor_set_handles.extend_from_slice(sets);
+			self.current_descriptor_materialization = None;
+			self.descriptor_materialization_dirty = true;
+		}
 		self.descriptor_resources_initialized = false;
 		self
 	}
@@ -141,15 +142,10 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
 		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
 		unsafe {
+			self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);
 			self.device
-				.device
-				.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);
-			self.device
-				.device
 				.cmd_bind_index_buffer(command_buffer, mesh.buffer, index_data_offset, vk::IndexType::UINT16);
-			self.device
-				.device
-				.cmd_draw_indexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
+			self.device.cmd_draw_indexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
 		}
 	}
 
@@ -162,12 +158,12 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 
 	fn draw_indirect<const N: usize>(
 		&mut self,
-		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
 		entry_index: usize,
 	) {
-		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
-		let buffer_handle = buffer_handle.into().handle();
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_handle));
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.get_buffer(buffer_handle);
 		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
 		assert!(
 			entry.end <= buffer_size,
@@ -177,19 +173,20 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 
 		// The draw record must be visible to the indirect stage before the deferred render pass begins.
 		self.vulkan_consume_resources([vulkan_consumption(
-			self.buffer_resource(buffer_handle),
+			Handles::Buffer(buffer_handle),
 			vk::PipelineStageFlags2::DRAW_INDIRECT,
 			vk::AccessFlags2::INDIRECT_COMMAND_READ,
 		)])
 		.apply(self);
 		let command_buffer = self.prepare_draw();
 		unsafe {
-			self.device.device.cmd_draw_indirect(
+			// The stride is one record, which is the entry's size.
+			self.device.cmd_draw_indirect(
 				command_buffer,
 				vk_buffer,
 				entry.start as vk::DeviceSize,
 				1,
-				crate::command_buffer::INDIRECT_DRAW_RECORD_SIZE as u32,
+				entry.len() as u32,
 			);
 		}
 	}
@@ -198,7 +195,6 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer = self.prepare_draw();
 		unsafe {
 			self.device
-				.device
 				.cmd_draw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
 		}
 	}
@@ -213,7 +209,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	) {
 		let command_buffer = self.prepare_draw();
 		unsafe {
-			self.device.device.cmd_draw_indexed(
+			self.device.cmd_draw_indexed(
 				command_buffer,
 				index_count,
 				instance_count,

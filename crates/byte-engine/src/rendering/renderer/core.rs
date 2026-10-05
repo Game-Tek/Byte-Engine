@@ -99,7 +99,6 @@ pub struct Renderer {
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
 	pipeline_compilation_manager: crate::rendering::pipeline_compilation::PipelineManager,
-	pipeline_compilation_servers: Vec<crate::rendering::PipelineManagerServer>,
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
@@ -123,7 +122,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	/// Creates a renderer that records and presents on `device`'s graphics queue.
+	/// Creates a renderer that records and presents on `device`'s graphics queue, and returns it with the pipeline
+	/// compilation servers that compile its pipelines. Run each server with [`PipelineManagerServer::run`] on a thread
+	/// that owns it.
 	///
 	/// # Parameters
 	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
@@ -140,15 +141,14 @@ impl Renderer {
 		parameters: &dyn Parameters,
 		configuration: &Configuration,
 		metrics: Arc<Metrics>,
-	) -> Self {
+	) -> (Self, Vec<PipelineManagerServer>) {
 		let defer_first_frame_sink_setup = parameters
 			.get_parameter("render.startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
 			.unwrap_or(false);
 
 		let mut context = device.create_context();
-		let frame_queue_depth = 2;
-		context.set_frames_in_flight(frame_queue_depth);
+		context.set_frames_in_flight(2);
 		let pipeline_compilation_server_count = parameters
 			.get_parameter("render.pipeline-compilation.threads")
 			.and_then(|parameter| parameter.parse::<usize>().ok())
@@ -164,7 +164,7 @@ impl Renderer {
 			.register(MetricKind::Gpu, "frame")
 			.map(|metric| (context.create_counter(Some("Frame")), metric));
 
-		Renderer {
+		let renderer = Renderer {
 			context,
 
 			started_frame_count: 0,
@@ -193,7 +193,6 @@ impl Renderer {
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_compilation_client,
 			pipeline_compilation_manager,
-			pipeline_compilation_servers,
 
 			graphics_queue_handle,
 
@@ -205,7 +204,8 @@ impl Renderer {
 			metrics,
 			frame_counter,
 			scene_counters: SmallVec::new(),
-		}
+		};
+		(renderer, pipeline_compilation_servers)
 	}
 
 	/// Creates the counter that times one node of `sink` and registers the metric it reports to.
@@ -328,13 +328,6 @@ impl Renderer {
 		self.add_post_scene_render_passes_for_sink(sink_id);
 	}
 
-	fn initialize_pending_sink_resources(&mut self) {
-		let pending_sink_initializations = std::mem::take(&mut self.pending_sink_initializations);
-		for sink_id in pending_sink_initializations {
-			self.initialize_scene_sink(sink_id);
-		}
-	}
-
 	/// Changes the state of every sink-local render pass with the requested stable name.
 	///
 	/// Returns the number of updated instances. A return value of `0` means that no registered render pass uses
@@ -342,11 +335,6 @@ impl Renderer {
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
 		self.redraw_requested = true;
 		set_render_pass_state(&mut self.render_pass_states, name, state)
-	}
-
-	/// Applies queued render-pass configuration after passes exist and before they prepare frame work.
-	fn apply_configuration(&mut self) {
-		apply_render_pass_configuration(&self.configuration, &mut self.pending_configuration, &self.render_pass_states);
 	}
 
 	/// Registers the scene background that every future sink's scene pipeline records between opaque and
@@ -472,35 +460,31 @@ impl Renderer {
 		if self.acquisitions.0 != self.started_frame_count {
 			self.acquisitions = (self.started_frame_count, SmallVec::new());
 		}
-		let decided = self.acquisitions.1.len();
-		let captures_hidden = self
-			.acquisitions
-			.1
-			.iter()
-			.enumerate()
-			.any(|(sink, window_frame)| matches!(window_frame, WindowFrame::Hidden) && captured(sink));
-		if decided == self.windows.len() && !captures_hidden {
+		// A window still needs deciding when this frame has no entry for it, or when it is hidden and a screenshot
+		// captures it.
+		let undecided = |acquisitions: &[WindowFrame], index: SinkId| match acquisitions.get(index) {
+			None => true,
+			Some(window_frame) => matches!(window_frame, WindowFrame::Hidden) && captured(index),
+		};
+		if !(0..self.windows.len()).any(|index| undecided(&self.acquisitions.1, index)) {
 			return None;
 		}
 
-		let span = debug_span!(
+		let _span = debug_span!(
 			"Renderer::acquire_swapchains",
 			frame = self.started_frame_count,
 			windows = self.windows.len()
-		);
-		let _enter = span.enter();
+		)
+		.entered();
 
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
 		for (index, (window, swapchain, warned)) in self.windows.iter_mut().enumerate() {
-			let captured = captured(index);
-			match self.acquisitions.1.get(index) {
-				None => {}
-				Some(WindowFrame::Hidden) if captured => {}
-				Some(_) => continue,
+			if !undecided(&self.acquisitions.1, index) {
+				continue;
 			}
-			if !captured && !window.is_visible() {
+			if !captured(index) && !window.is_visible() {
 				self.acquisitions.1.push(WindowFrame::Hidden);
 				continue;
 			}
@@ -616,12 +600,12 @@ impl Renderer {
 		alpha: f32,
 		time: crate::time::MediaTime,
 	) -> (u64, Vec<Result<ghi::TextureReadback, RendererScreenshotError>>) {
-		let span = debug_span!(
+		let _span = debug_span!(
 			"Renderer::prepare",
 			frame = self.started_frame_count,
 			windows = self.windows.len()
-		);
-		let _enter = span.enter();
+		)
+		.entered();
 
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
@@ -636,10 +620,13 @@ impl Renderer {
 		self.acquire_swapchain_images(|sink| screenshot_requests.iter().any(|(captured, _)| *captured == sink));
 		self.redraw_requested = false;
 
-		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
-			self.initialize_pending_sink_resources();
+		if self.started_frame_count > 0 {
+			for sink_id in std::mem::take(&mut self.pending_sink_initializations) {
+				self.initialize_scene_sink(sink_id);
+			}
 		}
-		self.apply_configuration();
+		// Queued render-pass configuration applies after passes exist and before they prepare frame work.
+		apply_render_pass_configuration(&self.configuration, &mut self.pending_configuration, &self.render_pass_states);
 
 		// Resolve names outside command recording so the hot path only compares pass IDs and transfers handles.
 		let screenshot_captures = screenshot_requests
@@ -650,16 +637,9 @@ impl Renderer {
 		self.context.start_frame_capture();
 
 		{
-			let span = debug_span!("Renderer::update_camera_transforms");
-			let _enter = span.enter();
+			let _span = debug_span!("Renderer::update_camera_transforms").entered();
 			while let Some(message) = transforms_listener.read() {
-				let handle = message.handle();
-
-				if let Some(transform) = self
-					.cameras
-					.iter_mut()
-					.find_map(|(h, _, transform)| if handle == *h { Some(transform) } else { None })
-				{
+				if let Some((.., transform)) = self.cameras.iter_mut().find(|(handle, ..)| *handle == message.handle()) {
 					transform.set_position(message.transform().get_position());
 					transform.set_orientation(message.transform().get_orientation());
 				}
@@ -672,21 +652,7 @@ impl Renderer {
 
 		self.started_frame_count += 1;
 
-		let command_buffer = self.render_command_buffer;
-		let synchronizer = self.render_finished_synchronizer;
-		let wait_for = &[];
 		let swapchains = &self.acquisitions.1;
-		let sink_cameras = &self.sink_cameras;
-		let cameras = &self.cameras;
-		let render_targets = &self.render_targets;
-		let pipeline_managers = &mut self.pipeline_managers;
-		let pipeline_compilation_client = &self.pipeline_compilation_client;
-		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
-		#[cfg(debug_assertions)]
-		let resource_updates = &self.resource_updates;
-		let render_passes = &mut self.render_passes;
-		let scene_presentation_copies = &mut self.scene_presentation_copies;
-		let frame_allocator = frame_allocator;
 		let submitted_frame = self.started_frame_count - 1;
 		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
 		let scene_counters = &self.scene_counters;
@@ -694,167 +660,130 @@ impl Renderer {
 		let mut completed_frame = None;
 
 		{
-			let span = debug_span!("Renderer::queue_execute");
-			let _enter = span.enter();
-			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
+			let _span = debug_span!("Renderer::queue_execute").entered();
+			queue.execute(Some(frame), &[], self.render_finished_synchronizer, |execution| {
 				completed_frame = execution.completed_frame();
 				#[cfg(debug_assertions)]
-				if let Some(resource_updates) = resource_updates {
+				if let Some(resource_updates) = &self.resource_updates {
 					while let Some(update) = resource_updates.read() {
-						pipeline_compilation_client.resource_updated(update.id());
+						self.pipeline_compilation_client.resource_updated(update.id());
 					}
 				}
-				pipeline_compilation_manager.publish(execution.frame().expect(
+				self.pipeline_compilation_manager.publish(execution.frame().expect(
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (
-					sinks,
-					pipeline_manager_commands,
-					render_pass_commands,
-					scene_presentation_commands,
-					present_keys,
-					first_uses,
-				) = {
-					let span = debug_span!("Renderer::prepare_frame_work");
-					let _enter = span.enter();
-					let frame = execution.frame().expect(
+				let prepare_frame_work = debug_span!("Renderer::prepare_frame_work").entered();
+				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
-					let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
+				let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
 
-					{
-						let span = debug_span!("Renderer::build_sinks", cameras = cameras.len());
-						let _enter = span.enter();
-						for (sink_id, camera_handle) in sink_cameras.iter() {
-							let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
-								continue;
-							};
+				{
+					let _span = debug_span!("Renderer::build_sinks", cameras = self.cameras.len()).entered();
+					for (sink_id, camera_handle) in self.sink_cameras.iter() {
+						let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
+							continue;
+						};
+						let Some((_, camera, transform)) = self.cameras.iter().find(|(handle, ..)| handle == camera_handle)
+						else {
+							continue;
+						};
 
-							let Some((camera, transform)) = cameras
-								.iter()
-								.find_map(|(handle, camera, transform)| if handle == camera_handle { Some((camera, transform)) } else { None })
-							else {
-								continue;
-							};
+						let view = make_perspective_view_from_camera(camera, transform, extent);
+						sinks.push(Sink::new(view, extent, *sink_id).with_exposure_scale(camera.exposure_scale()));
+					}
+				}
 
-							let view = make_perspective_view_from_camera(camera, transform, extent);
-							sinks.push(Sink::new(view, extent, *sink_id).with_exposure_scale(camera.exposure_scale()));
+				// The render targets each node uses first, per sink, so recording can give them new contents.
+				let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
+				{
+					let _span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len()).entered();
+					for sink in &sinks {
+						// Resize the sink's images to its extent, divided for reduced-resolution targets.
+						for (image, extent) in self.render_targets.get_images_for_sink(sink.index(), sink.extent()) {
+							frame.resize_image(image, extent);
+						}
+						// Targets whose uses do not overlap share memory, placed again only when an extent or use changes.
+						if let Some(plan) = self.render_targets.plan(sink.index(), sink.extent()) {
+							frame.place_image_group(plan.group, &plan.members);
+							first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
 						}
 					}
+				}
 
-					// The render targets each node uses first, per sink, so recording can give them new contents.
-					let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
-					{
-						let span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len());
-						let _enter = span.enter();
-						for sink in &sinks {
-							// Resize the sink's images to its extent, divided for reduced-resolution targets.
-							for (image, extent) in render_targets.get_images_for_sink(sink.index(), sink.extent()) {
-								frame.resize_image(image, extent);
-							}
-							// Targets whose uses do not overlap share memory, placed again only when an extent or use changes.
-							if let Some(plan) = render_targets.plan(sink.index(), sink.extent()) {
-								frame.place_image_group(plan.group, &plan.members);
-								first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
-							}
-						}
-					}
-
-					// Each manager's commands, indexed by manager, with the sink every command records for.
-					let pipeline_manager_commands: SmallVec<[SmallVec<[(SinkId, RenderPassReturn<'_>); 16]>; 16]> = {
-						let span = debug_span!("Renderer::prepare_pipeline_managers");
-						let _enter = span.enter();
-						pipeline_managers
-							.iter_mut()
-							.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, alpha, time))
-							.collect()
-					};
-
-					// A list of render pass commands and their corresponding pass/sink indices.
-					let render_pass_commands: SmallVec<
-						[([Option<RenderPassReturn>; 2], RenderPassId, SinkId, Option<GpuCounter>); 64],
-					> = {
-						let span = debug_span!("Renderer::prepare_render_passes");
-						let _enter = span.enter();
-						render_passes
-							.iter_mut()
-							.enumerate()
-							.filter_map(|(render_pass_id, render_pass)| {
-								let sink = sinks.iter().find(|sink| sink.index() == render_pass.sink)?;
-								let counter = render_pass.counter;
-								Some((
-									render_pass.prepare(frame, sink, frame_allocator),
-									render_pass_id,
-									sink.index(),
-									counter,
-								))
-							})
-							.collect()
-					};
-
-					let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = scene_presentation_copies
+				// Each manager's commands, indexed by manager, with the sink every command records for.
+				let pipeline_manager_commands: SmallVec<[SmallVec<[(SinkId, RenderPassReturn<'_>); 16]>; 16]> = {
+					let _span = debug_span!("Renderer::prepare_pipeline_managers").entered();
+					self.pipeline_managers
 						.iter_mut()
-						.filter_map(|(sink_id, copy)| {
-							let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-							Some((copy.prepare(frame, sink, frame_allocator), *sink_id))
-						})
-						.collect();
-
-					let present_keys = swapchains
-						.iter()
-						.filter_map(|window_frame| match window_frame {
-							WindowFrame::Acquired(present_key, ..) => Some(*present_key),
-							WindowFrame::Hidden | WindowFrame::Unusable => None,
-						})
-						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
-
-					(
-						sinks,
-						pipeline_manager_commands,
-						render_pass_commands,
-						scene_presentation_commands,
-						present_keys,
-						first_uses,
-					)
+						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, alpha, time))
+						.collect()
 				};
 
-				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
-					let span = debug_span!("Renderer::record_commands", sinks = sinks.len());
-					let _enter = span.enter();
+				// A list of render pass commands with their pass and sink indices and the counter that times them.
+				let render_pass_commands: SmallVec<
+					[([Option<RenderPassReturn>; 2], RenderPassId, SinkId, Option<GpuCounter>); 64],
+				> = {
+					let _span = debug_span!("Renderer::prepare_render_passes").entered();
+					self.render_passes
+						.iter_mut()
+						.enumerate()
+						.filter_map(|(render_pass_id, render_pass)| {
+							let sink = sinks.iter().find(|sink| sink.index() == render_pass.sink)?;
+							let counter = render_pass.counter;
+							Some((
+								render_pass.prepare(frame, sink, frame_allocator),
+								render_pass_id,
+								sink.index(),
+								counter,
+							))
+						})
+						.collect()
+				};
+
+				let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = self
+					.scene_presentation_copies
+					.iter_mut()
+					.filter_map(|(sink_id, copy)| {
+						let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
+						Some((copy.prepare(frame, sink, frame_allocator), *sink_id))
+					})
+					.collect();
+
+				let present_keys = swapchains
+					.iter()
+					.filter_map(|window_frame| match window_frame {
+						WindowFrame::Acquired(present_key, ..) => Some(*present_key),
+						WindowFrame::Hidden | WindowFrame::Unusable => None,
+					})
+					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
+				drop(prepare_frame_work);
+
+				execution.record_with_present_keys(self.render_command_buffer, &present_keys, |command_buffer_recording| {
+					let _span = debug_span!("Renderer::record_commands", sinks = sinks.len()).entered();
 					if let Some((counter, _)) = frame_counter {
 						command_buffer_recording.start_counter(counter);
 					}
 					{
-						let span = debug_span!("Renderer::record_pipeline_manager_commands");
-						let _enter = span.enter();
+						let _span = debug_span!("Renderer::record_pipeline_manager_commands").entered();
 						for (pipeline_manager_id, commands) in pipeline_manager_commands.iter().enumerate() {
 							for sink in &sinks {
 								let command = commands
 									.iter()
-									.find_map(|(sink_id, command)| (*sink_id == sink.index()).then_some(command));
-								initialize_first_uses(
-									&mut *command_buffer_recording,
-									&first_uses,
-									sink.index(),
-									RenderNode::Scene(pipeline_manager_id),
-									command.is_some(),
-								);
-								if let Some(command) = command {
-									let counter = scene_counters.iter().find_map(|(manager, sink_id, counter)| {
-										(*manager == pipeline_manager_id && *sink_id == sink.index()).then_some(counter.0)
-									});
-									record_counted(&mut *command_buffer_recording, counter, |recording| command(recording));
-								}
+									.find_map(|(sink_id, command)| (*sink_id == sink.index()).then_some(*command));
+								let node = RenderNode::Scene(pipeline_manager_id);
+								let counter = scene_counters.iter().find_map(|(manager, sink_id, counter)| {
+									(*manager == pipeline_manager_id && *sink_id == sink.index()).then_some(counter.0)
+								});
+								record_node(command_buffer_recording, &first_uses, sink.index(), node, &[command], counter);
 							}
 						}
 					}
 
 					for (request_index, capture) in screenshot_captures.iter().enumerate() {
 						let transfer = match capture {
-							Ok(ResolvedScreenshotCapture::AfterScene { target }) => {
-								command_buffer_recording.transfer_texture(*target)
-							}
+							Ok(ResolvedScreenshotCapture::AfterScene { target }) => command_buffer_recording.transfer_texture(*target),
 							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
 							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
 								command_buffer_recording.transfer_texture_with_frame(*target, -1)
@@ -865,70 +794,42 @@ impl Renderer {
 					}
 
 					{
-						let span = debug_span!("Renderer::record_render_pass_commands");
-						let _enter = span.enter();
+						let _span = debug_span!("Renderer::record_render_pass_commands").entered();
 						for (commands, render_pass_id, sink, counter) in render_pass_commands {
-							initialize_first_uses(
-								&mut *command_buffer_recording,
-								&first_uses,
-								sink,
-								RenderNode::Pass(render_pass_id),
-								commands.iter().any(Option::is_some),
-							);
-							if commands.iter().any(Option::is_some) {
-								record_counted(&mut *command_buffer_recording, counter.map(|(counter, _)| counter), |recording| {
-									for command in commands.into_iter().flatten() {
-										command(recording);
-									}
-								});
-							}
-							for request_index in captures_after_pass(&screenshot_captures, render_pass_id) {
-								let Ok(ResolvedScreenshotCapture::AfterPass { target, .. }) = screenshot_captures[request_index]
-								else {
-									unreachable!();
-								};
-								screenshot_transfers[request_index] = Some(
-									command_buffer_recording
-										.transfer_texture(target)
-										.map_err(RendererScreenshotError::Transfer),
-								);
+							let node = RenderNode::Pass(render_pass_id);
+							let counter = counter.map(|(counter, _)| counter);
+							record_node(command_buffer_recording, &first_uses, sink, node, &commands, counter);
+							for (request_index, capture) in screenshot_captures.iter().enumerate() {
+								if let Ok(ResolvedScreenshotCapture::AfterPass { pass, target }) = capture
+									&& *pass == render_pass_id
+								{
+									screenshot_transfers[request_index] = Some(
+										command_buffer_recording
+											.transfer_texture(*target)
+											.map_err(RendererScreenshotError::Transfer),
+									);
+								}
 							}
 						}
 					}
 
 					for (command, sink_id) in scene_presentation_commands {
-						initialize_first_uses(
-							&mut *command_buffer_recording,
-							&first_uses,
-							sink_id,
-							RenderNode::Presentation,
-							command.is_some(),
-						);
-						if let Some(command) = command {
-							command(&mut *command_buffer_recording);
-						}
+						record_node(command_buffer_recording, &first_uses, sink_id, RenderNode::Presentation, &[command], None);
 					}
 
 					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
 					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						let transfer = match capture {
-							Err(error) => Some(Err(*error)),
-							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => Some(match swapchains.get(*sink) {
+						screenshot_transfers[request_index] = Some(match capture {
+							Err(error) => Err(*error),
+							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => match swapchains.get(*sink) {
 								None => Err(RendererScreenshotError::SinkNotFound),
 								Some(WindowFrame::Hidden | WindowFrame::Unusable) => Err(RendererScreenshotError::SinkUnavailable),
 								Some(WindowFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
 									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
 									.map_err(RendererScreenshotError::Transfer),
-							}),
-							Ok(
-								ResolvedScreenshotCapture::AfterPass { .. }
-								| ResolvedScreenshotCapture::AfterScene { .. }
-								| ResolvedScreenshotCapture::PreviousFrame { .. },
-							) => None,
-						};
-						if transfer.is_some() {
-							screenshot_transfers[request_index] = transfer;
-						}
+							},
+							Ok(_) => continue,
+						});
 					}
 					if let Some((counter, _)) = frame_counter {
 						command_buffer_recording.end_counter(counter);
@@ -1018,11 +919,6 @@ impl Renderer {
 		self.pipeline_compilation_client.clone()
 	}
 
-	/// Takes pending compiler servers so the application can start them on owned threads with its resource manager.
-	pub(crate) fn take_pipeline_compilation_servers(&mut self) -> Vec<crate::rendering::PipelineManagerServer> {
-		std::mem::take(&mut self.pipeline_compilation_servers)
-	}
-
 	/// Creates the swapchain and sink state for a window.
 	///
 	/// Next, create a camera with [`Self::create_camera`] and associate it with the
@@ -1039,10 +935,7 @@ impl Renderer {
 		};
 
 		// Connect on first use so headless renderers never touch the windowing system.
-		let app = match self.app.take() {
-			Some(app) => Ok(app),
-			None => ghi::window::App::new("main_window"),
-		};
+		let app = self.app.take().map_or_else(|| ghi::window::App::new("main_window"), Ok);
 		let window = app.and_then(|mut app| {
 			let window = app.create_window(name, extent, features);
 			self.app = Some(app);
@@ -1051,34 +944,22 @@ impl Renderer {
 
 		match window {
 			Ok(window) => {
-				let os_handles = window.os_handles();
-
-				let swapchain_handle = {
-					let swapchain_handle = self.context.bind_to_window(
-						&os_handles,
-						ghi::PresentationModes::FIFO,
-						extent,
-						ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
-					);
-					if self.present_interval.is_some() {
-						self.context.set_present_interval(swapchain_handle, self.present_interval);
-					}
-					swapchain_handle
-				};
+				let swapchain_handle = self.context.bind_to_window(
+					&window.os_handles(),
+					ghi::PresentationModes::FIFO,
+					extent,
+					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
+				);
+				if self.present_interval.is_some() {
+					self.context.set_present_interval(swapchain_handle, self.present_interval);
+				}
 
 				let sink_id = self.windows.len();
-
-				let sink_has_camera = if let Some(camera) = camera {
-					self.sink_cameras.push((sink_id, *camera));
-					true
-				} else {
-					false
-				};
-
 				self.windows.push((window, swapchain_handle, false));
 				self.redraw_requested = true;
 
-				if sink_has_camera {
+				if let Some(camera) = camera {
+					self.sink_cameras.push((sink_id, *camera));
 					if self.defer_first_frame_sink_setup && self.started_frame_count == 0 {
 						// The native window and swapchain can be presented before scene pipelines are created; this keeps
 						// first-paint latency independent of shader and PSO warmup.
@@ -1110,22 +991,24 @@ impl Renderer {
 		self.redraw_requested = true;
 	}
 }
-/// Gives the render targets a node uses first new contents before the node records.
+/// Records one node's commands after giving the render targets it uses first new contents.
 ///
 /// A node that records commands writes its targets itself, so they are only discarded. A node that records nothing,
 /// for example while its pipeline compiles, leaves them cleared, so later nodes never read another target's memory.
-fn initialize_first_uses(
+/// `counter`, when the node has one, measures the GPU time of its commands.
+fn record_node(
 	recording: &mut ghi::implementation::CommandBufferRecording,
 	first_uses: &[(SinkId, FirstUse)],
 	sink: SinkId,
 	node: RenderNode,
-	records: bool,
+	commands: &[Option<RenderPassReturn>],
+	counter: Option<ghi::CounterHandle>,
 ) {
 	let first_uses = first_uses
 		.iter()
 		.filter(|(first_use_sink, first_use)| *first_use_sink == sink && first_use.node == node)
 		.map(|(_, first_use)| first_use);
-	if records {
+	if commands.iter().any(Option::is_some) {
 		let images = first_uses.map(|first_use| first_use.image).collect::<SmallVec<[_; 8]>>();
 		if !images.is_empty() {
 			recording.discard_images(&images);
@@ -1138,29 +1021,16 @@ fn initialize_first_uses(
 			recording.clear_images(&clears);
 		}
 	}
-}
-
-/// Records `commands` inside `counter` when the node has one, and plainly otherwise.
-fn record_counted<R: ghi::command_buffer::CommonCommandBufferMode + ?Sized>(
-	recording: &mut R,
-	counter: Option<ghi::CounterHandle>,
-	commands: impl FnOnce(&mut R),
-) {
-	match counter {
-		Some(counter) => recording.counter(counter, commands),
-		None => commands(recording),
+	// The counter times only the node's own commands, not the discards and clears above, and only when it records.
+	let record = |recording: &mut ghi::implementation::CommandBufferRecording| {
+		for command in commands.iter().flatten() {
+			command(recording);
+		}
+	};
+	match counter.filter(|_| commands.iter().any(Option::is_some)) {
+		Some(counter) => recording.counter(counter, record),
+		None => record(recording),
 	}
-}
-
-/// Returns request slots transferred immediately after one prepared pass entry.
-pub(super) fn captures_after_pass(
-	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
-	pass: RenderPassId,
-) -> impl Iterator<Item = usize> + '_ {
-	captures.iter().enumerate().filter_map(move |(index, capture)| {
-		matches!(capture, Ok(ResolvedScreenshotCapture::AfterPass { pass: capture_pass, .. }) if *capture_pass == pass)
-			.then_some(index)
-	})
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1219,7 +1089,7 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, Sink, make_perspective_view_from_camera,
+		Camera, PipelineManagerServer, Sink, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},

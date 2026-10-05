@@ -1,13 +1,17 @@
 use super::*;
 
-pub(crate) async fn load_gltf_buffers(
+/// Loads the glTF buffers, in document order, that `required` selects, or every buffer when it is `None`.
+///
+/// A GLB's BIN chunk stays borrowed from the source bytes, so baking a mesh or a clip does not copy embedded images.
+/// Skipped buffers are empty.
+pub(crate) async fn load_gltf_buffers<'a>(
 	asset_storage_backend: &dyn asset::DynStorageBackend,
 	source: ResourceId<'_>,
 	gltf: &gltf::Gltf,
-	mut binary_blob: Option<std::borrow::Cow<'_, [u8]>>,
+	mut binary_blob: Option<Cow<'a, [u8]>>,
 	required: Option<&[bool]>,
 	allocator: &dyn std::alloc::Allocator,
-) -> Result<Vec<gltf::buffer::Data>, LoadErrors> {
+) -> Result<Vec<Cow<'a, [u8]>>, LoadErrors> {
 	use utils::r#async::StreamExt as _;
 
 	let requests = gltf.buffers().map(|buffer| {
@@ -20,15 +24,15 @@ pub(crate) async fn load_gltf_buffers(
 
 		async move {
 			if skipped {
-				return Ok((buffer.index(), gltf::buffer::Data(Vec::new())));
+				return Ok((buffer.index(), Cow::Borrowed(&[][..])));
 			}
 
 			let mut data = match buffer.source() {
-				gltf::buffer::Source::Bin => binary_data.map(std::borrow::Cow::into_owned).ok_or_else(|| {
+				gltf::buffer::Source::Bin => binary_data.ok_or_else(|| {
 					log::error!("glTF binary buffer is missing. The most likely cause is a GLB without its required BIN chunk.");
 					LoadErrors::FailedToProcess
 				})?,
-				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => decode_gltf_buffer_data_uri(uri)?,
+				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => Cow::Owned(decode_gltf_buffer_data_uri(uri)?),
 				gltf::buffer::Source::Uri(uri) => {
 					let buffer_url = resolve_gltf_uri(source, uri)?;
 					let (bytes, ..) = asset_storage_backend
@@ -40,7 +44,10 @@ pub(crate) async fn load_gltf_buffers(
 							);
 							LoadErrors::AssetCouldNotBeLoaded
 						})?;
-					copy_gltf_buffer_bytes(&bytes)?
+					// Copy once into storage already reserved for the alignment padding.
+					let mut data = Vec::with_capacity(aligned_gltf_buffer_length(bytes.len())?);
+					data.extend_from_slice(&bytes);
+					Cow::Owned(data)
 				}
 			};
 
@@ -55,13 +62,15 @@ pub(crate) async fn load_gltf_buffers(
 				return Err(LoadErrors::FailedToProcess);
 			}
 
-			// Reserve once before adding the alignment bytes required by glTF buffer-view access.
+			// Pad to the alignment glTF buffer-view access requires. Decoded and copied buffers already reserved the
+			// padding, and a valid BIN chunk is already aligned, so it stays borrowed.
 			let aligned_length = aligned_gltf_buffer_length(raw_length)?;
-			if data.capacity() < aligned_length {
+			if aligned_length != raw_length {
+				let data = data.to_mut();
 				data.reserve_exact(aligned_length - raw_length);
+				data.resize(aligned_length, 0);
 			}
-			data.resize(aligned_length, 0);
-			Ok((buffer.index(), gltf::buffer::Data(data)))
+			Ok((buffer.index(), data))
 		}
 	});
 
@@ -112,15 +121,6 @@ pub(crate) fn decode_gltf_buffer_data_uri(uri: &str) -> Result<Vec<u8>, LoadErro
 	Ok(decoded)
 }
 
-/// Copies external buffer bytes once into storage already reserved for glTF alignment padding.
-pub(crate) fn copy_gltf_buffer_bytes(bytes: &[u8]) -> Result<Vec<u8>, LoadErrors> {
-	let mut data = Vec::with_capacity(aligned_gltf_buffer_length(bytes.len())?);
-
-	data.extend_from_slice(bytes);
-
-	Ok(data)
-}
-
 /// Rounds a glTF payload length up to its required four-byte buffer alignment.
 pub(crate) fn aligned_gltf_buffer_length(length: usize) -> Result<usize, LoadErrors> {
 	length.checked_add(3).map(|length| length & !3).ok_or_else(|| {
@@ -133,46 +133,22 @@ pub(crate) fn aligned_gltf_buffer_length(length: usize) -> Result<usize, LoadErr
 /// Finds the image addressed by a glTF resource fragment.
 /// Generated fragments use `images/<index>...` so unnamed GLB images remain addressable.
 pub(crate) fn image_for_gltf_fragment<'a>(gltf: &'a gltf::Gltf, fragment: &str) -> Option<gltf::Image<'a>> {
-	if let Some(index) = generated_image_fragment_index(fragment) {
-		return gltf.images().find(|image| image.index() == index as usize);
+	match generated_image_fragment_index(fragment) {
+		// `images` yields images in index order.
+		Some(index) => gltf.images().nth(index as usize),
+		None => gltf.images().find(|image| image.name() == Some(fragment)),
 	}
-
-	gltf.images().find(|image| image.name() == Some(fragment))
 }
 
+/// Reads the image index that leads a generated `images/<index>...` fragment.
 pub(crate) fn generated_image_fragment_index(fragment: &str) -> Option<u32> {
 	let suffix = fragment.strip_prefix("images/")?;
+	let end = suffix
+		.find(|character: char| !character.is_ascii_digit())
+		.unwrap_or(suffix.len());
 
-	let digits = suffix
-		.chars()
-		.take_while(|character| character.is_ascii_digit())
-		.collect::<String>();
-
-	if digits.is_empty() { None } else { digits.parse().ok() }
-}
-
-/// Loads a glTF image from embedded buffer data, data URIs, or file-local URI references.
-/// File-local references are resolved through the engine asset backend so ad-hoc textures inside `.gltf` assets do not need to be standalone engine resources.
-pub(crate) async fn load_gltf_image_data(
-	asset_storage_backend: &dyn asset::DynStorageBackend,
-	mesh_url: ResourceId<'_>,
-	image: gltf::Image<'_>,
-	allocator: &dyn std::alloc::Allocator,
-) -> Result<gltf::image::Data, LoadErrors> {
-	match image.source() {
-		gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
-			let image_url = resolve_gltf_uri(mesh_url, uri)?;
-
-			let (bytes, ..) = asset_storage_backend
-				.resolve_in(ResourceId::new(&image_url), allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			decode_external_gltf_image(&bytes)
-		}
-		// Buffer views are read by `load_gltf_fragment_image`; only data URIs reach this arm.
-		_ => gltf::image::Data::from_source(image.source(), None, &[]).map_err(|_| LoadErrors::FailedToProcess),
-	}
+	// An empty run of digits fails to parse.
+	suffix[..end].parse().ok()
 }
 
 pub(crate) fn resolve_gltf_uri(mesh_url: ResourceId<'_>, uri: &str) -> Result<String, LoadErrors> {
@@ -187,51 +163,6 @@ pub(crate) fn resolve_gltf_uri(mesh_url: ResourceId<'_>, uri: &str) -> Result<St
 	})?;
 
 	Ok(mesh_url.resolve_relative(&uri))
-}
-
-pub(crate) fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Data, LoadErrors> {
-	let image = image::load_from_memory(bytes).map_err(|_| LoadErrors::FailedToProcess)?;
-
-	let rgba = image.into_rgba8();
-
-	let (width, height) = rgba.dimensions();
-
-	Ok(gltf::image::Data {
-		pixels: rgba.into_raw(),
-		format: gltf::image::Format::R8G8B8A8,
-		width,
-		height,
-	})
-}
-
-/// Processes decoded glTF pixels and stores their image metadata and binary payload.
-pub(crate) async fn store_gltf_image(
-	context: BakeContext<'_>,
-	id: ResourceId<'_>,
-	image: gltf::image::Data,
-	semantic: Semantic,
-	mip_generator: Option<&MipGenerator>,
-) -> Result<crate::SerializableResource, LoadErrors> {
-	let (channels, encoding) = gltf_image_source_layout(image.format)?;
-	let extent = Extent::rectangle(image.width, image.height);
-
-	let image_description = ImageDescription {
-		semantic,
-		gamma: gamma_from_semantic(semantic),
-		generate_mipmaps: mip_generator.is_some(),
-	};
-	let source = ImageSource::new(extent, channels, encoding, &image.pixels);
-
-	let (resource, data) = process_image_with_mips_in(
-		id,
-		image_description,
-		source,
-		context.allocator(),
-		mip_generator.unwrap_or(&MipGenerator::Cpu),
-	)
-	.await?;
-
-	context.store_resource(resource, &data).await
 }
 
 /// Maps glTF decoder layouts to the source metadata consumed by the common image processor.
@@ -249,73 +180,70 @@ pub(crate) fn gltf_image_source_layout(format: gltf::image::Format) -> Result<(S
 	}
 }
 
-/// Collects unique glTF image dependencies in material-slot order.
-/// The generated shader uses material texture-variable names while the runtime fills those slots with bindless descriptor indices.
-pub(crate) fn collect_gltf_texture_dependencies(
+/// Merges how one material samples each image into `semantics`, which is indexed by image.
+///
+/// The material is validated before any texture is read, so a material that fails validation leaves `semantics`
+/// unchanged. Images outside `semantics` are ignored.
+pub(crate) fn merge_gltf_texture_semantics(
 	material: &BrdfMaterialDescription,
-) -> Result<Vec<GltfTextureDependency>, BrdfMaterialValidationError> {
+	semantics: &mut [Option<Semantic>],
+) -> Result<(), BrdfMaterialValidationError> {
 	material.validate()?;
 
-	let mut dependencies = Vec::new();
-
 	let BrdfNode::MetallicRoughness(surface) = material.node(material.surface)? else {
-		return Ok(dependencies);
+		return Ok(());
 	};
 
-	collect_texture_dependencies_from_node(material, surface.base_color, Semantic::Albedo, &mut dependencies)?;
-
-	collect_texture_dependencies_from_node(material, surface.metallic, Semantic::Metallic, &mut dependencies)?;
-
-	collect_texture_dependencies_from_node(material, surface.roughness, Semantic::Roughness, &mut dependencies)?;
-
-	if let Some(normal) = surface.normal {
-		collect_texture_dependencies_from_node(material, normal, Semantic::Normal, &mut dependencies)?;
+	for (node, semantic) in [
+		(Some(surface.base_color), Semantic::Albedo),
+		(Some(surface.metallic), Semantic::Metallic),
+		(Some(surface.roughness), Semantic::Roughness),
+		(surface.normal, Semantic::Normal),
+		(surface.occlusion, Semantic::AO),
+		(surface.emission, Semantic::Emissive),
+	] {
+		if let Some(node) = node {
+			merge_texture_semantics_from_node(material, node, semantic, semantics)?;
+		}
 	}
 
-	if let Some(occlusion) = surface.occlusion {
-		collect_texture_dependencies_from_node(material, occlusion, Semantic::AO, &mut dependencies)?;
-	}
-
-	if let Some(emission) = surface.emission {
-		collect_texture_dependencies_from_node(material, emission, Semantic::Emissive, &mut dependencies)?;
-	}
-
-	Ok(dependencies)
+	Ok(())
 }
 
-pub(crate) fn collect_texture_dependencies_from_node(
+pub(crate) fn merge_texture_semantics_from_node(
 	material: &BrdfMaterialDescription,
 	node: BrdfNodeId,
 	semantic: Semantic,
-	dependencies: &mut Vec<GltfTextureDependency>,
+	semantics: &mut [Option<Semantic>],
 ) -> Result<(), BrdfMaterialValidationError> {
 	match material.node(node)? {
-		BrdfNode::Texture(texture) => push_gltf_texture_dependency(dependencies, texture.image_index, semantic),
+		BrdfNode::Texture(texture) => {
+			if let Some(merged) = semantics.get_mut(texture.image_index as usize) {
+				*merged = Some(merged.map_or(semantic, |merged| merge_texture_semantics(merged, semantic)));
+			}
+		}
 		BrdfNode::Multiply { left, right } => {
-			collect_texture_dependencies_from_node(material, *left, semantic, dependencies)?;
+			merge_texture_semantics_from_node(material, *left, semantic, semantics)?;
 
-			collect_texture_dependencies_from_node(material, *right, semantic, dependencies)?;
+			merge_texture_semantics_from_node(material, *right, semantic, semantics)?;
 		}
 		BrdfNode::ExtractChannel { source, channel } => {
 			// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
 			// other read of the image outranks it in `merge_texture_semantics`, so only fully packable images pack.
 			let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
-				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some();
-			match material.node(*source)? {
-				BrdfNode::Texture(texture) if packable => {
-					push_gltf_texture_dependency(dependencies, texture.image_index, Semantic::MetallicRoughness)
-				}
-				_ => collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?,
-			}
+				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some()
+				&& matches!(material.node(*source)?, BrdfNode::Texture(_));
+			let semantic = if packable { Semantic::MetallicRoughness } else { semantic };
+			merge_texture_semantics_from_node(material, *source, semantic, semantics)?;
 		}
 		BrdfNode::NormalMap { source, .. } => {
-			collect_texture_dependencies_from_node(material, *source, Semantic::Normal, dependencies)?;
+			merge_texture_semantics_from_node(material, *source, Semantic::Normal, semantics)?;
 		}
 		BrdfNode::Occlusion { source, .. } => {
-			collect_texture_dependencies_from_node(material, *source, Semantic::AO, dependencies)?;
+			merge_texture_semantics_from_node(material, *source, Semantic::AO, semantics)?;
 		}
 		BrdfNode::Emission { color } => {
-			collect_texture_dependencies_from_node(material, *color, Semantic::Emissive, dependencies)?;
+			merge_texture_semantics_from_node(material, *color, Semantic::Emissive, semantics)?;
 		}
 		BrdfNode::Constant(_) | BrdfNode::MetallicRoughness(_) => {}
 	}
@@ -323,28 +251,11 @@ pub(crate) fn collect_texture_dependencies_from_node(
 	Ok(())
 }
 
-pub(crate) fn push_gltf_texture_dependency(
-	dependencies: &mut Vec<GltfTextureDependency>,
-	image_index: u32,
-	semantic: Semantic,
-) {
-	if let Some(existing) = dependencies
-		.iter_mut()
-		.find(|dependency| dependency.image_index == image_index)
-	{
-		existing.semantic = merge_texture_semantics(existing.semantic, semantic);
-
-		return;
-	}
-
-	dependencies.push(GltfTextureDependency { image_index, semantic });
-}
-
+/// Picks the semantic an image bakes with when materials sample it in more than one way.
+///
+/// For the semantics glTF materials read with, the pick is a fixed priority, so the order in which reads merge does not
+/// change the result.
 pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semantic {
-	if left == right {
-		return left;
-	}
-
 	// Prefer color semantics when an unusual glTF reuses the same image for color and data textures.
 	// This avoids accidentally sampling an albedo texture as linear data after processing.
 	match (left, right) {
@@ -368,16 +279,9 @@ pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semant
 /// An image no material samples is `None`.
 pub(crate) fn gltf_image_semantics(gltf: &gltf::Gltf) -> Vec<Option<Semantic>> {
 	let mut semantics = vec![None; gltf.images().count()];
-	let dependencies = gltf
-		.materials()
-		.filter_map(|material| collect_gltf_texture_dependencies(&brdf_material_from_gltf(&material)).ok())
-		.flatten();
-	for dependency in dependencies {
-		if let Some(semantic) = semantics.get_mut(dependency.image_index as usize) {
-			*semantic = Some(semantic.map_or(dependency.semantic, |merged| {
-				merge_texture_semantics(merged, dependency.semantic)
-			}));
-		}
+	for material in gltf.materials() {
+		// A material whose graph fails validation samples no texture, so its error needs no handling here.
+		let _ = merge_gltf_texture_semantics(&brdf_material_from_gltf(&material), &mut semantics);
 	}
 	semantics
 }
@@ -392,8 +296,29 @@ pub(crate) async fn load_gltf_fragment_image(
 	image: gltf::Image<'_>,
 	binary_blob: Option<&[u8]>,
 ) -> Result<gltf::image::Data, LoadErrors> {
-	let gltf::image::Source::View { view, mime_type } = image.source() else {
-		return load_gltf_image_data(context.asset_storage_backend(), source_id, image, context.allocator()).await;
+	let (view, mime_type) = match image.source() {
+		gltf::image::Source::View { view, mime_type } => (view, mime_type),
+		// File-local references resolve through the engine asset backend, so ad-hoc textures inside `.gltf` assets do
+		// not need to be standalone engine resources.
+		gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+			let image_url = resolve_gltf_uri(source_id, uri)?;
+			let (bytes, ..) = context
+				.resolve(ResourceId::new(&image_url))
+				.await
+				.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
+			let image = image::load_from_memory(&bytes)
+				.map_err(|_| LoadErrors::FailedToProcess)?
+				.into_rgba8();
+			let (width, height) = image.dimensions();
+			return Ok(gltf::image::Data {
+				pixels: image.into_raw(),
+				format: gltf::image::Format::R8G8B8A8,
+				width,
+				height,
+			});
+		}
+		// Only data URIs reach this arm.
+		source => return gltf::image::Data::from_source(source, None, &[]).map_err(|_| LoadErrors::FailedToProcess),
 	};
 
 	let range = view.offset()..view.offset().checked_add(view.length()).ok_or(LoadErrors::FailedToProcess)?;
@@ -425,17 +350,13 @@ pub(crate) async fn load_gltf_fragment_image(
 		gltf::buffer::Source::Uri(uri) => {
 			let buffer_url = resolve_gltf_uri(source_id, uri)?;
 
-			let (bytes, ..) = context
-				.asset_storage_backend()
-				.resolve_in(ResourceId::new(&buffer_url), context.allocator())
-				.await
-				.map_err(|_| {
-					log::error!(
-						"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
-					);
+			let (bytes, ..) = context.resolve(ResourceId::new(&buffer_url)).await.map_err(|_| {
+				log::error!(
+					"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
+				);
 
-					LoadErrors::AssetCouldNotBeLoaded
-				})?;
+				LoadErrors::AssetCouldNotBeLoaded
+			})?;
 
 			decode_gltf_view_image(bytes.get(range).ok_or_else(missing_view)?, mime_type)
 		}
@@ -482,9 +403,7 @@ pub(crate) fn decode_gltf_view_image(encoded: &[u8], mime_type: &str) -> Result<
 
 pub(crate) fn generated_gltf_image_id(mesh_url: ResourceId<'_>, image_index: u32, image_name: Option<&str>) -> String {
 	let readable_name = image_name
-		.map(sanitize_material_name)
-		.filter(|name| !name.is_empty())
-		.map(|name| format!("_{name}"))
+		.map(|name| format!("_{}", sanitize_material_name(name)))
 		.unwrap_or_default();
 
 	format!("{}#images/{image_index}{readable_name}", mesh_url.as_ref())

@@ -12,7 +12,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::gtao::configuration_float;
-use super::{ComputeStage, record_compute_stages};
+use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -66,31 +66,11 @@ pub(crate) const CONTACT_SHADOWS_TARGET: &str = "Contact Shadows";
 /// The render-graph name of the unfiltered trace, which the filter reads. Capture it to debug the trace alone.
 pub(crate) const CONTACT_SHADOW_TRACE_TARGET: &str = "Contact Shadow Trace";
 
-const VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const FILTER_TRACE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
+const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
+const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
+const DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+const OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const FILTER_TRACE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
 
 /// The `ContactShadowTargets` struct holds the images the contact-shadow trace writes and its filter smooths, so the
 /// visibility pass can hand them to [`ContactShadowPass::new`] and bind the filtered one in material evaluation.
@@ -147,20 +127,13 @@ pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::U
 /// It runs after the opaque visibility layer and before opaque material evaluation, which multiplies the sun's
 /// shadow by [`CONTACT_SHADOWS_TARGET`]. Create its targets with [`create_contact_shadow_targets`].
 pub(super) struct ContactShadowPass {
-	settings: ContactShadowSettings,
 	descriptor_set: ghi::DescriptorSetHandle,
 	filter_descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: crate::rendering::PipelineRef,
-	filter_pipeline: crate::rendering::PipelineRef,
+	/// The trace and filter pipelines.
+	pub(super) pipelines: Pipelines<2>,
 	/// Full-resolution camera constants. The shared screen view data describes the half-resolution pyramid.
 	view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 	parameters: ghi::DynamicBufferHandle<ContactShadowShaderParameters>,
-}
-
-/// The `ContactShadowPipelines` struct holds the trace and filter pipelines once both have compiled.
-pub(super) struct ContactShadowPipelines {
-	trace: ghi::PipelineHandle,
-	filter: ghi::PipelineHandle,
 }
 
 impl ContactShadowPass {
@@ -170,7 +143,6 @@ impl ContactShadowPass {
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		targets: ContactShadowTargets,
-		settings: ContactShadowSettings,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Contact Shadow Descriptor Set"));
 		let filter_descriptor_set = context.create_descriptor_set(Some("Contact Shadow Filter Descriptor Set"));
@@ -184,78 +156,42 @@ impl ContactShadowPass {
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
-				.max_lod(0f32),
+				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
+		let sampled = |set, slot, image: ghi::BaseImageHandle| {
+			ghi::DescriptorWrite::combined_image_sampler(set, slot, image, point_sampler, ghi::Layouts::Read)
+		};
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING.slot(), parameters.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				DEPTH_BINDING.slot(),
-				depth,
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_BINDING.slot(), targets.trace, ghi::Layouts::General),
-			ghi::DescriptorWrite::buffer(filter_descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				filter_descriptor_set,
-				DEPTH_BINDING.slot(),
-				depth,
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				filter_descriptor_set,
-				FILTER_TRACE_BINDING.slot(),
-				targets.trace,
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::image(
-				filter_descriptor_set,
-				OUTPUT_BINDING.slot(),
-				targets.filtered,
-				ghi::Layouts::General,
-			),
+			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING, view_data.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING, parameters.into()),
+			sampled(descriptor_set, DEPTH_BINDING, depth),
+			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_BINDING, targets.trace, ghi::Layouts::General),
+			ghi::DescriptorWrite::buffer(filter_descriptor_set, VIEW_BINDING, view_data.into()),
+			sampled(filter_descriptor_set, DEPTH_BINDING, depth),
+			sampled(filter_descriptor_set, FILTER_TRACE_BINDING, targets.trace),
+			ghi::DescriptorWrite::image(filter_descriptor_set, OUTPUT_BINDING, targets.filtered, ghi::Layouts::General),
 		]);
 
 		Self {
-			settings,
 			descriptor_set,
 			filter_descriptor_set,
-			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/contact-shadows.pipeline"),
-			filter_pipeline: pipeline_manager
-				.request_pipeline("byte-engine/rendering/visibility/contact-shadows-filter.pipeline"),
+			pipelines: Pipelines::request(pipeline_manager, ["contact-shadows", "contact-shadows-filter"]),
 			view_data,
 			parameters,
 		}
 	}
 
-	pub(super) fn set_settings(&mut self, settings: ContactShadowSettings) {
-		self.settings = settings;
-	}
-
-	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<ContactShadowPipelines> {
-		Some(ContactShadowPipelines {
-			trace: pipeline_manager.pipeline(self.pipeline)?,
-			filter: pipeline_manager.pipeline(self.filter_pipeline)?,
-		})
-	}
-
 	/// Uploads this frame's camera constants, sun direction and ray reach, and returns the trace and filter recording.
 	///
 	/// `sun_direction` is the world-space direction the sun's light travels. Without a sun the recording does
-	/// nothing, because material evaluation reads the result only for the sun.
+	/// nothing, because material evaluation reads the result only for the sun. `settings` sets the ray reach.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		sun_direction: Option<math::UnitVector>,
-		pipelines: ContactShadowPipelines,
+		settings: ContactShadowSettings,
+		[trace, filter]: [ghi::PipelineHandle; 2],
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
 		if let Some(sun_direction) = sun_direction {
@@ -263,7 +199,7 @@ impl ContactShadowPass {
 			frame.sync_buffer(self.view_data);
 			*frame.get_mut_dynamic_buffer_slice(self.parameters) = ContactShadowShaderParameters {
 				direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
-				max_distance: self.settings.max_distance,
+				max_distance: settings.max_distance,
 			};
 			frame.sync_buffer(self.parameters);
 		}
@@ -275,8 +211,8 @@ impl ContactShadowPass {
 			workgroup: Extent::new(8, 8, 1),
 		};
 		let stages = [
-			stage("Contact Shadow Trace", pipelines.trace, self.descriptor_set),
-			stage("Contact Shadow Filter", pipelines.filter, self.filter_descriptor_set),
+			stage("Contact Shadow Trace", trace, self.descriptor_set),
+			stage("Contact Shadow Filter", filter, self.filter_descriptor_set),
 		];
 		// Without a sun nothing is recorded.
 		let stage_count = if sun_direction.is_some() { stages.len() } else { 0 };
@@ -301,7 +237,7 @@ mod tests {
 			Point::new(0.0, 1.0, -5.0),
 			UnitVector::z_axis(),
 		);
-		let straight_down = UnitVector::try_from_vector(math::Vector::new(0.0, -1.0, 0.0)).expect("unit direction");
+		let straight_down = math::Vector::new(0.0, -1.0, 0.0).normalized().expect("unit direction");
 
 		let direction = view_space_direction_to_light(view, straight_down);
 

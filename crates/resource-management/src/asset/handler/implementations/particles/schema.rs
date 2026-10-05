@@ -32,13 +32,11 @@ pub(crate) struct ParticleSystemSource {
 
 /// The `SpawnSource` struct sets how much an emitter spawns when it does not choose for itself.
 #[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct SpawnSource {
 	/// Particles per second.
-	#[serde(default)]
 	pub(crate) rate: f32,
 	/// Particles spawned once, when an emitter is published.
-	#[serde(default)]
 	pub(crate) burst: u32,
 }
 
@@ -123,22 +121,19 @@ impl ParticleSystemSource {
 				"`lifetime` must be two increasing values between {SHORTEST_LIFETIME} and {LONGEST_LIFETIME} seconds."
 			));
 		}
-		if !(self.spawn.rate.is_finite() && self.spawn.rate >= 0.0) {
-			return Err("`spawn.rate` must be a finite value of at least zero.".to_string());
-		}
+		non_negative("`spawn.rate`", self.spawn.rate)?;
 		for module in &self.initialize {
 			match module {
 				InitializeModule::Sphere { radius } => non_negative("sphere `radius`", *radius)?,
-				InitializeModule::Box { size } => {
-					for side in size {
-						non_negative("box `size`", *side)?;
-					}
-				}
+				InitializeModule::Box { size } => size.iter().try_for_each(|&side| non_negative("box `size`", side))?,
 				InitializeModule::Cone { angle, speed } => {
 					if !(0.0..=std::f32::consts::PI).contains(angle) {
 						return Err("cone `angle` must be between 0 and π radians.".to_string());
 					}
-					increasing("cone `speed`", *speed)?;
+					speed.iter().try_for_each(|&value| non_negative("cone `speed`", value))?;
+					if speed[0] > speed[1] {
+						return Err("cone `speed` must list its smaller value first.".to_string());
+					}
 				}
 			}
 		}
@@ -189,15 +184,5 @@ fn positive(name: &str, value: f32) -> Result<(), String> {
 		Ok(())
 	} else {
 		Err(format!("{name} must be a finite value above zero."))
-	}
-}
-
-fn increasing(name: &str, [low, high]: [f32; 2]) -> Result<(), String> {
-	non_negative(name, low)?;
-	non_negative(name, high)?;
-	if low <= high {
-		Ok(())
-	} else {
-		Err(format!("{name} must list its smaller value first."))
 	}
 }

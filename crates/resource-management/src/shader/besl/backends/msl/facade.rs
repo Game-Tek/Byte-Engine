@@ -1,18 +1,6 @@
-use std::{
-	alloc::{Allocator, Global},
-	cell::RefCell,
-	collections::HashMap,
-	fmt::Write as _,
-	vec::Vec,
-};
+use utils::hash::{HashMap, HashSet};
 
-pub use Generator as MSLTranspiler;
-
-use super::*;
-use crate::shader::generator::{
-	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, emit_comma_separated_nodes,
-	emit_statement_block, ordered_shader_nodes_in,
-};
+use super::{any_code_node, is_intrinsic_call};
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
@@ -27,8 +15,7 @@ use crate::shader::generator::{
 /// # Parameters
 ///
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
-pub struct Generator<A: Allocator + Clone = Global> {
-	pub(crate) allocator: A,
+pub struct Generator {
 	pub(crate) minified: bool,
 	pub(crate) compute_binding_mode: ComputeBindingMode,
 	pub(crate) in_compute_body: bool,
@@ -70,16 +57,10 @@ pub enum ComputeBindingMode {
 	BareResources,
 }
 
-/// The `MeshWriteRate` enum names the native mesh value one output write belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MeshWriteRate {
-	Vertex,
-	Primitive,
-}
-
 /// The `MeshWrite` struct is one field write into a mesh vertex or primitive at `index`.
 pub(crate) struct MeshWrite {
-	pub(crate) rate: MeshWriteRate,
+	/// Whether the write targets a vertex instead of a primitive.
+	pub(crate) per_vertex: bool,
 	pub(crate) field: String,
 	pub(crate) index: besl::NodeReference,
 	pub(crate) value: besl::NodeReference,
@@ -91,9 +72,9 @@ pub(crate) struct MeshStageContext {
 	pub(crate) has_push_constant: bool,
 	pub(crate) has_task_payload: bool,
 	pub(crate) uses_render_target_array_index: bool,
-	pub(crate) primitive_output_fields: Vec<String>,
-	/// Per-vertex mesh output fields, in `VertexOutput` declaration order after the position.
-	pub(crate) vertex_output_fields: Vec<String>,
+	/// Mesh output fields in declaration order, each with whether it belongs to `VertexOutput` instead of
+	/// `PrimitiveOutput`.
+	pub(crate) mesh_output_fields: Vec<(bool, String)>,
 	pub(crate) maximum_vertices: u32,
 	pub(crate) maximum_primitives: u32,
 }
@@ -121,7 +102,7 @@ pub(crate) struct ComputeStageContext {
 }
 
 /// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct RasterStageContext {
 	pub(crate) has_resources: bool,
 	pub(crate) has_push_constant: bool,
@@ -135,44 +116,22 @@ impl RasterStageContext {
 	}
 }
 
-/// The `IntrinsicRequirements` struct records the generated helpers and Metal builtins a shader needs.
 #[derive(Default)]
-pub(crate) struct IntrinsicRequirements {
-	pub(crate) uses_atomic_compare_exchange: bool,
-	pub(crate) uses_sincos: bool,
-	pub(crate) uses_find_lsb: bool,
-	pub(crate) uses_subgroup_intrinsics: bool,
-	pub(crate) uses_simd_lane_id: bool,
-	pub(crate) uses_downsample_min: bool,
-	pub(crate) uses_downsample_max: bool,
-	pub(crate) uses_render_target_array_index: bool,
-}
-
-pub(crate) struct ClassifiedNodes<'a, A: Allocator + Clone> {
-	pub(crate) bindings: Vec<&'a besl::NodeReference, A>,
-	pub(crate) inputs: Vec<&'a besl::NodeReference, A>,
-	pub(crate) outputs: Vec<&'a besl::NodeReference, A>,
-	pub(crate) task_payloads: Vec<&'a besl::NodeReference, A>,
-	pub(crate) workgroups: Vec<&'a besl::NodeReference, A>,
-	pub(crate) declarations: Vec<&'a besl::NodeReference, A>,
-	pub(crate) functions: Vec<&'a besl::NodeReference, A>,
+pub(crate) struct ClassifiedNodes<'a> {
+	pub(crate) bindings: Vec<&'a besl::NodeReference>,
+	pub(crate) inputs: Vec<&'a besl::NodeReference>,
+	pub(crate) outputs: Vec<&'a besl::NodeReference>,
+	pub(crate) task_payloads: Vec<&'a besl::NodeReference>,
+	pub(crate) workgroups: Vec<&'a besl::NodeReference>,
+	pub(crate) declarations: Vec<&'a besl::NodeReference>,
+	pub(crate) functions: Vec<&'a besl::NodeReference>,
 	pub(crate) push_constant: Option<&'a besl::NodeReference>,
 }
 
-impl<A: Allocator + Clone> ShaderGenerator for Generator<A> {}
-
-impl Generator<Global> {
+impl Generator {
 	/// Creates an MSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
-		Self::new_in(Global)
-	}
-}
-
-impl<A: Allocator + Clone> Generator<A> {
-	/// Creates an MSL transpiler that uses `allocator` for temporary output buffers.
-	pub fn new_in(allocator: A) -> Self {
 		Generator {
-			allocator,
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
@@ -183,7 +142,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
-			hidden_contexts: HashMap::new(),
+			hidden_contexts: HashMap::default(),
 		}
 	}
 
@@ -197,55 +156,18 @@ impl<A: Allocator + Clone> Generator<A> {
 		self
 	}
 
-	pub fn allocator(&self) -> &A {
-		&self.allocator
-	}
-
-	/// Collects source requirements while walking emitted function bodies once instead of rescanning them for each helper.
-	pub(crate) fn collect_intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
-		pub(crate) fn record(requirements: &mut IntrinsicRequirements, name: &str) {
-			match name {
-				"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
-				"sincos" => requirements.uses_sincos = true,
-				"find_lsb" => requirements.uses_find_lsb = true,
-				"subgroup_lane_index" => {
-					requirements.uses_subgroup_intrinsics = true;
-					requirements.uses_simd_lane_id = true;
-				}
-				name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
-				"downsample_min" => requirements.uses_downsample_min = true,
-				"downsample_max" => requirements.uses_downsample_max = true,
-				"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
-				_ => {}
-			}
-		}
-
-		let mut requirements = IntrinsicRequirements::default();
-		for node in order {
-			any_code_node(node, false, &mut |node| {
-				if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
-					&& let Some(name) = intrinsic.borrow().get_name()
-				{
-					record(&mut requirements, name);
-				}
-				false
-			});
-		}
-		requirements
-	}
-
 	/// Returns the hidden kernel values a function forwards, as analyzed for the shader being generated.
 	pub(crate) fn hidden_context(&self, function: &besl::NodeReference) -> HiddenContext {
 		self.hidden_contexts
 			.get(function)
 			.copied()
-			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::new()))
+			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::default()))
 	}
 }
 
 /// Analyzes every function in `order` once, so emitting each declaration and call site is a lookup.
 pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<besl::NodeReference, HiddenContext> {
-	let mut contexts = HashMap::with_capacity(order.len());
+	let mut contexts = HashMap::with_capacity_and_hasher(order.len(), Default::default());
 	for node in order {
 		if matches!(node.borrow().node(), besl::Nodes::Function { .. }) {
 			analyze_hidden_context(node, &mut contexts);
@@ -268,76 +190,50 @@ fn analyze_hidden_context(
 	// Shaders can't recurse, but a placeholder keeps a malformed call graph from looping.
 	contexts.insert(function.clone(), HiddenContext::default());
 
+	// A node already visited returns false: a true result ends the whole walk, so every finished node was false, and a
+	// node still on the path is a cycle that cannot add a resource.
 	fn node_requires_resource_context(
 		node: &besl::NodeReference,
-		visited: &mut Vec<besl::NodeReference>,
+		visited: &mut HashSet<besl::NodeReference>,
 		contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
 	) -> bool {
-		if visited.iter().any(|visited_node| visited_node == node) {
+		if !visited.insert(node.clone()) {
 			return false;
 		}
 
-		visited.push(node.clone());
-
-		let result = match node.borrow().node() {
-			besl::Nodes::Binding { .. } => true,
-			besl::Nodes::TaskPayload { .. } => true,
-			besl::Nodes::Workgroup { .. } => true,
-			besl::Nodes::PushConstant { .. } => true,
-			besl::Nodes::Scope { children, .. } => children
-				.iter()
-				.any(|child| node_requires_resource_context(child, visited, contexts)),
+		let mut visit = |child: &besl::NodeReference| node_requires_resource_context(child, visited, contexts);
+		match node.borrow().node() {
+			besl::Nodes::Binding { .. }
+			| besl::Nodes::TaskPayload { .. }
+			| besl::Nodes::Workgroup { .. }
+			| besl::Nodes::PushConstant { .. } => true,
+			besl::Nodes::Scope { children, .. } | besl::Nodes::Struct { fields: children, .. } => {
+				children.iter().any(&mut visit)
+			}
 			besl::Nodes::Function {
 				params,
 				return_type,
 				statements,
 				..
-			} => {
-				params
-					.iter()
-					.any(|param| node_requires_resource_context(param, visited, contexts))
-					|| node_requires_resource_context(return_type, visited, contexts)
-					|| statements
-						.iter()
-						.any(|statement| node_requires_resource_context(statement, visited, contexts))
-			}
-			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
-				.branch_children()
-				.any(|child| node_requires_resource_context(child, visited, contexts)),
+			} => params.iter().any(&mut visit) || visit(return_type) || statements.iter().any(&mut visit),
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch.branch_children().any(&mut visit),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
 				update,
 				statements,
-			} => {
-				node_requires_resource_context(initializer, visited, contexts)
-					|| node_requires_resource_context(condition, visited, contexts)
-					|| node_requires_resource_context(update, visited, contexts)
-					|| statements
-						.iter()
-						.any(|statement| node_requires_resource_context(statement, visited, contexts))
-			}
-			besl::Nodes::Struct { fields, .. } => fields
-				.iter()
-				.any(|field| node_requires_resource_context(field, visited, contexts)),
-			besl::Nodes::Raw { input, output, .. } => {
-				input
-					.iter()
-					.any(|input| node_requires_resource_context(input, visited, contexts))
-					|| output
-						.iter()
-						.any(|output| node_requires_resource_context(output, visited, contexts))
-			}
+			} => visit(initializer) || visit(condition) || visit(update) || statements.iter().any(&mut visit),
+			besl::Nodes::Raw { input, output, .. } => input.iter().chain(output).any(&mut visit),
 			besl::Nodes::Parameter { r#type, .. }
 			| besl::Nodes::Member { r#type, .. }
 			| besl::Nodes::Specialization { r#type, .. }
 			| besl::Nodes::Input { format: r#type, .. }
-			| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited, contexts),
+			| besl::Nodes::Output { format: r#type, .. } => visit(r#type),
 			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Operator { left, right, .. } => {
-					node_requires_resource_context(left, visited, contexts)
-						|| node_requires_resource_context(right, visited, contexts)
+				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+					visit(left) || visit(right)
 				}
+				// Calls use `contexts` directly, so this arm walks without the `visit` closure.
 				besl::Expressions::FunctionCall {
 					function, parameters, ..
 				} => {
@@ -353,41 +249,23 @@ fn analyze_hidden_context(
 							.any(|parameter| node_requires_resource_context(parameter, visited, contexts))
 				}
 				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
-					arguments
-						.iter()
-						.any(|argument| node_requires_resource_context(argument, visited, contexts))
-						|| elements
-							.iter()
-							.any(|element| node_requires_resource_context(element, visited, contexts))
+					arguments.iter().chain(elements).any(&mut visit)
 				}
-				besl::Expressions::Expression { elements } => elements
-					.iter()
-					.any(|element| node_requires_resource_context(element, visited, contexts)),
-				besl::Expressions::Macro { body, .. } => node_requires_resource_context(body, visited, contexts),
-				besl::Expressions::Member { source, .. } => node_requires_resource_context(source, visited, contexts),
-				besl::Expressions::VariableDeclaration { r#type, .. } => {
-					node_requires_resource_context(r#type, visited, contexts)
-				}
-				besl::Expressions::Return { value } => value
-					.as_ref()
-					.is_some_and(|value| node_requires_resource_context(value, visited, contexts)),
-				besl::Expressions::Accessor { left, right } => {
-					node_requires_resource_context(left, visited, contexts)
-						|| node_requires_resource_context(right, visited, contexts)
-				}
+				besl::Expressions::Expression { elements } => elements.iter().any(&mut visit),
+				besl::Expressions::Macro { body, .. } => visit(body),
+				besl::Expressions::Member { source, .. } => visit(source),
+				besl::Expressions::VariableDeclaration { r#type, .. } => visit(r#type),
+				besl::Expressions::Return { value } => value.as_ref().is_some_and(&mut visit),
 				besl::Expressions::Literal { .. }
 				| besl::Expressions::Continue
 				| besl::Expressions::Break
 				| besl::Expressions::Discard => false,
 			},
 			_ => false,
-		};
-
-		visited.pop();
-		result
+		}
 	}
 
-	let requires_resources = node_requires_resource_context(function, &mut Vec::new(), contexts);
+	let requires_resources = node_requires_resource_context(function, &mut HashSet::default(), contexts);
 	// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
 	let uses_simd_lane_id = any_code_node(function, false, &mut |node| {
 		if is_intrinsic_call(node, "subgroup_lane_index") {

@@ -19,31 +19,7 @@ impl Generator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		self.current_stage = match shader_compilation_settings.stage {
-			Stages::Vertex => HlslStage::Vertex,
-			Stages::Fragment => HlslStage::Fragment,
-			Stages::Compute { .. } => HlslStage::Compute,
-			Stages::Task { .. } => HlslStage::Task,
-			Stages::Mesh { .. } => HlslStage::Mesh,
-		};
-		// Only fragment inputs and raster-producing outputs participate in interpolation.
-		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
-		self.current_stage_interpolates_outputs =
-			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
-		self.current_local_size = match shader_compilation_settings.stage {
-			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
-				Some(local_size)
-			}
-			_ => None,
-		};
-		(self.current_mesh_maximum_vertices, self.current_mesh_maximum_primitives) = match shader_compilation_settings.stage {
-			Stages::Mesh {
-				maximum_vertices,
-				maximum_primitives,
-				..
-			} => (maximum_vertices, maximum_primitives),
-			_ => (0, 0),
-		};
+		self.stage = shader_compilation_settings.stage;
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
@@ -54,18 +30,16 @@ impl Generator {
 		if order.iter().any(Self::has_misplaced_array_constructor) {
 			return Err(());
 		}
-		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
-		let uses_fma = order.iter().any(|node| uses_intrinsic(node, "fma"));
-		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
+		let requirements = intrinsic_requirements(&order);
+		if requirements.uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
 			return Err(());
 		}
-		self.mesh_uses_render_target_array_index = order
-			.iter()
-			.any(|node| uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
+		self.mesh_uses_render_target_array_index = requirements.uses_render_target_array_index;
 		self.task_payloads.clear();
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
 		self.raster_outputs.clear();
+		self.user_struct_constructors.clear();
 		self.packed_write_counter = 0;
 		self.atomic_temporary_counter = 0;
 		self.atomic_temporaries.clear();
@@ -78,48 +52,35 @@ impl Generator {
 				_ => {}
 			}
 		}
-		self.user_struct_constructors.clear();
-		// Discover constructor calls before declarations are emitted so their HLSL factories can stay next to each struct.
-		for node in &order {
-			self.emit_node_string(&mut string, node);
-		}
-		string.clear();
-		self.packed_write_counter = 0;
-		self.atomic_temporary_counter = 0;
-		self.atomic_temporaries.clear();
-
-		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics, uses_fma);
-		if self.current_stage == HlslStage::Task {
+		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, &requirements);
+		if matches!(self.stage, Stages::Task { .. }) {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			string.push_str(ShaderFormatting::new(self.minified).break_str());
 		}
-		if self.current_stage == HlslStage::Mesh {
+		if matches!(self.stage, Stages::Mesh { .. }) {
 			self.emit_mesh_output_structs(&mut string);
 		}
 
+		// Each constructed user struct gets its factory right after its declaration. Constructor calls are emitted after
+		// the struct they construct, so the factories are inserted once emission has recorded every call.
+		let mut struct_ends = Vec::new();
 		for node in order {
 			self.emit_node_string(&mut string, &node);
+			if matches!(node.borrow().node(), besl::Nodes::Struct { .. }) {
+				struct_ends.push((string.len(), node));
+			}
+		}
+		for (end, node) in struct_ends.into_iter().rev() {
+			if let besl::Nodes::Struct { name, fields, .. } = node.borrow().node()
+				&& self.user_struct_constructors.contains(&node)
+			{
+				let mut factory = String::new();
+				self.emit_hlsl_struct_factory(&mut factory, name, fields);
+				string.insert_str(end, &factory);
+			}
 		}
 
 		Ok(string)
-	}
-
-	/// Emits one user struct and its factory when the program constructs that type.
-	pub(crate) fn emit_hlsl_struct_node(
-		&mut self,
-		string: &mut String,
-		node: &besl::NodeReference,
-		name: &str,
-		fields: &[besl::NodeReference],
-		template: &Option<besl::NodeReference>,
-	) {
-		self.emit_struct_node(string, name, fields, template);
-		if template.is_none()
-			&& !crate::shader::generator::is_builtin_struct_type(name)
-			&& self.user_struct_constructors.contains(node)
-		{
-			self.emit_hlsl_struct_factory(string, name, fields);
-		}
 	}
 
 	/// Emits an amplification entry point with the group-shared payload required by `DispatchMesh`.
@@ -135,7 +96,7 @@ impl Generator {
 		if !self.task_payloads.is_empty() {
 			// Every amplification lane contributes to one payload, so it must use group-shared storage.
 			string.push_str("groupshared ObjectPayload payload;");
-			string.push_str(ShaderFormatting::new(self.minified).break_str());
+			string.push_str(formatting.break_str());
 		}
 		self.emit_function_attributes(string, node, "main");
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
@@ -143,9 +104,7 @@ impl Generator {
 		// `main` is reserved, so the entry point is written as `besl_main` like any other escaped name.
 		Self::identifier("main").push_to(string);
 		string.push('(');
-		emit_comma_separated_nodes(string, formatting, params, |string, parameter| {
-			self.emit_node_string(string, parameter)
-		});
+		self.emit_call_arguments(string, params);
 		self.emit_function_extra_parameters(string, node, "main", !params.is_empty());
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
@@ -164,10 +123,7 @@ impl Generator {
 	/// Emits a field-by-field factory because DXC does not support user-defined struct constructor expressions.
 	pub(crate) fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
-		Self::identifier(name).push_to(string);
-		string.push_str(" besl_construct_");
-		string.push_str(name);
-		string.push('(');
+		let _ = write!(string, "{} besl_construct_{name}(", Self::identifier(name));
 		for (index, field) in fields.iter().enumerate() {
 			let field = field.borrow();
 			let besl::Nodes::Member {
@@ -182,19 +138,15 @@ impl Generator {
 				string.push_str(formatting.comma_str());
 			}
 			Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-			string.push_str(" besl_argument_");
-			string.push_str(field_name);
+			let _ = write!(string, " besl_argument_{field_name}");
 			if let Some(count) = count {
-				string.push('[');
-				string.push_str(&count.to_string());
-				string.push(']');
+				let _ = write!(string, "[{count}]");
 			}
 		}
 		formatting.push_block_start(string);
 
 		formatting.push_indentation(string, 1);
-		Self::identifier(name).push_to(string);
-		string.push_str(" besl_value");
+		let _ = write!(string, "{} besl_value", Self::identifier(name));
 		formatting.push_statement_end(string);
 		for field in fields {
 			let field = field.borrow();
@@ -204,24 +156,16 @@ impl Generator {
 			else {
 				continue;
 			};
-
+			let member = Self::identifier(field_name);
+			formatting.push_indentation(string, 1);
 			if let Some(count) = count {
-				formatting.push_indentation(string, 1);
-				string.push_str("[unroll] for(uint besl_index=0;besl_index<");
-				string.push_str(&count.to_string());
-				string.push_str(";++besl_index){");
-				string.push_str("besl_value.");
-				Self::identifier(field_name).push_to(string);
-				string.push_str("[besl_index]=besl_argument_");
-				string.push_str(field_name);
-				string.push_str("[besl_index];}");
-				string.push_str(ShaderFormatting::new(self.minified).break_str());
+				let _ = write!(
+					string,
+					"[unroll] for(uint besl_index=0;besl_index<{count};++besl_index){{besl_value.{member}[besl_index]=besl_argument_{field_name}[besl_index];}}{}",
+					formatting.break_str()
+				);
 			} else {
-				formatting.push_indentation(string, 1);
-				string.push_str("besl_value.");
-				Self::identifier(field_name).push_to(string);
-				string.push_str("=besl_argument_");
-				string.push_str(field_name);
+				let _ = write!(string, "besl_value.{member}=besl_argument_{field_name}");
 				formatting.push_statement_end(string);
 			}
 		}
@@ -297,7 +241,7 @@ impl Generator {
 				..
 			} => {
 				// The shared emitter escapes the reserved `main` to the `besl_main` entry point.
-				if name == "main" && self.current_stage == HlslStage::Task {
+				if name == "main" && matches!(self.stage, Stages::Task { .. }) {
 					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
 				} else {
 					self.emit_function_node(string, this_node, name, statements, return_type, params);
@@ -305,30 +249,23 @@ impl Generator {
 			}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => self.emit_hlsl_struct_node(string, this_node, name, fields, template),
+			} => self.emit_struct_node(string, name, fields, template),
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
 				// Root constants use the constant-buffer namespace, while flat resources use t/u/s registers in space 0.
-				if self.minified {
-					string.push_str("struct PushConstant{");
-				} else {
+				if !self.minified {
 					string.push_str("// Root constants\n");
-					string.push_str("struct PushConstant {\n");
 				}
-
-				for member in members {
-					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, member);
-					formatting.push_statement_end(string);
-				}
-
-				if self.minified {
-					string.push_str("};ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
-				} else {
-					string.push_str("};\n");
-					string.push_str("ConstantBuffer<PushConstant> push_constant : register(b0, space0);\n");
-				}
+				self.emit_named_struct_start(string, "PushConstant");
+				emit_statement_block(string, formatting, members, 1, |string, member| {
+					self.emit_node_string(string, member)
+				});
+				self.emit_struct_declaration_end(string);
+				let _ = write!(
+					string,
+					"ConstantBuffer<PushConstant> push_constant : register(b0, space0);{break_char}"
+				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
 			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
@@ -340,41 +277,37 @@ impl Generator {
 				}
 				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
-					string.push('[');
-					string.push_str(count.to_string().as_str());
-					string.push(']');
+					let _ = write!(string, "[{count}]");
 				}
 			}
+			// Use HLSL code if available, otherwise fall back to GLSL, which may need translation for HLSL.
 			besl::Nodes::Raw { glsl, hlsl, .. } => {
-				// Use HLSL code if available, otherwise fall back to GLSL
-				if let Some(code) = hlsl {
-					string.push_str(code);
-				} else if let Some(code) = glsl {
-					// Fall back to GLSL code (may need translation for HLSL-specific features)
+				if let Some(code) = hlsl.as_ref().or(glsl.as_ref()) {
 					string.push_str(code);
 				}
 			}
-			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
+			besl::Nodes::Parameter { name, r#type } => {
+				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
+			}
 			besl::Nodes::Input { name, location, format } => {
-				if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+				if matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 					return;
 				}
 				let format = format.borrow();
 				let besl_type = format.get_name().unwrap();
-				let type_name = Self::translate_type(besl_type);
 
 				// HLSL uses semantics like TEXCOORD0, TEXCOORD1, etc.
-				string.push_str(&format!(
-					"{}{} {} : TEXCOORD{};{break_char}",
-					if self.current_stage_interpolates_inputs && is_integer_besl_type(besl_type) {
+				let _ = write!(
+					string,
+					"{}{} {} : TEXCOORD{location};{break_char}",
+					if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 						"nointerpolation "
 					} else {
 						""
 					},
-					type_name,
-					Self::identifier(name),
-					location
-				));
+					Self::translate_type(besl_type),
+					Self::identifier(name)
+				);
 			}
 			besl::Nodes::Output {
 				name,
@@ -383,28 +316,24 @@ impl Generator {
 				count,
 				..
 			} => {
-				if count.is_some() {
-					return;
-				}
-				if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+				if count.is_some() || matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 					return;
 				}
 				let format = format.borrow();
 				let besl_type = format.get_name().unwrap();
-				let type_name = Self::translate_type(besl_type);
 
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
-				string.push_str(&format!(
-					"{}{} {} : SV_Target{};{break_char}",
-					if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
+				let _ = write!(
+					string,
+					"{}{} {} : SV_Target{location};{break_char}",
+					if self.stage.interpolates_outputs() && is_integer_besl_type(besl_type) {
 						"nointerpolation "
 					} else {
 						""
 					},
-					type_name,
-					Self::identifier(name),
-					location
-				));
+					Self::translate_type(besl_type),
+					Self::identifier(name)
+				);
 			}
 			besl::Nodes::TaskPayload { .. } => {
 				if self.task_payloads.first() == Some(this_node) {
@@ -412,37 +341,37 @@ impl Generator {
 				}
 			}
 			besl::Nodes::Workgroup { name, format, count } => {
-				string.push_str("groupshared ");
-				Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-				string.push(' ');
-				Self::identifier(name).push_to(string);
+				let _ = write!(
+					string,
+					"groupshared {} {}",
+					Self::type_identifier(format.borrow().get_name().unwrap()),
+					Self::identifier(name)
+				);
 				if let Some(count) = count {
-					string.push('[');
-					string.push_str(&count.to_string());
-					string.push(']');
+					let _ = write!(string, "[{count}]");
 				}
-				string.push(';');
-				string.push_str(ShaderFormatting::new(self.minified).break_str());
+				let _ = write!(string, ";{break_char}");
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional {
-				statements,
-				else_branch: None,
-				..
-			} if self.current_stage == HlslStage::Mesh && Self::mesh_output_count_arguments(statements).is_some() => {
-				let (vertices, primitives) = Self::mesh_output_count_arguments(statements).unwrap();
-				// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
-				string.push_str("SetMeshOutputCounts(");
-				self.emit_node_string(string, &vertices);
-				self.emit_separator(string);
-				self.emit_node_string(string, &primitives);
-				string.push(')');
-			}
 			besl::Nodes::Conditional {
 				condition,
 				statements,
 				else_branch,
-			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
+			} => {
+				if matches!(self.stage, Stages::Mesh { .. })
+					&& else_branch.is_none()
+					&& let Some((vertices, primitives)) = Self::mesh_output_count_arguments(statements)
+				{
+					// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
+					string.push_str("SetMeshOutputCounts(");
+					self.emit_node_string(string, &vertices);
+					self.emit_separator(string);
+					self.emit_node_string(string, &primitives);
+					string.push(')');
+				} else {
+					self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
+				}
+			}
 			besl::Nodes::Match {
 				scrutinee,
 				r#type,
@@ -472,28 +401,17 @@ impl Generator {
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
-						self.emit_named_struct_start(string, &format!("_{name}"));
+						self.emit_named_struct_start(string, format_args!("_{name}"));
+						emit_statement_block(string, formatting, members, 1, |string, member| {
+							self.emit_node_string(string, member)
+						});
+						self.emit_struct_declaration_end(string);
 
-						for member in members.iter() {
-							self.emit_indentation(string, 1);
-							self.emit_node_string(string, member);
-							self.emit_statement_end(string);
-						}
-
-						string.push('}');
-						self.emit_statement_end(string);
-
-						string.push_str(&format!("{buffer_type}<_{name}> "));
-						Self::identifier(name).push_to(string);
-
+						let _ = write!(string, "{buffer_type}<_{name}> {}", Self::identifier(name));
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
 						let element = element.borrow();
@@ -506,10 +424,11 @@ impl Generator {
 						} else {
 							Self::type_identifier(element_type).push_to(string);
 						}
-						string.push_str("> ");
-						Self::identifier(name).push_to(string);
-						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(
+							string,
+							"> {} : register({register_type}{register_index}, space0);{break_char}",
+							Self::identifier(name)
+						);
 					}
 					besl::BindingTypes::Image { format } => {
 						// UAV (unordered access view) for images
@@ -518,18 +437,11 @@ impl Generator {
 							_ => "RWTexture2D<float4>",
 						};
 
-						string.push_str(texture_type);
-						string.push(' ');
-						Self::identifier(name).push_to(string);
-
+						let _ = write!(string, "{texture_type} {}", Self::identifier(name));
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" : register(u{register_index}, space0);"));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, " : register(u{register_index}, space0);{break_char}");
 					}
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
@@ -540,36 +452,26 @@ impl Generator {
 							"ArrayTexture2D" => "Texture2DArray",
 							_ => "Texture2D",
 						};
-
-						string.push_str(texture_type);
-						string.push_str(match format.as_str() {
+						let element_type = match format.as_str() {
 							"r8ui" | "r16ui" | "r32ui" => "<uint>",
 							_ => "<float4>",
-						});
-						string.push(' ');
-						Self::identifier(name).push_to(string);
+						};
+						// References build the sampler name from the escaped texture name, so both use one identifier.
+						let name = Self::identifier(name);
 
+						let _ = write!(string, "{texture_type}{element_type} {name}");
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" : register(t{register_index}, space0);"));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
-
 						// Also declare a sampler with the same name + _sampler suffix
-						string.push_str("SamplerState ");
-						// References build this name from the escaped texture name, so the sampler must match it.
-						Self::identifier(name).push_to(string);
-						string.push_str("_sampler");
+						let _ = write!(
+							string,
+							" : register(t{register_index}, space0);{break_char}SamplerState {name}_sampler"
+						);
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-						string.push_str(&format!(" : register(s{register_index}, space0);"));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, " : register(s{register_index}, space0);{break_char}");
 					}
 				}
 			}
@@ -588,42 +490,32 @@ impl Generator {
 		&self,
 		hlsl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
-		uses_subgroup_intrinsics: bool,
-		uses_fma: bool,
+		requirements: &IntrinsicRequirements,
 	) {
 		// Generated HLSL uses the engine's modern-only DXIL contract.
 		hlsl_block.push_str("// Shader Model 6.9\n");
 
-		// Shader type as comment (user preference: Option B)
-		match compilation_settings.stage {
-			Stages::Vertex => hlsl_block.push_str("// #pragma shader_stage(vertex)\n"),
-			Stages::Fragment => hlsl_block.push_str("// #pragma shader_stage(fragment)\n"),
-			Stages::Compute { .. } => hlsl_block.push_str("// #pragma shader_stage(compute)\n"),
-			Stages::Task { .. } => hlsl_block.push_str("// #pragma shader_stage(amplification)\n"),
-			Stages::Mesh { .. } => hlsl_block.push_str("// #pragma shader_stage(mesh)\n"),
-		}
+		// Shader type as comment (user preference: Option B), followed by the stage's feature requirements.
+		let (stage, requirement) = match compilation_settings.stage {
+			Stages::Vertex => ("vertex", ""),
+			Stages::Fragment => ("fragment", ""),
+			Stages::Compute { .. } => (
+				"compute",
+				"// Requires: Wave intrinsics (WaveGetLaneCount, WaveGetLaneIndex, etc.)\n",
+			),
+			Stages::Task { .. } => ("amplification", "// Requires: Amplification shader support\n"),
+			Stages::Mesh { .. } => ("mesh", "// Requires: Mesh shader support\n"),
+		};
+		let _ = write!(
+			hlsl_block,
+			"// #pragma shader_stage({stage})\n// Requires: native 16-bit, wave, and 64-bit integer shader operations\n{requirement}"
+		);
 
-		hlsl_block.push_str("// Requires: native 16-bit, wave, and 64-bit integer shader operations\n");
-
-		match compilation_settings.stage {
-			Stages::Compute { .. } => {
-				hlsl_block.push_str("// Requires: Wave intrinsics (WaveGetLaneCount, WaveGetLaneIndex, etc.)\n");
-			}
-			Stages::Mesh { .. } => {
-				hlsl_block.push_str("// Requires: Mesh shader support\n");
-			}
-			Stages::Task { .. } => hlsl_block.push_str("// Requires: Amplification shader support\n"),
-			_ => {}
-		}
-
-		// Matrix layout
-		hlsl_block.push_str("#pragma pack_matrix(row_major)\n");
-
-		// Constants
-		hlsl_block.push_str("static const float PI = 3.14159265359;");
+		// Matrix layout, then constants.
+		hlsl_block.push_str("#pragma pack_matrix(row_major)\nstatic const float PI = 3.14159265359;");
 
 		hlsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
-		if uses_subgroup_intrinsics {
+		if requirements.uses_subgroup_intrinsics {
 			hlsl_block.push_str(
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
 				 uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return firstbitlow(mask.x); } if (mask.y != 0u) { return 32u + firstbitlow(mask.y); } if (mask.z != 0u) { return 64u + firstbitlow(mask.z); } if (mask.w != 0u) { return 96u + firstbitlow(mask.w); } return 0xffffffffu; }\n\
@@ -631,33 +523,15 @@ impl Generator {
 				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
 			);
 		}
-		if uses_fma {
-			Self::emit_fma_helpers(hlsl_block);
-		}
-	}
-
-	/// Emits the helpers that preserve BESL's one-rounding FMA contract.
-	fn emit_fma_helpers(hlsl_block: &mut String) {
-		hlsl_block.push_str(
-			"// A binary16 product is exact in binary32. TwoSum recovers the addition residual so a binary32 midpoint can be rounded on the exact side.\n\
+		if requirements.uses_fma {
+			// These helpers preserve BESL's one-rounding FMA contract.
+			hlsl_block.push_str(
+				"// A binary16 product is exact in binary32. TwoSum recovers the addition residual so a binary32 midpoint can be rounded on the exact side.\n\
 float16_t _besl_fma_f16(float16_t first, float16_t second, float16_t third) { precise float product = float(first) * float(second); precise float addend = float(third); precise float sum = product + addend; if (!isfinite(sum)) { return float16_t(sum); } precise float virtual_addend = sum - product; precise float residual = (product - (sum - virtual_addend)) + (addend - virtual_addend); uint rounded_bits = f32tof16(sum) & 0xffffu; float rounded = f16tof32(rounded_bits); if (residual == 0.0 || rounded == sum) { return float16_t(rounded); } bool rounded_below = rounded < sum; bool negative = (rounded_bits & 0x8000u) != 0u; uint adjacent_bits = rounded_bits + (rounded_below != negative ? 1u : 0xffffffffu); float adjacent = f16tof32(adjacent_bits); float midpoint = !isfinite(rounded) || !isfinite(adjacent) ? (sum < 0.0 ? -65520.0 : 65520.0) : rounded + (adjacent - rounded) * 0.5; if (sum != midpoint) { return float16_t(rounded); } bool rounded_follows_residual = (residual > 0.0 && rounded > sum) || (residual < 0.0 && rounded < sum); return float16_t(rounded_follows_residual ? rounded : adjacent); }\n\
 float16_t2 _besl_fma_f16(float16_t2 first, float16_t2 second, float16_t2 third) { return float16_t2(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y)); }\n\
 float16_t3 _besl_fma_f16(float16_t3 first, float16_t3 second, float16_t3 third) { return float16_t3(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y), _besl_fma_f16(first.z, second.z, third.z)); }\n\
 float16_t4 _besl_fma_f16(float16_t4 first, float16_t4 second, float16_t4 third) { return float16_t4(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y), _besl_fma_f16(first.z, second.z, third.z), _besl_fma_f16(first.w, second.w, third.w)); }\n",
-		);
-	}
-
-	/// Emits the 32-bit word containing one packed logical narrow-buffer element.
-	pub(crate) fn emit_packed_word_access_by_name(
-		&self,
-		string: &mut String,
-		binding_name: &str,
-		index_name: &str,
-		elements_per_word: u32,
-	) {
-		Self::identifier(binding_name).push_to(string);
-		string.push('[');
-		string.push_str(index_name);
-		let _ = write!(string, "/{elements_per_word}u]");
+			);
+		}
 	}
 }

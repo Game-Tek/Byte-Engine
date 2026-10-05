@@ -1,330 +1,128 @@
-use std::{
-	alloc::{Allocator, Global},
-	cell::RefCell,
-	collections::{HashMap, HashSet},
-	hash::RandomState,
-	vec::Vec as AllocVec,
-};
+use utils::hash::HashSet;
 
-/// The `Graph` struct exists to track dependencies between shader nodes.
-#[derive(Clone, Debug)]
-pub struct Graph<A: Allocator + Clone = Global> {
-	pub set: HashMap<besl::NodeReference, AllocVec<besl::NodeReference, A>, RandomState, A>,
-	/// Keys of `set` in first-insertion order. `set` hashes nodes by address, so iterating it would make emission order change between runs.
-	order: AllocVec<besl::NodeReference, A>,
-	allocator: A,
-}
+/// Returns every node the `main` function reaches, each after the nodes it depends on, and `main` last.
+///
+/// Backends emit declarations in this order, so every type, binding, and function is declared before its first use.
+/// The walk visits each node's dependencies in a fixed order, so the order does not change between runs.
+///
+/// # Panics
+///
+/// Panics if `main_function_node` is not the `main` function, or if the nodes depend on each other in a cycle.
+pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::NodeReference> {
+	let mut order = Vec::new();
+	let mut expanded = HashSet::default();
+	let mut active = Vec::new();
 
-impl Default for Graph<Global> {
-	fn default() -> Self {
-		Self::new()
+	let node = main_function_node.borrow();
+	let besl::Nodes::Function {
+		params,
+		return_type,
+		statements,
+		name,
+		..
+	} = node.node()
+	else {
+		panic!("Root node must be a function node.")
+	};
+	assert_eq!(name, "main");
+	for child in params.iter().chain(statements).chain([return_type]) {
+		visit_node(child, &mut order, &mut expanded, &mut active);
 	}
-}
+	order.push(main_function_node.clone());
 
-impl Graph<Global> {
-	pub fn new() -> Self {
-		Self::new_in(Global)
-	}
-}
-
-impl<A: Allocator + Clone> Graph<A> {
-	pub fn new_in(allocator: A) -> Self {
-		Graph {
-			set: HashMap::with_capacity_and_hasher_in(1024, RandomState::new(), allocator.clone()),
-			order: AllocVec::new_in(allocator.clone()),
-			allocator,
-		}
-	}
-
-	pub fn add(&mut self, from: besl::NodeReference, to: besl::NodeReference) {
-		let order = &mut self.order;
-		self.set
-			.entry(from)
-			.or_insert_with_key(|key| {
-				order.push(key.clone());
-				AllocVec::new_in(self.allocator.clone())
-			})
-			.push(to);
-	}
-}
-
-/// Performs a topological sort on the graph to determine the order in which nodes should be emitted.
-pub fn topological_sort(graph: &Graph) -> Vec<besl::NodeReference> {
-	topological_sort_in(graph, Global)
-}
-
-/// Performs a topological sort using the provided allocator for temporary traversal state.
-pub fn topological_sort_in<A: Allocator + Clone>(graph: &Graph<A>, allocator: A) -> AllocVec<besl::NodeReference, A> {
-	let mut visited = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
-	let mut stack = AllocVec::new_in(allocator.clone());
-
-	// Walk roots in insertion order so independent nodes keep a stable, run-to-run identical order.
-	for node in &graph.order {
-		if !visited.contains(node) {
-			topological_sort_impl(node.clone(), graph, &mut visited, &mut stack, allocator.clone());
-		}
-	}
-
-	fn topological_sort_impl<A: Allocator + Clone>(
-		node: besl::NodeReference,
-		graph: &Graph<A>,
-		visited: &mut HashSet<besl::NodeReference, RandomState, A>,
-		stack: &mut AllocVec<besl::NodeReference, A>,
-		allocator: A,
-	) {
-		visited.insert(node.clone());
-
-		if let Some(neighbours) = graph.set.get(&node) {
-			for neighbour in neighbours {
-				if !visited.contains(neighbour) {
-					topological_sort_impl(neighbour.clone(), graph, visited, stack, allocator.clone());
-				}
-			}
-		}
-
-		stack.push(node);
-	}
-
-	stack
-}
-
-/// Builds a dependency graph from the main function node.
-pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
-	build_graph_in(main_function_node, Global)
-}
-
-/// Builds a dependency graph using the provided allocator for graph and traversal storage.
-// Keep the recursive walker local to the entry point so its allocator and cycle-state invariants cannot diverge.
-#[allow(clippy::too_many_lines)]
-pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeReference, allocator: A) -> Graph<A> {
-	let mut graph = Graph::new_in(allocator.clone());
-	let mut expanded = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
-	let mut active = AllocVec::new_in(allocator.clone());
-
-	let node_borrow = RefCell::borrow(&main_function_node);
-	let node_ref = node_borrow.node();
-
-	match node_ref {
-		besl::Nodes::Function {
-			params,
-			return_type,
-			statements,
-			name,
-			..
-		} => {
-			assert_eq!(name, "main");
-
-			for p in params {
-				build_graph_impl(
-					main_function_node.clone(),
-					p.clone(),
-					&mut graph,
-					&mut expanded,
-					&mut active,
-					allocator.clone(),
-				);
-			}
-
-			for statement in statements {
-				build_graph_impl(
-					main_function_node.clone(),
-					statement.clone(),
-					&mut graph,
-					&mut expanded,
-					&mut active,
-					allocator.clone(),
-				);
-			}
-
-			build_graph_impl(
-				main_function_node.clone(),
-				return_type.clone(),
-				&mut graph,
-				&mut expanded,
-				&mut active,
-				allocator,
-			);
-		}
-		_ => panic!("Root node must be a function node."),
-	}
-
+	/// Appends `node` after its dependencies unless an earlier visit already appended it.
 	// This match is the exhaustive shader-node dependency-edge contract.
-	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-	fn build_graph_impl<A: Allocator + Clone>(
-		parent: besl::NodeReference,
-		node: besl::NodeReference,
-		graph: &mut Graph<A>,
-		expanded: &mut HashSet<besl::NodeReference, RandomState, A>,
-		active: &mut AllocVec<besl::NodeReference, A>,
-		allocator: A,
+	fn visit_node(
+		node: &besl::NodeReference,
+		order: &mut Vec<besl::NodeReference>,
+		expanded: &mut HashSet<besl::NodeReference>,
+		active: &mut Vec<besl::NodeReference>,
 	) {
-		graph.add(parent, node.clone());
-
-		if expanded.contains(&node) {
+		if expanded.contains(node) {
 			return;
 		}
 
-		if active.contains(&node) {
-			panic!(
-				"Cyclic shader dependency detected while building the shader graph. The most likely cause is a self-referential or mutually recursive BESL node graph."
-			);
-		}
+		assert!(
+			!active.contains(node),
+			"Cyclic shader dependency detected while building the shader graph. The most likely cause is a self-referential or mutually recursive BESL node graph."
+		);
 
 		active.push(node.clone());
 
-		let node_borrow = RefCell::borrow(&node);
-		let node_ref = node_borrow.node();
+		let node_borrow = node.borrow();
+		// Dependencies are visited in the order the arms list them.
+		let mut visit = |child: &besl::NodeReference| visit_node(child, order, expanded, active);
 
-		match node_ref {
-			besl::Nodes::Scope { children, .. } => {
-				for child in children {
-					build_graph_impl(node.clone(), child.clone(), graph, expanded, active, allocator.clone());
-				}
-			}
+		match node_borrow.node() {
+			besl::Nodes::Scope { children, .. }
+			| besl::Nodes::Struct { fields: children, .. }
+			| besl::Nodes::PushConstant { members: children }
+			| besl::Nodes::Intrinsic { elements: children, .. } => children.iter().for_each(&mut visit),
 			besl::Nodes::Function {
 				statements,
 				params,
 				return_type,
 				..
-			} => {
-				for parameter in params {
-					build_graph_impl(node.clone(), parameter.clone(), graph, expanded, active, allocator.clone());
-				}
-
-				for statement in statements {
-					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active, allocator.clone());
-				}
-
-				build_graph_impl(node.clone(), return_type.clone(), graph, expanded, active, allocator);
-			}
+			} => params.iter().chain(statements).chain([return_type]).for_each(&mut visit),
 			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
-				for child in branch.branch_children() {
-					build_graph_impl(node.clone(), child.clone(), graph, expanded, active, allocator.clone());
-				}
+				branch.branch_children().for_each(&mut visit)
 			}
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
 				update,
 				statements,
-			} => {
-				build_graph_impl(node.clone(), initializer.clone(), graph, expanded, active, allocator.clone());
-				build_graph_impl(node.clone(), condition.clone(), graph, expanded, active, allocator.clone());
-				build_graph_impl(node.clone(), update.clone(), graph, expanded, active, allocator.clone());
-
-				for statement in statements {
-					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active, allocator.clone());
+			} => [initializer, condition, update]
+				.into_iter()
+				.chain(statements)
+				.for_each(&mut visit),
+			besl::Nodes::Specialization { r#type, .. }
+			| besl::Nodes::Member { r#type, .. }
+			| besl::Nodes::Parameter { r#type, .. }
+			| besl::Nodes::Input { format: r#type, .. }
+			| besl::Nodes::Output { format: r#type, .. }
+			| besl::Nodes::TaskPayload { format: r#type, .. }
+			| besl::Nodes::Workgroup { format: r#type, .. } => visit(r#type),
+			besl::Nodes::Raw { input, output, .. } => input.iter().chain(output).for_each(&mut visit),
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+					visit(left);
+					visit(right);
 				}
-			}
-			besl::Nodes::Struct { fields, .. } => {
-				for field in fields {
-					build_graph_impl(node.clone(), field.clone(), graph, expanded, active, allocator.clone());
+				besl::Expressions::FunctionCall {
+					parameters, function, ..
+				} => {
+					visit(&function.get());
+					parameters.iter().for_each(&mut visit);
 				}
-			}
-			besl::Nodes::PushConstant { members } => {
-				for member in members {
-					build_graph_impl(node.clone(), member.clone(), graph, expanded, active, allocator.clone());
+				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
+					arguments.iter().chain(elements).for_each(&mut visit)
 				}
-			}
-			besl::Nodes::Specialization { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
-			}
-			besl::Nodes::Member { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
-			}
-			besl::Nodes::Raw { input, output, .. } => {
-				for reference in input {
-					build_graph_impl(node.clone(), reference.clone(), graph, expanded, active, allocator.clone());
-				}
-
-				for reference in output {
-					build_graph_impl(node.clone(), reference.clone(), graph, expanded, active, allocator.clone());
-				}
-			}
-			besl::Nodes::Parameter { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
-			}
-			besl::Nodes::Expression(expression) => {
-				match expression {
-					besl::Expressions::Operator { left, right, .. } => {
-						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
-						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator);
-					}
-					besl::Expressions::FunctionCall {
-						parameters, function, ..
-					} => {
-						build_graph_impl(node.clone(), function.get(), graph, expanded, active, allocator.clone());
-
-						for parameter in parameters {
-							build_graph_impl(node.clone(), parameter.clone(), graph, expanded, active, allocator.clone());
-						}
-					}
-					besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
-						for e in arguments.iter().chain(elements) {
-							build_graph_impl(node.clone(), e.clone(), graph, expanded, active, allocator.clone());
-						}
-					}
-					besl::Expressions::Expression { elements } => {
-						for element in elements {
-							build_graph_impl(node.clone(), element.clone(), graph, expanded, active, allocator.clone());
-						}
-					}
-					besl::Expressions::Macro { body, .. } => {
-						build_graph_impl(node.clone(), body.clone(), graph, expanded, active, allocator);
-					}
-					besl::Expressions::Member { source, .. } => {
-						build_graph_impl(node.clone(), source.clone(), graph, expanded, active, allocator);
-					}
-					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
-					}
-					besl::Expressions::Literal { .. } => {
-						// build_graph_inner(node.clone(), value.clone(), graph);
-					}
-					besl::Expressions::Return { value } => {
-						if let Some(value) = value {
-							build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
-						}
-					}
-					besl::Expressions::Continue | besl::Expressions::Break | besl::Expressions::Discard => {}
-					besl::Expressions::Accessor { left, right } => {
-						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
-						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator);
-					}
-				}
-			}
-			besl::Nodes::Binding { r#type, .. } => match r#type {
-				besl::BindingTypes::Buffer { members } => {
-					for member in members {
-						build_graph_impl(node.clone(), member.clone(), graph, expanded, active, allocator.clone());
-					}
-				}
-				besl::BindingTypes::BufferArray { element, .. } => {
-					build_graph_impl(node.clone(), element.clone(), graph, expanded, active, allocator);
-				}
-				besl::BindingTypes::Image { .. } => {}
-				besl::BindingTypes::CombinedImageSampler { .. } => {}
+				besl::Expressions::Expression { elements } => elements.iter().for_each(&mut visit),
+				besl::Expressions::Macro { body, .. } => visit(body),
+				besl::Expressions::Member { source, .. } => visit(source),
+				besl::Expressions::VariableDeclaration { r#type, .. } => visit(r#type),
+				besl::Expressions::Return { value } => value.iter().for_each(&mut visit),
+				besl::Expressions::Literal { .. }
+				| besl::Expressions::Continue
+				| besl::Expressions::Break
+				| besl::Expressions::Discard => {}
 			},
-			besl::Nodes::Input { format, .. }
-			| besl::Nodes::Output { format, .. }
-			| besl::Nodes::TaskPayload { format, .. }
-			| besl::Nodes::Workgroup { format, .. } => {
-				build_graph_impl(node.clone(), format.clone(), graph, expanded, active, allocator);
-			}
-			besl::Nodes::Intrinsic { elements, .. } => {
-				for element in elements {
-					build_graph_impl(node.clone(), element.clone(), graph, expanded, active, allocator.clone());
-				}
-			}
+			besl::Nodes::Binding { r#type, .. } => match r#type {
+				besl::BindingTypes::Buffer { members } => members.iter().for_each(&mut visit),
+				besl::BindingTypes::BufferArray { element, .. } => visit(element),
+				besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
+			},
 			besl::Nodes::Const { r#type, value, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
-				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
+				visit(r#type);
+				visit(value);
 			}
 		}
 
 		active.pop();
 		expanded.insert(node.clone());
+		order.push(node.clone());
 	}
 
-	graph
+	order
 }

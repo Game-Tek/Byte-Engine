@@ -102,7 +102,7 @@ impl Extent {
 	}
 
 	/// Creates a square two-dimensional extent.
-	pub fn square(size: u32) -> Self {
+	pub const fn square(size: u32) -> Self {
 		Self {
 			width: size,
 			height: size,
@@ -111,7 +111,7 @@ impl Extent {
 	}
 
 	/// Creates a rectangular two-dimensional extent.
-	pub fn rectangle(width: u32, height: u32) -> Self {
+	pub const fn rectangle(width: u32, height: u32) -> Self {
 		Self { width, height, depth: 0 }
 	}
 

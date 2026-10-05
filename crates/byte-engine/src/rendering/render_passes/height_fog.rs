@@ -1,5 +1,5 @@
 use bytemuck::Zeroable as _;
-use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
+use ghi::{context::ContextCreate as _, frame::Frame as _};
 use math::inverse;
 use maths_rs::{Vec3f, Vec4f};
 use utils::Extent;
@@ -13,7 +13,7 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		DirectionalLight, ExponentialHeightFog, FogLayer, Sink, View,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
 		render_passes::{blit::ImageBypassPass, sun::Sun},
 	},
 };
@@ -22,8 +22,7 @@ use crate::{
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct FogShaderData {
 	pixel_to_camera_offset: ghi::pod::Mat4f,
-	layer: FogLayerShaderData,
-	second_layer: FogLayerShaderData,
+	layers: [FogLayerShaderData; 2],
 	scattering: [f32; 4],
 	sun_direction: [f32; 4],
 	ambient_inscattering: [f32; 4],
@@ -41,11 +40,8 @@ struct FogLayerShaderData {
 }
 
 impl FogLayerShaderData {
-	/// Packs `layer` for a camera at `camera`. `None` packs a layer without density, which adds no fog.
-	fn new(layer: Option<FogLayer>, camera: Vec3f) -> Self {
-		let Some(layer) = layer else {
-			return Self::zeroed();
-		};
+	/// Packs `layer` for a camera at `camera`.
+	fn new(layer: FogLayer, camera: Vec3f) -> Self {
 		// The density at the camera is density · e^exponent. The shader clamps the exponent once it adds the ray's part.
 		let exponent = layer.height_falloff() * (layer.base_height() - camera.y);
 		let (bounded, bounds_min, bounds_max) = match layer.bounds() {
@@ -156,8 +152,8 @@ fn fog_shader_data(
 	sink: &Sink,
 ) -> FogShaderData {
 	let view = sink.view();
-	let camera = inverse(view.view()) * Vec4f::new(0.0, 0.0, 0.0, 1.0);
-	let camera = Vec3f::new(camera.x, camera.y, camera.z);
+	// The translation column of the inverse view is the camera's world position.
+	let camera = Vec3f::from(inverse(view.view()).get_column(3));
 	let exposure = sink.exposure_scale();
 	let albedo = fog.albedo();
 	// A sky that delivers E lux to the ground evenly from every direction has a radiance of E / π, and fog lit evenly
@@ -179,8 +175,12 @@ fn fog_shader_data(
 
 	FogShaderData {
 		pixel_to_camera_offset: pixel_to_camera_offset(view, sink.extent()).into(),
-		layer: FogLayerShaderData::new(Some(fog.layer()), camera),
-		second_layer: FogLayerShaderData::new(fog.second_layer(), camera),
+		layers: [
+			FogLayerShaderData::new(fog.layer(), camera),
+			// A missing second layer packs no density, which adds no fog.
+			fog.second_layer()
+				.map_or_else(FogLayerShaderData::zeroed, |layer| FogLayerShaderData::new(layer, camera)),
+		],
 		scattering: [1.0 + squared, 2.0 * anisotropy, fog.max_opacity(), 0.0],
 		sun_direction,
 		ambient_inscattering: [ambient.x, ambient.y, ambient.z, 0.0],
@@ -220,19 +220,12 @@ impl RenderPass for ExponentialHeightFogRenderPass {
 		let Some(fog) = self.fog else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
-		let Some(fog_pass) = self.fog_pass.ready(frame) else {
+		let Some(command) = self.fog_pass.prepare(frame, sink, frame_allocator) else {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
-			fog_shader_data(&fog, self.sun.illuminance(), self.sun.direction(), sink);
-		let extent = sink.extent();
-
-		Some(allocate_render_command(frame_allocator, move |command_buffer| {
-			command_buffer.region(
-				|label| label.write_str("Exponential Height Fog"),
-				|command_buffer| fog_pass.record(command_buffer, extent),
-			);
-		}))
+			fog_shader_data(&fog, self.sun.illuminance, self.sun.direction, sink);
+		Some(command)
 	}
 
 	fn bypass<'a>(
@@ -308,27 +301,30 @@ mod tests {
 		);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
-			("layer", data.layer.shape),
-			("layer_bounds_min", data.layer.bounds_min),
-			("layer_bounds_max", data.layer.bounds_max),
-			("second_layer", data.second_layer.shape),
-			("second_layer_bounds_min", data.second_layer.bounds_min),
-			("second_layer_bounds_max", data.second_layer.bounds_max),
-			("scattering", data.scattering),
-			("sun_direction", data.sun_direction),
-			("ambient_inscattering", data.ambient_inscattering),
-			("sun_inscattering", data.sun_inscattering),
-		] {
-			parameters
-				.write(name, Value::Vec4F(value))
-				.expect("Failed to initialize fog parameters. The most likely cause is a changed production buffer layout.");
-		}
-		parameters
-			.write(
+			(
 				"pixel_to_camera_offset",
 				Value::Mat4F(bytemuck::cast(data.pixel_to_camera_offset)),
-			)
-			.expect("Failed to initialize the fog matrix. The most likely cause is a changed production buffer layout.");
+			),
+			("scattering", Value::Vec4F(data.scattering)),
+			("sun_direction", Value::Vec4F(data.sun_direction)),
+			("ambient_inscattering", Value::Vec4F(data.ambient_inscattering)),
+			("sun_inscattering", Value::Vec4F(data.sun_inscattering)),
+		] {
+			parameters
+				.write(name, value)
+				.expect("Failed to initialize fog parameters. The most likely cause is a changed production buffer layout.");
+		}
+		for (index, layer) in data.layers.iter().enumerate() {
+			for (field, value) in [
+				("shape", layer.shape),
+				("bounds_min", layer.bounds_min),
+				("bounds_max", layer.bounds_max),
+			] {
+				parameters
+					.write_indexed_field("layers", index, field, Value::Vec4F(value))
+					.expect("Failed to initialize fog layers. The most likely cause is a changed production buffer layout.");
+			}
+		}
 		// Every pixel holds the same depth and color, so only the view ray changes from pixel to pixel.
 		let (width, height) = (sink.extent().width(), sink.extent().height());
 		let texels = (width * height) as usize;
@@ -502,12 +498,8 @@ mod tests {
 	/// Returns [`SCENE`] seen through `optical_depth` of unlit fog.
 	fn behind_unlit_fog(optical_depth: f32) -> [f32; 4] {
 		let transmittance = (-optical_depth).exp();
-		[
-			SCENE[0] * transmittance,
-			SCENE[1] * transmittance,
-			SCENE[2] * transmittance,
-			SCENE[3],
-		]
+		let [r, g, b, a] = SCENE;
+		[r * transmittance, g * transmittance, b * transmittance, a]
 	}
 
 	/// Verifies that a bounded layer fogs only the part of the view ray inside its box, whether the camera starts

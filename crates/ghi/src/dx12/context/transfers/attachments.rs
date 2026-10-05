@@ -62,23 +62,11 @@ impl Device {
 		Some(resource)
 	}
 
-	pub(crate) fn attachment_image_handle(
-		&mut self,
-		attachment: &AttachmentInformation,
-		sequence_index: u8,
-	) -> crate::BaseImageHandle {
+	pub(crate) fn attachment_image_handle(&mut self, attachment: &AttachmentInformation) -> crate::BaseImageHandle {
 		match attachment.target {
 			ImageOrSwapchain::Image(image) => image,
-			ImageOrSwapchain::Swapchain(swapchain) => {
-				let image_index =
-					self.swapchains[swapchain.0 as usize].acquired_image_indices[sequence_index as usize] as usize;
-				self.get_swapchain_image(swapchain, Uses::RenderTarget);
-				self.swapchains[swapchain.0 as usize].images[image_index]
-					.unwrap_or_else(|| self.swapchains[swapchain.0 as usize].images[0].expect(
-						"Missing DX12 swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
-					))
-					.0
-			}
+			// Every acquired backbuffer of a swapchain renders through its one proxy image.
+			ImageOrSwapchain::Swapchain(swapchain) => self.get_swapchain_image(swapchain, Uses::RenderTarget).0.0,
 		}
 	}
 
@@ -171,11 +159,7 @@ impl Device {
 		final_state: Option<TextureBarrierState>,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {

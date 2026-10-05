@@ -3,14 +3,16 @@
 use utils::Extent;
 
 use super::super::mesh_dispatch::PhaseDispatches;
-use super::{OcclusionPhase, PhasePipelines, record_meshlet_dispatches};
-use crate::rendering::PipelineManagerClient;
+use super::{OcclusionPhase, Pipelines, record_meshlet_dispatches};
 
 /// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
+///
+/// Material evaluation pushes the discriminant as its blend flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub(super) enum VisibilityPhase {
-	Opaque,
-	Transparent,
+	Opaque = 0,
+	Transparent = 1,
 }
 
 impl VisibilityPhase {
@@ -20,55 +22,20 @@ impl VisibilityPhase {
 			Self::Transparent => "Transparent",
 		}
 	}
-
-	pub(super) fn blend_flag(self) -> u32 {
-		match self {
-			Self::Opaque => 0,
-			Self::Transparent => 1,
-		}
-	}
 }
 
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
 pub(super) struct VisibilityPass {
-	/// The base set and the sink's occlusion culling set.
-	descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The base set and the sink's occlusion culling set, which the shadow maps bind too.
+	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
-	pipelines: PhasePipelines,
-	primitive_index: ghi::BaseImageHandle,
-	instance_id: ghi::BaseImageHandle,
-	depth: ghi::BaseImageHandle,
+	pub(super) pipelines: Pipelines<4>,
+	pub(super) primitive_index: ghi::BaseImageHandle,
+	pub(super) instance_id: ghi::BaseImageHandle,
+	pub(super) depth: ghi::BaseImageHandle,
 }
 
 impl VisibilityPass {
-	pub(super) fn new(
-		pipeline_manager: &PipelineManagerClient,
-		descriptor_sets: [ghi::DescriptorSetHandle; 2],
-		primitive_index: ghi::BaseImageHandle,
-		instance_id: ghi::BaseImageHandle,
-		depth: ghi::BaseImageHandle,
-	) -> Self {
-		Self {
-			descriptor_sets,
-			pipelines: PhasePipelines::request(
-				pipeline_manager,
-				[
-					"byte-engine/rendering/visibility/visibility.pipeline",
-					"byte-engine/rendering/visibility/masked-visibility.pipeline",
-					"byte-engine/rendering/visibility/double-sided-visibility.pipeline",
-					"byte-engine/rendering/visibility/double-sided-masked-visibility.pipeline",
-				],
-			),
-			primitive_index,
-			instance_id,
-			depth,
-		}
-	}
-
-	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; 4]> {
-		self.pipelines.resolve(pipeline_manager)
-	}
-
 	/// Records the work ranges of one phase into the visibility buffers: the solid, masked, and both double-sided
 	/// ranges for the opaque phase, or the transparent range.
 	///
@@ -121,28 +88,21 @@ impl VisibilityPass {
 		c.start_region(|label| {
 			label.write_str(phase.label())?;
 			label.write_str(" Visibility Buffer")?;
-			label.write_str(occlusion.label())
+			label.write_str(match occlusion {
+				OcclusionPhase::Early => " (Early)",
+				OcclusionPhase::Late => " (Late)",
+				OcclusionPhase::Disabled | OcclusionPhase::Test => "",
+			})
 		});
 		let c = c.start_render_pass(extent, &attachments);
-		// The camera is view zero. Blend materials have no alpha test and keep back-face culling.
-		match phase {
-			VisibilityPhase::Opaque => record_meshlet_dispatches(
-				c,
-				self.descriptor_sets,
-				occlusion,
-				dispatches.opaque_layer().into_iter().zip(pipelines),
-				0,
-				1,
-			),
-			VisibilityPhase::Transparent => record_meshlet_dispatches(
-				c,
-				self.descriptor_sets,
-				occlusion,
-				[(dispatches.transparent, pipelines[0])],
-				0,
-				1,
-			),
-		}
+		// Blend materials have no alpha test and keep back-face culling, so they pair with the solid pipeline.
+		let ranges = match phase {
+			VisibilityPhase::Opaque => &dispatches.opaque_layer[..],
+			VisibilityPhase::Transparent => std::slice::from_ref(&dispatches.transparent),
+		};
+		let ranges = ranges.iter().copied().zip(pipelines);
+		// The camera is view zero.
+		record_meshlet_dispatches(c, self.descriptor_sets, occlusion, ranges, 0, 1);
 		c.end_render_pass();
 		c.end_region();
 	}

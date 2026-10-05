@@ -97,70 +97,53 @@ decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
 	);
 }
 
-normalize_plane: fn(plane: vec4f) -> vec4f {
+// Returns whether a sphere reaches the positive side of a plane, after normalizing the plane.
+sphere_intersects_plane: fn(plane: vec4f, sphere: vec4f) -> bool {
 	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
-	return plane * inversesqrt(max(dot(normal, normal), 0.000000000001));
+	let scale: f32 = inversesqrt(max(dot(normal, normal), 0.000000000001));
+	return dot(vec3f(sphere.x, sphere.y, sphere.z), normal * scale) + plane.w * scale >= 0.0 - sphere.w;
 }
 
-sphere_intersects_plane: fn(plane: vec4f, center: vec3f, radius: f32) -> bool {
-	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
-	return dot(center, normal) + plane.w >= 0.0 - radius;
-}
-
-sphere_intersects_frustum: fn(matrix: mat4f, center: vec3f, radius: f32) -> bool {
+// Returns whether a world-space sphere may show in a view: no frustum plane has it wholly outside.
+sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
+	let matrix: mat4f = view.view_projection;
 	let row0: vec4f = vec4f(matrix[0].x, matrix[1].x, matrix[2].x, matrix[3].x);
 	let row1: vec4f = vec4f(matrix[0].y, matrix[1].y, matrix[2].y, matrix[3].y);
 	let row2: vec4f = vec4f(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
 	let row3: vec4f = vec4f(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
 
-	return sphere_intersects_plane(normalize_plane(row3 + row0), center, radius)
-		&& sphere_intersects_plane(normalize_plane(row3 - row0), center, radius)
-		&& sphere_intersects_plane(normalize_plane(row3 - row1), center, radius)
-		&& sphere_intersects_plane(normalize_plane(row3 + row1), center, radius)
-		&& sphere_intersects_plane(normalize_plane(row2), center, radius)
-		&& sphere_intersects_plane(normalize_plane(row3 - row2), center, radius);
-}
-
-transform_world_to_object: fn(model: mat4x3f, world_position: vec3f, determinant: f32) -> vec3f {
-	let object_x: vec3f = model[0];
-	let object_y: vec3f = model[1];
-	let object_z: vec3f = model[2];
-	let world_delta: vec3f = world_position - model[3];
-	let inverse_determinant: f32 = 1.0 / determinant;
-
-	return vec3f(
-		dot(cross(object_y, object_z) * inverse_determinant, world_delta),
-		dot(cross(object_z, object_x) * inverse_determinant, world_delta),
-		dot(cross(object_x, object_y) * inverse_determinant, world_delta)
-	);
+	return sphere_intersects_plane(row3 + row0, sphere)
+		&& sphere_intersects_plane(row3 - row0, sphere)
+		&& sphere_intersects_plane(row3 - row1, sphere)
+		&& sphere_intersects_plane(row3 + row1, sphere)
+		&& sphere_intersects_plane(row2, sphere)
+		&& sphere_intersects_plane(row3 - row2, sphere);
 }
 
 cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
 	// Flag bit 0 marks a double-sided material. Both of its faces are visible, so no view direction culls it.
-	let double_sided: bool = (mesh.flags & 1) != 0;
-	if (double_sided || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
-		return double_sided || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0;
+	if ((mesh.flags & 1) != 0 || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
+		return true;
 	}
 
-	let camera_position_world: vec3f = vec3f(
-		view.inverse_view[3].x,
-		view.inverse_view[3].y,
-		view.inverse_view[3].z
+	// The inverse view's translation column is the camera's world position. The rows of the model's inverse are the
+	// cross products of its columns over the determinant.
+	let world_delta: vec3f = view.inverse_view[3] - mesh.model[3];
+	let inverse_determinant: f32 = 1.0 / determinant;
+	let camera_position_object: vec3f = vec3f(
+		dot(cross(mesh.model[1], mesh.model[2]) * inverse_determinant, world_delta),
+		dot(cross(mesh.model[2], mesh.model[0]) * inverse_determinant, world_delta),
+		dot(cross(mesh.model[0], mesh.model[1]) * inverse_determinant, world_delta)
 	);
-	let camera_position_object: vec3f = transform_world_to_object(mesh.model, camera_position_world, determinant);
-	let cone_apex: vec3f = vec3f(
-		meshlet.cone_apex_cutoff.x,
-		meshlet.cone_apex_cutoff.y,
-		meshlet.cone_apex_cutoff.z
-	);
+	let cone_apex: vec3f = vec3f(meshlet.cone_apex_cutoff.x, meshlet.cone_apex_cutoff.y, meshlet.cone_apex_cutoff.z);
 	let cone_axis: vec3f = decode_octahedral_normal(meshlet.cone_axis);
 	let cone_view: vec3f = cone_apex - camera_position_object;
 	let cone_view_length_squared: f32 = dot(cone_view, cone_view);
 	let cone_axis_length_squared: f32 = dot(cone_axis, cone_axis);
 
 	if (cone_view_length_squared <= 0.000000000001 || cone_axis_length_squared <= 0.000000000001) {
-		return cone_view_length_squared <= 0.000000000001 || cone_axis_length_squared <= 0.000000000001;
+		return true;
 	}
 
 	return dot(
@@ -170,15 +153,10 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 }
 
 // Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
-world_sphere: fn(model: mat4x3f, center: vec3f, radius: f32) -> vec4f {
+world_sphere: fn(model: mat4x3f, sphere: vec4f) -> vec4f {
 	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
-	let world_center: vec3f = model * vec4f(center.x, center.y, center.z, 1.0);
-	return vec4f(world_center.x, world_center.y, world_center.z, radius * scale);
-}
-
-// Returns whether a world-space sphere may show in a view.
-sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
-	return sphere_intersects_frustum(view.view_projection, vec3f(sphere.x, sphere.y, sphere.z), sphere.w);
+	let world_center: vec3f = model * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	return vec4f(world_center.x, world_center.y, world_center.z, sphere.w * scale);
 }
 
 // Returns the smaller and the larger tangent slope, lateral over depth, from the eye to a view-space circle. The circle
@@ -245,8 +223,7 @@ main: fn() -> void {
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
 	let skinned: bool = mesh.skinned_base_vertex_index != 4294967295;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
-	let sphere: vec4f = mesh.bounding_sphere;
-	let instance_sphere: vec4f = world_sphere(mesh.model, vec3f(sphere.x, sphere.y, sphere.z), sphere.w);
+	let instance_sphere: vec4f = world_sphere(mesh.model, mesh.bounding_sphere);
 
 	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
 	// workgroup whose instance no view sees returns before it reads a single meshlet.
@@ -286,10 +263,7 @@ main: fn() -> void {
 	}
 
 	let first_meshlet: u32 = chunk_index * 32;
-	let chunk_meshlet_count: u32 = mesh.meshlet_count - first_meshlet;
-	if (chunk_meshlet_count > 32) {
-		chunk_meshlet_count = 32;
-	}
+	let chunk_meshlet_count: u32 = min(mesh.meshlet_count - first_meshlet, 32);
 
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
@@ -300,33 +274,24 @@ main: fn() -> void {
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
 		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
-		let meshlet_sphere: vec4f = world_sphere(
-			mesh.model,
-			vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z),
-			meshlet.center_radius.w
-		);
+		let meshlet_sphere: vec4f = world_sphere(mesh.model, vec4f(meshlet.center_radius));
 		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			if ((instance_views & (1 << view_offset)) != 0) {
 				let view: View = views.views[push_constant.view_base + view_offset];
 				if (skinned || (sphere_is_visible(view, meshlet_sphere) && cone_allows_rendering(mesh, meshlet, view))) {
-					let emit: bool = true;
-					if (phase == OCCLUSION_EARLY) {
-						emit = drawn_early;
-					}
+					// The early pass draws only what the previous late pass found unoccluded.
+					// Occlusion-testing passes are never early, so the test decides alone.
+					let emit: bool = phase != OCCLUSION_EARLY || drawn_early;
 					if (tests_occlusion) {
-						if (sphere_is_occluded(view, meshlet_sphere)) {
-							emit = false;
-						}
+						emit = sphere_is_occluded(view, meshlet_sphere) == false;
 					}
 					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
 					if (phase == OCCLUSION_LATE) {
 						if (emit) {
 							atomic_or(unoccluded_meshlets, 1 << lane);
 						}
-						if (drawn_early) {
-							emit = false;
-						}
+						emit = emit && drawn_early == false;
 					}
 					if (emit) {
 						let payload_index: u32 = atomic_add(visible_count, 1);

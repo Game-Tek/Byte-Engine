@@ -122,32 +122,6 @@ impl Generator {
 				.all(|parameter| Self::node_type_name(parameter).as_deref() == Some(column_type))
 	}
 
-	pub(crate) fn emit_texture_2d_array_grad_sample(
-		&mut self,
-		string: &mut String,
-		texture_array: &besl::NodeReference,
-		texture_index: &besl::NodeReference,
-		uv: &besl::NodeReference,
-		uv_derivative_x: &besl::NodeReference,
-		uv_derivative_y: &besl::NodeReference,
-	) {
-		self.emit_node_string(string, texture_array);
-		string.push('[');
-		self.emit_node_string(string, texture_index);
-		string.push_str("].SampleGrad(");
-		self.emit_node_string(string, texture_array);
-		string.push_str("_sampler[");
-		self.emit_node_string(string, texture_index);
-		string.push(']');
-		self.emit_separator(string);
-		self.emit_node_string(string, uv);
-		self.emit_separator(string);
-		self.emit_node_string(string, uv_derivative_x);
-		self.emit_separator(string);
-		self.emit_node_string(string, uv_derivative_y);
-		string.push(')');
-	}
-
 	pub(crate) fn image_size_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
 		let expression = expression.borrow();
 		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
@@ -295,39 +269,6 @@ impl Generator {
 		}
 	}
 
-	/// Returns the expression children that must be evaluated before `node`.
-	fn hlsl_expression_children(node: &besl::NodeReference) -> Vec<besl::NodeReference> {
-		let node = node.borrow();
-		match node.node() {
-			besl::Nodes::Conditional { condition, .. }
-			| besl::Nodes::Match {
-				scrutinee: condition, ..
-			} => {
-				vec![condition.clone()]
-			}
-			// A for-loop initializer runs once, so it can be lifted before the loop.
-			// Atomics in the repeated condition or update are rejected by validation.
-			besl::Nodes::ForLoop { initializer, .. } => vec![initializer.clone()],
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Return { value } => value.iter().cloned().collect(),
-				besl::Expressions::Expression { elements } => elements.clone(),
-				besl::Expressions::FunctionCall { parameters, .. } => parameters.clone(),
-				besl::Expressions::IntrinsicCall { arguments, .. } => arguments.clone(),
-				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
-					vec![left.clone(), right.clone()]
-				}
-				besl::Expressions::Macro { body, .. } => vec![body.clone()],
-				besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard
-				| besl::Expressions::Member { .. }
-				| besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. } => Vec::new(),
-			},
-			_ => Vec::new(),
-		}
-	}
-
 	/// Emits one HLSL Interlocked call with the previous value written to `previous_value`.
 	pub(crate) fn emit_hlsl_atomic_call(
 		&mut self,
@@ -389,8 +330,36 @@ impl Generator {
 
 	/// Lifts expression-valued atomics into HLSL statements because Interlocked intrinsics return through out parameters.
 	pub(crate) fn emit_hlsl_atomic_temporaries(&mut self, string: &mut String, node: &besl::NodeReference, indent: usize) {
-		for child in Self::hlsl_expression_children(node) {
-			self.emit_hlsl_atomic_temporaries(string, &child, indent);
+		// Lift the atomics of the expression children that are evaluated before `node` first.
+		let mut lift = |child: &besl::NodeReference| self.emit_hlsl_atomic_temporaries(string, child, indent);
+		match node.borrow().node() {
+			besl::Nodes::Conditional { condition, .. }
+			| besl::Nodes::Match {
+				scrutinee: condition, ..
+			} => lift(condition),
+			// A for-loop initializer runs once, so it can be lifted before the loop.
+			// Atomics in the repeated condition or update are rejected by validation.
+			besl::Nodes::ForLoop { initializer, .. } => lift(initializer),
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::Return { value } => value.iter().for_each(&mut lift),
+				besl::Expressions::Expression { elements: children }
+				| besl::Expressions::FunctionCall {
+					parameters: children, ..
+				}
+				| besl::Expressions::IntrinsicCall { arguments: children, .. } => children.iter().for_each(&mut lift),
+				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+					lift(left);
+					lift(right);
+				}
+				besl::Expressions::Macro { body, .. } => lift(body),
+				besl::Expressions::Continue
+				| besl::Expressions::Break
+				| besl::Expressions::Discard
+				| besl::Expressions::Member { .. }
+				| besl::Expressions::VariableDeclaration { .. }
+				| besl::Expressions::Literal { .. } => {}
+			},
+			_ => {}
 		}
 		if self.atomic_temporaries.contains_key(node) {
 			return;
@@ -456,12 +425,7 @@ impl Generator {
 
 		// HLSL array constants use brace initializers rather than constructor syntax like float[3](...).
 		string.push('{');
-		emit_comma_separated_nodes(
-			string,
-			ShaderFormatting::new(self.minified),
-			parameters,
-			|string, parameter| self.emit_node_string(string, parameter),
-		);
+		self.emit_call_arguments(string, parameters);
 		string.push('}');
 		true
 	}
@@ -476,27 +440,10 @@ impl Generator {
 		let type_node = r#type.borrow();
 		let type_name = type_node.get_name().unwrap();
 		string.push_str("static const ");
-		if let Some(vector_type) = crate::shader::generator::scalar_array_vector_type(type_name) {
-			string.push_str(Self::translate_type(vector_type));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" = ");
-			self.emit_node_string(string, value);
-		} else if let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name) {
-			Self::type_identifier(element_type).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push('[');
-			string.push_str(count);
-			string.push_str("] = ");
-			if !self.emit_array_initializer(string, value) {
-				self.emit_node_string(string, value);
-			}
-		} else {
-			Self::emit_type_name(string, type_name);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" = ");
+		Self::emit_c_declaration(string, name, type_name);
+		string.push_str(" = ");
+		// Short scalar arrays are vectors, so only real arrays take a brace initializer.
+		if crate::shader::generator::value_array_parts(type_name).is_none() || !self.emit_array_initializer(string, value) {
 			self.emit_node_string(string, value);
 		}
 		string.push(';');

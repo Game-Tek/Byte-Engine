@@ -2,7 +2,7 @@
 //!
 //! Start with the platform [`implementation::Instance`], select a device and
 //! queues, then create context-owned resources through [`ContextCreate`]. Record
-//! work with [`command_buffer::CommandBuffer`] and submit it through [`Queue`].
+//! work with [`command_buffer::CommandBufferRecording`] and submit it through [`Queue`].
 
 #![allow(dead_code)]
 #![allow(incomplete_features)]
@@ -126,16 +126,10 @@ pub use types::{
 /// Rewrite a dynamic buffer this many frames in a row to reach every copy.
 pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
-#[cfg(debug_assertions)]
+/// Copies a resource name for debuggers, or drops it in release builds.
 #[inline]
 pub(crate) fn debug_name(name: Option<&str>) -> Option<String> {
-	name.map(str::to_owned)
-}
-
-#[cfg(not(debug_assertions))]
-#[inline]
-pub(crate) fn debug_name(_name: Option<&str>) -> Option<String> {
-	None
+	name.filter(|_| cfg!(debug_assertions)).map(str::to_owned)
 }
 
 /// Clamps a scissor rectangle to the active render area so every backend accepts it.
@@ -177,9 +171,7 @@ mod scissor_tests {
 pub(crate) use implementation::Binding;
 // Metal chains these through `ResourceCollection`; the other backends link them with `Next`.
 #[cfg(not(target_os = "macos"))]
-pub(crate) use implementation::DescriptorSet;
-#[cfg(not(target_os = "macos"))]
-pub(crate) use implementation::Synchronizer;
+pub(crate) use implementation::{DescriptorSet, Synchronizer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PrivateHandles {
@@ -195,52 +187,28 @@ pub(crate) enum PrivateHandles {
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
-pub(crate) trait HandleLike
-where
-	Self: Sized,
-	Self: PartialEq<Self>,
-	Self: Clone,
-	Self: Copy,
-{
+pub(crate) trait HandleLike: Copy + PartialEq {
 	type Item: Next<Handle = Self>;
 
 	fn build(value: u64) -> Self;
 
 	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item;
 
+	/// Walks back to the first handle of the chain that links to this one.
 	fn root(&self, collection: &[Self::Item]) -> Self {
-		let handle_option = Some(*self);
-
-		if let Some(e) = collection
-			.iter()
-			.enumerate()
-			.find(|(_, e)| e.next() == handle_option)
-			.map(|(i, _)| Self::build(i as u64))
-		{
-			e.root(collection)
-		} else {
-			handle_option.unwrap()
+		match collection.iter().position(|item| item.next() == Some(*self)) {
+			Some(index) => Self::build(index as u64).root(collection),
+			None => *self,
 		}
 	}
 
+	/// Returns this handle followed by every handle it links to, in chain order.
 	fn get_all(&self, collection: &[Self::Item]) -> SmallVec<[Self; MAX_FRAMES_IN_FLIGHT]> {
-		let mut handles = SmallVec::new();
-		let mut handle_option = Some(*self);
-
-		while let Some(handle) = handle_option {
-			let binding = handle.access(collection);
-			handles.push(handle);
-			handle_option = binding.next();
-		}
-
-		handles
+		std::iter::successors(Some(*self), |handle| handle.access(collection).next()).collect()
 	}
 }
 
-pub(crate) trait Next
-where
-	Self: Sized,
-{
+pub(crate) trait Next: Sized {
 	type Handle: HandleLike<Item = Self>;
 
 	fn next(&self) -> Option<Self::Handle>;

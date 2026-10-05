@@ -2,10 +2,11 @@
 //!
 //! Resource management tests the kernels it generates from `.particles` assets.
 
-use besl::vm::{DescriptorBindings, ExecutableProgram, ExecutionConfig, ResourceSlot, Value};
+use besl::vm::{DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
 
 use super::shader_data;
-use crate::rendering::shader_vm_test::{buffer, compile};
+use crate::rendering::render_pass::simple_compute::compile_test_program;
+use crate::rendering::shader_vm_test::{buffer, compile, run_at};
 
 const FRAME_SLOT: ResourceSlot = ResourceSlot::new(shader_data::FRAME_SLOT.index());
 const DRAWS_SLOT: ResourceSlot = ResourceSlot::new(shader_data::DRAWS_SLOT.index());
@@ -13,14 +14,7 @@ const DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(shader_data::DISPATCH_SLOT
 const CAPACITY: u32 = 4096;
 
 fn prepare_program() -> besl::NodeReference {
-	besl::lex(
-		besl::parse(include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/particles/prepare.besl"
-		)))
-		.expect("prepare.besl should parse"),
-	)
-	.expect("prepare.besl should link")
+	compile_test_program(include_str!("../../../assets/rendering/particles/prepare.besl"))
 }
 
 /// Runs the prepare pass for a frame that writes half 0 and returns the simulation's workgroup count and the reset
@@ -48,9 +42,7 @@ fn prepare(previous_vertex_count: u32, spawn_total: u32, reset: bool) -> ([u32; 
 	descriptors.bind_buffer(FRAME_SLOT, &mut frame);
 	descriptors.bind_buffer(DRAWS_SLOT, &mut draws);
 	descriptors.bind_buffer(DISPATCH_SLOT, &mut dispatch);
-	program
-		.run_workgroup(&mut descriptors, &[ExecutionConfig::new(1_000_000)])
-		.expect("Failed to run the particle prepare pass in the BESL VM.");
+	run_at(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
 	let group_count = match dispatch.read("group_count").expect("group count") {

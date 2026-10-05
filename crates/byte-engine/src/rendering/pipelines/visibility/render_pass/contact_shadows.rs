@@ -181,10 +181,10 @@ impl ContactShadowPass {
 		}
 	}
 
-	/// Uploads this frame's camera constants, sun direction and ray reach, and returns the trace and filter recording.
+	/// Uploads this frame's camera constants, sun direction and ray reach, and returns the trace and filter recording,
+	/// or `None` without a sun, because material evaluation reads the result only for the sun.
 	///
-	/// `sun_direction` is the world-space direction the sun's light travels. Without a sun the recording does
-	/// nothing, because material evaluation reads the result only for the sun. `settings` sets the ray reach.
+	/// `sun_direction` is the world-space direction the sun's light travels. `settings` sets the ray reach.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -192,17 +192,16 @@ impl ContactShadowPass {
 		sun_direction: Option<math::UnitVector>,
 		settings: ContactShadowSettings,
 		[trace, filter]: [ghi::PipelineHandle; 2],
-	) -> impl RenderPassFunction + use<> {
+	) -> Option<impl RenderPassFunction + use<>> {
+		let sun_direction = sun_direction?;
 		let extent = sink.extent();
-		if let Some(sun_direction) = sun_direction {
-			*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, extent);
-			frame.sync_buffer(self.view_data);
-			*frame.get_mut_dynamic_buffer_slice(self.parameters) = ContactShadowShaderParameters {
-				direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
-				max_distance: settings.max_distance,
-			};
-			frame.sync_buffer(self.parameters);
-		}
+		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, extent);
+		frame.sync_buffer(self.view_data);
+		*frame.get_mut_dynamic_buffer_slice(self.parameters) = ContactShadowShaderParameters {
+			direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
+			max_distance: settings.max_distance,
+		};
+		frame.sync_buffer(self.parameters);
 		let stage = |label, pipeline, descriptor_set| ComputeStage {
 			label,
 			pipeline,
@@ -214,10 +213,10 @@ impl ContactShadowPass {
 			stage("Contact Shadow Trace", trace, self.descriptor_set),
 			stage("Contact Shadow Filter", filter, self.filter_descriptor_set),
 		];
-		// Without a sun nothing is recorded.
-		let stage_count = if sun_direction.is_some() { stages.len() } else { 0 };
 
-		move |c| record_compute_stages(c, Some("Contact Shadows"), &stages[..stage_count])
+		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
+			record_compute_stages(c, Some("Contact Shadows"), &stages)
+		})
 	}
 }
 

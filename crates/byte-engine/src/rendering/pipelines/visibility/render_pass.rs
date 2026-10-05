@@ -3,7 +3,8 @@
 //! screen-space reflections. GTAO and SSGI each run only while their settings enable them.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
-//! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
+//! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
+//! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
 mod contact_shadows;
 mod depth_pyramid;
@@ -164,8 +165,67 @@ use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
-use crate::rendering::render_pass::RenderPassFunction;
+use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, Sink, View};
+
+/// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
+/// stages, so the inspector reports `stage.<name>` next to the pass's `scene.VisibilityPipelineManager` time.
+///
+/// Create it with [`StageCounters::new`] while building the sink and hand it to [`VisibilityRenderPass::new`]. A
+/// stage records its counter only on frames it records commands, so a stage that runs nothing reports no time.
+#[derive(Clone, Copy)]
+pub(crate) struct StageCounters {
+	skinning: ghi::CounterHandle,
+	/// The directional cascades and every cone layer and point cube face drawn this frame.
+	shadow_maps: ghi::CounterHandle,
+	/// The max-depth pyramid built from the directional cascades.
+	shadow_depth_pyramid: ghi::CounterHandle,
+	light_clusters: ghi::CounterHandle,
+	visibility_early: ghi::CounterHandle,
+	occlusion_pyramid: ghi::CounterHandle,
+	visibility_late: ghi::CounterHandle,
+	/// The opaque layer's material count, offset, and pixel mapping.
+	material_prepasses: ghi::CounterHandle,
+	cascade_fit: ghi::CounterHandle,
+	depth_pyramid: ghi::CounterHandle,
+	/// The contact-shadow trace and filter.
+	contact_shadows: ghi::CounterHandle,
+	gtao: ghi::CounterHandle,
+	/// The SSGI trace, denoise, and upscale.
+	ssgi: ghi::CounterHandle,
+	/// The clear of the lit target and the histories before opaque evaluation.
+	history_clear: ghi::CounterHandle,
+	/// Opaque material evaluation.
+	material_evaluation: ghi::CounterHandle,
+	background: ghi::CounterHandle,
+	/// The transparent layer's visibility draw, material prepasses, and material evaluation.
+	transparent: ghi::CounterHandle,
+}
+
+impl StageCounters {
+	/// Creates one counter per stage, named as the inspector reports it.
+	pub(crate) fn new(builder: &mut RenderPassBuilder<'_>) -> Self {
+		Self {
+			skinning: builder.create_gpu_counter("skinning"),
+			shadow_maps: builder.create_gpu_counter("shadow-maps"),
+			shadow_depth_pyramid: builder.create_gpu_counter("shadow-depth-pyramid"),
+			light_clusters: builder.create_gpu_counter("light-clusters"),
+			visibility_early: builder.create_gpu_counter("visibility-early"),
+			occlusion_pyramid: builder.create_gpu_counter("occlusion-pyramid"),
+			visibility_late: builder.create_gpu_counter("visibility-late"),
+			material_prepasses: builder.create_gpu_counter("material-prepasses"),
+			cascade_fit: builder.create_gpu_counter("cascade-fit"),
+			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
+			contact_shadows: builder.create_gpu_counter("contact-shadows"),
+			gtao: builder.create_gpu_counter("gtao"),
+			ssgi: builder.create_gpu_counter("ssgi"),
+			history_clear: builder.create_gpu_counter("history-clear"),
+			material_evaluation: builder.create_gpu_counter("material-evaluation"),
+			background: builder.create_gpu_counter("background"),
+			transparent: builder.create_gpu_counter("transparent"),
+		}
+	}
+}
 
 /// The `SinkTargets` struct names the render-graph images a sink gives the visibility pass.
 #[derive(Clone, Copy)]
@@ -210,14 +270,15 @@ pub(crate) struct VisibilityRenderPass {
 	ssgi: SsgiPass,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
+	stage_counters: StageCounters,
 }
 
 impl VisibilityRenderPass {
 	/// Creates every per-sink GPU resource and requests the fixed visibility pipelines.
 	///
-	/// `shadow_maps` are the maps every sink shares; this sink's material evaluation samples them. The
-	/// material-evaluation descriptor set still needs the environment written by the pipeline manager; see
-	/// [`Self::material_evaluation_descriptor_set`].
+	/// `shadow_maps` are the maps every sink shares; this sink's material evaluation samples them. `stage_counters`
+	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
+	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`].
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -225,6 +286,7 @@ impl VisibilityRenderPass {
 		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
+		stage_counters: StageCounters,
 	) -> Self {
 		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
 		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
@@ -370,6 +432,7 @@ impl VisibilityRenderPass {
 				descriptor_set: material_evaluation_descriptor_set,
 				evaluation_dispatches,
 			},
+			stage_counters,
 			pipeline_manager,
 		}
 	}
@@ -420,6 +483,7 @@ impl VisibilityRenderPass {
 					dispatches,
 					shadow_work,
 					self.visibility.descriptor_sets,
+					self.stage_counters,
 				)?),
 			),
 			None => (None, None),
@@ -476,20 +540,26 @@ impl VisibilityRenderPass {
 		// frame instead of holding the scene back.
 		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
+		// Each stage records its counter only when it records commands, so an idle stage reports no time.
+		let counters = self.stage_counters;
+		let skinning = skinning.filter(|_| !render_info.skinning_dispatches.is_empty());
 
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::CommonCommandBufferMode as _;
 
 			c.start_region(|label| label.write_str("Visibility Render Model"));
 			if let Some((pass, pipeline)) = skinning {
-				pass.record(c, &render_info.skinning_dispatches, pipeline);
+				c.counter(counters.skinning, |c| {
+					pass.record(c, &render_info.skinning_dispatches, pipeline)
+				});
 			}
-			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists.
+			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists. The shadow
+			// recording times its maps and pyramid with this sink's counters itself.
 			if !fits_receivers && let Some(shadows) = &shadows {
 				shadows(c);
 			}
 			// Both material evaluation layers read the clusters, and nothing before them does.
-			light_clusters(c);
+			c.counter(counters.light_clusters, &light_clusters);
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
 			// pass draws what was unoccluded last frame, and the late pass draws what that depth does not hide.
@@ -497,35 +567,50 @@ impl VisibilityRenderPass {
 				self.visibility
 					.record(c, extent, phase, dispatches, visibility_pipelines, occlusion);
 			};
-			draw(c, VisibilityPhase::Opaque, OcclusionPhase::Early);
-			occlusion_pyramid(c);
-			draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late);
-			self.material_prepasses.record(c, extent, prepass_pipelines);
-			cascade_fit(c);
-			if fits_receivers && let Some(shadows) = &shadows {
-				shadows(c);
+			c.counter(counters.visibility_early, |c| {
+				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Early)
+			});
+			c.counter(counters.occlusion_pyramid, &occlusion_pyramid);
+			c.counter(counters.visibility_late, |c| {
+				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
+			});
+			c.counter(counters.material_prepasses, |c| {
+				self.material_prepasses.record(c, extent, prepass_pipelines)
+			});
+			if fits_receivers {
+				c.counter(counters.cascade_fit, &cascade_fit);
+				if let Some(shadows) = &shadows {
+					shadows(c);
+				}
 			}
 			// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
-			depth_pyramid(c);
-			contact_shadows(c);
+			c.counter(counters.depth_pyramid, &depth_pyramid);
+			if let Some(contact_shadows) = &contact_shadows {
+				c.counter(counters.contact_shadows, contact_shadows);
+			}
 			if let Some(gtao) = &gtao {
-				gtao(c);
+				c.counter(counters.gtao, gtao);
 			}
 			if let Some(ssgi) = &ssgi {
-				ssgi(c);
+				c.counter(counters.ssgi, ssgi);
 			}
-			opaque_materials(c);
+			c.counter(counters.history_clear, |c| {
+				self.material_evaluation.clear_histories(c, screen_space_lighting.ssgi)
+			});
+			c.counter(counters.material_evaluation, &opaque_materials);
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {
-				background(c);
+				c.counter(counters.background, background);
 			}
 
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.
 			if !dispatches.transparent.is_empty() {
-				draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
-				self.material_prepasses.record(c, extent, prepass_pipelines);
-				transparent_materials(c);
+				c.counter(counters.transparent, |c| {
+					draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
+					self.material_prepasses.record(c, extent, prepass_pipelines);
+					transparent_materials(c);
+				});
 			}
 			c.end_region();
 		})

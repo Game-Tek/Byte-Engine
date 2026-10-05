@@ -216,6 +216,8 @@ pub struct RenderPassBuilder<'a> {
 	created_scene_backgrounds: Vec<SceneBackground>,
 	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
 	main_copy: Option<ImageBypassPass>,
+	/// Every stage counter this node created, with the name the renderer reports it under.
+	gpu_counters: Vec<(String, ghi::CounterHandle)>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -251,7 +253,26 @@ impl<'a> RenderPassBuilder<'a> {
 			scene_background_factory,
 			created_scene_backgrounds: Vec::new(),
 			main_copy: None,
+			gpu_counters: Vec::new(),
 		}
+	}
+
+	/// Creates a GPU timing counter for one stage of this node's commands, which the inspector reports as
+	/// `stage.<name>` next to the node's own `scene.<manager>` or `pass.<name>` time.
+	///
+	/// Wrap the stage's commands with [`ghi::command_buffer::CommonCommandBufferMode::counter`] inside the node's
+	/// recording, once per frame, and only on frames the stage records: a counter around no commands reports a
+	/// meaningless near-zero time. Stage counters nest inside the node's counter, so a node's stages add up to its
+	/// time plus whatever it records outside them.
+	pub fn create_gpu_counter(&mut self, name: &str) -> ghi::CounterHandle {
+		let counter = self.context.create_counter(Some(name));
+		self.gpu_counters.push((name.to_string(), counter));
+		counter
+	}
+
+	/// Hands the renderer every stage counter created through this builder so it can publish their times.
+	pub(crate) fn take_gpu_counters(&mut self) -> Vec<(String, ghi::CounterHandle)> {
+		std::mem::take(&mut self.gpu_counters)
 	}
 
 	/// Creates this sink's scene background, or returns `None` when the application registered none.

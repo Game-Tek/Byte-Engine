@@ -56,7 +56,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// per capture.
 ///
 /// `GET /metrics` summarizes the CPU time of every engine span and the GPU time of
-/// every scene pipeline and render pass over the retained ticks, in milliseconds,
+/// every scene pipeline, render pass, and stage timed inside them over the retained ticks, in milliseconds,
 /// with `count`, `mean`, `min`, `max`, `p50`, `p95`, and `p99`. Add
 /// `since=<tick>` to summarize only later ticks and `presented=true` to count only
 /// ticks that could reach the screen. `GET /metrics/frames` streams the retained

@@ -586,7 +586,7 @@
 			"get": {
 				"operationId": "summarizeMetrics",
 				"summary": "Summarize performance metrics",
-				"description": "Returns the distribution of every metric over the retained ticks, in milliseconds. The engine retains the last 1024 ticks. CPU metrics are named after the engine `tracing` spans they sum, such as `GraphicsApplication::tick` for the whole tick or `Renderer::prepare` for frame preparation. GPU metrics are `frame` for all GPU work of a frame, `scene.<manager>` for each scene pipeline manager, and `pass.<name>` for each post-scene render pass, with `@<sink>` appended on sinks after the first. GPU times arrive once the frame that recorded them completes, so the newest frames in flight have none yet. `delta` is the frame delta the application clock advanced by.",
+				"description": "Returns the distribution of every metric over the retained ticks, in milliseconds. The engine retains the last 1024 ticks. CPU metrics are named after the engine `tracing` spans they sum, such as `GraphicsApplication::tick` for the whole tick or `Renderer::prepare` for frame preparation. GPU metrics are `frame` for all GPU work of a frame, `scene.<manager>` for each scene pipeline manager, `pass.<name>` for each post-scene render pass, and `stage.<name>` for each stage a scene pipeline or pass times inside its own commands, such as the visibility pipeline's `stage.shadow-maps` and `stage.material-evaluation`, with `@<sink>` appended on sinks after the first. A stage that recorded nothing on a frame has no value for it. GPU times arrive once the frame that recorded them completes, so the newest frames in flight have none yet. `delta` is the frame delta the application clock advanced by.",
 				"tags": [
 					"Metrics"
 				],
@@ -743,7 +743,7 @@
 								"schema": {
 									"$ref": "#/components/schemas/MetricRow"
 								},
-								"example": "{\"tick\":610,\"frame\":598,\"time\":10412.3,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.12,\"Renderer::prepare\":1.9},\"gpu\":{\"frame\":5.4,\"scene.VisibilityPipelineManager\":3.8,\"pass.Bloom\":0.41}}\n{\"tick\":611,\"frame\":599,\"time\":10429.0,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.08,\"Renderer::prepare\":1.88},\"gpu\":{}}\n"
+								"example": "{\"tick\":610,\"frame\":598,\"time\":10412.3,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.12,\"Renderer::prepare\":1.9},\"gpu\":{\"frame\":5.4,\"scene.VisibilityPipelineManager\":3.8,\"stage.shadow-maps\":0.9,\"stage.material-evaluation\":1.2,\"pass.Bloom\":0.41}}\n{\"tick\":611,\"frame\":599,\"time\":10429.0,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.08,\"Renderer::prepare\":1.88},\"gpu\":{}}\n"
 							}
 						}
 					},
@@ -1297,7 +1297,7 @@
 						"properties": {
 							"name": {
 								"type": "string",
-								"description": "The span name of a CPU metric, or `frame`, `scene.<manager>`, or `pass.<name>` for a GPU metric."
+								"description": "The span name of a CPU metric, or `frame`, `scene.<manager>`, `pass.<name>`, or `stage.<name>` for a GPU metric."
 							},
 							"kind": {
 								"type": "string",

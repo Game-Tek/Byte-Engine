@@ -1265,6 +1265,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let contact_shadows = create_contact_shadow_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
+		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1282,6 +1283,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				radiance_history,
 			},
 			&self.shadow_maps,
+			stage_counters,
 		);
 		context.write(
 			&self

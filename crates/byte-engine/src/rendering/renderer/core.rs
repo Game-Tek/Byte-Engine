@@ -115,6 +115,8 @@ pub struct Renderer {
 	frame_counter: Option<GpuCounter>,
 	/// The counter around each pipeline manager's scene commands on each sink, reported as `scene.<manager>`.
 	scene_counters: SmallVec<[(PipelineManagerId, SinkId, GpuCounter); 16]>,
+	/// The counters scene pipelines and render passes created around their own stages, reported as `stage.<name>`.
+	stage_counters: SmallVec<[GpuCounter; 32]>,
 
 	/// The GHI context where all rendering resources and operations are performed. Only the render thread uses it.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
@@ -132,8 +134,9 @@ impl Renderer {
 	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
 	///
-	/// GPU times of every frame, scene pipeline, and post-scene pass are reported to `metrics` once each frame
-	/// completes, under `frame`, `scene.<manager>`, and `pass.<name>`, with `@<sink>` appended for sinks after the first.
+	/// GPU times of every frame, scene pipeline, post-scene pass, and the stages those create with
+	/// [`RenderPassBuilder::create_gpu_counter`] are reported to `metrics` once each frame completes, under `frame`,
+	/// `scene.<manager>`, `pass.<name>`, and `stage.<name>`, with `@<sink>` appended for sinks after the first.
 	///
 	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
 	pub fn new(
@@ -204,22 +207,31 @@ impl Renderer {
 			metrics,
 			frame_counter,
 			scene_counters: SmallVec::new(),
+			stage_counters: SmallVec::new(),
 		};
 		(renderer, pipeline_compilation_servers)
 	}
 
-	/// Creates the counter that times one node of `sink` and registers the metric it reports to.
-	///
-	/// The metric is `<kind>.<name>`, with `@<sink>` appended on every sink after the first so one name stays one
-	/// column while the usual single-sink application reads plain names.
+	/// Creates the counter that times one node of `sink` and registers the metric it reports to, named by
+	/// [`gpu_metric_name`].
 	fn create_gpu_counter(&mut self, kind: &str, name: &str, sink_id: SinkId) -> Option<GpuCounter> {
-		let metric_name = if sink_id == 0 {
-			format!("{kind}.{name}")
-		} else {
-			format!("{kind}.{name}@{sink_id}")
-		};
+		let metric_name = gpu_metric_name(kind, name, sink_id);
 		let metric = self.metrics.register(MetricKind::Gpu, &metric_name)?;
 		Some((self.context.create_counter(Some(&metric_name)), metric))
+	}
+
+	/// Registers a `stage.<name>` metric for every counter a node of `sink` created through its builder, as
+	/// [`RenderPassBuilder::take_gpu_counters`] hands them over, so [`Self::publish_gpu_metrics`] reports their times.
+	/// A counter past the metric capacity keeps measuring unreported.
+	fn adopt_stage_counters(&mut self, counters: Vec<(String, ghi::CounterHandle)>, sink_id: SinkId) {
+		for (name, counter) in counters {
+			if let Some(metric) = self
+				.metrics
+				.register(MetricKind::Gpu, &gpu_metric_name("stage", &name, sink_id))
+			{
+				self.stage_counters.push((counter, metric));
+			}
+		}
 	}
 
 	/// Reports the GPU time every counter measured in `frame`, now that the frame completed.
@@ -228,6 +240,7 @@ impl Renderer {
 			.frame_counter
 			.iter()
 			.chain(self.scene_counters.iter().map(|(_, _, counter)| counter))
+			.chain(self.stage_counters.iter())
 			.chain(
 				self.render_passes
 					.iter()
@@ -311,6 +324,8 @@ impl Renderer {
 		pipeline_manager.create_sink(sink_id, &mut builder);
 		builder.record_node();
 		let backgrounds = builder.take_scene_backgrounds();
+		let stage_counters = builder.take_gpu_counters();
+		self.adopt_stage_counters(stage_counters, sink_id);
 		self.scene_backgrounds.extend(backgrounds);
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
 			self.scene_counters.push((pipeline_manager_id, sink_id, counter));
@@ -389,6 +404,8 @@ impl Renderer {
 			builder.record_node();
 			let writable_targets = builder.writable_targets();
 			let main_copy = builder.take_main_copy();
+			let stage_counters = builder.take_gpu_counters();
+			self.adopt_stage_counters(stage_counters, sink_id);
 			let counter = self.create_gpu_counter("pass", render_pass.name(), sink_id);
 			self.render_passes.push(SinkPass {
 				harness: RenderPassHarness::new(render_pass, &mut self.render_pass_states),
@@ -991,6 +1008,16 @@ impl Renderer {
 		self.redraw_requested = true;
 	}
 }
+/// Names the GPU metric one counter reports to: `<kind>.<name>`, with `@<sink>` appended on every sink after the
+/// first so one name stays one column while the usual single-sink application reads plain names.
+fn gpu_metric_name(kind: &str, name: &str, sink_id: SinkId) -> String {
+	if sink_id == 0 {
+		format!("{kind}.{name}")
+	} else {
+		format!("{kind}.{name}@{sink_id}")
+	}
+}
+
 /// Records one node's commands after giving the render targets it uses first new contents.
 ///
 /// A node that records commands writes its targets itself, so they are only discarded. A node that records nothing,
@@ -1102,3 +1129,18 @@ use crate::{
 		render_passes::blit::ImageBypassPass,
 	},
 };
+
+#[cfg(test)]
+mod tests {
+	use super::gpu_metric_name;
+
+	#[test]
+	fn gpu_metrics_are_named_by_kind_and_sink() {
+		assert_eq!(
+			gpu_metric_name("scene", "VisibilityPipelineManager", 0),
+			"scene.VisibilityPipelineManager"
+		);
+		assert_eq!(gpu_metric_name("stage", "shadow-maps", 0), "stage.shadow-maps");
+		assert_eq!(gpu_metric_name("pass", "Bloom", 2), "pass.Bloom@2");
+	}
+}

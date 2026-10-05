@@ -91,7 +91,23 @@ pub(super) struct MaterialEvaluationPass {
 }
 
 impl MaterialEvaluationPass {
-	/// Prepares one material phase; the opaque phase clears its targets, the transparent phase composites over the lit one.
+	/// Clears the lit target and the histories opaque evaluation writes, so background pixels never hold light of
+	/// an older frame. Record it before the opaque phase; `ssgi` says whether SSGI reads the diffuse radiance history
+	/// this frame, since nothing else does.
+	pub(super) fn clear_histories(&self, c: &mut ghi::implementation::CommandBufferRecording, ssgi: bool) {
+		use ghi::command_buffer::CommandBufferRecording as _;
+
+		let transparent_black = ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0));
+		let clears = [
+			(self.lit, transparent_black),
+			(self.radiance_history.into(), transparent_black),
+			(self.diffuse_radiance_history.into(), transparent_black),
+		];
+		// Only SSGI reads the diffuse radiance history, so it is left untouched while SSGI is off.
+		c.clear_images(if ssgi { &clears } else { &clears[..2] });
+	}
+
+	/// Prepares one material phase; the transparent phase composites over the lit target the opaque phase wrote.
 	pub(super) fn prepare<'a>(
 		&self,
 		materials: &'a [MaterialEntry],
@@ -99,9 +115,6 @@ impl MaterialEvaluationPass {
 		phase: VisibilityPhase,
 		screen_space_lighting: ScreenSpaceLighting,
 	) -> impl RenderPassFunction + use<'a> {
-		let lit = self.lit;
-		let diffuse_radiance_history = self.diffuse_radiance_history.into();
-		let radiance_history = self.radiance_history.into();
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
 		let ScreenSpaceLighting { gtao, ssgi } = screen_space_lighting;
@@ -112,17 +125,6 @@ impl MaterialEvaluationPass {
 				CommonCommandBufferMode as _,
 			};
 
-			if phase == VisibilityPhase::Opaque {
-				// Clearing the histories keeps background pixels from holding light of an older frame.
-				let transparent_black = ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0));
-				let clears = [
-					(lit, transparent_black),
-					(radiance_history, transparent_black),
-					(diffuse_radiance_history, transparent_black),
-				];
-				// Only SSGI reads the diffuse radiance history, so it is left untouched while SSGI is off.
-				c.clear_images(if ssgi { &clears } else { &clears[..2] });
-			}
 			let active = materials
 				.iter()
 				.filter(|(_, index, _)| material_is_active(active_materials, *index));

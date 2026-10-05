@@ -16,7 +16,7 @@ use super::super::layout::{
 };
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::{ComputeStage, OcclusionPhase, Pipelines, record_compute_stages, record_meshlet_dispatches};
+use super::{ComputeStage, OcclusionPhase, Pipelines, StageCounters, record_compute_stages, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -217,7 +217,8 @@ impl ShadowMaps {
 	///
 	/// `descriptor_sets` are the recording sink's meshlet sets: the base set and its occlusion culling set. The shadow
 	/// passes share the camera's task shader, which declares the occlusion resources, so they bind them but never cull
-	/// by occlusion.
+	/// by occlusion. `counters` are that sink's stage counters; the maps and the pyramid record theirs only when they
+	/// record.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -225,6 +226,7 @@ impl ShadowMaps {
 		dispatches: PhaseDispatches,
 		work: ShadowWork,
 		descriptor_sets: [ghi::DescriptorSetHandle; 2],
+		counters: StageCounters,
 	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
 
@@ -287,40 +289,49 @@ impl ShadowMaps {
 				c.end_region();
 			};
 
+			// Every map draws before the pyramid, so the raster passes stay back to back in one stretch of render work.
+			if work.directional.is_some() || work.cone_count > 0 || work.point_count > 0 {
+				c.counter(counters.shadow_maps, |c| {
+					if work.directional.is_some() {
+						record_maps(
+							c,
+							"Directional Shadow Map",
+							directional,
+							directional_extent,
+							directional_pipelines,
+							// View zero is the camera, so the cascades follow it.
+							1,
+							SHADOW_CASCADE_COUNT,
+						);
+					}
+					if work.cone_count > 0 {
+						record_maps(
+							c,
+							"Cone Shadow Map",
+							cone,
+							cone_extent,
+							local_pipelines,
+							CONE_SHADOW_VIEW_OFFSET,
+							work.cone_count,
+						);
+					}
+					if work.point_count > 0 {
+						record_maps(
+							c,
+							"Point Shadow Map",
+							point,
+							point_extent,
+							local_pipelines,
+							POINT_SHADOW_VIEW_OFFSET,
+							work.point_count * POINT_SHADOW_FACE_COUNT,
+						);
+					}
+				});
+			}
 			if work.directional.is_some() {
-				record_maps(
-					c,
-					"Directional Shadow Map",
-					directional,
-					directional_extent,
-					directional_pipelines,
-					// View zero is the camera, so the cascades follow it.
-					1,
-					SHADOW_CASCADE_COUNT,
-				);
-				record_compute_stages(c, None, &[depth_pyramid]);
-			}
-			if work.cone_count > 0 {
-				record_maps(
-					c,
-					"Cone Shadow Map",
-					cone,
-					cone_extent,
-					local_pipelines,
-					CONE_SHADOW_VIEW_OFFSET,
-					work.cone_count,
-				);
-			}
-			if work.point_count > 0 {
-				record_maps(
-					c,
-					"Point Shadow Map",
-					point,
-					point_extent,
-					local_pipelines,
-					POINT_SHADOW_VIEW_OFFSET,
-					work.point_count * POINT_SHADOW_FACE_COUNT,
-				);
+				c.counter(counters.shadow_depth_pyramid, |c| {
+					record_compute_stages(c, None, &[depth_pyramid])
+				});
 			}
 		})
 	}

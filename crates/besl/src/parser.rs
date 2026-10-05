@@ -323,6 +323,25 @@ mod tests {
 	}
 
 	#[test]
+	fn call_arguments_require_comma_separators() {
+		for source in ["main: fn () -> void { f(a b); }", "main: fn () -> void { f(,); }"] {
+			assert!(
+				matches!(parse(&tokenize(source)), Err(ParsingFailReasons::BadSyntax { .. })),
+				"call arguments without comma separators should be rejected: {source}"
+			);
+		}
+	}
+
+	#[test]
+	fn deeply_nested_unclosed_calls_return_a_syntax_error() {
+		// Each unclosed call used to be retried as a variable followed by a grouped expression, which doubled the work
+		// per nesting level. This depth would never finish under that behavior.
+		let source = format!("main: fn () -> void {{ {}x; }}", "f(".repeat(64));
+
+		assert!(matches!(parse(&tokenize(&source)), Err(ParsingFailReasons::BadSyntax { .. })));
+	}
+
+	#[test]
 	fn test_parse_struct_and_function() {
 		let source = "
 Light: struct {

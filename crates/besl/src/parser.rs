@@ -333,6 +333,15 @@ mod tests {
 	}
 
 	#[test]
+	fn index_expressions_with_out_of_range_indices_parse() {
+		// The call parser reads `items[4294967296]` as a possible array type name before it sees that no `(` follows.
+		// That speculative read must not stop the variable parser from accepting the index expression.
+		let source = "main: fn () -> void { let a: u32 = items[4294967296]; }";
+
+		assert!(parse(&tokenize(source)).is_ok());
+	}
+
+	#[test]
 	fn deeply_nested_unclosed_calls_return_a_syntax_error() {
 		// Each unclosed call used to be retried as a variable followed by a grouped expression, which doubled the work
 		// per nesting level. This depth would never finish under that behavior.

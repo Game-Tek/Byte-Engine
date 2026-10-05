@@ -373,7 +373,9 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
-	let (function_name, mut iterator) = parse_type_name(iterator, function_name)?;
+	// Until `(` follows, the tokens may still be a variable or an index expression such as `items[4294967296]`, so a
+	// failed type name only declines.
+	let (function_name, mut iterator) = parse_type_name(iterator, function_name).map_err(|_| ParsingFailReasons::NotMine)?;
 	iterator.next_str("(")?;
 
 	// After `name(` the tokens can only be a call, so every failure from here on is a syntax error. Reporting it as

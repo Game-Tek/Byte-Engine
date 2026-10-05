@@ -27,10 +27,19 @@ pub(crate) const OCCLUSION_PYRAMID_HEIGHT: u32 = 256;
 /// Mip zero through the 2x1 level. `meshlet-task.besl` spells the last level as `OCCLUSION_PYRAMID_LAST_LEVEL`.
 pub(crate) const OCCLUSION_PYRAMID_MIP_COUNT: u32 = 9;
 const _: () = assert!(OCCLUSION_PYRAMID_WIDTH >> (OCCLUSION_PYRAMID_MIP_COUNT - 1) == 2);
+/// The build's first stage seeds mip zero in 16x16 blocks and reduces each block through workgroup memory to one
+/// texel of mip four, so mip zero must be whole blocks; the second stage takes mip four, 32x16, to the top in one
+/// 16x8 workgroup. `hiz-base.besl` and `hiz-tail.besl` spell these shapes.
+const BASE_LEVELS: usize = 5;
+const BASE_BLOCK: u32 = 16;
+const _: () =
+	assert!(OCCLUSION_PYRAMID_WIDTH.is_multiple_of(BASE_BLOCK) && OCCLUSION_PYRAMID_HEIGHT.is_multiple_of(BASE_BLOCK));
+const _: () =
+	assert!(OCCLUSION_PYRAMID_WIDTH >> (BASE_LEVELS - 1) == 32 && OCCLUSION_PYRAMID_HEIGHT >> (BASE_LEVELS - 1) == 16);
 
-// Both build stages read their source at 1033 and write their level at 1034.
+// Both build stages read their source at 1033 and write their levels from 1034 up.
 const SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-const DESTINATION_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const FIRST_LEVEL_BINDING: u32 = 1034;
 
 /// The `OcclusionPhase` enum selects how one meshlet pass culls by occlusion. `meshlet-task.besl` spells each phase as an
 /// `OCCLUSION_*` constant.
@@ -55,9 +64,10 @@ pub(crate) enum OcclusionPhase {
 pub(super) struct OcclusionCulling {
 	/// Gives the camera's task shader the pyramid and the record of unoccluded meshlets.
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
-	/// Seeds mip zero from the sink's depth, then reduces each later level from the one above it.
-	build_descriptor_sets: [ghi::DescriptorSetHandle; OCCLUSION_PYRAMID_MIP_COUNT as usize],
-	/// The seed and reduce pipelines.
+	/// The base stage's set, with the sink's depth and mips zero through four, and the tail stage's, with mip four
+	/// and the levels above it.
+	build_descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The base and tail pipelines.
 	pipelines: Pipelines<2>,
 }
 
@@ -71,12 +81,15 @@ impl OcclusionCulling {
 		depth: ghi::BaseImageHandle,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Occlusion Culling Descriptor Set"));
-		let build_descriptor_sets =
-			std::array::from_fn(|_| context.create_descriptor_set(Some("Occlusion Pyramid Descriptor Set")));
+		let build_descriptor_sets = [
+			context.create_descriptor_set(Some("Occlusion Pyramid Base Descriptor Set")),
+			context.create_descriptor_set(Some("Occlusion Pyramid Tail Descriptor Set")),
+		];
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
+		// The seed rounds each depth toward the far plane before storing it in 16 bits, so culling stays conservative.
 		let pyramid = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+			ghi::image::Builder::new(ghi::Formats::R16F, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("Occlusion Pyramid")
 				.extent(Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT))
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
@@ -101,7 +114,8 @@ impl OcclusionCulling {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let level = |set, slot, level| ghi::DescriptorWrite::image_mip(set, slot, pyramid, ghi::Layouts::General, level);
-		context.write(&[
+		let [base_set, tail_set] = build_descriptor_sets;
+		let mut writes = vec![
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
 				OCCLUSION_PYRAMID_BINDING.slot(),
@@ -110,44 +124,47 @@ impl OcclusionCulling {
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::buffer(descriptor_set, OCCLUSION_VISIBILITY_BINDING.slot(), visibility.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				build_descriptor_sets[0],
-				SOURCE_BINDING,
-				depth,
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			level(build_descriptor_sets[0], DESTINATION_BINDING, 0),
-		]);
-		for (index, &set) in build_descriptor_sets.iter().enumerate().skip(1) {
-			context.write(&[
-				level(set, SOURCE_BINDING, index as u32 - 1),
-				level(set, DESTINATION_BINDING, index as u32),
-			]);
+			ghi::DescriptorWrite::combined_image_sampler(base_set, SOURCE_BINDING, depth, point_sampler, ghi::Layouts::Read),
+			level(tail_set, SOURCE_BINDING, BASE_LEVELS as u32 - 1),
+		];
+		for mip in 0..OCCLUSION_PYRAMID_MIP_COUNT {
+			let (set, first) = if (mip as usize) < BASE_LEVELS {
+				(base_set, 0)
+			} else {
+				(tail_set, BASE_LEVELS as u32)
+			};
+			writes.push(level(set, ghi::ResourceSlot::new(FIRST_LEVEL_BINDING + mip - first), mip));
 		}
+		context.write(&writes);
 
 		Self {
 			descriptor_set,
 			build_descriptor_sets,
-			pipelines: Pipelines::request(pipeline_manager, ["hiz-seed", "hiz-reduce"]),
+			pipelines: Pipelines::request(pipeline_manager, ["hiz-base", "hiz-tail"]),
 		}
 	}
 
 	/// Returns the recording that builds the pyramid, or `None` while a pipeline is still compiling. Record it after the
 	/// [`OcclusionPhase::Early`] pass and before the [`OcclusionPhase::Late`] pass.
 	pub(super) fn prepare(&self, pipeline_manager: &PipelineManagerClient) -> Option<impl RenderPassFunction + use<>> {
-		let [seed, reduce] = self.pipelines.resolve(pipeline_manager)?;
-		let stages: [ComputeStage; OCCLUSION_PYRAMID_MIP_COUNT as usize] = std::array::from_fn(|level| ComputeStage {
-			label: if level == 0 {
-				"Occlusion Pyramid Seed"
-			} else {
-				"Occlusion Pyramid Reduce"
+		let [base, tail] = self.pipelines.resolve(pipeline_manager)?;
+		let [base_set, tail_set] = self.build_descriptor_sets;
+		let stages = [
+			ComputeStage {
+				label: "Occlusion Pyramid Base",
+				pipeline: base,
+				descriptor_sets: [base_set],
+				extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT),
+				workgroup: Extent::new(BASE_BLOCK, BASE_BLOCK, 1),
 			},
-			pipeline: if level == 0 { seed } else { reduce },
-			descriptor_sets: [self.build_descriptor_sets[level]],
-			extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(level as u32),
-			workgroup: Extent::new(8, 8, 1),
-		});
+			ComputeStage {
+				label: "Occlusion Pyramid Tail",
+				pipeline: tail,
+				descriptor_sets: [tail_set],
+				extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
+				workgroup: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
+			},
+		];
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
 			record_compute_stages(c, Some("Occlusion Pyramid"), &stages)
 		})

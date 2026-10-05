@@ -1,0 +1,1 @@
+{"name":"Occlusion Pyramid Base","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/hiz-base.besl"}}

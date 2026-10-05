@@ -693,40 +693,141 @@ fn late_pass_clears_the_record_of_instances_outside_the_view() {
 	assert_eq!(record, 0);
 }
 
-/// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
-/// partly covers.
-#[test]
-fn occlusion_pyramid_seed_keeps_the_farthest_depth_under_each_texel() {
-	let program = asset!("hiz-seed.besl");
-	// Five depth pixels map onto two texels, so the middle pixel straddles both.
-	let texels = [0.9, 0.8, 0.3, 0.7, 0.6].map(|depth| [depth, 0.0, 0.0, 1.0]);
-	let mut depth = texture_2d(5, 1, &texels);
-	let mut seeded = empty_image(2, 1);
+/// The occlusion pyramid base stage's 16x16 workgroup, and the tail stage's 16x8 one.
+const HIZ_BASE_WORKGROUP_WIDTH: u32 = 16;
+const HIZ_BASE_WORKGROUP_SIZE: usize = 256;
+const HIZ_TAIL_WORKGROUP_SIZE: usize = 128;
 
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut seeded);
-	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
-
-	assert_rgba_close(rgba(&seeded, [0, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
-	assert_rgba_close(rgba(&seeded, [1, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
+/// Returns the 16-bit floats the occlusion pyramid's seed may store for `depth`: the nearest one at or below it, and,
+/// when the nearest overall lies above, also the step below that, which the seed's scaling can land on.
+fn toward_far_plane(depth: f32) -> [f32; 2] {
+	let nearest = half::f16::from_f32(depth);
+	if nearest.to_f32() > depth {
+		let below = half::f16::from_bits(nearest.to_bits() - 1);
+		[below.to_f32(), half::f16::from_bits(below.to_bits() - 1).to_f32()]
+	} else {
+		[nearest.to_f32(); 2]
+	}
 }
 
-/// Verifies each reduced texel keeps the farthest of its four source texels.
+/// Reduces a level of `width` by `height` texels to the farthest of each 2x2 block, as the production build does.
+fn farthest_of_four(level: &[f32], width: u32, height: u32) -> Vec<f32> {
+	(0..width / 2 * (height / 2))
+		.map(|index| {
+			let [x, y] = [index % (width / 2) * 2, index / (width / 2) * 2];
+			let at = |x: u32, y: u32| level[(y * width + x) as usize];
+			at(x, y).min(at(x + 1, y)).min(at(x, y + 1)).min(at(x + 1, y + 1))
+		})
+		.collect()
+}
+
+/// Reads a one-channel image back as a row-major vector.
+fn channel(image: &Texture, width: u32, height: u32) -> Vec<f32> {
+	(0..width * height)
+		.map(|index| rgba(image, [index % width, index / width])[0])
+		.collect()
+}
+
+/// Runs the occlusion pyramid base stage's one 16x16 block over a depth buffer of `width` by `height` pixels holding
+/// `depth(x, y)`, and returns mips zero through four of that block.
+fn run_hiz_base(width: u32, height: u32, depth: impl Fn(u32, u32) -> f32) -> [Vec<f32>; 5] {
+	let program = asset!("hiz-base.besl");
+	let texels = (0..width * height)
+		.map(|index| [depth(index % width, index / width), 0.0, 0.0, 1.0])
+		.collect::<Vec<_>>();
+	let mut source = texture_2d(width, height, &texels);
+	let mut levels = [16, 8, 4, 2, 1].map(|size| empty_image(size, size));
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+	for (index, level) in levels.iter_mut().enumerate() {
+		descriptors.bind_image(ResourceSlot::new(1034 + index as u32), level);
+	}
+	run_workgroup_containing::<HIZ_BASE_WORKGROUP_SIZE>(&program, descriptors, HIZ_BASE_WORKGROUP_WIDTH, [0, 0]);
+	let mut sizes = [16, 8, 4, 2, 1].into_iter();
+	levels.each_ref().map(|level| {
+		let size = sizes.next().unwrap();
+		channel(level, size, size)
+	})
+}
+
+/// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
+/// partly covers, stored as the 16-bit float at or just below it, and that each level above holds the farthest of
+/// four texels of the one below.
 #[test]
-fn occlusion_pyramid_reduce_keeps_the_farthest_of_four_texels() {
-	let program = asset!("hiz-reduce.besl");
-	let texels = [0.5, 0.4, 0.9, 0.8, 0.6, 0.7, 0.2, 0.95].map(|depth| [depth, 0.0, 0.0, 1.0]);
-	let mut source = texture_2d(4, 2, &texels);
-	let mut reduced = empty_image(2, 1);
+fn occlusion_pyramid_base_seeds_the_farthest_depth_and_reduces_its_block() {
+	// Forty pixels map onto sixteen texels, so every other texel straddles a pixel with its neighbor.
+	let depth = |x: u32, y: u32| (((x * 7 + y * 13) % 29) as f32 + 1.0) / 31.0;
+	let [level_0, level_1, level_2, level_3, level_4] = run_hiz_base(40, 16, depth);
+
+	for (index, &stored) in level_0.iter().enumerate() {
+		let [x, y] = [index as u32 % 16, index as u32 / 16];
+		let farthest = (x * 40 / 16..((x + 1) * 40).div_ceil(16))
+			.map(|pixel| depth(pixel, y))
+			.fold(1.0f32, f32::min);
+		assert!(
+			toward_far_plane(farthest).contains(&stored),
+			"Texel ({x}, {y}) holds {stored} for a farthest depth of {farthest}. The most likely cause is a wrong footprint or a rounding toward the camera."
+		);
+	}
+	assert_eq!(level_1, farthest_of_four(&level_0, 16, 16));
+	assert_eq!(level_2, farthest_of_four(&level_1, 8, 8));
+	assert_eq!(level_3, farthest_of_four(&level_2, 4, 4));
+	assert_eq!(level_4, farthest_of_four(&level_3, 2, 2));
+}
+
+/// Verifies the seed stores a depth that is a 16-bit float, including zero, exactly, and never rounds one toward the
+/// camera, which would let the pyramid cull a surface in front of what was drawn.
+#[test]
+fn occlusion_pyramid_seed_never_rounds_toward_the_camera() {
+	let depths = [0.0, 0.5, 0.999_511_7, 0.1, 0.7, 0.123_456_79, 0.000_061_035_156, 0.3];
+	let [level_0, ..] = run_hiz_base(16, 16, |x, y| if y == 0 && x < 8 { depths[x as usize] } else { 1.0 });
+
+	for (&depth, &stored) in depths.iter().zip(&level_0) {
+		assert!(
+			stored <= depth,
+			"Depth {depth} was stored as {stored}, nearer than drawn. The most likely cause is that the seed rounded to the nearest 16-bit float."
+		);
+		assert_eq!(
+			half::f16::from_f32(stored).to_f32(),
+			stored,
+			"Depth {depth} was stored as {stored}, which is not a 16-bit float, so the image would round it again."
+		);
+		// At most two steps of the 16-bit significand below the nearest 16-bit float.
+		let nearest = half::f16::from_f32(depth);
+		let two_below = half::f16::from_bits(nearest.to_bits().saturating_sub(2)).to_f32();
+		assert!(
+			stored >= two_below,
+			"Depth {depth} was stored as {stored}, further than two 16-bit steps below it. The most likely cause is an over-eager rounding step."
+		);
+	}
+}
+
+/// Verifies the tail stage takes a 32x16 mip four to the 2x1 top, each level the farthest of four texels below it.
+#[test]
+fn occlusion_pyramid_tail_reduces_mip_four_to_the_top() {
+	let program = asset!("hiz-tail.besl");
+	let level_4: Vec<f32> = (0..32 * 16).map(|index| ((index * 11 % 37) as f32 + 1.0) / 40.0).collect();
+	let texels = level_4.iter().map(|&depth| [depth, 0.0, 0.0, 1.0]).collect::<Vec<_>>();
+	let mut source = texture_2d(32, 16, &texels);
+	let mut levels = [[16, 8], [8, 4], [4, 2], [2, 1]].map(|[width, height]| empty_image(width, height));
 
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_image(ResourceSlot::new(1033), &mut source);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
+	for (index, level) in levels.iter_mut().enumerate() {
+		descriptors.bind_image(ResourceSlot::new(1034 + index as u32), level);
+	}
+	run_workgroup_containing::<HIZ_TAIL_WORKGROUP_SIZE>(&program, descriptors, HIZ_BASE_WORKGROUP_WIDTH, [0, 0]);
 
-	assert_rgba_close(rgba(&reduced, [0, 0]), [0.4, 0.0, 0.0, 1.0], 0.0);
-	assert_rgba_close(rgba(&reduced, [1, 0]), [0.2, 0.0, 0.0, 1.0], 0.0);
+	let mut expected = level_4;
+	for ([width, height], level) in [[32, 16], [16, 8], [8, 4], [4, 2]].into_iter().zip(&levels) {
+		expected = farthest_of_four(&expected, width, height);
+		assert_eq!(
+			channel(level, width / 2, height / 2),
+			expected,
+			"Level {width}x{height} reduced wrongly."
+		);
+	}
 }
 
 /// The `MeshView` struct selects the view a mesh-shader test draws: the batch its push constants name and the view's
@@ -2696,8 +2797,16 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			asset_source!("pixel-mapping.besl"),
 			Settings::compute(Extent::square(16)),
 		),
-		("hiz_seed", asset_source!("hiz-seed.besl"), tile()),
-		("hiz_reduce", asset_source!("hiz-reduce.besl"), tile()),
+		(
+			"hiz_base",
+			asset_source!("hiz-base.besl"),
+			Settings::compute(Extent::square(16)),
+		),
+		(
+			"hiz_tail",
+			asset_source!("hiz-tail.besl"),
+			Settings::compute(Extent::rectangle(16, 8)),
+		),
 		("contact_shadows", asset_source!("contact-shadows.besl"), tile()),
 		("sun_visibility", asset_source!("sun-visibility.besl"), tile()),
 		("ssgi_trace", asset_source!("ssgi-trace.besl"), tile()),

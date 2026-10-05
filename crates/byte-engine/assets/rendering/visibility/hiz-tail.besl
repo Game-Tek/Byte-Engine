@@ -1,0 +1,62 @@
+// Builds the last four levels of the camera's occlusion-culling pyramid, from its 32x16 mip four down to the 2x1 top,
+// in one 16x8 workgroup: each thread reduces one 2x2 block of mip four to a texel of mip five, kept in workgroup
+// memory, and the workgroup reduces those in place through the remaining levels. The levels below hold 16-bit floats
+// rounded toward the far plane, and the minimum of such values is one of them, so every level here is exact.
+source_level: descriptor<{ type: StorageImage<r16f>, binding: 1033, access: read }>;
+level_5: descriptor<{ type: StorageImage<r16f>, binding: 1034, access: write }>;
+level_6: descriptor<{ type: StorageImage<r16f>, binding: 1035, access: write }>;
+level_7: descriptor<{ type: StorageImage<r16f>, binding: 1036, access: write }>;
+level_8: descriptor<{ type: StorageImage<r16f>, binding: 1037, access: write }>;
+
+// Mip five's 16x8 depths, then the 8x4 and 4x2 reductions after them.
+shared_depth: workgroup<f32, 168>;
+
+HIZ_TAIL_WIDTH: const u32 = 16;
+HIZ_LEVEL_6_OFFSET: const u32 = 128;
+HIZ_LEVEL_7_OFFSET: const u32 = 160;
+
+// Returns the farthest of the 2x2 block of shared depths whose first texel is `index` in a row of `stride`.
+farthest_of_four: fn (index: u32, stride: u32) -> f32 {
+	return min(
+		min(shared_depth[index], shared_depth[index + 1]),
+		min(shared_depth[index + stride], shared_depth[index + stride + 1])
+	);
+}
+
+main: fn (input: StageInput) -> void {
+	let texel: vec2u = input.thread_id;
+	let lane: u32 = input.thread_idx;
+	let source: vec2u = texel * vec2u(2, 2);
+	// Reversed depth makes the minimum the farthest surface.
+	let depth: f32 = min(
+		min(image_load(source_level, source).x, image_load(source_level, source + vec2u(1, 0)).x),
+		min(image_load(source_level, source + vec2u(0, 1)).x, image_load(source_level, source + vec2u(1, 1)).x)
+	);
+	write(level_5, texel, vec4f(depth, 0.0, 0.0, 1.0));
+	shared_depth[lane] = depth;
+	workgroup_barrier();
+
+	// Lanes 0-31 reduce mip five to 8x4.
+	if (lane < 32) {
+		let texel_6: vec2u = vec2u(lane % 8, lane / 8);
+		let depth_6: f32 = farthest_of_four(texel_6.y * 2 * HIZ_TAIL_WIDTH + texel_6.x * 2, HIZ_TAIL_WIDTH);
+		write(level_6, texel_6, vec4f(depth_6, 0.0, 0.0, 1.0));
+		shared_depth[HIZ_LEVEL_6_OFFSET + lane] = depth_6;
+	}
+	workgroup_barrier();
+
+	// Lanes 0-7 reduce it to 4x2.
+	if (lane < 8) {
+		let texel_7: vec2u = vec2u(lane % 4, lane / 4);
+		let depth_7: f32 = farthest_of_four(HIZ_LEVEL_6_OFFSET + texel_7.y * 2 * 8 + texel_7.x * 2, 8);
+		write(level_7, texel_7, vec4f(depth_7, 0.0, 0.0, 1.0));
+		shared_depth[HIZ_LEVEL_7_OFFSET + lane] = depth_7;
+	}
+	workgroup_barrier();
+
+	// Lanes 0-1 reduce it to the 2x1 top.
+	if (lane < 2) {
+		let depth_8: f32 = farthest_of_four(HIZ_LEVEL_7_OFFSET + lane * 2, 4);
+		write(level_8, vec2u(lane, 0), vec4f(depth_8, 0.0, 0.0, 1.0));
+	}
+}

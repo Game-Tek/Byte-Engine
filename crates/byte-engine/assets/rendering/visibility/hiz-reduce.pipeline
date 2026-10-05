@@ -1,1 +1,0 @@
-{"name":"HiZ Reduce","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/hiz-reduce.besl"}}

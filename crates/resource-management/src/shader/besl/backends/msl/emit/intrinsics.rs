@@ -129,6 +129,18 @@ impl Generator {
 				self.emit_node_string(string, &arguments[3]);
 				string.push_str("))");
 			}
+			"gather" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".gather(");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				self.emit_node_string(string, &arguments[1]);
+				if let Some(layer) = arguments.get(2) {
+					string.push_str(", ");
+					self.emit_node_string(string, layer);
+				}
+				string.push_str(", int2(0), component::x)");
+			}
 			// The helpers gather and reduce in shader code; see `generate_msl_header_block`.
 			"downsample_min" | "downsample_max" => {
 				let _ = write!(string, "_besl_{name}(");

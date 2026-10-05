@@ -28,6 +28,7 @@ pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 8;
 const DEPTH_PYRAMID_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 const DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const DEPTH_PYRAMID_MINIMUM_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
 const RECEIVER_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 const RECEIVER_BOUNDS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
 const RECEIVER_FIT_PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
@@ -128,6 +129,8 @@ pub(crate) struct ShadowMaps {
 	pub(crate) directional: ghi::BaseImageHandle,
 	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade.
 	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
+	/// The same cells' min depth, which proves receivers behind every texel of an area fully shadowed.
+	pub(crate) directional_depth_minimum_pyramid: ghi::BaseImageHandle,
 	pub(crate) cone: ghi::BaseImageHandle,
 	pub(crate) point: ghi::BaseImageHandle,
 }
@@ -159,17 +162,20 @@ impl ShadowMaps {
 					.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 			)
 			.into();
-		let directional_depth_pyramid: ghi::BaseImageHandle = context
-			.build_image(
-				ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
-					.name("Directional Shadow Depth Pyramid")
-					.extent(Extent::rectangle(
-						resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
-						resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
-					))
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-					.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
-			)
+		let depth_pyramid = |name| {
+			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+				.name(name)
+				.extent(Extent::rectangle(
+					resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
+					resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
+				))
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT)
+		};
+		let directional_depth_pyramid: ghi::BaseImageHandle =
+			context.build_image(depth_pyramid("Directional Shadow Depth Pyramid")).into();
+		let directional_depth_minimum_pyramid: ghi::BaseImageHandle = context
+			.build_image(depth_pyramid("Directional Shadow Minimum Depth Pyramid"))
 			.into();
 		// Images start at zero extent, so these pools have no backing maps until a visible light uses them.
 		// Metal requires two layers to create the array texture that material evaluation always binds.
@@ -190,19 +196,27 @@ impl ShadowMaps {
 
 		let depth_pyramid_descriptor_set =
 			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
-		let max_sampler = context.build_sampler(ghi::sampler::Builder::new().reduction_mode(ghi::SamplingReductionModes::Max));
+		// The pyramid gathers texel quads, which no sampler filter or reduction touches.
+		let source_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				depth_pyramid_descriptor_set,
 				DEPTH_PYRAMID_SOURCE_BINDING,
 				directional,
-				max_sampler,
+				source_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
 				DEPTH_PYRAMID_OUTPUT_BINDING,
 				directional_depth_pyramid,
+				ghi::Layouts::General,
+				0,
+			),
+			ghi::DescriptorWrite::image_mip(
+				depth_pyramid_descriptor_set,
+				DEPTH_PYRAMID_MINIMUM_OUTPUT_BINDING,
+				directional_depth_minimum_pyramid,
 				ghi::Layouts::General,
 				0,
 			),
@@ -214,6 +228,7 @@ impl ShadowMaps {
 			depth_pyramid_pipeline: Pipelines::request(pipeline_manager, ["directional-shadow-depth-pyramid"]),
 			directional,
 			directional_depth_pyramid,
+			directional_depth_minimum_pyramid,
 			cone,
 			point,
 		}

@@ -301,6 +301,22 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(']');
 			}
+			"gather" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".Gather(");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				if let Some(layer) = arguments.get(2) {
+					string.push_str("float3(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(", float(");
+					self.emit_node_string(string, layer);
+					string.push_str("))");
+				} else {
+					self.emit_node_string(string, &arguments[1]);
+				}
+				string.push(')');
+			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".SampleLevel(");

@@ -64,6 +64,23 @@ mod tests {
 	}
 
 	#[test]
+	fn gather_reads_the_texel_quad_with_gather_in_hlsl() {
+		let source = r#"
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
+			main: fn () -> void {
+				let quad: vec4f = gather(depth_texture, vec2f(0.5, 0.5));
+				let layer_quad: vec4f = gather(array_depth_texture, vec2f(0.5, 0.5), 1);
+				quad;
+				layer_quad;
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(shader, "depth_texture.Gather(depth_texture_sampler, ");
+		assert_string_contains!(shader, "array_depth_texture.Gather(array_depth_texture_sampler, float3(");
+	}
+
+	#[test]
 	fn modern_half_and_integer_atomics_lower_to_shader_model_6_9_hlsl() {
 		let source = r#"
 			unsigned_value: workgroup<atomicu32>;

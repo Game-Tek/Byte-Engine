@@ -344,6 +344,13 @@ pub(super) enum TextureInstruction {
 		slot: ResourceSlot,
 		coord: usize,
 	},
+	/// Reads the first channel of the four texels around a normalized UV in mip zero, in GPU gather order.
+	GatherTexture {
+		register: usize,
+		slot: ResourceSlot,
+		uv: usize,
+		layer: Option<usize>,
+	},
 	SampleTexture {
 		register: usize,
 		slot: ResourceSlot,

@@ -347,6 +347,23 @@ impl Node {
 				],
 				f32_t.clone(),
 			),
+			// `gather` returns the first channel of the four texels around a normalized UV in mip zero, in the order
+			// every platform shares: x and y are the quad's second row, left then right, and z and w its first row,
+			// right then left, with rows ordered by v.
+			builtin_intrinsic(
+				"gather",
+				vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"gather",
+				vec![
+					("texture", array_texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("layer", u32_t.clone()),
+				],
+				vec4f32.clone(),
+			),
 			builtin_intrinsic(
 				"fetch",
 				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],

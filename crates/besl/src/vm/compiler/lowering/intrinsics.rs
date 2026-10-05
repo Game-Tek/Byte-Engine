@@ -167,6 +167,27 @@ impl<'a> Compiler<'a> {
 				}
 				Ok(register)
 			}
+			"gather" => {
+				if arguments.len() != 2 && arguments.len() != 3 {
+					return Err(VmError::UnsupportedExpression {
+						message: "gather requires a texture, UV coordinates, and an optional array layer.".to_string(),
+					});
+				}
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
+				let layer = arguments
+					.get(2)
+					.map(|layer| self.compile_value_expression(layer, &ValueType::U32))
+					.transpose()?;
+				let register = self.allocate_register();
+				self.emit(TextureInstruction::GatherTexture {
+					register,
+					slot,
+					uv,
+					layer,
+				});
+				Ok(register)
+			}
 			"fetch_u32" => {
 				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;

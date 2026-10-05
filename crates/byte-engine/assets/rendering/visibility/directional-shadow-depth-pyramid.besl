@@ -1,9 +1,12 @@
-// Build the 8x8 conservative max-depth level for every directional cascade in one dispatch.
+// Build the 8x8 conservative max-depth and min-depth levels for every directional cascade in one dispatch.
 // One SIMD group processes two adjacent 8x8 source tiles so all 32 lanes remain useful.
 source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
 reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
+// The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
+reduced_minimum_1: descriptor<{ type: StorageImage<r32f>, binding: 1035, access: write }>;
 
 shared_depth: workgroup<f32, 32>;
+shared_minimum: workgroup<f32, 32>;
 
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
@@ -24,22 +27,26 @@ main: fn (input: StageInput) -> void {
 		source_quad_coordinate.y - shadow_layer * source_quad_cascade_height
 	);
 
-	// One gather or native maximum-reduction sample replaces four scalar source reads.
+	// One gather returns the quad's four texels, so its maximum and minimum cost one texture instruction.
 	let source_center_coordinate: vec2u = cascade_source_quad_coordinate * vec2u(2, 2) + vec2u(1, 1);
 	let source_uv: vec2f = vec2f(f32(source_center_coordinate.x), f32(source_center_coordinate.y))
 		/ vec2f(f32(source_extent.x), f32(source_extent.y));
-	shared_depth[lane] = downsample_max(source_depth, source_uv, shadow_layer, 0.0);
+	let quad: vec4f = gather(source_depth, source_uv, shadow_layer);
+	shared_depth[lane] = max(max(quad.x, quad.y), max(quad.z, quad.w));
+	shared_minimum[lane] = min(min(quad.x, quad.y), min(quad.z, quad.w));
 	workgroup_barrier();
 
 	// Lanes 0 and 1 each reduce the 4x4 source quads of one tile, the left and the right, into its cell.
 	if (lane < 2) {
 		let maximum_depth: f32 = 0.0;
+		let minimum_depth: f32 = 1.0;
 		for (let row: u32 = 0; row < DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT; row = row + 1) {
 			for (let column: u32 = 0; column < DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH; column = column + 1) {
 				let source_index: u32 = row * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH
 					+ lane * DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH
 					+ column;
 				maximum_depth = max(maximum_depth, shared_depth[source_index]);
+				minimum_depth = min(minimum_depth, shared_minimum[source_index]);
 			}
 		}
 
@@ -47,5 +54,6 @@ main: fn (input: StageInput) -> void {
 		// first cell.
 		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + vec2u(lane, 0);
 		write(reduced_depth_1, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		write(reduced_minimum_1, output_coordinate, vec4f(minimum_depth, 0.0, 0.0, 1.0));
 	}
 }

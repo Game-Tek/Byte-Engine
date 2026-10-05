@@ -88,6 +88,7 @@ const RESOLVE_VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
 const RESOLVE_PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
 const RESOLVE_SHADOW_MAP_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1039);
 const RESOLVE_SHADOW_DEPTH_PYRAMID_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1040);
+const RESOLVE_SHADOW_DEPTH_MINIMUM_PYRAMID_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1041);
 
 /// The `SunVisibilityTargets` struct holds the image the contact-shadow trace writes and the image the resolve writes,
 /// so the visibility pass can hand them to [`SunVisibilityPass::new`] and bind the result in material evaluation.
@@ -197,12 +198,15 @@ impl SunVisibilityPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		// Maximum reduction gives the fully-lit probe the nearest occluder of four pyramid cells in one sample.
-		let shadow_pyramid_sampler = context.build_sampler(
+		// Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one sample, and
+		// the fully-shadowed probe the farthest.
+		let pyramid_sampler = |reduction_mode| {
 			ghi::sampler::Builder::new()
-				.reduction_mode(ghi::SamplingReductionModes::Max)
-				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
-		);
+				.reduction_mode(reduction_mode)
+				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32)
+		};
+		let shadow_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Max));
+		let shadow_minimum_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Min));
 		let sampled = |set, slot, image: ghi::BaseImageHandle, sampler| {
 			ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, ghi::Layouts::Read)
 		};
@@ -238,6 +242,12 @@ impl SunVisibilityPass {
 				RESOLVE_SHADOW_DEPTH_PYRAMID_BINDING,
 				shadow_maps.directional_depth_pyramid,
 				shadow_pyramid_sampler,
+			),
+			sampled(
+				resolve_descriptor_set,
+				RESOLVE_SHADOW_DEPTH_MINIMUM_PYRAMID_BINDING,
+				shadow_maps.directional_depth_minimum_pyramid,
+				shadow_minimum_pyramid_sampler,
 			),
 		]);
 

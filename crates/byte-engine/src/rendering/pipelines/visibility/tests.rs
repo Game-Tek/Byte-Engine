@@ -1564,7 +1564,8 @@ fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
 	}
 }
 
-/// Verifies one SIMD group reduces two adjacent 8x8 tiles to one max-depth cell each in every cascade.
+/// Verifies one SIMD group reduces two adjacent 8x8 tiles to one max-depth and one min-depth cell each in every
+/// cascade.
 #[test]
 fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
 	let program = asset!("directional-shadow-depth-pyramid.besl");
@@ -1588,10 +1589,12 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 		}
 	}
 	let mut reduced = empty_image(2, 4);
+	let mut reduced_minimum = empty_image(2, 4);
 	for layer in 0..layer_count {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
 		descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
+		descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_minimum);
 		run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
 			&program,
 			descriptors,
@@ -1604,6 +1607,11 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 			assert_rgba_close(
 				rgba(&reduced, [cell_x, layer]),
 				[cell_maximum(layer, cell_x, 0), 0.0, 0.0, 1.0],
+				0.00001,
+			);
+			assert_rgba_close(
+				rgba(&reduced_minimum, [cell_x, layer]),
+				[cell_maximum(layer, cell_x, 0) * 0.5, 0.0, 0.0, 1.0],
 				0.00001,
 			);
 		}
@@ -2381,8 +2389,8 @@ fn sun_cascade_view() -> crate::rendering::View {
 /// Renders the floor scene with the low wall into the test sun's shadow map: each texel stores the depth of the
 /// surface the light meets first along its ray, the wall where the ray crosses it above the floor, else the floor, or
 /// zero where the ray meets nothing. Returns the map with its four cascade layers, cascade zero drawn, and the
-/// cascades' max-depth cell pyramid as the directional shadow pyramid pass builds it.
-fn sun_shadow_map() -> (Texture, Texture) {
+/// cascades' max-depth and min-depth cell pyramids as the directional shadow pyramid pass builds them.
+fn sun_shadow_map() -> (Texture, Texture, Texture) {
 	let extent = SUN_SHADOW_MAP_EXTENT;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32;
 	let view_projection = sun_cascade_view().view_projection();
@@ -2414,17 +2422,27 @@ fn sun_shadow_map() -> (Texture, Texture) {
 	let mut shadow_map = Texture::new_3d(extent, extent, cascades).expect("shadow map fixture");
 	let cells = extent / 8;
 	let mut pyramid = vec![[0.0f32, 0.0, 0.0, 1.0]; (cells * cells * cascades) as usize];
+	let mut minimum_pyramid = pyramid.clone();
 	for y in 0..extent {
 		for x in 0..extent {
 			let depth = depth_at(x, y);
 			shadow_map
 				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
 				.expect("shadow map fixture");
-			let cell = &mut pyramid[((y / 8) * cells + x / 8) as usize][0];
-			*cell = (*cell).max(depth);
+			let cell = ((y / 8) * cells + x / 8) as usize;
+			pyramid[cell][0] = pyramid[cell][0].max(depth);
+			minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
+				depth
+			} else {
+				minimum_pyramid[cell][0].min(depth)
+			};
 		}
 	}
-	(shadow_map, texture_2d(cells, cells * cascades, &pyramid))
+	(
+		shadow_map,
+		texture_2d(cells, cells * cascades, &pyramid),
+		texture_2d(cells, cells * cascades, &minimum_pyramid),
+	)
 }
 
 /// Runs the sun visibility resolve at one pixel of the floor scene with the low wall, over a half-resolution
@@ -2453,12 +2471,13 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 		.iter()
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
-	let (mut shadow_map, mut shadow_pyramid) = if shadow_map {
+	let (mut shadow_map, mut shadow_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
 		sun_shadow_map()
 	} else {
 		let cells = SUN_SHADOW_MAP_EXTENT / 8;
 		(
 			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
+			empty_image(cells, cells * cascades as u32),
 			empty_image(cells, cells * cascades as u32),
 		)
 	};
@@ -2511,6 +2530,7 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	descriptors.bind_buffer(ResourceSlot::new(1038), &mut parameters);
 	descriptors.bind_texture(ResourceSlot::new(1039), &mut shadow_map);
 	descriptors.bind_texture(ResourceSlot::new(1040), &mut shadow_pyramid);
+	descriptors.bind_texture(ResourceSlot::new(1041), &mut shadow_minimum_pyramid);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)[0]
 }

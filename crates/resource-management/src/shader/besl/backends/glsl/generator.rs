@@ -274,6 +274,22 @@ impl NodeEmitter for Generator {
 				}
 				string.push(')');
 			}
+			"gather" => {
+				string.push_str("textureGather(");
+				self.emit_node(string, &arguments[0]);
+				self.emit_separator(string);
+				if let Some(layer) = arguments.get(2) {
+					string.push_str("vec3(");
+					self.emit_node(string, &arguments[1]);
+					self.emit_separator(string);
+					string.push_str("float(");
+					self.emit_node(string, layer);
+					string.push_str("))");
+				} else {
+					self.emit_node(string, &arguments[1]);
+				}
+				string.push(')');
+			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				string.push_str("textureLod(");
 				self.emit_node(string, &arguments[0]);

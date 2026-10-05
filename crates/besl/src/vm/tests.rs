@@ -614,6 +614,75 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 }
 
 #[test]
+fn gather_returns_the_texel_quad_in_platform_order() {
+	let script = r#"
+	main: fn () -> void {
+		let quad: vec4f = gather(texture_sampler, vec2f(0.5, 0.5));
+		let layer_quad: vec4f = gather(array_sampler, vec2f(0.5, 0.5), 1);
+		buff.x = quad.x;
+		buff.y = quad.y;
+		buff.z = quad.z;
+		buff.w = quad.w;
+		buff.layer_x = layer_quad.x;
+	}
+	"#;
+	let mut root = buffer_root(
+		"buff",
+		10,
+		&[("x", "f32"), ("y", "f32"), ("z", "f32"), ("w", "f32"), ("layer_x", "f32")],
+	);
+	root.add_child(
+		Node::binding(
+			"texture_sampler",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			9,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		Node::binding(
+			"array_sampler",
+			BindingTypes::CombinedImageSampler {
+				format: "ArrayTexture2D".to_string(),
+			},
+			8,
+			true,
+			false,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+	write_texture(
+		&mut texture,
+		&[
+			([0, 0], [1.0, 0.0, 0.0, 1.0]),
+			([1, 0], [7.0, 0.0, 0.0, 1.0]),
+			([0, 1], [3.0, 0.0, 0.0, 1.0]),
+			([1, 1], [5.0, 0.0, 0.0, 1.0]),
+		],
+	);
+	let mut array = Texture::new_3d(2, 2, 2).expect("Expected array texture allocation");
+	array
+		.write_3d([0, 1, 1], [9.0, 0.0, 0.0, 1.0])
+		.expect("Expected array texel write");
+	let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(10));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(ResourceSlot::new(9), &mut texture);
+	descriptors.bind_texture(ResourceSlot::new(8), &mut array);
+	descriptors.bind_buffer(ResourceSlot::new(10), &mut buffer);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected gather execution to succeed");
+
+	// The quad around the center: x and y from the second row, left then right, z and w from the first, right then
+	// left; the array layer reads its own texels.
+	assert_eq!(read_f32s(&buffer, 5), vec![3.0, 5.0, 7.0, 1.0, 9.0]);
+}
+
+#[test]
 fn executable_program_writes_a_pixel_to_a_bound_image() {
 	let script = r#"
 	main: fn () -> void {

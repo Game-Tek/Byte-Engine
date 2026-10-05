@@ -161,6 +161,20 @@ impl Texture {
 		Ok(Value::U32(self.texels[index].u32()?))
 	}
 
+	/// Returns the first channel of the four texels around `uv` in mip zero of `layer`, in the order GPU gather
+	/// returns them: x and y are the quad's second row, left then right, and z and w its first row, right then
+	/// left, with rows ordered by v.
+	pub fn gather(&self, uv: [f32; 2], layer: u32) -> Result<Value, VmError> {
+		let (x0, x1, _) = normalized_linear_axis(uv[0], self.width);
+		let (y0, y1, _) = normalized_linear_axis(uv[1], self.height);
+		Ok(Value::Vec4F([
+			self.fetch_texel([x0, y1, layer])?[0],
+			self.fetch_texel([x1, y1, layer])?[0],
+			self.fetch_texel([x1, y0, layer])?[0],
+			self.fetch_texel([x0, y0, layer])?[0],
+		]))
+	}
+
 	/// Samples one texel using bilinear interpolation in normalized UV space.
 	pub fn sample(&self, uv: [f32; 2]) -> Result<Value, VmError> {
 		self.sample_with_sampler(uv, Sampler::default())

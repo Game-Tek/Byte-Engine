@@ -3,10 +3,11 @@
 // material shader, keeps its many fetches in a small kernel that hides their latency, and lets the GPU overlap them
 // with the other screen-space passes. Transparent surfaces lie in front of this depth, so the material shader still
 // resolves the map for them with the same helpers, which it holds in `shader_generator/sources/shadow.rs`: keep the
-// two copies in sync.
+// two copies in sync. This copy adds the fully-shadowed probe, which transparent surfaces do without.
 //
-// Each pixel first resolves the shadow map: its cascade, a probe of the cascade's max-depth pyramid that proves most
-// lit pixels lit at once, a blocker search that sizes the penumbra, and a tent filter over the map. The receiver's
+// Each pixel first resolves the shadow map: its cascade, probes of the cascade's max-depth and min-depth pyramids
+// that prove most lit and most shadowed pixels at once, a blocker search that sizes the penumbra, and a tent filter
+// over the map. The receiver's
 // plane comes from the depth buffer, as the contact shadows' does. A pixel the map shadows is done. Otherwise the
 // contact-shadow trace, which runs at half resolution and dithers each texel's ray start, is smoothed into a
 // full-resolution value by the Gaussian average of the 5x5 trace texels around the pixel that lie on its surface,
@@ -59,6 +60,7 @@ screen_view: descriptor<{ type: ScreenView, binding: 1037, access: read }>;
 sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 1038, access: read }>;
 depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1039, access: read }>;
 directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, access: read }>;
+directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read }>;
 
 // Returns the view-space position at continuous full-resolution pixel coordinates, where integers are pixel centers.
 sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
@@ -285,6 +287,48 @@ directional_shadow_area_is_fully_lit: fn (
 	return surface_depth >= block_maximum;
 }
 
+// Proves every texel the penumbra filter can read is closer to the light than the receiver's plane, so the receiver is
+// fully shadowed. It covers the same 4x4 block of eight-texel cells as the fully-lit probe, with four
+// minimum-reduction samples of the cascades' minimum-depth pyramid, and lifts the receiver's plane by the most it can
+// rise over the filter's reach of eight texels, so a sloped receiver counts only when every tap lies behind the map.
+directional_shadow_area_is_fully_shadowed: fn (
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	depth_gradient_per_texel: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> bool {
+	if (shadow_uv.x <= 0.0 || shadow_uv.x >= 1.0 || shadow_uv.y <= 0.0 || shadow_uv.y >= 1.0) {
+		return false;
+	}
+
+	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
+	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
+	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(cell_extent.y * 4));
+	let first_cell: vec2f = vec2f(
+		floor(shadow_texel_position.x / 8.0 - 1.5),
+		floor(shadow_texel_position.y / 8.0 - 1.5)
+	);
+	let maximum_corner: vec2f = vec2f(f32(cell_extent.x - 1), f32(cell_extent.y - 1));
+	let block_minimum: f32 = 1.0;
+	for (let quad_row: u32 = 0; quad_row < 2; quad_row = quad_row + 1) {
+		for (let quad_column: u32 = 0; quad_column < 2; quad_column = quad_column + 1) {
+			let corner: vec2f = vec2f(
+				clamp(first_cell.x + f32(quad_column * 2 + 1), 1.0, maximum_corner.x),
+				clamp(first_cell.y + f32(quad_row * 2 + 1), 1.0, maximum_corner.y)
+			);
+			block_minimum = min(block_minimum, downsample_min(
+				directional_shadow_depth_minimum_pyramid,
+				vec2f(corner.x, corner.y + layer_offset) / pyramid_extent,
+				0.0
+			));
+		}
+	}
+	let plane_rise: f32 = 8.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
+	return block_minimum > surface_depth + plane_rise;
+}
+
 // Returns the depth of the occluders near a directional receiver, for sizing its penumbra, or zero when nothing near it
 // rises above the receiver's plane. Zero is never a blocker's depth, because blockers lie closer to the light than a
 // receiver whose depth is at least zero. Occluders that touch the receiver can be missed, and they need the sharpest
@@ -468,8 +512,8 @@ directional_shadow_receiver_gradient: fn (
 }
 
 // Searches one directional cascade for the occluders near a receiver. Returns how far above the receiver they are, in
-// meters along the light, for sizing its penumbra: zero when none rises clearly above the receiver's plane, and -1
-// when the cascade proves the receiver fully lit.
+// meters along the light, for sizing its penumbra: zero when none rises clearly above the receiver's plane, -1 when the
+// cascade proves the receiver fully lit, and -2 when it proves it fully shadowed.
 directional_shadow_occluder_distance: fn (
 	shadow_view_projection: mat4f,
 	shadow_layer: u32,
@@ -490,6 +534,9 @@ directional_shadow_occluder_distance: fn (
 		world_space_position_derivative_x,
 		world_space_position_derivative_y
 	);
+	if (directional_shadow_area_is_fully_shadowed(shadow_uv, receiver.z, depth_gradient / shadow_map_extent_f, shadow_layer, shadow_map_extent)) {
+		return 0.0 - 2.0;
+	}
 	let depth_per_meter: f32 = directional_shadow_depth_per_meter(shadow_view_projection);
 	let blocker_depth: f32 = directional_shadow_blocker_depth(
 		shadow_uv * shadow_map_extent_f,
@@ -539,8 +586,9 @@ sample_directional_shadow_penumbra: fn (
 }
 
 // Filters a directional receiver's shadow in one cascade with a penumbra `penumbra_meters` wide on each side of an
-// occluder edge. When `check_fully_lit` is true, it first proves the receiver fully lit in this cascade when it can:
-// callers set it when a coarser cascade found no occluders, because a thin occluder can vanish at that resolution.
+// occluder edge. When `check_fully_lit` is true, it first proves the receiver fully lit or fully shadowed in this
+// cascade when it can: callers set it when a coarser cascade decided, because a thin occluder or gap can vanish at
+// that resolution.
 sample_directional_shadow_cascade: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_view_projection: mat4f,
@@ -566,6 +614,15 @@ sample_directional_shadow_cascade: fn (
 		world_space_position_derivative_x,
 		world_space_position_derivative_y
 	);
+	if (check_fully_lit && directional_shadow_area_is_fully_shadowed(
+		shadow_uv,
+		receiver.z,
+		depth_gradient / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y)),
+		shadow_layer,
+		shadow_map_extent
+	)) {
+		return 0.0;
+	}
 	let penumbra_radius: f32 = penumbra_meters
 		* directional_shadow_texels_per_meter(shadow_view_projection, f32(shadow_map_extent.x));
 	return sample_directional_shadow_penumbra(
@@ -651,8 +708,13 @@ sample_directional_shadow: fn (
 		world_space_position_derivative_y,
 		shadow_map_extent
 	);
-	if (occluder_distance < 0.0 && search_cascade == depth_cascade) {
-		return 1.0;
+	if (search_cascade == depth_cascade) {
+		if (occluder_distance <= 0.0 - 2.0) {
+			return 0.0;
+		}
+		if (occluder_distance < 0.0) {
+			return 1.0;
+		}
 	}
 
 	// The filter reaches at most eight texels, so the penumbra is filtered in the finest cascade that holds it.

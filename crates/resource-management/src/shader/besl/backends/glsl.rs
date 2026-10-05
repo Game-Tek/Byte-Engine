@@ -82,6 +82,25 @@ mod tests {
 	}
 
 	#[test]
+	fn gather_reads_the_texel_quad_with_texture_gather_in_glsl() {
+		let source = r#"
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
+			main: fn () -> void {
+				let quad: vec4f = gather(depth_texture, vec2f(0.5, 0.5));
+				let layer_quad: vec4f = gather(array_depth_texture, vec2f(0.5, 0.5), 1);
+				quad;
+				layer_quad;
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(shader, "textureGather(depth_texture,");
+		assert_string_contains!(shader, "textureGather(array_depth_texture,vec3(");
+
+		compile(&shader, "besl-gather");
+	}
+
+	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 

@@ -120,6 +120,15 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			self.emit_vertex_builtin_helper_list(string, has_previous_argument, false);
 		}
 	}
+	// HLSL textures carry no sampler, so a texture parameter is paired with one named after it, as bindings are.
+	fn emit_texture_parameter_sampler(&mut self, string: &mut String, name: &str) {
+		self.emit_separator(string);
+		let _ = write!(string, "SamplerState {}_sampler", Self::identifier(name));
+	}
+	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeReference) {
+		self.emit_separator(string);
+		self.emit_sampler(string, argument);
+	}
 	fn emit_function_call(
 		&mut self,
 		string: &mut String,

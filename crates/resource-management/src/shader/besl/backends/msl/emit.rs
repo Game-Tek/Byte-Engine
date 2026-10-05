@@ -18,7 +18,7 @@ impl Generator {
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
-		self.emit_call_arguments(string, params);
+		self.emit_function_parameters(string, params);
 		self.emit_hidden_context(string, function_node, !params.is_empty(), true);
 
 		string.push(')');

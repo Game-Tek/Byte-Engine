@@ -100,6 +100,32 @@ mod tests {
 		compile(&shader, "besl-gather");
 	}
 
+	/// Verifies a texture parameter needs no companion in GLSL, whose sampler types carry their own.
+	#[test]
+	fn texture_parameters_pass_as_combined_samplers_in_glsl() {
+		let source = r#"
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+			quad_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f, layer: u32) -> f32 {
+				let quad: vec4f = gather(depth_map, uv, layer);
+				return max(max(quad.x, quad.y), max(quad.z, quad.w));
+			}
+			first_layer_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f) -> f32 {
+				return quad_maximum(depth_map, uv, 0);
+			}
+			main: fn () -> void {
+				first_layer_maximum(array_depth_texture, vec2f(0.5, 0.5));
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(
+			shader,
+			"float quad_maximum(in sampler2DArray depth_map,vec2 uv,uint32_t layer)"
+		);
+		assert_string_contains!(shader, "first_layer_maximum(array_depth_texture,vec2(");
+
+		compile(&shader, "besl-texture-parameter");
+	}
+
 	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());

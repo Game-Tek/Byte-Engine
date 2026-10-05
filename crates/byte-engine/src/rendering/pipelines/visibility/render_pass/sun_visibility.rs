@@ -89,6 +89,8 @@ const RESOLVE_PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(103
 const RESOLVE_SHADOW_MAP_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1039);
 const RESOLVE_SHADOW_DEPTH_PYRAMID_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1040);
 const RESOLVE_SHADOW_DEPTH_MINIMUM_PYRAMID_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1041);
+// The maximum pyramid once more, with the point sampler, for the blocker search's gathers.
+const RESOLVE_SHADOW_DEPTH_CELLS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1042);
 
 /// The `SunVisibilityTargets` struct holds the image the contact-shadow trace writes and the image the resolve writes,
 /// so the visibility pass can hand them to [`SunVisibilityPass::new`] and bind the result in material evaluation.
@@ -248,6 +250,12 @@ impl SunVisibilityPass {
 				RESOLVE_SHADOW_DEPTH_MINIMUM_PYRAMID_BINDING,
 				shadow_maps.directional_depth_minimum_pyramid,
 				shadow_minimum_pyramid_sampler,
+			),
+			sampled(
+				resolve_descriptor_set,
+				RESOLVE_SHADOW_DEPTH_CELLS_BINDING,
+				shadow_maps.directional_depth_pyramid,
+				point_sampler,
 			),
 		]);
 

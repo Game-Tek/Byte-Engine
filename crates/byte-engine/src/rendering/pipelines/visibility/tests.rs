@@ -2471,10 +2471,17 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 		.iter()
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
+	let cells = SUN_SHADOW_MAP_EXTENT / 8;
+	// The blocker search gathers the maximum pyramid through a binding of its own, and the VM binds a texture once, so
+	// the pyramid is built twice.
+	let mut shadow_cells = if shadow_map {
+		sun_shadow_map().1
+	} else {
+		empty_image(cells, cells * cascades as u32)
+	};
 	let (mut shadow_map, mut shadow_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
 		sun_shadow_map()
 	} else {
-		let cells = SUN_SHADOW_MAP_EXTENT / 8;
 		(
 			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
 			empty_image(cells, cells * cascades as u32),
@@ -2531,6 +2538,7 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	descriptors.bind_texture(ResourceSlot::new(1039), &mut shadow_map);
 	descriptors.bind_texture(ResourceSlot::new(1040), &mut shadow_pyramid);
 	descriptors.bind_texture(ResourceSlot::new(1041), &mut shadow_minimum_pyramid);
+	descriptors.bind_texture(ResourceSlot::new(1042), &mut shadow_cells);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)[0]
 }

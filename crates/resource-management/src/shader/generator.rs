@@ -348,6 +348,15 @@ pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
 	}
 }
 
+/// Reports whether the BESL type `name` is a texture, which a function parameter can take. Backends whose textures
+/// carry no sampler of their own pair each such parameter with one.
+pub(crate) fn is_texture_besl_type(name: &str) -> bool {
+	matches!(
+		name,
+		"Texture2D" | "Texture3D" | "TextureCube" | "TextureCubeArray" | "ArrayTexture2D"
+	)
+}
+
 pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 	matches!(
 		name,
@@ -376,6 +385,19 @@ pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 			| "atomicu32"
 			| "atomici32"
 	)
+}
+
+/// Returns the name of `parameter` when it is a function parameter of a texture type.
+fn texture_parameter_name(parameter: &besl::NodeReference) -> Option<String> {
+	let parameter = parameter.borrow();
+	let besl::Nodes::Parameter { name, r#type } = parameter.node() else {
+		return None;
+	};
+	r#type
+		.borrow()
+		.get_name()
+		.filter(|type_name| is_texture_besl_type(type_name))
+		.map(|_| name.clone())
 }
 
 /// Reports whether the BESL type `name` holds integers, which stage interfaces must pass without interpolation.
@@ -661,6 +683,14 @@ pub(crate) trait NodeEmitter {
 	) {
 	}
 
+	/// Emits the sampler a backend pairs with the texture parameter `name`, right after that parameter. Backends
+	/// whose texture types carry their sampler emit nothing.
+	fn emit_texture_parameter_sampler(&mut self, _string: &mut String, _name: &str) {}
+
+	/// Emits the sampler paired with `argument`, a texture passed to a function, right after that argument, so it
+	/// matches what [`Self::emit_texture_parameter_sampler`] declared.
+	fn emit_texture_argument_sampler(&mut self, _string: &mut String, _argument: &besl::NodeReference) {}
+
 	/// Gives a backend the opportunity to replace call syntax for callable types such as aggregate structs.
 	fn emit_function_call(
 		&mut self,
@@ -701,7 +731,7 @@ pub(crate) trait NodeEmitter {
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
-		self.emit_call_arguments(string, params);
+		self.emit_function_parameters(string, params);
 		self.emit_function_extra_parameters(string, this_node, name, !params.is_empty());
 		ShaderFormatting::new(self.minified()).push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
@@ -860,8 +890,24 @@ pub(crate) trait NodeEmitter {
 				let function = RefCell::borrow(&function_ref);
 				let name = function.get_name().unwrap();
 				Self::emit_type_name(string, name);
+				let texture_parameters: Vec<bool> = match function.node() {
+					besl::Nodes::Function { params, .. } => params
+						.iter()
+						.map(|parameter| texture_parameter_name(parameter).is_some())
+						.collect(),
+					_ => Vec::new(),
+				};
+				drop(function);
 				string.push('(');
-				self.emit_call_arguments(string, parameters);
+				for (index, argument) in parameters.iter().enumerate() {
+					if index > 0 {
+						self.emit_separator(string);
+					}
+					self.emit_node(string, argument);
+					if texture_parameters.get(index).copied().unwrap_or(false) {
+						self.emit_texture_argument_sampler(string, argument);
+					}
+				}
 				self.emit_function_call_extra_arguments(string, &function_ref, !parameters.is_empty());
 				string.push(')');
 			}
@@ -1088,6 +1134,20 @@ pub(crate) trait NodeEmitter {
 			let _ = write!(string, "{}[{count}]", Self::type_identifier(element_type));
 		} else {
 			Self::type_identifier(source).push_to(string);
+		}
+	}
+
+	/// Emits a function's comma-separated parameter declarations, each texture parameter followed by the sampler the
+	/// backend pairs with it.
+	fn emit_function_parameters(&mut self, string: &mut String, params: &[besl::NodeReference]) {
+		for (index, parameter) in params.iter().enumerate() {
+			if index > 0 {
+				self.emit_separator(string);
+			}
+			self.emit_node(string, parameter);
+			if let Some(name) = texture_parameter_name(parameter) {
+				self.emit_texture_parameter_sampler(string, &name);
+			}
 		}
 	}
 

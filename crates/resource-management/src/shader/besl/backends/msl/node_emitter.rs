@@ -48,6 +48,15 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	) {
 		self.emit_hidden_context(string, function, has_previous_argument, false);
 	}
+	// Metal textures carry no sampler, so a texture parameter is paired with one named after it, as bindings are.
+	fn emit_texture_parameter_sampler(&mut self, string: &mut String, name: &str) {
+		self.emit_separator(string);
+		let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
+	}
+	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeReference) {
+		self.emit_separator(string);
+		self.emit_sampler(string, argument);
+	}
 	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
 		Self::emit_value_type(string, type_name);
 		string.push(' ');

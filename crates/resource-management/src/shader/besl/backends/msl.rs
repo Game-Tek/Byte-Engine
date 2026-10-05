@@ -391,6 +391,40 @@ mod tests {
 		compile_natively(&shader, "besl-gather").await;
 	}
 
+	/// Verifies a texture parameter arrives with its sampler, through a binding and through another parameter.
+	#[compio::test]
+	async fn texture_parameters_carry_their_sampler_in_msl() {
+		let source = r#"
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+			quad_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f, layer: u32) -> f32 {
+				let quad: vec4f = gather(depth_map, uv, layer);
+				return max(max(quad.x, quad.y), max(quad.z, quad.w));
+			}
+			first_layer_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f) -> f32 {
+				return quad_maximum(depth_map, uv, 0);
+			}
+			main: fn () -> void {
+				first_layer_maximum(array_depth_texture, vec2f(0.5, 0.5));
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(
+			shader,
+			"float quad_maximum(texture2d_array<float> depth_map,sampler depth_map_sampler,float2 uv,uint layer)"
+		);
+		assert_string_contains!(shader, "quad_maximum(depth_map,depth_map_sampler,uv,0)");
+		assert_string_contains!(
+			shader,
+			"depth_map.gather(depth_map_sampler, uv, layer, int2(0), component::x)"
+		);
+		assert_string_contains!(
+			shader,
+			"first_layer_maximum(resources.array_depth_texture,resources.array_depth_texture_sampler,"
+		);
+
+		compile_natively(&shader, "besl-texture-parameter-sampler").await;
+	}
+
 	#[compio::test]
 	async fn conservative_downsampling_gathers_and_reduces_in_shader_code() {
 		let source = r#"

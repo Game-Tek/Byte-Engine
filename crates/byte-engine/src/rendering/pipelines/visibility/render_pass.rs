@@ -1,12 +1,11 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! occlusion and linear depth pyramids, contact shadows, GTAO, SSGI, and material evaluation, which also traces
+//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI, and material evaluation, which also traces
 //! screen-space reflections. GTAO and SSGI each run only while their settings enable them.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
 //! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
-mod contact_shadows;
 mod depth_pyramid;
 mod gtao;
 mod light_clusters;
@@ -15,6 +14,7 @@ mod occlusion;
 mod reflections;
 mod shadows;
 mod ssgi;
+mod sun_visibility;
 mod visibility;
 
 use ghi::context::{Context as _, ContextCreate as _};
@@ -129,9 +129,6 @@ pub(super) fn record_meshlet_dispatches(
 	}
 }
 
-pub use self::contact_shadows::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
-use self::contact_shadows::ContactShadowPass;
-pub(crate) use self::contact_shadows::{ContactShadowSettings, ContactShadowTargets, create_contact_shadow_targets};
 use self::depth_pyramid::DepthPyramidPass;
 pub(crate) use self::depth_pyramid::ScreenViewData;
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
@@ -148,6 +145,9 @@ pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, Shado
 pub use self::ssgi::SSGI_CONFIGURATION_PREFIX;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
+pub use self::sun_visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
+use self::sun_visibility::SunVisibilityPass;
+pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -156,11 +156,11 @@ pub(crate) use self::{
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
 use super::layout::{
-	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, CONTACT_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING,
-	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS, POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING,
-	SSGI_HISTORY_BINDING, SSGI_NORMALS_BINDING, SSGI_VIEW_BINDING, TRIANGLE_INDEX_BINDING,
+	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
+	INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_TASK_VIEWS, POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING, SSGI_HISTORY_BINDING, SSGI_NORMALS_BINDING,
+	SSGI_VIEW_BINDING, SUN_VISIBILITY_BINDING, TRIANGLE_INDEX_BINDING,
 };
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
@@ -189,8 +189,8 @@ pub(crate) struct StageCounters {
 	material_prepasses: ghi::CounterHandle,
 	cascade_fit: ghi::CounterHandle,
 	depth_pyramid: ghi::CounterHandle,
-	/// The contact-shadow trace and filter.
-	contact_shadows: ghi::CounterHandle,
+	/// The contact-shadow trace and the sun visibility resolve.
+	sun_visibility: ghi::CounterHandle,
 	gtao: ghi::CounterHandle,
 	/// The SSGI trace, denoise, and upscale.
 	ssgi: ghi::CounterHandle,
@@ -215,7 +215,7 @@ impl StageCounters {
 			material_prepasses: builder.create_gpu_counter("material-prepasses"),
 			cascade_fit: builder.create_gpu_counter("cascade-fit"),
 			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
-			contact_shadows: builder.create_gpu_counter("contact-shadows"),
+			sun_visibility: builder.create_gpu_counter("sun-visibility"),
 			gtao: builder.create_gpu_counter("gtao"),
 			ssgi: builder.create_gpu_counter("ssgi"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
@@ -235,7 +235,7 @@ pub(crate) struct SinkTargets {
 	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays.
 	pub(crate) ssgi: SsgiTargets,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
-	pub(crate) contact_shadows: ContactShadowTargets,
+	pub(crate) sun_visibility: SunVisibilityTargets,
 	/// The light opaque material evaluation writes for next frame's reflection rays.
 	pub(crate) radiance_history: ghi::DynamicImageHandle,
 }
@@ -263,7 +263,7 @@ pub(crate) struct VisibilityRenderPass {
 	occlusion: OcclusionCulling,
 	material_prepasses: MaterialPrepasses,
 	depth_pyramid: DepthPyramidPass,
-	contact_shadows: ContactShadowPass,
+	sun_visibility: SunVisibilityPass,
 	gtao: GtaoPass,
 	ssgi: SsgiPass,
 	reflections: ScreenSpaceReflections,
@@ -380,8 +380,7 @@ impl VisibilityRenderPass {
 				SSGI_VIEW_BINDING.slot(),
 				depth_pyramid.view_data.into(),
 			),
-			// Point sampling keeps a shadow edge from bleeding one pixel onto the lit surface beside it.
-			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows.filtered, depth_sampler),
+			sampled(SUN_VISIBILITY_BINDING, targets.sun_visibility.visibility, depth_sampler),
 			sampled(SHADOW_MAP_BINDING, shadow_maps.directional, depth_sampler),
 			sampled(
 				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
@@ -427,13 +426,15 @@ impl VisibilityRenderPass {
 				depth_pyramid.view_data,
 				ao_map.into(),
 			),
-			contact_shadows: ContactShadowPass::new(
+			sun_visibility: SunVisibilityPass::new(
 				context,
 				&pipeline_manager,
+				base_descriptor_set,
 				targets.depth,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
-				targets.contact_shadows,
+				shadow_maps,
+				targets.sun_visibility,
 			),
 			depth_pyramid,
 			ssgi,
@@ -507,7 +508,7 @@ impl VisibilityRenderPass {
 		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;
 		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
-		let contact_shadow_pipelines = self.contact_shadows.pipelines.resolve(pipeline_manager)?;
+		let sun_visibility_pipelines = self.sun_visibility.pipelines.resolve(pipeline_manager)?;
 		// A disabled pass neither records nor holds the frame back while its pipelines compile.
 		let gtao_pipelines = match gtao_settings.enabled {
 			true => Some(self.gtao.pipelines.resolve(pipeline_manager)?),
@@ -519,12 +520,13 @@ impl VisibilityRenderPass {
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
-		let contact_shadows = self.contact_shadows.prepare(
+		let sun_visibility = self.sun_visibility.prepare(
 			frame,
 			sink,
 			shadow_work.directional,
+			shadow_work.sun_angular_radius_tangent,
 			contact_shadow_settings,
-			contact_shadow_pipelines,
+			sun_visibility_pipelines,
 		);
 		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, gtao_settings, pipelines));
 		// SSGI history exists only if the pass also ran last frame.
@@ -596,10 +598,11 @@ impl VisibilityRenderPass {
 					shadows(c);
 				}
 			}
-			// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
+			// GTAO and SSGI don't read shadows, so the GPU can run them alongside the shadow maps. The sun visibility
+			// resolve reads the maps and their pyramid, which both orders above record before it.
 			c.counter(counters.depth_pyramid, &depth_pyramid);
-			if let Some(contact_shadows) = &contact_shadows {
-				c.counter(counters.contact_shadows, contact_shadows);
+			if let Some(sun_visibility) = &sun_visibility {
+				c.counter(counters.sun_visibility, sun_visibility);
 			}
 			if let Some(gtao) = &gtao {
 				c.counter(counters.gtao, gtao);

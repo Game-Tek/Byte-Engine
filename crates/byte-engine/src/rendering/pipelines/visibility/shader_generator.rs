@@ -298,7 +298,7 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		),
 		read_buffer("materials", "materials", MATERIAL_ARRAY, 1046),
 		sampled("ao", Node::combined_image_sampler(), 1051),
-		sampled("contact_shadows", Node::combined_image_sampler(), 1058),
+		sampled("sun_visibility", Node::combined_image_sampler(), 1058),
 		depth_pyramid_binding(),
 		sampled("depth_shadow_map", Node::combined_array_image_sampler(), 1052),
 		sampled("directional_shadow_depth_pyramid", Node::combined_image_sampler(), 1053),

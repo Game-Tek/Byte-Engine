@@ -31,7 +31,7 @@ use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
 	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, VisibilityRenderPass,
-	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
+	create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
@@ -1204,6 +1204,13 @@ impl PipelineManager for VisibilityPipelineManager {
 			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), &ies_scales);
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
+			sun_angular_radius_tangent: shadows
+				.directional
+				.and_then(|(index, _)| self.scene.lights.iter().nth(index))
+				.map_or(0.0, |(_, light, _)| match light {
+					Lights::Direction(light) => light.angular_radius.value().tan(),
+					_ => 0.0,
+				}),
 			cascade_resolution: self.settings.directional_shadow_map_resolution,
 			receiver_fit: cascades.filter(|_| self.settings.cascade_fitting == CascadeFitting::Receivers),
 			cone_count: shadows.cone_count(),
@@ -1287,7 +1294,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			depth: depth.into(),
 		});
 		let ssgi = create_ssgi_targets(render_pass_builder);
-		let contact_shadows = create_contact_shadow_targets(render_pass_builder);
+		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 
@@ -1303,7 +1310,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
 				ssgi,
-				contact_shadows,
+				sun_visibility,
 				radiance_history,
 			},
 			&self.shadow_maps,

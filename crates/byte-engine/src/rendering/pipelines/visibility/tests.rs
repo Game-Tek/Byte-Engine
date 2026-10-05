@@ -49,7 +49,7 @@ const PYRAMID_WORKGROUP_SIZE: usize = 32;
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 /// The 8x8 workgroup most visibility compute passes use, such as the material count, the occlusion pyramid, the GTAO
-/// blur and upscale, the contact-shadow filter, the SSGI trace and temporal passes, and the receiver bounds.
+/// blur and upscale, the sun visibility resolve, the SSGI trace and temporal passes, and the receiver bounds.
 const TILE_WORKGROUP_WIDTH: u32 = 8;
 const TILE_WORKGROUP_SIZE: usize = 64;
 
@@ -1310,12 +1310,18 @@ const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
 
 /// Creates compact camera data for one square GTAO shader fixture.
 fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
+	screen_view_buffer(program, VIEWS_SLOT, width, height)
+}
+
+/// Creates the screen-view constants of a `width` by `height` image seen through the fixture projection, for the
+/// `ScreenView` binding at `slot`.
+fn screen_view_buffer(program: &ExecutableProgram, slot: ResourceSlot, width: u32, height: u32) -> besl::vm::Buffer {
 	let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR);
 	let projection_x = projection[0];
 	let projection_y = projection[5];
 	let width = width as f32;
 	let height = height as f32;
-	let mut view = buffer(program, VIEWS_SLOT);
+	let mut view = buffer(program, slot);
 	for (member, value) in [
 		(
 			"pixel_to_ray_mul",
@@ -2345,12 +2351,90 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	rgba(&output, pixel)[0]
 }
 
-/// Runs the contact-shadow filter at one pixel of the floor scene with the low wall, over a half-resolution trace whose
-/// value at each texel is `trace(column, row, depth)`, where `depth` is the texel's linear depth as mip zero of the
-/// depth pyramid holds it, and returns the filtered value.
-fn run_contact_shadow_filter(trace: impl Fn(u32, u32, f32) -> f32, pixel: [u32; 2]) -> f32 {
-	let program = asset!("contact-shadows-filter.besl");
+/// Texels per side of the sun's shadow map, and of each of its four cascades, in the sun visibility tests.
+const SUN_SHADOW_MAP_EXTENT: u32 = 512;
+/// Half the width, in meters, of the square the test cascade covers.
+const SUN_CASCADE_HALF_EXTENT: f32 = 6.0;
+
+/// Returns the world-space direction the test sun's light travels: down and toward the camera at 45 degrees, over the
+/// low wall of the floor scene, so the wall shadows the quarter meter of floor just in front of it.
+fn sun_direction() -> math::UnitVector {
+	math::Vector::new(0.0, -1.0, -1.0).normalized().expect("sun direction")
+}
+
+/// Returns the test sun's cascade: an orthographic view along the light that covers the floor scene. Every cascade
+/// uses it, so each receiver's depth cascade is cascade zero.
+fn sun_cascade_view() -> crate::rendering::View {
+	let half_extent = SUN_CASCADE_HALF_EXTENT;
+	crate::rendering::View::new_orthographic(
+		-half_extent,
+		half_extent,
+		-half_extent,
+		half_extent,
+		0.0,
+		40.0,
+		math::Point::new(0.0, 10.0, 14.0),
+		sun_direction(),
+	)
+}
+
+/// Renders the floor scene with the low wall into the test sun's shadow map: each texel stores the depth of the
+/// surface the light meets first along its ray, the wall where the ray crosses it above the floor, else the floor, or
+/// zero where the ray meets nothing. Returns the map with its four cascade layers, cascade zero drawn, and the
+/// cascades' max-depth cell pyramid as the directional shadow pyramid pass builds it.
+fn sun_shadow_map() -> (Texture, Texture) {
+	let extent = SUN_SHADOW_MAP_EXTENT;
+	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32;
+	let view_projection = sun_cascade_view().view_projection();
+	let inverse_view_projection = math::inverse(view_projection);
+	let direction = sun_direction().into_maths();
+	let depth_at = |x: u32, y: u32| {
+		// The texel center's normalized device position on the near plane, as the receiver projection lays uv out.
+		let ndc = [
+			(x as f32 + 0.5) / extent as f32 * 2.0 - 1.0,
+			1.0 - (y as f32 + 0.5) / extent as f32 * 2.0,
+		];
+		let near = inverse_view_projection * maths_rs::Vec4f::new(ndc[0], ndc[1], 1.0, 1.0);
+		let origin = maths_rs::Vec3f::new(near.x / near.w, near.y / near.w, near.z / near.w);
+		let floor_distance = (-CONTACT_SHADOW_CAMERA_HEIGHT - origin.y) / direction.y;
+		let wall_distance = (CONTACT_SHADOW_WALL_Z - origin.z) / direction.z;
+		let wall_height = origin.y + direction.y * wall_distance + CONTACT_SHADOW_CAMERA_HEIGHT;
+		let distance = if wall_distance > 0.0 && (0.0..=CONTACT_SHADOW_WALL_HEIGHT).contains(&wall_height) {
+			wall_distance.min(floor_distance)
+		} else {
+			floor_distance
+		};
+		if distance <= 0.0 {
+			return 0.0;
+		}
+		let point = origin + direction * distance;
+		let clip = view_projection * maths_rs::Vec4f::new(point.x, point.y, point.z, 1.0);
+		clip.z / clip.w
+	};
+	let mut shadow_map = Texture::new_3d(extent, extent, cascades).expect("shadow map fixture");
+	let cells = extent / 8;
+	let mut pyramid = vec![[0.0f32, 0.0, 0.0, 1.0]; (cells * cells * cascades) as usize];
+	for y in 0..extent {
+		for x in 0..extent {
+			let depth = depth_at(x, y);
+			shadow_map
+				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
+				.expect("shadow map fixture");
+			let cell = &mut pyramid[((y / 8) * cells + x / 8) as usize][0];
+			*cell = (*cell).max(depth);
+		}
+	}
+	(shadow_map, texture_2d(cells, cells * cascades, &pyramid))
+}
+
+/// Runs the sun visibility resolve at one pixel of the floor scene with the low wall, over a half-resolution
+/// contact-shadow trace whose value at each texel is `trace(column, row, depth)`, where `depth` is the texel's linear
+/// depth as mip zero of the depth pyramid holds it, and returns the pixel's sun visibility. With `shadow_map`, the
+/// scene's own shadow map shadows it; without, an empty map leaves the sun unshadowed. View space is world space.
+fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pixel: [u32; 2]) -> f32 {
+	let program = asset!("sun-visibility.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
+	let cascades = super::layout::SHADOW_CASCADE_COUNT;
 	let linear_depth = contact_shadow_linear_depth(true);
 	let (trace_depth, trace_extent, _) = reduce_nearest_nonzero_depth(&linear_depth, extent, extent);
 	let trace = trace_depth
@@ -2369,17 +2453,64 @@ fn run_contact_shadow_filter(trace: impl Fn(u32, u32, f32) -> f32, pixel: [u32; 
 		.iter()
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
-	let mut view = gtao_view_data(&program, extent, extent);
+	let (mut shadow_map, mut shadow_pyramid) = if shadow_map {
+		sun_shadow_map()
+	} else {
+		let cells = SUN_SHADOW_MAP_EXTENT / 8;
+		(
+			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
+			empty_image(cells, cells * cascades as u32),
+		)
+	};
+	let mut views = buffer(&program, VIEWS_SLOT);
+	for (member, value) in [
+		("view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX)),
+		("inverse_view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX)),
+	] {
+		views.write_array_member(0, member, value).expect("camera view");
+	}
+	let cascade = column_major(sun_cascade_view().view_projection());
+	for view_index in 1..=cascades {
+		views
+			.write_array_member(view_index, "view_projection", Value::Mat4F(cascade))
+			.expect("cascade view");
+		views
+			.write_array_member(view_index, "far", Value::F32(GTAO_FAR))
+			.expect("cascade far");
+	}
+	let mut trace_view = screen_view_buffer(&program, ResourceSlot::new(1037), trace_extent, trace_extent);
+	let screen = screen_view_buffer(&program, ResourceSlot::new(1037), extent, extent);
+	let mut parameters = buffer(&program, ResourceSlot::new(1038));
+	let [x, y, z] = [0.0, 1.0, 1.0f32].map(|component| component / 2.0f32.sqrt());
+	for (member, value) in [
+		("direction_to_light", Value::Vec4F([x, y, z, 0.0])),
+		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
+		("angular_radius_tangent", Value::F32(0.0)),
+		(
+			"pixel_to_ray_mul",
+			screen.read("pixel_to_ray_mul").expect("full-resolution rays"),
+		),
+		(
+			"pixel_to_ray_add",
+			screen.read("pixel_to_ray_add").expect("full-resolution rays"),
+		),
+	] {
+		parameters.write(member, value).expect("sun visibility parameters");
+	}
 	let mut depth = texture_2d(extent, extent, &device_depth);
 	let mut trace = texture_2d(trace_extent, trace_extent, &trace);
 	let mut trace_depth = texture_2d(trace_extent, trace_extent, &trace_depth);
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
 	descriptors.bind_texture(ResourceSlot::new(1036), &mut trace_depth);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	descriptors.bind_buffer(ResourceSlot::new(1037), &mut trace_view);
+	descriptors.bind_buffer(ResourceSlot::new(1038), &mut parameters);
+	descriptors.bind_texture(ResourceSlot::new(1039), &mut shadow_map);
+	descriptors.bind_texture(ResourceSlot::new(1040), &mut shadow_pyramid);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)[0]
 }
@@ -2432,17 +2563,18 @@ fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 	}
 }
 
-/// Verifies the contact-shadow filter turns the trace's pixel dither into a smooth value on the floor, and keeps a
-/// shadowed floor from darkening the top edge of the wall in front of it.
+/// Verifies the sun visibility resolve turns the contact trace's pixel dither into a smooth value on the floor, and
+/// keeps a shadowed floor from darkening the top edge of the wall in front of it. The sun's own map is empty, so it
+/// shadows nothing.
 #[test]
-fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
+fn sun_visibility_smooths_contact_dither_without_crossing_depth_edges() {
 	let column = CONTACT_SHADOW_EXTENT / 2;
 	// The floor seven units away lies behind the wall, several rows above it on screen.
 	let open_floor_row = (0..CONTACT_SHADOW_EXTENT)
 		.find(|&row| (6.9..7.1).contains(&contact_shadow_floor_z(row)))
 		.expect("a floor row near seven units");
 	let checkerboard = |x: u32, y: u32, _: f32| ((x + y) % 2) as f32;
-	let smoothed = [0, 1].map(|step| run_contact_shadow_filter(checkerboard, [column + step, open_floor_row]));
+	let smoothed = [0, 1].map(|step| run_sun_visibility(checkerboard, false, [column + step, open_floor_row]));
 	assert!(
 		smoothed.iter().all(|value| (0.3..0.7).contains(value)) && (smoothed[0] - smoothed[1]).abs() < 0.3,
 		"Expected the filter to smooth a checkerboard of zeros and ones, got {smoothed:?}."
@@ -2453,8 +2585,30 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 		.find(|&row| contact_shadow_scene_depth([column, row], true) == CONTACT_SHADOW_WALL_Z)
 		.expect("a wall row");
 	let shadowed_floor = |_, _, z| if z == CONTACT_SHADOW_WALL_Z { 1.0 } else { 0.0 };
-	let wall_edge = run_contact_shadow_filter(shadowed_floor, [column, wall_top_row]);
+	let wall_edge = run_sun_visibility(shadowed_floor, false, [column, wall_top_row]);
 	assert_eq!(wall_edge, 1.0, "The floor behind the wall darkened the wall's top edge.");
+}
+
+/// Verifies the sun visibility resolve filters the shadow map: the floor just in front of the low wall, which the
+/// sun's rays over the wall cannot reach, is shadowed even where the contact trace is clear, while the floor further
+/// from the wall stays lit, and a clear shadow map still leaves the contact shadow to darken the floor.
+#[test]
+fn sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let row_at = |near: f32, far: f32| {
+		(0..CONTACT_SHADOW_EXTENT)
+			.find(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
+			.expect("a floor row in the band")
+	};
+	// The wall shadows the quarter meter of floor before it, z from 3.75 to 4, and the filter reaches two texels, about
+	// five centimeters, so rows a decimeter inside either side of the shadow's edge resolve fully.
+	let shadowed_row = row_at(CONTACT_SHADOW_WALL_Z - 0.2, CONTACT_SHADOW_WALL_Z - 0.05);
+	let lit_row = row_at(CONTACT_SHADOW_WALL_Z - 0.65, CONTACT_SHADOW_WALL_Z - 0.35);
+	let clear = |_, _, _| 1.0;
+
+	assert_eq!(run_sun_visibility(clear, true, [column, shadowed_row]), 0.0);
+	assert_eq!(run_sun_visibility(clear, true, [column, lit_row]), 1.0);
+	assert_eq!(run_sun_visibility(|_, _, _| 0.0, false, [column, lit_row]), 0.0);
 }
 
 /// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.
@@ -2501,7 +2655,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		("hiz_seed", asset_source!("hiz-seed.besl"), tile()),
 		("hiz_reduce", asset_source!("hiz-reduce.besl"), tile()),
 		("contact_shadows", asset_source!("contact-shadows.besl"), tile()),
-		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl"), tile()),
+		("sun_visibility", asset_source!("sun-visibility.besl"), tile()),
 		("ssgi_trace", asset_source!("ssgi-trace.besl"), tile()),
 		("ssgi_temporal", asset_source!("ssgi-temporal.besl"), tile()),
 		(

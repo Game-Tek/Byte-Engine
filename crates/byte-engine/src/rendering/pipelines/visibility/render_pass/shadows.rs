@@ -42,6 +42,8 @@ const RECEIVER_BOUNDS_PER_CASCADE: usize = 6;
 pub(crate) struct ShadowWork {
 	/// The world-space direction the shadow-casting sun's light travels, or `None` without a sun.
 	pub(crate) directional: Option<math::UnitVector>,
+	/// The tangent of the sun's angular radius, which sizes its penumbrae. Zero without a sun.
+	pub(crate) sun_angular_radius_tangent: f32,
 	/// Texels per side of each directional cascade.
 	pub(crate) cascade_resolution: u32,
 	/// The sun's cascades as the CPU fitted them to the camera frustum, when this sink shrinks them to the surfaces its

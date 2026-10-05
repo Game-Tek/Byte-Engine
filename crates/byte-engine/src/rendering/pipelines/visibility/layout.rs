@@ -192,7 +192,8 @@ pub(crate) const SSGI_NORMALS_BINDING: ShaderResourceDescriptor = sampled_image(
 pub(crate) const SSGI_VIEW_BINDING: ShaderResourceDescriptor =
 	buffer(1048, AccessPolicies::READ, std::mem::size_of::<ScreenViewData>() as u32);
 pub(crate) const SSGI_HISTORY_BINDING: ShaderResourceDescriptor = sampled_image(1056);
-pub(crate) const CONTACT_SHADOW_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1058);
+/// The sun's resolved visibility per opaque pixel. See [`super::render_pass::SunVisibilityTargets`].
+pub(crate) const SUN_VISIBILITY_BINDING: ShaderResourceDescriptor = sampled_image(1058);
 pub(crate) const SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1052).texture_view_type(TextureViewTypes::Texture2DArray);
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1053);

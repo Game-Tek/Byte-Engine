@@ -455,25 +455,27 @@ material_evaluation_suffix: fn () -> void {
 			if (light_type == 68) {
 				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view0 != 0) {
-					let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
-					let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
-					let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
-					occlusion_factor = f16(sample_directional_shadow(
-						depth_shadow_map,
-						shadow_view0,
-						shadow_view1,
-						shadow_view2,
-						shadow_view3,
-						lighting_data.lights[light_index].angular_radius_tangent,
-						world_space_vertex_position,
-						view_space_surface_position,
-						position_derivative_x,
-						position_derivative_y
-					));
-					// Contact shadows fill gaps smaller than a shadow-map texel. They trace the opaque depth buffer, so a
-					// transparent surface in front of it has none.
 					if (push_constant.blend == 0) {
-						occlusion_factor = occlusion_factor * f16(fetch(contact_shadows, pixel_coordinates).x);
+						// The sun visibility pass resolved the shadow map and the contact shadows for every opaque pixel.
+						occlusion_factor = f16(fetch(sun_visibility, pixel_coordinates).x);
+					} else {
+						// A transparent surface lies in front of the opaque depth that pass resolved, so it filters the
+						// shadow map itself, without contact shadows, which trace that depth.
+						let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
+						let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
+						let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
+						occlusion_factor = f16(sample_directional_shadow(
+							depth_shadow_map,
+							shadow_view0,
+							shadow_view1,
+							shadow_view2,
+							shadow_view3,
+							lighting_data.lights[light_index].angular_radius_tangent,
+							world_space_vertex_position,
+							view_space_surface_position,
+							position_derivative_x,
+							position_derivative_y
+						));
 					}
 					if (occlusion_factor == 0.0) {
 						continue;

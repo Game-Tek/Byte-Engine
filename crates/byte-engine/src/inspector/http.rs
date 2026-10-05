@@ -1021,7 +1021,7 @@ mod tests {
 		let response = server.request(
 			"POST",
 			"/screenshots",
-			r#"{"captures":[{"sink":0,"target":"Contact Shadows","format":"exr"},{"sink":1,"pass":"bloom","target":"main","format":"raw"}]}"#,
+			r#"{"captures":[{"sink":0,"target":"Sun Visibility","format":"exr"},{"sink":1,"pass":"bloom","target":"main","format":"raw"}]}"#,
 		);
 		responder.join().expect("join screenshot responder");
 
@@ -1044,7 +1044,7 @@ mod tests {
 		assert_eq!(parts[3], b"--\r\n");
 
 		let (exr_headers, exr) = split_part(parts[1]);
-		assert!(exr_headers.contains(r#"name="0"; filename="0-sink0-Contact_Shadows.exr""#));
+		assert!(exr_headers.contains(r#"name="0"; filename="0-sink0-Sun_Visibility.exr""#));
 		assert!(exr_headers.contains("Content-Type: image/x-exr"));
 		assert!(exr.starts_with(b"\x76\x2f\x31\x01"));
 
@@ -1094,7 +1094,7 @@ mod tests {
 		let response = server.request(
 			"POST",
 			"/screenshots",
-			r#"{"captures":[{"sink":0},{"sink":0,"target":"Contact Shadows","previous":true}]}"#,
+			r#"{"captures":[{"sink":0},{"sink":0,"target":"Sun Visibility","previous":true}]}"#,
 		);
 		responder.join().expect("join screenshot responder");
 

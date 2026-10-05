@@ -32,7 +32,7 @@ pub(crate) const RADIANCE_HISTORY_TARGET: &str = "Radiance History";
 pub(crate) fn create_radiance_history_target(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> ghi::DynamicImageHandle {
-	// Material evaluation clears and writes this image, so it also needs clear use.
+	// Clear use lets the renderer clear it on frames the scene records nothing.
 	render_pass_builder.create_history_target(
 		ghi::image::Builder::new(
 			ghi::Formats::RGBA16F,

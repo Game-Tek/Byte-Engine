@@ -44,7 +44,8 @@ pub(crate) const MAX_TASK_VIEWS: usize = 6;
 /* Shadow views */
 
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
-pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 4096;
+/// Texels per side of each directional cascade unless the application sets `render.directional-shadows.resolution`.
+pub(crate) const DEFAULT_SHADOW_MAP_RESOLUTION: u32 = 4096;
 /// The largest local-light shadow pools. Every pooled map has a reserved slot in the `views` buffer.
 pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = 16;
 pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = 16;

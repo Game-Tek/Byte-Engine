@@ -220,6 +220,11 @@ fn visibility_pipeline_settings(application: &GraphicsApplication) -> Visibility
 	if let Some(fitting) = parse(application, DIRECTIONAL_SHADOW_FITTING_PARAMETER) {
 		settings = settings.with_cascade_fitting(fitting);
 	}
+	if let Some(resolution) = parse(application, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER) {
+		settings = settings
+			.with_directional_shadow_map_resolution(resolution)
+			.unwrap_or_else(|reason| panic!("{reason}"));
+	}
 	settings
 }
 

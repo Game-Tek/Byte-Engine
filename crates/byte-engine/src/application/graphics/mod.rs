@@ -41,6 +41,7 @@
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.15`.
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 /// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
+/// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 16. Halving it quarters the shadow raster and depth pyramid work. The default is `4096`.
 ///
 /// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -1284,9 +1285,9 @@ use crate::{
 			simple::SimplePipelineManager,
 			visibility::{
 				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER,
-				DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
-				GEOMETRY_CAPACITY_PARAMETER_PREFIX, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
-				VisibilityPipelineSettings,
+				DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
+				DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX,
+				POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 			},
 		},
 		render_passes::{

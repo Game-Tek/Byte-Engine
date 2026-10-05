@@ -12,7 +12,7 @@ use utils::Extent;
 use super::super::layout::{
 	CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET,
-	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	SHADOW_CASCADE_COUNT,
 };
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
@@ -42,6 +42,8 @@ const RECEIVER_BOUNDS_PER_CASCADE: usize = 6;
 pub(crate) struct ShadowWork {
 	/// The world-space direction the shadow-casting sun's light travels, or `None` without a sun.
 	pub(crate) directional: Option<math::UnitVector>,
+	/// Texels per side of each directional cascade.
+	pub(crate) cascade_resolution: u32,
 	/// The sun's cascades as the CPU fitted them to the camera frustum, when this sink shrinks them to the surfaces its
 	/// camera sees. `None` draws them as fitted.
 	pub(crate) receiver_fit: Option<[CascadeFrame; SHADOW_CASCADE_COUNT]>,
@@ -71,11 +73,13 @@ pub(crate) struct ReceiverFitShaderData {
 	pub(crate) fit_constants: [f32; 4],
 }
 
-/// Builds the receiver-fit constants for a camera and the cascades the CPU fitted to its frustum.
+/// Builds the receiver-fit constants for a camera and the cascades the CPU fitted to its frustum, for cascades of
+/// `shadow_map_resolution` texels per side.
 pub(crate) fn receiver_fit_shader_data(
 	screen: ScreenViewData,
 	camera_view: View,
 	cascades: &[CascadeFrame; SHADOW_CASCADE_COUNT],
+	shadow_map_resolution: u32,
 ) -> ReceiverFitShaderData {
 	let camera_to_world = math::inverse(camera_view.view());
 	let mut data = ReceiverFitShaderData {
@@ -91,7 +95,7 @@ pub(crate) fn receiver_fit_shader_data(
 			0.0,
 			0.0,
 		],
-		fit_constants: [SHADOW_MAP_RESOLUTION as f32, EDGE_TEXELS, CASTER_REACH, SIZE_STEPS_PER_OCTAVE],
+		fit_constants: [shadow_map_resolution as f32, EDGE_TEXELS, CASTER_REACH, SIZE_STEPS_PER_OCTAVE],
 		..Default::default()
 	};
 	for (cascade, frame) in cascades.iter().enumerate() {
@@ -127,7 +131,9 @@ pub(crate) struct ShadowMaps {
 }
 
 impl ShadowMaps {
-	/// Creates the shadow maps and requests their depth pipelines.
+	/// Creates the shadow maps and requests their depth pipelines. `resolution` sizes the cascade depth pyramid for
+	/// cascades of that many texels per side, a multiple of 16 so the pyramid reduces them in whole cells; every frame's
+	/// [`ShadowWork::cascade_resolution`] draws them at it.
 	///
 	/// Next, write [`Self::directional`], [`Self::directional_depth_pyramid`], [`Self::cone`], and [`Self::point`] into
 	/// each sink's material-evaluation descriptor set, as [`super::VisibilityRenderPass::new`] does, and record
@@ -135,6 +141,7 @@ impl ShadowMaps {
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
+		resolution: u32,
 		cone_shadow_pool_capacity: usize,
 		point_shadow_pool_capacity: usize,
 	) -> Self {
@@ -155,8 +162,8 @@ impl ShadowMaps {
 				ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
 					.name("Directional Shadow Depth Pyramid")
 					.extent(Extent::rectangle(
-						SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
-						SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
+						resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
+						resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
 					))
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 					.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
@@ -239,13 +246,13 @@ impl ShadowMaps {
 			pipeline: depth_pyramid_pipeline,
 			descriptor_sets: [self.depth_pyramid_descriptor_set],
 			extent: Extent::rectangle(
-				SHADOW_MAP_RESOLUTION / 2,
-				SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32,
+				work.cascade_resolution / 2,
+				work.cascade_resolution / 2 * SHADOW_CASCADE_COUNT as u32,
 			),
 			workgroup: Extent::new(8, 4, 1),
 		};
 		let (directional, cone, point) = (self.directional, self.cone, self.point);
-		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
+		let directional_extent = Extent::square(work.cascade_resolution);
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
 
@@ -425,8 +432,12 @@ impl CascadeFitPass {
 		let [receiver_bounds_pipeline, cascade_fit_pipeline] = self.pipelines.resolve(pipeline_manager)?;
 		let receiver_fit_extent = work.receiver_fit.map(|cascades| {
 			let extent = sink.extent();
-			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) =
-				receiver_fit_shader_data(screen_view_data(sink, extent), sink.view(), &cascades);
+			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) = receiver_fit_shader_data(
+				screen_view_data(sink, extent),
+				sink.view(),
+				&cascades,
+				work.cascade_resolution,
+			);
 			frame.sync_buffer(self.receiver_fit_parameters);
 			extent
 		});

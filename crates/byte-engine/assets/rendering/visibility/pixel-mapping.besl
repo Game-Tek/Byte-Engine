@@ -27,6 +27,15 @@ mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device
 material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
 pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
 instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
+// Material evaluation writes these at every pixel it maps; the opaque phase zeroes them at every other pixel here.
+lit: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1041, access: write }>;
+diffuse_radiance_history: descriptor<{ type: StorageImage<rgba16f>, binding: 1057, access: write }>;
+radiance_history: descriptor<{ type: StorageImage<rgba16f>, binding: 1062, access: write }>;
+
+// The visibility phase being mapped: zero for the opaque layer, one for the transparent layer.
+push_constant: push_constant {
+	phase: u32,
+}
 
 tile_histogram_keys: workgroup<atomicu32, 32>;
 tile_histogram_counts: workgroup<atomicu32, 32>;
@@ -163,5 +172,15 @@ main: fn (input: StageInput) -> void {
 	}
 	if (pixel_mapping_index < PIXEL_MAPPING_CAPACITY) {
 		pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
+	}
+
+	// A pixel no opaque surface covered belongs to no material, so nothing later writes its color or histories. Zeroing
+	// them here, where the opaque phase visits every pixel, keeps the background and the next frame's rays from reading
+	// light of an older frame. The transparent phase leaves the opaque phase's and the background's results in place.
+	if (material_index == INVALID_INDEX && push_constant.phase == 0 && coord.x < extent.x && coord.y < extent.y) {
+		let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		write(lit, coord, zero);
+		write(radiance_history, coord, zero);
+		write(diffuse_radiance_history, coord, zero);
 	}
 }

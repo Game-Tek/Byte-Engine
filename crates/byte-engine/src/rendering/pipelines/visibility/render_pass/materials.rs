@@ -1,6 +1,6 @@
 //! Material dispatch bookkeeping and evaluation: count pixels per material, prefix-sum offsets, map pixels, shade.
 
-use utils::{Extent, RGBA};
+use utils::Extent;
 
 use super::super::layout::{ActiveMaterialMask, MAX_MATERIALS};
 use super::super::scene::MaterialEntry;
@@ -26,8 +26,9 @@ pub(super) fn material_is_active(active_materials: &ActiveMaterialMask, material
 
 /// The `MaterialPrepasses` struct runs the three compute passes that turn the visibility buffer into per-material pixel lists.
 pub(super) struct MaterialPrepasses {
-	/// The base set and the sink's visibility set.
-	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The base set, the sink's visibility set, and its material-evaluation set, whose lit target and histories pixel
+	/// mapping zeroes where no surface was drawn.
+	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 3],
 	pub(super) count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	/// The count, offset, and pixel-mapping pipelines.
 	pub(super) pipelines: Pipelines<3>,
@@ -35,13 +36,21 @@ pub(super) struct MaterialPrepasses {
 
 impl MaterialPrepasses {
 	/// Records count, offset, and pixel-mapping for the visibility buffer currently in `extent`.
+	///
+	/// In the opaque `phase`, pixel mapping also zeroes the lit target and the histories at every pixel no surface
+	/// covered, so the background and the next frame's rays never read light of an older frame there. The transparent
+	/// phase keeps what the opaque phase and the background wrote.
 	pub(super) fn record(
 		&self,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		extent: Extent,
 		[count, offset, pixel_mapping]: [ghi::PipelineHandle; 3],
+		phase: VisibilityPhase,
 	) {
-		use ghi::command_buffer::CommandBufferRecording as _;
+		use ghi::command_buffer::{
+			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
+			CommonCommandBufferMode as _,
+		};
 
 		let stage = |label, pipeline, extent, workgroup| super::ComputeStage {
 			label,
@@ -59,9 +68,14 @@ impl MaterialPrepasses {
 			&[
 				stage("Material Count", count, extent, Extent::square(8)),
 				stage("Material Offset", offset, offset_threads, offset_threads),
-				stage("Pixel Mapping", pixel_mapping, extent, Extent::square(16)),
 			],
 		);
+		c.start_region(|label| label.write_str("Pixel Mapping"));
+		let c = c.bind_compute_pipeline(pixel_mapping);
+		c.bind_descriptor_sets(&self.descriptor_sets);
+		c.write_push_constant(0, [phase as u32]);
+		c.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
+		c.end_region();
 	}
 }
 
@@ -80,9 +94,6 @@ pub(super) struct ScreenSpaceLighting {
 /// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history while SSGI runs, and
 /// the lit color into this frame's copy of the radiance history. The next frame's SSGI and reflection rays read them.
 pub(super) struct MaterialEvaluationPass {
-	pub(super) lit: ghi::BaseImageHandle,
-	pub(super) diffuse_radiance_history: ghi::DynamicImageHandle,
-	pub(super) radiance_history: ghi::DynamicImageHandle,
 	pub(super) base_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) visibility_descriptor_set: ghi::DescriptorSetHandle,
 	/// The material-evaluation-only set, which also carries the environment.
@@ -91,22 +102,6 @@ pub(super) struct MaterialEvaluationPass {
 }
 
 impl MaterialEvaluationPass {
-	/// Clears the lit target and the histories opaque evaluation writes, so background pixels never hold light of
-	/// an older frame. Record it before the opaque phase; `ssgi` says whether SSGI reads the diffuse radiance history
-	/// this frame, since nothing else does.
-	pub(super) fn clear_histories(&self, c: &mut ghi::implementation::CommandBufferRecording, ssgi: bool) {
-		use ghi::command_buffer::CommandBufferRecording as _;
-
-		let transparent_black = ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0));
-		let clears = [
-			(self.lit, transparent_black),
-			(self.radiance_history.into(), transparent_black),
-			(self.diffuse_radiance_history.into(), transparent_black),
-		];
-		// Only SSGI reads the diffuse radiance history, so it is left untouched while SSGI is off.
-		c.clear_images(if ssgi { &clears } else { &clears[..2] });
-	}
-
 	/// Prepares one material phase; the transparent phase composites over the lit target the opaque phase wrote.
 	pub(super) fn prepare<'a>(
 		&self,

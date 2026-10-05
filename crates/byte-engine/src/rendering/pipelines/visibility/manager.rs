@@ -19,12 +19,12 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY, ENVIRONMENT_BINDING,
-	MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS,
-	MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
-	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
-	SKINNED_VERTICES_BINDING, SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+	DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING, MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES,
+	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
+	MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SKINNED_VERTICES_BINDING, SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING,
+	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
@@ -68,6 +68,9 @@ pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "render.directional-s
 /// The startup parameter that sets what directional shadow cascades cover: `receivers` or `frustum`. See
 /// [`CascadeFitting`].
 pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "render.directional-shadows.fitting";
+/// The startup parameter that sets the directional cascades' resolution in texels per side. See
+/// [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
+pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "render.directional-shadows.resolution";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
@@ -78,6 +81,7 @@ pub struct VisibilityPipelineSettings {
 	point_shadow_map_pool_capacity: usize,
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
+	directional_shadow_map_resolution: u32,
 }
 
 impl Default for VisibilityPipelineSettings {
@@ -88,6 +92,7 @@ impl Default for VisibilityPipelineSettings {
 			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
+			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
 		}
 	}
 }
@@ -124,6 +129,23 @@ impl VisibilityPipelineSettings {
 
 	pub fn cascade_fitting(&self) -> CascadeFitting {
 		self.cascade_fitting
+	}
+
+	/// Sets the directional cascades' resolution in texels per side. Halving it quarters the shadow map raster and
+	/// depth pyramid work and doubles the size of a shadow texel on the ground.
+	///
+	/// # Errors
+	///
+	/// Returns an error unless `resolution` is a positive multiple of 16, which the cascade depth pyramid reduces in
+	/// whole cells.
+	pub fn with_directional_shadow_map_resolution(mut self, resolution: u32) -> Result<Self, String> {
+		if resolution == 0 || !resolution.is_multiple_of(16) {
+			return Err(format!(
+				"Directional shadow resolution was not set. The most likely cause is that {resolution} is not a positive multiple of 16 texels."
+			));
+		}
+		self.directional_shadow_map_resolution = resolution;
+		Ok(self)
 	}
 
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
@@ -524,6 +546,7 @@ impl VisibilityPipelineManager {
 		let shadow_maps = ShadowMaps::new(
 			context,
 			&pipeline_manager,
+			settings.directional_shadow_map_resolution,
 			settings.cone_shadow_map_pool_capacity,
 			settings.point_shadow_map_pool_capacity,
 		);
@@ -1048,7 +1071,7 @@ impl VisibilityPipelineManager {
 				main_view,
 				light_direction,
 				SHADOW_CASCADE_COUNT,
-				SHADOW_MAP_RESOLUTION,
+				self.settings.directional_shadow_map_resolution,
 				self.settings.cascade_splits,
 			)
 			.collect::<SmallVec<[_; SHADOW_CASCADE_COUNT]>>()
@@ -1181,6 +1204,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), &ies_scales);
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
+			cascade_resolution: self.settings.directional_shadow_map_resolution,
 			receiver_fit: cascades.filter(|_| self.settings.cascade_fitting == CascadeFitting::Receivers),
 			cone_count: shadows.cone_count(),
 			point_count: shadows.point_count(),

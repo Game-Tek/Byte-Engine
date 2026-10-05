@@ -22,6 +22,9 @@ const MATERIAL_OFFSET_SCRATCH_SLOT: ResourceSlot = ResourceSlot::new(1035);
 const MATERIAL_DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(1036);
 const PIXEL_MAPPING_SLOT: ResourceSlot = ResourceSlot::new(1037);
 const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
+const LIT_SLOT: ResourceSlot = ResourceSlot::new(1041);
+const DIFFUSE_RADIANCE_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1057);
+const RADIANCE_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1062);
 const MESH_DISPATCH_WORK_SLOT: ResourceSlot = ResourceSlot::new(1063);
 const OCCLUSION_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1069);
 const OCCLUSION_VISIBILITY_SLOT: ResourceSlot = ResourceSlot::new(1070);
@@ -124,6 +127,13 @@ fn read_vec3u(buffer: &besl::vm::Buffer, index: usize) -> [u32; 3] {
 	match buffer.read_array_element(index).expect("VM vec3u array element") {
 		Value::Vec3U(value) => value,
 		value => panic!("Unexpected visibility dispatch value: {value:?}."),
+	}
+}
+
+fn read_vec4f(texture: &Texture, coord: [u32; 2]) -> [f32; 4] {
+	match texture.fetch(coord).expect("VM texel") {
+		Value::Vec4F(value) => value,
+		value => panic!("Unexpected texel value: {value:?}."),
 	}
 }
 
@@ -933,21 +943,42 @@ fn run_material_count(
 	material_counts
 }
 
-/// Runs one 16x16 pixel-mapping workgroup over the instance-index image.
+/// The light an older frame left in the lit target and the histories before pixel mapping runs.
+const STALE_LIGHT: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
+
+/// Runs one 16x16 pixel-mapping workgroup over the square instance-index image of `width` texels in visibility
+/// `phase`, zero for opaque and one for transparent. Returns the mapping and the lit target and both histories, which
+/// started full of [`STALE_LIGHT`] at the instance image's size.
 fn run_pixel_mapping(
 	program: &ExecutableProgram,
 	mesh_data: &mut besl::vm::Buffer,
 	material_offset_scratch: &mut besl::vm::Buffer,
 	instance_indices: &mut Texture,
-) -> besl::vm::Buffer {
+	width: u32,
+	phase: u32,
+) -> (besl::vm::Buffer, [Texture; 3]) {
 	let mut pixel_mapping = buffer(program, PIXEL_MAPPING_SLOT);
+	let mut push_constant = push_constant_buffer(program);
+	push_constant.write("phase", Value::U32(phase)).expect("pixel mapping phase");
+	let mut images = std::array::from_fn(|_| {
+		let mut texture = Texture::new(width, width).expect("light fixture");
+		for lane in 0..(width * width) {
+			texture.write([lane % width, lane / width], STALE_LIGHT).expect("light texel");
+		}
+		texture
+	});
+	let [lit, diffuse_radiance_history, radiance_history] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(MESH_DATA_SLOT, mesh_data);
 	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, material_offset_scratch);
 	descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
+	descriptors.bind_image(LIT_SLOT, lit);
+	descriptors.bind_image(DIFFUSE_RADIANCE_HISTORY_SLOT, diffuse_radiance_history);
+	descriptors.bind_image(RADIANCE_HISTORY_SLOT, radiance_history);
+	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
-	pixel_mapping
+	(pixel_mapping, images)
 }
 
 /// Creates the mesh table of a material prepass test, where mesh `i` uses the `i`th of `materials`.
@@ -1052,11 +1083,13 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	assert_eq!(read_vec3u(&material_dispatches, 5), [1, 1, 1]);
 
 	// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.
-	let pixel_mapping = run_pixel_mapping(
+	let (pixel_mapping, _) = run_pixel_mapping(
 		&pixel_mapping_program,
 		&mut mesh_data,
 		&mut material_offset_scratch,
 		&mut instance_indices,
+		2,
+		0,
 	);
 	assert_eq!(read_vec2u16(&pixel_mapping, 0), [1, 1]);
 	assert_eq!(read_vec2u16(&pixel_mapping, 1), [2, 2]);
@@ -1073,7 +1106,14 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |_| 0);
 
-	let pixel_mapping = run_pixel_mapping(&program, &mut mesh_data, &mut material_offset_scratch, &mut instance_indices);
+	let (pixel_mapping, _) = run_pixel_mapping(
+		&program,
+		&mut mesh_data,
+		&mut material_offset_scratch,
+		&mut instance_indices,
+		PIXEL_MAPPING_WORKGROUP_WIDTH,
+		0,
+	);
 
 	let width = PIXEL_MAPPING_WORKGROUP_WIDTH as usize;
 	let mut seen = vec![false; width * width];
@@ -1098,6 +1138,41 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	);
 }
 
+/// Verifies the opaque phase zeroes the lit target and both histories only where no surface was drawn, and the
+/// transparent phase leaves every pixel as it found it.
+#[test]
+fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
+	let program = asset!("pixel-mapping.besl");
+	let mut mesh_data = mesh_materials(&program, [3]);
+	// Texel 0 is covered by instance 0; the other three hold the renderer's empty-pixel sentinel.
+	let instances = [0, u32::MAX, u32::MAX, u32::MAX];
+
+	for (phase, uncovered_light) in [(0, [0.0; 4]), (1, STALE_LIGHT)] {
+		let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+		let mut instance_indices = instance_texture(2, |texel| instances[texel]);
+
+		let (_, images) = run_pixel_mapping(
+			&program,
+			&mut mesh_data,
+			&mut material_offset_scratch,
+			&mut instance_indices,
+			2,
+			phase,
+		);
+
+		for image in &images {
+			assert_eq!(
+				read_vec4f(image, [0, 0]),
+				STALE_LIGHT,
+				"Phase {phase} touched the covered pixel, which material evaluation writes."
+			);
+			for coord in [[1, 0], [0, 1], [1, 1]] {
+				assert_eq!(read_vec4f(image, coord), uncovered_light, "Phase {phase} at {coord:?}.");
+			}
+		}
+	}
+}
+
 /// Verifies tile-local reservations preserve mappings when distinct materials exceed the bounded histogram.
 #[test]
 fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
@@ -1114,7 +1189,14 @@ fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 		|lane| if lane < 33 { lane as u32 } else { u32::MAX },
 	);
 
-	let pixel_mapping = run_pixel_mapping(&program, &mut mesh_data, &mut material_offset_scratch, &mut instance_indices);
+	let (pixel_mapping, _) = run_pixel_mapping(
+		&program,
+		&mut mesh_data,
+		&mut material_offset_scratch,
+		&mut instance_indices,
+		PIXEL_MAPPING_WORKGROUP_WIDTH,
+		0,
+	);
 
 	for material_index in 0..33 {
 		let expected_coordinate = [
@@ -1154,7 +1236,14 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 	let width = PIXEL_MAPPING_WORKGROUP_WIDTH as usize;
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |texel| material_of(texel) as u32);
 
-	let pixel_mapping = run_pixel_mapping(&program, &mut mesh_data, &mut material_offset_scratch, &mut instance_indices);
+	let (pixel_mapping, _) = run_pixel_mapping(
+		&program,
+		&mut mesh_data,
+		&mut material_offset_scratch,
+		&mut instance_indices,
+		PIXEL_MAPPING_WORKGROUP_WIDTH,
+		0,
+	);
 
 	for material_index in 0..MATERIALS {
 		let mut expected = (0..width * width)
@@ -2712,7 +2801,7 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 		camera,
 		sun,
 		super::layout::SHADOW_CASCADE_COUNT,
-		super::layout::SHADOW_MAP_RESOLUTION,
+		super::layout::DEFAULT_SHADOW_MAP_RESOLUTION,
 		csm::CascadeSplits::default(),
 	)
 	.collect::<smallvec::SmallVec<[_; 4]>>()
@@ -2720,7 +2809,8 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 	.expect("four cascades");
 	let extent = utils::Extent::square(RECEIVER_FIT_EXTENT);
 	let screen = super::render_pass::screen_view_data(&Sink::new(camera, extent, 0), extent);
-	let shader_data = super::render_pass::receiver_fit_shader_data(screen, camera, &cascades);
+	let shader_data =
+		super::render_pass::receiver_fit_shader_data(screen, camera, &cascades, super::layout::DEFAULT_SHADOW_MAP_RESOLUTION);
 
 	let camera_to_world = math::inverse(camera.view());
 	let position = camera_to_world * maths_rs::Vec4f::new(0.0, 0.0, 0.0, 1.0);
@@ -2862,7 +2952,7 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	let program = asset!("directional-shadow-cascade-fit.besl");
 	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
 	let views = run_cascade_fit(&program, &scene, &mut bounds, &mut size_steps);
-	let resolution = super::layout::SHADOW_MAP_RESOLUTION as f32;
+	let resolution = super::layout::DEFAULT_SHADOW_MAP_RESOLUTION as f32;
 
 	for (cascade, frame) in scene.cascades.iter().enumerate() {
 		let view_projection = read_matrix(&views, 1 + cascade, "view_projection");

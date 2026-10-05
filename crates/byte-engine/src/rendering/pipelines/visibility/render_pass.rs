@@ -193,8 +193,6 @@ pub(crate) struct StageCounters {
 	gtao: ghi::CounterHandle,
 	/// The SSGI trace, denoise, and upscale.
 	ssgi: ghi::CounterHandle,
-	/// The clear of the lit target and the histories before opaque evaluation.
-	history_clear: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
 	background: ghi::CounterHandle,
@@ -219,7 +217,6 @@ impl StageCounters {
 			contact_shadows: builder.create_gpu_counter("contact-shadows"),
 			gtao: builder.create_gpu_counter("gtao"),
 			ssgi: builder.create_gpu_counter("ssgi"),
-			history_clear: builder.create_gpu_counter("history-clear"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
 			transparent: builder.create_gpu_counter("transparent"),
@@ -407,7 +404,11 @@ impl VisibilityRenderPass {
 			},
 			occlusion,
 			material_prepasses: MaterialPrepasses {
-				descriptor_sets: [base_descriptor_set, visibility_descriptor_set],
+				descriptor_sets: [
+					base_descriptor_set,
+					visibility_descriptor_set,
+					material_evaluation_descriptor_set,
+				],
 				count_buffer: material_count,
 				pipelines: Pipelines::request(&pipeline_manager, ["material-count", "material-offset", "pixel-mapping"]),
 			},
@@ -424,9 +425,6 @@ impl VisibilityRenderPass {
 			ssgi,
 			reflections,
 			material_evaluation: MaterialEvaluationPass {
-				lit: targets.lit,
-				diffuse_radiance_history: targets.ssgi.diffuse_radiance_history,
-				radiance_history: targets.radiance_history,
 				base_descriptor_set,
 				visibility_descriptor_set,
 				descriptor_set: material_evaluation_descriptor_set,
@@ -575,7 +573,8 @@ impl VisibilityRenderPass {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
 			});
 			c.counter(counters.material_prepasses, |c| {
-				self.material_prepasses.record(c, extent, prepass_pipelines)
+				self.material_prepasses
+					.record(c, extent, prepass_pipelines, VisibilityPhase::Opaque)
 			});
 			if fits_receivers {
 				c.counter(counters.cascade_fit, &cascade_fit);
@@ -594,9 +593,6 @@ impl VisibilityRenderPass {
 			if let Some(ssgi) = &ssgi {
 				c.counter(counters.ssgi, ssgi);
 			}
-			c.counter(counters.history_clear, |c| {
-				self.material_evaluation.clear_histories(c, screen_space_lighting.ssgi)
-			});
 			c.counter(counters.material_evaluation, &opaque_materials);
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {
@@ -608,7 +604,8 @@ impl VisibilityRenderPass {
 			if !dispatches.transparent.is_empty() {
 				c.counter(counters.transparent, |c| {
 					draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
-					self.material_prepasses.record(c, extent, prepass_pipelines);
+					self.material_prepasses
+						.record(c, extent, prepass_pipelines, VisibilityPhase::Transparent);
 					transparent_materials(c);
 				});
 			}

@@ -19,9 +19,8 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::gtao::configuration_bool;
-use super::{ComputeStage, Pipelines, SinkHistory, record_compute_stages};
+use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::configuration::ConfigurationValue;
-use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// Configuration namespace of the runtime SSGI controls.
@@ -259,7 +258,7 @@ impl SsgiPass {
 		history: Option<SinkHistory>,
 		exposure: f32,
 		[trace, temporal]: [ghi::PipelineHandle; 2],
-	) -> impl RenderPassFunction + use<> {
+	) -> SsgiStages {
 		let half_extent = sink.extent().scaled_down(SSGI_RESOLUTION_DIVISOR);
 		// Reprojection and normal comparison share the same camera transform and inverse.
 		let (previous_clip, previous_view) = history
@@ -286,12 +285,21 @@ impl SsgiPass {
 			extent: half_extent,
 			workgroup: Extent::new(8, 8, 1),
 		};
-		let stages = [
-			stage("SSGI Trace", trace, self.trace_descriptor_set),
-			stage("SSGI Denoise and Accumulate", temporal, self.temporal_descriptor_set),
-		];
-		move |c| record_compute_stages(c, Some("SSGI"), &stages)
+		SsgiStages {
+			trace: stage("SSGI Trace", trace, self.trace_descriptor_set),
+			temporal: stage("SSGI Denoise and Accumulate", temporal, self.temporal_descriptor_set),
+		}
 	}
+}
+
+/// The `SsgiStages` struct holds one frame's two SSGI dispatches, so the visibility pass can record the trace alongside
+/// the other screen-space passes' first stages and the temporal pass, which reads it, alongside their second stages.
+#[derive(Clone, Copy)]
+pub(super) struct SsgiStages {
+	/// The half-resolution trace; it reads the depth pyramid and last frame's radiance.
+	pub(super) trace: ComputeStage<1>,
+	/// The denoise and accumulation; it reads the trace and the history.
+	pub(super) temporal: ComputeStage<1>,
 }
 
 #[cfg(test)]

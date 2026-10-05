@@ -126,6 +126,21 @@ mod tests {
 		compile(&shader, "besl-texture-parameter");
 	}
 
+	/// Verifies a 16-bit unorm storage image takes the `r16` layout qualifier.
+	#[test]
+	fn unorm_storage_image_takes_the_r16_layout_in_glsl() {
+		let source = r#"
+			cells: descriptor<{ type: StorageImage<r16>, binding: 0, access: write }>;
+			main: fn () -> void {
+				write(cells, vec2u(0, 0), vec4f(0.5, 0.0, 0.0, 1.0));
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(shader, "layout(set=0,binding=0,r16) writeonly uniform image2D cells");
+
+		compile(&shader, "besl-unorm-storage-image");
+	}
+
 	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());

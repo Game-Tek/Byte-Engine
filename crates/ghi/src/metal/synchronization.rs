@@ -291,6 +291,26 @@ struct MetalResourceState {
 	/// The unordered group the access was made in, or `0` outside a group. Later uses in the same group plan no
 	/// hazard against it.
 	group: u64,
+	/// How many encoder barriers had been planned in the state's encoder when it was recorded, so a later hazard
+	/// against it is already ordered by any barrier logged at this index or after.
+	barriers: u32,
+}
+
+/// The `PlannedEncoderBarrier` struct records one encoder barrier a command encoded, so later hazards in the same
+/// encoder that it already orders plan no barrier of their own.
+#[derive(Clone, Copy)]
+struct PlannedEncoderBarrier {
+	after: mtl::MTLStages,
+	before: mtl::MTLStages,
+	/// Whether the barrier made prior writes visible to later reads, which a write-after-read barrier does not.
+	device_visibility: bool,
+}
+
+impl PlannedEncoderBarrier {
+	/// Returns whether this barrier, encoded after `state` was recorded, orders a use of `stages` against it.
+	fn covers(self, state: MetalResourceState, stages: mtl::MTLStages, needs_visibility: bool) -> bool {
+		self.after.contains(state.stages) && self.before.contains(stages) && (self.device_visibility || !needs_visibility)
+	}
 }
 
 /// The `MetalBarrier` struct contains the precise inter-encoder and intra-encoder dependencies for one command.
@@ -435,6 +455,12 @@ pub(crate) struct MetalResourceTracker {
 	group: u64,
 	/// The group number given out last. Numbers are never reused, so a state only ever matches its own group.
 	last_group: u64,
+	/// The encoder barriers planned so far in the encoder `barrier_encoder`, the one the last command recorded in, in
+	/// encoding order. A Metal encoder barrier orders every earlier command of its encoder before every later one,
+	/// so a hazard between a state and a use that a logged barrier already orders plans nothing new. Encoders are
+	/// sequential and never resumed, so only the current one's barriers matter.
+	encoder_barriers: SmallVec<[PlannedEncoderBarrier; 8]>,
+	barrier_encoder: u32,
 	/// The hazards behind the barrier of the most recently planned command.
 	#[cfg(debug_assertions)]
 	hazards: SmallVec<[MetalHazard; 4]>,
@@ -454,6 +480,9 @@ impl MetalResourceTracker {
 			"Metal resource tracker transaction failed. The most likely cause is that queue history was reused before its previous recording finished.",
 		);
 		self.undo_states.clear();
+		// Encoder ids restart with each recording, so the first encoder must not inherit the last one's barriers.
+		self.encoder_barriers.clear();
+		self.barrier_encoder = u32::MAX;
 		self.recording = true;
 	}
 
@@ -536,8 +565,24 @@ impl MetalResourceTracker {
 		let mut barrier = MetalBarrier::default();
 		#[cfg(debug_assertions)]
 		self.hazards.clear();
+		// A new encoder starts with no barriers; encoder ids also restart with each recording.
+		if let MetalEncoderScope::Encoder(encoder) = scope
+			&& encoder != self.barrier_encoder
+		{
+			self.encoder_barriers.clear();
+			self.barrier_encoder = encoder;
+		}
 		self.plan(scope, primary_uses, &mut barrier);
 		self.plan(scope, additional_uses, &mut barrier);
+		// The caller encodes the barrier before the command, so it orders this command's states against nothing, and
+		// every later command in the encoder against everything before it.
+		if barrier.has_encoder_dependency() {
+			self.encoder_barriers.push(PlannedEncoderBarrier {
+				after: barrier.encoder_after,
+				before: barrier.encoder_before,
+				device_visibility: barrier.encoder_visibility == mtl::MTL4VisibilityOptions::Device,
+			});
+		}
 
 		if aliases_primary {
 			// The uncommon alias path may copy descriptors so overlapping uses become one atomic command state.
@@ -690,6 +735,18 @@ impl MetalResourceTracker {
 				if in_group || !Self::has_hazard(state.access, resource_use.access) {
 					continue;
 				}
+				// A barrier encoded in this encoder after the state was recorded already orders the use against it,
+				// when it spans both stages and, for a read of a write, made the write visible.
+				if state.scope == scope && scope != MetalEncoderScope::Queue {
+					let needs_visibility = state.access.intersects(crate::AccessPolicies::WRITE)
+						&& resource_use.access.intersects(crate::AccessPolicies::READ);
+					if self.encoder_barriers[state.barriers as usize..]
+						.iter()
+						.any(|barrier| barrier.covers(*state, resource_use.stages, needs_visibility))
+					{
+						continue;
+					}
+				}
 				#[cfg(debug_assertions)]
 				{
 					let hazard = MetalHazard {
@@ -734,6 +791,11 @@ impl MetalResourceTracker {
 
 	fn apply_use(&mut self, scope: MetalEncoderScope, resource_use: MetalResourceUse) {
 		self.remember(resource_use.key);
+		// Only the current encoder's barriers are logged; a state in any other scope sees none.
+		let barriers = match scope {
+			MetalEncoderScope::Encoder(encoder) if encoder == self.barrier_encoder => self.encoder_barriers.len() as u32,
+			_ => 0,
+		};
 		let states = self.states.entry(resource_use.key).or_default();
 		let has_hazard = states
 			.iter()
@@ -754,6 +816,8 @@ impl MetalResourceTracker {
 				state.recording = self.next_recording;
 				// This use was already planned against the state, so the group's later uses may skip it.
 				state.group = self.group;
+				// It now stands for the newest command too, which only barriers encoded after that one order.
+				state.barriers = barriers;
 				return;
 			}
 			states.retain(|state| !resource_use.region.covers(state.region));
@@ -765,6 +829,7 @@ impl MetalResourceTracker {
 			// Without a hazard this use is a read, and widening a read's stages cannot give another read a hazard.
 			state.stages |= resource_use.stages;
 			state.recording = self.next_recording;
+			state.barriers = barriers;
 			return;
 		} else if resource_use.access.intersects(crate::AccessPolicies::WRITE) {
 			self.generation += 1;
@@ -777,6 +842,7 @@ impl MetalResourceTracker {
 			scope,
 			recording: self.next_recording,
 			group: self.group,
+			barriers,
 		});
 	}
 
@@ -898,6 +964,94 @@ mod tests {
 		assert!(!barrier.has_queue_dependency());
 		assert_eq!(barrier.encoder_after, mtl::MTLStages::Dispatch);
 		assert_eq!(barrier.encoder_before, mtl::MTLStages::Blit);
+	}
+
+	fn second_buffer(access: crate::AccessPolicies, stages: mtl::MTLStages) -> MetalResourceUse {
+		MetalResourceUse::buffer(BufferHandle(2), 0, 64, stages, access)
+	}
+
+	#[test]
+	fn encoded_barrier_covers_a_later_read_of_an_earlier_write() {
+		//! Tests that a read of one write, ordered by the barrier another read of a write planned after both writes,
+		//! plans no barrier of its own, while a write recorded after that barrier still gets one.
+
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		tracker.consume(
+			scope,
+			[
+				buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+			],
+		);
+		let first_read = tracker.consume(scope, [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		let covered_read = tracker.consume(scope, [second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		let later_write = tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)]);
+
+		assert_eq!(first_read.encoder_after, mtl::MTLStages::Dispatch);
+		assert_eq!(first_read.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
+		assert!(!covered_read.has_encoder_dependency() && !covered_read.has_queue_dependency());
+		// The first read came after the barrier, so the write after it needs a new one.
+		assert_eq!(later_write.encoder_after, mtl::MTLStages::Dispatch);
+		assert_eq!(later_write.encoder_before, mtl::MTLStages::Dispatch);
+	}
+
+	#[test]
+	fn covering_barrier_must_span_the_hazard_stages() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		tracker.consume(
+			scope,
+			[
+				buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit),
+			],
+		);
+		let dispatch_read = tracker.consume(scope, [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		let blit_read = tracker.consume(scope, [second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+
+		assert_eq!(dispatch_read.encoder_after, mtl::MTLStages::Dispatch);
+		// The planned barrier waits on dispatch work only, so a read of blit work needs its own.
+		assert_eq!(blit_read.encoder_after, mtl::MTLStages::Blit);
+		assert_eq!(blit_read.encoder_before, mtl::MTLStages::Dispatch);
+	}
+
+	#[test]
+	fn execution_only_barrier_does_not_cover_a_later_read_after_write() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		tracker.consume(
+			scope,
+			[
+				buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch),
+				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+			],
+		);
+		let write_after_read = tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)]);
+		let read_after_write = tracker.consume(scope, [second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+
+		assert_eq!(write_after_read.encoder_visibility, mtl::MTL4VisibilityOptions::None);
+		// Ordering alone does not make the write visible, so the read plans a barrier that does.
+		assert_eq!(read_after_write.encoder_after, mtl::MTLStages::Dispatch);
+		assert_eq!(read_after_write.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
+	}
+
+	#[test]
+	fn encoded_barriers_do_not_carry_into_the_next_recording() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(0);
+		tracker.begin_recording();
+		tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)]);
+		tracker.consume(scope, [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		tracker.finish_recording();
+
+		tracker.begin_recording();
+		tracker.consume(scope, [second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)]);
+		let read = tracker.consume(scope, [second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+
+		// The earlier recording's encoder 0 is a different encoder from this one's.
+		assert_eq!(read.encoder_after, mtl::MTLStages::Dispatch);
+		assert_eq!(read.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
 	}
 
 	#[test]

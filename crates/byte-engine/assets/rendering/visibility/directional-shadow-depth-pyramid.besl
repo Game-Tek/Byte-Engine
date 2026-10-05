@@ -1,9 +1,9 @@
 // Build the 8x8 conservative max-depth and min-depth levels for every directional cascade in one dispatch.
 // One SIMD group processes two adjacent 8x8 source tiles so all 32 lanes remain useful.
 source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
-reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
+reduced_depth_1: descriptor<{ type: StorageImage<r16>, binding: 1034, access: write }>;
 // The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
-reduced_minimum_1: descriptor<{ type: StorageImage<r32f>, binding: 1035, access: write }>;
+reduced_minimum_1: descriptor<{ type: StorageImage<r16>, binding: 1035, access: write }>;
 
 shared_depth: workgroup<f32, 32>;
 shared_minimum: workgroup<f32, 32>;

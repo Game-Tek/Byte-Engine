@@ -159,8 +159,10 @@ impl ShadowMaps {
 					.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 			)
 			.into();
+		// The cells are the maximum or minimum of 16-bit depths, which is one of those depths, so 16-bit unorm cells
+		// hold them exactly and the probes' comparisons stay exact.
 		let depth_pyramid = |name| {
-			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+			ghi::image::Builder::new(ghi::Formats::R16UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 				.name(name)
 				.extent(Extent::rectangle(
 					resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,

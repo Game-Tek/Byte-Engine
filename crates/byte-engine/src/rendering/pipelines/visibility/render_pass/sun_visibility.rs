@@ -19,9 +19,8 @@ use utils::Extent;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::gtao::configuration_float;
 use super::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps};
-use super::{ComputeStage, Pipelines, record_compute_stages};
+use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
-use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// The configuration namespace for contact-shadow runtime controls.
@@ -280,7 +279,7 @@ impl SunVisibilityPass {
 		angular_radius_tangent: f32,
 		settings: ContactShadowSettings,
 		[trace, resolve]: [ghi::PipelineHandle; 2],
-	) -> Option<impl RenderPassFunction + use<>> {
+	) -> Option<SunVisibilityStages> {
 		let sun_direction = sun_direction?;
 		let extent = sink.extent();
 		let screen = screen_view_data(sink, extent);
@@ -293,30 +292,34 @@ impl SunVisibilityPass {
 			_padding: [0.0; 2],
 		};
 		frame.sync_buffer(self.parameters);
-		let trace = ComputeStage {
-			label: "Contact Shadow Trace",
-			pipeline: trace,
-			descriptor_sets: [self.trace_descriptor_set],
-			extent: extent.scaled_down(CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
-			workgroup: Extent::new(8, 8, 1),
-		};
-		let resolve = ComputeStage {
-			label: "Sun Visibility Resolve",
-			pipeline: resolve,
-			descriptor_sets: self.resolve_descriptor_sets,
-			extent,
-			workgroup: Extent::new(8, 8, 1),
-		};
-
-		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
-			use ghi::command_buffer::CommonCommandBufferMode as _;
-
-			c.start_region(|label| label.write_str("Sun Visibility"));
-			record_compute_stages(c, None, &[trace]);
-			record_compute_stages(c, None, &[resolve]);
-			c.end_region();
+		Some(SunVisibilityStages {
+			trace: ComputeStage {
+				label: "Contact Shadow Trace",
+				pipeline: trace,
+				descriptor_sets: [self.trace_descriptor_set],
+				extent: extent.scaled_down(CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
+				workgroup: Extent::new(8, 8, 1),
+			},
+			resolve: ComputeStage {
+				label: "Sun Visibility Resolve",
+				pipeline: resolve,
+				descriptor_sets: self.resolve_descriptor_sets,
+				extent,
+				workgroup: Extent::new(8, 8, 1),
+			},
 		})
 	}
+}
+
+/// The `SunVisibilityStages` struct holds one frame's two sun visibility dispatches, so the visibility pass can record
+/// the trace alongside the other screen-space passes' first stages and the resolve, which reads it, alongside their
+/// second stages.
+#[derive(Clone, Copy)]
+pub(super) struct SunVisibilityStages {
+	/// The half-resolution contact-shadow trace; it reads only the depth pyramid.
+	pub(super) trace: ComputeStage<1>,
+	/// The full-resolution resolve; it reads the trace, the shadow maps, and their pyramids.
+	pub(super) resolve: ComputeStage<2>,
 }
 
 #[cfg(test)]

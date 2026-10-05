@@ -8,9 +8,8 @@ use ghi::frame::Frame as _;
 use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
-use super::{ComputeStage, Pipelines, record_compute_stages};
+use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
-use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// Configuration namespace of the runtime GTAO controls.
@@ -241,7 +240,7 @@ impl GtaoPass {
 		sink: &Sink,
 		settings: GtaoSettings,
 		[gtao, blur, upscale]: [ghi::PipelineHandle; 3],
-	) -> impl RenderPassFunction + use<> {
+	) -> GtaoStages {
 		let extent = sink.extent();
 		let gtao_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = GtaoShaderParameters {
@@ -254,31 +253,42 @@ impl GtaoPass {
 		frame.resize_image(self.raw_ao_map.into(), gtao_extent);
 		frame.resize_image(self.blurred_ao_map.into(), gtao_extent);
 
-		let stages = [
-			ComputeStage {
+		GtaoStages {
+			evaluate: ComputeStage {
 				label: "GTAO Evaluate",
 				pipeline: gtao,
 				descriptor_sets: [self.gtao_descriptor_set],
 				extent: gtao_extent,
 				workgroup: Extent::new(16, 8, 1),
 			},
-			ComputeStage {
+			blur: ComputeStage {
 				label: "GTAO Denoise Horizontal",
 				pipeline: blur,
 				descriptor_sets: [self.blur_descriptor_set],
 				extent: gtao_extent,
 				workgroup: Extent::new(8, 8, 1),
 			},
-			ComputeStage {
+			upscale: ComputeStage {
 				label: "GTAO Denoise and Depth-Aware Upscale",
 				pipeline: upscale,
 				descriptor_sets: [self.upscale_descriptor_set],
 				extent,
 				workgroup: Extent::new(8, 8, 1),
 			},
-		];
-		move |c| record_compute_stages(c, Some("GTAO"), &stages)
+		}
 	}
+}
+
+/// The `GtaoStages` struct holds one frame's three GTAO dispatches in order, so the visibility pass can record each
+/// alongside the other screen-space passes' stage of the same rank.
+#[derive(Clone, Copy)]
+pub(super) struct GtaoStages {
+	/// The half-resolution evaluation; it reads only the depth pyramid.
+	pub(super) evaluate: ComputeStage<1>,
+	/// The horizontal denoise; it reads the evaluation.
+	pub(super) blur: ComputeStage<1>,
+	/// The full-resolution denoise and upscale; it reads the blur.
+	pub(super) upscale: ComputeStage<1>,
 }
 
 #[cfg(test)]
@@ -292,7 +302,13 @@ mod tests {
 			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
 			.unwrap();
 		assert_eq!(effective, ConfigurationValue::Bool(false));
-		assert_eq!(disabled, GtaoSettings { enabled: false, ..settings });
+		assert_eq!(
+			disabled,
+			GtaoSettings {
+				enabled: false,
+				..settings
+			}
+		);
 		assert!(disabled.with_parameter("enabled", &ConfigurationValue::Integer(1)).is_err());
 	}
 }

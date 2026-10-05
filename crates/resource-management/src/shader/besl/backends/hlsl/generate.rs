@@ -434,6 +434,7 @@ impl Generator {
 						// UAV (unordered access view) for images
 						let texture_type = match format.as_str() {
 							"r8ui" | "r16ui" | "r32ui" => "RWTexture2D<uint>",
+							"r16" => "RWTexture2D<unorm float4>",
 							_ => "RWTexture2D<float4>",
 						};
 

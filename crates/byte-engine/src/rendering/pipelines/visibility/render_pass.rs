@@ -189,11 +189,9 @@ pub(crate) struct StageCounters {
 	material_prepasses: ghi::CounterHandle,
 	cascade_fit: ghi::CounterHandle,
 	depth_pyramid: ghi::CounterHandle,
-	/// The contact-shadow trace and the sun visibility resolve.
-	sun_visibility: ghi::CounterHandle,
-	gtao: ghi::CounterHandle,
-	/// The SSGI trace, denoise, and upscale.
-	ssgi: ghi::CounterHandle,
+	/// The sun visibility, GTAO, and SSGI dispatches, recorded interleaved so the GPU can overlap them. One counter
+	/// covers them all, because a precise timestamp between stages would serialize them again.
+	screen_space: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
 	background: ghi::CounterHandle,
@@ -215,9 +213,7 @@ impl StageCounters {
 			material_prepasses: builder.create_gpu_counter("material-prepasses"),
 			cascade_fit: builder.create_gpu_counter("cascade-fit"),
 			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
-			sun_visibility: builder.create_gpu_counter("sun-visibility"),
-			gtao: builder.create_gpu_counter("gtao"),
-			ssgi: builder.create_gpu_counter("ssgi"),
+			screen_space: builder.create_gpu_counter("screen-space"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
 			transparent: builder.create_gpu_counter("transparent"),
@@ -609,17 +605,34 @@ impl VisibilityRenderPass {
 					shadows(c);
 				}
 			}
-			// GTAO and SSGI don't read shadows, so the GPU can run them alongside the shadow maps. The sun visibility
-			// resolve reads the maps and their pyramid, which both orders above record before it.
-			if let Some(sun_visibility) = &sun_visibility {
-				c.counter(counters.sun_visibility, sun_visibility);
-			}
-			if let Some(gtao) = &gtao {
-				c.counter(counters.gtao, gtao);
-			}
-			if let Some(ssgi) = &ssgi {
-				c.counter(counters.ssgi, ssgi);
-			}
+			// The screen-space passes read the depth pyramid and write their own images, so their first stages are
+			// independent of each other and so are their second stages, which read only the first. Recording the
+			// stages by rank lets the GPU overlap them: the resource tracker barriers the first second stage against
+			// every first stage, and the others need nothing more. The sun visibility resolve also reads the shadow
+			// maps and their pyramid, which both orders above record before it.
+			c.counter(counters.screen_space, |c| {
+				if let Some(sun_visibility) = &sun_visibility {
+					record_compute_stages(c, None, &[sun_visibility.trace]);
+				}
+				if let Some(gtao) = &gtao {
+					record_compute_stages(c, None, &[gtao.evaluate]);
+				}
+				if let Some(ssgi) = &ssgi {
+					record_compute_stages(c, None, &[ssgi.trace]);
+				}
+				if let Some(sun_visibility) = &sun_visibility {
+					record_compute_stages(c, None, &[sun_visibility.resolve]);
+				}
+				if let Some(gtao) = &gtao {
+					record_compute_stages(c, None, &[gtao.blur]);
+				}
+				if let Some(ssgi) = &ssgi {
+					record_compute_stages(c, None, &[ssgi.temporal]);
+				}
+				if let Some(gtao) = &gtao {
+					record_compute_stages(c, None, &[gtao.upscale]);
+				}
+			});
 			c.counter(counters.material_evaluation, &opaque_materials);
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {

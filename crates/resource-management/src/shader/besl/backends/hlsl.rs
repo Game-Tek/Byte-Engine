@@ -106,6 +106,19 @@ mod tests {
 		assert_string_contains!(shader, "first_layer_maximum(array_depth_texture,array_depth_texture_sampler,");
 	}
 
+	/// Verifies a 16-bit unorm storage image declares its unorm element type, which typed UAV stores need.
+	#[test]
+	fn unorm_storage_image_declares_unorm_float_in_hlsl() {
+		let source = r#"
+			cells: descriptor<{ type: StorageImage<r16>, binding: 0, access: write }>;
+			main: fn () -> void {
+				write(cells, vec2u(0, 0), vec4f(0.5, 0.0, 0.0, 1.0));
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+		assert_string_contains!(shader, "RWTexture2D<unorm float4> cells");
+	}
+
 	#[test]
 	fn modern_half_and_integer_atomics_lower_to_shader_model_6_9_hlsl() {
 		let source = r#"

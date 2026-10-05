@@ -371,7 +371,8 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 }
 
 // Encodes a unit normal as an octahedral pair for the two-channel normal image, or zero for a zero normal. Readers decode
-// it with the same convention; see `decode_stored_normal` in `ssgi-temporal.besl` and `ssgi-upscale.besl`.
+// it with the same convention; see `decode_stored_normal` in `ssgi-temporal.besl` and `ssgi_stored_normal` in material
+// evaluation.
 encode_stored_normal: fn (normal: vec3f) -> vec4f {
 	let length: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
 	if (length == 0.0) {

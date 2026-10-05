@@ -49,7 +49,7 @@ const PYRAMID_WORKGROUP_SIZE: usize = 32;
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 /// The 8x8 workgroup most visibility compute passes use, such as the material count, the occlusion pyramid, the GTAO
-/// blur and upscale, the contact-shadow filter, the SSGI trace, temporal, and upscale passes, and the receiver bounds.
+/// blur and upscale, the contact-shadow filter, the SSGI trace and temporal passes, and the receiver bounds.
 const TILE_WORKGROUP_WIDTH: u32 = 8;
 const TILE_WORKGROUP_SIZE: usize = 64;
 
@@ -1800,7 +1800,7 @@ pub(super) fn ssgi_ray_at(x: u32, y: u32, extent: u32) -> [f32; 2] {
 }
 
 /// Returns the depth a ray sees in a scene with a floor one unit below the camera and, optionally, a facing wall.
-fn ssgi_floor_depth(ray: [f32; 2], wall_z: Option<f32>) -> f32 {
+pub(super) fn ssgi_floor_depth(ray: [f32; 2], wall_z: Option<f32>) -> f32 {
 	let floor_z = if ray[1] < 0.0 { -1.0 / ray[1] } else { f32::INFINITY };
 	let depth = wall_z.map_or(floor_z, |wall_z| floor_z.min(wall_z));
 	if depth <= GTAO_FAR { depth } else { 0.0 }
@@ -1991,7 +1991,7 @@ const SSGI_TEMPORAL_EXTENT: u32 = 8;
 /// The stored view-space normal of a wall that faces the camera, (0, 0, -1). View space is y-up and the camera looks
 /// down positive z. The trace stores normals as an octahedral pair in RG, which folds the lower z hemisphere into the
 /// corners.
-const SSGI_WALL_NORMAL: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+pub(super) const SSGI_WALL_NORMAL: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 /// The stored view-space normal of the floor below the camera, (0, 1, 0).
 const SSGI_FLOOR_NORMAL: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 
@@ -2134,11 +2134,11 @@ fn ssgi_temporal_filter_keeps_light_on_its_own_surface() {
 }
 
 /// The depth of the wall that stands on the floor of [`ssgi_floor_depth`] in the contact scene.
-const SSGI_CONTACT_WALL_Z: f32 = 4.0;
+pub(super) const SSGI_CONTACT_WALL_Z: f32 = 4.0;
 
 /// Renders the contact scene, a wall at [`SSGI_CONTACT_WALL_Z`] standing on the floor of [`ssgi_floor_depth`], into
 /// `extent` square images of its depth, its view-space normals, and its light, which only the wall gathered.
-fn ssgi_contact_images(extent: u32) -> [Vec<[f32; 4]>; 3] {
+pub(super) fn ssgi_contact_images(extent: u32) -> [Vec<[f32; 4]>; 3] {
 	let (mut depth, mut normals, mut light) = (Vec::new(), Vec::new(), Vec::new());
 	for index in 0..extent * extent {
 		let z = ssgi_floor_depth(ssgi_ray_at(index % extent, index / extent, extent), Some(SSGI_CONTACT_WALL_Z));
@@ -2180,111 +2180,6 @@ fn ssgi_temporal_filter_keeps_light_off_a_touching_surface() {
 		"Expected no wall light on the floor next to it, found {floor:?}."
 	);
 	assert!(wall[0] > 0.99, "Expected the wall to keep its light, found {wall:?}.");
-}
-
-/// Runs the SSGI upscale over the 8x8 workgroup that holds `pixel` and returns that full-resolution pixel. Low-resolution
-/// inputs are half the full extent.
-fn run_ssgi_upscale(
-	full_extent: u32,
-	device_depth: &[[f32; 4]],
-	low_resolution_depth: &[[f32; 4]],
-	low_resolution_normals: &[[f32; 4]],
-	radiance: &[[f32; 4]],
-	pixel: [u32; 2],
-) -> [f32; 4] {
-	let program = asset!("ssgi-upscale.besl");
-	let low_extent = full_extent / 2;
-	let mut view = gtao_view_data(&program, low_extent, low_extent);
-	let mut visibility_depth = texture_2d(full_extent, full_extent, device_depth);
-	let mut source = texture_2d(low_extent, low_extent, radiance);
-	let mut output = empty_image(full_extent, full_extent);
-	let mut depth_pyramid = texture_2d(low_extent, low_extent, low_resolution_depth);
-	let mut normals = texture_2d(low_extent, low_extent, low_resolution_normals);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut visibility_depth);
-	descriptors.bind_texture(ResourceSlot::new(1034), &mut source);
-	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
-	descriptors.bind_texture(ResourceSlot::new(1036), &mut depth_pyramid);
-	descriptors.bind_texture(ResourceSlot::new(1037), &mut normals);
-	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
-	rgba(&output, pixel)
-}
-
-/// Verifies upscaling keeps indirect light on its own side of a depth edge and leaves the background unlit.
-#[test]
-fn ssgi_upscale_keeps_light_on_its_own_side_of_a_depth_edge() {
-	const FULL: u32 = 16;
-	const LOW: u32 = FULL / 2;
-	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
-		.map(|index| {
-			let (x, y) = (index % FULL, index / FULL);
-			let z = if y == FULL - 1 {
-				0.0
-			} else if x < FULL / 2 {
-				2.0
-			} else {
-				10.0
-			};
-			[gtao_fixture_device_depth(z), 0.0, 0.0, 1.0]
-		})
-		.collect();
-	let low_depth: Vec<[f32; 4]> = (0..LOW * LOW)
-		.map(|index| [if index % LOW < LOW / 2 { 2.0 } else { 10.0 }, 0.0, 0.0, 1.0])
-		.collect();
-	let radiance: Vec<[f32; 4]> = (0..LOW * LOW)
-		.map(|index| {
-			if index % LOW < LOW / 2 {
-				[1.0, 0.0, 0.0, 1.0]
-			} else {
-				[0.0, 1.0, 0.0, 1.0]
-			}
-		})
-		.collect();
-	// Both walls face the camera.
-	let normals = vec![SSGI_WALL_NORMAL; (LOW * LOW) as usize];
-
-	let near = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [FULL / 2 - 1, 4]);
-	let far = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [FULL / 2, 4]);
-	let background = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [3, FULL - 1]);
-
-	assert_rgba_close(near, [1.0, 0.0, 0.0, 1.0], 0.0001);
-	assert_rgba_close(far, [0.0, 1.0, 0.0, 1.0], 0.0001);
-	assert_rgba_close(background, [0.0; 4], 0.0);
-}
-
-/// Verifies upscaling keeps light off a surface that touches the pixel's surface at nearly the same depth.
-#[test]
-fn ssgi_upscale_keeps_light_off_a_touching_surface() {
-	const FULL: u32 = 32;
-	let [full_depth, ..] = ssgi_contact_images(FULL);
-	let device_depth: Vec<[f32; 4]> = full_depth
-		.iter()
-		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
-		.collect();
-	let [low_depth, low_normals, radiance] = ssgi_contact_images(FULL / 2);
-	let column = FULL / 2;
-	let floor_row = (0..FULL)
-		.find(|&row| full_depth[(row * FULL + column) as usize][0] != SSGI_CONTACT_WALL_Z)
-		.expect("the wall stands on the floor");
-
-	let wall = run_ssgi_upscale(
-		FULL,
-		&device_depth,
-		&low_depth,
-		&low_normals,
-		&radiance,
-		[column, floor_row - 1],
-	);
-	let floor = run_ssgi_upscale(FULL, &device_depth, &low_depth, &low_normals, &radiance, [column, floor_row]);
-	assert!(
-		wall[0] > 0.99,
-		"Expected the wall next to the floor to keep its light, found {wall:?}."
-	);
-	assert!(
-		floor[0] < 0.01,
-		"Expected no wall light on the floor next to it, found {floor:?}."
-	);
 }
 
 /// Verifies rays from a wall find the floor in front of it, a surface seen at a grazing angle that one march step
@@ -2609,7 +2504,6 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl"), tile()),
 		("ssgi_trace", asset_source!("ssgi-trace.besl"), tile()),
 		("ssgi_temporal", asset_source!("ssgi-temporal.besl"), tile()),
-		("ssgi_upscale", asset_source!("ssgi-upscale.besl"), tile()),
 		(
 			"light_clusters",
 			asset_source!("light-clusters.besl"),
@@ -3126,30 +3020,6 @@ fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
 		fixture.previous_depth[index][0] = if previous_y < 0.0 { -1.0 / previous_y } else { 0.0 };
 	}
 	assert_rgba_close(fixture.run([4, 6]), [1.81, 1.81, 1.81, 0.5], 0.00001);
-}
-
-/// Odd-sized reconstruction must keep a smooth radiance ramp centered on the full-resolution image.
-#[test]
-fn ssgi_upscale_centers_radiance_at_odd_extents() {
-	for full in [9, 17, 33] {
-		let low = full / 2;
-		let device_z = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR) / 5.0 - GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
-		let radiance: Vec<_> = (0..low * low)
-			.map(|index| [(index % low) as f32 / (low - 1) as f32, 0.0, 0.0, 0.5])
-			.collect();
-		assert_rgba_close(
-			run_ssgi_upscale(
-				full,
-				&vec![[device_z, 0.0, 0.0, 1.0]; (full * full) as usize],
-				&vec![[5.0, 0.0, 0.0, 1.0]; (low * low) as usize],
-				&vec![SSGI_WALL_NORMAL; (low * low) as usize],
-				&radiance,
-				[full / 2, full / 2],
-			),
-			[0.5, 0.0, 0.0, 0.5],
-			0.00001,
-		);
-	}
 }
 
 /// A nearest surface at the last row or column of an odd source must reach the reduced image.

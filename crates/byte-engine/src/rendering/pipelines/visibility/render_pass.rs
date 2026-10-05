@@ -133,6 +133,7 @@ pub use self::contact_shadows::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
 use self::contact_shadows::ContactShadowPass;
 pub(crate) use self::contact_shadows::{ContactShadowSettings, ContactShadowTargets, create_contact_shadow_targets};
 use self::depth_pyramid::DepthPyramidPass;
+pub(crate) use self::depth_pyramid::ScreenViewData;
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
@@ -156,10 +157,10 @@ pub(crate) use self::{
 };
 use super::layout::{
 	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, CONTACT_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING,
-	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, INDIRECT_DIFFUSE_MAP_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING,
-	LIT_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS,
-	POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING, TRIANGLE_INDEX_BINDING,
+	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS, POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING,
+	SSGI_HISTORY_BINDING, SSGI_NORMALS_BINDING, SSGI_VIEW_BINDING, TRIANGLE_INDEX_BINDING,
 };
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
@@ -336,7 +337,6 @@ impl VisibilityRenderPass {
 		let ssgi = SsgiPass::new(
 			context,
 			&pipeline_manager,
-			targets.depth,
 			depth_pyramid.depth_pyramid,
 			depth_pyramid.view_data,
 			targets.ssgi,
@@ -372,7 +372,14 @@ impl VisibilityRenderPass {
 				lighting_buffer.into(),
 			),
 			sampled(AO_MAP_BINDING, ao_map.into(), linear_sampler),
-			sampled(INDIRECT_DIFFUSE_MAP_BINDING, targets.ssgi.indirect_diffuse, linear_sampler),
+			// Material evaluation upsamples the half-resolution SSGI result itself, so it point-samples its images.
+			sampled(SSGI_HISTORY_BINDING, targets.ssgi.history.into(), depth_sampler),
+			sampled(SSGI_NORMALS_BINDING, targets.ssgi.normals.into(), depth_sampler),
+			ghi::DescriptorWrite::buffer(
+				material_evaluation_descriptor_set,
+				SSGI_VIEW_BINDING.slot(),
+				depth_pyramid.view_data.into(),
+			),
 			// Point sampling keeps a shadow edge from bleeding one pixel onto the lit surface beside it.
 			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows.filtered, depth_sampler),
 			sampled(SHADOW_MAP_BINDING, shadow_maps.directional, depth_sampler),

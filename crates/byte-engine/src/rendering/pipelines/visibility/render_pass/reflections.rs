@@ -14,7 +14,7 @@ use ghi::frame::Frame as _;
 use super::SinkHistory;
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use crate::rendering::pipelines::visibility::layout::{
-	PREVIOUS_RADIANCE_BINDING, RADIANCE_HISTORY_BINDING, REFLECTION_DEPTH_PYRAMID_BINDING, REFLECTION_PARAMETERS_BINDING,
+	DEPTH_PYRAMID_BINDING, PREVIOUS_RADIANCE_BINDING, RADIANCE_HISTORY_BINDING, REFLECTION_PARAMETERS_BINDING,
 };
 use crate::rendering::pipelines::visibility::shader_data::ReflectionShaderParameters;
 
@@ -81,7 +81,7 @@ impl ScreenSpaceReflections {
 			ghi::DescriptorWrite::buffer(set, REFLECTION_PARAMETERS_BINDING.slot(), parameters.into()),
 			ghi::DescriptorWrite::combined_image_sampler(
 				set,
-				REFLECTION_DEPTH_PYRAMID_BINDING.slot(),
+				DEPTH_PYRAMID_BINDING.slot(),
 				ghi::BaseImageHandle::from(depth_pyramid),
 				point_sampler,
 				ghi::Layouts::Read,

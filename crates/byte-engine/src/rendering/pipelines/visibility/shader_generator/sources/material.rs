@@ -202,6 +202,12 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let position_numerator: vec3f = position_numerator_origin + interpolation_delta.x * position_numerator_dx + interpolation_delta.y * position_numerator_dy;
 	let normal_numerator: vec3f = normal_numerator_origin + interpolation_delta.x * normal_numerator_dx + interpolation_delta.y * normal_numerator_dy;
 	let world_space_vertex_position: vec3f = position_numerator * perspective_w;
+	let view_space_surface_position: vec3f = views.views[0].view * vec4f(
+		world_space_vertex_position.x,
+		world_space_vertex_position.y,
+		world_space_vertex_position.z,
+		1.0
+	);
 	let world_space_vertex_normal: vec3f = normalize(normal_numerator * perspective_w);
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = views.views[0].inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
@@ -365,8 +371,15 @@ material_evaluation_suffix: fn () -> void {
 	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (push_constant.blend == 0) {
 		if (push_constant.ssgi != 0) {
-			// Alpha is the fraction of rays that hit, so the rest reach the environment.
-			let screen_space_indirect: vec4f = fetch(indirect_diffuse, pixel_coordinates);
+			// SSGI works in view space at half resolution. The pixel's own surface picks the history texels that lie
+			// on it. Alpha is the fraction of rays that hit, so the rest reach the environment.
+			let view_space_normal: vec3f = views.views[0].view * vec4f(N.x, N.y, N.z, 0.0);
+			let screen_space_indirect: vec4f = sample_screen_space_indirect_diffuse(
+				pixel_coordinates,
+				image_extent,
+				view_space_surface_position,
+				view_space_normal
+			);
 			// SSGI carries pre-exposed light through its half-float images. Undo that scale before combining it
 			// with physical lighting, so the final exposure below applies exactly once.
 			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)
@@ -440,12 +453,6 @@ material_evaluation_suffix: fn () -> void {
 
 			let occlusion_factor: f16 = 1.0;
 			if (light_type == 68) {
-				let view_space_surface_position: vec3f = views.views[0].view * vec4f(
-					world_space_vertex_position.x,
-					world_space_vertex_position.y,
-					world_space_vertex_position.z,
-					1.0
-				);
 				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view0 != 0) {
 					let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];

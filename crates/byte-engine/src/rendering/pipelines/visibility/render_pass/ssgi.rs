@@ -2,9 +2,10 @@
 //!
 //! Each half-resolution pixel shoots one cosine-weighted ray per frame. A ray that hits on-screen geometry takes its
 //! light from the previous frame's [`DIFFUSE_RADIANCE_HISTORY_TARGET`], so bounces accumulate over frames. An edge-aware
-//! spatial filter and an exponential moving average over reprojected history remove the noise, and an edge-aware
-//! upscale writes the full-resolution result that material evaluation composites. Both compare surface normals
-//! rebuilt from depth, because surfaces that touch, such as a foot on a floor, share the same depth at the contact.
+//! spatial filter and an exponential moving average over reprojected history remove the noise. Both compare surface
+//! normals rebuilt from depth, because surfaces that touch, such as a foot on a floor, share the same depth at the
+//! contact. Opaque material evaluation reads the half-resolution result and upsamples it with each pixel's own
+//! surface, so the pass writes no full-resolution image.
 //!
 //! The result stores pre-exposed hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation
 //! lights the missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
@@ -73,13 +74,12 @@ pub(crate) const SSGI_RAW_TARGET: &str = "SSGI Raw";
 /// The render-graph name of the half-resolution view-space normals the trace rebuilds from depth.
 ///
 /// RG holds the normal's octahedral encoding, or zero where the depth neighborhood was degenerate or empty. Zero would
-/// otherwise encode a normal facing away from the camera, which the trace never stores. The next frame's denoiser reads
-/// it to tell whether its history belongs to the same surface.
+/// otherwise encode a normal facing away from the camera, which the trace never stores. Material evaluation and the
+/// next frame's denoiser read it to tell whether a texel belongs to a pixel's surface.
 pub(crate) const SSGI_NORMALS_TARGET: &str = "SSGI Normals";
-/// The render-graph name of the half-resolution accumulated result that the next frame blends with.
+/// The render-graph name of the half-resolution accumulated result that material evaluation upsamples and the next
+/// frame blends with.
 pub(crate) const SSGI_HISTORY_TARGET: &str = "SSGI History";
-/// The render-graph name of the full-resolution result that material evaluation composites.
-pub(crate) const SSGI_INDIRECT_DIFFUSE_TARGET: &str = "SSGI Indirect Diffuse";
 /// SSGI traces and accumulates at half the sink resolution.
 const SSGI_RESOLUTION_DIVISOR: u32 = 2;
 
@@ -90,9 +90,10 @@ const SSGI_RESOLUTION_DIVISOR: u32 = 2;
 #[derive(Clone, Copy)]
 pub(crate) struct SsgiTargets {
 	pub(crate) raw: ghi::BaseImageHandle,
+	/// Named [`SSGI_NORMALS_TARGET`]. Bind it in material evaluation with [`history`](Self::history).
 	pub(crate) normals: ghi::DynamicImageHandle,
+	/// Named [`SSGI_HISTORY_TARGET`]. Bind it in material evaluation, which upsamples it with its pixels' surfaces.
 	pub(crate) history: ghi::DynamicImageHandle,
-	pub(crate) indirect_diffuse: ghi::BaseImageHandle,
 	pub(crate) diffuse_radiance_history: ghi::DynamicImageHandle,
 }
 
@@ -114,9 +115,6 @@ pub(crate) fn create_ssgi_targets(
 			.into(),
 		normals: render_pass_builder.create_history_target(image(SSGI_NORMALS_TARGET, NORMAL_FORMAT), SSGI_RESOLUTION_DIVISOR),
 		history: render_pass_builder.create_history_target(radiance_image(SSGI_HISTORY_TARGET), SSGI_RESOLUTION_DIVISOR),
-		indirect_diffuse: render_pass_builder
-			.create_render_target(radiance_image(SSGI_INDIRECT_DIFFUSE_TARGET))
-			.into(),
 		// Clear use lets the renderer clear it on frames the scene records nothing.
 		diffuse_radiance_history: render_pass_builder.create_history_target(
 			radiance_image(DIFFUSE_RADIANCE_HISTORY_TARGET).additional_uses(ghi::Uses::Clear),
@@ -127,12 +125,12 @@ pub(crate) fn create_ssgi_targets(
 /// The format of the SSGI radiance images: HDR radiance in RGB and the ray hit fraction in alpha.
 const RADIANCE_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// The format of the SSGI normals: an octahedral pair, at half the bandwidth of a three-component normal in
-/// [`RADIANCE_FORMAT`]. The temporal and upscale passes read each normal many times.
+/// [`RADIANCE_FORMAT`]. The temporal pass and material evaluation read each normal many times.
 const NORMAL_FORMAT: ghi::Formats = ghi::Formats::RG16SNORM;
 
 const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-// Every stage reads linear depth at 1033 and writes its output at 1034 or 1035. See each BESL asset for the rest.
+// Both stages read linear depth at 1033 and write their output at 1034 or 1035. See each BESL asset for the rest.
 const DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 const TRACE_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
 const TRACE_PREVIOUS_RADIANCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
@@ -143,10 +141,6 @@ const TEMPORAL_PREVIOUS_HISTORY_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::
 const TEMPORAL_PREVIOUS_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
 const TEMPORAL_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
 const TEMPORAL_PREVIOUS_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1039);
-const UPSCALE_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const UPSCALE_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
-const UPSCALE_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
 
 /// The `SsgiShaderParameters` struct carries the per-frame values every SSGI stage needs to use history.
 #[repr(C)]
@@ -172,34 +166,31 @@ fn current_view_to_previous_view(current: View, previous: View) -> Matrix {
 
 /// The `SsgiPass` struct adds bounce light from visible geometry to the diffuse ambient term of opaque surfaces.
 ///
-/// It runs after [`super::depth_pyramid::DepthPyramidPass`] and before opaque material evaluation, which reads
-/// the full-resolution result. Opaque material evaluation writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next
-/// frame's rays.
+/// It runs after [`super::depth_pyramid::DepthPyramidPass`] and before opaque material evaluation, which upsamples
+/// the half-resolution result and writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next frame's rays.
 pub(super) struct SsgiPass {
 	trace_descriptor_set: ghi::DescriptorSetHandle,
 	temporal_descriptor_set: ghi::DescriptorSetHandle,
-	upscale_descriptor_set: ghi::DescriptorSetHandle,
-	/// The trace, temporal, and upscale pipelines.
-	pub(super) pipelines: Pipelines<3>,
+	/// The trace and temporal pipelines.
+	pub(super) pipelines: Pipelines<2>,
 	parameters: ghi::DynamicBufferHandle<SsgiShaderParameters>,
 }
 
 impl SsgiPass {
-	/// Creates the radiance images and wires the trace, temporal, and upscale descriptor sets.
+	/// Wires the trace and temporal descriptor sets.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`].
-	/// Create `targets` with [`create_ssgi_targets`]. Next, bind [`SsgiTargets::indirect_diffuse`] in material evaluation.
+	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. Create `targets` with
+	/// [`create_ssgi_targets`]. Next, bind [`SsgiTargets::history`], [`SsgiTargets::normals`], the pyramid, and
+	/// `view_data` in material evaluation.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		depth: ghi::BaseImageHandle,
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
 	) -> Self {
 		let trace_descriptor_set = context.create_descriptor_set(Some("SSGI Trace Descriptor Set"));
 		let temporal_descriptor_set = context.create_descriptor_set(Some("SSGI Temporal Descriptor Set"));
-		let upscale_descriptor_set = context.create_descriptor_set(Some("SSGI Upscale Descriptor Set"));
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("SSGI Parameters")
@@ -215,7 +206,6 @@ impl SsgiPass {
 			raw,
 			normals,
 			history,
-			indirect_diffuse,
 			diffuse_radiance_history,
 		} = targets;
 		let sampled = |set, slot, image: ghi::BaseImageHandle| {
@@ -247,28 +237,17 @@ impl SsgiPass {
 			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_DEPTH_BINDING, depth_pyramid),
 			sampled(temporal_descriptor_set, TEMPORAL_NORMALS_BINDING, normals.into()),
 			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_NORMALS_BINDING, normals),
-			ghi::DescriptorWrite::buffer(upscale_descriptor_set, VIEW_BINDING, view_data.into()),
-			sampled(upscale_descriptor_set, DEPTH_BINDING, depth),
-			sampled(upscale_descriptor_set, UPSCALE_SOURCE_BINDING, history.into()),
-			storage(upscale_descriptor_set, UPSCALE_OUTPUT_BINDING, indirect_diffuse),
-			sampled(
-				upscale_descriptor_set,
-				UPSCALE_LOW_RESOLUTION_DEPTH_BINDING,
-				depth_pyramid.into(),
-			),
-			sampled(upscale_descriptor_set, UPSCALE_NORMALS_BINDING, normals.into()),
 		]);
 
 		Self {
 			trace_descriptor_set,
 			temporal_descriptor_set,
-			upscale_descriptor_set,
-			pipelines: Pipelines::request(pipeline_manager, ["ssgi-trace", "ssgi-temporal", "ssgi-upscale"]),
+			pipelines: Pipelines::request(pipeline_manager, ["ssgi-trace", "ssgi-temporal"]),
 			parameters,
 		}
 	}
 
-	/// Uploads this frame's reprojection and noise seed, resizes the images, and returns the three-stage recording.
+	/// Uploads this frame's reprojection and noise seed and returns the trace and temporal recording.
 	///
 	/// `history` describes the previous frame's view and exposure, or is `None` when its SSGI and radiance images do
 	/// not hold this sink's data, such as the frame after the pass was turned back on. Without it the stages ignore
@@ -279,10 +258,9 @@ impl SsgiPass {
 		sink: &Sink,
 		history: Option<SinkHistory>,
 		exposure: f32,
-		[trace, temporal, upscale]: [ghi::PipelineHandle; 3],
+		[trace, temporal]: [ghi::PipelineHandle; 2],
 	) -> impl RenderPassFunction + use<> {
-		let extent = sink.extent();
-		let half_extent = extent.scaled_down(2);
+		let half_extent = sink.extent().scaled_down(SSGI_RESOLUTION_DIVISOR);
 		// Reprojection and normal comparison share the same camera transform and inverse.
 		let (previous_clip, previous_view) = history
 			.map(|previous| {
@@ -301,22 +279,16 @@ impl SsgiPass {
 		};
 		frame.sync_buffer(self.parameters);
 
-		let stage = |label, pipeline, descriptor_set, extent| ComputeStage {
+		let stage = |label, pipeline, descriptor_set| ComputeStage {
 			label,
 			pipeline,
 			descriptor_sets: [descriptor_set],
-			extent,
+			extent: half_extent,
 			workgroup: Extent::new(8, 8, 1),
 		};
 		let stages = [
-			stage("SSGI Trace", trace, self.trace_descriptor_set, half_extent),
-			stage(
-				"SSGI Denoise and Accumulate",
-				temporal,
-				self.temporal_descriptor_set,
-				half_extent,
-			),
-			stage("SSGI Depth-Aware Upscale", upscale, self.upscale_descriptor_set, extent),
+			stage("SSGI Trace", trace, self.trace_descriptor_set),
+			stage("SSGI Denoise and Accumulate", temporal, self.temporal_descriptor_set),
 		];
 		move |c| record_compute_stages(c, Some("SSGI"), &stages)
 	}

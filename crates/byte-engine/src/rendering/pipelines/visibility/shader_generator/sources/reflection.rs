@@ -1,8 +1,8 @@
 // Screen-space reflection helpers. Material evaluation traces one mirror ray per pixel through this frame's linear
 // depth pyramid, and reads the light at the hit from last frame's radiance history.
 //
-// The helpers read the `reflection_parameters`, `reflection_depth_pyramid`, and `previous_radiance` bindings that
-// `screen_space_reflection_scope` declares. Each helper only calls helpers declared above it.
+// The helpers read the `reflection_parameters` and `previous_radiance` bindings that `screen_space_reflection_scope`
+// declares, and the shared `depth_pyramid` binding. Each helper only calls helpers declared above it.
 
 // Reads the nearest positive linear depth at continuous half-resolution pixel coordinates, where integers are texel
 // centers. Returns zero where no opaque surface was drawn.
@@ -14,7 +14,7 @@ reflection_scene_depth: fn (pixel: vec2f, depth_extent: vec2u) -> f32 {
 		clamp(round(pixel.y), 0.0, f32(depth_extent.y - 1))
 	);
 	let uv: vec2f = vec2f((texel.x + 0.5) / f32(depth_extent.x), (texel.y + 0.5) / f32(depth_extent.y));
-	return texture_lod(reflection_depth_pyramid, uv, 0.0).x;
+	return texture_lod(depth_pyramid, uv, 0.0).x;
 }
 "#;
 

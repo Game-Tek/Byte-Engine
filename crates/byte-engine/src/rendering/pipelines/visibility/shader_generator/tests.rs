@@ -2,7 +2,9 @@ use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
 use ghi::AccessPolicies;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
-use super::super::tests::{ssgi_projection, ssgi_ray_at};
+use super::super::tests::{
+	SSGI_CONTACT_WALL_Z, SSGI_WALL_NORMAL, ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
+};
 use super::*;
 use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d};
 
@@ -1020,7 +1022,9 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 		}
 		"#,
 		{
-			let mut bindings = screen_space_reflection_scope();
+			// The shared pyramid binding comes first, as in the material shader, since helpers read it.
+			let mut bindings = vec![depth_pyramid_binding()];
+			bindings.extend(screen_space_reflection_scope());
 			bindings.push(Node::binding(
 				"inputs",
 				Node::buffer(vec![
@@ -1145,5 +1149,216 @@ fn reflection_rays_miss_without_a_visible_surface_with_known_light() {
 	] {
 		let reflection = trace_floor_reflection(scene, previous_scene, column, row);
 		assert_eq!(reflection[3], 0.0, "Expected the {name} ray to miss, found {reflection:?}.");
+	}
+}
+
+/* Screen-space indirect diffuse */
+
+const INDIRECT_DIFFUSE_INPUTS_SLOT: ResourceSlot = ResourceSlot::new(0);
+const INDIRECT_DIFFUSE_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1);
+const SSGI_VIEW_SLOT: ResourceSlot = ResourceSlot::new(1048);
+/// The view-space normal of a wall that faces the camera, which looks down positive z.
+const WALL_NORMAL: [f32; 3] = [0.0, 0.0, -1.0];
+
+/// Reconstructs the indirect diffuse light of `pixel` of a `full_extent` square image from the half-resolution SSGI
+/// images, `full_extent / 2` square: the linear depth, the stored normals, and the history. `position` and `normal`
+/// are the pixel's view-space surface position and normal, as material evaluation passes them.
+fn sample_indirect_diffuse(
+	full_extent: u32,
+	[low_depth, low_normals, history]: [&[[f32; 4]]; 3],
+	pixel: [u32; 2],
+	position: [f32; 3],
+	normal: [f32; 3],
+) -> [f32; 4] {
+	let executable = compile_with(
+		r#"
+		main: fn () -> void {
+			results.indirect_diffuse = sample_screen_space_indirect_diffuse(
+				inputs.pixel,
+				inputs.extent,
+				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
+				vec3f(inputs.normal.x, inputs.normal.y, inputs.normal.z)
+			);
+		}
+		"#,
+		{
+			let mut bindings = vec![depth_pyramid_binding()];
+			bindings.extend(screen_space_indirect_diffuse_scope());
+			bindings.push(Node::binding(
+				"inputs",
+				Node::buffer(vec![
+					Node::member("pixel", "vec2u"),
+					Node::member("extent", "vec2u"),
+					Node::member("position", "vec4f"),
+					Node::member("normal", "vec4f"),
+				]),
+				INDIRECT_DIFFUSE_INPUTS_SLOT.slot(),
+				true,
+				false,
+			));
+			bindings.push(results_binding(
+				vec![Node::member("indirect_diffuse", "vec4f")],
+				INDIRECT_DIFFUSE_RESULTS_SLOT,
+			));
+			bindings
+		},
+	);
+
+	let low_extent = full_extent / 2;
+	let mut inputs = buffer(&executable, INDIRECT_DIFFUSE_INPUTS_SLOT);
+	for (member, value) in [
+		("pixel", Value::Vec2U(pixel)),
+		("extent", Value::Vec2U([full_extent, full_extent])),
+		("position", Value::Vec4F([position[0], position[1], position[2], 1.0])),
+		("normal", Value::Vec4F([normal[0], normal[1], normal[2], 0.0])),
+	] {
+		inputs.write(member, value).expect("indirect diffuse inputs");
+	}
+	// The camera constants of the half-resolution images, as `screen_view_data` builds them.
+	let projection = ssgi_projection();
+	let size = low_extent as f32;
+	let mut view = buffer(&executable, SSGI_VIEW_SLOT);
+	for (member, value) in [
+		(
+			"pixel_to_ray_mul",
+			Value::Vec2F([2.0 / (size * projection[0]), -2.0 / (size * projection[5])]),
+		),
+		(
+			"pixel_to_ray_add",
+			Value::Vec2F([(1.0 / size - 1.0) / projection[0], (1.0 - 1.0 / size) / projection[5]]),
+		),
+	] {
+		view.write(member, value).expect("SSGI view");
+	}
+	let mut depth = texture_2d(low_extent, low_extent, low_depth);
+	let mut normals = texture_2d(low_extent, low_extent, low_normals);
+	let mut history = texture_2d(low_extent, low_extent, history);
+	let mut results = buffer(&executable, INDIRECT_DIFFUSE_RESULTS_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(INDIRECT_DIFFUSE_INPUTS_SLOT, &mut inputs);
+	descriptors.bind_buffer(SSGI_VIEW_SLOT, &mut view);
+	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
+	descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
+	descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
+	descriptors.bind_buffer(INDIRECT_DIFFUSE_RESULTS_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	match results.read("indirect_diffuse").expect("indirect diffuse result") {
+		Value::Vec4F(value) => value,
+		value => panic!("Unexpected indirect diffuse result type: {value:?}."),
+	}
+}
+
+/// Returns the view-space position of full-resolution pixel `pixel` of an `extent` square image at depth `z`.
+fn pixel_position(pixel: [u32; 2], extent: u32, z: f32) -> [f32; 3] {
+	let ray = ssgi_ray_at(pixel[0], pixel[1], extent);
+	[ray[0] * z, ray[1] * z, z]
+}
+
+fn assert_indirect_diffuse(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
+	assert!(
+		actual.iter().zip(expected).all(|(a, e)| (a - e).abs() <= tolerance),
+		"Expected indirect diffuse {expected:?}, found {actual:?}."
+	);
+}
+
+/// Verifies the upsample keeps indirect light on its own side of a depth edge between two walls facing the camera.
+#[test]
+fn indirect_diffuse_keeps_light_on_its_own_side_of_a_depth_edge() {
+	const FULL: u32 = 16;
+	const LOW: u32 = FULL / 2;
+	let (near_z, far_z) = (2.0, 10.0);
+	let depth: Vec<[f32; 4]> = (0..LOW * LOW)
+		.map(|index| [if index % LOW < LOW / 2 { near_z } else { far_z }, 0.0, 0.0, 1.0])
+		.collect();
+	let history: Vec<[f32; 4]> = (0..LOW * LOW)
+		.map(|index| {
+			if index % LOW < LOW / 2 {
+				[1.0, 0.0, 0.0, 1.0]
+			} else {
+				[0.0, 1.0, 0.0, 1.0]
+			}
+		})
+		.collect();
+	let normals = vec![SSGI_WALL_NORMAL; (LOW * LOW) as usize];
+	let images = [depth.as_slice(), normals.as_slice(), history.as_slice()];
+
+	let near_pixel = [FULL / 2 - 1, 4];
+	let near = sample_indirect_diffuse(
+		FULL,
+		images,
+		near_pixel,
+		pixel_position(near_pixel, FULL, near_z),
+		WALL_NORMAL,
+	);
+	let far_pixel = [FULL / 2, 4];
+	let far = sample_indirect_diffuse(FULL, images, far_pixel, pixel_position(far_pixel, FULL, far_z), WALL_NORMAL);
+
+	assert_indirect_diffuse(near, [1.0, 0.0, 0.0, 1.0], 0.0001);
+	assert_indirect_diffuse(far, [0.0, 1.0, 0.0, 1.0], 0.0001);
+}
+
+/// Verifies the upsample keeps light off a surface that touches the pixel's surface at nearly the same depth, as a
+/// floor meets the wall standing on it.
+#[test]
+fn indirect_diffuse_keeps_light_off_a_touching_surface() {
+	const FULL: u32 = 32;
+	let [depth, normals, history] = ssgi_contact_images(FULL / 2);
+	let images = [depth.as_slice(), normals.as_slice(), history.as_slice()];
+	let column = FULL / 2;
+	let full_depth = |row| ssgi_floor_depth(ssgi_ray_at(column, row, FULL), Some(SSGI_CONTACT_WALL_Z));
+	let floor_row = (0..FULL)
+		.find(|&row| full_depth(row) != SSGI_CONTACT_WALL_Z)
+		.expect("the wall stands on the floor");
+
+	let wall_pixel = [column, floor_row - 1];
+	let wall = sample_indirect_diffuse(
+		FULL,
+		images,
+		wall_pixel,
+		pixel_position(wall_pixel, FULL, SSGI_CONTACT_WALL_Z),
+		WALL_NORMAL,
+	);
+	let floor_pixel = [column, floor_row];
+	let floor = sample_indirect_diffuse(
+		FULL,
+		images,
+		floor_pixel,
+		pixel_position(floor_pixel, FULL, full_depth(floor_row)),
+		[0.0, 1.0, 0.0],
+	);
+
+	assert!(
+		wall[0] > 0.99,
+		"Expected the wall next to the floor to keep its light, found {wall:?}."
+	);
+	assert!(
+		floor[0] < 0.01,
+		"Expected no wall light on the floor next to it, found {floor:?}."
+	);
+}
+
+/// Verifies odd full extents keep a smooth radiance ramp centered on the full-resolution image.
+#[test]
+fn indirect_diffuse_centers_radiance_at_odd_extents() {
+	for full in [9, 17, 33] {
+		let low = full / 2;
+		let z = 5.0;
+		let depth = vec![[z, 0.0, 0.0, 1.0]; (low * low) as usize];
+		let normals = vec![SSGI_WALL_NORMAL; (low * low) as usize];
+		let history: Vec<[f32; 4]> = (0..low * low)
+			.map(|index| [(index % low) as f32 / (low - 1) as f32, 0.0, 0.0, 0.5])
+			.collect();
+		let pixel = [full / 2, full / 2];
+
+		let center = sample_indirect_diffuse(
+			full,
+			[&depth, &normals, &history],
+			pixel,
+			pixel_position(pixel, full, z),
+			WALL_NORMAL,
+		);
+
+		assert_indirect_diffuse(center, [0.5, 0.0, 0.0, 0.5], 0.00001);
 	}
 }

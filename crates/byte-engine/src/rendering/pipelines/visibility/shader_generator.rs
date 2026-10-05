@@ -298,8 +298,8 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		),
 		read_buffer("materials", "materials", MATERIAL_ARRAY, 1046),
 		sampled("ao", Node::combined_image_sampler(), 1051),
-		sampled("indirect_diffuse", Node::combined_image_sampler(), 1056),
 		sampled("contact_shadows", Node::combined_image_sampler(), 1058),
+		depth_pyramid_binding(),
 		sampled("depth_shadow_map", Node::combined_array_image_sampler(), 1052),
 		sampled("directional_shadow_depth_pyramid", Node::combined_image_sampler(), 1053),
 		sampled("environment_irradiance", Node::combined_cube_image_sampler(), 1054),
@@ -394,15 +394,66 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 	children.extend(base_bindings);
 	children.extend(material_evaluation_bindings);
 	children.extend(screen_space_reflection_scope());
+	children.extend(screen_space_indirect_diffuse_scope());
 	children.push(sample_texture);
 	children.extend(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)));
 	Node::scope("Visibility", children)
 }
 
+/// Declares mip zero of the linear depth pyramid, which holds half-resolution positive linear depth.
+///
+/// Reflection rays march it and the indirect diffuse upsample reads it. The slot mirrors
+/// [`super::layout::DEPTH_PYRAMID_BINDING`].
+fn depth_pyramid_binding() -> Node<'static> {
+	Node::binding("depth_pyramid", Node::combined_image_sampler(), 1060, true, false)
+}
+
+/// Declares the screen-space indirect diffuse helpers from [`sources`], with the bindings they read.
+///
+/// Opaque material evaluation reconstructs each pixel's indirect diffuse light from the half-resolution SSGI history
+/// with them, next to [`depth_pyramid_binding`], so SSGI writes no full-resolution image. The slots mirror
+/// [`super::layout::SSGI_NORMALS_BINDING`], [`super::layout::SSGI_VIEW_BINDING`], and
+/// [`super::layout::SSGI_HISTORY_BINDING`].
+fn screen_space_indirect_diffuse_scope() -> Vec<Node<'static>> {
+	let mut nodes = vec![
+		Node::binding("ssgi_normals", Node::combined_image_sampler(), 1047, true, false),
+		// The camera constants of the half-resolution SSGI images, as `ScreenViewData` lays them out.
+		Node::device_buffer_binding(
+			"ssgi_view",
+			Node::buffer(vec![
+				Node::member("pixel_to_ray_mul", "vec2f"),
+				Node::member("pixel_to_ray_add", "vec2f"),
+				Node::member("projection_pixels_y", "f32"),
+				Node::member("view_z_sign", "f32"),
+				Node::member("depth_unproject_numerator", "f32"),
+				Node::member("depth_unproject_denominator_offset", "f32"),
+			]),
+			1048,
+			true,
+			false,
+		),
+		Node::binding("ssgi_history", Node::combined_image_sampler(), 1056, true, false),
+	];
+	// Helpers follow the bindings they read, in dependency order.
+	nodes.extend(
+		[
+			(SSGI_STORED_NORMAL_SOURCE, "ssgi_stored_normal"),
+			(SSGI_SURFACE_WEIGHT_SOURCE, "ssgi_surface_weight"),
+			(
+				SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+				"sample_screen_space_indirect_diffuse",
+			),
+		]
+		.map(|(source, name)| parse_besl_function(source, name)),
+	);
+	nodes
+}
+
 /// Declares the screen-space reflection helpers from [`sources`], with the ray struct and bindings they read.
 ///
-/// Material evaluation traces its reflection rays with them, and writes this frame's radiance history for the next
-/// frame's rays. The slots mirror [`super::layout::REFLECTION_PARAMETERS_BINDING`] and the bindings after it.
+/// Material evaluation traces its reflection rays with them through [`depth_pyramid_binding`], and writes this
+/// frame's radiance history for the next frame's rays. The slots mirror
+/// [`super::layout::REFLECTION_PARAMETERS_BINDING`] and the bindings after it.
 fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	let mut nodes = vec![
 		// One ray's screen-space path. Screen position and 1/z are both linear along a projected line.
@@ -427,7 +478,6 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 			true,
 			false,
 		),
-		Node::binding("reflection_depth_pyramid", Node::combined_image_sampler(), 1060, true, false),
 		Node::binding("previous_radiance", Node::combined_image_sampler(), 1061, true, false),
 		Node::binding("radiance_history_map", Node::image("rgba16f"), 1062, false, true),
 	];

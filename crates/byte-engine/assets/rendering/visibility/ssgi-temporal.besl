@@ -62,7 +62,8 @@ SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
 
 // Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
 // texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
-// `ssgi-upscale.besl` holds the same decoder; keep both in sync with `encode_stored_normal` in `ssgi-trace.besl`.
+// Material evaluation's `ssgi_stored_normal` holds the same decoder; keep both in sync with `encode_stored_normal` in
+// `ssgi-trace.besl`.
 decode_stored_normal: fn (stored: vec4f) -> vec3f {
 	if (stored.x == 0.0 && stored.y == 0.0) {
 		return vec3f(0.0, 0.0, 0.0);

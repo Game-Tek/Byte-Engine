@@ -7,6 +7,7 @@
 
 use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
 
+use super::render_pass::ScreenViewData;
 use super::shader_data::{
 	LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
 };
@@ -185,7 +186,12 @@ pub(crate) const DIFFUSE_RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = st
 pub(crate) const LIGHTING_DATA_BINDING: ShaderResourceDescriptor =
 	buffer(1045, AccessPolicies::READ, std::mem::size_of::<LightingData>() as u32);
 pub(crate) const AO_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1051);
-pub(crate) const INDIRECT_DIFFUSE_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1056);
+/// The half-resolution SSGI history and normals, and the camera constants of their resolution, from which opaque
+/// material evaluation reconstructs each pixel's indirect diffuse light. See [`super::render_pass::SsgiTargets`].
+pub(crate) const SSGI_NORMALS_BINDING: ShaderResourceDescriptor = sampled_image(1047);
+pub(crate) const SSGI_VIEW_BINDING: ShaderResourceDescriptor =
+	buffer(1048, AccessPolicies::READ, std::mem::size_of::<ScreenViewData>() as u32);
+pub(crate) const SSGI_HISTORY_BINDING: ShaderResourceDescriptor = sampled_image(1056);
 pub(crate) const CONTACT_SHADOW_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1058);
 pub(crate) const SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1052).texture_view_type(TextureViewTypes::Texture2DArray);
@@ -211,7 +217,8 @@ pub(crate) const REFLECTION_PARAMETERS_BINDING: ShaderResourceDescriptor = buffe
 	AccessPolicies::READ,
 	std::mem::size_of::<ReflectionShaderParameters>() as u32,
 );
-pub(crate) const REFLECTION_DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1060);
+/// Mip zero of the linear depth pyramid, which reflection rays march and the indirect diffuse upsample reads.
+pub(crate) const DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1060);
 pub(crate) const PREVIOUS_RADIANCE_BINDING: ShaderResourceDescriptor = sampled_image(1061);
 pub(crate) const RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = storage_image(1062, AccessPolicies::WRITE);
 

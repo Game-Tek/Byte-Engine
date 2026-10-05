@@ -30,6 +30,7 @@ impl CommandBufferRecording<'_> {
 			descriptor_materialization_dirty: false,
 			descriptor_resources_initialized: false,
 			descriptor_heaps_bound: false,
+			unordered_group: None,
 			pending_rendering: None,
 			active_rendering: false,
 			active_render_extent: Extent::rectangle(0, 0),
@@ -194,6 +195,12 @@ impl CommandBufferRecording<'_> {
 		}
 		self.descriptor_resources_initialized = true;
 		consumptions.extend(additional_transitions);
+		if let Some(group) = &mut self.unordered_group {
+			// A resource's first consumption in the group was planned against the state from before the group, and
+			// that state stands for the whole group, so its later consumptions in the group record nothing.
+			consumptions.retain(|consumption| !group.contains(&consumption.handle));
+			group.extend(consumptions.iter().map(|consumption| consumption.handle));
+		}
 		// An empty batch records no barrier and changes no state, which is the common case for draws after the first.
 		if consumptions.is_empty() {
 			return TransitionStateUpdates::default();

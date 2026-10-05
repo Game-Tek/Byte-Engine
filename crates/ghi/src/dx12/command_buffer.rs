@@ -156,6 +156,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		)
 	}
 
+	fn unordered(&mut self, f: impl FnOnce(&mut Self)) {
+		self.device.unordered_group = Some(SmallVec::new());
+		f(self);
+		self.device.unordered_group = None;
+	}
+
 	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
 		self.device.record_top_level_acceleration_structure_build(
 			self.command_buffer,

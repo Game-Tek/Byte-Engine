@@ -145,6 +145,14 @@ pub trait CommandBufferRecording: Sized {
 		destination_layout: Layouts,
 	);
 
+	/// Records the commands `f` records as one unordered group, so the GPU can overlap its dispatches.
+	///
+	/// Inside the group no dispatch is ordered after another: a write one makes is neither complete nor visible when
+	/// another runs. Use it only when the group's dispatches touch disjoint memory, such as per-material evaluation
+	/// of a visibility buffer, where every pixel belongs to one material. The first command in the group still waits
+	/// for earlier work, and commands after the group wait for every command in it. Do not nest groups.
+	fn unordered(&mut self, f: impl FnOnce(&mut Self));
+
 	/// Submits the recorded commands for execution.
 	fn execute(self, synchronizer: SynchronizerHandle);
 }

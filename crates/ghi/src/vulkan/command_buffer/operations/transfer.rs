@@ -101,6 +101,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		)
 	}
 
+	fn unordered(&mut self, f: impl FnOnce(&mut Self)) {
+		self.unordered_group = Some(SmallVec::new());
+		f(self);
+		self.unordered_group = None;
+	}
+
 	fn transfer_texture(
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,

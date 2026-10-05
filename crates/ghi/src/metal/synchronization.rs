@@ -288,6 +288,9 @@ struct MetalResourceState {
 	scope: MetalEncoderScope,
 	/// The newest recording that made this access, so the state can be dropped once that recording has completed.
 	recording: u64,
+	/// The unordered group the access was made in, or `0` outside a group. Later uses in the same group plan no
+	/// hazard against it.
+	group: u64,
 }
 
 /// The `MetalBarrier` struct contains the precise inter-encoder and intra-encoder dependencies for one command.
@@ -428,6 +431,10 @@ pub(crate) struct MetalResourceTracker {
 	/// Completed recordings numbered above `completed_below`. Batches complete out of order, so these wait for
 	/// every recording before them to complete too.
 	completed_ahead: SmallVec<[u64; 8]>,
+	/// The unordered group being planned, or `0` outside a group. See [`Self::begin_unordered`].
+	group: u64,
+	/// The group number given out last. Numbers are never reused, so a state only ever matches its own group.
+	last_group: u64,
 	/// The hazards behind the barrier of the most recently planned command.
 	#[cfg(debug_assertions)]
 	hazards: SmallVec<[MetalHazard; 4]>,
@@ -464,6 +471,18 @@ impl MetalResourceTracker {
 		}
 		self.generation += 1;
 		true
+	}
+
+	/// Starts the unordered group of [`crate::command_buffer::CommandBufferRecording::unordered`]: until
+	/// [`Self::end_unordered`], a use plans no hazard against a state another use in the group recorded.
+	pub(crate) fn begin_unordered(&mut self) {
+		self.last_group += 1;
+		self.group = self.last_group;
+	}
+
+	/// Ends the unordered group [`Self::begin_unordered`] started.
+	pub(crate) fn end_unordered(&mut self) {
+		self.group = 0;
 	}
 
 	/// Plans one command's hazards against prior uses, then records its resulting resource states.
@@ -665,7 +684,10 @@ impl MetalResourceTracker {
 				continue;
 			};
 			for state in states.iter().filter(|state| state.region.overlaps(resource_use.region)) {
-				if !Self::has_hazard(state.access, resource_use.access) {
+				// The unordered group's caller promised its commands touch disjoint memory, so a state the group
+				// recorded is no hazard for its later commands.
+				let in_group = self.group != 0 && state.group == self.group;
+				if in_group || !Self::has_hazard(state.access, resource_use.access) {
 					continue;
 				}
 				#[cfg(debug_assertions)]
@@ -730,6 +752,8 @@ impl MetalResourceTracker {
 			{
 				// The state now also stands for this recording, so it stays until this recording completes.
 				state.recording = self.next_recording;
+				// This use was already planned against the state, so the group's later uses may skip it.
+				state.group = self.group;
 				return;
 			}
 			states.retain(|state| !resource_use.region.covers(state.region));
@@ -752,6 +776,7 @@ impl MetalResourceTracker {
 			access: resource_use.access,
 			scope,
 			recording: self.next_recording,
+			group: self.group,
 		});
 	}
 
@@ -770,6 +795,59 @@ mod tests {
 
 	fn descriptor_table(uses: &[MetalResourceUse]) -> DescriptorUses {
 		DescriptorUses::new(uses.iter().copied().collect())
+	}
+
+	#[test]
+	fn unordered_group_orders_only_against_work_outside_it() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		let write = buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch);
+		tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
+
+		tracker.begin_unordered();
+		let first = tracker.consume(scope, [write]);
+		let second = tracker.consume(scope, [write]);
+		tracker.end_unordered();
+		let read = tracker.consume(scope, [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Blit)]);
+		// A later group is a different group, so its first write waits for the read.
+		tracker.begin_unordered();
+		let later = tracker.consume(scope, [write]);
+		tracker.end_unordered();
+
+		assert_eq!(
+			(first.encoder_after, first.encoder_before),
+			(mtl::MTLStages::Blit, mtl::MTLStages::Dispatch)
+		);
+		assert!(!second.has_encoder_dependency() && !second.has_queue_dependency());
+		assert_eq!(
+			(read.encoder_after, read.encoder_before),
+			(mtl::MTLStages::Dispatch, mtl::MTLStages::Blit)
+		);
+		assert_eq!(read.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
+		assert_eq!(
+			(later.encoder_after, later.encoder_before),
+			(mtl::MTLStages::Blit, mtl::MTLStages::Dispatch)
+		);
+	}
+
+	#[test]
+	fn unordered_group_skips_descriptor_table_writes_between_its_dispatches() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		let descriptors = descriptor_table(&[
+			buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+			MetalResourceUse::buffer(BufferHandle(2), 0, 64, mtl::MTLStages::Dispatch, crate::AccessPolicies::READ),
+		]);
+		let mut settled = None;
+		tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
+
+		tracker.begin_unordered();
+		let first = tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
+		let second = tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
+		tracker.end_unordered();
+
+		assert_eq!(first.encoder_after, mtl::MTLStages::Blit);
+		assert!(!second.has_encoder_dependency() && !second.has_queue_dependency());
 	}
 
 	#[test]

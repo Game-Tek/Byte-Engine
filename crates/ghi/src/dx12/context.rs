@@ -63,6 +63,11 @@ pub struct Device {
 	/// Accesses that earlier images made to memory an image now reuses, by native resource key. The image's next
 	/// transition flushes them with a global barrier before its new contents are written.
 	image_alias_flushes: HashMap<usize, (D3D12_BARRIER_SYNC, D3D12_BARRIER_ACCESS)>,
+	/// The native resource keys transitioned so far in the open unordered group of
+	/// [`crate::command_buffer::CommandBufferRecording::unordered`], while one is open. A resource's later
+	/// unordered-access uses in the group get no UAV barrier, because the group's caller promised its commands touch
+	/// disjoint memory.
+	pub(super) unordered_group: Option<SmallVec<[usize; 16]>>,
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
 	/// Command and resource counts that tests and diagnostics read.

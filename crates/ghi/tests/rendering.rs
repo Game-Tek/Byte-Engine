@@ -32,6 +32,8 @@ use utils::{Extent, RGBA};
 
 #[path = "rendering/common.rs"]
 mod common;
+#[path = "rendering/compute.rs"]
+mod compute;
 #[path = "rendering/counters.rs"]
 mod counters;
 #[path = "rendering/image_groups.rs"]
@@ -101,6 +103,11 @@ fn nested_counters_resolve_when_the_outer_end_closes_the_frame() {
 fn counters_ended_after_the_last_dispatch_resolve() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	counters::counters_ended_after_the_last_dispatch_resolve(&mut device, queue_handle);
+}
+
+#[test]
+fn unordered_dispatches_write_their_own_rows() {
+	run(compute::unordered_dispatches_write_their_own_rows);
 }
 
 #[test]

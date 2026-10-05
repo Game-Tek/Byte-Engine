@@ -285,6 +285,19 @@ impl Device {
 		);
 	}
 
+	/// Notes one transition of `key` in the open unordered group and returns whether the group already transitioned
+	/// it, so the transition needs no UAV barrier. Always `false` outside a group.
+	fn unordered_group_covers(&mut self, key: usize) -> bool {
+		let Some(group) = &mut self.unordered_group else {
+			return false;
+		};
+		if group.contains(&key) {
+			return true;
+		}
+		group.push(key);
+		false
+	}
+
 	pub(crate) fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList7,
@@ -330,8 +343,9 @@ impl Device {
 		}
 		let key = Self::native_resource_key(resource);
 		let before = self.buffer_states.get(&key).copied().unwrap_or(BufferBarrierState::COMMON);
+		let ordered_by_group = self.unordered_group_covers(key);
 		if before == after {
-			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS {
+			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
 				barriers.buffer.push(Self::buffer_barrier(resource, before, after));
 				self.counters.uav_barrier_count += 1;
 			}
@@ -377,8 +391,9 @@ impl Device {
 			});
 		}
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
+		let ordered_by_group = self.unordered_group_covers(key);
 		if before == after {
-			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS {
+			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
 				barriers.texture.push(Self::texture_barrier(resource, before, after));
 				self.counters.uav_barrier_count += 1;
 			}

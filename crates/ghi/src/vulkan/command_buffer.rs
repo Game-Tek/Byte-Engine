@@ -40,6 +40,9 @@ pub struct CommandBufferRecording<'a> {
 	descriptor_materialization_dirty: bool,
 	descriptor_resources_initialized: bool,
 	descriptor_heaps_bound: bool,
+	/// The resources consumed so far in the open unordered group, while one is open. Their later consumptions in
+	/// the group plan no barrier, because the group's caller promised its commands touch disjoint memory.
+	unordered_group: Option<SmallVec<[Handles; 16]>>,
 	pending_rendering: Option<(Extent, SmallVec<[graphics_hardware_interface::AttachmentInformation; 8]>)>,
 	active_rendering: bool,
 	/// Extent of the render pass being recorded; scissors are clamped to it.

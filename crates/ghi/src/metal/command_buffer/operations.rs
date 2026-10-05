@@ -199,6 +199,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		)
 	}
 
+	fn unordered(&mut self, f: impl FnOnce(&mut Self)) {
+		// Metal 4 orders nothing inside an encoder by itself, so leaving out the barriers is all the group needs.
+		self.resource_tracker.begin_unordered();
+		f(self);
+		self.resource_tracker.end_unordered();
+	}
+
 	fn build_top_level_acceleration_structure(
 		&mut self,
 		acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,

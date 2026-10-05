@@ -245,6 +245,7 @@ impl Device {
 			images: Vec::new(),
 			image_groups: crate::image_group::ImageGroups::default(),
 			image_alias_flushes: HashMap::default(),
+			unordered_group: None,
 			image_group_heaps: Vec::new(),
 			samplers: Vec::new(),
 			descriptor_sets: Vec::new(),

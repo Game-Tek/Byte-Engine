@@ -130,19 +130,24 @@ impl MaterialEvaluationPass {
 				label.write_str(phase.label())?;
 				label.write_str(" Material Evaluation")
 			});
-			// Materials sharing a pipeline are adjacent, so the binding survives across consecutive dispatches.
-			let mut bound_pipeline = None;
-			for (name, index, pipeline) in active {
-				c.start_region(|label| label.write_str(name));
-				if bound_pipeline != Some(*pipeline) {
-					let c = c.bind_compute_pipeline(*pipeline);
-					c.bind_descriptor_sets(&descriptor_sets);
-					bound_pipeline = Some(*pipeline);
+			// Pixel mapping gave every pixel to exactly one material, so no two materials touch the same pixel of
+			// the lit target or the histories, and their dispatches can overlap instead of each waiting for the
+			// last one's writes.
+			c.unordered(|c| {
+				// Materials sharing a pipeline are adjacent, so the binding survives across consecutive dispatches.
+				let mut bound_pipeline = None;
+				for (name, index, pipeline) in active {
+					c.start_region(|label| label.write_str(name));
+					if bound_pipeline != Some(*pipeline) {
+						let c = c.bind_compute_pipeline(*pipeline);
+						c.bind_descriptor_sets(&descriptor_sets);
+						bound_pipeline = Some(*pipeline);
+					}
+					c.write_push_constant(0, [*index, phase as u32, u32::from(gtao), u32::from(ssgi)]);
+					c.indirect_dispatch(evaluation_dispatches, *index as usize);
+					c.end_region();
 				}
-				c.write_push_constant(0, [*index, phase as u32, u32::from(gtao), u32::from(ssgi)]);
-				c.indirect_dispatch(evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
+			});
 			c.end_region();
 		}
 	}

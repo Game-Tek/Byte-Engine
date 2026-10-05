@@ -43,44 +43,36 @@ fn is_keyword(name: &str) -> bool {
 
 /// Scalar, vector, and matrix type names, such as `float`, `float3`, `uint16_t2`, or `float4x4`.
 fn is_numeric_type(name: &str) -> bool {
-	const SCALAR_TYPES: [&str; 21] = [
-		"bool",
-		"int",
-		"uint",
-		"dword",
-		"half",
-		"float",
-		"double",
-		"min16float",
-		"min10float",
-		"min16int",
-		"min12int",
-		"min16uint",
-		"int16_t",
-		"uint16_t",
-		"int32_t",
-		"uint32_t",
-		"int64_t",
-		"uint64_t",
-		"float16_t",
-		"float32_t",
-		"float64_t",
-	];
+	// Split off a vector size `N` or a matrix shape `RxC`, with every size in 1 to 4. No scalar name ends in a digit,
+	// so the suffix is unambiguous and one lookup checks the rest.
+	let is_size = |byte: &u8| (b'1'..=b'4').contains(byte);
+	let scalar = match name.as_bytes() {
+		[.., rows, b'x', columns] if is_size(rows) && is_size(columns) => &name[..name.len() - 3],
+		[.., size] if is_size(size) => &name[..name.len() - 1],
+		_ => name,
+	};
 
-	/// Reports whether `suffix` is empty, a vector size `N`, or a matrix shape `RxC`, with every size in 1 to 4.
-	fn is_shape_suffix(suffix: &str) -> bool {
-		let is_size = |byte: &u8| (b'1'..=b'4').contains(byte);
-		match suffix.as_bytes() {
-			[] => true,
-			[size] => is_size(size),
-			[rows, b'x', columns] => is_size(rows) && is_size(columns),
-			_ => false,
-		}
-	}
-
-	SCALAR_TYPES
-		.iter()
-		.any(|scalar| name.strip_prefix(scalar).is_some_and(is_shape_suffix))
+	matches!(
+		scalar,
+		"bool"
+			| "int" | "uint"
+			| "dword" | "half"
+			| "float" | "double"
+			| "min16float"
+			| "min10float"
+			| "min16int"
+			| "min12int"
+			| "min16uint"
+			| "int16_t"
+			| "uint16_t"
+			| "int32_t"
+			| "uint32_t"
+			| "int64_t"
+			| "uint64_t"
+			| "float16_t"
+			| "float32_t"
+			| "float64_t"
+	)
 }
 
 /// Resource, sampler, stream, and ray-tracing object type names.

@@ -57,22 +57,23 @@ impl<V, T> Curve<V, T> {
 
 	/// Splits glTF-style interleaved `[in_tangent, value, out_tangent]` triplets into a cubic spline curve.
 	///
-	/// `map_value` converts each key value, such as normalizing rotations, and `map_tangent` converts each tangent
-	/// without changing its magnitude.
-	pub fn cubic_spline_from_triplets<R: Copy, E>(
+	/// `map_value` converts each key value, such as normalizing rotations; tangents are kept as authored.
+	pub fn cubic_spline_from_triplets<E>(
 		times: Vec<f32>,
-		triplets: &[[R; 3]],
-		mut map_value: impl FnMut(R) -> Result<V, E>,
-		mut map_tangent: impl FnMut(R) -> T,
-	) -> Result<Self, E> {
+		triplets: &[[T; 3]],
+		mut map_value: impl FnMut(T) -> Result<V, E>,
+	) -> Result<Self, E>
+	where
+		T: Copy,
+	{
 		let mut in_tangents = Vec::with_capacity(triplets.len());
 		let mut values = Vec::with_capacity(triplets.len());
 		let mut out_tangents = Vec::with_capacity(triplets.len());
 
 		for [incoming, value, outgoing] in triplets {
-			in_tangents.push(map_tangent(*incoming));
+			in_tangents.push(*incoming);
 			values.push(map_value(*value)?);
-			out_tangents.push(map_tangent(*outgoing));
+			out_tangents.push(*outgoing);
 		}
 
 		Ok(Self::CubicSpline {
@@ -85,10 +86,8 @@ impl<V, T> Curve<V, T> {
 
 	/// Counts the heap bytes this curve's key storage owns.
 	fn estimated_bytes(&self) -> usize {
-		let value_bytes = |values: &Vec<V>| values.capacity().saturating_mul(std::mem::size_of::<V>());
-		let tangent_bytes = |tangents: &Vec<T>| tangents.capacity().saturating_mul(std::mem::size_of::<T>());
 		let (times, key_bytes) = match self {
-			Self::Step { times, values } | Self::Linear { times, values } => (times, value_bytes(values)),
+			Self::Step { times, values } | Self::Linear { times, values } => (times, heap_bytes(values)),
 			Self::CubicSpline {
 				times,
 				values,
@@ -96,60 +95,75 @@ impl<V, T> Curve<V, T> {
 				out_tangents,
 			} => (
 				times,
-				value_bytes(values)
-					.saturating_add(tangent_bytes(in_tangents))
-					.saturating_add(tangent_bytes(out_tangents)),
+				heap_bytes(values)
+					.saturating_add(heap_bytes(in_tangents))
+					.saturating_add(heap_bytes(out_tangents)),
 			),
 		};
 
-		times
-			.capacity()
-			.saturating_mul(std::mem::size_of::<f32>())
-			.saturating_add(key_bytes)
+		heap_bytes(times).saturating_add(key_bytes)
 	}
 }
 
-/// The `CurveComponents` trait exposes the components of a curve value or tangent for finiteness checks.
-trait CurveComponents {
-	fn is_finite(&self) -> bool;
+/// Counts the heap bytes a vector's allocation reserves.
+fn heap_bytes<X>(items: &Vec<X>) -> usize {
+	items.capacity().saturating_mul(std::mem::size_of::<X>())
 }
 
-impl CurveComponents for Vector<ParentSpace> {
-	fn is_finite(&self) -> bool {
-		self.to_array().iter().all(|component| component.is_finite())
+/// The `CurveComponents` trait lets validation and samplers read a curve value or tangent as its `N` raw components.
+pub trait CurveComponents<const N: usize>: Copy {
+	fn components(self) -> [f32; N];
+}
+
+impl CurveComponents<3> for Vector<ParentSpace> {
+	fn components(self) -> [f32; 3] {
+		self.to_array()
 	}
 }
 
-impl CurveComponents for Scale {
-	fn is_finite(&self) -> bool {
-		self.to_array().iter().all(|component| component.is_finite())
+impl CurveComponents<3> for Scale {
+	fn components(self) -> [f32; 3] {
+		self.to_array()
 	}
 }
 
-/// An orientation is finite by construction.
-impl CurveComponents for Orientation {
-	fn is_finite(&self) -> bool {
-		true
+impl CurveComponents<4> for Orientation {
+	fn components(self) -> [f32; 4] {
+		self.to_array()
 	}
 }
 
-impl CurveComponents for [f32; 4] {
-	fn is_finite(&self) -> bool {
-		self.iter().all(|component| component.is_finite())
+/// Rotation tangents are quaternion derivatives, which are already raw components.
+impl CurveComponents<4> for [f32; 4] {
+	fn components(self) -> [f32; 4] {
+		self
 	}
 }
 
 /// Validates key timing, cardinality, and finite values and tangents before CPU graph evaluation.
-fn validate_curve<V: CurveComponents, T: CurveComponents>(
+fn validate_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
 	curve: &Curve<V, T>,
 	duration: f32,
 	track: usize,
 	path: &'static str,
 ) -> Result<(), SolveError> {
-	validate_times_and_values(curve.times(), curve.values(), duration, track, path)?;
+	let (times, values) = (curve.times(), curve.values());
+	if times.is_empty() || times.len() != values.len() {
+		return invalid_animation(format!(
+			"track {track} {path} key times and values do not have the same non-zero length"
+		));
+	}
+	if times.iter().any(|time| !time.is_finite() || *time < 0.0 || *time > duration) {
+		return invalid_animation(format!("track {track} {path} contains a time outside the clip duration"));
+	}
+	if times.windows(2).any(|pair| pair[0] >= pair[1]) {
+		return invalid_animation(format!("track {track} {path} times are not strictly increasing"));
+	}
+	if !values.iter().flat_map(|value| value.components()).all(f32::is_finite) {
+		return invalid_animation(format!("track {track} {path} contains a non-finite value"));
+	}
 
 	if let Curve::CubicSpline {
-		times,
 		in_tangents,
 		out_tangents,
 		..
@@ -158,7 +172,12 @@ fn validate_curve<V: CurveComponents, T: CurveComponents>(
 		if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
 			return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
 		}
-		if !in_tangents.iter().chain(out_tangents).all(CurveComponents::is_finite) {
+		if !in_tangents
+			.iter()
+			.chain(out_tangents)
+			.flat_map(|tangent| tangent.components())
+			.all(f32::is_finite)
+		{
 			return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
 		}
 	}
@@ -206,12 +225,7 @@ impl Animation {
 			.skeleton
 			.id
 			.capacity()
-			.saturating_add(
-				skeleton
-					.nodes
-					.capacity()
-					.saturating_mul(std::mem::size_of::<crate::resources::skeleton::SkeletonNode>()),
-			)
+			.saturating_add(heap_bytes(&skeleton.nodes))
 			.saturating_add(
 				skeleton
 					.nodes
@@ -223,7 +237,7 @@ impl Animation {
 
 		std::mem::size_of::<Self>()
 			.saturating_add(self.name.as_ref().map_or(0, String::capacity))
-			.saturating_add(self.tracks.capacity().saturating_mul(std::mem::size_of::<NodeTrack>()))
+			.saturating_add(heap_bytes(&self.tracks))
 			.saturating_add(track_bytes)
 			.saturating_add(skeleton_bytes)
 	}
@@ -326,31 +340,6 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 	Ok(())
 }
 
-/// Validates a key sequence shared by step, linear, and cubic curve representations.
-fn validate_times_and_values<V: CurveComponents>(
-	times: &[f32],
-	values: &[V],
-	duration: f32,
-	track: usize,
-	path: &'static str,
-) -> Result<(), SolveError> {
-	if times.is_empty() || times.len() != values.len() {
-		return invalid_animation(format!(
-			"track {track} {path} key times and values do not have the same non-zero length"
-		));
-	}
-	if times.iter().any(|time| !time.is_finite() || *time < 0.0 || *time > duration) {
-		return invalid_animation(format!("track {track} {path} contains a time outside the clip duration"));
-	}
-	if times.windows(2).any(|pair| pair[0] >= pair[1]) {
-		return invalid_animation(format!("track {track} {path} times are not strictly increasing"));
-	}
-	if !values.iter().all(CurveComponents::is_finite) {
-		return invalid_animation(format!("track {track} {path} contains a non-finite value"));
-	}
-	Ok(())
-}
-
 fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
 	Err(SolveError::DeserializationFailed(format!(
 		"Animation clip is invalid. The most likely cause is malformed imported animation data: {reason}."
@@ -366,16 +355,18 @@ mod tests {
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		resources::skeleton::{LocalTransform, SkeletonModel, SkeletonNode},
+		resources::skeleton::{SkeletonModel, tests::node},
 	};
 
 	async fn skeleton_reference(storage: &TestStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
 		let skeleton = SkeletonModel {
 			nodes: (0..node_count)
-				.map(|index| SkeletonNode {
-					name: Some(format!("node-{index}")),
-					parent: index.checked_sub(1).map(|parent| parent as u32),
-					rest_local: LocalTransform::identity(),
+				.map(|index| {
+					node(
+						Some(&format!("node-{index}")),
+						index.checked_sub(1).map(|parent| parent as u32),
+						[0.0; 3],
+					)
 				})
 				.collect(),
 		};

@@ -112,7 +112,7 @@ impl TryFrom<Axis3> for UnitVector {
 	type Error = NormalizationError;
 
 	fn try_from(value: Axis3) -> Result<Self, NormalizationError> {
-		UnitVector::try_from_vector(Vector::new(value.x, value.y, value.z))
+		Vector::new(value.x, value.y, value.z).normalized()
 	}
 }
 

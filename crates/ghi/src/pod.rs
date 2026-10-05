@@ -47,8 +47,8 @@ pub type I32 = i32;
 pub type F16 = f16;
 pub type F32 = f32;
 
-macro_rules! shader_vector {
-	($(#[$meta:meta])* $name:ident, $scalar:ty, $count:literal, [$($component:ident),+]) => {
+macro_rules! shader_vectors {
+	($($(#[$meta:meta])* $name:ident($scalar:ty, $count:literal; $($component:ident),+);)+) => {$(
 		$(#[$meta])*
 		#[repr(C)]
 		#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -77,96 +77,38 @@ macro_rules! shader_vector {
 				[$(value.$component),+]
 			}
 		}
-	};
+	)+};
 }
 
-shader_vector!(
+shader_vectors! {
 	/// The shader `vec2u16`.
-	Vec2u16,
-	u16,
-	2,
-	[x, y]
-);
-shader_vector!(
+	Vec2u16(u16, 2; x, y);
 	/// The shader `vec4u16`.
-	Vec4u16,
-	u16,
-	4,
-	[x, y, z, w]
-);
-shader_vector!(
+	Vec4u16(u16, 4; x, y, z, w);
 	/// The shader `vec2u`.
-	Vec2u,
-	u32,
-	2,
-	[x, y]
-);
-shader_vector!(
+	Vec2u(u32, 2; x, y);
 	/// The shader `vec3u`.
-	Vec3u,
-	u32,
-	3,
-	[x, y, z]
-);
-shader_vector!(
+	Vec3u(u32, 3; x, y, z);
 	/// The shader `vec4u`.
-	Vec4u,
-	u32,
-	4,
-	[x, y, z, w]
-);
-shader_vector!(
+	Vec4u(u32, 4; x, y, z, w);
 	/// The shader `vec2i`.
-	Vec2i,
-	i32,
-	2,
-	[x, y]
-);
-shader_vector!(
+	Vec2i(i32, 2; x, y);
 	/// The shader `vec2f16`.
-	Vec2f16,
-	f16,
-	2,
-	[x, y]
-);
-shader_vector!(
+	Vec2f16(f16, 2; x, y);
 	/// The shader `vec3f16`.
-	Vec3f16,
-	f16,
-	3,
-	[x, y, z]
-);
-shader_vector!(
+	Vec3f16(f16, 3; x, y, z);
 	/// The shader `vec4f16`.
-	Vec4f16,
-	f16,
-	4,
-	[x, y, z, w]
-);
-shader_vector!(
+	Vec4f16(f16, 4; x, y, z, w);
 	/// The shader `vec2f`.
-	Vec2f,
-	f32,
-	2,
-	[x, y]
-);
-shader_vector!(
+	Vec2f(f32, 2; x, y);
 	/// The shader `vec3f`.
-	Vec3f,
-	f32,
-	3,
-	[x, y, z]
-);
-shader_vector!(
+	Vec3f(f32, 3; x, y, z);
 	/// The shader `vec4f`.
-	Vec4f,
-	f32,
-	4,
-	[x, y, z, w]
-);
+	Vec4f(f32, 4; x, y, z, w);
+}
 
-macro_rules! shader_matrix {
-	($(#[$meta:meta])* $name:ident, $column:ident, $scalar:ty, $rows:literal, $count:literal, [$($component:ident),+]) => {
+macro_rules! shader_matrices {
+	($($(#[$meta:meta])* $name:ident($column:ident, $scalar:ty, $rows:literal, $count:literal; $($component:ident),+);)+) => {$(
 		$(#[$meta])*
 		#[repr(C)]
 		#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -191,60 +133,31 @@ macro_rules! shader_matrix {
 				[$(value.$component.into()),+]
 			}
 		}
-	};
+	)+};
 }
 
-shader_matrix!(
+shader_matrices! {
 	/// The shader `mat2f`, as two [`Vec2f`] columns.
-	Mat2f,
-	Vec2f,
-	f32,
-	2,
-	2,
-	[x, y]
-);
-shader_matrix!(
+	Mat2f(Vec2f, f32, 2, 2; x, y);
 	/// The shader `mat3f`, as three [`Vec3f`] columns.
-	Mat3f,
-	Vec3f,
-	f32,
-	3,
-	3,
-	[x, y, z]
-);
-shader_matrix!(
+	Mat3f(Vec3f, f32, 3, 3; x, y, z);
 	/// The shader `mat4f`, as four [`Vec4f`] columns.
-	Mat4f,
-	Vec4f,
-	f32,
-	4,
-	4,
-	[x, y, z, w]
-);
-shader_matrix!(
+	Mat4f(Vec4f, f32, 4, 4; x, y, z, w);
 	/// The shader `mat4x3f`, as four [`Vec3f`] columns.
-	Mat4x3f,
-	Vec3f,
-	f32,
-	3,
-	4,
-	[x, y, z, w]
-);
+	Mat4x3f(Vec3f, f32, 3, 4; x, y, z, w);
+}
 
 /// Lays out an engine matrix the way the platform's shaders multiply `mat4f`: Metal reads its columns, the other
 /// backends read its rows.
 impl From<math::Matrix> for Mat4f {
 	fn from(value: math::Matrix) -> Self {
-		let element = |outer: usize, inner: usize| {
-			if cfg!(target_os = "macos") {
-				value[(inner, outer)]
-			} else {
-				value[(outer, inner)]
-			}
-		};
-		Self::from(std::array::from_fn::<_, 4, _>(|outer| {
-			std::array::from_fn(|inner| element(outer, inner))
-		}))
+		// The engine matrix stores its elements row by row.
+		let rows: [[f32; 4]; 4] = bytemuck::cast(value.m);
+		Self::from(if cfg!(target_os = "macos") {
+			std::array::from_fn(|column| rows.map(|row| row[column]))
+		} else {
+			rows
+		})
 	}
 }
 

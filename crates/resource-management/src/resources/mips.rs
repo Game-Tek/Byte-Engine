@@ -23,50 +23,10 @@ pub(crate) struct MipLevel<'a> {
 	pub(crate) data: &'a [u8],
 }
 
-const MAX_MIP_LEVELS: usize = u32::BITS as usize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OwnedMipRange {
-	width: u32,
-	height: u32,
-	offset: usize,
-	size: usize,
-}
-
-impl OwnedMipRange {
-	const EMPTY: Self = Self {
-		width: 0,
-		height: 0,
-		offset: 0,
-		size: 0,
-	};
-}
-
-/// The `OwnedMipChain` struct holds the filtered levels below a base level until the CPU path encodes them.
-///
-/// The chain uses one allocation for all texels and keeps its bounded level metadata inline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OwnedMipChain {
-	levels: [OwnedMipRange; MAX_MIP_LEVELS],
-	level_count: usize,
-	data: Box<[u8]>,
-}
-
-impl OwnedMipChain {
-	/// Returns each generated level in order without allocating view metadata.
-	fn levels(&self) -> impl ExactSizeIterator<Item = MipLevel<'_>> + '_ {
-		self.levels[..self.level_count].iter().map(|level| MipLevel {
-			width: level.width,
-			height: level.height,
-			data: &self.data[level.offset..level.offset + level.size],
-		})
-	}
-}
-
 /// The `MipGenerator` enum selects where material importers filter and block-compress texture mip chains.
 ///
 /// Material importers share one generator and call [`Self::encode_mip_chain`] once per material texture, after
-/// [`crate::processors::processor::implementations::image::process_image_with_mips_in`] sized the stored chain.
+/// [`crate::processors::image::process_image_in`] sized the stored chain.
 /// `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
 /// path for requests it can't serve or whose GPU work fails.
 pub enum MipGenerator {
@@ -112,45 +72,35 @@ impl MipGenerator {
 			}
 		}
 
-		encode_mip_chain_on_cpu(output_format, gamma, width, height, base_level, output)
-	}
-}
+		// The CPU path filters and encodes on the calling thread.
+		let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
+			.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
+		if output.len() != expected {
+			return Err(MipGenerationError::BufferSizeMismatch {
+				expected,
+				got: output.len(),
+			});
+		}
 
-/// Filters and encodes a whole mip chain on the calling thread; see [`MipGenerator::encode_mip_chain`] for the contract.
-pub(crate) fn encode_mip_chain_on_cpu(
-	output_format: Formats,
-	gamma: Gamma,
-	width: u32,
-	height: u32,
-	base_level: &[u8],
-	output: &mut [u8],
-) -> Result<(), MipGenerationError> {
-	let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
-		.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
-	if output.len() != expected {
-		return Err(MipGenerationError::BufferSizeMismatch {
-			expected,
-			got: output.len(),
-		});
-	}
-
-	let lower_levels = generate_owned_lower_mip_chain(filtering_format(output_format), gamma, width, height, base_level)?;
-	encode_levels(
-		output_format,
-		std::iter::once(MipLevel {
+		let (bytes_per_pixel, lower_levels) =
+			generate_lower_levels(filtering_format(output_format), gamma, width, height, base_level)?;
+		encode_levels(
+			output_format,
 			width,
 			height,
-			data: base_level,
-		})
-		.chain(lower_levels.levels()),
-		output,
-	);
-	Ok(())
+			bytes_per_pixel,
+			base_level,
+			&lower_levels,
+			output,
+		);
+		Ok(())
+	}
 }
 
 /// Returns the levels below a `width` by `height` base level as stored back to back in `data`.
 ///
-/// This is the layout the GPU path reads filtered levels back in, with `bytes_per_pixel` per texel.
+/// The CPU filter writes lower levels in this layout and the GPU path reads them back in it, with `bytes_per_pixel`
+/// per texel.
 pub(crate) fn packed_lower_levels(
 	width: u32,
 	height: u32,
@@ -179,12 +129,27 @@ pub(crate) fn packed_lower_levels_size(width: u32, height: u32, bytes_per_pixel:
 		.sum()
 }
 
-/// Encodes already filtered `levels`, base level first, back to back into `output` as `output_format`.
+/// Encodes a `width` by `height` `base_level` and the already filtered `lower_levels` below it, back to back into
+/// `output` as `output_format`.
 ///
-/// `output` holds at least the levels' encoded sizes; the GPU path shares this step for the levels it filtered.
-pub(crate) fn encode_levels<'a>(output_format: Formats, levels: impl Iterator<Item = MipLevel<'a>>, output: &mut [u8]) {
+/// `lower_levels` holds texels of `bytes_per_pixel` bytes laid out as [`packed_lower_levels`] reads them, and `output`
+/// holds at least the levels' encoded sizes. The GPU path shares this step for the levels it filtered.
+pub(crate) fn encode_levels(
+	output_format: Formats,
+	width: u32,
+	height: u32,
+	bytes_per_pixel: usize,
+	base_level: &[u8],
+	lower_levels: &[u8],
+	output: &mut [u8],
+) {
+	let base_level = MipLevel {
+		width,
+		height,
+		data: base_level,
+	};
 	let mut remaining = output;
-	for level in levels {
+	for level in std::iter::once(base_level).chain(packed_lower_levels(width, height, bytes_per_pixel, lower_levels)) {
 		let extent = Extent::rectangle(level.width, level.height);
 		let size = encoded_mip_level_size(output_format, extent).expect("A storable chain has a stored size for every level");
 		let (destination, rest) = std::mem::take(&mut remaining).split_at_mut(size);
@@ -273,91 +238,50 @@ pub fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> 
 /// Returns the stored size of one level in a format the image processor can encode.
 pub(crate) fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<usize> {
 	match format {
-		Formats::BC5
-		| Formats::BC5SNORM
-		| Formats::BC7
-		| Formats::BC7SRGB
-		| Formats::RG8
-		| Formats::RG16
-		| Formats::RGBA8
-		| Formats::RGBA8SRGB
-		| Formats::R16F
-		| Formats::RGBA16
-		| Formats::RGBA16F => format.level_size(extent),
 		Formats::RGB8 | Formats::RGB16 => None,
+		format => format.level_size(extent),
 	}
 }
 
-/// Lays out every level below the base level back to back and returns the ranges, their count, and the total size.
-fn lower_level_layout(
-	width: u32,
-	height: u32,
-	bytes_per_pixel: usize,
-) -> Result<([OwnedMipRange; MAX_MIP_LEVELS], usize, usize), MipGenerationError> {
-	let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
-	let mut level_count = 0usize;
-	let mut offset = 0usize;
-	for (level_width, level_height) in mip_extents(width, height).skip(1) {
-		let size = expected_size(level_width, level_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
-		levels[level_count] = OwnedMipRange {
-			width: level_width,
-			height: level_height,
-			offset,
-			size,
-		};
-		offset = offset.checked_add(size).ok_or(MipGenerationError::DimensionsTooLarge)?;
-		level_count += 1;
-	}
-	Ok((levels, level_count, offset))
-}
-
-/// Generates packed lower mip levels using one output allocation.
-fn generate_owned_lower_mip_chain(
+/// Filters the levels below a base level into one allocation and returns them with their texel size.
+///
+/// The levels are laid out as [`packed_lower_levels`] reads them.
+fn generate_lower_levels(
 	format: Formats,
 	gamma: Gamma,
 	width: u32,
 	height: u32,
 	base_level: &[u8],
-) -> Result<OwnedMipChain, MipGenerationError> {
+) -> Result<(usize, Vec<u8>), MipGenerationError> {
 	if width == 0 || height == 0 {
 		return Err(MipGenerationError::ZeroDimensions);
 	}
 	let bytes_per_pixel = bytes_per_pixel(format).ok_or(MipGenerationError::UnsupportedFormat(format))?;
-	let expected_base_size = expected_size(width, height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
+	let expected_base_size = (width as usize)
+		.checked_mul(height as usize)
+		.and_then(|texels| texels.checked_mul(bytes_per_pixel))
+		.ok_or(MipGenerationError::DimensionsTooLarge)?;
 	if base_level.len() != expected_base_size {
 		return Err(MipGenerationError::BufferSizeMismatch {
 			expected: expected_base_size,
 			got: base_level.len(),
 		});
 	}
-	let (levels, level_count, total_size) = lower_level_layout(width, height, bytes_per_pixel)?;
-
-	let mut data = vec![0_u8; total_size];
-	let (mut source_width, mut source_height) = (width, height);
-	let mut source = None;
-	for level in &levels[..level_count] {
-		let (completed, destination) = data.split_at_mut(level.offset);
-		// Each level filters the one before it, which the previous iteration just wrote.
-		let source_bytes = source
-			.map(|range: std::ops::Range<usize>| &completed[range])
-			.unwrap_or(base_level);
-		downsample_level(
-			format,
-			gamma,
-			source_width,
-			source_height,
-			source_bytes,
-			&mut destination[..level.size],
-		)?;
-		source = Some(level.offset..level.offset + level.size);
-		(source_width, source_height) = (level.width, level.height);
+	// The lower levels together are smaller than the base level, so their sizes can't overflow.
+	let mut data = vec![0_u8; packed_lower_levels_size(width, height, bytes_per_pixel)];
+	// Each level filters the one before it, which the previous iteration just wrote.
+	let (mut source, mut remaining) = (base_level, data.as_mut_slice());
+	for ((source_width, source_height), (level_width, level_height)) in
+		mip_extents(width, height).zip(mip_extents(width, height).skip(1))
+	{
+		let (destination, rest) =
+			std::mem::take(&mut remaining).split_at_mut(level_width as usize * level_height as usize * bytes_per_pixel);
+		downsample_level(format, gamma, source_width, source_height, source, destination)?;
+		source = destination;
+		remaining = rest;
 	}
 
-	Ok(OwnedMipChain {
-		levels,
-		level_count,
-		data: data.into_boxed_slice(),
-	})
+	Ok((bytes_per_pixel, data))
 }
 
 /// Returns the texel size of a format the CPU downsampler supports.
@@ -366,10 +290,6 @@ fn bytes_per_pixel(format: Formats) -> Option<usize> {
 		Formats::R16F | Formats::RGBA16F => None,
 		format => format.texel_bytes(),
 	}
-}
-
-fn expected_size(width: u32, height: u32, bytes_per_pixel: usize) -> Option<usize> {
-	(width as usize).checked_mul(height as usize)?.checked_mul(bytes_per_pixel)
 }
 
 /// Downsamples one level according to format and channel depth.
@@ -382,24 +302,15 @@ fn downsample_level(
 	destination: &mut [u8],
 ) -> Result<(), MipGenerationError> {
 	match format {
-		Formats::RGB8 => downsample_u8::<3>(source_width, source_height, source, destination),
+		Formats::RGB8 => downsample_unorm::<3, 1>(source_width, source_height, source, destination),
 		Formats::RGBA8 | Formats::RGBA8SRGB if gamma == Gamma::SRGB => {
 			downsample_rgba8_srgb(source_width, source_height, source, destination)
 		}
-		Formats::RGBA8 | Formats::RGBA8SRGB => downsample_u8::<4>(source_width, source_height, source, destination),
-		Formats::RGB16 => downsample_u16::<3>(source_width, source_height, source, destination),
-		Formats::RGBA16 => downsample_u16::<4>(source_width, source_height, source, destination),
+		Formats::RGBA8 | Formats::RGBA8SRGB => downsample_unorm::<4, 1>(source_width, source_height, source, destination),
+		Formats::RGB16 => downsample_unorm::<3, 2>(source_width, source_height, source, destination),
+		Formats::RGBA16 => downsample_unorm::<4, 2>(source_width, source_height, source, destination),
 		// Packed RG formats filter as their RGBA filtering format and are truncated when each level is encoded.
-		Formats::RG8
-		| Formats::RG16
-		| Formats::R16F
-		| Formats::RGBA16F
-		| Formats::BC5
-		| Formats::BC5SNORM
-		| Formats::BC7
-		| Formats::BC7SRGB => {
-			return Err(MipGenerationError::UnsupportedFormat(format));
-		}
+		_ => return Err(MipGenerationError::UnsupportedFormat(format)),
 	}
 
 	Ok(())
@@ -411,6 +322,11 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 	let source_height = source_height as usize;
 	let destination_width = (source_width / 2).max(1);
 	let destination_height = (source_height / 2).max(1);
+	// Each 8-bit code always decodes to the same linear value, so decoding the 256 codes once per process gives
+	// bit-identical averages without 12 powf calls per destination texel, even for the smallest levels.
+	static TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
+		std::sync::LazyLock::new(|| std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0)));
+	let to_linear = &*TO_LINEAR;
 
 	for y in 0..destination_height {
 		let y0 = (y * 2).min(source_height - 1);
@@ -428,7 +344,7 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 			for channel in 0..3 {
 				let linear_average = sources
 					.iter()
-					.map(|source_pixel| srgb_u8_to_linear(source[*source_pixel + channel]))
+					.map(|source_pixel| to_linear[usize::from(source[*source_pixel + channel])])
 					.sum::<f32>() * 0.25;
 				destination[destination_pixel + channel] = linear_to_srgb_u8(linear_average);
 			}
@@ -441,22 +357,36 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 	}
 }
 
-fn srgb_u8_to_linear(value: u8) -> f32 {
-	srgb_to_linear(f32::from(value) / 255.0)
-}
-
 fn linear_to_srgb_u8(value: f32) -> u8 {
 	(linear_to_srgb(value).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Downsamples an 8-bit format level with SIMD lane arithmetic for channel averaging.
-fn downsample_u8<const CHANNELS: usize>(source_width: u32, source_height: u32, source: &[u8], destination: &mut [u8]) {
-	debug_assert!(CHANNELS > 0 && CHANNELS <= 4);
+/// Downsamples a level of `CHANNELS` unsigned-normalized samples, each `BYTES` little-endian bytes wide, with SIMD
+/// lane arithmetic for channel averaging.
+fn downsample_unorm<const CHANNELS: usize, const BYTES: usize>(
+	source_width: u32,
+	source_height: u32,
+	source: &[u8],
+	destination: &mut [u8],
+) {
+	debug_assert!(CHANNELS > 0 && CHANNELS <= 4 && BYTES <= 2);
 
 	let source_width = source_width as usize;
 	let source_height = source_height as usize;
 	let destination_width = (source_width / 2).max(1);
 	let destination_height = (source_height / 2).max(1);
+	let texel_bytes = CHANNELS * BYTES;
+	// Reads one texel's samples into SIMD lanes, leaving the unused lanes zero.
+	let load = |texel: usize| {
+		Simd::<u32, 4>::from_array(std::array::from_fn(|channel| {
+			let at = texel * texel_bytes + channel * BYTES;
+			match (channel < CHANNELS, BYTES) {
+				(false, _) => 0,
+				(true, 1) => u32::from(source[at]),
+				(true, _) => u32::from(u16::from_le_bytes([source[at], source[at + 1]])),
+			}
+		}))
+	};
 
 	for y in 0..destination_height {
 		let y0 = (y * 2).min(source_height - 1);
@@ -465,99 +395,22 @@ fn downsample_u8<const CHANNELS: usize>(source_width: u32, source_height: u32, s
 		for x in 0..destination_width {
 			let x0 = (x * 2).min(source_width - 1);
 			let x1 = (x0 + 1).min(source_width - 1);
-
-			let top_left = (y0 * source_width + x0) * CHANNELS;
-			let top_right = (y0 * source_width + x1) * CHANNELS;
-			let bottom_left = (y1 * source_width + x0) * CHANNELS;
-			let bottom_right = (y1 * source_width + x1) * CHANNELS;
-			let destination_pixel = (y * destination_width + x) * CHANNELS;
-
-			let a = load_u8_pixel::<CHANNELS>(source, top_left);
-			let b = load_u8_pixel::<CHANNELS>(source, top_right);
-			let c = load_u8_pixel::<CHANNELS>(source, bottom_left);
-			let d = load_u8_pixel::<CHANNELS>(source, bottom_right);
+			let (a, b) = (load(y0 * source_width + x0), load(y0 * source_width + x1));
+			let (c, d) = (load(y1 * source_width + x0), load(y1 * source_width + x1));
 			let average = (a + b + c + d + Simd::splat(2)) / Simd::splat(4);
-			let lanes = average.to_array();
-
-			for channel in 0..CHANNELS {
-				destination[destination_pixel + channel] = lanes[channel] as u8;
+			let destination_pixel = (y * destination_width + x) * texel_bytes;
+			// Every average fits in `BYTES` bytes, so its low little-endian bytes are the stored sample.
+			for (channel, value) in average.to_array()[..CHANNELS].iter().enumerate() {
+				destination[destination_pixel + channel * BYTES..][..BYTES].copy_from_slice(&value.to_le_bytes()[..BYTES]);
 			}
 		}
 	}
-}
-
-/// Downsamples a 16-bit format level with SIMD lane arithmetic for channel averaging.
-fn downsample_u16<const CHANNELS: usize>(source_width: u32, source_height: u32, source: &[u8], destination: &mut [u8]) {
-	debug_assert!(CHANNELS > 0 && CHANNELS <= 4);
-
-	let source_width = source_width as usize;
-	let source_height = source_height as usize;
-	let destination_width = (source_width / 2).max(1);
-	let destination_height = (source_height / 2).max(1);
-
-	for y in 0..destination_height {
-		let y0 = (y * 2).min(source_height - 1);
-		let y1 = (y0 + 1).min(source_height - 1);
-
-		for x in 0..destination_width {
-			let x0 = (x * 2).min(source_width - 1);
-			let x1 = (x0 + 1).min(source_width - 1);
-
-			let top_left = (y0 * source_width + x0) * CHANNELS * 2;
-			let top_right = (y0 * source_width + x1) * CHANNELS * 2;
-			let bottom_left = (y1 * source_width + x0) * CHANNELS * 2;
-			let bottom_right = (y1 * source_width + x1) * CHANNELS * 2;
-			let destination_pixel = (y * destination_width + x) * CHANNELS * 2;
-
-			let a = load_u16_pixel::<CHANNELS>(source, top_left);
-			let b = load_u16_pixel::<CHANNELS>(source, top_right);
-			let c = load_u16_pixel::<CHANNELS>(source, bottom_left);
-			let d = load_u16_pixel::<CHANNELS>(source, bottom_right);
-			let average = (a + b + c + d + Simd::splat(2)) / Simd::splat(4);
-			let lanes = average.to_array();
-
-			for channel in 0..CHANNELS {
-				let value = lanes[channel] as u16;
-				let offset = destination_pixel + channel * 2;
-				destination[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-			}
-		}
-	}
-}
-
-fn load_u8_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u16, 4> {
-	let mut lanes = [0_u16; 4];
-
-	for channel in 0..CHANNELS {
-		lanes[channel] = source[offset + channel] as u16;
-	}
-
-	Simd::from_array(lanes)
-}
-
-fn load_u16_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u32, 4> {
-	let mut lanes = [0_u32; 4];
-
-	for channel in 0..CHANNELS {
-		let channel_offset = offset + channel * 2;
-		let value = u16::from_le_bytes([source[channel_offset], source[channel_offset + 1]]);
-		lanes[channel] = value as u32;
-	}
-
-	Simd::from_array(lanes)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{MipGenerationError, generate_owned_lower_mip_chain, mip_level_count};
+	use super::{MipGenerationError, generate_lower_levels, mip_level_count, packed_lower_levels};
 	use crate::types::{Formats, Gamma};
-
-	#[derive(Debug, Clone, PartialEq, Eq)]
-	struct ExpectedMipLevel {
-		width: u32,
-		height: u32,
-		data: Vec<u8>,
-	}
 
 	#[test]
 	fn generates_rgba8_chain_with_odd_extent() {
@@ -566,27 +419,21 @@ mod tests {
 		let data = create_rgba8_pattern(width, height);
 
 		let generated = generate_mip_chain(Formats::RGBA8, width, height, &data).expect("mips must generate");
-		let expected = scalar_mip_chain_u8::<4>(width, height, &data);
 
-		assert_chain_matches(&generated, &expected);
+		assert_eq!(generated, scalar_mip_chain::<4, 1>(width, height, &data));
 	}
 
 	#[test]
 	fn srgb_mips_average_rgb_in_linear_light_and_alpha_linearly() {
 		let source = [0, 0, 0, 0, 255, 255, 255, 64, 0, 0, 0, 128, 255, 255, 255, 255];
-		let srgb = generate_owned_lower_mip_chain(Formats::RGBA8, Gamma::SRGB, 2, 2, &source)
-			.expect("sRGB mip generation should succeed");
-		let linear = generate_owned_lower_mip_chain(Formats::RGBA8, Gamma::Linear, 2, 2, &source)
-			.expect("linear mip generation should succeed");
+		// A 2x2 level has one 1x1 level below it.
+		let (_, srgb) =
+			generate_lower_levels(Formats::RGBA8, Gamma::SRGB, 2, 2, &source).expect("sRGB mip generation should succeed");
+		let (_, linear) =
+			generate_lower_levels(Formats::RGBA8, Gamma::Linear, 2, 2, &source).expect("linear mip generation should succeed");
 
-		assert_eq!(
-			srgb.levels().next().expect("1x1 sRGB mip should exist").data,
-			[188, 188, 188, 112]
-		);
-		assert_eq!(
-			linear.levels().next().expect("1x1 linear mip should exist").data,
-			[128, 128, 128, 112]
-		);
+		assert_eq!(srgb, [188, 188, 188, 112]);
+		assert_eq!(linear, [128, 128, 128, 112]);
 	}
 
 	#[test]
@@ -596,9 +443,8 @@ mod tests {
 		let data = create_rgba16_pattern(width, height);
 
 		let generated = generate_mip_chain(Formats::RGBA16, width, height, &data).expect("16-bit mips must generate");
-		let expected = scalar_mip_chain_u16::<4>(width, height, &data);
 
-		assert_chain_matches(&generated, &expected);
+		assert_eq!(generated, scalar_mip_chain::<4, 2>(width, height, &data));
 	}
 
 	#[test]
@@ -608,31 +454,21 @@ mod tests {
 		assert_eq!(count, 5);
 	}
 
-	/// Generates the complete linear chain, base level first, the way consumers store it.
+	/// Generates the complete linear chain, base level first, as (width, height, texels) the way consumers store it.
 	fn generate_mip_chain(
 		format: Formats,
 		width: u32,
 		height: u32,
 		base_level: &[u8],
-	) -> Result<Vec<ExpectedMipLevel>, MipGenerationError> {
-		let lower = generate_owned_lower_mip_chain(format, Gamma::Linear, width, height, base_level)?;
-		let base = ExpectedMipLevel {
-			width,
-			height,
-			data: base_level.to_vec(),
-		};
+	) -> Result<Vec<(u32, u32, Vec<u8>)>, MipGenerationError> {
+		let (bytes_per_pixel, lower) = generate_lower_levels(format, Gamma::Linear, width, height, base_level)?;
 
-		Ok(std::iter::once(base)
-			.chain(lower.levels().map(|level| ExpectedMipLevel {
-				width: level.width,
-				height: level.height,
-				data: level.data.to_vec(),
-			}))
+		Ok(std::iter::once((width, height, base_level.to_vec()))
+			.chain(
+				packed_lower_levels(width, height, bytes_per_pixel, &lower)
+					.map(|level| (level.width, level.height, level.data.to_vec())),
+			)
 			.collect())
-	}
-
-	fn assert_chain_matches(chain: &[ExpectedMipLevel], expected: &[ExpectedMipLevel]) {
-		assert_eq!(chain, expected);
 	}
 
 	fn create_rgba8_pattern(width: u32, height: u32) -> Vec<u8> {
@@ -668,109 +504,50 @@ mod tests {
 		data
 	}
 
-	fn scalar_mip_chain_u8<const CHANNELS: usize>(width: u32, height: u32, base_level: &[u8]) -> Vec<ExpectedMipLevel> {
-		let mut levels = Vec::new();
-		let mut current_width = width;
-		let mut current_height = height;
-		let mut current_data = base_level.to_vec();
+	/// Filters every level one texel and channel at a time, as the reference the SIMD filter must match.
+	///
+	/// Each texel holds `CHANNELS` little-endian samples of `BYTES` bytes.
+	fn scalar_mip_chain<const CHANNELS: usize, const BYTES: usize>(
+		width: u32,
+		height: u32,
+		base_level: &[u8],
+	) -> Vec<(u32, u32, Vec<u8>)> {
+		let sample = |data: &[u8], offset: usize| {
+			let mut bytes = [0_u8; 4];
+			bytes[..BYTES].copy_from_slice(&data[offset..offset + BYTES]);
+			u32::from_le_bytes(bytes)
+		};
+		let mut levels = vec![(width, height, base_level.to_vec())];
 
-		loop {
-			levels.push(ExpectedMipLevel {
-				width: current_width,
-				height: current_height,
-				data: current_data.clone(),
-			});
-
-			if current_width == 1 && current_height == 1 {
-				break;
-			}
-
-			let next_width = (current_width / 2).max(1);
-			let next_height = (current_height / 2).max(1);
-			let mut next_data = vec![0_u8; next_width as usize * next_height as usize * CHANNELS];
+		while let Some((current_width, current_height, current_data)) =
+			levels.last().filter(|(width, height, _)| *width > 1 || *height > 1)
+		{
+			let (next_width, next_height) = ((current_width / 2).max(1), (current_height / 2).max(1));
+			let (current_width, current_height) = (*current_width as usize, *current_height as usize);
+			let mut next_data = vec![0_u8; next_width as usize * next_height as usize * CHANNELS * BYTES];
 
 			for y in 0..next_height as usize {
-				let y0 = (y * 2).min(current_height as usize - 1);
-				let y1 = (y0 + 1).min(current_height as usize - 1);
+				let y0 = (y * 2).min(current_height - 1);
+				let y1 = (y0 + 1).min(current_height - 1);
 
 				for x in 0..next_width as usize {
-					let x0 = (x * 2).min(current_width as usize - 1);
-					let x1 = (x0 + 1).min(current_width as usize - 1);
+					let x0 = (x * 2).min(current_width - 1);
+					let x1 = (x0 + 1).min(current_width - 1);
+					let destination = (y * next_width as usize + x) * CHANNELS * BYTES;
 
-					let p00 = (y0 * current_width as usize + x0) * CHANNELS;
-					let p10 = (y0 * current_width as usize + x1) * CHANNELS;
-					let p01 = (y1 * current_width as usize + x0) * CHANNELS;
-					let p11 = (y1 * current_width as usize + x1) * CHANNELS;
-					let destination = (y * next_width as usize + x) * CHANNELS;
-
-					for channel in 0..CHANNELS {
-						let sum = current_data[p00 + channel] as u16
-							+ current_data[p10 + channel] as u16
-							+ current_data[p01 + channel] as u16
-							+ current_data[p11 + channel] as u16;
-						next_data[destination + channel] = ((sum + 2) / 4) as u8;
+					for channel in (0..CHANNELS * BYTES).step_by(BYTES) {
+						let sum = [(y0, x0), (y0, x1), (y1, x0), (y1, x1)]
+							.into_iter()
+							.map(|(y, x)| sample(current_data, (y * current_width + x) * CHANNELS * BYTES + channel))
+							.sum::<u32>();
+						let value = (sum + 2) / 4;
+						next_data[destination + channel..destination + channel + BYTES]
+							.copy_from_slice(&value.to_le_bytes()[..BYTES]);
 					}
 				}
 			}
 
-			current_width = next_width;
-			current_height = next_height;
-			current_data = next_data;
-		}
-
-		levels
-	}
-
-	fn scalar_mip_chain_u16<const CHANNELS: usize>(width: u32, height: u32, base_level: &[u8]) -> Vec<ExpectedMipLevel> {
-		let mut levels = Vec::new();
-		let mut current_width = width;
-		let mut current_height = height;
-		let mut current_data = base_level.to_vec();
-
-		loop {
-			levels.push(ExpectedMipLevel {
-				width: current_width,
-				height: current_height,
-				data: current_data.clone(),
-			});
-
-			if current_width == 1 && current_height == 1 {
-				break;
-			}
-
-			let next_width = (current_width / 2).max(1);
-			let next_height = (current_height / 2).max(1);
-			let mut next_data = vec![0_u8; next_width as usize * next_height as usize * CHANNELS * 2];
-
-			for y in 0..next_height as usize {
-				let y0 = (y * 2).min(current_height as usize - 1);
-				let y1 = (y0 + 1).min(current_height as usize - 1);
-
-				for x in 0..next_width as usize {
-					let x0 = (x * 2).min(current_width as usize - 1);
-					let x1 = (x0 + 1).min(current_width as usize - 1);
-
-					let p00 = (y0 * current_width as usize + x0) * CHANNELS * 2;
-					let p10 = (y0 * current_width as usize + x1) * CHANNELS * 2;
-					let p01 = (y1 * current_width as usize + x0) * CHANNELS * 2;
-					let p11 = (y1 * current_width as usize + x1) * CHANNELS * 2;
-					let destination = (y * next_width as usize + x) * CHANNELS * 2;
-
-					for channel in 0..CHANNELS {
-						let c = channel * 2;
-						let s00 = u16::from_le_bytes([current_data[p00 + c], current_data[p00 + c + 1]]) as u32;
-						let s10 = u16::from_le_bytes([current_data[p10 + c], current_data[p10 + c + 1]]) as u32;
-						let s01 = u16::from_le_bytes([current_data[p01 + c], current_data[p01 + c + 1]]) as u32;
-						let s11 = u16::from_le_bytes([current_data[p11 + c], current_data[p11 + c + 1]]) as u32;
-						let value = ((s00 + s10 + s01 + s11 + 2) / 4) as u16;
-						next_data[destination + c..destination + c + 2].copy_from_slice(&value.to_le_bytes());
-					}
-				}
-			}
-
-			current_width = next_width;
-			current_height = next_height;
-			current_data = next_data;
+			levels.push((next_width, next_height, next_data));
 		}
 
 		levels

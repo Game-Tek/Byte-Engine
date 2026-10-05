@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 /// The `Value` enum stores the VM values that can move between registers, locals, and buffers.
@@ -25,8 +27,16 @@ pub enum Value {
 	PackedVec4F([f32; 4]),
 	Mat4F([f32; 16]),
 	Mat4x3F([f32; 12]),
-	Resource { slot: ResourceSlot, value_type: ValueType },
-	Struct { value_type: ValueType, fields: Vec<Value> },
+	Resource {
+		slot: ResourceSlot,
+		value_type: ValueType,
+	},
+	/// A struct or array value. Copies share `fields` until one of them is written, so register, local, argument, and
+	/// return copies of an array don't copy its elements.
+	Struct {
+		value_type: ValueType,
+		fields: Arc<[Value]>,
+	},
 }
 
 impl Value {

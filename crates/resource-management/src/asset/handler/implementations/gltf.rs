@@ -10,18 +10,21 @@ pub(crate) use io::*;
 pub(crate) use material::*;
 pub(crate) use mesh::*;
 pub(crate) use skeleton::*;
+// The FBX tests embed the same PNG fixtures.
+#[cfg(test)]
+pub(crate) use tests::generated_rgba8_png;
 
 #[cfg(test)]
 mod tests {
+	use std::borrow::Cow;
 
 	use maths_rs::mat::MatNew4;
 
 	use super::{
-		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, collect_gltf_texture_dependencies,
-		generated_gltf_brdf, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
-		gltf_image_semantics, gltf_normal_transform, gltf_primitive_transform_node, gltf_transform_orientation,
-		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
-		load_gltf_buffers, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
+		GLTFAssetHandler, GltfImportError, generated_gltf_brdf, generated_gltf_image_id, generated_image_fragment_index,
+		generated_material_base_id, gltf_image_semantics, gltf_normal_transform, gltf_transform_orientation, gltf_vertex_skin,
+		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, load_gltf_buffers,
+		merge_gltf_texture_semantics, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
 		transform_gltf_unit_direction, unique_gltf_materials, validate_affine_matrix,
 		validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
 	};
@@ -33,10 +36,10 @@ mod tests {
 			manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		pbr::{
-			BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode,
-			BrdfNodeId, BrdfTexture, BrdfValue,
+			BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
+			BrdfTexture, BrdfValue,
 		},
-		processors::processor::implementations::image::Semantic,
+		processors::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
@@ -45,7 +48,7 @@ mod tests {
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
-		types::{Formats, VertexComponent, VertexSemantics},
+		types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
 	};
 
 	#[test]
@@ -62,7 +65,7 @@ mod tests {
 
 		assert_eq!(
 			validate_affine_matrix(&projective, "fixture"),
-			Err(GltfSkeletalImportError::NonAffine("fixture"))
+			Err(GltfImportError::NonAffine("fixture"))
 		);
 	}
 
@@ -153,12 +156,12 @@ mod tests {
 		glb
 	}
 
-	/// Encodes the tiny image embedded in the textured GLB fixture.
-	fn generated_rgba8_png() -> Vec<u8> {
+	/// Encodes an RGBA8 PNG of `width` by `height` pixels for embedding in GLB fixtures.
+	pub(crate) fn generated_rgba8_png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
 		let mut png = Vec::new();
 
 		{
-			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+			let mut encoder = png::Encoder::new(&mut png, width, height);
 
 			encoder.set_color(png::ColorType::Rgba);
 
@@ -166,26 +169,20 @@ mod tests {
 
 			let mut writer = encoder.write_header().expect("generated PNG header should encode");
 
-			writer
-				.write_image_data(&[255, 64, 32, 255].repeat(16))
-				.expect("generated PNG pixels should encode");
+			writer.write_image_data(pixels).expect("generated PNG pixels should encode");
 		}
 
 		png
 	}
 
-	/// Builds a triangle GLB with one material and one PNG stored in its binary chunk.
-	fn generated_textured_triangle_glb() -> Vec<u8> {
-		generated_textured_triangle_glb_named("Triangle")
-	}
-
-	/// Builds the textured triangle GLB with a custom node name, so tests can edit the file without touching its material.
-	fn generated_textured_triangle_glb_named(node_name: &str) -> Vec<u8> {
+	/// Builds a triangle GLB whose one material, `material`, reads texture 0, which samples `png` stored in the binary
+	/// chunk as the image `image_name`.
+	fn generated_image_triangle_glb(node_name: &str, png: &[u8], image_name: &str, material: serde_json::Value) -> Vec<u8> {
 		let (mut document, mut binary) = generated_triangle_gltf();
 
 		document["nodes"][0]["name"] = node_name.into();
 
-		let image = append_fixture_bytes(&mut binary, &generated_rgba8_png());
+		let image = append_fixture_bytes(&mut binary, png);
 
 		document["buffers"][0]["byteLength"] = binary.len().into();
 
@@ -194,25 +191,47 @@ mod tests {
 			.expect("fixture buffer views should be an array")
 			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
 
-		document["images"] = serde_json::json!([{ "name": "Test Texture", "bufferView": 2, "mimeType": "image/png" }]);
+		document["images"] = serde_json::json!([{ "name": image_name, "bufferView": 2, "mimeType": "image/png" }]);
 
 		document["textures"] = serde_json::json!([{ "source": 0 }]);
 
-		document["materials"] = serde_json::json!([{
-			"name": "Test Material",
-			"pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
-		}]);
+		document["materials"] = serde_json::json!([material]);
 
 		document["meshes"][0]["primitives"][0]["material"] = 0.into();
 
 		package_fixture_glb(&document, binary)
 	}
 
+	/// Builds the textured triangle GLB with a custom node name, so tests can edit the file without touching its material.
+	fn generated_textured_triangle_glb_named(node_name: &str) -> Vec<u8> {
+		let material = serde_json::json!({
+			"name": "Test Material",
+			"pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
+		});
+
+		let png = generated_rgba8_png(4, 4, &[255, 64, 32, 255].repeat(16));
+
+		generated_image_triangle_glb(node_name, &png, "Test Texture", material)
+	}
+
+	/// Builds an asset manager whose glTF handler generates material shaders with the minimal test generator.
+	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorageBackend) -> AssetManager {
+		let mut asset_manager = AssetManager::new(assets, resources);
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+	}
+
 	/// Builds a triangle GLB drawn twice, each time with a material that samples a different image through the same graph.
 	fn generated_two_material_textured_glb() -> Vec<u8> {
 		let (mut document, mut binary) = generated_triangle_gltf();
 
-		let png = generated_rgba8_png();
+		let png = generated_rgba8_png(4, 4, &[255, 64, 32, 255].repeat(16));
 
 		let first = append_fixture_bytes(&mut binary, &png);
 
@@ -345,39 +364,7 @@ mod tests {
 			]
 		});
 
-		let mut json = serde_json::to_vec(&document).expect("fixture JSON should serialize");
-
-		while !json.len().is_multiple_of(4) {
-			json.push(b' ');
-		}
-
-		while !binary.len().is_multiple_of(4) {
-			binary.push(0);
-		}
-
-		let total_length = 12 + 8 + json.len() + 8 + binary.len();
-
-		let mut glb = Vec::with_capacity(total_length);
-
-		glb.extend_from_slice(b"glTF");
-
-		glb.extend_from_slice(&2u32.to_le_bytes());
-
-		glb.extend_from_slice(&(total_length as u32).to_le_bytes());
-
-		glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
-
-		glb.extend_from_slice(b"JSON");
-
-		glb.extend_from_slice(&json);
-
-		glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
-
-		glb.extend_from_slice(b"BIN\0");
-
-		glb.extend_from_slice(&binary);
-
-		glb
+		package_fixture_glb(&document, binary)
 	}
 
 	/// Builds a one-clip GLB with a node hierarchy but no renderable mesh geometry.
@@ -409,52 +396,26 @@ mod tests {
 			]
 		});
 
-		let mut json = serde_json::to_vec(&document).expect("fixture JSON should serialize");
-
-		while !json.len().is_multiple_of(4) {
-			json.push(b' ');
-		}
-
-		while !binary.len().is_multiple_of(4) {
-			binary.push(0);
-		}
-
-		let total_length = 12 + 8 + json.len() + 8 + binary.len();
-
-		let mut glb = Vec::with_capacity(total_length);
-
-		glb.extend_from_slice(b"glTF");
-
-		glb.extend_from_slice(&2u32.to_le_bytes());
-
-		glb.extend_from_slice(&(total_length as u32).to_le_bytes());
-
-		glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
-
-		glb.extend_from_slice(b"JSON");
-
-		glb.extend_from_slice(&json);
-
-		glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
-
-		glb.extend_from_slice(b"BIN\0");
-
-		glb.extend_from_slice(&binary);
-
-		glb
+		package_fixture_glb(&document, binary)
 	}
 
 	/// Parses the generated GLB through the same glTF reader utilities used by the importer.
-	fn parse_skeletal_fixture() -> (gltf::Gltf, Vec<gltf::buffer::Data>) {
+	fn parse_skeletal_fixture() -> (gltf::Gltf, Vec<Cow<'static, [u8]>>) {
 		let gltf = gltf::Gltf::from_slice(&generated_skeletal_glb()).expect("generated skeletal GLB should parse");
 
-		let buffers = gltf::import_buffers(&gltf, None, gltf.blob.clone()).expect("generated binary buffer should import");
+		let buffers = gltf::import_buffers(&gltf, None, gltf.blob.clone())
+			.expect("generated binary buffer should import")
+			.into_iter()
+			.map(|data| Cow::Owned(data.0))
+			.collect();
 
 		(gltf, buffers)
 	}
 
-	fn assert_near(actual: f32, expected: f32) {
-		assert!((actual - expected).abs() < 1.0e-5, "expected {expected}, got {actual}");
+	fn assert_near<const N: usize>(actual: [f32; N], expected: [f32; N]) {
+		for (actual, expected) in actual.into_iter().zip(expected) {
+			assert!((actual - expected).abs() < 1.0e-5, "expected {expected}, got {actual}");
+		}
 	}
 
 	#[test]
@@ -496,17 +457,9 @@ mod tests {
 
 		let tangent = transform_gltf_tangent(&transform, orientation, [1.0, 1.0, 0.0, 1.0]).unwrap();
 
-		assert_near(normal.x(), 0.8320503);
+		assert_near(normal.to_array(), [0.8320503, 0.5547002, 0.0]);
 
-		assert_near(normal.y(), 0.5547002);
-
-		assert_near(normal.z(), 0.0);
-
-		assert_near(tangent[0], 0.5547002);
-
-		assert_near(tangent[1], 0.8320503);
-
-		assert_near(tangent[2], 0.0);
+		assert_near([tangent[0], tangent[1], tangent[2]], [0.5547002, 0.8320503, 0.0]);
 
 		assert_eq!(tangent[3], -1.0);
 	}
@@ -520,7 +473,7 @@ mod tests {
 		assert!(validate_gltf_flattened_animation_transform(singular, None).is_ok());
 		assert_eq!(
 			validate_gltf_flattened_animation_transform(singular, Some(0)),
-			Err(GltfSkeletalImportError::SingularMeshTransform)
+			Err(GltfImportError::SingularMeshTransform)
 		);
 	}
 
@@ -542,35 +495,28 @@ mod tests {
 		);
 
 		for entry in &binding.entries {
-			let inverse_bind = entry.adjusted_inverse_bind_matrix.columns();
-
-			assert_near(inverse_bind[3][0], -3.0);
-
-			assert_near(inverse_bind[3][1], 0.0);
-
-			assert_near(inverse_bind[3][2], 1.0);
+			assert_near(entry.adjusted_inverse_bind_matrix.columns()[3], [-3.0, 0.0, 1.0]);
 		}
 
 		let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
 
-		validate_gltf_skin_attribute_sets(&primitive, true).expect("skinned instance should validate");
-
-		validate_gltf_skin_attribute_sets(&primitive, false).expect("rigid instance should ignore skin streams");
+		validate_gltf_skin_attribute_sets(&primitive).expect("skinned instance should validate");
 
 		let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-		let (joints, weights) = import_gltf_vertex_skin(&reader, 3, binding.len()).expect("weights should import");
+		let skins = gltf_vertex_skin(&reader, 3, binding.entries.len())
+			.expect("skin streams should validate")
+			.collect::<Result<Vec<_>, _>>()
+			.expect("weights should import");
 
-		assert_eq!(joints[0], [1, 0, 1, 0]);
+		assert_eq!(skins[0].joints, [1, 0, 1, 0]);
 
-		for (actual, expected) in weights[0].into_iter().zip([8.0 / 26.0, 7.0 / 26.0, 6.0 / 26.0, 5.0 / 26.0]) {
-			assert_near(actual, expected);
-		}
+		assert_near(skins[0].weights, [8.0 / 26.0, 7.0 / 26.0, 6.0 / 26.0, 5.0 / 26.0]);
 
 		assert!(skinned_node.skin().is_some());
 		assert!(rigid_node.skin().is_none());
-		assert_eq!(gltf_primitive_transform_node(&graph, &skinned_node, true), Some(2));
-		assert_eq!(gltf_primitive_transform_node(&graph, &rigid_node, true), Some(3));
+		assert_eq!(graph.source_to_dense[skinned_node.index()], 2);
+		assert_eq!(graph.source_to_dense[rigid_node.index()], 3);
 	}
 
 	#[test]
@@ -592,7 +538,10 @@ mod tests {
 		match animation.tracks[0].translation.as_ref().unwrap() {
 			TranslationCurve::Linear { times, values } => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values, &[math::Vector::new(0.0, 0.0, -2.0), math::Vector::new(1.0, 2.0, -3.0)]);
+				assert_eq!(
+					values,
+					&[math::Vector::new(0.0, 0.0, -2.0), math::Vector::new(1.0, 2.0, -3.0)]
+				);
 			}
 			curve => panic!("expected linear translation curve, got {curve:?}"),
 		}
@@ -605,10 +554,10 @@ mod tests {
 				out_tangents,
 			} => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values.iter().map(|value| value.to_array()).collect::<Vec<_>>(), [
-					[0.0, 0.0, 0.0, 1.0],
-					[0.0, 0.0, 1.0, 0.0]
-				]);
+				assert_eq!(
+					values.iter().map(|value| value.to_array()).collect::<Vec<_>>(),
+					[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]
+				);
 				assert_eq!(in_tangents, &[[-2.0, 0.0, 0.0, 0.0], [-6.0, 0.0, 0.0, 0.0]]);
 				assert_eq!(out_tangents, &[[-4.0, 0.0, 0.0, 0.0], [-8.0, 0.0, 0.0, 0.0]]);
 			}
@@ -624,9 +573,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("animation_only.glb")
@@ -658,9 +605,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
 			.bake_if_not_exists("generated_skeletal.glb")
@@ -724,9 +669,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend.clone(), resource_storage_backend);
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend);
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
 			.bake_if_not_exists("characters/generated_skeletal.gltf#skeleton")
@@ -783,13 +726,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
 			.bake_if_not_exists("generated_skeletal.glb")
@@ -817,35 +754,12 @@ mod tests {
 	#[test]
 	fn normalizes_gltf_layouts_to_shared_supported_streams() {
 		let normalized = normalize_vertex_layouts(&[
-			vec![
-				VertexComponent {
-					semantic: VertexSemantics::Position,
-					format: "vec3f".to_string(),
-					channel: 0,
-				},
-				VertexComponent {
-					semantic: VertexSemantics::Normal,
-					format: "vec3f".to_string(),
-					channel: 0,
-				},
-				VertexComponent {
-					semantic: VertexSemantics::BiTangent,
-					format: "vec3f".to_string(),
-					channel: 0,
-				},
-			],
-			vec![
-				VertexComponent {
-					semantic: VertexSemantics::Position,
-					format: "vec3f".to_string(),
-					channel: 0,
-				},
-				VertexComponent {
-					semantic: VertexSemantics::Normal,
-					format: "vec3f".to_string(),
-					channel: 0,
-				},
-			],
+			[VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::BiTangent]
+				.map(VertexComponent::canonical)
+				.to_vec(),
+			[VertexSemantics::Position, VertexSemantics::Normal]
+				.map(VertexComponent::canonical)
+				.to_vec(),
 		]);
 
 		assert_eq!(normalized.len(), 2);
@@ -879,9 +793,11 @@ mod tests {
 		)
 		.expect("test glTF should parse");
 
-		let primitives = gltf.meshes().flat_map(|mesh| mesh.primitives()).collect::<Vec<_>>();
-
-		let (materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
+		let (materials, material_indices_per_primitive) = unique_gltf_materials(
+			gltf.meshes()
+				.flat_map(|mesh| mesh.primitives())
+				.map(|primitive| primitive.material()),
+		);
 
 		assert_eq!(
 			materials.iter().map(|material| material.index()).collect::<Vec<_>>(),
@@ -930,37 +846,32 @@ mod tests {
 	}
 
 	#[test]
-	fn collects_gltf_texture_dependencies_in_material_slot_order() {
+	fn merges_each_texture_read_into_its_image_semantic() {
 		let mut builder = BrdfMaterialBuilder::new();
 
-		let base_color = builder.texture(BrdfTexture {
-			image_index: 2,
-			texcoord_channel: 0,
-		});
+		let texture = |builder: &mut BrdfMaterialBuilder, image_index| {
+			builder.texture(BrdfTexture {
+				image_index,
+				texcoord_channel: 0,
+			})
+		};
 
-		let metallic_roughness = builder.texture(BrdfTexture {
-			image_index: 5,
-			texcoord_channel: 0,
-		});
+		let base_color = texture(&mut builder, 2);
+
+		let metallic_roughness = texture(&mut builder, 5);
 
 		let metallic = builder.extract_channel(metallic_roughness, BrdfChannel::Blue);
 
 		let roughness = builder.extract_channel(metallic_roughness, BrdfChannel::Green);
 
-		let normal_source = builder.texture(BrdfTexture {
-			image_index: 8,
-			texcoord_channel: 0,
-		});
+		let normal_source = texture(&mut builder, 8);
 
 		let normal = builder.add(BrdfNode::NormalMap {
 			source: normal_source,
 			scale: 1.0,
 		});
 
-		let occlusion_source = builder.texture(BrdfTexture {
-			image_index: 10,
-			texcoord_channel: 0,
-		});
+		let occlusion_source = texture(&mut builder, 10);
 
 		let occlusion = builder.add(BrdfNode::Occlusion {
 			source: occlusion_source,
@@ -980,29 +891,23 @@ mod tests {
 			emission: Some(emission),
 		}));
 
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
-		let dependencies = collect_gltf_texture_dependencies(&material).expect("dependencies should collect");
+		let mut semantics = vec![None; 11];
+
+		merge_gltf_texture_semantics(&material, &mut semantics).expect("texture semantics should merge");
 
 		assert_eq!(
-			dependencies,
-			vec![
-				GltfTextureDependency {
-					image_index: 2,
-					semantic: Semantic::Albedo,
-				},
-				GltfTextureDependency {
-					image_index: 5,
-					semantic: Semantic::MetallicRoughness,
-				},
-				GltfTextureDependency {
-					image_index: 8,
-					semantic: Semantic::Normal,
-				},
-				GltfTextureDependency {
-					image_index: 10,
-					semantic: Semantic::AO,
-				},
+			semantics
+				.iter()
+				.enumerate()
+				.filter_map(|(image, semantic)| Some((image, (*semantic)?)))
+				.collect::<Vec<_>>(),
+			[
+				(2, Semantic::Albedo),
+				(5, Semantic::MetallicRoughness),
+				(8, Semantic::Normal),
+				(10, Semantic::AO)
 			]
 		);
 	}
@@ -1090,59 +995,25 @@ mod tests {
 		}
 	}
 
-	/// Builds a triangle GLB whose material reads a metallic-roughness PNG with distinct values in every channel.
-	fn generated_metallic_roughness_triangle_glb() -> Vec<u8> {
-		let (mut document, mut binary) = generated_triangle_gltf();
-
-		let mut png = Vec::new();
-		{
-			let mut encoder = png::Encoder::new(&mut png, 2, 2);
-			encoder.set_color(png::ColorType::Rgba);
-			encoder.set_depth(png::BitDepth::Eight);
-			let mut writer = encoder.write_header().expect("generated PNG header should encode");
-			writer
-				.write_image_data(&[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255])
-				.expect("generated PNG pixels should encode");
-		}
-
-		let image = append_fixture_bytes(&mut binary, &png);
-
-		document["buffers"][0]["byteLength"] = binary.len().into();
-
-		document["bufferViews"]
-			.as_array_mut()
-			.expect("fixture buffer views should be an array")
-			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
-
-		document["images"] = serde_json::json!([{ "name": "Metallic Roughness", "bufferView": 2, "mimeType": "image/png" }]);
-
-		document["textures"] = serde_json::json!([{ "source": 0 }]);
-
-		document["materials"] = serde_json::json!([{
-			"name": "Packed Material",
-			"pbrMetallicRoughness": { "metallicRoughnessTexture": { "index": 0 } }
-		}]);
-
-		document["meshes"][0]["primitives"][0]["material"] = 0.into();
-
-		package_fixture_glb(&document, binary)
-	}
-
 	#[r#async::test]
 	async fn baked_metallic_roughness_images_store_green_and_blue_as_rg8() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
-		asset_storage_backend.add_file("packed.glb", &generated_metallic_roughness_triangle_glb());
+		// A metallic-roughness PNG with distinct values in every channel.
+		let png = generated_rgba8_png(2, 2, &[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255]);
+
+		let material = serde_json::json!({
+			"name": "Packed Material",
+			"pbrMetallicRoughness": { "metallicRoughnessTexture": { "index": 0 } }
+		});
+
+		let glb = generated_image_triangle_glb("Triangle", &png, "Metallic Roughness", material);
+
+		asset_storage_backend.add_file("packed.glb", &glb);
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("packed.glb")
@@ -1186,13 +1057,11 @@ mod tests {
 	async fn bakes_named_image_fragment_from_minimal_glb() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
-		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb());
+		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb_named("Triangle"));
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("named_image.glb#Test Texture")
@@ -1218,13 +1087,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("two_materials.glb")
@@ -1306,13 +1169,7 @@ mod tests {
 
 		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Triangle"));
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend.clone(), resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend.clone());
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
@@ -1347,13 +1204,7 @@ mod tests {
 		// Editing the node leaves the material graph, program generator, and compiler unchanged.
 		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Edited Triangle"));
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
@@ -1387,13 +1238,7 @@ mod tests {
 		let shader_id =
 			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let mut asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
 
@@ -1434,13 +1279,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("shared.glb")
@@ -1460,21 +1299,20 @@ mod tests {
 	}
 }
 
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use maths_rs::{
-	mat::{MatDeterminant, MatInverse, MatNew4, MatScale, MatTranspose},
+	mat::{MatDeterminant, MatInverse, MatScale, MatTranspose},
 	vec::Vec3,
 };
-use utils::{Extent, json, json::JsonValueTrait};
+use utils::Extent;
 
 use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	manager::AssetManager,
-	sanitize_material_name, select_unfragmented_resource, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
@@ -1482,25 +1320,20 @@ use crate::asset::handler::implementations::bema::{
 use crate::{
 	ProcessedAsset, ReferenceModel,
 	asset::{self},
-	r#async::spawn_cpu_task,
 	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
 	processors::{
-		processor::implementations::image::{
-			ImageDescription, ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding,
-			channel_packing_for_semantic, gamma_from_semantic, guess_semantic_from_name, process_image_with_mips_in,
+		image::{
+			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,
+			guess_semantic_from_name,
 		},
-		processor::implementations::mesh::{
-			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,
-		},
+		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
-	resource,
 	resources::{
+		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
-		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
-		ModelSpace,
 	},
-	types::{Formats, VertexComponent, VertexSemantics},
+	types::{VertexComponent, VertexSemantics},
 };

@@ -1,7 +1,7 @@
 use super::*;
-impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A> {
+impl crate::shader::generator::NodeEmitter for Generator {
 	fn type_from_besl(source: &str) -> &str {
-		Generator::<A>::translate_type(source)
+		Generator::translate_type(source)
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "constant";
 	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
@@ -26,7 +26,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		arguments: &[besl::NodeReference],
 		elements: &[besl::NodeReference],
 	) {
-		Generator::<A>::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
+		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
 	}
 	fn emit_function_extra_parameters(
 		&mut self,
@@ -50,11 +50,6 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	}
 	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
 		Self::emit_value_type(string, type_name);
-		string.push(' ');
-		Self::identifier(name).push_to(string);
-	}
-	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
-		Self::emit_value_type(string, r#type.borrow().get_name().unwrap());
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 	}
@@ -135,15 +130,12 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		match source.borrow().node() {
-			besl::Nodes::Binding { .. } => {
-				if self.raster_stage_context.is_some() {
-					self.emit_raster_binding_reference(string, name);
-					return true;
-				}
-				if self.in_compute_body || self.mesh_stage_context.is_some() {
-					self.emit_compute_binding_reference(string, name);
-					return true;
-				}
+			// Outside a stage context, a binding keeps its plain name.
+			besl::Nodes::Binding { .. }
+				if self.raster_stage_context.is_some() || self.in_compute_body || self.mesh_stage_context.is_some() =>
+			{
+				self.emit_binding_reference(string, name);
+				return true;
 			}
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");

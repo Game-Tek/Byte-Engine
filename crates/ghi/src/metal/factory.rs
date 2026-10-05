@@ -41,7 +41,7 @@ pub type ComputePipeline = Pipeline;
 ///
 /// A loader context fills an image, then [`Context::export_image`] moves it out and [`Context::intern_image`] or
 /// [`Frame::intern_image`] gives it a handle in the context that renders with it.
-pub type DetachedImage = image::Image;
+pub type DetachedImage = Image;
 
 /// The `SharedBuffer` struct lets a second context of the same device record copies into a buffer it does not own.
 ///
@@ -60,73 +60,17 @@ pub struct SharedBuffer<T: ?Sized> {
 // metadata. Moving it between threads adds no shared state.
 unsafe impl<T: ?Sized> Send for SharedBuffer<T> {}
 
-impl crate::device::Device for Factory {
-	type Context = crate::metal::context::Context;
-	type Allocator = std::alloc::Global;
-	type RasterPipeline = Pipeline;
-	type ComputePipeline = ComputePipeline;
-
-	fn allocator(&self) -> &Self::Allocator {
-		&std::alloc::Global
-	}
-
-	#[cfg(any(debug_assertions, test))]
-	fn has_errors(&self) -> bool {
-		false
-	}
-
-	fn create_context(&self) -> Result<Self::Context, &'static str> {
-		Err(
-			"Detached Metal factory cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.",
-		)
-	}
-
-	fn create_shader(
-		&mut self,
-		name: Option<&str>,
-		shader_source_type: crate::shader::Sources,
-		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
-	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		add_shader(
-			&mut self.shaders,
-			&self.device,
-			name,
-			shader_source_type,
-			stage,
-			shader_resource_descriptors,
-			self.settings.debug_labels,
-		)
-	}
-
-	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		build_raster_pipeline(
-			&self.device,
-			&self.compiler,
-			&self.shaders,
-			self.settings.debug_labels,
-			builder,
-		)
-	}
-
-	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		build_compute_pipeline(
-			&self.device,
-			&self.compiler,
-			&self.shaders,
-			self.settings.debug_labels,
-			builder,
-		)
-	}
-}
-
 use super::*;
 
 /// These methods move resources between the contexts of one device and adopt [`Factory`] products.
 impl Context {
 	/// Creates a [`Factory`] that builds shaders and pipelines away from the render thread.
 	pub fn create_factory(&self) -> Option<Factory> {
-		Some(Factory::new(self.device.clone(), self.compiler.clone(), self.settings))
+		Some(Factory::new(
+			self.device.clone(),
+			self.factory.compiler.clone(),
+			self.settings,
+		))
 	}
 
 	/// Moves a finished image out of this context so another context of the same device can intern it.
@@ -186,7 +130,7 @@ impl Context {
 		use objc2_metal::MTLBuffer as _;
 
 		let gpu_address = buffer.buffer.gpuAddress();
-		let (handle, _) = self.buffers.add(buffer::Buffer {
+		let (handle, _) = self.buffers.add(Buffer {
 			name: buffer.name,
 			staging: None,
 			buffer: buffer.buffer,
@@ -199,14 +143,10 @@ impl Context {
 		graphics_hardware_interface::BufferHandle(handle, std::marker::PhantomData)
 	}
 
-	/// Adopts a pipeline built by a [`Factory`] and returns the handle recordings bind it with.
-	pub fn intern_raster_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
+	/// Adopts a raster, compute, or ray-tracing pipeline built by a [`Factory`] and returns the handle recordings bind
+	/// it with.
+	pub fn intern_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
 		self.pipelines.push(pipeline);
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
-	}
-
-	/// Adopts a compute pipeline built by a [`Factory`]; Metal stores it like any other pipeline.
-	pub fn intern_compute_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.intern_raster_pipeline(pipeline)
 	}
 }

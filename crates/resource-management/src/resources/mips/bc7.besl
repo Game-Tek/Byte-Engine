@@ -492,6 +492,19 @@ subset_format: fn (mode: u32, opaque: u32) -> Format {
 	return Format(2, 6, 2, color_alpha, 2, 0);
 }
 
+// Appends the 16 texel indices of `index_bits` bits each. Texel 0 and the `anchor` texel drop their implied top bit.
+put_indices: fn (bits: Bits, indices: vec2u, index_bits: u32, anchor: u32) -> Bits {
+	let result: Bits = bits;
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let width: u32 = index_bits;
+		if (texel == 0 || texel == anchor) {
+			width = index_bits - 1;
+		}
+		result = put(result, index_at(indices, texel), width);
+	}
+	return result;
+}
+
 // Packs a mode 6 block: one subset, 7-bit RGBA endpoints with a p-bit each, and 4-bit indices.
 pack_mode6: fn (subset: Subset) -> vec4u {
 	let bits: Bits = Bits(vec4u(0, 0, 0, 0), 0);
@@ -502,13 +515,7 @@ pack_mode6: fn (subset: Subset) -> vec4u {
 	}
 	bits = put(bits, subset.low.x & 1, 1);
 	bits = put(bits, subset.high.x & 1, 1);
-	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-		let width: u32 = 4;
-		if (texel == 0) {
-			width = 3;
-		}
-		bits = put(bits, index_at(subset.indices, texel), width);
-	}
+	bits = put_indices(bits, subset.indices, 4, 0);
 	return bits.words;
 }
 
@@ -540,14 +547,7 @@ pack_two_subsets: fn (mode: u32, partition: u32, first: Subset, second: Subset) 
 		bits = put(bits, second.high.x & 1, 1);
 	}
 	let indices: vec2u = vec2u(first.indices.x | second.indices.x, first.indices.y | second.indices.y);
-	let anchor: u32 = ANCHORS[partition];
-	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-		let width: u32 = format.index_bits;
-		if (texel == 0 || texel == anchor) {
-			width = width - 1;
-		}
-		bits = put(bits, index_at(indices, texel), width);
-	}
+	bits = put_indices(bits, indices, format.index_bits, ANCHORS[partition]);
 	return bits.words;
 }
 
@@ -654,11 +654,14 @@ encode_separate_alpha: fn (pixels: vec4f[16], mode: u32, index_selection: u32) -
 	let alpha_bits: u32 = 8;
 	let color_indices: u32 = 2;
 	let alpha_indices: u32 = 2;
+	// The second index set is the 3-bit one in mode 4, whichever of color and alpha it holds.
+	let second_bits: u32 = 2;
 	if (mode == 4) {
 		color_bits = 5;
 		alpha_bits = 6;
 		color_indices = 2 + index_selection;
 		alpha_indices = 3 - index_selection;
+		second_bits = 3;
 	}
 	let color: Subset = encode_subset(pixels, 65535, 0, Format(color_indices, color_bits, 0, vec4f(1.0, 1.0, 1.0, 0.0), 2, 0));
 	let alpha: Subset = encode_subset(pixels, 65535, 0, Format(alpha_indices, alpha_bits, 0, vec4f(0.0, 0.0, 0.0, 1.0), 2, 0));
@@ -684,24 +687,8 @@ encode_separate_alpha: fn (pixels: vec4f[16], mode: u32, index_selection: u32) -
 		first = alpha;
 		second = color;
 	}
-	let second_bits: u32 = 2;
-	if (mode == 4) {
-		second_bits = 3;
-	}
-	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-		let width: u32 = 2;
-		if (texel == 0) {
-			width = 1;
-		}
-		bits = put(bits, index_at(first.indices, texel), width);
-	}
-	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-		let width: u32 = second_bits;
-		if (texel == 0) {
-			width = second_bits - 1;
-		}
-		bits = put(bits, index_at(second.indices, texel), width);
-	}
+	bits = put_indices(bits, first.indices, 2, 0);
+	bits = put_indices(bits, second.indices, second_bits, 0);
 	return Candidate(color.error + alpha.error, bits.words);
 }
 

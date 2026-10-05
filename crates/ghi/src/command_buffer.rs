@@ -10,13 +10,7 @@ use crate::{
 
 /// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IndirectDispatchBuffer<const N: usize>(BaseBufferHandle);
-
-impl<const N: usize> IndirectDispatchBuffer<N> {
-	pub(crate) const fn handle(self) -> BaseBufferHandle {
-		self.0
-	}
-}
+pub struct IndirectDispatchBuffer<const N: usize>(pub(crate) BaseBufferHandle);
 
 impl<const N: usize> From<BufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
 	fn from(buffer: BufferHandle<[[u32; 3]; N]>) -> Self {
@@ -30,40 +24,19 @@ impl<const N: usize> From<DynamicBufferHandle<[[u32; 3]; N]>> for IndirectDispat
 	}
 }
 
-/// The `IndirectDrawBuffer` struct lets GPU work size non-indexed draws, so a pass draws only what a compute shader produced instead of a CPU-chosen upper bound.
-///
-/// Each entry is `[vertex_count, instance_count, first_vertex, first_instance]`, which is the native record layout on every backend.
-/// Record a draw with [`BoundRasterizationPipelineMode::draw_indirect`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IndirectDrawBuffer<const N: usize>(BaseBufferHandle);
-
-/// The size of one indirect draw record in bytes.
-pub(crate) const INDIRECT_DRAW_RECORD_SIZE: usize = std::mem::size_of::<[u32; 4]>();
-
-impl<const N: usize> IndirectDrawBuffer<N> {
-	pub(crate) const fn handle(self) -> BaseBufferHandle {
-		self.0
-	}
-
-	/// Returns the byte range of one draw record inside the buffer.
-	pub(crate) fn entry_range(entry_index: usize) -> std::ops::Range<usize> {
-		assert!(
-			entry_index < N,
-			"Indirect draw entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
-		);
-		// N entries fit in the typed allocation, so a valid index cannot overflow.
-		let start = entry_index * INDIRECT_DRAW_RECORD_SIZE;
-		start..start + INDIRECT_DRAW_RECORD_SIZE
-	}
-}
-
-impl<const N: usize> From<BufferHandle<[[u32; 4]; N]>> for IndirectDrawBuffer<N> {
-	fn from(buffer: BufferHandle<[[u32; 4]; N]>) -> Self {
-		Self(buffer.into())
-	}
+/// Returns the byte range of record `entry_index` in an indirect buffer that holds `N` records of type `R`.
+pub(crate) fn indirect_entry_range<R, const N: usize>(entry_index: usize) -> std::ops::Range<usize> {
+	assert!(
+		entry_index < N,
+		"Indirect entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
+	);
+	// N records fit in the typed allocation, so a valid index cannot overflow.
+	let start = entry_index * size_of::<R>();
+	start..start + size_of::<R>()
 }
 
 /// The `DebugLabelWriter` struct exists so command-buffer implementations can provide temporary label storage without forcing callers to allocate strings.
+#[derive(Default)]
 pub struct DebugLabelWriter {
 	bytes: SmallVec<[u8; 128]>,
 }
@@ -96,28 +69,14 @@ impl DebugLabelWriter {
 	}
 }
 
-impl Default for DebugLabelWriter {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl std::fmt::Write for DebugLabelWriter {
 	fn write_str(&mut self, s: &str) -> std::fmt::Result {
 		self.write_str(s)
 	}
 }
 
-pub trait CommandBuffer {
-	/// Starts recording commands into an existing command buffer.
-	fn create_command_buffer_recording(&mut self) -> impl CommandBufferRecording + CommonCommandBufferMode;
-}
-
 /// The `CommandBufferRecording` trait captures backend command encoding so GPU work can be recorded before submission.
-pub trait CommandBufferRecording
-where
-	Self: Sized,
-{
+pub trait CommandBufferRecording: Sized {
 	/// Returns the frame key that scoped this command-buffer recording.
 	fn frame_key(&self) -> FrameKey;
 
@@ -267,8 +226,10 @@ pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + Rasterizatio
 
 	/// Records one non-indexed draw whose vertex and instance counts the GPU reads from `buffer` at `entry_index`.
 	///
-	/// Use this when earlier GPU work, such as a compute pass, decides how much to draw.
-	fn draw_indirect<const N: usize>(&mut self, buffer: impl Into<IndirectDrawBuffer<N>>, entry_index: usize);
+	/// Use this when earlier GPU work, such as a compute pass, decides how much to draw, so a pass draws only what
+	/// that work produced instead of a CPU-chosen upper bound. Each record is
+	/// `[vertex_count, instance_count, first_vertex, first_instance]`, which is the native layout on every backend.
+	fn draw_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize);
 }
 
 /// The `BoundComputePipelineMode` trait provides dispatch commands for a bound compute pipeline.

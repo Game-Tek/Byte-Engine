@@ -41,7 +41,6 @@ use windows::{
 use crate::window::{
 	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
-	os::{AppLike, WindowLike},
 };
 
 /// Events shared by the pump and every window procedure, in arrival order.
@@ -120,10 +119,9 @@ impl WindowData {
 	}
 }
 
-impl AppLike for App {
-	type Window = Window;
-
-	fn try_new(id_name: &str) -> Result<App, String> {
+impl App {
+	/// Connects to the windowing system; see [`crate::window::App::new`].
+	pub(crate) fn try_new(id_name: &str) -> Result<App, String> {
 		let hinstance = unsafe {
 			GetModuleHandleA(PCSTR(std::ptr::null()))
 				.map_err(|_| "Failed to acquire the module handle. The most likely cause is that the current process module handle could not be resolved.")?
@@ -193,7 +191,8 @@ impl AppLike for App {
 		})
 	}
 
-	fn create_window(&mut self, name: &str, extent: utils::Extent, _features: Features) -> Result<Window, String> {
+	/// Creates and shows a native window; see [`crate::window::App::create_window`].
+	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, _features: Features) -> Result<Window, String> {
 		let name = CString::new(name).map_err(
 			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
 		)?;
@@ -253,7 +252,8 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
+	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		let timeout = match wait {
 			Wait::Immediate => None,
 			// Round up so the wait does not end just before the deadline and spin once more.
@@ -292,7 +292,7 @@ impl AppLike for App {
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
 	}
 
-	fn waker(&self) -> AppWaker {
+	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake_event))
 	}
 }
@@ -306,24 +306,24 @@ impl Drop for App {
 	}
 }
 
-impl WindowLike for Window {
-	fn id(&self) -> WindowId {
+impl Window {
+	pub(crate) fn id(&self) -> WindowId {
 		self.data.id
 	}
 
-	fn handles(&self) -> Handles {
+	pub(crate) fn handles(&self) -> Handles {
 		Handles {
 			hwnd: self.hwnd,
 			hinstance: self.hinstance,
 		}
 	}
 
-	fn refresh_interval(&self) -> Option<std::time::Duration> {
+	pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
 		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
 	}
 
 	/// Reports minimized windows only; Windows offers no cheap query for a window that others fully cover.
-	fn is_visible(&self) -> bool {
+	pub(crate) fn is_visible(&self) -> bool {
 		!unsafe { IsIconic(self.hwnd) }.as_bool()
 	}
 }
@@ -369,17 +369,8 @@ fn window_id(hwnd: HWND) -> WindowId {
 }
 
 fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
-	let mut client_rect = RECT {
-		left: 0,
-		top: 0,
-		right: 0,
-		bottom: 0,
-	};
-
-	let ok = unsafe { GetClientRect(hwnd, &mut client_rect) }.is_ok();
-	if !ok {
-		return None;
-	}
+	let mut client_rect = RECT::default();
+	unsafe { GetClientRect(hwnd, &mut client_rect) }.ok()?;
 
 	let width = (client_rect.right - client_rect.left).max(1) as f32;
 	let height = (client_rect.bottom - client_rect.top).max(1) as f32;
@@ -389,11 +380,7 @@ fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
 
 fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
 	let (width, height) = client_extent(hwnd)?;
-
-	let x = x / width * 2.0 - 1.0;
-	let y = 1.0 - y / height * 2.0;
-
-	Some((x, y))
+	Some((x / width * 2.0 - 1.0, 1.0 - y / height * 2.0))
 }
 
 fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
@@ -413,107 +400,37 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			return DefWindowProcA(hwnd, msg, wparam, lparam);
 		};
 
-		if let Some((event, result)) = handle_event(hwnd, msg, wparam, lparam, window_data) {
-			if let Some(event) = event {
-				window_data.push(event);
-			}
-
-			return result;
+		let Some(event) = handle_event(hwnd, msg, wparam, lparam, window_data) else {
+			return DefWindowProcA(hwnd, msg, wparam, lparam);
+		};
+		if let Some(event) = event {
+			window_data.push(event);
 		}
-
-		DefWindowProcA(hwnd, msg, wparam, lparam)
+		LRESULT(0)
 	}
 }
 
-// Handles windows messages/events.
-// If the event cannot be handled or we wish to let the OS handle it we return None.
-// This function is used inside the actual wnd_proc function.
-fn handle_event(
-	hwnd: HWND,
-	msg: u32,
-	wparam: WPARAM,
-	lparam: LPARAM,
-	window_data: &WindowData,
-) -> Option<(Option<Events>, LRESULT)> {
-	let result = match msg {
-		WM_CLOSE => {
-			return Some((Some(Events::Close), LRESULT(0)));
-		}
-		WM_LBUTTONDOWN => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: true,
-					button: MouseKeys::Left,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_LBUTTONUP => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: false,
-					button: MouseKeys::Left,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_MBUTTONDOWN => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: true,
-					button: MouseKeys::Middle,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_MBUTTONUP => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: false,
-					button: MouseKeys::Middle,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_RBUTTONDOWN => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: true,
-					button: MouseKeys::Right,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_RBUTTONUP => {
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: false,
-					button: MouseKeys::Right,
-				}),
-				LRESULT(0),
-			));
-		}
+/// Translates one window message into an event for [`wnd_proc`].
+///
+/// Returns `None` to leave the message to `DefWindowProcA`, and `Some(None)` to consume it without an event.
+fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_data: &WindowData) -> Option<Option<Events>> {
+	let seat = Seat::stub();
+	let event = match msg {
+		WM_CLOSE => Events::Close,
+		WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => Events::Button {
+			seat,
+			pressed: matches!(msg, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN),
+			button: match msg {
+				WM_LBUTTONDOWN | WM_LBUTTONUP => MouseKeys::Left,
+				WM_MBUTTONDOWN | WM_MBUTTONUP => MouseKeys::Middle,
+				_ => MouseKeys::Right,
+			},
+		},
 		WM_MOUSEMOVE => {
 			let x = (lparam.0 & 0xFFFF) as i16 as f32;
 			let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-
 			let (x, y) = normalize_client_position(hwnd, x, y)?;
-
-			return Some((
-				Some(Events::MousePosition {
-					seat: Seat::stub(),
-					x,
-					y,
-					time: 0,
-				}),
-				LRESULT(0),
-			));
+			Events::MousePosition { seat, x, y, time: 0 }
 		}
 		WM_INPUT => {
 			let mut raw_input = [0u64; 1024 / 8]; // Buffer needs to be aligned to 8 bytes
@@ -541,103 +458,48 @@ fn handle_event(
 
 				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
 					let (width, height) = client_extent(hwnd)?;
-
-					return Some((
-						Some(Events::MouseMove {
-							seat: Seat::stub(),
-							dx: mouse_data.lLastX as f32 / width * 2.0,
-							dy: -(mouse_data.lLastY as f32) / height * 2.0,
-							time: 0,
-						}),
-						LRESULT(0),
-					));
+					Events::MouseMove {
+						seat,
+						dx: mouse_data.lLastX as f32 / width * 2.0,
+						dy: -(mouse_data.lLastY as f32) / height * 2.0,
+						time: 0,
+					}
 				} else if (mouse_data.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == MOUSE_MOVE_ABSOLUTE.0 {
 					let (x, y) = cursor_position_in_window(hwnd)?;
-
-					return Some((
-						Some(Events::MousePosition {
-							seat: Seat::stub(),
-							x,
-							y,
-							time: 0,
-						}),
-						LRESULT(0),
-					));
+					Events::MousePosition { seat, x, y, time: 0 }
+				} else {
+					return Some(None);
 				}
 			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.use_raw_keyboard {
 				let keyboard_data = unsafe { &raw_input.data.keyboard };
 				let pressed = (keyboard_data.Flags as u32 & RI_KEY_BREAK) == 0;
-
-				if let Some(key) = wparam_to_key(WPARAM(keyboard_data.VKey as usize)) {
-					return Some((
-						Some(Events::Key {
-							seat: Seat::stub(),
-							pressed,
-							key,
-						}),
-						LRESULT(0),
-					));
-				}
+				let Some(key) = wparam_to_key(WPARAM(keyboard_data.VKey as usize)) else {
+					return Some(None);
+				};
+				Events::Key { seat, pressed, key }
 			} else {
 				return None;
 			}
-
-			LRESULT(0)
 		}
-		WM_MOUSEHWHEEL => {
-			let delta = (wparam.0 & 0xFFFF) as i16;
-
-			return Some((
-				Some(Events::Button {
-					seat: Seat::stub(),
-					pressed: true,
-					button: if delta > 0 {
-						MouseKeys::ScrollUp
-					} else {
-						MouseKeys::ScrollDown
-					},
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_KEYDOWN => {
-			if window_data.use_raw_keyboard {
-				return None;
-			}
-
-			let key = wparam_to_key(wparam)?;
-
-			return Some((
-				Some(Events::Key {
-					seat: Seat::stub(),
-					pressed: true,
-					key,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_KEYUP => {
-			if window_data.use_raw_keyboard {
-				return None;
-			}
-
-			let key = wparam_to_key(wparam)?;
-
-			return Some((
-				Some(Events::Key {
-					seat: Seat::stub(),
-					pressed: false,
-					key,
-				}),
-				LRESULT(0),
-			));
-		}
-		WM_SIZE => {
-			let width = (lparam.0 & 0xffff) as u32;
-			let height = ((lparam.0 >> 16) & 0xffff) as u32;
-
-			return Some((Some(Events::Resize { width, height }), LRESULT(0)));
-		}
+		WM_MOUSEHWHEEL => Events::Button {
+			seat,
+			pressed: true,
+			button: if (wparam.0 & 0xFFFF) as i16 > 0 {
+				MouseKeys::ScrollUp
+			} else {
+				MouseKeys::ScrollDown
+			},
+		},
+		// Raw keyboard input reports keys through `WM_INPUT` instead, so these fall through to default handling.
+		WM_KEYDOWN | WM_KEYUP if !window_data.use_raw_keyboard => Events::Key {
+			seat,
+			pressed: msg == WM_KEYDOWN,
+			key: wparam_to_key(wparam)?,
+		},
+		WM_SIZE => Events::Resize {
+			width: (lparam.0 & 0xffff) as u32,
+			height: ((lparam.0 >> 16) & 0xffff) as u32,
+		},
 		// Both messages still need default handling: moves generate `WM_SIZE` and `WM_MOVE` from it.
 		WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE => {
 			let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
@@ -648,15 +510,11 @@ fn handle_event(
 			}
 			return None;
 		}
-		WM_SETFOCUS | WM_KILLFOCUS => {
-			return Some((Some(Events::FocusChanged(msg == WM_SETFOCUS)), LRESULT(0)));
-		}
-		_ => {
-			return None;
-		}
+		WM_SETFOCUS | WM_KILLFOCUS => Events::FocusChanged(msg == WM_SETFOCUS),
+		_ => return None,
 	};
 
-	Some((None, result))
+	Some(Some(event))
 }
 
 fn wparam_to_key(wparam: WPARAM) -> Option<Keys> {

@@ -1,6 +1,5 @@
 use std::{
 	cmp::Ordering,
-	convert::Infallible,
 	fmt,
 	marker::PhantomData,
 	ops::{Add, AddAssign, Div, Mul, Neg, Sub},
@@ -8,15 +7,11 @@ use std::{
 
 use maths_rs::Vec3f;
 
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::serialization::serialize_as_array;
 
 /// The `WorldSpace` struct brands positions and directions that use the engine's world coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct WorldSpace;
-
-/// The `Unnormalized` struct marks a [`Vector`] whose length has not been validated.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Unnormalized;
 
 /// Describes why a vector cannot provide a direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +33,56 @@ impl fmt::Display for NormalizationError {
 
 impl std::error::Error for NormalizationError {}
 
+/// Implements the traits and component accessors that [`Point`], [`Vector`], and [`UnitVector`] share.
+///
+/// Each type stores a `value: Vec3f` beside a `PhantomData<Space>` brand. `derive` cannot generate these traits,
+/// because it would also require `Space` to implement them, and space brands are bare markers.
+macro_rules! branded_vec3 {
+	($type:ident) => {
+		impl<Space> Copy for $type<Space> {}
+
+		impl<Space> Clone for $type<Space> {
+			fn clone(&self) -> Self {
+				*self
+			}
+		}
+
+		impl<Space> fmt::Debug for $type<Space> {
+			fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+				formatter.debug_tuple(stringify!($type)).field(&self.value).finish()
+			}
+		}
+
+		impl<Space> PartialEq for $type<Space> {
+			fn eq(&self, other: &Self) -> bool {
+				self.value == other.value
+			}
+		}
+
+		impl<Space> $type<Space> {
+			/// Returns this value as an explicit `maths-rs` value for boundary integrations.
+			pub fn into_maths(self) -> Vec3f {
+				self.value
+			}
+
+			/// Returns the x component.
+			pub fn x(self) -> f32 {
+				self.value.x
+			}
+
+			/// Returns the y component.
+			pub fn y(self) -> f32 {
+				self.value.y
+			}
+
+			/// Returns the z component.
+			pub fn z(self) -> f32 {
+				self.value.z
+			}
+		}
+	};
+}
+
 /// The `Point` struct represents a location in one coordinate space without treating it as a direction.
 #[repr(transparent)]
 pub struct Point<Space = WorldSpace> {
@@ -45,25 +90,7 @@ pub struct Point<Space = WorldSpace> {
 	space: PhantomData<Space>,
 }
 
-impl<Space> Copy for Point<Space> {}
-
-impl<Space> Clone for Point<Space> {
-	fn clone(&self) -> Self {
-		*self
-	}
-}
-
-impl<Space> fmt::Debug for Point<Space> {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter.debug_tuple("Point").field(&self.value).finish()
-	}
-}
-
-impl<Space> PartialEq for Point<Space> {
-	fn eq(&self, other: &Self) -> bool {
-		self.value == other.value
-	}
-}
+branded_vec3!(Point);
 
 impl<Space> Point<Space> {
 	/// Creates a point from its coordinates in `Space`.
@@ -92,26 +119,6 @@ impl<Space> Point<Space> {
 			value,
 			space: PhantomData,
 		}
-	}
-
-	/// Returns this point as an explicit `maths-rs` value for boundary integrations.
-	pub fn into_maths(self) -> Vec3f {
-		self.value
-	}
-
-	/// Returns the x coordinate.
-	pub fn x(self) -> f32 {
-		self.value.x
-	}
-
-	/// Returns the y coordinate.
-	pub fn y(self) -> f32 {
-		self.value.y
-	}
-
-	/// Returns the z coordinate.
-	pub fn z(self) -> f32 {
-		self.value.z
 	}
 
 	/// Returns the distance to `other` in this point's coordinate space.
@@ -210,34 +217,16 @@ fn orientation_tolerance(value: f32) -> f32 {
 	f32::EPSILON * 16.0 * value.abs().max(1.0)
 }
 
-/// The `Vector` struct represents a displacement in one coordinate space and tracks whether its length is validated.
+/// The `Vector` struct represents a displacement in one coordinate space.
 #[repr(transparent)]
-pub struct Vector<Space = WorldSpace, State = Unnormalized> {
+pub struct Vector<Space = WorldSpace> {
 	value: Vec3f,
-	space: PhantomData<(Space, State)>,
+	space: PhantomData<Space>,
 }
 
-impl<Space, State> Copy for Vector<Space, State> {}
+branded_vec3!(Vector);
 
-impl<Space, State> Clone for Vector<Space, State> {
-	fn clone(&self) -> Self {
-		*self
-	}
-}
-
-impl<Space, State> fmt::Debug for Vector<Space, State> {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter.debug_tuple("Vector").field(&self.value).finish()
-	}
-}
-
-impl<Space, State> PartialEq for Vector<Space, State> {
-	fn eq(&self, other: &Self) -> bool {
-		self.value == other.value
-	}
-}
-
-impl<Space> Vector<Space, Unnormalized> {
+impl<Space> Vector<Space> {
 	/// Creates an unnormalized vector from coordinates in `Space`.
 	pub fn new(x: f32, y: f32, z: f32) -> Self {
 		Self::from_maths(Vec3f::new(x, y, z))
@@ -246,6 +235,11 @@ impl<Space> Vector<Space, Unnormalized> {
 	/// Creates an unnormalized vector from its `[x, y, z]` coordinates in `Space`.
 	pub fn from_array([x, y, z]: [f32; 3]) -> Self {
 		Self::new(x, y, z)
+	}
+
+	/// Returns the `[x, y, z]` coordinates of this vector.
+	pub fn to_array(self) -> [f32; 3] {
+		[self.x(), self.y(), self.z()]
 	}
 
 	/// Creates the zero displacement.
@@ -275,65 +269,17 @@ impl<Space> Vector<Space, Unnormalized> {
 	/// measuring the vector again and remains accurate for finite vectors that would overflow or
 	/// underflow during an unscaled length calculation.
 	pub fn normalize_with_length(self) -> Result<(UnitVector<Space>, f32), NormalizationError> {
-		let value = self.value;
-		if !value.x.is_finite() || !value.y.is_finite() || !value.z.is_finite() {
+		let components = self.to_array();
+		if !components.iter().all(|component| component.is_finite()) {
 			return Err(NormalizationError::NonFinite);
 		}
-
-		// Scaling before measuring avoids overflow for large finite values and underflow for tiny ones.
-		let scale = value.x.abs().max(value.y.abs()).max(value.z.abs());
-		if scale == 0.0 {
-			return Err(NormalizationError::ZeroLength);
-		}
-		let scaled = Vec3f::new(value.x / scale, value.y / scale, value.z / scale);
-		let scaled_length = dot_values(scaled, scaled).sqrt();
-		let normalized = Vec3f::new(scaled.x / scaled_length, scaled.y / scaled_length, scaled.z / scaled_length);
-		let length = scale * scaled_length;
-
-		Ok((
-			UnitVector {
-				value: normalized,
-				space: PhantomData,
-			},
-			length,
-		))
+		let ([x, y, z], length) = scaled_normalize(components).ok_or(NormalizationError::ZeroLength)?;
+		Ok((UnitVector::unchecked(Vec3f::new(x, y, z)), length))
 	}
 
 	/// Checks the vector and returns a [`UnitVector`] suitable for a normal or direction.
 	pub fn normalized(self) -> Result<UnitVector<Space>, NormalizationError> {
 		self.normalize_with_length().map(|(unit_vector, _)| unit_vector)
-	}
-
-	/// Checks the vector and returns a [`UnitVector`] suitable for a normal or direction.
-	pub fn unit(self) -> Result<UnitVector<Space>, NormalizationError> {
-		self.normalize_with_length().map(|(unit_vector, _)| unit_vector)
-	}
-}
-
-impl<Space, State> Vector<Space, State> {
-	/// Returns the `[x, y, z]` coordinates of this vector.
-	pub fn to_array(self) -> [f32; 3] {
-		[self.x(), self.y(), self.z()]
-	}
-
-	/// Returns this vector as an explicit `maths-rs` value for boundary integrations.
-	pub fn into_maths(self) -> Vec3f {
-		self.value
-	}
-
-	/// Returns the x component.
-	pub fn x(self) -> f32 {
-		self.value.x
-	}
-
-	/// Returns the y component.
-	pub fn y(self) -> f32 {
-		self.value.y
-	}
-
-	/// Returns the z component.
-	pub fn z(self) -> f32 {
-		self.value.z
 	}
 
 	/// Returns the squared length without a square-root operation.
@@ -351,7 +297,7 @@ impl<Space, State> Vector<Space, State> {
 	/// Returns [`None`] when either vector has a non-finite component. Finite inputs are
 	/// compared with scaled squared magnitudes, so the comparison remains valid even when
 	/// [`Self::length_squared`] would overflow or underflow.
-	pub fn partial_cmp_magnitude<OtherState>(self, other: Vector<Space, OtherState>) -> Option<Ordering> {
+	pub fn partial_cmp_magnitude(self, other: Self) -> Option<Ordering> {
 		let left = scaled_magnitude_squared(self.value)?;
 		let right = scaled_magnitude_squared(other.value)?;
 
@@ -359,17 +305,17 @@ impl<Space, State> Vector<Space, State> {
 	}
 
 	/// Returns the scalar projection of this vector onto `other`.
-	pub fn dot<OtherState>(self, other: Vector<Space, OtherState>) -> f32 {
+	pub fn dot(self, other: Self) -> f32 {
 		dot_values(self.value, other.value)
 	}
 
 	/// Returns a vector perpendicular to this vector and `other`.
-	pub fn cross<OtherState>(self, other: Vector<Space, OtherState>) -> Vector<Space> {
+	pub fn cross(self, other: Self) -> Self {
 		Vector::from_maths(cross_values(self.value, other.value))
 	}
 }
 
-impl<Space> Default for Vector<Space, Unnormalized> {
+impl<Space> Default for Vector<Space> {
 	fn default() -> Self {
 		Self::zero()
 	}
@@ -383,11 +329,10 @@ impl<Space> From<UnitVector<Space>> for Vector<Space> {
 
 /// The `UnitVector` struct provides a checked unit-length direction for normals, rays, and orientation APIs.
 ///
-/// Create one from an arbitrary [`Vector`] with [`Self::try_from_vector`] or
-/// [`Vector::normalized`]. Convert it to a facing [`crate::Orientation`] with
-/// [`crate::orientation_from_direction`] or [`crate::Orientation::from`], or to an orthonormal
-/// [`crate::Matrix`] with [`crate::from_normal`]. Use [`Self::into_vector`] when an operation needs
-/// a displacement instead of a checked direction.
+/// Create one from an arbitrary [`Vector`] with [`Vector::normalized`]. Convert it to a facing
+/// [`crate::Orientation`] with [`crate::orientation_from_direction`] or [`crate::Orientation::from`],
+/// or to an orthonormal [`crate::Matrix`] with [`crate::from_normal`]. Use [`Self::into_vector`] when
+/// an operation needs a displacement instead of a checked direction.
 ///
 /// A direction does not contain roll. Keep an [`crate::Orientation`] when you need the complete
 /// rotation.
@@ -397,57 +342,30 @@ pub struct UnitVector<Space = WorldSpace> {
 	space: PhantomData<Space>,
 }
 
-impl<Space> Copy for UnitVector<Space> {}
-
-impl<Space> Clone for UnitVector<Space> {
-	fn clone(&self) -> Self {
-		*self
-	}
-}
-
-impl<Space> fmt::Debug for UnitVector<Space> {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter.debug_tuple("UnitVector").field(&self.value).finish()
-	}
-}
-
-impl<Space> PartialEq for UnitVector<Space> {
-	fn eq(&self, other: &Self) -> bool {
-		self.value == other.value
-	}
-}
+branded_vec3!(UnitVector);
 
 impl<Space> UnitVector<Space> {
-	/// Validates and normalizes `vector` so it can be used as a direction or normal.
-	///
-	/// Use [`crate::orientation_from_direction`] next when the direction must become a facing
-	/// [`crate::Orientation`].
-	pub fn try_from_vector(vector: Vector<Space>) -> Result<Self, NormalizationError> {
-		vector.normalized()
+	/// Wraps components the caller already knows are finite and unit length.
+	const fn unchecked(value: Vec3f) -> Self {
+		Self {
+			value,
+			space: PhantomData,
+		}
 	}
 
 	/// Returns the positive x axis.
 	pub fn x_axis() -> Self {
-		Self {
-			value: Vec3f::new(1.0, 0.0, 0.0),
-			space: PhantomData,
-		}
+		Self::unchecked(Vec3f::new(1.0, 0.0, 0.0))
 	}
 
 	/// Returns the positive y axis.
 	pub fn y_axis() -> Self {
-		Self {
-			value: Vec3f::new(0.0, 1.0, 0.0),
-			space: PhantomData,
-		}
+		Self::unchecked(Vec3f::new(0.0, 1.0, 0.0))
 	}
 
 	/// Returns the positive z axis.
 	pub fn z_axis() -> Self {
-		Self {
-			value: Vec3f::new(0.0, 0.0, 1.0),
-			space: PhantomData,
-		}
+		Self::unchecked(Vec3f::new(0.0, 0.0, 1.0))
 	}
 
 	/// Returns this direction as an unnormalized [`Vector`] when an affine operation needs a displacement.
@@ -457,28 +375,8 @@ impl<Space> UnitVector<Space> {
 		Vector::from_maths(self.value)
 	}
 
-	/// Returns this direction as an explicit `maths-rs` value for boundary integrations.
-	pub fn into_maths(self) -> Vec3f {
-		self.value
-	}
-
-	/// Returns the x component.
-	pub fn x(self) -> f32 {
-		self.value.x
-	}
-
-	/// Returns the y component.
-	pub fn y(self) -> f32 {
-		self.value.y
-	}
-
-	/// Returns the z component.
-	pub fn z(self) -> f32 {
-		self.value.z
-	}
-
 	/// Returns the scalar projection of this direction onto `other`.
-	pub fn dot<OtherState>(self, other: Vector<Space, OtherState>) -> f32 {
+	pub fn dot(self, other: Vector<Space>) -> f32 {
 		dot_values(self.value, other.value)
 	}
 
@@ -488,10 +386,10 @@ impl<Space> UnitVector<Space> {
 	}
 }
 
-impl<Space, State> Add<Vector<Space, State>> for Point<Space> {
+impl<Space> Add<Vector<Space>> for Point<Space> {
 	type Output = Self;
 
-	fn add(self, rhs: Vector<Space, State>) -> Self::Output {
+	fn add(self, rhs: Vector<Space>) -> Self::Output {
 		Self::from_maths(self.value + rhs.value)
 	}
 }
@@ -510,10 +408,10 @@ impl<Space> AddAssign<Vector<Space>> for Point<Space> {
 	}
 }
 
-impl<Space, State> Sub<Vector<Space, State>> for Point<Space> {
+impl<Space> Sub<Vector<Space>> for Point<Space> {
 	type Output = Self;
 
-	fn sub(self, rhs: Vector<Space, State>) -> Self::Output {
+	fn sub(self, rhs: Vector<Space>) -> Self::Output {
 		Self::from_maths(self.value - rhs.value)
 	}
 }
@@ -534,70 +432,70 @@ impl<Space> Sub for Point<Space> {
 	}
 }
 
-impl<Space, LeftState, RightState> Add<Vector<Space, RightState>> for Vector<Space, LeftState> {
-	type Output = Vector<Space>;
+impl<Space> Add for Vector<Space> {
+	type Output = Self;
 
-	fn add(self, rhs: Vector<Space, RightState>) -> Self::Output {
+	fn add(self, rhs: Self) -> Self::Output {
 		Vector::from_maths(self.value + rhs.value)
 	}
 }
 
-impl<Space, LeftState, RightState> AddAssign<Vector<Space, RightState>> for Vector<Space, LeftState> {
-	fn add_assign(&mut self, rhs: Vector<Space, RightState>) {
+impl<Space> AddAssign for Vector<Space> {
+	fn add_assign(&mut self, rhs: Self) {
 		self.value += rhs.value;
 	}
 }
 
-impl<Space, LeftState, RightState> Sub<Vector<Space, RightState>> for Vector<Space, LeftState> {
-	type Output = Vector<Space>;
+impl<Space> Sub for Vector<Space> {
+	type Output = Self;
 
-	fn sub(self, rhs: Vector<Space, RightState>) -> Self::Output {
+	fn sub(self, rhs: Self) -> Self::Output {
 		Vector::from_maths(self.value - rhs.value)
 	}
 }
 
-impl<Space, State> Add<UnitVector<Space>> for Vector<Space, State> {
-	type Output = Vector<Space>;
+impl<Space> Add<UnitVector<Space>> for Vector<Space> {
+	type Output = Self;
 
 	fn add(self, rhs: UnitVector<Space>) -> Self::Output {
 		self + rhs.into_vector()
 	}
 }
 
-impl<Space, State> Sub<UnitVector<Space>> for Vector<Space, State> {
-	type Output = Vector<Space>;
+impl<Space> Sub<UnitVector<Space>> for Vector<Space> {
+	type Output = Self;
 
 	fn sub(self, rhs: UnitVector<Space>) -> Self::Output {
 		self - rhs.into_vector()
 	}
 }
 
-impl<Space, State> Mul<f32> for Vector<Space, State> {
-	type Output = Vector<Space>;
+impl<Space> Mul<f32> for Vector<Space> {
+	type Output = Self;
 
 	fn mul(self, rhs: f32) -> Self::Output {
 		Vector::from_maths(self.value * rhs)
 	}
 }
 
-impl<Space, State> Mul<Vector<Space, State>> for f32 {
+impl<Space> Mul<Vector<Space>> for f32 {
 	type Output = Vector<Space>;
 
-	fn mul(self, rhs: Vector<Space, State>) -> Self::Output {
+	fn mul(self, rhs: Vector<Space>) -> Self::Output {
 		rhs * self
 	}
 }
 
-impl<Space, State> Div<f32> for Vector<Space, State> {
-	type Output = Vector<Space>;
+impl<Space> Div<f32> for Vector<Space> {
+	type Output = Self;
 
 	fn div(self, rhs: f32) -> Self::Output {
 		Vector::from_maths(self.value / rhs)
 	}
 }
 
-impl<Space, State> Neg for Vector<Space, State> {
-	type Output = Vector<Space>;
+impl<Space> Neg for Vector<Space> {
+	type Output = Self;
 
 	fn neg(self) -> Self::Output {
 		Vector::from_maths(-self.value)
@@ -640,15 +538,27 @@ impl<Space> Neg for UnitVector<Space> {
 	type Output = Self;
 
 	fn neg(self) -> Self::Output {
-		Self {
-			value: -self.value,
-			space: PhantomData,
-		}
+		Self::unchecked(-self.value)
 	}
 }
 
 pub(crate) fn dot_values(left: Vec3f, right: Vec3f) -> f32 {
 	left.x * right.x + left.y * right.y + left.z * right.z
+}
+
+/// Scales `components` by their largest magnitude, then returns them at unit length together with their original
+/// length, or [`None`] when every component is zero.
+///
+/// Scaling before measuring avoids overflow for large finite values and underflow for tiny ones. Reject non-finite
+/// components before calling this.
+pub(crate) fn scaled_normalize<const N: usize>(components: [f32; N]) -> Option<([f32; N], f32)> {
+	let scale = components.iter().fold(0.0f32, |scale, component| scale.max(component.abs()));
+	if scale == 0.0 {
+		return None;
+	}
+	let scaled = components.map(|component| component / scale);
+	let scaled_length = scaled.iter().map(|component| component * component).sum::<f32>().sqrt();
+	Some((scaled.map(|component| component / scaled_length), scale * scaled_length))
 }
 
 // `f64` can represent the square of every finite `f32`, including subnormal values.
@@ -732,7 +642,6 @@ mod tests {
 		assert_eq!(unit_vector, Vector::new(0.6, 0.8, 0.0).normalized().unwrap());
 		assert_eq!(length, 5.0);
 		assert_eq!(vector.normalized().unwrap(), unit_vector);
-		assert_eq!(UnitVector::try_from_vector(vector).unwrap(), unit_vector);
 	}
 
 	#[test]
@@ -781,32 +690,5 @@ mod tests {
 	}
 }
 
-impl<Space> ArrayForm<3> for Point<Space> {
-	type Array = [f32; 3];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		Point::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_array(array))
-	}
-}
-
-serialize_as_array!(Point<Space>, 3, Space);
-
-impl<Space> ArrayForm<3> for Vector<Space> {
-	type Array = [f32; 3];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		Vector::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_array(array))
-	}
-}
-
-serialize_as_array!(Vector<Space>, 3, Space);
+serialize_as_array!(Point<Space>, [f32; 3], to_array, from: Point::from_array, Space);
+serialize_as_array!(Vector<Space>, [f32; 3], to_array, from: Vector::from_array, Space);

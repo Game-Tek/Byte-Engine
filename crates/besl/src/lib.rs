@@ -61,10 +61,7 @@ pub type ParserNode<'a> = parser::Node<'a>;
 /// This function tokenizes the source and builds a syntax tree. Call [`lex`] to
 /// resolve the tree's named references before compilation.
 pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> {
-	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
-	let parser_root_node = parser::parse(&tokens).map_err(CompilationError::Parsing)?;
-
-	Ok(parser_root_node)
+	parser::parse(&tokenizer::tokenize(source)).map_err(CompilationError::Parsing)
 }
 
 /// Resolves a parsed syntax tree and returns its linked root node.

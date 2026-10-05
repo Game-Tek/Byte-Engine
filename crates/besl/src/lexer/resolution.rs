@@ -11,8 +11,10 @@ pub(super) enum DescendantSearch {
 
 /// Resolves a node reference by searching the current lexical scope chain.
 ///
-/// A function in the chain is one the lookup runs inside, so its parameters and earlier locals are visible. Functions
-/// reached while searching an enclosing scope keep theirs private. See [`find_descendant`].
+/// A function in the chain is one the lookup runs inside, so its parameters are visible. Its earlier locals are visible
+/// too: the lexer pushes each statement onto the chain after the function, so the chain searches them before it
+/// reaches the function. Functions reached while searching an enclosing scope keep theirs private. See
+/// [`find_descendant`].
 pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
@@ -20,11 +22,10 @@ pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeR
 			Nodes::Function {
 				name: function_name,
 				params,
-				statements,
 				..
 			} => (function_name == name)
 				.then(|| node.clone())
-				.or_else(|| find_in_function(params, statements, name, DescendantSearch::NonIntrinsic)),
+				.or_else(|| find_named_child(params, name)),
 			_ => find_descendant(node, name, DescendantSearch::NonIntrinsic),
 		};
 
@@ -48,10 +49,10 @@ pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<N
 
 	if type_name.contains('[') {
 		let mut parts = type_name.split(['[', ']']);
-		let element_type_name = parts.next().ok_or(LexError::invalid("No type name"))?;
+		let element_type_name = parts.next().ok_or_else(|| LexError::invalid("No type name"))?;
 		let count = parts
 			.next()
-			.ok_or(LexError::invalid("No count"))?
+			.ok_or_else(|| LexError::invalid("No count"))?
 			.parse::<usize>()
 			.map_err(|_| LexError::invalid("Invalid count"))?;
 
@@ -464,19 +465,12 @@ pub(super) fn build_intrinsic(
 	parameters: &[NodeReference],
 	expansion_id: usize,
 ) -> Result<Vec<NodeReference>, LexError> {
-	let definition_parameters = elements
-		.iter()
-		.filter(|element| matches!(element.borrow().node(), Nodes::Parameter { .. }))
-		.collect::<Vec<_>>();
-
-	if definition_parameters.len() != parameters.len() {
+	let is_parameter = |element: &&NodeReference| matches!(element.borrow().node(), Nodes::Parameter { .. });
+	if elements.iter().filter(is_parameter).count() != parameters.len() {
 		return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 	}
 
-	let body = elements
-		.iter()
-		.filter(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }))
-		.collect::<Vec<_>>();
+	let body = elements.iter().filter(|element| !is_parameter(element)).collect::<Vec<_>>();
 	if body.is_empty() {
 		return Ok(parameters.to_vec());
 	}
@@ -508,8 +502,9 @@ pub(super) fn build_intrinsic(
 	}
 
 	let instantiation = IntrinsicInstantiation {
-		arguments: definition_parameters
-			.into_iter()
+		arguments: elements
+			.iter()
+			.filter(is_parameter)
 			.map(|parameter| parameter.identity())
 			.zip(parameters.iter().cloned())
 			.collect(),
@@ -528,22 +523,17 @@ pub(super) fn intrinsic_matches_parameters(intrinsic: &NodeReference, parameters
 		return false;
 	};
 
-	let expected_parameters = elements
-		.iter()
-		.filter_map(|element| match element.borrow().node() {
+	// Walk the parameter types twice, to check the arity before any type, without collecting them.
+	let expected_parameters = || {
+		elements.iter().filter_map(|element| match element.borrow().node() {
 			Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
 			_ => None,
 		})
-		.collect::<Vec<_>>();
-
-	if expected_parameters.len() != parameters.len() {
-		return false;
-	}
-
-	expected_parameters
-		.iter()
-		.zip(parameters.iter())
-		.all(|(expected, parameter)| expression_matches_type(parameter, expected))
+	};
+	expected_parameters().count() == parameters.len()
+		&& expected_parameters()
+			.zip(parameters)
+			.all(|(expected, parameter)| expression_matches_type(parameter, &expected))
 }
 
 pub(super) fn expression_matches_type(expression: &NodeReference, expected_type: &NodeReference) -> bool {
@@ -665,35 +655,28 @@ pub(super) fn infer_operator_result_type(
 
 	let left_type = infer_expression_type(left);
 	let right_type = infer_expression_type(right);
-	let left_name = left_type
-		.as_ref()
-		.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned));
-	let right_name = right_type
-		.as_ref()
-		.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned));
-
-	if *operator == Operators::Multiply {
-		let product_type = match (left_name.as_deref(), right_name.as_deref()) {
-			(Some("mat4x3f"), Some("vec4f")) => Some("vec3f"),
-			(Some("mat4f"), Some("vec4f")) => Some("vec4f"),
-			_ => None,
-		};
-		if let Some(product_type) = product_type {
-			return builtin_type(product_type);
+	// Compare the borrowed type names. The borrows end with this block, before either type is returned.
+	let right_first = {
+		let left_node = left_type.as_ref().map(|r#type| r#type.borrow());
+		let right_node = right_type.as_ref().map(|r#type| r#type.borrow());
+		let left_name = left_node.as_deref().and_then(Node::get_name);
+		let right_name = right_node.as_deref().and_then(Node::get_name);
+		if *operator == Operators::Multiply {
+			match (left_name, right_name) {
+				(Some("mat4x3f"), Some("vec4f")) => return builtin_type("vec3f"),
+				(Some("mat4f"), Some("vec4f")) => return builtin_type("vec4f"),
+				_ => {}
+			}
 		}
-	}
+		// An `f32` operand takes the other operand's type, so `f32 * vec3f` is a `vec3f`.
+		left_name != right_name && left_name == Some("f32")
+	};
 
-	if left_name == right_name {
-		return left_type.or(right_type);
+	if right_first {
+		right_type.or(left_type)
+	} else {
+		left_type.or(right_type)
 	}
-	if left_name.as_deref() == Some("f32") {
-		return right_type.or(left_type);
-	}
-	if right_name.as_deref() == Some("f32") {
-		return left_type.or(right_type);
-	}
-
-	left_type.or(right_type)
 }
 
 pub(super) fn infer_literal_type(value: &str) -> Option<NodeReference> {

@@ -102,17 +102,11 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 ///
 /// Release builds intentionally leave the manager without asset processors and
 /// must receive their complete resource store from BELD.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
 	generator: impl ProgramGenerator + Clone + 'static,
 ) {
-	#[cfg(not(debug_assertions))]
-	{
-		let _ = (application, generator);
-
-		return;
-	}
-
 	#[cfg(debug_assertions)]
 	{
 		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
@@ -243,9 +237,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 					}
 				};
 
-				let span = debug_span!("Render audio");
-
-				let _entered = span.enter();
+				let _span = debug_span!("Render audio").entered();
 
 				loop {
 					if matches!(receiver.read(), Some(Events::Close)) {
@@ -299,7 +291,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 pub fn setup_animation_pool(application: &mut GraphicsApplication, byte_budget: NonZeroUsize) -> AnimationPool {
 	// The pool owns pose evaluation state on the application thread while its
 	// worker resolves animation resources asynchronously.
-	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), AnimationPoolConfig::new(byte_budget));
+	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), byte_budget);
 
 	application.add_deferred_task(move |runtime| {
 		runtime.spawn(worker.run()).detach();
@@ -338,12 +330,12 @@ use resource_management::{
 use tracing::debug_span;
 use utils::Extent;
 
-use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline, setup_particles};
+use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 use crate::{
-	animation::graph::{AnimationPool, AnimationPoolConfig},
+	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},
 	audio::{
 		audio_system::DefaultAudioSystem,

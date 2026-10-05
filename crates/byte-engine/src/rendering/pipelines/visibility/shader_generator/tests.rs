@@ -2,8 +2,9 @@ use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
 use ghi::AccessPolicies;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
+use super::super::tests::{ssgi_projection, ssgi_ray_at};
 use super::*;
-use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
+use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d};
 
 macro_rules! material_metadata {
 	($($json:tt)*) => {
@@ -24,47 +25,56 @@ fn material_generator() -> VisibilityShaderGenerator {
 	})
 }
 
-fn main_statements<'a>(program: &'a besl::parser::Node<'a>) -> &'a [besl::parser::Node<'a>] {
-	let besl::parser::Nodes::Scope { children, .. } = program.node() else {
-		panic!("Expected generated material root scope.");
-	};
-	let main = children
-		.iter()
-		.find(|child| child.name() == Some("main"))
-		.expect("Generated material program should contain main.");
-	let besl::parser::Nodes::Function { statements, .. } = main.node() else {
-		panic!("Expected generated material main function.");
-	};
-	statements
-}
-
-/// Parses `source` as a `main`, adds `helpers` and `bindings`, and compiles the result for the VM.
-fn compile_with_helpers(
-	source: &str,
-	helpers: &[(&'static str, &str)],
-	bindings: Vec<besl::parser::Node<'static>>,
-) -> besl::vm::ExecutableProgram {
+/// Parses `source` as a `main`, adds `nodes`, such as helper functions and bindings, and compiles the result for the
+/// VM.
+fn compile_with(source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
 	let mut root = besl::parse(source).expect("Failed to parse a VM test. The most likely cause is invalid BESL test syntax.");
-	let mut nodes = helpers
-		.iter()
-		.map(|(source, name)| parse_besl_function(source, name))
-		.collect::<Vec<_>>();
-	nodes.extend(bindings);
 	root.add(nodes);
 	compile(
 		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
 }
 
-fn results_binding(members: Vec<besl::parser::Node<'static>>, slot: ResourceSlot) -> besl::parser::Node<'static> {
-	besl::ParserNode::binding("results", besl::ParserNode::buffer(members), slot.slot(), false, true)
+fn results_binding(members: Vec<Node<'static>>, slot: ResourceSlot) -> Node<'static> {
+	Node::binding("results", Node::buffer(members), slot.slot(), false, true)
+}
+
+/// Declares one buffer member of type `r#type` per name, in the order given, which sets the buffer layout.
+fn members(r#type: &str, names: &[&'static str]) -> Vec<Node<'static>> {
+	names.iter().map(|name| Node::member(name, r#type)).collect()
 }
 
 fn read_f32(results: &besl::vm::Buffer, name: &str) -> f32 {
-	match results.read(name).expect("VM result") {
-		Value::F32(value) => value,
-		value => panic!("Unexpected VM result type for {name}: {value:?}."),
+	results.read_f32(name).expect("VM result")
+}
+
+/// Runs `source` as `main` with the `helpers` functions it calls, `textures` bound from slot one on, and a `results`
+/// buffer of `members` at slot zero, and returns the results.
+///
+/// Helper tests use it to execute production BESL helper functions on fixed inputs.
+fn run_helper_test(
+	source: &str,
+	textures: &mut [(&'static str, besl::parser::BindingResource<'static>, &mut Texture)],
+	helpers: &[(&'static str, &str)],
+	members: Vec<Node<'static>>,
+) -> besl::vm::Buffer {
+	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+	let mut nodes = (1..)
+		.zip(textures.iter())
+		.map(|(slot, (name, resource, _))| Node::binding(name, resource.clone(), slot, true, false))
+		.chain(helpers.iter().map(|(source, name)| parse_besl_function(source, name)))
+		.collect::<Vec<_>>();
+	nodes.push(results_binding(members, RESULT_SLOT));
+	let executable = compile_with(source, nodes);
+	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	for (slot, (_, _, texture)) in (1..).zip(textures) {
+		descriptors.bind_texture(ResourceSlot::new(slot), texture);
 	}
+	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	results
 }
 
 /// Executes representative octahedral seams and axes through the optimized production decoder.
@@ -72,7 +82,7 @@ fn read_f32(results: &besl::vm::Buffer, name: &str) -> f32 {
 fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
-	let executable = compile_with_helpers(
+	let executable = compile_with(
 		r#"
 		main: fn () -> void {
 			for (let index: u32 = 0; index < 5; index = index + 1) {
@@ -80,16 +90,16 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 			}
 		}
 		"#,
-		&[(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal")],
 		vec![
-			besl::ParserNode::binding(
+			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+			Node::binding(
 				"inputs",
-				besl::ParserNode::buffer(vec![besl::ParserNode::member("values", "vec2u16[5]")]),
+				Node::buffer(vec![Node::member("values", "vec2u16[5]")]),
 				INPUT_SLOT.slot(),
 				true,
 				false,
 			),
-			results_binding(vec![besl::ParserNode::member("values", "vec3f[5]")], RESULT_SLOT),
+			results_binding(vec![Node::member("values", "vec3f[5]")], RESULT_SLOT),
 		],
 	);
 	let cases = [
@@ -131,7 +141,7 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
-	let executable = compile_with_helpers(
+	let executable = compile_with(
 		r#"
 		main: fn () -> void {
 			for (let index: u32 = 0; index < 5; index = index + 1) {
@@ -143,23 +153,21 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 			}
 		}
 		"#,
-		&[
-			(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
-			(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
-		],
 		vec![
-			besl::ParserNode::binding(
+			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+			parse_besl_function(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
+			Node::binding(
 				"inputs",
-				besl::ParserNode::buffer(vec![
-					besl::ParserNode::member("emission_directions", "vec3f[5]"),
-					besl::ParserNode::member("axes", "vec3f[5]"),
-					besl::ParserNode::member("c0_tangents", "vec2u16[5]"),
+				Node::buffer(vec![
+					Node::member("emission_directions", "vec3f[5]"),
+					Node::member("axes", "vec3f[5]"),
+					Node::member("c0_tangents", "vec2u16[5]"),
 				]),
 				INPUT_SLOT.slot(),
 				true,
 				false,
 			),
-			results_binding(vec![besl::ParserNode::member("values", "vec2f[5]")], RESULT_SLOT),
+			results_binding(vec![Node::member("values", "vec2f[5]")], RESULT_SLOT),
 		],
 	);
 	let cases = [
@@ -212,15 +220,17 @@ fn vec4f_variable_becomes_specialization() {
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
 	};
-	let specialization = children
-		.iter()
-		.find(|child| child.name() == Some("albedo"))
-		.expect("Generated material program should declare the vec4f variable.");
+	let child = |name| children.iter().find(|child| child.name() == Some(name));
+	let specialization = child("albedo").expect("Generated material program should declare the vec4f variable.");
 	assert!(matches!(
 		specialization.node(),
 		besl::parser::Nodes::Specialization { r#type, .. } if *r#type == "vec4f"
 	));
-	assert!(main_statements(&shader).iter().any(|statement| {
+	let main = child("main").expect("Generated material program should contain main.");
+	let besl::parser::Nodes::Function { statements, .. } = main.node() else {
+		panic!("Expected generated material main function.");
+	};
+	assert!(statements.iter().any(|statement| {
 		matches!(
 			statement.node(),
 			besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { operator, left, right })
@@ -273,8 +283,7 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 /// Verifies cone PCF evaluates its receiver plane at each fetched shadow texel center.
 #[test]
 fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	let executable = compile_with_helpers(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let identity: mat4f = mat4f(
@@ -306,27 +315,17 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 			);
 		}
 		"#,
+		&mut [],
 		&[(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient")],
-		vec![results_binding(
-			vec![
-				besl::ParserNode::member("gradient", "vec2f"),
-				besl::ParserNode::member("corrected_depth", "f32"),
-				besl::ParserNode::member("degenerate", "vec2f"),
-			],
-			RESULT_SLOT,
-		)],
+		vec![
+			Node::member("gradient", "vec2f"),
+			Node::member("corrected_depth", "f32"),
+			Node::member("degenerate", "vec2f"),
+		],
 	);
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
 
 	let Value::Vec2F(gradient) = results.read("gradient").expect("receiver-plane gradient") else {
 		panic!("Unexpected receiver-plane gradient type.");
-	};
-	let Value::Vec2F(degenerate) = results.read("degenerate").expect("degenerate receiver-plane gradient") else {
-		panic!("Unexpected degenerate receiver-plane gradient type.");
 	};
 	assert!(
 		(gradient[0] - 3.0).abs() <= 0.00001 && (gradient[1] + 1.0).abs() <= 0.00001,
@@ -338,8 +337,8 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 		"Unexpected cone receiver depth at a shadow texel center: {corrected_depth}. The most likely cause is incorrect receiver-plane tap correction."
 	);
 	assert_eq!(
-		degenerate,
-		[0.0, 0.0],
+		results.read("degenerate").expect("degenerate receiver-plane gradient"),
+		Value::Vec2F([0.0, 0.0]),
 		"A degenerate shadow projection must retain the base depth bias."
 	);
 }
@@ -347,9 +346,26 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 /// Verifies the directional probe skips PCF only when every fine cell touching the footprint is clear.
 #[test]
 fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
-	const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
-	let executable = compile_with_helpers(
+	let cascade_depths = [0.2, 0.4, 0.7, 0.9];
+	let mut base_depths = (0..8)
+		.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
+		.collect::<Vec<_>>();
+	// Cascade zero contains a blocker in the neighboring 8x8 cell. A maximum gather may conservatively include
+	// it even when the footprint stays in cell zero.
+	base_depths[0] = [0.2, 0.0, 0.0, 1.0];
+	base_depths[1] = [0.9, 0.0, 0.0, 1.0];
+	let mut pyramid = texture_2d(2, 8, &base_depths);
+	pyramid.add_mip(texture_2d(
+		1,
+		4,
+		&[
+			[0.9, 0.0, 0.0, 1.0],
+			[0.4, 0.0, 0.0, 1.0],
+			[0.7, 0.0, 0.0, 1.0],
+			[0.9, 0.0, 0.0, 1.0],
+		],
+	));
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			results.fully_lit = 0;
@@ -370,52 +386,22 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 			}
 		}
 		"#,
-		&[],
-		vec![
-			besl::ParserNode::binding(
-				"directional_shadow_depth_pyramid",
-				besl::ParserNode::combined_image_sampler(),
-				PYRAMID_SLOT.slot(),
-				true,
-				false,
-			),
-			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit"),
-			results_binding(
-				vec![
-					besl::ParserNode::member("fully_lit", "u32"),
-					besl::ParserNode::member("may_be_occluded", "u32"),
-					besl::ParserNode::member("crosses_tile_boundary", "u32"),
-					besl::ParserNode::member("adjacent_cell_may_occlude", "u32"),
-				],
-				RESULT_SLOT,
-			),
-		],
+		&mut [(
+			"directional_shadow_depth_pyramid",
+			Node::combined_image_sampler(),
+			&mut pyramid,
+		)],
+		&[(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit")],
+		members(
+			"u32",
+			&[
+				"fully_lit",
+				"may_be_occluded",
+				"crosses_tile_boundary",
+				"adjacent_cell_may_occlude",
+			],
+		),
 	);
-	let cascade_depths = [0.2, 0.4, 0.7, 0.9];
-	let mut base_depths = (0..8)
-		.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
-		.collect::<Vec<_>>();
-	// Cascade zero contains a blocker in the neighboring 8x8 cell. A maximum gather may conservatively include
-	// it even when the footprint stays in cell zero.
-	base_depths[0] = [0.2, 0.0, 0.0, 1.0];
-	base_depths[1] = [0.9, 0.0, 0.0, 1.0];
-	let mut pyramid = texture_2d(2, 8, &base_depths);
-	pyramid.add_mip(texture_2d(
-		1,
-		4,
-		&[
-			[0.9, 0.0, 0.0, 1.0],
-			[0.4, 0.0, 0.0, 1.0],
-			[0.7, 0.0, 0.0, 1.0],
-			[0.9, 0.0, 0.0, 1.0],
-		],
-	));
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(PYRAMID_SLOT, &mut pyramid);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
 
 	for (name, expected) in [
 		("fully_lit", 1),
@@ -423,10 +409,11 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 		("crosses_tile_boundary", 1),
 		("adjacent_cell_may_occlude", 0),
 	] {
-		let Value::U32(actual) = results.read(name).expect("directional shadow probe result") else {
-			panic!("Unexpected directional shadow probe result type for {name}.");
-		};
-		assert_eq!(actual, expected, "Unexpected directional shadow probe result for {name}.");
+		assert_eq!(
+			results.read(name).expect("directional shadow probe result"),
+			Value::U32(expected),
+			"Unexpected directional shadow probe result for {name}."
+		);
 	}
 }
 
@@ -435,10 +422,12 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 /// further from an edge when its taps are spaced wider.
 #[test]
 fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
-	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
-	const SLOPED_SLOT: ResourceSlot = ResourceSlot::new(2);
-	let executable = compile_with_helpers(
+	// Texels from column four on hold a blocker at depth 0.9, closer to the light than a receiver at 0.8 under
+	// reverse-Z. The others hold 0.2, farther than it.
+	let mut shadow_map = column_shadow_map(8, |x| if x >= 4 { 0.9 } else { 0.2 });
+	// A surface sloped toward the light along x stores its depth at each texel center.
+	let mut sloped_map = column_shadow_map(8, |x| 0.5 + 0.01 * (x as f32 + 0.5));
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
@@ -458,58 +447,30 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 			results.bounded_wide_reach = sample_shadow_tent(shadow_map, vec2f(2.0 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 2.0);
 		}
 		"#,
-		&[],
-		vec![
-			besl::ParserNode::binding(
-				"shadow_map",
-				besl::ParserNode::combined_array_image_sampler(),
-				SHADOW_SLOT.slot(),
-				true,
-				false,
-			),
-			besl::ParserNode::binding(
-				"sloped_map",
-				besl::ParserNode::combined_array_image_sampler(),
-				SLOPED_SLOT.slot(),
-				true,
-				false,
-			),
-			parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
-			parse_besl_function(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
-			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
-			results_binding(
-				vec![
-					besl::ParserNode::member("clear", "f32"),
-					besl::ParserNode::member("quarter_covered", "f32"),
-					besl::ParserNode::member("on_edge", "f32"),
-					besl::ParserNode::member("covered", "f32"),
-					besl::ParserNode::member("wide_on_edge", "f32"),
-					besl::ParserNode::member("sloped_receiver", "f32"),
-					besl::ParserNode::member("bounded_on_edge", "f32"),
-					besl::ParserNode::member("bounded_past_border", "f32"),
-					besl::ParserNode::member("bounded_wide_reach", "f32"),
-				],
-				RESULT_SLOT,
-			),
+		&mut [
+			("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map),
+			("sloped_map", Node::combined_array_image_sampler(), &mut sloped_map),
 		],
+		&[
+			(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
+			(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
+			(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
+		],
+		members(
+			"f32",
+			&[
+				"clear",
+				"quarter_covered",
+				"on_edge",
+				"covered",
+				"wide_on_edge",
+				"sloped_receiver",
+				"bounded_on_edge",
+				"bounded_past_border",
+				"bounded_wide_reach",
+			],
+		),
 	);
-	let mut shadow_map = edge_shadow_map(8, 4);
-	// A surface sloped toward the light along x stores its depth at each texel center.
-	let mut sloped_map = Texture::new_3d(8, 8, 1).expect("sloped shadow fixture");
-	for y in 0..8 {
-		for x in 0..8 {
-			sloped_map
-				.write_3d([x, y, 0], [0.5 + 0.01 * (x as f32 + 0.5), 0.0, 0.0, 1.0])
-				.expect("sloped shadow fixture");
-		}
-	}
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
-	descriptors.bind_texture(SLOPED_SLOT, &mut sloped_map);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
 
 	assert_f32_results(
 		&results,
@@ -528,16 +489,15 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 	);
 }
 
-/// Returns a square one-layer shadow map whose texels from column `edge` on hold a blocker at depth 0.9, closer to the
-/// light than a receiver at 0.8 under reverse-Z, and whose other texels hold 0.2, farther than it.
-fn edge_shadow_map(size: u32, edge: u32) -> Texture {
-	let mut shadow_map = Texture::new_3d(size, size, 1).expect("edge shadow fixture");
+/// Returns a square one-layer shadow map, `size` texels wide, whose texels in column `x` hold the stored depth
+/// `depth(x)`.
+fn column_shadow_map(size: u32, depth: impl Fn(u32) -> f32) -> Texture {
+	let mut shadow_map = Texture::new_3d(size, size, 1).expect("shadow map fixture");
 	for y in 0..size {
 		for x in 0..size {
-			let depth = if x >= edge { 0.9 } else { 0.2 };
 			shadow_map
-				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
-				.expect("edge shadow fixture");
+				.write_3d([x, y, 0], [depth(x), 0.0, 0.0, 1.0])
+				.expect("shadow map fixture");
 		}
 	}
 	shadow_map
@@ -559,9 +519,9 @@ fn assert_f32_results(results: &besl::vm::Buffer, expected: &[(&str, f32)], like
 /// between tent spacings. A receiver on the edge stays half lit at any radius.
 #[test]
 fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
-	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
-	let executable = compile_with_helpers(
+	// Texels from column 16 on hold a blocker in front of a receiver at 0.8.
+	let mut shadow_map = column_shadow_map(32, |x| if x >= 16 { 0.9 } else { 0.2 });
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
@@ -573,37 +533,15 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 			results.on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), extent, 8.0);
 		}
 		"#,
-		&[],
-		vec![
-			besl::ParserNode::binding(
-				"shadow_map",
-				besl::ParserNode::combined_array_image_sampler(),
-				SHADOW_SLOT.slot(),
-				true,
-				false,
-			),
-			parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
-			parse_besl_function(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
-			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
-			parse_besl_function(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
-			results_binding(
-				vec![
-					besl::ParserNode::member("contact", "f32"),
-					besl::ParserNode::member("between", "f32"),
-					besl::ParserNode::member("wide", "f32"),
-					besl::ParserNode::member("on_edge", "f32"),
-				],
-				RESULT_SLOT,
-			),
+		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
+		&[
+			(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
+			(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
+			(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
+			(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
 		],
+		members("f32", &["contact", "between", "wide", "on_edge"]),
 	);
-	let mut shadow_map = edge_shadow_map(32, 16);
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
 
 	// A radius of six lies between the two- and four-texel spacings, which give 1.0 and 0.875 here.
 	let between_blend = 3.0_f32.log2() - 1.0;
@@ -624,10 +562,11 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 /// sloped receiver as its own blocker.
 #[test]
 fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
-	const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
-	const SLOPED_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1);
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(2);
-	let executable = compile_with_helpers(
+	// Four 64x64 cascades reduce to four stacked blocks of 8x8 max-depth cells.
+	let mut cells = vec![[0.2, 0.0, 0.0, 1.0]; 8 * 32];
+	cells[4 * 8 + 4] = [0.9, 0.0, 0.0, 1.0];
+	let mut pyramid = texture_2d(8, 32, &cells);
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
@@ -646,38 +585,14 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 			results.entering = directional_shadow_blocker_depth(vec2f(24.0, 24.0), 0.5, flat, depth_per_meter, u32(0), extent);
 		}
 		"#,
-		&[],
-		vec![
-			besl::ParserNode::binding(
-				"directional_shadow_depth_pyramid",
-				besl::ParserNode::combined_image_sampler(),
-				PYRAMID_SLOT.slot(),
-				true,
-				false,
-			),
-			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
-			results_binding(
-				vec![
-					besl::ParserNode::member("nearby", "f32"),
-					besl::ParserNode::member("out_of_reach", "f32"),
-					besl::ParserNode::member("other_cascade", "f32"),
-					besl::ParserNode::member("fading_in", "f32"),
-					besl::ParserNode::member("entering", "f32"),
-				],
-				RESULT_SLOT,
-			),
-		],
+		&mut [(
+			"directional_shadow_depth_pyramid",
+			Node::combined_image_sampler(),
+			&mut pyramid,
+		)],
+		&[(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth")],
+		members("f32", &["nearby", "out_of_reach", "other_cascade", "fading_in", "entering"]),
 	);
-	// Four 64x64 cascades reduce to four stacked blocks of 8x8 max-depth cells.
-	let mut cells = vec![[0.2, 0.0, 0.0, 1.0]; 8 * 32];
-	cells[4 * 8 + 4] = [0.9, 0.0, 0.0, 1.0];
-	let mut pyramid = texture_2d(8, 32, &cells);
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(PYRAMID_SLOT, &mut pyramid);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
 
 	assert_f32_results(
 		&results,
@@ -693,25 +608,6 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 
 	// A receiver sloped toward the light along x: each cell's maximum is the receiver's own depth at the cell's
 	// nearest-to-light texel center, 3.5 texels past the cell center.
-	let executable = compile_with_helpers(
-		r#"
-		main: fn () -> void {
-			results.sloped_self = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
-		}
-		"#,
-		&[],
-		vec![
-			besl::ParserNode::binding(
-				"directional_shadow_depth_pyramid",
-				besl::ParserNode::combined_image_sampler(),
-				SLOPED_PYRAMID_SLOT.slot(),
-				true,
-				false,
-			),
-			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
-			results_binding(vec![besl::ParserNode::member("sloped_self", "f32")], RESULT_SLOT),
-		],
-	);
 	let sloped_cells = (0..8 * 32)
 		.map(|index| {
 			let cell_center_x = (index % 8) as f32 * 8.0 + 4.0;
@@ -719,12 +615,20 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 		})
 		.collect::<Vec<_>>();
 	let mut sloped_pyramid = texture_2d(8, 32, &sloped_cells);
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture(SLOPED_PYRAMID_SLOT, &mut sloped_pyramid);
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			results.sloped_self = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
+		}
+		"#,
+		&mut [(
+			"directional_shadow_depth_pyramid",
+			Node::combined_image_sampler(),
+			&mut sloped_pyramid,
+		)],
+		&[(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth")],
+		vec![Node::member("sloped_self", "f32")],
+	);
 
 	assert_eq!(
 		read_f32(&results, "sloped_self"),
@@ -738,7 +642,7 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 /// 0.01 units of stored depth per meter.
 #[test]
 fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let projection: mat4f = mat4f(
@@ -751,6 +655,7 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 			results.depth_per_meter = directional_shadow_depth_per_meter(projection);
 		}
 		"#,
+		&mut [],
 		&[
 			(
 				DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE,
@@ -761,10 +666,7 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 				"directional_shadow_depth_per_meter",
 			),
 		],
-		vec![
-			besl::ParserNode::member("texels_per_meter", "f32"),
-			besl::ParserNode::member("depth_per_meter", "f32"),
-		],
+		members("f32", &["texels_per_meter", "depth_per_meter"]),
 	);
 	let texels_per_meter = read_f32(&results, "texels_per_meter");
 	let depth_per_meter = read_f32(&results, "depth_per_meter");
@@ -779,7 +681,7 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 /// allowed cascade, and never go back to a finer one than the receiver's.
 #[test]
 fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			// Cascades span 500, 200, 70, and 15 texels per meter.
@@ -790,6 +692,7 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 			results.keeps_receiver_cascade = directional_shadow_fitting_cascade(u32(2), u32(3), 0.001, scales, 8.0);
 		}
 		"#,
+		&mut [],
 		&[
 			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
 			(
@@ -797,12 +700,10 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 				"directional_shadow_fitting_cascade",
 			),
 		],
-		vec![
-			besl::ParserNode::member("fits_own", "u32"),
-			besl::ParserNode::member("moves_coarser", "u32"),
-			besl::ParserNode::member("stops_at_last", "u32"),
-			besl::ParserNode::member("keeps_receiver_cascade", "u32"),
-		],
+		members(
+			"u32",
+			&["fits_own", "moves_coarser", "stops_at_last", "keeps_receiver_cascade"],
+		),
 	);
 	for (name, expected) in [
 		("fits_own", 0),
@@ -811,11 +712,9 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 		("stops_at_last", 1),
 		("keeps_receiver_cascade", 2),
 	] {
-		let Value::U32(actual) = results.read(name).expect("fitting cascade result") else {
-			panic!("Unexpected fitting cascade result type for {name}.");
-		};
 		assert_eq!(
-			actual, expected,
+			results.read(name).expect("fitting cascade result"),
+			Value::U32(expected),
 			"Unexpected fitting cascade for {name}. The most likely cause is comparing against the wrong cascade's scale."
 		);
 	}
@@ -825,7 +724,7 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 /// inside the cascade's square: a 20-meter square on a 2048-texel map holds receivers up to 9.92 meters from its center.
 #[test]
 fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let projection: mat4f = mat4f(
@@ -834,36 +733,28 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_be
 				vec4f(0.0, 0.0, 0.01, 0.0),
 				vec4f(0.0, 0.0, 0.0, 1.0)
 			);
-			let holds_inside: u32 = 0;
+			results.inside = 0;
 			if (directional_shadow_cascade_holds(projection, vec3f(9.9, 0.0 - 9.9, 3.0), 2048.0)) {
-				holds_inside = 1;
+				results.inside = 1;
 			}
-			let holds_past_x: u32 = 0;
+			results.past_x = 0;
 			if (directional_shadow_cascade_holds(projection, vec3f(9.95, 0.0, 3.0), 2048.0)) {
-				holds_past_x = 1;
+				results.past_x = 1;
 			}
-			let holds_past_y: u32 = 0;
+			results.past_y = 0;
 			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0 - 9.95, 3.0), 2048.0)) {
-				holds_past_y = 1;
+				results.past_y = 1;
 			}
-			results.inside = holds_inside;
-			results.past_x = holds_past_x;
-			results.past_y = holds_past_y;
 		}
 		"#,
+		&mut [],
 		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
-		vec![
-			besl::ParserNode::member("inside", "u32"),
-			besl::ParserNode::member("past_x", "u32"),
-			besl::ParserNode::member("past_y", "u32"),
-		],
+		members("u32", &["inside", "past_x", "past_y"]),
 	);
 	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0)] {
-		let Value::U32(actual) = results.read(name).expect("cascade holds result") else {
-			panic!("Unexpected cascade holds result type for {name}.");
-		};
 		assert_eq!(
-			actual, expected,
+			results.read(name).expect("cascade holds result"),
+			Value::U32(expected),
 			"Unexpected cascade holds result for {name}. The most likely cause is a margin other than eight texels."
 		);
 	}
@@ -872,7 +763,7 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_be
 /// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding.
 #[test]
 fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let to_camera: vec3f = vec3f(0.0, 0.0, 1.0);
@@ -884,13 +775,9 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 			results.grazing_front = facing_normal(normalize(vec3f(1.0, 0.0, 0.2)), to_camera, right, up).z;
 		}
 		"#,
+		&mut [],
 		&[(FACING_NORMAL_SOURCE, "facing_normal")],
-		vec![
-			besl::ParserNode::member("front", "f32"),
-			besl::ParserNode::member("back", "f32"),
-			besl::ParserNode::member("back_mirrored", "f32"),
-			besl::ParserNode::member("grazing_front", "f32"),
-		],
+		members("f32", &["front", "back", "back_mirrored", "grazing_front"]),
 	);
 	assert_f32_results(
 		&results,
@@ -904,26 +791,10 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 	);
 }
 
-/// Runs `source` with only buffer-free shadow helpers bound and returns the results buffer.
-fn run_buffer_free_shadow_helper(
-	source: &str,
-	helpers: &[(&'static str, &str)],
-	members: Vec<besl::parser::Node<'static>>,
-) -> besl::vm::Buffer {
-	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	let executable = compile_with_helpers(source, helpers, vec![results_binding(members, RESULT_SLOT)]);
-	let mut results = buffer(&executable, RESULT_SLOT);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(RESULT_SLOT, &mut results);
-	run_at(&executable, &mut descriptors, [0, 0]);
-	drop(descriptors);
-	results
-}
-
 /// Verifies point receivers use the perspective depth stored by the selected cube face.
 #[test]
 fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			results.center = point_shadow_receiver_depth(vec3f(0.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
@@ -931,12 +802,9 @@ fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
 			results.adjacent_face = point_shadow_receiver_depth(vec3f(6.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
 		}
 		"#,
+		&mut [],
 		&[(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth")],
-		vec![
-			besl::ParserNode::member("center", "f32"),
-			besl::ParserNode::member("off_axis", "f32"),
-			besl::ParserNode::member("adjacent_face", "f32"),
-		],
+		members("f32", &["center", "off_axis", "adjacent_face"]),
 	);
 	let center = read_f32(&results, "center");
 	assert!((center - read_f32(&results, "off_axis")).abs() < 0.000001);
@@ -946,7 +814,7 @@ fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
 /// Verifies offset point-shadow rays compare against the shaded receiver plane instead of a constant radius.
 #[test]
 fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let sample_direction: vec3f = normalize(vec3f(1.0, 0.0 - 5.0, 0.0));
@@ -959,8 +827,9 @@ fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
 			results.y = receiver.y;
 		}
 		"#,
+		&mut [],
 		&[(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector")],
-		vec![besl::ParserNode::member("x", "f32"), besl::ParserNode::member("y", "f32")],
+		members("f32", &["x", "y"]),
 	);
 	assert!((read_f32(&results, "x") - 1.0).abs() < 0.000001);
 	assert!((read_f32(&results, "y") + 5.0).abs() < 0.000001);
@@ -969,7 +838,7 @@ fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
 /// Verifies receiver-plane orientation does not change as close-camera derivatives shrink.
 #[test]
 fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			results.large = point_shadow_receiver_plane_normal(
@@ -982,14 +851,12 @@ fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm()
 			).z;
 		}
 		"#,
+		&mut [],
 		&[(
 			POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
 			"point_shadow_receiver_plane_normal",
 		)],
-		vec![
-			besl::ParserNode::member("large", "f32"),
-			besl::ParserNode::member("small", "f32"),
-		],
+		members("f32", &["large", "small"]),
 	);
 	for name in ["large", "small"] {
 		assert!(
@@ -1002,7 +869,7 @@ fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm()
 /// Verifies point PCF compares against the center of the cube texel selected by closest sampling.
 #[test]
 fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)));
@@ -1010,11 +877,9 @@ fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
 			results.z_over_x = direction.z / direction.x;
 		}
 		"#,
+		&mut [],
 		&[(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction")],
-		vec![
-			besl::ParserNode::member("y_over_x", "f32"),
-			besl::ParserNode::member("z_over_x", "f32"),
-		],
+		members("f32", &["y_over_x", "z_over_x"]),
 	);
 	for (name, expected) in [("y_over_x", -0.25097656), ("z_over_x", 0.10058594)] {
 		assert!(
@@ -1027,7 +892,7 @@ fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
 /// Verifies receivers beyond a point shadow's projection range remain unshadowed.
 #[test]
 fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_besl_vm() {
-	let results = run_buffer_free_shadow_helper(
+	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			results.blocker_beyond_far = point_shadow_occlusion(0.4, 0.0 - 0.01, 110.0, 0.1, 100.0);
@@ -1036,13 +901,12 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 			results.lit_inside = point_shadow_occlusion(0.1, 0.2, 10.0, 0.1, 100.0);
 		}
 		"#,
+		&mut [],
 		&[(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion")],
-		vec![
-			besl::ParserNode::member("blocker_beyond_far", "f32"),
-			besl::ParserNode::member("clear_beyond_far", "f32"),
-			besl::ParserNode::member("blocked_inside", "f32"),
-			besl::ParserNode::member("lit_inside", "f32"),
-		],
+		members(
+			"f32",
+			&["blocker_beyond_far", "clear_beyond_far", "blocked_inside", "lit_inside"],
+		),
 	);
 	for (name, expected) in [
 		("blocker_beyond_far", 1.0),
@@ -1061,7 +925,6 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 /* Screen-space reflections */
 
 const REFLECTION_EXTENT: u32 = 64;
-const REFLECTION_NEAR: f32 = 0.1;
 const REFLECTION_FAR: f32 = 100.0;
 const REFLECTION_INPUTS_SLOT: ResourceSlot = ResourceSlot::new(0);
 const REFLECTION_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1);
@@ -1070,8 +933,9 @@ const FLOOR_COLOR: [f32; 3] = [0.2, 0.2, 0.2];
 const WALL_COLOR: [f32; 3] = [2.0, 1.0, 0.5];
 const BAR_COLOR: [f32; 3] = [0.0, 5.0, 0.0];
 
-/// The `ReflectionScene` struct describes a fixture seen by a camera at the origin looking down positive z: a floor
-/// one unit below the camera, an optional wall facing the camera, and an optional horizontal bar floating in front.
+/// The `ReflectionScene` struct describes a fixture seen by a camera at the origin looking down positive z, through
+/// [`ssgi_projection`]: a floor one unit below the camera, an optional wall facing the camera, and an optional
+/// horizontal bar floating in front.
 #[derive(Clone, Copy)]
 struct ReflectionScene {
 	wall_z: Option<f32>,
@@ -1105,36 +969,11 @@ impl ReflectionScene {
 	}
 }
 
-fn reflection_projection() -> maths_rs::Mat4f {
-	math::projection_matrix(math::Degrees::new(60.0), 1.0, REFLECTION_NEAR, REFLECTION_FAR)
-}
-
-/// Converts a row-major matrix to the column-major element order the BESL VM multiplies with.
-fn column_major(matrix: maths_rs::Mat4f) -> [f32; 16] {
-	std::array::from_fn(|index| matrix[(index % 4) * 4 + index / 4])
-}
-
-/// Returns the view ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square image `extent` pixels wide.
-fn reflection_ray_at(x: u32, y: u32, extent: u32) -> [f32; 2] {
-	let projection = reflection_projection();
-	[
-		(2.0 * (x as f32 + 0.5) / extent as f32 - 1.0) / projection[0],
-		(1.0 - 2.0 * (y as f32 + 0.5) / extent as f32) / projection[5],
-	]
-}
-
 /// Renders `scene` into the half-resolution linear depth pyramid the rays march.
 fn reflection_depth_pyramid(scene: ReflectionScene) -> Texture {
 	let half = REFLECTION_EXTENT / 2;
 	let depth: Vec<[f32; 4]> = (0..half * half)
-		.map(|index| {
-			[
-				scene.surface(reflection_ray_at(index % half, index / half, half)).0,
-				0.0,
-				0.0,
-				1.0,
-			]
-		})
+		.map(|index| [scene.surface(ssgi_ray_at(index % half, index / half, half)).0, 0.0, 0.0, 1.0])
 		.collect();
 	// Mip zero holds half-resolution depth.
 	texture_2d(half, half, &depth)
@@ -1145,7 +984,7 @@ fn reflection_radiance_history(scene: ReflectionScene, exposure: f32) -> Texture
 	let extent = REFLECTION_EXTENT;
 	let texels: Vec<[f32; 4]> = (0..extent * extent)
 		.map(|index| {
-			let (z, [r, g, b]) = scene.surface(reflection_ray_at(index % extent, index / extent, extent));
+			let (z, [r, g, b]) = scene.surface(ssgi_ray_at(index % extent, index / extent, extent));
 			[r * exposure, g * exposure, b * exposure, z]
 		})
 		.collect();
@@ -1156,7 +995,7 @@ fn reflection_radiance_history(scene: ReflectionScene, exposure: f32) -> Texture
 fn floor_row_at(z: f32) -> u32 {
 	(REFLECTION_EXTENT / 2..REFLECTION_EXTENT)
 		.min_by(|&a, &b| {
-			let depth = |row| -1.0 / reflection_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT)[1];
+			let depth = |row| -1.0 / ssgi_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT)[1];
 			(depth(a) - z).abs().total_cmp(&(depth(b) - z).abs())
 		})
 		.expect("floor rows")
@@ -1168,7 +1007,7 @@ fn floor_row_at(z: f32) -> u32 {
 /// the helper's unexposed radiance in RGB and its confidence in alpha.
 fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<ReflectionScene>, column: u32, row: u32) -> [f32; 4] {
 	const PREVIOUS_EXPOSURE: f32 = 2.0;
-	let executable = compile_with_helpers(
+	let executable = compile_with(
 		r#"
 		main: fn () -> void {
 			results.reflection = trace_screen_space_reflection(
@@ -1180,23 +1019,22 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 			);
 		}
 		"#,
-		&[],
 		{
 			let mut bindings = screen_space_reflection_scope();
-			bindings.push(besl::ParserNode::binding(
+			bindings.push(Node::binding(
 				"inputs",
-				besl::ParserNode::buffer(vec![
-					besl::ParserNode::member("view_projection", "mat4f"),
-					besl::ParserNode::member("position", "vec4f"),
-					besl::ParserNode::member("direction", "vec4f"),
-					besl::ParserNode::member("extent", "vec2u"),
+				Node::buffer(vec![
+					Node::member("view_projection", "mat4f"),
+					Node::member("position", "vec4f"),
+					Node::member("direction", "vec4f"),
+					Node::member("extent", "vec2u"),
 				]),
 				REFLECTION_INPUTS_SLOT.slot(),
 				true,
 				false,
 			));
 			bindings.push(results_binding(
-				vec![besl::ParserNode::member("reflection", "vec4f")],
+				vec![Node::member("reflection", "vec4f")],
 				REFLECTION_RESULTS_SLOT,
 			));
 			bindings
@@ -1204,7 +1042,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	);
 
 	// The camera sits at the origin, so world space is view space and the view-projection is the projection.
-	let ray = reflection_ray_at(column, row, REFLECTION_EXTENT);
+	let ray = ssgi_ray_at(column, row, REFLECTION_EXTENT);
 	let z = -1.0 / ray[1];
 	let position = [ray[0] * z, -1.0, z];
 	let length = (position[0] * position[0] + 1.0 + z * z).sqrt();
@@ -1212,7 +1050,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	let direction = [position[0] / length, 1.0 / length, z / length, 0.0];
 	let mut inputs = buffer(&executable, REFLECTION_INPUTS_SLOT);
 	for (member, value) in [
-		("view_projection", Value::Mat4F(column_major(reflection_projection()))),
+		("view_projection", Value::Mat4F(column_major(ssgi_projection()))),
 		("position", Value::Vec4F([position[0], position[1], position[2], 1.0])),
 		("direction", Value::Vec4F(direction)),
 		("extent", Value::Vec2U([REFLECTION_EXTENT, REFLECTION_EXTENT])),
@@ -1221,7 +1059,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	}
 	let mut parameters = buffer(&executable, REFLECTION_PARAMETERS_SLOT);
 	for (member, value) in [
-		("world_to_previous_clip", Value::Mat4F(column_major(reflection_projection()))),
+		("world_to_previous_clip", Value::Mat4F(column_major(ssgi_projection()))),
 		("previous_exposure", Value::F32(PREVIOUS_EXPOSURE)),
 		("history_valid", Value::U32(previous_scene.is_some() as u32)),
 	] {
@@ -1278,9 +1116,7 @@ fn reflection_rays_pass_behind_thin_objects() {
 	};
 	let row = floor_row_at(2.0);
 	assert_eq!(
-		scene
-			.surface(reflection_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT))
-			.1,
+		scene.surface(ssgi_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT)).1,
 		FLOOR_COLOR,
 		"The bar must not hide the ray's origin."
 	);

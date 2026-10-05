@@ -1,5 +1,5 @@
 use super::*;
-impl<A: Allocator + Clone> Generator<A> {
+impl Generator {
 	pub(crate) fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeReference]) {
 		for node in nodes {
 			self.emit_node_string(string, node);
@@ -42,54 +42,88 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	pub(crate) fn generate_vertex_shader(
+	/// Generates a vertex or fragment shader: the shared resource declarations, the stage's IO structs, the helper
+	/// functions, and the entry point.
+	pub(crate) fn generate_raster_shader(
 		&mut self,
 		string: &mut String,
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
+		vertex: bool,
 	) {
-		let nodes = self.classify_nodes(order);
+		let nodes = Self::classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
 		if !bindings.is_empty() {
 			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
-		self.emit_vertex_input_struct(string, &nodes.inputs);
-		self.emit_vertex_output_struct(string, &nodes.outputs);
-		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
+		if vertex {
+			self.emit_vertex_input_struct(string, &nodes.inputs);
+			self.emit_vertex_output_struct(string, &nodes.outputs);
+		} else {
+			self.emit_fragment_input_struct(string, &nodes.inputs);
+			if !nodes.outputs.is_empty() {
+				self.emit_fragment_output_struct(string, &nodes.outputs);
+			}
+		}
+		// Only vertex shaders receive the invocation indices.
+		let has_input = |builtin: &str| {
+			vertex
+				&& nodes
+					.inputs
+					.iter()
+					.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == builtin))
+		};
+		let context = RasterStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
-			has_vertex_index: nodes.inputs.iter().any(
-				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN),
-			),
-			has_instance_index: nodes.inputs.iter().any(
-				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
-			),
-		});
+			has_vertex_index: has_input(besl::VERTEX_INDEX_BUILTIN),
+			has_instance_index: has_input(besl::INSTANCE_INDEX_BUILTIN),
+		};
+		let previous_raster_stage_context = self.raster_stage_context.replace(context);
 
-		for node in nodes.functions.iter().rev() {
+		self.emit_functions(string, &nodes.functions);
+		if vertex {
+			self.emit_vertex_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, context);
+		} else {
+			self.emit_fragment_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, context);
+		}
+		self.raster_stage_context = previous_raster_stage_context;
+	}
+
+	/// Emits every helper function's prototype, then every body, so helpers can call each other in any order.
+	fn emit_functions(&mut self, string: &mut String, functions: &[&besl::NodeReference]) {
+		for node in functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
-
-		for node in nodes.functions.iter().rev() {
+		for node in functions.iter().rev() {
 			self.emit_node_string(string, node);
 		}
+	}
 
-		self.emit_vertex_entry_point(
-			string,
-			main_function_node,
-			&nodes.inputs,
-			&nodes.outputs,
-			!bindings.is_empty(),
-			nodes.push_constant,
-		);
-		self.raster_stage_context = previous_raster_stage_context;
+	/// Records the workgroup variables a compute or object entry point declares and forwards to its helpers.
+	fn stage_workgroups(workgroups: &[&besl::NodeReference]) -> Vec<StageWorkgroup> {
+		workgroups
+			.iter()
+			.filter_map(|workgroup| {
+				let workgroup = workgroup.borrow();
+				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
+					return None;
+				};
+				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
+				Some(StageWorkgroup {
+					name: name.clone(),
+					msl_type,
+					count: count.map(|count| count.get()),
+				})
+			})
+			.collect()
 	}
 
 	pub(crate) fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
@@ -101,16 +135,16 @@ impl<A: Allocator + Clone> Generator<A> {
 			let besl::Nodes::Input { name, location, format } = input.node() else {
 				continue;
 			};
-			if Self::is_vertex_builtin_input(name) {
+			if crate::shader::generator::is_vertex_builtin_input(name) {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" [[attribute(");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
+			let _ = write!(
+				string,
+				"{} {} [[attribute({location})]]",
+				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::identifier(name)
+			);
 			formatting.push_statement_end(string);
 		}
 
@@ -118,7 +152,6 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	pub(crate) fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
-		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "FragmentInput");
 
 		for input in inputs {
@@ -126,25 +159,29 @@ impl<A: Allocator + Clone> Generator<A> {
 			let besl::Nodes::Input { name, location, format } = input.node() else {
 				continue;
 			};
-			if Self::is_fragment_builtin_input(name) {
+			if name == "front_facing" {
 				continue;
 			}
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
+			self.emit_user_attribute(string, name, format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
+	}
+
+	/// Emits one user attribute field that links a raster stage output to the next stage's input.
+	///
+	/// Metal cannot interpolate integers, so integer attributes are `[[flat]]`.
+	fn emit_user_attribute(&self, string: &mut String, name: &str, format: &besl::NodeReference, location: u8) {
+		let formatting = ShaderFormatting::new(self.minified);
+		formatting.push_indentation(string, 1);
+		let format = format.borrow();
+		let type_name = format.get_name().unwrap();
+		let _ = write!(string, "{} {}", Self::translate_type(type_name), Self::identifier(name));
+		if is_integer_besl_type(type_name) {
+			string.push_str(" [[flat]]");
+		}
+		let _ = write!(string, " [[user(locn{location})]]");
+		formatting.push_statement_end(string);
 	}
 
 	pub(crate) fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
@@ -157,27 +194,25 @@ impl<A: Allocator + Clone> Generator<A> {
 				name,
 				location,
 				format,
-				count,
+				count: None,
 				..
 			} = output.node()
 			else {
 				continue;
 			};
-			if count.is_some() {
-				continue;
-			}
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
+			let _ = write!(
+				string,
+				"{} {}",
+				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::identifier(name)
+			);
 			match name.as_str() {
 				"depth" => string.push_str(" [[depth(any)]]"),
 				"stencil" => string.push_str(" [[stencil]]"),
 				"sample_mask" => string.push_str(" [[sample_mask]]"),
 				_ => {
-					string.push_str(" [[color(");
-					string.push_str(location.to_string().as_str());
-					string.push_str(")]]");
+					let _ = write!(string, " [[color({location})]]");
 				}
 			}
 			formatting.push_statement_end(string);
@@ -200,79 +235,19 @@ impl<A: Allocator + Clone> Generator<A> {
 				name,
 				location,
 				format,
-				count,
+				count: None,
 				..
 			} = output.node()
 			else {
 				continue;
 			};
-			if count.is_some() || besl::is_position_output(name) {
+			if besl::is_position_output(name) {
 				continue;
 			}
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
+			self.emit_user_attribute(string, name, format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
-	}
-
-	pub(crate) fn generate_fragment_shader(
-		&mut self,
-		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
-	) {
-		let nodes = self.classify_nodes(order);
-		if let Some(push_constant) = nodes.push_constant {
-			self.emit_push_constant_struct(string, push_constant);
-		}
-		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
-		self.emit_buffer_binding_structs(string, &nodes.bindings);
-
-		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		if !bindings.is_empty() {
-			self.emit_argument_buffer_struct(string, &bindings);
-		}
-
-		self.emit_fragment_input_struct(string, &nodes.inputs);
-		if !nodes.outputs.is_empty() {
-			self.emit_fragment_output_struct(string, &nodes.outputs);
-		}
-		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
-			has_resources: !bindings.is_empty(),
-			has_push_constant: nodes.push_constant.is_some(),
-			has_vertex_index: false,
-			has_instance_index: false,
-		});
-
-		for node in nodes.functions.iter().rev() {
-			self.emit_function_prototype(string, node);
-		}
-
-		for node in nodes.functions.iter().rev() {
-			self.emit_node_string(string, node);
-		}
-
-		self.emit_fragment_entry_point(
-			string,
-			main_function_node,
-			&nodes.inputs,
-			&nodes.outputs,
-			!bindings.is_empty(),
-			nodes.push_constant,
-		);
-		self.raster_stage_context = previous_raster_stage_context;
 	}
 
 	pub(crate) fn emit_raster_input_locals(
@@ -297,9 +272,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			}
 			formatting.push_indentation(string, indent);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
+			let _ = write!(
+				string,
+				"{} {}",
+				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::identifier(name)
+			);
 			string.push('=');
 			if let Some(value) = builtin_value {
 				string.push_str(value);
@@ -323,9 +301,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			}
 			formatting.push_indentation(string, indent);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
+			let _ = write!(
+				string,
+				"{} {}",
+				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::identifier(name)
+			);
 			formatting.push_statement_end(string);
 		}
 	}
@@ -366,8 +347,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		has_resources: bool,
-		push_constant: Option<&besl::NodeReference>,
+		context: RasterStageContext,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
@@ -378,24 +358,19 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("vertex VertexOutput ");
 		string.push_str(MSL_ENTRY_POINT);
 		string.push_str("(VertexInput in [[stage_in]]");
-		if inputs
-			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN))
-		{
+		if context.has_vertex_index {
 			self.emit_separator(string);
 			string.push_str("uint vertex_index [[vertex_id]]");
 		}
-		if inputs.iter().any(
-			|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
-		) {
+		if context.has_instance_index {
 			self.emit_separator(string);
 			string.push_str("uint instance_index [[instance_id]]");
 		}
-		if push_constant.is_some() {
+		if context.has_push_constant {
 			self.emit_separator(string);
 			self.emit_push_constant_parameter(string);
 		}
-		if has_resources {
+		if context.has_resources {
 			self.emit_separator(string);
 			self.emit_argument_buffer_parameter(string);
 		}
@@ -435,8 +410,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		has_resources: bool,
-		push_constant: Option<&besl::NodeReference>,
+		context: RasterStageContext,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function {
@@ -468,11 +442,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_separator(string);
 			string.push_str("bool front_facing [[front_facing]]");
 		}
-		if push_constant.is_some() {
+		if context.has_push_constant {
 			self.emit_separator(string);
 			self.emit_push_constant_parameter(string);
 		}
-		if has_resources {
+		if context.has_resources {
 			self.emit_separator(string);
 			self.emit_argument_buffer_parameter(string);
 		}
@@ -504,14 +478,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_block_end(string);
 	}
 
-	pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
-		crate::shader::generator::is_vertex_builtin_input(name)
-	}
-
-	pub(crate) fn is_fragment_builtin_input(name: &str) -> bool {
-		matches!(name, "front_facing")
-	}
-
 	pub(crate) fn generate_compute_shader(
 		&mut self,
 		string: &mut String,
@@ -519,7 +485,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		uses_simd_lane_id: bool,
 	) {
-		let nodes = self.classify_nodes(order);
+		let nodes = Self::classify_nodes(order);
 		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_declarations(string, &nodes.outputs);
@@ -528,27 +494,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		let workgroups = nodes
-			.workgroups
-			.iter()
-			.filter_map(|workgroup| {
-				let workgroup = workgroup.borrow();
-				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
-					return None;
-				};
-				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
-				Some(StageWorkgroup {
-					name: name.clone(),
-					msl_type,
-					count: count.map(|count| count.get()),
-				})
-			})
-			.collect();
+		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
-			workgroups,
+			workgroups: Self::stage_workgroups(&nodes.workgroups),
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
@@ -559,18 +509,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
-		for node in nodes.functions.iter().rev() {
-			self.emit_function_prototype(string, node);
-		}
-
-		for node in nodes.functions.iter().rev() {
-			self.emit_node_string(string, node);
-		}
-
+		self.emit_functions(string, &nodes.functions);
 		self.emit_compute_entry_point(
 			string,
 			main_function_node,
-			nodes.bindings.as_slice(),
+			&nodes.bindings,
 			nodes.push_constant,
 			&nodes.workgroups,
 			uses_simd_lane_id,
@@ -587,33 +530,17 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		maximum_mesh_threadgroups: u32,
 	) {
-		let nodes = self.classify_nodes(order);
+		let nodes = Self::classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		let workgroups = nodes
-			.workgroups
-			.iter()
-			.filter_map(|workgroup| {
-				let workgroup = workgroup.borrow();
-				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
-					return None;
-				};
-				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
-				Some(StageWorkgroup {
-					name: name.clone(),
-					msl_type,
-					count: count.map(|count| count.get()),
-				})
-			})
-			.collect();
+		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
 		let previous_task_stage_context = self.task_stage_context.replace(TaskStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
-			workgroups,
+			workgroups: Self::stage_workgroups(&nodes.workgroups),
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
@@ -625,13 +552,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		self.emit_object_payload_struct(string, &nodes.task_payloads);
 
-		for node in nodes.functions.iter().rev() {
-			self.emit_function_prototype(string, node);
-		}
-		for node in nodes.functions.iter().rev() {
-			self.emit_node_string(string, node);
-		}
-
+		self.emit_functions(string, &nodes.functions);
 		self.emit_task_entry_point(
 			string,
 			main_function_node,
@@ -655,40 +576,35 @@ impl<A: Allocator + Clone> Generator<A> {
 		maximum_primitives: u32,
 		uses_render_target_array_index: bool,
 	) {
-		let nodes = self.classify_nodes(order);
+		let nodes = Self::classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		let mesh_output_fields = |vertex_rate: bool| {
-			nodes
-				.outputs
-				.iter()
-				.filter_map(|output| {
-					let output = output.borrow();
-					let besl::Nodes::Output {
-						name,
-						count: Some(_),
-						per_vertex,
-						..
-					} = output.node()
-					else {
-						return None;
-					};
-					(*per_vertex == vertex_rate).then(|| Self::mesh_output_field_name(name).to_string())
-				})
-				.collect()
-		};
-		let primitive_output_fields = mesh_output_fields(false);
-		let vertex_output_fields = mesh_output_fields(true);
+		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
+		let mesh_output_fields = nodes
+			.outputs
+			.iter()
+			.filter_map(|output| {
+				let output = output.borrow();
+				let besl::Nodes::Output {
+					name,
+					count: Some(_),
+					per_vertex,
+					..
+				} = output.node()
+				else {
+					return None;
+				};
+				Some((*per_vertex, Self::mesh_output_field_name(name).to_string()))
+			})
+			.collect();
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
 			uses_render_target_array_index,
-			primitive_output_fields,
-			vertex_output_fields,
+			mesh_output_fields,
 			maximum_vertices,
 			maximum_primitives,
 		});
@@ -705,14 +621,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_mesh_output_structs(string, &nodes.outputs);
 		}
 
-		for node in nodes.functions.iter().rev() {
-			self.emit_function_prototype(string, node);
-		}
-
-		for node in nodes.functions.iter().rev() {
-			self.emit_node_string(string, node);
-		}
-
+		self.emit_functions(string, &nodes.functions);
 		self.emit_mesh_entry_point_argument_buffers(
 			string,
 			main_function_node,
@@ -765,7 +674,6 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	/// Emits the mesh output arrays of one rate as user attributes of their native vertex or primitive struct.
 	fn emit_mesh_output_fields(&self, string: &mut String, outputs: &[&besl::NodeReference], vertex_rate: bool) {
-		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
@@ -778,30 +686,15 @@ impl<A: Allocator + Clone> Generator<A> {
 			else {
 				continue;
 			};
-			if *per_vertex != vertex_rate {
-				continue;
+			if *per_vertex == vertex_rate {
+				self.emit_user_attribute(string, Self::mesh_output_field_name(name), format, *location);
 			}
-
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(Self::mesh_output_field_name(name)).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
 		}
 	}
 
 	/// Returns resources in logical-slot order so generated MSL remains deterministic.
-	pub(crate) fn sort_bindings_by_slot<'a>(&self, bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference, A> {
-		let mut sorted = Vec::with_capacity_in(bindings.len(), self.allocator.clone());
-		sorted.extend_from_slice(bindings);
+	pub(crate) fn sort_bindings_by_slot<'a>(bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference> {
+		let mut sorted = bindings.to_vec();
 		sorted.sort_unstable_by_key(|binding| match binding.borrow().node() {
 			besl::Nodes::Binding { slot, .. } => *slot,
 			_ => u32::MAX,

@@ -71,12 +71,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		&resource_store,
 	);
 	application.renderer.add_pipeline_manager(pipeline_manager);
-
-	application.add_deferred_task(move |runtime| {
-		for lane in simple_loader_lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+	run_on_loading_thread(application, simple_loader_lanes.into_iter().map(|lane| lane.run()));
 }
 
 /// Installs the visibility-buffer PBR scene pipeline and its loader lanes.
@@ -97,27 +92,20 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+	use crate::rendering::pipelines::visibility::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX};
+
 	let visibility_pipeline_settings = visibility_pipeline_settings(application);
-	let gtao_configuration = application
-		.configuration()
-		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);
-	let contact_shadow_configuration = application
-		.configuration()
-		.register(crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX);
-	for prefix in [
-		crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX,
-		crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX,
-	] {
-		super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
-	}
+	// Each port subscribes before its startup parameters are queued, so it reports every one of them.
+	let [gtao_configuration, contact_shadow_configuration] = [GTAO_CONFIGURATION_PREFIX, CONTACT_SHADOWS_CONFIGURATION_PREFIX]
+		.map(|prefix| {
+			let port = application.configuration.register(prefix);
+			super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
+			port
+		});
 
 	let application_resource_manager = application.resource_manager.clone();
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
-	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
-		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
-		pipeline_manager.clone(),
-	);
 
 	let geometry = rendering::pipelines::visibility::GeometryHandles::new(
 		renderer.context_mut(),
@@ -129,14 +117,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		renderer.context_mut(),
 		application_resource_manager,
 		&geometry,
-		material_pipeline_config,
+		pipeline_manager.clone(),
 	);
 
-	application.add_deferred_task(move |runtime| {
-		for lane in visibility_loader_lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));
 
 	let visibility_pipeline_manager = VisibilityPipelineManager::new(
 		application.renderer.context_mut(),
@@ -169,12 +153,15 @@ pub fn setup_particles(application: &mut GraphicsApplication) {
 		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 16);
 	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
 	application.renderer.add_pipeline_manager(particle_manager);
+	run_on_loading_thread(application, lanes.into_iter().map(|lane| lane.run()));
+}
 
-	application.add_deferred_task(move |runtime| {
-		for lane in lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+/// Runs every loader lane as a task on the loading thread that [`defaults::launch_deferred_tasks_thread`] starts.
+fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
+	application: &mut GraphicsApplication,
+	lanes: impl IntoIterator<Item = F> + Send + 'static,
+) {
+	application.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane).detach()));
 }
 
 /// Resolves the visibility pipeline's startup parameters, panicking on any value it cannot use.
@@ -316,10 +303,8 @@ mod ui_source_tests {
 	use super::*;
 	use crate::ui::{Context, ElementContext, Engine, Size};
 
-	#[test]
-	fn republished_unchanged_render_is_not_adopted_again() {
-		let factory = Factory::new();
-		let mut source = UiRenderSource::new(factory.listener());
+	/// Creates an engine whose root renders on every evaluation, so each test controls what it publishes.
+	fn rendering_engine() -> Engine {
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
 			let _root = ctx.element("root").container(|c| c).await;
@@ -327,6 +312,14 @@ mod ui_source_tests {
 				ctx.render().await;
 			}
 		});
+		engine
+	}
+
+	#[test]
+	fn republished_unchanged_render_is_not_adopted_again() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
@@ -348,13 +341,7 @@ mod ui_source_tests {
 	fn adopted_ui_returns_render_buffers_to_the_engine() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let _root = ctx.element("root").container(|c| c).await;
-			loop {
-				ctx.render().await;
-			}
-		});
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
@@ -373,13 +360,7 @@ mod ui_source_tests {
 	fn submitted_ui_reaches_late_sinks_without_republication() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let _root = ctx.element("root").container(|c| c).await;
-			loop {
-				ctx.render().await;
-			}
-		});
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);

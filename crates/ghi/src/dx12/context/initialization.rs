@@ -4,18 +4,6 @@ use windows::Win32::Graphics::Direct3D12 as d3d12;
 
 use super::*;
 
-/// The `ModernDx12Capabilities` struct captures the mandatory runtime contract before queue creation.
-#[derive(Clone, Copy)]
-struct ModernDx12Capabilities {
-	shader_model_6_9: bool,
-	enhanced_barriers: bool,
-	root_signature_1_2: bool,
-	native_16_bit_shader_ops: bool,
-	typed_resource_int64_atomics: bool,
-	group_shared_int64_atomics: bool,
-	descriptor_heap_int64_atomics: bool,
-}
-
 impl Device {
 	const NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE: &str = "DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.";
 	const SHADER_MODEL_6_9_UNAVAILABLE: &str =
@@ -39,9 +27,8 @@ impl Device {
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let device_factory = Self::create_agility_device_factory(settings)?;
-		let adapter: Option<&IUnknown> = None;
 		let mut device: Option<ID3D12Device10> = None;
-		unsafe { device_factory.CreateDevice(adapter, D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
+		unsafe { device_factory.CreateDevice(None::<&IUnknown>, D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
 			"Failed to create a DX12 feature level 12_2 ID3D12Device10. The most likely cause is that the selected GPU lacks feature level 12_2 or the loaded Agility SDK does not expose the required modern device interface."
 		})?;
 		let device = device.ok_or(
@@ -50,16 +37,9 @@ impl Device {
 		let device_configuration = device
 			.cast::<ID3D12DeviceConfiguration>()
 			.map_err(|_| Self::DEVICE_CONFIGURATION_UNAVAILABLE)?;
-		let capabilities = Self::query_modern_dx12_capabilities(&device);
-		Self::require_modern_dx12_capabilities(capabilities)?;
-		let info_queue = if settings.validation {
-			device.cast::<ID3D12InfoQueue>().ok()
-		} else {
-			None
-		};
-		let debug_log_function = settings.debug_log_function.unwrap_or(|message| {
-			println!("{}", message);
-		});
+		Self::require_modern_dx12_capabilities(&device)?;
+		let info_queue = settings.validation.then(|| device.cast::<ID3D12InfoQueue>().ok()).flatten();
+		let debug_log_function = settings.debug_log_function.unwrap_or(|message| println!("{message}"));
 		let dxc_compiler = DxcCompiler::load().map_err(|reason| {
 			debug_log_function(&reason);
 			Self::DXC_UNAVAILABLE
@@ -72,9 +52,7 @@ impl Device {
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {
 				Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-				Priority: 0,
-				Flags: D3D12_COMMAND_QUEUE_FLAGS(0),
-				NodeMask: 0,
+				..Default::default()
 			};
 
 			let queue = unsafe { device.CreateCommandQueue(&desc) }
@@ -154,110 +132,74 @@ impl Device {
 		Ok(())
 	}
 
-	/// Queries the shader, synchronization, root-signature, and atomic capabilities required by the DX12 backend.
-	fn query_modern_dx12_capabilities(device: &ID3D12Device10) -> ModernDx12Capabilities {
-		let mut root_signature = d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE {
-			HighestVersion: d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2,
-		};
-		let root_signature_result = unsafe {
-			device.CheckFeatureSupport(
-				d3d12::D3D12_FEATURE_ROOT_SIGNATURE,
-				(&mut root_signature as *mut d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE).cast(),
-				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE>() as u32,
-			)
-		};
-
-		// FL12_2 already guarantees wave operations, 64-bit shader operations, mesh shaders, and DXR 1.1.
-		// Query only the capabilities that strengthen that feature-level contract.
-		let mut options4 = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
-		let options4_result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS4,
-				(&mut options4 as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS4).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>() as u32,
-			)
-		};
-
-		let mut options9 = d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
-		let options9_result = unsafe {
-			device.CheckFeatureSupport(
-				d3d12::D3D12_FEATURE_D3D12_OPTIONS9,
-				(&mut options9 as *mut d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9).cast(),
-				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9>() as u32,
-			)
-		};
-
-		let mut options11 = d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11::default();
-		let options11_result = unsafe {
-			device.CheckFeatureSupport(
-				d3d12::D3D12_FEATURE_D3D12_OPTIONS11,
-				(&mut options11 as *mut d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11).cast(),
-				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11>() as u32,
-			)
-		};
-
-		ModernDx12Capabilities {
-			shader_model_6_9: Self::query_shader_model_6_9_support(device),
-			enhanced_barriers: Self::query_enhanced_barriers_support(device),
-			root_signature_1_2: root_signature_result.is_ok()
-				&& root_signature.HighestVersion.0 >= d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2.0,
-			native_16_bit_shader_ops: options4_result.is_ok() && options4.Native16BitShaderOpsSupported.as_bool(),
-			typed_resource_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnTypedResourceSupported.as_bool(),
-			group_shared_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnGroupSharedSupported.as_bool(),
-			descriptor_heap_int64_atomics: options11_result.is_ok()
-				&& options11.AtomicInt64OnDescriptorHeapResourceSupported.as_bool(),
-		}
+	/// Fills one D3D12 feature-support structure, or returns `None` when the runtime rejects the query.
+	pub(crate) fn feature_support<T>(device: &ID3D12Device10, feature: d3d12::D3D12_FEATURE, mut data: T) -> Option<T> {
+		// SAFETY: `data` is a live structure of the size that this feature query writes.
+		unsafe { device.CheckFeatureSupport(feature, (&mut data as *mut T).cast(), std::mem::size_of::<T>() as u32) }.ok()?;
+		Some(data)
 	}
 
+	/// Checks the shader, synchronization, root-signature, and atomic capabilities required by the DX12 backend.
+	///
 	/// Reports the first missing capability so the user can update the relevant runtime, driver, or GPU.
-	fn require_modern_dx12_capabilities(capabilities: ModernDx12Capabilities) -> Result<(), &'static str> {
-		if !capabilities.shader_model_6_9 {
+	fn require_modern_dx12_capabilities(device: &ID3D12Device10) -> Result<(), &'static str> {
+		// Every DXC compilation path targets Shader Model 6.9.
+		let shader_model = D3D12_FEATURE_DATA_SHADER_MODEL {
+			HighestShaderModel: d3d12::D3D_SHADER_MODEL_6_9,
+		};
+		if !Self::feature_support(device, D3D12_FEATURE_SHADER_MODEL, shader_model)
+			.is_some_and(|data| data.HighestShaderModel.0 >= d3d12::D3D_SHADER_MODEL_6_9.0)
+		{
 			return Err(Self::SHADER_MODEL_6_9_UNAVAILABLE);
 		}
-		if !capabilities.enhanced_barriers {
+		if !Self::feature_support(
+			device,
+			D3D12_FEATURE_D3D12_OPTIONS12,
+			D3D12_FEATURE_DATA_D3D12_OPTIONS12::default(),
+		)
+		.is_some_and(|data| data.EnhancedBarriersSupported.as_bool())
+		{
 			return Err(Self::ENHANCED_BARRIERS_UNAVAILABLE);
 		}
-		if !capabilities.root_signature_1_2 {
+		let root_signature = d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE {
+			HighestVersion: d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2,
+		};
+		if !Self::feature_support(device, d3d12::D3D12_FEATURE_ROOT_SIGNATURE, root_signature)
+			.is_some_and(|data| data.HighestVersion.0 >= d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2.0)
+		{
 			return Err(Self::ROOT_SIGNATURE_1_2_UNAVAILABLE);
 		}
-		if !capabilities.native_16_bit_shader_ops {
+		// FL12_2 already guarantees wave operations, 64-bit shader operations, mesh shaders, and DXR 1.1.
+		// Query only the capabilities that strengthen that feature-level contract.
+		if !Self::feature_support(
+			device,
+			D3D12_FEATURE_D3D12_OPTIONS4,
+			D3D12_FEATURE_DATA_D3D12_OPTIONS4::default(),
+		)
+		.is_some_and(|data| data.Native16BitShaderOpsSupported.as_bool())
+		{
 			return Err(Self::NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE);
 		}
-		if !capabilities.typed_resource_int64_atomics || !capabilities.group_shared_int64_atomics {
+		if !Self::feature_support(
+			device,
+			d3d12::D3D12_FEATURE_D3D12_OPTIONS9,
+			d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9::default(),
+		)
+		.is_some_and(|data| {
+			data.AtomicInt64OnTypedResourceSupported.as_bool() && data.AtomicInt64OnGroupSharedSupported.as_bool()
+		}) {
 			return Err(Self::TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE);
 		}
-		if !capabilities.descriptor_heap_int64_atomics {
+		if !Self::feature_support(
+			device,
+			d3d12::D3D12_FEATURE_D3D12_OPTIONS11,
+			d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11::default(),
+		)
+		.is_some_and(|data| data.AtomicInt64OnDescriptorHeapResourceSupported.as_bool())
+		{
 			return Err(Self::DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE);
 		}
 		Ok(())
-	}
-
-	/// Checks that the runtime and driver expose the shader model used by every DXC compilation path.
-	fn query_shader_model_6_9_support(device: &ID3D12Device10) -> bool {
-		let mut shader_model = D3D12_FEATURE_DATA_SHADER_MODEL {
-			HighestShaderModel: d3d12::D3D_SHADER_MODEL_6_9,
-		};
-		let result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_SHADER_MODEL,
-				(&mut shader_model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_SHADER_MODEL>() as u32,
-			)
-		};
-		result.is_ok() && shader_model.HighestShaderModel.0 >= d3d12::D3D_SHADER_MODEL_6_9.0
-	}
-
-	/// Checks the enhanced-barrier capability before queues can accept work under the modern DX12 contract.
-	fn query_enhanced_barriers_support(device: &ID3D12Device10) -> bool {
-		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
-		let result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS12,
-				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS12).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS12>() as u32,
-			)
-		};
-		result.is_ok() && options.EnhancedBarriersSupported.as_bool()
 	}
 
 	/// Creates an empty DX12 context over an already-selected native device and queues.
@@ -271,11 +213,12 @@ impl Device {
 		queues: Vec<StoredQueue>,
 	) -> Self {
 		let descriptor_handle_increment_sizes = [
-			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) },
-			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) },
-			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) },
-			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV) },
-		];
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+			D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+			D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+		]
+		.map(|heap_type| unsafe { device.GetDescriptorHandleIncrementSize(heap_type) });
 		Self {
 			device,
 			device_configuration,
@@ -328,64 +271,7 @@ impl Device {
 			free_clear_uav_descriptor_slots: Vec::new(),
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
-			render_target_view_allocation_count: 0,
-			depth_stencil_view_allocation_count: 0,
-			texture_copy_count: 0,
-			buffer_copy_count: 0,
-			buffer_clear_count: 0,
-			clear_descriptor_copy_call_count: 0,
-			native_command_list_execute_count: 0,
-			empty_command_list_skip_count: 0,
-			root_signature_bind_count: 0,
-			descriptor_heap_bind_count: 0,
-			descriptor_table_bind_count: 0,
-			#[cfg(test)]
-			descriptor_table_bind_records: Vec::new(),
-			push_constant_write_count: 0,
-			#[cfg(test)]
-			push_constant_write_records: Vec::new(),
-			descriptor_write_count: 0,
-			image_srv_descriptor_write_count: 0,
-			image_uav_descriptor_write_count: 0,
-			acceleration_structure_descriptor_write_count: 0,
-			#[cfg(test)]
-			sampler_descriptor_write_records: Vec::new(),
-			pipeline_state_bind_count: 0,
-			compute_pipeline_state_create_attempt_count: 0,
-			graphics_pipeline_state_create_attempt_count: 0,
-			graphics_pipeline_state_last_error: None,
-			hlsl_specialization_compile_count: 0,
-			ray_tracing_state_object_create_attempt_count: 0,
-			compute_dispatch_encode_count: 0,
-			indirect_dispatch_encode_count: 0,
-			trace_rays_record_count: 0,
-			mesh_dispatch_encode_count: 0,
-			vertex_buffer_bind_count: 0,
-			index_buffer_bind_count: 0,
-			draw_encode_count: 0,
-			draw_indexed_encode_count: 0,
-			render_target_bind_count: 0,
-			render_target_clear_count: 0,
-			render_pass_end_count: 0,
-			depth_stencil_bind_count: 0,
-			depth_stencil_clear_count: 0,
-			viewport_set_count: 0,
-			scissor_set_count: 0,
-			primitive_topology_set_count: 0,
-			swapchain_backbuffer_bind_count: 0,
-			swapchain_present_transition_count: 0,
-			uav_barrier_count: 0,
-			acceleration_structure_resource_count: 0,
-			native_acceleration_structure_resource_count: 0,
-			acceleration_structure_instance_write_count: 0,
-			shader_binding_table_write_count: 0,
-			top_level_acceleration_structure_build_record_count: 0,
-			bottom_level_acceleration_structure_build_record_count: 0,
-			native_top_level_acceleration_structure_build_encode_count: 0,
-			native_bottom_level_acceleration_structure_build_encode_count: 0,
-			texture_readback_resolve_count: 0,
-			debug_region_begin_count: Cell::new(0),
-			debug_region_end_count: Cell::new(0),
+			counters: Dx12Counters::default(),
 		}
 	}
 
@@ -642,7 +528,7 @@ impl Device {
 		_resource_uses: Uses,
 		_resource_device_accesses: DeviceAccesses,
 	) -> AllocationHandle {
-		self.allocations.push(Allocation { data: vec![0u8; size] });
+		self.allocations.push(vec![0u8; size]);
 		AllocationHandle((self.allocations.len() - 1) as u64)
 	}
 
@@ -721,17 +607,6 @@ impl Device {
 		Ok(ShaderHandle((self.shaders.len() - 1) as u64))
 	}
 
-	pub(crate) fn compile_hlsl(
-		&self,
-		name: Option<&str>,
-		source: &str,
-		entry_point: &str,
-		stage: ShaderTypes,
-		specialization_map: &[pipelines::SpecializationMapEntry],
-	) -> Result<Vec<u8>, ()> {
-		self.compile_hlsl_with_dxc(name, source, entry_point, Self::dxc_target(stage), specialization_map)
-	}
-
 	/// Selects the Shader Model 6.9 DXC profile for a DX12 shader stage.
 	pub(crate) fn dxc_target(stage: ShaderTypes) -> &'static str {
 		match stage {
@@ -749,16 +624,18 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn compile_hlsl_with_dxc(
+	/// Compiles HLSL to DXIL for one shader stage, reusing the on-disk DXIL cache unless debug artifacts are enabled.
+	pub(crate) fn compile_hlsl(
 		&self,
 		name: Option<&str>,
 		source: &str,
 		entry_point: &str,
-		target: &str,
+		stage: ShaderTypes,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
+		let target = Self::dxc_target(stage);
 		let compiler = &self.dxc_compiler.native;
-		let dxc_identity = self.dxc_compiler.identity();
+		let dxc_identity: &str = &self.dxc_compiler.identity;
 		let source_buffer = DxcBuffer {
 			Ptr: source.as_ptr().cast(),
 			Size: source.len(),
@@ -777,36 +654,42 @@ impl Device {
 		if debug_artifacts_enabled {
 			let debug_source_path = Self::shader_debug_hlsl_path(name, entry_point, target)
 				.map(|path| path.to_string_lossy().into_owned())
-				.unwrap_or_else(|| {
-					format!(
-						"{}.{}.{}.hlsl",
-						Self::sanitize_shader_debug_name(name.unwrap_or("shader")),
-						Self::sanitize_shader_debug_name(entry_point),
-						Self::sanitize_shader_debug_name(target)
-					)
-				});
-			argument_storage.push(Self::wide_argument(&debug_source_path));
+				.unwrap_or_else(|| Self::shader_debug_file_name(name, entry_point, target));
+			argument_storage.push(wide_null(&debug_source_path));
 		}
-		argument_storage.push(Self::wide_argument("-E"));
-		argument_storage.push(Self::wide_argument(entry_point));
-		argument_storage.push(Self::wide_argument("-T"));
-		argument_storage.push(Self::wide_argument(target));
+		argument_storage.push(wide_null("-E"));
+		argument_storage.push(wide_null(entry_point));
+		argument_storage.push(wide_null("-T"));
+		argument_storage.push(wide_null(target));
 		// Every declared slot is materialized before binding, so DXC can optimize under the fully-bound resource contract.
-		argument_storage.push(Self::wide_argument("-all_resources_bound"));
+		argument_storage.push(wide_null("-all_resources_bound"));
 		// Pin modern language semantics and exact-width 16-bit types for every generated HLSL program.
-		argument_storage.push(Self::wide_argument("-HV"));
-		argument_storage.push(Self::wide_argument("2021"));
-		argument_storage.push(Self::wide_argument("-enable-16bit-types"));
+		argument_storage.push(wide_null("-HV"));
+		argument_storage.push(wide_null("2021"));
+		argument_storage.push(wide_null("-enable-16bit-types"));
 		if debug_artifacts_enabled {
-			argument_storage.push(Self::wide_argument("-Zi"));
-			argument_storage.push(Self::wide_argument("-Qembed_debug"));
+			argument_storage.push(wide_null("-Zi"));
+			argument_storage.push(wide_null("-Qembed_debug"));
 		}
-		let (macro_names, macro_values) = Self::hlsl_specialization_macro_storage(specialization_map)?;
-		for (name, value) in macro_names.iter().zip(macro_values.iter()) {
-			let name = name.to_str().map_err(|_| ())?;
-			let value = value.to_str().map_err(|_| ())?;
-			argument_storage.push(Self::wide_argument("-D"));
-			argument_storage.push(Self::wide_argument(&format!("{name}={value}")));
+		// Each specialization constant becomes a `SPEC_CONSTANT_<id>=<value>` define. Vectors define one f32 constant per
+		// component, at consecutive ids.
+		for entry in specialization_map {
+			let (id, data) = (entry.constant_id, &*entry.value);
+			let mut define = |id: u32, value: String| {
+				argument_storage.push(wide_null("-D"));
+				argument_storage.push(wide_null(&format!("SPEC_CONSTANT_{id}={value}")));
+			};
+			match (entry.r#type, data.len()) {
+				("bool", 1) => define(id, (data[0] != 0).to_string()),
+				("i32", 4) => define(id, bytemuck::pod_read_unaligned::<i32>(data).to_string()),
+				("u32", 4) => define(id, format!("{}u", bytemuck::pod_read_unaligned::<u32>(data))),
+				("f32", 4) | ("vec2f", 8) | ("vec3f", 12) | ("vec4f", 16) => {
+					for (component, bytes) in (0u32..).zip(data.chunks_exact(4)) {
+						define(id + component, format!("{:?}", bytemuck::pod_read_unaligned::<f32>(bytes)));
+					}
+				}
+				_ => return Err(()),
+			}
 		}
 		let arguments = argument_storage
 			.iter()
@@ -878,9 +761,9 @@ impl Device {
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
 		for entry in specialization_map {
-			Self::fnv64_update_text(&mut hash, entry.get_type().as_str());
-			Self::fnv64_update(&mut hash, &entry.get_constant_id().to_le_bytes());
-			Self::fnv64_update(&mut hash, entry.get_data());
+			Self::fnv64_update_text(&mut hash, entry.r#type);
+			Self::fnv64_update(&mut hash, &entry.constant_id.to_le_bytes());
+			Self::fnv64_update(&mut hash, &entry.value);
 		}
 
 		let mut path = std::env::current_exe().ok()?;
@@ -1026,13 +909,18 @@ impl Device {
 		let mut directory = std::env::current_exe().ok()?;
 		directory.pop();
 		directory.push("shader-pdbs");
-		directory.push(format!(
+		directory.push(Self::shader_debug_file_name(name, entry_point, target));
+		Some(directory)
+	}
+
+	/// Names the debug HLSL file of one compilation after its sanitized shader name, entry point, and target.
+	fn shader_debug_file_name(name: Option<&str>, entry_point: &str, target: &str) -> String {
+		format!(
 			"{}.{}.{}.hlsl",
 			Self::sanitize_shader_debug_name(name.unwrap_or("shader")),
 			Self::sanitize_shader_debug_name(entry_point),
 			Self::sanitize_shader_debug_name(target)
-		));
-		Some(directory)
+		)
 	}
 
 	pub(crate) fn sanitize_shader_debug_name(name: &str) -> String {
@@ -1088,147 +976,5 @@ impl Device {
 		self.log_dx12_error(format!(
 			"Failed to compile DX12 HLSL shader. Entry point: {entry_point}. Target: {target}. Reason: {reason}\n--- HLSL source ---\n{source}\n--- End HLSL source ---"
 		));
-	}
-
-	pub(crate) fn wide_argument(argument: &str) -> Vec<u16> {
-		argument.encode_utf16().chain(std::iter::once(0)).collect()
-	}
-
-	pub(crate) fn hlsl_specialization_macro_storage(
-		specialization_map: &[pipelines::SpecializationMapEntry],
-	) -> Result<(Vec<std::ffi::CString>, Vec<std::ffi::CString>), ()> {
-		let mut names = Vec::new();
-		let mut values = Vec::new();
-		for entry in specialization_map {
-			match entry.get_type().as_str() {
-				"bool" => Self::push_hlsl_bool_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"i32" => Self::push_hlsl_i32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"u32" => Self::push_hlsl_u32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"f32" => Self::push_hlsl_f32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"vec2f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					2,
-				)?,
-				"vec3f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					3,
-				)?,
-				"vec4f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					4,
-				)?,
-				_ => return Err(()),
-			}
-		}
-		Ok((names, values))
-	}
-
-	pub(crate) fn push_hlsl_bool_specialization_macro(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		data: &[u8],
-	) -> Result<(), ()> {
-		if data.len() != 1 {
-			return Err(());
-		}
-		let value = if data[0] == 0 { "false" } else { "true" };
-		Self::push_hlsl_specialization_macro_text(names, values, constant_id, value)
-	}
-
-	pub(crate) fn push_hlsl_i32_specialization_macro(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		data: &[u8],
-	) -> Result<(), ()> {
-		if data.len() != 4 {
-			return Err(());
-		}
-		let value = i32::from_ne_bytes(data.try_into().map_err(|_| ())?);
-		Self::push_hlsl_specialization_macro_text(names, values, constant_id, &value.to_string())
-	}
-
-	pub(crate) fn push_hlsl_u32_specialization_macro(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		data: &[u8],
-	) -> Result<(), ()> {
-		if data.len() != 4 {
-			return Err(());
-		}
-		let value = u32::from_ne_bytes(data.try_into().map_err(|_| ())?);
-		Self::push_hlsl_specialization_macro_text(names, values, constant_id, &format!("{value}u"))
-	}
-
-	pub(crate) fn push_hlsl_f32_specialization_macro(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		data: &[u8],
-	) -> Result<(), ()> {
-		if data.len() != 4 {
-			return Err(());
-		}
-		let value = f32::from_ne_bytes(data.try_into().map_err(|_| ())?);
-		Self::push_hlsl_specialization_macro_text(names, values, constant_id, &format!("{value:?}"))
-	}
-
-	pub(crate) fn push_hlsl_specialization_macro_text(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		value: &str,
-	) -> Result<(), ()> {
-		names.push(std::ffi::CString::new(format!("SPEC_CONSTANT_{constant_id}")).map_err(|_| ())?);
-		values.push(std::ffi::CString::new(value).map_err(|_| ())?);
-		Ok(())
-	}
-
-	pub(crate) fn push_hlsl_specialization_macro_vector(
-		names: &mut Vec<std::ffi::CString>,
-		values: &mut Vec<std::ffi::CString>,
-		constant_id: u32,
-		data: &[u8],
-		components: u32,
-	) -> Result<(), ()> {
-		if data.len() != components as usize * 4 {
-			return Err(());
-		}
-		for component in 0..components {
-			let start = component as usize * 4;
-			Self::push_hlsl_f32_specialization_macro(names, values, constant_id + component, &data[start..start + 4])?;
-		}
-		Ok(())
 	}
 }

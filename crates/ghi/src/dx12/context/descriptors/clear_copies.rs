@@ -91,7 +91,7 @@ impl Device {
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				);
 			}
-			self.clear_descriptor_copy_call_count += 1;
+			self.counters.clear_descriptor_copy_call_count += 1;
 			first = end;
 		}
 		copies.clear();

@@ -24,19 +24,19 @@ impl Device {
 		}
 
 		let buffer = self.buffers.get(index)?;
-		let resource = buffer.resource.clone()?;
+		let resource = buffer.memory.resource.clone()?;
 		let common_state = self
 			.buffer_states
 			.get(&Self::native_resource_key(&resource))
 			.copied()
-			.unwrap_or_else(|| Self::initial_buffer_barrier_state(buffer.heap_kind))
+			.unwrap_or_else(|| Self::initial_buffer_barrier_state(buffer.memory.heap_kind))
 			== BufferBarrierState::COMMON;
 
 		Some(ResourceIoBufferDestination {
 			resource,
 			size: buffer.size,
 			common_state,
-			direct_storage_compatible: buffer.heap_kind == BufferHeapKind::Default,
+			direct_storage_compatible: buffer.memory.heap_kind == BufferHeapKind::Default,
 		})
 	}
 

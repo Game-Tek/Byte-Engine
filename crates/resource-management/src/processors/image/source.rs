@@ -59,7 +59,7 @@ pub struct ImageSource<'a> {
 }
 
 impl<'a> ImageSource<'a> {
-	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image`] or its allocator-aware variants.
+	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image_in`].
 	pub fn new(extent: Extent, channels: SourceChannels, encoding: SourceEncoding, data: &'a [u8]) -> Self {
 		Self {
 			extent,
@@ -103,7 +103,7 @@ impl<'a> ImageSource<'a> {
 }
 
 /// The `CanonicalImageData` enum borrows compatible decoder output and owns storage only when normalization is required.
-pub(crate) enum CanonicalImageData<'a, A: Allocator> {
+pub(super) enum CanonicalImageData<'a, A: Allocator> {
 	Borrowed(&'a [u8]),
 	Owned(Box<[u8], A>),
 }
@@ -119,32 +119,32 @@ impl<A: Allocator> CanonicalImageData<'_, A> {
 	/// Returns the texels for in-place editing, copying borrowed decoder output into `allocator` first.
 	pub(crate) fn to_mut(&mut self, allocator: A) -> &mut [u8] {
 		if let Self::Borrowed(data) = *self {
-			let mut owned = Vec::with_capacity_in(data.len(), allocator);
-			owned.extend_from_slice(data);
-			*self = Self::Owned(owned.into_boxed_slice());
+			*self = Self::Owned(data.to_vec_in(allocator).into_boxed_slice());
 		}
-		match self {
-			Self::Owned(data) => data,
-			Self::Borrowed(_) => unreachable!("borrowed texels were copied above"),
-		}
+		let Self::Owned(data) = self else {
+			unreachable!("borrowed texels were copied above")
+		};
+		data
 	}
 }
 
 /// Converts a high-precision source into the linear RGBA16F surface required by environment processing.
-pub(crate) fn canonicalize_rgba16f_in<A: Allocator + Clone>(
+///
+/// The surface is always a copy, because environment bakes keep it as their root stream.
+pub(crate) fn canonicalize_rgba16f_in<A: Allocator>(
 	source: ImageSource<'_>,
 	gamma: Gamma,
 	allocator: A,
-) -> Option<CanonicalImageData<'_, A>> {
-	if gamma == Gamma::Linear {
-		return canonicalize_image_in(source, Formats::RGBA16F, allocator);
-	}
-
+) -> Option<Box<[u8], A>> {
 	let pixel_count = validated_pixel_count(source)?;
 	let mut output = Vec::with_capacity_in(pixel_count.checked_mul(target_stride(Formats::RGBA16F)?)?, allocator);
-	append_rgba16f(source, gamma, &mut output)?;
+	if gamma == Gamma::Linear {
+		append_canonical_image_in(source, Formats::RGBA16F, &mut output)?;
+	} else {
+		append_rgba16f(source, gamma, &mut output)?;
+	}
 
-	Some(CanonicalImageData::Owned(output.into_boxed_slice()))
+	Some(output.into_boxed_slice())
 }
 
 /// Normalizes source channels and sample byte order into the surface required by mip generation and compression.
@@ -161,7 +161,7 @@ pub(super) fn canonicalize_image_in<A: Allocator + Clone>(
 
 	let target_stride = target_stride(target_format)?;
 	let mut output = Vec::with_capacity_in(pixel_count.checked_mul(target_stride)?, allocator);
-	append_canonical_image_unchecked(source, target_format, &mut output)?;
+	append_canonical_image_in(source, target_format, &mut output)?;
 	Some(CanonicalImageData::Owned(output.into_boxed_slice()))
 }
 
@@ -172,7 +172,38 @@ pub(super) fn append_canonical_image_in<A: Allocator>(
 	output: &mut Vec<u8, A>,
 ) -> Option<()> {
 	validated_pixel_count(source)?;
-	append_canonical_image_unchecked(source, target_format, output)
+	if source_can_be_borrowed(source, target_format) {
+		output.extend_from_slice(source.data);
+		return Some(());
+	}
+	let encoding = source.encoding;
+	match target_format {
+		// Eight-bit RGB is how JPEG and most color textures decode, so it expands as whole texels, which vectorizes.
+		Formats::RGBA8 | Formats::RGBA8SRGB if (source.channels, encoding) == (SourceChannels::RGB, SourceEncoding::U8) => {
+			let start = output.len();
+			output.resize(start + source.data.len() / 3 * 4, 0);
+			for (texel, &[red, green, blue]) in output[start..].as_chunks_mut().0.iter_mut().zip(source.data.as_chunks().0) {
+				*texel = [red, green, blue, u8::MAX];
+			}
+			Some(())
+		}
+		Formats::RGBA8 | Formats::RGBA8SRGB => for_each_rgba(
+			source,
+			encoding.bytes_per_sample(),
+			u8::MAX,
+			|bytes| read_unorm8(bytes, encoding),
+			|rgba| output.extend_from_slice(&rgba),
+		),
+		Formats::RGBA16 => for_each_rgba(
+			source,
+			2,
+			u16::MAX,
+			|bytes| read_u16(bytes, encoding),
+			|rgba| output.extend_from_slice(rgba.map(u16::to_le_bytes).as_flattened()),
+		),
+		Formats::RGBA16F => append_rgba16f(source, Gamma::Linear, output),
+		_ => None,
+	}
 }
 
 fn validated_pixel_count(source: ImageSource<'_>) -> Option<usize> {
@@ -195,24 +226,6 @@ fn target_stride(target_format: Formats) -> Option<usize> {
 	}
 }
 
-fn append_canonical_image_unchecked<A: Allocator>(
-	source: ImageSource<'_>,
-	target_format: Formats,
-	output: &mut Vec<u8, A>,
-) -> Option<()> {
-	if source_can_be_borrowed(source, target_format) {
-		output.extend_from_slice(source.data);
-		return Some(());
-	}
-	match target_format {
-		Formats::RGBA8 | Formats::RGBA8SRGB => append_rgba8(source, output)?,
-		Formats::RGBA16 => append_rgba16(source, output)?,
-		Formats::RGBA16F => append_rgba16f(source, Gamma::Linear, output)?,
-		_ => return None,
-	}
-	Some(())
-}
-
 fn source_can_be_borrowed(source: ImageSource<'_>, target_format: Formats) -> bool {
 	matches!(
 		(source.channels, source.encoding, target_format),
@@ -227,74 +240,53 @@ fn source_can_be_borrowed(source: ImageSource<'_>, target_format: Formats) -> bo
 		))
 }
 
-fn append_rgba8<A: Allocator>(source: ImageSource<'_>, output: &mut Vec<u8, A>) -> Option<()> {
-	let source_stride = source.channels.count() * source.encoding.bytes_per_sample();
-	for pixel in source.data.chunks_exact(source_stride) {
-		let mut channels = [0_u8; 4];
-		for (channel, bytes) in pixel.chunks_exact(source.encoding.bytes_per_sample()).enumerate() {
-			channels[channel] = read_unorm8(bytes, source.encoding)?;
+/// Reads every source pixel's samples of `sample_bytes` bytes with `read`, spreads them over RGBA, and passes the
+/// texel to `write`.
+///
+/// Luminance repeats into red, green, and blue, and a missing alpha is `opaque`. Returns `None` when `read` rejects a
+/// sample. Each caller inlines it, so its sample size and closures are constants in the per-pixel loop.
+#[inline(always)]
+fn for_each_rgba<T: Copy + Default>(
+	source: ImageSource<'_>,
+	sample_bytes: usize,
+	opaque: T,
+	read: impl Fn(&[u8]) -> Option<T>,
+	mut write: impl FnMut([T; 4]),
+) -> Option<()> {
+	for pixel in source.data.chunks_exact(source.channels.count() * sample_bytes) {
+		let mut channels = [T::default(); 4];
+		for (channel, bytes) in pixel.chunks_exact(sample_bytes).enumerate() {
+			channels[channel] = read(bytes)?;
 		}
-		let rgba = match source.channels {
-			SourceChannels::Luminance => [channels[0], channels[0], channels[0], u8::MAX],
+		write(match source.channels {
+			SourceChannels::Luminance => [channels[0], channels[0], channels[0], opaque],
 			SourceChannels::LuminanceAlpha => [channels[0], channels[0], channels[0], channels[1]],
-			SourceChannels::RGB => [channels[0], channels[1], channels[2], u8::MAX],
+			SourceChannels::RGB => [channels[0], channels[1], channels[2], opaque],
 			SourceChannels::RGBA => channels,
-		};
-		output.extend_from_slice(&rgba);
-	}
-	Some(())
-}
-
-fn append_rgba16<A: Allocator>(source: ImageSource<'_>, output: &mut Vec<u8, A>) -> Option<()> {
-	let source_stride = source.channels.count() * 2;
-	for pixel in source.data.chunks_exact(source_stride) {
-		let mut channels = [0_u16; 4];
-		for (channel, bytes) in pixel.as_chunks::<2>().0.iter().enumerate() {
-			channels[channel] = read_u16(bytes, source.encoding)?;
-		}
-		let rgba = match source.channels {
-			SourceChannels::Luminance => [channels[0], channels[0], channels[0], u16::MAX],
-			SourceChannels::LuminanceAlpha => [channels[0], channels[0], channels[0], channels[1]],
-			SourceChannels::RGB => [channels[0], channels[1], channels[2], u16::MAX],
-			SourceChannels::RGBA => channels,
-		};
-		for channel in rgba {
-			output.extend_from_slice(&channel.to_le_bytes());
-		}
+		});
 	}
 	Some(())
 }
 
 /// Expands source channels, removes the RGB transfer function, and stores linear half-float RGBA pixels.
 fn append_rgba16f<A: Allocator>(source: ImageSource<'_>, gamma: Gamma, output: &mut Vec<u8, A>) -> Option<()> {
-	let bytes_per_sample = source.encoding.bytes_per_sample();
-	let source_stride = source.channels.count().checked_mul(bytes_per_sample)?;
-
-	for pixel in source.data.chunks_exact(source_stride) {
-		let mut channels = [0.0_f32; 4];
-
-		for (channel, bytes) in pixel.chunks_exact(bytes_per_sample).enumerate() {
-			channels[channel] = read_linear_f32(bytes, source.encoding)?;
-		}
-
-		let mut rgba = match source.channels {
-			SourceChannels::Luminance => [channels[0], channels[0], channels[0], 1.0],
-			SourceChannels::LuminanceAlpha => [channels[0], channels[0], channels[0], channels[1]],
-			SourceChannels::RGB => [channels[0], channels[1], channels[2], 1.0],
-			SourceChannels::RGBA => channels,
-		};
-		if gamma == Gamma::SRGB {
-			rgba[..3].iter_mut().for_each(|channel| *channel = srgb_to_linear(*channel));
-		}
-
-		for channel in rgba {
-			output.extend_from_slice(&f16::from_f32(channel).to_le_bytes());
-		}
-	}
-
-	Some(())
+	let encoding = source.encoding;
+	for_each_rgba(
+		source,
+		encoding.bytes_per_sample(),
+		1.0,
+		|bytes| read_linear_f32(bytes, encoding),
+		|mut rgba| {
+			if gamma == Gamma::SRGB {
+				rgba[..3].iter_mut().for_each(|channel| *channel = srgb_to_linear(*channel));
+			}
+			output.extend_from_slice(rgba.map(|channel| f16::from_f32(channel).to_le_bytes()).as_flattened());
+		},
+	)
 }
 
+/// Reads one sample as an 8-bit unorm value. The readers are inlined so each per-sample loop compiles its encoding in.
+#[inline]
 fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	match encoding {
 		SourceEncoding::U8 => bytes.first().copied(),
@@ -305,8 +297,9 @@ fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	}
 }
 
+#[inline]
 fn read_u16(bytes: &[u8], encoding: SourceEncoding) -> Option<u16> {
-	let bytes = [*bytes.first()?, *bytes.get(1)?];
+	let bytes = *bytes.first_chunk()?;
 	match encoding {
 		SourceEncoding::U16LittleEndian => Some(u16::from_le_bytes(bytes)),
 		SourceEncoding::U16BigEndian => Some(u16::from_be_bytes(bytes)),
@@ -316,21 +309,14 @@ fn read_u16(bytes: &[u8], encoding: SourceEncoding) -> Option<u16> {
 }
 
 /// Reads one source sample as linear floating-point radiance without applying a transfer function.
+#[inline]
 fn read_linear_f32(bytes: &[u8], encoding: SourceEncoding) -> Option<f32> {
 	match encoding {
 		SourceEncoding::U16LittleEndian | SourceEncoding::U16BigEndian | SourceEncoding::U16NativeEndian => {
 			Some(f32::from(read_u16(bytes, encoding)?) / f32::from(u16::MAX))
 		}
-		SourceEncoding::F16LittleEndian => {
-			let bytes = [*bytes.first()?, *bytes.get(1)?];
-
-			Some(f16::from_le_bytes(bytes).to_f32())
-		}
-		SourceEncoding::F32NativeEndian => {
-			let bytes = [*bytes.first()?, *bytes.get(1)?, *bytes.get(2)?, *bytes.get(3)?];
-
-			Some(f32::from_ne_bytes(bytes))
-		}
+		SourceEncoding::F16LittleEndian => Some(f16::from_le_bytes(*bytes.first_chunk()?).to_f32()),
+		SourceEncoding::F32NativeEndian => Some(f32::from_ne_bytes(*bytes.first_chunk()?)),
 		SourceEncoding::U8 => None,
 	}
 }
@@ -341,10 +327,18 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{
-		CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in, canonicalize_rgba16f_in,
-	};
+	use super::{ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in, canonicalize_rgba16f_in};
 	use crate::types::{Formats, Gamma};
+
+	/// Decodes RGBA16F bytes into their channel values.
+	fn decode_f16(bytes: &[u8]) -> Vec<f32> {
+		bytes
+			.as_chunks::<2>()
+			.0
+			.iter()
+			.map(|bytes| exr::prelude::f16::from_le_bytes(*bytes).to_f32())
+			.collect()
+	}
 
 	#[test]
 	fn expands_luminance_and_luminance_alpha_in_the_common_writer() {
@@ -411,15 +405,8 @@ mod tests {
 			Global,
 		)
 		.expect("16-bit RGB must normalize to RGBA16F");
-		let values = canonical
-			.as_slice()
-			.as_chunks::<2>()
-			.0
-			.iter()
-			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
-			.collect::<Vec<_>>();
 
-		assert_eq!(values, vec![0.0, 0.5, 1.0, 1.0]);
+		assert_eq!(decode_f16(&canonical), vec![0.0, 0.5, 1.0, 1.0]);
 
 		let rgba16f = [0_u8; 8];
 		let source = ImageSource::new(
@@ -430,8 +417,7 @@ mod tests {
 		);
 		let canonical = canonicalize_rgba16f_in(source, Gamma::Linear, Global).expect("RGBA16F must remain compatible");
 
-		assert!(matches!(canonical, CanonicalImageData::Borrowed(_)));
-		assert_eq!(canonical.as_slice().as_ptr(), rgba16f.as_ptr());
+		assert_eq!(*canonical, rgba16f);
 	}
 
 	#[test]
@@ -448,13 +434,7 @@ mod tests {
 		);
 		let canonical =
 			canonicalize_rgba16f_in(source, Gamma::SRGB, Global).expect("high-precision sRGB must normalize to linear RGBA16F");
-		let values = canonical
-			.as_slice()
-			.as_chunks::<2>()
-			.0
-			.iter()
-			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
-			.collect::<Vec<_>>();
+		let values = decode_f16(&canonical);
 
 		assert!((values[0] - 0.214).abs() < 0.001);
 		assert!((values[1] - 0.0509).abs() < 0.001);

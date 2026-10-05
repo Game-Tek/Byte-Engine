@@ -14,17 +14,10 @@ const DXC_SHARED_ARGUMENTS: [&str; 5] = [
 
 /// Describes the loaded DXC runtime and the flags [`compile_hlsl_source_to_dxil`] passes.
 ///
-/// Baked shader reuse hashes this text, so stored DXIL is only reused by the compiler that produced it. The runtime
-/// query runs once per process.
+/// Baked shader reuse hashes this text, so stored DXIL is only reused by the compiler that produced it.
 #[cfg(target_os = "windows")]
 pub(crate) fn dxc_compiler_identity() -> Result<String, String> {
 	use windows::Win32::Graphics::Direct3D::Dxc::{CLSID_DxcCompiler, DxcCreateInstance, IDxcCompiler3};
-
-	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-	if let Some(identity) = IDENTITY.get() {
-		return Ok(identity.clone());
-	}
 
 	// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
 	let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
@@ -33,9 +26,8 @@ pub(crate) fn dxc_compiler_identity() -> Result<String, String> {
 		)
 	})?;
 	let version = require_shader_model_6_9_dxc(&compiler)?;
-	let identity = format!("{version}; arguments={DXC_SHARED_ARGUMENTS:?}");
 
-	Ok(IDENTITY.get_or_init(|| identity).clone())
+	Ok(format!("{version}; arguments={DXC_SHARED_ARGUMENTS:?}"))
 }
 
 /// Compiles generated HLSL into the native DXIL payload consumed by DX12.
@@ -109,12 +101,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 			"DXC returned no DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
 		)
 	})?;
-	// SAFETY: The blob owns this pointer and keeps it valid until object is dropped.
-	let bytecode_pointer = unsafe { object.GetBufferPointer() }.cast::<u8>();
-	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
-	let bytecode_size = unsafe { object.GetBufferSize() };
-	// SAFETY: The pointer and size come from the same live blob allocation.
-	let bytecode = unsafe { std::slice::from_raw_parts(bytecode_pointer, bytecode_size) };
+	let bytecode = blob_bytes(&object);
 	if bytecode.is_empty() {
 		return Err(format!(
 			"DXC returned empty DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
@@ -227,18 +214,20 @@ fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult
 	let Some(errors) = errors else {
 		return "DXC compilation failed with no error output.".to_string();
 	};
-	// SAFETY: The blob owns this pointer and keeps it valid until errors is dropped.
-	let error_pointer = unsafe { errors.GetBufferPointer() }.cast::<u8>();
-	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
-	let error_size = unsafe { errors.GetBufferSize() };
-	// SAFETY: The pointer and size come from the same live blob allocation.
-	let bytes = unsafe { std::slice::from_raw_parts(error_pointer, error_size) };
-	let message = String::from_utf8_lossy(bytes).trim().to_string();
+	let message = String::from_utf8_lossy(blob_bytes(&errors)).trim().to_string();
 	if message.is_empty() {
 		"DXC compilation failed with empty error output.".to_string()
 	} else {
 		message
 	}
+}
+
+/// Views the bytes a DXC blob owns, such as compiled DXIL or compiler errors.
+#[cfg(target_os = "windows")]
+fn blob_bytes(blob: &windows::Win32::Graphics::Direct3D::Dxc::IDxcBlob) -> &[u8] {
+	// SAFETY: The blob owns this buffer and keeps it valid while borrowed, and it reports the buffer's exact
+	// initialized length.
+	unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) }
 }
 
 #[cfg(test)]

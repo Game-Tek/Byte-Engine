@@ -43,8 +43,8 @@ pub use aabb::AABB;
 pub use affine::AffineMatrix;
 pub use angle::{Degrees, Radians};
 pub use geometry::{
-	NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace, barycentric_xz, distance_xz, is_finite,
-	point_on_segment_xz, segments_intersect_xz, signed_area_xz,
+	NormalizationError, Point, UnitVector, Vector, WorldSpace, barycentric_xz, distance_xz, is_finite, point_on_segment_xz,
+	segments_intersect_xz, signed_area_xz,
 };
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
 ///
@@ -67,7 +67,6 @@ pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;
 pub use scale::Scale;
-pub use serialization::ArchivedFloats;
 pub use sphere::Sphere;
 
 /// Asserts that two floating-point values differ by no more than an explicit epsilon.
@@ -75,33 +74,25 @@ pub use sphere::Sphere;
 /// The expressions are evaluated once. The assertion fails for non-finite values so tests do not silently accept `NaN`.
 #[macro_export]
 macro_rules! assert_float_eq_with_epsilon {
-	($left:expr, $right:expr, $epsilon:expr $(,)?) => {
+	(@check $left:expr, $right:expr, $epsilon:expr, $suffix:expr) => {
 		match (&$left, &$right, &$epsilon) {
 			(left, right, epsilon) => {
 				let difference = (*left as f64 - *right as f64).abs();
 				let epsilon = *epsilon as f64;
 				if !difference.is_finite() || !epsilon.is_finite() || epsilon < 0.0 || difference > epsilon {
 					panic!(
-						"assertion failed: values are not within epsilon\n  left: `{:?}`,\n right: `{:?}`,\n difference: `{difference:?}`,\n epsilon: `{epsilon:?}`",
-						*left, *right,
+						"assertion failed: values are not within epsilon\n  left: `{:?}`,\n right: `{:?}`,\n difference: `{difference:?}`,\n epsilon: `{epsilon:?}`{}",
+						*left, *right, $suffix,
 					);
 				}
 			}
 		}
 	};
+	($left:expr, $right:expr, $epsilon:expr $(,)?) => {
+		$crate::assert_float_eq_with_epsilon!(@check $left, $right, $epsilon, "")
+	};
 	($left:expr, $right:expr, $epsilon:expr, $($arg:tt)+) => {
-		match (&$left, &$right, &$epsilon) {
-			(left, right, epsilon) => {
-				let difference = (*left as f64 - *right as f64).abs();
-				let epsilon = *epsilon as f64;
-				if !difference.is_finite() || !epsilon.is_finite() || epsilon < 0.0 || difference > epsilon {
-					panic!(
-						"assertion failed: values are not within epsilon\n  left: `{:?}`,\n right: `{:?}`,\n difference: `{difference:?}`,\n epsilon: `{epsilon:?}`\n{}",
-						*left, *right, format_args!($($arg)+),
-					);
-				}
-			}
-		}
+		$crate::assert_float_eq_with_epsilon!(@check $left, $right, $epsilon, format_args!("\n{}", format_args!($($arg)+)))
 	};
 }
 
@@ -237,7 +228,9 @@ pub fn direction_from_orientation(orientation: Orientation) -> UnitVector {
 	let rotated_forward = orientation.rotate_vector(UnitVector::<WorldSpace>::z_axis().into_vector());
 
 	// A valid orientation preserves the finite, non-zero length of the forward unit vector.
-	UnitVector::try_from_vector(rotated_forward).expect("valid orientations preserve unit directions")
+	rotated_forward
+		.normalized()
+		.expect("valid orientations preserve unit directions")
 }
 
 /// Returns a left-handed perspective projection matrix from a vertical field of view in degrees.

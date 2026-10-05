@@ -4,17 +4,16 @@ use std::ptr::NonNull;
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::{NSAutoreleasePool, NSString};
+use objc2_foundation::NSString;
 use objc2_metal::MTLBuffer;
 use smallvec::SmallVec;
 
 use super::*;
 use crate::{
-	DeviceAccesses, ResourceCollection, Uses,
+	ResourceCollection, Uses,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
-	metal::swapchain::Swapchain,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
 	window,
@@ -23,6 +22,7 @@ use crate::{
 /// The `TextureReadbackStorage` struct keeps one Metal transfer result alive for later CPU mapping.
 pub(crate) struct TextureReadbackStorage {
 	pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	/// Reserved for the compact image when the transfer is recorded, and filled when it is mapped.
 	pub(crate) bytes: Vec<u8>,
 	pub(crate) extent: Extent,
 	pub(crate) format: crate::Formats,
@@ -32,39 +32,43 @@ pub(crate) struct TextureReadbackStorage {
 	pub(crate) native_bytes_per_row: usize,
 }
 
+/// The pixel format of every swapchain drawable and of the images frames render into before presentation.
+pub(crate) const SWAPCHAIN_FORMAT: crate::Formats = crate::Formats::BGRAu8;
+
 /// The frame-local descriptor sets of a context, one chain per public set with an entry per frame in flight.
 pub(crate) type DescriptorSets =
-	ResourceCollection<descriptor_set::DescriptorSet, graphics_hardware_interface::DescriptorSetHandle, DescriptorSetHandle>;
+	ResourceCollection<DescriptorSet, graphics_hardware_interface::DescriptorSetHandle, DescriptorSetHandle>;
 
 /// The `Context` struct owns resources created for rendering on a Metal GPU device.
 pub struct Context {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
-	pub(crate) compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
+	/// Compiles the context's shaders and pipelines, so shader handles index the factory's shaders.
+	pub(crate) factory: Factory,
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::StoredQueue>,
-	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
-	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(crate) samplers: Vec<sampler::Sampler>,
+	pub(crate) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
+	pub(crate) images: ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
+	pub(crate) samplers: Vec<Retained<ProtocolObject<dyn mtl::MTLSamplerState>>>,
 	pub(crate) allocations: Vec<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
 	pub(crate) descriptor_sets: DescriptorSets,
 	pub(crate) meshes: Vec<Mesh>,
 	pub(crate) acceleration_structures: Vec<AccelerationStructure>,
-	pub(crate) shaders: Vec<Shader>,
 	pub(crate) pipelines: Vec<Pipeline>,
 	pub(crate) command_buffers: Vec<StoredCommandBuffer>,
 	pub(crate) synchronizers: ResourceCollection<
-		synchronizer::Synchronizer,
+		Synchronizer,
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
 	/// Signals when the internal uploads of each frame sequence complete.
 	internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
-	pub(crate) swapchains: Vec<swapchain::Swapchain>,
+	pub(crate) swapchains: Vec<Swapchain>,
 	pub(crate) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 
+	/// The descriptor-set bindings that reference each resource, as frame-local set, slot, and array element.
 	pub(crate) resource_to_descriptor:
-		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,
+		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32)>>,
 
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
@@ -74,7 +78,7 @@ pub struct Context {
 	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
 	pub(crate) argument_tables: command_buffer::CommandArgumentTables,
 	pub(crate) image_groups: crate::image_group::ImageGroups,
-	/// The serial the next group heap receives; see [`image::GroupSlot::heap_serial`].
+	/// The serial the next group heap receives; see [`GroupSlot::heap_serial`].
 	pub(crate) next_group_heap_serial: u64,
 }
 

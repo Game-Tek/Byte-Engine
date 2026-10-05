@@ -10,14 +10,13 @@ use std::num::NonZeroUsize;
 use byte_engine::{
 	MediaTime,
 	animation::graph::{
-		AnimationClip, AnimationEvaluation, AnimationGraph, AnimationPool, AnimationPoolConfig, AnimationStateId,
-		AnimationTransition, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
+		AnimationClip, AnimationGraph, AnimationStateId, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	},
 	application::{
 		Parameter,
 		graphics::{
-			GraphicsApplication, setup_default_audio, setup_default_input, setup_default_resource_and_asset_management,
-			setup_pbr_visibility_shading_render_pipeline,
+			GraphicsApplication, setup_animation_pool, setup_default_audio, setup_default_input,
+			setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
 		},
 	},
 	core::{Creator as _, channel::Channel as _},
@@ -38,12 +37,6 @@ const ROOT_MOTION: Option<RootMotionSettings<'static>> = Some(RootMotionSettings
 });
 const ANIMATION_POOL_BYTES: usize = 32 * 1024 * 1024;
 
-/// The `LocomotionInput` struct holds the game-owned facts used by graph predicates.
-#[derive(Clone, Copy)]
-struct LocomotionInput {
-	moving: bool,
-}
-
 /// The `LocomotionAnimation` struct keeps the graph beside the durable states selected by client code.
 struct LocomotionAnimation {
 	graph: AnimationGraph,
@@ -59,10 +52,8 @@ fn locomotion_graph() -> LocomotionAnimation {
 
 	// Routes describe how the player reconciles its playback after client code
 	// requests another persistent state.
-	idle.to(walk)
-		.when(AnimationTransition::new().inertialize(MediaTime::from_millis(150)));
-	walk.to(idle)
-		.when(AnimationTransition::new().inertialize(MediaTime::from_millis(150)));
+	idle.to(walk).when(MediaTime::from_millis(150));
+	walk.to(idle).when(MediaTime::from_millis(150));
 
 	LocomotionAnimation {
 		idle: idle.id(),
@@ -70,14 +61,6 @@ fn locomotion_graph() -> LocomotionAnimation {
 		graph: builder
 			.build(idle)
 			.expect("the example graph has valid state IDs and clip IDs"),
-	}
-}
-
-/// Selects one authored graph state from game-owned locomotion facts.
-fn evaluate_locomotion(input: LocomotionInput, animation: &LocomotionAnimation) -> AnimationStateId {
-	match input {
-		LocomotionInput { moving: true } => animation.walk,
-		LocomotionInput { moving: false } => animation.idle,
 	}
 }
 
@@ -112,15 +95,11 @@ fn main() {
 	setup_pbr_visibility_shading_render_pipeline(&mut app);
 
 	let animation = locomotion_graph();
-	let (mut pool, animation_worker) = AnimationPool::new(
-		app.resource_manager_handle(),
-		AnimationPoolConfig::new(NonZeroUsize::new(ANIMATION_POOL_BYTES).expect("the pool budget is non-zero")),
+	let mut pool = setup_animation_pool(
+		&mut app,
+		NonZeroUsize::new(ANIMATION_POOL_BYTES).expect("the pool budget is non-zero"),
 	);
-
 	let mut player = pool.create_player(&animation.graph, ROOT_MOTION);
-	app.add_deferred_task(move |runtime| {
-		runtime.spawn(animation_worker.run()).detach();
-	});
 	byte_engine::application::graphics::defaults::launch_deferred_tasks_thread(&mut app);
 
 	let animated_handle = create_scene(&mut app);
@@ -134,11 +113,9 @@ fn main() {
 
 			// Replace this timed input with your input, AI, or networking state. It
 			// deliberately alternates every two seconds to exercise both transitions.
-			let input = LocomotionInput {
-				moving: (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2),
-			};
-			let requested = evaluate_locomotion(input, &animation);
-			let AnimationEvaluation::Ready(pose) = player
+			let moving = (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2);
+			let requested = if moving { animation.walk } else { animation.idle };
+			let Some(pose) = player
 				.advance(time.delta(), requested, &mut pool)
 				.expect("application frame time and root-motion settings must be valid")
 			else {
@@ -147,7 +124,7 @@ fn main() {
 
 			// Compose object-space root motion into the owning transform before
 			// submitting the in-place visual pose.
-			let root_motion = pose.root_motion();
+			let root_motion = pose.root_motion;
 			// The skeleton root's parent space is the owning object's space, which this example keeps in world space.
 			root_position += Vector::from_maths(root_motion.translation.into_maths());
 			root_orientation = root_motion.rotation.compose(root_orientation);
@@ -161,7 +138,7 @@ fn main() {
 			// vector. Graph evaluation itself continues to reuse its retained buffers.
 			world
 				.poses_channel()
-				.send(UpdatePose::new(animated_handle, pose.global_pose().to_vec()));
+				.send(UpdatePose::new(animated_handle, pose.global_pose.to_vec()));
 		})
 		.is_some()
 	{}

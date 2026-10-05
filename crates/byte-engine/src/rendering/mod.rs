@@ -79,7 +79,7 @@ pub use lights::{
 	PhotometricIntensity, PointLight,
 };
 pub use particles::ParticleEmitter;
-pub use pipeline_compilation::{PipelineKey, PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
+pub use pipeline_compilation::{PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, VisibilityPipelineManager};
 pub use pose::UpdatePose;
@@ -118,7 +118,7 @@ pub(crate) fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnc
 
 /// Builds a perspective [`View`] from a scene camera and render target extent.
 pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &Camera, po: &T, extent: Extent) -> View {
-	let (camera_position, camera_orientation, fov_y) = (po.position(), po.orientation(), camera.vertical_fov());
+	let fov_y = camera.vertical_fov();
 	debug_assert!(
 		extent.width() > 0 && extent.height() > 0,
 		"Perspective extent is empty. The most likely cause is building a camera view before the render target is sized."
@@ -127,15 +127,12 @@ pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &
 		fov_y.is_finite() && fov_y > math::Degrees::new(0.0) && fov_y < math::Degrees::new(180.0),
 		"Camera field of view is invalid. The most likely cause is an unset, non-finite, or out-of-range perspective angle."
 	);
-
-	let aspect_ratio = extent.width() as f32 / extent.height() as f32;
-
 	View::new_perspective(
 		fov_y,
-		aspect_ratio,
-		0.1f32,
-		100f32,
-		camera_position,
-		direction_from_orientation(camera_orientation),
+		extent.aspect_ratio(),
+		0.1,
+		100.0,
+		po.position(),
+		direction_from_orientation(po.orientation()),
 	)
 }

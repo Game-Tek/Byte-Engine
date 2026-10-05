@@ -237,15 +237,10 @@ impl Device {
 		if before == after {
 			return false;
 		}
-		barriers.push_texture(Self::texture_barrier(resource, before, after));
+		barriers.texture.push(Self::texture_barrier(resource, before, after));
 		self.remember_image_state(key);
 		self.image_states.insert(key, after);
 		true
-	}
-
-	/// Submits one native call for a group of barriers that share a synchronization boundary.
-	pub(crate) fn submit_resource_barriers(command_list: &ID3D12GraphicsCommandList7, barriers: &EnhancedBarrierBatch) {
-		barriers.submit(command_list);
 	}
 
 	/// Uses native resource identity so dynamic frame allocations keep independent state histories.
@@ -266,22 +261,16 @@ impl Device {
 	) -> Option<BufferHeapKind> {
 		let key = Self::native_resource_key(resource);
 		let buffer = self.buffer(buffer_handle)?;
-		if buffer
-			.resource
-			.as_ref()
-			.is_some_and(|resource| Self::native_resource_key(resource) == key)
-		{
-			return Some(buffer.heap_kind);
-		}
-		buffer.frame_resources.as_ref().and_then(|frame_resources| {
-			frame_resources.iter().flatten().find_map(|frame_resource| {
-				frame_resource
+		// Search the base storage first, then each frame sequence's copy.
+		std::iter::once(&buffer.memory)
+			.chain(buffer.frame_resources.iter().flatten().flatten())
+			.find_map(|memory| {
+				memory
 					.resource
 					.as_ref()
 					.is_some_and(|resource| Self::native_resource_key(resource) == key)
-					.then_some(frame_resource.heap_kind)
+					.then_some(memory.heap_kind)
 			})
-		})
 	}
 
 	/// Checks that one enhanced buffer access is legal for the resource's native heap.
@@ -305,7 +294,7 @@ impl Device {
 	) {
 		let mut barriers = EnhancedBarrierBatch::default();
 		self.transition_tracked_buffer_into(buffer, resource, after, &mut barriers);
-		Self::submit_resource_barriers(command_list, &barriers);
+		barriers.submit(command_list);
 	}
 
 	/// Appends a tracked buffer transition to a caller-owned synchronization batch.
@@ -343,12 +332,12 @@ impl Device {
 		let before = self.buffer_states.get(&key).copied().unwrap_or(BufferBarrierState::COMMON);
 		if before == after {
 			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS {
-				barriers.push_buffer(Self::buffer_barrier(resource, before, after));
-				self.uav_barrier_count += 1;
+				barriers.buffer.push(Self::buffer_barrier(resource, before, after));
+				self.counters.uav_barrier_count += 1;
 			}
 			return;
 		}
-		barriers.push_buffer(Self::buffer_barrier(resource, before, after));
+		barriers.buffer.push(Self::buffer_barrier(resource, before, after));
 		self.remember_buffer_state(key);
 		self.buffer_states.insert(key, after);
 	}
@@ -362,7 +351,7 @@ impl Device {
 	) {
 		let mut barriers = EnhancedBarrierBatch::default();
 		self.transition_tracked_image_into(image, resource, after, &mut barriers);
-		Self::submit_resource_barriers(command_list, &barriers);
+		barriers.submit(command_list);
 	}
 
 	/// Appends a tracked texture transition to a caller-owned synchronization batch.
@@ -380,7 +369,7 @@ impl Device {
 		let key = Self::native_resource_key(resource);
 		if let Some((sync, access)) = self.image_alias_flushes.remove(&key) {
 			// Another member used this memory last, so its work must finish and its writes leave the caches first.
-			barriers.push_global(D3D12_GLOBAL_BARRIER {
+			barriers.global.push(D3D12_GLOBAL_BARRIER {
 				SyncBefore: sync,
 				SyncAfter: after.sync,
 				AccessBefore: access,
@@ -390,12 +379,12 @@ impl Device {
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
 		if before == after {
 			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS {
-				barriers.push_texture(Self::texture_barrier(resource, before, after));
-				self.uav_barrier_count += 1;
+				barriers.texture.push(Self::texture_barrier(resource, before, after));
+				self.counters.uav_barrier_count += 1;
 			}
 			return;
 		}
-		barriers.push_texture(Self::texture_barrier(resource, before, after));
+		barriers.texture.push(Self::texture_barrier(resource, before, after));
 		self.remember_image_state(key);
 		self.image_states.insert(key, after);
 	}
@@ -426,7 +415,7 @@ impl Device {
 		let raytracing_uav_access = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS
 			| D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE
 			| D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ;
-		barriers.push_global(D3D12_GLOBAL_BARRIER {
+		barriers.global.push(D3D12_GLOBAL_BARRIER {
 			SyncBefore: raytracing_uav_sync,
 			SyncAfter: raytracing_uav_sync,
 			AccessBefore: raytracing_uav_access,

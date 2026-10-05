@@ -26,10 +26,11 @@ impl Device {
 			.buffer(buffer_handle)
 			.expect("Invalid DX12 buffer address request. The most likely cause is that the handle is stale.");
 		assert!(
-			buffer.heap_kind != BufferHeapKind::Readback,
+			buffer.memory.heap_kind != BufferHeapKind::Readback,
 			"Invalid DX12 readback-buffer address request. The most likely cause is that CPU readback memory was selected for a GPU-address operation. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
 		);
 		buffer
+			.memory
 			.resource
 			.as_ref()
 			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
@@ -58,7 +59,7 @@ impl Device {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
-		Self::mark_buffer_host_write(buffer);
+		Self::mark_host_write(&mut buffer.memory);
 		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: Typed handles preserve the allocation's layout and `&mut self` guarantees exclusive CPU access.
 		unsafe { &mut *pointer }
@@ -66,7 +67,7 @@ impl Device {
 
 	/// Returns the typed CPU view of a buffer's host storage, sized by the allocation's recorded byte count.
 	fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(buffer: &Buffer) -> *mut T {
-		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.data, buffer.size).expect(
+		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.memory.data, buffer.size).expect(
 			"Failed to map a typed DX12 buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU storage.",
 		)
 	}
@@ -83,7 +84,7 @@ impl Device {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
-		Self::mark_buffer_host_write(buffer);
+		Self::mark_host_write(&mut buffer.memory);
 		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
@@ -96,25 +97,24 @@ impl Device {
 		self.buffer(buffer).map(|buffer| {
 			(
 				buffer.access,
-				buffer.heap_kind,
-				buffer.resource.is_some(),
-				!buffer.mapped.is_null(),
+				buffer.memory.heap_kind,
+				buffer.memory.resource.is_some(),
+				!buffer.memory.mapped.is_null(),
 			)
 		})
 	}
 
 	pub(crate) fn buffer_frame_resource_state(&self, buffer: BaseBufferHandle, sequence_index: u8) -> Option<bool> {
+		// A sequence without its own frame copy reports no resource instead of falling back to the base storage.
 		self.buffer(buffer).map(|buffer| {
 			if sequence_index == 0 {
-				return buffer.resource.is_some();
+				return buffer.memory.resource.is_some();
 			}
 			buffer
 				.frame_resources
 				.as_ref()
-				.and_then(|resources| resources.get(sequence_index as usize))
-				.and_then(|resource| resource.as_ref())
-				.and_then(|resource| resource.resource.as_ref())
-				.is_some()
+				.and_then(|resources| resources.get(sequence_index as usize)?.as_ref())
+				.is_some_and(|memory| memory.resource.is_some())
 		})
 	}
 
@@ -126,7 +126,7 @@ impl Device {
 
 	pub(crate) fn buffer_is_in_common_state(&self, buffer: BaseBufferHandle) -> Option<bool> {
 		self.buffer(buffer)
-			.and_then(|buffer_data| buffer_data.resource.as_ref())
+			.and_then(|buffer_data| buffer_data.memory.resource.as_ref())
 			.map(|resource| {
 				self.buffer_states
 					.get(&Self::native_resource_key(resource))
@@ -142,7 +142,7 @@ impl Device {
 			return None;
 		}
 		// SAFETY: Buffer shadow storage is non-null, stable, and contains at least the checked number of initialized bytes.
-		Some(unsafe { std::slice::from_raw_parts(buffer_data.data, size).to_vec() })
+		Some(unsafe { std::slice::from_raw_parts(buffer_data.memory.data, size).to_vec() })
 	}
 
 	pub(crate) fn buffer_bytes_for_sequence(
@@ -172,17 +172,7 @@ impl Device {
 		if size > buffer_data.size {
 			return None;
 		}
-		let mapped = if sequence_index == 0 {
-			buffer_data.mapped
-		} else {
-			buffer_data
-				.frame_resources
-				.as_ref()
-				.and_then(|resources| resources.get(sequence_index as usize))
-				.and_then(|resource| resource.as_ref())
-				.map(|resource| resource.mapped)
-				.unwrap_or(buffer_data.mapped)
-		};
+		let mapped = buffer_data.memory(sequence_index).mapped;
 		if mapped.is_null() {
 			return None;
 		}

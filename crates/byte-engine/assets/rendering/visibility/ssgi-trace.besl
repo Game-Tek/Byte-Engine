@@ -32,6 +32,7 @@ SsgiRay: struct {
 
 screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
 ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+// Mip zero holds positive linear depth at the trace resolution.
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
 previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
@@ -82,15 +83,6 @@ interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }
 
-// Reads the positive linear depth stored in mip zero, which matches the trace resolution.
-fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f(
-		(f32(coordinate.x) + 0.5) / f32(extent.x),
-		(f32(coordinate.y) + 0.5) / f32(extent.y)
-	);
-	return texture_lod(depth_pyramid, uv, 0.0).x;
-}
-
 // Reports whether four consecutive depths along one screen axis lie on one connected surface. Across a plane,
 // 1/depth changes by the same step between neighboring texels, and at a crease the step changes gradually. At a
 // silhouette, the step between the middle texels is several times larger than the steps on either side.
@@ -120,24 +112,24 @@ clamped_texel: fn (x: f32, y: f32, extent: vec2u) -> vec2u {
 hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let base_x: f32 = floor(hit_pixel.x);
 	let base_y: f32 = floor(hit_pixel.y);
-	let z00: f32 = fetch_linear_depth(clamped_texel(base_x, base_y, extent), extent);
-	let z10: f32 = fetch_linear_depth(clamped_texel(base_x + 1.0, base_y, extent), extent);
-	let z01: f32 = fetch_linear_depth(clamped_texel(base_x, base_y + 1.0, extent), extent);
+	let z00: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y, extent)).x;
+	let z10: f32 = fetch(depth_pyramid, clamped_texel(base_x + 1.0, base_y, extent)).x;
+	let z01: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y + 1.0, extent)).x;
 	let continuous_x: bool = depths_are_continuous(
-		fetch_linear_depth(clamped_texel(base_x - 1.0, base_y, extent), extent),
+		fetch(depth_pyramid, clamped_texel(base_x - 1.0, base_y, extent)).x,
 		z00,
 		z10,
-		fetch_linear_depth(clamped_texel(base_x + 2.0, base_y, extent), extent)
+		fetch(depth_pyramid, clamped_texel(base_x + 2.0, base_y, extent)).x
 	);
 	let continuous_y: bool = depths_are_continuous(
-		fetch_linear_depth(clamped_texel(base_x, base_y - 1.0, extent), extent),
+		fetch(depth_pyramid, clamped_texel(base_x, base_y - 1.0, extent)).x,
 		z00,
 		z01,
-		fetch_linear_depth(clamped_texel(base_x, base_y + 2.0, extent), extent)
+		fetch(depth_pyramid, clamped_texel(base_x, base_y + 2.0, extent)).x
 	);
 	if (continuous_x && continuous_y) {
 		let hit_texel: vec2u = clamped_texel(round(hit_pixel.x), round(hit_pixel.y), extent);
-		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch_linear_depth(hit_texel, extent));
+		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch(depth_pyramid, hit_texel).x);
 	}
 
 	// At a silhouette, the object in front is the nearest nonzero texel of the footprint.
@@ -145,7 +137,7 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let nearest_texel: vec2u = vec2u(0, 0);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let texel: vec2u = clamped_texel(base_x + f32(tap % 2), base_y + f32(tap / 2), extent);
-		let z: f32 = fetch_linear_depth(texel, extent);
+		let z: f32 = fetch(depth_pyramid, texel).x;
 		if (z != 0.0 && (nearest_z == 0.0 || z < nearest_z)) {
 			nearest_z = z;
 			nearest_texel = texel;
@@ -164,10 +156,6 @@ view_position: fn (pixel: vec2f, z: f32) -> vec3f {
 	return vec3f(ray.x * z, ray.y * z, z);
 }
 
-ray_pixel: fn (ray: SsgiRay, fraction: f32) -> vec2f {
-	return mix(ray.start_pixel, ray.end_pixel, fraction);
-}
-
 // Screen-space interpolation is linear in 1/z, which keeps the ray depth perspective-correct.
 ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 	return 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, fraction);
@@ -176,8 +164,8 @@ ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 // Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
 // Background holds nothing to hit, so the ray is in front of it.
 ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
-	let sample_pixel: vec2f = ray_pixel(ray, fraction);
-	let scene_z: f32 = fetch_linear_depth(clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent), extent);
+	let sample_pixel: vec2f = mix(ray.start_pixel, ray.end_pixel, fraction);
+	let scene_z: f32 = fetch(depth_pyramid, clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent)).x;
 	if (scene_z == 0.0) {
 		return 0.0 - 1.0;
 	}
@@ -197,7 +185,7 @@ neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -
 	if (x < 0.0 || y < 0.0 || x >= f32(extent.x) || y >= f32(extent.y)) {
 		return 0.0;
 	}
-	return fetch_linear_depth(vec2u(u32(x), u32(y)), extent);
+	return fetch(depth_pyramid, vec2u(u32(x), u32(y))).x;
 }
 
 // Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
@@ -300,22 +288,10 @@ hit_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
 	);
 }
 
-// Rebuilds the view-space normal of one of the workgroup's own texels from its tile, or returns zero when the
-// neighborhood is degenerate.
-reconstruct_tile_normal: fn (center_index: u32, pixel: vec2f, center_position: vec3f) -> vec3f {
-	return tangent_normal(
-		tile_axis_tangent(center_index, 1, pixel, vec2f(1.0, 0.0), center_position),
-		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel, vec2f(0.0, 1.0), center_position),
-		center_position
-	);
-}
-
 // Maps two uniform numbers to a cosine-weighted direction around `normal` (Duff et al. 2017 orthonormal basis).
 cosine_hemisphere_direction: fn (normal: vec3f, u1: f32, u2: f32) -> vec3f {
-	let axis_sign: f32 = 1.0;
-	if (normal.z < 0.0) {
-		axis_sign = 0.0 - 1.0;
-	}
+	// `step` returns the positive sign at zero.
+	let axis_sign: f32 = step(0.0, normal.z) * 2.0 - 1.0;
 	let a: f32 = (0.0 - 1.0) / (axis_sign + normal.z);
 	let b: f32 = normal.x * normal.y * a;
 	let tangent: vec3f = vec3f(1.0 + axis_sign * normal.x * normal.x * a, axis_sign * b, (0.0 - axis_sign) * normal.x);
@@ -341,10 +317,7 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 		return vec4f(0.0, 0.0, 0.0, 0.0 - 1.0);
 	}
 	let radiance_extent: vec2u = texture_size(previous_radiance_map);
-	let texel_position: vec2f = vec2f(
-		uv.x * f32(radiance_extent.x) - 0.5,
-		uv.y * f32(radiance_extent.y) - 0.5
-	);
+	let texel_position: vec2f = vec2f(uv.x * f32(radiance_extent.x) - 0.5, uv.y * f32(radiance_extent.y) - 0.5);
 	let color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let best_error: f32 = SSGI_RADIANCE_DEPTH_TOLERANCE;
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
@@ -395,10 +368,7 @@ encode_stored_normal: fn (normal: vec3f) -> vec4f {
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(raw_output);
-	let local: vec2u = vec2u(
-		input.thread_idx % SSGI_TRACE_WORKGROUP_WIDTH,
-		input.thread_idx / SSGI_TRACE_WORKGROUP_WIDTH
-	);
+	let local: vec2u = vec2u(input.thread_idx % SSGI_TRACE_WORKGROUP_WIDTH, input.thread_idx / SSGI_TRACE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = pixel - local;
 	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
 	for (
@@ -426,8 +396,13 @@ main: fn (input: StageInput) -> void {
 
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let center_position: vec3f = view_position(pixel_f, center_z);
-	let normal: vec3f = reconstruct_tile_normal(center_index, pixel_f, center_position);
-	// A zero normal marks a degenerate neighborhood; the denoiser then compares depth only.
+	// The normal comes from the depths in the workgroup's tile. A zero normal marks a degenerate neighborhood; the
+	// denoiser then compares depth only.
+	let normal: vec3f = tangent_normal(
+		tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+		center_position
+	);
 	write(normal_output, pixel, encode_stored_normal(normal));
 	// Without history there is no light to gather, so every ray reports a miss and the environment lights the pixel.
 	if (ssgi_parameters.history_valid == 0 || dot(normal, normal) == 0.0) {
@@ -472,7 +447,7 @@ main: fn (input: StageInput) -> void {
 
 	for (let step: u32 = 0; step < SSGI_STEP_COUNT; step = step + 1) {
 		let fraction: f32 = (f32(step) + jitter) / f32(SSGI_STEP_COUNT);
-		let sample_pixel: vec2f = ray_pixel(ray, fraction);
+		let sample_pixel: vec2f = mix(ray.start_pixel, ray.end_pixel, fraction);
 		if (sample_pixel.x < 0.0 - 0.5 || sample_pixel.y < 0.0 - 0.5 || sample_pixel.x >= f32(extent.x) - 0.5 || sample_pixel.y >= f32(extent.y) - 0.5) {
 			break;
 		}
@@ -499,7 +474,7 @@ main: fn (input: StageInput) -> void {
 				front = middle;
 			}
 		}
-		let surface: vec3f = hit_surface(ray_pixel(ray, behind), ray_depth(ray, behind), extent);
+		let surface: vec3f = hit_surface(mix(ray.start_pixel, ray.end_pixel, behind), ray_depth(ray, behind), extent);
 		let surface_position: vec3f = view_position(vec2f(surface.x, surface.y), surface.z);
 		// Rays only hit surfaces that face them. This rejects a surface occluding itself: a ray that leaves a floor
 		// almost parallel to it can land behind the next floor texel, whose depth is quantized.

@@ -9,7 +9,23 @@ pub(crate) fn msl_packs_direct_binding_member(type_name: &str, is_array: bool) -
 	is_array || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16")
 }
 
-impl<A: Allocator + Clone> Generator<A> {
+/// Selects the Metal texture element type and access for a storage image.
+pub(crate) fn storage_image_type(format: &str, read: bool, write: bool) -> (&'static str, &'static str) {
+	let element_type = match format {
+		"r8ui" | "r16ui" | "r32ui" => "uint",
+		_ => "float",
+	};
+	let access = if read && write {
+		"access::read_write"
+	} else if write {
+		"access::write"
+	} else {
+		"access::read"
+	};
+	(element_type, access)
+}
+
+impl Generator {
 	pub(crate) fn emit_push_constant_struct(&mut self, string: &mut String, push_constant: &besl::NodeReference) {
 		let node = push_constant.borrow();
 		let besl::Nodes::PushConstant { members } = node.node() else {
@@ -18,11 +34,10 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		self.emit_named_struct_start(string, "PushConstant");
 
-		for member in members {
-			self.emit_indentation(string, 1);
-			self.emit_node_string(string, member);
-			self.emit_statement_end(string);
-		}
+		let formatting = ShaderFormatting::new(self.minified);
+		emit_statement_block(string, formatting, members, 1, |string, member| {
+			self.emit_node_string(string, member)
+		});
 
 		self.emit_struct_declaration_end(string);
 	}
@@ -87,13 +102,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			"Invalid fixed Metal argument ID range. The most likely cause is that binding validation was bypassed before source emission.",
 		);
 		let emit_suffix = |string: &mut String, argument_id: u32| {
-			string.push_str(" [[id(");
-			let _ = write!(string, "{argument_id}");
-			string.push_str(")]]");
+			let _ = write!(string, " [[id({argument_id})]]");
 			if let Some(count) = count {
-				string.push('[');
-				let _ = write!(string, "{count}");
-				string.push(']');
+				let _ = write!(string, "[{count}]");
 			}
 			self.emit_statement_end(string);
 		};
@@ -118,17 +129,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::Image { format } => {
-				let element_type = match format.as_str() {
-					"r8ui" | "r16ui" | "r32ui" => "uint",
-					_ => "float",
-				};
-				let access = if *read && *write {
-					"access::read_write"
-				} else if *write {
-					"access::write"
-				} else {
-					"access::read"
-				};
+				let (element_type, access) = storage_image_type(format, *read, *write);
 				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}
@@ -169,11 +170,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
 		self.in_buffer_binding_struct = true;
 
-		for member in members {
-			self.emit_indentation(string, 1);
-			self.emit_node_string(string, member);
-			self.emit_statement_end(string);
-		}
+		let formatting = ShaderFormatting::new(self.minified);
+		emit_statement_block(string, formatting, members, 1, |string, member| {
+			self.emit_node_string(string, member)
+		});
 
 		self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
 
@@ -211,7 +211,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		uses_simd_lane_id: bool,
 	) {
 		let node = RefCell::borrow(main_function_node);
-
 		let besl::Nodes::Function {
 			name,
 			statements,
@@ -270,7 +269,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_block_end(string);
 	}
 
-	/// Emits function-scope threadgroup variables shared by every invocation in one compute workgroup.
+	/// Emits function-scope threadgroup variables shared by every invocation in one compute or object workgroup.
 	pub(crate) fn emit_compute_workgroup_declarations(&mut self, string: &mut String, workgroups: &[&besl::NodeReference]) {
 		for workgroup in workgroups {
 			let workgroup = workgroup.borrow();
@@ -278,16 +277,46 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			};
 			self.emit_indentation(string, 1);
-			string.push_str("threadgroup ");
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
+			let _ = write!(
+				string,
+				"threadgroup {} {}",
+				Self::type_identifier(format.borrow().get_name().unwrap()),
+				Self::identifier(name)
+			);
 			if let Some(count) = count {
-				string.push('[');
-				string.push_str(&count.to_string());
-				string.push(']');
+				let _ = write!(string, "[{count}]");
 			}
 			self.emit_statement_end(string);
+		}
+	}
+
+	/// Writes an object or mesh entry point's authored, push-constant, and argument-buffer parameters, then the
+	/// separator before its stage builtins.
+	fn emit_kernel_entry_parameters(
+		&mut self,
+		string: &mut String,
+		params: &[besl::NodeReference],
+		has_push_constant: bool,
+		has_resources: bool,
+	) {
+		self.emit_call_arguments(string, params);
+		let mut has_previous_parameter = !params.is_empty();
+		if has_push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			self.emit_push_constant_parameter(string);
+			has_previous_parameter = true;
+		}
+		if has_resources {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			self.emit_argument_buffer_parameter(string);
+			has_previous_parameter = true;
+		}
+		if has_previous_parameter {
+			self.emit_separator(string);
 		}
 	}
 
@@ -312,42 +341,17 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		string.push_str("[[object, max_total_threadgroups_per_mesh_grid(");
-		string.push_str(maximum_mesh_threadgroups.to_string().as_str());
-		string.push_str(")]] void ");
+		let _ = write!(
+			string,
+			"[[object, max_total_threadgroups_per_mesh_grid({maximum_mesh_threadgroups})]] void "
+		);
 		if *name == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
 			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
-
-		let mut has_previous_parameter = false;
-		for param in params {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_node_string(string, param);
-			has_previous_parameter = true;
-		}
-
-		if push_constant.is_some() {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_push_constant_parameter(string);
-			has_previous_parameter = true;
-		}
-		if has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_argument_buffer_parameter(string);
-			has_previous_parameter = true;
-		}
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
+		self.emit_kernel_entry_parameters(string, params, push_constant.is_some(), has_resources);
 		string.push_str("uint thread_position [[thread_position_in_grid]]");
 		self.emit_separator(string);
 		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -359,23 +363,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("mesh_grid_properties mesh_grid");
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
-		for workgroup in workgroups {
-			let workgroup = workgroup.borrow();
-			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
-				continue;
-			};
-			self.emit_indentation(string, 1);
-			string.push_str("threadgroup ");
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			if let Some(count) = count {
-				string.push('[');
-				string.push_str(&count.to_string());
-				string.push(']');
-			}
-			self.emit_statement_end(string);
-		}
+		self.emit_compute_workgroup_declarations(string, workgroups);
 		self.emit_statement_block(string, statements, 1);
 		self.emit_block_end(string);
 	}
@@ -391,7 +379,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		maximum_primitives: u32,
 	) {
 		let node = RefCell::borrow(main_function_node);
-
 		let besl::Nodes::Function {
 			name,
 			statements,
@@ -409,35 +396,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
-
-		let mut has_previous_parameter = false;
-		for param in params {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_node_string(string, param);
-			has_previous_parameter = true;
-		}
-
-		if push_constant.is_some() {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_push_constant_parameter(string);
-			has_previous_parameter = true;
-		}
-
-		if has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			self.emit_argument_buffer_parameter(string);
-			has_previous_parameter = true;
-		}
-
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
+		self.emit_kernel_entry_parameters(string, params, push_constant.is_some(), has_resources);
 		string.push_str("uint threadgroup_position [[threadgroup_position_in_grid]]");
 		self.emit_separator(string);
 		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -446,10 +405,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str("const object_data ObjectPayload& payload [[payload]]");
 		}
 		self.emit_separator(string);
-		string.push_str(&format!(
-			"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> out_mesh",
-			maximum_vertices, maximum_primitives
-		));
+		let _ = write!(
+			string,
+			"metal::mesh<VertexOutput, PrimitiveOutput, {maximum_vertices}, {maximum_primitives}, topology::triangle> out_mesh"
+		);
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
 
@@ -501,18 +460,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let _ = write!(string, "{} [[buffer({index})]]", Self::identifier(name));
 			}
 			besl::BindingTypes::Image { format } => {
-				let element_type = match format.as_str() {
-					"r8ui" | "r16ui" | "r32ui" => "uint",
-					_ => "float",
-				};
-				let access = if *read && *write {
-					"access::read_write"
-				} else if *write {
-					"access::write"
-				} else {
-					"access::read"
-				};
-
+				let (element_type, access) = storage_image_type(format, *read, *write);
 				self.emit_separator(string);
 				let _ = write!(
 					string,
@@ -538,25 +486,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	pub(crate) fn emit_compute_binding_reference(&self, string: &mut String, name: &str) {
-		if self.mesh_stage_context.is_some() {
+	/// Qualifies a resource through the argument buffer, or names it directly in a compute or object kernel that takes
+	/// bare resources.
+	pub(crate) fn emit_binding_reference(&self, string: &mut String, name: &str) {
+		if !(self.in_compute_body && self.compute_binding_mode == ComputeBindingMode::BareResources) {
 			string.push_str("resources.");
-			Self::identifier(name).push_to(string);
-			return;
 		}
-
-		match self.compute_binding_mode {
-			ComputeBindingMode::ArgumentBuffers => {
-				string.push_str("resources.");
-				Self::identifier(name).push_to(string);
-			}
-			ComputeBindingMode::BareResources => Self::identifier(name).push_to(string),
-		}
-	}
-
-	/// Qualifies a raster resource through the argument buffer supplied to its entry point or helper.
-	pub(crate) fn emit_raster_binding_reference(&self, string: &mut String, name: &str) {
-		string.push_str("resources.");
 		Self::identifier(name).push_to(string);
 	}
 

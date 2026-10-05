@@ -127,6 +127,6 @@ use super::{
 };
 use crate::{
 	ProcessedAsset,
-	processors::processor::implementations::audio::{AudioDescription, process_audio},
+	processors::audio::{AudioDescription, process_audio},
 	types::BitDepths,
 };

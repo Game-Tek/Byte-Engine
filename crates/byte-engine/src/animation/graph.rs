@@ -55,30 +55,13 @@ pub enum AnimationPlayback {
 	Once,
 }
 
-/// The `AnimationLease` struct keeps a stable clip identity across arena residency and eviction.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct AnimationLease {
-	resource_id: Box<str>,
-}
-
-impl AnimationLease {
-	/// Creates a lease handle for a clip that the pool may load, evict, and load again.
-	pub fn new(resource_id: impl Into<Box<str>>) -> Self {
-		Self {
-			resource_id: resource_id.into(),
-		}
-	}
-
-	/// Returns the resource ID used when an evicted lease needs another asynchronous load.
-	pub fn resource_id(&self) -> &str {
-		self.resource_id.as_ref()
-	}
-}
-
-/// The `AnimationClip` struct identifies the leased resource and playback behavior used by one state.
+/// The `AnimationClip` struct identifies the resource and playback behavior used by one state.
+///
+/// [`AnimationPool`] keys clips by their resource ID, so a clip keeps a stable identity across arena residency and
+/// eviction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnimationClip {
-	lease: AnimationLease,
+	resource_id: Box<str>,
 	playback: AnimationPlayback,
 }
 
@@ -86,7 +69,7 @@ impl AnimationClip {
 	/// Creates a clip that restarts from its first sample after reaching its duration.
 	pub fn looping(resource_id: impl Into<Box<str>>) -> Self {
 		Self {
-			lease: AnimationLease::new(resource_id),
+			resource_id: resource_id.into(),
 			playback: AnimationPlayback::Loop,
 		}
 	}
@@ -94,14 +77,14 @@ impl AnimationClip {
 	/// Creates a clip that holds its final sample after reaching its duration.
 	pub fn once(resource_id: impl Into<Box<str>>) -> Self {
 		Self {
-			lease: AnimationLease::new(resource_id),
+			resource_id: resource_id.into(),
 			playback: AnimationPlayback::Once,
 		}
 	}
 
 	/// Returns the resource ID requested by an [`AnimationPool`].
 	pub fn resource_id(&self) -> &str {
-		self.lease.resource_id()
+		&self.resource_id
 	}
 
 	/// Returns the playback behavior used after the clip reaches its duration.
@@ -110,79 +93,34 @@ impl AnimationClip {
 	}
 }
 
-/// The `AnimationTransition` struct configures how the player blends toward a requested state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AnimationTransition {
-	duration: MediaTime,
-}
-
-impl AnimationTransition {
-	/// Creates an immediate transition toward a requested state.
-	pub const fn new() -> Self {
-		Self {
-			duration: MediaTime::ZERO,
-		}
-	}
-
-	/// Smooths the transition with critically damped inertialization for the supplied duration.
-	pub const fn inertialize(mut self, duration: MediaTime) -> Self {
-		self.duration = duration;
-		self
-	}
-}
-
-impl Default for AnimationTransition {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 struct StateTransition {
 	// `target` may be an internal one-shot state, while `destination` is the
 	// persistent state requested by client code.
 	target: AnimationStateId,
 	destination: AnimationStateId,
-	transition: AnimationTransition,
+	/// The critically damped inertialization duration. [`MediaTime::ZERO`] switches immediately.
+	duration: MediaTime,
 	// Only `.anytime` edges can interrupt an active transition clip.
 	can_interrupt_transition: bool,
-}
-
-/// Distinguishes persistent clips from one-shot clips that complete into another state.
-enum AnimationGraphStateKind {
-	Persistent,
-	Transition { completion: AnimationStateId },
 }
 
 struct AnimationGraphStateData {
 	name: String,
 	clip: AnimationClip,
-	kind: AnimationGraphStateKind,
+	/// Set only for one-shot transition states: the state entered after the clip finishes.
+	completion: Option<AnimationStateId>,
 	transitions: Vec<StateTransition>,
 }
 
 impl AnimationGraphStateData {
-	/// Returns the fallback target entered after a transition-state clip finishes.
-	fn completion_target(&self) -> Option<AnimationStateId> {
-		match self.kind {
-			AnimationGraphStateKind::Persistent => None,
-			AnimationGraphStateKind::Transition { completion } => Some(completion),
-		}
-	}
-
 	/// Selects the first authored route whose persistent destination was requested.
-	fn select_authored_transition(&self, requested: AnimationStateId) -> Option<(AnimationStateId, MediaTime)> {
+	///
+	/// When `interrupting` an active transition clip, only `.anytime` routes qualify.
+	fn select_route(&self, requested: AnimationStateId, interrupting: bool) -> Option<(AnimationStateId, MediaTime)> {
 		self.transitions
 			.iter()
-			.find(|transition| transition.destination == requested)
-			.map(|transition| (transition.target, transition.transition.duration))
-	}
-
-	/// Selects the first interruptible route whose persistent destination was requested.
-	fn select_anytime_transition(&self, requested: AnimationStateId) -> Option<(AnimationStateId, MediaTime)> {
-		self.transitions
-			.iter()
-			.find(|transition| transition.can_interrupt_transition && transition.destination == requested)
-			.map(|transition| (transition.target, transition.transition.duration))
+			.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
+			.map(|transition| (transition.target, transition.duration))
 	}
 }
 
@@ -200,7 +138,19 @@ pub struct AnimationGraph {
 impl AnimationGraph {
 	/// Starts a builder for an animation reconciliation graph.
 	pub fn builder() -> AnimationGraphBuilder {
-		AnimationGraphBuilder::new()
+		use std::hash::BuildHasher as _;
+
+		// Each `RandomState` gets fresh keys from the standard library, so every
+		// builder gets a distinct 64-bit identity without an engine-owned counter.
+		// The identity only guards against mixing state IDs from different graphs.
+		let graph = std::hash::RandomState::new().hash_one(0u64);
+		AnimationGraphBuilder {
+			graph,
+			data: RefCell::new(Some(AnimationGraphBuilderData {
+				states: Vec::new(),
+				transitions: Vec::new(),
+			})),
+		}
 	}
 
 	/// Returns the graph's initial state.
@@ -231,23 +181,19 @@ impl AnimationGraph {
 		source_finished: bool,
 	) -> Option<(AnimationStateId, MediaTime)> {
 		let source_state = self.state(source);
-		if source_state.completion_target().is_none() {
+		let Some(completion) = source_state.completion else {
 			return if source == requested {
 				None
 			} else {
-				source_state.select_authored_transition(requested)
+				source_state.select_route(requested, false)
 			};
-		}
+		};
 
-		if let Some(transition) = source_state.select_authored_transition(requested) {
+		if let Some(transition) = source_state.select_route(requested, false) {
 			return Some(transition);
 		}
-
-		let completion = source_state
-			.completion_target()
-			.expect("transition state completion was checked above");
 		if requested != completion
-			&& let Some(transition) = self.state(completion).select_anytime_transition(requested)
+			&& let Some(transition) = self.state(completion).select_route(requested, true)
 		{
 			return Some(transition);
 		}
@@ -256,16 +202,9 @@ impl AnimationGraph {
 	}
 }
 
-struct PendingStateTransition {
-	source: AnimationStateId,
-	target: AnimationStateId,
-	destination: AnimationStateId,
-	transition: AnimationTransition,
-	// This value becomes `StateTransition::can_interrupt_transition` during graph construction.
-	can_interrupt_transition: bool,
-}
-
 /// The `AnimationGraphBuilder` struct assembles named clip states and their ordered reconciliation routes.
+///
+/// Start one with [`AnimationGraph::builder`], then name states with [`Self::state`].
 pub struct AnimationGraphBuilder {
 	graph: u64,
 	data: RefCell<Option<AnimationGraphBuilderData>>,
@@ -273,7 +212,30 @@ pub struct AnimationGraphBuilder {
 
 struct AnimationGraphBuilderData {
 	states: Vec<AnimationGraphStateData>,
-	transitions: Vec<PendingStateTransition>,
+	/// Routes beside their source state, which [`AnimationGraphBuilder::build`] validates before attaching them.
+	transitions: Vec<(AnimationStateId, StateTransition)>,
+}
+
+impl AnimationGraphBuilderData {
+	/// Appends a state with no routes and returns its ID in `graph`.
+	fn push_state(
+		&mut self,
+		graph: u64,
+		name: String,
+		clip: AnimationClip,
+		completion: Option<AnimationStateId>,
+	) -> AnimationStateId {
+		self.states.push(AnimationGraphStateData {
+			name,
+			clip,
+			completion,
+			transitions: Vec::new(),
+		});
+		AnimationStateId {
+			graph,
+			index: self.states.len() - 1,
+		}
+	}
 }
 
 /// The `AnimationGraphStateBuilder` struct assigns a clip to a named graph state.
@@ -284,18 +246,11 @@ pub struct AnimationGraphStateBuilder<'builder> {
 }
 
 /// The `AnimationGraphState` struct connects a state to other states during graph authoring.
+#[derive(Clone, Copy)]
 pub struct AnimationGraphState<'builder> {
 	data: &'builder RefCell<Option<AnimationGraphBuilderData>>,
 	id: AnimationStateId,
 }
-
-impl Clone for AnimationGraphState<'_> {
-	fn clone(&self) -> Self {
-		*self
-	}
-}
-
-impl Copy for AnimationGraphState<'_> {}
 
 /// The `AnimationGraphTransitionBuilder` struct assigns a clip to a route between two states.
 pub struct AnimationGraphTransitionBuilder<'builder> {
@@ -315,16 +270,7 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 	pub fn with(self, clip: AnimationClip) -> AnimationGraphState<'builder> {
 		let mut builder = self.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let id = AnimationStateId {
-			graph: self.graph,
-			index: builder.states.len(),
-		};
-		builder.states.push(AnimationGraphStateData {
-			name: self.name,
-			clip,
-			kind: AnimationGraphStateKind::Persistent,
-			transitions: Vec::new(),
-		});
+		let id = builder.push_state(self.graph, self.name, clip, None);
 		AnimationGraphState { data: self.data, id }
 	}
 }
@@ -347,16 +293,21 @@ impl<'builder> AnimationGraphState<'builder> {
 
 impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 	/// Adds a direct route without playing an intermediate clip.
-	pub fn when(self, transition: AnimationTransition) -> AnimationGraphState<'builder> {
+	///
+	/// `inertialization` smooths the switch with critically damped inertialization for that duration.
+	/// Pass [`MediaTime::ZERO`] to switch immediately.
+	pub fn when(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		builder.transitions.push(PendingStateTransition {
-			source: self.source.id,
-			target: self.target.id,
-			destination: self.target.id,
-			transition,
-			can_interrupt_transition: false,
-		});
+		builder.transitions.push((
+			self.source.id,
+			StateTransition {
+				target: self.target.id,
+				destination: self.target.id,
+				duration: inertialization,
+				can_interrupt_transition: false,
+			},
+		));
 		self.target
 	}
 
@@ -372,42 +323,39 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 
 impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 	/// Adds a one-shot route that must complete before reconciling another request.
-	pub fn when(self, transition: AnimationTransition) -> AnimationGraphState<'builder> {
-		self.add(transition, false)
+	///
+	/// `inertialization` works as in [`AnimationGraphTransitionBuilder::when`].
+	pub fn when(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
+		self.add(inertialization, false)
 	}
 
 	/// Adds a one-shot route that can reconcile another request before it completes.
-	pub fn anytime(self, transition: AnimationTransition) -> AnimationGraphState<'builder> {
-		self.add(transition, true)
+	///
+	/// `inertialization` works as in [`AnimationGraphTransitionBuilder::when`].
+	pub fn anytime(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
+		self.add(inertialization, true)
 	}
 
 	/// Adds the internal one-shot state and its source route with the selected interruption policy.
-	fn add(self, transition: AnimationTransition, can_interrupt_transition: bool) -> AnimationGraphState<'builder> {
+	fn add(self, inertialization: MediaTime, can_interrupt_transition: bool) -> AnimationGraphState<'builder> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let id = AnimationStateId {
-			graph: self.source.id.graph,
-			index: builder.states.len(),
-		};
 		let name = format!(
 			"{} -> {} [{}]",
-			builder.states[self.source.id.index].name, builder.states[self.target.id.index].name, id.index,
+			builder.states[self.source.id.index].name,
+			builder.states[self.target.id.index].name,
+			builder.states.len(),
 		);
-		builder.states.push(AnimationGraphStateData {
-			name,
-			clip: self.clip,
-			kind: AnimationGraphStateKind::Transition {
-				completion: self.target.id,
+		let id = builder.push_state(self.source.id.graph, name, self.clip, Some(self.target.id));
+		builder.transitions.push((
+			self.source.id,
+			StateTransition {
+				target: id,
+				destination: self.target.id,
+				duration: inertialization,
+				can_interrupt_transition,
 			},
-			transitions: Vec::new(),
-		});
-		builder.transitions.push(PendingStateTransition {
-			source: self.source.id,
-			target: id,
-			destination: self.target.id,
-			transition,
-			can_interrupt_transition,
-		});
+		));
 		AnimationGraphState {
 			data: self.source.data,
 			id,
@@ -415,30 +363,7 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 	}
 }
 
-impl Default for AnimationGraphBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl AnimationGraphBuilder {
-	/// Creates an empty animation graph builder.
-	pub fn new() -> Self {
-		use std::hash::BuildHasher as _;
-
-		// Each `RandomState` gets fresh keys from the standard library, so every
-		// builder gets a distinct 64-bit identity without an engine-owned counter.
-		// The identity only guards against mixing state IDs from different graphs.
-		let graph = std::hash::RandomState::new().hash_one(0u64);
-		Self {
-			graph,
-			data: RefCell::new(Some(AnimationGraphBuilderData {
-				states: Vec::new(),
-				transitions: Vec::new(),
-			})),
-		}
-	}
-
 	/// Names a state. Call [`AnimationGraphStateBuilder::with`] next to assign its clip.
 	pub fn state(&self, name: impl Into<String>) -> AnimationGraphStateBuilder<'_> {
 		AnimationGraphStateBuilder {
@@ -454,17 +379,7 @@ impl AnimationGraphBuilder {
 	fn transition_state(&self, name: impl Into<String>, clip: AnimationClip, completion: AnimationStateId) -> AnimationStateId {
 		let mut data = self.data.borrow_mut();
 		let data = data.as_mut().expect("the animation graph has already been built");
-		let id = AnimationStateId {
-			graph: self.graph,
-			index: data.states.len(),
-		};
-		data.states.push(AnimationGraphStateData {
-			name: name.into(),
-			clip,
-			kind: AnimationGraphStateKind::Transition { completion },
-			transitions: Vec::new(),
-		});
-		id
+		data.push_state(self.graph, name.into(), clip, Some(completion))
 	}
 
 	/// Validates the graph and selects the initial state.
@@ -498,7 +413,7 @@ impl AnimationGraphBuilder {
 					name: state.name.clone(),
 				});
 			}
-			if let AnimationGraphStateKind::Transition { completion } = state.kind {
+			if let Some(completion) = state.completion {
 				if state.clip.playback() != AnimationPlayback::Once {
 					return Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: state_index });
 				}
@@ -512,28 +427,23 @@ impl AnimationGraphBuilder {
 			}
 		}
 
-		for pending in data.transitions {
-			if pending.source.graph != self.graph || pending.source.index >= data.states.len() {
+		for (source, transition) in data.transitions {
+			if source.graph != self.graph || source.index >= data.states.len() {
 				return Err(AnimationGraphBuildError::TransitionSourceOutOfRange {
-					state: pending.source.index,
+					state: source.index,
 					state_count: data.states.len(),
 				});
 			}
-			if pending.target.graph != self.graph || pending.target.index >= data.states.len() {
+			if transition.target.graph != self.graph || transition.target.index >= data.states.len() {
 				return Err(AnimationGraphBuildError::TransitionTargetOutOfRange {
-					state: pending.target.index,
+					state: transition.target.index,
 					state_count: data.states.len(),
 				});
 			}
-			if pending.transition.duration < MediaTime::ZERO {
+			if transition.duration < MediaTime::ZERO {
 				return Err(AnimationGraphBuildError::NegativeTransitionDuration);
 			}
-			data.states[pending.source.index].transitions.push(StateTransition {
-				target: pending.target,
-				destination: pending.destination,
-				transition: pending.transition,
-				can_interrupt_transition: pending.can_interrupt_transition,
-			});
+			data.states[source.index].transitions.push(transition);
 		}
 
 		Ok(AnimationGraph {
@@ -652,13 +562,7 @@ impl std::error::Error for AnimationGraphBuildError {}
 
 mod runtime;
 
-use std::{
-	cell::RefCell,
-	collections::{HashMap, VecDeque},
-	fmt,
-	num::NonZeroUsize,
-	sync::Arc,
-};
+use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc};
 
 use math::{Matrix, Vector};
 use resource_management::{
@@ -672,9 +576,8 @@ use resource_management::{
 #[doc(hidden)]
 pub use runtime::benchmarks;
 pub use runtime::{
-	AnimationEvaluation, AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, AnimationLoadWorker,
-	AnimationPool, AnimationPoolConfig, AnimationPoolEvent, AnimationPoolRequest, RootMotionRotation, RootMotionSettings,
-	RootMotionTranslation,
+	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, AnimationLoadWorker, AnimationPool,
+	AnimationPoolEvent, AnimationPoolRequest, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 };
 
 use super::{
@@ -697,10 +600,10 @@ mod tests {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		idle.to(walk).when(AnimationTransition::new());
+		idle.to(walk).when(MediaTime::ZERO);
 		idle.to(idle)
 			.with(AnimationClip::once("restart.animation"))
-			.when(AnimationTransition::new().inertialize(MediaTime::from_millis(100)));
+			.when(MediaTime::from_millis(100));
 		let graph = builder.build(idle).expect("expected graph value");
 
 		assert_eq!(graph.state_count(), 3);
@@ -728,11 +631,11 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.anytime(AnimationTransition::new());
+			.anytime(MediaTime::ZERO);
 		let stop_walk = walk
 			.to(idle)
 			.with(AnimationClip::once("stop.animation"))
-			.anytime(AnimationTransition::new());
+			.anytime(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(
@@ -796,8 +699,8 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.when(AnimationTransition::new());
-		start_walk.to(idle).when(AnimationTransition::new());
+			.when(MediaTime::ZERO);
+		start_walk.to(idle).when(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(

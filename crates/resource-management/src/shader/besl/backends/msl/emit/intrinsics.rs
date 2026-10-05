@@ -1,25 +1,17 @@
 use super::super::*;
 
-impl<A: Allocator + Clone> Generator<A> {
+impl Generator {
 	/// Emits a resource passed to an intrinsic using the active stage's resource context.
 	pub(crate) fn emit_intrinsic_resource_reference(&mut self, string: &mut String, resource: &besl::NodeReference) {
 		let resource_node = resource.borrow();
 		if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = resource_node.node() {
-			if self.in_compute_body || self.task_stage_context.is_some() {
-				self.emit_compute_binding_reference(string, name);
-			} else {
-				self.emit_raster_binding_reference(string, name);
-			}
+			self.emit_binding_reference(string, name);
 			return;
 		}
 		if let besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) = resource_node.node() {
 			let left = left.borrow();
 			if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left.node() {
-				if self.in_compute_body || self.task_stage_context.is_some() {
-					self.emit_compute_binding_reference(string, name);
-				} else {
-					self.emit_raster_binding_reference(string, name);
-				}
+				self.emit_binding_reference(string, name);
 				return;
 			}
 		}
@@ -41,32 +33,6 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, &index);
 			string.push(']');
 		}
-	}
-
-	pub(crate) fn emit_texture_2d_array_grad_sample(
-		&mut self,
-		string: &mut String,
-		texture_array: &besl::NodeReference,
-		texture_index: &besl::NodeReference,
-		uv: &besl::NodeReference,
-		uv_derivative_x: &besl::NodeReference,
-		uv_derivative_y: &besl::NodeReference,
-	) {
-		self.emit_intrinsic_resource_reference(string, texture_array);
-		string.push('[');
-		self.emit_node_string(string, texture_index);
-		string.push_str("].sample(");
-		self.emit_intrinsic_resource_reference(string, texture_array);
-		string.push_str("_sampler[");
-		self.emit_node_string(string, texture_index);
-		string.push(']');
-		self.emit_separator(string);
-		self.emit_node_string(string, uv);
-		string.push_str(", metal::gradient2d(");
-		self.emit_node_string(string, uv_derivative_x);
-		self.emit_separator(string);
-		self.emit_node_string(string, uv_derivative_y);
-		string.push_str("))");
 	}
 
 	// Keep the intrinsic table contiguous because each arm defines one exact Metal lowering contract.
@@ -91,44 +57,50 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
+		let has_body = definition
+			.iter()
+			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
 		match name.as_str() {
+			// Texture lowerings bypass intrinsic bodies.
 			"sample" => {
-				if let Some((kind, resource, index)) = resource_accessor(&arguments[0]) {
-					self.emit_intrinsic_resource_reference(string, &resource);
-					if kind == ResourceAccessorKind::DescriptorArray {
-						string.push('[');
-						self.emit_node_string(string, &index);
-						string.push(']');
+				let accessor = resource_accessor(&arguments[0]);
+				match &accessor {
+					Some((kind, resource, index)) => {
+						self.emit_intrinsic_resource_reference(string, resource);
+						if *kind == ResourceAccessorKind::DescriptorArray {
+							string.push('[');
+							self.emit_node_string(string, index);
+							string.push(']');
+						}
 					}
-					string.push_str(".sample(");
-					self.emit_sampler(string, &arguments[0]);
-					string.push_str(", ");
-					self.emit_node_string(string, &arguments[1]);
-					if kind == ResourceAccessorKind::Texture2DArrayLayer {
-						string.push_str(", ");
-						self.emit_node_string(string, &index);
-					}
-					string.push(')');
-					return;
+					None => self.emit_node_string(string, &arguments[0]),
 				}
-				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
 				self.emit_sampler(string, &arguments[0]);
 				string.push_str(", ");
 				self.emit_node_string(string, &arguments[1]);
+				if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, index)) = &accessor {
+					string.push_str(", ");
+					self.emit_node_string(string, index);
+				}
 				string.push(')');
-				return;
 			}
 			"sample_texture_2d_array_grad" => {
-				self.emit_texture_2d_array_grad_sample(
-					string,
-					&arguments[0],
-					&arguments[1],
-					&arguments[2],
-					&arguments[3],
-					&arguments[4],
-				);
-				return;
+				self.emit_intrinsic_resource_reference(string, &arguments[0]);
+				string.push('[');
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("].sample(");
+				self.emit_intrinsic_resource_reference(string, &arguments[0]);
+				string.push_str("_sampler[");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(']');
+				self.emit_separator(string);
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(", metal::gradient2d(");
+				self.emit_node_string(string, &arguments[3]);
+				self.emit_separator(string);
+				self.emit_node_string(string, &arguments[4]);
+				string.push_str("))");
 			}
 			"texture_lod" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -144,7 +116,6 @@ impl<A: Allocator + Clone> Generator<A> {
 					string.push_str("0.0");
 				}
 				string.push_str("))");
-				return;
 			}
 			"texture_cube_array_lod" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -157,45 +128,29 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(", metal::level(");
 				self.emit_node_string(string, &arguments[3]);
 				string.push_str("))");
-				return;
 			}
 			// The helpers gather and reduce in shader code; see `generate_msl_header_block`.
 			"downsample_min" | "downsample_max" => {
-				string.push_str(if name == "downsample_min" {
-					"_besl_downsample_min("
-				} else {
-					"_besl_downsample_max("
-				});
+				let _ = write!(string, "_besl_{name}(");
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(", ");
 				self.emit_sampler(string, &arguments[0]);
 				string.push_str(", ");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", ");
+				self.emit_node_string(string, &arguments[2]);
 				if arguments.len() == 4 {
-					self.emit_node_string(string, &arguments[2]);
 					string.push_str(", ");
 					self.emit_node_string(string, &arguments[3]);
-				} else {
-					self.emit_node_string(string, &arguments[2]);
 				}
 				string.push(')');
-				return;
 			}
-			_ => {}
-		}
-
-		let has_body = definition
-			.iter()
-			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
-		if has_body {
-			for element in elements {
-				self.emit_node_string(string, element);
+			// Every other intrinsic with a body emits its expansion.
+			_ if has_body => {
+				for element in elements {
+					self.emit_node_string(string, element);
+				}
 			}
-			return;
-		}
-
-		match name.as_str() {
 			"pow" if arguments.len() == 2 && super::super::super::is_two(&arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
@@ -214,29 +169,6 @@ impl<A: Allocator + Clone> Generator<A> {
 					self.emit_node_string(string, argument);
 					string.push(')');
 				}
-				string.push(')');
-			}
-			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"
-			| "floor" | "round" | "fract" | "fwidth" | "step" | "smoothstep" | "mix" => {
-				string.push_str(name);
-				string.push('(');
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"fma" => {
-				string.push_str("fma(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
-				string.push_str(match name.as_str() {
-					"is_nan" => "isnan(",
-					"is_infinite" => "isinf(",
-					"is_finite" => "isfinite(",
-					"is_normal" => "isnormal(",
-					_ => unreachable!("Expected a floating-point classification intrinsic"),
-				});
-				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
 			"sincos" => {
@@ -258,37 +190,6 @@ impl<A: Allocator + Clone> Generator<A> {
 					string.push_str(" * (PI / 180.0))");
 				}
 			}
-			"inversesqrt" => {
-				string.push_str("rsqrt(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"f32" => {
-				string.push_str("float(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"f16" => {
-				string.push_str("half(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
-				string.push_str(Self::translate_type(name));
-				string.push('(');
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"u32" => {
-				string.push_str("uint(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"u16" => {
-				string.push_str("ushort(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
 			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
 			| "atomic_xor" => {
 				string.push_str(match name.as_str() {
@@ -307,11 +208,6 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", memory_order_relaxed)");
 			}
-			"atomic_compare_exchange" => {
-				string.push_str("_besl_atomic_compare_exchange(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
 			"atomic_load" => {
 				string.push_str("atomic_load_explicit(&");
 				self.emit_node_string(string, &arguments[0]);
@@ -324,15 +220,9 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", memory_order_relaxed)");
 			}
-			"thread_position" => {
-				string.push_str("thread_position");
-			}
-			"thread_id" => {
-				string.push_str("gid");
-			}
-			"thread_idx" => {
-				string.push_str("thread_index");
-			}
+			"thread_position" => string.push_str("thread_position"),
+			"thread_id" => string.push_str("gid"),
+			"thread_idx" => string.push_str("thread_index"),
 			"subgroup_lane_index" => string.push_str("simd_lane_id"),
 			"threadgroup_position" => {
 				string.push_str("threadgroup_position");
@@ -340,49 +230,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					string.push_str(".x");
 				}
 			}
-			"subgroup_ballot" => {
-				string.push_str("_besl_subgroup_ballot(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_any" => {
-				string.push_str("_besl_subgroup_ballot_any(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"find_lsb" => {
-				string.push_str("_besl_find_lsb(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_find_lsb" => {
-				string.push_str("_besl_subgroup_ballot_find_lsb(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_count" => {
-				string.push_str("_besl_subgroup_ballot_count(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_and_not" => {
-				string.push_str("_besl_subgroup_ballot_and_not(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_broadcast_u32" => {
-				string.push_str("_besl_subgroup_broadcast_u32(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_broadcast_f32" => {
-				string.push_str("_besl_subgroup_broadcast_f32(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"workgroup_barrier" => {
-				string.push_str("threadgroup_barrier(mem_flags::mem_threadgroup)");
-			}
+			"workgroup_barrier" => string.push_str("threadgroup_barrier(mem_flags::mem_threadgroup)"),
 			"set_task_mesh_output_count" => {
 				string.push_str("mesh_grid.set_threadgroups_per_grid(uint3(");
 				self.emit_node_string(string, &arguments[0]);
@@ -415,17 +263,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("})");
 			}
-			"image_load" => {
+			"image_load" | "image_load_u32" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
-				string.push(')');
-			}
-			"image_load_u32" => {
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(".read(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(").x");
+				string.push_str(if name == "image_load_u32" { ").x" } else { ")" });
 			}
 			"fetch" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -463,8 +305,28 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".get_height()){return;}");
 			}
+			// Every other intrinsic is a Metal call, renamed where Metal spells the operation differently.
 			_ => {
-				string.push_str(name);
+				string.push_str(match name.as_str() {
+					"is_nan" => "isnan",
+					"is_infinite" => "isinf",
+					"is_finite" => "isfinite",
+					"is_normal" => "isnormal",
+					"inversesqrt" => "rsqrt",
+					"f32" | "f16" | "u32" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
+					| "packed_vec4f" => Self::translate_type(name),
+					// These call the helpers that `generate_msl_header_block` declares.
+					"atomic_compare_exchange" => "_besl_atomic_compare_exchange",
+					"find_lsb" => "_besl_find_lsb",
+					"subgroup_ballot" => "_besl_subgroup_ballot",
+					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",
+					"subgroup_ballot_find_lsb" => "_besl_subgroup_ballot_find_lsb",
+					"subgroup_ballot_count" => "_besl_subgroup_ballot_count",
+					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
+					"subgroup_broadcast_u32" => "_besl_subgroup_broadcast_u32",
+					"subgroup_broadcast_f32" => "_besl_subgroup_broadcast_f32",
+					name => name,
+				});
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
 				string.push(')');

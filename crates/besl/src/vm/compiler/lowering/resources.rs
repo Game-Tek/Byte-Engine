@@ -8,34 +8,7 @@ impl<'a> Compiler<'a> {
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (binding, selectors) = extract_access_chain(expression)?;
 
-		let binding_ref = binding.borrow();
-		let (slot, layout, runtime_element_type) = match binding_ref.node() {
-			Nodes::Binding {
-				slot,
-				read,
-				write,
-				r#type,
-				..
-			} => {
-				let slot = ResourceSlot::new(*slot);
-				require_descriptor_access(slot, *read, *write, access)?;
-				let (layout, runtime_element_type) = match r#type {
-					BindingTypes::Buffer { members } => (compile_buffer_layout(members)?, None),
-					BindingTypes::BufferArray { element, fixed } => {
-						let count = fixed.as_ref().map(|fixed| fixed.count);
-						let (layout, element_type) = compile_buffer_array_layout(element, count)?;
-						(layout, Some(element_type))
-					}
-					_ => {
-						return Err(VmError::UnsupportedDescriptor {
-							slot,
-							message: "Only buffer descriptors are supported".to_string(),
-						});
-					}
-				};
-
-				(slot, layout, runtime_element_type)
-			}
+		let (slot, layout, runtime_element_type) = match binding.borrow().node() {
 			Nodes::PushConstant { members } => {
 				if access.requires_write() {
 					return Err(VmError::UnsupportedAssignmentTarget {
@@ -45,32 +18,31 @@ impl<'a> Compiler<'a> {
 
 				(PUSH_CONSTANT_SLOT, compile_buffer_layout(members)?, None)
 			}
-			node => {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Expected a binding access, but found {}", describe_node(node)),
-				});
-			}
+			node => match accessible_binding(node, access)? {
+				(slot, BindingTypes::Buffer { members }) => (slot, compile_buffer_layout(members)?, None),
+				(slot, BindingTypes::BufferArray { element, fixed }) => {
+					let count = fixed.as_ref().map(|fixed| fixed.count);
+					let (layout, element_type) = compile_buffer_array_layout(element, count)?;
+					(slot, layout, Some(element_type))
+				}
+				(slot, _) => {
+					return Err(VmError::UnsupportedDescriptor {
+						slot,
+						message: "Only buffer descriptors are supported".to_string(),
+					});
+				}
+			},
 		};
-		drop(binding_ref);
 
-		let descriptor_layout = if slot == PUSH_CONSTANT_SLOT {
-			DescriptorLayout::PushConstant(layout.clone())
-		} else {
-			DescriptorLayout::Buffer(layout.clone())
-		};
-
-		match self.descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &descriptor_layout => {
-				return Err(VmError::UnsupportedDescriptor {
-					slot,
-					message: "Descriptor slot was reused with a different layout".to_string(),
-				});
-			}
-			Some(_) => {}
-			None => {
-				self.descriptor_layouts.insert(slot, descriptor_layout);
-			}
-		}
+		self.claim_descriptor_layout(
+			slot,
+			if slot == PUSH_CONSTANT_SLOT {
+				DescriptorLayout::PushConstant(layout.clone())
+			} else {
+				DescriptorLayout::Buffer(layout.clone())
+			},
+			"layout",
+		)?;
 
 		resolve_buffer_access(slot, &layout, runtime_element_type, &selectors)
 	}
@@ -80,68 +52,36 @@ impl<'a> Compiler<'a> {
 		expression: &NodeReference,
 		access: RequiredAccess,
 	) -> Result<ResourceSlot, VmError> {
-		let binding = match extract_binding_reference(expression) {
-			Ok(binding) => binding,
-			Err(_) => {
-				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
-				if !matches!(
-					value_type,
-					ValueType::Texture2D
-						| ValueType::Texture3D
-						| ValueType::TextureCube
-						| ValueType::TextureCubeArray
-						| ValueType::ArrayTexture2D
-				) {
-					return Err(VmError::TypeMismatch {
-						expected: "texture resource".to_string(),
-						found: value_type.name().to_string(),
-					});
-				}
-				let register = self.compile_value_expression(expression, &value_type)?;
-				return Ok(dynamic_resource_slot(register));
+		let Ok(binding) = extract_binding_reference(expression) else {
+			let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
+			if !matches!(
+				value_type,
+				ValueType::Texture2D
+					| ValueType::Texture3D
+					| ValueType::TextureCube
+					| ValueType::TextureCubeArray
+					| ValueType::ArrayTexture2D
+			) {
+				return Err(VmError::TypeMismatch {
+					expected: "texture resource".to_string(),
+					found: value_type.name().to_string(),
+				});
 			}
+			let register = self.compile_value_expression(expression, &value_type)?;
+			return Ok(dynamic_resource_slot(register));
 		};
 
-		let binding_ref = binding.borrow();
-		let slot = match binding_ref.node() {
-			Nodes::Binding {
-				slot,
-				read,
-				write,
-				r#type,
-				..
-			} => {
-				let slot = ResourceSlot::new(*slot);
-				require_descriptor_access(slot, *read, *write, access)?;
-				match r#type {
-					BindingTypes::CombinedImageSampler { .. } => slot,
-					_ => {
-						return Err(VmError::UnsupportedDescriptor {
-							slot,
-							message: "Only texture descriptors can be sampled or fetched".to_string(),
-						});
-					}
-				}
-			}
-			node => {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Expected a binding access, but found {}", describe_node(node)),
+		let slot = match accessible_binding(binding.borrow().node(), access)? {
+			(slot, BindingTypes::CombinedImageSampler { .. }) => slot,
+			(slot, _) => {
+				return Err(VmError::UnsupportedDescriptor {
+					slot,
+					message: "Only texture descriptors can be sampled or fetched".to_string(),
 				});
 			}
 		};
-		drop(binding_ref);
-
-		match self.descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &DescriptorLayout::Texture => Err(VmError::UnsupportedDescriptor {
-				slot,
-				message: "Descriptor slot was reused with a different layout".to_string(),
-			}),
-			Some(_) => Ok(slot),
-			None => {
-				self.descriptor_layouts.insert(slot, DescriptorLayout::Texture);
-				Ok(slot)
-			}
-		}
+		self.claim_descriptor_layout(slot, DescriptorLayout::Texture, "layout")?;
+		Ok(slot)
 	}
 
 	/// Resolves `array_texture[layer]` without treating the layer as a descriptor-array index.
@@ -181,66 +121,30 @@ impl<'a> Compiler<'a> {
 		expression: &NodeReference,
 		access: RequiredAccess,
 	) -> Result<ResourceSlot, VmError> {
-		let binding = match extract_binding_reference(expression) {
-			Ok(binding) => binding,
-			Err(_) => {
-				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
-				if value_type != ValueType::Texture2D {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Texture2D.name().to_string(),
-						found: value_type.name().to_string(),
-					});
-				}
-				let register = self.compile_value_expression(expression, &value_type)?;
-				return Ok(dynamic_resource_slot(register));
+		let Ok(binding) = extract_binding_reference(expression) else {
+			let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
+			if value_type != ValueType::Texture2D {
+				return Err(type_mismatch(&ValueType::Texture2D, &value_type));
 			}
+			let register = self.compile_value_expression(expression, &value_type)?;
+			return Ok(dynamic_resource_slot(register));
 		};
 
-		let binding_ref = binding.borrow();
-		let slot = match binding_ref.node() {
-			Nodes::Binding {
-				slot,
-				read,
-				write,
-				r#type,
-				..
-			} => {
-				let slot = ResourceSlot::new(*slot);
-				require_descriptor_access(slot, *read, *write, access)?;
-				match r#type {
-					BindingTypes::Image { .. } => slot,
-					_ => {
-						return Err(VmError::UnsupportedDescriptor {
-							slot,
-							message: "Only image descriptors can be written through `write`".to_string(),
-						});
-					}
-				}
-			}
-			node => {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Expected a binding access, but found {}", describe_node(node)),
+		let slot = match accessible_binding(binding.borrow().node(), access)? {
+			(slot, BindingTypes::Image { .. }) => slot,
+			(slot, _) => {
+				return Err(VmError::UnsupportedDescriptor {
+					slot,
+					message: "Only image descriptors can be written through `write`".to_string(),
 				});
 			}
 		};
-		drop(binding_ref);
-
-		match self.descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &DescriptorLayout::Image => Err(VmError::UnsupportedDescriptor {
-				slot,
-				message: "Descriptor slot was reused with a different layout".to_string(),
-			}),
-			Some(_) => Ok(slot),
-			None => {
-				self.descriptor_layouts.insert(slot, DescriptorLayout::Image);
-				Ok(slot)
-			}
-		}
+		self.claim_descriptor_layout(slot, DescriptorLayout::Image, "layout")?;
+		Ok(slot)
 	}
 
 	pub(super) fn resolve_output_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
-		let borrowed = expression.borrow();
-		let (source, output_name) = match borrowed.node() {
+		let (source, output_name) = match expression.borrow().node() {
 			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
 			node => {
 				return Err(VmError::UnsupportedExpression {
@@ -248,10 +152,8 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		drop(borrowed);
 
-		let source_ref = source.borrow();
-		let (slot, layout) = match source_ref.node() {
+		let (slot, value_type, count) = match source.borrow().node() {
 			// The VM stores per-vertex and per-primitive mesh outputs alike, as plain arrays tests read back.
 			Nodes::Output {
 				name,
@@ -266,25 +168,15 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let value_type = resolve_value_type(format)?;
-				let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
+				let slot = if crate::is_position_output(&output_name) {
+					builtin_position_slot()
+				} else {
+					output_slot(*location)
+				};
 				(
-					if crate::is_position_output(&output_name) {
-						builtin_position_slot()
-					} else {
-						output_slot(*location)
-					},
-					BufferLayout {
-						members: vec![BufferMemberLayout {
-							name: output_name,
-							offset: 0,
-							value_type: value_type.clone(),
-							count,
-						}],
-						size: value_type.size() * count,
-						element: None,
-						element_count: None,
-					},
+					slot,
+					resolve_value_type(format)?,
+					count.map_or(1, std::num::NonZeroUsize::get),
 				)
 			}
 			node => {
@@ -293,29 +185,8 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		drop(source_ref);
 
-		match self.descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
-				return Err(VmError::UnsupportedDescriptor {
-					slot,
-					message: "Descriptor slot was reused with a different layout".to_string(),
-				});
-			}
-			Some(_) => {}
-			None => {
-				self.descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
-			}
-		}
-
-		Ok(ResolvedBufferAccess {
-			slot,
-			offset: 0,
-			stride: layout.members()[0].value_type().size(),
-			count: Some(layout.members()[0].count()),
-			index_expression: None,
-			value_type: layout.members()[0].value_type().clone(),
-		})
+		self.interface_access(slot, output_name, value_type, count)
 	}
 
 	/// Resolves one dynamically indexed mesh output-array write.
@@ -335,8 +206,7 @@ impl<'a> Compiler<'a> {
 	}
 
 	pub(super) fn resolve_input_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
-		let borrowed = expression.borrow();
-		let (source, input_name) = match borrowed.node() {
+		let (source, input_name) = match expression.borrow().node() {
 			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
 			node => {
 				return Err(VmError::UnsupportedExpression {
@@ -344,10 +214,8 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		drop(borrowed);
 
-		let source_ref = source.borrow();
-		let (slot, layout) = match source_ref.node() {
+		let (slot, value_type) = match source.borrow().node() {
 			Nodes::Input { name, format, location } => {
 				if name != &input_name {
 					return Err(VmError::UnsupportedExpression {
@@ -361,20 +229,7 @@ impl<'a> Compiler<'a> {
 					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
 					_ => input_slot(*location),
 				};
-				(
-					slot,
-					BufferLayout {
-						members: vec![BufferMemberLayout {
-							name: input_name,
-							offset: 0,
-							value_type: value_type.clone(),
-							count: 1,
-						}],
-						size: value_type.size(),
-						element: None,
-						element_count: None,
-					},
-				)
+				(slot, value_type)
 			}
 			node => {
 				return Err(VmError::UnsupportedExpression {
@@ -382,30 +237,81 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		drop(source_ref);
 
-		match self.descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
-				return Err(VmError::UnsupportedDescriptor {
-					slot,
-					message: "Descriptor slot was reused with a different layout".to_string(),
-				});
-			}
-			Some(_) => {}
-			None => {
-				self.descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
-			}
-		}
+		self.interface_access(slot, input_name, value_type, 1)
+	}
+
+	/// Declares the one-member buffer the VM keeps for an input or output interface at `slot` and returns its access.
+	fn interface_access(
+		&mut self,
+		slot: ResourceSlot,
+		name: String,
+		value_type: ValueType,
+		count: usize,
+	) -> Result<ResolvedBufferAccess, VmError> {
+		let stride = value_type.size();
+		let layout = BufferLayout {
+			members: vec![BufferMemberLayout {
+				name,
+				offset: 0,
+				value_type: value_type.clone(),
+				count,
+			}],
+			size: stride * count,
+			element: None,
+			element_count: None,
+		};
+		self.claim_descriptor_layout(slot, DescriptorLayout::Buffer(layout), "layout")?;
 
 		Ok(ResolvedBufferAccess {
 			slot,
 			offset: 0,
-			stride: layout.size(),
-			count: Some(1),
+			stride,
+			count: Some(count),
 			index_expression: None,
-			value_type: layout.members()[0].value_type().clone(),
+			value_type,
 		})
 	}
+
+	/// Records `layout` for `slot`, or rejects it when an earlier access gave the slot a different layout, so every
+	/// access to one slot agrees on what it holds. `conflict` names what differs in the rejection message.
+	pub(super) fn claim_descriptor_layout(
+		&mut self,
+		slot: ResourceSlot,
+		layout: DescriptorLayout,
+		conflict: &str,
+	) -> Result<(), VmError> {
+		match self.descriptor_layouts.get(&slot) {
+			Some(existing) if *existing != layout => Err(VmError::UnsupportedDescriptor {
+				slot,
+				message: format!("Descriptor slot was reused with a different {conflict}"),
+			}),
+			Some(_) => Ok(()),
+			None => {
+				self.descriptor_layouts.insert(slot, layout);
+				Ok(())
+			}
+		}
+	}
+}
+
+/// Returns the slot and resource type of a binding node after checking that the binding allows `access`.
+fn accessible_binding(node: &Nodes, access: RequiredAccess) -> Result<(ResourceSlot, &BindingTypes), VmError> {
+	let Nodes::Binding {
+		slot,
+		read,
+		write,
+		r#type,
+		..
+	} = node
+	else {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected a binding access, but found {}", describe_node(node)),
+		});
+	};
+	let slot = ResourceSlot::new(*slot);
+	require_descriptor_access(slot, *read, *write, access)?;
+	Ok((slot, r#type))
 }
 
 /// Resolves selectors rooted at either a fixed buffer member or a runtime buffer element.

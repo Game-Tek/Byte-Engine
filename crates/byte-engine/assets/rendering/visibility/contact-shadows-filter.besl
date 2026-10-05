@@ -29,8 +29,8 @@ CONTACT_SHADOW_FILTER_WORKGROUP_SIZE: const u32 = 64;
 // The workgroup's pixels plus the filter radius on every side.
 CONTACT_SHADOW_FILTER_TILE_WIDTH: const u32 = 12;
 CONTACT_SHADOW_FILTER_TILE_SIZE: const u32 = 144;
-// Gaussian weights for offsets zero, one, and two. The product of two gives the 5x5 kernel.
-CONTACT_SHADOW_FILTER_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
+// Gaussian weights of the five taps along one axis, centered on the pixel. The product of two gives the 5x5 kernel.
+CONTACT_SHADOW_FILTER_WEIGHTS: const f32[5] = f32[5](0.0544886845, 0.2442013420, 0.4026199469, 0.2442013420, 0.0544886845);
 // A neighbor counts fully when its depth lies on the center's surface plane, and less the further it lies from it, down
 // to nothing at this distance relative to the center's depth.
 CONTACT_SHADOW_FILTER_PLANE_TOLERANCE: const f32 = 0.02;
@@ -76,11 +76,6 @@ inverse_depth_gradient: fn (center_index: u32, stride: u32) -> f32 {
 	return 0.0;
 }
 
-// Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
-filter_weight: fn (offset: u32) -> f32 {
-	return CONTACT_SHADOW_FILTER_WEIGHTS[max(offset, CONTACT_SHADOW_FILTER_RADIUS) - min(offset, CONTACT_SHADOW_FILTER_RADIUS)];
-}
-
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(contact_shadow_output);
@@ -99,13 +94,12 @@ main: fn (input: StageInput) -> void {
 		let column: f32 = tile_origin_column + f32(tile_index % CONTACT_SHADOW_FILTER_TILE_WIDTH);
 		let row: f32 = tile_origin_row + f32(tile_index / CONTACT_SHADOW_FILTER_TILE_WIDTH);
 		let inverse_depth: f32 = fetch_inverse_depth(column, row, extent);
-		let trace: f32 = 0.0;
-		// A texel outside the image, or without a surface, has zero depth and never counts as a tap.
-		if (inverse_depth != 0.0) {
-			trace = fetch(contact_shadow_trace, vec2u(u32(column), u32(row))).x;
-		}
 		shared_inverse_depth[tile_index] = inverse_depth;
-		shared_trace[tile_index] = trace;
+		// A texel outside the image, or without a surface, has zero depth and never counts as a tap, so nothing reads
+		// its trace.
+		if (inverse_depth != 0.0) {
+			shared_trace[tile_index] = fetch(contact_shadow_trace, vec2u(u32(column), u32(row))).x;
+		}
 	}
 	workgroup_barrier();
 
@@ -134,7 +128,7 @@ main: fn (input: StageInput) -> void {
 			if (neighbor_inverse_z != 0.0) {
 				let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
 				let plane_error: f32 = abs(neighbor_inverse_z - predicted_inverse_z) / center_inverse_z;
-				let weight: f32 = filter_weight(tap_column) * filter_weight(tap_row)
+				let weight: f32 = CONTACT_SHADOW_FILTER_WEIGHTS[tap_column] * CONTACT_SHADOW_FILTER_WEIGHTS[tap_row]
 					* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
 				lit = lit + weight * shared_trace[tap_index];
 				total_weight = total_weight + weight;

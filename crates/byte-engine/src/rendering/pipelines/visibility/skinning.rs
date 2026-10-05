@@ -64,11 +64,12 @@ pub(crate) struct SkinningDispatch {
 
 /// The `SkinningPass` struct owns the frame-local palettes and deformed-vertex output every sink reads.
 pub(crate) struct SkinningPass {
-	pipeline: crate::rendering::PipelineRef,
+	pub(crate) pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
 	matrix_palette_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
 	dual_quaternion_palette_buffer: ghi::DynamicBufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
-	skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
+	/// The deformed vertices every stage reads in place of the bind pose.
+	pub(crate) skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
 
 impl SkinningPass {
@@ -113,14 +114,6 @@ impl SkinningPass {
 			dual_quaternion_palette_buffer,
 			skinned_vertices_buffer,
 		}
-	}
-
-	pub(crate) const fn skinned_vertices_buffer(&self) -> ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]> {
-		self.skinned_vertices_buffer
-	}
-
-	pub(crate) const fn pipeline(&self) -> crate::rendering::PipelineRef {
-		self.pipeline
 	}
 
 	/// Uploads this frame's palettes. Empty palettes skip the sync.
@@ -203,20 +196,8 @@ fn is_rigid_transform(matrix: &AffineMatrix) -> bool {
 
 /// Converts one validated rigid matrix into the engine's xyzw dual-quaternion convention.
 fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix) -> DualQuaternion {
-	let [x, y, z, [translation_x, translation_y, translation_z]] = matrix.columns();
-	let real = rotation_from_columns(x, y, z);
-	let dual = Quaternion::new(translation_x, translation_y, translation_z, 0.0) * real.into_maths() * 0.5;
-	DualQuaternion {
-		real: real.to_array(),
-		dual: [dual.x, dual.y, dual.z, dual.w],
-	}
-}
-
-/// Extracts the rotation of orthonormal rotation columns.
-fn rotation_from_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]) -> Orientation {
-	let [m00, m10, m20] = column0;
-	let [m01, m11, m21] = column1;
-	let [m02, m12, m22] = column2;
+	let [[m00, m10, m20], [m01, m11, m21], [m02, m12, m22], translation] = matrix.columns();
+	// Extracts the rotation of the orthonormal rotation columns.
 	let trace = m00 + m11 + m22;
 	let quaternion = if trace > 0.0 {
 		let scale = (trace + 1.0).sqrt() * 2.0;
@@ -231,9 +212,14 @@ fn rotation_from_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]
 		let scale = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
 		[(m02 + m20) / scale, (m12 + m21) / scale, scale * 0.25, (m10 - m01) / scale]
 	};
-	Orientation::try_from_array(quaternion).expect(
+	let real = Orientation::try_from_array(quaternion).expect(
 		"Rigid rotation columns always give a finite nonzero quaternion. The most likely cause is skipping is_rigid_transform.",
-	)
+	);
+	let dual = Quaternion::new(translation[0], translation[1], translation[2], 0.0) * real.into_maths() * 0.5;
+	DualQuaternion {
+		real: real.to_array(),
+		dual: [dual.x, dual.y, dual.z, dual.w],
+	}
 }
 
 #[cfg(test)]
@@ -241,24 +227,13 @@ mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, push_constant_buffer, run_at};
+	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, link_program, push_constant_buffer, run_at};
 
-	/// Parses and links the exact checked-in shader consumed by the runtime resource path.
-	///
-	/// Returns the program rather than its `main`, because the program owns every function it calls.
-	fn production_skinning_program() -> besl::NodeReference {
-		let source = include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/skinning.besl"
-		));
-		let program = besl::compile_to_besl(source, None).expect(
-			"Failed to compile the checked-in visibility skinning BESL. The most likely cause is invalid production shader syntax.",
-		);
-		program.get_main().expect(
-			"Missing visibility skinning entry point. The most likely cause is that the checked-in shader does not define main.",
-		);
-		program
-	}
+	/// The exact checked-in shader consumed by the runtime resource path.
+	const SKINNING_BESL: &str = include_str!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/assets/rendering/visibility/skinning.besl"
+	));
 
 	/// Binds every skinning slot and runs one lane at the origin.
 	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 7], push_constant: &mut Buffer) {
@@ -365,7 +340,7 @@ mod tests {
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
-		let program = compile(production_skinning_program());
+		let program = compile(link_program(SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, palette, ..] = &mut buffers;
@@ -415,7 +390,7 @@ mod tests {
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
 	#[test]
 	fn skinning_besl_vm_dual_quaternions_preserve_twist_volume_and_handle_antipodality() {
-		let program = compile(production_skinning_program());
+		let program = compile(link_program(SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, _, _, dual_quaternion_palette] = &mut buffers;

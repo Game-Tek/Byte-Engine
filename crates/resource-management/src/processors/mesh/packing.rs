@@ -1,57 +1,3 @@
-/// The `MeshProcessor` struct configures the common mesh-processing pipeline used after format-specific import.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MeshProcessor;
-
-impl MeshProcessor {
-	pub fn new() -> Self {
-		Self
-	}
-
-	/// Starts a short-lived processing session that borrows one source primitive at a time.
-	///
-	/// Call [`MeshProcessorSession::push_primitive`] for each imported primitive, then call
-	/// [`MeshProcessorSession::finish_into`] to write the payload directly, or
-	/// [`MeshProcessorSession::finish`] when the caller needs an owned payload. Each primitive names its material by its
-	/// slot in the list the finish call receives.
-	pub fn begin(
-		self,
-		vertex_layout: Vec<VertexComponent>,
-		skeleton: Option<ReferenceModel<SkeletonModel>>,
-		skins: Vec<SkinBinding>,
-	) -> Result<MeshProcessorSession, MeshProcessingError> {
-		validate_vertex_layout(&vertex_layout)?;
-		let skeleton_nodes = skeleton_node_count(skeleton.as_ref())?;
-		for (skin_index, skin) in skins.iter().enumerate() {
-			validate_skin_binding(skin_index, skin, skeleton_nodes)?;
-		}
-
-		let mut stream_order = vertex_layout
-			.iter()
-			.map(|component| Streams::Vertices(component.semantic))
-			.collect::<Vec<_>>();
-		stream_order.sort_by_key(|stream| match stream {
-			Streams::Vertices(semantic) => super::vertex_semantic_order(*semantic),
-			_ => usize::MAX,
-		});
-		stream_order.extend([
-			Streams::Indices(IndexStreamTypes::Vertices),
-			Streams::Indices(IndexStreamTypes::Triangles),
-			Streams::Indices(IndexStreamTypes::Meshlets),
-			Streams::Meshlets,
-		]);
-
-		Ok(MeshProcessorSession {
-			vertex_layout,
-			skeleton,
-			skeleton_nodes,
-			skins,
-			blocks: stream_order.into_iter().map(PackedStreamBlock::new).collect(),
-			primitives: Vec::new(),
-			scratch: MeshProcessingScratch::default(),
-		})
-	}
-}
-
 /// The `MeshPrimitiveProcessingError` enum preserves source-format failures alongside common processor failures.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MeshPrimitiveProcessingError<E> {
@@ -59,7 +5,24 @@ pub enum MeshPrimitiveProcessingError<E> {
 	Processing(MeshProcessingError),
 }
 
-/// The `MeshProcessorSession` struct keeps reusable scratch and final stream writers alive across borrowed primitives.
+impl<E: std::fmt::Display> std::fmt::Display for MeshPrimitiveProcessingError<E> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Source(error) => error.fmt(formatter),
+			Self::Processing(error) => error.fmt(formatter),
+		}
+	}
+}
+
+impl<E> From<MeshProcessingError> for MeshPrimitiveProcessingError<E> {
+	fn from(error: MeshProcessingError) -> Self {
+		Self::Processing(error)
+	}
+}
+
+/// The `MeshProcessorSession` struct runs the common mesh-processing pipeline after format-specific import.
+///
+/// It keeps reusable scratch and final stream writers alive across borrowed primitives. Start one with [`Self::new`].
 pub struct MeshProcessorSession {
 	vertex_layout: Vec<VertexComponent>,
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
@@ -72,6 +35,48 @@ pub struct MeshProcessorSession {
 }
 
 impl MeshProcessorSession {
+	/// Starts a short-lived processing session that borrows one source primitive at a time.
+	///
+	/// Call [`Self::push_primitive`] for each imported primitive, then call [`Self::finish_into`] to write the payload
+	/// directly, or [`Self::finish`] when the caller needs an owned payload. Each primitive names its material by its
+	/// slot in the list the finish call receives.
+	pub fn new(
+		vertex_layout: Vec<VertexComponent>,
+		skeleton: Option<ReferenceModel<SkeletonModel>>,
+		skins: Vec<SkinBinding>,
+	) -> Result<Self, MeshProcessingError> {
+		validate_vertex_layout(&vertex_layout)?;
+		let skeleton_nodes = skeleton_node_count(skeleton.as_ref())?;
+		for (skin_index, skin) in skins.iter().enumerate() {
+			validate_skin_binding(skin_index, skin, skeleton_nodes)?;
+		}
+
+		// Vertex streams follow the declaration order of `VertexSemantics`, then the generated streams.
+		let mut semantics = vertex_layout.iter().map(|component| component.semantic).collect::<Vec<_>>();
+		semantics.sort_by_key(|semantic| *semantic as usize);
+		let stream_order = semantics.into_iter().map(Streams::Vertices).chain([
+			Streams::Indices(IndexStreamTypes::Vertices),
+			Streams::Indices(IndexStreamTypes::Triangles),
+			Streams::Indices(IndexStreamTypes::Meshlets),
+			Streams::Meshlets,
+		]);
+
+		Ok(Self {
+			vertex_layout,
+			skeleton,
+			skeleton_nodes,
+			skins,
+			blocks: stream_order
+				.map(|stream_type| PackedStreamBlock {
+					stream_type,
+					bytes: Vec::new(),
+				})
+				.collect(),
+			primitives: Vec::new(),
+			scratch: MeshProcessingScratch::default(),
+		})
+	}
+
 	/// Adds a final skin binding and returns the palette index that a later source primitive should reference.
 	pub fn add_skin(&mut self, skin: SkinBinding) -> Result<u32, MeshProcessingError> {
 		let skin_index = self.skins.len();
@@ -116,9 +121,7 @@ impl MeshProcessorSession {
 				.positions
 				.push(position.map_err(MeshPrimitiveProcessingError::Source)?.to_array());
 		}
-		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::InvalidPositionData,
-		))?;
+		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshProcessingError::InvalidPositionData)?;
 
 		let indices = primitive.indices().map_err(MeshPrimitiveProcessingError::Source)?;
 		self.scratch.indices.clear();
@@ -129,21 +132,15 @@ impl MeshProcessorSession {
 				.push(index.map_err(MeshPrimitiveProcessingError::Source)?);
 		}
 		if !self.scratch.indices.len().is_multiple_of(3) {
-			return Err(MeshPrimitiveProcessingError::Processing(
-				MeshProcessingError::InvalidTriangleIndexCount,
-			));
+			return Err(MeshProcessingError::InvalidTriangleIndexCount.into());
 		}
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
 		let mut primitive_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
 
-		self.scratch.position_bytes.clear();
-		self.scratch.position_bytes.reserve(position_count.saturating_mul(12));
-		for position in &self.scratch.positions {
-			write_f32_components(&mut self.scratch.position_bytes, position);
-		}
-		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(&self.scratch.position_bytes, 12, 0)
-			.map_err(|_| MeshPrimitiveProcessingError::Processing(MeshProcessingError::FailedToBuildMeshlets))?;
+		// meshopt reads native-endian positions, which is what casting the position scratch gives it.
+		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&self.scratch.positions), 12, 0)
+			.map_err(|_| MeshProcessingError::FailedToBuildMeshlets)?;
 		let meshlets = meshopt::clusterize::build_meshlets(
 			&self.scratch.indices,
 			&meshlet_vertex_adapter,
@@ -215,14 +212,17 @@ impl MeshProcessorSession {
 			&self.vertex_layout,
 			self.skeleton_nodes,
 			&self.skins,
-		)
-		.map_err(MeshPrimitiveProcessingError::Processing)?;
+		)?;
 
 		let mut streams = Vec::with_capacity(self.vertex_layout.len() + 4);
-		streams.push(append_f32_slice(
+		streams.push(append_generated_stream(
 			&mut self.blocks,
 			Streams::Vertices(VertexSemantics::Position),
-			&self.scratch.positions,
+			|bytes| {
+				for position in &self.scratch.positions {
+					write_f32_components(bytes, position);
+				}
+			},
 		));
 		append_optional_f32(
 			&mut streams,
@@ -323,10 +323,9 @@ impl MeshProcessorSession {
 	/// can go directly to resource storage.
 	pub fn finish(self, materials: &[ReferenceModel<VariantModel>]) -> ProcessedMesh {
 		let mut buffer = Vec::with_capacity(self.payload_size());
-		let (mesh, stream_descriptions, blocks) = self.finish_parts(materials);
-		for block in blocks {
-			buffer.extend_from_slice(&block.bytes);
-		}
+		let (mesh, stream_descriptions) = self
+			.finish_into(materials, &mut buffer)
+			.expect("Writing to a Vec never fails");
 
 		ProcessedMesh {
 			mesh,
@@ -415,30 +414,12 @@ pub struct ProcessedMesh {
 struct MeshProcessingScratch {
 	positions: Vec<[f32; 3]>,
 	indices: Vec<u32>,
-	position_bytes: Vec<u8>,
 	block_lengths: Vec<usize>,
 }
 
 struct PackedStreamBlock {
 	stream_type: Streams,
 	bytes: Vec<u8>,
-}
-
-impl PackedStreamBlock {
-	fn new(stream_type: Streams) -> Self {
-		Self {
-			stream_type,
-			bytes: Vec::new(),
-		}
-	}
-}
-
-fn append_f32_slice<const N: usize>(blocks: &mut [PackedStreamBlock], stream_type: Streams, values: &[[f32; N]]) -> Stream {
-	append_generated_stream(blocks, stream_type, |bytes| {
-		for value in values {
-			write_f32_components(bytes, value);
-		}
-	})
 }
 
 fn append_optional_f32<const N: usize, I, E>(
@@ -455,18 +436,13 @@ where
 		return Ok(());
 	};
 	if values.len() != position_count {
-		return Err(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::AttributeLengthMismatch(semantic, 0),
-		));
+		return Err(MeshProcessingError::AttributeLengthMismatch(semantic, 0).into());
 	}
 	let stream_type = Streams::Vertices(semantic);
-	let block =
-		blocks
-			.iter_mut()
-			.find(|block| block.stream_type == stream_type)
-			.ok_or(MeshPrimitiveProcessingError::Processing(
-				MeshProcessingError::MissingAttribute(semantic, 0),
-			))?;
+	let block = blocks
+		.iter_mut()
+		.find(|block| block.stream_type == stream_type)
+		.ok_or(MeshProcessingError::MissingAttribute(semantic, 0))?;
 	let offset = block.bytes.len();
 	for value in values {
 		write_f32_components(&mut block.bytes, &value.map_err(MeshPrimitiveProcessingError::Source)?);
@@ -492,34 +468,29 @@ where
 	I: ExactSizeIterator<Item = Result<VertexSkin, E>>,
 {
 	if values.len() != position_count {
-		return Err(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::SkinVertexCountMismatch {
-				primitive,
-				values: values.len(),
-				positions: position_count,
-			},
-		));
+		return Err(MeshProcessingError::SkinVertexCountMismatch {
+			primitive,
+			values: values.len(),
+			positions: position_count,
+		}
+		.into());
 	}
-	let joints_index = blocks
-		.iter()
-		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Joints))
-		.ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Joints),
-		))?;
-	let weights_index = blocks
-		.iter()
-		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Weights))
-		.ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Weights),
-		))?;
+	let block_index = |semantic| {
+		(blocks
+			.iter()
+			.position(|block| block.stream_type == Streams::Vertices(semantic)))
+		.ok_or(MeshProcessingError::MissingSkinVertexComponent(semantic))
+	};
+	let joints_index = block_index(VertexSemantics::Joints)?;
+	let weights_index = block_index(VertexSemantics::Weights)?;
 	let joints_offset = blocks[joints_index].bytes.len();
 	let weights_offset = blocks[weights_index].bytes.len();
 	for (vertex, value) in values.enumerate() {
 		let value = value.map_err(MeshPrimitiveProcessingError::Source)?;
-		validate_vertex_skin(primitive, vertex, value, skin).map_err(MeshPrimitiveProcessingError::Processing)?;
-		for joint in value.joints {
-			blocks[joints_index].bytes.extend(joint.to_le_bytes());
-		}
+		validate_vertex_skin(primitive, vertex, value, skin)?;
+		blocks[joints_index]
+			.bytes
+			.extend_from_slice(value.joints.map(u16::to_le_bytes).as_flattened());
 		write_f32_components(&mut blocks[weights_index].bytes, &value.weights);
 	}
 	for (index, offset, semantic) in [
@@ -553,19 +524,13 @@ fn append_generated_stream(blocks: &mut [PackedStreamBlock], stream_type: Stream
 }
 
 fn write_f32_components<const N: usize>(bytes: &mut Vec<u8>, value: &[f32; N]) {
-	for component in value {
-		bytes.extend(component.to_le_bytes());
-	}
+	bytes.extend_from_slice(value.map(f32::to_le_bytes).as_flattened());
 }
 
 fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<AABB<ModelSpace>> {
 	let first = *positions.first()?;
-	if first.iter().any(|component| !component.is_finite()) {
-		return None;
-	}
-	let mut minimum = first;
-	let mut maximum = first;
-	for position in &positions[1..] {
+	let (mut minimum, mut maximum) = (first, first);
+	for position in positions {
 		if position.iter().any(|component| !component.is_finite()) {
 			return None;
 		}

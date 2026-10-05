@@ -42,13 +42,13 @@ pub struct Device {
 	last_frame_synchronizers: [Option<SynchronizerHandle>; crate::MAX_FRAMES_IN_FLIGHT],
 	top_level_acceleration_structures: Vec<AccelerationStructure>,
 	bottom_level_acceleration_structures: Vec<AccelerationStructure>,
-	allocations: Vec<Allocation>,
+	allocations: Vec<Vec<u8>>,
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
 	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	untracked_present_work: bool,
-	render_target_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
-	depth_stencil_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
+	render_target_views: HashMap<AttachmentViewKey, DescriptorHeap>,
+	depth_stencil_views: HashMap<AttachmentViewKey, DescriptorHeap>,
 	retained_clear_uav_descriptors: HashMap<usize, RetainedCpuDescriptor>,
 	clear_uav_descriptor_pages: Vec<DescriptorHeapArena>,
 	free_clear_uav_descriptor_slots: Vec<(usize, u32)>,
@@ -60,6 +60,14 @@ pub struct Device {
 	image_alias_flushes: HashMap<usize, (D3D12_BARRIER_SYNC, D3D12_BARRIER_ACCESS)>,
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
+	/// Command and resource counts that tests and diagnostics read.
+	counters: Dx12Counters,
+}
+
+/// The `Dx12Counters` struct records how often the backend encodes or creates each kind of native object, so tests
+/// and diagnostics can check the commands a recording produced.
+#[derive(Default)]
+struct Dx12Counters {
 	render_target_view_allocation_count: usize,
 	depth_stencil_view_allocation_count: usize,
 	texture_copy_count: usize,
@@ -183,20 +191,15 @@ impl Device {
 	}
 }
 
-#[path = "context/commands.rs"]
-mod device_commands;
-#[path = "context/descriptors.rs"]
-mod device_descriptors;
-#[path = "context/initialization.rs"]
-mod device_initialization;
+mod commands;
+mod descriptors;
+mod initialization;
+// Named apart from the `crate::pipelines` import that this module and its children use.
 #[path = "context/pipelines.rs"]
 mod device_pipelines;
-#[path = "context/presentation.rs"]
-mod device_presentation;
-#[path = "context/resources.rs"]
-mod device_resources;
-#[path = "context/transfers.rs"]
-mod device_transfers;
+mod presentation;
+mod resources;
+mod transfers;
 
 const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 
@@ -467,58 +470,42 @@ struct EnhancedBarrierBatch {
 }
 
 impl EnhancedBarrierBatch {
-	fn push_global(&mut self, barrier: D3D12_GLOBAL_BARRIER) {
-		self.global.push(barrier);
-	}
-
-	fn push_buffer(&mut self, barrier: D3D12_BUFFER_BARRIER) {
-		self.buffer.push(barrier);
-	}
-
-	fn push_texture(&mut self, barrier: D3D12_TEXTURE_BARRIER) {
-		self.texture.push(barrier);
-	}
-
 	/// Submits at most one native group for each enhanced barrier type.
 	fn submit(&self, command_list: &ID3D12GraphicsCommandList7) {
-		let mut groups = [D3D12_BARRIER_GROUP::default(); 3];
-		let mut group_count = 0;
+		let mut groups = SmallVec::<[D3D12_BARRIER_GROUP; 3]>::new();
 		if !self.global.is_empty() {
-			groups[group_count] = D3D12_BARRIER_GROUP {
+			groups.push(D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_GLOBAL,
 				NumBarriers: self.global.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pGlobalBarriers: self.global.as_ptr(),
 				},
-			};
-			group_count += 1;
+			});
 		}
 		if !self.buffer.is_empty() {
-			groups[group_count] = D3D12_BARRIER_GROUP {
+			groups.push(D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_BUFFER,
 				NumBarriers: self.buffer.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pBufferBarriers: self.buffer.as_ptr(),
 				},
-			};
-			group_count += 1;
+			});
 		}
 		if !self.texture.is_empty() {
-			groups[group_count] = D3D12_BARRIER_GROUP {
+			groups.push(D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_TEXTURE,
 				NumBarriers: self.texture.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pTextureBarriers: self.texture.as_ptr(),
 				},
-			};
-			group_count += 1;
+			});
 		}
-		if group_count == 0 {
+		if groups.is_empty() {
 			return;
 		}
 
 		// SAFETY: Each group points into this live batch, and the synchronous call only borrows the arrays.
-		unsafe { command_list.Barrier(&groups[..group_count]) };
+		unsafe { command_list.Barrier(&groups) };
 	}
 }
 
@@ -579,11 +566,6 @@ struct AttachmentViewKey {
 	format: i32,
 }
 
-/// The `CpuDescriptorView` struct retains native attachment descriptors for reuse across frames.
-struct CpuDescriptorView {
-	heap: DescriptorHeap,
-}
-
 /// The `RenderTargetAttachment` struct carries one resolved color attachment through native binding.
 struct RenderTargetAttachment {
 	image_handle: Option<crate::BaseImageHandle>,
@@ -597,22 +579,43 @@ struct RenderTargetAttachment {
 	swapchain_backbuffer: bool,
 }
 
+/// The `Buffer` struct keeps one logical DX12 buffer: its base storage and, for dynamic buffers, a lazily created copy
+/// for each other frame sequence.
 pub(crate) struct Buffer {
-	data: *mut u8,
-	layout: Layout,
+	/// The storage of static buffers, of sequence 0, and of any sequence without its own copy.
+	memory: BufferMemory,
 	size: usize,
-	host_generation: u64,
-	uploaded_generation: u64,
 	uses: Uses,
 	access: DeviceAccesses,
-	resource: Option<ID3D12Resource>,
-	mapped: *mut u8,
-	heap_kind: BufferHeapKind,
-	frame_resources: Option<Vec<Option<BufferFrameStorage>>>,
+	frame_resources: Option<Vec<Option<BufferMemory>>>,
 }
 
-/// The `BufferFrameStorage` struct provides lazy frame-local backing storage for dynamic DX12 buffers.
-pub(crate) struct BufferFrameStorage {
+impl Buffer {
+	/// Returns the storage that `sequence_index` reads, which is the base storage unless the sequence has its own copy.
+	fn memory(&self, sequence_index: u8) -> &BufferMemory {
+		self.frame_resources
+			.as_ref()
+			.filter(|_| sequence_index != 0)
+			.and_then(|resources| resources.get(sequence_index as usize)?.as_ref())
+			.unwrap_or(&self.memory)
+	}
+
+	/// Returns the storage that `sequence_index` writes, which is the base storage unless the sequence has its own copy.
+	fn memory_mut(&mut self, sequence_index: u8) -> &mut BufferMemory {
+		if let Some(memory) = self
+			.frame_resources
+			.as_mut()
+			.filter(|_| sequence_index != 0)
+			.and_then(|resources| resources.get_mut(sequence_index as usize)?.as_mut())
+		{
+			return memory;
+		}
+		&mut self.memory
+	}
+}
+
+/// The `BufferMemory` struct pairs the CPU shadow storage of a buffer with the native resource that GPU work reads.
+pub(crate) struct BufferMemory {
 	data: *mut u8,
 	layout: Layout,
 	host_generation: u64,
@@ -652,27 +655,18 @@ pub(crate) struct ResourceIoImageDestination {
 	pub(crate) common_state: bool,
 }
 
-/// The `TextureReadbackData` struct owns one completed DX12 texture-transfer result.
-struct TextureReadbackData {
-	bytes: Vec<u8>,
-	extent: Extent,
-	format: Formats,
-	bytes_per_row: usize,
-	bytes_per_image: usize,
-}
-
 /// The `TextureReadback` struct keeps one DX12 transfer result and optional native staging alive until consumption.
 struct TextureReadback {
 	completion: Option<(crate::synchronizer::SynchronizerHandle, u64)>,
 	resource: Option<ID3D12Resource>,
 	sequence_index: u8,
 	row_pitch: usize,
-	row_bytes: usize,
 	height: usize,
 	depth: usize,
 	size: usize,
 	mapping_failed: bool,
-	data: TextureReadbackData,
+	/// The compact result, whose `bytes` fill in once the copy completes.
+	data: MappedTextureReadback,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -682,27 +676,7 @@ pub(crate) enum BufferHeapKind {
 	Readback,
 }
 
-impl Drop for Buffer {
-	fn drop(&mut self) {
-		if self.heap_kind != BufferHeapKind::Default && !self.mapped.is_null() {
-			if let Some(resource) = self.resource.as_ref() {
-				unsafe {
-					resource.Unmap(0, None);
-				}
-			}
-		}
-		if self.layout.size() == 0 {
-			return;
-		}
-		if !self.data.is_null() {
-			unsafe {
-				alloc::dealloc(self.data, self.layout);
-			}
-		}
-	}
-}
-
-impl Drop for BufferFrameStorage {
+impl Drop for BufferMemory {
 	fn drop(&mut self) {
 		if self.heap_kind != BufferHeapKind::Default && !self.mapped.is_null() {
 			if let Some(resource) = self.resource.as_ref() {
@@ -910,11 +884,6 @@ impl DxcCompiler {
 		let identity = Device::dxc_identity(&native)?.into();
 		Ok(Self { native, identity })
 	}
-
-	/// Returns the stable compiler identity used to partition the DXIL cache.
-	pub(crate) fn identity(&self) -> &str {
-		&self.identity
-	}
 }
 
 struct Mesh {
@@ -934,8 +903,10 @@ pub(crate) struct Swapchain {
 	image_count: u8,
 	next_image_index: u8,
 	present_mode: PresentationModes,
-	images: [Option<ImageHandle>; 8],
-	proxy_uses: [Uses; 8],
+	/// The proxy image that the engine renders into; each frame sequence resolves it to its own native resource.
+	image: Option<ImageHandle>,
+	/// The uses requested for the proxy image so far.
+	proxy_uses: Uses,
 	proxy_resource_uses: Uses,
 	backbuffers: [Option<ID3D12Resource>; 8],
 	pub(crate) acquired_image_indices: [u8; 8],
@@ -957,12 +928,8 @@ pub(crate) struct Synchronizer {
 /// The `DeferredTask` enum keeps DX12 work and resources with the frame sequence that can safely process them.
 pub(crate) enum DeferredTask {
 	RetireResource(ID3D12Resource),
-	RetireBufferFrameStorage(BufferFrameStorage),
+	RetireBufferFrameStorage(BufferMemory),
 	ResizeImage { handle: ImageHandle, extent: Extent },
-}
-
-struct Allocation {
-	data: Vec<u8>,
 }
 
 struct AccelerationStructure {
@@ -973,6 +940,13 @@ struct AccelerationStructure {
 
 fn edge(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
 	(c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
+}
+
+/// Rejects resource creation on the primary device, which only detached devices support.
+fn detached_creation_unavailable(resource: &str) -> ! {
+	panic!(
+		"DX12 detached {resource} creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+	)
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
@@ -995,23 +969,8 @@ impl Drop for Execution<'_> {
 		};
 		// Recordings update state in order, so abandon them in reverse to restore the committed state.
 		for &command_buffer in self.command_buffers.iter().rev() {
-			let device = frame.device_mut();
-			device.discard_command_buffer_recording(command_buffer);
+			frame.device().discard_command_buffer_recording(command_buffer);
 		}
-	}
-}
-
-/// The `CommandBufferReference` struct exists to start DX12 command-buffer recordings from a command-buffer handle.
-pub struct CommandBufferReference<'a> {
-	device: &'a mut Device,
-	command_buffer_handle: CommandBufferHandle,
-}
-
-impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
 	}
 }
 
@@ -1051,33 +1010,23 @@ impl crate::device::Device for Device {
 		_stage: ShaderTypes,
 		_shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
-		panic!(
-			"DX12 detached shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
-		)
+		detached_creation_unavailable("shader")
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		panic!(
-			"DX12 detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
-		)
+		detached_creation_unavailable("raster pipeline")
 	}
 
 	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		panic!(
-			"DX12 detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
-		)
+		detached_creation_unavailable("compute pipeline")
 	}
 
 	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-		panic!(
-			"DX12 detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
-		)
+		detached_creation_unavailable("image")
 	}
 
 	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-		panic!(
-			"DX12 detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
-		)
+		detached_creation_unavailable("sampler")
 	}
 }
 
@@ -1167,7 +1116,6 @@ impl crate::context::ContextCreate for Device {
 
 impl crate::context::Context for Device {
 	type Queue<'a> = super::queue::Queue<'a>;
-	type CommandBuffer<'a> = CommandBufferReference<'a>;
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
@@ -1185,11 +1133,11 @@ impl crate::context::Context for Device {
 		}
 	}
 
-	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a> {
-		CommandBufferReference {
-			device: self,
-			command_buffer_handle,
-		}
+	fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		Device::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {
@@ -1286,7 +1234,7 @@ impl crate::context::Context for Device {
 	}
 
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {
-		Device::set_present_interval(self, swapchain, interval);
+		self.swapchains[swapchain.0 as usize].present_interval = interval;
 	}
 
 	fn get_image_data(
@@ -1303,23 +1251,36 @@ impl crate::context::Context for Device {
 	}
 
 	fn start_frame_capture(&mut self) {
-		Device::start_frame_capture(self);
+		self.debugger.start_frame_capture();
 	}
 
 	fn end_frame_capture(&mut self) {
-		Device::end_frame_capture(self);
+		self.debugger.end_frame_capture();
 	}
 
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
 		Device::wait_for_synchronizer(self, synchronizer);
 	}
 
+	/// Returns whether every fence of the synchronizer reached its captured submission value, without blocking.
+	///
+	/// A complete synchronizer refreshes readbacks the same way a wait does, so mapping them afterwards is valid.
 	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool {
-		Device::poll_synchronizer(self, synchronizer)
+		let complete = self.synchronizer_handles(synchronizer).into_iter().all(|handle| {
+			self.synchronizers
+				.get(handle.0 as usize)
+				.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
+		});
+		if complete {
+			self.refresh_readback_texture_copies(None);
+		}
+		complete
 	}
 
 	fn wait(&mut self) {
-		Device::wait(self);
+		for index in 0..self.synchronizers.len() {
+			self.wait_for_private_synchronizer(crate::synchronizer::SynchronizerHandle(index as u64));
+		}
 	}
 }
 
@@ -1329,8 +1290,10 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 
-use ::utils::Extent;
-use ::utils::hash::{HashMap, HashSet};
+use ::utils::{
+	Extent,
+	hash::{HashMap, HashSet},
+};
 use smallvec::SmallVec;
 use windows::Win32::Foundation::{HANDLE, RECT};
 use windows::Win32::Graphics::Direct3D::Dxc::{
@@ -1339,33 +1302,50 @@ use windows::Win32::Graphics::Direct3D::Dxc::{
 };
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_12_2, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
 use windows::Win32::Graphics::Direct3D12::{
-	CLSID_D3D12Debug, CLSID_D3D12SDKConfiguration, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
-	D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE,
-	D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE, D3D12_BUFFER_UAV_FLAG_RAW,
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
-	D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS,
-	D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_GREATER_EQUAL,
-	D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-	D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK,
-	D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCIL_DESC,
-	D3D12_DEPTH_STENCIL_VALUE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DEPTH_STENCILOP_DESC,
-	D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC,
-	D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-	D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE,
-	D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-	D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D,
-	D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE, D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY,
-	D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE, D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS12,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_FEATURE_DATA_SHADER_MODEL,
-	D3D12_FEATURE_SHADER_MODEL, D3D12_FENCE_FLAGS, D3D12_FILL_MODE, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME,
-	D3D12_FILTER, D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MAXIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-	D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_GLOBAL_ROOT_SIGNATURE, D3D12_GPU_BASED_VALIDATION_FLAGS_NONE,
-	D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
-	D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE,
-	D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_HIT_GROUP_DESC,
-	D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE, D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
-	D3D12_INDEX_BUFFER_VIEW, D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE,
+	CLSID_D3D12Debug, CLSID_D3D12SDKConfiguration, D3D_ROOT_SIGNATURE_VERSION_1_2, D3D12_BARRIER_ACCESS,
+	D3D12_BARRIER_ACCESS_COMMON, D3D12_BARRIER_ACCESS_CONSTANT_BUFFER, D3D12_BARRIER_ACCESS_COPY_DEST,
+	D3D12_BARRIER_ACCESS_COPY_SOURCE, D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE, D3D12_BARRIER_ACCESS_INDEX_BUFFER,
+	D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT, D3D12_BARRIER_ACCESS_NO_ACCESS,
+	D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ, D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE,
+	D3D12_BARRIER_ACCESS_RENDER_TARGET, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+	D3D12_BARRIER_ACCESS_VERTEX_BUFFER, D3D12_BARRIER_GROUP, D3D12_BARRIER_GROUP_0, D3D12_BARRIER_LAYOUT,
+	D3D12_BARRIER_LAYOUT_COMMON, D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE, D3D12_BARRIER_LAYOUT_PRESENT,
+	D3D12_BARRIER_LAYOUT_RENDER_TARGET, D3D12_BARRIER_LAYOUT_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_UNDEFINED,
+	D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, D3D12_BARRIER_SUBRESOURCE_RANGE, D3D12_BARRIER_SYNC, D3D12_BARRIER_SYNC_ALL,
+	D3D12_BARRIER_SYNC_ALL_SHADING, D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE,
+	D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COPY,
+	D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_BARRIER_SYNC_DEPTH_STENCIL,
+	D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO, D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
+	D3D12_BARRIER_SYNC_INDEX_INPUT, D3D12_BARRIER_SYNC_NONE, D3D12_BARRIER_SYNC_RENDER_TARGET,
+	D3D12_BARRIER_SYNC_VERTEX_SHADING, D3D12_BARRIER_TYPE_BUFFER, D3D12_BARRIER_TYPE_GLOBAL, D3D12_BARRIER_TYPE_TEXTURE,
+	D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO,
+	D3D12_BUFFER_BARRIER, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE,
+	D3D12_BUFFER_UAV_FLAG_RAW, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC,
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0,
+	D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL,
+	D3D12_COMMAND_LIST_FLAG_NONE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_SIGNATURE_DESC,
+	D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_NEVER,
+	D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
+	D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT,
+	D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCIL_VALUE,
+	D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
+	D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+	D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+	D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+	D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE, D3D12_DESCRIPTOR_RANGE_TYPE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+	D3D12_DESCRIPTOR_RANGE1, D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY,
+	D3D12_DSV_FLAG_NONE, D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY, D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE,
+	D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS12, D3D12_FEATURE_DATA_D3D12_OPTIONS4,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_FEATURE_DATA_SHADER_MODEL, D3D12_FEATURE_SHADER_MODEL, D3D12_FENCE_FLAGS,
+	D3D12_FILL_MODE, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC,
+	D3D12_FILTER_MAXIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_GLOBAL_BARRIER,
+	D3D12_GLOBAL_ROOT_SIGNATURE, D3D12_GPU_BASED_VALIDATION_FLAGS_NONE, D3D12_GPU_DESCRIPTOR_HANDLE,
+	D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+	D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_HIT_GROUP_DESC, D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE,
+	D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
+	D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE,
 	D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
 	D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESSAGE,
 	D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR, D3D12_PIPELINE_STATE_FLAG_NONE,
@@ -1386,10 +1366,12 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS, D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
 	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RENDER_TARGET_VIEW_DESC,
-	D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+	D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_DESC1, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 	D3D12_RESOURCE_DIMENSION_TEXTURE3D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_FLAGS, D3D12_ROOT_CONSTANTS,
-	D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE,
+	D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_RESOURCE_FLAGS, D3D12_ROOT_CONSTANTS,
+	D3D12_ROOT_DESCRIPTOR_TABLE1, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+	D3D12_ROOT_PARAMETER1, D3D12_ROOT_PARAMETER1_0, D3D12_ROOT_SIGNATURE_DESC2,
 	D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY, D3D12_RTV_DIMENSION_TEXTURE2D,
 	D3D12_RTV_DIMENSION_TEXTURE2DARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES,
 	D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY_ALL,
@@ -1403,41 +1385,16 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV,
 	D3D12_TEX3D_SRV, D3D12_TEX3D_UAV, D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE,
 	D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR,
-	D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
-	D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-	D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
+	D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE, D3D12_TEXTURE_COPY_LOCATION,
+	D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+	D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
 	D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC,
-	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator,
-	ID3D12CommandList, ID3D12CommandQueue, ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap,
-	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList6, ID3D12InfoQueue,
-	ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1, ID3D12StateObject,
-	ID3D12StateObjectProperties,
-};
-use windows::Win32::Graphics::Direct3D12::{
-	D3D_ROOT_SIGNATURE_VERSION_1_2, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
-	D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE, D3D12_DESCRIPTOR_RANGE1, D3D12_ROOT_DESCRIPTOR_TABLE1,
-	D3D12_ROOT_PARAMETER1, D3D12_ROOT_PARAMETER1_0, D3D12_ROOT_SIGNATURE_DESC2, D3D12_VERSIONED_ROOT_SIGNATURE_DESC,
-	D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0, ID3D12DeviceConfiguration,
-};
-use windows::Win32::Graphics::Direct3D12::{
-	D3D12_BARRIER_ACCESS, D3D12_BARRIER_ACCESS_COMMON, D3D12_BARRIER_ACCESS_CONSTANT_BUFFER, D3D12_BARRIER_ACCESS_COPY_DEST,
-	D3D12_BARRIER_ACCESS_COPY_SOURCE, D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE, D3D12_BARRIER_ACCESS_INDEX_BUFFER,
-	D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT, D3D12_BARRIER_ACCESS_NO_ACCESS,
-	D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ, D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE,
-	D3D12_BARRIER_ACCESS_RENDER_TARGET, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-	D3D12_BARRIER_ACCESS_VERTEX_BUFFER, D3D12_BARRIER_GROUP, D3D12_BARRIER_GROUP_0, D3D12_BARRIER_LAYOUT,
-	D3D12_BARRIER_LAYOUT_COMMON, D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE, D3D12_BARRIER_LAYOUT_PRESENT,
-	D3D12_BARRIER_LAYOUT_RENDER_TARGET, D3D12_BARRIER_LAYOUT_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_UNDEFINED,
-	D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, D3D12_BARRIER_SUBRESOURCE_RANGE, D3D12_BARRIER_SYNC, D3D12_BARRIER_SYNC_ALL,
-	D3D12_BARRIER_SYNC_ALL_SHADING, D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE,
-	D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COPY,
-	D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_BARRIER_SYNC_DEPTH_STENCIL,
-	D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO, D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
-	D3D12_BARRIER_SYNC_INDEX_INPUT, D3D12_BARRIER_SYNC_NONE, D3D12_BARRIER_SYNC_RENDER_TARGET,
-	D3D12_BARRIER_SYNC_VERTEX_SHADING, D3D12_BARRIER_TYPE_BUFFER, D3D12_BARRIER_TYPE_GLOBAL, D3D12_BARRIER_TYPE_TEXTURE,
-	D3D12_BUFFER_BARRIER, D3D12_COMMAND_LIST_FLAG_NONE, D3D12_GLOBAL_BARRIER, D3D12_RESOURCE_DESC1,
-	D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE,
-	ID3D12Device10, ID3D12GraphicsCommandList7, ID3D12ProtectedResourceSession,
+	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERSIONED_ROOT_SIGNATURE_DESC, D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0,
+	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
+	ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap, ID3D12Device10, ID3D12DeviceConfiguration,
+	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList7,
+	ID3D12InfoQueue, ID3D12PipelineState, ID3D12ProtectedResourceSession, ID3D12Resource, ID3D12RootSignature,
+	ID3D12SDKConfiguration1, ID3D12StateObject, ID3D12StateObjectProperties,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC5_UNORM,
@@ -1452,21 +1409,14 @@ use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-	CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-	DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4, IDXGISwapChain3,
+	CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+	DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4,
+	IDXGISwapChain3,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
-use windows::core::{BOOL, PCSTR, PCWSTR};
-use windows::{
-	Win32::Graphics::{
-		Direct3D12::D3D12_COMMAND_LIST_TYPE_DIRECT,
-		Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG},
-	},
-	core::{IUnknown, Interface},
-};
+use windows::core::{BOOL, IUnknown, Interface, PCSTR, PCWSTR};
 
 use super::utils;
-use crate::WorkloadTypes;
 use crate::{
 	AllocationHandle, AttachmentInformation, BaseBufferHandle, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferDescriptor, BufferHandle, BufferStridedRange, ClearValue,
@@ -1475,7 +1425,7 @@ use crate::{
 	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
 	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 	TextureReadback as MappedTextureReadback, TextureTransferError, TextureViewTypes, TopLevelAccelerationStructureHandle,
-	UseCases, Uses, buffer,
+	UseCases, Uses, WorkloadTypes, buffer,
 	descriptors::{DescriptorWrite, WriteData},
 	device::Features,
 	image,

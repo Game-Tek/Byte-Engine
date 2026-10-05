@@ -69,11 +69,11 @@ impl Device {
 	}
 
 	pub(crate) fn root_signature_bind_count(&self) -> usize {
-		self.root_signature_bind_count
+		self.counters.root_signature_bind_count
 	}
 
 	pub(crate) fn descriptor_heap_bind_count(&self) -> usize {
-		self.descriptor_heap_bind_count
+		self.counters.descriptor_heap_bind_count
 	}
 
 	/// Returns retained descriptor, page, used-slot, and free-slot counts for clear UAV descriptors.
@@ -97,46 +97,46 @@ impl Device {
 
 	#[cfg(test)]
 	pub(crate) fn clear_descriptor_copy_call_count(&self) -> usize {
-		self.clear_descriptor_copy_call_count
+		self.counters.clear_descriptor_copy_call_count
 	}
 
 	pub(crate) fn descriptor_table_bind_count(&self) -> usize {
-		self.descriptor_table_bind_count
+		self.counters.descriptor_table_bind_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn descriptor_table_bind_records(&self) -> &[DescriptorTableBindRecord] {
-		&self.descriptor_table_bind_records
+		&self.counters.descriptor_table_bind_records
 	}
 
 	pub(crate) fn push_constant_write_count(&self) -> usize {
-		self.push_constant_write_count
+		self.counters.push_constant_write_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn push_constant_write_records(&self) -> &[PushConstantWriteRecord] {
-		&self.push_constant_write_records
+		&self.counters.push_constant_write_records
 	}
 
 	pub(crate) fn descriptor_write_count(&self) -> usize {
-		self.descriptor_write_count
+		self.counters.descriptor_write_count
 	}
 
 	pub(crate) fn image_srv_descriptor_write_count(&self) -> usize {
-		self.image_srv_descriptor_write_count
+		self.counters.image_srv_descriptor_write_count
 	}
 
 	pub(crate) fn image_uav_descriptor_write_count(&self) -> usize {
-		self.image_uav_descriptor_write_count
+		self.counters.image_uav_descriptor_write_count
 	}
 
 	pub(crate) fn acceleration_structure_descriptor_write_count(&self) -> usize {
-		self.acceleration_structure_descriptor_write_count
+		self.counters.acceleration_structure_descriptor_write_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn sampler_descriptor_write_records(&self) -> &[SamplerDescriptorWriteRecord] {
-		&self.sampler_descriptor_write_records
+		&self.counters.sampler_descriptor_write_records
 	}
 
 	pub fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {

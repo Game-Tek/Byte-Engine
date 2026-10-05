@@ -17,12 +17,9 @@ pub(crate) fn parse_var_decl<'i, 'a: 'i>(
 	iterator.next_str("let")?;
 	let variable_name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
-	let variable_type = iterator.next_identifier().map_err(|e| match e {
-		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find a type for variable {}", variable_name),
-		},
-		_ => e,
-	})?;
+	let variable_type = iterator
+		.next_identifier()
+		.map_err(|error| error.claimed(|| format!("Expected to find a type for variable {variable_name}")))?;
 	let (variable_type, iterator) = parse_type_name(iterator, variable_type)?;
 
 	expressions.push(Atoms::VariableDeclaration {
@@ -41,10 +38,9 @@ pub(crate) fn parse_keywords<'i, 'a: 'i>(
 
 	expressions.push(Atoms::Keyword);
 
-	if **iterator
-		.clone()
-		.peekable()
-		.peek()
+	if *iterator
+		.as_slice()
+		.first()
 		.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 		== ";"
 	{
@@ -234,99 +230,66 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 		};
 	}
 
-	if matches!(atoms.first(), Some(Atoms::Continue)) {
-		return Node {
-			node: Nodes::Expression(Expressions::Continue),
-		};
-	}
-	if matches!(atoms.first(), Some(Atoms::Break)) {
-		return Node {
-			node: Nodes::Expression(Expressions::Break),
-		};
-	}
-	if matches!(atoms.first(), Some(Atoms::Discard)) {
-		return Node {
-			node: Nodes::Expression(Expressions::Discard),
-		};
-	}
-
-	let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
-
-	if let Some((i, e)) = max_precedence_item {
-		match e {
-			Atoms::Keyword => Node {
-				node: Nodes::Expression(Expressions::Return { value: None }),
-			},
-			Atoms::Continue => Node {
-				node: Nodes::Expression(Expressions::Continue),
-			},
-			Atoms::Break => Node {
-				node: Nodes::Expression(Expressions::Break),
-			},
-			Atoms::Discard => Node {
-				node: Nodes::Expression(Expressions::Discard),
-			},
-			Atoms::Operator { operator } => {
-				let left = expression_atoms_to_node(&atoms[..i]);
-				let right = expression_atoms_to_node(&atoms[i + 1..]);
-
-				Node {
-					node: Nodes::Expression(Expressions::Operator {
-						operator: *operator,
-						left: Box::new(left),
-						right: Box::new(right),
-					}),
-				}
-			}
-			Atoms::Accessor => {
-				let left = expression_atoms_to_node(&atoms[..i]);
-				let right = expression_atoms_to_node(&atoms[i + 1..]);
-
-				Node {
-					node: Nodes::Expression(Expressions::Accessor {
-						left: Box::new(left),
-						right: Box::new(right),
-					}),
-				}
-			}
-			Atoms::GroupedExpression(inner) => Node::sentence(vec![expression_atoms_to_node(inner)]),
-			Atoms::FunctionCall { name, parameters } => {
-				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
-
-				Node {
-					node: Nodes::Expression(Expressions::Call {
-						name: name.clone(),
-						parameters,
-					}),
-				}
-			}
-			Atoms::Literal { value } => Node {
-				node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
-			},
-			Atoms::RecordLiteral { fields } => Node::record_literal(
-				fields
-					.iter()
-					.map(|field| RecordField {
-						name: field.name,
-						value: field
-							.value
-							.as_deref()
-							.map_or_else(|| Node::member_expression(field.name), expression_atoms_to_node),
-					})
-					.collect(),
-			),
-			Atoms::Member { name } => Node {
-				node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
-			},
-			Atoms::VariableDeclaration { name, r#type } => Node {
-				node: Nodes::Expression(Expressions::VariableDeclaration {
-					name: (*name).into(),
-					r#type: r#type.clone(),
-				}),
-			},
-		}
-	} else {
+	// The expression splits at the atom with the highest precedence, the last one on a tie.
+	let Some((i, atom)) = atoms.iter().enumerate().max_by_key(|(_, atom)| match atom {
+		Atoms::Accessor => 1,
+		Atoms::Operator { operator } => operator.precedence(),
+		_ => 0,
+	}) else {
 		panic!("No max precedence item");
+	};
+
+	match atom {
+		Atoms::Keyword => Node {
+			node: Nodes::Expression(Expressions::Return { value: None }),
+		},
+		Atoms::Continue => Node {
+			node: Nodes::Expression(Expressions::Continue),
+		},
+		Atoms::Break => Node {
+			node: Nodes::Expression(Expressions::Break),
+		},
+		Atoms::Discard => Node {
+			node: Nodes::Expression(Expressions::Discard),
+		},
+		Atoms::Operator { operator } => Node {
+			node: Nodes::Expression(Expressions::Operator {
+				operator: *operator,
+				left: Box::new(expression_atoms_to_node(&atoms[..i])),
+				right: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
+			}),
+		},
+		Atoms::Accessor => Node::accessor(
+			expression_atoms_to_node(&atoms[..i]),
+			expression_atoms_to_node(&atoms[i + 1..]),
+		),
+		Atoms::GroupedExpression(inner) => Node::sentence(vec![expression_atoms_to_node(inner)]),
+		Atoms::FunctionCall { name, parameters } => Node {
+			node: Nodes::Expression(Expressions::Call {
+				name: name.clone(),
+				parameters: parameters.iter().map(|v| expression_atoms_to_node(v)).collect(),
+			}),
+		},
+		Atoms::Literal { value } => Node::literal_expression(*value),
+		Atoms::RecordLiteral { fields } => Node::record_literal(
+			fields
+				.iter()
+				.map(|field| RecordField {
+					name: field.name,
+					value: field
+						.value
+						.as_deref()
+						.map_or_else(|| Node::member_expression(field.name), expression_atoms_to_node),
+				})
+				.collect(),
+		),
+		Atoms::Member { name } => Node::member_expression(*name),
+		Atoms::VariableDeclaration { name, r#type } => Node {
+			node: Nodes::Expression(Expressions::VariableDeclaration {
+				name: (*name).into(),
+				r#type: r#type.clone(),
+			}),
+		},
 	}
 }
 
@@ -365,10 +328,9 @@ fn parse_block<'i, 'a: 'i>(
 
 	let mut statements = vec![];
 	loop {
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
+		if *iterator
+			.as_slice()
+			.first()
 			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 			== "}"
 		{
@@ -426,10 +388,9 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 		}
 
 		// Check if iter is comma
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
+		if *iterator
+			.as_slice()
+			.first()
 			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 			== ","
 		{
@@ -437,10 +398,9 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 		}
 
 		// check if iter is close brace
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
+		if *iterator
+			.as_slice()
+			.first()
 			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 			== ")"
 		{
@@ -450,7 +410,7 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 
 		// Safety: if no progress was made, break to avoid infinite loop
 		if iterator.len() == iter_before.len() {
-			let token = iterator.clone().peekable().peek().copied().copied().unwrap_or("<eof>");
+			let token = iterator.as_slice().first().copied().unwrap_or("<eof>");
 			return Err(ParsingFailReasons::BadSyntax {
 				message: format!("Unexpected token '{}' in function call {}", token, function_name),
 			});
@@ -616,10 +576,9 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 
 	let mut params = Vec::new();
 	loop {
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
+		if *iterator
+			.as_slice()
+			.first()
 			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 			== ")"
 		{
@@ -627,27 +586,20 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 			break;
 		}
 
-		let param_name = iterator.next_identifier().map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected a parameter name for function {}.", name),
-			},
-			_ => e,
-		})?;
+		let param_name = iterator
+			.next_identifier()
+			.map_err(|error| error.claimed(|| format!("Expected a parameter name for function {name}.")))?;
 		iterator.next_str(":")?;
-		let param_type = iterator.next_identifier().map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected a parameter type for function {}.", name),
-			},
-			_ => e,
-		})?;
+		let param_type = iterator
+			.next_identifier()
+			.map_err(|error| error.claimed(|| format!("Expected a parameter type for function {name}.")))?;
 		let (param_type, next_iterator) = parse_type_name(iterator, param_type)?;
 		params.push(Node::parameter(param_name, param_type));
 		iterator = next_iterator;
 
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
+		if *iterator
+			.as_slice()
+			.first()
 			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 			== ","
 		{
@@ -656,20 +608,14 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	}
 	iterator.next_str("->")?;
 
-	let return_type = iterator.next_identifier().map_err(|e| match e {
-		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected a return type for function {} declaration.", name),
-		},
-		_ => e,
-	})?;
+	let return_type = iterator
+		.next_identifier()
+		.map_err(|error| error.claimed(|| format!("Expected a return type for function {name} declaration.")))?;
 	let (return_type, mut iterator) = parse_type_name(iterator, return_type)?;
 
-	iterator.next_str("{").map_err(|e| match e {
-		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected a {{ after function {} declaration.", name),
-		},
-		_ => e,
-	})?;
+	iterator
+		.next_str("{")
+		.map_err(|error| error.claimed(|| format!("Expected a {{ after function {name} declaration.")))?;
 
 	let mut statements = vec![];
 
@@ -700,7 +646,7 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 		}
 
 		// check if iter is close brace
-		if **iterator.clone().peekable().peek().ok_or(ParsingFailReasons::BadSyntax {
+		if *iterator.as_slice().first().ok_or_else(|| ParsingFailReasons::BadSyntax {
 			message: "Expected a '}' after function body".to_string(),
 		})? == "}"
 		{
@@ -709,7 +655,5 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 		}
 	}
 
-	let node = Node::function(name, params, return_type, statements);
-
-	Ok((node, iterator))
+	Ok((Node::function(name, params, return_type, statements), iterator))
 }

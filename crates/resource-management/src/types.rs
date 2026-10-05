@@ -21,7 +21,10 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
+/// The `AlphaMode` enum identifies how alpha affects surface visibility, from the material graph to the renderer.
+#[derive(
+	Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy,
+)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
@@ -49,8 +52,27 @@ pub enum ShaderTypes {
 	Callable,
 }
 
+impl From<crate::shader::generator::Stages> for ShaderTypes {
+	/// Returns the resource stage of shaders generated for `stage`.
+	fn from(stage: crate::shader::generator::Stages) -> Self {
+		use crate::shader::generator::Stages;
+
+		match stage {
+			Stages::Vertex => Self::Vertex,
+			Stages::Fragment => Self::Fragment,
+			Stages::Compute { .. } => Self::Compute,
+			Stages::Task { .. } => Self::Task,
+			Stages::Mesh { .. } => Self::Mesh,
+		}
+	}
+}
+
 // Mesh
 
+/// The `VertexSemantics` enum names what one vertex stream holds.
+///
+/// The declaration order is the canonical interleaved vertex layout, which mesh processing orders streams by, and
+/// stored meshes encode each variant by its index, so new semantics go at the end.
 #[derive(
 	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
 )]
@@ -72,6 +94,26 @@ pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
 	pub channel: u32,
+}
+
+impl VertexComponent {
+	/// Returns the stream every importer declares for `semantic`: its canonical format on channel 0.
+	///
+	/// Build importer vertex layouts from these, then pass them to
+	/// [`MeshProcessorSession::new`](crate::processors::mesh::MeshProcessorSession::new).
+	pub fn canonical(semantic: VertexSemantics) -> Self {
+		let format = match semantic {
+			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => "vec3f",
+			VertexSemantics::UV => "vec2f",
+			VertexSemantics::Joints => "vec4u16",
+			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => "vec4f",
+		};
+		Self {
+			semantic,
+			format: format.to_string(),
+			channel: 0,
+		}
+	}
 }
 
 #[derive(
@@ -118,27 +160,17 @@ pub trait Size {
 impl Size for VertexSemantics {
 	fn size(&self) -> usize {
 		match self {
-			VertexSemantics::Position => 3 * 4,
-			VertexSemantics::Normal => 3 * 4,
-			VertexSemantics::Tangent => 4 * 4,
-			VertexSemantics::BiTangent => 3 * 4,
+			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => 3 * 4,
+			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => 4 * 4,
 			VertexSemantics::UV => 2 * 4,
-			VertexSemantics::Color => 4 * 4,
 			VertexSemantics::Joints => 4 * 2,
-			VertexSemantics::Weights => 4 * 4,
 		}
 	}
 }
 
 impl Size for Vec<VertexComponent> {
 	fn size(&self) -> usize {
-		let mut size = 0;
-
-		for component in self {
-			size += component.semantic.size();
-		}
-
-		size
+		self.iter().map(|component| component.semantic.size()).sum()
 	}
 }
 

@@ -59,7 +59,7 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		self.create_compute_pipeline_with_resources(builder, &self.shaders)
+		crate::vulkan::context::build_compute_pipeline(&self.device, &self.descriptor_heap_properties, &self.shaders, builder)
 	}
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
@@ -91,10 +91,6 @@ impl crate::device::Device for Device {
 }
 
 impl InnerDevice {
-	pub(crate) fn start_frame_capture(&mut self) {}
-
-	pub(crate) fn end_frame_capture(&mut self) {}
-
 	pub(crate) fn wait(&self) {
 		unsafe { self.device.device_wait_idle() }.unwrap();
 	}
@@ -250,52 +246,5 @@ impl InnerDevice {
 				| vk::ImageUsageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
 				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
 		)
-	}
-}
-
-impl Device {
-	/// Creates a detached compute pipeline whose flat bindings map directly into descriptor heaps.
-	pub(crate) fn create_compute_pipeline_with_resources(
-		&self,
-		builder: crate::pipelines::compute::Builder,
-		shaders: &[crate::vulkan::Shader],
-	) -> ComputePipeline {
-		let shader_parameter = builder.shader;
-		let shader = &shaders[shader_parameter.handle.0 as usize];
-		let stage_resources = [(shader.stage, shader.shader_resource_descriptors.clone())];
-		let layout = crate::vulkan::build_pipeline_layout(
-			&stage_resources,
-			builder.push_constant_ranges,
-			&self.descriptor_heap_properties,
-		);
-		let mappings = crate::vulkan::build_shader_mappings(&layout, &shader.shader_resource_descriptors);
-		let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
-		let (specialization_entries_buffer, specialization_map_entries) =
-			crate::vulkan::utils::build_specialization_entries(shader_parameter.specialization_map);
-		let specialization_info = vk::SpecializationInfo::default()
-			.data(&specialization_entries_buffer)
-			.map_entries(&specialization_map_entries);
-		let stage = vk::PipelineShaderStageCreateInfo::default()
-			.push(&mut mapping_info)
-			.stage(vk::ShaderStageFlags::COMPUTE)
-			.module(shader.shader)
-			.name(c"main")
-			.specialization_info(&specialization_info);
-		let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
-		let create_infos = [vk::ComputePipelineCreateInfo::default()
-			.push(&mut flags)
-			.stage(stage)
-			.layout(vk::PipelineLayout::null())];
-		let pipeline = unsafe {
-			self.device
-				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
-				.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.")[0]
-		};
-
-		ComputePipeline {
-			pipeline,
-			layout,
-			shader_handles: HashMap::from_iter([(*shader_parameter.handle, [0; 32])]),
-		}
 	}
 }

@@ -1,7 +1,7 @@
 //! Encode one mip level into its stored format on the CPU.
 //!
-//! [`super::encode_mip_chain_on_cpu`] encodes every level with [`encode_level_in`], and the image processor uses it for
-//! textures stored without mips. The GPU path uses it for formats it doesn't encode itself.
+//! The CPU path of [`super::MipGenerator::encode_mip_chain`] encodes every level with [`encode_level_in`], and the image
+//! processor uses it for textures stored without mips. The GPU path uses it for formats it doesn't encode itself.
 
 use std::alloc::Allocator;
 
@@ -26,7 +26,7 @@ pub(crate) fn encode_level_in<A: Allocator + Clone>(
 		Formats::BC5 | Formats::BC5SNORM => {
 			// RgSurface expects tightly packed RG pairs, not interleaved RGBA, so B and A can't leak into the
 			// second texel's channels.
-			let (rg_data, width, height) = rg_surface_in(data, extent, allocator);
+			let (rg_data, width, height) = padded_surface_in::<4, 2, _>(data, extent, allocator);
 			let surface = intel_tex_2::RgSurface {
 				data: &rg_data,
 				width,
@@ -36,8 +36,21 @@ pub(crate) fn encode_level_in<A: Allocator + Clone>(
 			intel_tex_2::bc5::compress_blocks_into(&surface, output);
 		}
 		Formats::BC7 | Formats::BC7SRGB => {
-			let (padded, width, height) = padded_rgba8_surface_in(extent, data, allocator);
-			let data = padded.as_deref().unwrap_or(data);
+			let (width, height) = (extent.width().max(1), extent.height().max(1));
+			let expected_source_bytes = width as usize * height as usize * 4;
+			assert_eq!(
+				data.len(),
+				expected_source_bytes,
+				"BC compression source size mismatch. The most likely cause is that image format conversion did not produce one RGBA8 texel per source pixel. extent={extent:?}, width={width}, height={height}, data_len={}, expected={expected_source_bytes}",
+				data.len()
+			);
+			// A level that already fills whole blocks is compressed in place.
+			let padded = (!width.is_multiple_of(4) || !height.is_multiple_of(4))
+				.then(|| padded_surface_in::<4, 4, _>(data, extent, allocator));
+			let (data, width, height) = match &padded {
+				Some((padded, width, height)) => (padded.as_slice(), *width, *height),
+				None => (data, width, height),
+			};
 			let surface = intel_tex_2::RgbaSurface {
 				data,
 				width,
@@ -48,15 +61,7 @@ pub(crate) fn encode_level_in<A: Allocator + Clone>(
 		}
 		Formats::RG8 => truncate_texels::<4, 2>(data, output),
 		Formats::RG16 => truncate_texels::<8, 4>(data, output),
-		Formats::RGB8
-		| Formats::RGBA8
-		| Formats::RGBA8SRGB
-		| Formats::RGB16
-		| Formats::RGBA16
-		| Formats::R16F
-		| Formats::RGBA16F => {
-			output.copy_from_slice(data);
-		}
+		_ => output.copy_from_slice(data),
 	}
 }
 
@@ -71,67 +76,33 @@ fn bc7_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
 	}
 }
 
-/// Returns a copy of an RGBA8 level padded to whole blocks, or `None` when the level already fills them.
-fn padded_rgba8_surface_in<A: Allocator + Clone>(
-	extent: Extent,
-	data: &[u8],
-	allocator: A,
-) -> (Option<Box<[u8], A>>, u32, u32) {
-	let width = extent.width().max(1);
-	let height = extent.height().max(1);
-
-	let expected_source_bytes = width as usize * height as usize * 4;
-	assert_eq!(
-		data.len(),
-		expected_source_bytes,
-		"BC compression source size mismatch. The most likely cause is that image format conversion did not produce one RGBA8 texel per source pixel. extent={extent:?}, width={width}, height={height}, data_len={}, expected={expected_source_bytes}",
-		data.len()
-	);
-
-	let padded_width = width.next_multiple_of(4);
-	let padded_height = height.next_multiple_of(4);
-	if padded_width == width && padded_height == height {
-		return (None, width, height);
-	}
-
-	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 4, allocator);
-	for y in 0..padded_height {
-		let source_y = y.min(height - 1);
-		for x in 0..padded_width {
-			let source_x = x.min(width - 1);
-			let source_offset = ((source_y * width + source_x) * 4) as usize;
-			let destination_offset = ((y * padded_width + x) * 4) as usize;
-			padded[destination_offset..destination_offset + 4].copy_from_slice(&data[source_offset..source_offset + 4]);
-		}
-	}
-
-	(Some(padded), padded_width, padded_height)
-}
-
-/// Produces a tightly packed RG surface (2 bytes per texel) from RGBA8 data, padded to whole blocks.
+/// Keeps the first `OUTPUT` bytes of every `SOURCE`-byte texel of a level, padded to whole 4x4 blocks.
 ///
 /// Every row is repacked as one pass over texel chunks, which is what keeps a 2K normal map's repack to a few
 /// milliseconds instead of the hundred a per-texel copy costs. Edge padding repeats the last row and column.
-fn rg_surface_in<A: Allocator + Clone>(data: &[u8], extent: Extent, allocator: A) -> (Box<[u8], A>, u32, u32) {
+fn padded_surface_in<const SOURCE: usize, const OUTPUT: usize, A: Allocator>(
+	data: &[u8],
+	extent: Extent,
+	allocator: A,
+) -> (Vec<u8, A>, u32, u32) {
 	let width = extent.width().max(1) as usize;
 	let height = extent.height().max(1) as usize;
 	let padded_width = width.next_multiple_of(4);
 	let padded_height = height.next_multiple_of(4);
 
-	let mut padded = zeroed_boxed_slice_in(padded_width * padded_height * 2, allocator);
-	let source_rows = data.as_chunks::<4>().0.chunks_exact(width);
-	let mut destination_rows = padded.as_chunks_mut::<2>().0.chunks_exact_mut(padded_width);
+	let mut padded = Vec::with_capacity_in(padded_width * padded_height * OUTPUT, allocator);
+	padded.resize(padded_width * padded_height * OUTPUT, 0_u8);
+	let source_rows = data.as_chunks::<SOURCE>().0.chunks_exact(width);
+	let mut destination_rows = padded.as_chunks_mut::<OUTPUT>().0.chunks_exact_mut(padded_width);
 	for (source_row, destination_row) in source_rows.zip(&mut destination_rows) {
 		let (texels, pad) = destination_row.split_at_mut(width);
-		for (texel, source) in texels.iter_mut().zip(source_row) {
-			*texel = [source[0], source[1]];
-		}
+		truncate_texels::<SOURCE, OUTPUT>(source_row.as_flattened(), texels.as_flattened_mut());
 		pad.fill(texels[width - 1]);
 	}
 	// Rows past the image repeat the last image row.
-	let (filled, pad_rows) = padded.split_at_mut(height * padded_width * 2);
-	let last_row = &filled[(height - 1) * padded_width * 2..];
-	for pad_row in pad_rows.chunks_exact_mut(padded_width * 2) {
+	let (filled, pad_rows) = padded.split_at_mut(height * padded_width * OUTPUT);
+	let last_row = &filled[(height - 1) * padded_width * OUTPUT..];
+	for pad_row in pad_rows.chunks_exact_mut(padded_width * OUTPUT) {
 		pad_row.copy_from_slice(last_row);
 	}
 
@@ -149,14 +120,9 @@ fn truncate_texels<const SOURCE: usize, const OUTPUT: usize>(data: &[u8], output
 		output.len()
 	);
 	for (texel, stored) in source.iter().zip(destination) {
-		stored.copy_from_slice(&texel[..OUTPUT]);
+		// Building the array vectorizes; a slice copy per texel runs several times slower on 2K levels.
+		*stored = std::array::from_fn(|channel| texel[channel]);
 	}
-}
-
-fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<[u8], A> {
-	let mut buffer = Vec::with_capacity_in(len, allocator);
-	buffer.resize(len, 0_u8);
-	buffer.into_boxed_slice()
 }
 
 #[cfg(test)]

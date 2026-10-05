@@ -1,27 +1,19 @@
 //! Splits BESL source into tokens for [`crate::parser`].
 
-pub struct Tokens<'a> {
-	/// The tokens in the stream.
-	pub(crate) tokens: Vec<&'a str>,
-}
-
 /// Splits a source string into a token stream.
-pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
-	let interrupt = |c: char| -> bool { c.is_whitespace() };
-
-	let can_sequence_continue = |token: &str, last: Option<char>, c: char| -> bool {
-		let Some(last) = last else {
+pub fn tokenize(source: &str) -> Vec<&str> {
+	/// Reports whether `c` extends `token`, the non-empty token read so far.
+	fn can_sequence_continue(token: &str, c: char) -> bool {
+		let Some(last) = token.chars().next_back() else {
 			return true;
 		};
 
-		if last.is_alphabetic() {
+		if last.is_alphabetic() || last == '_' {
 			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
 			c.is_alphanumeric() || c == '_' || c == '.' && token.chars().all(|character| character.is_ascii_digit())
 		} else if last == '.' {
 			c.is_numeric()
-		} else if last == '_' {
-			c.is_alphanumeric() || c == '_'
 		} else {
 			matches!(
 				(last, c),
@@ -33,149 +25,82 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 					| ('|', '|')
 			)
 		}
-	};
+	}
 
 	let mut tokens = Vec::new();
 	let mut chars = source.char_indices().peekable();
 	let mut token_start: Option<usize> = None;
-	let mut token_last: Option<char> = None;
 
 	while let Some((idx, c)) = chars.peek().copied() {
-		if c == '/' && chars.clone().nth(1).is_some_and(|(_, next)| next == '/') {
-			if let Some(start) = token_start {
-				tokens.push(&source[start..idx]);
-				token_start = None;
-				token_last = None;
-			}
+		let comment = c == '/' && chars.clone().nth(1).is_some_and(|(_, next)| next == '/');
+		// Whitespace, a comment, or a character that cannot extend the current token ends that token.
+		if let Some(start) = token_start
+			&& (comment || c.is_whitespace() || !can_sequence_continue(&source[start..idx], c))
+		{
+			tokens.push(&source[start..idx]);
+			token_start = None;
+		}
+		if comment {
 			// Line comments are discarded before punctuation tokenization so their contents remain entirely opaque.
-			for (_, comment_character) in chars.by_ref() {
-				if comment_character == '\n' {
-					break;
-				}
-			}
+			chars.by_ref().find(|&(_, character)| character == '\n');
 			continue;
 		}
-
-		if interrupt(c) {
-			if let Some(start) = token_start {
-				tokens.push(&source[start..idx]);
-				token_start = None;
-				token_last = None;
-			}
-			chars.next();
-			continue;
+		if !c.is_whitespace() {
+			token_start.get_or_insert(idx);
 		}
-
-		match token_start {
-			None => {
-				token_start = Some(idx);
-				token_last = Some(c);
-				chars.next();
-			}
-			Some(start) => {
-				if can_sequence_continue(&source[start..idx], token_last, c) {
-					token_last = Some(c);
-					chars.next();
-				} else {
-					tokens.push(&source[start..idx]);
-					token_start = None;
-					token_last = None;
-				}
-			}
-		}
+		chars.next();
 	}
 
 	if let Some(start) = token_start {
 		tokens.push(&source[start..]);
 	}
 
-	Ok(Tokens { tokens })
+	tokens
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
+	/// Asserts that `source` splits into the space-separated tokens of `expected`.
+	fn assert_tokens(source: &str, expected: &str) {
+		assert_eq!(tokenize(source), expected.split(' ').collect::<Vec<_>>());
+	}
+
 	#[test]
 	fn test_operators() {
-		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"fn",
-				"main",
-				"(",
-				")",
-				"->",
-				"void",
-				"{",
-				"gl_Position",
-				"=",
-				"vec4",
-				"(",
-				"0.0",
-				",",
-				"0.0",
-				",",
-				"0.0",
-				",",
-				"1.0",
-				")",
-				"*",
-				"2.0",
-				";",
-				"}"
-			]
+		assert_tokens(
+			"fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }",
+			"fn main ( ) -> void { gl_Position = vec4 ( 0.0 , 0.0 , 0.0 , 1.0 ) * 2.0 ; }",
 		);
 	}
 
 	#[test]
 	fn test_bitwise_operators() {
-		let source = "fn main() -> void { value = 1 << 8 | 2 ^ 3 & 255; }";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "^", "3", "&", "255", ";", "}"
-			]
+		assert_tokens(
+			"fn main() -> void { value = 1 << 8 | 2 ^ 3 & 255; }",
+			"fn main ( ) -> void { value = 1 << 8 | 2 ^ 3 & 255 ; }",
 		);
 	}
 
 	#[test]
 	fn test_comparison_and_logical_operators() {
-		let source = "main: fn () -> void { if (a >= b || c != d && e <= f && g > h) { continue; } }";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"main", ":", "fn", "(", ")", "->", "void", "{", "if", "(", "a", ">=", "b", "||", "c", "!=", "d", "&&", "e",
-				"<=", "f", "&&", "g", ">", "h", ")", "{", "continue", ";", "}", "}"
-			]
+		assert_tokens(
+			"main: fn () -> void { if (a >= b || c != d && e <= f && g > h) { continue; } }",
+			"main : fn ( ) -> void { if ( a >= b || c != d && e <= f && g > h ) { continue ; } }",
 		);
 	}
 
 	#[test]
 	fn line_comments_are_ignored_without_consuming_adjacent_tokens() {
-		let source = "main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"main", ":", "fn", "(", ")", "->", "void", "{", "value", "=", "1", ";", "value", "=", "value", "+", "2", ";",
-				"}"
-			]
+		assert_tokens(
+			"main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment",
+			"main : fn ( ) -> void { value = 1 ; value = value + 2 ; }",
 		);
 	}
 
 	#[test]
 	fn numeric_identifier_suffix_does_not_consume_member_accessor() {
-		let tokens = tokenize("matrix0.column0 + 1.25").unwrap();
-
-		assert_eq!(tokens.tokens, vec!["matrix0", ".", "column0", "+", "1.25"]);
+		assert_tokens("matrix0.column0 + 1.25", "matrix0 . column0 + 1.25");
 	}
 }

@@ -25,7 +25,7 @@ pub(crate) struct GltfNodeGraph {
 }
 
 /// Imports every glTF node into a deterministic parent-before-child graph shared by animation channels and skin bindings.
-pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph, GltfSkeletalImportError> {
+pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph, GltfImportError> {
 	let source_nodes = gltf.nodes().collect::<Vec<_>>();
 
 	let mut source_parents = vec![None; source_nodes.len()];
@@ -35,7 +35,7 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 			let parent = &mut source_parents[child.index()];
 
 			if parent.replace(node.index()).is_some() {
-				return Err(GltfSkeletalImportError::MultipleNodeParents);
+				return Err(GltfImportError::MultipleNodeParents);
 			}
 		}
 	}
@@ -64,7 +64,7 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 	}
 
 	if state.iter().any(|state| *state != 2) {
-		return Err(GltfSkeletalImportError::CyclicNodeHierarchy);
+		return Err(GltfImportError::CyclicNodeHierarchy);
 	}
 
 	Ok(GltfNodeGraph {
@@ -83,9 +83,9 @@ pub(crate) fn append_gltf_skeleton_subtree(
 	source_to_dense: &mut [u32],
 	source_global_transforms: &mut [math::Matrix],
 	nodes: &mut Vec<SkeletonNode>,
-) -> Result<(), GltfSkeletalImportError> {
+) -> Result<(), GltfImportError> {
 	match state[source_index] {
-		1 => return Err(GltfSkeletalImportError::CyclicNodeHierarchy),
+		1 => return Err(GltfImportError::CyclicNodeHierarchy),
 		2 => return Ok(()),
 		_ => {}
 	}
@@ -101,7 +101,7 @@ pub(crate) fn append_gltf_skeleton_subtree(
 	let parent = source_parents[source_index].map(|source_parent| source_to_dense[source_parent]);
 
 	if parent == Some(u32::MAX) {
-		return Err(GltfSkeletalImportError::CyclicNodeHierarchy);
+		return Err(GltfImportError::CyclicNodeHierarchy);
 	}
 
 	let source_global = source_parents[source_index]
@@ -150,31 +150,22 @@ pub(crate) fn append_gltf_node_subtree<'a>(node: gltf::Node<'a>, nodes: &mut Vec
 	}
 }
 
-/// Retains the dense node identity needed to drive both skinned and rigid primitives from CPU animation output.
-pub(crate) fn gltf_primitive_transform_node(
-	graph: &GltfNodeGraph,
-	node: &gltf::Node<'_>,
-	retain_skeleton: bool,
-) -> Option<u32> {
-	retain_skeleton.then_some(graph.source_to_dense[node.index()])
-}
-
 /// Rejects a singular bind transform when flattened geometry must later be recovered by a CPU-driven node pose.
 pub(crate) fn validate_gltf_flattened_animation_transform(
 	transform: math::Matrix,
 	transform_node: Option<u32>,
-) -> Result<(), GltfSkeletalImportError> {
-	if transform_node.is_none() {
-		return Ok(());
+) -> Result<(), GltfImportError> {
+	if transform_node.is_some() && invertible_determinant(&transform).is_none() {
+		return Err(GltfImportError::SingularMeshTransform);
 	}
 
+	Ok(())
+}
+
+/// Returns the determinant of a transform that can be inverted reliably, or `None` for a singular or non-finite one.
+fn invertible_determinant(transform: &math::Matrix) -> Option<f32> {
 	let determinant = transform.determinant();
-
-	if determinant.is_finite() && determinant.abs() > f32::EPSILON {
-		Ok(())
-	} else {
-		Err(GltfSkeletalImportError::SingularMeshTransform)
-	}
+	(determinant.is_finite() && determinant.abs() > f32::EPSILON).then_some(determinant)
 }
 
 /// Converts glTF local TRS values from right-handed coordinates into the engine's left-handed basis.
@@ -182,18 +173,18 @@ pub(crate) fn convert_gltf_local_transform(
 	translation: [f32; 3],
 	rotation: [f32; 4],
 	scale: [f32; 3],
-) -> Result<LocalTransform, GltfSkeletalImportError> {
+) -> Result<LocalTransform, GltfImportError> {
 	if translation
 		.iter()
 		.chain(rotation.iter())
 		.chain(scale.iter())
 		.any(|component| !component.is_finite())
 	{
-		return Err(GltfSkeletalImportError::NonFinite("node local transform"));
+		return Err(GltfImportError::NonFinite("node local transform"));
 	}
 
 	let rotation = Orientation::try_from_array([-rotation[0], -rotation[1], rotation[2], rotation[3]])
-		.map_err(|_| GltfSkeletalImportError::InvalidRestRotation)?;
+		.map_err(|_| GltfImportError::InvalidRestRotation)?;
 
 	Ok(LocalTransform {
 		translation: Vector::new(translation[0], translation[1], -translation[2]),
@@ -207,42 +198,30 @@ pub(crate) fn handedness_matrix() -> math::Matrix {
 }
 
 /// Builds the inverse-transpose matrix required to preserve normals under nonuniform node scale.
-pub(crate) fn gltf_normal_transform(transform: math::Matrix) -> Result<math::Matrix, GltfSkeletalImportError> {
-	let determinant = transform.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::InvalidVertexDirection);
-	}
+pub(crate) fn gltf_normal_transform(transform: math::Matrix) -> Result<math::Matrix, GltfImportError> {
+	invertible_determinant(&transform).ok_or(GltfImportError::InvalidVertexDirection)?;
 
 	Ok(transform.inverse().transpose())
 }
 
 /// Reports whether an affine transform preserves or flips tangent-space handedness.
-pub(crate) fn gltf_transform_orientation(transform: math::Matrix) -> Result<f32, GltfSkeletalImportError> {
-	let determinant = transform.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::InvalidVertexDirection);
-	}
-
-	Ok(determinant.signum())
+pub(crate) fn gltf_transform_orientation(transform: math::Matrix) -> Result<f32, GltfImportError> {
+	invertible_determinant(&transform)
+		.map(f32::signum)
+		.ok_or(GltfImportError::InvalidVertexDirection)
 }
 
 /// Applies only the linear matrix portion to a direction and returns a normalized result without allocating.
 pub(crate) fn transform_gltf_unit_direction(
 	transform: &math::Matrix,
 	direction: [f32; 3],
-) -> Result<Vector<ModelSpace>, GltfSkeletalImportError> {
-	let transformed = Vector::new(
-		transform[(0, 0)] * direction[0] + transform[(0, 1)] * direction[1] + transform[(0, 2)] * direction[2],
-		transform[(1, 0)] * direction[0] + transform[(1, 1)] * direction[1] + transform[(1, 2)] * direction[2],
-		transform[(2, 0)] * direction[0] + transform[(2, 1)] * direction[1] + transform[(2, 2)] * direction[2],
-	);
+) -> Result<Vector<ModelSpace>, GltfImportError> {
+	let [x, y, z] = direction;
 
-	transformed
+	Vector::from_maths(maths_rs::Mat3f::from(*transform) * Vec3::new(x, y, z))
 		.normalized()
 		.map(UnitVector::into_vector)
-		.map_err(|_| GltfSkeletalImportError::InvalidVertexDirection)
+		.map_err(|_| GltfImportError::InvalidVertexDirection)
 }
 
 /// Transforms and normalizes a tangent while carrying affine reflection into its handedness sign.
@@ -250,9 +229,9 @@ pub(crate) fn transform_gltf_tangent(
 	transform: &math::Matrix,
 	orientation: f32,
 	tangent: [f32; 4],
-) -> Result<[f32; 4], GltfSkeletalImportError> {
+) -> Result<[f32; 4], GltfImportError> {
 	if !tangent[3].is_finite() {
-		return Err(GltfSkeletalImportError::InvalidVertexDirection);
+		return Err(GltfImportError::InvalidVertexDirection);
 	}
 
 	let [x, y, z] = transform_gltf_unit_direction(transform, [tangent[0], tangent[1], tangent[2]])?.to_array();
@@ -262,37 +241,22 @@ pub(crate) fn transform_gltf_tangent(
 
 /// Converts the column-major matrix representation used by glTF resources into maths-rs row-major storage.
 pub(crate) fn mat4_from_columns(matrix: [[f32; 4]; 4]) -> math::Matrix {
-	math::Matrix::new(
-		matrix[0][0],
-		matrix[1][0],
-		matrix[2][0],
-		matrix[3][0],
-		matrix[0][1],
-		matrix[1][1],
-		matrix[2][1],
-		matrix[3][1],
-		matrix[0][2],
-		matrix[1][2],
-		matrix[2][2],
-		matrix[3][2],
-		matrix[0][3],
-		matrix[1][3],
-		matrix[2][3],
-		matrix[3][3],
-	)
+	math::Matrix {
+		m: std::array::from_fn(|index| matrix[index % 4][index / 4]),
+	}
 }
 
 /// Rejects non-finite matrix components before they enter serializable skeletal resources.
-pub(crate) fn validate_finite_matrix(matrix: &math::Matrix, context: &'static str) -> Result<(), GltfSkeletalImportError> {
+pub(crate) fn validate_finite_matrix(matrix: &math::Matrix, context: &'static str) -> Result<(), GltfImportError> {
 	if matrix.m.iter().all(|component| component.is_finite()) {
 		Ok(())
 	} else {
-		Err(GltfSkeletalImportError::NonFinite(context))
+		Err(GltfImportError::NonFinite(context))
 	}
 }
 
 /// Rejects projective matrices because compact skinning matrices omit their homogeneous row.
-pub(crate) fn validate_affine_matrix(matrix: &math::Matrix, context: &'static str) -> Result<(), GltfSkeletalImportError> {
+pub(crate) fn validate_affine_matrix(matrix: &math::Matrix, context: &'static str) -> Result<(), GltfImportError> {
 	const AFFINE_EPSILON: f32 = 0.00001;
 
 	if matrix[(3, 0)].abs() <= AFFINE_EPSILON
@@ -302,12 +266,16 @@ pub(crate) fn validate_affine_matrix(matrix: &math::Matrix, context: &'static st
 	{
 		Ok(())
 	} else {
-		Err(GltfSkeletalImportError::NonAffine(context))
+		Err(GltfImportError::NonAffine(context))
 	}
 }
 
+/// The `GltfImportError` enum identifies glTF data the importer rejects, from node hierarchies and clips to mesh streams.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum GltfSkeletalImportError {
+pub(crate) enum GltfImportError {
+	MissingIndices,
+	MissingPositions,
+	MissingAttribute(VertexSemantics),
 	MultipleNodeParents,
 	CyclicNodeHierarchy,
 	AnimationNotFound(String),
@@ -334,9 +302,21 @@ pub(crate) enum GltfSkeletalImportError {
 	NonAffine(&'static str),
 }
 
-impl std::fmt::Display for GltfSkeletalImportError {
+impl std::fmt::Display for GltfImportError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			Self::MissingIndices => write!(
+				formatter,
+				"glTF triangle indices are missing. The most likely cause is an unindexed source primitive."
+			),
+			Self::MissingPositions => write!(
+				formatter,
+				"glTF positions are missing. The most likely cause is a missing or malformed POSITION accessor."
+			),
+			Self::MissingAttribute(semantic) => write!(
+				formatter,
+				"glTF vertex data is incomplete. The most likely cause is a missing {semantic:?} accessor required by the shared mesh layout."
+			),
 			Self::MultipleNodeParents => write!(
 				formatter,
 				"glTF node hierarchy is invalid. The most likely cause is a node referenced by multiple parents."
@@ -437,46 +417,39 @@ impl std::fmt::Display for GltfSkeletalImportError {
 	}
 }
 
-impl std::error::Error for GltfSkeletalImportError {}
-
-pub(crate) fn is_gltf_animation_fragment(fragment: &str) -> bool {
-	fragment == DEFAULT_ANIMATION_FRAGMENT || fragment.starts_with(ANIMATION_FRAGMENT_PREFIX)
-}
+impl std::error::Error for GltfImportError {}
 
 /// Selects the first, indexed, or named clip addressed by a reserved glTF animation fragment.
-pub(crate) fn select_gltf_animation<'a>(
-	gltf: &'a gltf::Gltf,
-	fragment: &str,
-) -> Result<gltf::Animation<'a>, GltfSkeletalImportError> {
+pub(crate) fn select_gltf_animation<'a>(gltf: &'a gltf::Gltf, fragment: &str) -> Result<gltf::Animation<'a>, GltfImportError> {
 	if fragment == DEFAULT_ANIMATION_FRAGMENT {
 		return gltf
 			.animations()
 			.next()
-			.ok_or_else(|| GltfSkeletalImportError::AnimationNotFound("first animation".to_string()));
+			.ok_or_else(|| GltfImportError::AnimationNotFound("first animation".to_string()));
 	}
 
 	let selector = fragment
 		.strip_prefix(ANIMATION_FRAGMENT_PREFIX)
-		.ok_or_else(|| GltfSkeletalImportError::AnimationNotFound(fragment.to_string()))?;
+		.ok_or_else(|| GltfImportError::AnimationNotFound(fragment.to_string()))?;
 
 	if selector.is_empty() {
-		return Err(GltfSkeletalImportError::AnimationNotFound("empty selector".to_string()));
+		return Err(GltfImportError::AnimationNotFound("empty selector".to_string()));
 	}
 
 	if let Ok(index) = selector.parse::<usize>() {
 		return gltf
 			.animations()
 			.nth(index)
-			.ok_or_else(|| GltfSkeletalImportError::AnimationNotFound(format!("index {index}")));
+			.ok_or_else(|| GltfImportError::AnimationNotFound(format!("index {index}")));
 	}
 
 	gltf.animations()
 		.find(|animation| animation.name() == Some(selector))
-		.ok_or_else(|| GltfSkeletalImportError::AnimationNotFound(selector.to_string()))
+		.ok_or_else(|| GltfImportError::AnimationNotFound(selector.to_string()))
 }
 
 /// Marks only the source buffers needed by one selected clip so unrelated mesh payloads stay unloaded.
-pub(crate) fn required_gltf_animation_buffers(gltf: &gltf::Gltf, fragment: &str) -> Result<Vec<bool>, GltfSkeletalImportError> {
+pub(crate) fn required_gltf_animation_buffers(gltf: &gltf::Gltf, fragment: &str) -> Result<Vec<bool>, GltfImportError> {
 	let animation = select_gltf_animation(gltf, fragment)?;
 
 	let mut required = vec![false; gltf.buffers().len()];
@@ -508,11 +481,11 @@ pub(crate) fn mark_gltf_accessor_buffers(accessor: gltf::Accessor<'_>, required:
 /// Converts one glTF clip into node-indexed curves ready for a future CPU animation graph.
 pub(crate) fn import_gltf_animation(
 	gltf: &gltf::Gltf,
-	buffers: &[gltf::buffer::Data],
+	buffers: &[Cow<'_, [u8]>],
 	fragment: &str,
 	source_to_dense: &[u32],
 	skeleton: ReferenceModel<SkeletonModel>,
-) -> Result<AnimationModel, GltfSkeletalImportError> {
+) -> Result<AnimationModel, GltfImportError> {
 	let animation = select_gltf_animation(gltf, fragment)?;
 
 	let mut tracks = Vec::<NodeTrack>::with_capacity(animation.channels().count());
@@ -525,7 +498,7 @@ pub(crate) fn import_gltf_animation(
 		let property = target.property();
 
 		if property == gltf::animation::Property::MorphTargetWeights {
-			return Err(GltfSkeletalImportError::MorphTargetAnimationUnsupported);
+			return Err(GltfImportError::MorphTargetAnimationUnsupported);
 		}
 
 		let source_node = target.node().index();
@@ -533,20 +506,20 @@ pub(crate) fn import_gltf_animation(
 		let dense_node = *source_to_dense
 			.get(source_node)
 			.filter(|dense| **dense != u32::MAX)
-			.ok_or(GltfSkeletalImportError::MissingSkinJoint)?;
+			.ok_or(GltfImportError::MissingSkinJoint)?;
 
 		let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
 
 		let times = reader
 			.read_inputs()
-			.ok_or(GltfSkeletalImportError::MissingAnimationInput)?
+			.ok_or(GltfImportError::MissingAnimationInput)?
 			.collect::<Vec<_>>();
 
 		validate_animation_times(&times)?;
 
 		duration = duration.max(times.last().copied().unwrap_or(0.0));
 
-		let outputs = reader.read_outputs().ok_or(GltfSkeletalImportError::MissingAnimationOutput)?;
+		let outputs = reader.read_outputs().ok_or(GltfImportError::MissingAnimationOutput)?;
 
 		let interpolation = channel.sampler().interpolation();
 
@@ -569,60 +542,40 @@ pub(crate) fn import_gltf_animation(
 
 		let track = &mut tracks[track_index];
 
-		match (property, outputs) {
+		// Each arm reports whether the channel replaced a track that an earlier channel already set.
+		let duplicate = match (property, outputs) {
 			(gltf::animation::Property::Translation, gltf::animation::util::ReadOutputs::Translations(values)) => {
+				// Flip Z to move from glTF's right-handed basis into the engine's left-handed one.
 				let values = values
-					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Translation))
+					.map(|value| finite_gltf_key(value, "animation vector key").map(|[x, y, z]| Vector::from_array([x, y, -z])))
 					.collect::<Result<Vec<_>, _>>()?;
-
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Ok(Vector::from_array(value)),
-					Vector::from_array,
-				)?;
-
-				if track.translation.replace(curve).is_some() {
-					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
-				}
+				track
+					.translation
+					.replace(make_curve(interpolation, times, values, Ok)?)
+					.is_some()
 			}
 			(gltf::animation::Property::Scale, gltf::animation::util::ReadOutputs::Scales(values)) => {
 				let values = values
-					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Scale))
+					.map(|value| finite_gltf_key(value, "animation vector key").map(Scale::from_array))
 					.collect::<Result<Vec<_>, _>>()?;
-
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Ok(Scale::from_array(value)),
-					Scale::from_array,
-				)?;
-
-				if track.scale.replace(curve).is_some() {
-					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
-				}
+				track.scale.replace(make_curve(interpolation, times, values, Ok)?).is_some()
 			}
 			(gltf::animation::Property::Rotation, gltf::animation::util::ReadOutputs::Rotations(values)) => {
+				// Mirroring Z negates the quaternion's X and Y components.
 				let values = values
 					.into_f32()
-					.map(convert_gltf_quaternion)
+					.map(|value| finite_gltf_key(value, "animation quaternion key").map(|[x, y, z, w]| [-x, -y, z, w]))
 					.collect::<Result<Vec<_>, _>>()?;
-
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Orientation::try_from_array(value).map_err(|_| GltfSkeletalImportError::InvalidAnimationOutput),
-					|tangent| tangent,
-				)?;
-
-				if track.rotation.replace(curve).is_some() {
-					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
-				}
+				let curve = make_curve(interpolation, times, values, |value| {
+					Orientation::try_from_array(value).map_err(|_| GltfImportError::InvalidAnimationOutput)
+				})?;
+				track.rotation.replace(curve).is_some()
 			}
-			_ => return Err(GltfSkeletalImportError::InvalidAnimationOutput),
+			_ => return Err(GltfImportError::InvalidAnimationOutput),
+		};
+
+		if duplicate {
+			return Err(GltfImportError::DuplicateAnimationTrack);
 		}
 	}
 
@@ -635,56 +588,36 @@ pub(crate) fn import_gltf_animation(
 }
 
 /// Validates the finite, non-negative, strictly increasing key order required by CPU clip evaluation.
-pub(crate) fn validate_animation_times(times: &[f32]) -> Result<(), GltfSkeletalImportError> {
+pub(crate) fn validate_animation_times(times: &[f32]) -> Result<(), GltfImportError> {
 	if times.is_empty()
 		|| times.iter().any(|time| !time.is_finite() || *time < 0.0)
 		|| times.windows(2).any(|pair| pair[0] >= pair[1])
 	{
-		Err(GltfSkeletalImportError::InvalidAnimationTimes)
+		Err(GltfImportError::InvalidAnimationTimes)
 	} else {
 		Ok(())
 	}
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum GltfVector3Semantic {
-	Translation,
-	Scale,
-}
-
-pub(crate) fn convert_gltf_vector3(
-	value: [f32; 3],
-	semantic: GltfVector3Semantic,
-) -> Result<[f32; 3], GltfSkeletalImportError> {
+/// Rejects an animation key that has a non-finite component, naming the key kind in `context`.
+pub(crate) fn finite_gltf_key<const N: usize>(value: [f32; N], context: &'static str) -> Result<[f32; N], GltfImportError> {
 	if value.iter().any(|component| !component.is_finite()) {
-		return Err(GltfSkeletalImportError::NonFinite("animation vector key"));
+		return Err(GltfImportError::NonFinite(context));
 	}
 
-	Ok(match semantic {
-		GltfVector3Semantic::Translation => [value[0], value[1], -value[2]],
-		GltfVector3Semantic::Scale => value,
-	})
+	Ok(value)
 }
 
-pub(crate) fn convert_gltf_quaternion(value: [f32; 4]) -> Result<[f32; 4], GltfSkeletalImportError> {
-	if value.iter().any(|component| !component.is_finite()) {
-		return Err(GltfSkeletalImportError::NonFinite("animation quaternion key"));
-	}
-
-	Ok([-value[0], -value[1], value[2], value[3]])
-}
-
-/// Builds one glTF sampler's curve from raw keys, converting each key value with `map_value` and each cubic spline
-/// tangent with `map_tangent`.
+/// Builds one glTF sampler's curve from keys, converting each key value with `map_value` and keeping cubic spline
+/// tangents as authored.
 ///
 /// Rotations normalize their values without touching derivative tangents.
-pub(crate) fn make_curve<R: Copy, V, T>(
+pub(crate) fn make_curve<V, T: Copy>(
 	interpolation: gltf::animation::Interpolation,
 	times: Vec<f32>,
-	values: Vec<R>,
-	map_value: impl FnMut(R) -> Result<V, GltfSkeletalImportError>,
-	map_tangent: impl FnMut(R) -> T,
-) -> Result<Curve<V, T>, GltfSkeletalImportError> {
+	values: Vec<T>,
+	map_value: impl FnMut(T) -> Result<V, GltfImportError>,
+) -> Result<Curve<V, T>, GltfImportError> {
 	match interpolation {
 		gltf::animation::Interpolation::Step if values.len() == times.len() => Ok(Curve::Step {
 			times,
@@ -695,36 +628,32 @@ pub(crate) fn make_curve<R: Copy, V, T>(
 			values: values.into_iter().map(map_value).collect::<Result<_, _>>()?,
 		}),
 		gltf::animation::Interpolation::CubicSpline if values.len() == times.len().saturating_mul(3) => {
-			Curve::cubic_spline_from_triplets(times, values.as_chunks::<3>().0, map_value, map_tangent)
+			Curve::cubic_spline_from_triplets(times, values.as_chunks::<3>().0, map_value)
 		}
-		_ => Err(GltfSkeletalImportError::InvalidAnimationOutput),
+		_ => Err(GltfImportError::InvalidAnimationOutput),
 	}
 }
 
 /// Imports one mesh-node skin and adjusts source inverse binds for the handler's flattened bind-pose vertices.
 pub(crate) fn import_gltf_skin_binding(
 	node: &gltf::Node<'_>,
-	buffers: &[gltf::buffer::Data],
+	buffers: &[Cow<'_, [u8]>],
 	graph: &GltfNodeGraph,
-) -> Result<SkinBinding, GltfSkeletalImportError> {
-	let skin = node.skin().ok_or(GltfSkeletalImportError::MissingSkin)?;
+) -> Result<SkinBinding, GltfImportError> {
+	let skin = node.skin().ok_or(GltfImportError::MissingSkin)?;
 
 	let joint_count = skin.joints().count();
 
 	if joint_count > MAX_SKIN_JOINTS {
-		return Err(GltfSkeletalImportError::TooManySkinJoints);
+		return Err(GltfImportError::TooManySkinJoints);
 	}
 
 	let source_global = *graph
 		.source_global_transforms
 		.get(node.index())
-		.ok_or(GltfSkeletalImportError::MissingSkinJoint)?;
+		.ok_or(GltfImportError::MissingSkinJoint)?;
 
-	let determinant = source_global.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::SingularMeshTransform);
-	}
+	invertible_determinant(&source_global).ok_or(GltfImportError::SingularMeshTransform)?;
 
 	let inverse_source_global = source_global.inverse();
 
@@ -739,38 +668,32 @@ pub(crate) fn import_gltf_skin_binding(
 			.filter(|dense| **dense != u32::MAX)
 			.copied()
 			.map(SkinJoint::Node)
-			.ok_or(GltfSkeletalImportError::MissingSkinJoint)
+			.ok_or(GltfImportError::MissingSkinJoint)
 	};
+
+	let inverse_binds = reader.read_inverse_bind_matrices();
+
+	if inverse_binds
+		.as_ref()
+		.is_some_and(|inverse_binds| inverse_binds.len() != joint_count)
+	{
+		return Err(GltfImportError::MismatchedInverseBindMatrices);
+	}
+
+	// A skin without inverse bind matrices binds every joint with the identity.
+	let inverse_binds = inverse_binds
+		.into_iter()
+		.flatten()
+		.map(mat4_from_columns)
+		.chain(std::iter::repeat(math::Matrix::identity()));
 
 	let mut entries = Vec::with_capacity(joint_count);
 
-	if let Some(inverse_binds) = reader.read_inverse_bind_matrices() {
-		if inverse_binds.len() != joint_count {
-			return Err(GltfSkeletalImportError::MismatchedInverseBindMatrices);
-		}
-
-		for (joint, inverse_bind) in skin.joints().zip(inverse_binds) {
-			entries.push(SkinPaletteEntry {
-				joint: remap_joint(joint)?,
-				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(inverse_bind, inverse_source_global, handedness)?,
-			});
-		}
-	} else {
-		for joint in skin.joints() {
-			entries.push(SkinPaletteEntry {
-				joint: remap_joint(joint)?,
-				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(
-					[
-						[1.0, 0.0, 0.0, 0.0],
-						[0.0, 1.0, 0.0, 0.0],
-						[0.0, 0.0, 1.0, 0.0],
-						[0.0, 0.0, 0.0, 1.0],
-					],
-					inverse_source_global,
-					handedness,
-				)?,
-			});
-		}
+	for (joint, inverse_bind) in skin.joints().zip(inverse_binds) {
+		entries.push(SkinPaletteEntry {
+			joint: remap_joint(joint)?,
+			adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(inverse_bind, inverse_source_global, handedness)?,
+		});
 	}
 
 	Ok(SkinBinding { entries })
@@ -778,12 +701,10 @@ pub(crate) fn import_gltf_skin_binding(
 
 /// Converts one source inverse bind into the flattened left-handed vertex basis used by the mesh resource.
 pub(crate) fn adjust_gltf_inverse_bind(
-	inverse_bind: [[f32; 4]; 4],
+	inverse_bind: math::Matrix,
 	inverse_source_global: math::Matrix,
 	handedness: math::Matrix,
-) -> Result<AffineMatrix, GltfSkeletalImportError> {
-	let inverse_bind = mat4_from_columns(inverse_bind);
-
+) -> Result<AffineMatrix, GltfImportError> {
 	validate_finite_matrix(&inverse_bind, "inverse bind matrix")?;
 
 	validate_affine_matrix(&inverse_bind, "matrix")?;
@@ -799,88 +720,44 @@ pub(crate) fn adjust_gltf_inverse_bind(
 	Ok(AffineMatrix::from_matrix(adjusted))
 }
 
-/// The `GltfVertexSkinIterator` struct normalizes borrowed glTF influence sets without staging per-primitive vectors.
-pub(crate) struct GltfVertexSkinIterator<'a> {
-	set0_joints: gltf::mesh::util::joints::CastingIter<'a, gltf::mesh::util::joints::U16>,
-	set0_weights: gltf::mesh::util::weights::CastingIter<'a, gltf::mesh::util::weights::F32>,
-	set1: Option<(
-		gltf::mesh::util::joints::CastingIter<'a, gltf::mesh::util::joints::U16>,
-		gltf::mesh::util::weights::CastingIter<'a, gltf::mesh::util::weights::F32>,
-	)>,
+/// Reads one primitive's normalized vertex influences without staging per-primitive vectors.
+///
+/// Validates first that every influence set is paired and holds one value per vertex, so the returned iterator yields
+/// exactly `vertex_count` items.
+pub(crate) fn gltf_vertex_skin<'a, 'document, F>(
+	reader: &gltf::mesh::Reader<'document, 'a, F>,
+	vertex_count: usize,
 	joint_count: usize,
-}
+) -> Result<impl ExactSizeIterator<Item = Result<VertexSkin, GltfImportError>> + use<'a, F>, GltfImportError>
+where
+	F: Clone + Fn(gltf::Buffer<'document>) -> Option<&'a [u8]>,
+{
+	let read_set = |set| match (reader.read_joints(set), reader.read_weights(set)) {
+		(Some(joints), Some(weights)) => Ok(Some((joints.into_u16(), weights.into_f32()))),
+		(None, None) => Ok(None),
+		_ => Err(GltfImportError::UnpairedSkinAttributes(set)),
+	};
+	let (set0_joints, set0_weights) = read_set(0)?.ok_or(GltfImportError::MissingSkinAttributes)?;
+	let mut set1 = read_set(1)?;
 
-impl<'a> GltfVertexSkinIterator<'a> {
-	/// Creates an influence iterator after validating that every accessor can yield one value per vertex.
-	pub(crate) fn new<'document, F>(
-		reader: &gltf::mesh::Reader<'document, 'a, F>,
-		vertex_count: usize,
-		joint_count: usize,
-	) -> Result<Self, GltfSkeletalImportError>
-	where
-		F: Clone + Fn(gltf::Buffer<'document>) -> Option<&'a [u8]>,
+	if set0_joints.len() != vertex_count
+		|| set0_weights.len() != vertex_count
+		|| set1
+			.as_ref()
+			.is_some_and(|(joints, weights)| joints.len() != vertex_count || weights.len() != vertex_count)
 	{
-		let set0_joints = reader.read_joints(0);
-		let set0_weights = reader.read_weights(0);
-		if set0_joints.is_some() != set0_weights.is_some() {
-			return Err(GltfSkeletalImportError::UnpairedSkinAttributes(0));
-		}
-		let (Some(set0_joints), Some(set0_weights)) = (set0_joints, set0_weights) else {
-			return Err(GltfSkeletalImportError::MissingSkinAttributes);
-		};
-		let set0_joints = set0_joints.into_u16();
-		let set0_weights = set0_weights.into_f32();
-
-		let set1_joints = reader.read_joints(1);
-		let set1_weights = reader.read_weights(1);
-		if set1_joints.is_some() != set1_weights.is_some() {
-			return Err(GltfSkeletalImportError::UnpairedSkinAttributes(1));
-		}
-		let set1 = match (set1_joints, set1_weights) {
-			(Some(joints), Some(weights)) => Some((joints.into_u16(), weights.into_f32())),
-			(None, None) => None,
-			_ => unreachable!("paired skin attributes were checked above"),
-		};
-
-		if set0_joints.len() != vertex_count
-			|| set0_weights.len() != vertex_count
-			|| set1
-				.as_ref()
-				.is_some_and(|(joints, weights)| joints.len() != vertex_count || weights.len() != vertex_count)
-		{
-			return Err(GltfSkeletalImportError::MismatchedSkinAttributeCount);
-		}
-
-		Ok(Self {
-			set0_joints,
-			set0_weights,
-			set1,
-			joint_count,
-		})
+		return Err(GltfImportError::MismatchedSkinAttributeCount);
 	}
-}
 
-impl ExactSizeIterator for GltfVertexSkinIterator<'_> {}
-
-impl Iterator for GltfVertexSkinIterator<'_> {
-	type Item = Result<VertexSkin, GltfSkeletalImportError>;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		let joints = self.set0_joints.next()?;
-		let weights = match self.set0_weights.next() {
-			Some(weights) => weights,
-			None => return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount)),
-		};
+	Ok(set0_joints.zip(set0_weights).map(move |(joints, weights)| {
 		let mut influences = [(0u16, 0.0f32); 8];
 		for influence in 0..4 {
 			influences[influence] = (joints[influence], weights[influence]);
 		}
-		let influence_count = if let Some((joints, weights)) = &mut self.set1 {
-			let Some(joints) = joints.next() else {
-				return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount));
-			};
-			let Some(weights) = weights.next() else {
-				return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount));
+		let influence_count = if let Some((joints, weights)) = &mut set1 {
+			// Every stream was checked to hold `vertex_count` values, so set 1 cannot end before set 0.
+			let (Some(joints), Some(weights)) = (joints.next(), weights.next()) else {
+				return Err(GltfImportError::MismatchedSkinAttributeCount);
 			};
 			for influence in 0..4 {
 				influences[influence + 4] = (joints[influence], weights[influence]);
@@ -891,70 +768,36 @@ impl Iterator for GltfVertexSkinIterator<'_> {
 		};
 
 		for &(joint, weight) in &influences[..influence_count] {
-			if joint as usize >= self.joint_count {
-				return Some(Err(GltfSkeletalImportError::SkinJointOutOfRange));
+			if joint as usize >= joint_count {
+				return Err(GltfImportError::SkinJointOutOfRange);
 			}
 			if !weight.is_finite() || weight < 0.0 {
-				return Some(Err(GltfSkeletalImportError::InvalidSkinWeight));
+				return Err(GltfImportError::InvalidSkinWeight);
 			}
 		}
 		influences[..influence_count]
 			.sort_unstable_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
 		let total = influences[..4].iter().map(|(_, weight)| *weight).sum::<f32>();
 		if !total.is_finite() || total <= f32::EPSILON {
-			return Some(Err(GltfSkeletalImportError::InvalidSkinWeight));
+			return Err(GltfImportError::InvalidSkinWeight);
 		}
-		let mut vertex_skin = VertexSkin {
-			joints: [0; 4],
-			weights: [0.0; 4],
-		};
-		for influence in 0..4 {
-			vertex_skin.joints[influence] = influences[influence].0;
-			vertex_skin.weights[influence] = influences[influence].1 / total;
-		}
-		Some(Ok(vertex_skin))
-	}
-
-	fn size_hint(&self) -> (usize, Option<usize>) {
-		self.set0_joints.size_hint()
-	}
+		Ok(VertexSkin {
+			joints: std::array::from_fn(|influence| influences[influence].0),
+			weights: std::array::from_fn(|influence| influences[influence].1 / total),
+		})
+	}))
 }
 
-/// Reads both supported glTF influence sets into owned values for callers that need retained skin data.
-#[cfg(test)]
-pub(crate) fn import_gltf_vertex_skin<'a, 's, F>(
-	reader: &gltf::mesh::Reader<'a, 's, F>,
-	vertex_count: usize,
-	joint_count: usize,
-) -> Result<(Vec<[u16; 4]>, Vec<[f32; 4]>), GltfSkeletalImportError>
-where
-	F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
-{
-	let vertex_skin = GltfVertexSkinIterator::new(reader, vertex_count, joint_count)?.collect::<Result<Vec<_>, _>>()?;
-	Ok(vertex_skin.into_iter().map(|value| (value.joints, value.weights)).unzip())
-}
-
-/// Validates the paired influence sets consumed by skinned instances while allowing a shared mesh to be instanced rigidly.
-pub(crate) fn validate_gltf_skin_attribute_sets(
-	primitive: &gltf::Primitive<'_>,
-	is_skinned: bool,
-) -> Result<(), GltfSkeletalImportError> {
-	// A mesh may be instanced by both skinned and rigid nodes; rigid instances deliberately ignore complete skin streams.
-	if !is_skinned {
-		return Ok(());
-	}
-
+/// Validates the paired influence sets a skinned instance of `primitive` consumes.
+pub(crate) fn validate_gltf_skin_attribute_sets(primitive: &gltf::Primitive<'_>) -> Result<(), GltfImportError> {
 	let mut joints = [false; 2];
 
 	let mut weights = [false; 2];
 
 	for (semantic, _) in primitive.attributes() {
 		match semantic {
-			gltf::Semantic::Joints(set) if set > 1 => {
-				return Err(GltfSkeletalImportError::UnsupportedSkinAttributeSet(set));
-			}
-			gltf::Semantic::Weights(set) if set > 1 => {
-				return Err(GltfSkeletalImportError::UnsupportedSkinAttributeSet(set));
+			gltf::Semantic::Joints(set) | gltf::Semantic::Weights(set) if set > 1 => {
+				return Err(GltfImportError::UnsupportedSkinAttributeSet(set));
 			}
 			gltf::Semantic::Joints(set) => joints[set as usize] = true,
 			gltf::Semantic::Weights(set) => weights[set as usize] = true,
@@ -964,12 +807,12 @@ pub(crate) fn validate_gltf_skin_attribute_sets(
 
 	for set in 0..=1 {
 		if joints[set] != weights[set] {
-			return Err(GltfSkeletalImportError::UnpairedSkinAttributes(set as u32));
+			return Err(GltfImportError::UnpairedSkinAttributes(set as u32));
 		}
 	}
 
 	if !joints[0] {
-		return Err(GltfSkeletalImportError::MissingSkinAttributes);
+		return Err(GltfImportError::MissingSkinAttributes);
 	}
 
 	Ok(())
@@ -979,7 +822,7 @@ pub(crate) fn validate_gltf_skin_attribute_sets(
 pub(crate) fn include_skin_vertex_layout(
 	mut normalized: Vec<VertexComponent>,
 	vertex_layouts: &[Vec<VertexComponent>],
-) -> Result<Vec<VertexComponent>, GltfSkeletalImportError> {
+) -> Result<Vec<VertexComponent>, GltfImportError> {
 	let has_joints = vertex_layouts
 		.iter()
 		.flatten()
@@ -991,22 +834,11 @@ pub(crate) fn include_skin_vertex_layout(
 		.any(|component| component.semantic == VertexSemantics::Weights);
 
 	if has_joints != has_weights {
-		return Err(GltfSkeletalImportError::UnpairedSkinAttributes(0));
+		return Err(GltfImportError::UnpairedSkinAttributes(0));
 	}
 
 	if has_joints {
-		for component in [
-			VertexComponent {
-				semantic: VertexSemantics::Joints,
-				format: "vec4u16".to_string(),
-				channel: 0,
-			},
-			VertexComponent {
-				semantic: VertexSemantics::Weights,
-				format: "vec4f".to_string(),
-				channel: 0,
-			},
-		] {
+		for component in [VertexSemantics::Joints, VertexSemantics::Weights].map(VertexComponent::canonical) {
 			if !normalized.iter().any(|existing| existing.semantic == component.semantic) {
 				normalized.push(component);
 			}

@@ -74,8 +74,6 @@ impl ScreenSpaceReflections {
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let set = material_evaluation_descriptor_set;

@@ -14,11 +14,8 @@ pub use ast::{
 pub use resolution::infer_expression_type;
 
 #[cfg(test)]
-use crate::parser;
-#[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::tokenizer;
 
 	#[cfg(target_pointer_width = "64")]
 	#[test]
@@ -539,9 +536,8 @@ mod tests {
 
 	#[test]
 	fn source_buffer_descriptor_requires_a_declared_type() {
-		let tokens = tokenizer::tokenize("data: descriptor<{ type: Missing, binding: 0, access: read }>;")
-			.expect("descriptor should tokenize");
-		let parsed = parser::parse(&tokens).expect("descriptor should parse");
+		let parsed =
+			crate::parse("data: descriptor<{ type: Missing, binding: 0, access: read }>;").expect("descriptor should parse");
 
 		assert_eq!(
 			lex_with_root(Node::root(), parsed),
@@ -569,8 +565,7 @@ Foo: struct {
 	bar: NonExistantType
 }";
 
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
+		let node = crate::parse(source).expect("Failed to parse");
 		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| {
@@ -585,8 +580,7 @@ Foo: struct {
 	fn lex_rejects_non_type_names_as_types() {
 		// `root` names the program scope and `main` names the function itself. Neither declares a type.
 		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
-			let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-			let node = parser::parse(&tokens).expect("Failed to parse");
+			let node = crate::parse(source).expect("Failed to parse");
 			assert_eq!(
 				lex_with_root(Node::root(), node).err(),
 				Some(LexError::ReferenceToUndefinedType {
@@ -599,8 +593,7 @@ Foo: struct {
 	#[test]
 	fn lex_rejects_functions_used_as_values() {
 		let source = "main: fn () -> void { normalize(vec3f(main)); }";
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
+		let node = crate::parse(source).expect("Failed to parse");
 
 		assert!(matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })));
 	}
@@ -631,8 +624,7 @@ Foo: struct {
 		let source = "
 main: fn () -> NonExistantType {}";
 
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
+		let node = crate::parse(source).expect("Failed to parse");
 		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| {
@@ -651,8 +643,7 @@ main: fn () -> void {
 	function(vec3f(1.0, 1.0, 1.0), vec3f(0.0, 0.0, 0.0));
 }";
 
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
+		let node = crate::parse(source).expect("Failed to parse");
 		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
@@ -666,8 +657,7 @@ main: fn () -> void {
 	set_mesh_primitive_render_target_array_index(0, 1.0);
 }";
 
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
+		let node = crate::parse(source).expect("Failed to parse");
 
 		assert_eq!(
 			lex_with_root(Node::root(), node).expect_err("The mesh primitive and array indices must both be u32"),
@@ -826,8 +816,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let parsed = parser::parse(&tokens).expect("Failed to parse");
+		let parsed = crate::parse(source).expect("Failed to parse");
 
 		let mut root = Node::root();
 		root.add_child(

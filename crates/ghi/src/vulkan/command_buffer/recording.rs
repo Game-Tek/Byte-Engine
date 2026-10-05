@@ -8,24 +8,14 @@ impl CommandBufferRecording<'_> {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
-	/// Records a staging-to-buffer upload on this command buffer.
-	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		let buffer = self.device.buffers.resource(buffer_handle);
-		let Some(staging_handle) = buffer.staging else {
-			return;
-		};
-
-		let copy = BufferCopy::new(staging_handle, 0, buffer_handle, 0, buffer.size);
-		self.sync_buffers(std::iter::once(copy));
-	}
-
+	/// Begins recording, then records the pending buffer and image uploads the caller drained from the context.
 	pub(crate) fn new(
 		device: &'_ mut Context,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<FrameKey>,
+		(buffer_copies, image_copies): (Vec<BufferCopy>, Vec<ImageCopy>),
 	) -> CommandBufferRecording<'_> {
-		let command_buffer = CommandBufferRecording {
+		let mut recording = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			frame_key,
@@ -49,8 +39,10 @@ impl CommandBufferRecording<'_> {
 			device,
 		};
 
-		command_buffer.begin();
-		command_buffer
+		recording.begin();
+		recording.sync_buffers(buffer_copies.into_iter());
+		recording.sync_textures(image_copies.into_iter());
+		recording
 	}
 
 	pub(crate) fn into_submission(
@@ -81,11 +73,9 @@ impl CommandBufferRecording<'_> {
 
 		unsafe {
 			self.device
-				.device
 				.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty())
 				.expect("No command pool reset");
 			self.device
-				.device
 				.begin_command_buffer(command_buffer.command_buffer, &begin_info)
 				.expect("No command buffer begin");
 		}
@@ -120,10 +110,10 @@ impl CommandBufferRecording<'_> {
 		unsafe {
 			self.device
 				.descriptor_heap
-				.cmd_bind_resource_heap(command_buffer, &heaps.resource().bind_info());
+				.cmd_bind_resource_heap(command_buffer, &heaps.resource.bind_info());
 			self.device
 				.descriptor_heap
-				.cmd_bind_sampler_heap(command_buffer, &heaps.sampler().bind_info());
+				.cmd_bind_sampler_heap(command_buffer, &heaps.sampler.bind_info());
 		}
 		self.descriptor_heaps_bound = true;
 	}
@@ -204,6 +194,10 @@ impl CommandBufferRecording<'_> {
 		}
 		self.descriptor_resources_initialized = true;
 		consumptions.extend(additional_transitions);
+		// An empty batch records no barrier and changes no state, which is the common case for draws after the first.
+		if consumptions.is_empty() {
+			return TransitionStateUpdates::default();
+		}
 		self.consume_resources(consumptions)
 	}
 
@@ -313,7 +307,6 @@ impl CommandBufferRecording<'_> {
 				.dependency_flags(vk::DependencyFlags::BY_REGION);
 			unsafe {
 				self.device
-					.device
 					.cmd_pipeline_barrier2(self.get_command_buffer().command_buffer, &dependency_info)
 			};
 		}
@@ -371,8 +364,13 @@ impl CommandBufferRecording<'_> {
 	fn merge_repeated_consumptions(
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
 	) -> SmallVec<[VulkanConsumption; 16]> {
-		let mut merged = SmallVec::<[VulkanConsumption; 16]>::new();
-		let mut indices = HashMap::<(Handles, vk::ImageLayout), usize>::default();
+		const INLINE: usize = 16;
+		let consumptions = consumptions.into_iter();
+		let expected = consumptions.size_hint().0;
+		let mut merged = SmallVec::<[VulkanConsumption; INLINE]>::new();
+		merged.reserve(expected);
+		// Batches that fit the inline storage search `merged` directly; an index only pays off for larger ones.
+		let mut indices = None::<HashMap<(Handles, vk::ImageLayout), usize>>;
 
 		for consumption in consumptions {
 			if consumption.range.is_some() {
@@ -380,14 +378,33 @@ impl CommandBufferRecording<'_> {
 				continue;
 			}
 
-			match indices.entry((consumption.handle, consumption.layout)) {
-				std::collections::hash_map::Entry::Occupied(entry) => {
-					let existing = &mut merged[*entry.get()];
-					existing.stages |= consumption.stages;
-					existing.access |= consumption.access;
+			let key = (consumption.handle, consumption.layout);
+			if indices.is_none() && (expected > INLINE || merged.len() >= INLINE) {
+				let mut map = HashMap::with_capacity_and_hasher(expected.max(merged.len() + 1), Default::default());
+				map.extend(
+					merged
+						.iter()
+						.enumerate()
+						.filter(|(_, entry)| entry.range.is_none())
+						.map(|(index, entry)| ((entry.handle, entry.layout), index)),
+				);
+				indices = Some(map);
+			}
+			let existing = match &indices {
+				Some(indices) => indices.get(&key).copied(),
+				None => merged
+					.iter()
+					.position(|entry| entry.range.is_none() && (entry.handle, entry.layout) == key),
+			};
+			match existing {
+				Some(index) => {
+					merged[index].stages |= consumption.stages;
+					merged[index].access |= consumption.access;
 				}
-				std::collections::hash_map::Entry::Vacant(entry) => {
-					entry.insert(merged.len());
+				None => {
+					if let Some(indices) = &mut indices {
+						indices.insert(key, merged.len());
+					}
 					merged.push(consumption);
 				}
 			}
@@ -566,22 +583,18 @@ impl CommandBufferRecording<'_> {
 		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	pub(super) fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
+	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
 		if let Some(swapchain) = self
 			.device
 			.swapchains
 			.iter()
-			.find(|swapchain| swapchain.images[0].0 == handle.0.0 || swapchain.native_images[0].0 == handle.0.0)
+			.find(|swapchain| swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0)
 		{
 			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize];
 		}
 
-		let handles = ImageHandle(handle.0.0).get_all(&self.device.images);
+		let handles = ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
-	}
-
-	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		self.get_internal_image_handle(graphics_hardware_interface::ImageHandle(handle))
 	}
 
 	pub(super) fn get_attachment_image_handle(
@@ -597,18 +610,11 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	fn get_attachment_format(&self, attachment: &graphics_hardware_interface::AttachmentInformation) -> crate::Formats {
-		attachment
-			.format
-			.unwrap_or_else(|| self.get_image(self.get_attachment_image_handle(attachment)).format_)
-	}
-
-	/// Selects the native image view declared by one render-pass attachment.
-	pub(super) fn get_attachment_image_view(
-		&self,
+	/// Selects the native view of `image` that one render-pass attachment declares.
+	pub(super) fn attachment_image_view(
 		attachment: &graphics_hardware_interface::AttachmentInformation,
+		image: &Image,
 	) -> vk::ImageView {
-		let image = self.get_image(self.get_attachment_image_handle(attachment));
 		let image_layer_count = image.layers.map_or(1, |layer_count| layer_count.get());
 		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
 
@@ -646,39 +652,53 @@ impl CommandBufferRecording<'_> {
 			return;
 		};
 
-		let attachment_info = |attachment: &graphics_hardware_interface::AttachmentInformation| {
-			vk::RenderingAttachmentInfo::default()
-				.image_view(self.get_attachment_image_view(attachment))
-				.image_layout(texture_format_and_resource_use_to_image_layout(
-					self.get_attachment_format(attachment),
-					attachment.layout,
-					None,
-				))
-				.load_op(to_load_operation(attachment.load))
-				.store_op(to_store_operation(attachment.store))
-				.clear_value(to_clear_value(attachment.clear_value()))
-		};
 		let render_area = vk::Rect2D::default().extent(vk::Extent2D {
 			width: extent.width(),
 			height: extent.height(),
 		});
-		let color_attachments = attachments
-			.iter()
-			.filter(|attachment| !self.get_attachment_format(attachment).is_depth())
-			.map(|attachment| {
-				let info = attachment_info(attachment);
-				let image_extent = self.get_image(self.get_attachment_image_handle(attachment)).extent;
-				if info.image_view.is_null() && image_extent.as_array() == [0; 3] {
-					eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
-				}
-				info
-			})
-			.collect::<Vec<_>>();
-		let depth_attachment = attachments
-			.iter()
-			.find(|attachment| self.get_attachment_format(attachment).is_depth())
-			.map(attachment_info)
-			.unwrap_or_default();
+		// Each attachment's image is resolved once; its format decides whether it is the depth attachment.
+		let (color_attachments, depth_attachment) = {
+			let resolved = attachments
+				.iter()
+				.map(|attachment| {
+					let image = self.get_image(self.get_attachment_image_handle(attachment));
+					(attachment, image, attachment.format.unwrap_or(image.format_))
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let attachment_info = |&(attachment, image, format): &(
+				&graphics_hardware_interface::AttachmentInformation,
+				&Image,
+				crate::Formats,
+			)| {
+				vk::RenderingAttachmentInfo::default()
+					.image_view(Self::attachment_image_view(attachment, image))
+					.image_layout(texture_format_and_resource_use_to_image_layout(
+						format,
+						attachment.layout,
+						None,
+					))
+					.load_op(to_load_operation(attachment.load))
+					.store_op(to_store_operation(attachment.store))
+					.clear_value(to_clear_value(attachment.clear_value()))
+			};
+			let color_attachments = resolved
+				.iter()
+				.filter(|(.., format)| !format.is_depth())
+				.map(|resolved| {
+					let info = attachment_info(resolved);
+					if info.image_view.is_null() && resolved.1.extent.as_array() == [0; 3] {
+						eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
+					}
+					info
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let depth_attachment = resolved
+				.iter()
+				.find(|(.., format)| format.is_depth())
+				.map(attachment_info)
+				.unwrap_or_default();
+			(color_attachments, depth_attachment)
+		};
 		let rendering_info = vk::RenderingInfoKHR::default()
 			.color_attachments(&color_attachments)
 			.depth_attachment(&depth_attachment)
@@ -696,19 +716,12 @@ impl CommandBufferRecording<'_> {
 		}];
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.device.cmd_set_scissor(command_buffer, 0, &[render_area]);
-			self.device.device.cmd_set_viewport(command_buffer, 0, &viewports);
-			self.device.device.cmd_begin_rendering(command_buffer, &rendering_info);
+			self.device.cmd_set_scissor(command_buffer, 0, &[render_area]);
+			self.device.cmd_set_viewport(command_buffer, 0, &viewports);
+			self.device.cmd_begin_rendering(command_buffer, &rendering_info);
 		}
 		self.active_rendering = true;
 		self.active_render_extent = extent;
-	}
-
-	pub(crate) fn get_presentable_swapchain_image_handle(
-		&self,
-		present_key: graphics_hardware_interface::PresentKey,
-	) -> ImageHandle {
-		self.get_swapchain(present_key.swapchain).native_images[present_key.image_index as usize]
 	}
 
 	/// Performs a transfer-domain blit from the source image to the destination image, including the required layout
@@ -730,12 +743,8 @@ impl CommandBufferRecording<'_> {
 
 		// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the acquire wait.
 		self.consume_resources([
-			transfer_image_consumption(source_image_handle, crate::AccessPolicies::READ, crate::Layouts::Transfer),
-			transfer_image_consumption(
-				destination_image_handle,
-				crate::AccessPolicies::WRITE,
-				crate::Layouts::Transfer,
-			),
+			transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::READ),
+			transfer_consumption(Handles::Image(destination_image_handle), crate::AccessPolicies::WRITE),
 		])
 		.apply(self);
 
@@ -761,15 +770,13 @@ impl CommandBufferRecording<'_> {
 
 		unsafe {
 			self.device
-				.device
 				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_image_info);
 		}
 
-		self.consume_resources([transfer_image_consumption(
-			source_image_handle,
-			crate::AccessPolicies::NONE,
-			crate::Layouts::General,
-		)])
+		self.consume_resources([Consumption {
+			layout: crate::Layouts::General,
+			..transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::NONE)
+		}])
 		.apply(self);
 	}
 
@@ -787,7 +794,7 @@ impl CommandBufferRecording<'_> {
 		}
 
 		let present_transitions = presentation_keys.iter().map(|present_key| Consumption {
-			handle: Handles::Image(self.get_presentable_swapchain_image_handle(*present_key)),
+			handle: Handles::Image(self.get_swapchain(present_key.swapchain).native_images[present_key.image_index as usize]),
 			stages: crate::Stages::PRESENTATION,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Present,
@@ -840,7 +847,7 @@ impl CommandBufferRecording<'_> {
 			.dst_stage_mask(vk::PipelineStageFlags2::HOST)
 			.dst_access_mask(vk::AccessFlags2::HOST_READ)];
 		unsafe {
-			self.device.device.cmd_pipeline_barrier2(
+			self.device.cmd_pipeline_barrier2(
 				self.get_command_buffer().command_buffer,
 				&vk::DependencyInfo::default().memory_barriers(&barriers),
 			);
@@ -850,7 +857,6 @@ impl CommandBufferRecording<'_> {
 	pub fn end_recording(&self) {
 		unsafe {
 			self.device
-				.device
 				.end_command_buffer(self.get_command_buffer().command_buffer)
 				.expect("Failed to end command buffer.");
 		}
@@ -883,7 +889,7 @@ impl CommandBufferRecording<'_> {
 				.dst_buffer(self.get_buffer(copy.dst_buffer).buffer)
 				.regions(&regions);
 
-			unsafe { self.device.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
+			unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
 		}
 	}
 
@@ -928,9 +934,7 @@ impl CommandBufferRecording<'_> {
 				.regions(&regions);
 
 			unsafe {
-				self.device
-					.device
-					.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
+				self.device.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
 			}
 		}
 
@@ -941,14 +945,5 @@ impl CommandBufferRecording<'_> {
 			layout: crate::Layouts::Read,
 		}))
 		.apply(self);
-	}
-}
-
-fn transfer_image_consumption(image: ImageHandle, access: crate::AccessPolicies, layout: crate::Layouts) -> Consumption {
-	Consumption {
-		handle: Handles::Image(image),
-		stages: crate::Stages::TRANSFER,
-		access,
-		layout,
 	}
 }

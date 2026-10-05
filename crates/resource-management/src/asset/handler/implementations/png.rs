@@ -1,6 +1,7 @@
 /// The `PNGAssetHandler` struct configures PNG decoding for image assets.
 ///
 /// Palette and low-bit-depth images are expanded to whole channels while decoding.
+#[derive(Default)]
 pub struct PNGAssetHandler;
 
 impl PNGAssetHandler {
@@ -25,13 +26,10 @@ impl AssetHandler for PNGAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let cursor = std::io::Cursor::new(data);
-		let mut decoder = png::Decoder::new(cursor);
+		let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-		let Some(size) = reader.output_buffer_size() else {
-			return Err(LoadErrors::FailedToProcess);
-		};
+		let size = reader.output_buffer_size().ok_or(LoadErrors::FailedToProcess)?;
 		let mut buffer = Vec::with_capacity_in(size, allocator);
 		buffer.resize(size, 0);
 		let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -40,13 +38,8 @@ impl AssetHandler for PNGAssetHandler {
 		let extent = Extent::rectangle(info.width, info.height);
 		let gamma = png_gamma(reader.info(), semantic);
 		let (channels, encoding) = png_source_layout(info.color_type, info.bit_depth)?;
-		let description = ImageDescription {
-			semantic,
-			gamma,
-			generate_mipmaps: false,
-		};
 		let source = ImageSource::new(extent, channels, encoding, &buffer);
-		let (asset, data) = process_image_in(url, description, source, allocator)
+		let (asset, data) = process_image_in(url, semantic, gamma, source, allocator, None)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
@@ -54,14 +47,8 @@ impl AssetHandler for PNGAssetHandler {
 	}
 }
 
-impl Default for PNGAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 /// Determines the image gamma from its semantic and the transfer functions the engine can represent.
-fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::processor::implementations::image::Semantic) -> Gamma {
+fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::image::Semantic) -> Gamma {
 	let semantic_gamma = gamma_from_semantic(semantic);
 
 	// Color-profile metadata is frequently attached to every exported PNG. Data textures must keep their numeric samples
@@ -217,9 +204,9 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::image::{
-		ImageDescription, ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name,
-		png_declared_gamma, process_image_in,
+	processors::image::{
+		ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name, png_declared_gamma,
+		process_image_in,
 	},
 	types::Gamma,
 };

@@ -4,7 +4,7 @@ use super::*;
 
 struct RuntimeClip {
 	state: AnimationStateId,
-	lease: AnimationLease,
+	resource_id: Box<str>,
 	pose_map: SkeletonPoseMap,
 	playback: AnimationPlayback,
 	duration: f32,
@@ -12,20 +12,13 @@ struct RuntimeClip {
 }
 
 impl RuntimeClip {
-	fn new(
-		state: AnimationStateId,
-		lease: AnimationLease,
-		resident: &ResidentAnimationLease<'_>,
-		playback: AnimationPlayback,
-		target: &Skeleton,
-	) -> Self {
-		let pose_map = SkeletonPoseMap::by_name(resident.skeleton(), target);
+	fn new(state: AnimationStateId, clip: &AnimationClip, resident: &ResidentAnimationLease<'_>, target: &Skeleton) -> Self {
 		Self {
 			state,
-			lease,
-			pose_map,
-			playback,
-			duration: resident.packed().duration(),
+			resource_id: clip.resource_id.clone(),
+			pose_map: SkeletonPoseMap::by_name(&resident.entry.skeleton, target),
+			playback: clip.playback,
+			duration: resident.packed.duration(),
 			time_seconds: 0.0,
 		}
 	}
@@ -34,32 +27,26 @@ impl RuntimeClip {
 		self.playback == AnimationPlayback::Once && self.time_seconds >= self.duration
 	}
 
-	fn advance(&mut self, delta: MediaTime) -> ClipAdvance {
-		let previous_time = self.time_seconds;
+	/// Moves playback forward by `delta` and returns how many times a looping clip wrapped.
+	fn advance(&mut self, delta: MediaTime) -> usize {
 		let duration = self.duration;
 		if duration <= 0.0 {
 			self.time_seconds = 0.0;
-			return ClipAdvance { wrapped_loops: 0 };
+			return 0;
 		}
 
-		let advanced = previous_time + delta.as_seconds_f32();
+		let advanced = self.time_seconds + delta.as_seconds_f32();
 		match self.playback {
 			AnimationPlayback::Loop => {
-				let wrapped_loops = (advanced / duration).floor().max(0.0) as usize;
 				self.time_seconds = advanced.rem_euclid(duration);
-				ClipAdvance { wrapped_loops }
+				(advanced / duration).floor().max(0.0) as usize
 			}
 			AnimationPlayback::Once => {
 				self.time_seconds = advanced.min(duration);
-				ClipAdvance { wrapped_loops: 0 }
+				0
 			}
 		}
 	}
-}
-
-#[derive(Clone, Copy)]
-struct ClipAdvance {
-	wrapped_loops: usize,
 }
 
 struct ActiveTransition {
@@ -96,13 +83,9 @@ impl RootMotionTranslation {
 		Self(self.0 | other.0)
 	}
 
-	const fn contains(self, axis: Self) -> bool {
-		self.0 & axis.0 != 0
-	}
-
 	/// Takes `selected` along the axes this selection contains and `unselected` along the others.
 	fn select(self, selected: Vector<ParentSpace>, unselected: Vector<ParentSpace>) -> Vector<ParentSpace> {
-		let axis = |axis, selected: f32, unselected: f32| if self.contains(axis) { selected } else { unselected };
+		let axis = |axis: Self, selected: f32, unselected: f32| if self.0 & axis.0 != 0 { selected } else { unselected };
 		Vector::new(
 			axis(Self::X, selected.x(), unselected.x()),
 			axis(Self::Y, selected.y(), unselected.y()),
@@ -150,59 +133,19 @@ struct RootMotionTarget {
 	rotation: RootMotionRotation,
 }
 
-/// Retains root-motion configuration until the initial clip supplies the canonical skeleton.
-struct OwnedRootMotionSettings {
-	node_name: Box<str>,
-	translation: RootMotionTranslation,
-	rotation: RootMotionRotation,
-}
-
-impl From<RootMotionSettings<'_>> for OwnedRootMotionSettings {
-	fn from(settings: RootMotionSettings<'_>) -> Self {
-		Self {
-			node_name: settings.node_name.into(),
-			translation: settings.translation,
-			rotation: settings.rotation,
-		}
-	}
-}
-
 /// The `AnimationGraphPose` struct borrows the latest player pose and frame root motion.
+///
+/// Apply [`Self::root_motion`] to the owning object, then submit [`Self::global_pose`] to rendering during the
+/// current tick.
 pub struct AnimationGraphPose<'a> {
-	skeleton: &'a Skeleton,
-	local_pose: &'a [LocalTransform],
-	global_pose: &'a [Matrix],
-	root_motion: RootMotionDelta,
-}
-
-impl<'a> AnimationGraphPose<'a> {
-	/// Returns the canonical skeleton that defines the pose's node and matrix order.
-	pub fn skeleton(&self) -> &'a Skeleton {
-		self.skeleton
-	}
-
-	/// Returns blendable local transforms with extracted root motion removed when configured.
-	pub fn local_pose(&self) -> &'a [LocalTransform] {
-		self.local_pose
-	}
-
-	/// Returns renderer-facing global skeleton matrices.
-	pub fn global_pose(&self) -> &'a [Matrix] {
-		self.global_pose
-	}
-
-	/// Returns this frame's root translation and rotation delta.
-	pub const fn root_motion(&self) -> RootMotionDelta {
-		self.root_motion
-	}
-}
-
-/// The `AnimationEvaluation` enum reports whether the initial clip has supplied a canonical skeleton and pose.
-pub enum AnimationEvaluation<'a> {
-	/// Keep the renderable's existing pose while the initial clip loads asynchronously.
-	Waiting,
-	/// Apply root motion and submit the evaluated pose during the current tick.
-	Ready(AnimationGraphPose<'a>),
+	/// The canonical skeleton that defines the pose's node and matrix order.
+	pub skeleton: &'a Skeleton,
+	/// Blendable local transforms with extracted root motion removed when configured.
+	pub local_pose: &'a [LocalTransform],
+	/// Renderer-facing global skeleton matrices.
+	pub global_pose: &'a [Matrix],
+	/// This frame's root translation and rotation delta.
+	pub root_motion: RootMotionDelta,
 }
 
 /// The `AnimationGraphPlayer` struct retains local playback while the pool resolves all graph data asynchronously.
@@ -212,7 +155,8 @@ pub enum AnimationEvaluation<'a> {
 /// initial clip supplies the canonical skeleton used by every graph clip.
 pub struct AnimationGraphPlayer<'graph> {
 	graph: &'graph AnimationGraph,
-	root_motion: Option<OwnedRootMotionSettings>,
+	/// Retained until the initial clip supplies the canonical skeleton that resolves the node name.
+	root_motion: Option<RootMotionSettings<'graph>>,
 	runtime: Option<ReadyAnimationGraphPlayer<'graph>>,
 }
 
@@ -220,10 +164,10 @@ pub struct AnimationGraphPlayer<'graph> {
 fn prefetch_neighbors(graph: &AnimationGraph, state: AnimationStateId, pool: &mut AnimationPool) {
 	let state = graph.state(state);
 	for transition in &state.transitions {
-		let _ = pool.request(&graph.state(transition.target).clip.lease);
+		let _ = pool.request(graph.state(transition.target).clip.resource_id());
 	}
-	if let Some(completion) = state.completion_target() {
-		let _ = pool.request(&graph.state(completion).clip.lease);
+	if let Some(completion) = state.completion {
+		let _ = pool.request(graph.state(completion).clip.resource_id());
 	}
 }
 
@@ -236,13 +180,12 @@ impl AnimationPool {
 	pub fn create_player<'graph>(
 		&mut self,
 		graph: &'graph AnimationGraph,
-		root_motion: Option<RootMotionSettings<'_>>,
+		root_motion: Option<RootMotionSettings<'graph>>,
 	) -> AnimationGraphPlayer<'graph> {
-		let initial = &graph.state(graph.initial_state()).clip.lease;
-		let _ = self.request(initial);
+		let _ = self.request(graph.state(graph.initial_state()).clip.resource_id());
 		AnimationGraphPlayer {
 			graph,
-			root_motion: root_motion.map(OwnedRootMotionSettings::from),
+			root_motion,
 			runtime: None,
 		}
 	}
@@ -255,12 +198,15 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 	}
 
 	/// Initializes from the initial clip when ready, then evaluates locally toward `requested`.
+	///
+	/// Returns [`None`] while the initial clip loads asynchronously. Keep the renderable's existing pose until a pose
+	/// arrives.
 	pub fn advance(
 		&mut self,
 		delta: MediaTime,
 		requested: AnimationStateId,
 		pool: &mut AnimationPool,
-	) -> Result<AnimationEvaluation<'_>, AnimationGraphPlayerError> {
+	) -> Result<Option<AnimationGraphPose<'_>>, AnimationGraphPlayerError> {
 		if delta < MediaTime::ZERO {
 			return Err(AnimationGraphPlayerError::NegativeDelta);
 		}
@@ -269,23 +215,31 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 		}
 
 		if self.runtime.is_none() {
-			let initial = &self.graph.state(self.graph.initial_state()).clip.lease;
+			let initial = self.graph.state(self.graph.initial_state()).clip.resource_id();
 			if pool.request(initial) != AnimationPoolRequest::Ready {
-				return Ok(AnimationEvaluation::Waiting);
+				return Ok(None);
 			}
-			let skeleton = pool
-				.acquire(initial)
-				.expect("ready initial animation lease must remain resident")
-				.shared_skeleton();
-			self.runtime = Some(ReadyAnimationGraphPlayer::new(
-				self.graph,
-				skeleton,
-				self.root_motion.as_ref(),
-			)?);
+			let skeleton = Arc::clone(
+				&pool
+					.acquire(initial)
+					.expect("ready initial animation lease must remain resident")
+					.entry
+					.skeleton,
+			);
+			// The canonical skeleton sizes every retained evaluation buffer, and the player starts in the initial state.
+			self.runtime = Some(ReadyAnimationGraphPlayer {
+				graph: self.graph,
+				playback: Playback::AwaitingInitial,
+				pending: Some(PendingPlayerTransition {
+					target: self.graph.initial_state(),
+					duration: None,
+				}),
+				pose: PlayerPose::new(skeleton, self.root_motion)?,
+			});
 		}
 
 		let runtime = self.runtime.as_mut().expect("player runtime was initialized above");
-		Ok(AnimationEvaluation::Ready(runtime.advance(delta, requested, pool)))
+		Ok(Some(runtime.advance(delta, requested, pool)))
 	}
 }
 
@@ -320,23 +274,6 @@ struct PlayerPose {
 }
 
 impl<'graph> ReadyAnimationGraphPlayer<'graph> {
-	/// Initializes retained evaluation state from the initial clip's canonical skeleton.
-	fn new(
-		graph: &'graph AnimationGraph,
-		target: Arc<Skeleton>,
-		root_motion: Option<&OwnedRootMotionSettings>,
-	) -> Result<Self, AnimationGraphPlayerError> {
-		Ok(Self {
-			graph,
-			playback: Playback::AwaitingInitial,
-			pending: Some(PendingPlayerTransition {
-				target: graph.initial_state(),
-				duration: None,
-			}),
-			pose: PlayerPose::new(target, root_motion)?,
-		})
-	}
-
 	/// Returns the currently playing destination state.
 	fn state(&self) -> Option<AnimationStateId> {
 		match &self.playback {
@@ -372,22 +309,24 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 				RootMotionDelta::IDENTITY
 			}
 			Playback::Playing(active) => {
-				if pool.request(&active.lease) == AnimationPoolRequest::Ready {
-					let resident = pool.acquire(&active.lease).expect("ready active lease must remain resident");
+				if pool.request(&active.resource_id) == AnimationPoolRequest::Ready {
+					let resident = pool
+						.acquire(&active.resource_id)
+						.expect("ready active lease must remain resident");
 					self.pose.advance_active(active, delta, &resident)
 				} else {
 					RootMotionDelta::IDENTITY
 				}
 			}
 			Playback::Transitioning(transition) => {
-				if pool.request(&transition.source.lease) == AnimationPoolRequest::Ready
-					&& pool.request(&transition.destination.lease) == AnimationPoolRequest::Ready
+				if pool.request(&transition.source.resource_id) == AnimationPoolRequest::Ready
+					&& pool.request(&transition.destination.resource_id) == AnimationPoolRequest::Ready
 				{
 					let source = pool
-						.acquire(&transition.source.lease)
+						.acquire(&transition.source.resource_id)
 						.expect("ready source lease must remain resident");
 					let destination = pool
-						.acquire(&transition.destination.lease)
+						.acquire(&transition.destination.resource_id)
 						.expect("ready destination lease must remain resident");
 					let root_motion = self.pose.advance_transition(transition, delta, &source, &destination);
 					if transition.elapsed == transition.duration {
@@ -419,19 +358,14 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		let Some(pending) = self.pending.as_ref() else {
 			return;
 		};
-		let target_state = self.graph.state(pending.target);
-		let lease = target_state.clip.lease.clone();
-		if pool.request(&lease) != AnimationPoolRequest::Ready {
+		let clip = &self.graph.state(pending.target).clip;
+		if pool.request(clip.resource_id()) != AnimationPoolRequest::Ready {
 			return;
 		}
-		let resident = pool.acquire(&lease).expect("ready pending lease must remain resident");
-		let destination = RuntimeClip::new(
-			pending.target,
-			lease,
-			&resident,
-			target_state.clip.playback(),
-			&self.pose.target,
-		);
+		let resident = pool
+			.acquire(clip.resource_id())
+			.expect("ready pending lease must remain resident");
+		let destination = RuntimeClip::new(pending.target, clip, &resident, &self.pose.target);
 		let target = pending.target;
 
 		self.playback = if let Some(duration) = pending.duration {
@@ -479,7 +413,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 
 impl PlayerPose {
 	/// Allocates sampling buffers once from the canonical rest pose.
-	fn new(target: Arc<Skeleton>, root_motion: Option<&OwnedRootMotionSettings>) -> Result<Self, AnimationGraphPlayerError> {
+	fn new(target: Arc<Skeleton>, root_motion: Option<RootMotionSettings<'_>>) -> Result<Self, AnimationGraphPlayerError> {
 		let root_motion = resolve_root_motion_target(&target, root_motion)?;
 		let node_count = target.nodes.len();
 		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
@@ -509,7 +443,7 @@ impl PlayerPose {
 		delta: MediaTime,
 		resident: &ResidentAnimationLease<'_>,
 	) -> RootMotionDelta {
-		let advance = active.advance(delta);
+		let wrapped_loops = active.advance(delta);
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
 		sample_target_pose(active, resident, &mut self.active_current);
 		let root_motion = root_delta(
@@ -517,7 +451,7 @@ impl PlayerPose {
 			active,
 			&self.active_previous,
 			&self.active_current,
-			advance,
+			wrapped_loops,
 			resident,
 			&self.target,
 			&mut self.loop_start,
@@ -537,84 +471,76 @@ impl PlayerPose {
 		source_resident: &ResidentAnimationLease<'_>,
 		destination_resident: &ResidentAnimationLease<'_>,
 	) -> RootMotionDelta {
-		let root_motion_target = self.root_motion;
-		let target = &self.target;
-		let (root_motion, completed) = {
-			let source_advance = transition.source.advance(delta);
-			let destination_advance = transition.destination.advance(delta);
-			std::mem::swap(&mut self.active_previous, &mut self.active_current);
-			std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
-			sample_target_pose(&transition.source, source_resident, &mut self.active_current);
-			sample_target_pose(&transition.destination, destination_resident, &mut self.destination_current);
+		let source_wrapped_loops = transition.source.advance(delta);
+		let destination_wrapped_loops = transition.destination.advance(delta);
+		std::mem::swap(&mut self.active_previous, &mut self.active_current);
+		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
+		sample_target_pose(&transition.source, source_resident, &mut self.active_current);
+		sample_target_pose(&transition.destination, destination_resident, &mut self.destination_current);
 
-			let source_root_motion = root_delta(
-				root_motion_target,
-				&transition.source,
-				&self.active_previous,
-				&self.active_current,
-				source_advance,
-				source_resident,
-				target,
-				&mut self.loop_start,
-				&mut self.loop_end,
-			);
-			let destination_root_motion = root_delta(
-				root_motion_target,
-				&transition.destination,
-				&self.destination_previous,
-				&self.destination_current,
-				destination_advance,
-				destination_resident,
-				target,
-				&mut self.loop_start,
-				&mut self.loop_end,
-			);
+		let source_root_motion = root_delta(
+			self.root_motion,
+			&transition.source,
+			&self.active_previous,
+			&self.active_current,
+			source_wrapped_loops,
+			source_resident,
+			&self.target,
+			&mut self.loop_start,
+			&mut self.loop_end,
+		);
+		let destination_root_motion = root_delta(
+			self.root_motion,
+			&transition.destination,
+			&self.destination_previous,
+			&self.destination_current,
+			destination_wrapped_loops,
+			destination_resident,
+			&self.target,
+			&mut self.loop_start,
+			&mut self.loop_end,
+		);
 
-			let duration = transition.duration;
-			if duration == MediaTime::ZERO {
-				self.local_pose.copy_from_slice(&self.destination_current);
-			} else if delta == MediaTime::ZERO && !transition.begun {
-				// Inertialization needs a non-zero sample interval to derive velocities.
-				// Keep the source pose for this zero-time tick and begin next advance.
-				self.local_pose.copy_from_slice(&self.active_current);
-			} else {
-				if !transition.begun {
-					self.inertializer
-						.begin(
-							&self.active_previous,
-							&self.active_current,
-							&self.destination_previous,
-							&self.destination_current,
-							delta,
-							duration,
-						)
-						.expect("player pose buffers must match the canonical skeleton");
-					transition.begun = true;
-				}
+		let duration = transition.duration;
+		if duration == MediaTime::ZERO {
+			self.local_pose.copy_from_slice(&self.destination_current);
+		} else if delta == MediaTime::ZERO && !transition.begun {
+			// Inertialization needs a non-zero sample interval to derive velocities.
+			// Keep the source pose for this zero-time tick and begin next advance.
+			self.local_pose.copy_from_slice(&self.active_current);
+		} else {
+			if !transition.begun {
 				self.inertializer
-					.apply(&self.destination_current, delta, &mut self.local_pose)
+					.begin(
+						&self.active_previous,
+						&self.active_current,
+						&self.destination_previous,
+						&self.destination_current,
+						delta,
+						duration,
+					)
 					.expect("player pose buffers must match the canonical skeleton");
+				transition.begun = true;
 			}
+			self.inertializer
+				.apply(&self.destination_current, delta, &mut self.local_pose)
+				.expect("player pose buffers must match the canonical skeleton");
+		}
 
-			transition.elapsed = (transition.elapsed + delta).min(duration);
-			let transition_factor = if duration == MediaTime::ZERO {
-				1.0
-			} else {
-				(transition.elapsed.as_seconds_f32() / duration.as_seconds_f32()).clamp(0.0, 1.0)
-			};
-			(
-				source_root_motion.blend(destination_root_motion, transition_factor),
-				transition.elapsed == duration,
-			)
+		transition.elapsed = (transition.elapsed + delta).min(duration);
+		let transition_factor = if duration == MediaTime::ZERO {
+			1.0
+		} else {
+			(transition.elapsed.as_seconds_f32() / duration.as_seconds_f32()).clamp(0.0, 1.0)
 		};
 		self.remove_root_motion_from_visual_pose();
 		self.write_global_pose();
 
-		if completed {
+		if transition.elapsed == duration {
 			self.active_previous.copy_from_slice(&self.destination_current);
 			self.active_current.copy_from_slice(&self.destination_current);
 		}
-		root_motion
+		source_root_motion.blend(destination_root_motion, transition_factor)
 	}
 
 	/// Restores the canonical pose while no clip is ready.
@@ -693,12 +619,12 @@ impl std::error::Error for AnimationGraphPlayerError {}
 /// Resolves the stable root-motion name once so steady-state sampling retains a numeric node index.
 fn resolve_root_motion_target(
 	target: &Skeleton,
-	root_motion: Option<&OwnedRootMotionSettings>,
+	root_motion: Option<RootMotionSettings<'_>>,
 ) -> Result<Option<RootMotionTarget>, AnimationGraphPlayerError> {
 	let Some(settings) = root_motion else {
 		return Ok(None);
 	};
-	let name = settings.node_name.as_ref();
+	let name = settings.node_name;
 	let mut matches = target
 		.nodes
 		.iter()
@@ -721,7 +647,7 @@ fn resolve_root_motion_target(
 /// Samples one loaded clip directly into canonical-skeleton local transforms.
 fn sample_target_pose(clip: &RuntimeClip, resident: &ResidentAnimationLease<'_>, output: &mut [LocalTransform]) {
 	resident
-		.packed()
+		.packed
 		.sample_target_local_pose(&clip.pose_map, clip.time_seconds, output);
 }
 
@@ -732,7 +658,7 @@ fn root_delta(
 	clip: &RuntimeClip,
 	previous: &[LocalTransform],
 	current: &[LocalTransform],
-	advance: ClipAdvance,
+	wrapped_loops: usize,
 	resident: &ResidentAnimationLease<'_>,
 	target: &Skeleton,
 	loop_start: &mut Vec<LocalTransform>,
@@ -741,20 +667,20 @@ fn root_delta(
 	let Some(root_motion) = root_motion else {
 		return RootMotionDelta::IDENTITY;
 	};
-	if advance.wrapped_loops == 0 {
+	if wrapped_loops == 0 {
 		return object_space_root_delta(root_motion, target, previous, current);
 	}
 
 	// Sample the clip ends only for a loop crossing. This keeps the common
 	// steady-state path to one clip sample while preserving forward root motion.
 	resident
-		.packed()
+		.packed
 		.sample_target_local_pose(&clip.pose_map, clip.duration, loop_end);
-	resident.packed().sample_target_local_pose(&clip.pose_map, 0.0, loop_start);
+	resident.packed.sample_target_local_pose(&clip.pose_map, 0.0, loop_start);
 
 	let mut delta = object_space_root_delta(root_motion, target, previous, loop_end);
 	let full_loop = object_space_root_delta(root_motion, target, loop_start, loop_end);
-	for _ in 1..advance.wrapped_loops {
+	for _ in 1..wrapped_loops {
 		delta = delta.then(full_loop);
 	}
 	delta.then(object_space_root_delta(root_motion, target, loop_start, current))
@@ -821,57 +747,18 @@ mod tests {
 		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
-			skeleton::{LocalTransform, Skeleton, SkeletonNode},
+			skeleton::{LocalTransform, Skeleton},
 		},
 	};
 
+	use super::super::tests::{packed_test_animation_bytes, test_animation};
 	use super::*;
-	use crate::MediaTime;
+	use crate::{MediaTime, animation::test_node};
 
-	fn test_skeleton() -> Skeleton {
-		Skeleton {
-			nodes: vec![SkeletonNode {
-				name: Some("root".into()),
-				parent: None,
-				rest_local: LocalTransform::identity(),
-			}],
-		}
-	}
-
-	fn test_animation(name: &str, end_translation: f32) -> Animation {
-		test_animation_with_skeleton(name, end_translation, test_skeleton())
-	}
-
-	fn test_animation_with_skeleton(name: &str, end_translation: f32, skeleton: Skeleton) -> Animation {
-		Animation {
-			name: Some(name.into()),
-			skeleton: Reference::in_memory("test.skeleton", skeleton),
-			duration: 1.0,
-			tracks: vec![NodeTrack {
-				node: 0,
-				translation: Some(TranslationCurve::Linear {
-					times: vec![0.0, 1.0],
-					values: vec![
-						math::Vector::from_array([0.0; 3]),
-						math::Vector::from_array([end_translation, 0.0, 0.0]),
-					],
-				}),
-				rotation: None,
-				scale: None,
-			}],
-		}
-	}
-
-	/// Measures the representation retained by the pool rather than the transient resource representation.
-	fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
-		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
-	}
-
-	fn ready(result: Result<AnimationEvaluation<'_>, AnimationGraphPlayerError>) -> AnimationGraphPose<'_> {
-		match result.expect("animation evaluation should succeed") {
-			AnimationEvaluation::Waiting => panic!("resident initial clip should produce a pose"),
-			AnimationEvaluation::Ready(pose) => pose,
-		}
+	fn ready(result: Result<Option<AnimationGraphPose<'_>>, AnimationGraphPlayerError>) -> AnimationGraphPose<'_> {
+		result
+			.expect("animation evaluation should succeed")
+			.expect("resident initial clip should produce a pose")
 	}
 
 	#[test]
@@ -882,7 +769,7 @@ mod tests {
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0)
 			+ packed_test_animation_bytes("backward", -1.0);
-		let mut pool = super::super::test_pool(byte_budget);
+		let mut pool = AnimationPool::detached(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 
 		let builder = AnimationGraph::builder();
@@ -893,20 +780,20 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.when(AnimationTransition::new());
-		idle.to(backward).when(AnimationTransition::new());
+			.when(MediaTime::ZERO);
+		idle.to(backward).when(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		assert!(!pool.entries.contains_key(&AnimationLease::new("start.animation")));
+		assert!(!pool.entries.contains_key("start.animation"));
 		player
 			.advance(MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("enters the initial idle state");
 
-		assert!(pool.entries.contains_key(&AnimationLease::new("start.animation")));
-		assert!(pool.entries.contains_key(&AnimationLease::new("backward.animation")));
-		assert!(!pool.entries.contains_key(&AnimationLease::new("walk.animation")));
-		assert!(!pool.entries.contains_key(&AnimationLease::new("unrelated.animation")));
+		assert!(pool.entries.contains_key("start.animation"));
+		assert!(pool.entries.contains_key("backward.animation"));
+		assert!(!pool.entries.contains_key("walk.animation"));
+		assert!(!pool.entries.contains_key("unrelated.animation"));
 
 		pool.admit("start.animation".into(), start_animation);
 		player
@@ -914,8 +801,8 @@ mod tests {
 			.expect("starts the walk transition clip");
 
 		assert_eq!(player.state(), Some(start_walk.id()));
-		assert!(pool.entries.contains_key(&AnimationLease::new("walk.animation")));
-		assert!(!pool.entries.contains_key(&AnimationLease::new("unrelated.animation")));
+		assert!(pool.entries.contains_key("walk.animation"));
+		assert!(!pool.entries.contains_key("unrelated.animation"));
 	}
 
 	#[test]
@@ -923,41 +810,41 @@ mod tests {
 		let idle = test_animation("idle", 1.0);
 		let run = test_animation("run", 3.0);
 		let byte_budget = packed_test_animation_bytes("idle", 1.0).saturating_add(packed_test_animation_bytes("run", 3.0));
-		let mut pool = super::super::test_pool(byte_budget);
+		let mut pool = AnimationPool::detached(byte_budget);
 		pool.admit("idle.animation".into(), idle);
 		pool.admit("run.animation".into(), run);
 
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
-		idle.to(run).when(AnimationTransition::new());
+		idle.to(run).when(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
 		let initial = ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
 
-		assert_eq!(initial.local_pose()[0], LocalTransform::identity());
-		let root_motion = ready(player.advance(MediaTime::from_millis(500), idle.id(), &mut pool)).root_motion();
+		assert_eq!(initial.local_pose[0], LocalTransform::identity());
+		let root_motion = ready(player.advance(MediaTime::from_millis(500), idle.id(), &mut pool)).root_motion;
 
 		assert_eq!(root_motion.translation, math::Vector::new(0.5, 0.0, 0.0));
 		assert_eq!(
-			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool)).local_pose()[0].translation,
+			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool)).local_pose[0].translation,
 			math::Vector::zero()
 		);
 
 		let switched = ready(player.advance(MediaTime::ZERO, run.id(), &mut pool));
 
-		assert_eq!(switched.root_motion().translation, math::Vector::zero());
+		assert_eq!(switched.root_motion.translation, math::Vector::zero());
 		assert_eq!(player.state(), Some(run.id()));
 		assert_eq!(
 			ready(player.advance(MediaTime::from_millis(500), run.id(), &mut pool))
-				.root_motion()
+				.root_motion
 				.translation,
 			math::Vector::new(1.5, 0.0, 0.0)
 		);
 		assert_eq!(
 			ready(player.advance(MediaTime::from_millis(750), run.id(), &mut pool))
-				.root_motion()
+				.root_motion
 				.translation,
 			math::Vector::new(2.25, 0.0, 0.0)
 		);
@@ -971,7 +858,7 @@ mod tests {
 		let byte_budget = packed_test_animation_bytes("idle", 0.0)
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = super::super::test_pool(byte_budget);
+		let mut pool = AnimationPool::detached(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 
 		let builder = AnimationGraph::builder();
@@ -980,7 +867,7 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.when(AnimationTransition::new());
+			.when(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
@@ -1027,7 +914,7 @@ mod tests {
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("stop", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = super::super::test_pool(byte_budget);
+		let mut pool = AnimationPool::detached(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 		pool.admit("start.animation".into(), start_animation);
 		pool.admit("stop.animation".into(), stop_animation);
@@ -1039,11 +926,11 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.anytime(AnimationTransition::new());
+			.anytime(MediaTime::ZERO);
 		let stop_walk = walk
 			.to(idle)
 			.with(AnimationClip::once("stop.animation"))
-			.anytime(AnimationTransition::new());
+			.anytime(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
@@ -1076,17 +963,14 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let graph = builder.build(idle).expect("graph should build");
 		let animation = test_animation("idle", 0.0);
-		let mut pool = super::super::test_pool(PackedAnimationData::resident_bytes(&animation));
+		let mut pool = AnimationPool::detached(animation.resident_bytes());
 		let mut player = pool.create_player(&graph, None);
 
-		assert!(matches!(
-			player.advance(MediaTime::ZERO, idle.id(), &mut pool),
-			Ok(AnimationEvaluation::Waiting)
-		));
+		assert!(matches!(player.advance(MediaTime::ZERO, idle.id(), &mut pool), Ok(None)));
 
 		pool.admit("idle.animation".into(), animation);
 		let pose = ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
-		assert_eq!(pose.skeleton().nodes.len(), 1);
+		assert_eq!(pose.skeleton.nodes.len(), 1);
 	}
 
 	#[test]
@@ -1094,58 +978,29 @@ mod tests {
 		let root_rotation =
 			math::Orientation::try_from_rotation_vector(Vector::<ParentSpace>::new(0.0, std::f32::consts::FRAC_PI_2, 0.0))
 				.unwrap();
+		let root_rest = LocalTransform {
+			rotation: root_rotation,
+			scale: math::Scale::from_array([0.01; 3]),
+			..LocalTransform::identity()
+		};
+		let hips_rest = LocalTransform {
+			translation: math::Vector::from_array([0.0, 100.0, 0.0]),
+			..LocalTransform::identity()
+		};
 		let source = Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("Root".into()),
-					parent: None,
-					rest_local: LocalTransform {
-						rotation: root_rotation,
-						scale: math::Scale::from_array([0.01; 3]),
-						..LocalTransform::identity()
-					},
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: Some(0),
-					rest_local: LocalTransform {
-						translation: math::Vector::from_array([0.0, 100.0, 0.0]),
-						..LocalTransform::identity()
-					},
-				},
+				test_node(Some("Root"), None, root_rest),
+				test_node(Some("Hips"), Some(0), hips_rest),
 			],
 		};
 		// The target inserts helper nodes before Hips, matching FBX rigs whose
 		// compatible named joints do not share source indices.
 		let target = Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: None,
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Root".into()),
-					parent: Some(0),
-					rest_local: LocalTransform {
-						rotation: root_rotation,
-						scale: math::Scale::from_array([0.01; 3]),
-						..LocalTransform::identity()
-					},
-				},
-				SkeletonNode {
-					name: Some("IK Helper".into()),
-					parent: Some(1),
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: Some(1),
-					rest_local: LocalTransform {
-						translation: math::Vector::from_array([0.0, 100.0, 0.0]),
-						..LocalTransform::identity()
-					},
-				},
+				test_node(None, None, LocalTransform::identity()),
+				test_node(Some("Root"), Some(0), root_rest),
+				test_node(Some("IK Helper"), Some(1), LocalTransform::identity()),
+				test_node(Some("Hips"), Some(1), hips_rest),
 			],
 		};
 		let animation = Animation {
@@ -1156,10 +1011,7 @@ mod tests {
 				node: 1,
 				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![
-						math::Vector::from_array([0.0, 100.0, 0.0]),
-						math::Vector::from_array([20.0, 110.0, -100.0]),
-					],
+					values: vec![math::Vector::new(0.0, 100.0, 0.0), math::Vector::new(20.0, 110.0, -100.0)],
 				}),
 				rotation: Some(RotationCurve::Linear {
 					times: vec![0.0, 1.0],
@@ -1178,13 +1030,13 @@ mod tests {
 			tracks: Vec::new(),
 		};
 		let byte_budget = idle_animation.estimated_resident_bytes() + animation.estimated_resident_bytes();
-		let mut pool = super::super::test_pool(byte_budget);
-		pool.admit("idle.animation".into(), idle_animation);
-		pool.admit("walk.animation".into(), animation);
+		let mut pool = AnimationPool::detached(byte_budget);
+		pool.admit("idle.animation".into(), PackedAnimationData::from_resource(idle_animation));
+		pool.admit("walk.animation".into(), PackedAnimationData::from_resource(animation));
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		idle.to(walk).when(AnimationTransition::new());
+		idle.to(walk).when(MediaTime::ZERO);
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(
 			&graph,
@@ -1196,23 +1048,23 @@ mod tests {
 		);
 
 		let initial = ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
-		assert_eq!(initial.root_motion().translation, math::Vector::zero());
+		assert_eq!(initial.root_motion.translation, math::Vector::zero());
 		let switched = ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
-		assert_eq!(switched.root_motion().translation, math::Vector::zero());
+		assert_eq!(switched.root_motion.translation, math::Vector::zero());
 		let first = ready(player.advance(MediaTime::from_millis(750), walk.id(), &mut pool));
-		math::assert_float_eq!(first.root_motion().translation.x(), -0.75);
-		math::assert_float_eq!(first.root_motion().translation.y(), 0.0);
-		math::assert_float_eq!(first.root_motion().translation.z(), 0.0);
+		math::assert_float_eq!(first.root_motion.translation.x(), -0.75);
+		math::assert_float_eq!(first.root_motion.translation.y(), 0.0);
+		math::assert_float_eq!(first.root_motion.translation.z(), 0.0);
 
-		assert_eq!(first.local_pose()[3].translation, math::Vector::new(15.0, 107.5, 0.0));
-		assert_ne!(first.local_pose()[3].rotation, LocalTransform::identity().rotation);
+		assert_eq!(first.local_pose[3].translation, math::Vector::new(15.0, 107.5, 0.0));
+		assert_ne!(first.local_pose[3].rotation, LocalTransform::identity().rotation);
 
 		let wrapped = ready(player.advance(MediaTime::from_millis(500), walk.id(), &mut pool));
-		math::assert_float_eq!(wrapped.root_motion().translation.x(), -0.5);
-		math::assert_float_eq!(wrapped.root_motion().translation.y(), 0.0);
-		math::assert_float_eq!(wrapped.root_motion().translation.z(), 0.0);
+		math::assert_float_eq!(wrapped.root_motion.translation.x(), -0.5);
+		math::assert_float_eq!(wrapped.root_motion.translation.y(), 0.0);
+		math::assert_float_eq!(wrapped.root_motion.translation.z(), 0.0);
 
-		assert_eq!(wrapped.local_pose()[3].translation, math::Vector::new(5.0, 102.5, 0.0));
-		assert_ne!(wrapped.local_pose()[3].rotation, LocalTransform::identity().rotation);
+		assert_eq!(wrapped.local_pose[3].translation, math::Vector::new(5.0, 102.5, 0.0));
+		assert_ne!(wrapped.local_pose[3].rotation, LocalTransform::identity().rotation);
 	}
 }

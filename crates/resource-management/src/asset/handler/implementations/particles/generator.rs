@@ -19,13 +19,6 @@ pub(crate) const DRAW_PUSH_CONSTANT_SIZE: u32 = 80;
 /// The steps per second a particle's aging rate is stored in, 16 bits of `packed`.
 const DECAY_STEPS: f32 = 1024.0;
 
-/// The `ParticlePrograms` struct holds the generated BESL source of one particle system.
-pub(crate) struct ParticlePrograms {
-	pub(crate) simulate: String,
-	pub(crate) vertex: String,
-	pub(crate) fragment: String,
-}
-
 /// Declarations the simulation and vertex stages share with the renderer.
 ///
 /// Particles store only scalars, because backends pad a `vec3f` struct member to 16 bytes and would double the
@@ -70,16 +63,8 @@ pub(crate) fn longest_life(system: &ParticleSystemSource) -> f32 {
 	DECAY_STEPS / (DECAY_STEPS / system.lifetime[1]).floor()
 }
 
-/// Generates the simulation, vertex, and fragment programs of a validated system.
-pub(crate) fn generate(system: &ParticleSystemSource) -> ParticlePrograms {
-	ParticlePrograms {
-		simulate: simulate_program(system),
-		vertex: vertex_program(system),
-		fragment: fragment_program(&system.render.shape),
-	}
-}
-
-fn simulate_program(system: &ParticleSystemSource) -> String {
+/// Generates the simulation kernel of a validated system, which spawns, moves, and packs its particles.
+pub(crate) fn simulate_program(system: &ParticleSystemSource) -> String {
 	// Random draws 0 and 1 belong to the lifetime and the birth moment; modules take theirs after them.
 	let mut next_random = 2u32;
 	let mut initialize = String::new();
@@ -103,7 +88,9 @@ fn simulate_program(system: &ParticleSystemSource) -> String {
 				literal(*radius),
 				random(),
 			),
-			InitializeModule::Box { size: [width, height, depth] } => writeln!(
+			InitializeModule::Box {
+				size: [width, height, depth],
+			} => writeln!(
 				initialize,
 				"		offset = offset + vec3f(({} - 0.5) * {}, ({} - 0.5) * {}, ({} - 0.5) * {});",
 				random(),
@@ -268,7 +255,8 @@ main: fn (input: StageInput) -> void {{
 	)
 }
 
-fn vertex_program(system: &ParticleSystemSource) -> String {
+/// Generates the vertex program of a validated system, which expands each particle into a quad of its shape.
+pub(crate) fn vertex_program(system: &ParticleSystemSource) -> String {
 	let shape = match system.render.shape {
 		Shape::Streak { width, stretch } => format!(
 			"	// The streak covers the distance the particle travels in its stretch time, so faster particles draw longer.
@@ -363,7 +351,8 @@ fn color_gradient(stops: &[ColorStop]) -> String {
 	code
 }
 
-fn fragment_program(shape: &Shape) -> String {
+/// Generates the fragment program that shades one particle quad of `shape`.
+pub(crate) fn fragment_program(shape: &Shape) -> String {
 	let coverage = match shape {
 		// Soft across the streak and solid along it.
 		Shape::Streak { .. } => "1.0 - pipeline_input.uv.y * pipeline_input.uv.y",

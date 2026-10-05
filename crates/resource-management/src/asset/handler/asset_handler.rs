@@ -82,62 +82,40 @@ impl LoadErrors {
 }
 
 /// The `TrackingStorageBackend` struct records every source resolved during one asset bake.
+///
+/// It records a source's version only after a successful read whose version matched on both sides of the read.
 pub(crate) struct TrackingStorageBackend<'a> {
-	inner: &'a dyn asset::DynStorageBackend,
-	dependencies: &'a Mutex<Vec<AssetDependency>>,
+	pub(in crate::asset) inner: &'a dyn asset::DynStorageBackend,
+	/// The provenance attached to every resource the bake stores, kept sorted by source ID so it persists
+	/// deterministically.
+	pub(in crate::asset) dependencies: &'a Mutex<Vec<AssetDependency>>,
 }
 
-impl<'a> TrackingStorageBackend<'a> {
-	/// Creates a source backend that records stable versions after successful reads.
-	pub(crate) fn new(inner: &'a dyn asset::DynStorageBackend, dependencies: &'a Mutex<Vec<AssetDependency>>) -> Self {
-		Self { inner, dependencies }
-	}
-
-	/// Records the latest observed version once when handlers resolve the same source repeatedly.
-	fn record(&self, id: ResourceId<'_>, version: AssetVersion) {
-		upsert_dependency(&mut self.dependencies.lock(), AssetDependency::new(id, version));
-	}
-
-	/// Records a completed read only when its versions match on both sides of the operation.
-	fn finish_tracked_read<T>(
+impl TrackingStorageBackend<'_> {
+	/// Runs `read` between two version checks of `id` and records its version, rejecting the result when `id` changed
+	/// during the read.
+	async fn tracked<T, F: Future<Output = Result<T, ()>>>(
 		&self,
-		url: ResourceId<'_>,
-		before: AssetVersion,
-		after: AssetVersion,
-		resolved: T,
+		id: ResourceId<'_>,
+		read: impl FnOnce() -> F,
 	) -> Result<T, ()> {
+		let before = self.inner.version(id).await?;
+		let resolved = read().await?;
+		let after = self.inner.version(id).await?;
+
 		if before != after {
 			log::warn!(
 				"Asset changed while it was being read. The most likely cause is that '{}' was saved during the bake; retry the request.",
-				url.as_ref()
+				id.as_ref()
 			);
 
 			return Err(());
 		}
 
-		self.record(url, after);
+		// Records the latest observed version once when handlers resolve the same source repeatedly.
+		upsert_dependency(&mut self.dependencies.lock(), AssetDependency::new(id, after));
 
 		Ok(resolved)
-	}
-
-	/// Resolves one source and rejects a result if its filesystem identity changed during the read.
-	fn resolve_tracked<'b>(
-		&'b self,
-		url: ResourceId<'b>,
-		allocator: Option<&'b dyn Allocator>,
-	) -> crate::r#async::BoxedFuture<'b, Result<(AssetStorageBytes<'b>, String), ()>> {
-		crate::r#async::future(async move {
-			let before = self.inner.version(url).await?;
-
-			let resolved = match allocator {
-				Some(allocator) => self.inner.resolve_in(url, allocator).await?,
-				None => self.inner.resolve(url).await?,
-			};
-
-			let after = self.inner.version(url).await?;
-
-			self.finish_tracked_read(url, before, after, resolved)
-		})
 	}
 }
 
@@ -146,29 +124,22 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		self.inner.directory_accessible(path)
 	}
 
-	fn resolve<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, String), ()>> + 'a {
-		self.resolve_tracked(url, None)
+	async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> Result<(AssetStorageBytes<'a>, String), ()> {
+		self.tracked(url, || self.inner.resolve(url)).await
 	}
 
-	fn resolve_in<'a>(
+	async fn resolve_in<'a>(
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, String), ()>> + 'a {
-		self.resolve_tracked(url, Some(allocator))
+	) -> Result<(AssetStorageBytes<'a>, String), ()> {
+		self.tracked(url, || self.inner.resolve_in(url, allocator)).await
 	}
 
 	async fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> Result<Option<BEADType>, ()> {
 		// Track absence as well as content, so creating a sidecar invalidates the baked resource.
 		let path = format!("{}.bead", url.get_base().as_ref());
-		let id = ResourceId::new(&path);
-		let before = self.inner.version(id).await?;
-		let resolved = self.inner.load_sidecar(url).await?;
-		let after = self.inner.version(id).await?;
-		self.finish_tracked_read(id, before, after, resolved)
+		self.tracked(ResourceId::new(&path), || self.inner.load_sidecar(url)).await
 	}
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
@@ -179,41 +150,14 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 /// The `BakeContext` struct provides format handlers with the shared facilities used during one asset bake.
 #[derive(Clone, Copy)]
 pub struct BakeContext<'a> {
-	asset_manager: &'a Arc<AssetManagerState>,
-	resource_storage_backend: &'a dyn resource::DynStorageBackend,
-	asset_storage_backend: &'a dyn asset::DynStorageBackend,
-	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
-	allocator: &'a BakeAllocator,
-	primary_id: ResourceId<'a>,
-	primary_stored: &'a Cell<bool>,
-	#[cfg(debug_assertions)]
-	resource_trace: &'a ResourceTrace,
+	pub(in crate::asset) asset_manager: &'a Arc<AssetManagerState>,
+	pub(in crate::asset) asset_storage_backend: &'a TrackingStorageBackend<'a>,
+	pub(in crate::asset) allocator: &'a BakeAllocator,
+	pub(in crate::asset) primary_id: ResourceId<'a>,
+	pub(in crate::asset) primary_stored: &'a Cell<bool>,
 }
 
 impl<'a> BakeContext<'a> {
-	pub(in crate::asset) fn new(
-		asset_manager: &'a Arc<AssetManagerState>,
-		resource_storage_backend: &'a dyn resource::DynStorageBackend,
-		asset_storage_backend: &'a dyn asset::DynStorageBackend,
-		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
-		allocator: &'a BakeAllocator,
-		primary_id: ResourceId<'a>,
-		primary_stored: &'a Cell<bool>,
-		#[cfg(debug_assertions)] resource_trace: &'a ResourceTrace,
-	) -> Self {
-		Self {
-			asset_manager,
-			resource_storage_backend,
-			asset_storage_backend,
-			asset_dependencies,
-			allocator,
-			primary_id,
-			primary_stored,
-			#[cfg(debug_assertions)]
-			resource_trace,
-		}
-	}
-
 	/// Adds an informational item to this resource's development trace and terminal log.
 	pub fn info(&self, message: impl fmt::Display) {
 		self.log(log::Level::Info, message);
@@ -235,22 +179,20 @@ impl<'a> BakeContext<'a> {
 	/// Writes one message to the terminal log and, in development builds, to this resource's trace.
 	fn log(&self, level: log::Level, message: impl fmt::Display) {
 		#[cfg(debug_assertions)]
-		{
-			let message = message.to_string();
+		let message = message.to_string();
 
-			log::log!(level, "{message}");
+		log::log!(level, "{message}");
 
-			let trace_level = match level {
+		#[cfg(debug_assertions)]
+		self.asset_manager.resource_trace.record(
+			self.primary_id,
+			match level {
 				log::Level::Error => ResourceTraceLevel::Error,
 				log::Level::Warn => ResourceTraceLevel::Warn,
 				log::Level::Info | log::Level::Debug | log::Level::Trace => ResourceTraceLevel::Info,
-			};
-
-			self.resource_trace.record(self.primary_id, trace_level, message);
-		}
-
-		#[cfg(not(debug_assertions))]
-		log::log!(level, "{message}");
+			},
+			message,
+		);
 	}
 
 	/// Resolves only the requested source bytes with the bake allocator.
@@ -271,17 +213,11 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
-	/// Bakes a referenced source asset when necessary and returns its stored model.
+	/// Bakes a referenced source asset on the shared worker pool when necessary and returns its stored model.
+	///
+	/// Concurrent calls from one handler bake on separate workers, each in its own arena.
 	pub async fn bake_dependency<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadErrors> {
-		let resource = self
-			.asset_manager
-			.bake_if_not_exists_in(id, self.allocator)
-			.await
-			.map_err(dependency_load_error)?;
-
-		self.inherit_dependency_provenance(&resource);
-
-		Ok(resource.into())
+		Ok(self.bake_dependencies(&[id.to_owned()], 1).await?.remove(0))
 	}
 
 	/// Bakes independent dependencies on the shared worker pool while bounding active requests.
@@ -295,8 +231,6 @@ impl<'a> BakeContext<'a> {
 	) -> Result<Vec<ReferenceModel<M>>, LoadErrors> {
 		use utils::r#async::StreamExt as _;
 
-		let max_concurrency = max_concurrency.max(1);
-
 		let requests = ids.iter().enumerate().map(|(index, id)| async move {
 			self.asset_manager
 				.dispatch_bake_in_scope(
@@ -307,19 +241,19 @@ impl<'a> BakeContext<'a> {
 				.await
 				.map_err(dependency_load_error)?;
 
-			let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await else {
+			let Some((resource, _)) = self.asset_manager.resource_storage_backend.read(ResourceId::new(id)).await else {
 				return Err(LoadErrors::FailedToProcess);
 			};
 
 			Ok((index, resource))
 		});
 
-		let completed = utils::r#async::stream::iter(requests)
-			.buffer_unordered(max_concurrency)
+		let mut completed = utils::r#async::stream::iter(requests)
+			.buffer_unordered(max_concurrency.max(1))
 			.collect::<Vec<_>>()
-			.await;
-
-		let mut completed = completed.into_iter().collect::<Result<Vec<_>, _>>()?;
+			.await
+			.into_iter()
+			.collect::<Result<Vec<_>, _>>()?;
 
 		completed.sort_unstable_by_key(|(index, _)| *index);
 
@@ -336,7 +270,7 @@ impl<'a> BakeContext<'a> {
 
 	/// Adds one stored dependency's transitive source versions to the parent bake.
 	fn inherit_dependency_provenance(&self, resource: &SerializableResource) {
-		let mut dependencies = self.asset_dependencies.lock();
+		let mut dependencies = self.asset_storage_backend.dependencies.lock();
 
 		for dependency in resource.asset_dependencies() {
 			upsert_dependency(&mut dependencies, dependency.clone());
@@ -352,7 +286,7 @@ impl<'a> BakeContext<'a> {
 	/// [`AssetManager::rebuild_resources_baked_before`](crate::asset::manager::AssetManager::rebuild_resources_baked_before)
 	/// are not returned, so a forced rebuild regenerates them.
 	pub(crate) async fn reusable_resource(&self, id: ResourceId<'_>) -> Option<SerializableResource> {
-		let (resource, _) = self.resource_storage_backend.read(id).await?;
+		let (resource, _) = self.asset_manager.resource_storage_backend.read(id).await?;
 
 		(!self.asset_manager.precedes_rebuild_cutoff(&resource)).then_some(resource)
 	}
@@ -369,7 +303,8 @@ impl<'a> BakeContext<'a> {
 		id: ResourceId<'_>,
 		size: usize,
 	) -> Result<resource::ResourceTransaction<'_>, LoadErrors> {
-		self.resource_storage_backend
+		self.asset_manager
+			.resource_storage_backend
 			.begin_resource(id, size)
 			.await
 			.map_err(|_| LoadErrors::FailedToStore)
@@ -393,7 +328,7 @@ impl<'a> BakeContext<'a> {
 		transaction: resource::ResourceTransaction<'_>,
 		resource: ProcessedAsset,
 	) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 		let stored = transaction
 			.commit(resource, self.allocator)
 			.await
@@ -422,9 +357,10 @@ impl<'a> BakeContext<'a> {
 	///
 	/// Generated dependencies use this path too; parent resources reference the returned metadata.
 	pub async fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 
 		let stored = self
+			.asset_manager
 			.resource_storage_backend
 			.store_in(resource, data, self.allocator)
 			.await
@@ -440,7 +376,7 @@ impl<'a> BakeContext<'a> {
 		data: T,
 	) -> Result<SerializableResource, LoadErrors> {
 		let id = ResourceId::new(resource.id());
-		let storage = self.resource_storage_backend;
+		let storage = self.asset_manager.resource_storage_backend.as_ref();
 		let transaction =
 			resource::storage_backend::write_complete_owned_resource(data, storage.cpu_compression_policy(&resource), |size| {
 				storage.begin_resource(id, size)
@@ -469,15 +405,6 @@ impl<'a> BakeContext<'a> {
 		stored
 	}
 
-	/// Returns deterministic source provenance for persisted resource metadata.
-	fn sorted_asset_dependencies(&self) -> Vec<AssetDependency> {
-		let mut dependencies = self.asset_dependencies.lock().clone();
-
-		dependencies.sort_by(|left, right| left.id().cmp(right.id()));
-
-		dependencies
-	}
-
 	pub(crate) fn asset_storage_backend(&self) -> &'a dyn asset::DynStorageBackend {
 		self.asset_storage_backend
 	}
@@ -488,11 +415,11 @@ impl<'a> BakeContext<'a> {
 	}
 }
 
-/// Replaces the recorded version of a source already in `dependencies`, or adds it.
+/// Replaces the recorded version of a source already in `dependencies`, or inserts it so the list stays sorted by ID.
 fn upsert_dependency(dependencies: &mut Vec<AssetDependency>, dependency: AssetDependency) {
-	match dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-		Some(existing) => *existing = dependency,
-		None => dependencies.push(dependency),
+	match dependencies.binary_search_by(|existing| existing.id().cmp(dependency.id())) {
+		Ok(index) => dependencies[index] = dependency,
+		Err(index) => dependencies.insert(index, dependency),
 	}
 }
 
@@ -509,9 +436,9 @@ use std::{alloc::Allocator, cell::Cell, fmt, future::Future, sync::Arc};
 use utils::sync::Mutex;
 
 #[cfg(debug_assertions)]
-use crate::asset::resource_trace::{ResourceTrace, ResourceTraceLevel};
+use crate::asset::resource_trace::ResourceTraceLevel;
 use crate::asset::{
-	AssetStorageBytes, BEADType, ResourceId,
+	AssetStorageBytes, BEADType, ResourceId, StorageBackend as _,
 	bake_memory::BakeAllocator,
 	manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},

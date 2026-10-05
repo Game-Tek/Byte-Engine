@@ -1,6 +1,4 @@
-use std::convert::Infallible;
-
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::serialization::serialize_as_array;
 use crate::{Point, Vector, WorldSpace};
 
 /// The `AABB` struct represents an axis-aligned volume in one coordinate space for broad-phase and contact queries.
@@ -15,17 +13,11 @@ impl<Space> AABB<Space> {
 	///
 	/// The constructor orders each coordinate, so callers can pass the corners in either order.
 	pub fn new(first: Point<Space>, second: Point<Space>) -> Self {
-		let min = Point::new(
-			first.x().min(second.x()),
-			first.y().min(second.y()),
-			first.z().min(second.z()),
-		);
-		let max = Point::new(
-			first.x().max(second.x()),
-			first.y().max(second.y()),
-			first.z().max(second.z()),
-		);
-		Self { min, max }
+		let (first, second) = (first.into_maths(), second.into_maths());
+		Self {
+			min: Point::from_maths(maths_rs::min(first, second)),
+			max: Point::from_maths(maths_rs::max(first, second)),
+		}
 	}
 
 	/// Creates an axis-aligned box from its center and non-negative half extents.
@@ -51,6 +43,11 @@ impl<Space> AABB<Space> {
 	/// Returns the distance from the center to each face.
 	pub fn half_extents(&self) -> Vector<Space> {
 		(self.max - self.min) * 0.5
+	}
+
+	/// Returns the smallest and largest corners as the arrays this box is stored as.
+	fn to_array(&self) -> [[f32; 3]; 2] {
+		[self.min.to_array(), self.max.to_array()]
 	}
 
 	/// Returns whether `point` is inside this box or on its boundary.
@@ -96,17 +93,10 @@ mod tests {
 	}
 }
 
-impl<Space> ArrayForm<6> for AABB<Space> {
-	type Array = [[f32; 3]; 2];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		[self.min.to_array(), self.max.to_array()]
-	}
-
-	fn try_from_array([first, second]: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::new(Point::from_array(first), Point::from_array(second)))
-	}
-}
-
-serialize_as_array!(AABB<Space>, 6, Space);
+serialize_as_array!(
+	AABB<Space>,
+	[[f32; 3]; 2],
+	to_array,
+	from: |[min, max]: [[f32; 3]; 2]| AABB::new(Point::from_array(min), Point::from_array(max)),
+	Space
+);

@@ -15,11 +15,7 @@ impl Generator {
 
 			formatting.push_indentation(string, 1);
 			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push('[');
-			string.push_str(&count.get().to_string());
-			string.push(']');
+			let _ = write!(string, " {}[{count}]", Self::identifier(name));
 			formatting.push_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
@@ -71,34 +67,9 @@ impl Generator {
 			if is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			string.push_str(type_name);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" : TEXCOORD");
-			string.push_str(&location.to_string());
+			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(name));
 			formatting.push_statement_end(string);
 		}
-	}
-
-	/// Recovers an indexed mesh-output declaration so HLSL can address its vertex or primitive structure field.
-	///
-	/// Returns the field name and whether the output is per-vertex.
-	pub(crate) fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<(String, bool)> {
-		let left = left.borrow();
-		let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = left.node() else {
-			return None;
-		};
-		let source = source.borrow();
-		let besl::Nodes::Output {
-			name,
-			count: Some(_),
-			per_vertex,
-			..
-		} = source.node()
-		else {
-			return None;
-		};
-		Some((name.clone(), *per_vertex))
 	}
 
 	/// Finds a lane-guarded BESL mesh-count statement that HLSL must execute uniformly.
@@ -126,8 +97,7 @@ impl Generator {
 	}
 
 	/// Emits raster stage I/O as mutable entry-point parameters because HLSL semantic globals are immutable.
-	pub(crate) fn emit_raster_entry_parameters(&self, string: &mut String, has_previous_parameter: bool) {
-		let mut has_previous_parameter = has_previous_parameter;
+	pub(crate) fn emit_raster_entry_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
 		for input in &self.raster_inputs {
 			let input = input.borrow();
 			let besl::Nodes::Input { name, location, format } = input.node() else {
@@ -139,10 +109,8 @@ impl Generator {
 			let format = format.borrow();
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
-			if self.current_stage == HlslStage::Vertex && crate::shader::generator::is_vertex_builtin_input(name) {
-				string.push_str(type_name);
-				string.push(' ');
-				Self::identifier(name).push_to(string);
+			if matches!(self.stage, Stages::Vertex) && crate::shader::generator::is_vertex_builtin_input(name) {
+				let _ = write!(string, "{} {}", type_name, Self::identifier(name));
 				string.push_str(match name.as_str() {
 					besl::VERTEX_INDEX_BUILTIN => " : SV_VertexID",
 					besl::INSTANCE_INDEX_BUILTIN => " : SV_InstanceID",
@@ -151,14 +119,10 @@ impl Generator {
 				has_previous_parameter = true;
 				continue;
 			}
-			if self.current_stage_interpolates_inputs && is_integer_besl_type(besl_type) {
+			if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			string.push_str(type_name);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" : TEXCOORD");
-			string.push_str(&location.to_string());
+			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(name));
 			has_previous_parameter = true;
 		}
 
@@ -180,30 +144,28 @@ impl Generator {
 			let format = format.borrow();
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
-			if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
+			if self.stage.interpolates_outputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str("out ");
-			string.push_str(type_name);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(if self.current_stage == HlslStage::Vertex && besl::is_position_output(name) {
-				" : SV_Position"
-			} else if self.current_stage == HlslStage::Fragment {
-				" : SV_Target"
+			let _ = write!(string, "{} {}", type_name, Self::identifier(name));
+			if matches!(self.stage, Stages::Vertex) && besl::is_position_output(name) {
+				string.push_str(" : SV_Position");
 			} else {
-				" : TEXCOORD"
-			});
-			if !(self.current_stage == HlslStage::Vertex && besl::is_position_output(name)) {
-				string.push_str(&location.to_string());
+				let semantic = if matches!(self.stage, Stages::Fragment) {
+					"SV_Target"
+				} else {
+					"TEXCOORD"
+				};
+				let _ = write!(string, " : {semantic}{location}");
 			}
 			has_previous_parameter = true;
 		}
 	}
 
-	/// Adds the vertex invocation indices to helper signatures when the shader uses them.
-	pub(crate) fn emit_vertex_builtin_helper_parameters(&self, string: &mut String, has_previous_parameter: bool) {
-		let mut has_previous_parameter = has_previous_parameter;
+	/// Adds the vertex invocation indices to helper signatures when the shader uses them, or forwards them through
+	/// nested BESL helper calls when `with_types` is false.
+	pub(crate) fn emit_vertex_builtin_helper_list(&self, string: &mut String, mut has_previous: bool, with_types: bool) {
 		for input in &self.raster_inputs {
 			let input = input.borrow();
 			let besl::Nodes::Input { name, format, .. } = input.node() else {
@@ -212,47 +174,26 @@ impl Generator {
 			if !crate::shader::generator::is_vertex_builtin_input(name) {
 				continue;
 			}
-			if has_previous_parameter {
+			if has_previous {
 				self.emit_separator(string);
 			}
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			has_previous_parameter = true;
-		}
-	}
-
-	/// Forwards the vertex invocation indices through nested BESL helper calls.
-	pub(crate) fn emit_vertex_builtin_helper_arguments(&self, string: &mut String, has_previous_argument: bool) {
-		let mut has_previous_argument = has_previous_argument;
-		for input in &self.raster_inputs {
-			let input = input.borrow();
-			let besl::Nodes::Input { name, .. } = input.node() else {
-				continue;
-			};
-			if !crate::shader::generator::is_vertex_builtin_input(name) {
-				continue;
-			}
-			if has_previous_argument {
-				self.emit_separator(string);
+			if with_types {
+				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				string.push(' ');
 			}
 			Self::identifier(name).push_to(string);
-			has_previous_argument = true;
+			has_previous = true;
 		}
 	}
 
 	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
 	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
-		let Some((kind, resource, index)) = resource_accessor(texture) else {
-			self.emit_node_string(string, texture);
-			string.push_str("_sampler");
-			return;
-		};
-		self.emit_node_string(string, &resource);
+		let accessor = resource_accessor(texture);
+		self.emit_node_string(string, accessor.as_ref().map_or(texture, |(_, resource, _)| resource));
 		string.push_str("_sampler");
-		if kind == ResourceAccessorKind::DescriptorArray {
+		if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
 			string.push('[');
-			self.emit_node_string(string, &index);
+			self.emit_node_string(string, index);
 			string.push(']');
 		}
 	}
@@ -280,150 +221,57 @@ impl Generator {
 			return;
 		};
 
-		match name.as_str() {
-			"sample" => {
-				if let Some((kind, resource, index)) = resource_accessor(&arguments[0]) {
-					self.emit_node_string(string, &resource);
-					if kind == ResourceAccessorKind::DescriptorArray {
-						string.push('[');
-						self.emit_node_string(string, &index);
-						string.push(']');
-					}
-					string.push_str(".Sample(");
-					self.emit_sampler(string, &arguments[0]);
-					string.push_str(", ");
-					if kind == ResourceAccessorKind::Texture2DArrayLayer {
-						string.push_str("float3(");
-						self.emit_node_string(string, &arguments[1]);
-						string.push_str(", float(");
-						self.emit_node_string(string, &index);
-						string.push_str("))");
-					} else {
-						self.emit_node_string(string, &arguments[1]);
-					}
-				} else {
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str(".Sample(");
-					self.emit_sampler(string, &arguments[0]);
-					string.push_str(", ");
-					self.emit_node_string(string, &arguments[1]);
-				}
-				string.push(')');
-				return;
-			}
-			"sample_texture_2d_array_grad" => {
-				self.emit_texture_2d_array_grad_sample(
-					string,
-					&arguments[0],
-					&arguments[1],
-					&arguments[2],
-					&arguments[3],
-					&arguments[4],
-				);
-				return;
-			}
-			_ => {}
-		}
-
 		let has_body = definition
 			.iter()
 			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
-		if has_body {
-			for element in elements {
-				self.emit_node_string(string, element);
-			}
-			return;
-		}
-
 		match name.as_str() {
+			// Texture samples bypass intrinsic bodies.
+			"sample" => {
+				let accessor = resource_accessor(&arguments[0]);
+				self.emit_node_string(string, accessor.as_ref().map_or(&arguments[0], |(_, resource, _)| resource));
+				if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
+					string.push('[');
+					self.emit_node_string(string, index);
+					string.push(']');
+				}
+				string.push_str(".Sample(");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, index)) = &accessor {
+					string.push_str("float3(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(", float(");
+					self.emit_node_string(string, index);
+					string.push_str("))");
+				} else {
+					self.emit_node_string(string, &arguments[1]);
+				}
+				string.push(')');
+			}
+			"sample_texture_2d_array_grad" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push('[');
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("].SampleGrad(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler[");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(']');
+				for argument in &arguments[2..5] {
+					self.emit_separator(string);
+					self.emit_node_string(string, argument);
+				}
+				string.push(')');
+			}
+			// Every other intrinsic with a body emits its expansion.
+			_ if has_body => {
+				for element in elements {
+					self.emit_node_string(string, element);
+				}
+			}
 			"pow" if arguments.len() == 2 && super::super::is_two(&arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
-				string.push(')');
-			}
-			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
-				string.push_str(match name.as_str() {
-					"is_nan" => "isnan",
-					"is_infinite" => "isinf",
-					"is_finite" => "isfinite",
-					"is_normal" => "isnormal",
-					_ => unreachable!(),
-				});
-				string.push('(');
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"
-			| "floor" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross" | "normalize" | "reflect"
-			| "length" => {
-				string.push_str(name);
-				string.push('(');
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			// firstbitlow already returns 0xFFFFFFFF for zero.
-			"find_lsb" => {
-				string.push_str("firstbitlow(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"fract" => {
-				string.push_str("frac(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"mix" => {
-				string.push_str("lerp(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"f32" => {
-				string.push_str("float(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"f16" => {
-				string.push_str("float16_t(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"u16" => {
-				string.push_str("uint16_t(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
-				string.push_str(Self::translate_type(name));
-				string.push('(');
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"u32" => {
-				string.push_str("uint(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
-				string.push(')');
-			}
-			"inversesqrt" => {
-				string.push_str("rsqrt(");
-				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
-					self.emit_node_string(string, argument)
-				});
 				string.push(')');
 			}
 			"fetch" => {
@@ -447,7 +295,7 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", 0)).x");
 			}
-			"image_load" => {
+			"image_load" | "image_load_u32" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push('[');
 				self.emit_node_string(string, &arguments[1]);
@@ -491,12 +339,6 @@ impl Generator {
 				string.push(')');
 			}
 			"image_atomic_or" => unreachable!("HLSL image atomics must be lifted before expression emission"),
-			"image_load_u32" => {
-				self.emit_node_string(string, &arguments[0]);
-				string.push('[');
-				self.emit_node_string(string, &arguments[1]);
-				string.push(']');
-			}
 			"guard_image_bounds" => {
 				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site.
 				string.push_str("uint2 _besl_image_size; ");
@@ -541,56 +383,11 @@ impl Generator {
 				string.push_str(ShaderFormatting::new(self.minified).comma_str());
 				let _ = write!(string, "besl_atomic_stored_{temporary_id});}}");
 			}
-			"thread_id" => {
-				string.push_str("dispatch_thread_id.xy");
-			}
-			"thread_position" => {
-				string.push_str("dispatch_thread_id.x");
-			}
-			"thread_idx" => {
-				string.push_str("group_thread_index");
-			}
+			"thread_id" => string.push_str("dispatch_thread_id.xy"),
+			"thread_position" => string.push_str("dispatch_thread_id.x"),
+			"thread_idx" => string.push_str("group_thread_index"),
 			"subgroup_lane_index" => string.push_str("WaveGetLaneIndex()"),
-			"threadgroup_position" => {
-				string.push_str("group_id.x");
-			}
-			"subgroup_ballot" => {
-				string.push_str("WaveActiveBallot(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_any" => {
-				string.push_str("_besl_subgroup_ballot_any(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_find_lsb" => {
-				string.push_str("_besl_subgroup_ballot_find_lsb(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_count" => {
-				string.push_str("_besl_subgroup_ballot_count(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_ballot_and_not" => {
-				string.push_str("_besl_subgroup_ballot_and_not(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => {
-				string.push_str("WaveReadLaneAt(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
-			"fma" => {
-				let return_type = r#return.borrow();
-				let returns_half = matches!(return_type.get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"));
-				string.push_str(if returns_half { "_besl_fma_f16(" } else { "mad(" });
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
+			"threadgroup_position" => string.push_str("group_id.x"),
 			"sincos" => {
 				string.push_str("float2(sin(");
 				self.emit_node_string(string, &arguments[0]);
@@ -603,17 +400,10 @@ impl Generator {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("))");
 			}
-			"workgroup_barrier" => {
-				string.push_str("GroupMemoryBarrierWithGroupSync()");
-			}
+			"workgroup_barrier" => string.push_str("GroupMemoryBarrierWithGroupSync()"),
 			"set_task_mesh_output_count" => {
 				string.push_str("besl_mesh_output_count = ");
 				self.emit_node_string(string, &arguments[0]);
-			}
-			"set_mesh_output_counts" => {
-				string.push_str("SetMeshOutputCounts(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
 			}
 			"set_mesh_vertex_position" => {
 				string.push_str("besl_vertices[");
@@ -633,10 +423,47 @@ impl Generator {
 				string.push_str("].render_target_array_index = ");
 				self.emit_node_string(string, &arguments[1]);
 			}
+			// Every other intrinsic is one HLSL call, renamed where HLSL spells the operation differently.
 			_ => {
-				for element in elements {
-					self.emit_node_string(string, element);
-				}
+				let call = match name.as_str() {
+					"is_nan" => "isnan",
+					"is_infinite" => "isinf",
+					"is_finite" => "isfinite",
+					"is_normal" => "isnormal",
+					// firstbitlow already returns 0xFFFFFFFF for zero.
+					"find_lsb" => "firstbitlow",
+					"fract" => "frac",
+					"mix" => "lerp",
+					"u32" => "uint",
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
+					| "packed_vec4f" => Self::translate_type(name),
+					"inversesqrt" => "rsqrt",
+					"subgroup_ballot" => "WaveActiveBallot",
+					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",
+					"subgroup_ballot_find_lsb" => "_besl_subgroup_ballot_find_lsb",
+					"subgroup_ballot_count" => "_besl_subgroup_ballot_count",
+					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
+					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
+					"fma" if matches!(r#return.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
+						"_besl_fma_f16"
+					}
+					"fma" => "mad",
+					"set_mesh_output_counts" => "SetMeshOutputCounts",
+					"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin"
+					| "atan2" | "floor" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
+					| "normalize" | "reflect" | "length" => name,
+					// Intrinsics without an HLSL call emit their elements.
+					_ => {
+						for element in elements {
+							self.emit_node_string(string, element);
+						}
+						return;
+					}
+				};
+				string.push_str(call);
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
 			}
 		}
 	}

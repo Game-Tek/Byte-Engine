@@ -14,13 +14,10 @@ pub(crate) use skeleton::*;
 #[cfg(test)]
 mod tests {
 
-	use std::{
-		alloc::{Allocator, Global},
-		collections::HashMap,
-	};
+	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
+		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
@@ -34,12 +31,14 @@ mod tests {
 	use crate::{
 		ReferenceModel,
 		asset::{
-			ResourceId, handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
+			ResourceId,
+			handler::implementations::{bema::tests::MinimalTestShaderGenerator, gltf::generated_rgba8_png},
+			manager::AssetManager,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
-		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh},
+		pbr::{BrdfMaterialDescription, BrdfNode, BrdfValue},
+		processors::mesh::ProcessedMesh,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
@@ -48,7 +47,7 @@ mod tests {
 			mesh::MeshModel,
 			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinJoint},
 		},
-		types::{AlphaMode, IndexStreamTypes, VertexSemantics},
+		types::{AlphaMode, IndexStreamTypes, Streams, VertexSemantics},
 	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../test_data/triangle_move_ascii.fbx");
@@ -60,27 +59,6 @@ mod tests {
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("../../test_data/material_factors_ascii.fbx");
 
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("../../test_data/skinned_triangle_ascii.fbx");
-
-	/// Encodes one RGBA texel for focused external-image decoding coverage.
-	fn one_pixel_rgba_png() -> Vec<u8> {
-		let mut png = Vec::new();
-
-		{
-			let mut encoder = png::Encoder::new(&mut png, 1, 1);
-
-			encoder.set_color(png::ColorType::Rgba);
-
-			encoder.set_depth(png::BitDepth::Eight);
-
-			let mut writer = encoder.write_header().expect("one-pixel PNG header should encode");
-
-			writer
-				.write_image_data(&[255, 64, 32, 255])
-				.expect("one-pixel PNG data should encode");
-		}
-
-		png
-	}
 
 	/// Imports a fixture with a test variant for each material it uses, named after the FBX material or `default`, and
 	/// discards diagnostic counts that are not relevant to the focused assertion.
@@ -95,16 +73,7 @@ mod tests {
 			.iter()
 			.map(|key| match key {
 				MaterialKey::Default => test_material("default"),
-				MaterialKey::Material(id) => {
-					let material = scene.materials.iter().find(|material| material.element.typed_id == *id);
-					test_material(
-						material
-							.expect("A used material should belong to the scene")
-							.element
-							.name
-							.as_ref(),
-					)
-				}
+				MaterialKey::Material(id) => test_material(scene.materials[*id as usize].element.name.as_ref()),
 			})
 			.collect::<Vec<_>>();
 		let session = import_fbx_mesh_session(
@@ -112,7 +81,6 @@ mod tests {
 			&keys,
 			skeleton,
 			source_to_skeleton,
-			MeshProcessor::new(),
 			allocator,
 			&mut FbxCulledPolygonCounts::default(),
 		)?;
@@ -162,33 +130,20 @@ mod tests {
 		assert!(processed.mesh.skins.is_empty());
 		assert_eq!(processed.mesh.primitives.len(), 1);
 		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
-		assert!(
-			processed
-				.mesh
-				.vertex_components
-				.iter()
-				.any(|component| component.semantic == VertexSemantics::Position)
-		);
-		assert!(
-			processed
-				.mesh
-				.vertex_components
-				.iter()
-				.any(|component| component.semantic == VertexSemantics::Normal)
-		);
-		assert!(
-			processed
-				.mesh
-				.vertex_components
-				.iter()
-				.any(|component| component.semantic == VertexSemantics::UV)
-		);
+		for semantic in [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV] {
+			assert!(
+				processed
+					.mesh
+					.vertex_components
+					.iter()
+					.any(|component| component.semantic == semantic)
+			);
+		}
 
 		let bounds = processed.mesh.primitives[0].bounding_box;
 
 		assert_eq!(bounds.min().to_array(), [0.0, 0.0, 0.0]);
-		assert!((bounds.max().x() - 0.01).abs() < 1.0e-6);
-		assert!((bounds.max().y() - 0.01).abs() < 1.0e-6);
+		assert_close([bounds.max().x(), bounds.max().y()], [0.01, 0.01]);
 		assert_eq!(bounds.max().z(), 0.0);
 	}
 
@@ -210,11 +165,7 @@ mod tests {
 		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
 		assert_eq!(
 			processed.mesh.primitives[0]
-				.streams
-				.iter()
-				.find(|stream| {
-					stream.stream_type == crate::types::Streams::Indices(crate::types::IndexStreamTypes::Triangles)
-				})
+				.stream(Streams::Indices(IndexStreamTypes::Triangles))
 				.expect("triangle stream should exist")
 				.size,
 			6
@@ -260,38 +211,16 @@ mod tests {
 
 	#[test]
 	fn maps_animation_nodes_around_target_only_helpers() {
+		let node = |name: &str, parent| SkeletonNode {
+			name: Some(name.into()),
+			parent,
+			rest_local: LocalTransform::identity(),
+		};
 		let source = SkeletonModel {
-			nodes: vec![
-				SkeletonNode {
-					name: Some("Root".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
-			],
+			nodes: vec![node("Root", None), node("Hips", Some(0))],
 		};
 		let target = SkeletonModel {
-			nodes: vec![
-				SkeletonNode {
-					name: Some("Root".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("ik_foot_root".into()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
-			],
+			nodes: vec![node("Root", None), node("ik_foot_root", Some(0)), node("Hips", Some(0))],
 		};
 
 		assert_eq!(canonical_animation_node_map(&source, &target), Ok(vec![0, 2]));
@@ -368,7 +297,7 @@ mod tests {
 
 		assert!(matches!(
 			import_test_fbx_meshes(&scene, Some(skeleton), &imported_skeleton.source_to_skeleton, &Global,),
-			Err(FbxMeshProcessingError::Import(
+			Err(FbxMeshProcessingError::Source(
 				FbxImportError::NonInvertibleAnimatedMeshTransform
 			))
 		));
@@ -380,17 +309,9 @@ mod tests {
 
 		let imported_skeleton = import_fbx_skeleton(&scene).expect("skinned hierarchy should import");
 
-		let root = scene
-			.nodes
-			.iter()
-			.find(|node| node.element.name.as_ref() == "RootJoint")
-			.expect("fixture should contain RootJoint");
+		let root = ufbx::find_node(&scene, "RootJoint").expect("fixture should contain RootJoint");
 
-		let child = scene
-			.nodes
-			.iter()
-			.find(|node| node.element.name.as_ref() == "ChildJoint")
-			.expect("fixture should contain ChildJoint");
+		let child = ufbx::find_node(&scene, "ChildJoint").expect("fixture should contain ChildJoint");
 
 		let root_index = imported_skeleton.source_to_skeleton[root.element.typed_id as usize];
 
@@ -419,12 +340,11 @@ mod tests {
 			binding.entries.iter().map(|entry| entry.joint).collect::<Vec<_>>(),
 			[SkinJoint::Node(root_index), SkinJoint::Node(child_index)]
 		);
-		assert_eq!(binding.len(), 2);
+		assert_eq!(binding.entries.len(), 2);
 
 		// The palette must match ufbx's evaluated clusters after expressing them in
 		// the flattened vertex basis used by the imported mesh.
-		let mut globals =
-			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
+		let mut globals = vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
@@ -432,7 +352,7 @@ mod tests {
 			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.entries.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
@@ -444,18 +364,15 @@ mod tests {
 			let expected = ufbx::matrix_mul(&cluster.geometry_to_world, &flattened_inverse);
 
 			assert_matrix_close(
-				matrix.columns(),
-				matrix_to_affine(&expected)
-					.expect("expected fixture palette matrix should be finite")
-					.columns(),
+				matrix,
+				matrix_to_affine(&expected).expect("expected fixture palette matrix should be finite"),
 			);
 		}
 
 		let (joints, weights) = skin_weights(skin, 1, fallback_joint).expect("mixed fixture weights should import");
 
 		assert_eq!(&joints[..2], &[1, 0]);
-		assert!((weights[0] - 0.75).abs() < 1.0e-6);
-		assert!((weights[1] - 0.25).abs() < 1.0e-6);
+		assert_close([weights[0], weights[1]], [0.75, 0.25]);
 
 		let skeleton = test_skeleton(&imported_skeleton.model);
 
@@ -523,8 +440,7 @@ mod tests {
 			SkinJoint::Node(mesh_node_index)
 		);
 
-		let mut globals =
-			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
+		let mut globals = vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
@@ -532,16 +448,13 @@ mod tests {
 			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.entries.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("fallback palette should be complete");
 
-		assert_matrix_close(
-			palette[fallback_joint as usize].columns(),
-			math::AffineMatrix::identity().columns(),
-		);
+		assert_matrix_close(palette[fallback_joint as usize], math::AffineMatrix::identity());
 
 		// Moving the mesh node after bind must move the fallback palette entry instead of freezing the vertex.
 		let mut moved = globals[mesh_node_index as usize].columns();
@@ -652,14 +565,13 @@ mod tests {
 
 		let (base_color, metallic, roughness, emission) = brdf_values(&phong_brdf);
 
-		assert_vec4_close(base_color, [0.2, 0.1, 0.05, 1.0]);
+		assert_close(base_color, [0.2, 0.1, 0.05, 1.0]);
 
-		assert!((metallic - 0.0).abs() < 1.0e-6);
-		assert!((roughness - 0.6).abs() < 1.0e-6);
+		assert_close([metallic, roughness], [0.0, 0.6]);
 
-		assert_vec3_close(emission, [0.2, 0.6, 1.0]);
+		assert_close(emission, [0.2, 0.6, 1.0]);
 
-		assert_eq!(phong_brdf.alpha_mode, BrdfAlphaMode::Opaque);
+		assert_eq!(phong_brdf.alpha_mode, AlphaMode::Opaque);
 		assert!(phong_brdf.nodes.iter().any(|node| {
 			matches!(node, BrdfNode::Texture(texture) if texture.image_index == diffuse_texture.element.typed_id)
 		}));
@@ -668,12 +580,11 @@ mod tests {
 
 		let (base_color, metallic, roughness, emission) = brdf_values(&pbr_brdf);
 
-		assert_vec4_close(base_color, [0.25, 0.5, 0.75, 0.4]);
+		assert_close(base_color, [0.25, 0.5, 0.75, 0.4]);
 
-		assert!((metallic - 0.65).abs() < 1.0e-6);
-		assert!((roughness - 0.35).abs() < 1.0e-6);
+		assert_close([metallic, roughness], [0.65, 0.35]);
 
-		assert_vec3_close(emission, [0.05, 0.1, 0.15]);
+		assert_close(emission, [0.05, 0.1, 0.15]);
 
 		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("material-part mesh should import");
 
@@ -717,7 +628,7 @@ mod tests {
 			"materials/textures/factored_diffuse.png"
 		);
 
-		let encoded = one_pixel_rgba_png();
+		let encoded = generated_rgba8_png(1, 1, &[255, 64, 32, 255]);
 
 		let (pixels, width, height) =
 			decode_fbx_texture_image(&encoded).expect("external PNG texture should decode into RGBA pixels");
@@ -729,7 +640,7 @@ mod tests {
 	async fn bakes_fbx_diffuse_textures_into_opaque_material_variants() {
 		let asset_storage = AssetTestStorageBackend::new();
 
-		let encoded = one_pixel_rgba_png();
+		let encoded = generated_rgba8_png(1, 1, &[255, 64, 32, 255]);
 
 		let scene = load_fbx_scene(MATERIAL_FACTORS_FBX, "material_factors.fbx").expect("material fixture should parse");
 
@@ -795,15 +706,17 @@ mod tests {
 	fn reusable_corner_remap_restores_scratch_and_rejects_invalid_indices() {
 		let mut remap = vec![u32::MAX; 4];
 
-		let batches =
-			remap_triangle_corners(4, &[0, 1, 2, 2, 1, 3], &mut remap, &Global).expect("valid triangles should remap");
+		let mut remapped = RemappedCorners::with_capacity_in(6, &Global);
 
-		assert_eq!(batches.len(), 1);
-		assert_eq!(batches[0].source_corners, vec![0, 1, 2, 3]);
-		assert_eq!(batches[0].indices, vec![0, 1, 2, 2, 1, 3]);
+		remap_triangle_corners(4, &[0, 1, 2, 2, 1, 3], &mut remap, &mut remapped).expect("valid triangles should remap");
+
+		assert_eq!(
+			remapped.primitives().collect::<Vec<_>>(),
+			[(&[0, 1, 2, 3][..], &[0, 1, 2, 2, 1, 3][..])]
+		);
 		assert!(remap.iter().all(|&slot| slot == u32::MAX));
 		assert!(matches!(
-			remap_triangle_corners(4, &[0, 1, 4], &mut remap, &Global),
+			remap_triangle_corners(4, &[0, 1, 4], &mut remap, &mut remapped),
 			Err(FbxImportError::InvalidCornerIndex)
 		));
 	}
@@ -1024,7 +937,7 @@ mod tests {
 		)
 	}
 
-	/// Computes the first triangle's signed XY area after applying MeshProcessor's clockwise index convention.
+	/// Computes the first triangle's signed XY area after applying MeshProcessorSession's clockwise index convention.
 	fn first_clockwise_triangle_area(scene: &ufbx::Scene) -> f32 {
 		let processed = import_test_fbx_meshes(scene, None, &[], &Global).expect("fixture mesh should import");
 		let positions = primitive_f32_values::<3>(&processed, 0, VertexSemantics::Position);
@@ -1036,56 +949,36 @@ mod tests {
 		(second[0] - first[0]) * (third[1] - first[1]) - (second[1] - first[1]) * (third[0] - first[0])
 	}
 
+	/// Returns one primitive's bytes of `stream_type` from the processed aggregate buffer.
+	fn primitive_stream(processed: &ProcessedMesh, primitive_index: usize, stream_type: Streams) -> &[u8] {
+		let aggregate = processed
+			.mesh
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("aggregate stream should exist");
+		let primitive = processed.mesh.primitives[primitive_index]
+			.stream(stream_type)
+			.expect("primitive stream should exist");
+		let begin = aggregate.offset + primitive.offset;
+		&processed.buffer[begin..begin + primitive.size]
+	}
+
 	/// Decodes one primitive's packed floating-point stream from the processed aggregate buffer.
 	fn primitive_f32_values<const N: usize>(
 		processed: &ProcessedMesh,
 		primitive_index: usize,
 		semantic: VertexSemantics,
 	) -> Vec<[f32; N]> {
-		let stream_type = crate::types::Streams::Vertices(semantic);
-		let aggregate = processed
-			.mesh
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == stream_type)
-			.expect("aggregate vertex stream should exist");
-		let primitive = processed.mesh.primitives[primitive_index]
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == stream_type)
-			.expect("primitive vertex stream should exist");
-		let begin = aggregate.offset + primitive.offset;
-		processed.buffer[begin..begin + primitive.size]
+		primitive_stream(processed, primitive_index, Streams::Vertices(semantic))
 			.chunks_exact(N * 4)
-			.map(|bytes| {
-				std::array::from_fn(|component| {
-					let offset = component * 4;
-					f32::from_le_bytes(
-						bytes[offset..offset + 4]
-							.try_into()
-							.expect("component should contain four bytes"),
-					)
-				})
-			})
+			.map(|bytes| std::array::from_fn(|component| f32::from_le_bytes(bytes.as_chunks::<4>().0[component])))
 			.collect()
 	}
 
 	/// Decodes one primitive's optimized u16 triangle stream from the processed aggregate buffer.
 	fn primitive_triangle_indices(processed: &ProcessedMesh, primitive_index: usize) -> Vec<u16> {
-		let stream_type = crate::types::Streams::Indices(crate::types::IndexStreamTypes::Triangles);
-		let aggregate = processed
-			.mesh
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == stream_type)
-			.expect("aggregate triangle stream should exist");
-		let primitive = processed.mesh.primitives[primitive_index]
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == stream_type)
-			.expect("primitive triangle stream should exist");
-		let begin = aggregate.offset + primitive.offset;
-		processed.buffer[begin..begin + primitive.size]
+		primitive_stream(processed, primitive_index, Streams::Indices(IndexStreamTypes::Triangles))
 			.as_chunks::<2>()
 			.0
 			.iter()
@@ -1150,14 +1043,8 @@ mod tests {
 		}
 	}
 
-	fn assert_vec3_close(actual: [f32; 3], expected: [f32; 3]) {
-		for index in 0..3 {
-			assert!((actual[index] - expected[index]).abs() < 1.0e-6);
-		}
-	}
-
-	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
-		for index in 0..4 {
+	fn assert_close<const N: usize>(actual: [f32; N], expected: [f32; N]) {
+		for index in 0..N {
 			assert!(
 				(actual[index] - expected[index]).abs() < 1.0e-6,
 				"component {index} differs: actual {actual:?}, expected {expected:?}"
@@ -1165,19 +1052,14 @@ mod tests {
 		}
 	}
 
-	fn assert_matrix_close(actual: [[f32; 3]; 4], expected: [[f32; 3]; 4]) {
+	fn assert_matrix_close(actual: math::AffineMatrix, expected: math::AffineMatrix) {
 		for column in 0..4 {
-			assert_vec3_close(actual[column], expected[column]);
+			assert_close(actual.columns()[column], expected.columns()[column]);
 		}
 	}
 }
 
-use std::{
-	alloc::Allocator,
-	collections::{HashMap, HashSet},
-	fmt,
-	sync::Arc,
-};
+use std::{alloc::Allocator, collections::HashSet, fmt, sync::Arc};
 
 use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use serde_json::Value;
@@ -1187,34 +1069,24 @@ use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	manager::AssetManager,
-	sanitize_material_name, select_unfragmented_resource, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
 };
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,
-	r#async::spawn_cpu_task,
-	pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
+	pbr::{BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 	processors::{
-		processor::implementations::image::{
-			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
-			process_image_with_mips_in,
-		},
-		processor::implementations::mesh::{
-			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
-			ProcessedMesh, VertexSkin,
-		},
+		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
+		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
-	resource,
 	resources::{
+		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
-		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
-		ModelSpace,
 	},
-	types::{Formats, VertexComponent, VertexSemantics},
+	types::{AlphaMode, VertexComponent, VertexSemantics},
 };

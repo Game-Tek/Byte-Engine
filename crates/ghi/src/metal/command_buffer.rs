@@ -8,7 +8,6 @@ use objc2_metal::{
 use smallvec::SmallVec;
 
 use super::*;
-use crate::metal::swapchain::Swapchain;
 use crate::{
 	ImageOrSwapchain, ResourceCollection,
 	command_buffer::{
@@ -57,8 +56,8 @@ pub(super) const MISSING_SURFACE: &str = "Missing Metal surface. The most likely
 /// The `Surface` struct is the texture a command reaches through an image or swapchain handle.
 ///
 /// It is a frame image or a swapchain's image for the frame sequence; commands never reach a drawable directly.
-/// Resolve one with [`CommandBufferRecording::surface`] and describe each access with [`Self::resource_use`];
-/// consuming that use retains the texture.
+/// Resolve one with [`CommandBufferRecording::surface`] and describe each access to its `image` with
+/// [`MetalResourceUse::image`](synchronization::MetalResourceUse::image); consuming that use retains the texture.
 pub(super) struct Surface {
 	/// The image behind the texture.
 	pub(super) image: ImageHandle,
@@ -68,19 +67,6 @@ pub(super) struct Surface {
 	pub(super) array_layers: u32,
 	/// The uses the texture was created with. A swapchain's surfaces report the swapchain's uses.
 	pub(super) uses: crate::Uses,
-}
-
-impl Surface {
-	/// Describes one access to this surface for hazard tracking.
-	pub(super) fn resource_use(
-		&self,
-		mip_level: Option<u32>,
-		layer: Option<u32>,
-		stages: mtl::MTLStages,
-		access: crate::AccessPolicies,
-	) -> synchronization::MetalResourceUse {
-		synchronization::MetalResourceUse::image(self.image, mip_level, layer, stages, access)
-	}
 }
 
 /// The `ActiveEncoder` enum holds the one native encoder a recording writes into at a time.
@@ -110,6 +96,8 @@ struct EncoderState {
 	pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	/// The argument-buffer snapshot this encoder's tables reference.
 	descriptors: Option<AppliedDescriptorBinding>,
+	/// The stages whose shared argument table this encoder already holds, one bit per `ArgumentTableStage as usize`.
+	bound_argument_tables: u8,
 	push_constants_dirty: bool,
 	/// How many logical debug regions this encoder mirrors, which it pops before it ends.
 	#[cfg(debug_assertions)]
@@ -145,26 +133,6 @@ fn texture_view_2d(
 	view
 }
 
-/// Validates one attachment's declared layer selection against the native texture.
-fn validate_attachment_layer_selection(
-	layer: Option<u32>,
-	layer_count: Option<std::num::NonZeroU32>,
-	available_layer_count: u32,
-) {
-	if let Some(layer) = layer {
-		assert!(
-			layer < available_layer_count,
-			"Render-pass attachment layer is out of bounds. The most likely cause is that the selected layer does not exist in the target image. layer={layer}, available_layers={available_layer_count}",
-		);
-	}
-	let layer_count = layer_count.map_or(1, std::num::NonZeroU32::get);
-
-	assert!(
-		layer_count <= available_layer_count,
-		"Render-pass attachment layer count is out of bounds. The most likely cause is that layered rendering requested more layers than the target image provides. requested_layers={layer_count}, available_layers={available_layer_count}",
-	);
-}
-
 #[cfg(test)]
 mod tests {
 	#[test]
@@ -176,105 +144,12 @@ mod tests {
 	}
 }
 
-/// Copies compact CPU texture data into an aligned upload range and records its Metal blits.
-///
-/// Returns the page that backs the range; the caller retains it in the command.
-pub(in crate::metal) fn encode_texture_upload(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	upload_arena: &mut UploadArena,
-	transfer_encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>,
-	texture: &ProtocolObject<dyn mtl::MTLTexture>,
-	format: crate::Formats,
-	extent: Extent,
-	array_layers: u32,
-	staging: &[u8],
-	region: Option<crate::image::Region>,
-) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
-	let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent);
-	if let Some(region) = region {
-		region.validate(extent, format, array_layers);
-	}
-	let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
-	let origin = region.map_or([0, 0], |region| region.offset);
-	let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
-	let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent);
-	let expected_size = source_image_pitch
-		.checked_mul(array_layers as usize)
-		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
-
-	assert!(
-		staging.len() >= expected_size,
-		"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
-		staging.len(),
-	);
-	if format.bc_bytes_per_block().is_some() {
-		assert_eq!(
-			staging.len(),
-			expected_size,
-			"Metal compressed texture staging size mismatch. The most likely cause is that CPU staging was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, staging_len={}, expected_size={expected_size}",
-			staging.len()
-		);
-	}
-
-	let (aligned_bytes_per_row, aligned_bytes_per_image) = utils::texture_copy_pitches(bytes_per_row, row_count);
-	let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
-		"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
-	);
-	let (upload_buffer, upload_offset) = upload_arena.allocate(device, upload_size);
-	let upload_buffer = upload_buffer.clone();
-	// SAFETY: The arena range starts at `upload_offset` and spans `upload_size` writable bytes.
-	let destination = unsafe { upload_buffer.contents().as_ptr().cast::<u8>().add(upload_offset) };
-
-	for slice in 0..array_layers as usize {
-		let source_offset = slice * source_image_pitch;
-		let source_bytes = &staging[source_offset..source_offset + source_image_pitch];
-		// SAFETY: The size checks above keep every source row of the region inside this slice, the upload allocation
-		// covers every padded row of every layer, and staging memory never aliases an upload page.
-		unsafe {
-			utils::copy_rows(
-				source_bytes.as_ptr().add(source_start),
-				source_row_pitch,
-				destination.add(slice * aligned_bytes_per_image),
-				aligned_bytes_per_row,
-				bytes_per_row,
-				row_count,
-			);
-		}
-	}
-
-	let mut source_size = utils::mtl_size(copy_extent);
-	source_size.depth = 1;
-	let destination_origin = mtl::MTLOrigin {
-		x: origin[0] as _,
-		y: origin[1] as _,
-		z: 0,
-	};
-	for slice in 0..array_layers as usize {
-		// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
-		unsafe {
-			transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-				upload_buffer.as_ref(),
-				(upload_offset + slice * aligned_bytes_per_image) as _,
-				aligned_bytes_per_row as _,
-				aligned_bytes_per_image as _,
-				source_size,
-				texture,
-				slice,
-				0,
-				destination_origin,
-			);
-		}
-	}
-
-	upload_buffer
-}
-
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
 pub(super) struct RecordingDevice<'a> {
 	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
-	pub(super) buffers: &'a ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
-	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) samplers: &'a [sampler::Sampler],
+	pub(super) buffers: &'a ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
+	pub(super) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
+	pub(super) samplers: &'a [Retained<ProtocolObject<dyn mtl::MTLSamplerState>>],
 	pub(super) acceleration_structures: &'a [AccelerationStructure],
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
@@ -289,7 +164,7 @@ pub(super) struct RecordingCommit<'a> {
 	pub(super) queue_handle: graphics_hardware_interface::QueueHandle,
 	pub(super) queue: &'a mut queue::StoredQueue,
 	pub(super) synchronizers: &'a mut ResourceCollection<
-		synchronizer::Synchronizer,
+		Synchronizer,
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
@@ -331,6 +206,9 @@ impl std::ops::DerefMut for NativeCommandSlot {
 	}
 }
 
+/// The `ArgumentTableStage` enum names the shader stage whose shared argument table a binding targets.
+///
+/// Its declaration order indexes [`CommandArgumentTables`], so `stage as usize` selects the stage's table.
 #[derive(Clone, Copy)]
 pub(super) enum ArgumentTableStage {
 	Compute,
@@ -353,16 +231,6 @@ impl ArgumentTableStage {
 		}
 	}
 
-	fn index(self) -> usize {
-		match self {
-			Self::Compute => 0,
-			Self::Vertex => 1,
-			Self::Fragment => 2,
-			Self::Object => 3,
-			Self::Mesh => 4,
-		}
-	}
-
 	fn render_stage(self) -> mtl::MTLRenderStages {
 		match self {
 			Self::Vertex => mtl::MTLRenderStages::Vertex,
@@ -376,33 +244,23 @@ impl ArgumentTableStage {
 	}
 }
 
-/// The `CommandArgumentTables` struct keeps one mutable Metal 4 binding table per shader stage.
+/// The `CommandArgumentTables` type keeps one mutable Metal 4 binding table per shader stage.
 ///
 /// Draws and dispatches snapshot table contents when they are encoded, so one
 /// set of tables serves every recording; each command retains the tables it
 /// snapshots until completion.
-#[derive(Default)]
-pub(crate) struct CommandArgumentTables {
-	tables: [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5],
-}
-
-impl CommandArgumentTables {
-	fn get(&self, stage: ArgumentTableStage) -> Option<&Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>> {
-		self.tables[stage.index()].as_ref()
-	}
-
-	fn insert(&mut self, stage: ArgumentTableStage, table: Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>) {
-		self.tables[stage.index()] = Some(table);
-	}
-
-	fn iter(&self) -> impl Iterator<Item = &Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>> {
-		self.tables.iter().flatten()
-	}
-}
+pub(crate) type CommandArgumentTables = [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5];
 
 /// The `UploadPage` struct keeps immutable upload snapshots in one shared Metal buffer.
-struct UploadPage {
-	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+///
+/// [`UploadArena::allocate`] hands out ranges of it; callers write through `contents` and bind through `gpu_address`.
+pub(crate) struct UploadPage {
+	pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	/// The buffer's length, CPU mapping, and GPU address, which never change, read once so allocations ask Metal
+	/// for none of them.
+	capacity: usize,
+	pub(crate) contents: *mut u8,
+	pub(crate) gpu_address: mtl::MTLGPUAddress,
 	cursor: usize,
 	/// Sized for one oversized request; released at the next reset instead of being kept resident.
 	dedicated: bool,
@@ -448,11 +306,7 @@ impl UploadArena {
 	}
 
 	/// Returns an aligned range of `size` bytes and the page that backs it.
-	pub(crate) fn allocate(
-		&mut self,
-		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		size: usize,
-	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
+	pub(crate) fn allocate(&mut self, device: &ProtocolObject<dyn mtl::MTLDevice>, size: usize) -> (&UploadPage, usize) {
 		assert!(
 			size > 0,
 			"Empty Metal upload. The most likely cause is that a zero-sized upload was requested."
@@ -460,7 +314,7 @@ impl UploadArena {
 		let page_index = self
 			.pages
 			.iter()
-			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.buffer.length()).is_some())
+			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.capacity).is_some())
 			.unwrap_or_else(|| {
 				let dedicated = size > UPLOAD_PAGE_SIZE;
 				let capacity = if dedicated {
@@ -479,6 +333,9 @@ impl UploadArena {
 					buffer.setLabel(Some(&NSString::from_str(label)));
 				}
 				self.pages.push(UploadPage {
+					capacity: buffer.length(),
+					contents: buffer.contents().as_ptr().cast(),
+					gpu_address: buffer.gpuAddress(),
 					buffer,
 					cursor: 0,
 					dedicated,
@@ -486,25 +343,21 @@ impl UploadArena {
 				self.pages.len() - 1
 			});
 		let page = &mut self.pages[page_index];
-		let offset = upload_offset(page.cursor, size, page.buffer.length()).expect(
+		let offset = upload_offset(page.cursor, size, page.capacity).expect(
 			"Metal upload range does not fit. The most likely cause is that the selected page is smaller than the request.",
 		);
 		page.cursor = offset + size;
-		(&page.buffer, offset)
+		(page, offset)
 	}
 
 	/// Copies `bytes` into a fresh range and returns its page and offset.
-	pub(crate) fn upload(
-		&mut self,
-		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		bytes: &[u8],
-	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
-		let (buffer, offset) = self.allocate(device, bytes.len());
+	pub(crate) fn upload(&mut self, device: &ProtocolObject<dyn mtl::MTLDevice>, bytes: &[u8]) -> (&UploadPage, usize) {
+		let (page, offset) = self.allocate(device, bytes.len());
 		// SAFETY: `offset` was computed against this page's capacity and leaves `bytes.len()` writable bytes.
-		let destination = unsafe { buffer.contents().as_ptr().cast::<u8>().add(offset) };
+		let destination = unsafe { page.contents.add(offset) };
 		// SAFETY: Caller bytes and the shared upload page do not overlap and no command reads this range yet.
 		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
-		(buffer, offset)
+		(page, offset)
 	}
 }
 
@@ -561,20 +414,6 @@ pub struct FinishedCommandBuffer {
 	pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	pub(crate) command_buffer: queue::NativeCommand,
 	pub(crate) texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
-}
-
-impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
-}
-
-impl super::CommandBuffer<'_> {
-	pub fn create_command_buffer_recording(&mut self) -> super::CommandBufferRecording<'_> {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
 }
 
 mod encoding;

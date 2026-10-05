@@ -8,7 +8,7 @@
 //! typed ready or unavailable events; generic keys, requests, worker residents, lane types, and material
 //! compilation state remain inside this module.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use resource_management::Reference;
 use resource_management::resource::resource_manager::ResourceManager;
@@ -24,7 +24,6 @@ use utils::hash::HashMap;
 
 use super::geometry::{GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
 use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS};
-use super::slots::assign_slot;
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
@@ -46,7 +45,7 @@ const VISIBILITY_RESULT_CAPACITY: usize = 64;
 
 /// The `VisibilityLoadKey` enum names every logical resource in the visibility pipeline's shared registry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum VisibilityLoadKey {
+pub(crate) enum VisibilityLoadKey {
 	Resource(&'static str),
 	Query(Query),
 	Mesh(MeshKey),
@@ -69,7 +68,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 }
 
 /// The `VisibilityLoadRequest` enum carries owned work for every visibility resource family.
-enum VisibilityLoadRequest {
+pub(crate) enum VisibilityLoadRequest {
 	/// A resource of unknown class, routed to its family once its class is read.
 	Resource(&'static str),
 	/// Every resource that matches a query, each routed by the query's class.
@@ -80,22 +79,16 @@ enum VisibilityLoadRequest {
 	Environment(String),
 }
 
-/// The `PreparedMaterial` struct keeps loader-ready material data private until its pipeline is available.
-struct PreparedMaterial {
-	id: String,
-	index: u32,
-	pipeline: PipelineRef,
-	alpha_mode: AlphaMode,
-	double_sided: bool,
-	coverage: MaterialCoverage,
-	texture_slots: Vec<Option<u32>>,
-}
-
-/// The `ResidentMaterial` struct carries one fully ready material into renderer-owned draw state.
+/// The `ResidentMaterial` struct carries one loaded material's table data from a loader lane to renderer-owned draw
+/// state.
+///
+/// The loader keeps it until its specialized pipeline compiles, then publishes it with that compiled pipeline in
+/// [`VisibilityLoaderEvent::MaterialReady`].
+#[derive(Clone)]
 pub(crate) struct ResidentMaterial {
 	pub(crate) id: String,
 	pub(crate) index: u32,
-	pub(crate) pipeline: ghi::PipelineHandle,
+	pub(crate) pipeline: PipelineRef,
 	pub(crate) alpha_mode: AlphaMode,
 	pub(crate) double_sided: bool,
 	pub(crate) coverage: MaterialCoverage,
@@ -123,11 +116,12 @@ pub(crate) struct ResidentEnvironment {
 }
 
 /// The `VisibilityResident` enum keeps generic loader results private to the loader boundary.
-enum VisibilityResident {
+pub(crate) enum VisibilityResident {
 	/// A routed resource; its family request travels as the only dependency.
 	Routed,
-	Mesh(MeshData),
-	Material(PreparedMaterial),
+	/// A resident mesh and the key it was requested by.
+	Mesh(MeshKey, MeshData),
+	Material(ResidentMaterial),
 	/// An upload-complete texture whose image the render thread still interns.
 	Texture {
 		id: String,
@@ -146,35 +140,19 @@ enum VisibilityResident {
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
 pub(crate) enum VisibilityLoaderEvent {
-	MeshReady { key: MeshKey, mesh: MeshData },
-	MaterialReady(ResidentMaterial),
+	MeshReady { key: MeshKey, mesh: Arc<MeshData> },
+	MaterialReady(ResidentMaterial, ghi::PipelineHandle),
 	MaterialUnavailable { index: u32 },
 	TextureReady(ResidentTexture),
 	EnvironmentReady { id: String, environment: ResidentEnvironment },
 	Unavailable { resource: String, error: LoadError },
 }
 
-/// The `MaterialPipelineConfig` struct gives visibility lanes the immutable inputs used to request compute pipelines.
-#[derive(Clone)]
-pub struct MaterialPipelineConfig {
-	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	pipeline_manager: PipelineManagerClient,
-}
-
-impl MaterialPipelineConfig {
-	/// Creates the compute-pipeline inputs shared by every visibility lane.
-	pub fn new(push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>, pipeline_manager: PipelineManagerClient) -> Self {
-		Self {
-			push_constant_ranges,
-			pipeline_manager,
-		}
-	}
-}
-
 /// The `VisibilityLoader` struct owns all resource loading and GPU placement for the visibility pipeline.
-struct VisibilityLoader {
+pub(crate) struct VisibilityLoader {
 	resource_manager: EntityHandle<ResourceManager>,
-	pipeline_config: MaterialPipelineConfig,
+	/// Requests each material's specialized material-evaluation pipeline.
+	pipeline_manager: PipelineManagerClient,
 	geometry: Mutex<GeometryBuffers>,
 	material_slots: Mutex<HashMap<String, u32>>,
 	texture_slots: Mutex<HashMap<String, u32>>,
@@ -184,7 +162,8 @@ struct VisibilityLoader {
 pub(crate) struct VisibilityLoaderClient {
 	client: LoaderClient<VisibilityLoader>,
 	pipeline_manager: PipelineManagerClient,
-	meshes: HashMap<MeshKey, MeshData>,
+	/// Resident meshes, shared with every renderable that uses them.
+	meshes: HashMap<MeshKey, Arc<MeshData>>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
 	/// Reports rebaked material variants, so their materials load again.
@@ -200,29 +179,29 @@ pub(crate) struct VisibilityLoaderClient {
 
 /// The `MaterialPublication` struct tracks the last compilation state reported to the renderer.
 struct MaterialPublication {
-	material: PreparedMaterial,
+	material: ResidentMaterial,
 	published: Option<PipelineState>,
 }
 
-/// The `VisibilityLoaderLane` struct hides one generic worker lane from application setup.
-pub(crate) struct VisibilityLoaderLane(LoaderLane<VisibilityLoader>);
-
-impl VisibilityLoaderLane {
-	/// Runs this lane until the visibility loader client is dropped.
-	pub(crate) async fn run(self) {
-		self.0.run().await;
+/// Returns or assigns a stable shader-table slot for `id`, failing once `limit` slots exist.
+fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &str) -> Option<u32> {
+	if let Some(index) = slots.get(id) {
+		return Some(*index);
 	}
+	if slots.len() >= limit {
+		log::error!(
+			"Visibility {kind} limit exceeded. The most likely cause is that the scene created more {kind} variants than the visibility pipeline supports."
+		);
+		return None;
+	}
+	let index = slots.len() as u32;
+	slots.insert(id.to_string(), index);
+	Some(index)
 }
 
 /// Builds the default sampler used by visibility material textures.
 fn material_sampler() -> ghi::sampler::Builder {
-	ghi::sampler::Builder::new()
-		.filtering_mode(ghi::FilteringModes::Linear)
-		.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-		.mip_map_mode(ghi::FilteringModes::Linear)
-		.addressing_mode(ghi::SamplerAddressingModes::Repeat)
-		.min_lod(0f32)
-		.max_lod(0f32)
+	ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Repeat)
 }
 
 /// Returns whether an image can safely provide the normalized Type C IES intensity-map contract.
@@ -245,7 +224,7 @@ impl VisibilityLoaderClient {
 	}
 
 	/// Requests one mesh and reports whether that mesh was already resident.
-	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<MeshData>) {
+	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<Arc<MeshData>>) {
 		let key = source.key();
 		let resident = self.meshes.get(&key).cloned();
 		self.client.request(VisibilityLoadRequest::Mesh(source));
@@ -275,19 +254,20 @@ impl VisibilityLoaderClient {
 		while let Some(event) = self.client.poll() {
 			events.push(match event {
 				LoaderEvent::Ready {
-					key: VisibilityLoadKey::Resource(_) | VisibilityLoadKey::Query(_),
 					resident: VisibilityResident::Routed,
+					..
 				} => continue,
 				LoaderEvent::Ready {
-					key: VisibilityLoadKey::Mesh(key),
-					resident: VisibilityResident::Mesh(mesh),
+					resident: VisibilityResident::Mesh(key, mesh),
+					..
 				} => {
+					let mesh = Arc::new(mesh);
 					self.meshes.insert(key, mesh.clone());
 					VisibilityLoaderEvent::MeshReady { key, mesh }
 				}
 				LoaderEvent::Ready {
-					key: VisibilityLoadKey::Material(_),
 					resident: VisibilityResident::Material(material),
+					..
 				} => {
 					self.materials.insert(
 						material.index,
@@ -299,27 +279,25 @@ impl VisibilityLoaderClient {
 					continue;
 				}
 				LoaderEvent::Ready {
-					key: VisibilityLoadKey::Texture(_),
-					resident:
-						VisibilityResident::Texture {
-							id,
-							index,
-							image,
-							photometry,
-						},
-				} => VisibilityLoaderEvent::TextureReady(ResidentTexture {
+					resident: VisibilityResident::Texture {
 						id,
 						index,
-						image: frame.intern_image(image).into(),
-						sampler: if photometry.is_some() {
-							self.clamp_sampler
-						} else {
-							self.repeat_sampler
-						},
+						image,
 						photometry,
-					}),
+					},
+					..
+				} => VisibilityLoaderEvent::TextureReady(ResidentTexture {
+					id,
+					index,
+					image: frame.intern_image(image).into(),
+					sampler: if photometry.is_some() {
+						self.clamp_sampler
+					} else {
+						self.repeat_sampler
+					},
+					photometry,
+				}),
 				LoaderEvent::Ready {
-					key: VisibilityLoadKey::Environment(_),
 					resident:
 						VisibilityResident::Environment {
 							id,
@@ -327,6 +305,7 @@ impl VisibilityLoaderClient {
 							specular_image,
 							upward_illuminance,
 						},
+					..
 				} => {
 					let resident = ResidentEnvironment {
 						diffuse_image: frame.intern_image(diffuse_image).into(),
@@ -344,45 +323,27 @@ impl VisibilityLoaderClient {
 					resource: key.to_string(),
 					error,
 				},
-				LoaderEvent::Ready { .. } => unreachable!(
-					"Visibility loader returned a mismatched key and resident. The most likely cause is an incorrect route inside VisibilityLoader."
-				),
 			});
 		}
 
 		// Visit each material once, even when many compilation results arrive together. A reloaded material replaced
-		// its publication, so it reports its new state here too.
+		// its publication, so it reports its new state here too. One read lock covers every material's poll.
+		let pipelines = self.pipeline_manager.compute_pipelines();
 		for publication in self.materials.values_mut() {
-			let state = self.pipeline_manager.get(publication.material.pipeline);
+			let state = pipelines.state(publication.material.pipeline);
 			if publication.published == Some(state) {
 				continue;
 			}
 			let was_ready = matches!(publication.published, Some(PipelineState::Ready(_)));
 			publication.published = Some(state);
 			match state {
-				PipelineState::Pending if was_ready => {
-					events.push(VisibilityLoaderEvent::MaterialUnavailable {
-						index: publication.material.index,
-					});
-				}
-				PipelineState::Pending => {}
+				PipelineState::Pending if !was_ready => {}
 				PipelineState::Ready(pipeline) => {
-					let material = &publication.material;
-					events.push(VisibilityLoaderEvent::MaterialReady(ResidentMaterial {
-						id: material.id.clone(),
-						index: material.index,
-						pipeline,
-						alpha_mode: material.alpha_mode.clone(),
-						double_sided: material.double_sided,
-						coverage: material.coverage,
-						texture_slots: material.texture_slots.clone(),
-					}));
+					events.push(VisibilityLoaderEvent::MaterialReady(publication.material.clone(), pipeline))
 				}
-				PipelineState::Failed => {
-					events.push(VisibilityLoaderEvent::MaterialUnavailable {
-						index: publication.material.index,
-					});
-				}
+				PipelineState::Pending | PipelineState::Failed => events.push(VisibilityLoaderEvent::MaterialUnavailable {
+					index: publication.material.index,
+				}),
 			}
 		}
 	}
@@ -411,22 +372,22 @@ impl VisibilityLoaderClient {
 /// Creates the visibility pipeline's single loader client and lane pool.
 ///
 /// `render` is the context that created `geometry` and renders the loaded resources. The loader imports the
-/// geometry streams so lanes append to them. Run every returned lane on the loading thread.
+/// geometry streams so lanes append to them. `pipeline_manager` compiles each material's evaluation pipeline. Run
+/// every returned lane on the loading thread.
 pub(crate) fn spawn(
 	loader: &mut Loader,
 	render: &mut ghi::implementation::Context,
 	resource_manager: EntityHandle<ResourceManager>,
 	geometry: &GeometryHandles,
-	pipeline_config: MaterialPipelineConfig,
-) -> (VisibilityLoaderClient, Vec<VisibilityLoaderLane>) {
+	pipeline_manager: PipelineManagerClient,
+) -> (VisibilityLoaderClient, Vec<LoaderLane<VisibilityLoader>>) {
 	use ghi::context::ContextCreate as _;
 
-	let pipeline_manager = pipeline_config.pipeline_manager.clone();
 	#[cfg(debug_assertions)]
 	let resource_updates = resource_manager.resource_updates();
 	let visibility_loader = VisibilityLoader {
 		resource_manager,
-		pipeline_config,
+		pipeline_manager: pipeline_manager.clone(),
 		geometry: Mutex::new(GeometryBuffers::import(geometry, render, loader)),
 		material_slots: Mutex::new(HashMap::default()),
 		texture_slots: Mutex::new(HashMap::default()),
@@ -449,20 +410,11 @@ pub(crate) fn spawn(
 			),
 			environment_sampler: render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32)),
 		},
-		lanes.into_iter().map(VisibilityLoaderLane).collect(),
+		lanes,
 	)
 }
 
 impl VisibilityLoader {
-	/// Returns or assigns the stable material-table slot for each primitive of a prepared mesh.
-	fn mesh_material_slots(&self, mesh: &PreparedMesh) -> Option<SmallVec<[u32; 8]>> {
-		let mut slots = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
-		mesh.primitives
-			.iter()
-			.map(|primitive| assign_slot(&mut slots, &primitive.material_id, MAX_MATERIALS, "material"))
-			.collect()
-	}
-
 	/// Reads the stored class of `id` and forwards it as the matching family request.
 	async fn load_resource(&self, id: &'static str, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let class = self.resource_manager.class(id).await.map_err(|error| {
@@ -527,6 +479,7 @@ impl VisibilityLoader {
 	/// Requests one mesh's materials, then resolves, converts, places, and uploads its geometry.
 	async fn load_mesh(&self, source: MeshSource, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let staging = lane.staging().clone();
+		let key = source.key();
 		// Materials load while this mesh is read, converted, and uploaded.
 		let prepared = match source {
 			MeshSource::Resource(id) => {
@@ -555,7 +508,16 @@ impl VisibilityLoader {
 			)
 		})?;
 
-		let slots = self.mesh_material_slots(&prepared).ok_or_else(|| {
+		// Every primitive gets its material's stable table slot.
+		let slots = {
+			let mut slots = self.material_slots.lock().unwrap_or_else(|error| error.into_inner());
+			prepared
+				.primitives
+				.iter()
+				.map(|primitive| assign_slot(&mut slots, &primitive.material_id, MAX_MATERIALS, "material"))
+				.collect::<Option<SmallVec<[u32; 8]>>>()
+		}
+		.ok_or_else(|| {
 			LoadError(
 				"Visibility mesh material slots could not be assigned. The most likely cause is that the material table is full."
 					.to_string(),
@@ -574,7 +536,7 @@ impl VisibilityLoader {
 				)
 			})?;
 		lane.upload(prepared.staging, [], copies).await?;
-		Ok(VisibilityResident::Mesh(mesh))
+		Ok(VisibilityResident::Mesh(key, mesh))
 	}
 
 	/// Assigns every shader-table slot a material needs before publishing it to the render thread.
@@ -604,7 +566,7 @@ impl VisibilityLoader {
 			))
 		})?;
 		let variant = reference.resource_mut();
-		let alpha_mode = variant.alpha_mode.clone();
+		let alpha_mode = variant.alpha_mode;
 		let texture_ids: Vec<Option<String>> = variant
 			.variables
 			.iter()
@@ -628,36 +590,28 @@ impl VisibilityLoader {
 		for texture in texture_ids.iter().flatten() {
 			lane.request(VisibilityLoadRequest::Texture(texture.clone()));
 		}
-		let coverage = material.coverage;
-		let double_sided = material.double_sided();
 		let (index, texture_slots) = self.assign_material_slots(&id, &texture_ids).ok_or_else(|| {
 			LoadError(format!(
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
 			))
 		})?;
-		let pipeline =
-			self.pipeline_config
-				.pipeline_manager
-				.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-					shader_id,
-					specialization,
-					self.pipeline_config.push_constant_ranges.clone(),
-				));
-		Ok(VisibilityResident::Material(PreparedMaterial {
+		// Material evaluation pushes two u32s: the material index and the blend flag.
+		let pipeline = self
+			.pipeline_manager
+			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+				shader_id,
+				specialization,
+				vec![ghi::pipelines::PushConstantRange::new(0, 8)],
+			));
+		Ok(VisibilityResident::Material(ResidentMaterial {
 			id,
 			index,
 			pipeline,
 			alpha_mode,
-			double_sided,
-			coverage,
+			double_sided: material.double_sided(),
+			coverage: material.coverage,
 			texture_slots,
 		}))
-	}
-
-	/// Returns or assigns the stable bindless slot for `id`, failing once the texture table is full.
-	fn texture_slot(&self, id: &str) -> Option<u32> {
-		let mut slots = self.texture_slots.lock().unwrap_or_else(|error| error.into_inner());
-		assign_slot(&mut slots, id, MAX_BINDLESS_TEXTURES, "texture")
 	}
 
 	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
@@ -672,7 +626,14 @@ impl VisibilityLoader {
 			.photometry
 			.clone()
 			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
-		let index = self.texture_slot(&id).ok_or_else(|| {
+		// The slot guard drops at the end of this statement, before the transfer awaits.
+		let index = assign_slot(
+			&mut self.texture_slots.lock().unwrap_or_else(|error| error.into_inner()),
+			&id,
+			MAX_BINDLESS_TEXTURES,
+			"texture",
+		)
+		.ok_or_else(|| {
 			LoadError(
 				"Visibility texture limit exceeded. The most likely cause is that the scene referenced more textures than the visibility pipeline supports."
 					.to_string(),
@@ -920,6 +881,15 @@ mod tests {
 			ibl: None,
 			photometry: None,
 		}
+	}
+
+	#[test]
+	fn slots_are_stable_and_bounded() {
+		let mut slots = HashMap::default();
+		assert_eq!(assign_slot(&mut slots, "a", 2, "test"), Some(0));
+		assert_eq!(assign_slot(&mut slots, "b", 2, "test"), Some(1));
+		assert_eq!(assign_slot(&mut slots, "a", 2, "test"), Some(0));
+		assert_eq!(assign_slot(&mut slots, "c", 2, "test"), None);
 	}
 
 	#[test]

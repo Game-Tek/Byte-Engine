@@ -162,14 +162,6 @@ impl<T> TextureReadbackState<T> {
 			Self::MappingFailed | Self::Vacant => None,
 		}
 	}
-
-	fn submit(&mut self, synchronizer: Option<PrivateSynchronizerHandle>) -> bool {
-		let Self::Recorded(value) = std::mem::replace(self, Self::Vacant) else {
-			return false;
-		};
-		*self = Self::Submitted(value, synchronizer);
-		true
-	}
 }
 
 struct TextureReadbackSlot<T> {
@@ -193,24 +185,23 @@ impl<T> TextureReadbackRegistry<T> {
 
 	/// Inserts one recorded readback and returns a generation-qualified stable handle.
 	pub(crate) fn insert(&mut self, value: T) -> TextureCopyHandle {
-		if let Some(index) = self.free.pop() {
-			let slot = &mut self.slots[index as usize];
-			slot.generation = slot.generation.checked_add(1).expect(
-				"Texture readback generation overflowed. The most likely cause is that one registry slot was reused more than u32::MAX times.",
+		// A new slot starts at generation zero, so its first handle has generation one like a reused slot's next one.
+		let index = self.free.pop().unwrap_or_else(|| {
+			let index = u32::try_from(self.slots.len()).expect(
+				"Texture readback registry exhausted its handle index space. The most likely cause is more than u32::MAX simultaneous transfers.",
 			);
-			slot.state = TextureReadbackState::Recorded(value);
-			return Self::handle(index, slot.generation);
-		}
-
-		let index = u32::try_from(self.slots.len()).expect(
-			"Texture readback registry exhausted its handle index space. The most likely cause is more than u32::MAX simultaneous transfers.",
-		);
-		let generation = 1;
-		self.slots.push(TextureReadbackSlot {
-			generation,
-			state: TextureReadbackState::Recorded(value),
+			self.slots.push(TextureReadbackSlot {
+				generation: 0,
+				state: TextureReadbackState::Vacant,
+			});
+			index
 		});
-		Self::handle(index, generation)
+		let slot = &mut self.slots[index as usize];
+		slot.generation = slot.generation.checked_add(1).expect(
+			"Texture readback generation overflowed. The most likely cause is that one registry slot was reused more than u32::MAX times.",
+		);
+		slot.state = TextureReadbackState::Recorded(value);
+		Self::handle(index, slot.generation)
 	}
 
 	/// Records that the readback's command was submitted, signaling `synchronizer` when it completes.
@@ -219,7 +210,14 @@ impl<T> TextureReadbackRegistry<T> {
 		handle: TextureCopyHandle,
 		synchronizer: Option<PrivateSynchronizerHandle>,
 	) -> bool {
-		self.slot_mut(handle).is_some_and(|slot| slot.state.submit(synchronizer))
+		let Some(slot) = self.slot_mut(handle) else {
+			return false;
+		};
+		let TextureReadbackState::Recorded(value) = std::mem::replace(&mut slot.state, TextureReadbackState::Vacant) else {
+			return false;
+		};
+		slot.state = TextureReadbackState::Submitted(value, synchronizer);
+		true
 	}
 
 	pub(crate) fn get(&self, handle: TextureCopyHandle) -> Option<&T> {
@@ -247,9 +245,7 @@ impl<T> TextureReadbackRegistry<T> {
 	pub(crate) fn take_submitted(&mut self, handle: TextureCopyHandle) -> Result<T, TextureTransferError> {
 		self.submitted(handle)?;
 		let (index, _) = Self::parts(handle);
-		let slot = self
-			.slot_mut(handle)
-			.expect("A validated texture readback slot must remain available.");
+		let slot = &mut self.slots[index as usize];
 		let TextureReadbackState::Submitted(value, _) = std::mem::replace(&mut slot.state, TextureReadbackState::Vacant) else {
 			unreachable!();
 		};
@@ -261,17 +257,15 @@ impl<T> TextureReadbackRegistry<T> {
 
 	/// Releases an unsubmitted value and leaves a reusable failed slot for deterministic mapping errors.
 	pub(crate) fn abandon_recorded(&mut self, handle: TextureCopyHandle) -> Option<T> {
-		let (index, generation) = Self::parts(handle);
-		let slot = self.slots.get_mut(index as usize)?;
-		if slot.generation != generation || !matches!(slot.state, TextureReadbackState::Recorded(_)) {
-			return None;
-		}
+		let slot = self
+			.slot_mut(handle)
+			.filter(|slot| matches!(slot.state, TextureReadbackState::Recorded(_)))?;
 		let TextureReadbackState::Recorded(value) = std::mem::replace(&mut slot.state, TextureReadbackState::MappingFailed)
 		else {
 			unreachable!();
 		};
 		if slot.generation != u32::MAX {
-			self.free.push(index);
+			self.free.push(Self::parts(handle).0);
 		}
 		Some(value)
 	}
@@ -308,14 +302,11 @@ impl<T> TextureReadbackRegistry<T> {
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
 /// Implementations use the context lifetime to bound the lifetime of owned GPU resources.
 ///
-/// Create resources through [`ContextCreate`], obtain a command
-/// buffer with [`Self::command_buffer`], then submit recorded work through a
+/// Create resources through [`ContextCreate`], record work outside frames with
+/// [`Self::create_command_buffer_recording`], then submit frame work through a
 /// queue returned by [`Self::queue`].
 pub trait Context: ContextCreate {
 	type Queue<'a>: crate::queue::Queue
-	where
-		Self: 'a;
-	type CommandBuffer<'a>: crate::command_buffer::CommandBuffer
 	where
 		Self: 'a;
 
@@ -331,8 +322,13 @@ pub trait Context: ContextCreate {
 	/// Returns a borrowed queue wrapper that exposes queue-local command submission.
 	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
 
-	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
-	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;
+	/// Starts a recording that belongs to no frame, for transfers submitted outside the render loop.
+	///
+	/// Next, record commands and submit them with [`crate::command_buffer::CommandBufferRecording::execute`].
+	fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode;
 
 	/// Changes the maximum number of frames in flight.
 	///

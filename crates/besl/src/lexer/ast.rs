@@ -107,10 +107,7 @@ impl PartialEq for NodeReference {
 impl Eq for NodeReference {}
 
 impl Hash for NodeReference {
-	fn hash<H>(&self, state: &mut H)
-	where
-		H: std::hash::Hasher,
-	{
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		Rc::as_ptr(&self.0).hash(state);
 	}
 }
@@ -157,8 +154,7 @@ impl CallTarget {
 
 impl From<NodeReference> for CallTarget {
 	fn from(target: NodeReference) -> Self {
-		let is_function = matches!(target.borrow().node(), Nodes::Function { .. });
-		if is_function {
+		if matches!(target.borrow().node(), Nodes::Function { .. }) {
 			CallTarget(CallTargetLink::Function(Rc::downgrade(&target.0)))
 		} else {
 			CallTarget(CallTargetLink::Owned(target))
@@ -182,25 +178,23 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 
 	let root: NodeReference = root.into();
 
-	match &mut node.node {
-		parser::Nodes::Scope { name, children } => {
-			assert_eq!(*name, "root");
-
-			let mut lexer = Lexer::new(root.clone());
-			for child in children {
-				for declaration in super::entry::normalize_entry(child, &root)? {
-					root.borrow_mut().add_child(declaration.into());
-				}
-				let child = lexer.lex(child)?;
-				root.borrow_mut().add_child(child);
-			}
-
-			Ok(root)
-		}
-		_ => Err(LexError::invalid(
+	let parser::Nodes::Scope { name, children } = &mut node.node else {
+		return Err(LexError::invalid(
 			"Invalid program root: the parsed node is not a scope. The most likely cause is that the node passed to the lexer is not the root that besl::parse returns.",
-		)),
+		));
+	};
+	assert_eq!(*name, "root");
+
+	let mut lexer = Lexer::new(root.clone());
+	for child in children {
+		for declaration in super::entry::normalize_entry(child, &root)? {
+			root.borrow_mut().add_child(declaration.into());
+		}
+		let child = lexer.lex(child)?;
+		root.borrow_mut().add_child(child);
 	}
+
+	Ok(root)
 }
 
 #[derive(Clone)]
@@ -222,78 +216,22 @@ impl Node {
 		let f16_t = primitive_type("f16");
 		let f32_t = primitive_type("f32");
 
-		let vec2u16 = record_type("vec2u16", [("x", u16_t.clone()), ("y", u16_t.clone())]);
-		let vec4u16 = record_type(
-			"vec4u16",
-			[
-				("x", u16_t.clone()),
-				("y", u16_t.clone()),
-				("z", u16_t.clone()),
-				("w", u16_t.clone()),
-			],
-		);
-		let vec2u32 = record_type("vec2u", [("x", u32_t.clone()), ("y", u32_t.clone())]);
-		let vec2i32 = record_type("vec2i", [("x", i32_t.clone()), ("y", i32_t.clone())]);
-		let vec2f16 = record_type("vec2f16", [("x", f16_t.clone()), ("y", f16_t.clone())]);
-		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
-		let vec3f16 = record_type("vec3f16", [("x", f16_t.clone()), ("y", f16_t.clone()), ("z", f16_t.clone())]);
-		let vec3f32 = record_type("vec3f", [("x", f32_t.clone()), ("y", f32_t.clone()), ("z", f32_t.clone())]);
-		let vec3u32 = record_type("vec3u", [("x", u32_t.clone()), ("y", u32_t.clone()), ("z", u32_t.clone())]);
-		let vec4u32 = record_type(
-			"vec4u",
-			[
-				("x", u32_t.clone()),
-				("y", u32_t.clone()),
-				("z", u32_t.clone()),
-				("w", u32_t.clone()),
-			],
-		);
-		let vec4f16 = record_type(
-			"vec4f16",
-			[
-				("x", f16_t.clone()),
-				("y", f16_t.clone()),
-				("z", f16_t.clone()),
-				("w", f16_t.clone()),
-			],
-		);
-		let vec4f32 = record_type(
-			"vec4f",
-			[
-				("x", f32_t.clone()),
-				("y", f32_t.clone()),
-				("z", f32_t.clone()),
-				("w", f32_t.clone()),
-			],
-		);
+		let vec2u16 = vector_type("vec2u16", &u16_t, 2);
+		let vec4u16 = vector_type("vec4u16", &u16_t, 4);
+		let vec2u32 = vector_type("vec2u", &u32_t, 2);
+		let vec2i32 = vector_type("vec2i", &i32_t, 2);
+		let vec2f16 = vector_type("vec2f16", &f16_t, 2);
+		let vec2f32 = vector_type("vec2f", &f32_t, 2);
+		let vec3f16 = vector_type("vec3f16", &f16_t, 3);
+		let vec3f32 = vector_type("vec3f", &f32_t, 3);
+		let vec3u32 = vector_type("vec3u", &u32_t, 3);
+		let vec4u32 = vector_type("vec4u", &u32_t, 4);
+		let vec4f16 = vector_type("vec4f16", &f16_t, 4);
+		let vec4f32 = vector_type("vec4f", &f32_t, 4);
 		// Packed vectors keep scalar alignment when they are embedded in storage records.
-		let packed_vec4f32 = record_type(
-			"packed_vec4f",
-			[
-				("x", f32_t.clone()),
-				("y", f32_t.clone()),
-				("z", f32_t.clone()),
-				("w", f32_t.clone()),
-			],
-		);
-		let mat4f32 = record_type(
-			"mat4f",
-			[
-				("x", vec4f32.clone()),
-				("y", vec4f32.clone()),
-				("z", vec4f32.clone()),
-				("w", vec4f32.clone()),
-			],
-		);
-		let mat4x3f32 = record_type(
-			"mat4x3f",
-			[
-				("x", vec3f32.clone()),
-				("y", vec3f32.clone()),
-				("z", vec3f32.clone()),
-				("w", vec3f32.clone()),
-			],
-		);
+		let packed_vec4f32 = vector_type("packed_vec4f", &f32_t, 4);
+		let mat4f32 = vector_type("mat4f", &vec4f32, 4);
+		let mat4x3f32 = vector_type("mat4x3f", &vec3f32, 4);
 
 		let texture_2d = primitive_type("Texture2D");
 		let texture_3d = primitive_type("Texture3D");
@@ -637,10 +575,10 @@ impl Node {
 		builtins.extend(atomic_intrinsics(atomic_u32, u32_t, void.clone()));
 		builtins.extend(atomic_intrinsics(atomic_i32, i32_t, void));
 
-		let mut root = Node::scope("root".to_string());
-		root.add_children(builtins);
-
-		root
+		Node::new(Nodes::Scope {
+			name: "root".to_string(),
+			children: builtins,
+		})
 	}
 
 	/// Creates a scope that groups child nodes.
@@ -791,22 +729,12 @@ impl Node {
 
 	/// Builds a device-backed binding. Use [`Self::binding_in_memory`] for dispatch-shared constant data.
 	pub fn binding(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
-		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
+		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device, None)
 	}
 
-	/// Builds a binding whose memory class is independent from its read and write access.
+	/// Builds a binding whose memory class is independent from its read and write access. Pass a `count` to bind an
+	/// array of that many resources, as [`Self::binding_array`] does.
 	pub fn binding_in_memory(
-		name: &str,
-		r#type: BindingTypes,
-		slot: u32,
-		read: bool,
-		write: bool,
-		memory_class: BufferMemoryClass,
-	) -> Node {
-		Self::binding_with_count(name, r#type, slot, read, write, memory_class, None)
-	}
-
-	pub(super) fn binding_with_count(
 		name: &str,
 		r#type: BindingTypes,
 		slot: u32,
@@ -835,25 +763,12 @@ impl Node {
 	}
 
 	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
-		Self::binding_array_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device, count)
-	}
-
-	/// Builds a resource array whose buffer memory class is independent from its read and write access.
-	pub fn binding_array_in_memory(
-		name: &str,
-		r#type: BindingTypes,
-		slot: u32,
-		read: bool,
-		write: bool,
-		memory_class: BufferMemoryClass,
-		count: usize,
-	) -> Node {
 		let count = u32::try_from(count)
 			.expect("Invalid binding array count. The most likely cause is that a resource array exceeds u32::MAX elements.");
 		let count = NonZeroU32::new(count).expect(
 			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
 		);
-		Self::binding_with_count(name, r#type, slot, read, write, memory_class, Some(count))
+		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device, Some(count))
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
@@ -902,20 +817,13 @@ impl Node {
 	}
 
 	pub fn output(name: &str, format: NodeReference, location: u8) -> Node {
-		Self::output_with_count(name, format, location, None, false)
+		Self::output_array(name, format, location, None, false)
 	}
 
-	/// Declares a mesh output array with one flat element per primitive.
-	pub fn output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), false)
-	}
-
-	/// Declares a mesh output array with one element per vertex, which rasterization interpolates.
-	pub fn vertex_output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), true)
-	}
-
-	fn output_with_count(
+	/// Declares a mesh output array of `count` elements, with one element per vertex, which rasterization
+	/// interpolates, when `per_vertex` is set, or one flat element per primitive otherwise. Without a `count` it
+	/// declares a plain stage output, like [`Self::output`].
+	pub fn output_array(
 		name: &str,
 		format: NodeReference,
 		location: u8,
@@ -933,10 +841,7 @@ impl Node {
 		}
 	}
 
-	pub fn task_payload(name: &str, format: NodeReference, count: u32) -> Node {
-		let count = NonZeroUsize::new(count as usize).expect(
-			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
-		);
+	pub fn task_payload(name: &str, format: NodeReference, count: NonZeroUsize) -> Node {
 		Node {
 			node: Nodes::TaskPayload {
 				name: name.to_string(),
@@ -960,37 +865,26 @@ impl Node {
 		Node { node }
 	}
 
+	/// Appends `child` to a container node, such as a scope's declarations or a function's statements, and returns it.
+	/// Other nodes ignore it.
 	pub fn add_child(&mut self, child: NodeReference) -> NodeReference {
-		match &mut self.node {
-			Nodes::Scope { children, .. } => {
-				children.push(child.clone());
-			}
-			Nodes::Struct { fields, .. } => {
-				fields.push(child.clone());
-			}
-			Nodes::Function { statements, .. } => {
-				statements.push(child.clone());
-			}
-			Nodes::PushConstant { members } => {
-				members.push(child.clone());
-			}
-			Nodes::Intrinsic { elements, .. } => {
-				elements.push(child.clone());
-			}
-			_ => {}
+		if let Nodes::Scope { children, .. }
+		| Nodes::Struct { fields: children, .. }
+		| Nodes::Function {
+			statements: children, ..
 		}
-
+		| Nodes::PushConstant { members: children }
+		| Nodes::Intrinsic { elements: children, .. } = &mut self.node
+		{
+			children.push(child.clone());
+		}
 		child
 	}
 
-	pub fn add_children(&mut self, children: Vec<NodeReference>) -> Vec<NodeReference> {
-		let mut ch = Vec::with_capacity(children.len());
-
+	pub fn add_children(&mut self, children: Vec<NodeReference>) {
 		for child in children {
-			ch.push(self.add_child(child));
+			self.add_child(child);
 		}
-
-		ch
 	}
 
 	pub fn node(&self) -> &Nodes {
@@ -1007,8 +901,8 @@ impl Node {
 			| Nodes::Binding { name, .. }
 			| Nodes::Parameter { name, .. }
 			| Nodes::Specialization { name, .. }
-			| Nodes::Const { name, .. } => Some(name),
-			Nodes::Input { name, .. }
+			| Nodes::Const { name, .. }
+			| Nodes::Input { name, .. }
 			| Nodes::Output { name, .. }
 			| Nodes::TaskPayload { name, .. }
 			| Nodes::Workgroup { name, .. } => Some(name),
@@ -1053,27 +947,23 @@ pub struct FixedArray {
 impl BindingTypes {
 	/// Lowers a buffer whose only member is a fixed array into [`BindingTypes::BufferArray`].
 	fn lowered_single_array(self) -> Self {
-		let lowered = match &self {
-			Self::Buffer { members } => match members.as_slice() {
-				[member] => match member.borrow().node() {
-					Nodes::Member {
-						name,
-						r#type,
-						count: Some(count),
-					} => Some(Self::BufferArray {
-						element: r#type.clone(),
-						fixed: Some(FixedArray {
-							count: *count,
-							alias: name.clone(),
-						}),
-					}),
-					_ => None,
-				},
-				_ => None,
-			},
-			_ => None,
-		};
-		lowered.unwrap_or(self)
+		if let Self::Buffer { members } = &self
+			&& let [member] = members.as_slice()
+			&& let Nodes::Member {
+				name,
+				r#type,
+				count: Some(count),
+			} = member.borrow().node()
+		{
+			return Self::BufferArray {
+				element: r#type.clone(),
+				fixed: Some(FixedArray {
+					count: *count,
+					alias: name.clone(),
+				}),
+			};
+		}
+		self
 	}
 }
 
@@ -1325,22 +1215,15 @@ impl Nodes {
 	}
 
 	pub fn is_leaf(&self) -> bool {
-		match self {
-			Nodes::Function { .. } => false,
-			Nodes::Conditional { .. } | Nodes::Match { .. } | Nodes::ForLoop { .. } => false,
-			Nodes::Struct { .. } => false,
-			Nodes::Binding { .. } => false,
-			Nodes::PushConstant { .. } => false,
-			Nodes::Input { .. } | Nodes::Output { .. } | Nodes::TaskPayload { .. } | Nodes::Workgroup { .. } => false,
-			Nodes::Specialization { .. } => false,
-			Nodes::Const { .. } => false,
-			Nodes::Parameter { .. } => true,
-			Nodes::Scope { .. } => true,
-			Nodes::Intrinsic { .. } => true,
-			Nodes::Member { .. } => true,
-			Nodes::Expression { .. } => true,
-			Nodes::Raw { .. } => true,
-		}
+		matches!(
+			self,
+			Nodes::Parameter { .. }
+				| Nodes::Scope { .. }
+				| Nodes::Intrinsic { .. }
+				| Nodes::Member { .. }
+				| Nodes::Expression(_)
+				| Nodes::Raw { .. }
+		)
 	}
 
 	pub fn is_indexable(&self) -> bool {
@@ -1406,100 +1289,65 @@ impl std::fmt::Debug for Node {
 	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
-			Nodes::Scope { name, children } => {
-				write!(f, "Scope {{ name: {}, children: {:#?} }}", name, names(children))
-			}
-			Nodes::Struct { name, fields, .. } => {
-				write!(f, "Struct {{ name: {}, fields: {:?} }}", name, names(fields))
-			}
+			Nodes::Scope { name, children } => write!(f, "Scope {{ name: {name}, children: {:#?} }}", names(children)),
+			Nodes::Struct { name, fields, .. } => write!(f, "Struct {{ name: {name}, fields: {:?} }}", names(fields)),
 			Nodes::Member { name, r#type, .. } => {
-				write!(
-					f,
-					"Member {{ name: {}, type: {:?} }}",
-					name,
-					r#type.0.borrow().get_name().map(|e| e.to_string())
-				)
+				write!(f, "Member {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
 			}
 			Nodes::Function {
 				name,
 				params,
 				statements,
 				..
-			} => {
-				write!(
-					f,
-					"Function {{ name: {}, parameters: {:?}, statements: {:?} }}",
-					name,
-					names(params),
-					names(statements)
-				)
-			}
+			} => write!(
+				f,
+				"Function {{ name: {name}, parameters: {:?}, statements: {:?} }}",
+				names(params),
+				names(statements)
+			),
 			Nodes::Conditional {
 				condition,
 				statements,
 				else_branch,
-			} => {
-				write!(
-					f,
-					"Conditional {{ condition: {:?}, statements: {:?}, else_branch: {:?} }}",
-					condition, statements, else_branch
-				)
-			}
+			} => write!(
+				f,
+				"Conditional {{ condition: {condition:?}, statements: {statements:?}, else_branch: {else_branch:?} }}"
+			),
 			Nodes::Match {
 				scrutinee,
 				r#type,
 				arms,
 				default,
-			} => {
-				write!(
-					f,
-					"Match {{ scrutinee: {:?}, type: {:?}, arms: {:?}, default: {:?} }}",
-					scrutinee,
-					r#type.borrow().get_name(),
-					arms,
-					default
-				)
-			}
+			} => write!(
+				f,
+				"Match {{ scrutinee: {scrutinee:?}, type: {:?}, arms: {arms:?}, default: {default:?} }}",
+				r#type.borrow().get_name()
+			),
 			Nodes::ForLoop {
 				initializer,
 				condition,
 				update,
 				statements,
-			} => {
-				write!(
-					f,
-					"ForLoop {{ initializer: {:?}, condition: {:?}, update: {:?}, statements: {:?} }}",
-					initializer, condition, update, statements
-				)
-			}
+			} => write!(
+				f,
+				"ForLoop {{ initializer: {initializer:?}, condition: {condition:?}, update: {update:?}, statements: {statements:?} }}"
+			),
 			Nodes::Specialization { name, r#type } => {
-				write!(
-					f,
-					"Specialization {{ name: {}, type: {:?} }}",
-					name,
-					r#type.0.borrow().get_name().map(|e| e.to_string())
-				)
+				write!(f, "Specialization {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
 			}
-			Nodes::Expression(expression) => {
-				write!(f, "Expression {{ {:?} }}", expression)
-			}
+			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
 			Nodes::Raw {
 				glsl,
 				hlsl,
 				msl,
 				input,
 				output,
-			} => {
-				write!(
-					f,
-					"RawCode {{ glsl: {:?}, hlsl: {:?}, msl: {:?}, input: {:?}, output: {:?} }}",
-					glsl,
-					hlsl,
-					msl,
-					names(input),
-					names(output)
-				)
-			}
+			} => write!(
+				f,
+				"RawCode {{ glsl: {glsl:?}, hlsl: {hlsl:?}, msl: {msl:?}, input: {:?}, output: {:?} }}",
+				names(input),
+				names(output)
+			),
 			Nodes::Binding {
 				name,
 				slot,
@@ -1508,90 +1356,56 @@ impl std::fmt::Debug for Node {
 				memory_class,
 				r#type,
 				count,
-			} => {
-				write!(
-					f,
-					"Binding {{ name: {}, slot: {}, read: {}, write: {}, memory_class: {:?}, type: {:?}, count: {:?} }}",
-					name, slot, read, write, memory_class, r#type, count
-				)
-			}
-			Nodes::PushConstant { members } => {
-				write!(f, "PushConstant {{ members: {:?} }}", names(members))
-			}
+			} => write!(
+				f,
+				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?} }}",
+				r#type
+			),
+			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(members)),
 			Nodes::Intrinsic {
 				name,
 				elements,
 				r#return,
-			} => {
-				write!(
-					f,
-					"Intrinsic {{ name: {}, elements: {:?}, return: {:?} }}",
-					name,
-					names(elements),
-					r#return.0.borrow().get_name().map(|e| e.to_string())
-				)
-			}
+			} => write!(
+				f,
+				"Intrinsic {{ name: {name}, elements: {:?}, return: {:?} }}",
+				names(elements),
+				r#return.borrow().get_name()
+			),
 			Nodes::Parameter { name, r#type } => {
-				write!(
-					f,
-					"Parameter {{ name: {}, type: {:?} }}",
-					name,
-					r#type.0.borrow().get_name().map(|e| e.to_string())
-				)
+				write!(f, "Parameter {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
 			}
-			Nodes::Input { name, format, location } => {
-				write!(
-					f,
-					"Input {{ name: {}, format: {:?}, location: {} }}",
-					name,
-					format.0.borrow().get_name().map(|e| e.to_string()),
-					location
-				)
-			}
+			Nodes::Input { name, format, location } => write!(
+				f,
+				"Input {{ name: {name}, format: {:?}, location: {location} }}",
+				format.borrow().get_name()
+			),
 			Nodes::Output {
 				name,
 				format,
 				location,
 				count,
 				per_vertex,
-			} => {
-				write!(
-					f,
-					"Output {{ name: {}, format: {:?}, location: {}, count: {:?}, per_vertex: {} }}",
-					name,
-					format.0.borrow().get_name().map(|e| e.to_string()),
-					location,
-					count,
-					per_vertex
-				)
-			}
-			Nodes::TaskPayload { name, format, count } => {
-				write!(
-					f,
-					"TaskPayload {{ name: {}, format: {:?}, count: {} }}",
-					name,
-					format.0.borrow().get_name().map(|e| e.to_string()),
-					count
-				)
-			}
-			Nodes::Workgroup { name, format, count } => {
-				write!(
-					f,
-					"Workgroup {{ name: {}, format: {:?}, count: {:?} }}",
-					name,
-					format.0.borrow().get_name().map(|e| e.to_string()),
-					count
-				)
-			}
-			Nodes::Const { name, r#type, value } => {
-				write!(
-					f,
-					"Const {{ name: {}, type: {:?}, value: {:?} }}",
-					name,
-					r#type.0.borrow().get_name().map(|e| e.to_string()),
-					value
-				)
-			}
+			} => write!(
+				f,
+				"Output {{ name: {name}, format: {:?}, location: {location}, count: {count:?}, per_vertex: {per_vertex} }}",
+				format.borrow().get_name()
+			),
+			Nodes::TaskPayload { name, format, count } => write!(
+				f,
+				"TaskPayload {{ name: {name}, format: {:?}, count: {count} }}",
+				format.borrow().get_name()
+			),
+			Nodes::Workgroup { name, format, count } => write!(
+				f,
+				"Workgroup {{ name: {name}, format: {:?}, count: {count:?} }}",
+				format.borrow().get_name()
+			),
+			Nodes::Const { name, r#type, value } => write!(
+				f,
+				"Const {{ name: {name}, type: {:?}, value: {value:?} }}",
+				r#type.borrow().get_name()
+			),
 		}
 	}
 }
@@ -1736,19 +1550,17 @@ impl LexError {
 }
 
 fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#return: NodeReference) -> NodeReference {
-	let intrinsic: NodeReference = Node::intrinsic(name, Vec::new(), r#return).into();
-
-	for (parameter_name, parameter_type) in parameters {
-		intrinsic.borrow_mut().add_child(
+	let parameters = parameters
+		.into_iter()
+		.map(|(name, r#type)| {
 			Node::new(Nodes::Parameter {
-				name: parameter_name.to_string(),
-				r#type: parameter_type,
+				name: name.to_string(),
+				r#type,
 			})
-			.into(),
-		);
-	}
-
-	intrinsic
+			.into()
+		})
+		.collect();
+	Node::intrinsic(name, parameters, r#return).into()
 }
 
 /// Builds the relaxed scalar atomic surface for one signed or unsigned 32-bit type.
@@ -1823,13 +1635,11 @@ fn primitive_type(name: &str) -> NodeReference {
 	Node::r#struct(name, Vec::new()).into()
 }
 
-fn record_type<const N: usize>(name: &str, fields: [(&str, NodeReference); N]) -> NodeReference {
-	Node::r#struct(
-		name,
-		fields
-			.into_iter()
-			.map(|(field_name, field_type)| Node::member(field_name, field_type).into())
-			.collect(),
-	)
-	.into()
+/// Builds a vector or matrix type whose first `count` fields of `x`, `y`, `z`, and `w` share the `component` type.
+fn vector_type(name: &str, component: &NodeReference, count: usize) -> NodeReference {
+	let fields = ["x", "y", "z", "w"][..count]
+		.iter()
+		.map(|axis| Node::member(axis, component.clone()).into())
+		.collect();
+	Node::r#struct(name, fields).into()
 }

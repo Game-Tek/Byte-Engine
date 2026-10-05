@@ -1,44 +1,18 @@
 use super::*;
 
+/// Maps a glTF attribute to the shared vertex stream it fills, or `None` for attributes the engine does not import.
 pub(crate) fn gltf_vertex_component(semantic: gltf::Semantic) -> Option<VertexComponent> {
-	match semantic {
-		gltf::Semantic::Positions => Some(VertexComponent {
-			semantic: VertexSemantics::Position,
-			format: "vec3f".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::Normals => Some(VertexComponent {
-			semantic: VertexSemantics::Normal,
-			format: "vec3f".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::Tangents => Some(VertexComponent {
-			semantic: VertexSemantics::Tangent,
-			format: "vec4f".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::Colors(0) => Some(VertexComponent {
-			semantic: VertexSemantics::Color,
-			format: "vec4f".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::TexCoords(0) => Some(VertexComponent {
-			semantic: VertexSemantics::UV,
-			format: "vec2f".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::Joints(0) => Some(VertexComponent {
-			semantic: VertexSemantics::Joints,
-			format: "vec4u16".to_string(),
-			channel: 0,
-		}),
-		gltf::Semantic::Weights(0) => Some(VertexComponent {
-			semantic: VertexSemantics::Weights,
-			format: "vec4f".to_string(),
-			channel: 0,
-		}),
-		_ => None,
-	}
+	let semantic = match semantic {
+		gltf::Semantic::Positions => VertexSemantics::Position,
+		gltf::Semantic::Normals => VertexSemantics::Normal,
+		gltf::Semantic::Tangents => VertexSemantics::Tangent,
+		gltf::Semantic::Colors(0) => VertexSemantics::Color,
+		gltf::Semantic::TexCoords(0) => VertexSemantics::UV,
+		gltf::Semantic::Joints(0) => VertexSemantics::Joints,
+		gltf::Semantic::Weights(0) => VertexSemantics::Weights,
+		_ => return None,
+	};
+	Some(VertexComponent::canonical(semantic))
 }
 
 pub(crate) fn normalize_vertex_layouts(vertex_layouts: &[Vec<VertexComponent>]) -> Vec<VertexComponent> {
@@ -64,43 +38,6 @@ pub(crate) fn has_vertex_component(vertex_layout: &[VertexComponent], semantic: 
 		.any(|component| component.semantic == semantic && component.channel == channel)
 }
 
-/// The `GltfMeshSourceError` enum identifies glTF data that cannot supply a canonical processor stream.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum GltfMeshSourceError {
-	MissingIndices,
-	MissingPositions,
-	MissingAttribute(VertexSemantics),
-	Skeletal(GltfSkeletalImportError),
-}
-
-impl std::fmt::Display for GltfMeshSourceError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::MissingIndices => write!(
-				formatter,
-				"glTF triangle indices are missing. The most likely cause is an unindexed source primitive."
-			),
-			Self::MissingPositions => write!(
-				formatter,
-				"glTF positions are missing. The most likely cause is a missing or malformed POSITION accessor."
-			),
-			Self::MissingAttribute(semantic) => write!(
-				formatter,
-				"glTF vertex data is incomplete. The most likely cause is a missing {semantic:?} accessor required by the shared mesh layout."
-			),
-			Self::Skeletal(error) => error.fmt(formatter),
-		}
-	}
-}
-
-impl std::error::Error for GltfMeshSourceError {}
-
-impl From<GltfSkeletalImportError> for GltfMeshSourceError {
-	fn from(error: GltfSkeletalImportError) -> Self {
-		Self::Skeletal(error)
-	}
-}
-
 /// The `GltfPrimitiveAttributes` struct records which shared vertex streams each glTF primitive should expose.
 #[derive(Clone, Copy)]
 pub(crate) struct GltfPrimitiveAttributes {
@@ -123,40 +60,17 @@ impl GltfPrimitiveAttributes {
 
 /// The `GltfPrimitiveSource` struct lends one glTF primitive and its accessor data to the common mesh processor.
 pub(crate) struct GltfPrimitiveSource<'a> {
-	primitive: &'a gltf::Primitive<'a>,
-	buffers: &'a [gltf::buffer::Data],
-	material_slot: usize,
-	transform: math::Matrix,
-	transform_node: Option<u32>,
-	skin: Option<u32>,
-	skin_joint_count: Option<usize>,
-	attributes: GltfPrimitiveAttributes,
+	pub(crate) primitive: &'a gltf::Primitive<'a>,
+	pub(crate) buffers: &'a [Cow<'a, [u8]>],
+	pub(crate) material_slot: usize,
+	pub(crate) transform: math::Matrix,
+	pub(crate) transform_node: Option<u32>,
+	pub(crate) skin: Option<u32>,
+	pub(crate) skin_joint_count: Option<usize>,
+	pub(crate) attributes: GltfPrimitiveAttributes,
 }
 
 impl<'a> GltfPrimitiveSource<'a> {
-	#[allow(clippy::too_many_arguments)]
-	pub(crate) fn new(
-		primitive: &'a gltf::Primitive<'a>,
-		buffers: &'a [gltf::buffer::Data],
-		material_slot: usize,
-		transform: math::Matrix,
-		transform_node: Option<u32>,
-		skin: Option<u32>,
-		skin_joint_count: Option<usize>,
-		attributes: GltfPrimitiveAttributes,
-	) -> Self {
-		Self {
-			primitive,
-			buffers,
-			material_slot,
-			transform,
-			transform_node,
-			skin,
-			skin_joint_count,
-			attributes,
-		}
-	}
-
 	fn reader(&self) -> gltf::mesh::Reader<'a, 'a, impl Clone + Fn(gltf::Buffer<'a>) -> Option<&'a [u8]>> {
 		let buffers = self.buffers;
 		self.primitive.reader(move |buffer| Some(&buffers[buffer.index()]))
@@ -164,7 +78,7 @@ impl<'a> GltfPrimitiveSource<'a> {
 }
 
 impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
-	type Error = GltfMeshSourceError;
+	type Error = GltfImportError;
 
 	fn material_slot(&self) -> usize {
 		self.material_slot
@@ -182,7 +96,7 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		Ok(self
 			.reader()
 			.read_indices()
-			.ok_or(GltfMeshSourceError::MissingIndices)?
+			.ok_or(GltfImportError::MissingIndices)?
 			.into_u32()
 			.map(Ok))
 	}
@@ -192,7 +106,7 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		Ok(self
 			.reader()
 			.read_positions()
-			.ok_or(GltfMeshSourceError::MissingPositions)?
+			.ok_or(GltfImportError::MissingPositions)?
 			.map(move |position| {
 				Ok(Point::from_maths(
 					transform * Point::<ModelSpace>::from_array(position).into_maths(),
@@ -210,10 +124,10 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		let normals = self
 			.reader()
 			.read_normals()
-			.ok_or(GltfMeshSourceError::MissingAttribute(VertexSemantics::Normal))?;
-		Ok(Some(normals.map(move |normal| {
-			transform_gltf_unit_direction(&normal_transform, normal).map_err(Into::into)
-		})))
+			.ok_or(GltfImportError::MissingAttribute(VertexSemantics::Normal))?;
+		Ok(Some(
+			normals.map(move |normal| transform_gltf_unit_direction(&normal_transform, normal)),
+		))
 	}
 
 	fn tangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 4], Self::Error>> + '_>, Self::Error> {
@@ -225,9 +139,9 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		let tangents = self
 			.reader()
 			.read_tangents()
-			.ok_or(GltfMeshSourceError::MissingAttribute(VertexSemantics::Tangent))?;
+			.ok_or(GltfImportError::MissingAttribute(VertexSemantics::Tangent))?;
 		Ok(Some(tangents.map(move |tangent| {
-			transform_gltf_tangent(&transform, orientation, tangent).map_err(Into::into)
+			transform_gltf_tangent(&transform, orientation, tangent)
 		})))
 	}
 
@@ -238,7 +152,7 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		let uvs = self
 			.reader()
 			.read_tex_coords(0)
-			.ok_or(GltfMeshSourceError::MissingAttribute(VertexSemantics::UV))?;
+			.ok_or(GltfImportError::MissingAttribute(VertexSemantics::UV))?;
 		Ok(Some(uvs.into_f32().map(Ok)))
 	}
 
@@ -249,7 +163,7 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 		let colors = self
 			.reader()
 			.read_colors(0)
-			.ok_or(GltfMeshSourceError::MissingAttribute(VertexSemantics::Color))?;
+			.ok_or(GltfImportError::MissingAttribute(VertexSemantics::Color))?;
 		Ok(Some(colors.into_rgba_f32().map(Ok)))
 	}
 
@@ -258,9 +172,7 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 			return Ok(None);
 		};
 		let reader = self.reader();
-		let vertex_count = reader.read_positions().ok_or(GltfMeshSourceError::MissingPositions)?.len();
-		Ok(Some(
-			GltfVertexSkinIterator::new(&reader, vertex_count, joint_count)?.map(|value| value.map_err(Into::into)),
-		))
+		let vertex_count = reader.read_positions().ok_or(GltfImportError::MissingPositions)?.len();
+		Ok(Some(gltf_vertex_skin(&reader, vertex_count, joint_count)?))
 	}
 }

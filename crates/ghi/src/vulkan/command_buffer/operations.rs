@@ -33,7 +33,6 @@ impl CommandBufferRecording<'_> {
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
 		unsafe {
 			self.device
-				.device
 				.cmd_bind_pipeline(self.get_command_buffer().command_buffer, bind_point, pipeline.pipeline);
 		}
 

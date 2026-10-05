@@ -9,15 +9,14 @@ use super::{
 	ResourceId,
 	besl::{PlatformShaderCompilerAdapter, ShaderCompiler},
 	handler::{AssetHandler, BakeContext, LoadErrors},
+	store_model, store_model_owned,
 };
 use crate::{
-	ProcessedAsset,
 	resources::{
 		particle_system::ParticleSystem,
 		pipeline::{Attachment, BlendMode, CullMode, FaceWinding, FillMode, Format, Pipeline, PipelineKind, PushConstantRange},
 	},
 	shader::ShaderGenerationSettings,
-	types::ShaderTypes,
 };
 
 /// The `ParticleSystemAssetHandler` struct exists to bake `.particles` module lists into a runnable GPU particle system.
@@ -68,43 +67,42 @@ impl AssetHandler for ParticleSystemAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-		let programs = generator::generate(&system);
 		let shader = |stage: &str| format!("{container}#shaders/{stage}");
-		let workgroup = Extent::line(generator::SIMULATION_WORKGROUP_SIZE);
-		for (stage, source, kind, settings) in [
+		let stages = [
 			(
 				"simulate",
-				&programs.simulate,
-				ShaderTypes::Compute,
-				ShaderGenerationSettings::compute(workgroup),
+				generator::simulate_program(&system),
+				ShaderGenerationSettings::compute(Extent::line(generator::SIMULATION_WORKGROUP_SIZE)),
 			),
 			(
 				"vertex",
-				&programs.vertex,
-				ShaderTypes::Vertex,
+				generator::vertex_program(&system),
 				ShaderGenerationSettings::vertex(),
 			),
 			(
 				"fragment",
-				&programs.fragment,
-				ShaderTypes::Fragment,
+				generator::fragment_program(&system.render.shape),
 				ShaderGenerationSettings::fragment(),
 			),
-		] {
+		];
+
+		// The stages are independent, so their platform compiles overlap. Storing them in stage order keeps the stored
+		// resources and the reported error the same as compiling one stage at a time.
+		let compiled = utils::r#async::join_all(stages.map(|(stage, source, settings)| async move {
 			let id = shader(stage);
-			let (compiled, bytes) = self
-				.compiler
-				.compile(&id, source, None, kind, settings.name(id.clone()))
-				.await
-				.map_err(|error| {
-					context.error(format_args!(
-						"Generated particle {stage} shader for '{container}' failed to compile: {error} The most likely cause is a defect in the particle shader generator."
-					));
-					LoadErrors::FailedToProcess
-				})?;
-			context
-				.store_resource_owned(ProcessedAsset::new(ResourceId::new(&id), compiled), bytes)
-				.await?;
+			let result = self.compiler.compile(&source, None, settings.name(id.clone())).await;
+			(stage, id, result)
+		}))
+		.await;
+
+		for (stage, id, result) in compiled {
+			let (compiled, bytes) = result.map_err(|error| {
+				context.error(format_args!(
+					"Generated particle {stage} shader for '{container}' failed to compile: {error} The most likely cause is a defect in the particle shader generator."
+				));
+				LoadErrors::FailedToProcess
+			})?;
+			store_model_owned(context, &id, compiled, bytes).await?;
 		}
 
 		let simulate_pipeline = format!("{container}#simulate");
@@ -146,10 +144,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 				},
 			),
 		] {
-			let pipeline = Pipeline { name: id.clone(), kind };
-			context
-				.store_resource(ProcessedAsset::new(ResourceId::new(id), pipeline), &[])
-				.await?;
+			store_model(context, id, Pipeline { name: id.clone(), kind }, &[]).await?;
 		}
 
 		let system = ParticleSystem {
@@ -160,10 +155,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			simulate_pipeline,
 			draw_pipeline,
 		};
-		context
-			.store_resource(ProcessedAsset::new(ResourceId::new(container), system), &[])
-			.await
-			.map(|_| ())
+		store_model(context, container, system, &[]).await.map(|_| ())
 	}
 }
 

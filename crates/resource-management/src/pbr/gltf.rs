@@ -1,7 +1,8 @@
 use super::{
-	BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
-	BrdfTexture, BrdfValue,
+	BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode, BrdfNodeId, BrdfTexture,
+	BrdfValue,
 };
+use crate::types::AlphaMode;
 
 /// Converts a glTF material into a flat BRDF material graph.
 pub fn brdf_material_from_gltf(material: &gltf::Material) -> BrdfMaterialDescription {
@@ -98,11 +99,11 @@ fn texture_info(texture: gltf::Texture, texcoord_channel: u32) -> BrdfTexture {
 	}
 }
 
-fn brdf_alpha_mode_from_gltf(material: &gltf::Material) -> BrdfAlphaMode {
+fn brdf_alpha_mode_from_gltf(material: &gltf::Material) -> AlphaMode {
 	match material.alpha_mode() {
-		gltf::material::AlphaMode::Opaque => BrdfAlphaMode::Opaque,
-		gltf::material::AlphaMode::Mask => BrdfAlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
-		gltf::material::AlphaMode::Blend => BrdfAlphaMode::Blend,
+		gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+		gltf::material::AlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
+		gltf::material::AlphaMode::Blend => AlphaMode::Blend,
 	}
 }
 
@@ -135,7 +136,7 @@ mod tests {
 
 		assert_eq!(brdf.name.as_deref(), Some("paint"));
 		assert_eq!(brdf.double_sided, true);
-		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Mask(0.25));
+		assert_eq!(brdf.alpha_mode, AlphaMode::Mask(0.25));
 		assert_eq!(brdf.validate(), Ok(()));
 		let surface = expect_surface(&brdf);
 
@@ -241,7 +242,7 @@ mod tests {
 
 		let brdf = brdf_material_from_gltf(&material);
 
-		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Blend);
+		assert_eq!(brdf.alpha_mode, AlphaMode::Blend);
 		assert_eq!(brdf.validate(), Ok(()));
 		let surface = expect_surface(&brdf);
 		let normal_id = surface.normal.unwrap();

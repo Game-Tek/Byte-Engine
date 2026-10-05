@@ -121,15 +121,6 @@ pub(super) struct BakeAllocator {
 }
 
 impl BakeAllocator {
-	/// Acquires budget before creating the arena used by a new root bake request.
-	pub(super) async fn new(memory_budget: Option<&Arc<BakeMemoryBudget>>) -> Self {
-		let memory_scope = match memory_budget {
-			Some(memory_budget) => Some(memory_budget.acquire().await),
-			None => None,
-		};
-		Self::in_scope(memory_scope)
-	}
-
 	/// Creates a dependency arena in its parent's scope so waiting children cannot deadlock their parent.
 	pub(super) fn in_scope(memory_scope: Option<Arc<BakeMemoryScope>>) -> Self {
 		Self {

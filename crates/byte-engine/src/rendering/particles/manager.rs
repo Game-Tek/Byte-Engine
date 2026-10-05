@@ -45,8 +45,8 @@ pub struct ParticleManager {
 	systems: Vec<SystemEntry>,
 	pipeline_manager: PipelineManagerClient,
 	prepare_pipeline: PipelineRef,
-	/// Each sink's color and depth targets, by sink id.
-	sink_targets: SmallVec<[(usize, SinkTargets); 4]>,
+	/// Each sink's color and depth attachments, by sink id.
+	sink_attachments: SmallVec<[(usize, [ghi::AttachmentInformation; 2]); 4]>,
 	/// Simulated seconds. Retirement and idleness are measured on this clock, which hitches slow down like particles.
 	simulated_time: f64,
 	last_frame_time: Option<MediaTime>,
@@ -112,12 +112,6 @@ struct PoolFrame {
 	side: u32,
 }
 
-#[derive(Clone, Copy)]
-struct SinkTargets {
-	color: ghi::BaseImageHandle,
-	depth: ghi::BaseImageHandle,
-}
-
 impl ParticleManager {
 	/// Requests the shared prepare pipeline and subscribes to the world's emitters. Next, register the manager with
 	/// [`crate::rendering::Renderer::add_pipeline_manager`].
@@ -135,7 +129,7 @@ impl ParticleManager {
 			systems: Vec::new(),
 			prepare_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/particles/prepare.pipeline"),
 			pipeline_manager,
-			sink_targets: SmallVec::new(),
+			sink_attachments: SmallVec::new(),
 			simulated_time: 0.0,
 			last_frame_time: None,
 			seed: 0,
@@ -156,11 +150,9 @@ impl ParticleManager {
 				}
 				// A new emitter, or one that switched systems and gives its old slot back.
 				_ => {
-					let previous = self.emitters.remove(&handle);
-					let model = previous
-						.as_ref()
-						.map_or_else(|| math::Matrix::identity().into(), |state| state.model);
-					if let Some(previous) = previous {
+					let mut model = math::Matrix::identity().into();
+					if let Some(previous) = self.emitters.remove(&handle) {
+						model = previous.model;
 						release(&mut self.systems, previous, self.simulated_time);
 					}
 					self.emitters.insert(
@@ -236,17 +228,15 @@ impl ParticleManager {
 				continue;
 			};
 			state.slot = pool.slots.iter().position(|slot| *slot == Slot::Free);
-			match state.slot {
-				Some(slot) => pool.slots[slot] = Slot::Emitting,
-				None if !state.reported_full => {
-					state.reported_full = true;
-					log::warn!(
-						"Particle emitter waits for a slot: all {MAX_EMITTERS} emitter slots of '{}' are taken. The most likely cause is that too many of its emitters are alive, or were deleted too recently for their particles to have died.",
-						entry.id
-					);
-				}
-				None => {}
+			if let Some(slot) = state.slot {
+				pool.slots[slot] = Slot::Emitting;
 			}
+			crate::rendering::warn_once(&mut state.reported_full, state.slot.is_none(), || {
+				format!(
+					"Particle emitter waits for a slot: all {MAX_EMITTERS} emitter slots of '{}' are taken. The most likely cause is that too many of its emitters are alive, or were deleted too recently for their particles to have died.",
+					entry.id
+				)
+			});
 		}
 	}
 }
@@ -307,25 +297,16 @@ fn release(systems: &mut [SystemEntry], state: EmitterState, simulated_time: f64
 	}
 }
 
-/// The `Clock` struct is the frame timing every system's simulation shares.
-#[derive(Clone, Copy)]
-struct Clock {
-	delta_time: f32,
-	/// The simulated time after this frame's step.
-	simulated_time: f64,
-	/// Varies every frame so new particles get new random values.
-	seed: u32,
-}
-
 /// Writes one system's spawn runs and spawning emitters into `data` for a simulation that fills `side`, and returns
 /// how many particles were requested.
 fn write_frame_data(
-	pool: &mut SystemPool,
+	pool: &SystemPool,
 	system: usize,
 	emitters: &mut HashMap<Handle, EmitterState>,
 	data: &mut ParticleFrameData,
 	side: u32,
-	clock: Clock,
+	delta_time: f32,
+	seed: u32,
 ) -> u32 {
 	let mut spawn_total = 0u32;
 	let mut spawn_count = 0usize;
@@ -334,7 +315,7 @@ fn write_frame_data(
 			continue;
 		};
 		let rate = state.emitter.rate.unwrap_or(pool.system.rate).max(0.0);
-		let spawn = state.fractional_spawn + rate * clock.delta_time;
+		let spawn = state.fractional_spawn + rate * delta_time;
 		let streamed = spawn.floor();
 		state.fractional_spawn = spawn - streamed;
 		let burst = state.emitter.burst.unwrap_or(pool.system.burst);
@@ -352,18 +333,13 @@ fn write_frame_data(
 		spawn_total = spawn_total.saturating_add(count);
 	}
 
-	data.delta_time = clock.delta_time;
-	data.seed = clock.seed;
+	data.delta_time = delta_time;
+	data.seed = seed;
 	data.spawn_total = spawn_total;
 	data.spawn_count = spawn_count as u32;
 	data.side = side;
 	data.reset = u32::from(pool.reset);
 	data.capacity = pool.system.capacity;
-	if spawn_total > 0 {
-		pool.alive_until = pool
-			.alive_until
-			.max(clock.simulated_time + f64::from(pool.system.longest_life));
-	}
 	spawn_total
 }
 
@@ -406,12 +382,13 @@ impl PipelineManager for ParticleManager {
 		}
 
 		self.seed = self.seed.wrapping_add(1);
-		let clock = Clock {
-			delta_time,
-			simulated_time: self.simulated_time,
-			seed: self.seed,
-		};
-		let mut pool_frames = SmallVec::<[(usize, PoolFrame); 8]>::new();
+		// Every active pool draws for each sink with attachments, so such a sink decides up front whether this frame
+		// records anything and advances the pools.
+		let records = sinks
+			.iter()
+			.any(|sink| self.sink_attachments.iter().any(|(sink_id, _)| *sink_id == sink.index()));
+		// The frame arena holds the active pools; it allocates on the first push, so idle frames allocate nothing.
+		let mut pools = bumpalo::collections::Vec::new_in(frame_allocator);
 		for (index, entry) in self.systems.iter_mut().enumerate() {
 			let Some(pool) = entry.pool.as_deref_mut() else {
 				continue;
@@ -424,56 +401,55 @@ impl PipelineManager for ParticleManager {
 			};
 			// The simulation reads the half the last one filled and packs survivors into the other.
 			let side = pool.side ^ 1;
-			let frame_data = pool.frame_data;
 			let spawn_total = write_frame_data(
 				pool,
 				index,
 				&mut self.emitters,
-				frame.get_mut_dynamic_buffer_slice(frame_data),
+				frame.get_mut_dynamic_buffer_slice(pool.frame_data),
 				side,
-				clock,
+				delta_time,
+				self.seed,
 			);
-			// With nothing alive and nothing new, the system has no GPU work. Its buffers then hold stale particles,
-			// so its next simulation must start from empty.
-			if spawn_total == 0 && self.simulated_time > pool.alive_until {
+			// New particles keep the system busy until the longest-lived of them dies. With nothing alive and nothing
+			// new, the system has no GPU work. Its buffers then hold stale particles, so its next simulation must start
+			// from empty.
+			if spawn_total > 0 {
+				pool.alive_until = pool
+					.alive_until
+					.max(self.simulated_time + f64::from(pool.system.longest_life));
+			} else if self.simulated_time > pool.alive_until {
 				pool.reset = true;
 				continue;
 			}
-			frame.sync_buffer(frame_data);
-			pool_frames.push((
-				index,
-				PoolFrame {
-					simulate,
-					draw,
-					descriptor_set: pool.descriptor_set,
-					draws: pool.draws,
-					dispatch: pool.dispatch,
-					side,
-				},
-			));
+			frame.sync_buffer(pool.frame_data);
+			pools.push(PoolFrame {
+				simulate,
+				draw,
+				descriptor_set: pool.descriptor_set,
+				draws: pool.draws,
+				dispatch: pool.dispatch,
+				side,
+			});
+			// A frame that records nothing leaves the live particles in the half they were in.
+			if records {
+				pool.side = side;
+				pool.reset = false;
+			}
 		}
-		if pool_frames.is_empty() {
+		if pools.is_empty() {
 			return commands;
 		}
-		let pools: &'a [PoolFrame] = frame_allocator.alloc_slice_fill_iter(pool_frames.iter().map(|(_, pool)| *pool));
+		let pools: &'a [PoolFrame] = pools.into_bump_slice();
 
 		for sink in sinks {
-			let Some(targets) = self
-				.sink_targets
-				.iter()
-				.find_map(|(sink_id, targets)| (*sink_id == sink.index()).then_some(*targets))
-			else {
+			let Some(&(_, attachments)) = self.sink_attachments.iter().find(|(sink_id, _)| *sink_id == sink.index()) else {
 				continue;
 			};
-			let inverse_view = math::inverse(sink.view().view());
+			// The translation column of the inverse view is the camera's world position.
+			let camera = math::inverse(sink.view().view()).get_column(3);
 			let push_constants = ParticlePushConstants {
 				view_projection: sink.view_projection().into(),
-				camera: [
-					inverse_view[(0, 3)],
-					inverse_view[(1, 3)],
-					inverse_view[(2, 3)],
-					sink.exposure_scale(),
-				],
+				camera: [camera.x, camera.y, camera.z, sink.exposure_scale()],
 			};
 			// Every sink sees the same particles, so only the first recorded one simulates them.
 			let simulates = commands.is_empty();
@@ -497,22 +473,6 @@ impl PipelineManager for ParticleManager {
 							}
 						}
 
-						// Particles test against the scene's depth without writing it, so they hide behind
-						// geometry and never hide each other.
-						let attachments = [
-							ghi::AttachmentInformation::new(
-								targets.color,
-								ghi::Layouts::RenderTarget,
-								ghi::LoadOp::Load,
-								ghi::StoreOp::Store,
-							),
-							ghi::AttachmentInformation::new(
-								targets.depth,
-								ghi::Layouts::RenderTarget,
-								ghi::LoadOp::Load,
-								ghi::StoreOp::Store,
-							),
-						];
 						let render_pass = c.start_render_pass(extent, &attachments);
 						for pool in pools {
 							let c = render_pass.bind_raster_pipeline(pool.draw);
@@ -526,23 +486,18 @@ impl PipelineManager for ParticleManager {
 			});
 			commands.push((sink.index(), command));
 		}
-
-		// A frame that recorded nothing leaves the live particles in the half they were in.
-		if !commands.is_empty() {
-			for (index, pool_frame) in &pool_frames {
-				if let Some(pool) = self.systems[*index].pool.as_deref_mut() {
-					pool.side = pool_frame.side;
-					pool.reset = false;
-				}
-			}
-		}
 		commands
 	}
 
 	/// Records which images particles draw into for a new sink: the scene's `main` color and `depth`.
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let color = render_pass_builder.render_to("main").into();
-		let depth = render_pass_builder.read_from("depth").into();
-		self.sink_targets.push((sink_id, SinkTargets { color, depth }));
+		let color = render_pass_builder.render_to("main");
+		let depth = render_pass_builder.read_from("depth");
+		// Particles test against the scene's depth without writing it, so they hide behind geometry and never hide
+		// each other.
+		let attachments = [color.into(), depth.into()].map(|image: ghi::ImageOrSwapchain| {
+			ghi::AttachmentInformation::new(image, ghi::Layouts::RenderTarget, ghi::LoadOp::Load, ghi::StoreOp::Store)
+		});
+		self.sink_attachments.push((sink_id, attachments));
 	}
 }

@@ -1,34 +1,25 @@
 use resource_management::{
 	Reference,
 	resources::{
-		animation::{Animation, Curve, NodeTrack},
+		animation::{Animation, Curve, CurveComponents, NodeTrack},
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
 };
 
-use super::math::{CurveComponents, CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
+/// The header word that holds the offset of the three-component value table, used by translation and scale curves.
+const VECTOR3_VALUES_WORD: usize = 5;
+/// The header word that holds the offset of the four-component value table, used by rotation curves.
+const QUATERNION_VALUES_WORD: usize = 6;
 const TRACK_WORDS: usize = 4;
 const CURVE_WORDS: usize = 4;
 
-#[derive(Clone, Copy)]
-struct CurveDescriptor {
-	interpolation: CurveInterpolation,
-	key_start: u32,
-	value_start: u32,
-	key_count: u32,
-}
-
-struct TrackDescriptor {
-	node: u32,
-	translation: Option<u32>,
-	rotation: Option<u32>,
-	scale: Option<u32>,
-}
-
 /// The `PackedAnimationData` struct stages one packed clip before the animation pool copies it into its arena.
+///
+/// The load worker packs each clip, so the thread that admits it into the arena only copies its words.
 #[derive(Debug)]
 pub(crate) struct PackedAnimationData {
 	pub(crate) skeleton: Reference<Skeleton>,
@@ -36,39 +27,17 @@ pub(crate) struct PackedAnimationData {
 }
 
 impl PackedAnimationData {
-	/// Returns the exact arena bytes needed after packing without allocating staging arrays.
-	pub(crate) fn resident_bytes(animation: &Animation) -> usize {
-		let curve_count = animation
-			.tracks
-			.iter()
-			.map(|track| {
-				usize::from(track.translation.is_some())
-					+ usize::from(track.rotation.is_some())
-					+ usize::from(track.scale.is_some())
-			})
-			.sum::<usize>();
-		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
-			total
-				+ track.translation.as_ref().map_or(0, curve_words::<3, _, _>)
-				+ track.rotation.as_ref().map_or(0, curve_words::<4, _, _>)
-				+ track.scale.as_ref().map_or(0, curve_words::<3, _, _>)
-		});
-		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
-			* std::mem::size_of::<u32>()
+	/// Returns the arena bytes this packed clip occupies.
+	pub(crate) fn resident_bytes(&self) -> usize {
+		self.data.len() * std::mem::size_of::<u32>()
 	}
 
 	/// Consumes a loaded resource and combines all curve descriptors, times, and values into one allocation.
 	pub(crate) fn from_resource(animation: Animation) -> Self {
-		let expected_bytes = Self::resident_bytes(&animation);
-		let Animation {
-			name: _,
-			skeleton,
-			duration,
-			tracks,
-		} = animation;
-		let data = pack_data(duration, tracks);
-		debug_assert_eq!(data.len() * std::mem::size_of::<u32>(), expected_bytes);
-		Self { skeleton, data }
+		Self {
+			data: pack_data(animation.duration, animation.tracks),
+			skeleton: animation.skeleton,
+		}
 	}
 }
 
@@ -95,105 +64,80 @@ impl<'a> PackedAnimation<'a> {
 	pub fn sample_local_pose(self, skeleton: &Skeleton, time: f32, output: &mut Vec<LocalTransform>) {
 		output.clear();
 		output.extend(skeleton.nodes.iter().map(|node| node.rest_local));
-		for track_index in 0..self.track_count() {
-			let track = self.track(track_index);
-			let node = track.node as usize;
-			self.sample_track(track, time, &mut output[node]);
+		for &[node, curves @ ..] in self.tracks() {
+			self.sample_track(curves, time, &mut output[node as usize]);
 		}
 	}
 
 	/// Samples directly into a mapped target pose, avoiding a transient complete source pose.
 	pub(crate) fn sample_target_local_pose(self, pose_map: &SkeletonPoseMap, time: f32, output: &mut [LocalTransform]) {
 		output.copy_from_slice(pose_map.target_rest_pose());
-		for track_index in 0..self.track_count() {
-			let track = self.track(track_index);
-			let Some(target) = pose_map.direct_target_node(track.node as usize) else {
+		for &[node, curves @ ..] in self.tracks() {
+			// Skip tracks without a target before decoding any of their curves.
+			let Some(target) = pose_map.direct_target_node(node as usize) else {
 				continue;
 			};
-			self.sample_track(track, time, &mut output[target]);
+			self.sample_track(curves, time, &mut output[target]);
 		}
 	}
 
-	/// Applies the sampled channels from one packed track to a local transform.
-	fn sample_track(self, track: PackedTrack, time: f32, local: &mut LocalTransform) {
-		if let Some(curve) = track.translation {
-			local.translation = self.sample(curve, time, Self::vector3);
+	/// Applies the sampled channels of one packed track, given its translation, rotation, and scale curve indices.
+	fn sample_track(self, [translation, rotation, scale]: [u32; 3], time: f32, local: &mut LocalTransform) {
+		if let Some(curve) = self.optional_curve(translation) {
+			local.translation = self.sample(curve, time, VECTOR3_VALUES_WORD);
 		}
-		if let Some(curve) = track.rotation {
-			local.rotation = self.sample(curve, time, Self::quaternion);
+		if let Some(curve) = self.optional_curve(rotation) {
+			local.rotation = self.sample(curve, time, QUATERNION_VALUES_WORD);
 		}
-		if let Some(curve) = track.scale {
-			local.scale = self.sample(curve, time, Self::vector3);
+		if let Some(curve) = self.optional_curve(scale) {
+			local.scale = self.sample(curve, time, VECTOR3_VALUES_WORD);
 		}
 	}
 
-	fn track_count(self) -> usize {
-		self.words[1] as usize
-	}
-
-	fn track(self, index: usize) -> PackedTrack {
-		let start = self.words[2] as usize + index * TRACK_WORDS;
-		PackedTrack {
-			node: self.words[start],
-			translation: self.optional_curve(self.words[start + 1]),
-			rotation: self.optional_curve(self.words[start + 2]),
-			scale: self.optional_curve(self.words[start + 3]),
-		}
+	/// Returns each track's `[node, translation, rotation, scale]` words.
+	fn tracks(self) -> &'a [[u32; TRACK_WORDS]] {
+		let start = self.words[2] as usize;
+		self.words[start..][..self.words[1] as usize * TRACK_WORDS].as_chunks().0
 	}
 
 	fn optional_curve(self, index: u32) -> Option<PackedCurve> {
 		(index != NONE).then(|| {
-			let start = self.words[3] as usize + index as usize * CURVE_WORDS;
+			let [interpolation, key_start, value_start, key_count] =
+				self.words[self.words[3] as usize..].as_chunks::<CURVE_WORDS>().0[index as usize];
 			PackedCurve {
-				interpolation: match self.words[start] {
+				interpolation: match interpolation {
 					0 => CurveInterpolation::Step,
 					1 => CurveInterpolation::Linear,
 					2 => CurveInterpolation::CubicSpline,
 					_ => unreachable!("packed curves are produced only by the engine encoder"),
 				},
-				key_start: self.words[start + 1] as usize,
-				value_start: self.words[start + 2] as usize,
-				key_count: self.words[start + 3] as usize,
+				key_start: key_start as usize,
+				value_start: value_start as usize,
+				key_count: key_count as usize,
 			}
 		})
 	}
 
-	fn time(self, curve: PackedCurve, key: usize) -> f32 {
-		f32::from_bits(self.words[self.words[4] as usize + curve.key_start + key])
-	}
-
-	fn vector3(self, index: usize) -> [f32; 3] {
-		let start = self.words[5] as usize + index * 3;
-		std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
-	}
-
-	fn quaternion(self, index: usize) -> [f32; 4] {
-		let start = self.words[6] as usize + index * 4;
-		std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
-	}
-
-	/// Samples one packed curve whose values `read` decodes from the value array.
+	/// Samples one packed curve whose `N`-component values start at the offset in header word `table`.
 	///
 	/// Cubic curves store each key as `[value, in_tangent, out_tangent]`; other curves store one value per key.
-	fn sample<V: CurveValue<N>, const N: usize>(
-		self,
-		curve: PackedCurve,
-		time: f32,
-		read: impl Fn(Self, usize) -> [f32; N],
-	) -> V {
+	fn sample<V: CurveValue<N>, const N: usize>(self, curve: PackedCurve, time: f32, table: usize) -> V {
+		// Slice both tables once, so each key read is one bounds-checked load instead of one per word.
+		let times = &self.words[self.words[4] as usize + curve.key_start..];
+		let values = &self.words[self.words[table] as usize..].as_chunks::<N>().0[curve.value_start..];
+		let read = |index: usize| values[index].map(f32::from_bits);
 		let stride = if curve.interpolation == CurveInterpolation::CubicSpline {
 			3
 		} else {
 			1
 		};
-		let value_index = |key: usize| curve.value_start + key * stride;
 		sample_curve(
 			curve.interpolation,
 			curve.key_count,
 			time,
-			|key| self.time(curve, key),
-			|key| V::from_components(read(self, value_index(key))),
-			|key| (read(self, value_index(key) + 1), read(self, value_index(key) + 2)),
+			|key| f32::from_bits(times[key]),
+			|key| V::from_key(read(key * stride)),
+			|key| (read(key * stride + 1), read(key * stride + 2)),
 		)
 	}
 }
@@ -206,13 +150,6 @@ struct PackedCurve {
 	key_count: usize,
 }
 
-struct PackedTrack {
-	node: u32,
-	translation: Option<PackedCurve>,
-	rotation: Option<PackedCurve>,
-	scale: Option<PackedCurve>,
-}
-
 /// Builds transient typed arrays, then writes the retained representation into one word-aligned allocation.
 fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	let mut descriptors = Vec::new();
@@ -222,21 +159,19 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	let mut quaternion_values = Vec::new();
 
 	for track in tracks {
-		let translation = track
-			.translation
-			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
-		let rotation = track
-			.rotation
-			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut quaternion_values));
-		let scale = track
-			.scale
-			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
-		packed_tracks.push(TrackDescriptor {
-			node: track.node,
-			translation,
-			rotation,
-			scale,
-		});
+		// Array elements evaluate left to right, so curve descriptors keep the translation, rotation, scale order.
+		packed_tracks.push([
+			track.node,
+			track.translation.map_or(NONE, |curve| {
+				pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values)
+			}),
+			track.rotation.map_or(NONE, |curve| {
+				pack_curve(curve, &mut descriptors, &mut times, &mut quaternion_values)
+			}),
+			track.scale.map_or(NONE, |curve| {
+				pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values)
+			}),
+		]);
 	}
 
 	let tracks_offset = HEADER_WORDS;
@@ -256,91 +191,61 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 		quaternion_offset as u32,
 		0,
 	]);
-	for track in packed_tracks {
-		words.extend([
-			track.node,
-			track.translation.unwrap_or(NONE),
-			track.rotation.unwrap_or(NONE),
-			track.scale.unwrap_or(NONE),
-		]);
-	}
-	for curve in descriptors {
-		words.extend([
-			curve.interpolation as u32,
-			curve.key_start,
-			curve.value_start,
-			curve.key_count,
-		]);
-	}
+	words.extend(packed_tracks.into_iter().flatten());
+	words.extend(descriptors.into_iter().flatten());
 	words.extend(times.into_iter().map(f32::to_bits));
 	words.extend(vector3_values.into_iter().flatten().map(f32::to_bits));
 	words.extend(quaternion_values.into_iter().flatten().map(f32::to_bits));
 	words.into_boxed_slice()
 }
 
-/// Counts the packed words one curve adds: a time plus every value of each key, where cubic keys also carry two tangents.
-fn curve_words<const N: usize, V, T>(curve: &Curve<V, T>) -> usize {
-	match curve {
-		Curve::Step { times, .. } | Curve::Linear { times, .. } => times.len() * (1 + N),
-		Curve::CubicSpline { times, .. } => times.len() * (1 + 3 * N),
-	}
-}
-
 /// Appends one curve to the packed tables and returns its descriptor index.
 ///
-/// Values and tangents are stored as their components. Cubic keys are stored as consecutive
-/// `[value, in_tangent, out_tangent]` triples.
-fn pack_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
+/// Values and tangents are stored as their components. Values are stored as [`CurveValue::from_components`] would
+/// rebuild them, so sampling reads them back with [`CurveValue::from_key`] and normalizes each rotation only once.
+/// Cubic keys are stored as consecutive `[value, in_tangent, out_tangent]` triples.
+fn pack_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize>(
 	curve: Curve<V, T>,
-	descriptors: &mut Vec<CurveDescriptor>,
+	descriptors: &mut Vec<[u32; CURVE_WORDS]>,
 	times: &mut Vec<f32>,
 	values: &mut Vec<[f32; N]>,
 ) -> u32 {
-	let (interpolation, curve_times, curve_values) = match curve {
-		Curve::Step { times, values } => (
-			CurveInterpolation::Step,
-			times,
-			values.into_iter().map(CurveComponents::components).collect(),
-		),
-		Curve::Linear { times, values } => (
-			CurveInterpolation::Linear,
-			times,
-			values.into_iter().map(CurveComponents::components).collect(),
-		),
+	let index = descriptors.len() as u32;
+	let value_start = values.len() as u32;
+	let (interpolation, curve_times) = match curve {
+		Curve::Step { times, values: keys } => {
+			values.extend(keys.into_iter().map(stored_key));
+			(CurveInterpolation::Step, times)
+		}
+		Curve::Linear { times, values: keys } => {
+			values.extend(keys.into_iter().map(stored_key));
+			(CurveInterpolation::Linear, times)
+		}
 		Curve::CubicSpline {
 			times,
-			values,
+			values: keys,
 			in_tangents,
 			out_tangents,
 		} => {
-			let mut packed = Vec::with_capacity(values.len() * 3);
-			for ((key, incoming), outgoing) in values.into_iter().zip(in_tangents).zip(out_tangents) {
-				packed.extend([key.components(), incoming.components(), outgoing.components()]);
+			for ((key, incoming), outgoing) in keys.into_iter().zip(in_tangents).zip(out_tangents) {
+				values.extend([stored_key(key), incoming.components(), outgoing.components()]);
 			}
-			(CurveInterpolation::CubicSpline, times, packed)
+			(CurveInterpolation::CubicSpline, times)
 		}
 	};
-	push_curve(interpolation, curve_times, curve_values, descriptors, times, values)
+	descriptors.push([
+		interpolation as u32,
+		times.len() as u32,
+		value_start,
+		curve_times.len() as u32,
+	]);
+	times.extend(curve_times);
+	index
 }
 
-fn push_curve<T>(
-	interpolation: CurveInterpolation,
-	curve_times: Vec<f32>,
-	curve_values: Vec<T>,
-	descriptors: &mut Vec<CurveDescriptor>,
-	times: &mut Vec<f32>,
-	values: &mut Vec<T>,
-) -> u32 {
-	let index = descriptors.len() as u32;
-	descriptors.push(CurveDescriptor {
-		interpolation,
-		key_start: times.len() as u32,
-		value_start: values.len() as u32,
-		key_count: curve_times.len() as u32,
-	});
-	times.extend(curve_times);
-	values.extend(curve_values);
-	index
+/// Returns the components that sampling would rebuild from `key`, which normalizes rotations ahead of time.
+fn stored_key<V: CurveValue<N>, const N: usize>(key: V) -> [f32; N] {
+	V::from_components(key.components()).components()
 }
 
 #[cfg(test)]
@@ -349,40 +254,27 @@ mod tests {
 		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, TranslationCurve},
-			skeleton::{LocalTransform, Skeleton, SkeletonNode, SkeletonPoseMap},
+			skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 		},
 	};
 
 	use super::{PackedAnimation, PackedAnimationData};
+	use crate::animation::test_node;
 
 	#[test]
 	fn direct_sampling_preserves_the_last_duplicate_source_node() {
+		let rest = |x| LocalTransform {
+			translation: math::Vector::from_array([x, 0.0, 0.0]),
+			..LocalTransform::identity()
+		};
 		let source = Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform {
-						translation: math::Vector::from_array([1.0, 0.0, 0.0]),
-						..LocalTransform::identity()
-					},
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform {
-						translation: math::Vector::from_array([2.0, 0.0, 0.0]),
-						..LocalTransform::identity()
-					},
-				},
+				test_node(Some("Hips"), None, rest(1.0)),
+				test_node(Some("Hips"), None, rest(2.0)),
 			],
 		};
 		let target = Skeleton {
-			nodes: vec![SkeletonNode {
-				name: Some("Hips".into()),
-				parent: None,
-				rest_local: LocalTransform::identity(),
-			}],
+			nodes: vec![test_node(Some("Hips"), None, LocalTransform::identity())],
 		};
 		let animation = Animation {
 			name: None,

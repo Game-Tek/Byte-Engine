@@ -1,11 +1,12 @@
 use std::{cell::RefCell, fmt::Write as _};
 
 use super::{
-	ResourceAccessorKind, any_code_node, resource_accessor, runtime_buffer_element, uses_intrinsic, uses_subgroup_intrinsics,
+	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, resource_accessor,
+	runtime_buffer_element, uses_intrinsic,
 };
 use crate::shader::generator::{
-	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, emit_comma_separated_nodes,
-	is_integer_besl_type, ordered_shader_nodes,
+	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,
+	ordered_shader_nodes,
 };
 
 mod analysis;
@@ -18,7 +19,7 @@ mod reserved;
 pub(crate) use analysis::*;
 pub(crate) use emit::*;
 pub use facade::Generator;
-pub(crate) use facade::{HlslBufferBindingSource, HlslStage};
+pub(crate) use facade::HlslBufferBindingSource;
 pub(crate) use generate::*;
 
 /// Returns the narrow array element DX12 packs into shared 32-bit words, so declarations, accesses, and reflected
@@ -33,31 +34,33 @@ pub(crate) fn hlsl_narrow_element(element_type: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-	use std::cell::RefCell;
-
 	use super::*;
-	use crate::shader::generator::{self, ShaderGenerationSettings};
+	use crate::{
+		shader::generator::{self, ShaderGenerationSettings},
+		types::ShaderTypes,
+	};
 
-	macro_rules! assert_string_contains {
-		($haystack:expr, $needle:expr) => {
-			assert!(
-				$haystack.contains($needle),
-				"Expected string to contain '{}', but it did not. String: '{}'",
-				$needle,
-				$haystack
-			);
-		};
+	/// Builds one intrinsic parameter for tests that declare their own intrinsics.
+	fn parameter(name: &str, r#type: besl::NodeReference) -> besl::NodeReference {
+		besl::Node::new(besl::Nodes::Parameter {
+			name: name.to_string(),
+			r#type,
+		})
+		.into()
 	}
 
-	macro_rules! assert_string_does_not_contain {
-		($haystack:expr, $needle:expr) => {
-			assert!(
-				!$haystack.contains($needle),
-				"Expected string not to contain '{}', but it did. String: '{}'",
-				$needle,
-				$haystack
-			);
-		};
+	/// Lowers `main` to minified HLSL.
+	fn generate(settings: &ShaderGenerationSettings, main: &besl::NodeReference) -> String {
+		Generator::new()
+			.minified(true)
+			.generate(settings, main)
+			.expect("Expected HLSL generation")
+	}
+
+	/// Links a standalone BESL source and lowers its `main` to minified HLSL.
+	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
+		let root = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+		generate(settings, &root.get_main().expect("Expected fixture main function"))
 	}
 
 	#[test]
@@ -92,14 +95,7 @@ mod tests {
 				}
 			}
 		"#;
-		let root = besl::compile_to_besl(source, None).expect("Expected modern HLSL source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected modern HLSL source generation");
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
 
 		assert_string_contains!(shader, "// Shader Model 6.9");
 		assert_string_contains!(shader, "groupshared uint32_t unsigned_value;");
@@ -127,14 +123,7 @@ mod tests {
 			assert_string_contains!(shader, predicate);
 		}
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"modern-half-atomic-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected modern half and atomic HLSL to compile to DXIL");
+		compile_dxil(&shader, "modern-half-atomic-regression", ShaderTypes::Compute);
 	}
 
 	/// An `else if` condition's atomic runs only when that branch is reached, so it is lifted into the else block.
@@ -147,26 +136,12 @@ mod tests {
 				if (n == 1) { n = 2; } else if (atomic_load(counter) == 0) { n = 3; }
 			}
 		"#;
-		let root = besl::compile_to_besl(source, None).expect("Expected else-if atomic source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected else-if atomic HLSL generation");
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
 
 		assert_string_contains!(shader, "}else{uint32_t besl_atomic_previous_0;");
 		assert_string_contains!(shader, "if(besl_atomic_previous_0==0){n=3;}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-else-if-atomic",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected else-if atomic HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-else-if-atomic", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -251,14 +226,7 @@ mod tests {
 				previous;
 			}
 		"#;
-		let root = besl::compile_to_besl(source, None).expect("Expected signed atomic subtraction source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected signed atomic subtraction HLSL generation");
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
 
 		assert_string_contains!(
 			shader,
@@ -266,24 +234,14 @@ mod tests {
 		);
 		assert_string_does_not_contain!(shader, "InterlockedAdd(signed_value,-(");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"signed-atomic-sub-wrapping-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected signed atomic subtraction HLSL to compile to DXIL");
+		compile_dxil(&shader, "signed-atomic-sub-wrapping-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();
 
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
 
 		// The test sets read=true, write=true for buff, which makes it a RWStructuredBuffer
 		// Check for structured buffer (writable buffer)
@@ -346,10 +304,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected reserved-name shader source to compile");
 		let main = root.get_main().expect("Expected reserved-name shader source to contain main");
 
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::fragment(), &main)
-			.expect("Expected reserved-name shader source to generate HLSL");
+		let shader = generate(&ShaderGenerationSettings::fragment(), &main);
 
 		assert_string_contains!(shader, "struct besl_half{float3 besl_float3;};");
 		assert_string_contains!(shader, "struct Wrapper{besl_half value;};");
@@ -369,15 +324,7 @@ mod tests {
 
 	#[test]
 	fn runtime_buffer_and_texture_array_layer_use_native_hlsl_resources() {
-		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
-			.expect("Expected runtime-array fragment source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::fragment(),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected runtime-array fragment HLSL generation");
+		let shader = lower_fixture(super::super::RUNTIME_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
 		assert_string_contains!(shader, "StructuredBuffer<Instance> instances : register(t1, space0);");
 		assert_string_contains!(shader, "Texture2DArray<float4> sprites : register(t0, space0);");
@@ -388,15 +335,10 @@ mod tests {
 
 	#[test]
 	fn scalar_runtime_arrays_pack_narrow_hlsl_elements_into_words() {
-		let root = besl::compile_to_besl(super::super::SCALAR_RUNTIME_ARRAY_COMPUTE, None)
-			.expect("Expected scalar runtime-array compute source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected scalar runtime-array HLSL generation");
+		let shader = lower_fixture(
+			super::super::SCALAR_RUNTIME_ARRAY_COMPUTE,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 
 		assert_string_contains!(shader, "StructuredBuffer<float3> positions : register(t0, space0);");
 		assert_string_contains!(shader, "StructuredBuffer<uint> indices : register(t1, space0);");
@@ -409,15 +351,7 @@ mod tests {
 
 	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_hlsl() {
-		let root = besl::compile_to_besl(super::super::DESCRIPTOR_ARRAY_FRAGMENT, None)
-			.expect("Expected descriptor-array fragment source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::fragment(),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected descriptor-array fragment HLSL generation");
+		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
 		assert_string_contains!(shader, "textures[items[index].slot].GetDimensions(size.x, size.y);");
 		assert_string_contains!(shader, "textures[index+1].SampleLevel(textures_sampler[index+1], uv, 0.0)");
@@ -446,13 +380,10 @@ mod tests {
 			"vec4f",
 		)]);
 		let root = besl::lex(root).expect("Expected descriptor-array gradient sample source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected descriptor-array gradient sample HLSL generation");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&root.get_main().expect("Expected main"),
+		);
 
 		assert_string_contains!(shader, "Texture2D<float4> textures[4] : register(t3, space0);");
 		assert_string_contains!(shader, "SamplerState textures_sampler[4] : register(s3, space0);");
@@ -461,24 +392,12 @@ mod tests {
 			"textures[2].SampleGrad(textures_sampler[2],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
 		);
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"descriptor-array-sample-grad-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected descriptor-array gradient sample HLSL to compile to DXIL");
+		compile_dxil(&shader, "descriptor-array-sample-grad-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn structural_position_uses_sv_position_without_colliding_with_a_local() {
-		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
-			.expect("Expected structural position source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
-			.expect("Expected structural position HLSL generation");
+		let shader = lower_fixture(super::super::STRUCTURAL_POSITION_VERTEX, &ShaderGenerationSettings::vertex());
 
 		assert_string_contains!(shader, "out float4 _besl_interface_position : SV_Position");
 		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
@@ -488,37 +407,30 @@ mod tests {
 
 	#[test]
 	fn packed_vec4f_uses_native_hlsl_vectors_in_nested_records() {
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&generator::tests::packed_vec4f_meshlet_binding(),
-			)
-			.expect("Expected packed_vec4f HLSL generation");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&generator::tests::packed_vec4f_meshlet_binding(),
+		);
 		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
 		assert_string_does_not_contain!(shader, "struct packed_vec4f");
 	}
 
 	#[test]
 	fn vec2u16_array_uses_the_native_four_byte_hlsl_vector_type() {
-		let main = generator::tests::vec2u16_array_binding();
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected vec2u16 HLSL generation");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&generator::tests::vec2u16_array_binding(),
+		);
 		assert_string_contains!(shader, "RWStructuredBuffer<uint16_t2> buff : register(u0, space0);");
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<uint2> buff");
 	}
 
 	#[test]
 	fn f16_storage_types_use_native_hlsl_types() {
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&generator::tests::mixed_f16_storage_binding(),
-			)
-			.expect("Expected f16 HLSL generation");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&generator::tests::mixed_f16_storage_binding(),
+		);
 		assert_string_contains!(shader, "float16_t scalar;");
 		assert_string_contains!(shader, "float16_t2 uv;");
 		assert_string_contains!(shader, "float16_t3 normal;");
@@ -559,10 +471,7 @@ mod tests {
 			.borrow()
 			.get_child("main")
 			.expect("Expected vector access shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected vector access shader source to generate HLSL");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "float component=besl_vector.x;");
 		assert_string_contains!(shader, "float indexed_component=besl_vector[1];");
 		assert_string_contains!(shader, "uint16_t joint_component=joints.x;");
@@ -570,19 +479,12 @@ mod tests {
 		assert_string_does_not_contain!(shader, "vector[x]");
 		assert_string_does_not_contain!(shader, "joints[x]");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"vector-access-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected vector access HLSL to compile to DXIL");
+		compile_dxil(&shader, "vector-access-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn user_struct_constructors_lower_to_hlsl_factories() {
-		let root = besl::compile_to_besl(
+		let shader = lower_fixture(
 			r#"
 			Pair: struct {
 				left: vec4f,
@@ -597,30 +499,15 @@ mod tests {
 				pair;
 			}
 			"#,
-			None,
-		)
-		.expect("Expected user struct constructor shader source to compile");
-		let main = root
-			.get_main()
-			.expect("Expected user struct constructor shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected user struct constructor shader source to generate HLSL");
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(
 			shader,
 			"Pair pair=besl_construct_Pair(float4(1.0,1.0,1.0,1.0),float4(2.0,2.0,2.0,2.0));"
 		);
 		assert_string_does_not_contain!(shader, "Pair pair=Pair(");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"user-struct-constructor-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected user struct constructor HLSL to compile to DXIL");
+		compile_dxil(&shader, "user-struct-constructor-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -684,10 +571,7 @@ mod tests {
 		)
 		.expect("Expected affine-matrix shader source to compile");
 		let main = root.get_main().expect("Expected affine-matrix shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected affine-matrix shader source to generate HLSL");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "return mul(position, model);");
 		assert_string_contains!(
 			shader,
@@ -706,14 +590,7 @@ mod tests {
 		assert_string_does_not_contain!(shader, "return float4x4(extend_vec3f(model[0]");
 		assert_string_does_not_contain!(shader, "transpose(model)[3]");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"affine-matrix-semantics-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected affine-matrix HLSL to compile to DXIL");
+		compile_dxil(&shader, "affine-matrix-semantics-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -787,10 +664,7 @@ mod tests {
 		let main = root
 			.get_main()
 			.expect("Expected buffered matrix-column shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected buffered matrix-column shader source to generate HLSL");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "results[0]=transpose(wrapped[0].besl_matrix)[1];");
 		assert_string_contains!(shader, "results[1]=transpose(matrices[0])[2];");
 		assert_string_contains!(shader, "results[2]=transpose(wrapped[0].besl_matrix+matrices[0])[3];");
@@ -813,19 +687,12 @@ mod tests {
 		assert_string_contains!(shader, "float4 subtracted=transpose(scale-besl_matrix)[3];");
 		assert_string_contains!(shader, "float4 remainder=transpose(besl_matrix%scale)[0];");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"buffered-matrix-column-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected buffered matrix-column HLSL to compile to DXIL");
+		compile_dxil(&shader, "buffered-matrix-column-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn task_payload_compaction_uses_groupshared_storage_and_compiles_as_dxil_amplification_shader() {
-		let root = besl::compile_to_besl(
+		let shader = lower_fixture(
 			r#"
 			meshlet_indices: task_payload<u32, 32>;
 			visible_count: workgroup<atomicu32>;
@@ -846,14 +713,8 @@ mod tests {
 				}
 			}
 			"#,
-			None,
-		)
-		.expect("Expected task shader source to compile");
-		let main = root.get_main().expect("Expected task shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::task(utils::Extent::line(32), 32), &main)
-			.expect("Expected task shader source to generate HLSL");
+			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+		);
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
@@ -862,47 +723,16 @@ mod tests {
 		assert_string_contains!(shader, "besl_mesh_output_count = besl_atomic_previous_");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"task-payload-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Task,
-		)
-		.expect("Expected task HLSL to compile to amplification DXIL");
+		compile_dxil(&shader, "task-payload-regression", ShaderTypes::Task);
 	}
 
 	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
 	#[test]
 	fn vertex_mesh_outputs_join_the_vertex_struct() {
-		let root = besl::compile_to_besl(
-			r#"
-			out_primitive_index: output<u32, 1, 1>;
-			out_uv: vertex_output<vec2f, 2, 3>;
-
-			main: fn () -> void {
-				let lane: u32 = thread_idx();
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
-				if (lane < 3) {
-					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
-					out_uv[lane] = vec2f(f32(lane), 1.0);
-				}
-				if (lane < 1) {
-					set_mesh_triangle(0, vec3u(0, 1, 2));
-					out_primitive_index[0] = lane;
-				}
-			}
-			"#,
-			None,
-		)
-		.expect("Expected mesh shader source to compile");
-		let main = root.get_main().expect("Expected mesh shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
-			.expect("Expected mesh shader source to generate HLSL");
+		let shader = generate(
+			&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)),
+			&generator::tests::vertex_and_primitive_mesh_outputs(),
+		);
 		assert_string_contains!(
 			shader,
 			"struct VertexOutput{float4 position : SV_Position;float2 out_uv : TEXCOORD2;};"
@@ -917,7 +747,7 @@ mod tests {
 
 	#[test]
 	fn mesh_payload_and_primitive_outputs_compile_as_dxil_mesh_shader() {
-		let root = besl::compile_to_besl(
+		let shader = lower_fixture(
 			r#"
 			meshlet_indices: task_payload<u32, 32>;
 			out_instance_index: output<u32, 0, 1>;
@@ -940,14 +770,8 @@ mod tests {
 				}
 			}
 			"#,
-			None,
-		)
-		.expect("Expected mesh shader source to compile");
-		let main = root.get_main().expect("Expected mesh shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
-			.expect("Expected mesh shader source to generate HLSL");
+			&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)),
+		);
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "struct VertexOutput{float4 position : SV_Position;};");
 		assert_string_contains!(shader, "struct PrimitiveOutput{");
@@ -962,14 +786,7 @@ mod tests {
 		assert_string_contains!(shader, "besl_primitives[0].render_target_array_index = 2");
 		assert_string_contains!(shader, "besl_primitives[0].out_instance_index=meshlet_index");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"mesh-output-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Mesh,
-		)
-		.expect("Expected mesh HLSL to compile to mesh DXIL");
+		compile_dxil(&shader, "mesh-output-regression", ShaderTypes::Mesh);
 	}
 
 	#[test]
@@ -985,36 +802,17 @@ mod tests {
 		)]);
 
 		let root = besl::lex(root).expect("Expected array texture binding shader source to lex");
-		let main = RefCell::borrow(&root)
-			.get_child("main")
+		let main = root
+			.get_main()
 			.expect("Expected array texture binding shader source to contain main");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected array texture binding shader source to generate HLSL");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "Texture2DArray<float4> shadow_map : register(t11, space0);");
 		assert_string_does_not_contain!(shader, "Texture2DArray<float4><float4>");
 	}
 
 	#[test]
 	fn vertex_invocation_indices_lower_to_system_semantics_and_reach_helpers() {
-		let root = besl::compile_to_besl(
-			r#"
-			invocation_sum: fn () -> u32 {
-				return vertex_index + instance_index;
-			}
-			out_value: output<u32, 0>;
-			main: fn () -> void {
-				out_value = invocation_sum();
-			}
-			"#,
-			None,
-		)
-		.expect("Expected implicit vertex builtins to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
-			.expect("Expected vertex builtins to lower to HLSL");
+		let shader = lower_fixture(super::super::VERTEX_BUILTIN_HELPER, &ShaderGenerationSettings::vertex());
 
 		assert_string_contains!(shader, "vertex_index : SV_VertexID");
 		assert_string_contains!(shader, "instance_index : SV_InstanceID");
@@ -1029,14 +827,8 @@ mod tests {
 	#[test]
 	fn packed_integer_vector_stage_io_uses_nointerpolation_only_across_rasterization() {
 		let main = generator::tests::packed_u16_stage_io();
-		let vertex_shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Expected packed integer vertex HLSL generation");
-		let fragment_shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::fragment(), &main)
-			.expect("Expected packed integer fragment HLSL generation");
+		let vertex_shader = generate(&ShaderGenerationSettings::vertex(), &main);
+		let fragment_shader = generate(&ShaderGenerationSettings::fragment(), &main);
 		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0");
 		assert_string_contains!(vertex_shader, "nointerpolation out uint16_t4 packed_output : TEXCOORD1");
 		assert_string_contains!(fragment_shader, "nointerpolation uint16_t2 packed_input : TEXCOORD0");
@@ -1085,53 +877,19 @@ mod tests {
 			)
 			.into(),
 		]);
-		let guard_image_bounds = root.add_child(besl::Node::intrinsic("guard_image_bounds", Vec::new(), void_type).into());
-		guard_image_bounds.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "image".to_string(),
-				r#type: image_type.clone(),
-			})
-			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "coord".to_string(),
-				r#type: vec2u_type.clone(),
-			})
-			.into(),
-		]);
-		let image_load_u32 = root.add_child(besl::Node::intrinsic("image_load_u32", Vec::new(), u32_type).into());
-		image_load_u32.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "image".to_string(),
-				r#type: image_type.clone(),
-			})
-			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "coord".to_string(),
-				r#type: vec2u_type.clone(),
-			})
-			.into(),
-		]);
-		let image_load = root.add_child(besl::Node::intrinsic("image_load", Vec::new(), vec4f_type).into());
-		image_load.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "image".to_string(),
-				r#type: image_type,
-			})
-			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "coord".to_string(),
-				r#type: vec2u_type,
-			})
-			.into(),
-		]);
+		for (name, return_type) in [
+			("guard_image_bounds", void_type),
+			("image_load_u32", u32_type),
+			("image_load", vec4f_type),
+		] {
+			let parameters = vec![parameter("image", image_type.clone()), parameter("coord", vec2u_type.clone())];
+			root.add_child(besl::Node::intrinsic(name, parameters, return_type).into());
+		}
 
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected storage-image shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		let main = root.get_main().expect("Expected main function");
 
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
 		assert_string_contains!(shader, "uint2 _besl_image_size;");
 		assert_string_contains!(shader, "image.GetDimensions(_besl_image_size.x, _besl_image_size.y);");
 		assert_string_contains!(shader, "if (any(coord >= _besl_image_size)) { return; }");
@@ -1183,12 +941,7 @@ mod tests {
 		let program = besl::compile_to_besl(script, Some(root))
 			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.");
 		let main = program.get_main().expect("Expected read-write narrow-buffer main function");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect(
-				"Failed to generate HLSL for read-write narrow buffers. The most likely cause is unsupported packed assignment.",
-			);
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "RWStructuredBuffer<uint> bytes : register(u0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint> shorts : register(u1, space0);");
 		assert_string_contains!(shader, "bytes[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
@@ -1214,14 +967,7 @@ mod tests {
 			"Packed writes must evaluate a self-reading right-hand side before reading and replacing its destination word."
 		);
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"packed-narrow-buffer-write-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected read-write narrow-buffer HLSL to compile to DXIL");
+		compile_dxil(&shader, "packed-narrow-buffer-write-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -1277,40 +1023,30 @@ mod tests {
 
 		let texture_2d = root.get_child("Texture2D").expect("Expected Texture2D type");
 		let vec2u_type = root.get_child("vec2u").expect("Expected vec2u type");
-		let image_load_u32 = root.add_child(besl::Node::intrinsic("image_load_u32", Vec::new(), u32_type.clone()).into());
-		image_load_u32.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "image".to_string(),
-				r#type: texture_2d,
-			})
+		root.add_child(
+			besl::Node::intrinsic(
+				"image_load_u32",
+				vec![parameter("image", texture_2d), parameter("coord", vec2u_type)],
+				u32_type.clone(),
+			)
 			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "coord".to_string(),
-				r#type: vec2u_type,
-			})
+		);
+		root.add_child(
+			besl::Node::intrinsic(
+				"atomic_add",
+				vec![
+					parameter("value", atomic_u32),
+					parameter("increment", root.get_child("u32").expect("Expected u32 type")),
+				],
+				u32_type,
+			)
 			.into(),
-		]);
-		let atomic_add = root.add_child(besl::Node::intrinsic("atomic_add", Vec::new(), u32_type).into());
-		atomic_add.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "value".to_string(),
-				r#type: atomic_u32,
-			})
-			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "increment".to_string(),
-				r#type: root.get_child("u32").expect("Expected u32 type"),
-			})
-			.into(),
-		]);
+		);
 
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected buffer shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		let main = root.get_main().expect("Expected main function");
 
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
 		assert_string_contains!(shader, "[numthreads(8, 8, 1)]void besl_main(");
 		assert_string_contains!(shader, "uint32_t item_index=index_image[coord];");
 		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
@@ -1374,27 +1110,19 @@ mod tests {
 			.into(),
 		]);
 
-		let texture_lod = root.add_child(besl::Node::intrinsic("texture_lod", Vec::new(), vec4f).into());
-		texture_lod.borrow_mut().add_children(vec![
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "texture".to_string(),
-				r#type: texture_2d,
-			})
+		root.add_child(
+			besl::Node::intrinsic(
+				"texture_lod",
+				vec![parameter("texture", texture_2d), parameter("uv", vec2f)],
+				vec4f,
+			)
 			.into(),
-			besl::Node::new(besl::Nodes::Parameter {
-				name: "uv".to_string(),
-				r#type: vec2f,
-			})
-			.into(),
-		]);
+		);
 
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected parameter-buffer shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		let main = root.get_main().expect("Expected main function");
 
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
 		assert_string_contains!(
 			shader,
 			"struct _parameters{float4x4 inverse_view_projection;float4 sun_direction;};"
@@ -1439,11 +1167,8 @@ mod tests {
 			.into(),
 		]);
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected push-constant shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected push-constant shader source to generate HLSL");
+		let main = root.get_main().expect("Expected main function");
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space0);");
 		assert_string_does_not_contain!(shader, "vk::push_constant");
@@ -1451,40 +1176,10 @@ mod tests {
 
 	#[test]
 	fn test_multi_language_raw_code() {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		main: fn () -> void {}
-		"#;
-
-		let root = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&root).get_child("main").unwrap();
-
-		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
-
-		{
-			let mut main = main.borrow_mut();
-			// Create a RawCode node with both GLSL and HLSL variants
-			main.add_child(
-				besl::Node::raw(
-					Some("gl_Position = vec4(0)".to_string()),
-					Some("output.position = float4(0, 0, 0, 1)".to_string()),
-					Some("out.position = float4(0, 0, 0, 1)".to_string()),
-					vec![vertex_struct],
-					vec![],
-				)
-				.into(),
-			);
-		}
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&generator::tests::multi_language_raw_code(),
+		);
 
 		// The HLSL transpiler should use the HLSL code.
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
@@ -1495,12 +1190,7 @@ mod tests {
 
 	#[test]
 	fn test_const_variable() {
-		let main = generator::tests::const_variable();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::const_variable());
 		// The backend declares its own `PI`, so the user constant takes the escaped name.
 		assert_string_contains!(shader, "static const float besl_PI = 3.14;");
 		assert_string_contains!(shader, "void besl_main(){besl_PI;}");
@@ -1508,111 +1198,33 @@ mod tests {
 
 	#[test]
 	fn else_chains_lower_to_hlsl() {
-		let script = r#"
-		main: fn () -> void {
-			let n: u32 = 0;
-			if (n < 1) {
-				n = 2;
-			} else if (n < 4) {
-				n = 3;
-			} else {
-				n = 4;
-			}
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected else-chain shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Failed to generate shader");
+		let shader = lower_fixture(
+			super::super::ELSE_CHAIN,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-else-chain",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected else-chain HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-else-chain", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn match_lowers_to_hlsl_switch() {
-		let script = r#"
-		main: fn () -> void {
-			let n: u32 = 0;
-			let small: u16 = u16(n);
-			for (let i: u32 = 0; i < 4; i = i + 1) {
-				match i {
-					0 => n = 1,
-					1 | 2 => break,
-					_ => {}
-				}
-			}
-			match small {
-				65535 => n = 2,
-				_ => n = 3,
-			}
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected match shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Failed to generate shader");
+		let shader = lower_fixture(
+			super::super::MATCH_IN_LOOP,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(
 			shader,
 			"{bool besl_match_break_0=false;switch(i){case 0u:{n=1;break;}case 1u:case 2u:{besl_match_break_0=true;break;break;}default:{break;}}if(besl_match_break_0){break;}}"
 		);
 		assert_string_contains!(shader, "switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-match",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected match HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-match", ShaderTypes::Compute);
 	}
 
 	#[test]
 	fn short_scalar_arrays_lower_to_hlsl_vectors() {
-		let script = r#"
-		scalar_f32: fn () -> f32[3] {
-			return f32[3](0.5, 0.25, 0.125);
-		}
-		scalar_u16: fn () -> u16[3] {
-			return u16[3](1, 2, 3);
-		}
-		scalar_u32: fn () -> u32[3] {
-			return u32[3](4, 5, 6);
-		}
-		mirror_indices: fn (indices: u32[3]) -> u32[3] {
-			return indices;
-		}
-		main: fn () -> void {
-			let floats: f32[3] = scalar_f32();
-			let shorts: u16[3] = scalar_u16();
-			let indices: u32[3] = mirror_indices(scalar_u32());
-			let sum: f32 = floats[1] + f32(u32(shorts[1])) + f32(indices[1]);
-			sum;
-		}
-		"#;
-		let root = besl::compile_to_besl(script, None).expect("Expected scalar-array shader source to lex");
-		let main = root.get_main().expect("Expected scalar-array main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Expected scalar arrays to lower to HLSL vectors");
+		let shader = lower_fixture(super::super::SHORT_SCALAR_ARRAYS, &ShaderGenerationSettings::vertex());
 		assert_string_contains!(shader, "float3 scalar_f32()");
 		assert_string_contains!(shader, "uint16_t3 scalar_u16()");
 		assert_string_contains!(shader, "uint3 scalar_u32()");
@@ -1625,7 +1237,7 @@ mod tests {
 	/// Verifies value arrays declare their count after the name, including parameters, and initialize from braces.
 	#[test]
 	fn local_arrays_declare_in_c_position_and_initialize_from_braces() {
-		let root = besl::compile_to_besl(
+		let shader = lower_fixture(
 			r#"
 			first: fn (values: vec4f[3], count: u32) -> vec4f {
 				let copy: vec4f[3] = values;
@@ -1642,24 +1254,15 @@ mod tests {
 				first(positions, thread_idx());
 			}
 			"#,
-			None,
-		)
-		.expect("Expected local array source to link.");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main."),
-			)
-			.expect("Expected HLSL local array lowering.");
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 
 		assert_string_contains!(shader, "float4 positions[3]={float4(");
 		assert_string_contains!(shader, "float4 first(float4 values[3],");
 		assert_string_contains!(shader, "float4 copy[3]=values;");
 		assert_string_does_not_contain!(shader, "float4[3]");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "local arrays");
+		compile_dxil(&shader, "local arrays", ShaderTypes::Compute);
 	}
 
 	/// Verifies HLSL generation rejects an array constructor outside a declaration, which HLSL can't express.
@@ -1689,33 +1292,22 @@ mod tests {
 		);
 	}
 
-	/// Compiles generated compute HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
-	#[cfg(target_os = "windows")]
-	fn compile_compute(shader: &str, name: &str) {
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			shader,
-			name,
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.unwrap_or_else(|error| panic!("Expected {name} HLSL to compile to DXIL. {error}"));
+	/// Compiles generated HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
+	fn compile_dxil(shader: &str, name: &str, stage: ShaderTypes) {
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(shader, name, "besl_main", stage)
+			.unwrap_or_else(|error| panic!("Expected {name} HLSL to compile to DXIL. {error}"));
+		#[cfg(not(target_os = "windows"))]
+		let _ = (shader, name, stage);
 	}
 
 	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
 	#[test]
 	fn power_of_two_uses_exp2() {
-		let root = besl::compile_to_besl(
+		let shader = lower_fixture(
 			"main: fn () -> void { let full: f32 = pow(2.0, 3.0); let half: f16 = pow(f16(2.0), f16(3.0)); full; half; }",
-			None,
-		)
-		.expect("Expected power source to link.");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main."),
-			)
-			.expect("Expected HLSL power lowering.");
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 
 		assert_eq!(shader.matches("exp2(").count(), 2);
 		assert_string_does_not_contain!(shader, "pow(");
@@ -1724,74 +1316,34 @@ mod tests {
 	/// Verifies subgroup intrinsics map onto HLSL wave operations over the group thread index.
 	#[test]
 	fn compute_subgroup_intrinsics_lower_to_hlsl_wave_operations() {
-		let root = besl::compile_to_besl(
-			r#"
-			main: fn () -> void {
-				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
-				let leader: u32 = subgroup_ballot_find_lsb(mask);
-				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
-				let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
-				if (subgroup_ballot_any(remaining)) {
-					let count: u32 = subgroup_ballot_count(remaining);
-					count;
-				}
-			}
-			"#,
-			None,
-		)
-		.expect("Expected subgroup fixture source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(32)),
-				&root.get_main().expect("Expected subgroup fixture main function"),
-			)
-			.expect("Expected subgroup fixture to lower to HLSL");
+		let shader = lower_fixture(
+			super::super::SUBGROUP_COMPUTE,
+			&ShaderGenerationSettings::compute(utils::Extent::line(32)),
+		);
 		assert_string_contains!(shader, "WaveActiveBallot(group_thread_index<4)");
 		assert_string_contains!(shader, "WaveReadLaneAt(group_thread_index,leader)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-subgroup-waves");
+		compile_dxil(&shader, "besl-subgroup-waves", ShaderTypes::Compute);
 	}
 
 	/// Verifies `find_lsb` lowers to `firstbitlow`, which returns `0xffffffff` for zero like the BESL contract and the other backends.
 	#[test]
 	fn find_lsb_lowers_to_firstbitlow() {
-		let root = besl::compile_to_besl(
-			r#"
-			main: fn () -> void {
-				let bits: u32 = 40;
-				let lowest: u32 = find_lsb(bits);
-				lowest;
-			}
-			"#,
-			None,
-		)
-		.expect("Expected find_lsb fixture source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected find_lsb fixture main function"),
-			)
-			.expect("Expected find_lsb fixture to lower to HLSL");
+		let shader = lower_fixture(
+			super::super::FIND_LSB,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(shader, "firstbitlow(bits)");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-find-lsb");
+		compile_dxil(&shader, "besl-find-lsb", ShaderTypes::Compute);
 	}
 
 	/// Verifies specialization constants become `static const` values, because DX12 has no Vulkan-style specialization constants.
 	#[test]
 	fn specializations_lower_to_static_constants() {
-		let main = generator::tests::specializations();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
+		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
 		assert_string_contains!(shader, "static const float color_x=1.0f;");
 		assert_string_contains!(shader, "static const float color_y=1.0f;");
 		assert_string_contains!(shader, "static const float color_z=1.0f;");
@@ -1802,37 +1354,13 @@ mod tests {
 	/// Verifies `fetch` reads an exact texel through `Load` with an explicit mip level instead of sampling.
 	#[test]
 	fn fetch_intrinsic_lowers_to_hlsl() {
-		let script = r#"
-		main: fn () -> void {
-			let coord: vec2u = vec2u(1, 2);
-			let texel: vec4f = fetch(texture, coord);
-			texel;
-		}
-		"#;
-
-		let mut root = besl::Node::root();
-		root.add_child(
-			besl::Node::binding(
-				"texture",
-				besl::BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
-				true,
-				false,
-			)
-			.into(),
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			&generator::tests::texel_fetch(),
 		);
-		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "float4 texel=besl_texture.Load(int3(coord, 0));");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-fetch");
+		compile_dxil(&shader, "besl-fetch", ShaderTypes::Compute);
 	}
 
 	/// Verifies compute builtins, image access, storage buffers and atomic stores use their DX12 HLSL forms.
@@ -1894,37 +1422,43 @@ mod tests {
 			.into(),
 		]);
 
-		let parameter = |name: &str, r#type: besl::NodeReference| -> besl::NodeReference {
-			besl::Node::new(besl::Nodes::Parameter {
-				name: name.to_string(),
-				r#type,
-			})
-			.into()
-		};
-		let image_size = root.add_child(besl::Node::intrinsic("image_size", Vec::new(), vec2u_type.clone()).into());
-		image_size
-			.borrow_mut()
-			.add_children(vec![parameter("image", texture_2d_type.clone())]);
-		let write = root.add_child(besl::Node::intrinsic("write", Vec::new(), void_type.clone()).into());
-		write.borrow_mut().add_children(vec![
-			parameter("image", texture_2d_type),
-			parameter("coord", vec2u_type),
-			parameter("value", vec4f_type),
-		]);
-		let atomic_store = root.add_child(besl::Node::intrinsic("atomic_store", Vec::new(), void_type).into());
-		atomic_store.borrow_mut().add_children(vec![
-			parameter("value", atomic_u32),
-			parameter("stored", root.get_child("u32").expect("Expected u32 type")),
-		]);
+		root.add_child(
+			besl::Node::intrinsic(
+				"image_size",
+				vec![parameter("image", texture_2d_type.clone())],
+				vec2u_type.clone(),
+			)
+			.into(),
+		);
+		root.add_child(
+			besl::Node::intrinsic(
+				"write",
+				vec![
+					parameter("image", texture_2d_type),
+					parameter("coord", vec2u_type),
+					parameter("value", vec4f_type),
+				],
+				void_type.clone(),
+			)
+			.into(),
+		);
+		root.add_child(
+			besl::Node::intrinsic(
+				"atomic_store",
+				vec![
+					parameter("value", atomic_u32),
+					parameter("stored", root.get_child("u32").expect("Expected u32 type")),
+				],
+				void_type,
+			)
+			.into(),
+		);
 
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected compute shader source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Failed to generate shader");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			&root.get_main().expect("Expected main"),
+		);
 		// Read-only buffers bind as SRVs (`t`), writable ones as UAVs (`u`), and single-member buffers flatten to their element.
 		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
@@ -1952,14 +1486,7 @@ mod tests {
 		}
 		"#;
 
-		let root = besl::compile_to_besl(script, None).expect("Expected compare-exchange shader source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-				&root.get_main().expect("Expected compare-exchange main function"),
-			)
-			.expect("Expected compare-exchange source to lower to HLSL");
+		let shader = lower_fixture(script, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 		assert_string_contains!(
 			shader,
 			"InterlockedCompareExchange(shared_keys[group_thread_index],4294967295,7,besl_atomic_previous_0);"
@@ -1970,35 +1497,20 @@ mod tests {
 			"InterlockedCompareExchange(shared_keys[group_thread_index],7,9,besl_atomic_previous_1);"
 		);
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-atomic-compare-exchange");
+		compile_dxil(&shader, "besl-atomic-compare-exchange", ShaderTypes::Compute);
 	}
 
 	/// Verifies a global scalar-array constant is `static const`, since a plain HLSL global would become a constant-buffer uniform.
 	#[test]
 	fn const_array_variable_lowers_to_hlsl() {
-		let script = r#"
-		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
-
-		main: fn () -> void {
-			let value: f32 = WEIGHTS[1];
-			value;
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected const-array shader source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Failed to generate shader");
+		let shader = lower_fixture(
+			super::super::CONST_ARRAY,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(shader, "static const float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-const-array");
+		compile_dxil(&shader, "besl-const-array", ShaderTypes::Compute);
 	}
 
 	/// Verifies BESL `mix` lowers to HLSL `lerp`, since HLSL has no `mix`.
@@ -2011,19 +1523,11 @@ mod tests {
 		}
 		"#;
 
-		let root = besl::compile_to_besl(script, None).expect("Expected mix shader source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Failed to generate shader");
+		let shader = lower_fixture(script, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
 		assert_string_contains!(shader, "float value=lerp(0.0,1.0,0.5);");
 		assert_string_does_not_contain!(shader, "mix(");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-mix-lerp");
+		compile_dxil(&shader, "besl-mix-lerp", ShaderTypes::Compute);
 	}
 }
 

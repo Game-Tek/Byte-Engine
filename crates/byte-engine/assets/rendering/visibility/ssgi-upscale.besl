@@ -1,7 +1,9 @@
 // Reconstructs full-resolution pre-exposed indirect diffuse light from the half-resolution SSGI history. Bilinear taps are
 // weighted by how well they lie on the full-resolution pixel's surface, so light does not bleed across edges.
 // Each 8x8 workgroup first loads the linear depth of its pixels and a two-pixel border into workgroup memory, so every
-// pixel rebuilds its normal from shared values instead of fetching and linearizing eight neighbors again.
+// pixel rebuilds its normal from shared values instead of fetching and linearizing eight neighbors again. It also loads
+// the position, normal, and light of the 6x6 low-resolution texels its pixels tap, so the taps read shared values
+// instead of fetching three images each.
 ScreenView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -20,6 +22,11 @@ low_resolution_normals: descriptor<{ type: Texture2D, binding: 1037, access: rea
 
 // Per tile pixel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
+// Per low-resolution tile texel: the view-space position, whose z is zero where no surface was drawn; the decoded
+// normal; and the light.
+source_positions: workgroup<vec4f, 36>;
+source_normals: workgroup<vec4f, 36>;
+source_radiance: workgroup<vec4f, 36>;
 
 // A 2% relative-depth sigma gives a Gaussian inverse variance of 1,250. It applies where no normal is known.
 SSGI_UPSCALE_INVERSE_DEPTH_VARIANCE: const f32 = 1250.0;
@@ -37,6 +44,10 @@ SSGI_UPSCALE_WORKGROUP_SIZE: const u32 = 64;
 // The workgroup's pixels plus the reconstruction radius on every side.
 SSGI_UPSCALE_TILE_WIDTH: const u32 = 12;
 SSGI_UPSCALE_TILE_SIZE: const u32 = 144;
+// The workgroup's 8x8 pixels lie over 4x4 low-resolution texels, and their bilinear taps reach one texel past those on
+// every side.
+SSGI_UPSCALE_SOURCE_TILE_WIDTH: const u32 = 6;
+SSGI_UPSCALE_SOURCE_TILE_SIZE: const u32 = 36;
 
 // Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
 // texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
@@ -140,12 +151,20 @@ surface_weight: fn (center_normal: vec3f, center_position: vec3f, tap_normal: ve
 	return normal_agreement * exp(0.0 - plane_distance * plane_distance * SSGI_UPSCALE_INVERSE_PLANE_VARIANCE);
 }
 
+// Returns the continuous low-resolution texel coordinates under a pixel, where integers are texel centers. Odd full
+// extents do not divide exactly by two, so texel centers match by normalized screen position.
+source_position_of: fn (pixel: vec2u, full_to_half_scale: vec2f) -> vec2f {
+	return (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) * full_to_half_scale - vec2f(0.5, 0.5);
+}
+
 main: fn (input: StageInput) -> void {
 	let coordinate: vec2u = input.thread_id;
 	let extent: vec2u = image_size(radiance_output);
 	let local: vec2u = vec2u(input.thread_idx % SSGI_UPSCALE_WORKGROUP_WIDTH, input.thread_idx / SSGI_UPSCALE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = coordinate - local;
-	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
+	let source_extent: vec2u = texture_size(radiance_source);
+	let full_to_half_scale: vec2f = vec2f(f32(source_extent.x) / f32(extent.x), f32(source_extent.y) / f32(extent.y));
+	// Every invocation helps load the tiles, including those past the image edge, before any of them returns.
 	for (
 		let tile_index: u32 = input.thread_idx;
 		tile_index < SSGI_UPSCALE_TILE_SIZE;
@@ -158,6 +177,26 @@ main: fn (input: StageInput) -> void {
 			extent
 		);
 	}
+	// The source tile starts one texel before the texel under the workgroup's first pixel, or at the image's first
+	// texel, and a tile texel past the image repeats the image's last one.
+	let origin_source_position: vec2f = source_position_of(workgroup_origin, full_to_half_scale);
+	let source_tile_origin: vec2u = vec2u(
+		u32(max(floor(origin_source_position.x) - 1.0, 0.0)),
+		u32(max(floor(origin_source_position.y) - 1.0, 0.0))
+	);
+	if (input.thread_idx < SSGI_UPSCALE_SOURCE_TILE_SIZE) {
+		let texel: vec2u = vec2u(
+			min(source_tile_origin.x + input.thread_idx % SSGI_UPSCALE_SOURCE_TILE_WIDTH, source_extent.x - 1),
+			min(source_tile_origin.y + input.thread_idx / SSGI_UPSCALE_SOURCE_TILE_WIDTH, source_extent.y - 1)
+		);
+		// Mip zero of the depth pyramid holds positive linear depth at the source resolution.
+		let z: f32 = fetch(low_resolution_depth, texel).x;
+		let position: vec3f = view_position(vec2f(f32(texel.x), f32(texel.y)), z);
+		let normal: vec3f = decode_stored_normal(fetch(low_resolution_normals, texel));
+		source_positions[input.thread_idx] = vec4f(position.x, position.y, z, 0.0);
+		source_normals[input.thread_idx] = vec4f(normal.x, normal.y, normal.z, 0.0);
+		source_radiance[input.thread_idx] = fetch(radiance_source, texel);
+	}
 	workgroup_barrier();
 
 	guard_image_bounds(radiance_output, coordinate);
@@ -167,11 +206,7 @@ main: fn (input: StageInput) -> void {
 		write(radiance_output, coordinate, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
-	let source_extent: vec2u = texture_size(radiance_source);
-	// Odd full extents do not divide exactly by two. Match texel centers by normalized screen position.
-	let full_to_half_scale: vec2f = vec2f(f32(source_extent.x) / f32(extent.x), f32(source_extent.y) / f32(extent.y));
-	let source_position: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5))
-		* full_to_half_scale - vec2f(0.5, 0.5);
+	let source_position: vec2f = source_position_of(coordinate, full_to_half_scale);
 	let center_position: vec3f = view_position(source_position, center_z);
 	let center_normal: vec3f = reconstruct_normal(center_index, source_position, center_position, full_to_half_scale);
 
@@ -182,26 +217,31 @@ main: fn (input: StageInput) -> void {
 	);
 	let base: vec2u = vec2u(u32(floor(clamped_position.x)), u32(floor(clamped_position.y)));
 	let fraction: vec2f = vec2f(clamped_position.x - f32(base.x), clamped_position.y - f32(base.y));
+	// The base texel's place in the source tile, kept inside it together with the tap after it.
+	let tile_base: vec2u = vec2u(
+		min(base.x - source_tile_origin.x, SSGI_UPSCALE_SOURCE_TILE_WIDTH - 2),
+		min(base.y - source_tile_origin.y, SSGI_UPSCALE_SOURCE_TILE_WIDTH - 2)
+	);
 	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total_weight: f32 = 0.0;
 
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
-		let tap_coordinate: vec2u = vec2u(min(base.x + tap % 2, source_extent.x - 1), min(base.y + tap / 2, source_extent.y - 1));
-		// Mip zero of the depth pyramid holds positive linear depth at the source resolution.
-		let sample_z: f32 = fetch(low_resolution_depth, tap_coordinate).x;
-		if (sample_z == 0.0) {
+		let tap_index: u32 = (tile_base.y + tap / 2) * SSGI_UPSCALE_SOURCE_TILE_WIDTH + tile_base.x + tap % 2;
+		let tap_position: vec4f = source_positions[tap_index];
+		if (tap_position.z == 0.0) {
 			continue;
 		}
 		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
+		let tap_normal: vec4f = source_normals[tap_index];
 		// A small floor keeps a tap that lands exactly on the far side of the bilinear footprint eligible.
 		let weight: f32 = max(bilinear, 0.001)
 			* surface_weight(
 				center_normal,
 				center_position,
-				decode_stored_normal(fetch(low_resolution_normals, tap_coordinate)),
-				view_position(vec2f(f32(tap_coordinate.x), f32(tap_coordinate.y)), sample_z)
+				vec3f(tap_normal.x, tap_normal.y, tap_normal.z),
+				vec3f(tap_position.x, tap_position.y, tap_position.z)
 			);
-		sum = sum + fetch(radiance_source, tap_coordinate) * weight;
+		sum = sum + source_radiance[tap_index] * weight;
 		total_weight = total_weight + weight;
 	}
 

@@ -1,7 +1,8 @@
 //! Positive linear view depth, reduced into a nearest-surface pyramid that screen-space passes share.
 //!
-//! [`DepthPyramidPass`] runs after the opaque visibility layer. Next, [`super::gtao::GtaoPass`] and
-//! [`super::ssgi::SsgiPass`] read [`DepthPyramidPass::depth_pyramid`] and [`DepthPyramidPass::view_data`].
+//! [`DepthPyramidPass`] runs after the opaque visibility layer. Next, [`super::contact_shadows::ContactShadowPass`],
+//! [`super::gtao::GtaoPass`] and [`super::ssgi::SsgiPass`] read [`DepthPyramidPass::depth_pyramid`] and
+//! [`DepthPyramidPass::view_data`].
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;

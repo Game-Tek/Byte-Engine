@@ -1,7 +1,8 @@
-// Marks full-resolution pixels whose short ray toward the sun is blocked by visible geometry. The directional shadow
+// Marks half-resolution texels whose short ray toward the sun is blocked by visible geometry. The directional shadow
 // map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. The result is one
-// where the ray is clear and falls toward zero where it is blocked. The contact-shadow filter then smooths it, and
-// material evaluation multiplies the sun's shadow by the filtered result.
+// where the ray is clear and falls toward zero where it is blocked. The contact-shadow filter then smooths it into a
+// full-resolution image, and material evaluation multiplies the sun's shadow by the filtered result.
+// The screen view constants describe the half-resolution image, mip zero of the linear depth pyramid.
 ScreenView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -30,12 +31,13 @@ ContactShadowRay: struct {
 
 screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
 contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 1, access: read }>;
-visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+// Mip zero holds positive linear depth at the trace resolution.
+depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 contact_shadow_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
 
 CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
-// Screen-space reach in pixels. It bounds the march cost for pixels close to the camera.
-CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 64.0;
+// Screen-space reach in half-resolution texels. It bounds the march cost for texels close to the camera.
+CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 32.0;
 // A ray is blocked only while it is less than this far behind the depth buffer. The depth buffer stores only front
 // faces, so without a thickness every ray that passes behind a thin object would count as blocked.
 CONTACT_SHADOW_THICKNESS_BASE: const f32 = 0.05;
@@ -58,25 +60,21 @@ interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }
 
-// Returns the positive linear view depth of a pixel, or zero where no surface was drawn or outside the image.
+// Returns the positive linear view depth of a texel, or zero where no surface was drawn or outside the image.
 fetch_linear_depth: fn (column: f32, row: f32, extent: vec2u) -> f32 {
 	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
 		return 0.0;
 	}
-	let depth: f32 = fetch(visibility_depth, vec2u(u32(column), u32(row))).x;
-	if (depth == 0.0) {
-		return 0.0;
-	}
-	return screen_view.depth_unproject_numerator / (depth + screen_view.depth_unproject_denominator_offset);
+	return fetch(depth_pyramid, vec2u(u32(column), u32(row))).x;
 }
 
-// Returns the view-space position at continuous pixel coordinates, where integers are pixel centers.
+// Returns the view-space position at continuous texel coordinates, where integers are texel centers.
 view_position: fn (pixel: vec2f, z: f32) -> vec3f {
 	let ray: vec2f = pixel * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
 	return vec3f(ray.x * z, ray.y * z, z);
 }
 
-// Projects a view-space position to continuous pixel coordinates, where integers are pixel centers.
+// Projects a view-space position to continuous texel coordinates, where integers are texel centers.
 project_to_pixel: fn (position: vec3f) -> vec2f {
 	let ray: vec2f = vec2f(position.x / position.z, position.y / position.z);
 	return (ray - screen_view.pixel_to_ray_add) / screen_view.pixel_to_ray_mul;
@@ -89,8 +87,8 @@ ray_pixel: fn (ray: ContactShadowRay, fraction: f32) -> vec2f {
 // Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
 // Background holds nothing to block the ray, so the ray is in front of it.
 //
-// A plane cannot shadow itself, so depth samples on the pixel's own surface never block the ray. Rays sample depth at
-// pixel centers, off the ray's own screen position, and on a surface seen at a grazing angle that offset alone would
+// A plane cannot shadow itself, so depth samples on the texel's own surface never block the ray. Rays sample depth at
+// texel centers, off the ray's own screen position, and on a surface seen at a grazing angle that offset alone would
 // put the surface several centimeters in front of a ray leaving it.
 ray_penetration: fn (ray: ContactShadowRay, fraction: f32, extent: vec2u) -> f32 {
 	let texel: vec2f = round(ray_pixel(ray, fraction));
@@ -115,9 +113,9 @@ side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
 	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
 }
 
-// Returns how much 1/z of the pixel's own surface changes per pixel along one screen axis, or zero without a
+// Returns how much 1/z of the texel's own surface changes per texel along one screen axis, or zero without a
 // neighbor. It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal
-// Reconstruction from Depth Buffer", 2020), so a floor pixel next to a foot takes its slope from the floor.
+// Reconstruction from Depth Buffer", 2020), so a floor texel next to a foot takes its slope from the floor.
 inverse_depth_gradient: fn (column: f32, row: f32, axis: vec2f, center_z: f32, extent: vec2u) -> f32 {
 	let positive_z: f32 = fetch_linear_depth(column + axis.x, row + axis.y, extent);
 	let negative_z: f32 = fetch_linear_depth(column - axis.x, row - axis.y, extent);

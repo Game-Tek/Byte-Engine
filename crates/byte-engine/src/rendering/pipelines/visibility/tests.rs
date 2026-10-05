@@ -2405,13 +2405,17 @@ fn contact_shadow_scene_depth([x, y]: [u32; 2], wall: bool) -> f32 {
 	}
 }
 
-/// Returns the reversed device depth of every pixel of the floor scene, with or without the low wall.
-fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
+/// Returns the positive linear depth of every pixel of the floor scene, with or without the low wall.
+fn contact_shadow_linear_depth(wall: bool) -> Vec<[f32; 4]> {
 	let extent = CONTACT_SHADOW_EXTENT;
 	(0..extent * extent)
 		.map(|index| {
-			let z = contact_shadow_scene_depth([index % extent, index / extent], wall);
-			[gtao_fixture_device_depth(z), 0.0, 0.0, 1.0]
+			[
+				contact_shadow_scene_depth([index % extent, index / extent], wall),
+				0.0,
+				0.0,
+				1.0,
+			]
 		})
 		.collect()
 }
@@ -2419,8 +2423,8 @@ fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
 /// The ray reach the contact-shadow tests trace with. The wall test's rows are laid out for it.
 const CONTACT_SHADOW_TEST_DISTANCE: f32 = 0.3;
 
-/// Runs the contact-shadow trace at one pixel of the floor scene and returns the value it writes: one where the ray
-/// toward the light is clear, falling toward zero where it is blocked.
+/// Runs the contact-shadow trace at one texel of the floor scene, traced at the scene's own resolution, and returns the
+/// value it writes: one where the ray toward the light is clear, falling toward zero where it is blocked.
 fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
 	let program = asset!("contact-shadows.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
@@ -2434,7 +2438,7 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	parameters
 		.write("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE))
 		.expect("contact shadow parameters");
-	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(wall));
+	let mut depth = texture_2d(extent, extent, &contact_shadow_linear_depth(wall));
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
@@ -2446,22 +2450,40 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	rgba(&output, pixel)[0]
 }
 
-/// Runs the contact-shadow filter at one pixel of the floor scene with the low wall, over a trace whose value at each
-/// pixel is `trace(column, row)`, and returns the filtered value.
-fn run_contact_shadow_filter(trace: impl Fn(u32, u32) -> f32, pixel: [u32; 2]) -> f32 {
+/// Runs the contact-shadow filter at one pixel of the floor scene with the low wall, over a half-resolution trace whose
+/// value at each texel is `trace(column, row, depth)`, where `depth` is the texel's linear depth as mip zero of the
+/// depth pyramid holds it, and returns the filtered value.
+fn run_contact_shadow_filter(trace: impl Fn(u32, u32, f32) -> f32, pixel: [u32; 2]) -> f32 {
 	let program = asset!("contact-shadows-filter.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
-	let trace = (0..extent * extent)
-		.map(|index| [trace(index % extent, index / extent), 0.0, 0.0, 1.0])
+	let linear_depth = contact_shadow_linear_depth(true);
+	let (trace_depth, trace_extent, _) = reduce_nearest_nonzero_depth(&linear_depth, extent, extent);
+	let trace = trace_depth
+		.iter()
+		.enumerate()
+		.map(|(index, texel)| {
+			[
+				trace(index as u32 % trace_extent, index as u32 / trace_extent, texel[0]),
+				0.0,
+				0.0,
+				1.0,
+			]
+		})
+		.collect::<Vec<_>>();
+	let device_depth = linear_depth
+		.iter()
+		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
 	let mut view = gtao_view_data(&program, extent, extent);
-	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(true));
-	let mut trace = texture_2d(extent, extent, &trace);
+	let mut depth = texture_2d(extent, extent, &device_depth);
+	let mut trace = texture_2d(trace_extent, trace_extent, &trace);
+	let mut trace_depth = texture_2d(trace_extent, trace_extent, &trace_depth);
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
+	descriptors.bind_texture(ResourceSlot::new(1036), &mut trace_depth);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)[0]
@@ -2524,7 +2546,7 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 	let open_floor_row = (0..CONTACT_SHADOW_EXTENT)
 		.find(|&row| (6.9..7.1).contains(&contact_shadow_floor_z(row)))
 		.expect("a floor row near seven units");
-	let checkerboard = |x: u32, y: u32| ((x + y) % 2) as f32;
+	let checkerboard = |x: u32, y: u32, _: f32| ((x + y) % 2) as f32;
 	let smoothed = [0, 1].map(|step| run_contact_shadow_filter(checkerboard, [column + step, open_floor_row]));
 	assert!(
 		smoothed.iter().all(|value| (0.3..0.7).contains(value)) && (smoothed[0] - smoothed[1]).abs() < 0.3,
@@ -2532,11 +2554,10 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 	);
 
 	// The wall's top row borders the floor far behind it. Only the floor is shadowed.
-	let on_wall = |x, y| contact_shadow_scene_depth([x, y], true) == CONTACT_SHADOW_WALL_Z;
 	let wall_top_row = (0..CONTACT_SHADOW_EXTENT)
-		.find(|&row| on_wall(column, row))
+		.find(|&row| contact_shadow_scene_depth([column, row], true) == CONTACT_SHADOW_WALL_Z)
 		.expect("a wall row");
-	let shadowed_floor = |x, y| if on_wall(x, y) { 1.0 } else { 0.0 };
+	let shadowed_floor = |_, _, z| if z == CONTACT_SHADOW_WALL_Z { 1.0 } else { 0.0 };
 	let wall_edge = run_contact_shadow_filter(shadowed_floor, [column, wall_top_row]);
 	assert_eq!(wall_edge, 1.0, "The floor behind the wall darkened the wall's top edge.");
 }

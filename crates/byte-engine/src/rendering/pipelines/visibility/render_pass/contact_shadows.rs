@@ -1,16 +1,16 @@
-//! Screen-space contact shadows for the sun, traced against full-resolution depth.
+//! Screen-space contact shadows for the sun, traced at half resolution against the linear depth pyramid.
 //!
 //! The directional shadow map cannot resolve shadows smaller than its texels, so small gaps of sunlight appear where
-//! objects touch, such as under a foot on a floor. Each pixel marches a short ray toward the sun through the depth
-//! buffer and records how much visible geometry blocks it. A depth-aware filter then smooths the dithered result, and
-//! material evaluation multiplies the sun's shadow by it.
+//! objects touch, such as under a foot on a floor. Each half-resolution texel marches a short ray toward the sun
+//! through the depth pyramid and records how much visible geometry blocks it. A depth-aware filter then smooths the
+//! dithered result into a full-resolution image, and material evaluation multiplies the sun's shadow by it.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use maths_rs::Vec4f;
 use utils::Extent;
 
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::depth_pyramid::ScreenViewData;
 use super::gtao::configuration_float;
 use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::configuration::ConfigurationValue;
@@ -63,20 +63,24 @@ impl ContactShadowSettings {
 /// The render-graph name of the full-resolution filtered result: one where the ray toward the sun is clear, falling
 /// toward zero where visible geometry blocks it. Material evaluation reads it only for the sun.
 pub(crate) const CONTACT_SHADOWS_TARGET: &str = "Contact Shadows";
-/// The render-graph name of the unfiltered trace, which the filter reads. Capture it to debug the trace alone.
+/// The render-graph name of the unfiltered half-resolution trace, which the filter reads. Capture it to debug the
+/// trace alone.
 pub(crate) const CONTACT_SHADOW_TRACE_TARGET: &str = "Contact Shadow Trace";
+/// The trace runs at half the sink resolution, against mip zero of the linear depth pyramid.
+const CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR: u32 = 2;
 
 const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
 const DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 const OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
 const FILTER_TRACE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
+const FILTER_TRACE_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
 
 /// The `ContactShadowTargets` struct holds the images the contact-shadow trace writes and its filter smooths, so the
 /// visibility pass can hand them to [`ContactShadowPass::new`] and bind the filtered one in material evaluation.
 #[derive(Clone, Copy)]
 pub(crate) struct ContactShadowTargets {
-	/// The unfiltered trace, named [`CONTACT_SHADOW_TRACE_TARGET`].
+	/// The unfiltered half-resolution trace, named [`CONTACT_SHADOW_TRACE_TARGET`].
 	pub(crate) trace: ghi::BaseImageHandle,
 	/// The filtered result material evaluation reads, named [`CONTACT_SHADOWS_TARGET`].
 	pub(crate) filtered: ghi::BaseImageHandle,
@@ -89,18 +93,19 @@ pub(crate) struct ContactShadowTargets {
 pub(crate) fn create_contact_shadow_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> ContactShadowTargets {
-	let mut target = |name| {
+	let mut target = |name, resolution_divisor| {
 		render_pass_builder
-			.create_render_target(
+			.create_scaled_render_target(
 				ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 					.name(name)
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				resolution_divisor,
 			)
 			.into()
 	};
 	ContactShadowTargets {
-		trace: target(CONTACT_SHADOW_TRACE_TARGET),
-		filtered: target(CONTACT_SHADOWS_TARGET),
+		trace: target(CONTACT_SHADOW_TRACE_TARGET, CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
+		filtered: target(CONTACT_SHADOWS_TARGET, 1),
 	}
 }
 
@@ -124,35 +129,36 @@ pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::U
 
 /// The `ContactShadowPass` struct fills the gaps the sun's shadow map leaves where objects touch.
 ///
-/// It runs after the opaque visibility layer and before opaque material evaluation, which multiplies the sun's
-/// shadow by [`CONTACT_SHADOWS_TARGET`]. Create its targets with [`create_contact_shadow_targets`].
+/// It runs after [`super::depth_pyramid::DepthPyramidPass`] and before opaque material evaluation, which multiplies
+/// the sun's shadow by [`CONTACT_SHADOWS_TARGET`]. Create its targets with [`create_contact_shadow_targets`].
 pub(super) struct ContactShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	filter_descriptor_set: ghi::DescriptorSetHandle,
 	/// The trace and filter pipelines.
 	pub(super) pipelines: Pipelines<2>,
-	/// Full-resolution camera constants. The shared screen view data describes the half-resolution pyramid.
-	view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 	parameters: ghi::DynamicBufferHandle<ContactShadowShaderParameters>,
 }
 
 impl ContactShadowPass {
-	/// Wires full-resolution depth and the targets, and requests the trace and filter pipelines.
+	/// Wires the depth images and the targets, and requests the trace and filter pipelines.
+	///
+	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]: the trace marches mip
+	/// zero with the half-resolution camera constants, and the filter reads the full-resolution `depth` with them.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
+		depth_pyramid: ghi::DynamicImageHandle,
+		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: ContactShadowTargets,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Contact Shadow Descriptor Set"));
 		let filter_descriptor_set = context.create_descriptor_set(Some("Contact Shadow Filter Descriptor Set"));
-		let host_buffer = |name| {
+		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-		};
-		let view_data = context.build_dynamic_buffer(host_buffer("Contact Shadow View Data"));
-		let parameters = context.build_dynamic_buffer(host_buffer("Contact Shadow Parameters"));
+				.name("Contact Shadow Parameters")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -164,11 +170,12 @@ impl ContactShadowPass {
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING, view_data.into()),
 			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING, parameters.into()),
-			sampled(descriptor_set, DEPTH_BINDING, depth),
+			sampled(descriptor_set, DEPTH_BINDING, depth_pyramid.into()),
 			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_BINDING, targets.trace, ghi::Layouts::General),
 			ghi::DescriptorWrite::buffer(filter_descriptor_set, VIEW_BINDING, view_data.into()),
 			sampled(filter_descriptor_set, DEPTH_BINDING, depth),
 			sampled(filter_descriptor_set, FILTER_TRACE_BINDING, targets.trace),
+			sampled(filter_descriptor_set, FILTER_TRACE_DEPTH_BINDING, depth_pyramid.into()),
 			ghi::DescriptorWrite::image(filter_descriptor_set, OUTPUT_BINDING, targets.filtered, ghi::Layouts::General),
 		]);
 
@@ -176,13 +183,12 @@ impl ContactShadowPass {
 			descriptor_set,
 			filter_descriptor_set,
 			pipelines: Pipelines::request(pipeline_manager, ["contact-shadows", "contact-shadows-filter"]),
-			view_data,
 			parameters,
 		}
 	}
 
-	/// Uploads this frame's camera constants, sun direction and ray reach, and returns the trace and filter recording,
-	/// or `None` without a sun, because material evaluation reads the result only for the sun.
+	/// Uploads this frame's sun direction and ray reach, and returns the trace and filter recording, or `None` without
+	/// a sun, because material evaluation reads the result only for the sun.
 	///
 	/// `sun_direction` is the world-space direction the sun's light travels. `settings` sets the ray reach.
 	pub(super) fn prepare(
@@ -195,14 +201,12 @@ impl ContactShadowPass {
 	) -> Option<impl RenderPassFunction + use<>> {
 		let sun_direction = sun_direction?;
 		let extent = sink.extent();
-		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, extent);
-		frame.sync_buffer(self.view_data);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = ContactShadowShaderParameters {
 			direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
 			max_distance: settings.max_distance,
 		};
 		frame.sync_buffer(self.parameters);
-		let stage = |label, pipeline, descriptor_set| ComputeStage {
+		let stage = |label, pipeline, descriptor_set, extent| ComputeStage {
 			label,
 			pipeline,
 			descriptor_sets: [descriptor_set],
@@ -210,8 +214,13 @@ impl ContactShadowPass {
 			workgroup: Extent::new(8, 8, 1),
 		};
 		let stages = [
-			stage("Contact Shadow Trace", trace, self.descriptor_set),
-			stage("Contact Shadow Filter", filter, self.filter_descriptor_set),
+			stage(
+				"Contact Shadow Trace",
+				trace,
+				self.descriptor_set,
+				extent.scaled_down(CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
+			),
+			stage("Contact Shadow Filter", filter, self.filter_descriptor_set, extent),
 		];
 
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {

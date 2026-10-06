@@ -338,6 +338,7 @@ impl Generator {
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" => "_besl_subgroup_broadcast_u32",
 					"subgroup_broadcast_f32" => "_besl_subgroup_broadcast_f32",
+					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
 					name => name,
 				});
 				string.push('(');

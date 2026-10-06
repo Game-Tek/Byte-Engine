@@ -256,14 +256,14 @@ impl ShadowMaps {
 		let directional_pipelines = self.directional_pipelines.resolve(pipeline_manager)?;
 		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
 		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
-		// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
+		// One thread per 4x4 texel block: each SIMD-width workgroup reduces four by two cells, four threads per cell.
 		let depth_pyramid = ComputeStage {
 			label: "Directional Shadow Depth Pyramid",
 			pipeline: depth_pyramid_pipeline,
 			descriptor_sets: [self.depth_pyramid_descriptor_set],
 			extent: Extent::rectangle(
-				work.cascade_resolution / 2,
-				work.cascade_resolution / 2 * SHADOW_CASCADE_COUNT as u32,
+				work.cascade_resolution / 4,
+				work.cascade_resolution / 4 * SHADOW_CASCADE_COUNT as u32,
 			),
 			workgroup: Extent::new(8, 4, 1),
 		};

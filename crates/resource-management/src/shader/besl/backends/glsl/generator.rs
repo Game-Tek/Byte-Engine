@@ -116,6 +116,7 @@ impl Generator {
 			Stages::Compute { .. } if uses_subgroup_intrinsics => {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:require\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:require\n");
 			}
 			Stages::Mesh {
 				maximum_vertices,
@@ -526,6 +527,7 @@ impl NodeEmitter for Generator {
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "subgroupBroadcast",
+					"subgroup_shuffle_xor_f32" => "subgroupShuffleXor",
 					"set_mesh_output_counts" => "SetMeshOutputsEXT",
 					name => name,
 				});

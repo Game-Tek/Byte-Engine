@@ -520,7 +520,8 @@ impl Generator {
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
 				 uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return firstbitlow(mask.x); } if (mask.y != 0u) { return 32u + firstbitlow(mask.y); } if (mask.z != 0u) { return 64u + firstbitlow(mask.z); } if (mask.w != 0u) { return 96u + firstbitlow(mask.w); } return 0xffffffffu; }\n\
 				 uint _besl_subgroup_ballot_count(uint4 mask) { return countbits(mask.x) + countbits(mask.y) + countbits(mask.z) + countbits(mask.w); }\n\
-				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
+				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
+				 float _besl_subgroup_shuffle_xor_f32(float value, uint mask) { return WaveReadLaneAt(value, WaveGetLaneIndex() ^ mask); }\n",
 			);
 		}
 		if requirements.uses_fma {

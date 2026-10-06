@@ -501,7 +501,8 @@ impl Generator {
 				 inline uint _besl_subgroup_ballot_count(uint4 mask) { return popcount(mask.x) + popcount(mask.y) + popcount(mask.z) + popcount(mask.w); }\n\
 				 inline uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
 					 inline uint _besl_subgroup_broadcast_u32(uint value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n\
-					 inline float _besl_subgroup_broadcast_f32(float value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n",
+					 inline float _besl_subgroup_broadcast_f32(float value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n\
+					 inline float _besl_subgroup_shuffle_xor_f32(float value, uint mask) { return simd_shuffle_xor(value, ushort(mask)); }\n",
 			);
 		}
 

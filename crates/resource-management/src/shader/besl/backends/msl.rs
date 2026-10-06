@@ -933,8 +933,9 @@ mod tests {
 				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
 				let leader: u32 = subgroup_ballot_find_lsb(mask);
 				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+				let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
 				if (subgroup_ballot_any(mask)) {
-					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0)));
+					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0))) + u32(neighbor);
 				}
 			}
 			"#,
@@ -942,6 +943,8 @@ mod tests {
 		);
 		assert_string_contains!(shader, "simd_ballot(predicate)");
 		assert_string_contains!(shader, "simd_broadcast(value, ushort(source_lane))");
+		assert_string_contains!(shader, "simd_shuffle_xor(value, ushort(mask))");
+		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(");
 		assert_string_contains!(shader, "threadgroup uint scratch[1]");

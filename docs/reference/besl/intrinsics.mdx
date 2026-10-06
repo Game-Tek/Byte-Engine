@@ -165,9 +165,17 @@ stage input parameter.
 | `subgroup_ballot_and_not` | `subgroup_ballot_and_not(vec4u mask, vec4u removed) -> vec4u` | Removes selected lanes from a mask. |
 | `subgroup_broadcast_u32` | `subgroup_broadcast_u32(u32 value, u32 source_lane) -> u32` | Copies an unsigned value from one lane to every participating lane. |
 | `subgroup_broadcast_f32` | `subgroup_broadcast_f32(f32 value, u32 source_lane) -> f32` | Copies a float value from one lane to every participating lane. |
+| `subgroup_shuffle_xor_f32` | `subgroup_shuffle_xor_f32(f32 value, u32 mask) -> f32` | Returns `value` from the lane whose index is your lane index XOR `mask`. Pass the same `mask` in every lane, and keep the source lane active. |
 
 Subgroup intrinsics require the target's subgroup or wave capability. BESL's
 GLSL, HLSL, and MSL generators validate them for compute stages only.
+
+To combine values across a small group of lanes, such as the four lanes that
+reduce one tile, give those lanes consecutive local invocation indices that
+start at a multiple of the group size, and shuffle with masks below the group
+size. This relies on each compute subgroup holding consecutive local
+invocations, a power of two of at least four lanes, which Apple, AMD, NVIDIA,
+and Intel GPUs do.
 
 ## Task stage
 

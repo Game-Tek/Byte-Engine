@@ -2079,6 +2079,75 @@ fn compute_subgroup_collectives_reject_divergent_lanes() {
 	));
 }
 
+/// Verifies each lane reads the lane whose index differs by the mask, inside its own subgroup only.
+#[test]
+fn compute_subgroup_shuffle_xor_reads_the_masked_lane_of_each_subgroup() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			near: f32[64],
+			far: f32[64],
+		}
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			result.near[lane] = subgroup_shuffle_xor_f32(f32(lane), 1);
+			result.far[lane] = subgroup_shuffle_xor_f32(f32(lane) * 0.5, 18);
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(43));
+	let configs = (0..64)
+		.map(|lane| ExecutionConfig::new(512).with_thread_idx(lane).with_subgroup_size(32))
+		.collect::<Vec<_>>();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(43), &mut result);
+		executable
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("Subgroup shuffle execution failed. The most likely cause is broken per-subgroup collective scheduling.");
+	}
+
+	// Lane indices restart in the second subgroup, so a mask never crosses into the other subgroup.
+	for lane in 0..64usize {
+		assert_eq!(result.read_indexed("near", lane), Ok(Value::F32((lane ^ 1) as f32)));
+		assert_eq!(result.read_indexed("far", lane), Ok(Value::F32((lane ^ 18) as f32 * 0.5)));
+	}
+}
+
+/// Verifies a shuffle rejects masks that differ between lanes, which Metal leaves undefined, and masks that reach a
+/// lane the subgroup does not run.
+#[test]
+fn compute_subgroup_shuffle_xor_rejects_divergent_masks_and_inactive_sources() {
+	let run = |mask: &str| {
+		let executable = compile_test_program(
+			&format!("main: fn () -> void {{ let shuffled: f32 = subgroup_shuffle_xor_f32(1.0, {mask}); shuffled; }}"),
+			None,
+		);
+		let configs = (0..4)
+			.map(|lane| ExecutionConfig::new(64).with_thread_idx(lane).with_subgroup_size(32))
+			.collect::<Vec<_>>();
+		let mut descriptors = DescriptorBindings::new();
+		executable.run_workgroup(&mut descriptors, &configs)
+	};
+
+	// Lanes 0 and 1 pass mask 1, lanes 2 and 3 pass mask 2.
+	assert_eq!(
+		run("1 + thread_idx() / 2"),
+		Err(VmError::DivergentSubgroupShuffleMask {
+			lane: 2,
+			expected: 1,
+			found: 2,
+		})
+	);
+	assert_eq!(
+		run("4"),
+		Err(VmError::SubgroupShuffleSourceInactive { lane: 0, source_lane: 4 })
+	);
+}
+
 #[test]
 fn task_workgroup_reuse_clears_shared_storage() {
 	let executable = compile_test_program(

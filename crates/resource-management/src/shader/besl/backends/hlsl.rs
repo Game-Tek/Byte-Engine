@@ -1388,6 +1388,8 @@ mod tests {
 		);
 		assert_string_contains!(shader, "WaveActiveBallot(group_thread_index<4)");
 		assert_string_contains!(shader, "WaveReadLaneAt(group_thread_index,leader)");
+		assert_string_contains!(shader, "WaveReadLaneAt(value, WaveGetLaneIndex() ^ mask)");
+		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 

@@ -765,6 +765,14 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"subgroup_shuffle_xor_f32" => {
+				require_argument_count(arguments, 2)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32)?;
+				let mask = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
+				let register = self.allocate_register();
+				self.emit(Instruction::SubgroupShuffleXor { register, value, mask });
+				Ok(register)
+			}
 			_ => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported intrinsic `{}`", name),
 			}),

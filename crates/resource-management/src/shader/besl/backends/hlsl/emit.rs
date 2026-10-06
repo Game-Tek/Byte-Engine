@@ -464,6 +464,7 @@ impl Generator {
 					"subgroup_ballot_count" => "_besl_subgroup_ballot_count",
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
+					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
 					"fma" if matches!(r#return.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
 						"_besl_fma_f16"
 					}

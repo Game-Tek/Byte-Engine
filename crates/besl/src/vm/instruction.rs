@@ -29,6 +29,12 @@ pub(super) enum Instruction {
 		source_lane: usize,
 		value_type: ValueType,
 	},
+	/// Copies the `f32` in `value` from the subgroup lane whose index is the reading lane's index XOR `mask`.
+	SubgroupShuffleXor {
+		register: usize,
+		value: usize,
+		mask: usize,
+	},
 	WorkgroupBarrier,
 }
 

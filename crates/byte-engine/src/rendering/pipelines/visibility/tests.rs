@@ -1745,21 +1745,30 @@ fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
 	}
 }
 
-/// Verifies one SIMD group reduces two adjacent 8x8 tiles to one max-depth and one min-depth cell each in every
-/// cascade.
+/// Verifies the four threads of each cell combine their 4x4 blocks into the cell's nearest and farthest depth in every
+/// cascade, and that the workgroup reaching past a cascade 48 texels wide writes only the cells inside it.
 #[test]
-fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
+fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cascade() {
 	let program = asset!("directional-shadow-depth-pyramid.besl");
 	let layer_count = 4u32;
+	// Each row of cells is one and a half workgroups wide, so the second workgroup is half outside the cascade.
+	let (cells_wide, cells_tall) = (6u32, 2u32);
 	let cell_maximum =
 		|layer: u32, cell_x: u32, cell_y: u32| 0.1 + layer as f32 * 0.15 + cell_y as f32 * 0.04 + cell_x as f32 * 0.01;
-	let mut source = Texture::new_3d(16, 8, layer_count).expect("directional shadow array fixture");
+	// A cell's nearest and farthest texels sit in different 4x4 blocks, and the pair rotates through the four blocks
+	// along a row, so a cell's bounds come out right only when its four threads exchange their blocks' bounds.
+	let extreme_texels = [([0, 1], [6, 3]), ([5, 2], [3, 4]), ([2, 7], [4, 5]), ([7, 4], [1, 2])];
+	let mut source = Texture::new_3d(cells_wide * 8, cells_tall * 8, layer_count).expect("directional shadow array fixture");
 	for layer in 0..layer_count {
-		for y in 0..8 {
-			for x in 0..16 {
-				let maximum = cell_maximum(layer, x / 8, y / 8);
-				let depth = if x % 8 == 2 * layer + 1 && y % 8 == 7 - 2 * layer {
+		for y in 0..cells_tall * 8 {
+			for x in 0..cells_wide * 8 {
+				let (cell_x, cell_y) = (x / 8, y / 8);
+				let maximum = cell_maximum(layer, cell_x, cell_y);
+				let (nearest, farthest) = extreme_texels[((cell_x + layer) % 4) as usize];
+				let depth = if [x % 8, y % 8] == nearest {
 					maximum
+				} else if [x % 8, y % 8] == farthest {
+					maximum * 0.25
 				} else {
 					maximum * 0.5
 				};
@@ -1769,32 +1778,30 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 			}
 		}
 	}
-	let mut reduced = empty_image(2, 4);
-	let mut reduced_minimum = empty_image(2, 4);
+	let mut reduced = empty_image(cells_wide, cells_tall * layer_count);
+	let mut reduced_minimum = empty_image(cells_wide, cells_tall * layer_count);
 	for layer in 0..layer_count {
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
-		descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-		descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_minimum);
-		run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
-			&program,
-			descriptors,
-			PYRAMID_WORKGROUP_WIDTH,
-			[0, layer * PYRAMID_WORKGROUP_HEIGHT],
-		);
+		for workgroup_x in [0, PYRAMID_WORKGROUP_WIDTH] {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_minimum);
+			run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
+				&program,
+				descriptors,
+				PYRAMID_WORKGROUP_WIDTH,
+				[workgroup_x, layer * PYRAMID_WORKGROUP_HEIGHT],
+			);
+		}
 	}
 	for layer in 0..layer_count {
-		for cell_x in 0..2 {
-			assert_rgba_close(
-				rgba(&reduced, [cell_x, layer]),
-				[cell_maximum(layer, cell_x, 0), 0.0, 0.0, 1.0],
-				0.00001,
-			);
-			assert_rgba_close(
-				rgba(&reduced_minimum, [cell_x, layer]),
-				[cell_maximum(layer, cell_x, 0) * 0.5, 0.0, 0.0, 1.0],
-				0.00001,
-			);
+		for cell_y in 0..cells_tall {
+			for cell_x in 0..cells_wide {
+				let packed_cell = [cell_x, layer * cells_tall + cell_y];
+				let maximum = cell_maximum(layer, cell_x, cell_y);
+				assert_rgba_close(rgba(&reduced, packed_cell), [maximum, 0.0, 0.0, 1.0], 0.00001);
+				assert_rgba_close(rgba(&reduced_minimum, packed_cell), [maximum * 0.25, 0.0, 0.0, 1.0], 0.00001);
+			}
 		}
 	}
 }

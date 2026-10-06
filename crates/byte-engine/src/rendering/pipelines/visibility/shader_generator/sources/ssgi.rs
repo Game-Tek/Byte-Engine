@@ -64,11 +64,12 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
 	let fraction: vec2f = source_position - base;
 	// Every texel is read before any weight is computed, so the twelve fetches overlap instead of waiting on each
-	// other: the material shader's register footprint leaves few other threads to hide their latency.
-	// Per texel: the view-space position, whose z is zero where no surface was drawn; the normal; and the light.
+	// other: the material shader's register footprint leaves few other threads to hide their latency. Each tap keeps
+	// only what its fetches returned, the depth and the stored normal pair, and derives its position and decoded
+	// normal when it is weighted, so the fetch window holds as little as possible.
+	let depths: f32[4] = f32[4](0.0, 0.0, 0.0, 0.0);
+	let stored_normals: vec2f[4] = vec2f[4](vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0));
 	let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let positions: vec4f[4] = vec4f[4](zero, zero, zero, zero);
-	let normals: vec4f[4] = vec4f[4](zero, zero, zero, zero);
 	let lights: vec4f[4] = vec4f[4](zero, zero, zero, zero);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let texel: vec2u = vec2u(
@@ -76,28 +77,32 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 			min(u32(base.y) + tap / 2, source_extent.y - 1)
 		);
 		// Mip zero of the depth pyramid holds positive linear depth at the history's resolution.
-		let z: f32 = fetch(depth_pyramid, texel).x;
-		let ray: vec2f = vec2f(f32(texel.x), f32(texel.y)) * ssgi_view.pixel_to_ray_mul + ssgi_view.pixel_to_ray_add;
-		let tap_normal: vec3f = ssgi_stored_normal(fetch(ssgi_normals, texel));
-		positions[tap] = vec4f(ray.x * z, ray.y * z, z, 0.0);
-		normals[tap] = vec4f(tap_normal.x, tap_normal.y, tap_normal.z, 0.0);
+		depths[tap] = fetch(depth_pyramid, texel).x;
+		let stored: vec4f = fetch(ssgi_normals, texel);
+		stored_normals[tap] = vec2f(stored.x, stored.y);
 		lights[tap] = fetch(ssgi_history, texel);
 	}
 	let sum: vec4f = zero;
 	let total_weight: f32 = 0.0;
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
-		let tap_position: vec4f = positions[tap];
-		if (tap_position.z == 0.0) {
-			continue;
-		}
-		let tap_normal: vec4f = normals[tap];
+		let z: f32 = depths[tap];
+		// The texel again, in float so it is rebuilt from `base` here rather than kept from the fetch loop.
+		let tap_texel: vec2f = vec2f(
+			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
+			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
+		);
+		let ray: vec2f = tap_texel * ssgi_view.pixel_to_ray_mul + ssgi_view.pixel_to_ray_add;
+		let stored: vec2f = stored_normals[tap];
+		let tap_normal: vec3f = ssgi_stored_normal(vec4f(stored.x, stored.y, 0.0, 0.0));
 		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
-		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible.
-		let weight: f32 = max(bilinear, 0.001) * ssgi_surface_weight(
+		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible. A texel
+		// without a surface has zero depth and gets no weight; a factor instead of a branch keeps the four taps in one
+		// straight run of code that the compiler can interleave with the fetches.
+		let weight: f32 = step(0.000001, z) * max(bilinear, 0.001) * ssgi_surface_weight(
 			normal,
 			position,
-			vec3f(tap_normal.x, tap_normal.y, tap_normal.z),
-			vec3f(tap_position.x, tap_position.y, tap_position.z)
+			tap_normal,
+			vec3f(ray.x * z, ray.y * z, z)
 		);
 		sum = sum + lights[tap] * weight;
 		total_weight = total_weight + weight;

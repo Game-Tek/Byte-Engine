@@ -54,16 +54,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 
 	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
 	let triangle_vertex_indices: u32[3] = compute_vertex_indices(mesh, meshlet, primitive_index_base);
-	let active_lanes: vec4u = subgroup_ballot(true);
-	let setup_leader: u32 = subgroup_ballot_find_lsb(active_lanes);
-	let leader_instance_index: u32 = subgroup_broadcast_u32(instance_index, setup_leader);
-	let leader_triangle_indices: u32 = subgroup_broadcast_u32(triangle_meshlet_indices, setup_leader);
-	let matching_triangle_lanes: vec4u = subgroup_ballot(
-		instance_index == leader_instance_index && triangle_meshlet_indices == leader_triangle_indices
-	);
-	let share_triangle_setup: bool = subgroup_ballot_count(matching_triangle_lanes) == subgroup_ballot_count(active_lanes);
-	let setup_lane: bool = share_triangle_setup == false || input.subgroup_lane_index == setup_leader;
-
+	// Every lane sets up its own triangle. Lanes of one SIMD group often share a triangle, but a region that only a
+	// leader lane runs issues the same instructions as one every lane runs, so sharing the setup through ballots and
+	// broadcasts only added their own cost: material evaluation ran 3 % faster without it (2026-10-05).
 	let model_space_vertex_positions: vec4f[3] = vec4f[3](
 		vec4f(0.0, 0.0, 0.0, 1.0),
 		vec4f(0.0, 0.0, 0.0, 1.0),
@@ -75,124 +68,90 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		vec4f(0.0, 0.0, 1.0, 0.0)
 	);
 
-	if (setup_lane) {
-		if (mesh.skinned_base_vertex_index != 4294967295) {
-			let skinned_vertex_indices: u32[3] = u32[3](
-				mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index),
-				mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index),
-				mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index)
-			);
-			let skinned_vertices_for_triangle: SkinnedVertex[3] = SkinnedVertex[3](
-				skinned_vertices.vertices[skinned_vertex_indices[0]],
-				skinned_vertices.vertices[skinned_vertex_indices[1]],
-				skinned_vertices.vertices[skinned_vertex_indices[2]]
-			);
-			model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
-			model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
-			model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-			model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
-			model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
-			model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
-		} else {
-			let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
-			let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
-			let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
-			let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
-			let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
-			let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
-			model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
-			model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
-			model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
-			model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
-			model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
-			model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
-		}
+	if (mesh.skinned_base_vertex_index != 4294967295) {
+		let skinned_vertex_indices: u32[3] = u32[3](
+			mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index),
+			mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index),
+			mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index)
+		);
+		let skinned_vertices_for_triangle: SkinnedVertex[3] = SkinnedVertex[3](
+			skinned_vertices.vertices[skinned_vertex_indices[0]],
+			skinned_vertices.vertices[skinned_vertex_indices[1]],
+			skinned_vertices.vertices[skinned_vertex_indices[2]]
+		);
+		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
+		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
+		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
+		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
+		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
+		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
+	} else {
+		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
+		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
+		let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
+		let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
+		let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
+		let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
+		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
+		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
+		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
+		model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
+		model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
+		model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
 	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let model: mat4x3f = mesh.model;
-	let world_space_vertex_positions: vec3f[3] = vec3f[3](vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 0.0));
-	let clip_space_vertex_positions: vec4f[3] = vec4f[3](vec4f(0.0, 0.0, 0.0, 0.0), vec4f(0.0, 0.0, 0.0, 0.0), vec4f(0.0, 0.0, 0.0, 0.0));
-	let world_space_vertex_normals: vec3f[3] = vec3f[3](vec3f(0.0, 0.0, 1.0), vec3f(0.0, 0.0, 1.0), vec3f(0.0, 0.0, 1.0));
-	let triangle_inverse_w: vec3f = vec3f(0.0, 0.0, 0.0);
-	let triangle_raw_ddx: vec3f = vec3f(0.0, 0.0, 0.0);
-	let triangle_raw_ddy: vec3f = vec3f(0.0, 0.0, 0.0);
-	if (setup_lane) {
-		let view_projection: mat4f = views.views[0].view_projection;
-		world_space_vertex_positions[0] = model * model_space_vertex_positions[0];
-		world_space_vertex_positions[1] = model * model_space_vertex_positions[1];
-		world_space_vertex_positions[2] = model * model_space_vertex_positions[2];
-		clip_space_vertex_positions[0] = view_projection * vec4f(world_space_vertex_positions[0].x, world_space_vertex_positions[0].y, world_space_vertex_positions[0].z, 1.0);
-		clip_space_vertex_positions[1] = view_projection * vec4f(world_space_vertex_positions[1].x, world_space_vertex_positions[1].y, world_space_vertex_positions[1].z, 1.0);
-		clip_space_vertex_positions[2] = view_projection * vec4f(world_space_vertex_positions[2].x, world_space_vertex_positions[2].y, world_space_vertex_positions[2].z, 1.0);
-		world_space_vertex_normals[0] = normalize(model * model_space_vertex_normals[0]);
-		world_space_vertex_normals[1] = normalize(model * model_space_vertex_normals[1]);
-		world_space_vertex_normals[2] = normalize(model * model_space_vertex_normals[2]);
-	}
+	let view_projection: mat4f = views.views[0].view_projection;
+	let world_vertex_position0: vec3f = model * model_space_vertex_positions[0];
+	let world_vertex_position1: vec3f = model * model_space_vertex_positions[1];
+	let world_vertex_position2: vec3f = model * model_space_vertex_positions[2];
+	let clip_vertex_position0: vec4f = view_projection * vec4f(world_vertex_position0.x, world_vertex_position0.y, world_vertex_position0.z, 1.0);
+	let clip_vertex_position1: vec4f = view_projection * vec4f(world_vertex_position1.x, world_vertex_position1.y, world_vertex_position1.z, 1.0);
+	let clip_vertex_position2: vec4f = view_projection * vec4f(world_vertex_position2.x, world_vertex_position2.y, world_vertex_position2.z, 1.0);
+	let world_vertex_normal0: vec3f = normalize(model * model_space_vertex_normals[0]);
+	let world_vertex_normal1: vec3f = normalize(model * model_space_vertex_normals[1]);
+	let world_vertex_normal2: vec3f = normalize(model * model_space_vertex_normals[2]);
 
-	// Share perspective-correct interpolation planes instead of only transformed vertices. The
-	// fallback computes the same planes per lane when a SIMD group contains more than one triangle.
-	let interpolation_origin: vec2f = vec2f(0.0, 0.0);
-	let inverse_w_origin: f32 = 0.0;
-	let inverse_w_dx: f32 = 0.0;
-	let inverse_w_dy: f32 = 0.0;
-	let position_numerator_origin: vec3f = vec3f(0.0, 0.0, 0.0);
-	let position_numerator_dx: vec3f = vec3f(0.0, 0.0, 0.0);
-	let position_numerator_dy: vec3f = vec3f(0.0, 0.0, 0.0);
-	let normal_numerator_origin: vec3f = vec3f(0.0, 0.0, 0.0);
-	let normal_numerator_dx: vec3f = vec3f(0.0, 0.0, 0.0);
-	let normal_numerator_dy: vec3f = vec3f(0.0, 0.0, 0.0);
-	if (setup_lane) {
-		let triangle_interpolation: TriangleInterpolation = compute_triangle_interpolation(
-			clip_space_vertex_positions[0],
-			clip_space_vertex_positions[1],
-			clip_space_vertex_positions[2]
-		);
-		interpolation_origin = triangle_interpolation.origin;
-		triangle_inverse_w = triangle_interpolation.inverse_w;
-		triangle_raw_ddx = triangle_interpolation.raw_ddx;
-		triangle_raw_ddy = triangle_interpolation.raw_ddy;
-		inverse_w_origin = triangle_inverse_w.x;
-		inverse_w_dx = dot(triangle_raw_ddx, vec3f(1.0, 1.0, 1.0));
-		inverse_w_dy = dot(triangle_raw_ddy, vec3f(1.0, 1.0, 1.0));
-		position_numerator_origin = world_space_vertex_positions[0] * triangle_inverse_w.x;
-		position_numerator_dx = interpolate_vec3f_with_deriv(
-			triangle_raw_ddx,
-			world_space_vertex_positions[0],
-			world_space_vertex_positions[1],
-			world_space_vertex_positions[2]
-		);
-		position_numerator_dy = interpolate_vec3f_with_deriv(
-			triangle_raw_ddy,
-			world_space_vertex_positions[0],
-			world_space_vertex_positions[1],
-			world_space_vertex_positions[2]
-		);
-		normal_numerator_origin = world_space_vertex_normals[0] * triangle_inverse_w.x;
-		normal_numerator_dx = interpolate_vec3f_with_deriv(
-			triangle_raw_ddx,
-			world_space_vertex_normals[0],
-			world_space_vertex_normals[1],
-			world_space_vertex_normals[2]
-		);
-		normal_numerator_dy = interpolate_vec3f_with_deriv(
-			triangle_raw_ddy,
-			world_space_vertex_normals[0],
-			world_space_vertex_normals[1],
-			world_space_vertex_normals[2]
-		);
-	}
-	if (share_triangle_setup) {
-		interpolation_origin = vec2f(subgroup_broadcast_f32(interpolation_origin.x, setup_leader), subgroup_broadcast_f32(interpolation_origin.y, setup_leader));
-		inverse_w_origin = subgroup_broadcast_f32(inverse_w_origin, setup_leader);
-		inverse_w_dx = subgroup_broadcast_f32(inverse_w_dx, setup_leader);
-		inverse_w_dy = subgroup_broadcast_f32(inverse_w_dy, setup_leader);
-		position_numerator_origin = vec3f(subgroup_broadcast_f32(position_numerator_origin.x, setup_leader), subgroup_broadcast_f32(position_numerator_origin.y, setup_leader), subgroup_broadcast_f32(position_numerator_origin.z, setup_leader));
-		position_numerator_dx = vec3f(subgroup_broadcast_f32(position_numerator_dx.x, setup_leader), subgroup_broadcast_f32(position_numerator_dx.y, setup_leader), subgroup_broadcast_f32(position_numerator_dx.z, setup_leader));
-		position_numerator_dy = vec3f(subgroup_broadcast_f32(position_numerator_dy.x, setup_leader), subgroup_broadcast_f32(position_numerator_dy.y, setup_leader), subgroup_broadcast_f32(position_numerator_dy.z, setup_leader));
-		normal_numerator_origin = vec3f(subgroup_broadcast_f32(normal_numerator_origin.x, setup_leader), subgroup_broadcast_f32(normal_numerator_origin.y, setup_leader), subgroup_broadcast_f32(normal_numerator_origin.z, setup_leader));
-		normal_numerator_dx = vec3f(subgroup_broadcast_f32(normal_numerator_dx.x, setup_leader), subgroup_broadcast_f32(normal_numerator_dx.y, setup_leader), subgroup_broadcast_f32(normal_numerator_dx.z, setup_leader));
-		normal_numerator_dy = vec3f(subgroup_broadcast_f32(normal_numerator_dy.x, setup_leader), subgroup_broadcast_f32(normal_numerator_dy.y, setup_leader), subgroup_broadcast_f32(normal_numerator_dy.z, setup_leader));
-	}
+	// Perspective-correct interpolation planes: an attribute divided by w and 1 / w are both affine across the screen,
+	// so each pixel's attribute is the ratio of the two planes evaluated at that pixel.
+	let triangle_interpolation: TriangleInterpolation = compute_triangle_interpolation(
+		clip_vertex_position0,
+		clip_vertex_position1,
+		clip_vertex_position2
+	);
+	let interpolation_origin: vec2f = triangle_interpolation.origin;
+	let triangle_inverse_w: vec3f = triangle_interpolation.inverse_w;
+	let triangle_raw_ddx: vec3f = triangle_interpolation.raw_ddx;
+	let triangle_raw_ddy: vec3f = triangle_interpolation.raw_ddy;
+	let inverse_w_origin: f32 = triangle_inverse_w.x;
+	let inverse_w_dx: f32 = dot(triangle_raw_ddx, vec3f(1.0, 1.0, 1.0));
+	let inverse_w_dy: f32 = dot(triangle_raw_ddy, vec3f(1.0, 1.0, 1.0));
+	let position_numerator_origin: vec3f = world_vertex_position0 * triangle_inverse_w.x;
+	let position_numerator_dx: vec3f = interpolate_vec3f_with_deriv(
+		triangle_raw_ddx,
+		world_vertex_position0,
+		world_vertex_position1,
+		world_vertex_position2
+	);
+	let position_numerator_dy: vec3f = interpolate_vec3f_with_deriv(
+		triangle_raw_ddy,
+		world_vertex_position0,
+		world_vertex_position1,
+		world_vertex_position2
+	);
+	let normal_numerator_origin: vec3f = world_vertex_normal0 * triangle_inverse_w.x;
+	let normal_numerator_dx: vec3f = interpolate_vec3f_with_deriv(
+		triangle_raw_ddx,
+		world_vertex_normal0,
+		world_vertex_normal1,
+		world_vertex_normal2
+	);
+	let normal_numerator_dy: vec3f = interpolate_vec3f_with_deriv(
+		triangle_raw_ddy,
+		world_vertex_normal0,
+		world_vertex_normal1,
+		world_vertex_normal2
+	);
 
 	let interpolation_delta: vec2f = nc - interpolation_origin;
 	let inverse_w_at_pixel: f32 = inverse_w_origin + interpolation_delta.x * inverse_w_dx + interpolation_delta.y * inverse_w_dy;
@@ -243,24 +202,14 @@ facing_normal: fn (normal: vec3f, to_camera: vec3f, position_derivative_x: vec3f
 pub(crate) const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
 	// Runtime UVs use half-float storage and are expanded only for materials that sample them.
-	let uv_numerator_origin: vec2f = vec2f(0.0, 0.0);
-	let uv_numerator_dx: vec2f = vec2f(0.0, 0.0);
-	let uv_numerator_dy: vec2f = vec2f(0.0, 0.0);
-	if (setup_lane) {
-		let vertex_uv_values: vec2f[3] = vec2f[3](
-			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]),
-			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]),
-			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]])
-		);
-		uv_numerator_origin = vertex_uv_values[0] * triangle_inverse_w.x;
-		uv_numerator_dx = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
-		uv_numerator_dy = interpolate_vec2f_with_deriv(triangle_raw_ddy, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
-	}
-	if (share_triangle_setup) {
-		uv_numerator_origin = vec2f(subgroup_broadcast_f32(uv_numerator_origin.x, setup_leader), subgroup_broadcast_f32(uv_numerator_origin.y, setup_leader));
-		uv_numerator_dx = vec2f(subgroup_broadcast_f32(uv_numerator_dx.x, setup_leader), subgroup_broadcast_f32(uv_numerator_dx.y, setup_leader));
-		uv_numerator_dy = vec2f(subgroup_broadcast_f32(uv_numerator_dy.x, setup_leader), subgroup_broadcast_f32(uv_numerator_dy.y, setup_leader));
-	}
+	let vertex_uv_values: vec2f[3] = vec2f[3](
+		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]),
+		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]),
+		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]])
+	);
+	let uv_numerator_origin: vec2f = vertex_uv_values[0] * triangle_inverse_w.x;
+	let uv_numerator_dx: vec2f = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
+	let uv_numerator_dy: vec2f = interpolate_vec2f_with_deriv(triangle_raw_ddy, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
 	let uv_numerator: vec2f = uv_numerator_origin + interpolation_delta.x * uv_numerator_dx + interpolation_delta.y * uv_numerator_dy;
 	let vertex_uv: vec2f = uv_numerator * perspective_w;
 	let uv_derivative_x: vec2f =
@@ -350,20 +299,6 @@ sample_ies_profile: fn (
 
 pub(crate) const MATERIAL_EVALUATION_SUFFIX_SOURCE: &str = r#"
 material_evaluation_suffix: fn () -> void {
-	// Preserve compact material values and normalized vectors through the BRDF.
-	// Positions, shadow projections, HDR radiance, and accumulation remain f32.
-	let albedo_rgb: vec3f16 = vec3f16(albedo.x, albedo.y, albedo.z);
-	let V_material: vec3f16 = vec3f16(V);
-	let one_minus_metalness: f16 = f16(1.0) - metalness;
-	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * one_minus_metalness + albedo_rgb * metalness;
-	let one_minus_f0: vec3f16 = vec3f16(1.0, 1.0, 1.0) - F0;
-	let NdotV: f16 = max(dot(normal, V_material), f16(0.0));
-	let roughness_alpha: f16 = roughness * roughness;
-	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
-	let adjusted_roughness: f16 = roughness + 1.0;
-	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
-	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
-	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	// The fraction of the hemisphere around the normal that nearby geometry leaves open to the environment. GTAO and
 	// SSGI each estimate it from the opaque depth buffer, so a transparent surface has neither, and either may be off.
 	let environment_visibility: f32 = 1.0;
@@ -397,6 +332,21 @@ material_evaluation_suffix: fn () -> void {
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
 	let indirect_diffuse_radiance: vec3f = screen_space_irradiance
 		+ sample_environment_irradiance(vec3f(normal)) * (lighting_data.environment_intensity * environment_visibility);
+	// The BRDF constants come after the screen-space reads above, so they are not live while those fetches wait.
+	// Preserve compact material values and normalized vectors through the BRDF.
+	// Positions, shadow projections, HDR radiance, and accumulation remain f32.
+	let albedo_rgb: vec3f16 = vec3f16(albedo.x, albedo.y, albedo.z);
+	let V_material: vec3f16 = vec3f16(V);
+	let one_minus_metalness: f16 = f16(1.0) - metalness;
+	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * one_minus_metalness + albedo_rgb * metalness;
+	let one_minus_f0: vec3f16 = vec3f16(1.0, 1.0, 1.0) - F0;
+	let NdotV: f16 = max(dot(normal, V_material), f16(0.0));
+	let roughness_alpha: f16 = roughness * roughness;
+	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
+	let adjusted_roughness: f16 = roughness + 1.0;
+	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
+	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
+	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
 	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
 	let view_fresnel_factor: f16 = view_fresnel_squared * view_fresnel_squared * view_fresnel_base;

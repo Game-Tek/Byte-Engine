@@ -21,3 +21,5 @@ perf.data.old
 .cargo/*
 !.cargo/mutants.toml
 .DS_Store
+
+.claude

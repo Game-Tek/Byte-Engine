@@ -700,7 +700,7 @@ const HIZ_TAIL_WORKGROUP_SIZE: usize = 128;
 
 /// Returns the 16-bit floats the occlusion pyramid's seed may store for `depth`: the nearest one at or below it, and,
 /// when the nearest overall lies above, also the step below that, which the seed's scaling can land on.
-fn toward_far_plane(depth: f32) -> [f32; 2] {
+fn seeded_depths(depth: f32) -> [f32; 2] {
 	let nearest = half::f16::from_f32(depth);
 	if nearest.to_f32() > depth {
 		let below = half::f16::from_bits(nearest.to_bits() - 1);
@@ -744,11 +744,7 @@ fn run_hiz_base(width: u32, height: u32, depth: impl Fn(u32, u32) -> f32) -> [Ve
 		descriptors.bind_image(ResourceSlot::new(1034 + index as u32), level);
 	}
 	run_workgroup_containing::<HIZ_BASE_WORKGROUP_SIZE>(&program, descriptors, HIZ_BASE_WORKGROUP_WIDTH, [0, 0]);
-	let mut sizes = [16, 8, 4, 2, 1].into_iter();
-	levels.each_ref().map(|level| {
-		let size = sizes.next().unwrap();
-		channel(level, size, size)
-	})
+	std::array::from_fn(|level| channel(&levels[level], 16 >> level, 16 >> level))
 }
 
 /// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
@@ -766,7 +762,7 @@ fn occlusion_pyramid_base_seeds_the_farthest_depth_and_reduces_its_block() {
 			.map(|pixel| depth(pixel, y))
 			.fold(1.0f32, f32::min);
 		assert!(
-			toward_far_plane(farthest).contains(&stored),
+			seeded_depths(farthest).contains(&stored),
 			"Texel ({x}, {y}) holds {stored} for a farthest depth of {farthest}. The most likely cause is a wrong footprint or a rounding toward the camera."
 		);
 	}

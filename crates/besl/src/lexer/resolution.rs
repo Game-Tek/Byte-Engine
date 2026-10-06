@@ -757,7 +757,7 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::Struct {
 			template: Some(element), ..
 		} => Some(element.clone()),
-		Nodes::Struct { name, fields, .. } if name.starts_with("vec") || name.starts_with("mat") || name == "packed_vec4f" => {
+		Nodes::Struct { name, fields, .. } if name.starts_with("vec") || name.starts_with("mat") => {
 			fields.first().and_then(infer_member_type)
 		}
 		_ => None,

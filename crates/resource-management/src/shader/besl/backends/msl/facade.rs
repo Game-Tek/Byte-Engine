@@ -23,7 +23,9 @@ pub struct Generator {
 	pub(crate) raster_stage_context: Option<RasterStageContext>,
 	pub(crate) task_stage_context: Option<TaskStageContext>,
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
-	pub(crate) in_buffer_binding_struct: bool,
+	/// Set while emitting a struct that a raster entry point returns. Metal rejects packed vectors in stage
+	/// interfaces, so its members keep native vector types.
+	pub(crate) in_stage_interface_struct: bool,
 	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
 	pub(crate) match_break_depth: Option<usize>,
 	/// The hidden kernel values each emitted function needs, analyzed once per shader before emission.
@@ -139,7 +141,7 @@ impl Generator {
 			raster_stage_context: None,
 			task_stage_context: None,
 			mesh_stage_context: None,
-			in_buffer_binding_struct: false,
+			in_stage_interface_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
 			hidden_contexts: HashMap::default(),

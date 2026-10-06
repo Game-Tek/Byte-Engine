@@ -301,6 +301,42 @@ impl Generator {
 		self.accessor_returns_packed_mat4x3(left, right)
 	}
 
+	/// Emits a matrix product whose vector operand may be a packed storage read, converting that operand to its native
+	/// vector type.
+	///
+	/// Metal converts packed vectors implicitly for arithmetic and built-in functions, but not for matrix
+	/// multiplication. Returns `false`, without writing, when the product needs no conversion.
+	pub(crate) fn emit_packed_vector_matrix_product(
+		&mut self,
+		string: &mut String,
+		left: &besl::NodeReference,
+		right: &besl::NodeReference,
+	) -> bool {
+		let unpack_left = is_matrix_expression(right).then(|| packed_vector_read(left)).flatten();
+		let unpack_right = is_matrix_expression(left).then(|| packed_vector_read(right)).flatten();
+		if unpack_left.is_none() && unpack_right.is_none() {
+			return false;
+		}
+
+		let formatting = ShaderFormatting::new(self.minified);
+		for (index, (operand, unpack)) in [(left, unpack_left), (right, unpack_right)].into_iter().enumerate() {
+			if index > 0 {
+				string.push_str(formatting.space_str());
+				string.push('*');
+				string.push_str(formatting.space_str());
+			}
+			if let Some(vector) = unpack {
+				string.push_str(Self::translate_type(vector.borrow().get_name().unwrap_or_default()));
+				string.push('(');
+				self.emit_node_string(string, operand);
+				string.push(')');
+			} else {
+				self.emit_wrapped_expression(string, operand);
+			}
+		}
+		true
+	}
+
 	/// Emits an accessor path without converting its final packed matrix storage value.
 	pub(crate) fn emit_accessor_expression_raw(
 		&mut self,
@@ -420,4 +456,26 @@ impl Generator {
 
 		nodes
 	}
+}
+
+/// Returns the vector type that `expression` reads when the read may come from packed storage: a struct member, a
+/// buffer element, or an array element. Locals, parameters, and computed values are always native vectors.
+fn packed_vector_read(expression: &besl::NodeReference) -> Option<besl::NodeReference> {
+	match expression.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
+			return packed_vector_read(&elements[0]);
+		}
+		besl::Nodes::Expression(besl::Expressions::Accessor { .. }) => {}
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. })
+			if matches!(source.borrow().node(), besl::Nodes::Member { .. }) => {}
+		_ => return None,
+	}
+	besl::infer_expression_type(expression)
+		.filter(|r#type| r#type.borrow().get_name().is_some_and(|name| name.starts_with("vec")))
+}
+
+/// Reports whether `expression` produces a matrix value.
+fn is_matrix_expression(expression: &besl::NodeReference) -> bool {
+	besl::infer_expression_type(expression)
+		.is_some_and(|r#type| r#type.borrow().get_name().is_some_and(|name| name.starts_with("mat")))
 }

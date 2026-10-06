@@ -3,13 +3,13 @@
 //! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::visibility_shader_scope`].
 //! The layout tests at the bottom pin the offsets the shaders depend on.
 
-use ghi::pod::{Mat4f, Mat4x3f};
+use ghi::pod::{Mat4f, Mat4x3f, Vec3f};
 
 use super::layout::{LIGHT_CLUSTER_SLICES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, RuntimeUnitVector};
 use crate::rendering::View;
 
 /// The `ShaderMesh` struct is one entry of the per-frame instance table read by culling, rasterization, and material evaluation.
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderMesh {
 	pub(crate) model: Mat4x3f,
@@ -60,34 +60,6 @@ impl From<View> for ShaderViewData {
 	}
 }
 
-/// The `ShaderVec3` struct pads a vector to the 16-byte stride every storage-buffer backend agrees on.
-#[repr(C, align(16))]
-#[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ShaderVec3 {
-	pub(crate) x: f32,
-	pub(crate) y: f32,
-	pub(crate) z: f32,
-	pub(crate) _padding: f32,
-}
-
-impl From<(f32, f32, f32)> for ShaderVec3 {
-	fn from((x, y, z): (f32, f32, f32)) -> Self {
-		Self { x, y, z, _padding: 0.0 }
-	}
-}
-
-impl From<maths_rs::Vec3f> for ShaderVec3 {
-	fn from(value: maths_rs::Vec3f) -> Self {
-		Self::from((value.x, value.y, value.z))
-	}
-}
-
-impl ShaderVec3 {
-	pub(crate) fn scaled(self, scale: f32) -> Self {
-		Self::from((self.x * scale, self.y * scale, self.z * scale))
-	}
-}
-
 /// Sentinel used when a local light has no resident IES profile texture.
 pub(crate) const NO_IES_PROFILE_TEXTURE: u32 = u32::MAX;
 /// Octahedral encoding of the +Z axis, used where no meaningful tangent exists.
@@ -111,9 +83,9 @@ pub(crate) struct IesProfileTexture {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightData {
-	pub position: ShaderVec3,
-	pub color: ShaderVec3,
-	pub direction: ShaderVec3,
+	pub position: Vec3f,
+	pub color: Vec3f,
+	pub direction: Vec3f,
 	pub cone_cosines: [f32; 2],
 	pub light_type: u32,
 	pub shadow_views: [u32; 8],
@@ -148,7 +120,6 @@ pub struct LightingData {
 	pub exposure: f32,
 	/// The linear factor that brings the environment map to the illuminance its [`crate::rendering::Environment`] requests.
 	pub environment_intensity: f32,
-	pub(crate) _padding: u32,
 	pub lights: [LightData; MAX_LIGHTS],
 }
 
@@ -240,7 +211,6 @@ pub(crate) struct ReflectionShaderParameters {
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
 const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
-const _: () = assert!(std::mem::align_of::<ShaderMesh>() == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 76);
@@ -254,26 +224,24 @@ const _: () = assert!(std::mem::offset_of!(ShaderViewData, fov) == 160);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, near) == 168);
 const _: () = assert!(std::mem::offset_of!(ShaderViewData, far) == 172);
 
-const _: () = assert!(std::mem::size_of::<LightData>() == 112);
-const _: () = assert!(std::mem::align_of::<LightData>() == 16);
+const _: () = assert!(std::mem::size_of::<LightData>() == 100);
 const _: () = assert!(std::mem::offset_of!(LightData, position) == 0);
-const _: () = assert!(std::mem::offset_of!(LightData, color) == 16);
-const _: () = assert!(std::mem::offset_of!(LightData, direction) == 32);
-const _: () = assert!(std::mem::offset_of!(LightData, cone_cosines) == 48);
-const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 56);
-const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 60);
-const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 92);
-const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 96);
-const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 100);
-const _: () = assert!(std::mem::offset_of!(LightData, reach) == 104);
+const _: () = assert!(std::mem::offset_of!(LightData, color) == 12);
+const _: () = assert!(std::mem::offset_of!(LightData, direction) == 24);
+const _: () = assert!(std::mem::offset_of!(LightData, cone_cosines) == 36);
+const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 44);
+const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 48);
+const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 80);
+const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 84);
+const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 88);
+const _: () = assert!(std::mem::offset_of!(LightData, reach) == 92);
+const _: () = assert!(std::mem::offset_of!(LightData, angular_radius_tangent) == 96);
 
-const _: () = assert!(std::mem::size_of::<LightingData>() == 16 + 112 * MAX_LIGHTS);
-const _: () = assert!(std::mem::align_of::<LightingData>() == 16);
+const _: () = assert!(std::mem::size_of::<LightingData>() == 12 + 100 * MAX_LIGHTS);
 const _: () = assert!(std::mem::offset_of!(LightingData, count) == 0);
 const _: () = assert!(std::mem::offset_of!(LightingData, exposure) == 4);
 const _: () = assert!(std::mem::offset_of!(LightingData, environment_intensity) == 8);
-const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 12);
-const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 16);
+const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 12);
 
 const _: () = assert!(std::mem::size_of::<LightClusterParameters>() == 64);
 const _: () = assert!(std::mem::offset_of!(LightClusterParameters, edge_slopes) == 48);

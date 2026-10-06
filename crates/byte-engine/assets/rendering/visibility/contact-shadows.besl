@@ -13,8 +13,8 @@ ScreenView: struct {
 }
 
 ContactShadowParameters: struct {
-	// The view-space unit direction from a surface toward the sun. W is unused.
-	direction_to_light: vec4f,
+	// The view-space unit direction from a surface toward the sun.
+	direction_to_light: vec3f,
 	// World-space reach of one ray. Occluders further away are left to the shadow map.
 	max_distance: f32,
 }
@@ -150,11 +150,7 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 
-	let direction: vec3f = vec3f(
-		contact_shadow_parameters.direction_to_light.x,
-		contact_shadow_parameters.direction_to_light.y,
-		contact_shadow_parameters.direction_to_light.z
-	);
+	let direction: vec3f = contact_shadow_parameters.direction_to_light;
 	let pixel_f: vec2f = vec2f(column, row);
 	let origin: vec3f = view_position(pixel_f, center_z);
 	let ray_length: f32 = contact_shadow_parameters.max_distance;

@@ -785,7 +785,6 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec2F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec3F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
-		Value::PackedVec4F(value) => value.get(index).copied().map(Value::F32),
 		Value::Mat4F(value) => value.as_chunks::<4>().0.get(index).copied().map(Value::Vec4F),
 		Value::Mat4x3F(value) => value.as_chunks::<3>().0.get(index).copied().map(Value::Vec3F),
 		Value::Struct { fields, .. } => fields.get(index).cloned(),
@@ -820,7 +819,7 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 		(Value::Vec4F16(slots), Value::F16(value)) => set(slots, index, value),
 		(Value::Vec2F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Vec3F(slots), Value::F32(value)) => set(slots, index, value),
-		(Value::Vec4F(slots) | Value::PackedVec4F(slots), Value::F32(value)) => set(slots, index, value),
+		(Value::Vec4F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
 		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
 		// Copy-on-write: a local store copies the shared fields once, and only when another copy still reads them.
@@ -850,7 +849,7 @@ pub(crate) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
 		ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16 => Some(ValueType::F16),
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::PackedVec4F => Some(ValueType::F32),
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),
 		_ => None,
 	}
 }

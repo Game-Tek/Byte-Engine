@@ -292,7 +292,7 @@ fn run_meshlet_task_workgroup(
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
 		meshlets
-			.write_array_member(meshlet_index, "center_radius", Value::PackedVec4F(center_radius))
+			.write_array_member(meshlet_index, "center_radius", Value::Vec4F(center_radius))
 			.expect("task meshlet bound");
 		// A cutoff above one disables cone rejection. The back-facing cone sits at the meshlet center and points
 		// along +Z, the octahedral center, which is the direction from the camera at the origin to the meshlet.
@@ -305,7 +305,7 @@ fn run_meshlet_task_workgroup(
 			([0.0, 0.0, 0.0, 2.0], [0; 2])
 		};
 		meshlets
-			.write_array_member(meshlet_index, "cone_apex_cutoff", Value::PackedVec4F(cone_apex_cutoff))
+			.write_array_member(meshlet_index, "cone_apex_cutoff", Value::Vec4F(cone_apex_cutoff))
 			.expect("task cone cutoff");
 		meshlets
 			.write_array_member(meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
@@ -851,7 +851,7 @@ impl MeshView {
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
 	view: MeshView,
-	skinned_positions: Option<[[f32; 4]; 3]>,
+	skinned_positions: Option<[[f32; 3]; 3]>,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 ) {
@@ -911,7 +911,7 @@ fn assert_triangle_mesh_program(
 	}
 	for (index, position) in skinned_positions.into_iter().flatten().enumerate() {
 		skinned_vertices
-			.write_array_member(SKINNED_BASE_VERTEX as usize + index, "position", Value::Vec4F(position))
+			.write_array_member(SKINNED_BASE_VERTEX as usize + index, "position", Value::Vec3F(position))
 			.expect("skinned mesh vertex");
 	}
 	let mut push_constant = push_constant_buffer(&program);
@@ -1002,12 +1002,12 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 /// Verifies that posed instances source raster positions from their frame-local deformation range.
 #[test]
 fn visibility_mesh_main_reads_skinned_positions() {
-	let skinned_positions = [[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]];
+	let skinned_positions = [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0], [8.0, 9.0, 10.0]];
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
 		Some(skinned_positions),
-		skinned_positions,
+		skinned_positions.map(|[x, y, z]| [x, y, z, 1.0]),
 		None,
 	);
 }
@@ -2523,7 +2523,7 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	let mut view = gtao_view_data(&program, extent, extent);
 	let mut parameters = buffer(&program, ResourceSlot::new(1));
 	parameters
-		.write("direction_to_light", Value::Vec4F([x / length, y / length, z / length, 0.0]))
+		.write("direction_to_light", Value::Vec3F([x / length, y / length, z / length]))
 		.expect("contact shadow parameters");
 	parameters
 		.write("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE))
@@ -2690,7 +2690,7 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	let mut parameters = buffer(&program, ResourceSlot::new(1038));
 	let [x, y, z] = [0.0, 1.0, 1.0f32].map(|component| component / 2.0f32.sqrt());
 	for (member, value) in [
-		("direction_to_light", Value::Vec4F([x, y, z, 0.0])),
+		("direction_to_light", Value::Vec3F([x, y, z])),
 		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
 		("angular_radius_tangent", Value::F32(0.0)),
 		(
@@ -2963,12 +2963,11 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 		.write("light_count", Value::U32(lights.len() as u32))
 		.expect("light count");
 	lighting.write("exposure", Value::F32(exposure)).expect("exposure");
-	let vec4 = |vector: super::shader_data::ShaderVec3| Value::Vec4F([vector.x, vector.y, vector.z, 0.0]);
 	for (index, light) in lights.iter().enumerate() {
 		for (field, value) in [
-			("position", vec4(light.position)),
-			("color", vec4(light.color)),
-			("direction", vec4(light.direction)),
+			("position", Value::Vec3F(light.position.into())),
+			("color", Value::Vec3F(light.color.into())),
+			("direction", Value::Vec3F(light.direction.into())),
 			("cone_cosines", Value::Vec2F(light.cone_cosines)),
 			("type", Value::U32(light.light_type)),
 			("reach", Value::F32(light.reach)),

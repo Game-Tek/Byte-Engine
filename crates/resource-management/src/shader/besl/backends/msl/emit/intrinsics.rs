@@ -325,8 +325,9 @@ impl Generator {
 					"is_finite" => "isfinite",
 					"is_normal" => "isnormal",
 					"inversesqrt" => "rsqrt",
-					"f32" | "f16" | "u32" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
-					| "packed_vec4f" => Self::translate_type(name),
+					"f32" | "f16" | "u32" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::translate_type(name)
+					}
 					// These call the helpers that `generate_msl_header_block` declares.
 					"atomic_compare_exchange" => "_besl_atomic_compare_exchange",
 					"find_lsb" => "_besl_find_lsb",

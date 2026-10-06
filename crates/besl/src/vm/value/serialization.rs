@@ -51,7 +51,6 @@ pub(crate) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 		| ValueType::Vec2F
 		| ValueType::Vec3F
 		| ValueType::Vec4F
-		| ValueType::PackedVec4F
 		| ValueType::Mat4F
 		| ValueType::Mat4x3F
 		| ValueType::Texture2D
@@ -84,7 +83,6 @@ pub(crate) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 		ValueType::Vec2F => Ok(Value::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(Value::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(Value::Vec4F(extract_f32_components::<4>(components)?)),
-		ValueType::PackedVec4F => Ok(Value::PackedVec4F(extract_f32_components::<4>(components)?)),
 		ValueType::Mat4F => Ok(Value::Mat4F(extract_f32_components::<16>(components)?)),
 		ValueType::Mat4x3F => Ok(Value::Mat4x3F(extract_f32_components::<12>(components)?)),
 		ValueType::Struct { fields, .. } => {
@@ -226,7 +224,7 @@ pub(crate) fn extract_f32_components<const N: usize>(components: &[Value]) -> Re
 			Value::Vec4F16(value) => fill_lanes(lanes, value, f16::to_f32),
 			Value::Vec2F(value) => fill_lanes(lanes, value, f32::from),
 			Value::Vec3F(value) => fill_lanes(lanes, value, f32::from),
-			Value::Vec4F(value) | Value::PackedVec4F(value) => fill_lanes(lanes, value, f32::from),
+			Value::Vec4F(value) => fill_lanes(lanes, value, f32::from),
 			Value::Mat4F(value) => fill_lanes(lanes, value, f32::from),
 			Value::Mat4x3F(value) => fill_lanes(lanes, value, f32::from),
 			_ => return None,

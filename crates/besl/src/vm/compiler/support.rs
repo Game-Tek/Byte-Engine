@@ -623,7 +623,7 @@ pub(super) fn aggregate_member(value_type: &ValueType, member_name: &str) -> Res
 			vector_member(value_type, member_name, 2)
 		}
 		ValueType::Vec3U | ValueType::Vec3F16 | ValueType::Vec3F => vector_member(value_type, member_name, 3),
-		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F | ValueType::PackedVec4F => {
+		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F => {
 			vector_member(value_type, member_name, 4)
 		}
 		ValueType::Mat4F => matrix_member(member_name, ValueType::Vec4F),

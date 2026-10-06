@@ -122,6 +122,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		let besl::Expressions::Operator { operator, left, right } = expression else {
 			return false;
 		};
+		if *operator == besl::Operators::Multiply {
+			return self.emit_packed_vector_matrix_product(string, left, right);
+		}
 		if *operator != besl::Operators::Assignment || !self.expression_is_packed_mat4x3_accessor(left) {
 			return false;
 		}

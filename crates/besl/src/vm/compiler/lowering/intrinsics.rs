@@ -619,7 +619,7 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 				require_argument_count(arguments, 1)?;
 				// The selected overload carries the source type. This also distinguishes
 				// vec4f conversions from f16 and packed storage vectors.

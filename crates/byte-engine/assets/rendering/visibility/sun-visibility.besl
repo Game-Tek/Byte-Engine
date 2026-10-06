@@ -42,8 +42,8 @@ Views: struct {
 }
 
 SunVisibilityParameters: struct {
-	// The view-space unit direction from a surface toward the sun, which the contact-shadow trace marches. W is unused.
-	direction_to_light: vec4f,
+	// The view-space unit direction from a surface toward the sun, which the contact-shadow trace marches.
+	direction_to_light: vec3f,
 	// World-space reach of one contact-shadow ray.
 	max_distance: f32,
 	// The tangent of the sun's angular radius, which sizes its penumbrae.

@@ -202,7 +202,6 @@ impl NodeEmitter for Generator {
 			"vec4u" => "uvec4",
 			"vec3f" => "vec3",
 			"vec4f" => "vec4",
-			"packed_vec4f" => "vec4",
 			"mat2f" => "mat2",
 			"mat3f" => "mat3",
 			"mat4f" => "mat4",
@@ -520,8 +519,9 @@ impl NodeEmitter for Generator {
 					"is_finite" => "_besl_is_finite",
 					"is_normal" => "_besl_is_normal",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
-					| "packed_vec4f" => Self::type_from_besl(name),
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::type_from_besl(name)
+					}
 					"subgroup_ballot" => "subgroupBallot",
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
@@ -603,7 +603,7 @@ impl NodeEmitter for Generator {
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
 					string,
-					"layout(push_constant){space_char}uniform PushConstant{space_char}{{{break_char}"
+					"layout(push_constant,{space_char}scalar){space_char}uniform PushConstant{space_char}{{{break_char}"
 				);
 				emit_statement_block(string, formatting, members, 1, |string, member| {
 					self.emit_node(string, member)

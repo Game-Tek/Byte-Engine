@@ -135,50 +135,6 @@ fn apply_arithmetic_supports_all_basic_scalar_operations() {
 }
 
 #[test]
-fn executable_program_round_trips_packed_vec4f_storage() {
-	let script = r#"
-	main: fn () -> void {
-		let unpacked: vec4f = vec4f(buff.source);
-		buff.first = buff.source.x;
-		buff.ordinary = unpacked;
-		buff.round_trip = packed_vec4f(unpacked);
-	}
-	"#;
-
-	let root = buffer_root(
-		"buff",
-		0,
-		&[
-			("source", "packed_vec4f"),
-			("first", "f32"),
-			("ordinary", "vec4f"),
-			("round_trip", "packed_vec4f"),
-		],
-	);
-	let executable = compile_test_program(script, Some(root));
-	let slot = ResourceSlot::new(0);
-	let expected = [1.0, 2.0, 3.0, 4.0];
-	let mut buffer = buffer_for_slot(&executable, slot);
-	buffer
-		.write("source", Value::PackedVec4F(expected))
-		.expect("Expected packed source write");
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(
-		buffer.read("first").expect("Expected packed member access"),
-		Value::F32(expected[0])
-	);
-	assert_eq!(
-		buffer.read("ordinary").expect("Expected ordinary vector"),
-		Value::Vec4F(expected)
-	);
-	assert_eq!(
-		buffer.read("round_trip").expect("Expected packed round trip"),
-		Value::PackedVec4F(expected)
-	);
-}
-
-#[test]
 fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_access() {
 	let script = r#"
 	main: fn () -> void {

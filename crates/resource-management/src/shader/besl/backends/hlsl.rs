@@ -473,13 +473,12 @@ mod tests {
 	}
 
 	#[test]
-	fn packed_vec4f_uses_native_hlsl_vectors_in_nested_records() {
+	fn vec4f_meshlet_record_uses_native_hlsl_vectors() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::packed_vec4f_meshlet_binding(),
+			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
-		assert_string_does_not_contain!(shader, "struct packed_vec4f");
 	}
 
 	#[test]

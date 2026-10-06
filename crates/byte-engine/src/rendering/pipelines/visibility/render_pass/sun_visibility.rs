@@ -13,6 +13,7 @@
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
+use ghi::pod::Vec3f;
 use maths_rs::Vec4f;
 use utils::Extent;
 
@@ -130,22 +131,22 @@ pub(crate) fn create_sun_visibility_targets(
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SunVisibilityShaderParameters {
-	/// The view-space unit direction from a surface toward the sun. W is unused.
-	direction_to_light: [f32; 4],
+	/// The view-space unit direction from a surface toward the sun.
+	direction_to_light: Vec3f,
 	max_distance: f32,
 	/// The tangent of the sun's angular radius, which sizes its penumbrae.
 	angular_radius_tangent: f32,
 	pixel_to_ray_mul: [f32; 2],
 	pixel_to_ray_add: [f32; 2],
-	_padding: [f32; 2],
+	_padding: [f32; 3],
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
 /// `light_direction` in world space.
-pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::UnitVector) -> [f32; 4] {
+pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::UnitVector) -> Vec3f {
 	let light_direction = light_direction.into_maths();
 	let direction = view.view() * Vec4f::new(-light_direction.x, -light_direction.y, -light_direction.z, 0.0);
-	[direction.x, direction.y, direction.z, 0.0]
+	Vec3f::new(direction.x, direction.y, direction.z)
 }
 
 /// The `SunVisibilityPass` struct resolves the sun's shadow for every opaque pixel, so material evaluation reads one
@@ -289,7 +290,7 @@ impl SunVisibilityPass {
 			angular_radius_tangent,
 			pixel_to_ray_mul: screen.pixel_to_ray_mul,
 			pixel_to_ray_add: screen.pixel_to_ray_add,
-			_padding: [0.0; 2],
+			_padding: [0.0; 3],
 		};
 		frame.sync_buffer(self.parameters);
 		Some(SunVisibilityStages {
@@ -342,7 +343,7 @@ mod tests {
 
 		let direction = view_space_direction_to_light(view, straight_down);
 
-		for (actual, expected) in direction.into_iter().zip([0.0, 1.0, 0.0, 0.0]) {
+		for (actual, expected) in <[f32; 3]>::from(direction).into_iter().zip([0.0, 1.0, 0.0]) {
 			assert!((actual - expected).abs() < 0.0001, "{direction:?}");
 		}
 	}

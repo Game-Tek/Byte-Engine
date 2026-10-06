@@ -25,8 +25,8 @@ Meshlet: struct {
 	triangle_offset: u32,
 	primitive_count: u32,
 	triangle_count: u32,
-	center_radius: packed_vec4f,
-	cone_apex_cutoff: packed_vec4f,
+	center_radius: vec4f,
+	cone_apex_cutoff: vec4f,
 	cone_axis: vec2u16,
 }
 
@@ -274,7 +274,7 @@ main: fn() -> void {
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
 		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
-		let meshlet_sphere: vec4f = world_sphere(mesh.model, vec4f(meshlet.center_radius));
+		let meshlet_sphere: vec4f = world_sphere(mesh.model, meshlet.center_radius);
 		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			if ((instance_views & (1 << view_offset)) != 0) {

@@ -172,7 +172,7 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		),
 		Node::r#struct(
 			"SkinnedVertex",
-			vec![Node::member("position", "vec4f"), Node::member("normal", "vec4f")],
+			vec![Node::member("position", "vec3f"), Node::member("normal", "vec3f")],
 		),
 		Node::r#struct(
 			"TriangleInterpolation",
@@ -190,18 +190,17 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 				Node::member("triangle_offset", "u32"),
 				Node::member("primitive_count", "u32"),
 				Node::member("triangle_count", "u32"),
-				Node::member("center_radius", "packed_vec4f"),
-				Node::member("cone_apex_cutoff", "packed_vec4f"),
+				Node::member("center_radius", "vec4f"),
+				Node::member("cone_apex_cutoff", "vec4f"),
 				Node::member("cone_axis", "vec2u16"),
 			],
 		),
 		Node::r#struct(
 			"Light",
 			vec![
-				// Explicit 16-byte vector fields keep every storage-buffer backend on the CPU layout.
-				Node::member("position", "vec4f"),
-				Node::member("color", "vec4f"),
-				Node::member("direction", "vec4f"),
+				Node::member("position", "vec3f"),
+				Node::member("color", "vec3f"),
+				Node::member("direction", "vec3f"),
 				Node::member("cone_cosines", "vec2f"),
 				Node::member("type", "u32"),
 				Node::member("shadow_views", "u32[8]"),
@@ -275,8 +274,6 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 				Node::member("light_count", "u32"),
 				Node::member("exposure", "f32"),
 				Node::member("environment_intensity", "f32"),
-				// Keep the light array at the CPU record's 16-byte boundary on scalar-layout backends.
-				Node::member("_light_count_padding", "u32"),
 				Node::member("lights", LIGHT_ARRAY),
 			]),
 			1045,

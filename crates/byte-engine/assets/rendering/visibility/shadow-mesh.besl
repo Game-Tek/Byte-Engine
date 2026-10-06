@@ -25,14 +25,14 @@ Meshlet: struct {
 	triangle_offset: u32,
 	primitive_count: u32,
 	triangle_count: u32,
-	center_radius: packed_vec4f,
-	cone_apex_cutoff: packed_vec4f,
+	center_radius: vec4f,
+	cone_apex_cutoff: vec4f,
 	cone_axis: vec2u16,
 }
 
 SkinnedVertex: struct {
-	position: vec4f,
-	normal: vec4f,
+	position: vec3f,
+	normal: vec3f,
 }
 
 Views: struct {
@@ -94,7 +94,9 @@ main: fn() -> void {
 		// A skinned vertex reads only its posed position, never the bind-pose one.
 		let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 		if (mesh.skinned_base_vertex_index != 4294967295) {
-			position = skinned_vertices.vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position;
+			let skinned_position: vec3f =
+				skinned_vertices.vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position;
+			position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
 		} else {
 			let object_position: vec3f = vertex_positions[vertex_index];
 			position = vec4f(object_position.x, object_position.y, object_position.z, 1.0);

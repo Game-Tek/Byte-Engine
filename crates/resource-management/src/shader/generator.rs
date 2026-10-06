@@ -369,9 +369,9 @@ pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 			| "vec3f16"
 			| "vec4f16"
 			| "vec2f" | "vec3f"
-			| "vec4f" | "packed_vec4f"
-			| "mat2f" | "mat3f"
-			| "mat4f" | "mat4x3f"
+			| "vec4f" | "mat2f"
+			| "mat3f" | "mat4f"
+			| "mat4x3f"
 			| "f16" | "f32"
 			| "u8" | "u16"
 			| "u32" | "i32"
@@ -1272,19 +1272,19 @@ pub mod tests {
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}
 
-	/// Builds the 52-byte meshlet record used to verify explicit packed-float storage across backends.
-	pub fn packed_vec4f_meshlet_binding() -> besl::NodeReference {
+	/// Builds the 52-byte meshlet record, whose `vec4f` members follow 16 bytes of scalars and are followed by a
+	/// `vec2u16`, to verify scalar-aligned vector storage across backends.
+	pub fn vec4f_meshlet_binding() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
-			let center: vec4f = vec4f(buff.meshlets[1].center_radius);
-			let packed: packed_vec4f = packed_vec4f(center);
-			packed.x;
+			let center: vec4f = buff.meshlets[1].center_radius;
+			center.x;
 			buff.meshlets[0].cone_apex_cutoff.w;
 		}
 		"#;
 		let mut root_node = besl::Node::root();
 		let u32_type = root_node.get_child("u32").expect("Expected u32 type");
-		let packed_vec4f_type = root_node.get_child("packed_vec4f").expect("Expected packed_vec4f type");
+		let vec4f_type = root_node.get_child("vec4f").expect("Expected vec4f type");
 		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
 		let meshlet = root_node.add_child(
 			besl::Node::r#struct(
@@ -1294,8 +1294,8 @@ pub mod tests {
 					besl::Node::member("triangle_offset", u32_type.clone()).into(),
 					besl::Node::member("primitive_count", u32_type.clone()).into(),
 					besl::Node::member("triangle_count", u32_type).into(),
-					besl::Node::member("center_radius", packed_vec4f_type.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", packed_vec4f_type).into(),
+					besl::Node::member("center_radius", vec4f_type.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", vec4f_type).into(),
 					besl::Node::member("cone_axis", vec2u16_type).into(),
 				],
 			)

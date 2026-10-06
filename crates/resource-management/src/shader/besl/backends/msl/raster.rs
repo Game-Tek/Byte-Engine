@@ -6,27 +6,18 @@ impl Generator {
 		}
 	}
 
-	/// Emits declared types using direct-buffer packing for runtime array elements.
+	/// Emits declared types. `stage_interface` names the struct a raster entry point returns, whose members stay
+	/// native.
 	pub(crate) fn emit_storage_declarations(
 		&mut self,
 		string: &mut String,
 		nodes: &[&besl::NodeReference],
-		bindings: &[&besl::NodeReference],
+		stage_interface: Option<&besl::NodeReference>,
 	) {
 		for node in nodes {
-			let runtime_element = bindings.iter().any(|binding| {
-				matches!(
-					binding.borrow().node(),
-					besl::Nodes::Binding {
-						r#type: besl::BindingTypes::BufferArray { element, .. },
-						..
-					} if element == *node
-				)
-			});
-			let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
-			self.in_buffer_binding_struct = runtime_element;
+			self.in_stage_interface_struct = stage_interface == Some(*node);
 			self.emit_node_string(string, node);
-			self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
+			self.in_stage_interface_struct = false;
 		}
 	}
 
@@ -55,7 +46,11 @@ impl Generator {
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
-		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
+		let return_type = match main_function_node.borrow().node() {
+			besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+			_ => None,
+		};
+		self.emit_storage_declarations(string, &nodes.declarations, return_type.as_ref());
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
 		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
@@ -486,7 +481,7 @@ impl Generator {
 		uses_simd_lane_id: bool,
 	) {
 		let nodes = Self::classify_nodes(order);
-		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
+		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_declarations(string, &nodes.outputs);
 
@@ -545,7 +540,7 @@ impl Generator {
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
 
-		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
+		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 		if !bindings.is_empty() {
 			self.emit_argument_buffer_struct(string, &bindings);
@@ -608,7 +603,7 @@ impl Generator {
 			maximum_vertices,
 			maximum_primitives,
 		});
-		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
+		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 

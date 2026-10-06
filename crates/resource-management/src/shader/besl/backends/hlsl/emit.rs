@@ -454,8 +454,9 @@ impl Generator {
 					"fract" => "frac",
 					"mix" => "lerp",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
-					| "packed_vec4f" => Self::translate_type(name),
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::translate_type(name)
+					}
 					"inversesqrt" => "rsqrt",
 					"subgroup_ballot" => "WaveActiveBallot",
 					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",

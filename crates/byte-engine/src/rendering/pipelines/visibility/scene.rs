@@ -14,8 +14,7 @@ use super::geometry::encode_octahedral_unit_vector;
 use super::layout::{ActiveEvaluationMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
 use super::render_pass::VisibilityRenderPass;
 use super::shader_data::{
-	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderVec3,
-	ShaderViewData,
+	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
 };
 use super::shadow_selection::{LightShadow, ShadowLightSelection};
 use super::skinning::SkinningDispatch;
@@ -229,7 +228,6 @@ impl VisibilityScene {
 		lighting_data.count = self.lights.len().min(MAX_LIGHTS) as u32;
 		lighting_data.exposure = exposure;
 		lighting_data.environment_intensity = environment_intensity;
-		lighting_data._padding = 0;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
 			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), ies_profiles[index].1);
 		}
@@ -266,8 +264,8 @@ pub(super) fn light_data(
 	let (profile, cone_cosines, light_type, color) = match light {
 		Lights::Direction(light) => {
 			return LightData {
-				position: direction.into(),
-				color: light.color.into(),
+				position: shader_vec3(direction),
+				color: shader_vec3(light.color),
 				light_type: 68,
 				shadow_views,
 				angular_radius_tangent: light.angular_radius.value().tan(),
@@ -278,34 +276,29 @@ pub(super) fn light_data(
 			light.emission.ies_profile(),
 			[light.inner_angle.cos(), light.outer_angle.cos()],
 			1,
-			ShaderVec3::from(light.emission.color),
+			light.emission.color,
 		),
-		Lights::Point(light) => (
-			light.emission.ies_profile(),
-			[0.0; 2],
-			0,
-			ShaderVec3::from(light.emission.color),
-		),
+		Lights::Point(light) => (light.emission.ies_profile(), [0.0; 2], 0, light.emission.color),
 	};
 	let (color, ies_profile_texture, ies_c0_tangent) = match (profile, ies_texture) {
 		(None, _) => (color, NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
 		// Dimmed fallback until the profile texture is resident.
-		(Some(profile), None) => (color.scaled(profile.dimmer()), NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
+		(Some(profile), None) => (color * profile.dimmer(), NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
 		(Some(_), Some(texture)) => {
 			let tangent = orientation
 				.rotate_vector(math::UnitVector::<math::WorldSpace>::x_axis().into_vector())
 				.into_maths();
 			(
-				color.scaled(texture.intensity_scale_candela),
+				color * texture.intensity_scale_candela,
 				texture.texture_index,
 				encode_octahedral_unit_vector((tangent.x, tangent.y, tangent.z)),
 			)
 		}
 	};
 	LightData {
-		position: position.into(),
-		color,
-		direction: direction.into(),
+		position: shader_vec3(position),
+		color: shader_vec3(color),
+		direction: shader_vec3(direction),
 		cone_cosines,
 		light_type,
 		shadow_views,
@@ -317,11 +310,16 @@ pub(super) fn light_data(
 	}
 }
 
+/// Converts an engine vector to the vector layout shaders read.
+fn shader_vec3(value: maths_rs::Vec3f) -> ghi::pod::Vec3f {
+	ghi::pod::Vec3f::new(value.x, value.y, value.z)
+}
+
 /// Returns how far a local light with peak RGB intensity `color`, in candela, lights at an exposure of one.
 ///
 /// The brightest channel sets the reach, so a saturated light keeps its full reach. A light with unusable
 /// intensity gets no reach and lights nothing.
-fn light_reach(color: ShaderVec3) -> f32 {
+fn light_reach(color: maths_rs::Vec3f) -> f32 {
 	let reach = (color.x.max(color.y).max(color.z) / LIGHT_REACH_THRESHOLD_LUX).sqrt();
 	if reach.is_finite() { reach } else { 0.0 }
 }
@@ -382,18 +380,18 @@ mod tests {
 		let tangent = orientation.rotate_vector(UnitVector::<WorldSpace>::x_axis().into_vector());
 		let encoded_tangent = encode_octahedral_unit_vector((tangent.x(), tangent.y(), tangent.z()));
 
-		assert_eq!(resident.color, ShaderVec3::from((45.0, 45.0, 45.0)));
+		assert_eq!(resident.color, ghi::pod::Vec3f::splat(45.0));
 		assert_eq!(resident.ies_profile_texture, 37);
 		assert_eq!(resident.ies_c0_tangent, encoded_tangent);
 	}
 
 	#[test]
 	fn a_light_reaches_where_its_brightest_channel_falls_to_the_threshold() {
-		let reach = light_reach(ShaderVec3::from((100.0, 400.0, 25.0)));
+		let reach = light_reach(Vec3f::new(100.0, 400.0, 25.0));
 
 		assert!((400.0 / (reach * reach) - LIGHT_REACH_THRESHOLD_LUX).abs() < 1.0e-9);
-		assert_eq!(light_reach(ShaderVec3::default()), 0.0);
-		assert_eq!(light_reach(ShaderVec3::from((f32::NAN, f32::NAN, f32::NAN))), 0.0);
+		assert_eq!(light_reach(Vec3f::new(0.0, 0.0, 0.0)), 0.0);
+		assert_eq!(light_reach(Vec3f::new(f32::NAN, f32::NAN, f32::NAN)), 0.0);
 	}
 
 	#[test]
@@ -419,9 +417,9 @@ mod tests {
 		let directional_data = light_data(&Lights::Direction(directional), &transform, LightShadow::Directional, None);
 		let point_data = light_data(&Lights::Point(point), &transform, LightShadow::None, None);
 
-		assert_eq!(directional_data.color, ShaderVec3::from((80_000.0, 80_000.0, 80_000.0)));
+		assert_eq!(directional_data.color, ghi::pod::Vec3f::splat(80_000.0));
 		assert_eq!(directional_data.shadow_views, [1, 2, 3, 4, 0, 0, 0, 0]);
-		assert_eq!(point_data.color, ShaderVec3::from((100.0, 100.0, 100.0)));
+		assert_eq!(point_data.color, ghi::pod::Vec3f::splat(100.0));
 		assert_eq!(directional_data.light_type, 68);
 		assert_eq!(point_data.light_type, 0);
 	}

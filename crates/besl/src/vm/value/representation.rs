@@ -24,7 +24,6 @@ pub enum Value {
 	Vec2F([f32; 2]),
 	Vec3F([f32; 3]),
 	Vec4F([f32; 4]),
-	PackedVec4F([f32; 4]),
 	Mat4F([f32; 16]),
 	Mat4x3F([f32; 12]),
 	Resource {
@@ -61,7 +60,6 @@ impl Value {
 			Value::Vec2F(_) => ValueType::Vec2F,
 			Value::Vec3F(_) => ValueType::Vec3F,
 			Value::Vec4F(_) => ValueType::Vec4F,
-			Value::PackedVec4F(_) => ValueType::PackedVec4F,
 			Value::Mat4F(_) => ValueType::Mat4F,
 			Value::Mat4x3F(_) => ValueType::Mat4x3F,
 			Value::Resource { value_type, .. } => value_type.clone(),

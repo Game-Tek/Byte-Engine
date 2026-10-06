@@ -1,4 +1,5 @@
 mod opacity;
+mod push_constant_layout;
 mod reflection;
 
 #[cfg(test)]
@@ -22,7 +23,7 @@ mod tests {
 		let r#type = root
 			.get_child(type_name)
 			.unwrap_or_else(|| panic!("Expected built-in type '{type_name}'"));
-		let layout = reflected_storage_type_layout(&r#type, target, false, &mut HashSet::new())
+		let layout = reflected_storage_type_layout(&r#type, target, &mut HashSet::new())
 			.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
@@ -136,15 +137,36 @@ mod tests {
 			.map(|binding| binding.buffer_stride)
 			.collect::<Vec<_>>();
 
-		let expected = if cfg!(target_vendor = "apple") {
-			vec![Some(12), Some(2), Some(1552)]
-		} else if cfg!(target_os = "windows") {
+		let expected = if cfg!(target_os = "windows") {
 			vec![Some(12), Some(4), Some(1284)]
 		} else {
 			vec![Some(12), Some(2), Some(1284)]
 		};
 
 		assert_eq!(strides, expected);
+	}
+
+	#[test]
+	fn reflection_rejects_a_push_constant_that_dx12_would_read_at_other_offsets() {
+		let program = besl::compile_to_besl(
+			r#"
+			push_constant: push_constant {
+				scale: f32,
+				bias: f32,
+				offset: vec3f,
+			}
+			main: fn () -> void { push_constant.offset; }
+			"#,
+			None,
+		)
+		.expect("Expected the push-constant program to link");
+
+		let error = ProgramEvaluation::from_program(&program).expect_err("Expected the push-constant layout to be rejected");
+
+		assert!(
+			error.contains("`offset` starts at byte 8 on the CPU and Vulkan, 8 on Metal, and 16 on DX12"),
+			"{error}"
+		);
 	}
 
 	#[test]
@@ -169,7 +191,7 @@ mod tests {
 		);
 		assert_eq!(
 			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::Msl),
-			Ok(32)
+			Ok(16)
 		);
 		assert_eq!(
 			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::GlslScalar),
@@ -198,67 +220,46 @@ mod tests {
 		assert_eq!(bindings.len(), 1);
 		assert_eq!(bindings[0].kind, BindingKind::StorageBuffer);
 		assert_eq!(bindings[0].count, 1);
-		assert_eq!(
-			bindings[0].buffer_stride,
-			Some(if cfg!(target_vendor = "apple") { 32 } else { 16 })
-		);
+		assert_eq!(bindings[0].buffer_stride, Some(16));
 	}
 
 	#[test]
 	fn primitive_storage_layouts_follow_each_emitted_backend_type() {
 		let root = besl::Node::root();
 
-		for (type_name, size, alignment) in [
-			("u8", 4, 4),
-			("u16", 2, 2),
-			("u32", 4, 4),
-			("f16", 2, 2),
-			("vec2u16", 4, 2),
-			("vec4u16", 8, 2),
-			("vec2f16", 4, 2),
-			("vec3f16", 6, 2),
-			("vec4f16", 8, 2),
-			("vec3f", 12, 4),
-			("packed_vec4f", 16, 4),
+		// Metal stores vectors as packed types, so every backend shares their scalar-aligned layout.
+		for target in [
+			StorageLayoutTarget::Hlsl,
+			StorageLayoutTarget::Msl,
+			StorageLayoutTarget::GlslScalar,
 		] {
-			assert_builtin_layout(&root, StorageLayoutTarget::Hlsl, type_name, StorageLayout { size, alignment });
+			for (type_name, size, alignment) in [
+				("u16", 2, 2),
+				("u32", 4, 4),
+				("f16", 2, 2),
+				("vec2u16", 4, 2),
+				("vec4u16", 8, 2),
+				("vec2f16", 4, 2),
+				("vec3f16", 6, 2),
+				("vec4f16", 8, 2),
+				("vec2f", 8, 4),
+				("vec3f", 12, 4),
+				("vec4f", 16, 4),
+			] {
+				assert_builtin_layout(&root, target, type_name, StorageLayout { size, alignment });
+			}
 		}
 
-		for (type_name, size, alignment) in [
-			("u8", 1, 1),
-			("u16", 2, 2),
-			("u32", 4, 4),
-			("f16", 2, 2),
-			("vec2u16", 4, 4),
-			("vec4u16", 8, 8),
-			("vec2f16", 4, 4),
-			("vec3f16", 8, 8),
-			("vec4f16", 8, 8),
-			("vec3f", 16, 16),
-			("packed_vec4f", 16, 4),
+		// HLSL widens u8 to a 32-bit uint, and Metal stores a one-byte bool.
+		for (target, type_name, size) in [
+			(StorageLayoutTarget::Hlsl, "u8", 4),
+			(StorageLayoutTarget::Msl, "u8", 1),
+			(StorageLayoutTarget::GlslScalar, "u8", 1),
+			(StorageLayoutTarget::Hlsl, "bool", 4),
+			(StorageLayoutTarget::Msl, "bool", 1),
+			(StorageLayoutTarget::GlslScalar, "bool", 4),
 		] {
-			assert_builtin_layout(&root, StorageLayoutTarget::Msl, type_name, StorageLayout { size, alignment });
-		}
-
-		for (type_name, size, alignment) in [
-			("u8", 1, 1),
-			("u16", 2, 2),
-			("u32", 4, 4),
-			("f16", 2, 2),
-			("vec2u16", 4, 2),
-			("vec4u16", 8, 2),
-			("vec2f16", 4, 2),
-			("vec3f16", 6, 2),
-			("vec4f16", 8, 2),
-			("vec3f", 12, 4),
-			("packed_vec4f", 16, 4),
-		] {
-			assert_builtin_layout(
-				&root,
-				StorageLayoutTarget::GlslScalar,
-				type_name,
-				StorageLayout { size, alignment },
-			);
+			assert_builtin_layout(&root, target, type_name, StorageLayout { size, alignment: size });
 		}
 	}
 
@@ -369,7 +370,7 @@ mod tests {
 			(StorageLayoutTarget::GlslScalar, [(16, 4), (36, 4), (64, 4), (48, 4)]),
 		] {
 			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
-				let layout = reflected_storage_type_layout(matrix, target, false, &mut HashSet::new())
+				let layout = reflected_storage_type_layout(matrix, target, &mut HashSet::new())
 					.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 				assert_eq!(layout, StorageLayout { size, alignment });
@@ -405,22 +406,22 @@ mod tests {
 		);
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Msl),
-			Ok(80)
+			Ok(36)
 		);
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::GlslScalar),
 			Ok(36)
 		);
 
-		// Metal emits packed_float3 only for arrays. Direct scalar members and fields nested inside Mixed retain
-		// native float3.
+		// Metal emits packed_float3 for every vec3f member, so direct members and fields nested inside Mixed keep
+		// the 12-byte layout of the other backends.
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Hlsl),
 			Ok(12)
 		);
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Msl),
-			Ok(16)
+			Ok(12)
 		);
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::GlslScalar),
@@ -434,8 +435,8 @@ mod tests {
 		let f32_type = root.get_child("f32").expect("Expected f32");
 		let u32_type = root.get_child("u32").expect("Expected u32");
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
-		let packed_vec4f = root.get_child("packed_vec4f").expect("Expected packed_vec4f");
 		let vec2u16 = root.get_child("vec2u16").expect("Expected vec2u16");
 		let mat4f = root.get_child("mat4f").expect("Expected mat4f");
 		let mat4x3f = root.get_child("mat4x3f").expect("Expected mat4x3f");
@@ -479,8 +480,8 @@ mod tests {
 					besl::Node::member("triangle_offset", u32_type.clone()).into(),
 					besl::Node::member("primitive_count", u32_type.clone()).into(),
 					besl::Node::member("triangle_count", u32_type.clone()).into(),
-					besl::Node::member("center_radius", packed_vec4f.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", packed_vec4f).into(),
+					besl::Node::member("center_radius", vec4f.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", vec4f).into(),
 					besl::Node::member("cone_axis", vec2u16).into(),
 				],
 			)
@@ -490,21 +491,19 @@ mod tests {
 			besl::Node::r#struct(
 				"Light",
 				vec![
-					besl::Node::member("position", vec4f.clone()).into(),
-					besl::Node::member("color", vec4f.clone()).into(),
-					besl::Node::member("direction", vec4f).into(),
+					besl::Node::member("position", vec3f.clone()).into(),
+					besl::Node::member("color", vec3f.clone()).into(),
+					besl::Node::member("direction", vec3f).into(),
 					besl::Node::member("cone_cosines", vec2f).into(),
 					besl::Node::member("type", u32_type.clone()).into(),
 					besl::Node::array("cascades", u32_type.clone(), 8),
-					besl::Node::member("_padding", u32_type.clone()).into(),
 				],
 			)
 			.into(),
 		);
 
 		let lighting_buffer = vec![
-			besl::Node::member("light_count", u32_type.clone()).into(),
-			besl::Node::array("_light_count_padding", u32_type, 3),
+			besl::Node::member("light_count", u32_type).into(),
 			besl::Node::array("lights", light, 16),
 		];
 
@@ -516,7 +515,7 @@ mod tests {
 			assert_eq!(reflected_array_buffer_stride_for_target(&mesh, target), Ok(mesh_stride));
 			assert_eq!(reflected_array_buffer_stride_for_target(&view, target), Ok(view_stride));
 			assert_eq!(reflected_array_buffer_stride_for_target(&meshlet, target), Ok(52));
-			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1552));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1284));
 		}
 	}
 

@@ -221,14 +221,13 @@ mod tests {
 	}
 
 	#[test]
-	fn packed_vec4f_uses_native_vectors_with_scalar_buffer_layout() {
+	fn vec4f_meshlet_record_uses_scalar_buffer_layout() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::packed_vec4f_meshlet_binding(),
+			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
-		assert!(!shader.contains("struct packed_vec4f"));
 	}
 
 	#[test]
@@ -323,7 +322,7 @@ mod tests {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::push_constant());
 		assert_string_contains!(
 			shader,
-			"layout(push_constant)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
+			"layout(push_constant,scalar)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
 		);
 	}
 

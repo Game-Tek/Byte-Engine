@@ -81,15 +81,15 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 			skinned_vertices.vertices[skinned_vertex_indices[1]],
 			skinned_vertices.vertices[skinned_vertex_indices[2]]
 		);
-		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
-		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
-		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-		let skinned_normal0: vec4f = skinned_vertices_for_triangle[0].normal;
-		let skinned_normal1: vec4f = skinned_vertices_for_triangle[1].normal;
-		let skinned_normal2: vec4f = skinned_vertices_for_triangle[2].normal;
-		model_space_vertex_normals[0] = vec3f(skinned_normal0.x, skinned_normal0.y, skinned_normal0.z);
-		model_space_vertex_normals[1] = vec3f(skinned_normal1.x, skinned_normal1.y, skinned_normal1.z);
-		model_space_vertex_normals[2] = vec3f(skinned_normal2.x, skinned_normal2.y, skinned_normal2.z);
+		let skinned_position0: vec3f = skinned_vertices_for_triangle[0].position;
+		let skinned_position1: vec3f = skinned_vertices_for_triangle[1].position;
+		let skinned_position2: vec3f = skinned_vertices_for_triangle[2].position;
+		model_space_vertex_positions[0] = vec4f(skinned_position0.x, skinned_position0.y, skinned_position0.z, 1.0);
+		model_space_vertex_positions[1] = vec4f(skinned_position1.x, skinned_position1.y, skinned_position1.z, 1.0);
+		model_space_vertex_positions[2] = vec4f(skinned_position2.x, skinned_position2.y, skinned_position2.z, 1.0);
+		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
+		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
+		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
 	} else {
 		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
 		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
@@ -393,11 +393,7 @@ material_evaluation_suffix: fn () -> void {
 			let light_type: u32 = lighting_data.lights[light_index].type;
 			let L: vec3f = vec3f(0.0, 0.0, 0.0);
 			let attenuation: f32 = 1.0;
-			let light_position: vec3f = vec3f(
-				lighting_data.lights[light_index].position.x,
-				lighting_data.lights[light_index].position.y,
-				lighting_data.lights[light_index].position.z
-			);
+			let light_position: vec3f = lighting_data.lights[light_index].position;
 			if (light_type == 68) {
 				L = vec3f(0.0, 0.0, 0.0) - light_position;
 			} else {
@@ -467,11 +463,7 @@ material_evaluation_suffix: fn () -> void {
 						}
 					}
 					1 => {
-						let cone_direction: vec3f16 = vec3f16(
-							lighting_data.lights[light_index].direction.x,
-							lighting_data.lights[light_index].direction.y,
-							lighting_data.lights[light_index].direction.z
-						);
+						let cone_direction: vec3f16 = vec3f16(lighting_data.lights[light_index].direction);
 						let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
 						let cone_factor: f16 = f16(cone_attenuation(
 							f32(cone_cosine),
@@ -502,11 +494,7 @@ material_evaluation_suffix: fn () -> void {
 				}
 				if (lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
 					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
-					let profile_axis: vec3f = vec3f(
-						lighting_data.lights[light_index].direction.x,
-						lighting_data.lights[light_index].direction.y,
-						lighting_data.lights[light_index].direction.z
-					);
+					let profile_axis: vec3f = lighting_data.lights[light_index].direction;
 					let intensity_factor: f32 = sample_ies_profile(
 						lighting_data.lights[light_index].ies_profile_texture,
 						emission_direction,
@@ -536,11 +524,7 @@ material_evaluation_suffix: fn () -> void {
 			let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
 			let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
 			let local_diffuse: vec3f16 = direct_diffuse_albedo * (f16(1.0) - light_fresnel_factor);
-			let light_color: vec3f = vec3f(
-				lighting_data.lights[light_index].color.x,
-				lighting_data.lights[light_index].color.y,
-				lighting_data.lights[light_index].color.z
-			);
+			let light_color: vec3f = lighting_data.lights[light_index].color;
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
 			specular = specular + vec3f(local_specular) * irradiance;

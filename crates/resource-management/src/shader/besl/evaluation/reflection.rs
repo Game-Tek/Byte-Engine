@@ -92,7 +92,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 		let element = element.borrow();
 		match element.node() {
 			besl::Nodes::Struct { name, fields, .. }
-				if !fields.is_empty() && primitive_storage_layout(name, target, false).is_none() =>
+				if !fields.is_empty() && primitive_storage_layout(name, target).is_none() =>
 			{
 				Some(fields.clone())
 			}
@@ -101,7 +101,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 	};
 	let mut visiting = HashSet::new();
 	let layout = if let Some(fields) = user_struct_fields {
-		reflected_storage_members_layout(&fields, target, true, &mut visiting)?
+		reflected_storage_members_layout(&fields, target, &mut visiting)?
 	} else if target == StorageLayoutTarget::Hlsl
 		&& element
 			.borrow()
@@ -113,7 +113,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 		// even though native u16 values remain two bytes in every other HLSL layout.
 		StorageLayout { size: 4, alignment: 4 }
 	} else {
-		reflected_storage_member_type_layout(element, target, true, true, &mut visiting)?
+		reflected_storage_type_layout(element, target, &mut visiting)?
 	};
 	let size = checked_align_up(layout.size, layout.alignment)?;
 	if size == 0 {
@@ -140,7 +140,7 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 	}
 
 	// The lexer lowers a lone fixed-array member to an array buffer, so these buffers are always wrapper structs.
-	let size = reflected_storage_members_layout(members, target, true, &mut HashSet::new())?.size;
+	let size = reflected_storage_members_layout(members, target, &mut HashSet::new())?.size;
 
 	if size == 0 {
 		return Err(
@@ -158,7 +158,6 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 fn reflected_storage_members_layout(
 	members: &[besl::NodeReference],
 	target: StorageLayoutTarget,
-	direct_binding_members: bool,
 	visiting: &mut HashSet<besl::NodeReference>,
 ) -> Result<StorageLayout, String> {
 	let mut size = 0usize;
@@ -171,7 +170,7 @@ fn reflected_storage_members_layout(
 					.to_string(),
 			);
 		};
-		let element = reflected_storage_member_type_layout(r#type, target, direct_binding_members, count.is_some(), visiting)?;
+		let element = reflected_storage_type_layout(r#type, target, visiting)?;
 		let member_alignment = element.alignment;
 		let element_stride = checked_align_up(element.size, member_alignment)?;
 		let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
@@ -194,33 +193,15 @@ fn reflected_storage_members_layout(
 	})
 }
 
-/// Applies direct Metal buffer-member packing before reflecting the member type.
-fn reflected_storage_member_type_layout(
-	r#type: &besl::NodeReference,
-	target: StorageLayoutTarget,
-	direct_binding_member: bool,
-	array_member: bool,
-	visiting: &mut HashSet<besl::NodeReference>,
-) -> Result<StorageLayout, String> {
-	let packed_msl_vector = target == StorageLayoutTarget::Msl
-		&& direct_binding_member
-		&& crate::shader::besl::backends::msl::msl_packs_direct_binding_member(
-			r#type.borrow().get_name().unwrap_or_default(),
-			array_member,
-		);
-	reflected_storage_type_layout(r#type, target, packed_msl_vector, visiting)
-}
-
-/// Returns the native emitted storage layout for one BESL value type.
+/// Returns the emitted storage layout for one BESL value type.
 pub(super) fn reflected_storage_type_layout(
 	r#type: &besl::NodeReference,
 	target: StorageLayoutTarget,
-	packed_msl_vector: bool,
 	visiting: &mut HashSet<besl::NodeReference>,
 ) -> Result<StorageLayout, String> {
 	let type_borrow = r#type.borrow();
 	let type_name = type_borrow.get_name().unwrap_or("unknown");
-	if let Some(layout) = primitive_storage_layout(type_name, target, packed_msl_vector) {
+	if let Some(layout) = primitive_storage_layout(type_name, target) {
 		return Ok(layout);
 	}
 
@@ -240,76 +221,38 @@ pub(super) fn reflected_storage_type_layout(
 			"Recursive storage-buffer type '{type_name}'. The most likely cause is that a shader struct contains itself."
 		));
 	}
-	// Nested Metal structs use their native member types. Only members written
-	// directly into a generated binding wrapper receive packed vector aliases.
-	let layout = reflected_storage_members_layout(&fields, target, false, visiting);
+	let layout = reflected_storage_members_layout(&fields, target, visiting);
 	visiting.remove(r#type);
 	layout
 }
 
 /// Returns the backend layout for one built-in BESL storage type.
-pub(super) fn primitive_storage_layout(
-	type_name: &str,
-	target: StorageLayoutTarget,
-	packed_msl_vector: bool,
-) -> Option<StorageLayout> {
-	let (size, alignment) = match target {
-		// BESL u8 remains a 32-bit uint in HLSL, while GLSL scalar layout keeps its single byte. Every other scalar
-		// layout is shared, and native u16 values keep their exact two-byte object representation and scalar alignment.
-		StorageLayoutTarget::Hlsl if type_name == "u8" => (4, 4),
-		StorageLayoutTarget::Hlsl | StorageLayoutTarget::GlslScalar => match type_name {
-			"u8" => (1, 1),
-			"u16" | "f16" => (2, 2),
-			"bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
-			"vec2u16" => (4, 2),
-			"vec4u16" => (8, 2),
-			"vec2f16" => (4, 2),
-			"vec3f16" => (6, 2),
-			"vec4f16" => (8, 2),
-			"vec2i" | "vec2u" | "vec2f" => (8, 4),
-			"vec3u" | "vec3f" => (12, 4),
-			"vec4u" | "vec4f" | "packed_vec4f" => (16, 4),
-			"mat2f" => (16, 4),
-			"mat3f" => (36, 4),
-			"mat4f" => (64, 4),
-			"mat4x3f" => (48, 4),
-			_ => return None,
-		},
-		StorageLayoutTarget::Msl => match type_name {
-			"bool" | "u8" => (1, 1),
-			"u16" | "f16" => (2, 2),
-			"u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
-			"vec2u16" => (4, if packed_msl_vector { 2 } else { 4 }),
-			"vec4u16" => (8, if packed_msl_vector { 2 } else { 8 }),
-			"vec2f16" => (4, if packed_msl_vector { 2 } else { 4 }),
-			"vec3f16" => {
-				if packed_msl_vector {
-					(6, 2)
-				} else {
-					(8, 8)
-				}
-			}
-			"vec4f16" => (8, if packed_msl_vector { 2 } else { 8 }),
-			"vec2f" => (8, if packed_msl_vector { 4 } else { 8 }),
-			"vec2i" | "vec2u" => (8, 8),
-			"vec3f" => {
-				if packed_msl_vector {
-					(12, 4)
-				} else {
-					(16, 16)
-				}
-			}
-			"vec3u" => (16, 16),
-			"vec4u" | "vec4f" => (16, 16),
-			// Explicit packed vectors retain scalar alignment inside nested records.
-			"packed_vec4f" => (16, 4),
-			"mat2f" => (16, 8),
-			"mat3f" => (48, 16),
-			"mat4f" => (64, 16),
-			// MSL expressions use native float4x3, but buffer storage lowers to four packed_float3 columns.
-			"mat4x3f" => (48, 4),
-			_ => return None,
-		},
+pub(super) fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget) -> Option<StorageLayout> {
+	let (size, alignment) = match (target, type_name) {
+		// BESL u8 remains a 32-bit uint in HLSL.
+		(StorageLayoutTarget::Hlsl, "u8") => (4, 4),
+		// Metal stores a one-byte bool and keeps its native column alignment for matrices other than `mat4x3f`.
+		(StorageLayoutTarget::Msl, "bool") => (1, 1),
+		(StorageLayoutTarget::Msl, "mat2f") => (16, 8),
+		(StorageLayoutTarget::Msl, "mat3f") => (48, 16),
+		(StorageLayoutTarget::Msl, "mat4f") => (64, 16),
+		// Every other type has one layout on every backend. Metal stores vectors as packed types, and native u16 values
+		// keep their two-byte object representation and scalar alignment.
+		(_, "u8") => (1, 1),
+		(_, "u16" | "f16") => (2, 2),
+		(_, "bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32") => (4, 4),
+		(_, "vec2u16" | "vec2f16") => (4, 2),
+		(_, "vec3f16") => (6, 2),
+		(_, "vec4u16" | "vec4f16") => (8, 2),
+		(_, "vec2i" | "vec2u" | "vec2f") => (8, 4),
+		(_, "vec3u" | "vec3f") => (12, 4),
+		(_, "vec4u" | "vec4f") => (16, 4),
+		(_, "mat2f") => (16, 4),
+		(_, "mat3f") => (36, 4),
+		(_, "mat4f") => (64, 4),
+		// Metal expressions use a native float4x3, but buffer storage lowers to four packed_float3 columns.
+		(_, "mat4x3f") => (48, 4),
+		_ => return None,
 	};
 	Some(StorageLayout { size, alignment })
 }
@@ -590,9 +533,16 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 		| besl::Nodes::Workgroup { format, .. } => {
 			build_bindings(bindings, format, state);
 		}
-		besl::Nodes::Struct { fields: nested, .. }
-		| besl::Nodes::PushConstant { members: nested }
-		| besl::Nodes::Scope { children: nested, .. } => {
+		besl::Nodes::PushConstant { members: nested } => {
+			if let Err(error) = super::push_constant_layout::validate_push_constant_layout(nested) {
+				state.error = Some(error);
+				return;
+			}
+			for child in nested {
+				build_bindings(bindings, child, state);
+			}
+		}
+		besl::Nodes::Struct { fields: nested, .. } | besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
 				build_bindings(bindings, child, state);
 			}

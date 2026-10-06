@@ -1,6 +1,6 @@
 SkinnedVertex: struct {
-	position: vec4f,
-	normal: vec4f,
+	position: vec3f,
+	normal: vec3f,
 }
 
 MatrixPalette: struct {
@@ -99,10 +99,7 @@ main: fn (input: StageInput) -> void {
 	) {
 		// Preserve legal output for malformed legacy assets instead of reading outside the matrix palette.
 		let fallback: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
-		skinned_vertices.values[destination_vertex_index] = SkinnedVertex(
-			vec4f(source_position.x, source_position.y, source_position.z, 1.0),
-			vec4f(fallback.x, fallback.y, fallback.z, 0.0)
-		);
+		skinned_vertices.values[destination_vertex_index] = SkinnedVertex(source_position, fallback);
 		return;
 	}
 	// Zero-weight lanes may contain legacy sentinel indices. Redirect them before any palette access.
@@ -196,8 +193,5 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 
-	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(
-		vec4f(position.x, position.y, position.z, 1.0),
-		vec4f(normal.x, normal.y, normal.z, 0.0)
-	);
+	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(vec3f(position.x, position.y, position.z), normal);
 }

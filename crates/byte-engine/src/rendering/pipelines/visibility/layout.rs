@@ -94,7 +94,6 @@ pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
 // Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
 pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderViewData>() as u32;
-// ShaderMesh retains an explicit 16-byte record alignment while its affine matrix occupies 48 bytes.
 pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMesh>() as u32;
 // HLSL reads packed narrow indices through 32-bit structured words. Metal and Vulkan expose native widths.
 pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
@@ -146,7 +145,7 @@ pub(crate) const MESH_DATA_BINDING: ShaderResourceDescriptor = buffer(1, AccessP
 pub(crate) const VERTEX_POSITIONS_BINDING: ShaderResourceDescriptor = buffer(2, AccessPolicies::READ, 12);
 pub(crate) const VERTEX_NORMALS_BINDING: ShaderResourceDescriptor =
 	buffer(3, AccessPolicies::READ, VERTEX_NORMAL_BUFFER_STRIDE);
-pub(crate) const SKINNED_VERTICES_BINDING: ShaderResourceDescriptor = buffer(4, AccessPolicies::READ, 32);
+pub(crate) const SKINNED_VERTICES_BINDING: ShaderResourceDescriptor = buffer(4, AccessPolicies::READ, 24);
 pub(crate) const VERTEX_UV_BINDING: ShaderResourceDescriptor = buffer(5, AccessPolicies::READ, VERTEX_UV_BUFFER_STRIDE);
 pub(crate) const VERTEX_INDICES_BINDING: ShaderResourceDescriptor = buffer(6, AccessPolicies::READ, VERTEX_INDEX_BUFFER_STRIDE);
 pub(crate) const PRIMITIVE_INDICES_BINDING: ShaderResourceDescriptor =

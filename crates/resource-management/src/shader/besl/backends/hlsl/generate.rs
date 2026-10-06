@@ -192,7 +192,6 @@ impl Generator {
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
-			"packed_vec4f" => "float4",
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",

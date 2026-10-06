@@ -112,6 +112,73 @@ mod tests {
 	}
 
 	#[compio::test]
+	async fn packed_vector_reads_unpack_in_matrix_products() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f }
+			Frame: struct { basis: mat4x3f, projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			push_constant: push_constant {
+				offset: vec3f,
+				scale: f32,
+			}
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let row: vec4f = bodies[item].velocity * frame.basis;
+				let offset: vec4f = push_constant.offset * frame.basis;
+				let projected: vec4f = frame.projection * bodies[item].color;
+				bodies[item].color = projected + row + offset * push_constant.scale;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		// Metal multiplies matrices only by native vectors, so packed member reads in a matrix product are unpacked.
+		assert_string_contains!(shader, "float3(resources.bodies[item].velocity)*_besl_load_mat4x3(");
+		assert_string_contains!(shader, "float3(push_constant.offset)*_besl_load_mat4x3(");
+		assert_string_contains!(shader, "resources.frame->projection*float4(resources.bodies[item].color)");
+
+		compile_natively(&shader, "besl-packed-vector-matrix-products").await;
+	}
+
+	#[compio::test]
+	async fn vector_members_use_packed_msl_storage() {
+		let shader = lower_fixture(
+			r#"
+			Sprite: struct { depth: f32, uv: vec2f, texel: vec2u, extent: vec2u16, scale: vec2f16, normal: vec3f, tint: vec4f, mask: vec4u }
+			sprites: descriptor<{ type: Sprite[], binding: 0, access: read_write }>;
+			atlas: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			push_constant: push_constant {
+				offset: f32,
+				jitter: vec2f,
+			}
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let color: vec4f = sample(atlas, sprites[item].uv + push_constant.jitter);
+				let texel: vec4f = fetch(atlas, sprites[item].texel);
+				sprites[item].uv = sprites[item].uv * push_constant.offset + vec2f(color.x, texel.y);
+				sprites[item].texel.x = sprites[item].texel.x + u32(sprites[item].extent.x);
+				sprites[item].depth = f32(sprites[item].scale.y) + length(sprites[item].uv) + dot(sprites[item].tint, color);
+				sprites[item].tint = sprites[item].tint * f32(sprites[item].mask.w);
+				sprites[item].normal = normalize(cross(sprites[item].normal, vec3f(0.0, 1.0, 0.0)));
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		// Packed members keep scalar alignment, so `uv` follows `depth` at offset 4, `normal` takes 12 bytes from offset
+		// 28, and `tint` follows at offset 40, as in HLSL, GLSL scalar layout, and the CPU `ghi::pod` vectors.
+		assert_string_contains!(
+			shader,
+			"struct Sprite{float depth;packed_float2 uv;packed_uint2 texel;packed_ushort2 extent;packed_half2 scale;packed_float3 normal;packed_float4 tint;packed_uint4 mask;};"
+		);
+		assert_string_contains!(shader, "struct PushConstant{float offset;packed_float2 jitter;};");
+
+		compile_natively(&shader, "besl-packed-vector-members").await;
+	}
+
+	#[compio::test]
 	async fn scalar_runtime_arrays_use_packed_msl_element_pointers() {
 		let shader = lower_fixture(
 			super::super::SCALAR_RUNTIME_ARRAY_COMPUTE,
@@ -286,16 +353,15 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn packed_vec4f_uses_native_msl_vectors_and_a_52_byte_record_stride() {
+	async fn vec4f_meshlet_record_keeps_its_52_byte_stride() {
 		let mut shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::packed_vec4f_meshlet_binding(),
+			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "packed_float4 center_radius;packed_float4 cone_apex_cutoff;");
-		assert!(!shader.contains("struct packed_vec4f"));
 		shader.push_str("\nstatic_assert(sizeof(Meshlet) == 52, \"Packed Meshlet stride must match the host\");\n");
 
-		compile_natively(&shader, "besl-packed-vec4f").await;
+		compile_natively(&shader, "besl-vec4f-meshlet").await;
 	}
 
 	#[test]
@@ -1185,7 +1251,7 @@ struct PrimitiveOutput {
 		);
 
 		// The MSL transpiler should use the explicit MSL code.
-		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
+		assert_string_contains!(shader, "struct Vertex{packed_float3 position;packed_float3 normal;};");
 		assert_string_contains!(shader, "void main(){out.position = float4(0, 0, 0, 1);}");
 		// Should NOT contain GLSL code
 		assert!(!shader.contains("gl_Position"), "MSL shader should not contain GLSL code");
@@ -1533,6 +1599,8 @@ struct PrimitiveOutput {
 		"#;
 		let shader = lower_fixture(script, &ShaderGenerationSettings::fragment());
 		assert_string_contains!(shader, "fragment FragmentOutput besl_main(FragmentInput in [[stage_in]])");
+		// Metal rejects packed vectors in stage interfaces, so the returned struct keeps native members.
+		assert_string_contains!(shader, "struct FragmentOutput{float4 color;};");
 		assert_string_contains!(shader, "return FragmentOutput{float4(1.0,0.0,0.0,1.0)};");
 
 		compile_natively(&shader, "besl-explicit-fragment-output").await;

@@ -292,6 +292,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
+			// Every texture intrinsic other than `sample` reaches its descriptor-array element through here.
+			self.emit_node_string(string, left);
+			self.emit_descriptor_array_index(string, right);
+			return;
+		}
+
 		let right_is_member = matches!(
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })

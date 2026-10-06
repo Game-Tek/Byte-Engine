@@ -23,11 +23,13 @@ decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
 pub(crate) const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
 material_evaluation_prefix: fn (input: StageInput) -> void {
 	let invocation: vec2u = input.thread_id;
-	if (invocation.x >= material_count.material_count[push_constant.material_id]) {
+	// One dispatch shades the pixel list of an evaluation slot, which holds the pixels of every material that compiled to
+	// this pipeline. Each pixel reads its own material below.
+	if (invocation.x >= material_count.material_count[push_constant.evaluation_index]) {
 		return;
 	}
 
-	let offset: u32 = material_offset.material_offset[push_constant.material_id];
+	let offset: u32 = material_offset.material_offset[push_constant.evaluation_index];
 	let packed_pixel_coordinates: vec2u16 = pixel_mapping.pixel_mapping[offset + invocation.x];
 	let raw_pixel_coordinates: vec2u = vec2u(
 		u32(packed_pixel_coordinates.x),
@@ -48,7 +50,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let meshlet_index: u32 = triangle_meshlet_indices >> 8;
 	let meshlet: Meshlet = meshlets[meshlet_index];
 	let mesh: Mesh = meshes.meshes[instance_index];
-	let material: Material = materials.materials[push_constant.material_id];
+	// Materials of one slot run the same program and differ only in the textures they bind, so the texture slots come
+	// from the pixel's own material. Pixel mapping groups pixels by tile, so neighboring lanes usually share it.
+	let material: Material = materials.materials[mesh.material_index];
 
 	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
 	let triangle_vertex_indices: u32[3] = compute_vertex_indices(mesh, meshlet, primitive_index_base);

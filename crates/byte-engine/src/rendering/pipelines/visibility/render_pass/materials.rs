@@ -1,30 +1,34 @@
-//! Material dispatch bookkeeping and evaluation: count pixels per material, prefix-sum offsets, map pixels, shade.
+//! Material dispatch bookkeeping and evaluation: count pixels per evaluation slot, prefix-sum offsets, map pixels, shade.
+//!
+//! Materials that compile to the same evaluation pipeline share one slot, so they share one pixel list and one dispatch.
+//! See [`MaterialEvaluation`].
 
 use utils::Extent;
 
-use super::super::layout::{ActiveMaterialMask, MAX_MATERIALS};
-use super::super::scene::MaterialEntry;
+use super::super::layout::{ActiveEvaluationMask, MAX_MATERIALS};
+use super::super::scene::MaterialEvaluation;
 use super::Pipelines;
 use super::visibility::VisibilityPhase;
 use crate::rendering::render_pass::RenderPassFunction;
 
-/// Threads of the one workgroup that scans every material's count into offsets. `material-offset.besl` and its `.bead`
-/// file assume this size and four materials per thread.
+/// Threads of the one workgroup that scans every evaluation slot's count into offsets. `material-offset.besl` and its
+/// `.bead` file assume this size and four slots per thread. There are never more slots than materials.
 const MATERIAL_OFFSET_WORKGROUP_SIZE: u32 = 256;
 const _: () = assert!(
 	MAX_MATERIALS == MATERIAL_OFFSET_WORKGROUP_SIZE as usize * 4,
 	"Update the material offset scan in `material-offset.besl` when the material limit changes."
 );
 
-/// Returns whether this frame contains geometry that uses one material in the requested visibility phase.
-pub(super) fn material_is_active(active_materials: &ActiveMaterialMask, material_index: u32) -> bool {
-	let material_index = material_index as usize;
-	active_materials
-		.get(material_index / u64::BITS as usize)
-		.is_some_and(|word| word & (1u64 << (material_index % u64::BITS as usize)) != 0)
+/// Returns whether this frame contains geometry of the requested visibility phase whose material uses one evaluation slot.
+pub(super) fn evaluation_is_active(active_evaluations: &ActiveEvaluationMask, evaluation_index: u32) -> bool {
+	let evaluation_index = evaluation_index as usize;
+	active_evaluations
+		.get(evaluation_index / u64::BITS as usize)
+		.is_some_and(|word| word & (1u64 << (evaluation_index % u64::BITS as usize)) != 0)
 }
 
-/// The `MaterialPrepasses` struct runs the three compute passes that turn the visibility buffer into per-material pixel lists.
+/// The `MaterialPrepasses` struct runs the three compute passes that turn the visibility buffer into one pixel list per
+/// evaluation slot.
 pub(super) struct MaterialPrepasses {
 	/// The base set, the sink's visibility set, and its material-evaluation set, whose lit target and histories pixel
 	/// mapping zeroes where no surface was drawn.
@@ -89,7 +93,7 @@ pub(super) struct ScreenSpaceLighting {
 	pub(super) ssgi: bool,
 }
 
-/// The `MaterialEvaluationPass` struct shades every material's pixel list into the lit target.
+/// The `MaterialEvaluationPass` struct shades every evaluation slot's pixel list into the lit target.
 ///
 /// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history while SSGI runs, and
 /// the lit color into this frame's copy of the radiance history. The next frame's SSGI and reflection rays read them.
@@ -103,10 +107,12 @@ pub(super) struct MaterialEvaluationPass {
 
 impl MaterialEvaluationPass {
 	/// Prepares one material phase; the transparent phase composites over the lit target the opaque phase wrote.
+	///
+	/// Records one dispatch for each of `evaluations` that `active_evaluations` marks.
 	pub(super) fn prepare<'a>(
 		&self,
-		materials: &'a [MaterialEntry],
-		active_materials: &'a ActiveMaterialMask,
+		evaluations: &'a [MaterialEvaluation],
+		active_evaluations: &'a ActiveEvaluationMask,
 		phase: VisibilityPhase,
 		screen_space_lighting: ScreenSpaceLighting,
 	) -> impl RenderPassFunction + use<'a> {
@@ -120,28 +126,24 @@ impl MaterialEvaluationPass {
 				CommonCommandBufferMode as _,
 			};
 
-			let active = materials
+			let active = evaluations
 				.iter()
-				.filter(|(_, index, _)| material_is_active(active_materials, *index));
+				.filter(|evaluation| evaluation_is_active(active_evaluations, evaluation.index));
 			c.start_region(|label| {
 				label.write_str(phase.label())?;
 				label.write_str(" Material Evaluation")
 			});
-			// Pixel mapping gave every pixel to exactly one material, so no two materials touch the same pixel of
-			// the lit target or the histories, and their dispatches can overlap instead of each waiting for the
-			// last one's writes.
+			// Pixel mapping gave every pixel to exactly one evaluation slot, so no two dispatches touch the same pixel
+			// of the lit target or the histories, and they can overlap instead of each waiting for the last one's
+			// writes.
 			c.unordered(|c| {
-				// Materials sharing a pipeline are adjacent, so the binding survives across consecutive dispatches.
-				let mut bound_pipeline = None;
-				for (name, index, pipeline) in active {
-					c.start_region(|label| label.write_str(name));
-					if bound_pipeline != Some(*pipeline) {
-						let c = c.bind_compute_pipeline(*pipeline);
-						c.bind_descriptor_sets(&descriptor_sets);
-						bound_pipeline = Some(*pipeline);
-					}
-					c.write_push_constant(0, [*index, phase as u32, u32::from(gtao), u32::from(ssgi)]);
-					c.indirect_dispatch(evaluation_dispatches, *index as usize);
+				// Every evaluation of a phase has its own pipeline.
+				for evaluation in active {
+					c.start_region(|label| label.write_str(&evaluation.name));
+					let c = c.bind_compute_pipeline(evaluation.pipeline);
+					c.bind_descriptor_sets(&descriptor_sets);
+					c.write_push_constant(0, [evaluation.index, phase as u32, u32::from(gtao), u32::from(ssgi)]);
+					c.indirect_dispatch(evaluation_dispatches, evaluation.index as usize);
 					c.end_region();
 				}
 			});

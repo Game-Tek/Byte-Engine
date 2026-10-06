@@ -543,14 +543,14 @@ impl VisibilityRenderPass {
 			ssgi: ssgi.is_some(),
 		};
 		let opaque_materials = self.material_evaluation.prepare(
-			&render_info.opaque_materials,
-			&render_info.opaque_material_mask,
+			&render_info.opaque_evaluations,
+			&render_info.opaque_evaluation_mask,
 			VisibilityPhase::Opaque,
 			screen_space_lighting,
 		);
 		let transparent_materials = self.material_evaluation.prepare(
-			&render_info.transparent_materials,
-			&render_info.transparent_material_mask,
+			&render_info.transparent_evaluations,
+			&render_info.transparent_evaluation_mask,
 			VisibilityPhase::Transparent,
 			screen_space_lighting,
 		);

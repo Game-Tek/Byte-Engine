@@ -186,15 +186,22 @@ impl Generator {
 		}
 	}
 
+	/// Emits the subscript that picks one texture or sampler of a descriptor array.
+	pub(crate) fn emit_descriptor_array_index(&mut self, string: &mut String, index: &besl::NodeReference) {
+		// Any expression may pick the element, so lanes of one wave can disagree, which D3D12 leaves undefined unless the
+		// index is marked non-uniform.
+		string.push_str("[NonUniformResourceIndex(");
+		self.emit_node_string(string, index);
+		string.push_str(")]");
+	}
+
 	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
 	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
 		let accessor = resource_accessor(texture);
 		self.emit_node_string(string, accessor.as_ref().map_or(texture, |(_, resource, _)| resource));
 		string.push_str("_sampler");
 		if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
-			string.push('[');
-			self.emit_node_string(string, index);
-			string.push(']');
+			self.emit_descriptor_array_index(string, index);
 		}
 	}
 
@@ -230,9 +237,7 @@ impl Generator {
 				let accessor = resource_accessor(&arguments[0]);
 				self.emit_node_string(string, accessor.as_ref().map_or(&arguments[0], |(_, resource, _)| resource));
 				if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
-					string.push('[');
-					self.emit_node_string(string, index);
-					string.push(']');
+					self.emit_descriptor_array_index(string, index);
 				}
 				string.push_str(".Sample(");
 				self.emit_sampler(string, &arguments[0]);
@@ -250,13 +255,11 @@ impl Generator {
 			}
 			"sample_texture_2d_array_grad" => {
 				self.emit_node_string(string, &arguments[0]);
-				string.push('[');
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str("].SampleGrad(");
+				self.emit_descriptor_array_index(string, &arguments[1]);
+				string.push_str(".SampleGrad(");
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler[");
-				self.emit_node_string(string, &arguments[1]);
-				string.push(']');
+				string.push_str("_sampler");
+				self.emit_descriptor_array_index(string, &arguments[1]);
 				for argument in &arguments[2..5] {
 					self.emit_separator(string);
 					self.emit_node_string(string, argument);

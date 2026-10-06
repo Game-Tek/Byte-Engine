@@ -75,7 +75,9 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 		let size: vec2u = texture_size(textures[items[index].slot]);
 		let lod: vec4f = texture_lod(textures[index + 1], uv);
 		let nested: vec4f = sample(textures[items[index].slot], uv);
-		return (lod + nested) * f32(size.x);
+		let texel: vec4f = fetch(textures[index], vec2u(0, 0));
+		let quad: vec4f = gather(textures[index], uv);
+		return (lod + nested + texel + quad) * f32(size.x);
 	}
 	main: fn (input: StageInput, pipeline_input: interface { index: u32, uv: vec2f }) -> output { color: vec4f } {
 		let color: vec4f = shade(pipeline_input.index, pipeline_input.uv);

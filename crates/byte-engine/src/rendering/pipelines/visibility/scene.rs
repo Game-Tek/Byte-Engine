@@ -11,7 +11,7 @@ use utils::hash::HashMap;
 use utils::{AvailabilityHandle, StableVec, StableVecHandle};
 
 use super::geometry::encode_octahedral_unit_vector;
-use super::layout::{ActiveMaterialMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
+use super::layout::{ActiveEvaluationMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
 use super::render_pass::VisibilityRenderPass;
 use super::shader_data::{
 	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderVec3,
@@ -48,8 +48,23 @@ pub(crate) struct RenderSkin {
 	pub(crate) skeleton_node_count: u32,
 }
 
-/// One material ready for evaluation: its debug name, table slot, and compiled pipeline.
-pub(crate) type MaterialEntry = (Arc<str>, u32, ghi::PipelineHandle);
+/// The `MaterialEvaluation` struct is one material-evaluation dispatch of a visibility phase. It lets materials that
+/// differ only in the textures they sample share one dispatch instead of one each.
+///
+/// Every ready material that compiled to `pipeline` belongs to it. Materials whose generated programs are the same,
+/// such as most of a glTF scene's metallic-roughness materials, request equal pipelines, and the pipeline manager
+/// gives equal requests one pipeline, so they share it automatically. The material prepasses bucket every pixel by
+/// its material's slot in [`super::layout::MATERIAL_EVALUATIONS_BINDING`], and the dispatch reads each pixel's own
+/// material record for its textures. Material evaluation records one dispatch per entry of
+/// [`RenderInfo::opaque_evaluations`] and [`RenderInfo::transparent_evaluations`].
+#[derive(Clone)]
+pub(crate) struct MaterialEvaluation {
+	/// The debug label: the first material's name, and how many more share the dispatch.
+	pub(crate) name: Arc<str>,
+	/// The evaluation slot, which indexes the pixel counts, offsets, and indirect dispatches.
+	pub(crate) index: u32,
+	pub(crate) pipeline: ghi::PipelineHandle,
+}
 
 /// The `RenderInfo` struct groups frame-local visibility work by the phase that consumes it.
 #[derive(Default)]
@@ -63,10 +78,12 @@ pub struct RenderInfo {
 	pub(crate) double_sided_masked_instances: Vec<Instance>,
 	pub(crate) transparent_instances: Vec<Instance>,
 	pub(crate) skinning_dispatches: Vec<SkinningDispatch>,
-	pub(crate) opaque_materials: Vec<MaterialEntry>,
-	pub(crate) transparent_materials: Vec<MaterialEntry>,
-	pub(crate) opaque_material_mask: ActiveMaterialMask,
-	pub(crate) transparent_material_mask: ActiveMaterialMask,
+	pub(crate) opaque_evaluations: Vec<MaterialEvaluation>,
+	pub(crate) transparent_evaluations: Vec<MaterialEvaluation>,
+	/// The evaluation slots of the opaque and masked instances admitted this frame.
+	pub(crate) opaque_evaluation_mask: ActiveEvaluationMask,
+	/// The evaluation slots of the blend instances admitted this frame.
+	pub(crate) transparent_evaluation_mask: ActiveEvaluationMask,
 }
 
 impl RenderInfo {
@@ -78,36 +95,37 @@ impl RenderInfo {
 		self.double_sided_masked_instances.clear();
 		self.transparent_instances.clear();
 		self.skinning_dispatches.clear();
-		self.opaque_material_mask.fill(0);
-		self.transparent_material_mask.fill(0);
+		self.opaque_evaluation_mask.fill(0);
+		self.transparent_evaluation_mask.fill(0);
 	}
 
-	/// Adds one active primitive to the phase selected by its authored alpha mode and sidedness.
+	/// Adds one active primitive to the phase selected by its authored alpha mode and sidedness, and marks its
+	/// material's evaluation slot active in that phase.
 	///
 	/// Double-sided blend primitives stay in the transparent phase, which still culls back faces.
 	pub(crate) fn push_active_instance(
 		&mut self,
 		instance: Instance,
-		material_index: u32,
+		evaluation_index: u32,
 		alpha_mode: &AlphaMode,
 		double_sided: bool,
 	) {
-		let material_index = material_index as usize;
+		let evaluation_index = evaluation_index as usize;
 		assert!(
-			material_index < MAX_MATERIALS,
-			"Visibility material index is out of range. The most likely cause is that an active primitive references a material beyond MAX_MATERIALS."
+			evaluation_index < MAX_MATERIALS,
+			"Visibility evaluation slot is out of range. The most likely cause is that an active primitive's material is not in any material evaluation list."
 		);
-		let material_bit = 1u64 << (material_index % u64::BITS as usize);
-		let material_word = material_index / u64::BITS as usize;
+		let evaluation_bit = 1u64 << (evaluation_index % u64::BITS as usize);
+		let evaluation_word = evaluation_index / u64::BITS as usize;
 		let (instances, mask) = match alpha_mode {
-			AlphaMode::Blend => (&mut self.transparent_instances, &mut self.transparent_material_mask),
-			AlphaMode::Mask(_) if double_sided => (&mut self.double_sided_masked_instances, &mut self.opaque_material_mask),
-			AlphaMode::Mask(_) => (&mut self.masked_instances, &mut self.opaque_material_mask),
-			AlphaMode::Opaque if double_sided => (&mut self.double_sided_instances, &mut self.opaque_material_mask),
-			AlphaMode::Opaque => (&mut self.opaque_instances, &mut self.opaque_material_mask),
+			AlphaMode::Blend => (&mut self.transparent_instances, &mut self.transparent_evaluation_mask),
+			AlphaMode::Mask(_) if double_sided => (&mut self.double_sided_masked_instances, &mut self.opaque_evaluation_mask),
+			AlphaMode::Mask(_) => (&mut self.masked_instances, &mut self.opaque_evaluation_mask),
+			AlphaMode::Opaque if double_sided => (&mut self.double_sided_instances, &mut self.opaque_evaluation_mask),
+			AlphaMode::Opaque => (&mut self.opaque_instances, &mut self.opaque_evaluation_mask),
 		};
 		instances.push(instance);
-		mask[material_word] |= material_bit;
+		mask[evaluation_word] |= evaluation_bit;
 	}
 }
 

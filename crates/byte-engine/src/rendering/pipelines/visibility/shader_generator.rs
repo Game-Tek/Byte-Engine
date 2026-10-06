@@ -306,9 +306,10 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		sampled("environment_specular", Node::combined_cube_image_sampler(), 1055),
 		sampled("cone_shadow_map", Node::combined_array_image_sampler(), 1064),
 		sampled("point_shadow_map", Node::combined_cube_array_image_sampler(), 1065),
-		// `gtao` and `ssgi` are nonzero when those passes wrote their images this frame.
+		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` and
+		// `ssgi` are nonzero when those passes wrote their images this frame.
 		Node::push_constant(vec![
-			Node::member("material_id", "u32"),
+			Node::member("evaluation_index", "u32"),
 			Node::member("blend", "u32"),
 			Node::member("gtao", "u32"),
 			Node::member("ssgi", "u32"),

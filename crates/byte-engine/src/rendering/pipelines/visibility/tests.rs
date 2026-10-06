@@ -16,6 +16,7 @@ use crate::rendering::shader_vm_test::{
 const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
 const GTAO_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
 const MESH_DATA_SLOT: ResourceSlot = ResourceSlot::new(1);
+const MATERIAL_EVALUATIONS_SLOT: ResourceSlot = ResourceSlot::new(1068);
 const MATERIAL_COUNT_SLOT: ResourceSlot = ResourceSlot::new(1033);
 const MATERIAL_OFFSET_SLOT: ResourceSlot = ResourceSlot::new(1034);
 const MATERIAL_OFFSET_SCRATCH_SLOT: ResourceSlot = ResourceSlot::new(1035);
@@ -1031,15 +1032,17 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 
 /* Material prepasses */
 
-/// Binds the instance-index image and mesh table and runs one 8x8 material-count workgroup.
+/// Binds the instance-index image, the mesh table, and the material evaluation slots, and runs one 8x8 material-count
+/// workgroup.
 fn run_material_count(
 	program: &ExecutableProgram,
-	mesh_data: &mut besl::vm::Buffer,
+	tables: &mut PrepassTables,
 	instance_indices: &mut Texture,
 ) -> besl::vm::Buffer {
 	let mut material_counts = buffer(program, MATERIAL_COUNT_SLOT);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(MESH_DATA_SLOT, mesh_data);
+	descriptors.bind_buffer(MESH_DATA_SLOT, &mut tables.meshes);
+	descriptors.bind_buffer(MATERIAL_EVALUATIONS_SLOT, &mut tables.evaluations);
 	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, [0, 0]);
@@ -1054,7 +1057,7 @@ const STALE_LIGHT: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 /// started full of [`STALE_LIGHT`] at the instance image's size.
 fn run_pixel_mapping(
 	program: &ExecutableProgram,
-	mesh_data: &mut besl::vm::Buffer,
+	tables: &mut PrepassTables,
 	material_offset_scratch: &mut besl::vm::Buffer,
 	instance_indices: &mut Texture,
 	width: u32,
@@ -1072,7 +1075,8 @@ fn run_pixel_mapping(
 	});
 	let [lit, diffuse_radiance_history, radiance_history] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(MESH_DATA_SLOT, mesh_data);
+	descriptors.bind_buffer(MESH_DATA_SLOT, &mut tables.meshes);
+	descriptors.bind_buffer(MATERIAL_EVALUATIONS_SLOT, &mut tables.evaluations);
 	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, material_offset_scratch);
 	descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
@@ -1084,15 +1088,36 @@ fn run_pixel_mapping(
 	(pixel_mapping, images)
 }
 
-/// Creates the mesh table of a material prepass test, where mesh `i` uses the `i`th of `materials`.
-fn mesh_materials(program: &ExecutableProgram, materials: impl IntoIterator<Item = u32>) -> besl::vm::Buffer {
-	let mut mesh_data = buffer(program, MESH_DATA_SLOT);
+/// The `PrepassTables` struct holds the mesh table and the material evaluation slots that a material prepass test binds.
+struct PrepassTables {
+	meshes: besl::vm::Buffer,
+	evaluations: besl::vm::Buffer,
+}
+
+/// Creates the tables of a material prepass test, where mesh `i` uses the `i`th of `materials` and every material is
+/// alone in the evaluation slot of its own index, so the prepasses' per-slot results are per-material results.
+fn mesh_materials(program: &ExecutableProgram, materials: impl IntoIterator<Item = u32>) -> PrepassTables {
+	mesh_materials_in_evaluations(program, materials, |material| material)
+}
+
+/// Creates the tables of a material prepass test, where mesh `i` uses the `i`th of `materials` and material `m` belongs
+/// to the evaluation slot `evaluation(m)`.
+fn mesh_materials_in_evaluations(
+	program: &ExecutableProgram,
+	materials: impl IntoIterator<Item = u32>,
+	evaluation: impl Fn(u32) -> u32,
+) -> PrepassTables {
+	let mut meshes = buffer(program, MESH_DATA_SLOT);
+	let mut evaluations = buffer(program, MATERIAL_EVALUATIONS_SLOT);
 	for (mesh_index, material_index) in materials.into_iter().enumerate() {
-		mesh_data
+		meshes
 			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
 			.expect("VM mesh");
+		evaluations
+			.write_array_element(material_index as usize, Value::U32(evaluation(material_index)))
+			.expect("VM material evaluation");
 	}
-	mesh_data
+	PrepassTables { meshes, evaluations }
 }
 
 /// Fills a square instance-index image where texel `lane` holds `instance(lane)`.
@@ -1164,10 +1189,10 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	let pixel_mapping_program = asset!("pixel-mapping.besl");
 
 	// Three visible instances span two materials; the remaining texel is the renderer's empty-pixel sentinel.
-	let mut mesh_data = mesh_materials(&material_count_program, [2, 5, 2]);
+	let mut tables = mesh_materials(&material_count_program, [2, 5, 2]);
 	let mut instance_indices = instance_texture(2, |texel| [0, 1, u32::MAX, 2][texel]);
 
-	let mut material_counts = run_material_count(&material_count_program, &mut mesh_data, &mut instance_indices);
+	let mut material_counts = run_material_count(&material_count_program, &mut tables, &mut instance_indices);
 	assert_eq!(read_u32(&material_counts, 2), 2);
 	assert_eq!(read_u32(&material_counts, 5), 1);
 	assert_eq!(read_u32(&material_counts, 0), 0);
@@ -1188,7 +1213,7 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.
 	let (pixel_mapping, _) = run_pixel_mapping(
 		&pixel_mapping_program,
-		&mut mesh_data,
+		&mut tables,
 		&mut material_offset_scratch,
 		&mut instance_indices,
 		2,
@@ -1201,17 +1226,60 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	assert_eq!(read_u32(&material_offset_scratch, 5), 3);
 }
 
+/// Verifies the prepasses give materials that share an evaluation slot one pixel count, one offset, one indirect
+/// dispatch, and one pixel list, so one material-evaluation dispatch shades all of them.
+#[test]
+fn materials_sharing_an_evaluation_slot_share_one_pixel_list() {
+	let material_count_program = asset!("material-count.besl");
+	let material_offset_program = asset!("material-offset.besl");
+	let pixel_mapping_program = asset!("pixel-mapping.besl");
+
+	// Materials 4 and 9 compiled to one pipeline and share slot 0; material 6 is alone in slot 1.
+	let mut tables = mesh_materials_in_evaluations(&material_count_program, [4, 6, 9], |material| match material {
+		4 | 9 => 0,
+		_ => 1,
+	});
+	// Texel 0 shows material 4, texel 1 material 6, and texels 2 and 3 material 9.
+	let mut instance_indices = instance_texture(2, |texel| [0, 1, 2, 2][texel]);
+
+	let mut counts = run_material_count(&material_count_program, &mut tables, &mut instance_indices);
+	assert_eq!(read_u32(&counts, 0), 3);
+	assert_eq!(read_u32(&counts, 1), 1);
+	for material in [4, 6, 9] {
+		assert_eq!(
+			read_u32(&counts, material),
+			0,
+			"Material {material} was counted under its own index instead of its evaluation slot."
+		);
+	}
+
+	let (offsets, mut scratch, dispatches) = run_material_offset(&material_offset_program, &mut counts);
+	assert_eq!(read_u32(&offsets, 0), 0);
+	assert_eq!(read_u32(&offsets, 1), 3);
+	assert_eq!(read_vec3u(&dispatches, 0), [1, 1, 1]);
+	assert_eq!(read_vec3u(&dispatches, 1), [1, 1, 1]);
+
+	let (pixel_mapping, _) = run_pixel_mapping(&pixel_mapping_program, &mut tables, &mut scratch, &mut instance_indices, 2, 0);
+	// Slot 0's list holds the pixels of both of its materials, in tile rank order; slot 1's holds material 6's pixel.
+	let mut shared = (0..3).map(|index| read_vec2u16(&pixel_mapping, index)).collect::<Vec<_>>();
+	shared.sort_unstable();
+	assert_eq!(shared, [[1, 1], [1, 2], [2, 2]]);
+	assert_eq!(read_vec2u16(&pixel_mapping, 3), [2, 1]);
+	assert_eq!(read_u32(&scratch, 0), 3);
+	assert_eq!(read_u32(&scratch, 1), 4);
+}
+
 /// Verifies a coherent tile reuses its established local key while preserving every pixel mapping.
 #[test]
 fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = mesh_materials(&program, [7]);
+	let mut tables = mesh_materials(&program, [7]);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |_| 0);
 
 	let (pixel_mapping, _) = run_pixel_mapping(
 		&program,
-		&mut mesh_data,
+		&mut tables,
 		&mut material_offset_scratch,
 		&mut instance_indices,
 		PIXEL_MAPPING_WORKGROUP_WIDTH,
@@ -1246,7 +1314,7 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 #[test]
 fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = mesh_materials(&program, [3]);
+	let mut tables = mesh_materials(&program, [3]);
 	// Texel 0 is covered by instance 0; the other three hold the renderer's empty-pixel sentinel.
 	let instances = [0, u32::MAX, u32::MAX, u32::MAX];
 
@@ -1256,7 +1324,7 @@ fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
 
 		let (_, images) = run_pixel_mapping(
 			&program,
-			&mut mesh_data,
+			&mut tables,
 			&mut material_offset_scratch,
 			&mut instance_indices,
 			2,
@@ -1280,7 +1348,7 @@ fn pixel_mapping_zeroes_uncovered_pixels_in_the_opaque_phase_only() {
 #[test]
 fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = mesh_materials(&program, 0..33);
+	let mut tables = mesh_materials(&program, 0..33);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	for material_index in 0..33 {
 		material_offset_scratch
@@ -1294,7 +1362,7 @@ fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 
 	let (pixel_mapping, _) = run_pixel_mapping(
 		&program,
-		&mut mesh_data,
+		&mut tables,
 		&mut material_offset_scratch,
 		&mut instance_indices,
 		PIXEL_MAPPING_WORKGROUP_WIDTH,
@@ -1327,7 +1395,7 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 	// Each material's pixels land in their own range of this many entries, which is more than any material covers.
 	const RANGE: usize = 16;
 	let program = asset!("pixel-mapping.besl");
-	let mut mesh_data = mesh_materials(&program, 0..MATERIALS as u32);
+	let mut tables = mesh_materials(&program, 0..MATERIALS as u32);
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	for material_index in 0..MATERIALS {
 		material_offset_scratch
@@ -1341,7 +1409,7 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 
 	let (pixel_mapping, _) = run_pixel_mapping(
 		&program,
-		&mut mesh_data,
+		&mut tables,
 		&mut material_offset_scratch,
 		&mut instance_indices,
 		PIXEL_MAPPING_WORKGROUP_WIDTH,
@@ -1375,10 +1443,10 @@ fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
 #[test]
 fn material_count_tile_histogram_preserves_overflowed_materials() {
 	let program = asset!("material-count.besl");
-	let mut mesh_data = mesh_materials(&program, 0..33);
+	let mut tables = mesh_materials(&program, 0..33);
 	let mut instance_indices = instance_texture(TILE_WORKGROUP_WIDTH, |lane| (lane % 33) as u32);
 
-	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
+	let material_counts = run_material_count(&program, &mut tables, &mut instance_indices);
 
 	for material_index in 0..33 {
 		let expected = if material_index < 31 { 2 } else { 1 };
@@ -1394,10 +1462,10 @@ fn material_count_tile_histogram_preserves_overflowed_materials() {
 #[test]
 fn material_count_subgroup_aggregation_counts_a_coherent_tile_once_per_partition() {
 	let program = asset!("material-count.besl");
-	let mut mesh_data = mesh_materials(&program, [7]);
+	let mut tables = mesh_materials(&program, [7]);
 	let mut instance_indices = instance_texture(TILE_WORKGROUP_WIDTH, |_| 0);
 
-	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
+	let material_counts = run_material_count(&program, &mut tables, &mut instance_indices);
 
 	assert_eq!(read_u32(&material_counts, 7), TILE_WORKGROUP_SIZE as u32);
 }

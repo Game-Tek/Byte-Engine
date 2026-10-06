@@ -22,8 +22,9 @@ pub(crate) const MAX_INSTANCE_MESHLETS: usize = 1024 * 4;
 pub(crate) const MAX_ADDRESSABLE_MESHLETS: usize = 1 << 24;
 pub(crate) const MAX_INSTANCES: usize = 1024;
 pub(crate) const MAX_MATERIALS: usize = 1024;
-/// One bit per material slot; a set bit means the material has at least one active instance this frame.
-pub(crate) type ActiveMaterialMask = [u64; MAX_MATERIALS / u64::BITS as usize];
+/// One bit per material evaluation slot; a set bit means a material of that slot has at least one active instance in
+/// the mask's phase this frame. There are never more slots than materials. See [`super::scene::MaterialEvaluation`].
+pub(crate) type ActiveEvaluationMask = [u64; MAX_MATERIALS / u64::BITS as usize];
 /// Materials use a small indirection table so generated shaders can use stable per-material slots into the
 /// larger scene-wide bindless texture pool.
 pub(crate) const MAX_MATERIAL_TEXTURES: usize = 16;
@@ -159,6 +160,12 @@ pub(crate) const TEXTURES_BINDING: ShaderResourceDescriptor = ShaderResourceDesc
 );
 pub(crate) const MATERIALS_DATA_BINDING: ShaderResourceDescriptor =
 	buffer(1046, AccessPolicies::READ, std::mem::size_of::<MaterialData>() as u32);
+/// The evaluation slot of every material table entry, or [`NO_EVALUATION`]. The material prepasses bucket each pixel by
+/// its material's slot. See [`super::scene::MaterialEvaluation`].
+pub(crate) const MATERIAL_EVALUATIONS_BINDING: ShaderResourceDescriptor = buffer(1068, AccessPolicies::READ, 4);
+/// The [`MATERIAL_EVALUATIONS_BINDING`] entry of a material that no evaluation dispatch shades. The material prepasses
+/// skip its pixels; the shaders spell it as `4294967295`, which fails their `< 1024` slot tests.
+pub(crate) const NO_EVALUATION: u32 = u32::MAX;
 pub(crate) const MESH_DISPATCH_WORK_BINDING: ShaderResourceDescriptor = buffer(1063, AccessPolicies::READ, 4);
 
 /* Occlusion descriptor set */
@@ -170,6 +177,8 @@ pub(crate) const OCCLUSION_VISIBILITY_BINDING: ShaderResourceDescriptor = buffer
 
 /* Visibility descriptor set */
 
+// The material dispatch bookkeeping is indexed by evaluation slot, not by material: materials that compile to one
+// evaluation pipeline share a slot, its pixel list, and its indirect dispatch.
 pub(crate) const MATERIAL_COUNT_BINDING: ShaderResourceDescriptor = buffer(1033, AccessPolicies::READ_WRITE, 4);
 pub(crate) const MATERIAL_OFFSET_BINDING: ShaderResourceDescriptor = buffer(1034, AccessPolicies::READ_WRITE, 4);
 pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ShaderResourceDescriptor = buffer(1035, AccessPolicies::READ_WRITE, 4);

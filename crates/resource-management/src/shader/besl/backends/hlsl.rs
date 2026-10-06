@@ -2,7 +2,7 @@ use std::{cell::RefCell, fmt::Write as _};
 
 use super::{
 	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, resource_accessor,
-	runtime_buffer_element, uses_intrinsic,
+	resource_reference_kind, runtime_buffer_element, uses_intrinsic,
 };
 use crate::shader::generator::{
 	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,
@@ -409,11 +409,22 @@ mod tests {
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_hlsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
 
-		assert_string_contains!(shader, "textures[items[index].slot].GetDimensions(size.x, size.y);");
-		assert_string_contains!(shader, "textures[index+1].SampleLevel(textures_sampler[index+1], uv, 0.0)");
 		assert_string_contains!(
 			shader,
-			"textures[items[index].slot].Sample(textures_sampler[items[index].slot], uv)"
+			"textures[NonUniformResourceIndex(items[index].slot)].GetDimensions(size.x, size.y);"
+		);
+		assert_string_contains!(
+			shader,
+			"textures[NonUniformResourceIndex(index+1)].SampleLevel(textures_sampler[NonUniformResourceIndex(index+1)], uv, 0.0)"
+		);
+		assert_string_contains!(
+			shader,
+			"textures[NonUniformResourceIndex(items[index].slot)].Sample(textures_sampler[NonUniformResourceIndex(items[index].slot)], uv)"
+		);
+		assert_string_contains!(shader, "textures[NonUniformResourceIndex(index)].Load(int3(");
+		assert_string_contains!(
+			shader,
+			"textures[NonUniformResourceIndex(index)].Gather(textures_sampler[NonUniformResourceIndex(index)], uv)"
 		);
 	}
 
@@ -445,7 +456,7 @@ mod tests {
 		assert_string_contains!(shader, "SamplerState textures_sampler[4] : register(s3, space0);");
 		assert_string_contains!(
 			shader,
-			"textures[2].SampleGrad(textures_sampler[2],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
+			"textures[NonUniformResourceIndex(2)].SampleGrad(textures_sampler[NonUniformResourceIndex(2)],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
 		);
 
 		compile_dxil(&shader, "descriptor-array-sample-grad-regression", ShaderTypes::Compute);

@@ -20,11 +20,12 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
-	DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING, MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES,
-	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
-	MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SKINNED_VERTICES_BINDING, SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING, MATERIAL_EVALUATIONS_BINDING, MATERIALS_DATA_BINDING,
+	MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
+	MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
+	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SKINNED_VERTICES_BINDING,
+	SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
@@ -33,7 +34,7 @@ use super::render_pass::{
 	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, VisibilityRenderPass,
 	create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
-use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
+use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowLightSelection, make_cone_shadow_view, make_point_shadow_view, select_shadow_lights,
@@ -468,8 +469,12 @@ pub struct VisibilityPipelineManager {
 	/// Canonical material table, copied into each frame-local buffer after it changes.
 	materials: Box<[MaterialData; MAX_MATERIALS]>,
 	materials_buffer: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
-	/// Which frame sequences' copies of the material buffer hold the current table. Every frame sequence keeps its
-	/// own copy, so a change reaches each copy on a frame of that copy's sequence.
+	/// Canonical evaluation slot of every material table entry, which [`Self::rebuild_material_lists`] assigns. It is
+	/// copied into each frame-local buffer together with `materials`.
+	material_evaluations: Box<[u32; MAX_MATERIALS]>,
+	material_evaluations_buffer: ghi::DynamicBufferHandle<[u32; MAX_MATERIALS]>,
+	/// Which frame sequences' copies of the material and evaluation buffers hold the current tables. Every frame
+	/// sequence keeps its own copy, so a change reaches each copy on a frame of that copy's sequence.
 	materials_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
 	mesh_dispatch_work: MeshDispatchWorkBuffer,
 	skinning_pass: SkinningPass,
@@ -537,6 +542,10 @@ impl VisibilityPipelineManager {
 			"Materials Data",
 			ghi::Uses::Storage | ghi::Uses::TransferDestination,
 		));
+		let material_evaluations_buffer = context.build_dynamic_buffer(host_buffer(
+			"Material Evaluations",
+			ghi::Uses::Storage | ghi::Uses::TransferDestination,
+		));
 		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
 		let meshes_buffer = context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage));
 		let lighting_buffer =
@@ -564,6 +573,7 @@ impl VisibilityPipelineManager {
 			write(PRIMITIVE_INDICES_BINDING, geometry.primitive_indices.into()),
 			write(MESHLET_DATA_BINDING, geometry.meshlets.into()),
 			write(MATERIALS_DATA_BINDING, materials_buffer.into()),
+			write(MATERIAL_EVALUATIONS_BINDING, material_evaluations_buffer.into()),
 		]);
 		Self {
 			loader,
@@ -580,7 +590,9 @@ impl VisibilityPipelineManager {
 			deletions_listener: world.deletions_listener(),
 			materials: Box::new([MaterialData::default(); MAX_MATERIALS]),
 			materials_buffer,
-			// The default table must reach every frame sequence too.
+			material_evaluations: Box::new([NO_EVALUATION; MAX_MATERIALS]),
+			material_evaluations_buffer,
+			// The default tables must reach every frame sequence too.
 			materials_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
 			mesh_dispatch_work,
 			skinning_pass,
@@ -872,27 +884,54 @@ impl VisibilityPipelineManager {
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
 
-	/// Rebuilds the opaque and transparent material lists consumed by material evaluation.
+	/// Rebuilds the opaque and transparent material evaluation lists and gives every ready material its evaluation slot.
+	///
+	/// Materials whose programs differ only in the textures they bind request equal pipelines, which the pipeline
+	/// manager compiles once, so grouping ready materials by pipeline finds them without comparing programs. Each
+	/// group gets one slot, and each phase records one dispatch per slot it draws instead of one per material. A
+	/// material that isn't ready keeps [`NO_EVALUATION`]; no admitted instance uses it.
 	fn rebuild_material_lists(&mut self) {
 		let render_info = &mut self.scene.render_info;
-		render_info.opaque_materials.clear();
-		render_info.transparent_materials.clear();
-		for material in self.loaded_materials.iter().flatten() {
-			// The availability graph combines pipeline and texture readiness before a material reaches a draw list.
-			if !self.availability.is_key_ready(&Availability::Material(material.index)) {
-				continue;
+		render_info.opaque_evaluations.clear();
+		render_info.transparent_evaluations.clear();
+		self.material_evaluations.fill(NO_EVALUATION);
+		// The availability graph combines pipeline and texture readiness before a material reaches an evaluation.
+		let mut ready = self
+			.loaded_materials
+			.iter()
+			.flatten()
+			.filter(|material| self.availability.is_key_ready(&Availability::Material(material.index)))
+			.collect::<Vec<_>>();
+		ready.sort_unstable_by_key(|material| (material.pipeline, material.index));
+		for (evaluation_index, materials) in ready.chunk_by(|left, right| left.pipeline == right.pipeline).enumerate() {
+			let evaluation_index = evaluation_index as u32;
+			for material in materials {
+				self.material_evaluations[material.index as usize] = evaluation_index;
 			}
-			let entry = (material.name.clone(), material.index, material.pipeline);
-			match material.alpha_mode {
-				AlphaMode::Blend => render_info.transparent_materials.push(entry),
-				AlphaMode::Opaque | AlphaMode::Mask(_) => render_info.opaque_materials.push(entry),
+			// The slot is shared by both phases; each phase's pixel lists only hold its own materials' pixels.
+			for (evaluations, blend) in [
+				(&mut render_info.opaque_evaluations, false),
+				(&mut render_info.transparent_evaluations, true),
+			] {
+				let mut phase_materials = materials
+					.iter()
+					.filter(|material| matches!(material.alpha_mode, AlphaMode::Blend) == blend);
+				let Some(first) = phase_materials.next() else {
+					continue;
+				};
+				let more = phase_materials.count();
+				evaluations.push(MaterialEvaluation {
+					name: if more == 0 {
+						first.name.clone()
+					} else {
+						format!("{} and {more} more", first.name).into()
+					},
+					index: evaluation_index,
+					pipeline: first.pipeline,
+				});
 			}
 		}
-		// Materials with the same generated shader share one pipeline. Keep them adjacent so recording can retain
-		// the native pipeline binding across consecutive indirect dispatches.
-		for materials in [&mut render_info.opaque_materials, &mut render_info.transparent_materials] {
-			materials.sort_unstable_by(|left, right| left.2.cmp(&right.2).then(left.1.cmp(&right.1)));
-		}
+		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
 
 	/// Creates scene instances for every pending renderable whose mesh is now resident.
@@ -1042,7 +1081,7 @@ impl VisibilityPipelineManager {
 					shader_mesh_index: active_index as u32,
 					meshlet_count: shader_mesh.meshlet_count,
 				},
-				shader_mesh.material_index,
+				self.material_evaluations[shader_mesh.material_index as usize],
 				&material.alpha_mode,
 				material.double_sided,
 			);
@@ -1149,7 +1188,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.adopt_scene_updates(alpha);
 		self.apply_runtime_settings();
 		self.adopt_resource_completions(frame);
-		// Each frame sequence has its own buffer, so a changed table is copied into each one on its own frame.
+		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
 			self.materials_copies_current[sequence] = true;
@@ -1157,6 +1196,10 @@ impl PipelineManager for VisibilityPipelineManager {
 				.get_mut_dynamic_buffer_slice(self.materials_buffer)
 				.copy_from_slice(&*self.materials);
 			frame.sync_buffer(self.materials_buffer);
+			frame
+				.get_mut_dynamic_buffer_slice(self.material_evaluations_buffer)
+				.copy_from_slice(&*self.material_evaluations);
+			frame.sync_buffer(self.material_evaluations_buffer);
 		}
 		self.rebuild_active_instances(frame);
 		let dispatches = self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info);

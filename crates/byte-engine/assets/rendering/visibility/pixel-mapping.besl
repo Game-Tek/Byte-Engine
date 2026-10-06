@@ -15,6 +15,13 @@ MeshData: struct {
 	meshes: Mesh[1024],
 }
 
+// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
+// and 4294967295 marks a material no evaluation shades.
+MaterialEvaluations: struct {
+	evaluation_indices: u32[1024],
+}
+
+// Indexed by evaluation slot, like the counts the offsets were scanned from.
 MaterialOffsetScratch: struct {
 	material_offset_scratch: atomicu32[1024],
 }
@@ -24,6 +31,7 @@ PixelMapping: struct {
 }
 
 mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device }>;
+material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
 material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
 pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
 instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
@@ -58,7 +66,7 @@ ballot_word_from_lane: fn (lane: u32, first_lane: u32) -> u32 {
 
 main: fn (input: StageInput) -> void {
 	// Each 32-thread group covers an 8x4 block of the 16x16 tile instead of two 16-pixel rows. The pixels one subgroup
-	// maps for a material then sit close together, and material evaluation shades neighbors in the same subgroup, which
+	// maps for an evaluation then sit close together, and material evaluation shades neighbors in the same subgroup, which
 	// share triangles and texture cache lines.
 	let local_index: u32 = input.thread_idx;
 	let block: u32 = local_index / 32;
@@ -66,17 +74,17 @@ main: fn (input: StageInput) -> void {
 	let tile_origin: vec2u = input.thread_id - vec2u(local_index % 16, local_index / 16);
 	let coord: vec2u = tile_origin + vec2u((block % 2) * 8 + block_lane % 8, (block / 2) * 4 + block_lane / 8);
 	let extent: vec2u = image_size(instance_index_render_target);
-	let material_index: u32 = INVALID_INDEX;
-	// The pixel's rank among its tile's pixels of the same material in the upper bits, and its histogram slot in the low
+	let evaluation_index: u32 = INVALID_INDEX;
+	// The pixel's rank among its tile's pixels of the same evaluation in the upper bits, and its histogram slot in the low
 	// five. Packing them keeps one value live across barriers.
 	let packed_tile_mapping: u32 = INVALID_INDEX;
-	// The pixel's mapping index when the tile histogram had no slot left for its material.
+	// The pixel's mapping index when the tile histogram had no slot left for its evaluation.
 	let fallback_mapping_index: u32 = INVALID_INDEX;
 
 	if (coord.x < extent.x && coord.y < extent.y) {
 		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 		if (pixel_instance_index < 1024) {
-			material_index = mesh_data.meshes[pixel_instance_index].material_index;
+			evaluation_index = material_evaluations.evaluation_indices[mesh_data.meshes[pixel_instance_index].material_index];
 		}
 	}
 
@@ -86,7 +94,7 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	// A subgroup elects one leader per material. The leader reserves a run of ranks for every matching pixel with one
+	// A subgroup elects one leader per evaluation. The leader reserves a run of ranks for every matching pixel with one
 	// atomic, and each pixel takes the run's base plus the number of matching lanes before it.
 	let lane: u32 = subgroup_lane_index();
 	// The ballot mask of this lane and every later lane. Removing it from a ballot leaves the earlier lanes.
@@ -96,15 +104,15 @@ main: fn (input: StageInput) -> void {
 		ballot_word_from_lane(lane, 64),
 		ballot_word_from_lane(lane, 96)
 	);
-	let remaining: vec4u = subgroup_ballot(material_index < 1024);
+	let remaining: vec4u = subgroup_ballot(evaluation_index < 1024);
 	for (
 		let has_remaining: bool = subgroup_ballot_any(remaining);
 		has_remaining;
 		has_remaining = subgroup_ballot_any(remaining)
 	) {
 		let leader_lane: u32 = subgroup_ballot_find_lsb(remaining);
-		let leader_material_index: u32 = subgroup_broadcast_u32(material_index, leader_lane);
-		let matching: vec4u = subgroup_ballot(material_index == leader_material_index);
+		let leader_evaluation_index: u32 = subgroup_broadcast_u32(evaluation_index, leader_lane);
+		let matching: vec4u = subgroup_ballot(evaluation_index == leader_evaluation_index);
 		let matching_count: u32 = subgroup_ballot_count(matching);
 		let leader_run: u32 = INVALID_INDEX;
 		let leader_fallback_base: u32 = INVALID_INDEX;
@@ -115,22 +123,22 @@ main: fn (input: StageInput) -> void {
 				probe < PIXEL_MAPPING_TILE_CAPACITY && leader_run == INVALID_INDEX;
 				probe = probe + 1
 			) {
-				let slot: u32 = (leader_material_index + probe) & 31;
+				let slot: u32 = (leader_evaluation_index + probe) & 31;
 				let key: u32 = atomic_load(tile_histogram_keys[slot]);
 				// Most later leaders find an established key and avoid a contended compare-exchange. An empty slot is
 				// claimed, unless another leader claims it first.
 				if (key == INVALID_INDEX) {
-					key = atomic_compare_exchange(tile_histogram_keys[slot], INVALID_INDEX, leader_material_index);
+					key = atomic_compare_exchange(tile_histogram_keys[slot], INVALID_INDEX, leader_evaluation_index);
 				}
-				if (key == INVALID_INDEX || key == leader_material_index) {
+				if (key == INVALID_INDEX || key == leader_evaluation_index) {
 					leader_run = (atomic_add(tile_histogram_counts[slot], matching_count) << 5) | slot;
 				}
 			}
 
 			if (leader_run == INVALID_INDEX) {
-				// A tile with more distinct materials than local slots reserves global indices once per subgroup material.
+				// A tile with more distinct evaluations than local slots reserves global indices once per subgroup evaluation.
 				leader_fallback_base = atomic_add(
-					material_offset_scratch_buffer.material_offset_scratch[leader_material_index],
+					material_offset_scratch_buffer.material_offset_scratch[leader_evaluation_index],
 					matching_count
 				);
 			}
@@ -138,7 +146,7 @@ main: fn (input: StageInput) -> void {
 
 		let run: u32 = subgroup_broadcast_u32(leader_run, leader_lane);
 		let fallback_base: u32 = subgroup_broadcast_u32(leader_fallback_base, leader_lane);
-		if (material_index == leader_material_index) {
+		if (evaluation_index == leader_evaluation_index) {
 			let earlier_matching: u32 = subgroup_ballot_count(subgroup_ballot_and_not(matching, earlier_lanes_excluded));
 			if (run == INVALID_INDEX) {
 				fallback_mapping_index = fallback_base + earlier_matching;
@@ -165,7 +173,7 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	// A pixel without a material keeps both indices invalid, which fails the capacity test.
+	// A pixel without an evaluation keeps both indices invalid, which fails the capacity test.
 	let pixel_mapping_index: u32 = fallback_mapping_index;
 	if (packed_tile_mapping < INVALID_INDEX) {
 		pixel_mapping_index = tile_mapping_bases[packed_tile_mapping & 31] + (packed_tile_mapping >> 5);
@@ -174,10 +182,10 @@ main: fn (input: StageInput) -> void {
 		pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 	}
 
-	// A pixel no opaque surface covered belongs to no material, so nothing later writes its color or histories. Zeroing
+	// A pixel no opaque surface covered belongs to no evaluation, so nothing later writes its color or histories. Zeroing
 	// them here, where the opaque phase visits every pixel, keeps the background and the next frame's rays from reading
 	// light of an older frame. The transparent phase leaves the opaque phase's and the background's results in place.
-	if (material_index == INVALID_INDEX && push_constant.phase == 0 && coord.x < extent.x && coord.y < extent.y) {
+	if (evaluation_index == INVALID_INDEX && push_constant.phase == 0 && coord.x < extent.x && coord.y < extent.y) {
 		let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		write(lit, coord, zero);
 		write(radiance_history, coord, zero);

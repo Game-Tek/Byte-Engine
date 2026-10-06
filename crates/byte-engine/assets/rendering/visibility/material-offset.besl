@@ -22,7 +22,8 @@ material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches,
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
 
-// One workgroup scans every material: each thread owns four consecutive materials.
+// One workgroup scans the pixel count of every evaluation slot: each thread owns four consecutive slots. Materials that
+// compile to one evaluation pipeline share a slot, so its offset starts one pixel list for all of them.
 MATERIAL_OFFSET_WORKGROUP_SIZE: const u32 = 256;
 MATERIALS_PER_THREAD: const u32 = 4;
 
@@ -48,7 +49,7 @@ main: fn (input: StageInput) -> void {
 		workgroup_barrier();
 	}
 
-	// The materials before this thread's first one hold every pixel the inclusive total does not count from this thread.
+	// The slots before this thread's first one hold every pixel the inclusive total does not count from this thread.
 	let offset: u32 = thread_totals[thread] - thread_total;
 	for (let i: u32 = 0; i < MATERIALS_PER_THREAD; i = i + 1) {
 		let material: u32 = first_material + i;

@@ -9,12 +9,12 @@
 pub(crate) const REFLECTION_SCENE_DEPTH_SOURCE: &str = r#"
 reflection_scene_depth: fn (pixel: vec2f, depth_extent: vec2u) -> f32 {
 	// Mip zero of the pyramid holds half-resolution depth.
-	let texel: vec2f = vec2f(
-		clamp(round(pixel.x), 0.0, f32(depth_extent.x - 1)),
-		clamp(round(pixel.y), 0.0, f32(depth_extent.y - 1))
+	// The nearest texel, read directly: the march reads this every step, so it skips building a sampling coordinate.
+	let texel: vec2u = vec2u(
+		u32(clamp(round(pixel.x), 0.0, f32(depth_extent.x - 1))),
+		u32(clamp(round(pixel.y), 0.0, f32(depth_extent.y - 1)))
 	);
-	let uv: vec2f = vec2f((texel.x + 0.5) / f32(depth_extent.x), (texel.y + 0.5) / f32(depth_extent.y));
-	return texture_lod(depth_pyramid, uv, 0.0).x;
+	return fetch(depth_pyramid, texel).x;
 }
 "#;
 
@@ -181,17 +181,41 @@ trace_screen_space_reflection: fn (
 	let previous_fraction: f32 = 0.0;
 	let was_in_front: bool = false;
 	let step_count: u32 = 32;
-	for (let step: u32 = 0; step < step_count; step = step + 1) {
-		let fraction: f32 = f32(step + 1) / f32(step_count);
-		if (reflection_ray_penetration(ray, fraction, depth_extent) <= 0.0) {
-			previous_fraction = fraction;
-			was_in_front = true;
+	// Steps are read eight at a time. The eight depth reads of a batch do not depend on each other, so they overlap
+	// instead of each waiting for the last, which the material shader's few resident threads cannot hide. The steps
+	// are still judged in order, and the march resumes right after a crossing that turns out not to be a hit, so the
+	// result is the same as stepping one read at a time. On the Sponza hall view this made material evaluation about
+	// 14 % faster than single steps; batches of 16 were no faster and batches of 32 spilled registers (2026-10-05).
+	let next_step: u32 = 0;
+	for (let batch: u32 = 0; batch < step_count; batch = batch + 1) {
+		if (next_step >= step_count) {
+			break;
+		}
+		let penetrations: f32[8] = f32[8](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
+			// Steps past the end read the last step again; the scan below ignores them.
+			let lane_fraction: f32 = f32(min(next_step + lane, step_count - 1) + 1) / f32(step_count);
+			penetrations[lane] = reflection_ray_penetration(ray, lane_fraction, depth_extent);
+		}
+		// The first step of the batch that is behind the depth buffer after the ray was seen in front of it. A ray
+		// that is still behind the same surface it went behind at an earlier step crosses nothing new.
+		let crossing: u32 = 8;
+		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
+			if (crossing == 8 && next_step + lane < step_count) {
+				if (penetrations[lane] <= 0.0) {
+					previous_fraction = f32(next_step + lane + 1) / f32(step_count);
+					was_in_front = true;
+				} else if (was_in_front) {
+					crossing = lane;
+				}
+			}
+		}
+		if (crossing == 8) {
+			next_step = next_step + 8;
 			continue;
 		}
-		// A ray that is still behind the same surface it went behind at an earlier step crosses nothing new.
-		if (was_in_front == false) {
-			continue;
-		}
+		let fraction: f32 = f32(next_step + crossing + 1) / f32(step_count);
+		next_step = next_step + crossing + 1;
 		was_in_front = false;
 
 		// The ray went behind the depth buffer since the last step. Bisect for where it crossed.

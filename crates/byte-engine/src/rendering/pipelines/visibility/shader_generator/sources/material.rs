@@ -10,15 +10,13 @@ decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
 	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) * 0.00003051804379339284
 		- vec2f(1.0, 1.0);
 	let normal_z: f32 = 1.0 - abs(octahedral.x) - abs(octahedral.y);
-	if (normal_z < 0.0) {
-		let fold: f32 = 0.0 - normal_z;
-		return vec3f(
-			octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
-			octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
-			normal_z
-		);
-	}
-	return vec3f(octahedral.x, octahedral.y, normal_z);
+	// The lower hemisphere is folded over the diagonals. The fold is zero on the upper one, so no branch is needed.
+	let fold: f32 = max(0.0 - normal_z, 0.0);
+	return vec3f(
+		octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
+		octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
+		normal_z
+	);
 }
 "#;
 
@@ -62,10 +60,10 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		vec4f(0.0, 0.0, 0.0, 1.0),
 		vec4f(0.0, 0.0, 0.0, 1.0)
 	);
-	let model_space_vertex_normals: vec4f[3] = vec4f[3](
-		vec4f(0.0, 0.0, 1.0, 0.0),
-		vec4f(0.0, 0.0, 1.0, 0.0),
-		vec4f(0.0, 0.0, 1.0, 0.0)
+	let model_space_vertex_normals: vec3f[3] = vec3f[3](
+		vec3f(0.0, 0.0, 1.0),
+		vec3f(0.0, 0.0, 1.0),
+		vec3f(0.0, 0.0, 1.0)
 	);
 
 	if (mesh.skinned_base_vertex_index != 4294967295) {
@@ -82,22 +80,27 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
 		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
 		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
-		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
-		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
+		let skinned_normal0: vec4f = skinned_vertices_for_triangle[0].normal;
+		let skinned_normal1: vec4f = skinned_vertices_for_triangle[1].normal;
+		let skinned_normal2: vec4f = skinned_vertices_for_triangle[2].normal;
+		model_space_vertex_normals[0] = vec3f(skinned_normal0.x, skinned_normal0.y, skinned_normal0.z);
+		model_space_vertex_normals[1] = vec3f(skinned_normal1.x, skinned_normal1.y, skinned_normal1.z);
+		model_space_vertex_normals[2] = vec3f(skinned_normal2.x, skinned_normal2.y, skinned_normal2.z);
 	} else {
 		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
 		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
 		let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
-		let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
-		let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
-		let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
+		// Octahedral decoding leaves a normal shorter than one. Interpolation below weights the normals as they are,
+		// so they are made unit length first, as skinning already writes them.
+		let normal0: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]));
+		let normal1: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]));
+		let normal2: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]));
 		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
 		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
 		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
-		model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
-		model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
-		model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+		model_space_vertex_normals[0] = normal0;
+		model_space_vertex_normals[1] = normal1;
+		model_space_vertex_normals[2] = normal2;
 	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let model: mat4x3f = mesh.model;
@@ -108,90 +111,75 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let clip_vertex_position0: vec4f = view_projection * vec4f(world_vertex_position0.x, world_vertex_position0.y, world_vertex_position0.z, 1.0);
 	let clip_vertex_position1: vec4f = view_projection * vec4f(world_vertex_position1.x, world_vertex_position1.y, world_vertex_position1.z, 1.0);
 	let clip_vertex_position2: vec4f = view_projection * vec4f(world_vertex_position2.x, world_vertex_position2.y, world_vertex_position2.z, 1.0);
-	let world_vertex_normal0: vec3f = normalize(model * model_space_vertex_normals[0]);
-	let world_vertex_normal1: vec3f = normalize(model * model_space_vertex_normals[1]);
-	let world_vertex_normal2: vec3f = normalize(model * model_space_vertex_normals[2]);
-
-	// Perspective-correct interpolation planes: an attribute divided by w and 1 / w are both affine across the screen,
-	// so each pixel's attribute is the ratio of the two planes evaluated at that pixel.
+	// Perspective-correct barycentrics. A vertex's screen-space weight divided by its w is affine across the screen, and
+	// so is the sum of the three, 1 / w, so each pixel's weights are the ratios of those planes at the pixel. They are
+	// evaluated once and every attribute below is interpolated from the triangle's edges.
 	let triangle_interpolation: TriangleInterpolation = compute_triangle_interpolation(
 		clip_vertex_position0,
 		clip_vertex_position1,
 		clip_vertex_position2
 	);
-	let interpolation_origin: vec2f = triangle_interpolation.origin;
-	let triangle_inverse_w: vec3f = triangle_interpolation.inverse_w;
 	let triangle_raw_ddx: vec3f = triangle_interpolation.raw_ddx;
 	let triangle_raw_ddy: vec3f = triangle_interpolation.raw_ddy;
-	let inverse_w_origin: f32 = triangle_inverse_w.x;
 	let inverse_w_dx: f32 = dot(triangle_raw_ddx, vec3f(1.0, 1.0, 1.0));
 	let inverse_w_dy: f32 = dot(triangle_raw_ddy, vec3f(1.0, 1.0, 1.0));
-	let position_numerator_origin: vec3f = world_vertex_position0 * triangle_inverse_w.x;
-	let position_numerator_dx: vec3f = interpolate_vec3f_with_deriv(
-		triangle_raw_ddx,
-		world_vertex_position0,
-		world_vertex_position1,
-		world_vertex_position2
-	);
-	let position_numerator_dy: vec3f = interpolate_vec3f_with_deriv(
-		triangle_raw_ddy,
-		world_vertex_position0,
-		world_vertex_position1,
-		world_vertex_position2
-	);
-	let normal_numerator_origin: vec3f = world_vertex_normal0 * triangle_inverse_w.x;
-	let normal_numerator_dx: vec3f = interpolate_vec3f_with_deriv(
-		triangle_raw_ddx,
-		world_vertex_normal0,
-		world_vertex_normal1,
-		world_vertex_normal2
-	);
-	let normal_numerator_dy: vec3f = interpolate_vec3f_with_deriv(
-		triangle_raw_ddy,
-		world_vertex_normal0,
-		world_vertex_normal1,
-		world_vertex_normal2
-	);
-
-	let interpolation_delta: vec2f = nc - interpolation_origin;
-	let inverse_w_at_pixel: f32 = inverse_w_origin + interpolation_delta.x * inverse_w_dx + interpolation_delta.y * inverse_w_dy;
+	let interpolation_delta: vec2f = nc - triangle_interpolation.origin;
+	let inverse_w_at_pixel: f32 = triangle_interpolation.inverse_w.x + interpolation_delta.x * inverse_w_dx
+		+ interpolation_delta.y * inverse_w_dy;
 	let perspective_w: f32 = 1.0 / inverse_w_at_pixel;
+	// The planes of vertices 1 and 2 start at zero at the planes' origin, vertex 0, whose weight is the rest.
+	let weighted_barycentric: vec2f = vec2f(
+		interpolation_delta.x * triangle_raw_ddx.y + interpolation_delta.y * triangle_raw_ddy.y,
+		interpolation_delta.x * triangle_raw_ddx.z + interpolation_delta.y * triangle_raw_ddy.z
+	);
+	let barycentric: vec2f = weighted_barycentric * perspective_w;
+	// How the weights change to the next pixel to the right and to the next one up in normalized device coordinates.
+	// Like a raster pass's quad derivatives, these are differences between two pixels, not the planes' slope at this
+	// one, so texture gradients stay what they were.
 	let ndc_step_x: f32 = 2.0 / f32(image_extent.x);
 	let ndc_step_y: f32 = 2.0 / f32(image_extent.y);
-	let position_numerator: vec3f = position_numerator_origin + interpolation_delta.x * position_numerator_dx + interpolation_delta.y * position_numerator_dy;
-	let normal_numerator: vec3f = normal_numerator_origin + interpolation_delta.x * normal_numerator_dx + interpolation_delta.y * normal_numerator_dy;
-	let world_space_vertex_position: vec3f = position_numerator * perspective_w;
-	let view_space_surface_position: vec3f = views.views[0].view * vec4f(
-		world_space_vertex_position.x,
-		world_space_vertex_position.y,
-		world_space_vertex_position.z,
-		1.0
-	);
-	let world_space_vertex_normal: vec3f = normalize(normal_numerator * perspective_w);
+	let barycentric_dx: vec2f = (weighted_barycentric + vec2f(triangle_raw_ddx.y, triangle_raw_ddx.z) * ndc_step_x)
+		/ (inverse_w_at_pixel + inverse_w_dx * ndc_step_x) - barycentric;
+	let barycentric_dy: vec2f = (weighted_barycentric + vec2f(triangle_raw_ddy.y, triangle_raw_ddy.z) * ndc_step_y)
+		/ (inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - barycentric;
+
+	let world_edge1: vec3f = world_vertex_position1 - world_vertex_position0;
+	let world_edge2: vec3f = world_vertex_position2 - world_vertex_position0;
+	let world_space_vertex_position: vec3f = world_vertex_position0 + barycentric.x * world_edge1
+		+ barycentric.y * world_edge2;
+	let position_derivative_x: vec3f = barycentric_dx.x * world_edge1 + barycentric_dx.y * world_edge2;
+	let position_derivative_y: vec3f = barycentric_dy.x * world_edge1 + barycentric_dy.y * world_edge2;
+	// The normal is interpolated in model space and turned into world space once, instead of turning all three. For a
+	// model matrix with uniform scale, the direction is the same as turning each unit vertex normal first.
+	let model_space_normal: vec3f = model_space_vertex_normals[0]
+		+ barycentric.x * (model_space_vertex_normals[1] - model_space_vertex_normals[0])
+		+ barycentric.y * (model_space_vertex_normals[2] - model_space_vertex_normals[0]);
+	let world_space_normal: vec3f = model * vec4f(model_space_normal.x, model_space_normal.y, model_space_normal.z, 0.0);
+	let world_space_vertex_normal: vec3f = normalize(world_space_normal);
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = views.views[0].inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
 	let V: vec3f = normalize(camera_position - world_space_vertex_position);
-	let position_derivative_x: vec3f =
-		(position_numerator + position_numerator_dx * ndc_step_x) /
-		(inverse_w_at_pixel + inverse_w_dx * ndc_step_x) - world_space_vertex_position;
-	let position_derivative_y: vec3f =
-		(position_numerator + position_numerator_dy * ndc_step_y) /
-		(inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - world_space_vertex_position;
 	// Flag bit 0 marks a double-sided material. Only those rasterize back faces, so only they need the check.
 	if ((mesh.flags & 1) != 0) {
-		N = facing_normal(N, V, position_derivative_x, position_derivative_y);
+		N = facing_normal(N, V, world_edge1, world_edge2);
 	}
+	// Everything after the prefix reads the view vector and the interpolated normal at half precision: the BRDF, the
+	// tangent frame, SSGI, and the reflection ray. Making the copies here ends their f32 originals with the prefix, so
+	// they do not stay live through the material body, the screen-space reads, and the light loop.
+	let V_material: vec3f16 = vec3f16(V);
+	let geometric_normal: vec3f16 = vec3f16(N);
 }
 "#;
 
 /// Reverses `normal` when the camera sees the back of the surface, as glTF requires for double-sided materials.
 ///
 /// A compute pass has no front-facing signal. The pixel sees the back face when the camera and the interpolated
-/// normal lie on opposite sides of the surface plane, which the screen-space position derivatives give for any
-/// triangle winding.
+/// normal lie on opposite sides of the surface plane, which any two vectors along it give, for any triangle winding.
+/// The material prefix passes the triangle's world-space edges, which decide the same way for every pixel of a
+/// triangle, even one seen almost edge-on.
 pub(crate) const FACING_NORMAL_SOURCE: &str = r#"
-facing_normal: fn (normal: vec3f, to_camera: vec3f, position_derivative_x: vec3f, position_derivative_y: vec3f) -> vec3f {
-	let surface_normal: vec3f = cross(position_derivative_x, position_derivative_y);
+facing_normal: fn (normal: vec3f, to_camera: vec3f, surface_vector0: vec3f, surface_vector1: vec3f) -> vec3f {
+	let surface_normal: vec3f = cross(surface_vector0, surface_vector1);
 	if (dot(surface_normal, to_camera) * dot(surface_normal, normal) < 0.0) {
 		return normal * (0.0 - 1.0);
 	}
@@ -201,34 +189,35 @@ facing_normal: fn (normal: vec3f, to_camera: vec3f, position_derivative_x: vec3f
 
 pub(crate) const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
-	// Runtime UVs use half-float storage and are expanded only for materials that sample them.
-	let vertex_uv_values: vec2f[3] = vec2f[3](
-		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]),
-		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]),
-		decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]])
-	);
-	let uv_numerator_origin: vec2f = vertex_uv_values[0] * triangle_inverse_w.x;
-	let uv_numerator_dx: vec2f = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
-	let uv_numerator_dy: vec2f = interpolate_vec2f_with_deriv(triangle_raw_ddy, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
-	let uv_numerator: vec2f = uv_numerator_origin + interpolation_delta.x * uv_numerator_dx + interpolation_delta.y * uv_numerator_dy;
-	let vertex_uv: vec2f = uv_numerator * perspective_w;
-	let uv_derivative_x: vec2f =
-		(uv_numerator + uv_numerator_dx * ndc_step_x) /
-		(inverse_w_at_pixel + inverse_w_dx * ndc_step_x) - vertex_uv;
-	let uv_derivative_y: vec2f =
-		(uv_numerator + uv_numerator_dy * ndc_step_y) /
-		(inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - vertex_uv;
+	// Runtime UVs use half-float storage and are expanded only for materials that sample them. They are interpolated,
+	// with their one-pixel differences, from the barycentrics of the prefix.
+	let vertex_uv0: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]);
+	let uv_edge1: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]) - vertex_uv0;
+	let uv_edge2: vec2f = decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]]) - vertex_uv0;
+	let vertex_uv: vec2f = vertex_uv0 + barycentric.x * uv_edge1 + barycentric.y * uv_edge2;
+	let uv_derivative_x: vec2f = barycentric_dx.x * uv_edge1 + barycentric_dx.y * uv_edge2;
+	let uv_derivative_y: vec2f = barycentric_dy.x * uv_edge1 + barycentric_dy.y * uv_edge2;
 }
 "#;
 
 pub(crate) const MATERIAL_EVALUATION_TANGENT_SOURCE: &str = r#"
 material_evaluation_tangent: fn () -> void {
-	let tangent_scale: f32 = 1.0 / (uv_derivative_x.x * uv_derivative_y.y - uv_derivative_y.x * uv_derivative_x.y);
-	let T: vec3f = normalize(
-		tangent_scale * (uv_derivative_y.y * position_derivative_x - uv_derivative_x.y * position_derivative_y)
+	// T and B are normalized, so only the sign of the UV mapping's determinant matters. Taking the sign instead of
+	// dividing by it keeps a mapping without area, such as a strip whose UVs lie on a line, from turning the frame into
+	// NaN; the floor under the lengths does the same for a mapping whose UVs do not change at all.
+	let uv_determinant: f32 = uv_derivative_x.x * uv_derivative_y.y - uv_derivative_y.x * uv_derivative_x.y;
+	let tangent_sign: f32 = step(0.0, uv_determinant) * 2.0 - 1.0;
+	let tangent_direction: vec3f = tangent_sign
+		* (uv_derivative_y.y * position_derivative_x - uv_derivative_x.y * position_derivative_y);
+	let bitangent_direction: vec3f = tangent_sign
+		* ((0.0 - uv_derivative_y.x) * position_derivative_x + uv_derivative_x.x * position_derivative_y);
+	let length_squared_floor: f32 = 0.000000000000000000000000000001;
+	// The frame only rotates the half-precision material normal, so it is kept at half precision too.
+	let T: vec3f16 = vec3f16(
+		tangent_direction * inversesqrt(max(dot(tangent_direction, tangent_direction), length_squared_floor))
 	);
-	let B: vec3f = normalize(
-		tangent_scale * ((0.0 - uv_derivative_y.x) * position_derivative_x + uv_derivative_x.x * position_derivative_y)
+	let B: vec3f16 = vec3f16(
+		bitangent_direction * inversesqrt(max(dot(bitangent_direction, bitangent_direction), length_squared_floor))
 	);
 }
 "#;
@@ -247,13 +236,13 @@ material_evaluation_defaults: fn () -> void {
 
 pub(crate) const MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = vec3f16(normalize(f32(normal.x) * T + f32(normal.y) * B + f32(normal.z) * N));
+	normal = vec3f16(normalize(f32(normal.x) * vec3f(T) + f32(normal.y) * vec3f(B) + f32(normal.z) * vec3f(geometric_normal)));
 }
 "#;
 
 pub(crate) const MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = vec3f16(N);
+	normal = geometric_normal;
 }
 "#;
 
@@ -308,7 +297,19 @@ material_evaluation_suffix: fn () -> void {
 		if (push_constant.ssgi != 0) {
 			// SSGI works in view space at half resolution. The pixel's own surface picks the history texels that lie
 			// on it. Alpha is the fraction of rays that hit, so the rest reach the environment.
-			let view_space_normal: vec3f = views.views[0].view * vec4f(N.x, N.y, N.z, 0.0);
+			// The surface in SSGI's view space, made here so neither stays live through the material body.
+			let view_space_surface_position: vec3f = views.views[0].view * vec4f(
+				world_space_vertex_position.x,
+				world_space_vertex_position.y,
+				world_space_vertex_position.z,
+				1.0
+			);
+			let view_space_normal: vec3f = views.views[0].view * vec4f(
+				f32(geometric_normal.x),
+				f32(geometric_normal.y),
+				f32(geometric_normal.z),
+				0.0
+			);
 			let screen_space_indirect: vec4f = sample_screen_space_indirect_diffuse(
 				pixel_coordinates,
 				image_extent,
@@ -336,7 +337,6 @@ material_evaluation_suffix: fn () -> void {
 	// Preserve compact material values and normalized vectors through the BRDF.
 	// Positions, shadow projections, HDR radiance, and accumulation remain f32.
 	let albedo_rgb: vec3f16 = vec3f16(albedo.x, albedo.y, albedo.z);
-	let V_material: vec3f16 = vec3f16(V);
 	let one_minus_metalness: f16 = f16(1.0) - metalness;
 	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * one_minus_metalness + albedo_rgb * metalness;
 	let one_minus_f0: vec3f16 = vec3f16(1.0, 1.0, 1.0) - F0;
@@ -345,14 +345,25 @@ material_evaluation_suffix: fn () -> void {
 	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
 	let adjusted_roughness: f16 = roughness + 1.0;
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
-	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
-	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
 	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
 	let view_fresnel_factor: f16 = view_fresnel_squared * view_fresnel_squared * view_fresnel_base;
 	let one_minus_fresnel_n_dot_v: vec3f16 = one_minus_f0 * (f16(1.0) - view_fresnel_factor);
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
+	// Every factor of the direct diffuse weight except the Fresnel factor of each light's angle. Folding them here keeps
+	// the albedo, metalness, and view Fresnel terms out of the light loop: of the shader's regions, the loop slows down
+	// the most for every value held live across it (2026-10-05).
+	let direct_diffuse_albedo: vec3f16 = one_minus_fresnel_n_dot_v * one_minus_f0 * one_minus_metalness * albedo_rgb
+		/ f16(3.14159265359);
+	// Indirect diffuse light and emission seed the diffuse sum, so neither they nor the material terms that weight them
+	// stay live through the loop. Material occlusion, like baked AO, applies to indirect light only. Direct light has
+	// its own shadows.
+	let one_minus_roughness: f16 = f16(1.0) - roughness;
+	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
+	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
+	let diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * indirect_diffuse_radiance * f32(occlusion) + vec3f(emission);
+	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
 	let light_count: u32 = lighting_data.light_count;
 
 	// Visit only the lights the light-cluster pass bucketed into this pixel's cluster: 16 columns, 8 rows, and 24
@@ -422,7 +433,7 @@ material_evaluation_suffix: fn () -> void {
 							shadow_view3,
 							lighting_data.lights[light_index].angular_radius_tangent,
 							world_space_vertex_position,
-							view_space_surface_position,
+							perspective_w,
 							position_derivative_x,
 							position_derivative_y
 						));
@@ -509,7 +520,9 @@ material_evaluation_suffix: fn () -> void {
 			let half_view_fresnel_base: f16 = clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0));
 			let half_view_fresnel_squared: f16 = half_view_fresnel_base * half_view_fresnel_base;
 			let half_view_fresnel_factor: f16 = half_view_fresnel_squared * half_view_fresnel_squared * half_view_fresnel_base;
-			let F: vec3f16 = F0 + one_minus_f0 * half_view_fresnel_factor;
+			// Schlick's F0 + (1 - F0) f, written so that 1 - F0 is not kept live through the loop.
+			let F: vec3f16 = F0 * (f16(1.0) - half_view_fresnel_factor)
+				+ vec3f16(half_view_fresnel_factor, half_view_fresnel_factor, half_view_fresnel_factor);
 			let NdotH: f16 = max(dot(normal, H), f16(0.0));
 			let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
 			let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
@@ -518,10 +531,7 @@ material_evaluation_suffix: fn () -> void {
 			let light_fresnel_base: f16 = clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0));
 			let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
 			let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
-			let kD: vec3f16 = one_minus_f0 * (f16(1.0) - light_fresnel_factor)
-				* one_minus_fresnel_n_dot_v
-				* one_minus_metalness;
-			let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
+			let local_diffuse: vec3f16 = direct_diffuse_albedo * (f16(1.0) - light_fresnel_factor);
 			let light_color: vec3f = vec3f(
 				lighting_data.lights[light_index].color.x,
 				lighting_data.lights[light_index].color.y,
@@ -533,24 +543,30 @@ material_evaluation_suffix: fn () -> void {
 		}
 	}
 
-	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;
+	// The half-precision view vector the lights above used. Keeping the f32 one live through the light loop for this
+	// alone made material evaluation 1.7 % slower (2026-10-05), and it already bends the mirror ray no more than the
+	// half-precision material normal does.
+	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - vec3f(V_material);
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
 	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness))
 		* lighting_data.environment_intensity;
-	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
-	// cannot stand for a wide glossy lobe, so reflections fade back to the prefiltered environment from roughness 0.2
-	// to 0.4. A reflection that points into the geometric surface would only find the surface itself.
-	let screen_space_reflection: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	if (f32(roughness) < 0.4 && dot(reflection_direction, N) > 0.0) {
-		screen_space_reflection = trace_screen_space_reflection(
-			world_space_vertex_position,
-			N,
-			reflection_direction,
-			views.views[0].view_projection,
-			image_extent
-		);
+	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
+	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
+	// Pre-exposure keeps daylight radiance within the half-float range. SSGI rescales previous-frame light when
+	// exposure changes, and the material consumer removes that scale before combining it with physical lighting.
+	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
+	// It is written before the reflection trace, which cannot change it, so the diffuse sum does not stay live through
+	// the ray march. Only SSGI reads the diffuse light, so it is not written while SSGI is off.
+	if (push_constant.blend == 0) {
+		if (push_constant.ssgi != 0) {
+			let diffuse_radiance: vec3f = diffuse * lighting_data.exposure;
+			write(
+				diffuse_radiance_map,
+				pixel_coordinates,
+				vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
+			);
+		}
 	}
-	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
 	// Visibility covers the cosine-weighted hemisphere, but a reflection gathers light from a lobe around the mirror
 	// direction that narrows as roughness falls. Lagarde and de Rousiers' fit ("Moving Frostbite to PBR", 2014)
 	// converts one to the other: smooth surfaces seen head-on keep more of their reflection, and grazing views lose it.
@@ -562,24 +578,35 @@ material_evaluation_suffix: fn () -> void {
 		0.0,
 		1.0
 	);
-	let specular_radiance: vec3f = reflection_radiance * (specular_occlusion * (1.0 - reflection_weight))
-		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
-	let one_minus_roughness: f16 = f16(1.0) - roughness;
-	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
-	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
-	let ibl_diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * indirect_diffuse_radiance;
-
 	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
 	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
 	let r: vec4f16 = roughness * c0 + c1;
 	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
 	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
-	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * specular_radiance;
-	// Material occlusion, like baked AO, applies to indirect light only. Direct light has its own shadows.
-	let ambient: vec3f = (ibl_diffuse + ibl_specular) * f32(occlusion);
+	// The split-sum weight of reflected light, with the material occlusion that applies to indirect light.
+	let specular_weight: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * f32(occlusion);
+	// Everything but the reflected light is known before the trace, so only these sums stay live through the march.
+	let direct_and_diffuse: vec3f = diffuse + specular;
+	let environment_specular: vec3f = reflection_radiance * specular_occlusion;
+	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
+	// cannot stand for a wide glossy lobe, so reflections fade back to the prefiltered environment from roughness 0.2
+	// to 0.4. A reflection that points into the geometric surface would only find the surface itself.
+	let screen_space_reflection: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (f32(roughness) < 0.4 && dot(reflection_direction, vec3f(geometric_normal)) > 0.0) {
+		screen_space_reflection = trace_screen_space_reflection(
+			world_space_vertex_position,
+			vec3f(geometric_normal),
+			reflection_direction,
+			views.views[0].view_projection,
+			image_extent
+		);
+	}
+	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
+	let specular_radiance: vec3f = environment_specular * (1.0 - reflection_weight)
+		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
-	let lit: vec3f = (diffuse + specular + ambient + vec3f(emission)) * lighting_data.exposure;
+	let lit: vec3f = (direct_and_diffuse + specular_weight * specular_radiance) * lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
 	if (push_constant.blend != 0) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
@@ -590,23 +617,9 @@ material_evaluation_suffix: fn () -> void {
 		);
 	}
 	write(lit_map, pixel_coordinates, output_color);
-	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
-	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
-	// Pre-exposure keeps daylight radiance within the half-float range. SSGI rescales previous-frame light when
-	// exposure changes, and the material consumer removes that scale before combining it with physical lighting.
-	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
 	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
 	if (push_constant.blend == 0) {
-		// Only SSGI reads the diffuse light, so it is not written while SSGI is off.
-		if (push_constant.ssgi != 0) {
-			let diffuse_radiance: vec3f = (diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission)) * lighting_data.exposure;
-			write(
-				diffuse_radiance_map,
-				pixel_coordinates,
-				vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
-			);
-		}
 		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
 	}
 }

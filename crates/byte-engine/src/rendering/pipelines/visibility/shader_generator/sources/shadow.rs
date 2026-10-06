@@ -810,6 +810,9 @@ sample_point_shadow: fn (
 }
 "#;
 
+// Filters the sun's shadow at a transparent receiver across the cascades in views `shadow_view0` through
+// `shadow_view3`. `view_depth` is the receiver's depth along the camera's view axis, which picks its cascade; the
+// material shader passes the clip w it already keeps, so no view-space position stays live through its light loop.
 pub(crate) const DIRECTIONAL_SHADOW_SOURCE: &str = r#"
 sample_directional_shadow: fn (
 	shadow_map: ArrayTexture2D,
@@ -819,23 +822,22 @@ sample_directional_shadow: fn (
 	shadow_view3: u32,
 	angular_radius_tangent: f32,
 	world_space_position: vec3f,
-	view_space_position: vec3f,
+	view_depth: f32,
 	world_space_position_derivative_x: vec3f,
 	world_space_position_derivative_y: vec3f
 ) -> f32 {
-	let depth_value: f32 = abs(view_space_position.z);
 	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
-	if (depth_value >= views.views[shadow_view3].far) {
+	if (view_depth >= views.views[shadow_view3].far) {
 		return 1.0;
 	}
 	// Descend only while the surface lies beyond a split. This avoids testing
 	// a sentinel cascade index after every successful near-cascade match.
 	let depth_cascade: u32 = 0;
-	if (depth_value >= views.views[shadow_view0].far) {
+	if (view_depth >= views.views[shadow_view0].far) {
 		depth_cascade = 1;
-		if (depth_value >= views.views[shadow_view1].far) {
+		if (view_depth >= views.views[shadow_view1].far) {
 			depth_cascade = 2;
-			if (depth_value >= views.views[shadow_view2].far) {
+			if (view_depth >= views.views[shadow_view2].far) {
 				depth_cascade = 3;
 			}
 		}

@@ -373,47 +373,38 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
-	let (function_name, mut iterator) = parse_type_name(iterator, function_name)?;
+	// Until `(` follows, the tokens may still be a variable or an index expression such as `items[4294967296]`, so a
+	// failed type name only declines.
+	let (function_name, mut iterator) = parse_type_name(iterator, function_name).map_err(|_| ParsingFailReasons::NotMine)?;
 	iterator.next_str("(")?;
+
+	// After `name(` the tokens can only be a call, so every failure from here on is a syntax error. Reporting it as
+	// one stops callers from retrying the same tokens as a variable followed by a grouped expression.
+	let malformed = || ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Malformed call to `{function_name}`. The most likely cause is a missing `)` or a missing `,` between arguments."
+		),
+	};
 
 	let mut parameters = vec![];
 
 	loop {
-		let iter_before = iterator.clone();
-
-		let mut parameter = Vec::new();
-		if let Some(new_iterator) = try_expression_parsers(&[parse_rvalue], &iterator, &mut parameter) {
-			parameters.push(parameter);
-			iterator = new_iterator;
-		}
-
-		// Check if iter is comma
-		if *iterator
-			.as_slice()
-			.first()
-			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
-			== ","
-		{
-			iterator.next();
-		}
-
-		// check if iter is close brace
-		if *iterator
-			.as_slice()
-			.first()
-			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
-			== ")"
-		{
+		if iterator.as_slice().first() == Some(&")") {
 			iterator.next();
 			break;
 		}
 
-		// Safety: if no progress was made, break to avoid infinite loop
-		if iterator.len() == iter_before.len() {
-			let token = iterator.as_slice().first().copied().unwrap_or("<eof>");
-			return Err(ParsingFailReasons::BadSyntax {
-				message: format!("Unexpected token '{}' in function call {}", token, function_name),
-			});
+		let mut parameter = Vec::new();
+		iterator = execute_expression_parsers(&[parse_rvalue], iterator, &mut parameter).map_err(|error| match error {
+			error @ ParsingFailReasons::BadSyntax { .. } => error,
+			_ => malformed(),
+		})?;
+		parameters.push(parameter);
+
+		match iterator.next().copied() {
+			Some(",") => {}
+			Some(")") => break,
+			_ => return Err(malformed()),
 		}
 	}
 

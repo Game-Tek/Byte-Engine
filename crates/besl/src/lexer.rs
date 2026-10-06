@@ -591,6 +591,16 @@ Foo: struct {
 	}
 
 	#[test]
+	fn lex_rejects_structs_that_contain_themselves() {
+		for field_type in ["Light", "Light[2]"] {
+			let source = format!("Light: struct {{ next: {field_type} }}");
+			let node = crate::parse(&source).expect("Failed to parse");
+
+			assert!(matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })));
+		}
+	}
+
+	#[test]
 	fn lex_rejects_functions_used_as_values() {
 		let source = "main: fn () -> void { normalize(vec3f(main)); }";
 		let node = crate::parse(source).expect("Failed to parse");

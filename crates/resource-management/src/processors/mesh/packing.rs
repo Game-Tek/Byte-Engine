@@ -61,17 +61,19 @@ impl MeshProcessorSession {
 			Streams::Meshlets,
 		]);
 
+		let blocks = stream_order
+			.map(|stream_type| PackedStreamBlock {
+				stream_type,
+				stride: stream_stride(&vertex_layout, stream_type),
+				bytes: Vec::new(),
+			})
+			.collect();
 		Ok(Self {
 			vertex_layout,
 			skeleton,
 			skeleton_nodes,
 			skins,
-			blocks: stream_order
-				.map(|stream_type| PackedStreamBlock {
-					stream_type,
-					bytes: Vec::new(),
-				})
-				.collect(),
+			blocks,
 			primitives: Vec::new(),
 			scratch: MeshProcessingScratch::default(),
 		})
@@ -382,7 +384,7 @@ impl MeshProcessorSession {
 				offset,
 				size,
 				stream_type: block.stream_type,
-				stride: stream_stride(block.stream_type),
+				stride: block.stride,
 			});
 			stream_descriptions.push(StreamDescription::new(stream_name(block.stream_type), size, offset));
 			offset += size;
@@ -419,6 +421,7 @@ struct MeshProcessingScratch {
 
 struct PackedStreamBlock {
 	stream_type: Streams,
+	stride: usize,
 	bytes: Vec<u8>,
 }
 
@@ -451,7 +454,7 @@ where
 		offset,
 		size: block.bytes.len() - offset,
 		stream_type,
-		stride: stream_stride(stream_type),
+		stride: block.stride,
 	});
 	Ok(())
 }
@@ -502,7 +505,7 @@ where
 			offset,
 			size: blocks[index].bytes.len() - offset,
 			stream_type,
-			stride: stream_stride(stream_type),
+			stride: blocks[index].stride,
 		});
 	}
 	Ok(())
@@ -519,7 +522,7 @@ fn append_generated_stream(blocks: &mut [PackedStreamBlock], stream_type: Stream
 		offset,
 		size: block.bytes.len() - offset,
 		stream_type,
-		stride: stream_stride(stream_type),
+		stride: block.stride,
 	}
 }
 
@@ -570,9 +573,14 @@ fn write_meshlet_record(bytes: &mut Vec<u8>, meshlet: meshopt::clusterize::Meshl
 	debug_assert_eq!(bytes.len() - offset, MESHLET_STREAM_STRIDE);
 }
 
-fn stream_stride(stream_type: Streams) -> usize {
+/// Returns the element stride of `stream_type`. Vertex streams take it from their declared format.
+fn stream_stride(vertex_layout: &[VertexComponent], stream_type: Streams) -> usize {
 	match stream_type {
-		Streams::Vertices(semantic) => semantic.size(),
+		Streams::Vertices(semantic) => vertex_layout
+			.iter()
+			.find(|component| component.semantic == semantic)
+			.and_then(VertexComponent::size)
+			.expect("validated vertex layouts declare a sized format for every stream"),
 		Streams::Indices(IndexStreamTypes::Vertices | IndexStreamTypes::Triangles) => size_of::<u16>(),
 		Streams::Indices(IndexStreamTypes::Meshlets) => size_of::<u8>(),
 		Streams::Meshlets => MESHLET_STREAM_STRIDE,
@@ -618,5 +626,5 @@ use crate::{
 		mesh::{MeshModel, Primitive},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
-	types::{IndexStreamTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };

@@ -166,7 +166,7 @@ mod tests {
 			.expect_err("mistyped skin layout should fail");
 			assert!(matches!(
 				error,
-				MeshProcessingError::InvalidSkinVertexComponentFormat {
+				MeshProcessingError::InvalidVertexComponentFormat {
 					semantic: actual,
 					..
 				} if actual == semantic

@@ -45,9 +45,9 @@ pub enum MeshProcessingError {
 		primitive: usize,
 	},
 	MissingSkinVertexComponent(VertexSemantics),
-	InvalidSkinVertexComponentFormat {
+	InvalidVertexComponentFormat {
 		semantic: VertexSemantics,
-		expected: &'static str,
+		expected: String,
 		actual: String,
 	},
 	SkinVertexCountMismatch {
@@ -164,13 +164,13 @@ impl std::fmt::Display for MeshProcessingError {
 				f,
 				"Skin vertex layout is incomplete. The most likely cause is that {semantic:?} channel 0 was omitted from the declared mesh layout."
 			),
-			Self::InvalidSkinVertexComponentFormat {
+			Self::InvalidVertexComponentFormat {
 				semantic,
 				expected,
 				actual,
 			} => write!(
 				f,
-				"Skin vertex layout has an invalid format. The most likely cause is that {semantic:?} was declared as '{actual}' instead of '{expected}'."
+				"Vertex layout has an unsupported format. The most likely cause is that {semantic:?} was declared as '{actual}', but the mesh processor only writes it as '{expected}'."
 			),
 			Self::SkinVertexCountMismatch {
 				primitive,
@@ -220,6 +220,15 @@ pub(super) fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Resul
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
 		seen[index] = true;
+		// The packer writes every stream in its canonical format, so any other declaration would mislabel the bytes.
+		let expected = VertexComponent::canonical(component.semantic).format;
+		if component.format != expected {
+			return Err(MeshProcessingError::InvalidVertexComponentFormat {
+				semantic: component.semantic,
+				expected,
+				actual: component.format.clone(),
+			});
+		}
 	}
 	Ok(())
 }
@@ -309,19 +318,12 @@ pub(super) fn validate_primitive_metadata(
 }
 
 fn validate_skin_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshProcessingError> {
-	for (semantic, expected) in [(VertexSemantics::Joints, "vec4u16"), (VertexSemantics::Weights, "vec4f")] {
-		let Some(component) = vertex_layout
+	for semantic in [VertexSemantics::Joints, VertexSemantics::Weights] {
+		if !vertex_layout
 			.iter()
-			.find(|component| component.semantic == semantic && component.channel == 0)
-		else {
+			.any(|component| component.semantic == semantic && component.channel == 0)
+		{
 			return Err(MeshProcessingError::MissingSkinVertexComponent(semantic));
-		};
-		if component.format != expected {
-			return Err(MeshProcessingError::InvalidSkinVertexComponentFormat {
-				semantic,
-				expected,
-				actual: component.format.clone(),
-			});
 		}
 	}
 	Ok(())

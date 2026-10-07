@@ -658,9 +658,17 @@ impl Context {
 		synchronizer_handle
 	}
 
-	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
+	/// Replaces one image's storage at `extent`. `array_layers` replaces its layer count, or keeps it when `None`.
+	pub(crate) fn resize_image_internal(
+		&mut self,
+		image_handle: ImageHandle,
+		extent: Extent,
+		array_layers: Option<std::num::NonZeroU32>,
+		sequence_index: u8,
+	) {
 		let image = image_handle.access(&self.images);
-		if !image.owns_image || image.extent == extent {
+		let array_layers = array_layers.or(image.layers);
+		if !image.owns_image || (image.extent == extent && image.layers == array_layers) {
 			return;
 		}
 
@@ -673,6 +681,7 @@ impl Context {
 		let builder = crate::image::Builder {
 			name: name.as_deref(),
 			extent,
+			array_layers,
 			..image.builder()
 		};
 		let new_image = self.build_image_internal(image.next, &builder);

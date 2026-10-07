@@ -55,7 +55,7 @@ impl Context {
 		let mut changed = false;
 		for sequence_index in 0..self.frames as usize {
 			match self.swapchains[swapchain_handle.0 as usize].images[sequence_index] {
-				Some(image) => changed |= self.resize_image_internal(image, extent),
+				Some(image) => changed |= self.resize_image_internal(image, extent, None),
 				None => {
 					let description = ImageDescription::new(
 						&image_builder::Builder::new(SWAPCHAIN_FORMAT, uses | Uses::BlitSource).extent(extent),

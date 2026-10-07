@@ -34,6 +34,14 @@ impl Region {
 	}
 }
 
+/// Checks that a layer count passed to [`crate::frame::Frame::resize_image_layers`] fits the image it resizes.
+pub(crate) fn assert_resizable_layers(cube_array_compatible: bool, array_layers: NonZeroU32) {
+	assert!(
+		!cube_array_compatible || array_layers.get().is_multiple_of(6),
+		"Cube-array image cannot be resized to {array_layers} layers. The most likely cause is a layer count that is not six faces per cube."
+	);
+}
+
 /// Returns the dimensions of one mip while preserving the image dimensionality; see [`Extent::mip`].
 pub(crate) fn mip_extent(extent: Extent, level: u32) -> Extent {
 	extent.mip(level)

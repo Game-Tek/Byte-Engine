@@ -232,6 +232,7 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 	if !matches!(
 		readback.format,
 		ghi::Formats::R8UNORM
+			| ghi::Formats::RGBA8UNORM
 			| ghi::Formats::BGRAu8
 			| ghi::Formats::BGRAsRGB
 			| ghi::Formats::RGBA16UNORM
@@ -253,6 +254,8 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 					rgba.extend_from_slice(&[value, value, value, 255]);
 				}
 			}
+			// Packed masks, such as one sun's visibility per channel, keep their channels.
+			ghi::Formats::RGBA8UNORM => rgba.extend_from_slice(row),
 			ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => {
 				for pixel in row.as_chunks::<4>().0 {
 					rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
@@ -507,6 +510,12 @@ mod tests {
 	}
 
 	#[test]
+	fn png_keeps_rgba8_unorm_channels_and_ignores_pitched_padding() {
+		let png = encode_png(&readback(vec![10, 20, 30, 40, 99, 99, 99, 99], ghi::Formats::RGBA8UNORM, 8)).expect("encode PNG");
+		assert_eq!(decode_png(&png), [10, 20, 30, 40]);
+	}
+
+	#[test]
 	fn png_converts_r8_unorm_to_gray_and_ignores_pitched_padding() {
 		let png = encode_png(&readback(vec![128, 99, 99, 99], ghi::Formats::R8UNORM, 4)).expect("encode PNG");
 		assert_eq!(decode_png(&png), [128, 128, 128, 255]);
@@ -514,7 +523,7 @@ mod tests {
 
 	#[test]
 	fn png_rejects_invalid_readbacks() {
-		let error = encode_png(&readback(vec![0; 4], ghi::Formats::RGBA8UNORM, 4)).expect_err("reject RGBA readback");
+		let error = encode_png(&readback(vec![0; 4], ghi::Formats::RG8UNORM, 4)).expect_err("reject RG readback");
 		assert!(error.starts_with("Texture transfer format is unsupported."));
 
 		let error = encode_png(&readback(vec![0; 3], ghi::Formats::BGRAu8, 4)).expect_err("reject incomplete row");

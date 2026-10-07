@@ -237,7 +237,7 @@ impl Context {
 				self.images[native.0 as usize] = image;
 
 				if uses_proxy_images {
-					self.resize_image_internal(images[index], proxy_extent, 0);
+					self.resize_image_internal(images[index], proxy_extent, None, 0);
 				}
 			} else {
 				native_images[index] = self.create_swapchain_image(
@@ -650,10 +650,14 @@ impl Context {
 					}
 					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
-				Tasks::ResizeImage { handle, extent } => {
+				Tasks::ResizeImage {
+					handle,
+					extent,
+					array_layers,
+				} => {
 					// The task names the resized frame's own image, which need not be the chain's first.
 					let handle = self.image_handle_for_sequence(handle.root(&self.images), sequence_index as usize);
-					self.resize_image_internal(handle, *extent, sequence_index);
+					self.resize_image_internal(handle, *extent, *array_layers, sequence_index);
 				}
 			}
 

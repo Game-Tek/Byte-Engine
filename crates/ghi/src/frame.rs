@@ -67,6 +67,14 @@ where
 	/// A smaller extent does not always require reallocation.
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent);
 
+	/// Resizes an array image to `extent` and `array_layers` layers.
+	///
+	/// Use this for images whose layer count follows a per-frame budget, such as a pool of shadow maps. The image
+	/// keeps its handle, so descriptors that reference it see the new storage. The new storage starts without valid
+	/// contents. This method has no effect when the image already has the requested extent and layer count. For a
+	/// cube-array image, `array_layers` counts faces and must be a multiple of six.
+	fn resize_image_layers(&mut self, image_handle: BaseImageHandle, extent: Extent, array_layers: std::num::NonZeroU32);
+
 	/// Sizes every member of `group` and gives each one memory, sharing memory between members whose lifetimes do
 	/// not overlap.
 	///

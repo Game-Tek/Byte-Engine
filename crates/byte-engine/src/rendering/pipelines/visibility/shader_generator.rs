@@ -150,7 +150,7 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		// Holds every entry of `views`, `SHADOW_VIEW_COUNT`: shadow sampling reads cone and point views past the cascades.
 		Node::constant_buffer_binding(
 			"views",
-			Node::buffer(vec![Node::member("views", "View[117]")]),
+			Node::buffer(vec![Node::member("views", "View[129]")]),
 			0,
 			true,
 			false,

@@ -1,7 +1,7 @@
-//! Sun visibility: the directional shadow map's filtered visibility times the screen-space contact shadow, resolved
-//! once per opaque pixel into one full-resolution image.
+//! Sun visibility: each shadowed sun's filtered shadow-map visibility times its screen-space contact shadow, resolved
+//! once per opaque pixel into one full-resolution image, with sun slot `s` in channel `s`.
 //!
-//! Opaque material evaluation multiplies the sun by one fetch of [`SUN_VISIBILITY_TARGET`]. Resolving the shadow map
+//! Opaque material evaluation multiplies each sun by its channel of one fetch of [`SUN_VISIBILITY_TARGET`]. Resolving the shadow map
 //! in a pass of its own keeps its many fetches out of the material shader, where they hide their latency poorly, and
 //! lets the GPU overlap them with the other screen-space passes. Transparent surfaces lie in front of the opaque depth
 //! the pass resolves, so the material shader still resolves the map for them itself.
@@ -17,6 +17,8 @@ use ghi::pod::Vec3f;
 use maths_rs::Vec4f;
 use utils::Extent;
 
+use super::super::layout::MAX_DIRECTIONAL_SHADOW_COUNT;
+use super::super::shadow_selection::SunShadow;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::gtao::configuration_float;
 use super::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps};
@@ -67,8 +69,8 @@ impl ContactShadowSettings {
 	}
 }
 
-/// The render-graph name of the full-resolution result: one where the sun reaches the pixel, falling toward zero
-/// where the shadow map or visible geometry blocks it. Material evaluation reads it for the sun.
+/// The render-graph name of the full-resolution result: per sun slot, one where that sun reaches the pixel, falling
+/// toward zero where its shadow map or visible geometry blocks it. Material evaluation reads it for every shadowed sun.
 pub(crate) const SUN_VISIBILITY_TARGET: &str = "Sun Visibility";
 /// The render-graph name of the unfiltered half-resolution contact-shadow trace, which the resolve reads. Capture it
 /// to debug the trace alone.
@@ -112,7 +114,8 @@ pub(crate) fn create_sun_visibility_targets(
 	let mut target = |name, resolution_divisor| {
 		render_pass_builder
 			.create_scaled_render_target(
-				ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
+				// One channel per sun slot, so every shadowed sun resolves in one dispatch that shares its tile loads.
+				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 					.name(name)
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 				resolution_divisor,
@@ -125,20 +128,21 @@ pub(crate) fn create_sun_visibility_targets(
 	}
 }
 
-/// The `SunVisibilityShaderParameters` struct carries what both stages need from the CPU each frame: the sun's
-/// direction and the contact rays' reach for the trace, and the sun's size and the camera's full-resolution pixel rays
-/// for the resolve.
+/// The `SunVisibilityShaderParameters` struct carries what both stages need from the CPU each frame: every sun's
+/// direction and the contact rays' reach for the trace, and every sun's size and the camera's full-resolution pixel
+/// rays for the resolve.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-struct SunVisibilityShaderParameters {
-	/// The view-space unit direction from a surface toward the sun.
-	direction_to_light: Vec3f,
-	max_distance: f32,
-	/// The tangent of the sun's angular radius, which sizes its penumbrae.
-	angular_radius_tangent: f32,
-	pixel_to_ray_mul: [f32; 2],
-	pixel_to_ray_add: [f32; 2],
-	_padding: [f32; 3],
+pub(crate) struct SunVisibilityShaderParameters {
+	/// Per sun slot, the view-space unit direction from a surface toward the sun in xyz and the tangent of the sun's
+	/// angular radius, which sizes its penumbrae, in w.
+	pub(crate) suns: [[f32; 4]; MAX_DIRECTIONAL_SHADOW_COUNT],
+	/// The camera's full-resolution pixel-to-ray scale in xy and offset in zw.
+	pub(crate) pixel_to_ray: [f32; 4],
+	pub(crate) max_distance: f32,
+	/// How many sun slots hold a shadowed sun.
+	pub(crate) sun_count: u32,
+	pub(crate) _padding: [u32; 2],
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
@@ -268,30 +272,38 @@ impl SunVisibilityPass {
 	}
 
 	/// Uploads this frame's sun and camera constants, and returns the trace and resolve recording, or `None` without a
-	/// shadow-casting sun, because material evaluation reads the result only for the sun.
+	/// shadowed sun, because material evaluation reads the result only for shadowed suns.
 	///
-	/// `sun_direction` is the world-space direction the sun's light travels, and `angular_radius_tangent` the tangent
-	/// of its angular radius. `settings` sets the contact rays' reach.
+	/// `suns` are the shadowed suns by sun slot. `settings` sets the contact rays' reach.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		sun_direction: Option<math::UnitVector>,
-		angular_radius_tangent: f32,
+		suns: &[SunShadow],
 		settings: ContactShadowSettings,
 		[trace, resolve]: [ghi::PipelineHandle; 2],
 	) -> Option<SunVisibilityStages> {
-		let sun_direction = sun_direction?;
+		if suns.is_empty() {
+			return None;
+		}
 		let extent = sink.extent();
 		let screen = screen_view_data(sink, extent);
-		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SunVisibilityShaderParameters {
-			direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
+		let mut parameters = SunVisibilityShaderParameters {
+			pixel_to_ray: [
+				screen.pixel_to_ray_mul[0],
+				screen.pixel_to_ray_mul[1],
+				screen.pixel_to_ray_add[0],
+				screen.pixel_to_ray_add[1],
+			],
 			max_distance: settings.max_distance,
-			angular_radius_tangent,
-			pixel_to_ray_mul: screen.pixel_to_ray_mul,
-			pixel_to_ray_add: screen.pixel_to_ray_add,
-			_padding: [0.0; 3],
+			sun_count: suns.len() as u32,
+			..Default::default()
 		};
+		for (entry, sun) in parameters.suns.iter_mut().zip(suns) {
+			let [x, y, z] = <[f32; 3]>::from(view_space_direction_to_light(sink.view(), sun.direction));
+			*entry = [x, y, z, sun.angular_radius_tangent];
+		}
+		*frame.get_mut_dynamic_buffer_slice(self.parameters) = parameters;
 		frame.sync_buffer(self.parameters);
 		Some(SunVisibilityStages {
 			trace: ComputeStage {

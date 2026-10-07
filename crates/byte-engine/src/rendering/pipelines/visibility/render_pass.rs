@@ -141,7 +141,7 @@ pub(crate) use self::occlusion::OcclusionPhase;
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
-pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork};
+pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork, SunCascades};
 pub use self::ssgi::SSGI_CONFIGURATION_PREFIX;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
@@ -474,7 +474,7 @@ impl VisibilityRenderPass {
 		frame_work: Option<(&'a SkinningPass, &'a ShadowMaps)>,
 		dispatches: PhaseDispatches,
 		render_info: &'a RenderInfo,
-		shadow_work: ShadowWork,
+		shadow_work: &ShadowWork,
 		history: Option<SinkHistory>,
 		exposure: f32,
 		gtao_settings: GtaoSettings,
@@ -486,9 +486,9 @@ impl VisibilityRenderPass {
 		let pipeline_manager = &self.pipeline_manager;
 		// The cascades were made for the camera of the sink that records the frame-wide work, so only its surfaces
 		// can fit them.
-		let shadow_work = ShadowWork {
-			receiver_fit: shadow_work.receiver_fit.filter(|_| frame_work.is_some()),
-			..shadow_work
+		let receiver_fit = match frame_work {
+			Some(_) => shadow_work.receiver_fit.as_slice(),
+			None => &[],
 		};
 		let (skinning, shadows) = match frame_work {
 			Some((skinning, shadow_maps)) => (
@@ -506,8 +506,11 @@ impl VisibilityRenderPass {
 		};
 		let visibility_pipelines = self.visibility.pipelines.resolve(pipeline_manager)?;
 		let prepass_pipelines = self.material_prepasses.pipelines.resolve(pipeline_manager)?;
-		let cascade_fit = self.cascade_fit.prepare(frame, pipeline_manager, shadow_work, sink)?;
-		let fits_receivers = shadow_work.receiver_fit.is_some();
+		let cascade_fit =
+			self.cascade_fit
+				.prepare(frame, pipeline_manager, receiver_fit, shadow_work.cascade_resolution, sink)?;
+		let fitted_suns = receiver_fit.len() as u32;
+		let fits_receivers = fitted_suns > 0;
 		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;
 		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
@@ -522,14 +525,11 @@ impl VisibilityRenderPass {
 			false => None,
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
-		let depth_pyramid = self
-			.depth_pyramid
-			.prepare(frame, sink, depth_pyramid_pipeline, fits_receivers);
+		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline, fitted_suns);
 		let sun_visibility = self.sun_visibility.prepare(
 			frame,
 			sink,
-			shadow_work.directional,
-			shadow_work.sun_angular_radius_tangent,
+			&shadow_work.suns,
 			contact_shadow_settings,
 			sun_visibility_pipelines,
 		);

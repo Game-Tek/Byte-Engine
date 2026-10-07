@@ -417,8 +417,19 @@ material_evaluation_suffix: fn () -> void {
 				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view0 != 0) {
 					if (push_constant.blend == 0) {
-						// The sun visibility pass resolved the shadow map and the contact shadows for every opaque pixel.
-						occlusion_factor = f16(fetch(sun_visibility, pixel_coordinates).x);
+						// The sun visibility pass resolved every sun's shadow map and contact shadows for every opaque
+						// pixel, sun slot `s` in channel `s`.
+						let sun_slot: u32 = lighting_data.lights[light_index].shadow_layer;
+						let suns_visibility: vec4f = fetch(sun_visibility, pixel_coordinates);
+						let sun_visibility_value: f32 = suns_visibility.x;
+						if (sun_slot == 1) {
+							sun_visibility_value = suns_visibility.y;
+						} else if (sun_slot == 2) {
+							sun_visibility_value = suns_visibility.z;
+						} else if (sun_slot == 3) {
+							sun_visibility_value = suns_visibility.w;
+						}
+						occlusion_factor = f16(sun_visibility_value);
 					} else {
 						// A transparent surface lies in front of the opaque depth that pass resolved, so it filters the
 						// shadow map itself, without contact shadows, which trace that depth.

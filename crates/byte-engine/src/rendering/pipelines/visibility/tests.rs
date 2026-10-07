@@ -1668,7 +1668,7 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 	let mut fit = buffer(program, PYRAMID_RECEIVER_FIT_SLOT);
 	let mut push_constant = push_constant_buffer(program);
 	push_constant
-		.write("fit_receivers", Value::U32(0))
+		.write("fitted_suns", Value::U32(0))
 		.expect("depth pyramid push constant");
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
@@ -2523,17 +2523,27 @@ const CONTACT_SHADOW_TEST_DISTANCE: f32 = 0.3;
 /// Runs the contact-shadow trace at one texel of the floor scene, traced at the scene's own resolution, and returns the
 /// value it writes: one where the ray toward the light is clear, falling toward zero where it is blocked.
 fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
+	run_contact_shadows_toward(wall, &[direction_to_light], pixel)[0]
+}
+
+/// Runs the contact-shadow trace at one texel of the floor scene with one sun slot per direction, and returns the texel
+/// it writes, sun slot `s` in channel `s`.
+fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixel: [u32; 2]) -> [f32; 4] {
 	let program = asset!("contact-shadows.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
-	let [x, y, z] = direction_to_light;
-	let length = (x * x + y * y + z * z).sqrt();
 	let mut view = gtao_view_data(&program, extent, extent);
 	let mut parameters = buffer(&program, ResourceSlot::new(1));
-	parameters
-		.write("direction_to_light", Value::Vec3F([x / length, y / length, z / length]))
-		.expect("contact shadow parameters");
+	for (slot, [x, y, z]) in directions_to_light.iter().copied().enumerate() {
+		let length = (x * x + y * y + z * z).sqrt();
+		parameters
+			.write_indexed("suns", slot, Value::Vec4F([x / length, y / length, z / length, 0.0]))
+			.expect("contact shadow parameters");
+	}
 	parameters
 		.write("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE))
+		.expect("contact shadow parameters");
+	parameters
+		.write("sun_count", Value::U32(directions_to_light.len() as u32))
 		.expect("contact shadow parameters");
 	let mut depth = texture_2d(extent, extent, &contact_shadow_linear_depth(wall));
 	let mut output = empty_image(extent, extent);
@@ -2544,7 +2554,7 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 	run_at(&program, &mut descriptors, pixel);
 	drop(descriptors);
-	rgba(&output, pixel)[0]
+	rgba(&output, pixel)
 }
 
 /// Texels per side of the sun's shadow map, and of each of its four cascades, in the sun visibility tests.
@@ -2576,11 +2586,13 @@ fn sun_cascade_view() -> crate::rendering::View {
 
 /// Renders the floor scene with the low wall into the test sun's shadow map: each texel stores the depth of the
 /// surface the light meets first along its ray, the wall where the ray crosses it above the floor, else the floor, or
-/// zero where the ray meets nothing. Returns the map with its four cascade layers, cascade zero drawn, and the
-/// cascades' max-depth and min-depth cell pyramids as the directional shadow pyramid pass builds them.
-fn sun_shadow_map() -> (Texture, Texture, Texture) {
+/// zero where the ray meets nothing. Returns the map with four cascade layers for each of `suns` sun slots, cascade
+/// zero of the last slot drawn, and the layers' max-depth and min-depth cell pyramids as the directional shadow
+/// pyramid pass builds them.
+fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 	let extent = SUN_SHADOW_MAP_EXTENT;
-	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32;
+	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32 * suns;
+	let drawn_layer = cascades - super::layout::SHADOW_CASCADE_COUNT as u32;
 	let view_projection = sun_cascade_view().view_projection();
 	let inverse_view_projection = math::inverse(view_projection);
 	let direction = sun_direction().into_maths();
@@ -2615,9 +2627,9 @@ fn sun_shadow_map() -> (Texture, Texture, Texture) {
 		for x in 0..extent {
 			let depth = depth_at(x, y);
 			shadow_map
-				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
+				.write_3d([x, y, drawn_layer], [depth, 0.0, 0.0, 1.0])
 				.expect("shadow map fixture");
-			let cell = ((y / 8) * cells + x / 8) as usize;
+			let cell = ((drawn_layer * cells + y / 8) * cells + x / 8) as usize;
 			pyramid[cell][0] = pyramid[cell][0].max(depth);
 			minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
 				depth
@@ -2638,21 +2650,31 @@ fn sun_shadow_map() -> (Texture, Texture, Texture) {
 /// depth as mip zero of the depth pyramid holds it, and returns the pixel's sun visibility. With `shadow_map`, the
 /// scene's own shadow map shadows it; without, an empty map leaves the sun unshadowed. View space is world space.
 fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pixel: [u32; 2]) -> f32 {
+	run_sun_visibility_in_slot(trace, shadow_map, pixel, 0)[0]
+}
+
+/// Runs the sun visibility resolve as [`run_sun_visibility`] does, with the test sun in sun slot `slot` and every
+/// earlier slot holding the same sun over an empty shadow map and a clear trace. Returns the pixel's texel, sun slot
+/// `s` in channel `s`.
+fn run_sun_visibility_in_slot(
+	trace: impl Fn(u32, u32, f32) -> f32,
+	shadow_map: bool,
+	pixel: [u32; 2],
+	slot: usize,
+) -> [f32; 4] {
 	let program = asset!("sun-visibility.besl");
 	let extent = CONTACT_SHADOW_EXTENT;
-	let cascades = super::layout::SHADOW_CASCADE_COUNT;
+	let suns = slot + 1;
+	let cascades = super::layout::SHADOW_CASCADE_COUNT * suns;
 	let linear_depth = contact_shadow_linear_depth(true);
 	let (trace_depth, trace_extent, _) = reduce_nearest_nonzero_depth(&linear_depth, extent, extent);
 	let trace = trace_depth
 		.iter()
 		.enumerate()
 		.map(|(index, texel)| {
-			[
-				trace(index as u32 % trace_extent, index as u32 / trace_extent, texel[0]),
-				0.0,
-				0.0,
-				1.0,
-			]
+			let mut channels = [1.0; 4];
+			channels[slot] = trace(index as u32 % trace_extent, index as u32 / trace_extent, texel[0]);
+			channels
 		})
 		.collect::<Vec<_>>();
 	let device_depth = linear_depth
@@ -2663,12 +2685,12 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	// The blocker search gathers the maximum pyramid through a binding of its own, and the VM binds a texture once, so
 	// the pyramid is built twice.
 	let mut shadow_cells = if shadow_map {
-		sun_shadow_map().1
+		sun_shadow_map(suns as u32).1
 	} else {
 		empty_image(cells, cells * cascades as u32)
 	};
 	let (mut shadow_map, mut shadow_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
-		sun_shadow_map()
+		sun_shadow_map(suns as u32)
 	} else {
 		(
 			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
@@ -2696,18 +2718,20 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	let screen = screen_view_buffer(&program, ResourceSlot::new(1037), extent, extent);
 	let mut parameters = buffer(&program, ResourceSlot::new(1038));
 	let [x, y, z] = [0.0, 1.0, 1.0f32].map(|component| component / 2.0f32.sqrt());
+	for sun in 0..suns {
+		parameters
+			.write_indexed("suns", sun, Value::Vec4F([x, y, z, 0.0]))
+			.expect("sun visibility parameters");
+	}
+	let rays = |member| match screen.read(member).expect("full-resolution rays") {
+		Value::Vec2F(rays) => rays,
+		value => panic!("Unexpected pixel ray value: {value:?}."),
+	};
+	let ([mul_x, mul_y], [add_x, add_y]) = (rays("pixel_to_ray_mul"), rays("pixel_to_ray_add"));
 	for (member, value) in [
-		("direction_to_light", Value::Vec3F([x, y, z])),
+		("pixel_to_ray", Value::Vec4F([mul_x, mul_y, add_x, add_y])),
 		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
-		("angular_radius_tangent", Value::F32(0.0)),
-		(
-			"pixel_to_ray_mul",
-			screen.read("pixel_to_ray_mul").expect("full-resolution rays"),
-		),
-		(
-			"pixel_to_ray_add",
-			screen.read("pixel_to_ray_add").expect("full-resolution rays"),
-		),
+		("sun_count", Value::U32(suns as u32)),
 	] {
 		parameters.write(member, value).expect("sun visibility parameters");
 	}
@@ -2728,7 +2752,7 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 	descriptors.bind_texture(ResourceSlot::new(1041), &mut shadow_minimum_pyramid);
 	descriptors.bind_texture(ResourceSlot::new(1042), &mut shadow_cells);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
-	rgba(&output, pixel)[0]
+	rgba(&output, pixel)
 }
 
 /// Returns the floor's depth at a pixel row of the center column, or zero where that row does not see the floor.
@@ -2827,6 +2851,39 @@ fn sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun() {
 	assert_eq!(run_sun_visibility(|_, _, _| 0.0, false, [column, lit_row]), 0.0);
 }
 
+/// Verifies a sun in a later slot resolves its own cascades, the shadow-map layers and views after the earlier suns',
+/// into its own channel, while an earlier sun over an empty map stays lit.
+#[test]
+fn sun_visibility_resolves_each_sun_from_its_own_cascades() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let row_at = |near: f32, far: f32| {
+		(0..CONTACT_SHADOW_EXTENT)
+			.find(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
+			.expect("a floor row in the band")
+	};
+	let shadowed_row = row_at(CONTACT_SHADOW_WALL_Z - 0.2, CONTACT_SHADOW_WALL_Z - 0.05);
+	let lit_row = row_at(CONTACT_SHADOW_WALL_Z - 0.65, CONTACT_SHADOW_WALL_Z - 0.35);
+	let clear = |_, _, _| 1.0;
+
+	let shadowed = run_sun_visibility_in_slot(clear, true, [column, shadowed_row], 1);
+	assert_eq!([shadowed[0], shadowed[1]], [1.0, 0.0]);
+	assert_eq!(run_sun_visibility_in_slot(clear, true, [column, lit_row], 1)[1], 1.0);
+}
+
+/// Verifies the contact-shadow trace marches each sun's own ray: the floor in front of the low wall is shadowed for a
+/// sun behind the wall and lit for one in front of it, each in its own channel.
+#[test]
+fn contact_shadows_trace_each_sun_into_its_own_channel() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let row = (0..CONTACT_SHADOW_EXTENT)
+		.find(|&row| (CONTACT_SHADOW_WALL_Z - 0.05..CONTACT_SHADOW_WALL_Z).contains(&contact_shadow_floor_z(row)))
+		.expect("a floor row just in front of the wall");
+
+	let texel = run_contact_shadows_toward(true, &[[0.0, 1.0, -1.0], [0.0, 1.0, 1.0]], [column, row]);
+
+	assert_eq!([texel[0], texel[1]], [1.0, 0.0]);
+}
+
 /// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.
 ///
 /// Each entry's settings mirror the asset's `.bead` file.
@@ -2877,6 +2934,11 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			"hiz_tail",
 			asset_source!("hiz-tail.besl"),
 			Settings::compute(Extent::rectangle(16, 8)),
+		),
+		(
+			"gtao_depth_pyramid",
+			asset_source!("gtao-depth-pyramid.besl"),
+			Settings::compute(Extent::square(16)),
 		),
 		("contact_shadows", asset_source!("contact-shadows.besl"), tile()),
 		("sun_visibility", asset_source!("sun-visibility.besl"), tile()),
@@ -3061,10 +3123,11 @@ const RECEIVER_FIT_EXTENT: u32 = 64;
 const RECEIVER_FIT_WALL_Z: f32 = 20.0;
 const RECEIVER_FIT_WALL_HEIGHT: f32 = 4.0;
 
-/// A camera 1.7 m above a floor, looking a little down toward a 4 m wall 20 m ahead, with sky above the wall, under a
-/// diagonal sun.
+/// A camera 1.7 m above a floor, looking a little down toward a 4 m wall 20 m ahead, with sky above the wall, under two
+/// diagonal suns.
 struct ReceiverFitScene {
-	cascades: [crate::rendering::csm::CascadeFrame; super::layout::SHADOW_CASCADE_COUNT],
+	/// Each sun's frustum-fitted cascades, by sun slot.
+	suns: Vec<[crate::rendering::csm::CascadeFrame; super::layout::SHADOW_CASCADE_COUNT]>,
 	shader_data: super::render_pass::ReceiverFitShaderData,
 	/// Each pixel's reversed device depth, zero for the sky.
 	device_depth: Vec<[f32; 4]>,
@@ -3083,21 +3146,25 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 		math::Point::new(0.0, 1.7, 0.0),
 		math::Vector::new(0.0, -0.3, 1.0).normalized().expect("camera direction"),
 	);
-	let sun = math::Vector::new(0.5, -1.0, 0.3).normalized().expect("sun direction");
-	let cascades = csm::make_cascade_frames(
-		camera,
-		sun,
-		super::layout::SHADOW_CASCADE_COUNT,
-		super::layout::DEFAULT_SHADOW_MAP_RESOLUTION,
-		csm::CascadeSplits::default(),
-	)
-	.collect::<smallvec::SmallVec<[_; 4]>>()
-	.into_inner()
-	.expect("four cascades");
+	let suns = [math::Vector::new(0.5, -1.0, 0.3), math::Vector::new(-0.4, -1.0, -0.6)]
+		.map(|direction| {
+			csm::make_cascade_frames(
+				camera,
+				direction.normalized().expect("sun direction"),
+				super::layout::SHADOW_CASCADE_COUNT,
+				super::layout::DEFAULT_SHADOW_MAP_RESOLUTION,
+				csm::CascadeSplits::default(),
+			)
+			.collect::<smallvec::SmallVec<[_; 4]>>()
+			.into_inner()
+			.expect("four cascades")
+		})
+		.to_vec();
+	let cascades = &suns[0];
 	let extent = utils::Extent::square(RECEIVER_FIT_EXTENT);
 	let screen = super::render_pass::screen_view_data(&Sink::new(camera, extent, 0), extent);
 	let shader_data =
-		super::render_pass::receiver_fit_shader_data(screen, camera, &cascades, super::layout::DEFAULT_SHADOW_MAP_RESOLUTION);
+		super::render_pass::receiver_fit_shader_data(screen, camera, &suns, super::layout::DEFAULT_SHADOW_MAP_RESOLUTION);
 
 	let camera_to_world = math::inverse(camera.view());
 	let position = camera_to_world * maths_rs::Vec4f::new(0.0, 0.0, 0.0, 1.0);
@@ -3127,7 +3194,7 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 		}
 	}
 	ReceiverFitScene {
-		cascades,
+		suns,
 		shader_data,
 		device_depth,
 		receivers,
@@ -3175,7 +3242,7 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 	let mut bounds = buffer(&program, PYRAMID_RECEIVER_BOUNDS_SLOT);
 	let mut push_constant = push_constant_buffer(&program);
 	push_constant
-		.write("fit_receivers", Value::U32(1))
+		.write("fitted_suns", Value::U32(scene.suns.len() as u32))
 		.expect("depth pyramid push constant");
 	let tiles = RECEIVER_FIT_EXTENT / RECEIVER_BOUNDS_TILE;
 	for tile in 0..tiles * tiles {
@@ -3198,7 +3265,7 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 	bounds
 }
 
-/// Runs the cascade fit on `bounds` over views holding the scene's frustum-fitted cascades after the camera, and
+/// Runs the cascade fit on `bounds` over views holding every sun's frustum-fitted cascades after the camera, and
 /// returns the views it wrote.
 fn run_cascade_fit(
 	program: &ExecutableProgram,
@@ -3207,7 +3274,7 @@ fn run_cascade_fit(
 	size_steps: &mut besl::vm::Buffer,
 ) -> besl::vm::Buffer {
 	let mut views = buffer(program, VIEWS_SLOT);
-	for (cascade, frame) in scene.cascades.iter().enumerate() {
+	for (cascade, frame) in scene.suns.iter().flatten().enumerate() {
 		let view = frame.view.view();
 		for (field, value) in [
 			("view", Value::Mat4x3F(bytemuck::cast(ghi::pod::Mat4x3f::from(view)))),
@@ -3222,13 +3289,15 @@ fn run_cascade_fit(
 		}
 	}
 	let mut fit = receiver_fit_buffer(program, RECEIVER_FIT_SLOT, &scene.shader_data);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-	descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
-	descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
-	descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
-	// One lane fits each cascade.
-	run_workgroup_containing::<4>(program, descriptors, 4, [0, 0]);
+	// One workgroup fits each sun, one lane per cascade.
+	for sun in 0..scene.suns.len() as u32 {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
+		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
+		descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
+		run_workgroup_containing::<4>(program, descriptors, 4, [4 * sun, 0]);
+	}
 	views
 }
 
@@ -3267,7 +3336,7 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	let resolution = super::layout::DEFAULT_SHADOW_MAP_RESOLUTION as f32;
 
 	// The fit resets the bounds it read, so the next frame's depth pyramid pass merges into empty boxes.
-	for bound in 0..24 {
+	for bound in 0..24 * scene.suns.len() {
 		assert_eq!(
 			bounds.read_array_element(bound).expect("receiver bound"),
 			Value::U32(0),
@@ -3275,8 +3344,11 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 		);
 	}
 
-	for (cascade, frame) in scene.cascades.iter().enumerate() {
-		let view_projection = read_matrix(&views, 1 + cascade, "view_projection");
+	// Every sun fits its own cascades, which follow the earlier suns' in the views; a pixel's cascade depends only on
+	// its distance from the camera, so every sun's cascades hold the same receivers.
+	for (fitted_box, frame) in scene.suns.iter().flatten().enumerate() {
+		let cascade = fitted_box % super::layout::SHADOW_CASCADE_COUNT;
+		let view_projection = read_matrix(&views, 1 + fitted_box, "view_projection");
 		let half_extent = fitted_half_extent(&view_projection);
 		let receivers = scene
 			.receivers
@@ -3288,13 +3360,13 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 			assert_eq!(
 				view_projection,
 				column_major(frame.view.view_projection()),
-				"Cascade {cascade} has no receivers but changed. The most likely cause is that the fit rewrote an empty cascade."
+				"Fitted cascade {fitted_box} has no receivers but changed. The most likely cause is that the fit rewrote an empty cascade."
 			);
 			continue;
 		}
 		assert!(
 			half_extent <= frame.half_extent * 1.0001,
-			"Cascade {cascade} grew from {} to {half_extent} meters. The most likely cause is that the fit is not limited by the frustum fit.",
+			"Fitted cascade {fitted_box} grew from {} to {half_extent} meters. The most likely cause is that the fit is not limited by the frustum fit.",
 			frame.half_extent
 		);
 
@@ -3306,11 +3378,11 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 			let ndc = transform_point(&view_projection, 4, *point);
 			assert!(
 				ndc[0].abs() <= edge && ndc[1].abs() <= edge,
-				"Cascade {cascade} receiver {point:?} lies at {ndc:?}, inside the edge margin. The most likely cause is that the receiver bounds or the fit's padding are wrong."
+				"Fitted cascade {fitted_box} receiver {point:?} lies at {ndc:?}, inside the edge margin. The most likely cause is that the receiver bounds or the fit's padding are wrong."
 			);
 			assert!(
 				(-0.0001..=1.0001 - CASTER_REACH / depth_range).contains(&ndc[2]),
-				"Cascade {cascade} receiver {point:?} lies at depth {} of 0..{}. The most likely cause is that the fit's depth range misses its receivers or its caster reach.",
+				"Fitted cascade {fitted_box} receiver {point:?} lies at depth {} of 0..{}. The most likely cause is that the fit's depth range misses its receivers or its caster reach.",
 				ndc[2],
 				1.0 - CASTER_REACH / depth_range
 			);
@@ -3322,32 +3394,32 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 			let texel = (coordinate * 0.5 + 0.5) * resolution;
 			assert!(
 				(texel - texel.round()).abs() < 0.02,
-				"Cascade {cascade} puts the world origin at texel {texel}. The most likely cause is that the fit does not snap to the world-fixed texel grid."
+				"Fitted cascade {fitted_box} puts the world origin at texel {texel}. The most likely cause is that the fit does not snap to the world-fixed texel grid."
 			);
 		}
 
 		// The light's position is the center of the view's light-facing side, and the view inverts the inverse view.
-		let inverse_view = read_matrix(&views, 1 + cascade, "inverse_view");
+		let inverse_view = read_matrix(&views, 1 + fitted_box, "inverse_view");
 		let light_position = [inverse_view[9], inverse_view[10], inverse_view[11]];
 		let light_ndc = transform_point(&view_projection, 4, light_position);
 		assert!(
 			light_ndc[0].abs() < 0.0001 && light_ndc[1].abs() < 0.0001 && (light_ndc[2] - 1.0).abs() < 0.0001,
-			"Cascade {cascade} light position maps to {light_ndc:?}. The most likely cause is that the inverse view did not move with the view-projection."
+			"Fitted cascade {fitted_box} light position maps to {light_ndc:?}. The most likely cause is that the inverse view did not move with the view-projection."
 		);
-		let view = read_matrix(&views, 1 + cascade, "view");
+		let view = read_matrix(&views, 1 + fitted_box, "view");
 		let light_view_position = transform_point(&view, 3, light_position);
 		assert!(
 			light_view_position.iter().all(|coordinate| coordinate.abs() < 0.001),
-			"Cascade {cascade} view maps its own light position to {light_view_position:?}. The most likely cause is that the view did not move with the inverse view."
+			"Fitted cascade {fitted_box} view maps its own light position to {light_view_position:?}. The most likely cause is that the view did not move with the inverse view."
 		);
 	}
 
 	// The camera sees the floor from about a meter away, so the first cascade drops the empty space in front of it.
 	let first = fitted_half_extent(&read_matrix(&views, 1, "view_projection"));
 	assert!(
-		first < scene.cascades[0].half_extent * 0.8,
+		first < scene.suns[0][0].half_extent * 0.8,
 		"The first cascade only shrank from {} to {first} meters. The most likely cause is that the receiver bounds span the whole frustum slice.",
-		scene.cascades[0].half_extent
+		scene.suns[0][0].half_extent
 	);
 }
 
@@ -3388,7 +3460,7 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 
 	let fitted = fit(0.5);
 	assert!(
-		fitted < scene.cascades[0].half_extent,
+		fitted < scene.suns[0][0].half_extent,
 		"The box should shrink the first cascade."
 	);
 	assert_eq!(fit(0.5 * 0.95), fitted, "A box one step smaller should keep the size.");

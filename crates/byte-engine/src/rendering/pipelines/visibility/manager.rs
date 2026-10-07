@@ -19,10 +19,9 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
-	DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING, MATERIAL_EVALUATIONS_BINDING, MATERIALS_DATA_BINDING,
-	MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
-	MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING,
+	MATERIAL_EVALUATIONS_BINDING, MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_INSTANCES, MAX_LIGHTS,
+	MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MESH_DATA_BINDING, MESHLET_DATA_BINDING, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
 	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SKINNED_VERTICES_BINDING,
 	SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
 	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
@@ -31,13 +30,14 @@ use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, Visi
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
-	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, VisibilityRenderPass,
-	create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
+	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
+	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
-	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowLightSelection, make_cone_shadow_view, make_point_shadow_view, select_shadow_lights,
+	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, make_cone_shadow_view,
+	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
 };
 use super::skinning::{
 	DualQuaternion, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass,
@@ -57,8 +57,9 @@ use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, UpdatePose, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
-pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
-pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-map-pool.capacity";
+/// The startup parameter that sets the shadow-map memory every light shares, in mebibytes. See
+/// [`VisibilityPipelineSettings::with_shadow_map_budget_mib`].
+pub const SHADOW_MAP_BUDGET_PARAMETER: &str = "render.shadow-maps.budget-mb";
 /// The prefix of the startup parameters that set each scene-wide geometry buffer's element count, such as
 /// `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "render.geometry.";
@@ -78,8 +79,7 @@ pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "render.directional-sh
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VisibilityPipelineSettings {
 	geometry_capacity: GeometryCapacity,
-	cone_shadow_map_pool_capacity: usize,
-	point_shadow_map_pool_capacity: usize,
+	shadow_map_budget_mib: u32,
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
@@ -89,8 +89,7 @@ impl Default for VisibilityPipelineSettings {
 	fn default() -> Self {
 		Self {
 			geometry_capacity: GeometryCapacity::default(),
-			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
-			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+			shadow_map_budget_mib: DEFAULT_SHADOW_MAP_BUDGET_MIB,
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
@@ -149,34 +148,34 @@ impl VisibilityPipelineSettings {
 		Ok(self)
 	}
 
-	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
-	pub fn with_cone_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
-		if capacity > MAX_CONE_SHADOW_POOL_CAPACITY {
-			return Err(format!(
-				"Cone shadow map pool capacity was not set. The most likely cause is that {capacity} exceeds the visibility pipeline limit of {MAX_CONE_SHADOW_POOL_CAPACITY}."
-			));
+	/// Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares.
+	///
+	/// The first directional light takes its cascades first, cone and point lights then share what remains by how much
+	/// of the screen they light, and other directional lights take what is left after them. Lights that do not fit stay
+	/// lit without shadows. One sun takes 32 MiB at the default cascade resolution, four times that per doubling of
+	/// [`Self::with_directional_shadow_map_resolution`]; a cone light takes 2 MiB and a point light 12 MiB.
+	///
+	/// # Errors
+	///
+	/// Returns an error when `mebibytes` is zero, which would leave every light without shadows.
+	pub fn with_shadow_map_budget_mib(mut self, mebibytes: u32) -> Result<Self, String> {
+		if mebibytes == 0 {
+			return Err(
+				"Shadow map budget was not set. The most likely cause is a budget of 0 MiB, which holds no shadow map."
+					.to_owned(),
+			);
 		}
-		self.cone_shadow_map_pool_capacity = capacity;
+		self.shadow_map_budget_mib = mebibytes;
 		Ok(self)
 	}
 
-	pub fn cone_shadow_map_pool_capacity(&self) -> usize {
-		self.cone_shadow_map_pool_capacity
+	pub fn shadow_map_budget_mib(&self) -> u32 {
+		self.shadow_map_budget_mib
 	}
 
-	/// Sets the maximum number of reusable point-light cube shadow maps per visibility sink.
-	pub fn with_point_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
-		if capacity > MAX_POINT_SHADOW_POOL_CAPACITY {
-			return Err(format!(
-				"Point shadow map pool capacity was not set. The most likely cause is that {capacity} exceeds the visibility pipeline limit of {MAX_POINT_SHADOW_POOL_CAPACITY}."
-			));
-		}
-		self.point_shadow_map_pool_capacity = capacity;
-		Ok(self)
-	}
-
-	pub fn point_shadow_map_pool_capacity(&self) -> usize {
-		self.point_shadow_map_pool_capacity
+	/// Returns what one light of each kind costs from the shadow-map budget.
+	fn shadow_budget(&self) -> ShadowBudget {
+		ShadowBudget::new(self.shadow_map_budget_mib, self.directional_shadow_map_resolution)
 	}
 }
 
@@ -497,6 +496,8 @@ pub struct VisibilityPipelineManager {
 	settings: VisibilityPipelineSettings,
 	/// The shadow maps every sink samples. The first recorded sink renders them each frame.
 	shadow_maps: ShadowMaps,
+	/// How many maps of each kind the shadow-map images hold, kept across frames by [`retain_layout`].
+	shadow_layout: ShadowLayout,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
 	ssgi_configuration: crate::configuration::ConfigurationPort,
@@ -510,8 +511,8 @@ pub struct VisibilityPipelineManager {
 	recorded_exposure: f32,
 	/// Whether the previous frame's recorded sinks ran SSGI, so their SSGI images hold history.
 	recorded_ssgi: bool,
-	/// Whether the light-count and cone and point shadow-pool warnings were reported while their limit stays exceeded.
-	reported_limits: [bool; 3],
+	/// Whether the light-count and shadow-budget warnings were reported while their limit stays exceeded.
+	reported_limits: [bool; 2],
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -552,13 +553,7 @@ impl VisibilityPipelineManager {
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
 		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"));
 		let mesh_dispatch_work = MeshDispatchWorkBuffer::new(context, descriptor_set);
-		let shadow_maps = ShadowMaps::new(
-			context,
-			&pipeline_manager,
-			settings.directional_shadow_map_resolution,
-			settings.cone_shadow_map_pool_capacity,
-			settings.point_shadow_map_pool_capacity,
-		);
+		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
 		let write = |binding: ghi::ShaderResourceDescriptor, buffer| {
 			ghi::DescriptorWrite::buffer(descriptor_set, binding.slot(), buffer)
 		};
@@ -615,6 +610,7 @@ impl VisibilityPipelineManager {
 			},
 			settings,
 			shadow_maps,
+			shadow_layout: ShadowLayout::default(),
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
 			ssgi_configuration,
@@ -624,7 +620,7 @@ impl VisibilityPipelineManager {
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
 			recorded_ssgi: false,
-			reported_limits: [false; 3],
+			reported_limits: [false; 2],
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
@@ -1092,8 +1088,8 @@ impl VisibilityPipelineManager {
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 	}
 
-	/// Writes the camera view and every shadow view selected this frame. Returns the sun's cascades, fitted to the
-	/// camera frustum, or `None` without a sun.
+	/// Writes the camera view and every shadow view selected this frame. Returns each shadowed sun's cascades, fitted
+	/// to the camera frustum, by sun slot.
 	///
 	/// `ies_scales` holds each light's IES intensity scale by light index.
 	fn write_views(
@@ -1102,40 +1098,41 @@ impl VisibilityPipelineManager {
 		main_view: View,
 		shadows: &ShadowLightSelection<'_>,
 		ies_scales: &[(f32, Option<IesProfileTexture>)],
-	) -> Option<[csm::CascadeFrame; SHADOW_CASCADE_COUNT]> {
+	) -> SunCascades {
 		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
-		let cascades = shadows.directional.map(|(_, light_direction)| {
-			let cascades = csm::make_cascade_frames(
-				main_view,
-				light_direction,
-				SHADOW_CASCADE_COUNT,
-				self.settings.directional_shadow_map_resolution,
-				self.settings.cascade_splits,
-			)
-			.collect::<SmallVec<[_; SHADOW_CASCADE_COUNT]>>()
-			.into_inner()
-			.expect("Cascade count does not match the shadow views. The most likely cause is that make_cascade_frames was called with another cascade count.");
-			for (cascade, frame) in cascades.iter().enumerate() {
-				let mut data = ShaderViewData::from(frame.view);
-				data.far = frame.slice_far;
-				views[1 + cascade] = data;
-			}
-			cascades
-		});
-		for (layer, cone) in shadows.cones.iter().enumerate() {
-			if let Some((index, light, transform)) = *cone {
-				views[CONE_SHADOW_VIEW_OFFSET + layer] =
-					make_cone_shadow_view(light, transform, SHADOW_DEFAULT_EXPOSURE_SCALE, ies_scales[index].0).into();
-			}
-		}
-		for (cube, point) in shadows.points.iter().enumerate() {
-			if let Some((index, light, transform)) = *point {
-				let scale = ies_scales[index].0;
-				for face in 0..POINT_SHADOW_FACE_COUNT {
-					views[POINT_SHADOW_VIEW_OFFSET + cube * POINT_SHADOW_FACE_COUNT + face] =
-						make_point_shadow_view(light, transform, face, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into();
+		let cascades = shadows
+			.suns
+			.iter()
+			.enumerate()
+			.map(|(slot, sun)| {
+				let cascades = csm::make_cascade_frames(
+					main_view,
+					sun.direction,
+					SHADOW_CASCADE_COUNT,
+					self.settings.directional_shadow_map_resolution,
+					self.settings.cascade_splits,
+				)
+				.collect::<SmallVec<[_; SHADOW_CASCADE_COUNT]>>()
+				.into_inner()
+				.expect("Cascade count does not match the shadow views. The most likely cause is that make_cascade_frames was called with another cascade count.");
+				for (cascade, frame) in cascades.iter().enumerate() {
+					let mut data = ShaderViewData::from(frame.view);
+					data.far = frame.slice_far;
+					views[sun_cascade_view(slot) + cascade] = data;
 				}
+				cascades
+			})
+			.collect();
+		for (layer, (index, light, transform)) in shadows.cones.iter().enumerate() {
+			views[CONE_SHADOW_VIEW_OFFSET + layer] =
+				make_cone_shadow_view(light, transform, SHADOW_DEFAULT_EXPOSURE_SCALE, ies_scales[*index].0).into();
+		}
+		for (cube, (index, light, transform)) in shadows.points.iter().enumerate() {
+			let scale = ies_scales[*index].0;
+			for face in 0..POINT_SHADOW_FACE_COUNT {
+				views[POINT_SHADOW_VIEW_OFFSET + cube * POINT_SHADOW_FACE_COUNT + face] =
+					make_point_shadow_view(light, transform, face, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into();
 			}
 		}
 		frame.sync_buffer(self.scene.views_buffer);
@@ -1219,45 +1216,37 @@ impl PipelineManager for VisibilityPipelineManager {
 				.take(MAX_LIGHTS)
 				.map(|(_, light, _)| resolve_ies_profile(light, profiles)),
 		);
-		let cone_capacity = self.settings.cone_shadow_map_pool_capacity;
-		let point_capacity = self.settings.point_shadow_map_pool_capacity;
+		let budget = self.settings.shadow_budget();
 		let shadows = select_shadow_lights(
 			self.scene.lights.iter().map(|(_, light, transform)| (light, transform)),
 			sinks,
-			cone_capacity,
-			point_capacity,
+			&budget,
 			|index| ies_scales[index].0,
 		);
-		for (reported, kind, lowercase_kind, eligible, capacity) in [
-			(1, "Cone", "cone", shadows.eligible_cone_count, cone_capacity),
-			(2, "Point", "point", shadows.eligible_point_count, point_capacity),
-		] {
-			crate::rendering::warn_once(&mut self.reported_limits[reported], eligible > capacity, || {
-				format!(
-					"{kind}-light shadow pool capacity exceeded. The most likely cause is that more than {capacity} visible {lowercase_kind} lights require shadows. Extra lights remain lit without shadows."
-				)
-			});
-		}
+		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
+			format!(
+				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} MiB set by `{SHADOW_MAP_BUDGET_PARAMETER}` holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
+				self.settings.shadow_map_budget_mib, shadows.unshadowed_count,
+			)
+		});
+		self.shadow_layout = retain_layout(self.shadow_layout, shadows.layout(), &budget);
 		let cascades = sinks
 			.first()
-			.and_then(|sink| self.write_views(frame, sink.view(), &shadows, &ies_scales));
+			.map(|sink| self.write_views(frame, sink.view(), &shadows, &ies_scales))
+			.unwrap_or_default();
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
 			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), &ies_scales);
 		let shadow_work = ShadowWork {
-			directional: shadows.directional.map(|(_, direction)| direction),
-			sun_angular_radius_tangent: shadows
-				.directional
-				.and_then(|(index, _)| self.scene.lights.iter().nth(index))
-				.map_or(0.0, |(_, light, _)| match light {
-					Lights::Direction(light) => light.angular_radius.value().tan(),
-					_ => 0.0,
-				}),
+			suns: shadows.suns.clone(),
 			cascade_resolution: self.settings.directional_shadow_map_resolution,
-			receiver_fit: cascades.filter(|_| self.settings.cascade_fitting == CascadeFitting::Receivers),
-			cone_count: shadows.cone_count(),
-			point_count: shadows.point_count(),
+			receiver_fit: (self.settings.cascade_fitting == CascadeFitting::Receivers)
+				.then_some(cascades)
+				.unwrap_or_default(),
+			layout: self.shadow_layout,
+			cone_count: shadows.cones.len(),
+			point_count: shadows.points.len(),
 		};
 
 		let frame_work = (&self.skinning_pass, &self.shadow_maps);
@@ -1292,7 +1281,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					frame_work,
 					dispatches,
 					render_info,
-					shadow_work,
+					&shadow_work,
 					history,
 					exposure,
 					self.gtao_settings,

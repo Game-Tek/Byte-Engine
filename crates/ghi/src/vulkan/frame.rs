@@ -310,27 +310,18 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
-		self.device.image_groups.assert_resizable(image_handle);
-		let current_frame = self.frame_key.sequence_index;
-		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
-		// Every earlier resize queued its extent for the other copies after resizing this one, so matching copies
-		// mean no resize toward a different extent is still pending.
-		if image_handles
-			.iter()
-			.all(|handle| self.device.images[handle.0 as usize].extent == extent)
-		{
-			return;
-		}
-		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
+		self.resize_image_storage(image_handle, extent, None);
+	}
 
-		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
-		self.device.resize_image_internal(handle, extent, current_frame);
-
-		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
-		if image_handles.len() > 1 {
-			self.device
-				.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
-		}
+	fn resize_image_layers(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		array_layers: std::num::NonZeroU32,
+	) {
+		let image = &self.device.images[ImageHandle(image_handle.index()).0 as usize];
+		crate::image::assert_resizable_layers(image.cube_array_compatible, array_layers);
+		self.resize_image_storage(image_handle, extent, Some(array_layers));
 	}
 
 	fn place_image_group(&mut self, group: graphics_hardware_interface::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
@@ -416,5 +407,45 @@ impl Context {
 		}
 
 		self.build_sampler(builder)
+	}
+}
+
+impl Frame<'_> {
+	/// Resizes the current image now and the other sequences' copies when their frames start.
+	///
+	/// `array_layers` replaces the layer count, or keeps it when `None`.
+	fn resize_image_storage(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		array_layers: Option<std::num::NonZeroU32>,
+	) {
+		self.device.image_groups.assert_resizable(image_handle);
+		let current_frame = self.frame_key.sequence_index;
+		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
+		// Every earlier resize queued its size for the other copies after resizing this one, so matching copies
+		// mean no resize toward a different size is still pending.
+		if image_handles.iter().all(|handle| {
+			let image = &self.device.images[handle.0 as usize];
+			image.extent == extent && array_layers.is_none_or(|layers| image.layers == Some(layers))
+		}) {
+			return;
+		}
+		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
+
+		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
+		self.device.resize_image_internal(handle, extent, array_layers, current_frame);
+
+		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
+		if image_handles.len() > 1 {
+			self.device.add_task_to_all_other_frames(
+				Tasks::ResizeImage {
+					handle,
+					extent,
+					array_layers,
+				},
+				current_frame,
+			);
+		}
 	}
 }

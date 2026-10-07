@@ -481,6 +481,8 @@ pub(crate) enum Tasks {
 	ResizeImage {
 		handle: ImageHandle,
 		extent: Extent,
+		/// The new layer count, or `None` to keep the image's current one.
+		array_layers: Option<std::num::NonZeroU32>,
 	},
 	/// Refreshes the frame-local descriptor snapshot after deferred backing resources are ready.
 	UpdateDescriptor {

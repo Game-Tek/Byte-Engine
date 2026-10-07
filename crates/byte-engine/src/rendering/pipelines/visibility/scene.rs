@@ -16,7 +16,7 @@ use super::render_pass::VisibilityRenderPass;
 use super::shader_data::{
 	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
 };
-use super::shadow_selection::{LightShadow, ShadowLightSelection};
+use super::shadow_selection::{LightShadow, ShadowLightSelection, sun_cascade_view};
 use super::skinning::SkinningDispatch;
 use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
@@ -251,10 +251,14 @@ pub(super) fn light_data(
 ) -> LightData {
 	let (shadow_views, shadow_layer) = match shadow {
 		LightShadow::None => ([0; 8], 0),
-		LightShadow::Directional => (
-			std::array::from_fn(|cascade| (cascade < SHADOW_CASCADE_COUNT) as u32 * (cascade as u32 + 1)),
-			0,
-		),
+		// Each sun's cascades are its four views; its slot picks its sun-visibility layer.
+		LightShadow::Directional { slot } => {
+			let first_view = sun_cascade_view(slot as usize) as u32;
+			(
+				std::array::from_fn(|cascade| (cascade < SHADOW_CASCADE_COUNT) as u32 * (first_view + cascade as u32)),
+				slot,
+			)
+		}
 		LightShadow::Cone { view_index, layer } => ([view_index, 0, 0, 0, 0, 0, 0, 0], layer),
 		LightShadow::Point { view_index, cube_index } => ([view_index, 0, 0, 0, 0, 0, 0, 0], cube_index),
 	};
@@ -268,6 +272,7 @@ pub(super) fn light_data(
 				color: shader_vec3(light.color),
 				light_type: 68,
 				shadow_views,
+				shadow_layer,
 				angular_radius_tangent: light.angular_radius.value().tan(),
 				..LightData::default()
 			};
@@ -414,11 +419,17 @@ mod tests {
 		)
 		.expect("physical point light");
 		let transform = Transform::default();
-		let directional_data = light_data(&Lights::Direction(directional), &transform, LightShadow::Directional, None);
+		let directional_data = light_data(
+			&Lights::Direction(directional),
+			&transform,
+			LightShadow::Directional { slot: 1 },
+			None,
+		);
 		let point_data = light_data(&Lights::Point(point), &transform, LightShadow::None, None);
 
 		assert_eq!(directional_data.color, ghi::pod::Vec3f::splat(80_000.0));
-		assert_eq!(directional_data.shadow_views, [1, 2, 3, 4, 0, 0, 0, 0]);
+		assert_eq!(directional_data.shadow_views, [5, 6, 7, 8, 0, 0, 0, 0]);
+		assert_eq!(directional_data.shadow_layer, 1);
 		assert_eq!(point_data.color, ghi::pod::Vec3f::splat(100.0));
 		assert_eq!(directional_data.light_type, 68);
 		assert_eq!(point_data.light_type, 0);

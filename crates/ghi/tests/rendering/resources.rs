@@ -240,6 +240,66 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 	}
 }
 
+pub(super) fn resize_layers(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	//! Tests that resizing an array image changes how many layers it holds. The first frame grows a two-layer target to
+	//! four layers and clears its last layer. The second shrinks it to one layer, which readback accepts only when the
+	//! image really holds a single layer, and checks the clear color.
+
+	let extent = Extent::square(16);
+	let render_target = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
+			.extent(extent)
+			.array_layers(std::num::NonZeroU32::new(2))
+			.device_accesses(DeviceAccesses::DeviceToHost),
+	);
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let render_finished_synchronizer = device.create_synchronizer(None, true);
+	let red = RGBA::new(1.0, 0.0, 0.0, 1.0);
+
+	for (frame_index, (layers, layer)) in [(4, 3), (1, 0)].into_iter().enumerate() {
+		let mut texture_copy_handles = Vec::new();
+		device.queue(queue_handle).execute(
+			Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
+			&[],
+			render_finished_synchronizer,
+			|execution| {
+				execution.frame().unwrap().resize_image_layers(
+					render_target.into(),
+					extent,
+					std::num::NonZeroU32::new(layers).unwrap(),
+				);
+				execution.record(command_buffer_handle, |command_buffer_recording| {
+					let attachments = [AttachmentInformation::new(
+						render_target,
+						Layouts::RenderTarget,
+						ghi::LoadOp::Clear(ClearValue::Color(red)),
+						ghi::StoreOp::Store,
+					)
+					.layer(layer)];
+					command_buffer_recording
+						.start_render_pass(extent, &attachments)
+						.end_render_pass();
+					if layers == 1 {
+						texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+							"Texture transfer failed. The most likely cause is that the resize kept more than one layer.",
+						)];
+					}
+				});
+				[]
+			},
+		);
+		device.wait();
+		assert!(!device.has_errors());
+
+		if let Some(&handle) = texture_copy_handles.first() {
+			let pixels = rgba_pixels(device.get_image_data(handle).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
+			assert!(pixels.iter().all(|pixel| pixel.r == 255 && pixel.g == 0 && pixel.b == 0));
+		}
+	}
+}
+
 pub(super) fn resize_render_target_in_flight(
 	device: &mut impl ghi::context::Context,
 	queue_handle: QueueHandle,

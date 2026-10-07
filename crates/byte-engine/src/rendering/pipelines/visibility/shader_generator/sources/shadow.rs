@@ -209,10 +209,12 @@ directional_shadow_area_is_fully_lit: fn (
 	}
 
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(cell_extent.y * 4));
+	let pyramid_size: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
 		floor(shadow_texel_position.y / 8.0 - 1.5)
@@ -261,7 +263,8 @@ directional_shadow_blocker_depth: fn (
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
 	let grid_position: vec2f = shadow_texel_position / 8.0;
@@ -439,7 +442,8 @@ directional_shadow_receiver_gradient: fn (
 
 // Searches one directional cascade for the occluders near a receiver. Returns how far above the receiver they are, in
 // meters along the light, for sizing its penumbra: zero when none rises clearly above the receiver's plane, and -1
-// when the cascade proves the receiver fully lit.
+// when the cascade proves the receiver fully lit. `shadow_layer` is the cascade's shadow-map layer; every sun owns four
+// layers, so the layer modulo four is the cascade's index, which sizes the receiver's depth margin.
 pub(crate) const DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE: &str = r#"
 directional_shadow_occluder_distance: fn (
 	shadow_view_projection: mat4f,
@@ -449,7 +453,7 @@ directional_shadow_occluder_distance: fn (
 	world_space_position_derivative_y: vec3f,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	let receiver: vec4f = directional_shadow_receiver(shadow_view_projection, shadow_layer, world_space_position);
+	let receiver: vec4f = directional_shadow_receiver(shadow_view_projection, shadow_layer % 4, world_space_position);
 	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
 	if (receiver.w == 0.0 || directional_shadow_area_is_fully_lit(shadow_uv, receiver.z, shadow_layer, shadow_map_extent)) {
 		return 0.0 - 1.0;
@@ -480,6 +484,7 @@ directional_shadow_occluder_distance: fn (
 // Filters a directional receiver's shadow in one cascade with a penumbra `penumbra_meters` wide on each side of an
 // occluder edge. When `check_fully_lit` is true, it first proves the receiver fully lit in this cascade when it can:
 // callers set it when a coarser cascade found no occluders, because a thin occluder can vanish at that resolution.
+// `shadow_layer` is the cascade's shadow-map layer, as in `directional_shadow_occluder_distance`.
 pub(crate) const DIRECTIONAL_SHADOW_CASCADE_SOURCE: &str = r#"
 sample_directional_shadow_cascade: fn (
 	shadow_map: ArrayTexture2D,
@@ -492,7 +497,7 @@ sample_directional_shadow_cascade: fn (
 	penumbra_meters: f32,
 	check_fully_lit: bool
 ) -> f32 {
-	let receiver: vec4f = directional_shadow_receiver(shadow_view_projection, shadow_layer, world_space_position);
+	let receiver: vec4f = directional_shadow_receiver(shadow_view_projection, shadow_layer % 4, world_space_position);
 	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
 	if (receiver.w == 0.0) {
 		return 1.0;
@@ -1031,8 +1036,9 @@ sample_point_shadow: fn (
 }
 "#;
 
-// Filters the sun's shadow at a transparent receiver across the cascades in views `shadow_view0` through
-// `shadow_view3`. `view_depth` is the receiver's depth along the camera's view axis, which picks its cascade; the
+// Filters a sun's shadow at a transparent receiver across the cascades in views `shadow_view0` through
+// `shadow_view3`. Directional view `v` is drawn into shadow-map layer `v - 1`, so cascade `c` lies in layer
+// `shadow_view0 - 1 + c`. `view_depth` is the receiver's depth along the camera's view axis, which picks its cascade; the
 // material shader passes the clip w it already keeps, so no view-space position stays live through its light loop.
 pub(crate) const DIRECTIONAL_SHADOW_SOURCE: &str = r#"
 sample_directional_shadow: fn (
@@ -1065,6 +1071,7 @@ sample_directional_shadow: fn (
 	}
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
 	let shadow_map_width: f32 = f32(shadow_map_extent.x);
+	let first_layer: u32 = shadow_view0 - 1;
 	// A surface outside its cascade's square moves to the first coarser cascade that holds it, and is lit when none does.
 	let holding_cascade: u32 = 4;
 	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
@@ -1100,7 +1107,7 @@ sample_directional_shadow: fn (
 	}
 	let occluder_distance: f32 = directional_shadow_occluder_distance(
 		views.views[search_view].view_projection,
-		search_cascade,
+		first_layer + search_cascade,
 		world_space_position,
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,
@@ -1119,7 +1126,7 @@ sample_directional_shadow: fn (
 	let lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
 		views.views[filter_view].view_projection,
-		filter_cascade,
+		first_layer + filter_cascade,
 		world_space_position,
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,
@@ -1144,7 +1151,7 @@ sample_directional_shadow: fn (
 	let finer_lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
 		views.views[finer_view].view_projection,
-		finer_cascade,
+		first_layer + finer_cascade,
 		world_space_position,
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,

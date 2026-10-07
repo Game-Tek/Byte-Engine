@@ -14,7 +14,16 @@ impl Device {
 	}
 
 	/// Resizes the active sequence immediately and schedules every other dynamic sequence after its fence completes.
-	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
+	///
+	/// `new_array_layers` replaces the image's layer count, or keeps it when `None`. Every sequence shares the
+	/// image record, so the deferred sequences rebuild with the new count too.
+	pub(crate) fn resize_image_internal(
+		&mut self,
+		image_handle: ImageHandle,
+		extent: Extent,
+		new_array_layers: Option<u32>,
+		sequence_index: u8,
+	) {
 		assert!(
 			sequence_index < self.frames,
 			"Invalid DX12 image sequence. The most likely cause is that the frame predates a frames-in-flight change."
@@ -32,7 +41,8 @@ impl Device {
 		else {
 			return;
 		};
-		if current_extent == extent {
+		let array_layers = new_array_layers.unwrap_or(array_layers);
+		if current_extent == extent && self.images[image_handle.0.0 as usize].array_layers == array_layers {
 			return;
 		}
 		Self::validate_image_dimension(extent, is_3d, array_layers, false);
@@ -50,6 +60,7 @@ impl Device {
 		let data_size = utils::texture_copy_size(format, extent);
 		let image = &mut self.images[image_handle.0.0 as usize];
 		image.extent = extent;
+		image.array_layers = array_layers;
 		if let Some(size) = data_size {
 			let data = image.data.get_or_insert_default();
 			data.resize(size, 0);

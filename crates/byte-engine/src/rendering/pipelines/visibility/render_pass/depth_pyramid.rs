@@ -136,14 +136,15 @@ impl DepthPyramidPass {
 		}
 	}
 
-	/// Uploads this frame's camera constants, resizes the pyramid, and returns the reduction recording. With
-	/// `fit_receivers`, the pass also finds the directional shadow receiver bounds the cascade fit reads after it.
+	/// Uploads this frame's camera constants, resizes the pyramid, and returns the reduction recording. The pass also
+	/// finds the directional shadow receiver bounds of the first `fitted_suns` sun slots, which the cascade fit reads
+	/// after it.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		pipeline: ghi::PipelineHandle,
-		fit_receivers: bool,
+		fitted_suns: u32,
 	) -> impl RenderPassFunction + use<> {
 		let half_extent = sink.extent().scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
@@ -159,7 +160,7 @@ impl DepthPyramidPass {
 			c.start_region(|label| label.write_str("Linear Depth Pyramid"));
 			let c = c.bind_compute_pipeline(pipeline);
 			c.bind_descriptor_sets(&[descriptor_set]);
-			c.write_push_constant(0, [u32::from(fit_receivers)]);
+			c.write_push_constant(0, [fitted_suns]);
 			c.dispatch(ghi::DispatchExtent::new(half_extent, Extent::square(16)));
 			c.end_region();
 		}

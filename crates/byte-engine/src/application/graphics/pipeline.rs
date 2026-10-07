@@ -183,14 +183,9 @@ fn visibility_pipeline_settings(application: &GraphicsApplication) -> Visibility
 			.map(|parameter| parameter.parse().unwrap_or_else(|error| panic!("{error}")))
 	}
 	let mut settings = VisibilityPipelineSettings::default();
-	if let Some(capacity) = parse(application, CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER) {
+	if let Some(mebibytes) = parse(application, SHADOW_MAP_BUDGET_PARAMETER) {
 		settings = settings
-			.with_cone_shadow_map_pool_capacity(capacity)
-			.unwrap_or_else(|reason| panic!("{reason}"));
-	}
-	if let Some(capacity) = parse(application, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER) {
-		settings = settings
-			.with_point_shadow_map_pool_capacity(capacity)
+			.with_shadow_map_budget_mib(mebibytes)
 			.unwrap_or_else(|reason| panic!("{reason}"));
 	}
 	// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.

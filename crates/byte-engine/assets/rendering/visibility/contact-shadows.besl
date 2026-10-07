@@ -1,4 +1,5 @@
-// Marks half-resolution texels whose short ray toward the sun is blocked by visible geometry. The directional shadow
+// Marks half-resolution texels whose short ray toward a sun is blocked by visible geometry, one channel per shadowed
+// sun slot. The directional shadow
 // map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. The result is one
 // where the ray is clear and falls toward zero where it is blocked. The contact-shadow filter then smooths it into a
 // full-resolution image, and material evaluation multiplies the sun's shadow by the filtered result.
@@ -12,11 +13,16 @@ ScreenView: struct {
 	depth_unproject_denominator_offset: f32,
 }
 
+// Must match the sun visibility parameters in sun-visibility.besl.
 ContactShadowParameters: struct {
-	// The view-space unit direction from a surface toward the sun.
-	direction_to_light: vec3f,
+	// Per sun slot: the view-space unit direction from a surface toward the sun in xyz. The trace ignores w.
+	suns: vec4f[4],
+	// The resolve's full-resolution pixel rays, which the trace does not read.
+	pixel_to_ray: vec4f,
 	// World-space reach of one ray. Occluders further away are left to the shadow map.
 	max_distance: f32,
+	// How many sun slots hold a shadowed sun.
+	sun_count: u32,
 }
 
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line. The ray starts on the
@@ -33,7 +39,7 @@ screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
 contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 1, access: read }>;
 // Mip zero holds positive linear depth at the trace resolution.
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-contact_shadow_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+contact_shadow_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
 
 CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
 // Screen-space reach in half-resolution texels. It bounds the march cost for texels close to the camera.
@@ -138,20 +144,15 @@ inverse_depth_gradient: fn (column: f32, row: f32, axis: vec2f, center_z: f32, e
 	return 0.0;
 }
 
-main: fn (input: StageInput) -> void {
-	let pixel: vec2u = input.thread_id;
-	guard_image_bounds(contact_shadow_output, pixel);
-	let extent: vec2u = image_size(contact_shadow_output);
-	let column: f32 = f32(pixel.x);
-	let row: f32 = f32(pixel.y);
-	let center_z: f32 = fetch_linear_depth(column, row, extent);
-	if (center_z == 0.0) {
-		write(contact_shadow_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
-		return;
-	}
-
-	let direction: vec3f = contact_shadow_parameters.direction_to_light;
-	let pixel_f: vec2f = vec2f(column, row);
+// Returns how much of a texel's ray toward the sun along view-space `direction` stays clear: one where nothing blocks
+// it, falling toward zero where visible geometry does. `surface_gradient` is the texel's 1/z change per texel.
+trace_contact_shadow: fn (
+	pixel_f: vec2f,
+	center_z: f32,
+	surface_gradient: vec2f,
+	direction: vec3f,
+	extent: vec2u
+) -> f32 {
 	let origin: vec3f = view_position(pixel_f, center_z);
 	let ray_length: f32 = contact_shadow_parameters.max_distance;
 	// Stop rays in front of the camera plane so every step keeps a positive depth.
@@ -170,10 +171,6 @@ main: fn (input: StageInput) -> void {
 		end_pixel = mix(pixel_f, end_pixel, kept_fraction);
 		inverse_end_z = mix(1.0 / center_z, inverse_end_z, kept_fraction);
 	}
-	let surface_gradient: vec2f = vec2f(
-		inverse_depth_gradient(column, row, vec2f(1.0, 0.0), center_z, extent),
-		inverse_depth_gradient(column, row, vec2f(0.0, 1.0), center_z, extent)
-	);
 	let ray: ContactShadowRay = ContactShadowRay(pixel_f, end_pixel, surface_gradient, 1.0 / center_z, inverse_end_z);
 	let bias: f32 = CONTACT_SHADOW_BIAS_SCALE * center_z;
 	let jitter: f32 = interleaved_gradient_noise(pixel_f);
@@ -218,10 +215,47 @@ main: fn (input: StageInput) -> void {
 			// A crossing near the thickness limit may be a ray passing behind a thin object, so it counts less.
 			let strength: f32 = (1.0 - smoothstep(CONTACT_SHADOW_FADE_START, 1.0, behind))
 				* (1.0 - smoothstep(0.5 * thickness, thickness, penetration));
-			write(contact_shadow_output, pixel, vec4f(1.0 - strength, 0.0, 0.0, 0.0));
-			return;
+			return 1.0 - strength;
 		}
 	}
+	return 1.0;
+}
 
-	write(contact_shadow_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
+// Returns the view-space unit direction from a surface toward the sun in slot `sun`.
+sun_direction: fn (sun: u32) -> vec3f {
+	let direction: vec4f = contact_shadow_parameters.suns[sun];
+	return vec3f(direction.x, direction.y, direction.z);
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(contact_shadow_output, pixel);
+	let extent: vec2u = image_size(contact_shadow_output);
+	let column: f32 = f32(pixel.x);
+	let row: f32 = f32(pixel.y);
+	let center_z: f32 = fetch_linear_depth(column, row, extent);
+	if (center_z == 0.0) {
+		write(contact_shadow_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		return;
+	}
+
+	let pixel_f: vec2f = vec2f(column, row);
+	let surface_gradient: vec2f = vec2f(
+		inverse_depth_gradient(column, row, vec2f(1.0, 0.0), center_z, extent),
+		inverse_depth_gradient(column, row, vec2f(0.0, 1.0), center_z, extent)
+	);
+	// Each sun's ray in its channel. Unused slots stay clear.
+	let sun_count: u32 = contact_shadow_parameters.sun_count;
+	let visibility: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
+	visibility.x = trace_contact_shadow(pixel_f, center_z, surface_gradient, sun_direction(0), extent);
+	if (sun_count > 1) {
+		visibility.y = trace_contact_shadow(pixel_f, center_z, surface_gradient, sun_direction(1), extent);
+		if (sun_count > 2) {
+			visibility.z = trace_contact_shadow(pixel_f, center_z, surface_gradient, sun_direction(2), extent);
+			if (sun_count > 3) {
+				visibility.w = trace_contact_shadow(pixel_f, center_z, surface_gradient, sun_direction(3), extent);
+			}
+		}
+	}
+	write(contact_shadow_output, pixel, visibility);
 }

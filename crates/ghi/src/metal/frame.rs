@@ -253,21 +253,25 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		unsafe { &mut *pointer }
 	}
 
-	/// Resizes the current image and schedules the other frame-local images for safe replacement.
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
-		self.device.image_groups.assert_resizable(image_handle);
-		let handle = self.get_current_image_handle(image_handle);
-		if self.device.resize_image_internal(handle, extent) {
-			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
-			let frames = self.device.frames;
-			for offset in 1..frames {
-				self.device.tasks.push(Task {
-					handle: image_handle,
-					extent,
-					frame: (self.frame_key.sequence_index + offset) % frames,
-				});
-			}
-		}
+		self.resize_image_storage(image_handle, extent, None);
+	}
+
+	fn resize_image_layers(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		array_layers: std::num::NonZeroU32,
+	) {
+		crate::image::assert_resizable_layers(
+			self.device
+				.images
+				.resource(self.get_current_image_handle(image_handle))
+				.description
+				.cube_array_compatible,
+			array_layers,
+		);
+		self.resize_image_storage(image_handle, extent, Some(array_layers.get()));
 	}
 
 	fn place_image_group(&mut self, group: graphics_hardware_interface::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
@@ -292,6 +296,33 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	) -> Option<crate::frame::SwapchainAcquisition> {
 		self.device
 			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
+	}
+}
+
+impl Frame<'_> {
+	/// Resizes the current image and schedules the other frame-local images for safe replacement.
+	///
+	/// `array_layers` replaces the layer count, or keeps it when `None`.
+	fn resize_image_storage(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		array_layers: Option<u32>,
+	) {
+		self.device.image_groups.assert_resizable(image_handle);
+		let handle = self.get_current_image_handle(image_handle);
+		if self.device.resize_image_internal(handle, extent, array_layers) {
+			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
+			let frames = self.device.frames;
+			for offset in 1..frames {
+				self.device.tasks.push(Task {
+					handle: image_handle,
+					extent,
+					array_layers,
+					frame: (self.frame_key.sequence_index + offset) % frames,
+				});
+			}
+		}
 	}
 }
 

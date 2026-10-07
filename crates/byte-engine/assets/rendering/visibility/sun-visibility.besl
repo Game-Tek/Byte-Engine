@@ -1,5 +1,5 @@
-// Sun visibility: the directional shadow map's filtered visibility times the contact shadow, for every opaque pixel.
-// Material evaluation multiplies the sun by one fetch of the result. Resolving the shadow map here, instead of in the
+// Sun visibility: each shadowed sun's filtered shadow-map visibility times its contact shadow, for every opaque pixel,
+// with sun slot `s` in channel `s`. Material evaluation multiplies each sun by one channel of one fetch of the result. Resolving the shadow map here, instead of in the
 // material shader, keeps its many fetches in a small kernel that hides their latency, and lets the GPU overlap them
 // with the other screen-space passes. Transparent surfaces lie in front of this depth, so the material shader still
 // resolves the map for them with the same helpers, which it holds in `shader_generator/sources/shadow.rs`: keep the
@@ -7,12 +7,13 @@
 // spacing-one tent and the blocker search's cells, which the material shader does not: its code is live in every
 // material, since `blend` is a push constant, and the extra registers cost opaque material evaluation more than the
 // fetches cost a transparent pixel. It also takes each cascade's texels and depth per meter from workgroup memory,
-// where four lanes compute them once, and projects a receiver into a cascade once for its probes, search, and filter.
+// where one lane per cascade computes them once, and projects a receiver into a cascade once for its probes, search, and
+// filter.
 //
-// Each pixel first resolves the shadow map: its cascade, probes of the cascade's max-depth and min-depth pyramids
+// Each pixel first resolves every sun's shadow map: its cascade, probes of the cascade's max-depth and min-depth pyramids
 // that prove most lit and most shadowed pixels at once, a blocker search that sizes the penumbra, and a tent filter
-// over the map. The receiver's
-// plane comes from the depth buffer, as the contact shadows' does. A pixel the map shadows is done. Otherwise the
+// over the map. The receiver's plane comes from the depth buffer, as the contact shadows' does. A pixel every map
+// shadows is done. Otherwise the
 // contact-shadow trace, which runs at half resolution and dithers each texel's ray start, is smoothed into a
 // full-resolution value by the Gaussian average of the 5x5 trace texels around the pixel that lie on its surface,
 // which turns the dither into a smooth ramp. A texel on another surface, such as a foot in front of the floor, does
@@ -36,26 +37,28 @@ View: struct {
 	far: f32,
 }
 
-// The camera, then the four cascades.
+// The camera, then four cascades per sun slot.
 Views: struct {
-	views: View[5],
+	views: View[17],
 }
 
+// Must match contact-shadows.besl.
 SunVisibilityParameters: struct {
-	// The view-space unit direction from a surface toward the sun, which the contact-shadow trace marches.
-	direction_to_light: vec3f,
+	// Per sun slot: the view-space unit direction from a surface toward the sun, which the contact-shadow trace
+	// marches, in xyz, and the tangent of the sun's angular radius, which sizes its penumbrae, in w.
+	suns: vec4f[4],
+	// The camera's full-resolution pixel-to-ray scale in xy and offset in zw, so a pixel's depth gives its view-space
+	// position.
+	pixel_to_ray: vec4f,
 	// World-space reach of one contact-shadow ray.
 	max_distance: f32,
-	// The tangent of the sun's angular radius, which sizes its penumbrae.
-	angular_radius_tangent: f32,
-	// The camera's full-resolution pixel-to-ray constants, so a pixel's depth gives its view-space position.
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
+	// How many sun slots hold a shadowed sun. Slot `s` writes channel `s` of every output.
+	sun_count: u32,
 }
 
 views: descriptor<{ type: Views, binding: 0, access: read }>;
 visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-sun_visibility_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+sun_visibility_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
 contact_shadow_trace: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
 // Mip zero holds positive linear depth at the trace resolution.
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
@@ -70,7 +73,8 @@ directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 1042, acc
 
 // Returns the view-space position at continuous full-resolution pixel coordinates, where integers are pixel centers.
 sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
-	let ray: vec2f = pixel * sun_visibility_parameters.pixel_to_ray_mul + sun_visibility_parameters.pixel_to_ray_add;
+	let pixel_to_ray: vec4f = sun_visibility_parameters.pixel_to_ray;
+	let ray: vec2f = pixel * vec2f(pixel_to_ray.x, pixel_to_ray.y) + vec2f(pixel_to_ray.z, pixel_to_ray.w);
 	return vec3f(ray.x * z, ray.y * z, z);
 }
 
@@ -327,10 +331,12 @@ directional_shadow_area_is_fully_lit: fn (
 	}
 
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(cell_extent.y * 4));
+	let pyramid_size: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
 		floor(shadow_texel_position.y / 8.0 - 1.5)
@@ -372,7 +378,8 @@ directional_shadow_area_is_fully_shadowed: fn (
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(cell_extent.y * 4));
+	let pyramid_size: vec2u = texture_size(directional_shadow_depth_minimum_pyramid);
+	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
 		floor(shadow_texel_position.y / 8.0 - 1.5)
@@ -434,7 +441,8 @@ directional_shadow_blocker_depth: fn (
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
 	let grid_position: vec2f = shadow_texel_position / 8.0;
@@ -750,9 +758,10 @@ sample_directional_shadow_cascade: fn (
 	);
 }
 
-// Resolves the sun's shadow at a world-space receiver from the four cascades in views `shadow_view0` through
-// `shadow_view3`. `texels_per_meter` and `depth_per_meter` hold each cascade's scale, cascade zero in x through cascade
-// three in w, computed once per workgroup.
+// Resolves a sun's shadow at a world-space receiver from the four cascades in views `shadow_view0` through
+// `shadow_view3`. Directional view `v` is drawn into shadow-map layer `v - 1`, so cascade `c` lies in layer
+// `shadow_view0 - 1 + c`. `texels_per_meter` and `depth_per_meter` hold each cascade's scale, cascade zero in x through
+// cascade three in w, computed once per workgroup.
 sample_directional_shadow: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_view0: u32,
@@ -786,6 +795,7 @@ sample_directional_shadow: fn (
 	}
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
 	let shadow_map_width: f32 = f32(shadow_map_extent.x);
+	let first_layer: u32 = shadow_view0 - 1;
 	// A surface outside its cascade's square moves to the first coarser cascade that holds it, and is lit when none does.
 	let holding_cascade: u32 = 4;
 	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
@@ -820,7 +830,7 @@ sample_directional_shadow: fn (
 	let search_gradient: vec2f = vec2f(0.0, 0.0);
 	let occluder_distance: f32 = 0.0 - 1.0;
 	if (search_receiver.w != 0.0 && directional_shadow_area_is_fully_lit(
-		vec2f(search_receiver.x, search_receiver.y), search_receiver.z, search_cascade, shadow_map_extent
+		vec2f(search_receiver.x, search_receiver.y), search_receiver.z, first_layer + search_cascade, shadow_map_extent
 	) == false) {
 		search_gradient = directional_shadow_receiver_gradient(
 			search_view_projection,
@@ -832,7 +842,7 @@ sample_directional_shadow: fn (
 			search_receiver,
 			search_gradient,
 			directional_shadow_cascade_scale(search_cascade, depth_per_meter),
-			search_cascade,
+			first_layer + search_cascade,
 			shadow_map_extent
 		);
 	}
@@ -865,7 +875,7 @@ sample_directional_shadow: fn (
 	}
 	let lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
-		filter_cascade,
+		first_layer + filter_cascade,
 		filter_receiver,
 		filter_gradient,
 		shadow_map_extent,
@@ -889,7 +899,7 @@ sample_directional_shadow: fn (
 	let finer_view_projection: mat4f = views.views[finer_view].view_projection;
 	let finer_lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
-		finer_cascade,
+		first_layer + finer_cascade,
 		directional_shadow_receiver(finer_view_projection, finer_cascade, world_space_position),
 		directional_shadow_receiver_gradient(
 			finer_view_projection,
@@ -904,12 +914,13 @@ sample_directional_shadow: fn (
 	return mix(finer_lit, lit, coarse_share);
 }
 
-// Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and the trace.
+// Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and every
+// sun's trace, one per channel.
 shared_inverse_depth: workgroup<f32, 64>;
-shared_trace: workgroup<f32, 64>;
-// Per cascade, its texels per meter and its stored depth per meter, which depend only on the cascade's fit.
-shared_cascade_texels_per_meter: workgroup<f32, 4>;
-shared_cascade_depth_per_meter: workgroup<f32, 4>;
+shared_trace: workgroup<vec4f, 64>;
+// Per cascade of every sun, its texels per meter and its stored depth per meter, which depend only on the cascade's fit.
+shared_cascade_texels_per_meter: workgroup<f32, 16>;
+shared_cascade_depth_per_meter: workgroup<f32, 16>;
 
 CONTACT_SHADOW_FILTER_RADIUS: const u32 = 2;
 CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH: const u32 = 8;
@@ -961,10 +972,46 @@ trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
 	return (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) * full_to_trace_scale - vec2f(0.5, 0.5);
 }
 
+// Resolves one sun's shadow map at the pixel's receiver, from its four cascades after the camera's view.
+resolve_sun_shadow: fn (
+	sun: u32,
+	world_position: vec3f,
+	view_position: vec3f,
+	world_derivative_x: vec3f,
+	world_derivative_y: vec3f
+) -> f32 {
+	let first_cascade: u32 = sun * 4;
+	return sample_directional_shadow(
+		depth_shadow_map,
+		first_cascade + 1,
+		first_cascade + 2,
+		first_cascade + 3,
+		first_cascade + 4,
+		vec4f(
+			shared_cascade_texels_per_meter[first_cascade],
+			shared_cascade_texels_per_meter[first_cascade + 1],
+			shared_cascade_texels_per_meter[first_cascade + 2],
+			shared_cascade_texels_per_meter[first_cascade + 3]
+		),
+		vec4f(
+			shared_cascade_depth_per_meter[first_cascade],
+			shared_cascade_depth_per_meter[first_cascade + 1],
+			shared_cascade_depth_per_meter[first_cascade + 2],
+			shared_cascade_depth_per_meter[first_cascade + 3]
+		),
+		sun_visibility_parameters.suns[sun].w,
+		world_position,
+		view_position,
+		world_derivative_x,
+		world_derivative_y
+	);
+}
+
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(sun_visibility_output);
 	let trace_extent: vec2u = texture_size(contact_shadow_trace);
+	let sun_count: u32 = sun_visibility_parameters.sun_count;
 	let local: vec2u = vec2u(
 		input.thread_idx % CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH,
 		input.thread_idx / CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH
@@ -985,9 +1032,9 @@ main: fn (input: StageInput) -> void {
 	if (depth != 0.0) {
 		shared_inverse_depth[tile_index] = 1.0 / depth;
 	}
-	shared_trace[tile_index] = fetch(contact_shadow_trace, texel).x;
-	// Four lanes compute the cascades' scales while the tile loads; views 1 through 4 hold the cascades.
-	if (input.thread_idx < 4) {
+	shared_trace[tile_index] = fetch(contact_shadow_trace, texel);
+	// One lane per cascade of every sun computes its scales while the tile loads; views 1 onward hold the cascades.
+	if (input.thread_idx < sun_count * 4) {
 		let cascade_view_projection: mat4f = views.views[input.thread_idx + 1].view_projection;
 		shared_cascade_texels_per_meter[input.thread_idx] = directional_shadow_texels_per_meter(
 			cascade_view_projection, f32(texture_size(depth_shadow_map).x)
@@ -999,7 +1046,7 @@ main: fn (input: StageInput) -> void {
 	guard_image_bounds(sun_visibility_output, pixel);
 	let device_depth: f32 = fetch(visibility_depth, pixel).x;
 	if (device_depth == 0.0) {
-		write(sun_visibility_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
+		write(sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 	let center_inverse_z: f32 = (device_depth + screen_view.depth_unproject_denominator_offset) / screen_view.depth_unproject_numerator;
@@ -1029,32 +1076,21 @@ main: fn (input: StageInput) -> void {
 	let world_position: vec3f = views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
 	let world_derivative_x: vec3f = views.views[0].inverse_view * vec4f(derivative_x.x, derivative_x.y, derivative_x.z, 0.0);
 	let world_derivative_y: vec3f = views.views[0].inverse_view * vec4f(derivative_y.x, derivative_y.y, derivative_y.z, 0.0);
-	let sun: f32 = sample_directional_shadow(
-		depth_shadow_map,
-		u32(1),
-		u32(2),
-		u32(3),
-		u32(4),
-		vec4f(
-			shared_cascade_texels_per_meter[0],
-			shared_cascade_texels_per_meter[1],
-			shared_cascade_texels_per_meter[2],
-			shared_cascade_texels_per_meter[3]
-		),
-		vec4f(
-			shared_cascade_depth_per_meter[0],
-			shared_cascade_depth_per_meter[1],
-			shared_cascade_depth_per_meter[2],
-			shared_cascade_depth_per_meter[3]
-		),
-		sun_visibility_parameters.angular_radius_tangent,
-		world_position,
-		view_position,
-		world_derivative_x,
-		world_derivative_y
-	);
-	// A pixel the shadow map fully shadows needs no contact shadow.
-	if (sun <= 0.0) {
+	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
+	// it stays zero and leaves the fully-shadowed test below to the used ones.
+	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	suns.x = resolve_sun_shadow(0, world_position, view_position, world_derivative_x, world_derivative_y);
+	if (sun_count > 1) {
+		suns.y = resolve_sun_shadow(1, world_position, view_position, world_derivative_x, world_derivative_y);
+		if (sun_count > 2) {
+			suns.z = resolve_sun_shadow(2, world_position, view_position, world_derivative_x, world_derivative_y);
+			if (sun_count > 3) {
+				suns.w = resolve_sun_shadow(3, world_position, view_position, world_derivative_x, world_derivative_y);
+			}
+		}
+	}
+	// A pixel every shadow map fully shadows needs no contact shadow.
+	if (max(max(suns.x, suns.y), max(suns.z, suns.w)) <= 0.0) {
 		write(sun_visibility_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
@@ -1075,7 +1111,8 @@ main: fn (input: StageInput) -> void {
 		row_weights[tap] = exp(0.0 - row_offset * row_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
 	}
 
-	let lit: f32 = 0.0;
+	// The taps' weights depend only on the surface, so one pass filters every sun's trace together.
+	let lit: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total_weight: f32 = 0.0;
 	for (let tap_row: u32 = 0; tap_row <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_row = tap_row + 1) {
 		for (let tap_column: u32 = 0; tap_column <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_column = tap_column + 1) {
@@ -1087,16 +1124,16 @@ main: fn (input: StageInput) -> void {
 				let plane_error: f32 = abs(tap_inverse_z - predicted_inverse_z) / center_inverse_z;
 				let weight: f32 = column_weights[tap_column] * row_weights[tap_row]
 					* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
-				lit = lit + weight * shared_trace[tap_index];
+				lit = lit + shared_trace[tap_index] * weight;
 				total_weight = total_weight + weight;
 			}
 		}
 	}
 	// A thin surface may have no trace texel on its plane, since each texel keeps the nearest of its pixels. The
 	// shadow map alone shadows it.
-	let result: f32 = 1.0;
+	let result: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
 	if (total_weight > 0.00001) {
 		result = lit / total_weight;
 	}
-	write(sun_visibility_output, pixel, vec4f(sun * result, 0.0, 0.0, 0.0));
+	write(sun_visibility_output, pixel, suns * result);
 }

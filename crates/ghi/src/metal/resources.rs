@@ -28,6 +28,8 @@ pub(crate) struct AccelerationStructure {
 pub(crate) struct Task {
 	pub(crate) handle: graphics_hardware_interface::BaseImageHandle,
 	pub(crate) extent: Extent,
+	/// The new layer count, or `None` to keep the image's current one.
+	pub(crate) array_layers: Option<u32>,
 	pub(crate) frame: u8,
 }
 

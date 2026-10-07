@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
+use super::features::{GTAO_ENABLED_PARAMETER, VisibilityFeatures};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
@@ -83,6 +84,7 @@ pub struct VisibilityPipelineSettings {
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
+	features: VisibilityFeatures,
 }
 
 impl Default for VisibilityPipelineSettings {
@@ -94,6 +96,7 @@ impl Default for VisibilityPipelineSettings {
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
+			features: VisibilityFeatures::default(),
 		}
 	}
 }
@@ -147,6 +150,19 @@ impl VisibilityPipelineSettings {
 		}
 		self.directional_shadow_map_resolution = resolution;
 		Ok(self)
+	}
+
+	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
+	/// configuration cannot turn it on.
+	///
+	/// Use the same [`VisibilityFeatures`] the material shaders were baked with.
+	pub fn with_features(mut self, features: VisibilityFeatures) -> Self {
+		self.features = features;
+		self
+	}
+
+	pub fn features(&self) -> VisibilityFeatures {
+		self.features
 	}
 
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
@@ -616,7 +632,11 @@ impl VisibilityPipelineManager {
 			settings,
 			shadow_maps,
 			gtao_configuration,
-			gtao_settings: GtaoSettings::default(),
+			// A left-out GTAO starts off, so the first frame does not report it as unavailable.
+			gtao_settings: GtaoSettings {
+				enabled: settings.features.gtao,
+				..GtaoSettings::default()
+			},
 			ssgi_configuration,
 			ssgi_settings: SsgiSettings::default(),
 			contact_shadow_configuration,
@@ -1000,6 +1020,12 @@ impl VisibilityPipelineManager {
 			&mut self.gtao_settings,
 			GtaoSettings::with_parameter,
 		);
+		if self.gtao_settings.enabled && !self.settings.features.gtao {
+			log::warn!(
+				"GTAO was not enabled. The most likely cause is that `{GTAO_ENABLED_PARAMETER}` was `false` at startup, so GTAO was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
+			);
+			self.gtao_settings.enabled = false;
+		}
 		drain_settings(
 			&self.ssgi_configuration,
 			SSGI_CONFIGURATION_PREFIX,
@@ -1358,6 +1384,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			},
 			&self.shadow_maps,
 			stage_counters,
+			self.settings.features,
 		);
 		context.write(
 			&self

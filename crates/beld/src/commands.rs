@@ -6,7 +6,7 @@ mod maintenance;
 mod query;
 mod shared;
 
-pub use bake::bake;
+pub use bake::{bake, read_visibility_features};
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
 #[cfg(test)]
@@ -98,6 +98,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
+			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -125,6 +126,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
+			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -156,6 +158,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
+			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -195,6 +198,7 @@ mod tests {
 				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
+				byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
 			)),
 			Err(1)
 		);

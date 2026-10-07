@@ -23,9 +23,10 @@ pub struct BaseApplication {
 impl BaseApplication {
 	/// Creates the process configuration with the specified name and configuration parameters.
 	///
-	/// Parameters may be overridden by `BE_*` environment variables and then by `--name=value` command-line
-	/// arguments. Applications are singletons: this also installs the process logger and the `tracing` subscriber
-	/// that feeds span times into [`Self::metrics`].
+	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
+	/// `--name=value` command-line arguments. See [`parameters_from_json`] for the file's format. Applications are
+	/// singletons: this also installs the process logger and the `tracing` subscriber that feeds span times into
+	/// [`Self::metrics`].
 	///
 	/// # Configuration
 	/// - `log.level`: Sets the most verbose `log` level that is printed: `trace`, `debug`, `info`, `warn`, `error`, or `off`.
@@ -34,6 +35,9 @@ impl BaseApplication {
 	/// With the `tracy` Cargo feature, spans and logs also stream to a connected Tracy profiler.
 	pub fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		let mut parameters = parameters.to_vec();
+		for parameter in read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME)) {
+			upsert_parameter(&mut parameters, parameter);
+		}
 		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {
 			upsert_parameter(
 				&mut parameters,
@@ -154,6 +158,50 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool) {
 	}
 }
 
+/// Reads the project's configuration file, or returns no parameters when the file does not exist.
+///
+/// # Panics
+///
+/// Panics when the file exists but cannot be read or parsed, so a typo does not silently drop settings.
+fn read_configuration_file(path: &std::path::Path) -> Vec<Parameter> {
+	let source = match std::fs::read_to_string(path) {
+		Ok(source) => source,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+		Err(error) => panic!(
+			"Configuration file '{}' could not be read. The most likely cause is missing read permission: {error}",
+			path.display()
+		),
+	};
+	parameters_from_json(&source).unwrap_or_else(|error| panic!("{error} File: '{}'.", path.display()))
+}
+
+/// Resolves an explicit path as supplied, or `default_path` inside the application directory.
+///
+/// The application directory is the Cargo package of a development binary, or the executable's directory otherwise.
+pub(crate) fn resolve_application_path(parameter: Option<&Parameter>, default_path: &str) -> std::path::PathBuf {
+	parameter.map(|parameter| parameter.value().into()).unwrap_or_else(|| {
+		// Cargo provides the application manifest directory while running development binaries.
+		#[cfg(debug_assertions)]
+		if let Some(manifest_directory) = std::env::var_os("CARGO_MANIFEST_DIR") {
+			return std::path::Path::new(&manifest_directory).join(default_path);
+		}
+
+		let executable = std::env::current_exe().unwrap_or_else(|error| {
+			panic!(
+				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
+			)
+		});
+		executable
+			.parent()
+			.unwrap_or_else(|| {
+				panic!(
+					"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
+				)
+			})
+			.join(default_path)
+	})
+}
+
 /// Replaces a previous parameter with the same name so later sources have deterministic precedence.
 fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
@@ -166,4 +214,4 @@ fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{Parameters, parse_argument};
+use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, parameters_from_json, parse_argument};

@@ -113,6 +113,8 @@
 
 ## Engine systems
 
+- Let `config.json` leave SSGI and contact shadows out of the bake, as `render.gtao.enabled` does for GTAO. Add their flags to `VisibilityFeatures` (`crates/byte-engine/src/rendering/pipelines/visibility/features.rs`), remove their blocks from the material evaluation suffix with `remove_conditionals_reading`, list their pipelines in `excluded_assets`, and make their passes optional in `VisibilityRenderPass`.
+- Rebake generated material shaders when the baked `VisibilityFeatures` change, without `beld bake --force`. Source versions record only files, so a material baked with GTAO stays current after `config.json` turns it off. Record the generator's feature set in the material's provenance and compare it in `AssetManager::resource_is_stale`.
 - Replace the fitted ACES grading output with the official ACES 2.0 Rec.709-D65 100-nit sRGB-piecewise transform, including AP1-to-AP0 conversion, precomputed hue/gamut tables, complete CAM/JMh tone/chroma/gamut processing, Apache-2.0 attribution, and Academy golden-image validation.
 - Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.

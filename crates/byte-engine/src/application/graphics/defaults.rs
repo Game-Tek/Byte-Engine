@@ -14,12 +14,15 @@
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
-		let generator = VisibilityShaderGenerator::with_access(ScopeAccess {
-			material_count: ghi::AccessPolicies::READ,
-			material_offset: ghi::AccessPolicies::NONE,
-			material_offset_scratch: ghi::AccessPolicies::NONE,
-			pixel_mapping: ghi::AccessPolicies::READ_WRITE,
-		});
+		let generator = VisibilityShaderGenerator::with_access(
+			VisibilityFeatures::from_parameters(&*application),
+			ScopeAccess {
+				material_count: ghi::AccessPolicies::READ,
+				material_offset: ghi::AccessPolicies::NONE,
+				material_offset_scratch: ghi::AccessPolicies::NONE,
+				pixel_mapping: ghi::AccessPolicies::READ_WRITE,
+			},
+		);
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -109,7 +112,8 @@ pub fn setup_default_resource_and_asset_management(
 ) {
 	#[cfg(debug_assertions)]
 	{
-		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
+		let assets_path =
+			crate::application::application::resolve_application_path(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 
@@ -333,7 +337,7 @@ use utils::Extent;
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
+use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityFeatures, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},

@@ -3,6 +3,7 @@
 //!
 //! Read the module in this order:
 //!
+//! * [`VisibilityFeatures`]: the optional features a project's `config.json` builds into its shaders.
 //! * [`manager`]: [`VisibilityPipelineManager`] owns the scene, adopts loaded resources, and prepares each frame.
 //! * [`scene`]: what the renderer retains between frames, and the per-frame instance lists it derives.
 //! * [`loader`]: the single loader object and request protocol that make every pipeline resource resident.
@@ -13,6 +14,7 @@
 //!
 //! Application wiring lives in [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
 
+mod features;
 mod geometry;
 mod layout;
 mod loader;
@@ -27,6 +29,7 @@ mod skinning;
 #[cfg(test)]
 mod tests;
 
+pub use features::{GTAO_ENABLED_PARAMETER, VisibilityFeatures};
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;

@@ -19,12 +19,20 @@ macro_rules! material_metadata {
 
 /// The access declaration used when baking material-evaluation shaders.
 fn material_generator() -> VisibilityShaderGenerator {
-	VisibilityShaderGenerator::with_access(ScopeAccess {
-		material_count: AccessPolicies::READ,
-		material_offset: AccessPolicies::READ,
-		material_offset_scratch: AccessPolicies::NONE,
-		pixel_mapping: AccessPolicies::READ,
-	})
+	material_generator_with(VisibilityFeatures::default())
+}
+
+/// Builds the baking generator for a project that selected `features`.
+fn material_generator_with(features: VisibilityFeatures) -> VisibilityShaderGenerator {
+	VisibilityShaderGenerator::with_access(
+		features,
+		ScopeAccess {
+			material_count: AccessPolicies::READ,
+			material_offset: AccessPolicies::READ,
+			material_offset_scratch: AccessPolicies::NONE,
+			pixel_mapping: AccessPolicies::READ,
+		},
+	)
 }
 
 /// Parses `source` as a `main`, adds `nodes`, such as helper functions and bindings, and compiles the result for the
@@ -217,7 +225,7 @@ fn vec4f_variable_becomes_specialization() {
 	};
 	let shader_node = besl::parse("main: fn () -> void { out_color = albedo; }").expect("test shader");
 
-	let shader = VisibilityShaderGenerator::new().transform(shader_node, &material);
+	let shader = VisibilityShaderGenerator::new(VisibilityFeatures::default()).transform(shader_node, &material);
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
@@ -256,6 +264,27 @@ fn material_evaluation_texture_variables_produce_valid_besl() {
 			.expect("test shader");
 	let shader = material_generator().transform(shader_node, &material);
 	besl::lex(shader).expect("generated normal-mapped program should link");
+}
+
+/// Verifies that a project without GTAO bakes material shaders that never reach the AO image.
+#[test]
+fn material_evaluation_without_gtao_reaches_no_occlusion_image() {
+	let material = material_metadata! { "variables": [] };
+	let reaches_ao = |features| {
+		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
+		let root = besl::lex(material_generator_with(features).transform(shader_node, &material))
+			.expect("generated program should link");
+		let main = root.get_main().expect("generated program should contain main");
+		resource_management::shader::besl::graph::dependency_order(&main)
+			.iter()
+			.any(|node| node.borrow().get_name() == Some("ao"))
+	};
+
+	assert!(reaches_ao(VisibilityFeatures::default()), "GTAO should reach the AO image.");
+	assert!(
+		!reaches_ao(VisibilityFeatures { gtao: false }),
+		"Material evaluation reached the AO image without GTAO. The most likely cause is that the GTAO block in the material evaluation suffix no longer reads `push_constant.gtao`."
+	);
 }
 
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.

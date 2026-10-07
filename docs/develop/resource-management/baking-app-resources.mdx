@@ -90,6 +90,44 @@ In packed mode, rebuilding or deleting a resource returns its old range to a coa
 
 Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
+## Leave render features out of the bake
+
+Use your project's `config.json` to leave an optional render feature out of
+both the baked shaders and the running application. Put the file in the
+application directory, next to `assets/` and `resources/`:
+
+```json
+{
+  "render": {
+    "gtao": { "enabled": false }
+  }
+}
+```
+
+BELD reads `config.json` from the current directory, so run it from the
+application directory or pass `--config`:
+
+```bash
+beld --source "$PWD/assets" --destination "$PWD/resources" bake \
+  --config "$PWD/config.json"
+```
+
+With `render.gtao.enabled` set to `false`:
+
+- BELD generates material shaders without the GTAO occlusion code and skips the
+  `gtao`, `gtao-blur-x`, and `gtao-upscale` pipelines.
+- The application reads the same file at startup and doesn't create the GTAO
+  pass. Turning GTAO on at runtime logs a warning instead.
+
+A missing file keeps every feature. The application also loads every other value
+in `config.json` as a startup parameter, so `{"render": {"debug": true}}` sets
+`render.debug`. Environment variables and command-line arguments still override
+the file.
+
+After you change a feature in `config.json`, run `beld bake --force`. Source
+file versions don't record the configuration, so a normal bake keeps the
+material shaders built with the old setting.
+
 ## Check the baked output
 
 Inspect the output before you package the application:
@@ -99,7 +137,7 @@ beld --destination "$PWD/resources" list
 beld --destination "$PWD/resources" inspect scene.glb
 ```
 
-Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor, run `beld bake --force` instead, because processor changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
+Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor or a feature in `config.json`, run `beld bake --force` instead, because those changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
 ## Use resources in development and release
 

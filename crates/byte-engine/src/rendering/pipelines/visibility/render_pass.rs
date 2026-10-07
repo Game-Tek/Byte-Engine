@@ -77,6 +77,13 @@ impl<const N: usize> Pipelines<N> {
 		let pipelines = self.0.map(|pipeline| pipeline_manager.pipeline(pipeline));
 		pipelines.iter().all(Option::is_some).then(|| pipelines.map(Option::unwrap))
 	}
+
+	/// Returns whether any pipeline failed to load or compile, so [`Self::resolve`] cannot succeed until it is rebuilt.
+	pub(super) fn failed(&self, pipeline_manager: &PipelineManagerClient) -> bool {
+		self.0
+			.iter()
+			.any(|pipeline| matches!(pipeline_manager.get(*pipeline), crate::rendering::PipelineState::Failed))
+	}
 }
 
 impl Pipelines<4> {
@@ -132,6 +139,7 @@ pub(super) fn record_meshlet_dispatches(
 use self::depth_pyramid::DepthPyramidPass;
 pub(crate) use self::depth_pyramid::ScreenViewData;
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
+pub(super) use self::gtao::GTAO_PIPELINES;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
@@ -155,6 +163,7 @@ pub(crate) use self::{
 	occlusion::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH},
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
+use super::features::VisibilityFeatures;
 use super::layout::{
 	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
 	INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
@@ -260,7 +269,8 @@ pub(crate) struct VisibilityRenderPass {
 	material_prepasses: MaterialPrepasses,
 	depth_pyramid: DepthPyramidPass,
 	sun_visibility: SunVisibilityPass,
-	gtao: GtaoPass,
+	/// Absent when the project left GTAO out of its shaders.
+	gtao: Option<GtaoPass>,
 	ssgi: SsgiPass,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
@@ -272,7 +282,9 @@ impl VisibilityRenderPass {
 	///
 	/// `shadow_maps` are the maps every sink shares; this sink's material evaluation samples them. `stage_counters`
 	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
-	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`].
+	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
+	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
+	/// pipelines.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -281,6 +293,7 @@ impl VisibilityRenderPass {
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
+		features: VisibilityFeatures,
 	) -> Self {
 		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
 		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
@@ -421,14 +434,16 @@ impl VisibilityRenderPass {
 				count_buffer: material_count,
 				pipelines: Pipelines::request(&pipeline_manager, ["material-count", "material-offset", "pixel-mapping"]),
 			},
-			gtao: GtaoPass::new(
-				context,
-				&pipeline_manager,
-				targets.depth,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				ao_map.into(),
-			),
+			gtao: features.gtao.then(|| {
+				GtaoPass::new(
+					context,
+					&pipeline_manager,
+					targets.depth,
+					depth_pyramid.depth_pyramid,
+					depth_pyramid.view_data,
+					ao_map.into(),
+				)
+			}),
 			sun_visibility: SunVisibilityPass::new(
 				context,
 				&pipeline_manager,
@@ -512,10 +527,15 @@ impl VisibilityRenderPass {
 		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
 		let sun_visibility_pipelines = self.sun_visibility.pipelines.resolve(pipeline_manager)?;
-		// A disabled pass neither records nor holds the frame back while its pipelines compile.
-		let gtao_pipelines = match gtao_settings.enabled {
-			true => Some(self.gtao.pipelines.resolve(pipeline_manager)?),
-			false => None,
+		// A disabled pass neither records nor holds the frame back while its pipelines compile. GTAO whose pipelines
+		// failed, such as a release whose `config.json` did not match the bake, shades without it instead of stalling.
+		let gtao = self
+			.gtao
+			.as_ref()
+			.filter(|gtao| gtao_settings.enabled && !gtao.pipelines.failed(pipeline_manager));
+		let gtao_pipelines = match gtao {
+			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
+			None => None,
 		};
 		let ssgi_pipelines = match ssgi_settings.enabled {
 			true => Some(self.ssgi.pipelines.resolve(pipeline_manager)?),
@@ -533,7 +553,7 @@ impl VisibilityRenderPass {
 			contact_shadow_settings,
 			sun_visibility_pipelines,
 		);
-		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, gtao_settings, pipelines));
+		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
 		// SSGI history exists only if the pass also ran last frame.
 		let ssgi_history = history.filter(|history| history.ssgi);
 		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));

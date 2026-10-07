@@ -1687,7 +1687,7 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 /// Verifies each production depth-pyramid texel keeps the nearest nonzero linear depth in its source footprint.
 #[test]
 fn gtao_depth_pyramid_reduces_odd_extents_to_nearest_linear_depth() {
-	let program = asset!("gtao-depth-pyramid.besl");
+	let program = asset!("depth-pyramid.besl");
 	let texels = [0.0, 0.2, 0.3, 0.4, 0.9, 0.5, 0.6, 0.7, 0.8].map(|depth| [depth, 0.0, 0.0, 1.0]);
 	let mut source = texture_2d(3, 3, &texels);
 
@@ -1702,7 +1702,7 @@ fn gtao_depth_pyramid_reduces_odd_extents_to_nearest_linear_depth() {
 /// Verifies one SIMD group keeps the two adjacent source tiles independent through every emitted level.
 #[test]
 fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
-	let program = asset!("gtao-depth-pyramid.besl");
+	let program = asset!("depth-pyramid.besl");
 	let mut source_texels = Vec::with_capacity(16 * 8);
 	for y in 0..8u32 {
 		for x in 0..16u32 {
@@ -3156,7 +3156,7 @@ fn receiver_fit_buffer(
 /// Runs the depth pyramid pass with the cascade fit enabled over the whole scene and returns the receiver bounds it
 /// found.
 fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
-	let program = asset!("gtao-depth-pyramid.besl");
+	let program = asset!("depth-pyramid.besl");
 	let half_extent = RECEIVER_FIT_EXTENT / 2;
 	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
 	let mut view = gtao_view_data(&program, half_extent, half_extent);
@@ -3425,7 +3425,7 @@ fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
 /// A nearest surface at the last row or column of an odd source must reach the reduced image.
 #[test]
 fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
-	let program = asset!("gtao-depth-pyramid.besl");
+	let program = asset!("depth-pyramid.besl");
 	for edge in [0, 1] {
 		let texels: Vec<_> = (0..81)
 			.map(|index| {

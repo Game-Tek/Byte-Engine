@@ -38,7 +38,9 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			memory_budget,
 			texture_compression,
 			force,
+			config,
 		} => {
+			let features = beld::read_visibility_features(std::path::Path::new(&config))?;
 			beld::bake(
 				cli.source,
 				cli.destination,
@@ -47,6 +49,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				texture_compression.map(Into::into),
 				bake_memory_budget(memory_budget),
 				force,
+				features,
 			)
 			.await
 		}
@@ -178,10 +181,16 @@ enum Commands {
 		#[arg(long, value_enum)]
 		texture_compression: Option<TextureCompression>,
 		/// Rebake every selected asset, even when its resource is current with its source files.
-		/// Use it after changing an asset processor or `--texture-compression`, which source versions don't track.
+		/// Use it after changing an asset processor, `--texture-compression`, or a baked setting in `--config`, which
+		/// source versions don't track.
 		/// Example: `beld bake --force`
 		#[arg(long)]
 		force: bool,
+		/// The project's configuration file, which the application also reads at startup.
+		/// Its `render.gtao.enabled` decides whether GTAO is baked into material shaders.
+		/// Example: `beld bake --config config.json`
+		#[arg(long, default_value = "config.json")]
+		config: String,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]

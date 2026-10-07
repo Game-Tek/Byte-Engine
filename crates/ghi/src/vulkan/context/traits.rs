@@ -314,6 +314,7 @@ impl crate::context::Context for Context {
 		&mut self,
 		window_os_handles: &window::Handles,
 		presentation_mode: graphics_hardware_interface::PresentationModes,
+		desired_image_count: Option<u8>,
 		fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
@@ -356,6 +357,7 @@ impl crate::context::Context for Context {
 			&vk_surface_capabilities,
 			extent,
 			native_image_usage,
+			desired_image_count,
 			vk::SwapchainKHR::null(),
 		);
 
@@ -424,6 +426,7 @@ impl crate::context::Context for Context {
 			acquire_wait_stages: [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT],
 			min_image_count: vk_surface_capabilities.min_image_count,
 			max_image_count: vk_images.len() as u32,
+			desired_image_count,
 			vk_present_mode,
 			present_interval: None,
 			next_present_slot: None,

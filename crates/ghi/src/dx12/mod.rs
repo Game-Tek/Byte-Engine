@@ -1062,7 +1062,7 @@ void main() {
 		let window = app
 			.create_window("DX12 Outstanding Acquisition Test", extent, crate::window::Features::empty())
 			.expect("Failed to create DX12 test window.");
-		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), None, extent, crate::Uses::RenderTarget);
 		let synchronizer = device.create_synchronizer(None, true);
 
 		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1087,7 +1087,7 @@ void main() {
 		let window = app
 			.create_window("DX12 Storage Present Proxy Test", extent, crate::window::Features::empty())
 			.expect("Failed to create DX12 test window.");
-		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), None, extent, crate::Uses::Storage);
 		let slot = crate::ResourceSlot::new(0);
 		let resource =
 			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
@@ -1929,7 +1929,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			.expect(
 				"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
 			);
-		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), None, extent, crate::Uses::Storage);
 		device.get_swapchain_image(swapchain, crate::Uses::Storage);
 		let synchronizer = device.create_synchronizer(None, false);
 		let missing_preparation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

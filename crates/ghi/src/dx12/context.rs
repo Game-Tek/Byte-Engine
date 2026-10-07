@@ -910,11 +910,19 @@ struct Mesh {
 	index_resource: Option<ID3D12Resource>,
 }
 
+/// Returns how many DXGI buffers a swapchain holds: the desired count, but never fewer than the frames in flight
+/// (each sequence owns a backbuffer) or two, nor more than the eight tracked backbuffers.
+pub(crate) fn swapchain_image_count(frames: u8, desired_image_count: Option<u8>) -> u8 {
+	desired_image_count.unwrap_or(frames).clamp(frames.max(2), 8)
+}
+
 pub(crate) struct Swapchain {
 	handles: window::Handles,
 	swapchain: IDXGISwapChain3,
 	extent: Extent,
 	image_count: u8,
+	/// The image count requested when binding the window; `None` follows the frames in flight.
+	desired_image_count: Option<u8>,
 	next_image_index: u8,
 	present_mode: PresentationModes,
 	/// The proxy image that the engine renders into; each frame sequence resolves it to its own native resource.
@@ -1242,10 +1250,11 @@ impl crate::context::Context for Device {
 		&mut self,
 		window_os_handles: &window::Handles,
 		presentation_mode: PresentationModes,
+		desired_image_count: Option<u8>,
 		fallback_extent: Extent,
 		_uses: Uses,
 	) -> SwapchainHandle {
-		Device::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, _uses)
+		Device::bind_to_window(self, window_os_handles, presentation_mode, desired_image_count, fallback_extent, _uses)
 	}
 
 	fn acquire_swapchain_image(

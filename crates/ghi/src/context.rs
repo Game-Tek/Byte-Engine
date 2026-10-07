@@ -407,10 +407,14 @@ pub trait Context: ContextCreate {
 	);
 
 	/// Associates a swapchain with a window.
+	///
+	/// `desired_image_count` asks the presentation engine for that many images, clamped to what the backend and
+	/// surface support (Metal accepts only 2 or 3). `None` keeps the backend's default for `presentation_mode`.
 	fn bind_to_window(
 		&mut self,
 		window_os_handles: &window::Handles,
 		presentation_mode: PresentationModes,
+		desired_image_count: Option<u8>,
 		fallback_extent: Extent,
 		uses: Uses,
 	) -> SwapchainHandle;

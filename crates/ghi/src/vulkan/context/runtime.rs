@@ -183,6 +183,7 @@ impl Context {
 
 		let (surface, present_mode, old_swapchain) = (swapchain.surface, swapchain.vk_present_mode, swapchain.swapchain);
 		let native_image_usage = swapchain.native_image_usage;
+		let desired_image_count = swapchain.desired_image_count;
 		let uses_proxy_images = swapchain.uses_proxy_images;
 		let native_uses = if uses_proxy_images {
 			crate::Uses::TransferDestination
@@ -203,7 +204,15 @@ impl Context {
 
 		let new_swapchain =
 			self.device
-				.create_vulkan_swapchain(surface, present_mode, capabilities, extent, native_image_usage, old_swapchain);
+				.create_vulkan_swapchain(
+					surface,
+					present_mode,
+					capabilities,
+					extent,
+					native_image_usage,
+					desired_image_count,
+					old_swapchain,
+				);
 		let vk_images = unsafe {
 			self.device.swapchain.destroy_swapchain(old_swapchain, None);
 			self.device

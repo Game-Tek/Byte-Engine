@@ -7,11 +7,12 @@ impl Device {
 		&mut self,
 		window_os_handles: &window::Handles,
 		presentation_mode: PresentationModes,
+		desired_image_count: Option<u8>,
 		fallback_extent: Extent,
 		_uses: Uses,
 	) -> SwapchainHandle {
 		let extent = Self::query_window_extent(window_os_handles, fallback_extent);
-		let image_count = self.frames.max(2);
+		let image_count = swapchain_image_count(self.frames, desired_image_count);
 
 		let (queue_index, queue) = self
 			.queues
@@ -60,6 +61,7 @@ impl Device {
 			swapchain,
 			extent,
 			image_count,
+			desired_image_count,
 			next_image_index: 0,
 			present_mode: presentation_mode,
 			image: None,

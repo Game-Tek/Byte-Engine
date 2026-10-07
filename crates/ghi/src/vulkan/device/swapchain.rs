@@ -69,15 +69,18 @@ impl InnerDevice {
 		capabilities: &vk::SurfaceCapabilitiesKHR,
 		extent: vk::Extent2D,
 		image_usage: vk::ImageUsageFlags,
+		desired_image_count: Option<u8>,
 		old_swapchain: vk::SwapchainKHR,
 	) -> vk::SwapchainKHR {
 		let presentation_modes = [present_mode];
 		let mut present_modes_create_info =
 			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
 
-		let requested_image_count = match capabilities.max_image_count {
-			0 => capabilities.min_image_count * 2,
-			max_image_count => max_image_count,
+		let requested_image_count = match (desired_image_count, capabilities.max_image_count) {
+			(Some(count), 0) => u32::from(count),
+			(Some(count), max_image_count) => u32::from(count).min(max_image_count),
+			(None, 0) => capabilities.min_image_count * 2,
+			(None, max_image_count) => max_image_count,
 		};
 		// Per-image state lives in fixed arrays, so never ask for more images than they hold.
 		let requested_image_count = requested_image_count

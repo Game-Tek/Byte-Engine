@@ -75,6 +75,8 @@ pub struct Renderer {
 	acquisitions: (u64, SmallVec<[WindowFrame; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
 	present_interval: Option<std::time::Duration>,
+	/// The swapchain image count requested for every window; `None` keeps the backend default.
+	swapchain_images: Option<u8>,
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
@@ -133,6 +135,8 @@ impl Renderer {
 	///   Defaults to false.
 	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
+	/// - `render.swapchain.images`: Sets how many swapchain images each window requests. Backends clamp it to what
+	///   they support (Metal takes 2 or 3). Defaults to the backend's choice for the presentation mode.
 	///
 	/// GPU times of every frame, scene pipeline, post-scene pass, and the stages those create with
 	/// [`RenderPassBuilder::create_gpu_counter`] are reported to `metrics` once each frame completes, under `frame`,
@@ -149,6 +153,10 @@ impl Renderer {
 			.get_parameter("render.startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
 			.unwrap_or(false);
+		let swapchain_images = parameters
+			.get_parameter("render.swapchain.images")
+			.and_then(|parameter| parameter.parse::<u8>().ok())
+			.filter(|count| *count > 0);
 
 		let mut context = device.create_context();
 		context.set_frames_in_flight(2);
@@ -176,6 +184,7 @@ impl Renderer {
 			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
 			present_interval: None,
+			swapchain_images,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
 
@@ -964,6 +973,7 @@ impl Renderer {
 				let swapchain_handle = self.context.bind_to_window(
 					&window.os_handles(),
 					ghi::PresentationModes::FIFO,
+					self.swapchain_images,
 					extent,
 					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
 				);

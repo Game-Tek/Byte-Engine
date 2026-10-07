@@ -7,7 +7,7 @@ impl Device {
 			return Extent::rectangle(0, 0);
 		};
 		let extent = Self::query_window_extent(&swapchain.handles, swapchain.extent);
-		let image_count = self.frames.max(2);
+		let image_count = swapchain_image_count(self.frames, swapchain.desired_image_count);
 		if (extent != swapchain.extent || image_count != swapchain.image_count) && extent.width() > 0 && extent.height() > 0 {
 			self.wait_for_all_queues_idle().expect(
 				"Failed to wait for DX12 queues before resizing a swapchain. The most likely cause is that the device was removed.",

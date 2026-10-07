@@ -326,9 +326,14 @@ impl<'a> Node<'a> {
 		Self::binding_with_count(name, r#type, slot, read, write, None, Some(count))
 	}
 
-	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
+	/// Declares a constant the host selects when it creates a pipeline.
+	///
+	/// `id` is the backend constant index. A scalar uses `id`; vector component `k` uses `id + k`, so the host gives each
+	/// specialization a range that does not overlap another one. Pass the values with
+	/// `ghi::pipelines::SpecializationMapEntry` at the same ids.
+	pub fn specialization(name: &'a str, r#type: &'a str, id: u32) -> Node<'a> {
 		Node {
-			node: Nodes::Specialization { name, r#type },
+			node: Nodes::Specialization { name, r#type, id },
 		}
 	}
 
@@ -727,6 +732,8 @@ pub enum Nodes<'a> {
 	Specialization {
 		name: &'a str,
 		r#type: &'a str,
+		/// The first backend constant index. Vector components take consecutive indices.
+		id: u32,
 	},
 	/// A small constant buffer updated during rendering.
 	PushConstant {

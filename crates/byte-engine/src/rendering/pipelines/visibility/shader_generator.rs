@@ -19,7 +19,8 @@ use self::ast::*;
 use self::sources::*;
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES,
-	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, TRANSPARENT_SPECIALIZATION_ID,
+	material_variable_specialization_id,
 };
 use crate::rendering::common_shader_generator::common_shader_scope;
 
@@ -99,13 +100,20 @@ impl VisibilityShaderGenerator {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform<'a>(&self, mut root: Node<'a>, material: &'a JsonObject) -> Node<'a> {
-		let mut declarations = Vec::new();
+		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path.
+		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
 		let mut texture_slots = Vec::new();
-		for variable in material["variables"].as_array().expect("material variables").iter() {
+		for (index, variable) in (0u32..).zip(material["variables"].as_array().expect("material variables")) {
 			let name = variable["name"].as_str().expect("material variable name");
 			let data_type = variable["data_type"].as_str().expect("material variable type");
 			match data_type {
-				"u32" | "f32" | "vec2f" | "vec3f" | "vec4f" => declarations.push(Node::specialization(name, data_type)),
+				"u32" | "f32" | "vec2f" | "vec3f" | "vec4f" => {
+					declarations.push(Node::specialization(
+						name,
+						data_type,
+						material_variable_specialization_id(index),
+					));
+				}
 				"Texture2D" => {
 					let slot = texture_slots.len() as u32;
 					texture_slots.push((name, slot));
@@ -304,10 +312,10 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		sampled("cone_shadow_map", Node::combined_array_image_sampler(), 1064),
 		sampled("point_shadow_map", Node::combined_cube_array_image_sampler(), 1065),
 		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` and
-		// `ssgi` are nonzero when those passes wrote their images this frame.
+		// `ssgi` are nonzero when those passes wrote their images this frame. The phase is the `transparent`
+		// specialization instead, so each phase's pipeline compiles only its own path.
 		Node::push_constant(vec![
 			Node::member("evaluation_index", "u32"),
-			Node::member("blend", "u32"),
 			Node::member("gtao", "u32"),
 			Node::member("ssgi", "u32"),
 		]),

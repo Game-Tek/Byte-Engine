@@ -806,11 +806,13 @@ impl Node {
 		}
 	}
 
-	pub fn specialization(name: &str, r#type: NodeReference) -> Node {
+	/// Declares a host-selected constant whose backend index starts at `id`. See [`crate::parser::Node::specialization`].
+	pub fn specialization(name: &str, r#type: NodeReference, id: u32) -> Node {
 		Node {
 			node: Nodes::Specialization {
 				name: name.to_string(),
 				r#type,
+				id,
 			},
 		}
 	}
@@ -1097,6 +1099,8 @@ pub enum Nodes {
 	Specialization {
 		name: String,
 		r#type: NodeReference,
+		/// The first backend constant index. Vector components take consecutive indices.
+		id: u32,
 	},
 	Expression(Expressions),
 	Raw {
@@ -1357,8 +1361,12 @@ impl std::fmt::Debug for Node {
 				f,
 				"ForLoop {{ initializer: {initializer:?}, condition: {condition:?}, update: {update:?}, statements: {statements:?} }}"
 			),
-			Nodes::Specialization { name, r#type } => {
-				write!(f, "Specialization {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
+			Nodes::Specialization { name, r#type, id } => {
+				write!(
+					f,
+					"Specialization {{ name: {name}, type: {:?}, id: {id} }}",
+					r#type.borrow().get_name()
+				)
 			}
 			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
 			Nodes::Raw {

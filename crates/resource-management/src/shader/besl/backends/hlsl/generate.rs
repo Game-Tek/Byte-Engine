@@ -267,7 +267,7 @@ impl Generator {
 				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					// A member may be a user struct, which is declared under its escaped name.

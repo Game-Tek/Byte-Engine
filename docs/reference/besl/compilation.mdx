@@ -32,7 +32,7 @@ code. They are not syntax you can write in a `.besl` file.
 | Generated feature | Rust entry point | Use |
 | --- | --- | --- |
 | Backend-specific code | `ParserNode::glsl`, `ParserNode::hlsl`, `ParserNode::msl`, or `ParserNode::raw_code` | Bridge a feature that portable BESL can't express. Declare every graph input and output. |
-| Specialization value | `ParserNode::specialization` | Add a host-selected typed value. The VM receives values through `SpecializationValues`. |
+| Specialization value | `ParserNode::specialization` | Add a host-selected typed value at a pipeline constant id. Vector components take consecutive ids, so give each specialization its own range. Pipelines receive values through `SpecializationMapEntry` at the same ids, and the VM receives them by name through `SpecializationValues`. See [Shader variants](/docs/develop/rendering/shader-variants) for when to use one. |
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
 | Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
 | Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |

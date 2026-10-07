@@ -884,7 +884,8 @@ impl VisibilityPipelineManager {
 	///
 	/// Materials whose programs differ only in the textures they bind request equal pipelines, which the pipeline
 	/// manager compiles once, so grouping ready materials by pipeline finds them without comparing programs. Each
-	/// group gets one slot, and each phase records one dispatch per slot it draws instead of one per material. A
+	/// group gets one slot in the list of its phase, and each phase records one dispatch per slot it draws instead of
+	/// one per material. A
 	/// material that isn't ready keeps [`NO_EVALUATION`]; no admitted instance uses it.
 	fn rebuild_material_lists(&mut self) {
 		let render_info = &mut self.scene.render_info;
@@ -904,28 +905,21 @@ impl VisibilityPipelineManager {
 			for material in materials {
 				self.material_evaluations[material.index as usize] = evaluation_index;
 			}
-			// The slot is shared by both phases; each phase's pixel lists only hold its own materials' pixels.
-			for (evaluations, blend) in [
-				(&mut render_info.opaque_evaluations, false),
-				(&mut render_info.transparent_evaluations, true),
-			] {
-				let mut phase_materials = materials
-					.iter()
-					.filter(|material| matches!(material.alpha_mode, AlphaMode::Blend) == blend);
-				let Some(first) = phase_materials.next() else {
-					continue;
-				};
-				let more = phase_materials.count();
-				evaluations.push(MaterialEvaluation {
-					name: if more == 0 {
-						first.name.clone()
-					} else {
-						format!("{} and {more} more", first.name).into()
-					},
-					index: evaluation_index,
-					pipeline: first.pipeline,
-				});
-			}
+			// The loader specializes every pipeline for its material's phase, so a slot belongs to one phase.
+			let first = &materials[0];
+			let evaluations = if matches!(first.alpha_mode, AlphaMode::Blend) {
+				&mut render_info.transparent_evaluations
+			} else {
+				&mut render_info.opaque_evaluations
+			};
+			evaluations.push(MaterialEvaluation {
+				name: match materials.len() {
+					1 => first.name.clone(),
+					count => format!("{} and {} more", first.name, count - 1).into(),
+				},
+				index: evaluation_index,
+				pipeline: first.pipeline,
+			});
 		}
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}

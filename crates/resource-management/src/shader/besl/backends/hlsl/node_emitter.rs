@@ -4,9 +4,21 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		Generator::translate_type(source)
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "static const";
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, _index: usize) {
-		// HLSL has no pipeline specialization, so each constant takes the default value the other backends override.
-		let _ = write!(string, "static const {type_name} {name}=1.0f;");
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		default: &str,
+	) {
+		// HLSL has no pipeline specialization. The DX12 backend recompiles with a `SPEC_CONSTANT_<id>` define for each
+		// value the host passes, and the define below supplies the default otherwise. Directives need their own lines,
+		// even in minified output.
+		let _ = write!(
+			string,
+			"\n#ifndef SPEC_CONSTANT_{id}\n#define SPEC_CONSTANT_{id} {default}\n#endif\nstatic const {type_name} {name}=SPEC_CONSTANT_{id};"
+		);
 	}
 	fn minified(&self) -> bool {
 		self.minified

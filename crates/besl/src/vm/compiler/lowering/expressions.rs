@@ -194,7 +194,7 @@ impl<'a> Compiler<'a> {
 					let source_value = {
 						let source_ref = source.borrow();
 						match source_ref.node() {
-							Nodes::Specialization { name, r#type } => {
+							Nodes::Specialization { name, r#type, .. } => {
 								let declared_type = resolve_value_type(r#type)?;
 								let value = self
 									.specializations

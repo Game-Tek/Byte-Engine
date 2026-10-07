@@ -233,8 +233,8 @@ impl Lexer {
 				self.lex_children(&this, fields)?;
 				this
 			}
-			parser::Nodes::Specialization { name, r#type } => {
-				Node::specialization(name, resolve_type(&self.scopes, r#type)?).into()
+			parser::Nodes::Specialization { name, r#type, id } => {
+				Node::specialization(name, resolve_type(&self.scopes, r#type)?, *id).into()
 			}
 			parser::Nodes::Member { name, r#type } => {
 				if r#type.contains('<') {

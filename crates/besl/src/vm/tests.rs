@@ -2761,7 +2761,7 @@ fn specialization_values_select_x_and_y_components() {
 		"#;
 		let mut root = buffer_root("result", 33, &[("value", "f32")]);
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		root.add_child(Node::specialization("axis", vec2f).into());
+		root.add_child(Node::specialization("axis", vec2f, 0).into());
 		let program = compile_to_besl(script, Some(root)).expect("Expected lexed specialization program");
 		let mut specializations = SpecializationValues::new();
 		specializations.set("axis", Value::Vec2F(axis));

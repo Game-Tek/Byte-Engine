@@ -7,7 +7,8 @@ use super::{OcclusionPhase, Pipelines, record_meshlet_dispatches};
 
 /// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
 ///
-/// Material evaluation pushes the discriminant as its blend flag.
+/// Pixel mapping pushes the discriminant as its phase. Material evaluation compiles each phase into its own pipelines
+/// through [`super::super::layout::TRANSPARENT_SPECIALIZATION_ID`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub(super) enum VisibilityPhase {

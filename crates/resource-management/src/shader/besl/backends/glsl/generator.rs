@@ -222,8 +222,15 @@ impl NodeEmitter for Generator {
 		}
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "const";
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
-		let _ = write!(string, "layout(constant_id={index})const {type_name} {name}=1.0f;");
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		default: &str,
+	) {
+		let _ = write!(string, "layout(constant_id={id})const {type_name} {name}={default};");
 	}
 	fn minified(&self) -> bool {
 		self.minified
@@ -612,7 +619,7 @@ impl NodeEmitter for Generator {
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
 			}
-			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					// A member may be a user struct, which is declared under its escaped name.

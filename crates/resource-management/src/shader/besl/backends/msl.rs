@@ -48,6 +48,39 @@ mod tests {
 		generate(settings, &root.get_main().expect("Expected fixture main function"))
 	}
 
+	/// Verifies a compute shader that branches on `bool` and `u32` specializations compiles with the Metal toolchain.
+	#[compio::test]
+	async fn specialization_branch_compiles_natively() {
+		let mut root = besl::Node::root();
+		let specializations = [("transparent", "bool", 0), ("fallback", "u32", 1)]
+			.map(|(name, r#type, id)| besl::Node::specialization(name, root.get_child(r#type).unwrap(), id).into());
+		root.add_children(specializations.into());
+		let root = besl::compile_to_besl(
+			r#"
+			Output: struct { values: u32[1] }
+			output: descriptor<{ type: Output, binding: 0, access: read_write }>;
+
+			main: fn () -> void {
+				if (transparent) {
+					output.values[0] = 1;
+				} else {
+					output.values[0] = fallback;
+				}
+			}
+			"#,
+			Some(root),
+		)
+		.expect("Expected specialization fixture source to link");
+		let shader = generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&root.get_main().expect("Expected main"),
+		);
+		assert_string_contains!(shader, "constant bool transparent [[function_constant(0)]];");
+		assert_string_contains!(shader, "constant uint fallback [[function_constant(1)]];");
+
+		compile_natively(&shader, "besl-specialization-branch").await;
+	}
+
 	#[compio::test]
 	async fn sampled_binding_array_argument_is_emitted_in_resources() {
 		let mut root = besl::Node::root();
@@ -1080,14 +1113,18 @@ struct PrimitiveOutput {
 		compile_natively(&shader, "besl-compute-stage-inputs").await;
 	}
 
+	/// Verifies each specialization becomes a function constant at its declared id, with vector components after it.
 	#[test]
-	fn specializtions() {
+	fn specializations_lower_to_function_constants() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
-		assert_string_contains!(shader, "constant float color_x [[function_constant(0)]];");
-		assert_string_contains!(shader, "constant float color_y [[function_constant(1)]];");
-		assert_string_contains!(shader, "constant float color_z [[function_constant(2)]];");
+		assert_string_contains!(shader, "constant bool enabled [[function_constant(0)]];");
+		assert_string_contains!(shader, "constant uint count [[function_constant(1)]];");
+		assert_string_contains!(shader, "constant float scale [[function_constant(2)]];");
+		assert_string_contains!(shader, "constant float color_x [[function_constant(4)]];");
+		assert_string_contains!(shader, "constant float color_y [[function_constant(5)]];");
+		assert_string_contains!(shader, "constant float color_z [[function_constant(6)]];");
 		assert_string_contains!(shader, "constant float3 color=float3(color_x,color_y,color_z);");
-		assert_string_contains!(shader, "void main(){color;}");
+		assert_string_contains!(shader, "void main(){enabled;count;scale;color;}");
 	}
 
 	#[compio::test]

@@ -297,7 +297,7 @@ material_evaluation_suffix: fn () -> void {
 	let environment_visibility: f32 = 1.0;
 	// Light from SSGI rays that hit on-screen geometry, already weighted by the fraction of rays that hit.
 	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			// SSGI works in view space at half resolution. The pixel's own surface picks the history texels that lie
 			// on it. Alpha is the fraction of rays that hit, so the rest reach the environment.
@@ -416,7 +416,7 @@ material_evaluation_suffix: fn () -> void {
 			if (light_type == 68) {
 				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view0 != 0) {
-					if (push_constant.blend == 0) {
+					if (!transparent) {
 						// The sun visibility pass resolved every sun's shadow map and contact shadows for every opaque
 						// pixel, sun slot `s` in channel `s`.
 						let sun_slot: u32 = lighting_data.lights[light_index].shadow_layer;
@@ -556,7 +556,7 @@ material_evaluation_suffix: fn () -> void {
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// It is written before the reflection trace, which cannot change it, so the diffuse sum does not stay live through
 	// the ray march. Only SSGI reads the diffuse light, so it is not written while SSGI is off.
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			let diffuse_radiance: vec3f = diffuse * lighting_data.exposure;
 			write(
@@ -606,7 +606,7 @@ material_evaluation_suffix: fn () -> void {
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
 	let lit: vec3f = (direct_and_diffuse + specular_weight * specular_radiance) * lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
-	if (push_constant.blend != 0) {
+	if (transparent) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
 		let destination_color: vec4f = image_load(lit_map, pixel_coordinates);
 		output_color = source_over(
@@ -617,7 +617,7 @@ material_evaluation_suffix: fn () -> void {
 	write(lit_map, pixel_coordinates, output_color);
 	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
 	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
 	}
 }

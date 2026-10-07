@@ -33,6 +33,19 @@ pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
 pub(crate) const MAX_LIGHTS: usize = 1024;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 
+/// The specialization constant that compiles a material evaluation pipeline for the transparent phase.
+///
+/// The opaque and transparent phases light and write pixels differently, and a runtime flag would compile the
+/// transparent path's shadow-map filtering into every opaque pipeline. The loader sets it from the variant's alpha mode.
+pub(crate) const TRANSPARENT_SPECIALIZATION_ID: u32 = 0;
+/// Returns the first specialization constant of the material variable at `variable_index`.
+///
+/// Variables follow [`TRANSPARENT_SPECIALIZATION_ID`], four constants each: one per component of the widest
+/// variable type, `vec4f`.
+pub(crate) const fn material_variable_specialization_id(variable_index: u32) -> u32 {
+	TRANSPARENT_SPECIALIZATION_ID + 1 + variable_index * 4
+}
+
 /// Vertices and triangles one meshlet can hold.
 pub(crate) const VERTEX_COUNT: u32 = 64;
 pub(crate) const TRIANGLE_COUNT: u32 = 126;

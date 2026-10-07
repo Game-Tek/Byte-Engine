@@ -1433,13 +1433,25 @@ mod tests {
 		compile_dxil(&shader, "besl-find-lsb", ShaderTypes::Compute);
 	}
 
-	/// Verifies specialization constants become `static const` values, because DX12 has no Vulkan-style specialization constants.
+	/// Verifies specialization constants read the `SPEC_CONSTANT_<id>` defines the DX12 backend passes, with a typed
+	/// default, because DX12 has no Vulkan-style specialization constants.
 	#[test]
-	fn specializations_lower_to_static_constants() {
+	fn specializations_lower_to_overridable_defines() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
-		assert_string_contains!(shader, "static const float color_x=1.0f;");
-		assert_string_contains!(shader, "static const float color_y=1.0f;");
-		assert_string_contains!(shader, "static const float color_z=1.0f;");
+		assert_string_contains!(
+			shader,
+			"#ifndef SPEC_CONSTANT_0\n#define SPEC_CONSTANT_0 false\n#endif\nstatic const bool enabled=SPEC_CONSTANT_0;"
+		);
+		assert_string_contains!(
+			shader,
+			"#define SPEC_CONSTANT_1 0u\n#endif\nstatic const uint32_t count=SPEC_CONSTANT_1;"
+		);
+		assert_string_contains!(
+			shader,
+			"#define SPEC_CONSTANT_2 0.0\n#endif\nstatic const float scale=SPEC_CONSTANT_2;"
+		);
+		assert_string_contains!(shader, "static const float color_x=SPEC_CONSTANT_4;");
+		assert_string_contains!(shader, "static const float color_z=SPEC_CONSTANT_6;");
 		assert_string_contains!(shader, "static const float3 color=float3(color_x,color_y,color_z);");
 		assert_string_does_not_contain!(shader, "vk::constant_id");
 	}

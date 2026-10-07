@@ -1,0 +1,126 @@
+---
+title: Shader variants
+description: Leave unused shader features out at bake time, and select features that only some materials use with specialization constants.
+icon: Braces
+---
+
+Read this page before you add an optional feature to a generated shader, such as
+material evaluation, or before you branch on a flag inside one. It explains when
+to leave code out while baking, when to select it with a specialization
+constant, and how to do each.
+
+## Why a branch that never runs still costs
+
+The GPU compiler allocates registers, spills, and instruction cache space for
+every path in a pipeline, including paths that no pixel takes. A runtime flag,
+such as a push constant, keeps both sides of its branch in the pipeline.
+
+For example, opaque material evaluation used to carry the transparent phase's
+shadow-map filtering behind a push-constant flag. Moving that flag into a
+specialization constant halved the opaque pipeline, from 8,664 to 4,320
+instructions. Afterwards, new transparent-only code no longer costs opaque
+pixels anything.
+
+## Choose how to gate a feature
+
+| When a feature is | Gate it with | Decided |
+|---|---|---|
+| Never used by the program being baked | Conditional generation | While baking, in the `ProgramGenerator` |
+| Part of the baked shader, but used only by some materials or phases | A specialization constant | When the loader requests the pipeline |
+| Switched per frame, such as whether SSGI ran | A push constant or buffer value | While recording |
+
+Prefer the earliest gate that still has the information it needs. Use a runtime
+flag only for state that changes while the pipeline stays the same.
+
+## Leave unused features out while baking
+
+When the authored program alone shows that it never needs a feature, don't
+generate that feature's code. The `ProgramGenerator` sees the parsed program
+before linking, so it can inspect the program and splice in only what the
+program uses.
+
+Material evaluation does this with `MaterialReconstructionFeatures`. The
+generator walks the material's `main` and reconstructs UVs only when the
+material samples a texture or reads `vertex_uv`. It builds the tangent frame only
+when the material writes a normal or reads `T` or `B`. A material without
+textures never contains UV interpolation.
+
+Keep these rules:
+
+- **Decide from the baked program and its asset, never from the scene.** One
+  baked shader serves every material and variant that references it. Only leave
+  code out when none of them can need it.
+- **Splice whole statements or helpers.** Backends emit only the functions that
+  `main` reaches, so a helper that no spliced statement calls disappears from
+  the generated source too.
+- **Test the decision at the generator's seam.** Assert that the generated
+  program lexes and contains, or doesn't contain, the feature. Leave lowering to
+  the backend tests.
+
+## Select per-material features with specialization constants
+
+When the baked shader must support a feature but only some materials use it,
+declare a specialization constant and branch on it. The loader sets its value
+for each material, and the platform compiler removes the unused side when it
+creates the pipeline. One baked shader still serves every material.
+
+The transparent phase works this way:
+
+1. The generator declares the constant with an id reserved in
+   `visibility/layout.rs`:
+
+   ```rust
+   Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)
+   ```
+
+2. The generated BESL branches on it like any other value:
+
+   ```rust
+   if (transparent) {
+   	occlusion_factor = f16(sample_directional_shadow(/* … */));
+   } else {
+   	occlusion_factor = f16(fetch(sun_visibility, pixel_coordinates).x);
+   }
+   ```
+
+3. The loader passes the value at the same id when it requests the pipeline:
+
+   ```rust
+   SpecializationMapEntry::new(TRANSPARENT_SPECIALIZATION_ID, matches!(alpha_mode, AlphaMode::Blend))
+   ```
+
+The pipeline manager compiles one pipeline per distinct shader and
+specialization values, and reuses it for every material that requests the same
+pair. Materials that share a pipeline also share an evaluation dispatch.
+
+Keep these rules:
+
+- **Reserve every id in one place.** A scalar uses its id, and vector component
+  `k` uses `id + k`. Give each specialization its own range next to the existing
+  ones in `visibility/layout.rs`, so the generator and the loader can't
+  disagree.
+- **Keep the number of distinct values small.** Each distinct combination
+  compiles its own pipeline and splits materials into separate dispatches. Use
+  specialization constants for switches such as the phase. Pass values that vary
+  per material, such as color factors, as material data instead.
+- **Use only the types every backend supports:** `bool`, `u32`, `i32`, `f32`, and
+  `f32` vectors.
+
+Each backend applies the values when it creates the pipeline. Metal uses
+function constants, Vulkan uses specialization constants, and DX12 recompiles
+the HLSL with a `SPEC_CONSTANT_<id>` define for each value.
+
+## Check the result
+
+A gate only helps if the compiler actually removed the code. Before you measure
+frame time, compare the compiled statistics of the affected pipeline, such as
+instruction count, register count, and spilled bytes, before and after the
+change. Then compare GPU time for the affected stage with the change and
+without it.
+
+Fewer instructions don't always mean a faster frame. Code that never runs mostly
+costs registers and compile time. The gain is that the excluded path no longer
+taxes pipelines that don't use it.
+
+See [Compilation and reflection](/docs/reference/besl/compilation) for the BESL
+side of specialization values.

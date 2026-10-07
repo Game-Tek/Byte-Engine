@@ -23,7 +23,7 @@ use utils::Extent;
 use utils::hash::HashMap;
 
 use super::geometry::{GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
-use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS};
+use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID, material_variable_specialization_id};
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
@@ -575,7 +575,7 @@ impl VisibilityLoader {
 				_ => None,
 			})
 			.collect();
-		let specialization = specialization_entries(&variant.variables);
+		let specialization = specialization_entries(alpha_mode, &variant.variables);
 		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			return Err(LoadError(format!(
@@ -595,13 +595,13 @@ impl VisibilityLoader {
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
 			))
 		})?;
-		// Material evaluation pushes four u32s: the material index, the blend flag, and the GTAO and SSGI flags.
+		// Material evaluation pushes three u32s: the evaluation index and the GTAO and SSGI flags.
 		let pipeline = self
 			.pipeline_manager
 			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
 				shader_id,
 				specialization,
-				vec![ghi::pipelines::PushConstantRange::new(0, 16)],
+				vec![ghi::pipelines::PushConstantRange::new(0, 12)],
 			));
 		Ok(VisibilityResident::Material(ResidentMaterial {
 			id,
@@ -795,23 +795,25 @@ impl VisibilityLoader {
 /// Converts a variant's constant parameters into shader specialization constants.
 ///
 /// Image parameters bind through texture slots instead, so they never split pipelines.
+/// Returns the specialization constants of a material variant's evaluation pipeline: its phase, then its scalar and
+/// vector variables, at the ids the visibility shader generator declared them with.
 fn specialization_entries(
+	alpha_mode: AlphaMode,
 	variables: &[resource_management::resources::material::VariantVariable],
 ) -> Vec<ghi::pipelines::SpecializationMapEntry> {
-	variables
-		.iter()
-		.enumerate()
-		.filter_map(|(index, variable)| match &variable.value {
-			Value::Scalar(value) => ghi::pipelines::SpecializationMapEntry::new(index as u32, *value).into(),
-			Value::Vector3(value) => {
-				ghi::pipelines::SpecializationMapEntry::new(index as u32, ghi::pod::Vec3f::from(*value)).into()
-			}
-			Value::Vector4(value) => {
-				ghi::pipelines::SpecializationMapEntry::new(index as u32, ghi::pod::Vec4f::from(*value)).into()
-			}
+	use ghi::pipelines::SpecializationMapEntry;
+
+	let transparent = SpecializationMapEntry::new(TRANSPARENT_SPECIALIZATION_ID, matches!(alpha_mode, AlphaMode::Blend));
+	let variables = (0u32..).zip(variables).filter_map(|(index, variable)| {
+		let id = material_variable_specialization_id(index);
+		match &variable.value {
+			Value::Scalar(value) => SpecializationMapEntry::new(id, *value).into(),
+			Value::Vector3(value) => SpecializationMapEntry::new(id, ghi::pod::Vec3f::from(*value)).into(),
+			Value::Vector4(value) => SpecializationMapEntry::new(id, ghi::pod::Vec4f::from(*value)).into(),
 			Value::Image(_) => None,
-		})
-		.collect()
+		}
+	});
+	std::iter::once(transparent).chain(variables).collect()
 }
 
 /// Returns the illuminance that a baked diffuse irradiance cube delivers to an upward-facing surface.

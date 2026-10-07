@@ -243,12 +243,13 @@ mod tests {
 		assert_string_contains!(shader, "pixel_mapping[0]=meshes[1];");
 	}
 
+	/// Verifies each specialization becomes a constant at its declared id with a typed default.
 	#[test]
-	fn specializtions() {
+	fn specializations_lower_to_constant_ids() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
 		assert_string_contains!(
 			shader,
-			"layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}"
+			"layout(constant_id=0)const bool enabled=false;layout(constant_id=1)const uint32_t count=0u;layout(constant_id=2)const float scale=0.0;layout(constant_id=4)const float color_x=0.0;layout(constant_id=5)const float color_y=0.0;layout(constant_id=6)const float color_z=0.0;const vec3 color=vec3(color_x,color_y,color_z);void main(){enabled;count;scale;color;}"
 		);
 	}
 

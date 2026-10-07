@@ -4,8 +4,16 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		Generator::translate_type(source)
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "constant";
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
-		let _ = write!(string, "constant {type_name} {name} [[function_constant({index})]];");
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		_default: &str,
+	) {
+		// Metal folds the value in when the pipeline is created, so the host passes every constant the shader reads.
+		let _ = write!(string, "constant {type_name} {name} [[function_constant({id})]];");
 	}
 	fn minified(&self) -> bool {
 		self.minified

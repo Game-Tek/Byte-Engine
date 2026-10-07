@@ -357,6 +357,22 @@ pub(crate) fn is_texture_besl_type(name: &str) -> bool {
 	)
 }
 
+/// Returns the value a specialization constant of the scalar BESL type `name` takes when the host passes none.
+///
+/// The spelling is valid in GLSL, HLSL, and MSL. The types match the ones `ghi::pipelines::SpecializationConstant`
+/// carries.
+fn specialization_default(name: &str) -> &'static str {
+	match name {
+		"bool" => "false",
+		"u32" => "0u",
+		"i32" => "0",
+		"f32" => "0.0",
+		_ => panic!(
+			"Unsupported specialization type `{name}`. The most likely cause is a specialization declared with a type other than bool, u32, i32, f32, or a vector of f32."
+		),
+	}
+}
+
 pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 	matches!(
 		name,
@@ -750,44 +766,68 @@ pub(crate) trait NodeEmitter {
 	/// The qualifier that declares a specialization aggregate, such as `const` or `static const`.
 	const SPECIALIZATION_QUALIFIER: &'static str;
 
-	/// Writes the declaration of one specialization constant, without the line break.
+	/// Writes the declaration of one scalar specialization constant, without the line break.
 	///
-	/// `type_name` is already translated, `name` is the constant's name, and `index` is its field position, which
-	/// backends with pipeline specialization use as the constant ID. [`Self::emit_specialization_node`] calls it.
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize);
+	/// `type_name` is already translated, `name` is the constant's name, `id` is the pipeline constant index, and
+	/// `default` is the value, spelled for the target language, that backends without a host override use.
+	/// [`Self::emit_specialization_node`] calls it.
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		default: &str,
+	);
 
-	/// Writes a specialization block: one constant per field of its struct type, named `<name>_<field>`, then an
-	/// aggregate of that type named `name` that collects them.
+	/// Writes a specialization block.
+	///
+	/// A scalar becomes one constant at `id`. A vector becomes one constant per component, named `<name>_<field>`, at
+	/// `id + component`, followed by an aggregate named `name` that collects them.
 	///
 	/// Backends call it for [`besl::Nodes::Specialization`] and customize it through
 	/// [`Self::emit_specialization_constant`] and [`Self::SPECIALIZATION_QUALIFIER`].
-	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
+	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference, id: u32) {
 		let r#type = r#type.borrow();
-		let type_name = Self::type_identifier(r#type.get_name().unwrap());
+		let besl_type_name = r#type.get_name().unwrap();
+		let type_name = Self::type_identifier(besl_type_name);
+		let break_str = ShaderFormatting::new(self.minified()).break_str();
+		let constant = |string: &mut String, scalar: &str, constant_name: &dyn std::fmt::Display, id: u32| {
+			let default = specialization_default(scalar);
+			self.emit_specialization_constant(
+				string,
+				Self::type_from_besl(scalar),
+				format_args!("{constant_name}"),
+				id,
+				default,
+			);
+			string.push_str(break_str);
+		};
+		// Scalars are structs without fields.
 		let fields = match r#type.node() {
 			besl::Nodes::Struct { fields, .. } => fields.as_slice(),
 			_ => &[],
 		};
-		let break_str = ShaderFormatting::new(self.minified()).break_str();
+		if fields.is_empty() {
+			constant(string, besl_type_name, &Self::identifier(name), id);
+			return;
+		}
 
-		// Declare every constant, keeping the field position as its specialization ID.
-		for (index, field) in fields.iter().enumerate() {
-			let field = field.borrow();
-			let besl::Nodes::Member {
+		// Declare every component at consecutive IDs after the specialization's own.
+		for (component, field) in (0u32..).zip(fields) {
+			if let besl::Nodes::Member {
 				name: member_name,
 				r#type,
 				..
-			} = field.node()
-			else {
-				continue;
-			};
-			self.emit_specialization_constant(
-				string,
-				Self::type_from_besl(r#type.borrow().get_name().unwrap()),
-				format_args!("{name}_{member_name}"),
-				index,
-			);
-			string.push_str(break_str);
+			} = field.borrow().node()
+			{
+				constant(
+					string,
+					r#type.borrow().get_name().unwrap(),
+					&format_args!("{name}_{member_name}"),
+					id + component,
+				);
+			}
 		}
 
 		// Collect the constants into the aggregate the shader reads.
@@ -1548,18 +1588,28 @@ pub mod tests {
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}
 
+	/// Builds a `main` that reads one specialization of each supported shape: `bool`, `u32`, and `f32` scalars at ids 0,
+	/// 1, and 2, and a `vec3f` whose components start at id 4.
 	pub fn specializations() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
+			enabled;
+			count;
+			scale;
 			color;
 		}
 		"#;
 
 		let mut root_node = besl::Node::root();
 
-		let vec3f_type = root_node.get_child("vec3f").unwrap();
-
-		root_node.add_children(vec![besl::Node::specialization("color", vec3f_type).into()]);
+		let specializations = [
+			("enabled", "bool", 0),
+			("count", "u32", 1),
+			("scale", "f32", 2),
+			("color", "vec3f", 4),
+		]
+		.map(|(name, r#type, id)| besl::Node::specialization(name, root_node.get_child(r#type).unwrap(), id).into());
+		root_node.add_children(specializations.into());
 
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}

@@ -101,8 +101,9 @@ rotate_shadow_poisson_offset: fn (poisson_offset: vec2f16, rotation: vec2f16) ->
 // A spacing of one filters every texel under a two-texel tent. Wider spacings give wider penumbrae at the same cost,
 // and resolve occluder outlines at the spacing, which the wider tent smooths the same way.
 //
-// This version checks every tap against the map's edges and treats taps outside the map as lit. Cone shadows and
-// directional receivers near a cascade's edge use it.
+// This version checks every tap against the map's edges and treats taps outside the map as lit. Directional receivers
+// near a cascade's edge use it; cone shadows use `sample_cone_shadow_tent`, its spacing-one form, which reads every texel
+// before comparing any.
 pub(crate) const SHADOW_TENT_SOURCE: &str = r#"
 sample_shadow_tent: fn (
 	shadow_map: ArrayTexture2D,
@@ -569,6 +570,91 @@ compute_shadow_rotation: fn (texel_direction: vec3f) -> vec2f16 {
 }
 "#;
 
+// Adds one texel of the cone tent's 4x4 block to `lit`: its tent weight when the receiver plane at its center lies in
+// front of `stored_depth`, or when the texel lies off the map or the plane there lies past the far plane, as
+// `sample_shadow_tap` decides. `texel` is the texel's position in texels, an integer, and `shadow_texel_position` the
+// receiver's.
+pub(crate) const CONE_SHADOW_TENT_TEXEL_SOURCE: &str = r#"
+cone_shadow_tent_texel: fn (
+	lit: f32,
+	stored_depth: f32,
+	texel: vec2f,
+	shadow_texel_position: vec2f,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	receiver_plane_depth_gradient: vec2f,
+	shadow_map_extent_f: vec2f
+) -> f32 {
+	let weight: f32 = (2.0 - abs(texel.x + 0.5 - shadow_texel_position.x)) * (2.0 - abs(texel.y + 0.5 - shadow_texel_position.y));
+	let inside: bool = texel.x >= 0.0 && texel.y >= 0.0 && texel.x < shadow_map_extent_f.x && texel.y < shadow_map_extent_f.y;
+	let tap_depth: f32 = surface_depth
+		+ dot(receiver_plane_depth_gradient, (texel + vec2f(0.5, 0.5)) / shadow_map_extent_f - shadow_uv);
+	return lit + weight * (inside && tap_depth >= 0.0 ? step(stored_depth, tap_depth) : 1.0);
+}
+"#;
+
+// Reads one row of the cone tent's 4x4 block, left to right: the texels in columns `columns` of row `row`.
+pub(crate) const CONE_SHADOW_ROW_DEPTHS_SOURCE: &str = r#"
+cone_shadow_row_depths: fn (shadow_map: ArrayTexture2D, columns: vec4u, row: u32, shadow_layer: u32) -> vec4f {
+	return vec4f(
+		fetch(shadow_map, vec2u(columns.x, row), shadow_layer).x,
+		fetch(shadow_map, vec2u(columns.y, row), shadow_layer).x,
+		fetch(shadow_map, vec2u(columns.z, row), shadow_layer).x,
+		fetch(shadow_map, vec2u(columns.w, row), shadow_layer).x
+	);
+}
+"#;
+
+// The spacing-one tent of `sample_shadow_tent`, for cone shadows: its sixteen taps are the 4x4 block of adjacent texels
+// around the receiver. All sixteen are read before any is compared, so the reads are in flight together instead of one
+// after another as in that function's loop. Texels are compared, weighted, and summed in the same order as there, so the
+// result is the same. Four gathers would read the block too, but they made material evaluation 0.6 % slower by day, when
+// no cone light runs, and saved only 1 % more than these fetches in a spotlight's view (2026-10-06).
+pub(crate) const CONE_SHADOW_TENT_SOURCE: &str = r#"
+sample_cone_shadow_tent: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	receiver_plane_depth_gradient: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> f32 {
+	let extent: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let receiver: vec2f = shadow_uv * extent;
+	let first: vec2f = vec2f(floor(receiver.x - 1.5), floor(receiver.y - 1.5));
+	// Texels off the map are read at its edge, and `cone_shadow_tent_texel` counts them as lit.
+	let columns: vec4u = vec4u(
+		u32(clamp(first.x, 0.0, extent.x - 1.0)),
+		u32(clamp(first.x + 1.0, 0.0, extent.x - 1.0)),
+		u32(clamp(first.x + 2.0, 0.0, extent.x - 1.0)),
+		u32(clamp(first.x + 3.0, 0.0, extent.x - 1.0))
+	);
+	let row0: vec4f = cone_shadow_row_depths(shadow_map, columns, u32(clamp(first.y, 0.0, extent.y - 1.0)), shadow_layer);
+	let row1: vec4f = cone_shadow_row_depths(shadow_map, columns, u32(clamp(first.y + 1.0, 0.0, extent.y - 1.0)), shadow_layer);
+	let row2: vec4f = cone_shadow_row_depths(shadow_map, columns, u32(clamp(first.y + 2.0, 0.0, extent.y - 1.0)), shadow_layer);
+	let row3: vec4f = cone_shadow_row_depths(shadow_map, columns, u32(clamp(first.y + 3.0, 0.0, extent.y - 1.0)), shadow_layer);
+	let gradient: vec2f = receiver_plane_depth_gradient;
+	let lit: f32 = 0.0;
+	lit = cone_shadow_tent_texel(lit, row0.x, first, receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row0.y, first + vec2f(1.0, 0.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row0.z, first + vec2f(2.0, 0.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row0.w, first + vec2f(3.0, 0.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row1.x, first + vec2f(0.0, 1.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row1.y, first + vec2f(1.0, 1.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row1.z, first + vec2f(2.0, 1.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row1.w, first + vec2f(3.0, 1.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row2.x, first + vec2f(0.0, 2.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row2.y, first + vec2f(1.0, 2.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row2.z, first + vec2f(2.0, 2.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row2.w, first + vec2f(3.0, 2.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row3.x, first + vec2f(0.0, 3.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row3.y, first + vec2f(1.0, 3.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row3.z, first + vec2f(2.0, 3.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	lit = cone_shadow_tent_texel(lit, row3.w, first + vec2f(3.0, 3.0), receiver, shadow_uv, surface_depth, gradient, extent);
+	return lit / 16.0;
+}
+"#;
+
 // Cone maps use two positive Depth16Unorm steps as a reverse-Z comparison margin after receiver-plane correction.
 pub(crate) const CONE_SHADOW_SOURCE: &str = r#"
 sample_cone_shadow: fn (
@@ -610,14 +696,13 @@ sample_cone_shadow: fn (
 	}
 
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
-	return sample_shadow_tent(
+	return sample_cone_shadow_tent(
 		shadow_map,
 		shadow_uv,
 		surface_depth,
 		receiver_plane_depth_gradient,
 		shadow_layer,
-		shadow_map_extent,
-		1.0
+		shadow_map_extent
 	);
 }
 "#;
@@ -769,6 +854,97 @@ sample_point_shadow_tap: fn (
 }
 "#;
 
+// Returns the outward normal of the cube face that a lookup direction selects, with the tie-breaking of
+// `point_shadow_texel_direction`: x before y before z.
+pub(crate) const POINT_SHADOW_FACE_NORMAL_SOURCE: &str = r#"
+point_shadow_face_normal: fn (direction: vec3f) -> vec3f {
+	let absolute_direction: vec3f = vec3f(abs(direction.x), abs(direction.y), abs(direction.z));
+	if (absolute_direction.x >= absolute_direction.y && absolute_direction.x >= absolute_direction.z) {
+		return vec3f(direction.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+	}
+	if (absolute_direction.y >= absolute_direction.z) {
+		return vec3f(0.0, direction.y >= 0.0 ? 1.0 : -1.0, 0.0);
+	}
+	return vec3f(0.0, 0.0, direction.z >= 0.0 ? 1.0 : -1.0);
+}
+"#;
+
+// One tap of `sample_point_shadow` for a receiver whose taps all stay on its own cube face. It reads the same texel and
+// compares the same receiver-plane depth as `sample_point_shadow_tap`, but works in the coordinates of that face: x and
+// y run along the face axes `face_u` and `face_v`, and z along `face_normal`. A direction there is the face position it
+// points at, scaled by z, so the tap needs no face choice and no normalization. `center_direction`, `tangent`,
+// `bitangent`, and `receiver_plane_normal` are given in these coordinates. `receiver_plane_distance` is the receiver
+// plane's distance from the light along its normal, and `inverse_center_face_distance` the reciprocal of the receiver's
+// own face distance, which a tap compares when its ray runs along the plane or meets it behind the light.
+pub(crate) const POINT_SHADOW_FACE_TAP_SOURCE: &str = r#"
+sample_point_shadow_face_tap: fn (
+	face_u: vec3f,
+	face_v: vec3f,
+	face_normal: vec3f,
+	center_direction: vec3f,
+	tangent: vec3f,
+	bitangent: vec3f,
+	receiver_plane_normal: vec3f,
+	receiver_plane_distance: f32,
+	inverse_receiver_plane_distance: f32,
+	inverse_center_face_distance: f32,
+	near: f32,
+	far: f32,
+	shadow_cube_index: u32,
+	poisson_offset: vec2f16,
+	pcf_rotation: vec2f16
+) -> f32 {
+	let tap_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)
+		* f16(1.5 * 2.0 / 1024.0);
+	let ray: vec3f = center_direction + tangent * f32(tap_offset.x) + bitangent * f32(tap_offset.y);
+	// The texel `point_shadow_texel_direction` snaps the ray to, and its center on the face, from -1 to 1.
+	let texel_position: vec2f = (vec2f(ray.x, ray.y) / ray.z * 0.5 + vec2f(0.5, 0.5)) * 1024.0;
+	let texel_center: vec2f = vec2f(
+		floor(clamp(texel_position.x, 0.0, 1023.0)) + 0.5,
+		floor(clamp(texel_position.y, 0.0, 1023.0)) + 0.5
+	) / 512.0 - vec2f(1.0, 1.0);
+	// The ray through the texel center has a z of one, so the distance along it to the receiver plane is the face distance
+	// there. The plane test of `point_shadow_receiver_vector` uses the unit ray, which is this one divided by its length.
+	let ray_alignment: f32 = dot(receiver_plane_normal, vec3f(texel_center.x, texel_center.y, 1.0));
+	let meets_plane: bool = ray_alignment * ray_alignment > 0.000000000001 * (1.0 + dot(texel_center, texel_center))
+		&& ray_alignment * receiver_plane_distance > 0.0;
+	let inverse_face_distance: f32 = meets_plane
+		? ray_alignment * inverse_receiver_plane_distance
+		: inverse_center_face_distance;
+	// As in `point_shadow_occlusion`, a tap whose face distance lies outside the shadow's range is lit. A receiver depth of
+	// two lies in front of every stored depth.
+	let in_range: bool = inverse_face_distance * near < 1.0 && inverse_face_distance * far > 1.0;
+	let receiver_depth: f32 = in_range ? (near * far * inverse_face_distance - near) / (far - near) + 2.0 / 65535.0 : 2.0;
+	let closest_depth: f32 = texture_cube_array_lod(
+		point_shadow_map,
+		face_normal + face_u * texel_center.x + face_v * texel_center.y,
+		shadow_cube_index,
+		0.0
+	).x;
+	return step(closest_depth, receiver_depth);
+}
+"#;
+
+// Returns tap `tap`, from zero to seven, of the eight-tap Poisson disk that point shadows rotate per receiver.
+pub(crate) const POINT_SHADOW_POISSON_OFFSET_SOURCE: &str = r#"
+point_shadow_poisson_offset: fn (tap: u32) -> vec2f16 {
+	match tap {
+		1 => return vec2f16(0.170019, -0.040254),
+		2 => return vec2f16(-0.299417, 0.791925),
+		3 => return vec2f16(0.645680, 0.493210),
+		4 => return vec2f16(-0.651784, 0.717887),
+		5 => return vec2f16(0.421003, 0.027070),
+		6 => return vec2f16(-0.817194, -0.271096),
+		7 => return vec2f16(-0.705374, -0.668203),
+		_ => return vec2f16(-0.613392, 0.617481),
+	}
+}
+"#;
+
+// Filters a point light's shadow with eight Poisson taps around the receiver, rotated per shadow-map texel. Taps of a
+// receiver inside its cube face run in that face's coordinates with `sample_point_shadow_face_tap`, which costs far less
+// than choosing a face for every tap. Near a face edge, where a tap can cross onto the next face, every tap chooses its
+// own face with `sample_point_shadow_tap`.
 pub(crate) const POINT_SHADOW_SOURCE: &str = r#"
 sample_point_shadow: fn (
 	shadow_view_index: u32,
@@ -797,15 +973,60 @@ sample_point_shadow: fn (
 		world_space_position_derivative_x,
 		world_space_position_derivative_y
 	);
+	// The receiver's cube face and the axes its face coordinates run along, as cube maps lay them out. Each axis is a unit
+	// vector along x, y, or z, so moving a vector into face coordinates only reorders and negates its components, exactly.
+	let face_normal: vec3f = point_shadow_face_normal(center_direction);
+	let face_u: vec3f = vec3f(abs(face_normal.y) + face_normal.z, 0.0, -face_normal.x);
+	let face_v: vec3f = vec3f(0.0, -abs(face_normal.x) - abs(face_normal.z), face_normal.y);
+	let face_center: vec3f = vec3f(
+		dot(center_direction, face_u),
+		dot(center_direction, face_v),
+		dot(center_direction, face_normal)
+	);
 	let occlusion: f32 = 0.0;
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.645680, 0.493210), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.421003, 0.027070), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation);
-	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation);
+	// A tap lies at most 0.0029 from the center direction, which moves the gap between the face component and another
+	// component by at most 0.0041. A receiver whose gaps both exceed 0.005 keeps every tap on its face.
+	if (face_center.z - abs(face_center.x) > 0.005 && face_center.z - abs(face_center.y) > 0.005) {
+		let face_tangent: vec3f = vec3f(dot(tangent, face_u), dot(tangent, face_v), dot(tangent, face_normal));
+		let face_bitangent: vec3f = vec3f(dot(bitangent, face_u), dot(bitangent, face_v), dot(bitangent, face_normal));
+		let face_plane_normal: vec3f = vec3f(
+			dot(receiver_plane_normal, face_u),
+			dot(receiver_plane_normal, face_v),
+			dot(receiver_plane_normal, face_normal)
+		);
+		let plane_distance: f32 = dot(receiver_plane_normal, light_to_surface);
+		let inverse_plane_distance: f32 = 1.0 / plane_distance;
+		let inverse_center_face_distance: f32 = 1.0
+			/ max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
+		// The taps are written out, so their eight cube reads are in flight together.
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(0), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(1), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(2), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(3), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(4), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(5), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(6), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(7), pcf_rotation);
+	} else {
+		// One pass per set bit, like the light loop. The compiler cannot count these passes, so this rare path stays a
+		// compact loop. Written out, its eight taps doubled the kernel's spill and added reloads to the light loop, which made
+		// material evaluation 0.3 % slower by day, when no point light runs; counted loops compiled to light-loop reloads
+		// too (2026-10-06).
+		for (let taps: u32 = 255; taps != 0; taps = taps & (taps - 1)) {
+			occlusion = occlusion + sample_point_shadow_tap(
+				shadow_cube_index,
+				center_direction,
+				tangent,
+				bitangent,
+				light_to_surface,
+				receiver_plane_normal,
+				view.near,
+				view.far,
+				point_shadow_poisson_offset(find_lsb(taps)),
+				pcf_rotation
+			);
+		}
+	}
 	return occlusion / 8.0;
 }
 "#;

@@ -74,6 +74,16 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 					walk_expressions(left, visit);
 					walk_expressions(right, visit);
 				}
+				Expressions::Unary { operand, .. } => walk_expressions(operand, visit),
+				Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => {
+					walk_expressions(condition, visit);
+					walk_expressions(if_true, visit);
+					walk_expressions(if_false, visit);
+				}
 				Expressions::Return { value: Some(value) } => walk_expressions(value, visit),
 				Expressions::Macro { body, .. } => walk_expressions(body, visit),
 				Expressions::Return { value: None }

@@ -6,11 +6,11 @@ mod lowering;
 mod matching;
 mod resolution;
 
-pub(crate) use ast::lex_with_root;
 pub use ast::{
 	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
-	Nodes, Operators,
+	Nodes, Operators, UnaryOperators,
 };
+pub(crate) use ast::{TERNARY_PRECEDENCE, UNARY_PRECEDENCE, lex_with_root};
 pub use resolution::infer_expression_type;
 
 #[cfg(test)]

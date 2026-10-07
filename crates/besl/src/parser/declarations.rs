@@ -808,6 +808,17 @@ pub enum Expressions<'a> {
 		left: Box<Node<'a>>,
 		right: Box<Node<'a>>,
 	},
+	/// A prefix operator applied to `operand`, such as `-x`, `!flag`, or `~mask`.
+	Unary {
+		operator: crate::UnaryOperators,
+		operand: Box<Node<'a>>,
+	},
+	/// `condition ? if_true : if_false`, which yields `if_true` when `condition` holds and `if_false` otherwise.
+	Ternary {
+		condition: Box<Node<'a>>,
+		if_true: Box<Node<'a>>,
+		if_false: Box<Node<'a>>,
+	},
 	VariableDeclaration {
 		name: Cow<'a, str>,
 		r#type: TypeName<'a>,
@@ -854,6 +865,14 @@ pub(super) enum Atoms<'a> {
 	},
 	Operator {
 		operator: crate::Operators,
+	},
+	/// A prefix operator that applies to the operand after it.
+	Unary {
+		operator: crate::UnaryOperators,
+	},
+	/// The `? if_true :` part of a ternary. The condition is the atoms before it and the false branch the atoms after.
+	Ternary {
+		if_true: Vec<Atoms<'a>>,
 	},
 	VariableDeclaration {
 		name: &'a str,

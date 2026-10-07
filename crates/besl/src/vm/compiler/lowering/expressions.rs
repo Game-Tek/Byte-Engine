@@ -238,6 +238,37 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_accessor_expression(expression, expected_type)
 			}
+			Nodes::Expression(Expressions::Unary { operator, operand }) => {
+				let operator = *operator;
+				let operand = operand.clone();
+				drop(borrowed);
+
+				let operand_type = self.infer_expression_type(&operand, expected_type)?;
+				let result_type = prefix_result_type(operator, &operand_type)?;
+				if &result_type != expected_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: result_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&operand, &operand_type)?;
+				let register = self.allocate_register();
+				self.emit(NumericInstruction::UnaryScalar {
+					register,
+					operator: prefix_operator(operator),
+					value,
+				});
+				Ok(register)
+			}
+			Nodes::Expression(Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			}) => {
+				let (condition, if_true, if_false) = (condition.clone(), if_true.clone(), if_false.clone());
+				drop(borrowed);
+				self.compile_ternary(&condition, &if_true, &if_false, expected_type)
+			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
 			}),
@@ -245,6 +276,40 @@ impl<'a> Compiler<'a> {
 				message: format!("Unsupported value node: {}", describe_node(node)),
 			}),
 		}
+	}
+
+	/// Compiles `condition ? if_true : if_false` so that only the selected branch runs, as it does on the GPU, which
+	/// lets a branch read what the condition guards, such as `index < count ? values[index] : 0.0`. Both branches store
+	/// into one hidden local that the result loads.
+	fn compile_ternary(
+		&mut self,
+		condition: &NodeReference,
+		if_true: &NodeReference,
+		if_false: &NodeReference,
+		expected_type: &ValueType,
+	) -> Result<usize, VmError> {
+		let condition = self.compile_value_expression(condition, &ValueType::Bool)?;
+		let local = self.local_types.len();
+		self.local_types.push(expected_type.clone());
+
+		let skip_true_index = self.instructions.len();
+		self.emit(ControlInstruction::JumpIfZero {
+			register: condition,
+			target: usize::MAX,
+		});
+		let value = self.compile_value_expression(if_true, expected_type)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: value });
+		let skip_false_index = self.instructions.len();
+		self.emit(ControlInstruction::Jump { target: usize::MAX });
+
+		self.patch_jump(skip_true_index, self.instructions.len());
+		let value = self.compile_value_expression(if_false, expected_type)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: value });
+		self.patch_jump(skip_false_index, self.instructions.len());
+
+		let register = self.allocate_register();
+		self.emit(LocalInstruction::LoadLocal { register, local });
+		Ok(register)
 	}
 
 	/// Compiles a resource or buffer access, or a projection from a temporary aggregate value.
@@ -510,6 +575,25 @@ impl<'a> Compiler<'a> {
 					let right_type = self.infer_expression_type(&right, expected_type)?;
 					binary_result_type(operator, &left_type, &right_type)
 				}
+			}
+			Nodes::Expression(Expressions::Unary {
+				operator: UnaryOperators::LogicalNot,
+				..
+			}) => Ok(ValueType::Bool),
+			Nodes::Expression(Expressions::Unary { operand, .. }) => {
+				let operand = operand.clone();
+				drop(borrowed);
+				self.infer_expression_type(&operand, expected_type)
+			}
+			Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) => {
+				// A literal branch takes its type from the context, so the other branch decides when it can.
+				let branch = if is_literal_expression(if_true) {
+					if_false.clone()
+				} else {
+					if_true.clone()
+				};
+				drop(borrowed);
+				self.infer_expression_type(&branch, expected_type)
 			}
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
 				message: "`continue` is only valid as a statement".to_string(),

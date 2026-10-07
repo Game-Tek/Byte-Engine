@@ -585,8 +585,7 @@ material_evaluation_suffix: fn () -> void {
 			world_space_vertex_position,
 			vec3f(geometric_normal),
 			reflection_direction,
-			views.views[0].view_projection,
-			image_extent
+			views.views[0].view_projection
 		);
 	}
 	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);

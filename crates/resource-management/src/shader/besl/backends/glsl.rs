@@ -468,6 +468,33 @@ mod tests {
 		assert!(!shader.contains("struct vec2f16"));
 	}
 
+	#[test]
+	fn prefix_operators_and_ternaries_lower_to_glsl() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+			Frame: struct { projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let flag: bool = bodies[item].bits > 3;
+				bodies[item].bits = ~bodies[item].bits ^ (flag ? 1 : 2);
+				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+				bodies[item].weight = !flag ? bodies[item].weight : 1.0;
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (flag ? bodies[item].color : bodies[item].color);
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "((~bodies[item].bits)^(flag?1:2))");
+		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
+		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
+		// GLSL does not narrow float literals to float16_t, so a literal branch beside an f16 branch is cast.
+		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
+		compile(&shader, "besl-prefix-operators-and-ternaries");
+	}
+
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.
 	fn compile(shader: &str, name: &str) {
 		#[cfg(target_os = "linux")]

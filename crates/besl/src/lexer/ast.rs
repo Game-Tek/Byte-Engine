@@ -1185,6 +1185,12 @@ impl Nodes {
 				Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
 					([Some(left), Some(right), None], &[], &[])
 				}
+				Expressions::Unary { operand, .. } => ([Some(operand), None, None], &[], &[]),
+				Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => ([Some(condition), Some(if_true), Some(if_false)], &[], &[]),
 				Expressions::Macro { body, .. } => ([Some(body), None, None], &[], &[]),
 				Expressions::Continue
 				| Expressions::Break
@@ -1455,29 +1461,39 @@ pub enum Operators {
 	LogicalOr,
 }
 
-/// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter.
+/// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter. Member
+/// access binds tightest, at 1, then the prefix [`UnaryOperators`], at [`UNARY_PRECEDENCE`]; the ternary sits at
+/// [`TERNARY_PRECEDENCE`], between `||` and `=`.
 const OPERATOR_TOKENS: [(&str, Operators, u8); 19] = [
-	("=", Operators::Assignment, 9),
-	("||", Operators::LogicalOr, 8),
-	("|", Operators::BitwiseOr, 8),
+	("=", Operators::Assignment, 11),
+	("||", Operators::LogicalOr, 9),
+	("|", Operators::BitwiseOr, 9),
 	// XOR binds tighter than OR and looser than AND, matching C-family shading languages.
-	("^", Operators::BitwiseXor, 7),
-	("&&", Operators::LogicalAnd, 6),
-	("&", Operators::BitwiseAnd, 6),
-	("==", Operators::Equality, 5),
-	("!=", Operators::Inequality, 5),
-	("<", Operators::LessThan, 5),
-	(">", Operators::GreaterThan, 5),
-	("<=", Operators::LessThanOrEqual, 5),
-	(">=", Operators::GreaterThanOrEqual, 5),
-	("<<", Operators::ShiftLeft, 4),
-	(">>", Operators::ShiftRight, 4),
-	("+", Operators::Plus, 3),
-	("-", Operators::Minus, 3),
-	("*", Operators::Multiply, 2),
-	("/", Operators::Divide, 2),
-	("%", Operators::Modulo, 2),
+	("^", Operators::BitwiseXor, 8),
+	("&&", Operators::LogicalAnd, 7),
+	("&", Operators::BitwiseAnd, 7),
+	("==", Operators::Equality, 6),
+	("!=", Operators::Inequality, 6),
+	("<", Operators::LessThan, 6),
+	(">", Operators::GreaterThan, 6),
+	("<=", Operators::LessThanOrEqual, 6),
+	(">=", Operators::GreaterThanOrEqual, 6),
+	("<<", Operators::ShiftLeft, 5),
+	(">>", Operators::ShiftRight, 5),
+	("+", Operators::Plus, 4),
+	("-", Operators::Minus, 4),
+	("*", Operators::Multiply, 3),
+	("/", Operators::Divide, 3),
+	("%", Operators::Modulo, 3),
 ];
+
+/// How loosely the prefix [`UnaryOperators`] bind: tighter than every binary operator, so `-a * b` is `(-a) * b`, and
+/// looser than member access, so `-a.b` is `-(a.b)`. See [`Operators::precedence`] for the scale.
+pub(crate) const UNARY_PRECEDENCE: u8 = 2;
+
+/// How loosely `condition ? if_true : if_false` binds: looser than `||` and tighter than `=`, as in C-family shading
+/// languages. See [`Operators::precedence`] for the scale.
+pub(crate) const TERNARY_PRECEDENCE: u8 = 10;
 
 impl Operators {
 	/// Reads the operator a source token spells, or returns `None` for any other token.
@@ -1494,6 +1510,40 @@ impl Operators {
 			.iter()
 			.find(|(_, operator, _)| operator == self)
 			.map_or(0, |(.., precedence)| *precedence)
+	}
+}
+
+/// The `UnaryOperators` enum names the BESL prefix operators. The parser reads them from source tokens with
+/// [`UnaryOperators::from_token`], and backends write them back with [`UnaryOperators::token`], which every target
+/// shading language spells the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOperators {
+	/// `-value` negates a float or integer scalar or vector. An unsigned value wraps, as in C-family shading languages.
+	Negate,
+	/// `!value` negates a `bool`.
+	LogicalNot,
+	/// `~value` flips every bit of an integer scalar or vector.
+	BitwiseNot,
+}
+
+impl UnaryOperators {
+	/// Reads the prefix operator a source token spells, or returns `None` for any other token.
+	pub fn from_token(token: &str) -> Option<Self> {
+		match token {
+			"-" => Some(Self::Negate),
+			"!" => Some(Self::LogicalNot),
+			"~" => Some(Self::BitwiseNot),
+			_ => None,
+		}
+	}
+
+	/// Returns the token that spells this operator in BESL and in every target shading language.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Negate => "-",
+			Self::LogicalNot => "!",
+			Self::BitwiseNot => "~",
+		}
 	}
 }
 
@@ -1529,6 +1579,18 @@ pub enum Expressions {
 		operator: Operators,
 		left: NodeReference,
 		right: NodeReference,
+	},
+	/// A prefix operator applied to `operand`, such as `-x`, `!flag`, or `~mask`.
+	Unary {
+		operator: UnaryOperators,
+		operand: NodeReference,
+	},
+	/// `condition ? if_true : if_false`: the value of `if_true` when the `bool` `condition` holds, and of `if_false`
+	/// otherwise. Only the selected operand is evaluated.
+	Ternary {
+		condition: NodeReference,
+		if_true: NodeReference,
+		if_false: NodeReference,
 	},
 	VariableDeclaration {
 		name: String,

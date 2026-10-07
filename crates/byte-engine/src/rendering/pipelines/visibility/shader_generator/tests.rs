@@ -1,4 +1,4 @@
-use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
+use besl::vm::{DescriptorBindings, ResourceSlot, Sampler, Texture, Value};
 use ghi::AccessPolicies;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
@@ -491,6 +491,72 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 	);
 }
 
+/// Verifies the cone tent filters like the spacing-one `sample_shadow_tent`: a hard shadow-map edge becomes a
+/// smooth ramp, a sloped receiver compares on its own plane so it does not shadow itself, texels off the map are lit, and
+/// so are texels where the receiver plane lies past the far plane.
+#[test]
+fn cone_shadow_tent_ramps_across_an_edge_in_the_besl_vm() {
+	// Texels from column four on hold a blocker at depth 0.9, closer to the light than a receiver at 0.8 under reverse-Z.
+	let mut shadow_map = column_shadow_map(8, |x| if x >= 4 { 0.9 } else { 0.2 });
+	let mut sloped_map = column_shadow_map(8, |x| 0.5 + 0.01 * (x as f32 + 0.5));
+	let mut blocked_map = column_shadow_map(8, |_| 0.9);
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let flat: vec2f = vec2f(0.0, 0.0);
+			let extent: vec2u = vec2u(8, 8);
+			results.clear = sample_cone_shadow_tent(shadow_map, vec2f(2.0, 4.0) / 8.0, 0.8, flat, u32(0), extent);
+			results.quarter_covered = sample_cone_shadow_tent(shadow_map, vec2f(3.5, 4.0) / 8.0, 0.8, flat, u32(0), extent);
+			results.on_edge = sample_cone_shadow_tent(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent);
+			results.covered = sample_cone_shadow_tent(shadow_map, vec2f(6.0, 4.0) / 8.0, 0.8, flat, u32(0), extent);
+			// The receiver lies 0.0001 in front of the stored slope, which rises 0.01 per texel, 0.08 per unit of uv.
+			results.sloped_receiver = sample_cone_shadow_tent(sloped_map, vec2f(3.2, 3.5) / 8.0, 0.5321, vec2f(0.08, 0.0), u32(0), extent);
+			// One quarter of this footprint's weight falls past the map's right edge.
+			results.past_border = sample_cone_shadow_tent(shadow_map, vec2f(7.5, 4.0) / 8.0, 0.8, flat, u32(0), extent);
+			// The receiver plane falls 0.125 per texel to the right, so it passes the far plane, zero, between the two
+			// middle columns of the footprint, whose right half then counts as lit.
+			results.past_far_plane = sample_cone_shadow_tent(blocked_map, vec2f(4.0, 4.0) / 8.0, 0.01, vec2f(-1.0, 0.0), u32(0), extent);
+		}
+		"#,
+		&mut [
+			("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map),
+			("sloped_map", Node::combined_array_image_sampler(), &mut sloped_map),
+			("blocked_map", Node::combined_array_image_sampler(), &mut blocked_map),
+		],
+		&[
+			(CONE_SHADOW_TENT_TEXEL_SOURCE, "cone_shadow_tent_texel"),
+			(CONE_SHADOW_ROW_DEPTHS_SOURCE, "cone_shadow_row_depths"),
+			(CONE_SHADOW_TENT_SOURCE, "sample_cone_shadow_tent"),
+		],
+		members(
+			"f32",
+			&[
+				"clear",
+				"quarter_covered",
+				"on_edge",
+				"covered",
+				"sloped_receiver",
+				"past_border",
+				"past_far_plane",
+			],
+		),
+	);
+
+	assert_f32_results(
+		&results,
+		&[
+			("clear", 1.0),
+			("quarter_covered", 0.75),
+			("on_edge", 0.5),
+			("covered", 0.0),
+			("sloped_receiver", 1.0),
+			("past_border", 0.25),
+			("past_far_plane", 0.5),
+		],
+		"The most likely cause is incorrect texel order, tent weights, or texel bounds.",
+	);
+}
+
 /// Returns a square one-layer shadow map, `size` texels wide, whose texels in column `x` hold the stored depth
 /// `depth(x)`.
 fn column_shadow_map(size: u32, depth: impl Fn(u32) -> f32) -> Texture {
@@ -924,6 +990,137 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 	}
 }
 
+/// Verifies a point-shadow tap worked out in the receiver's cube-face coordinates decides exactly as the general tap,
+/// which picks a face for every ray: for receivers inside each of the six faces with tilted receiver planes, for a
+/// degenerate receiver plane, and for a receiver beyond the far plane. The stored depth lies just in front of the
+/// receivers, so the tilted planes leave some taps lit and some shadowed.
+#[test]
+fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
+	// Every receiver but the last lies two meters from the light along its face axis. The VM samples cube maps as 3D
+	// textures, so a constant map stores the same depth for every direction.
+	let (near, far) = (0.1_f32, 20.0_f32);
+	let center_depth = (near * far / 2.0 - near) / (far - near);
+	let mut point_shadow_map = Texture::new_3d(2, 2, 2).expect("point shadow map fixture");
+	for texel in (0..8).map(|index| [index & 1, (index >> 1) & 1, index >> 2]) {
+		point_shadow_map
+			.write_3d(texel, [center_depth + 1.0 / 65535.0, 0.0, 0.0, 1.0])
+			.expect("point shadow map fixture");
+	}
+	let results = run_helper_test(
+		r#"
+		test_light_to_surface: fn (receiver: u32) -> vec3f {
+			match receiver {
+				1 => return vec3f(-2.0, -0.2, 0.5),
+				2 => return vec3f(0.25, 2.0, -0.6),
+				3 => return vec3f(-0.3, -2.0, 0.45),
+				4 => return vec3f(0.5, -0.35, 2.0),
+				5 => return vec3f(-0.45, 0.2, -2.0),
+				6 => return vec3f(0.3, 2.0, 0.2),
+				7 => return vec3f(0.2, -0.3, 25.0),
+				_ => return vec3f(2.0, 0.3, -0.4),
+			}
+		}
+
+		// Receiver six's derivatives span no plane, which `point_shadow_receiver_plane_normal` reports as zero.
+		test_receiver_plane_normal: fn (receiver: u32) -> vec3f {
+			match receiver {
+				1 => return normalize(vec3f(0.85, 0.35, -0.3)),
+				2 => return normalize(vec3f(0.3, -0.85, 0.4)),
+				3 => return normalize(vec3f(-0.35, 0.85, 0.3)),
+				4 => return normalize(vec3f(0.4, 0.3, -0.85)),
+				5 => return normalize(vec3f(-0.3, -0.4, 0.85)),
+				6 => return vec3f(0.0, 0.0, 0.0),
+				7 => return normalize(vec3f(0.2, 0.2, -0.95)),
+				_ => return normalize(vec3f(-0.8, 0.4, -0.3)),
+			}
+		}
+
+		main: fn () -> void {
+			let near: f32 = 0.1;
+			let far: f32 = 20.0;
+			let rotation: vec2f16 = vec2f16(0.8, 0.6);
+			let mismatches: f32 = 0.0;
+			let lit_inside_faces: f32 = 0.0;
+			let lit_fallbacks: f32 = 0.0;
+			for (let receiver: u32 = 0; receiver < 8; receiver = receiver + 1) {
+				// The same inputs `sample_point_shadow` prepares for both kinds of tap.
+				let light_to_surface: vec3f = test_light_to_surface(receiver);
+				let receiver_plane_normal: vec3f = test_receiver_plane_normal(receiver);
+				let center_direction: vec3f = light_to_surface / sqrt(dot(light_to_surface, light_to_surface));
+				let reference: vec3f = vec3f(0.0, 1.0, 0.0);
+				if (abs(center_direction.y) > 0.99) {
+					reference = vec3f(0.0, 0.0, 1.0);
+				}
+				let tangent: vec3f = normalize(cross(reference, center_direction));
+				let bitangent: vec3f = cross(center_direction, tangent);
+				let face_normal: vec3f = point_shadow_face_normal(center_direction);
+				let face_u: vec3f = vec3f(abs(face_normal.y) + face_normal.z, 0.0, -face_normal.x);
+				let face_v: vec3f = vec3f(0.0, -abs(face_normal.x) - abs(face_normal.z), face_normal.y);
+				let face_center: vec3f = vec3f(dot(center_direction, face_u), dot(center_direction, face_v), dot(center_direction, face_normal));
+				let face_tangent: vec3f = vec3f(dot(tangent, face_u), dot(tangent, face_v), dot(tangent, face_normal));
+				let face_bitangent: vec3f = vec3f(dot(bitangent, face_u), dot(bitangent, face_v), dot(bitangent, face_normal));
+				let face_plane_normal: vec3f = vec3f(
+					dot(receiver_plane_normal, face_u),
+					dot(receiver_plane_normal, face_v),
+					dot(receiver_plane_normal, face_normal)
+				);
+				let plane_distance: f32 = dot(receiver_plane_normal, light_to_surface);
+				let inverse_center_face_distance: f32 = 1.0
+					/ max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
+				for (let tap: u32 = 0; tap < 8; tap = tap + 1) {
+					let general: f32 = sample_point_shadow_tap(0, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, near, far, point_shadow_poisson_offset(tap), rotation);
+					let face: f32 = sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, 1.0 / plane_distance, inverse_center_face_distance, near, far, 0, point_shadow_poisson_offset(tap), rotation);
+					if (general != face) {
+						mismatches = mismatches + 1.0;
+					}
+					if (receiver < 6) {
+						lit_inside_faces = lit_inside_faces + general;
+					} else {
+						lit_fallbacks = lit_fallbacks + general;
+					}
+				}
+			}
+			results.mismatches = mismatches;
+			results.lit_inside_faces = lit_inside_faces;
+			results.lit_fallbacks = lit_fallbacks;
+		}
+		"#,
+		&mut [(
+			"point_shadow_map",
+			Node::combined_cube_array_image_sampler(),
+			&mut point_shadow_map,
+		)],
+		&[
+			(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
+			(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
+			(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
+			(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
+			(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
+			(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap"),
+			(POINT_SHADOW_FACE_NORMAL_SOURCE, "point_shadow_face_normal"),
+			(POINT_SHADOW_FACE_TAP_SOURCE, "sample_point_shadow_face_tap"),
+			(POINT_SHADOW_POISSON_OFFSET_SOURCE, "point_shadow_poisson_offset"),
+		],
+		members("f32", &["mismatches", "lit_inside_faces", "lit_fallbacks"]),
+	);
+
+	assert_eq!(
+		read_f32(&results, "mismatches"),
+		0.0,
+		"A face-coordinate point-shadow tap decided differently from the general tap. The most likely cause is a face \
+		 axis, receiver-plane, or depth-range difference between the two taps."
+	);
+	let lit_inside_faces = read_f32(&results, "lit_inside_faces");
+	assert!(
+		lit_inside_faces > 0.0 && lit_inside_faces < 48.0,
+		"Expected the tilted receivers to leave some of their 48 taps lit and some shadowed, got {lit_inside_faces} lit. \
+		 The most likely cause is a fixture whose stored depth no longer lies between the taps' receiver depths."
+	);
+	// Every tap of the degenerate plane compares the receiver's own depth, which the two-step margin keeps in front of the
+	// stored depth one step closer, and the far receiver is out of range, so all sixteen of their taps are lit.
+	assert_eq!(read_f32(&results, "lit_fallbacks"), 16.0);
+}
+
 /* Screen-space reflections */
 
 const REFLECTION_EXTENT: u32 = 64;
@@ -1016,8 +1213,7 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
 				vec3f(0.0, 1.0, 0.0),
 				vec3f(inputs.direction.x, inputs.direction.y, inputs.direction.z),
-				inputs.view_projection,
-				inputs.extent
+				inputs.view_projection
 			);
 		}
 		"#,
@@ -1031,7 +1227,6 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 					Node::member("view_projection", "mat4f"),
 					Node::member("position", "vec4f"),
 					Node::member("direction", "vec4f"),
-					Node::member("extent", "vec2u"),
 				]),
 				REFLECTION_INPUTS_SLOT.slot(),
 				true,
@@ -1057,7 +1252,6 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 		("view_projection", Value::Mat4F(column_major(ssgi_projection()))),
 		("position", Value::Vec4F([position[0], position[1], position[2], 1.0])),
 		("direction", Value::Vec4F(direction)),
-		("extent", Value::Vec2U([REFLECTION_EXTENT, REFLECTION_EXTENT])),
 	] {
 		inputs.write(member, value).expect("reflection inputs");
 	}
@@ -1075,7 +1269,8 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(REFLECTION_INPUTS_SLOT, &mut inputs);
 	descriptors.bind_buffer(REFLECTION_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth_pyramid);
+	// The engine binds the pyramid with a point sampler, which reflection steps read the texel under them with.
+	descriptors.bind_texture_with_sampler(ResourceSlot::new(1060), &mut depth_pyramid, Sampler::nearest());
 	descriptors.bind_texture(ResourceSlot::new(1061), &mut previous_radiance);
 	descriptors.bind_buffer(REFLECTION_RESULTS_SLOT, &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
@@ -1346,8 +1541,10 @@ fn indirect_diffuse_centers_radiance_at_odd_extents() {
 		let z = 5.0;
 		let depth = vec![[z, 0.0, 0.0, 1.0]; (low * low) as usize];
 		let normals = vec![SSGI_WALL_NORMAL; (low * low) as usize];
+		// The ramp rises through texel centers in steps of a power of two, which the 16-bit history image holds exactly,
+		// and is symmetric about 0.5.
 		let history: Vec<[f32; 4]> = (0..low * low)
-			.map(|index| [(index % low) as f32 / (low - 1) as f32, 0.0, 0.0, 0.5])
+			.map(|index| [((index % low) as f32 + 0.5) / low as f32, 0.0, 0.0, 0.5])
 			.collect();
 		let pixel = [full / 2, full / 2];
 

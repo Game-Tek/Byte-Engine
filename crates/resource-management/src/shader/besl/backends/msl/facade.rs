@@ -235,6 +235,12 @@ fn analyze_hidden_context(
 				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
 					visit(left) || visit(right)
 				}
+				besl::Expressions::Unary { operand, .. } => visit(operand),
+				besl::Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => visit(condition) || visit(if_true) || visit(if_false),
 				// Calls use `contexts` directly, so this arm walks without the `visit` closure.
 				besl::Expressions::FunctionCall {
 					function, parameters, ..

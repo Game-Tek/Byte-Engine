@@ -64,6 +64,31 @@ mod tests {
 	}
 
 	#[test]
+	fn prefix_operators_and_ternaries_lower_to_hlsl() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+			Frame: struct { projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let flag: bool = bodies[item].bits > 3;
+				bodies[item].bits = ~bodies[item].bits ^ (flag ? 1 : 2);
+				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+				bodies[item].weight = !flag ? bodies[item].weight : 1.0;
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (flag ? bodies[item].color : bodies[item].color);
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "((~bodies[item].bits)^(flag?1:2))");
+		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
+		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
+		assert_string_contains!(shader, "mul(frame[0].projection, -bodies[item].color)");
+	}
+
+	#[test]
 	fn gather_reads_the_texel_quad_with_gather_in_hlsl() {
 		let source = r#"
 			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;

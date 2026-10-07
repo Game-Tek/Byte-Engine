@@ -425,6 +425,16 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 				build_bindings(bindings, left, state);
 				build_bindings(bindings, right, state);
 			}
+			besl::Expressions::Unary { operand, .. } => build_bindings(bindings, operand, state),
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => {
+				for part in [condition, if_true, if_false] {
+					build_bindings(bindings, part, state);
+				}
+			}
 			besl::Expressions::Expression { elements } => {
 				for element in elements {
 					build_bindings(bindings, element, state);

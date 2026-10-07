@@ -1,6 +1,6 @@
 //! The `vm` module compiles and executes lexed BESL programs for deterministic host-side evaluation.
 
-use crate::lexer::{BindingTypes, Expressions, NodeReference, Nodes, Operators};
+use crate::lexer::{BindingTypes, Expressions, NodeReference, Nodes, Operators, UnaryOperators};
 
 mod buffer;
 mod compiler;

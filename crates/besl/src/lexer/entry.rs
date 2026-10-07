@@ -322,6 +322,16 @@ fn rewrite_expression<'a>(expression: &mut parser::Expressions<'a>, context: &En
 			rewrite_node(left, context)?;
 			rewrite_node(right, context)
 		}
+		parser::Expressions::Unary { operand, .. } => rewrite_node(operand, context),
+		parser::Expressions::Ternary {
+			condition,
+			if_true,
+			if_false,
+		} => {
+			rewrite_node(condition, context)?;
+			rewrite_node(if_true, context)?;
+			rewrite_node(if_false, context)
+		}
 		parser::Expressions::Call { parameters, .. } => {
 			for parameter in parameters {
 				rewrite_node(parameter, context)?;

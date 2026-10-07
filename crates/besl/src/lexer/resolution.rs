@@ -391,6 +391,14 @@ pub(super) fn find_in_function_expression(
 			Expressions::Operator { left, right, .. } => {
 				find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 			}
+			Expressions::Unary { operand, .. } => find_descendant(operand, child_name, mode),
+			Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => find_descendant(condition, child_name, mode)
+				.or_else(|| find_descendant(if_true, child_name, mode))
+				.or_else(|| find_descendant(if_false, child_name, mode)),
 			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(statement.clone()),
 			Expressions::Accessor { left, right } => {
 				find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
@@ -424,6 +432,15 @@ pub(super) fn find_in_expression(expression: &Expressions, child_name: &str, mod
 		Expressions::Operator { left, right, .. } => {
 			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 		}
+		// Neither a prefix operator nor a ternary declares a name, so only a search of every descendant enters them.
+		Expressions::Unary { operand, .. } if mode == DescendantSearch::Any => find_descendant(operand, child_name, mode),
+		Expressions::Ternary {
+			condition,
+			if_true,
+			if_false,
+		} if mode == DescendantSearch::Any => find_descendant(condition, child_name, mode)
+			.or_else(|| find_descendant(if_true, child_name, mode))
+			.or_else(|| find_descendant(if_false, child_name, mode)),
 		Expressions::Member { source, .. } => find_descendant(source, child_name, mode),
 		Expressions::Expression { elements } => find_in_descendants(elements, child_name, mode),
 		// A local exposes only its own name to the scope. Its type's fields belong to `local.field` accesses.
@@ -576,6 +593,16 @@ pub fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(&function.get()),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
+		Nodes::Expression(Expressions::Unary {
+			operator: UnaryOperators::LogicalNot,
+			..
+		}) => builtin_type("bool"),
+		// Negation and bitwise not keep their operand's type.
+		Nodes::Expression(Expressions::Unary { operand, .. }) => infer_expression_type(operand),
+		// Both branches of a ternary have the same type; a branch that linking cannot type defers to the other one.
+		Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) => {
+			infer_expression_type(if_true).or_else(|| infer_expression_type(if_false))
+		}
 		// A declaration read in place, such as the workgroup array under an index, has its declared type.
 		Nodes::Member { .. }
 		| Nodes::Parameter { .. }
@@ -830,6 +857,14 @@ pub(super) fn expression_has_reliable_type(expression: &NodeReference) -> bool {
 		Nodes::Expression(Expressions::Operator { left, right, .. }) => {
 			expression_has_reliable_type(left) && expression_has_reliable_type(right)
 		}
+		Nodes::Expression(Expressions::Unary {
+			operator: UnaryOperators::LogicalNot,
+			..
+		}) => true,
+		Nodes::Expression(Expressions::Unary { operand, .. }) => expression_has_reliable_type(operand),
+		Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) => {
+			expression_has_reliable_type(if_true) && expression_has_reliable_type(if_false)
+		}
 		_ => false,
 	}
 }
@@ -990,6 +1025,19 @@ fn instantiate_intrinsic_expression(expression: &Expressions, instantiation: &In
 			operator: *operator,
 			left: instantiate_intrinsic_node(left, instantiation),
 			right: instantiate_intrinsic_node(right, instantiation),
+		},
+		Expressions::Unary { operator, operand } => Expressions::Unary {
+			operator: *operator,
+			operand: instantiate_intrinsic_node(operand, instantiation),
+		},
+		Expressions::Ternary {
+			condition,
+			if_true,
+			if_false,
+		} => Expressions::Ternary {
+			condition: instantiate_intrinsic_node(condition, instantiation),
+			if_true: instantiate_intrinsic_node(if_true, instantiation),
+			if_false: instantiate_intrinsic_node(if_false, instantiation),
 		},
 		Expressions::FunctionCall { function, parameters } => Expressions::FunctionCall {
 			function: function.clone(),

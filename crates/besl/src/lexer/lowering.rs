@@ -566,6 +566,19 @@ impl Lexer {
 						left: self.lex(left)?,
 						right: self.lex(right)?,
 					}),
+					parser::Expressions::Unary { operator, operand } => Node::expression(Expressions::Unary {
+						operator: *operator,
+						operand: self.lex(operand)?,
+					}),
+					parser::Expressions::Ternary {
+						condition,
+						if_true,
+						if_false,
+					} => Node::expression(Expressions::Ternary {
+						condition: self.lex(condition)?,
+						if_true: self.lex(if_true)?,
+						if_false: self.lex(if_false)?,
+					}),
 					parser::Expressions::VariableDeclaration { name, r#type } => {
 						Node::expression(Expressions::VariableDeclaration {
 							name: name.to_string(),

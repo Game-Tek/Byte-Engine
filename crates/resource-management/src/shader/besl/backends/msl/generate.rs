@@ -465,6 +465,11 @@ fn packed_vector_read(expression: &besl::NodeReference) -> Option<besl::NodeRefe
 		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
 			return packed_vector_read(&elements[0]);
 		}
+		// Negating or selecting a packed read keeps the packed type, which a matrix product rejects as well.
+		besl::Nodes::Expression(besl::Expressions::Unary { operand, .. }) => return packed_vector_read(operand),
+		besl::Nodes::Expression(besl::Expressions::Ternary { if_true, if_false, .. }) => {
+			return packed_vector_read(if_true).or_else(|| packed_vector_read(if_false));
+		}
 		besl::Nodes::Expression(besl::Expressions::Accessor { .. }) => {}
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. })
 			if matches!(source.borrow().node(), besl::Nodes::Member { .. }) => {}

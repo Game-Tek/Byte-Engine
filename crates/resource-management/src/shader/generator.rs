@@ -546,6 +546,10 @@ fn expression_uses_f16(node: &besl::NodeReference) -> bool {
 			}
 			besl::Expressions::Expression { elements } if elements.len() == 1 => expression_uses_f16(&elements[0]),
 			besl::Expressions::Accessor { left, right } => expression_uses_f16(left) || expression_uses_f16(right),
+			besl::Expressions::Unary { operand, .. } => expression_uses_f16(operand),
+			besl::Expressions::Ternary { if_true, if_false, .. } => {
+				expression_uses_f16(if_true) || expression_uses_f16(if_false)
+			}
 			_ => false,
 		},
 		_ => false,
@@ -559,6 +563,11 @@ fn is_numeric_literal(node: &besl::NodeReference) -> bool {
 		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
 			is_numeric_literal(&elements[0])
 		}
+		// A negative literal such as `-1.0` narrows like the literal it negates.
+		besl::Nodes::Expression(besl::Expressions::Unary {
+			operator: besl::UnaryOperators::Negate,
+			operand,
+		}) => is_numeric_literal(operand),
 		_ => false,
 	}
 }
@@ -880,6 +889,39 @@ pub(crate) trait NodeEmitter {
 				string.push_str(formatting.space_str());
 				emit_value(self, string, right, right_as_f16);
 			}
+			besl::Expressions::Unary { operator, operand } => {
+				string.push_str(operator.token());
+				self.emit_wrapped_expression(string, operand);
+			}
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => {
+				// As with binary operators, a numeric literal branch beside an f16 branch is cast, because GLSL does not
+				// implicitly narrow float literals to float16_t and both branches must have one type.
+				let true_as_f16 = is_numeric_literal(if_true) && expression_uses_f16(if_false);
+				let false_as_f16 = is_numeric_literal(if_false) && expression_uses_f16(if_true);
+				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
+					if as_f16 {
+						Self::emit_type_name(string, "f16");
+						string.push('(');
+						emitter.emit_node(string, value);
+						string.push(')');
+					} else {
+						emitter.emit_wrapped_expression(string, value);
+					}
+				};
+				self.emit_wrapped_expression(string, condition);
+				string.push_str(formatting.space_str());
+				string.push('?');
+				string.push_str(formatting.space_str());
+				emit_branch(self, string, if_true, true_as_f16);
+				string.push_str(formatting.space_str());
+				string.push(':');
+				string.push_str(formatting.space_str());
+				emit_branch(self, string, if_false, false_as_f16);
+			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
 			} => {
@@ -1116,7 +1158,13 @@ pub(crate) trait NodeEmitter {
 	/// expression, otherwise emits it directly.
 	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
 		match node.borrow().node() {
-			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
+			// A nested prefix operator is wrapped too, so `-(-x)` never prints as the decrement `--x`.
+			besl::Nodes::Expression(
+				besl::Expressions::Operator { .. }
+				| besl::Expressions::Expression { .. }
+				| besl::Expressions::Unary { .. }
+				| besl::Expressions::Ternary { .. },
+			) => {
 				string.push('(');
 				self.emit_node(string, node);
 				string.push(')');

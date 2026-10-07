@@ -488,6 +488,8 @@ pub(super) fn extract_access_chain(expression: &NodeReference) -> Result<(NodeRe
 					Expressions::FunctionCall { .. } => "function call",
 					Expressions::IntrinsicCall { .. } => "intrinsic call",
 					Expressions::Operator { .. } => "operator",
+					Expressions::Unary { .. } => "prefix operator",
+					Expressions::Ternary { .. } => "ternary",
 					Expressions::VariableDeclaration { .. } => "variable declaration",
 					Expressions::Accessor { .. } => "accessor",
 					Expressions::Macro { .. } => "macro",

@@ -92,6 +92,12 @@ mod tests {
 	}
 
 	#[test]
+	fn prefix_and_ternary_operators_split_from_adjacent_tokens() {
+		// `!=` stays one token, while `!` before an operand and a doubled `-` split, so `--a` is two negations.
+		assert_tokens("x = a != !b ? ~c : --d;", "x = a != ! b ? ~ c : - - d ;");
+	}
+
+	#[test]
 	fn line_comments_are_ignored_without_consuming_adjacent_tokens() {
 		assert_tokens(
 			"main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment",

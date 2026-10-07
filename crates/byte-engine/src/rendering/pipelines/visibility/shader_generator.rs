@@ -372,6 +372,9 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		),
 		(DIRECTIONAL_SHADOW_CASCADE_SOURCE, "sample_directional_shadow_cascade"),
 		(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation"),
+		(CONE_SHADOW_TENT_TEXEL_SOURCE, "cone_shadow_tent_texel"),
+		(CONE_SHADOW_ROW_DEPTHS_SOURCE, "cone_shadow_row_depths"),
+		(CONE_SHADOW_TENT_SOURCE, "sample_cone_shadow_tent"),
 		(CONE_SHADOW_SOURCE, "sample_cone_shadow"),
 		(DIRECTIONAL_SHADOW_SOURCE, "sample_directional_shadow"),
 		(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
@@ -383,6 +386,9 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 		),
 		(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
 		(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap"),
+		(POINT_SHADOW_FACE_NORMAL_SOURCE, "point_shadow_face_normal"),
+		(POINT_SHADOW_FACE_TAP_SOURCE, "sample_point_shadow_face_tap"),
+		(POINT_SHADOW_POISSON_OFFSET_SOURCE, "point_shadow_poisson_offset"),
 		(POINT_SHADOW_SOURCE, "sample_point_shadow"),
 		(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance"),
 		(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular"),
@@ -454,12 +460,13 @@ fn screen_space_indirect_diffuse_scope() -> Vec<Node<'static>> {
 /// [`super::layout::REFLECTION_PARAMETERS_BINDING`] and the bindings after it.
 fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	let mut nodes = vec![
-		// One ray's screen-space path. Screen position and 1/z are both linear along a projected line.
+		// One ray's screen-space path, in normalized image coordinates. Screen position and 1/z are both linear along a
+		// projected line.
 		Node::r#struct(
 			"ReflectionRay",
 			vec![
-				Node::member("start_pixel", "vec2f"),
-				Node::member("end_pixel", "vec2f"),
+				Node::member("start_uv", "vec2f"),
+				Node::member("end_uv", "vec2f"),
 				Node::member("inverse_start_z", "f32"),
 				Node::member("inverse_end_z", "f32"),
 			],
@@ -482,8 +489,7 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	// Helpers follow the bindings they read, in dependency order.
 	nodes.extend(
 		[
-			(REFLECTION_SCENE_DEPTH_SOURCE, "reflection_scene_depth"),
-			(REFLECTION_RAY_PENETRATION_SOURCE, "reflection_ray_penetration"),
+			(REFLECTION_RAY_IS_BEHIND_SOURCE, "reflection_ray_is_behind"),
 			(REFLECTION_WORLD_FRACTION_SOURCE, "reflection_world_fraction"),
 			(REFLECTION_HISTORY_RADIANCE_SOURCE, "reflection_history_radiance"),
 			(TRACE_SCREEN_SPACE_REFLECTION_SOURCE, "trace_screen_space_reflection"),

@@ -193,13 +193,28 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 		return;
 	}
 
-	match cursor.choose(5) {
+	match cursor.choose(7) {
 		0 => emit_u32_leaf(source, cursor, u32_locals),
 		1 => {
-			let operator = ["+", "-", "*", "/", "%"][cursor.choose(5)];
+			let operator = ["+", "-", "*", "/", "%", "^", "&", "|"][cursor.choose(8)];
 			source.push('(');
 			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
 			let _ = write!(source, " {operator} ");
+			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+			source.push(')');
+		}
+		5 => {
+			// Unsigned negation wraps, as in C-family shading languages.
+			source.push_str(["~", "-"][cursor.choose(2)]);
+			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+		}
+		6 => {
+			// The ternary binds looser than every other operator, so it is parenthesized to nest anywhere.
+			source.push('(');
+			emit_comparison(source, cursor, u32_locals);
+			source.push_str(" ? ");
+			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+			source.push_str(" : ");
 			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
 			source.push(')');
 		}
@@ -221,6 +236,19 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 	}
 }
 
+/// Writes a `bool` comparison of two `u32` leaves, optionally negated, for ternary conditions.
+fn emit_comparison(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize) {
+	if cursor.chance(1, 3) {
+		source.push('!');
+	}
+	source.push('(');
+	emit_u32_leaf(source, cursor, u32_locals);
+	let operator = ["<", "<=", ">", ">=", "==", "!="][cursor.choose(6)];
+	let _ = write!(source, " {operator} ");
+	emit_u32_leaf(source, cursor, u32_locals);
+	source.push(')');
+}
+
 fn emit_u32_leaf(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize) {
 	if cursor.chance(1, 2) {
 		let _ = write!(source, "u{}", cursor.choose(u32_locals));
@@ -236,8 +264,21 @@ fn emit_f32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, f32_loc
 		return;
 	}
 
-	match cursor.choose(7) {
+	match cursor.choose(9) {
 		0 => emit_f32_leaf(source, cursor, f32_locals),
+		7 => {
+			source.push('-');
+			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
+		}
+		8 => {
+			source.push('(');
+			emit_comparison(source, cursor, u32_locals);
+			source.push_str(" ? ");
+			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
+			source.push_str(" : ");
+			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
+			source.push(')');
+		}
 		1 => {
 			let operator = ["+", "-", "*", "/", "%"][cursor.choose(5)];
 			source.push('(');

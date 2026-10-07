@@ -112,7 +112,7 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Points the placeholder `Jump` or `JumpIfZero` at `index` to `target`, once the target is known.
-	fn patch_jump(&mut self, index: usize, target: usize) {
+	pub(super) fn patch_jump(&mut self, index: usize, target: usize) {
 		match &mut self.instructions[index] {
 			Instruction::Control(
 				ControlInstruction::Jump { target: placeholder } | ControlInstruction::JumpIfZero { target: placeholder, .. },

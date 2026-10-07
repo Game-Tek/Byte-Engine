@@ -240,12 +240,56 @@ every declared field exactly once. Return it directly from the top-level entry
 body so the compiler can finalize the native stage output on every backend.
 
 Numeric literals contain digits and an optional decimal point. They don't use
-type suffixes or scientific notation. BESL has no unary operators, so write a
-negative value as a subtraction, such as `0.0 - 1.6`.
+type suffixes or scientific notation. Write a negative value with the prefix `-`,
+such as `-1.6`.
 
 Construct vectors, matrices, structs, and arrays by calling the type name. Use
 the conversion calls listed under [constructors and casts](/docs/reference/besl/intrinsics#constructors-and-casts)
 when the source and destination types differ.
+
+### Operators
+
+| Operation | Operators |
+| --- | --- |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` |
+| Shift | `<<`, `>>` |
+| Bitwise | `&`, `|`, `^` |
+| Assignment | `=` |
+| Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
+| Logical | `&&`, `||` |
+
+Put a prefix operator before a value to negate it or flip it:
+
+| Operator | Applies to | Result |
+| --- | --- | --- |
+| `-value` | An integer or float scalar or vector | The negated value. An unsigned value wraps, so `-one` is `4294967295` when `one` is the `u32` `1`. |
+| `!value` | A `bool` | The opposite `bool`. |
+| `~value` | An integer scalar or vector | The value with every bit flipped. |
+
+Use `condition ? if_true : if_false` to pick one of two values of the same type
+with a `bool`. BESL evaluates only the value it picks, so that value can read
+what the condition guards:
+
+```rust
+let depth: f32 = index < count ? depths[index] : 0.0;
+```
+
+Operators bind in this order, tightest first:
+
+1. Member access `.` and indexing `[]`
+2. The prefix operators `-`, `!`, and `~`
+3. `*`, `/`, `%`
+4. `+`, `-`
+5. `<<`, `>>`
+6. Comparisons
+7. `&`, `&&`
+8. `^`
+9. `|`, `||`
+10. `? :`, which groups right to left, so `a ? b : c ? d : e` is `a ? b : (c ? d : e)`
+11. `=`
+
+Add parentheses when you need a different order, or to mix bitwise and logical
+operators that share a level.
 
 ## Half-precision floats
 
@@ -315,7 +359,7 @@ if (roughness < 0.25) {
 
 Variables you declare inside a branch are only visible in that branch.
 
-BESL doesn't currently have `while` or unary operators.
+BESL doesn't currently have `while`.
 
 ### Match
 
@@ -346,15 +390,6 @@ Variables you declare inside an arm are only visible in that arm.
 
 BESL doesn't support match guards (`if` after a pattern), ranges, bindings, or
 matching on floating-point, vector, or struct values yet.
-
-| Operation | Operators |
-| --- | --- |
-| Arithmetic | `+`, `-`, `*`, `/`, `%` |
-| Shift | `<<`, `>>` |
-| Bitwise | `&`, `|` |
-| Assignment | `=` |
-| Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
-| Logical | `&&`, `||` |
 
 Next, [declare the shader interface](/docs/reference/besl/interface) that connects
 the program to its stage and resources.

@@ -95,6 +95,38 @@ pub(crate) fn binary_result_type(
 	Err(type_mismatch(left, right))
 }
 
+/// Selects the instruction operator for a BESL prefix operator.
+pub(crate) fn prefix_operator(operator: UnaryOperators) -> ScalarUnaryOperator {
+	match operator {
+		UnaryOperators::Negate => ScalarUnaryOperator::Negate,
+		UnaryOperators::LogicalNot => ScalarUnaryOperator::LogicalNot,
+		UnaryOperators::BitwiseNot => ScalarUnaryOperator::BitwiseNot,
+	}
+}
+
+/// Returns the type a prefix operator produces from an `operand` of that type: `!` takes a `bool`, `~` an integer
+/// scalar or vector, and `-` an integer or float scalar or vector, and each keeps its operand's type.
+pub(crate) fn prefix_result_type(operator: UnaryOperators, operand: &ValueType) -> Result<ValueType, VmError> {
+	let scalar = vector_scalar_type(operand).unwrap_or_else(|| operand.clone());
+	let integer = matches!(scalar, ValueType::U8 | ValueType::U16 | ValueType::U32 | ValueType::I32);
+	let (accepted, expected) = match operator {
+		UnaryOperators::LogicalNot => (*operand == ValueType::Bool, "bool"),
+		UnaryOperators::BitwiseNot => (integer, "integer scalar or vector"),
+		UnaryOperators::Negate => (
+			integer || matches!(scalar, ValueType::F16 | ValueType::F32),
+			"integer or float scalar or vector",
+		),
+	};
+	if accepted {
+		Ok(operand.clone())
+	} else {
+		Err(VmError::TypeMismatch {
+			expected: expected.to_string(),
+			found: operand.name().to_string(),
+		})
+	}
+}
+
 pub(crate) fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
 	match operator {
 		Operators::Equality => Some(ComparisonOperator::Equal),
@@ -562,6 +594,9 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::FromU16ToU32, _) => mismatch(ValueType::U16),
 		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FindLsb, _) => mismatch(ValueType::U32),
 		(Unary::FromI32ToF32 | Unary::FromI32ToF16 | Unary::FromI32ToU32, _) => mismatch(ValueType::I32),
+		(Unary::LogicalNot, Value::Bool(value)) => Ok(Value::Bool(!value)),
+		(Unary::LogicalNot, _) => mismatch(ValueType::Bool),
+		(Unary::Negate | Unary::BitwiseNot, _) => apply_sign_or_bit_flip(operator, value),
 		_ => map_float_value(value, |value| match operator {
 			Unary::Abs => value.abs(),
 			Unary::Sqrt => value.sqrt(),
@@ -577,7 +612,38 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			Unary::InverseSqrt => 1.0 / value.sqrt(),
 			Unary::Log2 => value.log2(),
 			Unary::Fwidth => 0.0,
-			_ => unreachable!("Conversions and find_lsb are matched above"),
+			_ => unreachable!("Conversions, find_lsb, and the prefix operators are matched above"),
+		}),
+	}
+}
+
+/// Applies `-value` or `~value` lane by lane. Integers negate with wrapping, as C-family shading languages do, and
+/// floats only negate, since they have no bits to flip in BESL.
+fn apply_sign_or_bit_flip(operator: ScalarUnaryOperator, value: &Value) -> Result<Value, VmError> {
+	let negate = operator == ScalarUnaryOperator::Negate;
+	macro_rules! integer {
+		($value:expr) => {
+			if negate { $value.wrapping_neg() } else { !$value }
+		};
+	}
+	match value {
+		Value::U8(value) => Ok(Value::U8(integer!(value))),
+		Value::U16(value) => Ok(Value::U16(integer!(value))),
+		Value::U32(value) => Ok(Value::U32(integer!(value))),
+		Value::I32(value) => Ok(Value::I32(integer!(value))),
+		Value::Vec2U16(value) => Ok(Value::Vec2U16(value.map(|value| integer!(value)))),
+		Value::Vec4U16(value) => Ok(Value::Vec4U16(value.map(|value| integer!(value)))),
+		Value::Vec2I(value) => Ok(Value::Vec2I(value.map(|value| integer!(value)))),
+		Value::Vec2U(value) => Ok(Value::Vec2U(value.map(|value| integer!(value)))),
+		Value::Vec3U(value) => Ok(Value::Vec3U(value.map(|value| integer!(value)))),
+		Value::Vec4U(value) => Ok(Value::Vec4U(value.map(|value| integer!(value)))),
+		value if negate => map_float_value(value, |value| -value).map_err(|_| VmError::TypeMismatch {
+			expected: "integer, float, or vector".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+		value => Err(VmError::TypeMismatch {
+			expected: "integer scalar or vector".to_string(),
+			found: value.value_type().name().to_string(),
 		}),
 	}
 }

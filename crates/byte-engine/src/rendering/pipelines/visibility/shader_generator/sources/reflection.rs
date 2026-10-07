@@ -4,30 +4,19 @@
 // The helpers read the `reflection_parameters` and `previous_radiance` bindings that `screen_space_reflection_scope`
 // declares, and the shared `depth_pyramid` binding. Each helper only calls helpers declared above it.
 
-// Reads the nearest positive linear depth at continuous half-resolution pixel coordinates, where integers are texel
-// centers. Returns zero where no opaque surface was drawn.
-pub(crate) const REFLECTION_SCENE_DEPTH_SOURCE: &str = r#"
-reflection_scene_depth: fn (pixel: vec2f, depth_extent: vec2u) -> f32 {
-	// Mip zero of the pyramid holds half-resolution depth.
-	// The nearest texel, read directly: the march reads this every step, so it skips building a sampling coordinate.
-	let texel: vec2u = vec2u(
-		u32(clamp(round(pixel.x), 0.0, f32(depth_extent.x - 1))),
-		u32(clamp(round(pixel.y), 0.0, f32(depth_extent.y - 1)))
-	);
-	return fetch(depth_pyramid, texel).x;
-}
-"#;
-
-// Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
-// Background holds nothing to hit, so the ray is in front of it.
-pub(crate) const REFLECTION_RAY_PENETRATION_SOURCE: &str = r#"
-reflection_ray_penetration: fn (ray: ReflectionRay, fraction: f32, depth_extent: vec2u) -> f32 {
-	let scene_z: f32 = reflection_scene_depth(mix(ray.start_pixel, ray.end_pixel, fraction), depth_extent);
-	if (scene_z == 0.0) {
-		return 0.0 - 1.0;
-	}
-	// Screen-space interpolation is linear in 1/z, which keeps the ray depth perspective-correct.
-	return 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, fraction) - scene_z;
+// Returns whether the ray lies behind the depth buffer at `fraction` of its screen path. Screen position and 1/z are
+// both linear along the path, so the test compares inverse depths: the ray is behind a surface when its 1/z is the
+// smaller one, `scene_z * inverse_z < 1`, which needs no division. Background holds zero depth and nothing to hit.
+//
+// The pyramid's point sampler reads the texel under the coordinate and clamps to the image's edge, so a step needs no
+// rounding, clamping, or conversion to integer coordinates of its own. Together with the bit-mask scan in
+// `trace_screen_space_reflection`, this made material evaluation 2.2 % faster on the Sponza hall view, and fetching the
+// texel at converted integer coordinates instead was 3 % slower than sampling it (2026-10-06).
+pub(crate) const REFLECTION_RAY_IS_BEHIND_SOURCE: &str = r#"
+reflection_ray_is_behind: fn (ray: ReflectionRay, fraction: f32) -> bool {
+	// Mip zero of the pyramid holds half-resolution positive linear depth.
+	let scene_z: f32 = texture_lod(depth_pyramid, mix(ray.start_uv, ray.end_uv, fraction), 0.0).x;
+	return scene_z != 0.0 && scene_z * mix(ray.inverse_start_z, ray.inverse_end_z, fraction) < 1.0;
 }
 "#;
 
@@ -99,14 +88,13 @@ reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 // it in alpha. Zero alpha means the ray found nothing on screen, so the caller keeps the environment.
 //
 // `position` is the world-space surface point, `normal` its geometric normal, and `direction` the unit reflection
-// direction. `view_projection` is the camera that drew this frame's depth, and `extent` the full-resolution image.
+// direction. `view_projection` is the camera that drew this frame's depth.
 pub(crate) const TRACE_SCREEN_SPACE_REFLECTION_SOURCE: &str = r#"
 trace_screen_space_reflection: fn (
 	position: vec3f,
 	normal: vec3f,
 	direction: vec3f,
-	view_projection: mat4f,
-	extent: vec2u
+	view_projection: mat4f
 ) -> vec4f {
 	let miss: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	if (reflection_parameters.history_valid == 0) {
@@ -137,29 +125,22 @@ trace_screen_space_reflection: fn (
 		ray_length = ray_length * kept_fraction;
 	}
 
-	// Rays march the half-resolution depth in continuous pixel coordinates, where integers are texel centers.
-	let depth_extent: vec2u = vec2u(max(extent.x / 2, u32(1)), max(extent.y / 2, u32(1)));
-	let pixel_scale: vec2f = vec2f(f32(depth_extent.x), f32(depth_extent.y));
-	let origin_pixel: vec2f = vec2f(
-		(0.5 + 0.5 * start_clip.x / start_clip.w) * pixel_scale.x - 0.5,
-		(0.5 - 0.5 * start_clip.y / start_clip.w) * pixel_scale.y - 0.5
-	);
-	let far_pixel: vec2f = vec2f(
-		(0.5 + 0.5 * end_clip.x / end_clip.w) * pixel_scale.x - 0.5,
-		(0.5 - 0.5 * end_clip.y / end_clip.w) * pixel_scale.y - 0.5
-	);
+	// Rays march the half-resolution depth in normalized image coordinates, which the depth pyramid's texels divide
+	// evenly at any resolution.
+	let origin_uv: vec2f = vec2f(0.5 + 0.5 * start_clip.x / start_clip.w, 0.5 - 0.5 * start_clip.y / start_clip.w);
+	let far_uv: vec2f = vec2f(0.5 + 0.5 * end_clip.x / end_clip.w, 0.5 - 0.5 * end_clip.y / end_clip.w);
 	// Cut the screen path where it leaves the image, so every step lands on screen and none are wasted.
-	let path: vec2f = far_pixel - origin_pixel;
+	let path: vec2f = far_uv - origin_uv;
 	let exit_fraction: f32 = 1.0;
 	if (path.x > 0.0) {
-		exit_fraction = min(exit_fraction, (pixel_scale.x - 0.5 - origin_pixel.x) / path.x);
+		exit_fraction = min(exit_fraction, (1.0 - origin_uv.x) / path.x);
 	} else if (path.x < 0.0) {
-		exit_fraction = min(exit_fraction, (0.0 - 0.5 - origin_pixel.x) / path.x);
+		exit_fraction = min(exit_fraction, -origin_uv.x / path.x);
 	}
 	if (path.y > 0.0) {
-		exit_fraction = min(exit_fraction, (pixel_scale.y - 0.5 - origin_pixel.y) / path.y);
+		exit_fraction = min(exit_fraction, (1.0 - origin_uv.y) / path.y);
 	} else if (path.y < 0.0) {
-		exit_fraction = min(exit_fraction, (0.0 - 0.5 - origin_pixel.y) / path.y);
+		exit_fraction = min(exit_fraction, -origin_uv.y / path.y);
 	}
 	if (exit_fraction <= 0.0) {
 		return miss;
@@ -169,8 +150,8 @@ trace_screen_space_reflection: fn (
 	ray_length = ray_length * reflection_world_fraction(exit_fraction, start_clip.w, end_clip.w);
 	let inverse_end_z: f32 = mix(1.0 / start_clip.w, 1.0 / end_clip.w, exit_fraction);
 	let ray: ReflectionRay = ReflectionRay(
-		origin_pixel,
-		mix(origin_pixel, far_pixel, exit_fraction),
+		origin_uv,
+		mix(origin_uv, far_uv, exit_fraction),
 		1.0 / start_clip.w,
 		inverse_end_z
 	);
@@ -191,28 +172,35 @@ trace_screen_space_reflection: fn (
 		if (next_step >= step_count) {
 			break;
 		}
-		let penetrations: f32[8] = f32[8](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		// Bit `lane` is set when that step of the batch lies behind the depth buffer. Steps past the end read the last
+		// step again; the valid mask below ignores them.
+		let behind_steps: u32 = 0;
+		let first_fraction: f32 = f32(next_step + 1) / f32(step_count);
 		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
-			// Steps past the end read the last step again; the scan below ignores them.
-			let lane_fraction: f32 = f32(min(next_step + lane, step_count - 1) + 1) / f32(step_count);
-			penetrations[lane] = reflection_ray_penetration(ray, lane_fraction, depth_extent);
+			let lane_fraction: f32 = min(first_fraction + f32(lane) / f32(step_count), 1.0);
+			behind_steps = behind_steps | (reflection_ray_is_behind(ray, lane_fraction) ? 1 << lane : 0);
 		}
-		// The first step of the batch that is behind the depth buffer after the ray was seen in front of it. A ray
-		// that is still behind the same surface it went behind at an earlier step crosses nothing new.
-		let crossing: u32 = 8;
-		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
-			if (crossing == 8 && next_step + lane < step_count) {
-				if (penetrations[lane] <= 0.0) {
-					previous_fraction = f32(next_step + lane + 1) / f32(step_count);
-					was_in_front = true;
-				} else if (was_in_front) {
-					crossing = lane;
-				}
+		// The steps are judged in order with bit operations instead of a loop over them. A crossing is a step behind the
+		// depth buffer after the ray was seen in front of it: in an earlier batch, or at an earlier step of this one. A
+		// ray that is still behind the surface it went behind at an earlier step crosses nothing new.
+		let remaining_steps: u32 = step_count - next_step;
+		let valid_steps: u32 = remaining_steps < 8 ? (1 << remaining_steps) - 1 : 255;
+		let front_steps: u32 = valid_steps & ~behind_steps;
+		let crossable_steps: u32 = was_in_front ? valid_steps : (front_steps != 0 ? 255 << (find_lsb(front_steps) + 1) : 0);
+		let crossing: u32 = find_lsb(behind_steps & valid_steps & crossable_steps);
+		if (crossing == 4294967295) {
+			// Every valid step after the first one in front is in front too, so the last valid step is.
+			if (front_steps != 0) {
+				previous_fraction = f32(next_step + min(remaining_steps, 8)) / f32(step_count);
+				was_in_front = true;
 			}
-		}
-		if (crossing == 8) {
 			next_step = next_step + 8;
 			continue;
+		}
+		// Every step between the first one in front and the crossing is in front, so the step before the crossing is
+		// the last one in front; a crossing at the first step keeps the earlier batch's.
+		if (crossing > 0) {
+			previous_fraction = f32(next_step + crossing) / f32(step_count);
 		}
 		let fraction: f32 = f32(next_step + crossing + 1) / f32(step_count);
 		next_step = next_step + crossing + 1;
@@ -223,7 +211,7 @@ trace_screen_space_reflection: fn (
 		let behind: f32 = fraction;
 		for (let refinement: u32 = 0; refinement < 5; refinement = refinement + 1) {
 			let middle: f32 = 0.5 * (front + behind);
-			if (reflection_ray_penetration(ray, middle, depth_extent) > 0.0) {
+			if (reflection_ray_is_behind(ray, middle)) {
 				behind = middle;
 				continue;
 			}
@@ -231,8 +219,8 @@ trace_screen_space_reflection: fn (
 		}
 		// The depth buffer stores only front faces. A ray further behind a surface than this passed behind the
 		// object instead of hitting it, and keeps marching.
-		let hit_pixel: vec2f = mix(ray.start_pixel, ray.end_pixel, behind);
-		let scene_z: f32 = reflection_scene_depth(hit_pixel, depth_extent);
+		let hit_uv: vec2f = mix(ray.start_uv, ray.end_uv, behind);
+		let scene_z: f32 = texture_lod(depth_pyramid, hit_uv, 0.0).x;
 		if (1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind) - scene_z >= 0.05 + 0.02 * scene_z) {
 			continue;
 		}
@@ -244,7 +232,6 @@ trace_screen_space_reflection: fn (
 		}
 		// Fade hits near the image border and near the end of the ray's reach, so reflections do not end in a hard
 		// line where the screen or the ray runs out.
-		let hit_uv: vec2f = vec2f((hit_pixel.x + 0.5) / pixel_scale.x, (hit_pixel.y + 0.5) / pixel_scale.y);
 		let border_distance: f32 = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
 		let border_fade: f32 = clamp(border_distance * 20.0, 0.0, 1.0);
 		let distance_fade: f32 = clamp((max_distance - hit_distance) / (0.25 * max_distance), 0.0, 1.0);

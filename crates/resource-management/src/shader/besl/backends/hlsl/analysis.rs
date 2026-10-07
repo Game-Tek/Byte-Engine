@@ -246,6 +246,18 @@ impl Generator {
 						|| Self::has_unsupported_hlsl_atomic_context(left)
 						|| Self::has_unsupported_hlsl_atomic_context(right)
 				}
+				besl::Expressions::Unary { operand, .. } => Self::has_unsupported_hlsl_atomic_context(operand),
+				// Only the selected branch runs, so lifting an atomic out of a branch would run it unconditionally, as
+				// for `&&` and `||`. The condition always runs, so its atomics lift.
+				besl::Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => {
+					Self::contains_hlsl_value_atomic(if_true)
+						|| Self::contains_hlsl_value_atomic(if_false)
+						|| Self::has_unsupported_hlsl_atomic_context(condition)
+				}
 				besl::Expressions::Return { value } => value.as_ref().is_some_and(Self::has_unsupported_hlsl_atomic_context),
 				besl::Expressions::Expression { elements } => elements.iter().any(Self::has_unsupported_hlsl_atomic_context),
 				besl::Expressions::FunctionCall { parameters, .. } => {
@@ -351,6 +363,9 @@ impl Generator {
 					lift(left);
 					lift(right);
 				}
+				besl::Expressions::Unary { operand, .. } => lift(operand),
+				// Validation rejects atomics in a ternary's branches, which run conditionally.
+				besl::Expressions::Ternary { condition, .. } => lift(condition),
 				besl::Expressions::Macro { body, .. } => lift(body),
 				besl::Expressions::Continue
 				| besl::Expressions::Break

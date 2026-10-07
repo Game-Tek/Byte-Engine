@@ -143,6 +143,43 @@ mod tests {
 	}
 
 	#[compio::test]
+	async fn prefix_operators_and_ternaries_lower_to_native_msl() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+			Frame: struct { projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let flag: bool = bodies[item].bits > 3;
+				bodies[item].bits = ~bodies[item].bits ^ (flag ? 1 : 2);
+				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+				bodies[item].weight = !flag ? bodies[item].weight : 1.0;
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (flag ? bodies[item].color : bodies[item].color);
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "((~resources.bodies[item].bits)^(flag?1:2))");
+		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
+		assert_string_contains!(
+			shader,
+			"((-(-resources.bodies[item].velocity))-(-resources.bodies[item].velocity))"
+		);
+		// A literal branch beside an f16 branch is narrowed so both branches share one type.
+		assert_string_contains!(shader, "((!flag)?resources.bodies[item].weight:half(1.0))");
+		// Negating or selecting packed reads keeps them packed, so a matrix product unpacks the whole operand.
+		assert_string_contains!(shader, "resources.frame->projection*float4(-resources.bodies[item].color)");
+		assert_string_contains!(
+			shader,
+			"resources.frame->projection*float4(flag?resources.bodies[item].color:resources.bodies[item].color)"
+		);
+
+		compile_natively(&shader, "besl-prefix-operators-and-ternaries").await;
+	}
+
+	#[compio::test]
 	async fn vector_members_use_packed_msl_storage() {
 		let shader = lower_fixture(
 			r#"

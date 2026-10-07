@@ -523,6 +523,49 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 }
 
 #[test]
+fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge() {
+	let script = r#"
+	main: fn () -> void {
+		buff.inside = texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x;
+		buff.outside = texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x;
+	}
+	"#;
+	let mut root = buffer_root("buff", 10, &[("inside", "f32"), ("outside", "f32")]);
+	root.add_child(
+		Node::binding(
+			"texture_sampler",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			9,
+			true,
+			false,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+	write_texture(
+		&mut texture,
+		&[
+			([0, 0], [1.0, 0.0, 0.0, 0.0]),
+			([1, 0], [2.0, 0.0, 0.0, 0.0]),
+			([0, 1], [3.0, 0.0, 0.0, 0.0]),
+			([1, 1], [4.0, 0.0, 0.0, 0.0]),
+		],
+	);
+	let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(10));
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture_with_sampler(ResourceSlot::new(9), &mut texture, Sampler::nearest());
+		descriptors.bind_buffer(ResourceSlot::new(10), &mut buffer);
+		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	}
+
+	// Both coordinates select texel (1, 0): the first lies inside it and the second clamps to it from outside the
+	// image. A linear sampler would blend texels instead.
+	assert_eq!(read_f32s(&buffer, 2), vec![2.0, 2.0]);
+}
+
+#[test]
 fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
 	let script = r#"
 	main: fn () -> void {
@@ -2730,5 +2773,83 @@ fn specialization_values_select_x_and_y_components() {
 			result.read("value").expect("Expected specialization result"),
 			Value::F32(expected)
 		);
+	}
+}
+
+#[test]
+fn prefix_operators_negate_flip_bits_and_invert_booleans() {
+	let script = r#"
+	main: fn () -> void {
+		let one: u32 = 1;
+		let x: f32 = 2.5;
+		// Unsigned negation wraps, as in C-family shading languages.
+		result.wrapped = -one;
+		result.flipped = ~one ^ 3;
+		// Negation binds tighter than the product, and a negative literal works as an argument.
+		result.negated = -x * 2.0;
+		result.vector = -vec3f(1.0, -2.0, 3.0);
+		result.inverted = !(one == 1) ? 10 : 20;
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		34,
+		&[
+			("wrapped", "u32"),
+			("flipped", "u32"),
+			("negated", "f32"),
+			("vector", "vec3f"),
+			("inverted", "u32"),
+		],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 34);
+
+	assert_eq!(result.read("wrapped").expect("wrapped"), Value::U32(u32::MAX));
+	assert_eq!(result.read("flipped").expect("flipped"), Value::U32(!1 ^ 3));
+	assert_eq!(result.read("negated").expect("negated"), Value::F32(-5.0));
+	assert_eq!(result.read("vector").expect("vector"), Value::Vec3F([-1.0, 2.0, -3.0]));
+	assert_eq!(result.read("inverted").expect("inverted"), Value::U32(20));
+}
+
+#[test]
+fn ternary_runs_only_the_selected_branch() {
+	let script = r#"
+	main: fn () -> void {
+		let zero: u32 = 0;
+		let four: u32 = 4;
+		// The run fails on division by zero, so a guard must keep the unselected branch from running.
+		result.guarded = zero != 0 ? four / zero : 7;
+		result.divisor = four / (zero == 0 ? four : zero);
+		// Ternaries group right to left, and `||` binds tighter than `?`.
+		result.nested = four < 2 ? 10 : four < 5 ? 20 : 30;
+		result.selected = four > 3 || zero > 1 ? 1.5 : 2.5;
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		35,
+		&[("guarded", "u32"), ("divisor", "u32"), ("nested", "u32"), ("selected", "f32")],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 35);
+
+	assert_eq!(result.read("guarded").expect("guarded"), Value::U32(7));
+	assert_eq!(result.read("divisor").expect("divisor"), Value::U32(1));
+	assert_eq!(result.read("nested").expect("nested"), Value::U32(20));
+	assert_eq!(result.read("selected").expect("selected"), Value::F32(1.5));
+}
+
+#[test]
+fn prefix_operators_reject_operands_they_do_not_apply_to() {
+	for (body, operand) in [
+		("let x: f32 = 1.0; result.value = ~x;", "f32"),
+		("let x: u32 = 1; result.value = !x;", "u32"),
+	] {
+		let script = format!("main: fn () -> void {{ {body} }}");
+		let root = buffer_root("result", 36, &[("value", operand)]);
+		let program = compile_to_besl(&script, Some(root)).expect("Expected lexed program");
+		let Err(error) = ExecutableProgram::compile(program) else {
+			panic!("Expected the VM to reject the operand of `{body}`");
+		};
+		assert!(matches!(error, VmError::TypeMismatch { .. }), "{body}: {error:?}");
 	}
 }

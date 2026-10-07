@@ -495,6 +495,137 @@ main: fn () -> void {
 		));
 	}
 
+	/// Returns the right side of the assignment that `source`'s `main` holds as its only statement.
+	fn assigned_value(source: &'static str) -> Node<'static> {
+		// The tokens outlive the parsed node, which borrows them, so the test leaks them.
+		let tokens: &'static [&'static str] = Box::leak(tokenize(source).into_boxed_slice());
+		let node = parse(tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected main function");
+		};
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Assignment,
+			right,
+			..
+		}) = &statements[0].node
+		else {
+			panic!("Expected an assignment");
+		};
+		(**right).clone()
+	}
+
+	#[test]
+	fn prefix_operators_bind_tighter_than_binary_operators_and_looser_than_member_access() {
+		// `-a * b` is `(-a) * b`.
+		let value = assigned_value("main: fn () -> void { x = -a * b; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Multiply,
+			left,
+			..
+		}) = &value.node
+		else {
+			panic!("Expected a product, found {value:?}");
+		};
+		assert!(matches!(
+			left.node,
+			Nodes::Expression(Expressions::Unary {
+				operator: crate::UnaryOperators::Negate,
+				..
+			})
+		));
+
+		// `!a && b` is `(!a) && b`, and `~a & b` is `(~a) & b`.
+		for (source, operator, prefix) in [
+			(
+				"main: fn () -> void { x = !a && b; }",
+				Operators::LogicalAnd,
+				crate::UnaryOperators::LogicalNot,
+			),
+			(
+				"main: fn () -> void { x = ~a & b; }",
+				Operators::BitwiseAnd,
+				crate::UnaryOperators::BitwiseNot,
+			),
+		] {
+			let value = assigned_value(source);
+			let Nodes::Expression(Expressions::Operator {
+				operator: found, left, ..
+			}) = &value.node
+			else {
+				panic!("Expected a binary operator for {source}");
+			};
+			assert_eq!(*found, operator, "{source}");
+			assert!(
+				matches!(left.node, Nodes::Expression(Expressions::Unary { operator: found, .. }) if found == prefix),
+				"{source}"
+			);
+		}
+		// `a - -b` subtracts a negation.
+		let value = assigned_value("main: fn () -> void { x = a - -b; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Minus,
+			right,
+			..
+		}) = &value.node
+		else {
+			panic!("Expected a difference, found {value:?}");
+		};
+		assert!(matches!(right.node, Nodes::Expression(Expressions::Unary { .. })));
+
+		// `-a.b` negates the member, and `- -a` nests two negations.
+		let value = assigned_value("main: fn () -> void { x = -a.b; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Expression(Expressions::Accessor { .. })));
+		let value = assigned_value("main: fn () -> void { x = - -a; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Expression(Expressions::Unary { .. })));
+	}
+
+	#[test]
+	fn ternary_binds_looser_than_logical_operators_and_groups_right_to_left() {
+		let value = assigned_value("main: fn () -> void { x = a || b ? c + 1 : d ? e : f; }");
+		let Nodes::Expression(Expressions::Ternary {
+			condition,
+			if_true,
+			if_false,
+		}) = &value.node
+		else {
+			panic!("Expected a ternary, found {value:?}");
+		};
+		assert!(matches!(
+			condition.node,
+			Nodes::Expression(Expressions::Operator {
+				operator: Operators::LogicalOr,
+				..
+			})
+		));
+		assert!(matches!(
+			if_true.node,
+			Nodes::Expression(Expressions::Operator {
+				operator: Operators::Plus,
+				..
+			})
+		));
+		assert!(matches!(if_false.node, Nodes::Expression(Expressions::Ternary { .. })));
+
+		// A nested ternary in the true branch ends at its own `:`.
+		let value = assigned_value("main: fn () -> void { x = a ? b ? c : d : e; }");
+		let Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) = &value.node else {
+			panic!("Expected a ternary, found {value:?}");
+		};
+		assert!(matches!(if_true.node, Nodes::Expression(Expressions::Ternary { .. })));
+		assert!(matches!(if_false.node, Nodes::Expression(Expressions::Member { .. })));
+	}
+
+	#[test]
+	fn ternary_without_a_false_branch_is_rejected() {
+		assert!(parse(&tokenize("main: fn () -> void { x = a ? b; }")).is_err());
+	}
+
 	#[test]
 	fn parse_grouping_parentheses() {
 		// Minimal repro: grouping parentheses inside a function call

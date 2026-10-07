@@ -58,6 +58,13 @@
 "&&"
 "||"
 
+# Single-character operators, including the prefix operators and the ternary.
+"^"
+"~"
+"!"
+"?"
+"-"
+
 # Grammar punctuation.
 "{"
 "}"

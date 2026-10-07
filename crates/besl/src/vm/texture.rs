@@ -67,13 +67,31 @@ pub enum SamplerReductionMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sampler {
 	reduction_mode: SamplerReductionMode,
+	nearest: bool,
 }
 
 impl Sampler {
 	/// Creates a linear clamp sampler with the requested reduction mode.
 	pub const fn new(reduction_mode: SamplerReductionMode) -> Self {
-		Self { reduction_mode }
+		Self {
+			reduction_mode,
+			nearest: false,
+		}
 	}
+
+	/// Creates a point clamp sampler, which returns the one texel under the coordinate, like the samplers shaders
+	/// bind to read depth images by normalized position.
+	pub const fn nearest() -> Self {
+		Self {
+			reduction_mode: SamplerReductionMode::WeightedAverage,
+			nearest: true,
+		}
+	}
+}
+
+/// Returns the texel a point sampler with clamp addressing selects on one axis of `size` texels.
+fn nearest_axis(uv: f32, size: u32) -> u32 {
+	((uv.clamp(0.0, 1.0) * size as f32).floor() as u32).min(size.saturating_sub(1))
 }
 
 fn reduce_rgba(samples: [[f32; 4]; 4], reduce: fn(f32, f32) -> f32) -> [f32; 4] {
@@ -182,6 +200,10 @@ impl Texture {
 
 	/// Samples one texel using the sampler state attached to a combined texture binding.
 	pub(super) fn sample_with_sampler(&self, uv: [f32; 2], sampler: Sampler) -> Result<Value, VmError> {
+		if sampler.nearest {
+			let texel = [nearest_axis(uv[0], self.width), nearest_axis(uv[1], self.height), 0];
+			return Ok(Value::Vec4F(self.fetch_texel(texel)?));
+		}
 		let (x0, x1, tx) = normalized_linear_axis(uv[0], self.width);
 		let (y0, y1, ty) = normalized_linear_axis(uv[1], self.height);
 		let samples = [
@@ -232,6 +254,10 @@ impl Texture {
 		} else {
 			self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self))
 		};
+		if sampler.nearest {
+			let texel = [nearest_axis(uv[0], texture.width), nearest_axis(uv[1], texture.height), layer];
+			return Ok(Value::Vec4F(texture.fetch_texel(texel)?));
+		}
 		let (x0, x1, tx) = normalized_linear_axis(uv[0], texture.width);
 		let (y0, y1, ty) = normalized_linear_axis(uv[1], texture.height);
 		let samples = [

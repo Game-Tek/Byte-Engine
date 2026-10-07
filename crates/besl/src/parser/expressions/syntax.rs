@@ -1,12 +1,12 @@
 use super::*;
 
-/// Parses the optional operator, member access, or index after an operand, as in `a + b`, `a.b`, or `a[i]`. Without
-/// one, it returns `iterator` unchanged.
+/// Parses the optional operator, ternary, member access, or index after an operand, as in `a + b`, `a ? b : c`,
+/// `a.b`, or `a[i]`. Without one, it returns `iterator` unchanged.
 fn parse_followers<'i, 'a: 'i>(
 	iterator: std::slice::Iter<'i, &'a str>,
 	expressions: &mut Vec<Atoms<'a>>,
 ) -> std::slice::Iter<'i, &'a str> {
-	let followers: [ExpressionParser<'i, 'a>; 3] = [parse_operator, parse_accessor, parse_index_accessor];
+	let followers: [ExpressionParser<'i, 'a>; 4] = [parse_operator, parse_ternary, parse_accessor, parse_index_accessor];
 	try_expression_parsers(&followers, &iterator, expressions).unwrap_or(iterator)
 }
 
@@ -195,6 +195,7 @@ pub(crate) fn parse_rvalue<'i, 'a: 'i>(
 ) -> ExpressionParserResult<'i, 'a> {
 	execute_expression_parsers(
 		&[
+			parse_unary,
 			parse_record_literal,
 			parse_function_call,
 			parse_grouped_expression,
@@ -218,6 +219,45 @@ pub(crate) fn parse_operator<'i, 'a: 'i>(
 	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
 }
 
+/// Parses a prefix operator and the operand it applies to, such as `-x`, `!flag`, or `~mask`.
+pub(crate) fn parse_unary<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	expressions: &mut Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	let token = iterator.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	let operator = crate::UnaryOperators::from_token(token).ok_or(ParsingFailReasons::NotMine)?;
+
+	expressions.push(Atoms::Unary { operator });
+
+	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
+		.map_err(|error| error.claimed(|| format!("Expected a value after the prefix operator `{token}`.")))
+}
+
+/// Parses the `? if_true : if_false` that follows a ternary's condition. The true branch is parsed on its own, like a
+/// parenthesized expression, because `?` and `:` enclose it. The condition is whatever precedes `?` and the false
+/// branch whatever follows `:`, so [`expression_atoms_to_node`] decides how far each reaches by precedence.
+pub(crate) fn parse_ternary<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	expressions: &mut Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("?")?;
+
+	let mut if_true = Vec::new();
+	let mut iterator = execute_expression_parsers(&[parse_rvalue], iterator, &mut if_true)
+		.map_err(|error| error.claimed(|| "Expected a value after `?` in a ternary expression.".to_string()))?;
+	iterator.next_str(":").map_err(|_| {
+		ParsingFailReasons::BadSyntax {
+		message: "Expected `:` after the true branch of a ternary expression. The most likely cause is a missing `:` or false branch."
+			.to_string(),
+	}
+	})?;
+
+	expressions.push(Atoms::Ternary { if_true });
+
+	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
+		.map_err(|error| error.claimed(|| "Expected a value after `:` in a ternary expression.".to_string()))
+}
+
 pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 	if matches!(atoms.first(), Some(Atoms::Keyword)) {
 		return Node {
@@ -230,14 +270,27 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 		};
 	}
 
-	// The expression splits at the atom with the highest precedence, the last one on a tie.
-	let Some((i, atom)) = atoms.iter().enumerate().max_by_key(|(_, atom)| match atom {
+	// The expression splits at its loosest atom. Binary operators group left to right, so a tie splits at the last of
+	// them. Prefix operators and the ternary group right to left, so `- -x` is `-(-x)` and `a ? b : c ? d : e` is
+	// `a ? b : (c ? d : e)`, and a tie splits at the first.
+	let precedence = |atom: &Atoms<'a>| match atom {
 		Atoms::Accessor => 1,
+		Atoms::Unary { .. } => crate::lexer::UNARY_PRECEDENCE,
+		Atoms::Ternary { .. } => crate::lexer::TERNARY_PRECEDENCE,
 		Atoms::Operator { operator } => operator.precedence(),
 		_ => 0,
-	}) else {
+	};
+	let Some(loosest) = atoms.iter().map(precedence).max() else {
 		panic!("No max precedence item");
 	};
+	let groups_right_to_left = loosest == crate::lexer::UNARY_PRECEDENCE || loosest == crate::lexer::TERNARY_PRECEDENCE;
+	let split = if groups_right_to_left {
+		atoms.iter().position(|atom| precedence(atom) == loosest)
+	} else {
+		atoms.iter().rposition(|atom| precedence(atom) == loosest)
+	};
+	let i = split.expect("The loosest atom exists");
+	let atom = &atoms[i];
 
 	match atom {
 		Atoms::Keyword => Node {
@@ -257,6 +310,23 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				operator: *operator,
 				left: Box::new(expression_atoms_to_node(&atoms[..i])),
 				right: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
+			}),
+		},
+		Atoms::Unary { operator } => {
+			// The parser reads a prefix operator only where an operand starts, so it is the first atom of its operand.
+			debug_assert_eq!(i, 0, "A prefix operator must start the expression it applies to.");
+			Node {
+				node: Nodes::Expression(Expressions::Unary {
+					operator: *operator,
+					operand: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
+				}),
+			}
+		}
+		Atoms::Ternary { if_true } => Node {
+			node: Nodes::Expression(Expressions::Ternary {
+				condition: Box::new(expression_atoms_to_node(&atoms[..i])),
+				if_true: Box::new(expression_atoms_to_node(if_true)),
+				if_false: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
 			}),
 		},
 		Atoms::Accessor => Node::accessor(

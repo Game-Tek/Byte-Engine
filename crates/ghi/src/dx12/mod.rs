@@ -1062,7 +1062,13 @@ void main() {
 		let window = app
 			.create_window("DX12 Outstanding Acquisition Test", extent, crate::window::Features::empty())
 			.expect("Failed to create DX12 test window.");
-		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), None, extent, crate::Uses::RenderTarget);
+		let swapchain = device.bind_to_window(
+			&window.os_handles(),
+			Default::default(),
+			None,
+			extent,
+			crate::Uses::RenderTarget,
+		);
 		let synchronizer = device.create_synchronizer(None, true);
 
 		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

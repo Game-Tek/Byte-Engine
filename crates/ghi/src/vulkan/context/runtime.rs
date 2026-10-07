@@ -202,17 +202,15 @@ impl Context {
 			);
 		}
 
-		let new_swapchain =
-			self.device
-				.create_vulkan_swapchain(
-					surface,
-					present_mode,
-					capabilities,
-					extent,
-					native_image_usage,
-					desired_image_count,
-					old_swapchain,
-				);
+		let new_swapchain = self.device.create_vulkan_swapchain(
+			surface,
+			present_mode,
+			capabilities,
+			extent,
+			native_image_usage,
+			desired_image_count,
+			old_swapchain,
+		);
 		let vk_images = unsafe {
 			self.device.swapchain.destroy_swapchain(old_swapchain, None);
 			self.device

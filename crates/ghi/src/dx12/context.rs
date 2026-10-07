@@ -1254,7 +1254,14 @@ impl crate::context::Context for Device {
 		fallback_extent: Extent,
 		_uses: Uses,
 	) -> SwapchainHandle {
-		Device::bind_to_window(self, window_os_handles, presentation_mode, desired_image_count, fallback_extent, _uses)
+		Device::bind_to_window(
+			self,
+			window_os_handles,
+			presentation_mode,
+			desired_image_count,
+			fallback_extent,
+			_uses,
+		)
 	}
 
 	fn acquire_swapchain_image(

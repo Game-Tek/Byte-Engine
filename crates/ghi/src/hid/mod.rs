@@ -3,7 +3,7 @@
 //! Input systems list the [`Usage`] values they can read, build a [`Scanner`] once, and call [`Scanner::scan`] at
 //! startup. Each platform filters by usage before it reads anything expensive, so only matching devices pay for
 //! their product name. A scan reports borrowed [`DeviceInfo`] values and allocates nothing per device; call
-//! [`DevicePathRef::to_owned`] only for the devices you keep.
+//! [`DevicePathRef::to_owned`] only for the devices you keep, then read them through a [`Device`].
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -58,6 +58,33 @@ impl Scanner {
 	/// for example with [`DevicePathRef::to_owned`].
 	pub fn scan(&mut self, found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
 		self.os.scan(found)
+	}
+}
+
+/// The `Device` struct keeps one device interface open so an input system can read its reports every frame.
+///
+/// Open it with a path from [`Scanner::scan`], then call [`Device::read`] until it returns `None`. Use it on the
+/// thread that opened it: on macOS, reports arrive through that thread's run loop.
+pub struct Device {
+	os: os::Device,
+}
+
+impl Device {
+	/// Opens the device for reading without blocking.
+	///
+	/// Next, call [`Device::read`] once per frame.
+	pub fn open(path: &DevicePath) -> Result<Self, String> {
+		Ok(Self {
+			os: os::Device::open(path.0.borrow())?,
+		})
+	}
+
+	/// Copies the next waiting input report into `report` and returns its length, or `None` when no report waits.
+	///
+	/// A report starts with its report ID only when the device numbers its reports. A report longer than
+	/// `report` is cut to fit. An error means the device stopped working, usually because it was unplugged.
+	pub fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
+		self.os.read(report)
 	}
 }
 

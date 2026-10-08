@@ -16,8 +16,15 @@ use windows::{
 				HidD_GetProductString, HidP_GetCaps, PHIDP_PREPARSED_DATA,
 			},
 		},
-		Foundation::{CloseHandle, HANDLE},
-		Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
+		Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE},
+		Storage::FileSystem::{
+			CreateFileW, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+			ReadFile,
+		},
+		System::{
+			IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+			Threading::CreateEventW,
+		},
 	},
 	core::PCWSTR,
 };
@@ -65,7 +72,7 @@ impl Scanner {
 		// The list holds NUL-terminated paths and ends with an empty one.
 		for path in self.list.split(|&unit| unit == 0).take_while(|path| !path.is_empty()) {
 			// SAFETY: `path` is followed by the NUL that `split` removed, so the pointer names a terminated string.
-			let Some(interface) = Interface::open(PCWSTR(path.as_ptr())) else {
+			let Some(interface) = Interface::open(PCWSTR(path.as_ptr()), 0, FILE_FLAGS_AND_ATTRIBUTES(0)) else {
 				continue;
 			};
 			let Some(usage) = interface.usage().filter(|usage| self.usages.contains(usage)) else {
@@ -128,18 +135,19 @@ fn fill_interface_list(list: &mut Vec<u16>) -> Result<(), String> {
 struct Interface(HANDLE);
 
 impl Interface {
-	/// Opens `path` without read or write access, which is enough for attribute queries and never conflicts with
-	/// applications that hold the device.
-	fn open(path: PCWSTR) -> Option<Self> {
+	/// Opens `path` with `access`, sharing it with other applications.
+	///
+	/// Queries need no access rights, which never conflicts with applications that hold the device.
+	fn open(path: PCWSTR, access: u32, flags: FILE_FLAGS_AND_ATTRIBUTES) -> Option<Self> {
 		// SAFETY: `path` is a NUL-terminated interface path and no security attributes or template are passed.
 		let handle = unsafe {
 			CreateFileW(
 				path,
-				0,
+				access,
 				FILE_SHARE_READ | FILE_SHARE_WRITE,
 				None,
 				OPEN_EXISTING,
-				FILE_FLAGS_AND_ATTRIBUTES(0),
+				flags,
 				None,
 			)
 		};
@@ -157,6 +165,14 @@ impl Interface {
 
 	/// Returns the usage of the interface's top-level collection.
 	fn usage(&self) -> Option<Usage> {
+		self.caps().map(|caps| Usage {
+			page: caps.UsagePage,
+			usage: caps.Usage,
+		})
+	}
+
+	/// Returns the capabilities of the interface's top-level collection, such as its usage and report sizes.
+	fn caps(&self) -> Option<HIDP_CAPS> {
 		let mut preparsed = PHIDP_PREPARSED_DATA::default();
 		// SAFETY: `self.0` is an open HID handle; the data is freed below.
 		if !unsafe { HidD_GetPreparsedData(self.0, &mut preparsed) } {
@@ -167,10 +183,7 @@ impl Interface {
 		let status = unsafe { HidP_GetCaps(preparsed, &mut caps) };
 		// SAFETY: `preparsed` is freed once and not used afterwards.
 		unsafe { HidD_FreePreparsedData(preparsed) };
-		(status.0 == HIDP_STATUS_SUCCESS).then_some(Usage {
-			page: caps.UsagePage,
-			usage: caps.Usage,
-		})
+		(status.0 == HIDP_STATUS_SUCCESS).then_some(caps)
 	}
 
 	/// Decodes the product string into `buffer` and returns it, or `None` when the device reports none.
@@ -198,5 +211,103 @@ impl Drop for Interface {
 	fn drop(&mut self) {
 		// SAFETY: the handle came from `CreateFileW` and is closed exactly once.
 		let _ = unsafe { CloseHandle(self.0) };
+	}
+}
+
+/// The `Device` struct keeps an interface open with one overlapped read in flight, so reads never block.
+pub(super) struct Device {
+	interface: Interface,
+	/// The read in flight, boxed so its address stays fixed while the kernel writes to it.
+	overlapped: Box<OVERLAPPED>,
+	/// Receives each report, sized to the interface's longest input report.
+	buffer: Box<[u8]>,
+	pending: bool,
+}
+
+impl Device {
+	pub(super) fn open(path: &PathData) -> Result<Self, String> {
+		let terminated = path.iter().copied().chain([0]).collect::<Vec<u16>>();
+		let interface = Interface::open(
+			PCWSTR(terminated.as_ptr()),
+			GENERIC_READ.0 | GENERIC_WRITE.0,
+			FILE_FLAG_OVERLAPPED,
+		)
+		.ok_or_else(|| {
+			format!(
+				"Failed to open HID device {}. The most likely cause is that another application holds it exclusively.",
+				String::from_utf16_lossy(path)
+			)
+		})?;
+		let caps = interface.caps().ok_or_else(|| {
+			"Failed to read HID device capabilities. The most likely cause is that the device was unplugged.".to_string()
+		})?;
+		// SAFETY: no security attributes or name are passed; the event is closed in `Drop`.
+		let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.map_err(|error| {
+			format!("Failed to create a HID read event: {error}. The most likely cause is that the process ran out of handles.")
+		})?;
+
+		Ok(Self {
+			interface,
+			overlapped: Box::new(OVERLAPPED {
+				hEvent: event,
+				..Default::default()
+			}),
+			buffer: vec![0; caps.InputReportByteLength as usize].into_boxed_slice(),
+			pending: false,
+		})
+	}
+
+	/// Starts a read when none is in flight, then returns its report if it has completed.
+	pub(super) fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
+		if !self.pending {
+			// SAFETY: `buffer` and `overlapped` live in boxes that outlive the read; `Drop` waits for it to finish.
+			let started = unsafe { ReadFile(self.interface.0, Some(&mut self.buffer), None, Some(&mut *self.overlapped)) };
+			if let Err(error) = started
+				&& error.code() != ERROR_IO_PENDING.to_hresult()
+			{
+				return Err(read_error(error));
+			}
+			self.pending = true;
+		}
+
+		let mut length = 0u32;
+		// SAFETY: `overlapped` belongs to the read in flight on this handle.
+		match unsafe { GetOverlappedResult(self.interface.0, &*self.overlapped, &mut length, false) } {
+			Ok(()) => {
+				self.pending = false;
+				let mut data = &self.buffer[..length as usize];
+				// Windows always starts a report with its report ID, and with 0 when the device does not number them.
+				if let [0, rest @ ..] = data {
+					data = rest;
+				}
+				let copied = data.len().min(report.len());
+				report[..copied].copy_from_slice(&data[..copied]);
+				Ok(Some(copied))
+			}
+			Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult() => Ok(None),
+			Err(error) => {
+				self.pending = false;
+				Err(read_error(error))
+			}
+		}
+	}
+}
+
+fn read_error(error: windows::core::Error) -> String {
+	format!("Failed to read a HID report: {error}. The most likely cause is that the device was unplugged.")
+}
+
+impl Drop for Device {
+	fn drop(&mut self) {
+		if self.pending {
+			let mut length = 0u32;
+			// SAFETY: the read in flight uses `overlapped`; waiting for it keeps the kernel from writing to freed memory.
+			unsafe {
+				let _ = CancelIoEx(self.interface.0, Some(&*self.overlapped));
+				let _ = GetOverlappedResult(self.interface.0, &*self.overlapped, &mut length, true);
+			}
+		}
+		// SAFETY: the event came from `CreateEventW` and is closed exactly once.
+		let _ = unsafe { CloseHandle(self.overlapped.hEvent) };
 	}
 }

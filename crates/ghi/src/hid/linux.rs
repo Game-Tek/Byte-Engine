@@ -37,6 +37,41 @@ impl Scanner {
 	}
 }
 
+pub(super) struct Device(OwnedFd);
+
+impl Device {
+	pub(super) fn open(path: &PathData) -> Result<Self, String> {
+		// The node is at most `/dev/hidraw4294967295` plus a NUL terminator.
+		let mut node = [0u8; 32];
+		let mut cursor = &mut node[..];
+		write!(cursor, "/dev/hidraw{path}\0").expect("A hidraw node path always fits its buffer.");
+		let node = CStr::from_bytes_until_nul(&node).expect("The hidraw node path was written with its terminator.");
+
+		rustix::fs::open(node, OFlags::RDWR | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())
+			.map(Self)
+			.map_err(|error| {
+				format!(
+					"Failed to open /dev/hidraw{path}: {error}. The most likely cause is that a udev rule does not grant your user access to the device."
+				)
+			})
+	}
+
+	pub(super) fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
+		loop {
+			match rustix::io::read(&self.0, &mut *report) {
+				Ok(length) => return Ok(Some(length)),
+				Err(Errno::AGAIN) => return Ok(None),
+				Err(Errno::INTR) => {}
+				Err(error) => {
+					return Err(format!(
+						"Failed to read a hidraw report: {error}. The most likely cause is that the device was unplugged."
+					));
+				}
+			}
+		}
+	}
+}
+
 /// Reports the hidraw entries of `class_dir` whose `device/report_descriptor` declares one of `usages`.
 ///
 /// The descriptor gives the usages, and `device/uevent` gives the vendor, product, and name of matches. Entries

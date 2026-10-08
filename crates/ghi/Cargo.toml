@@ -20,8 +20,14 @@ name = "ghi"
 name = "retained_work"
 harness = false
 
+[[bench]]
+name = "hid_discovery"
+harness = false
+
 [dev-dependencies]
 divan = "0.1.21"
+# Only the HID discovery benchmark uses hidapi, as the baseline it compares against.
+hidapi = "2.6.1"
 
 [package.metadata.docs.rs]
 rustc-args = ["-C", "target-feature=+aes,+sse2"]
@@ -38,7 +44,7 @@ smallvec = "1.15.1"
 [target.'cfg(target_os = "windows")'.dependencies]
 direct-storage = { version = "0.7.1", default-features = false }
 libloading = "0.8.9"
-windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Dxc"] }
+windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Security", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Dxc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 shaderc = "0.10.1"
@@ -55,6 +61,8 @@ block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", features = ["block2"] }
 objc2 = { version = "0.6.3", features = ["disable-encoding-assertions"] }
 objc2-foundation = "0.3.2"
+objc2-core-foundation = { version = "0.3.2", features = ["CFDictionary", "CFNumber", "CFString"] }
+objc2-io-kit = { version = "0.3.2", default-features = false, features = ["std", "libc"] }
 objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation"] }
 objc2-quartz-core = "0.3.2"
 objc2-metal = { version = "0.3.2", features = ["MTL4CommandAllocator", "MTL4CommandBuffer", "MTL4CommandEncoder", "MTL4CommandQueue", "MTL4CommitFeedback", "MTL4Compiler", "MTL4ComputeCommandEncoder", "MTL4ComputePipeline", "MTL4Counters", "MTL4FunctionDescriptor", "MTL4LibraryFunctionDescriptor", "MTL4MeshRenderPipeline", "MTL4PipelineState", "MTL4RenderCommandEncoder", "MTL4RenderPass", "MTL4RenderPipeline", "MTL4SpecializedFunctionDescriptor", "MTL4AccelerationStructure", "MTLAccelerationStructure", "MTLAccelerationStructureTypes", "MTL4BufferRange", "MTLGPUAddress", "MTLStageInputOutputDescriptor", "MTLTypes", "MTLArgument", "MTLAllocation", "MTLComputePipeline", "MTLDataType", "MTLDrawable", "MTLEvent", "MTLFunctionConstantValues", "MTLHeap", "MTLIOCommandBuffer", "MTLIOCommandQueue", "MTLIOCompressor", "MTLLibrary", "MTLResidencySet", "dispatch2"] }

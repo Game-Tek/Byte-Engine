@@ -61,6 +61,21 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type)
 			}
+			Nodes::Expression(Expressions::Operator {
+				operator: operator @ (Operators::LogicalAnd | Operators::LogicalOr),
+				left,
+				right,
+			}) => {
+				let (operator, left, right) = (*operator, left.clone(), right.clone());
+				drop(borrowed);
+				if expected_type != &ValueType::Bool {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::Bool.name().to_string(),
+					});
+				}
+				self.compile_short_circuit(operator, &left, &right)
+			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				let comparison = comparison_operator(operator);
 				let arithmetic = if comparison.is_none() {
@@ -76,11 +91,6 @@ impl<'a> Compiler<'a> {
 
 				let operand_hint = if comparison.is_some() {
 					&ValueType::U32
-				} else if matches!(
-					arithmetic,
-					Some(ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr)
-				) {
-					&ValueType::Bool
 				} else {
 					expected_type
 				};
@@ -278,9 +288,9 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Compiles `condition ? if_true : if_false` so that only the selected branch runs, as it does on the GPU, which
-	/// lets a branch read what the condition guards, such as `index < count ? values[index] : 0.0`. Both branches store
-	/// into one hidden local that the result loads.
+	/// Compiles a plain-value `if`, such as `if (index < count) { values[index] } else { 0.0 }`, so that only the
+	/// selected branch runs, as it does on the GPU, which lets a branch read what the condition guards. Both branches
+	/// store into one hidden local that the result loads.
 	fn compile_ternary(
 		&mut self,
 		condition: &NodeReference,
@@ -306,6 +316,44 @@ impl<'a> Compiler<'a> {
 		let value = self.compile_value_expression(if_false, expected_type)?;
 		self.emit(LocalInstruction::StoreLocal { local, register: value });
 		self.patch_jump(skip_false_index, self.instructions.len());
+
+		let register = self.allocate_register();
+		self.emit(LocalInstruction::LoadLocal { register, local });
+		Ok(register)
+	}
+
+	/// Compiles `left && right` or `left || right` so that `right` runs only when `left` doesn't decide the result, as
+	/// on the GPU, which lets `right` read what `left` guards, such as `index < count && values[index] > 0`. Both
+	/// operands store into one hidden local that the result loads.
+	fn compile_short_circuit(
+		&mut self,
+		operator: Operators,
+		left: &NodeReference,
+		right: &NodeReference,
+	) -> Result<usize, VmError> {
+		let local = self.local_types.len();
+		self.local_types.push(ValueType::Bool);
+
+		let left = self.compile_value_expression(left, &ValueType::Bool)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: left });
+		let false_index = self.instructions.len();
+		self.emit(ControlInstruction::JumpIfZero {
+			register: left,
+			target: usize::MAX,
+		});
+		// A false left side decides `&&`, so it skips the right one. A true left side decides `||`, which falls through
+		// to a jump over the right side, and a false one jumps to it.
+		let skip_right_index = if operator == Operators::LogicalOr {
+			let skip_right_index = self.instructions.len();
+			self.emit(ControlInstruction::Jump { target: usize::MAX });
+			self.patch_jump(false_index, self.instructions.len());
+			skip_right_index
+		} else {
+			false_index
+		};
+		let right = self.compile_value_expression(right, &ValueType::Bool)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: right });
+		self.patch_jump(skip_right_index, self.instructions.len());
 
 		let register = self.allocate_register();
 		self.emit(LocalInstruction::LoadLocal { register, local });
@@ -559,15 +607,12 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(&function.get()),
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-				if comparison_operator(operator).is_some() {
+				if comparison_operator(operator).is_some() || matches!(operator, Operators::LogicalAnd | Operators::LogicalOr) {
 					Ok(ValueType::Bool)
 				} else {
 					let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!("Unsupported value operator: {:?}", operator),
 					})?;
-					if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-						return Ok(ValueType::Bool);
-					}
 					let left = left.clone();
 					let right = right.clone();
 					drop(borrowed);

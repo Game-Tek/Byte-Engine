@@ -55,9 +55,10 @@ pub(crate) fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOper
 		Operators::BitwiseAnd => Some(ArithmeticOperator::BitwiseAnd),
 		Operators::BitwiseOr => Some(ArithmeticOperator::BitwiseOr),
 		Operators::BitwiseXor => Some(ArithmeticOperator::BitwiseXor),
-		Operators::LogicalAnd => Some(ArithmeticOperator::LogicalAnd),
-		Operators::LogicalOr => Some(ArithmeticOperator::LogicalOr),
-		Operators::Assignment
+		// `&&` and `||` short-circuit, so they lower to jumps instead of an arithmetic instruction.
+		Operators::LogicalAnd
+		| Operators::LogicalOr
+		| Operators::Assignment
 		| Operators::Equality
 		| Operators::LessThan
 		| Operators::Inequality
@@ -72,9 +73,6 @@ pub(crate) fn binary_result_type(
 	left: &ValueType,
 	right: &ValueType,
 ) -> Result<ValueType, VmError> {
-	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-		return Ok(ValueType::Bool);
-	}
 	if operator == ArithmeticOperator::Multiply {
 		match (left, right) {
 			(ValueType::Mat4F, ValueType::Vec4F) => return Ok(ValueType::Vec4F),
@@ -154,15 +152,6 @@ pub(crate) fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
 }
 
 pub(crate) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right: &Value) -> Result<Value, VmError> {
-	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-		let left = !is_zero_value(left)?;
-		let right = !is_zero_value(right)?;
-		return Ok(Value::Bool(match operator {
-			ArithmeticOperator::LogicalAnd => left && right,
-			ArithmeticOperator::LogicalOr => left || right,
-			_ => unreachable!("Logical operators are handled before arithmetic"),
-		}));
-	}
 	if operator == ArithmeticOperator::Multiply {
 		match (left, right) {
 			(Value::Mat4F(matrix), Value::Vec4F(vector)) => {
@@ -362,10 +351,18 @@ pub(crate) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 		Value::I32(value) => Ok(*value == 0),
 		Value::F16(value) => Ok(*value == f16::from_f32(0.0)),
 		Value::F32(value) => Ok(*value == 0.0),
-		value => Err(VmError::TypeMismatch {
-			expected: "u32, i32, f16, or f32".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(non_scalar_condition(value)),
+	}
+}
+
+/// Builds the error for a branch condition that isn't a scalar. It stays out of line, so the interpreter loop that
+/// inlines [`is_zero_value`] doesn't grow by the error formatting.
+#[cold]
+#[inline(never)]
+fn non_scalar_condition(value: &Value) -> VmError {
+	VmError::TypeMismatch {
+		expected: "u32, i32, f16, or f32".to_string(),
+		found: value.value_type().name().to_string(),
 	}
 }
 
@@ -433,9 +430,6 @@ fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: Arithmeti
 		ArithmeticOperator::BitwiseAnd => Ok(left & right),
 		ArithmeticOperator::BitwiseOr => Ok(left | right),
 		ArithmeticOperator::BitwiseXor => Ok(left ^ right),
-		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
-			unreachable!("Logical operations are evaluated before integer arithmetic")
-		}
 	}
 }
 
@@ -464,9 +458,7 @@ fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> 
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
-		| ArithmeticOperator::BitwiseXor
-		| ArithmeticOperator::LogicalAnd
-		| ArithmeticOperator::LogicalOr => {
+		| ArithmeticOperator::BitwiseXor => {
 			return Err(VmError::TypeMismatch {
 				expected: "integer operands".to_string(),
 				found: ValueType::F16.name().to_string(),
@@ -487,9 +479,7 @@ pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: Arithmetic
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
-		| ArithmeticOperator::BitwiseXor
-		| ArithmeticOperator::LogicalAnd
-		| ArithmeticOperator::LogicalOr => Err(VmError::TypeMismatch {
+		| ArithmeticOperator::BitwiseXor => Err(VmError::TypeMismatch {
 			expected: "integer operands".to_string(),
 			found: ValueType::F32.name().to_string(),
 		}),

@@ -585,45 +585,83 @@ main: fn () -> void {
 		assert!(matches!(operand.node, Nodes::Expression(Expressions::Unary { .. })));
 	}
 
+	/// An `if` or `match` value is one whole operand, like a parenthesized expression.
 	#[test]
-	fn ternary_binds_looser_than_logical_operators_and_groups_right_to_left() {
-		let value = assigned_value("main: fn () -> void { x = a || b ? c + 1 : d ? e : f; }");
-		let Nodes::Expression(Expressions::Ternary {
-			condition,
-			if_true,
-			if_false,
+	fn if_and_match_values_bind_like_parenthesized_operands() {
+		// `a + if (c) { b } else { d } * 2` is `a + ((if …) * 2)`.
+		let value = assigned_value("main: fn () -> void { x = a + if (c) { b } else { d } * 2; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Plus,
+			right,
+			..
 		}) = &value.node
 		else {
-			panic!("Expected a ternary, found {value:?}");
+			panic!("Expected a sum, found {value:?}");
+		};
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Multiply,
+			left,
+			..
+		}) = &right.node
+		else {
+			panic!("Expected a product, found {right:?}");
+		};
+		let Nodes::Conditional {
+			statements, else_branch, ..
+		} = &left.node
+		else {
+			panic!("Expected an `if` value, found {left:?}");
 		};
 		assert!(matches!(
-			condition.node,
-			Nodes::Expression(Expressions::Operator {
-				operator: Operators::LogicalOr,
-				..
-			})
+			statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Yield { .. })
+			}]
 		));
-		assert!(matches!(
-			if_true.node,
-			Nodes::Expression(Expressions::Operator {
-				operator: Operators::Plus,
-				..
-			})
-		));
-		assert!(matches!(if_false.node, Nodes::Expression(Expressions::Ternary { .. })));
+		assert!(matches!(else_branch, Some(ElseBranch::Block(statements)) if statements.len() == 1));
 
-		// A nested ternary in the true branch ends at its own `:`.
-		let value = assigned_value("main: fn () -> void { x = a ? b ? c : d : e; }");
-		let Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) = &value.node else {
-			panic!("Expected a ternary, found {value:?}");
+		// A member access applies to the whole `match`, and a prefix operator to the whole `if`.
+		let value = assigned_value("main: fn () -> void { x = match n { 0 => a, _ => b }.y; }");
+		let Nodes::Expression(Expressions::Accessor { left, .. }) = &value.node else {
+			panic!("Expected a member access, found {value:?}");
 		};
-		assert!(matches!(if_true.node, Nodes::Expression(Expressions::Ternary { .. })));
-		assert!(matches!(if_false.node, Nodes::Expression(Expressions::Member { .. })));
+		assert!(matches!(left.node, Nodes::Match { .. }));
+		let value = assigned_value("main: fn () -> void { x = -if (c) { a } else { b }; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Conditional { .. }));
 	}
 
+	/// A block's last expression without `;` is its value, while control flow stays a statement.
 	#[test]
-	fn ternary_without_a_false_branch_is_rejected() {
-		assert!(parse(&tokenize("main: fn () -> void { x = a ? b; }")).is_err());
+	fn block_values_are_final_expressions_without_a_semicolon() {
+		let value = assigned_value(
+			"main: fn () -> void { x = match n { 0 => 1.0, 1 => return y, _ => { let t: f32 = y; t * 2.0 } }; }",
+		);
+		let Nodes::Match { arms, .. } = &value.node else {
+			panic!("Expected a match, found {value:?}");
+		};
+		let is_yield = |node: &Node| matches!(node.node, Nodes::Expression(Expressions::Yield { .. }));
+		assert!(matches!(&arms[0].statements[..], [value] if is_yield(value)));
+		assert!(matches!(
+			&arms[1].statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Return { value: Some(_) })
+			}]
+		));
+		assert!(matches!(&arms[2].statements[..], [_, value] if is_yield(value)));
+
+		let value = assigned_value("main: fn () -> void { x = if (c) { return y } else { y }; }");
+		let Nodes::Conditional { statements, .. } = &value.node else {
+			panic!("Expected an `if` value, found {value:?}");
+		};
+		assert!(matches!(
+			statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Return { value: Some(_) })
+			}]
+		));
 	}
 
 	#[test]

@@ -178,15 +178,21 @@ trace_screen_space_reflection: fn (
 		let first_fraction: f32 = f32(next_step + 1) / f32(step_count);
 		for (let lane: u32 = 0; lane < 8; lane = lane + 1) {
 			let lane_fraction: f32 = min(first_fraction + f32(lane) / f32(step_count), 1.0);
-			behind_steps = behind_steps | (reflection_ray_is_behind(ray, lane_fraction) ? 1 << lane : 0);
+			behind_steps = behind_steps | (if (reflection_ray_is_behind(ray, lane_fraction)) { 1 << lane } else { 0 });
 		}
 		// The steps are judged in order with bit operations instead of a loop over them. A crossing is a step behind the
 		// depth buffer after the ray was seen in front of it: in an earlier batch, or at an earlier step of this one. A
 		// ray that is still behind the surface it went behind at an earlier step crosses nothing new.
 		let remaining_steps: u32 = step_count - next_step;
-		let valid_steps: u32 = remaining_steps < 8 ? (1 << remaining_steps) - 1 : 255;
+		let valid_steps: u32 = if (remaining_steps < 8) { (1 << remaining_steps) - 1 } else { 255 };
 		let front_steps: u32 = valid_steps & ~behind_steps;
-		let crossable_steps: u32 = was_in_front ? valid_steps : (front_steps != 0 ? 255 << (find_lsb(front_steps) + 1) : 0);
+		let crossable_steps: u32 = if (was_in_front) {
+			valid_steps
+		} else if (front_steps != 0) {
+			255 << (find_lsb(front_steps) + 1)
+		} else {
+			0
+		};
 		let crossing: u32 = find_lsb(behind_steps & valid_steps & crossable_steps);
 		if (crossing == 4294967295) {
 			// Every valid step after the first one in front is in front too, so the last valid step is.

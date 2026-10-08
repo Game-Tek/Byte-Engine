@@ -174,6 +174,46 @@ const CONST_ARRAY: &str = r#"
 	}
 "#;
 
+/// Reads a member and an element of parenthesized values, whose parentheses must survive lowering.
+#[cfg(test)]
+const GROUPED_ACCESSOR_BASES: &str = r#"
+	main: fn () -> void {
+		let v: vec2f = vec2f(1.0, 2.0);
+		let w: vec2f = vec2f(3.0, 4.0);
+		let sum_y: f32 = (v + w).y;
+		let values: u32[2] = u32[2](1, 2);
+		let i: u32 = 1;
+		let picked: u32 = (values)[i];
+		sum_y;
+		picked;
+	}
+"#;
+
+/// Uses an `if` and a `match` whose branches run statements, so the lexer hoists each in front of its statement, and a
+/// left operand that runs before the `match` is captured first.
+#[cfg(test)]
+const BRANCH_VALUES: &str = r#"
+	main: fn () -> void {
+		let n: u32 = 3;
+		let scale: f32 = 2.0;
+		let weight: f32 = scale * match n {
+			0 => 0.5,
+			1 | 2 => {
+				let half_scale: f32 = scale * 0.5;
+				half_scale + 1.0
+			}
+			_ => 1.0,
+		};
+		let shade: f32 = if (n > 1) {
+			let lit: f32 = weight * weight;
+			lit
+		} else {
+			0.0
+		};
+		shade;
+	}
+"#;
+
 /// Matches on a loop counter, with a `break` in one arm, and on a narrow integer.
 #[cfg(test)]
 const MATCH_IN_LOOP: &str = r#"

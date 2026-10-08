@@ -344,7 +344,7 @@ impl Generator {
 		left: &besl::NodeReference,
 		right: &besl::NodeReference,
 	) {
-		self.emit_node_string(string, left);
+		self.emit_wrapped_expression(string, left);
 		// Array buffers are element pointers; struct buffers point at their wrapper.
 		if runtime_buffer_element(left).is_some() {
 			string.push('[');

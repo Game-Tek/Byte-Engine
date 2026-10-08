@@ -92,9 +92,9 @@ mod tests {
 	}
 
 	#[test]
-	fn prefix_and_ternary_operators_split_from_adjacent_tokens() {
+	fn prefix_operators_split_from_adjacent_tokens() {
 		// `!=` stays one token, while `!` before an operand and a doubled `-` split, so `--a` is two negations.
-		assert_tokens("x = a != !b ? ~c : --d;", "x = a != ! b ? ~ c : - - d ;");
+		assert_tokens("x = a != !b ^ ~c - --d;", "x = a != ! b ^ ~ c - - - d ;");
 	}
 
 	#[test]

@@ -83,7 +83,8 @@ pub(crate) fn is_identifier_char(character: char) -> bool {
 }
 
 pub(crate) fn is_identifier(value: &str) -> bool {
-	if value == "struct" || value == "fn" || value == "let" || value == "return" || value == "const" || value == "match" {
+	// `if` and `match` start values, so a name like `if` would read `if (c)` as a call.
+	if matches!(value, "struct" | "fn" | "let" | "return" | "const" | "match" | "if" | "else") {
 		return false;
 	}
 	value.chars().all(is_identifier_char)

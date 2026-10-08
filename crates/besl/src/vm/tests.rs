@@ -2788,7 +2788,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 		// Negation binds tighter than the product, and a negative literal works as an argument.
 		result.negated = -x * 2.0;
 		result.vector = -vec3f(1.0, -2.0, 3.0);
-		result.inverted = !(one == 1) ? 10 : 20;
+		result.inverted = if (!(one == 1)) { 10 } else { 20 };
 	}
 	"#;
 	let root = buffer_root(
@@ -2812,17 +2812,16 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 }
 
 #[test]
-fn ternary_runs_only_the_selected_branch() {
+fn if_values_run_only_the_selected_branch() {
 	let script = r#"
 	main: fn () -> void {
 		let zero: u32 = 0;
 		let four: u32 = 4;
 		// The run fails on division by zero, so a guard must keep the unselected branch from running.
-		result.guarded = zero != 0 ? four / zero : 7;
-		result.divisor = four / (zero == 0 ? four : zero);
-		// Ternaries group right to left, and `||` binds tighter than `?`.
-		result.nested = four < 2 ? 10 : four < 5 ? 20 : 30;
-		result.selected = four > 3 || zero > 1 ? 1.5 : 2.5;
+		result.guarded = if (zero != 0) { four / zero } else { 7 };
+		result.divisor = four / (if (zero == 0) { four } else { zero });
+		result.nested = if (four < 2) { 10 } else if (four < 5) { 20 } else { 30 };
+		result.selected = if (four > 3 || zero > 1) { 1.5 } else { 2.5 };
 	}
 	"#;
 	let root = buffer_root(
@@ -2836,6 +2835,257 @@ fn ternary_runs_only_the_selected_branch() {
 	assert_eq!(result.read("divisor").expect("divisor"), Value::U32(1));
 	assert_eq!(result.read("nested").expect("nested"), Value::U32(20));
 	assert_eq!(result.read("selected").expect("selected"), Value::F32(1.5));
+}
+
+/// Verifies that `&&` and `||` run their right side only when the left side doesn't decide the result, as on the GPU.
+#[test]
+fn logical_operators_skip_the_right_side_when_the_left_decides() {
+	let script = r#"
+	main: fn () -> void {
+		let zero: u32 = 0;
+		let four: u32 = 4;
+		// The run fails on division by zero, so the right side must not run when the left one decides.
+		result.and = if (zero != 0 && four / zero > 1) { 1 } else { 2 };
+		result.or = if (zero == 0 || four / zero > 1) { 3 } else { 4 };
+		result.both = if (zero == 0 && four / 2 > 1) { 5 } else { 6 };
+		result.neither = if (zero != 0 || four / 2 > 3) { 7 } else { 8 };
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		38,
+		&[("and", "u32"), ("or", "u32"), ("both", "u32"), ("neither", "u32")],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 38);
+
+	assert_eq!(result.read("and").expect("and"), Value::U32(2));
+	assert_eq!(result.read("or").expect("or"), Value::U32(3));
+	assert_eq!(result.read("both").expect("both"), Value::U32(5));
+	assert_eq!(result.read("neither").expect("neither"), Value::U32(8));
+}
+
+/// Verifies that branches with statements yield their value wherever an expression can stand, and that only the
+/// taken branch runs its statements.
+#[test]
+fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
+	let script = r#"
+	pick: fn (selector: u32, value: f32) -> f32 {
+		return match selector {
+			0 => value,
+			1 | 2 => {
+				let doubled: f32 = value * 2.0;
+				doubled + 1.0
+			}
+			_ => return 0.5,
+		};
+	}
+
+	main: fn () -> void {
+		let zero: u32 = 0;
+		let four: u32 = 4;
+		let count: u32 = 0;
+		// The run fails on division by zero, so the branch not taken must not run.
+		let quotient: u32 = if (zero == 0) {
+			count = count + 1;
+			four / 2
+		} else {
+			count = count + 10;
+			four / zero
+		};
+		result.quotient = quotient;
+		result.count = count;
+		result.lobe = match four {
+			0 => 1,
+			3 | 4 => {
+				let base: u32 = four * 10;
+				base + count
+			}
+			_ => 7,
+		};
+		result.picked = pick(2, 1.5);
+		result.fallback = pick(9, 1.5);
+		result.argument = pick(if (four > 2) { let selector: u32 = zero; selector } else { 1 }, 3.0);
+		result.sum = 1.0 + if (four < 2) { 0.0 } else { let side: f32 = 2.0; side * side };
+		result.nested = if (four > 1) {
+			match zero {
+				0 => {
+					let seven: u32 = 6;
+					seven + 1
+				}
+				_ => 0,
+			}
+		} else {
+			100
+		};
+		result.chain = if (four < 2) { 1 } else if (four < 5) { let next: u32 = four + 1; next * 2 } else { 3 };
+		result.y = if (zero == 0) { vec2f(1.0, 2.0) } else { vec2f(3.0, 4.0) }.y;
+		let total: u32 = 0;
+		for (let i: u32 = 0; i < 6; i = i + 1) {
+			let step: u32 = match i {
+				1 => {
+					continue;
+				}
+				4 => {
+					break;
+				}
+				_ => i * 10,
+			};
+			total = total + step;
+		}
+		result.total = total;
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		36,
+		&[
+			("quotient", "u32"),
+			("count", "u32"),
+			("lobe", "u32"),
+			("picked", "f32"),
+			("fallback", "f32"),
+			("argument", "f32"),
+			("sum", "f32"),
+			("nested", "u32"),
+			("chain", "u32"),
+			("y", "f32"),
+			("total", "u32"),
+		],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 36);
+
+	assert_eq!(result.read("quotient").expect("quotient"), Value::U32(2));
+	assert_eq!(result.read("count").expect("count"), Value::U32(1));
+	assert_eq!(result.read("lobe").expect("lobe"), Value::U32(41));
+	assert_eq!(result.read("picked").expect("picked"), Value::F32(4.0));
+	assert_eq!(result.read("fallback").expect("fallback"), Value::F32(0.5));
+	assert_eq!(result.read("argument").expect("argument"), Value::F32(3.0));
+	assert_eq!(result.read("sum").expect("sum"), Value::F32(5.0));
+	assert_eq!(result.read("nested").expect("nested"), Value::U32(7));
+	assert_eq!(result.read("chain").expect("chain"), Value::U32(10));
+	assert_eq!(result.read("y").expect("y"), Value::F32(2.0));
+	// `i = 1` continues and `i = 4` breaks, so only 0, 20, and 30 are added.
+	assert_eq!(result.read("total").expect("total"), Value::U32(50));
+}
+
+/// Verifies that an `if` or `match` passed to a function or constructor takes the parameter's type, as a plain `if`
+/// does, even when every branch is a literal.
+#[test]
+fn branch_value_arguments_take_the_parameter_type() {
+	let script = r#"
+	Pair: struct { first: u16, second: u16 }
+
+	pick: fn (selector: u8) -> u8 {
+		return selector;
+	}
+
+	main: fn () -> void {
+		let k: u32 = 1;
+		result.picked = u32(pick(match k { 0 => 1, _ => 2 }));
+		let pair: Pair = Pair(if (k > 0) { k = k + 1; 3 } else { 4 }, u16(5));
+		result.first = u32(pair.first);
+	}
+	"#;
+	let root = buffer_root("result", 39, &[("picked", "u32"), ("first", "u32")]);
+	let result = run_slot(&compile_test_program(script, Some(root)), 39);
+
+	assert_eq!(result.read("picked").expect("picked"), Value::U32(2));
+	assert_eq!(result.read("first").expect("first"), Value::U32(3));
+}
+
+/// Verifies that a branch whose every path leaves, through a nested `if` or `match` whose branches all do, needs no
+/// value, as in Rust.
+#[test]
+fn branches_whose_paths_all_exit_need_no_value() {
+	let script = r#"
+	classify: fn (selector: u32) -> u32 {
+		let value: u32 = if (selector > 1) {
+			if (selector > 5) {
+				return 50;
+			} else {
+				return 20;
+			}
+		} else if (selector == 1) {
+			match selector {
+				1 => return 10,
+				_ => return 11,
+			}
+		} else {
+			selector + 3
+		};
+		return value;
+	}
+
+	main: fn () -> void {
+		result.large = classify(9);
+		result.middle = classify(3);
+		result.one = classify(1);
+		result.zero = classify(0);
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		40,
+		&[("large", "u32"), ("middle", "u32"), ("one", "u32"), ("zero", "u32")],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 40);
+
+	assert_eq!(result.read("large").expect("large"), Value::U32(50));
+	assert_eq!(result.read("middle").expect("middle"), Value::U32(20));
+	assert_eq!(result.read("one").expect("one"), Value::U32(10));
+	assert_eq!(result.read("zero").expect("zero"), Value::U32(3));
+}
+
+/// Verifies that a value whose branches run statements doesn't change what the parts of its statement that ran
+/// before it read, and that the right side of `&&` and `||` still runs only when needed.
+#[test]
+fn values_with_statements_keep_left_to_right_order() {
+	let script = r#"
+	combine: fn (left: u32, right: u32) -> u32 {
+		return left * 10 + right;
+	}
+
+	main: fn () -> void {
+		let zero: u32 = 0;
+		let four: u32 = 4;
+		let y: u32 = 1;
+		result.sum = y + if (zero == 0) { y = 2; 10 } else { 0 };
+		result.after = y;
+		let a: u32 = 5;
+		result.call = combine(a, match zero { _ => { a = 7; 1 } });
+		// The index runs before the stored value, so the store lands at the old index.
+		let values: u32[2] = u32[2](0, 0);
+		let i: u32 = 0;
+		values[i] = match zero { _ => { i = i + 1; 5 } };
+		result.first = values[0];
+		result.second = values[1];
+		// The run fails on division by zero, so the right sides must not run.
+		result.and = if (zero != 0 && match zero { _ => { let q: u32 = four / zero; q > 1 } }) { 1 } else { 2 };
+		result.or = if (zero == 0 || match zero { _ => { let q: u32 = four / zero; q > 1 } }) { 3 } else { 4 };
+	}
+	"#;
+	let root = buffer_root(
+		"result",
+		37,
+		&[
+			("sum", "u32"),
+			("after", "u32"),
+			("call", "u32"),
+			("first", "u32"),
+			("second", "u32"),
+			("and", "u32"),
+			("or", "u32"),
+		],
+	);
+	let result = run_slot(&compile_test_program(script, Some(root)), 37);
+
+	assert_eq!(result.read("sum").expect("sum"), Value::U32(11));
+	assert_eq!(result.read("after").expect("after"), Value::U32(2));
+	assert_eq!(result.read("call").expect("call"), Value::U32(51));
+	assert_eq!(result.read("first").expect("first"), Value::U32(5));
+	assert_eq!(result.read("second").expect("second"), Value::U32(0));
+	assert_eq!(result.read("and").expect("and"), Value::U32(2));
+	assert_eq!(result.read("or").expect("or"), Value::U32(3));
 }
 
 #[test]

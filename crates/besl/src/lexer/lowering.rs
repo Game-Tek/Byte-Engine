@@ -2,6 +2,8 @@ use super::resolution::*;
 use super::*;
 use crate::parser;
 
+mod yielding;
+
 const ATOMIC_INTRINSICS_DOCUMENTATION: &str =
 	"https://byte-engine.0x44491229.dev/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics";
 const ARRAY_DOCUMENTATION: &str = "https://byte-engine.0x44491229.dev/docs/reference/besl/language#pass-and-return-arrays";
@@ -121,49 +123,21 @@ fn binding_memory_class(
 	Ok(memory_class)
 }
 
-/// Rejects `break` and `continue` outside a loop, as Rust does. It checks the parsed tree, because lexing drops
-/// match arms that can never run, and those arms must still be valid code.
-fn validate_loop_control(statements: &[parser::Node], in_loop: bool) -> Result<(), LexError> {
-	for statement in statements {
-		match statement.node() {
-			parser::Nodes::Expression(parser::Expressions::Break | parser::Expressions::Continue) if !in_loop => {
-				return Err(LexError::invalid(
-					"`break` or `continue` outside a loop. The most likely cause is a `break` or `continue` in a function body, branch, or match arm without an enclosing `for` loop.",
-				));
-			}
-			parser::Nodes::Conditional {
-				statements, else_branch, ..
-			} => {
-				validate_loop_control(statements, in_loop)?;
-				match else_branch {
-					Some(parser::ElseBranch::Block(statements)) => validate_loop_control(statements, in_loop)?,
-					Some(parser::ElseBranch::If(conditional)) => {
-						validate_loop_control(std::slice::from_ref(conditional), in_loop)?
-					}
-					None => {}
-				}
-			}
-			parser::Nodes::Match { arms, .. } => {
-				for arm in arms {
-					validate_loop_control(&arm.statements, in_loop)?;
-				}
-			}
-			parser::Nodes::ForLoop { statements, .. } => validate_loop_control(statements, true)?,
-			_ => {}
-		}
-	}
-
-	Ok(())
-}
-
 /// The `Lexer` struct carries the state that linking one program threads through every parsed node: the lexical
-/// scope chain that name lookups search, and the counter that keeps inlined intrinsic locals unique.
+/// scope chain that name lookups search, the statements that `if` and `match` values hoist in front of the statement
+/// being linked, and the counter that keeps generated locals unique.
 ///
 /// Create it with [`Lexer::new`] over the program root, then call [`Lexer::lex`] for each top-level declaration.
 pub(super) struct Lexer {
 	/// The enclosing declarations and earlier statements visible to the node being lexed, innermost last.
 	scopes: Vec<NodeReference>,
-	next_intrinsic_expansion_id: usize,
+	/// Statements that must run before the statement being lexed, in order. `None` where nothing can run first: outside
+	/// function bodies, and in a `for` condition or update, which run on every iteration. See [`yielding`].
+	hoisted: Option<Vec<NodeReference>>,
+	/// How many `for` loops enclose the node being lexed, so `break` and `continue` outside one are rejected.
+	loop_depth: usize,
+	/// Numbers inlined intrinsic locals and hoisted temporaries.
+	next_generated_id: usize,
 }
 
 impl Lexer {
@@ -171,8 +145,19 @@ impl Lexer {
 	pub(super) fn new(root: NodeReference) -> Self {
 		Self {
 			scopes: vec![root],
-			next_intrinsic_expansion_id: 0,
+			hoisted: None,
+			loop_depth: 0,
+			next_generated_id: 0,
 		}
+	}
+
+	/// Returns a new number for a generated local name.
+	fn generated_id(&mut self) -> usize {
+		let id = self.next_generated_id;
+		self.next_generated_id = id
+			.checked_add(1)
+			.expect("Generated local count overflowed. The most likely cause is an invalid shader with too many intrinsic calls or `if` and `match` values.");
+		id
 	}
 
 	/// Runs `f` with `parent` as the innermost scope, then restores the scope chain, even when `f` fails.
@@ -185,19 +170,106 @@ impl Lexer {
 	}
 
 	/// Lexes the statements of a block in order. Each statement can see the current scope and the statements before
-	/// it, and none of them stays visible after the block.
+	/// it, and none of them stays visible after the block. Statements hoisted by `if` and `match` values come right
+	/// before the statement that uses them.
 	fn lex_block(&mut self, statements: &[parser::Node]) -> Result<Vec<NodeReference>, LexError> {
 		let length = self.scopes.len();
-		let result = statements
-			.iter()
-			.map(|statement| {
-				let statement = self.lex(statement)?;
-				self.scopes.push(statement.clone());
-				Ok(statement)
-			})
-			.collect();
+		let mut block = Vec::with_capacity(statements.len());
+		let result = statements.iter().try_for_each(|statement| {
+			let statement = self.lex_statement(statement, &mut block)?;
+			self.scopes.push(statement);
+			Ok(())
+		});
 		self.scopes.truncate(length);
-		result
+		result.map(|()| block)
+	}
+
+	/// Lexes one statement into `out`, after the statements its `if` and `match` values hoisted, and returns the
+	/// statement so the caller can make its declarations visible to later statements.
+	fn lex_statement(&mut self, statement: &parser::Node, out: &mut Vec<NodeReference>) -> Result<NodeReference, LexError> {
+		let enclosing = self.hoisted.replace(Vec::new());
+		let lexed = match &statement.node {
+			parser::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => self.lex_conditional_statement(condition, statements, else_branch.as_ref()),
+			parser::Nodes::Match { scrutinee, arms } => self.lex_match_statement(scrutinee, arms),
+			parser::Nodes::Expression(parser::Expressions::Yield { value }) => self.lex_final_statement(value),
+			_ => self.lex(statement),
+		};
+		let hoisted = std::mem::replace(&mut self.hoisted, enclosing).unwrap_or_default();
+		let lexed = lexed?;
+		out.extend(hoisted);
+		out.push(lexed.clone());
+		Ok(lexed)
+	}
+
+	/// Lexes an `if` statement. Each branch gets its own scope, so declarations in one branch are not visible in the
+	/// other.
+	fn lex_conditional_statement(
+		&mut self,
+		condition: &parser::Node,
+		statements: &[parser::Node],
+		else_branch: Option<&parser::ElseBranch>,
+	) -> Result<NodeReference, LexError> {
+		let condition = self.lex(condition)?;
+		let statements = self.lex_block(statements)?;
+		let else_branch = match else_branch {
+			Some(parser::ElseBranch::Block(statements)) => Some(ElseBranch::Block(self.lex_block(statements)?)),
+			// The link's condition runs only when this one fails, so statements it hoists stay inside the `else`.
+			Some(parser::ElseBranch::If(link)) => {
+				let mut block = Vec::with_capacity(1);
+				let link = self.lex_statement(link, &mut block)?;
+				Some(if block.len() == 1 {
+					ElseBranch::If(link)
+				} else {
+					ElseBranch::Block(block)
+				})
+			}
+			None => None,
+		};
+
+		Ok(Node::conditional(condition, statements, else_branch).into())
+	}
+
+	/// Lexes a `match` statement. Each arm gets its own scope, so declarations in one arm are not visible in the others.
+	fn lex_match_statement(&mut self, scrutinee: &parser::Node, arms: &[parser::MatchArm]) -> Result<NodeReference, LexError> {
+		let (scrutinee, r#type, domain, arms) = self.lex_match_parts(scrutinee, arms, Self::lex_block)?;
+		let (arms, default) = matching::normalize_arms(domain, arms)?;
+		Ok(Node::r#match(scrutinee, r#type, arms, default).into())
+	}
+
+	/// Lexes a `match`'s scrutinee, then each arm's body with `lex_arm`, and returns them with the scrutinee's type and
+	/// value domain. Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
+	#[allow(clippy::type_complexity)]
+	fn lex_match_parts<T>(
+		&mut self,
+		scrutinee: &parser::Node,
+		arms: &[parser::MatchArm],
+		mut lex_arm: impl FnMut(&mut Self, &[parser::Node]) -> Result<T, LexError>,
+	) -> Result<
+		(
+			NodeReference,
+			NodeReference,
+			matching::MatchDomain,
+			Vec<(Vec<Option<i64>>, T)>,
+		),
+		LexError,
+	> {
+		let scrutinee = self.lex(scrutinee)?;
+		let r#type = infer_expression_type(&scrutinee);
+		let domain = matching::MatchDomain::of(r#type.as_ref())?;
+		let arms = arms
+			.iter()
+			.map(|arm| {
+				let values = arm.patterns.iter().map(|pattern| domain.pattern_value(pattern));
+				let body = lex_arm(self, &arm.statements)?;
+				Ok((values.collect::<Result<_, _>>()?, body))
+			})
+			.collect::<Result<_, LexError>>()?;
+		let r#type = r#type.expect("A match domain always comes from a known type");
+		Ok((scrutinee, r#type, domain, arms))
 	}
 
 	/// Lexes the children of `this` in its scope and appends each one to it as it is linked.
@@ -308,7 +380,6 @@ impl Lexer {
 				params,
 				..
 			} => {
-				validate_loop_control(statements, false)?;
 				validate_return_type(name, return_type)?;
 				let t = resolve_type_name(&self.scopes, return_type)?;
 
@@ -324,52 +395,16 @@ impl Lexer {
 						params.push(param);
 					}
 
-					// Each statement is added to the function as it is linked and also stays in scope for later ones.
-					for statement in statements {
-						let statement = lexer.lex(statement)?;
-						this.borrow_mut().add_child(statement.clone());
-						lexer.scopes.push(statement);
-					}
+					let statements = lexer.lex_block(statements)?;
+					this.borrow_mut().add_children(statements);
 					Ok::<_, LexError>(())
 				})?;
 
 				this
 			}
-			parser::Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => {
-				let condition = self.lex(condition)?;
-				// Each branch gets its own scope, so declarations in one branch are not visible in the other.
-				let statements = self.lex_block(statements)?;
-				let else_branch = match else_branch {
-					Some(parser::ElseBranch::Block(statements)) => Some(ElseBranch::Block(self.lex_block(statements)?)),
-					Some(parser::ElseBranch::If(conditional)) => Some(ElseBranch::If(self.lex(conditional)?)),
-					None => None,
-				};
-
-				Node::conditional(condition, statements, else_branch).into()
-			}
-			parser::Nodes::Match { scrutinee, arms } => {
-				let scrutinee = self.lex(scrutinee)?;
-				let r#type = infer_expression_type(&scrutinee);
-				let domain = matching::MatchDomain::of(r#type.as_ref())?;
-
-				// Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
-				// Each arm gets its own scope, so declarations in one arm are not visible in the others.
-				let arms = arms
-					.iter()
-					.map(|arm| {
-						let values = arm.patterns.iter().map(|pattern| domain.pattern_value(pattern));
-						let statements = self.lex_block(&arm.statements)?;
-						Ok((values.collect::<Result<_, _>>()?, statements))
-					})
-					.collect::<Result<_, LexError>>()?;
-
-				let (arms, default) = matching::normalize_arms(domain, arms)?;
-				let r#type = r#type.expect("A match domain always comes from a known type");
-				Node::r#match(scrutinee, r#type, arms, default).into()
+			// Statements reach `lex_statement`, so an `if` or `match` here is an operand that yields a value.
+			parser::Nodes::Conditional { .. } | parser::Nodes::Match { .. } => {
+				return self.lex_branch_value(parser_node, None, false);
 			}
 			parser::Nodes::ForLoop {
 				initializer,
@@ -378,12 +413,20 @@ impl Lexer {
 				statements,
 			} => {
 				let initializer = self.lex(initializer)?;
-				// The loop variable is visible to the condition, the update, and the body, but not after the loop.
-				let (condition, update, statements) = self.in_scope(&initializer, |lexer| {
-					Ok::<_, LexError>((lexer.lex(condition)?, lexer.lex(update)?, lexer.lex_block(statements)?))
-				})?;
+				// The loop variable is visible to the condition, the update, and the body, but not after the loop. The
+				// condition and update run on every iteration, so nothing can be hoisted in front of them.
+				let enclosing = self.hoisted.take();
+				let header = self.in_scope(&initializer, |lexer| {
+					Ok::<_, LexError>((lexer.lex(condition)?, lexer.lex(update)?))
+				});
+				self.hoisted = enclosing;
+				let (condition, update) = header?;
 
-				Node::for_loop(initializer, condition, update, statements).into()
+				self.loop_depth += 1;
+				let statements = self.in_scope(&initializer, |lexer| lexer.lex_block(statements));
+				self.loop_depth -= 1;
+
+				Node::for_loop(initializer, condition, update, statements?).into()
 			}
 			parser::Nodes::PushConstant { members } => {
 				let this: NodeReference = Node::push_constant(vec![]).into();
@@ -453,14 +496,27 @@ impl Lexer {
 			} => lex_raw_code(&self.scopes, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
 			parser::Nodes::Expression(expression) => {
 				let this = match expression {
-					parser::Expressions::Return { value } => Node::expression(Expressions::Return {
-						value: value.as_deref().map(|value| self.lex(value)).transpose()?,
-					}),
+					parser::Expressions::Return { value } => {
+						let expected = self.enclosing_return_type();
+						Node::expression(Expressions::Return {
+							value: value.as_deref().map(|value| self.lex_value(value, expected)).transpose()?,
+						})
+					}
+					parser::Expressions::Continue | parser::Expressions::Break if self.loop_depth == 0 => {
+						return Err(LexError::invalid(
+							"`break` or `continue` outside a loop. The most likely cause is a `break` or `continue` in a function body, branch, or match arm without an enclosing `for` loop.",
+						));
+					}
 					parser::Expressions::Continue => Node::expression(Expressions::Continue),
 					parser::Expressions::Break => Node::expression(Expressions::Break),
 					parser::Expressions::Discard => Node::expression(Expressions::Discard),
 					parser::Expressions::Accessor { left, right } => {
-						let left = self.lex(left)?;
+						// Backends tell indexing from member access by the base's declared type, which a `?:` doesn't
+						// have, so an `if` or `match` base becomes a local.
+						let mut left = match yielding::branch_operand(left) {
+							Some(branch) => self.lex_branch_value(branch, None, true)?,
+							None => self.lex(left)?,
+						};
 						// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
 						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
 							&& is_fixed_array_alias(&left, name)
@@ -479,7 +535,14 @@ impl Lexer {
 								})
 								.into()
 							}
-							_ => self.lex(right)?,
+							_ => {
+								let mut at = self.hoisted_len();
+								let right = self.lex(right)?;
+								if self.hoisted_len() > at {
+									left = self.capture_base(left, &mut at)?;
+								}
+								right
+							}
 						};
 						if super::resolution::is_array_texture_reference(&left)
 							&& !super::resolution::infer_expression_type(&right)
@@ -521,10 +584,7 @@ impl Lexer {
 							.collect::<Result<Vec<NodeReference>, LexError>>()?,
 					}),
 					parser::Expressions::Call { name, parameters } => {
-						let parameters = parameters
-							.iter()
-							.map(|parameter| self.lex(parameter))
-							.collect::<Result<Vec<NodeReference>, LexError>>()?;
+						let parameters = self.lex_arguments(name, parameters)?;
 						let function = resolve_call_target(&self.scopes, name, &parameters)?;
 						let callee = function.borrow();
 						match callee.node() {
@@ -543,10 +603,7 @@ impl Lexer {
 								{
 									validate_atomic_target(name, target, requirement)?;
 								}
-								let expansion_id = self.next_intrinsic_expansion_id;
-								self.next_intrinsic_expansion_id = expansion_id.checked_add(1).expect(
-									"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
-								);
+								let expansion_id = self.generated_id();
 								let elements = build_intrinsic(elements, &parameters, expansion_id)?;
 								Node::expression(Expressions::IntrinsicCall {
 									intrinsic: function.clone(),
@@ -561,24 +618,51 @@ impl Lexer {
 							}
 						}
 					}
-					parser::Expressions::Operator { operator, left, right } => Node::expression(Expressions::Operator {
-						operator: *operator,
-						left: self.lex(left)?,
-						right: self.lex(right)?,
-					}),
+					parser::Expressions::Operator { operator, left, right } => {
+						let mut left = self.lex(left)?;
+						let mut at = self.hoisted_len();
+						let right = match operator {
+							// The value knows its type from the target, as in a typed `let`.
+							Operators::Assignment => self.lex_value(right, infer_expression_type(&left))?,
+							Operators::LogicalAnd | Operators::LogicalOr => {
+								// The right side runs only when the left one doesn't decide the result, so statements it
+								// hoists go under a guard instead of in front of the statement.
+								let enclosing = self.hoisted.as_ref().map(|_| Vec::new());
+								let enclosing = std::mem::replace(&mut self.hoisted, enclosing);
+								let right = self.lex(right);
+								let guarded = std::mem::replace(&mut self.hoisted, enclosing);
+								let right = right?;
+								if let Some(guarded) = guarded.filter(|guarded| !guarded.is_empty()) {
+									return self.short_circuit(*operator, left, guarded, right);
+								}
+								right
+							}
+							_ => self.lex(right)?,
+						};
+						// The left side ran before the statements the right side hoisted. An assignment's target keeps its
+						// storage, so only its indices are captured.
+						if self.hoisted_len() > at {
+							if *operator == Operators::Assignment {
+								self.capture_place(&left, &mut at)?;
+							} else {
+								left = self.capture(left, &mut at)?;
+							}
+						}
+						Node::expression(Expressions::Operator {
+							operator: *operator,
+							left,
+							right,
+						})
+					}
 					parser::Expressions::Unary { operator, operand } => Node::expression(Expressions::Unary {
 						operator: *operator,
 						operand: self.lex(operand)?,
 					}),
-					parser::Expressions::Ternary {
-						condition,
-						if_true,
-						if_false,
-					} => Node::expression(Expressions::Ternary {
-						condition: self.lex(condition)?,
-						if_true: self.lex(if_true)?,
-						if_false: self.lex(if_false)?,
-					}),
+					parser::Expressions::Yield { .. } => {
+						return Err(LexError::invalid(
+							"A value without `;` can only end a block. The most likely cause is a parser change that placed a block value elsewhere.",
+						));
+					}
 					parser::Expressions::VariableDeclaration { name, r#type } => {
 						Node::expression(Expressions::VariableDeclaration {
 							name: name.to_string(),

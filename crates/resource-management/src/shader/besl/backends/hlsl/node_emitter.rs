@@ -402,7 +402,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		self.emit_node_string(string, left);
+		self.emit_wrapped_expression(string, left);
 		// BESL numeric access always remains an HLSL subscript, including when
 		// its left side is itself an array-element expression.
 		if !right_is_member {

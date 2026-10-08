@@ -226,7 +226,8 @@ let color: vec4f = vec4f(1.0, 0.0, 1.0, 1.0);
 ```
 
 BESL expressions include literals, grouped expressions, function and intrinsic
-calls, constructors, assignments, member access, and contextual record values:
+calls, constructors, assignments, member access, contextual record values, and
+[`if` and `match` values](#use-if-and-match-as-values):
 
 ```rust
 let scaled: f32 = (value + bias) * factor;
@@ -258,6 +259,10 @@ when the source and destination types differ.
 | Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
 | Logical | `&&`, `||` |
 
+`&&` and `||` take `bool` operands and run their right side only when the left
+side doesn't decide the result, so the right side can read what the left side
+guards, as in `index < count && values[index] > 0`.
+
 Put a prefix operator before a value to negate it or flip it:
 
 | Operator | Applies to | Result |
@@ -266,12 +271,12 @@ Put a prefix operator before a value to negate it or flip it:
 | `!value` | A `bool` | The opposite `bool`. |
 | `~value` | An integer scalar or vector | The value with every bit flipped. |
 
-Use `condition ? if_true : if_false` to pick one of two values of the same type
-with a `bool`. BESL evaluates only the value it picks, so that value can read
-what the condition guards:
+To pick one of two values with a `bool`, use an
+[`if` value](#use-if-and-match-as-values). BESL evaluates only the value it
+picks, so that value can read what the condition guards:
 
 ```rust
-let depth: f32 = index < count ? depths[index] : 0.0;
+let depth: f32 = if (index < count) { depths[index] } else { 0.0 };
 ```
 
 Operators bind in this order, tightest first:
@@ -285,8 +290,7 @@ Operators bind in this order, tightest first:
 7. `&`, `&&`
 8. `^`
 9. `|`, `||`
-10. `? :`, which groups right to left, so `a ? b : c ? d : e` is `a ? b : (c ? d : e)`
-11. `=`
+10. `=`
 
 Add parentheses when you need a different order, or to mix bitwise and logical
 operators that share a level.
@@ -379,7 +383,8 @@ match material_kind {
 
 Write each pattern as a literal such as `3`, `-1`, or `true`, join patterns with
 `|` to share an arm, or use `_` to match every other value. Put a comma after an
-arm unless its body is a block.
+arm unless its body is a block, an `if`, or a `match`. A `match` can also produce
+a value; see [Use `if` and `match` as values](#use-if-and-match-as-values).
 
 A match must cover every value. Add a `_` arm, or for a `bool`, list both
 `true` and `false`. If an arm can't run because earlier arms cover its values,
@@ -390,6 +395,63 @@ Variables you declare inside an arm are only visible in that arm.
 
 BESL doesn't support match guards (`if` after a pattern), ranges, bindings, or
 matching on floating-point, vector, or struct values yet.
+
+### Use `if` and `match` as values
+
+An `if` or a `match` can produce a value, as in Rust. End each branch with its
+value, written without a `;`:
+
+```rust
+let shade: f32 = if (lit) { 1.0 } else if (rim) { 0.5 } else { 0.25 };
+
+let weight: f32 = match lobe {
+	0 => 0.1,
+	1 | 2 => {
+		let squared: f32 = roughness * roughness;
+		squared * 0.5
+	}
+	_ => 1.0,
+};
+```
+
+Use a value anywhere an expression can go, such as an operand, an argument, or a
+`return`, for example `albedo * if (lit) { 1.0 } else { 0.25 }`. As the value of
+a typed `let`, an assignment, an argument, or a `return`, it takes that type, so
+literal branches such as `1` also work for a `u8`. These rules apply:
+
+- An `if` value needs an `else` branch.
+- Every branch ends in a value of the same type, or leaves with `return`,
+  `break`, `continue`, or `discard`, directly or through an `if` or `match`
+  whose branches all leave:
+
+  ```rust
+  let depth: f32 = if (index < count) { depths[index] } else { return; };
+  ```
+
+- A branch can run statements before its value. Variables you declare inside a
+  branch are only visible in that branch.
+- Only the branch that's taken runs, so a branch can read what its condition
+  guards. Evaluation stays left to right: the parts of a statement before the
+  value run first, even when the value's branches run statements.
+
+At the end of a block that isn't a value, a final expression without `;` must be
+an assignment or a call that returns nothing. BESL functions return with
+`return`, so `get: fn () -> f32 { value }` is an error.
+
+How a value compiles affects performance:
+
+- An `if` whose branches are only values compiles to the target language's
+  conditional operator, `?:`.
+- An `if` whose branches run statements, and every `match`, compile to a
+  temporary that an `if` or `switch` statement sets just before the statement
+  that uses it. The GPU compiler keeps the temporary in a register, so this costs
+  the same as writing the branches yourself. To keep left-to-right order, BESL
+  also copies operands that run before such a value into temporaries.
+
+A `for` loop's condition and update run on every iteration, and a constant runs
+before any statement, so they can only use an `if` whose branches are only
+values. Compute other values with a `let` first. On HLSL, an atomic that returns
+a value can't be in a branch of such an `if`; assign its result to a `let` first.
 
 Next, [declare the shader interface](/docs/reference/besl/interface) that connects
 the program to its stage and resources.

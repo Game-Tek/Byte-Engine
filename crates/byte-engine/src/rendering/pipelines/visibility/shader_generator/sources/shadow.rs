@@ -594,7 +594,7 @@ cone_shadow_tent_texel: fn (
 	let inside: bool = texel.x >= 0.0 && texel.y >= 0.0 && texel.x < shadow_map_extent_f.x && texel.y < shadow_map_extent_f.y;
 	let tap_depth: f32 = surface_depth
 		+ dot(receiver_plane_depth_gradient, (texel + vec2f(0.5, 0.5)) / shadow_map_extent_f - shadow_uv);
-	return lit + weight * (inside && tap_depth >= 0.0 ? step(stored_depth, tap_depth) : 1.0);
+	return lit + weight * (if (inside && tap_depth >= 0.0) { step(stored_depth, tap_depth) } else { 1.0 });
 }
 "#;
 
@@ -865,12 +865,12 @@ pub(crate) const POINT_SHADOW_FACE_NORMAL_SOURCE: &str = r#"
 point_shadow_face_normal: fn (direction: vec3f) -> vec3f {
 	let absolute_direction: vec3f = vec3f(abs(direction.x), abs(direction.y), abs(direction.z));
 	if (absolute_direction.x >= absolute_direction.y && absolute_direction.x >= absolute_direction.z) {
-		return vec3f(direction.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+		return vec3f(if (direction.x >= 0.0) { 1.0 } else { -1.0 }, 0.0, 0.0);
 	}
 	if (absolute_direction.y >= absolute_direction.z) {
-		return vec3f(0.0, direction.y >= 0.0 ? 1.0 : -1.0, 0.0);
+		return vec3f(0.0, if (direction.y >= 0.0) { 1.0 } else { -1.0 }, 0.0);
 	}
-	return vec3f(0.0, 0.0, direction.z >= 0.0 ? 1.0 : -1.0);
+	return vec3f(0.0, 0.0, if (direction.z >= 0.0) { 1.0 } else { -1.0 });
 }
 "#;
 
@@ -913,13 +913,15 @@ sample_point_shadow_face_tap: fn (
 	let ray_alignment: f32 = dot(receiver_plane_normal, vec3f(texel_center.x, texel_center.y, 1.0));
 	let meets_plane: bool = ray_alignment * ray_alignment > 0.000000000001 * (1.0 + dot(texel_center, texel_center))
 		&& ray_alignment * receiver_plane_distance > 0.0;
-	let inverse_face_distance: f32 = meets_plane
-		? ray_alignment * inverse_receiver_plane_distance
-		: inverse_center_face_distance;
+	let inverse_face_distance: f32 = if (meets_plane) {
+		ray_alignment * inverse_receiver_plane_distance
+	} else {
+		inverse_center_face_distance
+	};
 	// As in `point_shadow_occlusion`, a tap whose face distance lies outside the shadow's range is lit. A receiver depth of
 	// two lies in front of every stored depth.
 	let in_range: bool = inverse_face_distance * near < 1.0 && inverse_face_distance * far > 1.0;
-	let receiver_depth: f32 = in_range ? (near * far * inverse_face_distance - near) / (far - near) + 2.0 / 65535.0 : 2.0;
+	let receiver_depth: f32 = if (in_range) { (near * far * inverse_face_distance - near) / (far - near) + 2.0 / 65535.0 } else { 2.0 };
 	let closest_depth: f32 = texture_cube_array_lod(
 		point_shadow_map,
 		face_normal + face_u * texel_center.x + face_v * texel_center.y,

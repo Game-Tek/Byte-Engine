@@ -10,7 +10,7 @@ pub use ast::{
 	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
 	Nodes, Operators, UnaryOperators,
 };
-pub(crate) use ast::{TERNARY_PRECEDENCE, UNARY_PRECEDENCE, lex_with_root};
+pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use resolution::infer_expression_type;
 
 #[cfg(test)]
@@ -878,6 +878,8 @@ main: fn () -> void {
 			"match 1 { 0 => {} _ => { let leaked: u32 = 1; } }",
 			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
 			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
+			"let x: u32 = if (true) { let leaked: u32 = 1; leaked } else { 2 };",
+			"let x: u32 = match 1 { 0 => { let leaked: u32 = 1; leaked } _ => 2 };",
 		] {
 			let source = format!("main: fn () -> void {{ {block} leaked = 2; }}");
 			assert!(
@@ -895,13 +897,88 @@ main: fn () -> void {
 			"if (true) { continue; }",
 			"match true { _ => {} false => break }",
 			"match 1 { 0 => {} _ => { match 2 { _ => continue } } }",
+			"let x: u32 = if (true) { break; } else { 1 };",
+			"let x: u32 = match 1 { 0 => { continue; } _ => 1 };",
 		] {
 			let source = format!("main: fn () -> void {{ {statement} }}");
 			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
 		}
 
-		let source = "main: fn () -> void { for (let i: u32 = 0; i < 1; i = i + 1) { match i { _ => {} 1 => break } } }";
-		assert!(crate::compile_to_besl(source, None).is_ok());
+		for body in [
+			"match i { _ => {} 1 => break }",
+			"let x: u32 = if (i == 0) { continue; } else { i };",
+		] {
+			let source = format!("main: fn () -> void {{ for (let i: u32 = 0; i < 1; i = i + 1) {{ {body} }} }}");
+			assert!(crate::compile_to_besl(&source, None).is_ok(), "`{body}` should lex in a loop");
+		}
+	}
+
+	/// Each branch of an `if` or `match` value must end in a value or leave with control flow, and an `if` value
+	/// needs an `else`, as in Rust.
+	#[test]
+	fn value_blocks_must_produce_a_value() {
+		for statement in [
+			"let x: u32 = if (true) { 1 };",
+			"let x: u32 = if (true) { 1; } else { 2 };",
+			"let x: u32 = match 1 { 0 => {} _ => 2 };",
+			"let x: u32 = if (true) { return; } else { return; };",
+		] {
+			let source = format!("main: fn () -> void {{ {statement} }}");
+			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
+		}
+	}
+
+	/// A statement block's last expression without `;` must not produce a value that would be silently lost, so a
+	/// function can't seem to return its last expression.
+	#[test]
+	fn statement_blocks_reject_unused_final_values() {
+		for source in [
+			"main: fn () -> void { let x: u32 = 1; if (true) { x } }",
+			"get: fn () -> u32 { let x: u32 = 1; x } main: fn () -> void {}",
+			"one: fn () -> u32 { return 1; } get: fn () -> u32 { one() } main: fn () -> void {}",
+			"main: fn () -> void { let x: u32 = 1; match x { 0 => x, _ => {} } }",
+		] {
+			assert!(crate::compile_to_besl(source, None).is_err(), "`{source}` should not lex");
+		}
+
+		for source in [
+			"main: fn () -> void { let x: u32 = 1; if (true) { x = 2 } }",
+			"main: fn () -> void { let x: u32 = 1; match x { 0 => x = 2, _ => {} } }",
+			"get: fn () -> u32 { let x: u32 = 1; if (true) { return x } return 0; } main: fn () -> void {}",
+		] {
+			assert!(crate::compile_to_besl(source, None).is_ok(), "`{source}` should lex");
+		}
+	}
+
+	/// A value whose branches run statements needs a statement to run them before. A `for` condition or update runs
+	/// on every iteration and a constant runs nowhere, so they only accept plain values.
+	#[test]
+	fn values_with_statements_need_somewhere_to_run_first() {
+		for source in [
+			"main: fn () -> void { for (let i: u32 = 0; i < match i { _ => 2 }; i = i + 1) {} }",
+			"main: fn () -> void { for (let i: u32 = 0; i < 2; i = i + if (true) { let one: u32 = 1; one } else { 2 }) {} }",
+			"LIMIT: const u32 = u32(match 1 { _ => 2 }); main: fn () -> void {}",
+		] {
+			assert!(crate::compile_to_besl(source, None).is_err(), "`{source}` should not lex");
+		}
+
+		let source = "main: fn () -> void { for (let i: u32 = 0; i < if (true) { 2 } else { 3 }; i = i + 1) {} }";
+		assert!(
+			crate::compile_to_besl(source, None).is_ok(),
+			"a plain `if` value should lex in a loop condition"
+		);
+	}
+
+	/// A structural `main` can return an `if` value whose branches read its contextual inputs.
+	#[test]
+	fn structural_main_record_fields_accept_if_values() {
+		crate::compile_to_besl(
+			"main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
+				return { color: if (pipeline_input.uv.x > 0.5) { let red: f32 = pipeline_input.uv.y; vec4f(red, 0.0, 0.0, 1.0) } else { vec4f(pipeline_input.uv.x, 0.0, 0.0, 1.0) } };
+			}",
+			None,
+		)
+		.expect("An `if` value should link in a record return");
 	}
 
 	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.

@@ -564,7 +564,7 @@ impl NodeEmitter for Generator {
 		true
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		self.emit_node(string, left);
+		self.emit_wrapped_expression(string, left);
 		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
 			// Any expression may pick the element, so the index cannot be assumed uniform across a draw.
 			string.push_str("[nonuniformEXT(");

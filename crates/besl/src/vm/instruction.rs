@@ -473,8 +473,6 @@ pub(super) enum ArithmeticOperator {
 	BitwiseAnd,
 	BitwiseOr,
 	BitwiseXor,
-	LogicalAnd,
-	LogicalOr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -759,7 +759,7 @@ pub(super) fn infer_member_type(source: &NodeReference) -> Option<NodeReference>
 }
 
 /// Reports whether the right side of an accessor is a bracketed index rather than a member name.
-fn is_index(right: &NodeReference) -> bool {
+pub(super) fn is_index(right: &NodeReference) -> bool {
 	matches!(right.borrow().node(), Nodes::Expression(Expressions::Expression { .. }))
 }
 

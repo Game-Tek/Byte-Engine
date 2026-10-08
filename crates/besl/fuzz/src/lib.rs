@@ -193,7 +193,7 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 		return;
 	}
 
-	match cursor.choose(7) {
+	match cursor.choose(8) {
 		0 => emit_u32_leaf(source, cursor, u32_locals),
 		1 => {
 			let operator = ["+", "-", "*", "/", "%", "^", "&", "|"][cursor.choose(8)];
@@ -209,14 +209,28 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
 		}
 		6 => {
-			// The ternary binds looser than every other operator, so it is parenthesized to nest anywhere.
-			source.push('(');
+			// A branch that runs a `let` is hoisted in front of its statement, which also captures the operands that
+			// ran before it. The name carries the depth so a nested value's `let` never shadows its own.
+			source.push_str("(if (");
 			emit_comparison(source, cursor, u32_locals);
-			source.push_str(" ? ");
+			source.push_str(") { ");
+			if cursor.chance(1, 2) {
+				let _ = write!(source, "let branch{depth}: u32 = ");
+				emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+				let _ = write!(source, "; branch{depth} + ");
+			}
 			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
-			source.push_str(" : ");
+			source.push_str(" } else { ");
 			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
-			source.push(')');
+			source.push_str(" })");
+		}
+		7 => {
+			// A `match` value is always hoisted as a `switch`.
+			let _ = write!(source, "(match u{} {{ {} => ", cursor.choose(u32_locals), cursor.next());
+			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+			source.push_str(", _ => ");
+			emit_u32_expression(source, cursor, u32_locals, f32_locals, depth - 1);
+			source.push_str(" })");
 		}
 		2 => {
 			source.push_str("combine_u32(");
@@ -236,7 +250,7 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 	}
 }
 
-/// Writes a `bool` comparison of two `u32` leaves, optionally negated, for ternary conditions.
+/// Writes a `bool` comparison of two `u32` leaves, optionally negated, for `if` value conditions.
 fn emit_comparison(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize) {
 	if cursor.chance(1, 3) {
 		source.push('!');
@@ -271,13 +285,13 @@ fn emit_f32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, f32_loc
 			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
 		}
 		8 => {
-			source.push('(');
+			source.push_str("(if (");
 			emit_comparison(source, cursor, u32_locals);
-			source.push_str(" ? ");
+			source.push_str(") { ");
 			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
-			source.push_str(" : ");
+			source.push_str(" } else { ");
 			emit_f32_expression(source, cursor, f32_locals, u32_locals, depth - 1);
-			source.push(')');
+			source.push_str(" })");
 		}
 		1 => {
 			let operator = ["+", "-", "*", "/", "%"][cursor.choose(5)];

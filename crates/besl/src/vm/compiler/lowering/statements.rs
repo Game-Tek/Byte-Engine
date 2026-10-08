@@ -100,6 +100,15 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_intrinsic_call_statement(&intrinsic, &arguments)
 			}
+			// A declaration without a value is a temporary the lexer hoisted for an `if` or `match` value; every branch that
+			// reaches its read stores to it first.
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
+				let name = name.clone();
+				let value_type = resolve_value_type(r#type)?;
+				drop(borrowed);
+				self.define_local(statement.clone(), statement.clone(), &name, value_type);
+				Ok(())
+			}
 			Nodes::Raw { .. } => Ok(()),
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedStatement {

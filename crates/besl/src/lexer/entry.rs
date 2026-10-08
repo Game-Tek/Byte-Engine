@@ -323,15 +323,6 @@ fn rewrite_expression<'a>(expression: &mut parser::Expressions<'a>, context: &En
 			rewrite_node(right, context)
 		}
 		parser::Expressions::Unary { operand, .. } => rewrite_node(operand, context),
-		parser::Expressions::Ternary {
-			condition,
-			if_true,
-			if_false,
-		} => {
-			rewrite_node(condition, context)?;
-			rewrite_node(if_true, context)?;
-			rewrite_node(if_false, context)
-		}
 		parser::Expressions::Call { parameters, .. } => {
 			for parameter in parameters {
 				rewrite_node(parameter, context)?;
@@ -341,10 +332,18 @@ fn rewrite_expression<'a>(expression: &mut parser::Expressions<'a>, context: &En
 		parser::Expressions::RecordLiteral { .. } => Err(entry_error(
 			"Record literals are contextual values and can appear only directly after return",
 		)),
-		parser::Expressions::Macro { body, .. } | parser::Expressions::Return { value: Some(body) } => {
-			rewrite_node(body, context)
-		}
-		_ => Ok(()),
+		// A block's final value can read contextual parameters too, such as `if (c) { input.uv } else { … }`.
+		parser::Expressions::Macro { body, .. }
+		| parser::Expressions::Return { value: Some(body) }
+		| parser::Expressions::Yield { value: body } => rewrite_node(body, context),
+		parser::Expressions::Member { .. }
+		| parser::Expressions::Literal { .. }
+		| parser::Expressions::VariableDeclaration { .. }
+		| parser::Expressions::RawCode { .. }
+		| parser::Expressions::Return { value: None }
+		| parser::Expressions::Continue
+		| parser::Expressions::Break
+		| parser::Expressions::Discard => Ok(()),
 	}
 }
 

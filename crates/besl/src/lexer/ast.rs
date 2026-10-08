@@ -1289,6 +1289,10 @@ impl Nodes {
 				_ => source.borrow().node().is_indexable(),
 			},
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
+			// A parenthesized value indexes like the value inside it, as in `(values)[i]`.
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				elements[0].borrow().node().is_indexable()
+			}
 			_ => false,
 		}
 	}
@@ -1470,8 +1474,7 @@ pub enum Operators {
 }
 
 /// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter. Member
-/// access binds tightest, at 1, then the prefix [`UnaryOperators`], at [`UNARY_PRECEDENCE`]; the ternary sits at
-/// [`TERNARY_PRECEDENCE`], between `||` and `=`.
+/// access binds tightest, at 1, then the prefix [`UnaryOperators`], at [`UNARY_PRECEDENCE`].
 const OPERATOR_TOKENS: [(&str, Operators, u8); 19] = [
 	("=", Operators::Assignment, 11),
 	("||", Operators::LogicalOr, 9),
@@ -1498,10 +1501,6 @@ const OPERATOR_TOKENS: [(&str, Operators, u8); 19] = [
 /// How loosely the prefix [`UnaryOperators`] bind: tighter than every binary operator, so `-a * b` is `(-a) * b`, and
 /// looser than member access, so `-a.b` is `-(a.b)`. See [`Operators::precedence`] for the scale.
 pub(crate) const UNARY_PRECEDENCE: u8 = 2;
-
-/// How loosely `condition ? if_true : if_false` binds: looser than `||` and tighter than `=`, as in C-family shading
-/// languages. See [`Operators::precedence`] for the scale.
-pub(crate) const TERNARY_PRECEDENCE: u8 = 10;
 
 impl Operators {
 	/// Reads the operator a source token spells, or returns `None` for any other token.
@@ -1593,8 +1592,10 @@ pub enum Expressions {
 		operator: UnaryOperators,
 		operand: NodeReference,
 	},
-	/// `condition ? if_true : if_false`: the value of `if_true` when the `bool` `condition` holds, and of `if_false`
-	/// otherwise. Only the selected operand is evaluated.
+	/// The value of an `if`/`else` whose branches are plain values: `if_true` when the `bool` `condition` holds, and
+	/// `if_false` otherwise. Only the selected operand is evaluated, so backends write it as their `?:` operator. The
+	/// lexer builds it from `if (condition) { if_true } else { if_false }`; an `if` whose branches run statements is
+	/// lowered to statements instead.
 	Ternary {
 		condition: NodeReference,
 		if_true: NodeReference,

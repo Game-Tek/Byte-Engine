@@ -409,6 +409,35 @@ mod tests {
 	}
 
 	#[test]
+	fn grouped_accessor_bases_keep_their_parentheses_in_glsl() {
+		let shader = lower_fixture(
+			super::super::GROUPED_ACCESSOR_BASES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "float sum_y=(v+w).y;");
+		assert_string_contains!(shader, "uint32_t picked=(values)[i];");
+
+		compile(&shader, "besl-grouped-accessor-bases");
+	}
+
+	#[test]
+	fn if_and_match_values_with_statements_lower_to_glsl() {
+		let shader = lower_fixture(
+			super::super::BRANCH_VALUES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		// `scale` ran before the `match`, so it is captured before the switch that sets the match's value.
+		assert_string_contains!(shader, "_besl_value_1=scale;float _besl_value_0;switch(n){");
+		assert_string_contains!(shader, "float weight=(_besl_value_1*_besl_value_0);");
+		assert_string_contains!(
+			shader,
+			"float _besl_value_2;if(n>1){float lit=(weight*weight);_besl_value_2=lit;}else{_besl_value_2=0.0;}"
+		);
+
+		compile(&shader, "besl-branch-values");
+	}
+
+	#[test]
 	fn match_lowers_to_glsl_switch() {
 		let script = r#"
 		main: fn () -> void {
@@ -470,7 +499,7 @@ mod tests {
 	}
 
 	#[test]
-	fn prefix_operators_and_ternaries_lower_to_glsl() {
+	fn prefix_operators_and_if_values_lower_to_glsl() {
 		let shader = lower_fixture(
 			r#"
 			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
@@ -480,10 +509,10 @@ mod tests {
 			main: fn (input: StageInput) -> void {
 				let item: u32 = input.thread_id.x;
 				let flag: bool = bodies[item].bits > 3;
-				bodies[item].bits = ~bodies[item].bits ^ (flag ? 1 : 2);
+				bodies[item].bits = ~bodies[item].bits ^ (if (flag) { 1 } else { 2 });
 				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
-				bodies[item].weight = !flag ? bodies[item].weight : 1.0;
-				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (flag ? bodies[item].color : bodies[item].color);
+				bodies[item].weight = if (!flag) { bodies[item].weight } else { 1.0 };
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (if (flag) { bodies[item].color } else { bodies[item].color });
 			}
 			"#,
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
@@ -493,7 +522,7 @@ mod tests {
 		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
 		// GLSL does not narrow float literals to float16_t, so a literal branch beside an f16 branch is cast.
 		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
-		compile(&shader, "besl-prefix-operators-and-ternaries");
+		compile(&shader, "besl-prefix-operators-and-if-values");
 	}
 
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.

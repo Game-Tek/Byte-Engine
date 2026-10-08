@@ -20,8 +20,8 @@ ssgi_stored_normal: fn (stored: vec2f16) -> vec3f16 {
 	let fold: f16 = max(-z, f16(0.0));
 	// The positive direction at zero matches the trace's encoder.
 	let normal: vec3f16 = vec3f16(
-		stored.x - (stored.x >= 0.0 ? fold : -fold),
-		stored.y - (stored.y >= 0.0 ? fold : -fold),
+		stored.x - (if (stored.x >= 0.0) { fold } else { -fold }),
+		stored.y - (if (stored.y >= 0.0) { fold } else { -fold }),
 		z
 	);
 	return normalize(normal);
@@ -54,8 +54,8 @@ ssgi_surface_weight: fn (
 	// 25 degrees, as across a curved limb, they count fully.
 	let normal_agreement: f16 = clamp((dot(normal, tap_normal) - f16(0.7)) * f16(5.0), f16(0.0), f16(1.0));
 	// Both cases share one exponential instead of each taking its own.
-	let exponent: f32 = has_normal ? plane_distance * plane_distance * 10000.0 : relative_delta * relative_delta * 1250.0;
-	return (has_normal ? f32(normal_agreement) : 1.0) * exp(-exponent);
+	let exponent: f32 = if (has_normal) { plane_distance * plane_distance * 10000.0 } else { relative_delta * relative_delta * 1250.0 };
+	return (if (has_normal) { f32(normal_agreement) } else { 1.0 }) * exp(-exponent);
 }
 "#;
 

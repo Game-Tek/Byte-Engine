@@ -48,7 +48,8 @@ impl<'a> ElseBranch<'a> {
 pub struct MatchArm<'a> {
 	/// The alternatives of an or-pattern such as `1 | 2`. A single pattern is a one-element list.
 	pub patterns: Vec<MatchPattern<'a>>,
-	/// The arm body. An expression arm such as `0 => n = 1,` is one statement.
+	/// The arm body. An expression arm such as `0 => n = 1,` is one [`Expressions::Yield`] of that expression, the same
+	/// as the block `0 => { n = 1 }`.
 	pub statements: Vec<Node<'a>>,
 }
 
@@ -472,6 +473,13 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	/// Builds the value a block ends with, written without `;`. See [`Expressions::Yield`].
+	pub fn r#yield(value: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Yield { value: Box::new(value) }),
+		}
+	}
+
 	pub fn return_void() -> Node<'a> {
 		Node {
 			node: Nodes::Expression(Expressions::Return { value: None }),
@@ -689,13 +697,16 @@ pub enum Nodes<'a> {
 		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
 	},
-	/// An `if` statement, with an optional `else` or `else if` branch.
+	/// An `if`, with an optional `else` or `else if` branch. As a statement its blocks run for their effects. As an
+	/// operand, such as `let x: f32 = if (c) { a } else { b };`, each block ends in the value it yields; see
+	/// [`Expressions::Yield`].
 	Conditional {
 		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 		else_branch: Option<ElseBranch<'a>>,
 	},
-	/// A `match` statement over a scalar value. It runs the first arm whose pattern matches.
+	/// A `match` over a scalar value. It runs the first arm whose pattern matches. Like [`Nodes::Conditional`], it is a
+	/// statement or, as an operand, a value its arms yield.
 	Match {
 		scrutinee: Box<Node<'a>>,
 		arms: Vec<MatchArm<'a>>,
@@ -820,11 +831,11 @@ pub enum Expressions<'a> {
 		operator: crate::UnaryOperators,
 		operand: Box<Node<'a>>,
 	},
-	/// `condition ? if_true : if_false`, which yields `if_true` when `condition` holds and `if_false` otherwise.
-	Ternary {
-		condition: Box<Node<'a>>,
-		if_true: Box<Node<'a>>,
-		if_false: Box<Node<'a>>,
+	/// The value a block ends with: its last expression, written without `;`, as in Rust. The blocks of an `if` or
+	/// `match` used as a value yield one. At the end of a statement block, the lexer accepts it only when it produces
+	/// nothing, such as an assignment.
+	Yield {
+		value: Box<Node<'a>>,
 	},
 	VariableDeclaration {
 		name: Cow<'a, str>,
@@ -877,10 +888,8 @@ pub(super) enum Atoms<'a> {
 	Unary {
 		operator: crate::UnaryOperators,
 	},
-	/// The `? if_true :` part of a ternary. The condition is the atoms before it and the false branch the atoms after.
-	Ternary {
-		if_true: Vec<Atoms<'a>>,
-	},
+	/// An `if` or `match` used as an operand. It is a whole operand, so precedence treats it like a group.
+	Branch(Node<'a>),
 	VariableDeclaration {
 		name: &'a str,
 		r#type: TypeName<'a>,

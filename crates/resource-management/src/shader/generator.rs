@@ -730,8 +730,10 @@ pub(crate) trait NodeEmitter {
 		false
 	}
 
+	/// Writes `left.right` or `left[right]`. A compound base such as `(a + b)` keeps its parentheses, because member
+	/// access and indexing bind tighter than any operator.
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		self.emit_node(string, left);
+		self.emit_wrapped_expression(string, left);
 		if left.borrow().node().is_indexable() {
 			string.push('[');
 			self.emit_node(string, right);

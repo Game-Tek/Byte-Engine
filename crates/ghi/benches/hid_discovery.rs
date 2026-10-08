@@ -14,7 +14,13 @@ use std::{
 	time::Instant,
 };
 
-use ghi::hid::{Match, Scanner};
+use ghi::hid::{Scanner, Usage};
+
+/// Joysticks and gamepads, the usages the input system reads.
+const GAMEPADS: &[Usage] = &[Usage { page: 0x01, usage: 0x04 }, Usage { page: 0x01, usage: 0x05 }];
+
+const ROUNDS: usize = 7;
+const WARM_ITERATIONS: usize = 25;
 
 /// The `CountingAllocator` struct counts allocations and reallocations so each side's allocations can be reported.
 struct CountingAllocator;
@@ -27,12 +33,6 @@ unsafe impl GlobalAlloc for CountingAllocator {
 		ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
 		// SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
 		unsafe { System.alloc(layout) }
-	}
-
-	unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-		ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-		// SAFETY: the caller upholds `GlobalAlloc::alloc_zeroed`'s contract, which `System` shares.
-		unsafe { System.alloc_zeroed(layout) }
 	}
 
 	unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -50,98 +50,6 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// The gamepad rules the input system scans for: joysticks, gamepads, and Sony controllers by vendor.
-const GAMEPADS: &[Match] = &[
-	Match::Usage { page: 0x01, usage: 0x04 },
-	Match::Usage { page: 0x01, usage: 0x05 },
-	Match::Vendor(0x054C),
-];
-
-const ROUNDS: usize = 7;
-const WARM_ITERATIONS: usize = 25;
-
-fn main() {
-	let mut args = std::env::args().skip(1);
-	if args.next().as_deref() == Some("--measure") {
-		measure(
-			&args
-				.next()
-				.expect("Missing the side to measure. The most likely cause is a manual run of the child mode."),
-		);
-		return;
-	}
-
-	let mut hidapi = Samples::default();
-	let mut native = Samples::default();
-	for round in 0..ROUNDS {
-		if round % 2 == 0 {
-			hidapi.add(run_child("hidapi"));
-			native.add(run_child("native"));
-		} else {
-			native.add(run_child("native"));
-			hidapi.add(run_child("hidapi"));
-		}
-	}
-
-	println!("HID gamepad discovery, {ROUNDS} fresh processes per side, {WARM_ITERATIONS} warm scans each");
-	println!(
-		"{:<8} {:>14} {:>14} {:>14} {:>12} {:>12}",
-		"side", "cold median", "cold min", "warm median", "cold allocs", "warm allocs"
-	);
-	for (name, samples) in [("hidapi", &hidapi), ("native", &native)] {
-		println!(
-			"{:<8} {:>11.3} ms {:>11.3} ms {:>11.3} ms {:>12} {:>12}",
-			name,
-			median(&samples.cold) * 1e-6,
-			samples.cold.iter().min().copied().unwrap_or_default() as f64 * 1e-6,
-			median(&samples.warm) * 1e-6,
-			samples.cold_allocations,
-			samples.warm_allocations
-		);
-	}
-	println!(
-		"cold speedup: {:.1}x, warm speedup: {:.1}x",
-		median(&hidapi.cold) / median(&native.cold),
-		median(&hidapi.warm) / median(&native.warm)
-	);
-
-	println!(
-		"hidapi found {} device(s), native found {}",
-		hidapi.paths.len(),
-		native.paths.len()
-	);
-	for path in hidapi.paths.iter().filter(|path| !native.paths.contains(path)) {
-		println!("  only hidapi: {path}");
-	}
-	for path in native.paths.iter().filter(|path| !hidapi.paths.contains(path)) {
-		println!("  only native: {path}");
-	}
-	for path in hidapi.paths.iter().filter(|path| native.paths.contains(path)) {
-		println!("  both:        {path}");
-	}
-}
-
-/// The `Samples` struct collects one side's results across child processes.
-#[derive(Default)]
-struct Samples {
-	cold: Vec<u64>,
-	warm: Vec<u64>,
-	/// Allocations are deterministic for a device set, so the last process's counts stand for all of them.
-	cold_allocations: u64,
-	warm_allocations: u64,
-	paths: Vec<String>,
-}
-
-impl Samples {
-	fn add(&mut self, measurement: Measurement) {
-		self.cold.push(measurement.cold);
-		self.warm.push(measurement.warm);
-		self.cold_allocations = measurement.cold_allocations;
-		self.warm_allocations = measurement.warm_allocations;
-		self.paths = measurement.paths;
-	}
-}
-
 /// The `Measurement` struct carries one child process's results back to the parent.
 struct Measurement {
 	cold: u64,
@@ -149,6 +57,66 @@ struct Measurement {
 	cold_allocations: u64,
 	warm_allocations: u64,
 	paths: Vec<String>,
+}
+
+fn main() {
+	let mut args = std::env::args().skip(1);
+	if args.next().as_deref() == Some("--measure") {
+		match args.next().as_deref() {
+			Some("hidapi") => measure_hidapi(),
+			Some("native") => measure_native(),
+			side => panic!("Unknown side {side:?}. The most likely cause is a typo in the child arguments."),
+		}
+		return;
+	}
+
+	let mut hidapi = Vec::new();
+	let mut native = Vec::new();
+	for round in 0..ROUNDS {
+		// Alternate the order so neither side always runs on warmer OS caches.
+		if round % 2 == 0 {
+			hidapi.push(run_child("hidapi"));
+			native.push(run_child("native"));
+		} else {
+			native.push(run_child("native"));
+			hidapi.push(run_child("hidapi"));
+		}
+	}
+
+	println!("HID gamepad discovery, {ROUNDS} fresh processes per side, {WARM_ITERATIONS} warm scans each");
+	println!(
+		"{:<8} {:>14} {:>14} {:>12} {:>12}",
+		"side", "cold median", "warm median", "cold allocs", "warm allocs"
+	);
+	let medians = [("hidapi", &hidapi), ("native", &native)].map(|(name, runs)| {
+		let cold = median(runs.iter().map(|run| run.cold));
+		let warm = median(runs.iter().map(|run| run.warm));
+		// Allocations are deterministic for a device set, so any run stands for all of them.
+		let last = runs.last().unwrap();
+		println!(
+			"{name:<8} {:>11.3} ms {:>11.3} ms {:>12} {:>12}",
+			cold * 1e-6,
+			warm * 1e-6,
+			last.cold_allocations,
+			last.warm_allocations
+		);
+		(cold, warm)
+	});
+	println!(
+		"cold speedup: {:.1}x, warm speedup: {:.1}x",
+		medians[0].0 / medians[1].0,
+		medians[0].1 / medians[1].1
+	);
+
+	let hidapi = &hidapi.last().unwrap().paths;
+	let native = &native.last().unwrap().paths;
+	println!("hidapi found {} device(s), native found {}", hidapi.len(), native.len());
+	for path in hidapi.iter().filter(|path| !native.contains(path)) {
+		println!("  only hidapi: {path}");
+	}
+	for path in native.iter().filter(|path| !hidapi.contains(path)) {
+		println!("  only native: {path}");
+	}
 }
 
 /// Runs one measurement in a fresh process and parses its `cold warm cold-allocs warm-allocs` line followed by one
@@ -176,58 +144,57 @@ fn run_child(side: &str) -> Measurement {
 	}
 }
 
-/// Times and counts the first discovery in this process, then repeated ones, and prints them with the paths.
-///
-/// Discovery only counts matches; the paths are collected afterwards so collecting them is not measured.
-fn measure(side: &str) {
-	let (cold, cold_allocations, warm, warm_allocations, paths) = match side {
-		"hidapi" => {
-			let (mut api, cold, cold_allocations) = sample(|| {
-				let api = hidapi::HidApi::new().unwrap();
-				std::hint::black_box(hidapi_gamepads(&api).count());
-				api
-			});
-			let (warm, warm_allocations) = sample_warm(|| {
-				api.refresh_devices().unwrap();
-				std::hint::black_box(hidapi_gamepads(&api).count());
-			});
-			let mut paths = hidapi_gamepads(&api)
-				.map(|device| device.path().to_string_lossy().into_owned())
-				.collect::<Vec<_>>();
-			// hidapi lists a device once per top-level usage.
-			paths.sort_unstable();
-			paths.dedup();
-			(cold, cold_allocations, warm, warm_allocations, paths)
-		}
-		"native" => {
-			let (mut scanner, cold, cold_allocations) = sample(|| {
-				let mut scanner = Scanner::new(GAMEPADS).unwrap();
-				let mut count = 0;
-				scanner.scan(|_| count += 1).unwrap();
-				std::hint::black_box(count);
-				scanner
-			});
-			let (warm, warm_allocations) = sample_warm(|| {
-				let mut count = 0;
-				scanner.scan(|_| count += 1).unwrap();
-				std::hint::black_box(count);
-			});
-			let mut paths = Vec::new();
-			scanner.scan(|device| paths.push(device.path.to_string())).unwrap();
-			(cold, cold_allocations, warm, warm_allocations, paths)
-		}
-		side => panic!("Unknown side {side}. The most likely cause is a typo in the child arguments."),
+/// Measures `HidApi::new` plus filtering, then repeated refreshes, and prints the results with the found paths.
+fn measure_hidapi() {
+	let matches = |device: &&hidapi::DeviceInfo| {
+		GAMEPADS.contains(&Usage {
+			page: device.usage_page(),
+			usage: device.usage(),
+		})
 	};
+	let (mut api, cold, cold_allocations) = sample(|| {
+		let api = hidapi::HidApi::new().unwrap();
+		std::hint::black_box(api.device_list().filter(matches).count());
+		api
+	});
+	let (warm, warm_allocations) = sample_warm(|| {
+		api.refresh_devices().unwrap();
+		std::hint::black_box(api.device_list().filter(matches).count());
+	});
 
+	let paths = api
+		.device_list()
+		.filter(matches)
+		.map(|device| device.path().to_string_lossy().into_owned())
+		.collect();
+	print_measurement(cold, warm, cold_allocations, warm_allocations, paths);
+}
+
+/// Measures [`Scanner::new`] plus a scan, then repeated scans, and prints the results with the found paths.
+fn measure_native() {
+	let (mut scanner, cold, cold_allocations) = sample(|| {
+		let mut scanner = Scanner::new(GAMEPADS);
+		scanner.scan(|device| _ = std::hint::black_box(device)).unwrap();
+		scanner
+	});
+	let (warm, warm_allocations) = sample_warm(|| scanner.scan(|device| _ = std::hint::black_box(device)).unwrap());
+
+	let mut paths = Vec::new();
+	scanner.scan(|device| paths.push(device.path.to_string())).unwrap();
+	print_measurement(cold, warm, cold_allocations, warm_allocations, paths);
+}
+
+fn print_measurement(cold: u64, warm: u64, cold_allocations: u64, warm_allocations: u64, mut paths: Vec<String>) {
 	println!("{cold} {warm} {cold_allocations} {warm_allocations}");
-	let mut paths = paths;
+	// hidapi lists a device once per top-level usage.
 	paths.sort_unstable();
+	paths.dedup();
 	for path in paths {
 		println!("{path}");
 	}
 }
 
-/// Runs `work` once and returns its result with the time and allocations it took.
+/// Runs `work` once and returns its result with the nanoseconds and allocations it took.
 fn sample<T>(work: impl FnOnce() -> T) -> (T, u64, u64) {
 	let allocations = ALLOCATIONS.load(Ordering::Relaxed);
 	let start = Instant::now();
@@ -236,7 +203,7 @@ fn sample<T>(work: impl FnOnce() -> T) -> (T, u64, u64) {
 	(result, time, ALLOCATIONS.load(Ordering::Relaxed) - allocations)
 }
 
-/// Runs `work` [`WARM_ITERATIONS`] times and returns the median time and the allocations of the last run.
+/// Runs `work` [`WARM_ITERATIONS`] times and returns the median nanoseconds and the allocations of the last run.
 fn sample_warm(mut work: impl FnMut()) -> (u64, u64) {
 	let mut times = [0u64; WARM_ITERATIONS];
 	let mut allocations = 0;
@@ -247,18 +214,8 @@ fn sample_warm(mut work: impl FnMut()) -> (u64, u64) {
 	(times[WARM_ITERATIONS / 2], allocations)
 }
 
-/// Applies the [`GAMEPADS`] rules to hidapi's device list, which holds one entry per top-level usage.
-fn hidapi_gamepads(api: &hidapi::HidApi) -> impl Iterator<Item = &hidapi::DeviceInfo> {
-	api.device_list().filter(|device| {
-		GAMEPADS.contains(&Match::Usage {
-			page: device.usage_page(),
-			usage: device.usage(),
-		}) || GAMEPADS.contains(&Match::Vendor(device.vendor_id()))
-	})
-}
-
-fn median(samples: &[u64]) -> f64 {
-	let mut samples = samples.to_vec();
+fn median(samples: impl Iterator<Item = u64>) -> f64 {
+	let mut samples = samples.collect::<Vec<_>>();
 	samples.sort_unstable();
-	samples.get(samples.len() / 2).copied().unwrap_or_default() as f64
+	samples[samples.len() / 2] as f64
 }

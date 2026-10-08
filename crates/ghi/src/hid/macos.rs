@@ -1,9 +1,9 @@
 //! Lists HID services from the I/O Registry.
 //!
 //! hidapi creates an `IOHIDManager` that builds a device object for every HID service, then copies its
-//! properties. This scan lets the kernel apply each [`Match`] rule as a matching dictionary and reads registry
+//! properties. This scan lets the kernel apply each requested usage as a matching dictionary and reads registry
 //! properties of the matching services only. The dictionaries and property keys are built once per
-//! [`Scanner`], so a scan allocates only the property values IOKit copies out.
+//! `Scanner`, so a scan allocates only the property values IOKit copies out.
 
 use std::ffi::{CStr, c_void};
 
@@ -14,67 +14,43 @@ use objc2_io_kit::{
 };
 use smallvec::SmallVec;
 
-use super::{DeviceInfo, DevicePathRef, Match};
+use super::{DeviceInfo, DevicePathRef, Usage};
 
 /// `kCFStringEncodingUTF8`.
 const UTF8: u32 = 0x0800_0100;
 
 /// A device path is the service's registry entry ID.
-pub(super) type Path = u64;
-pub(super) type PathRef<'a> = u64;
+pub(super) type PathData = u64;
 
-pub(super) fn path_ref(path: &Path) -> PathRef<'_> {
-	*path
-}
-
-pub(super) fn owned_path(path: PathRef<'_>) -> Path {
-	path
-}
-
-pub(super) fn write_path(path: PathRef<'_>, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+pub(super) fn write_path(path: &PathData, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 	write!(f, "DevSrvsID:{path}")
 }
 
-pub(super) struct Scanner<'a> {
-	/// Each rule with its matching dictionary, which every scan passes to IOKit again.
-	rules: SmallVec<[(Match, CFRetained<CFDictionary>); 4]>,
-	keys: Keys,
-	_matches: std::marker::PhantomData<&'a [Match]>,
-}
-
-/// The `Keys` struct holds the registry property names a scan reads, created once instead of per read.
-struct Keys {
+pub(super) struct Scanner {
+	/// Each usage with its matching dictionary, which every scan passes to IOKit again.
+	usages: SmallVec<[(Usage, CFRetained<CFDictionary>); 4]>,
+	/// The registry property names a scan reads, created once instead of per read.
 	vendor_id: CFRetained<CFString>,
 	product_id: CFRetained<CFString>,
-	primary_usage_page: CFRetained<CFString>,
-	primary_usage: CFRetained<CFString>,
 	product: CFRetained<CFString>,
 }
 
-impl<'a> Scanner<'a> {
-	pub(super) fn new(matches: &'a [Match]) -> Result<Self, String> {
-		Ok(Self {
-			rules: matches
-				.iter()
-				.map(|rule| Ok((*rule, matching_dictionary(*rule)?)))
-				.collect::<Result<_, String>>()?,
-			keys: Keys {
-				vendor_id: CFString::from_static_str("VendorID"),
-				product_id: CFString::from_static_str("ProductID"),
-				primary_usage_page: CFString::from_static_str("PrimaryUsagePage"),
-				primary_usage: CFString::from_static_str("PrimaryUsage"),
-				product: CFString::from_static_str("Product"),
-			},
-			_matches: std::marker::PhantomData,
-		})
+impl Scanner {
+	pub(super) fn new(usages: &'static [Usage]) -> Self {
+		Self {
+			usages: usages.iter().map(|usage| (*usage, matching_dictionary(*usage))).collect(),
+			vendor_id: CFString::from_static_str("VendorID"),
+			product_id: CFString::from_static_str("ProductID"),
+			product: CFString::from_static_str("Product"),
+		}
 	}
 
-	/// Looks up the services of every rule and reports each service once, even when several rules match it.
+	/// Looks up the services of every usage and reports each service once, even when it declares several usages.
 	pub(super) fn scan(&mut self, mut found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
 		let mut seen = SmallVec::<[u64; 8]>::new();
 		let mut name = [0u8; 512];
 
-		for (rule, matching) in &self.rules {
+		for (usage, matching) in &self.usages {
 			let services = matching_services(matching)?;
 			while let Some(service) = services.next() {
 				let mut entry_id = 0u64;
@@ -84,20 +60,12 @@ impl<'a> Scanner<'a> {
 				}
 				seen.push(entry_id);
 
-				let (usage_page, usage) = match *rule {
-					Match::Usage { page, usage } => (page, usage),
-					Match::Vendor(_) => (
-						service.number(&self.keys.primary_usage_page).unwrap_or(0) as u16,
-						service.number(&self.keys.primary_usage).unwrap_or(0) as u16,
-					),
-				};
 				found(DeviceInfo {
-					path: DevicePathRef(entry_id, std::marker::PhantomData),
-					vendor_id: service.number(&self.keys.vendor_id).unwrap_or(0) as u16,
-					product_id: service.number(&self.keys.product_id).unwrap_or(0) as u16,
-					usage_page,
-					usage,
-					product_name: service.string(&self.keys.product, &mut name),
+					path: DevicePathRef(&entry_id),
+					vendor_id: service.number(&self.vendor_id).unwrap_or(0) as u16,
+					product_id: service.number(&self.product_id).unwrap_or(0) as u16,
+					usage: *usage,
+					product_name: service.string(&self.product, &mut name),
 				});
 			}
 		}
@@ -106,17 +74,15 @@ impl<'a> Scanner<'a> {
 	}
 }
 
-/// Builds the `IOHIDDevice` matching dictionary for `rule`.
+/// Builds the `IOHIDDevice` matching dictionary for `usage`.
 ///
 /// `DeviceUsagePage` and `DeviceUsage` match any usage pair a device declares, like `IOHIDManager` matching does.
-fn matching_dictionary(rule: Match) -> Result<CFRetained<CFDictionary>, String> {
+fn matching_dictionary(usage: Usage) -> CFRetained<CFDictionary> {
 	// SAFETY: the class name is a NUL-terminated string.
-	let Some(matching) = (unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }) else {
-		return Err(
-			"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that IOKit is unavailable.".into(),
-		);
-	};
-	let set = |key: &'static str, value: u16| {
+	let matching = unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }.expect(
+		"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that the process is out of memory.",
+	);
+	for (key, value) in [("DeviceUsagePage", usage.page), ("DeviceUsage", usage.usage)] {
 		let key = CFString::from_static_str(key);
 		let value = CFNumber::new_i32(value as i32);
 		// SAFETY: the dictionary retains both CF objects, so they may be released after the call.
@@ -127,15 +93,8 @@ fn matching_dictionary(rule: Match) -> Result<CFRetained<CFDictionary>, String> 
 				(&*value as *const CFNumber).cast::<c_void>(),
 			)
 		};
-	};
-	match rule {
-		Match::Usage { page, usage } => {
-			set("DeviceUsagePage", page);
-			set("DeviceUsage", usage);
-		}
-		Match::Vendor(vendor) => set("VendorID", vendor),
 	}
-	Ok(CFRetained::<CFDictionary>::from(&*matching))
+	CFRetained::<CFDictionary>::from(&*matching)
 }
 
 /// Asks the kernel for the services that satisfy a matching dictionary from [`matching_dictionary`].

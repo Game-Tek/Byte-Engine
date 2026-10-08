@@ -1,8 +1,8 @@
 //! Lists HID device interfaces through the Configuration Manager.
 //!
 //! hidapi opens every HID interface and reads its strings and device-tree properties. This scan opens each
-//! interface without access rights, reads only its attributes and top-level usage, and reads the product string
-//! only for matching interfaces.
+//! interface without access rights, reads only its top-level usage and IDs, and reads the product string
+//! only for interfaces with a requested usage.
 
 use windows::{
 	Win32::{
@@ -22,7 +22,7 @@ use windows::{
 	core::PCWSTR,
 };
 
-use super::{DeviceInfo, DevicePathRef, Match, find_match};
+use super::{DeviceInfo, DevicePathRef, Usage};
 
 /// `HIDP_STATUS_SUCCESS`, which `HidP_GetCaps` returns on success.
 const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
@@ -32,20 +32,10 @@ const NAME_UNITS: usize = 126;
 /// The UTF-8 size of the longest product string.
 const NAME_CAPACITY: usize = NAME_UNITS * 3;
 
-/// A device path is the interface path in UTF-16, with its NUL terminator so it can be opened directly.
-pub(super) type Path = Box<[u16]>;
-/// A borrowed device path is the interface path in UTF-16, without its NUL terminator.
-pub(super) type PathRef<'a> = &'a [u16];
+/// A device path is the interface path in UTF-16, without a NUL terminator.
+pub(super) type PathData = [u16];
 
-pub(super) fn path_ref(path: &Path) -> PathRef<'_> {
-	&path[..path.len() - 1]
-}
-
-pub(super) fn owned_path(path: PathRef<'_>) -> Path {
-	path.iter().copied().chain([0]).collect()
-}
-
-pub(super) fn write_path(path: PathRef<'_>, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+pub(super) fn write_path(path: &PathData, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 	use std::fmt::Write as _;
 	for character in char::decode_utf16(path.iter().copied()) {
 		f.write_char(character.unwrap_or(char::REPLACEMENT_CHARACTER))?;
@@ -53,26 +43,23 @@ pub(super) fn write_path(path: PathRef<'_>, f: &mut std::fmt::Formatter<'_>) -> 
 	Ok(())
 }
 
-pub(super) struct Scanner<'a> {
-	matches: &'a [Match],
-	guid: windows::core::GUID,
+pub(super) struct Scanner {
+	usages: &'static [Usage],
 	/// The interface list of the last scan, kept so later scans reuse its capacity.
 	list: Vec<u16>,
 }
 
-impl<'a> Scanner<'a> {
-	pub(super) fn new(matches: &'a [Match]) -> Result<Self, String> {
-		Ok(Self {
-			matches,
-			// SAFETY: `HidD_GetHidGuid` only writes the HID interface class GUID.
-			guid: unsafe { HidD_GetHidGuid() },
+impl Scanner {
+	pub(super) fn new(usages: &'static [Usage]) -> Self {
+		Self {
+			usages,
 			list: Vec::new(),
-		})
+		}
 	}
 
-	/// Opens every present HID interface for queries and reports the ones whose attributes and usage match.
+	/// Opens every present HID interface for queries and reports the ones whose usage matches.
 	pub(super) fn scan(&mut self, mut found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
-		fill_interface_list(&self.guid, &mut self.list)?;
+		fill_interface_list(&mut self.list)?;
 		let mut name = [0u8; NAME_CAPACITY];
 
 		// The list holds NUL-terminated paths and ends with an empty one.
@@ -81,21 +68,17 @@ impl<'a> Scanner<'a> {
 			let Some(interface) = Interface::open(PCWSTR(path.as_ptr())) else {
 				continue;
 			};
+			let Some(usage) = interface.usage().filter(|usage| self.usages.contains(usage)) else {
+				continue;
+			};
 			let Some((vendor_id, product_id)) = interface.ids() else {
-				continue;
-			};
-			let Some(usages) = interface.usage() else {
-				continue;
-			};
-			let Some((usage_page, usage)) = find_match(self.matches, vendor_id, std::iter::once(usages)) else {
 				continue;
 			};
 
 			found(DeviceInfo {
-				path: DevicePathRef(path, std::marker::PhantomData),
+				path: DevicePathRef(path),
 				vendor_id,
 				product_id,
-				usage_page,
 				usage,
 				product_name: interface.product_name(&mut name),
 			});
@@ -105,10 +88,12 @@ impl<'a> Scanner<'a> {
 	}
 }
 
-/// Fills `list` with the present interfaces of `guid` as NUL-terminated wide strings, reusing its capacity.
+/// Fills `list` with the present HID interfaces as NUL-terminated wide strings, reusing its capacity.
 ///
 /// The list can grow between the size query and the copy, so a too-small buffer retries with the new size.
-fn fill_interface_list(guid: &windows::core::GUID, list: &mut Vec<u16>) -> Result<(), String> {
+fn fill_interface_list(list: &mut Vec<u16>) -> Result<(), String> {
+	// SAFETY: `HidD_GetHidGuid` only writes the HID interface class GUID.
+	let guid = &unsafe { HidD_GetHidGuid() };
 	loop {
 		let mut length = 0u32;
 		// SAFETY: `length` and `guid` are valid for the call, and a null device ID asks for every device.
@@ -170,8 +155,8 @@ impl Interface {
 		unsafe { HidD_GetAttributes(self.0, &mut attributes) }.then_some((attributes.VendorID, attributes.ProductID))
 	}
 
-	/// Returns the usage page and usage of the interface's top-level collection.
-	fn usage(&self) -> Option<(u16, u16)> {
+	/// Returns the usage of the interface's top-level collection.
+	fn usage(&self) -> Option<Usage> {
 		let mut preparsed = PHIDP_PREPARSED_DATA::default();
 		// SAFETY: `self.0` is an open HID handle; the data is freed below.
 		if !unsafe { HidD_GetPreparsedData(self.0, &mut preparsed) } {
@@ -182,7 +167,10 @@ impl Interface {
 		let status = unsafe { HidP_GetCaps(preparsed, &mut caps) };
 		// SAFETY: `preparsed` is freed once and not used afterwards.
 		unsafe { HidD_FreePreparsedData(preparsed) };
-		(status.0 == HIDP_STATUS_SUCCESS).then_some((caps.UsagePage, caps.Usage))
+		(status.0 == HIDP_STATUS_SUCCESS).then_some(Usage {
+			page: caps.UsagePage,
+			usage: caps.Usage,
+		})
 	}
 
 	/// Decodes the product string into `buffer` and returns it, or `None` when the device reports none.

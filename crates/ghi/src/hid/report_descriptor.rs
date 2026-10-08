@@ -1,12 +1,14 @@
 //! Reads the top-level usages out of a raw HID report descriptor.
 //!
-//! Linux exposes each device's report descriptor in sysfs but not its usages, so the Linux scan in
-//! [`super::linux`] parses them here before it decides whether a device is worth opening.
+//! Linux exposes each device's report descriptor in sysfs but not its usages, so the Linux scan parses them here
+//! before it reports a device.
 
-/// Returns the `(usage page, usage)` pair of every top-level collection in `descriptor`, in order.
+use super::Usage;
+
+/// Returns the usage of every top-level collection in `descriptor`, in order.
 ///
 /// Malformed or truncated items end the iteration instead of failing.
-pub(crate) fn top_level_usages(descriptor: &[u8]) -> TopLevelUsages<'_> {
+pub(super) fn top_level_usages(descriptor: &[u8]) -> TopLevelUsages<'_> {
 	TopLevelUsages {
 		descriptor,
 		usage_page: 0,
@@ -16,8 +18,7 @@ pub(crate) fn top_level_usages(descriptor: &[u8]) -> TopLevelUsages<'_> {
 }
 
 /// The `TopLevelUsages` struct walks a report descriptor without allocating; build it with [`top_level_usages`].
-#[derive(Clone)]
-pub(crate) struct TopLevelUsages<'a> {
+pub(super) struct TopLevelUsages<'a> {
 	descriptor: &'a [u8],
 	/// The current Usage Page global item.
 	usage_page: u16,
@@ -28,7 +29,7 @@ pub(crate) struct TopLevelUsages<'a> {
 }
 
 impl Iterator for TopLevelUsages<'_> {
-	type Item = (u16, u16);
+	type Item = Usage;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
@@ -66,7 +67,10 @@ impl Iterator for TopLevelUsages<'_> {
 					if self.depth == 1
 						&& let Some((page, usage)) = usage
 					{
-						return Some((page.unwrap_or(self.usage_page), usage));
+						return Some(Usage {
+							page: page.unwrap_or(self.usage_page),
+							usage,
+						});
 					}
 				}
 				// End Collection (main).
@@ -86,6 +90,10 @@ impl Iterator for TopLevelUsages<'_> {
 mod tests {
 	use super::*;
 
+	const fn usage(page: u16, usage: u16) -> Usage {
+		Usage { page, usage }
+	}
+
 	#[test]
 	fn reports_each_top_level_collection() {
 		// Usage Page (Generic Desktop), Usage (Game Pad), Collection (Application),
@@ -99,7 +107,7 @@ mod tests {
 
 		let usages: Vec<_> = top_level_usages(&descriptor).collect();
 
-		assert_eq!(usages, [(0x01, 0x05), (0xFF00, 0x01)]);
+		assert_eq!(usages, [usage(0x01, 0x05), usage(0xFF00, 0x01)]);
 	}
 
 	#[test]
@@ -109,7 +117,7 @@ mod tests {
 
 		let usages: Vec<_> = top_level_usages(&descriptor).collect();
 
-		assert_eq!(usages, [(0x01, 0x04)]);
+		assert_eq!(usages, [usage(0x01, 0x04)]);
 	}
 
 	#[test]
@@ -119,6 +127,6 @@ mod tests {
 
 		let usages: Vec<_> = top_level_usages(&descriptor).collect();
 
-		assert_eq!(usages, [(0x01, 0x05)]);
+		assert_eq!(usages, [usage(0x01, 0x05)]);
 	}
 }

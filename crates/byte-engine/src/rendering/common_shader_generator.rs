@@ -1,5 +1,7 @@
 use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 
+use crate::rendering::pipelines::visibility::VisibilityFeatures;
+
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.
 const COMMON_SHADER_SOURCE: &str = r#"
@@ -539,31 +541,35 @@ pub fn common_shader_scope() -> besl::parser::Node<'static> {
 	besl::parser::Node::scope("Common", children)
 }
 
-/// The `CommonShaderGenerator` struct preserves common-module programs while they pass through asset generation.
+/// The `CommonShaderGenerator` struct prepares standalone shaders, such as the engine's render passes, for baking.
 ///
-/// It parses the common module once when it is created, so repeated shader
-/// builds only clone the owned syntax tree.
+/// Install it on the standalone BESL handler. It gives every shader the common helper module and removes the code of
+/// the visibility features the project leaves out; see [`VisibilityFeatures`]. It parses the common module once when it
+/// is created, so repeated shader builds only clone the owned syntax tree.
 #[derive(Clone)]
 pub struct CommonShaderGenerator {
 	scope: besl::parser::Node<'static>,
-}
-
-impl Default for CommonShaderGenerator {
-	fn default() -> Self {
-		Self::new()
-	}
+	features: VisibilityFeatures,
 }
 
 impl CommonShaderGenerator {
-	pub fn new() -> Self {
+	/// Creates the generator for a project that builds in `features`.
+	///
+	/// Next, pass it to the standalone BESL handler's `set_shader_generator`.
+	pub fn new(features: VisibilityFeatures) -> Self {
 		Self {
 			scope: common_shader_scope(),
+			features,
 		}
 	}
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
+		// A feature's code sits in `main`; helpers it alone calls drop out because backends emit only what `main` reaches.
+		if let Some(besl::parser::Nodes::Function { statements, .. }) = root.get_mut("main").map(|main| main.node_mut()) {
+			self.features.remove_left_out_code(statements);
+		}
 		root.add(vec![self.scope.clone()]);
 
 		root

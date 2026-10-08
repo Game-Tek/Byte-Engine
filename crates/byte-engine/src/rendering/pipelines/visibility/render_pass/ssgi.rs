@@ -26,6 +26,9 @@ use crate::rendering::{PipelineManagerClient, Sink, View};
 /// Configuration namespace of the runtime SSGI controls.
 pub const SSGI_CONFIGURATION_PREFIX: &str = "render.ssgi.";
 
+/// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
+pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
+
 /// The `SsgiSettings` struct holds the runtime SSGI controls the visibility pipeline manager applies to every sink.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SsgiSettings {
@@ -241,7 +244,7 @@ impl SsgiPass {
 		Self {
 			trace_descriptor_set,
 			temporal_descriptor_set,
-			pipelines: Pipelines::request(pipeline_manager, ["ssgi-trace", "ssgi-temporal"]),
+			pipelines: Pipelines::request(pipeline_manager, SSGI_PIPELINES),
 			parameters,
 		}
 	}

@@ -46,6 +46,9 @@ beld --destination "$PWD/resources" list
 
 A release build doesn't compile a missing shader on demand.
 
+If your project has a `config.json`, BELD reads it from the application
+directory to decide which [render features to bake](/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake).
+
 Keep `resources/` outside Cargo's `target/` directory. It is an application
 input to packaging. Cargo owns `target/` and might remove it when you run
 `cargo clean`.
@@ -139,6 +142,14 @@ My Application.app/
     Resources/resources/
       resources.db
       ... baked payload files ...
+```
+
+A release build reads `config.json` beside its executable. If your project has
+one, copy it into `Contents/MacOS` after bundling, so the application starts
+with the same features BELD baked:
+
+```bash
+cp config.json "target/release/bundle/osx/My Application.app/Contents/MacOS/"
 ```
 
 Copy the `.app` to `/Applications` or drag it there in Finder to install it
@@ -264,6 +275,9 @@ Copy-Item -LiteralPath "target\release\$applicationName.exe" `
   -Destination $bundleDirectory -Force
 Copy-Item -LiteralPath "resources" `
   -Destination $bundleDirectory -Recurse -Force
+# The release build reads config.json beside its executable. Skip this line if the project has none.
+Copy-Item -LiteralPath "config.json" `
+  -Destination $bundleDirectory -Force
 Copy-Item -LiteralPath "$agilityDirectory\D3D12Core.dll" `
   -Destination $agilityBundleDirectory -Force
 # Include the matching debug layer only in development and test bundles that enable validation.

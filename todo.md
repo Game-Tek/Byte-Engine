@@ -113,6 +113,8 @@
 
 ## Engine systems
 
+- Skip the render targets of visibility features a project leaves out. With `VisibilityFeatures` turning off SSGI or contact shadows, `create_ssgi_targets` (`crates/byte-engine/src/rendering/pipelines/visibility/render_pass/ssgi.rs`) and the contact trace target in `create_sun_visibility_targets` are still allocated per sink, and `pixel-mapping.besl` still zeroes the diffuse radiance history only SSGI reads.
+- Rebake generated material shaders when the baked `VisibilityFeatures` change, without `beld bake --force`. Source versions record only files, so a material baked with GTAO stays current after `config.json` turns it off. Record the generator's feature set in the material's provenance and compare it in `AssetManager::resource_is_stale`.
 - Replace the fitted ACES grading output with the official ACES 2.0 Rec.709-D65 100-nit sRGB-piecewise transform, including AP1-to-AP0 conversion, precomputed hue/gamut tables, complete CAM/JMh tone/chroma/gamut processing, Apache-2.0 attribution, and Academy golden-image validation.
 - Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.

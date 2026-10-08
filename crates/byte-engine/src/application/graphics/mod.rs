@@ -33,11 +33,12 @@
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
 /// - `messages.capacity`: Sets the bytes of message storage shared by every typed route, in whole chunks of [`crate::core::message_bus::CHUNK_BYTES`]. A publisher waits when every chunk is held by unread messages. The default is `67108864`, which is 64 MiB.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
-/// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The default is `true`.
+/// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The startup value also decides whether GTAO is built in: set it to `false` in `config.json` and BELD bakes shaders without GTAO code and skips its pipelines, and GTAO cannot be turned on at runtime. See [`crate::rendering::pipelines::visibility::VisibilityFeatures`]. The default is `true`.
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `4`.
 /// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `6`.
-/// - `render.ssgi.enabled`: Runs screen-space global illumination, which adds light bounced off visible surfaces and darkens environment light that nearby geometry blocks. The default is `true`.
+/// - `render.ssgi.enabled`: Runs screen-space global illumination, which adds light bounced off visible surfaces and darkens environment light that nearby geometry blocks. Like `render.gtao.enabled`, its startup value also decides whether SSGI is built into the baked shaders. The default is `true`.
+/// - `render.contact-shadows.enabled`: Traces short rays toward the sun to shadow where objects touch, such as under a foot on a floor. Like `render.gtao.enabled`, its startup value also decides whether contact shadows are built into the baked shaders. The default is `true`.
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.15`.
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 /// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
@@ -169,8 +170,9 @@ struct Services {
 impl GraphicsApplication {
 	/// Creates the headed runtime with the specified name and configuration parameters.
 	///
-	/// Parameters may be overridden by `BE_*` environment variables and then by `--name=value` command-line
-	/// arguments. The pipeline compilation servers start here, so every setup function can request pipelines.
+	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
+	/// `--name=value` command-line arguments. The pipeline compilation servers start here, so every setup function can
+	/// request pipelines.
 	///
 	/// Next, call [`default_setup`] or the individual setup functions, then [`Self::do_loop`].
 	pub fn new(name: &str, parameters: &[Parameter]) -> Self {
@@ -180,7 +182,7 @@ impl GraphicsApplication {
 		let (message_bus, messages, world_messages) = create_message_bus(&application);
 		message_bus.observe().unwrap_or_else(|error| panic!("{error}"));
 
-		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
+		let resources_path = resolve_application_path(application.get_parameter("resources.path"), "resources");
 
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
@@ -1046,30 +1048,6 @@ fn message_bus_limit(application: &BaseApplication, name: &str, default: usize) 
 		.unwrap_or(default)
 }
 
-/// Resolves an explicit path as supplied while anchoring the development default to its Cargo application.
-fn resolve_application_directory(parameter: Option<&Parameter>, default_directory: &str) -> std::path::PathBuf {
-	parameter.map(|parameter| parameter.value().into()).unwrap_or_else(|| {
-		// Cargo provides the application manifest directory while running development binaries.
-		#[cfg(debug_assertions)]
-		if let Some(manifest_directory) = std::env::var_os("CARGO_MANIFEST_DIR") {
-			return std::path::Path::new(&manifest_directory).join(default_directory);
-		}
-
-		let executable = std::env::current_exe().unwrap_or_else(|error| {
-			panic!(
-				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
-			)
-		});
-		executable
-			.parent()
-			.unwrap_or_else(|| {
-				panic!(
-					"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
-				)
-			})
-			.join(default_directory)
-	})
-}
 /// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
 /// refresh rate is known.
 const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
@@ -1260,7 +1238,10 @@ use smallvec::SmallVec;
 use tracing::debug_span;
 use utils::Box;
 
-use super::{Events, Parameter, Time, application::BaseApplication};
+use super::{
+	Events, Parameter, Time,
+	application::{BaseApplication, resolve_application_path},
+};
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,

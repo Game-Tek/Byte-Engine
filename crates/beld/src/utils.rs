@@ -48,7 +48,7 @@ mod tests {
 		resources::mesh::MeshModel,
 	};
 
-	use super::get_asset_manager;
+	use super::{VisibilityFeatures, get_asset_manager};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
@@ -81,7 +81,7 @@ mod tests {
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),
 				ReDBStorageBackend::new(resources_path.clone()),
-				byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
+				VisibilityFeatures::default(),
 			);
 
 			let mesh: ReferenceModel<MeshModel> = asset_manager.bake_if_not_exists("triangle_move.fbx").await.expect(

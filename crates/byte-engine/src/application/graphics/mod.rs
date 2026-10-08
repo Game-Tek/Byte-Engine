@@ -181,8 +181,7 @@ impl GraphicsApplication {
 		let (message_bus, messages, world_messages) = create_message_bus(&application);
 		message_bus.observe().unwrap_or_else(|error| panic!("{error}"));
 
-		let resources_path =
-			crate::application::application::resolve_application_path(application.get_parameter("resources.path"), "resources");
+		let resources_path = resolve_application_path(application.get_parameter("resources.path"), "resources");
 
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
@@ -1238,7 +1237,10 @@ use smallvec::SmallVec;
 use tracing::debug_span;
 use utils::Box;
 
-use super::{Events, Parameter, Time, application::BaseApplication};
+use super::{
+	Events, Parameter, Time,
+	application::{BaseApplication, resolve_application_path},
+};
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,

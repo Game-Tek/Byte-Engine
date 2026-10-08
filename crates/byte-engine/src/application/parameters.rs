@@ -37,12 +37,29 @@ impl Parameters for [Parameter] {
 /// The name of the project configuration file that both the application and BELD read.
 pub const CONFIGURATION_FILE_NAME: &str = "config.json";
 
+/// Reads the project's configuration file at `path`, or returns no parameters when the file does not exist.
+///
+/// The application reads it in [`crate::application::BaseApplication::new`], and BELD reads it to choose what to bake.
+///
+/// # Errors
+///
+/// Returns a message when the file exists but cannot be read or is not valid configuration.
+pub fn read_configuration_file(path: &std::path::Path) -> Result<Vec<Parameter>, String> {
+	match std::fs::read_to_string(path) {
+		Ok(source) => parameters_from_json(&source).map_err(|error| format!("{error} File: '{}'.", path.display())),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+		Err(error) => Err(format!(
+			"Configuration file '{}' could not be read. The most likely cause is missing read permission: {error}",
+			path.display()
+		)),
+	}
+}
+
 /// Converts the contents of a project's `config.json` into parameters.
 ///
 /// Nested objects become dotted names, so `{"render": {"gtao": {"enabled": false}}}` and
 /// `{"render.gtao.enabled": false}` both set `render.gtao.enabled`. Strings, numbers, and Booleans become parameter
-/// values. The application reads the file in [`crate::application::BaseApplication::new`], and BELD reads it to choose
-/// what to bake.
+/// values.
 ///
 /// # Errors
 ///

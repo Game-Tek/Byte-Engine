@@ -161,10 +161,6 @@ impl VisibilityPipelineSettings {
 		self
 	}
 
-	pub fn features(&self) -> VisibilityFeatures {
-		self.features
-	}
-
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
 	pub fn with_cone_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
 		if capacity > MAX_CONE_SHADOW_POOL_CAPACITY {
@@ -632,11 +628,7 @@ impl VisibilityPipelineManager {
 			settings,
 			shadow_maps,
 			gtao_configuration,
-			// A left-out GTAO starts off, so the first frame does not report it as unavailable.
-			gtao_settings: GtaoSettings {
-				enabled: settings.features.gtao,
-				..GtaoSettings::default()
-			},
+			gtao_settings: GtaoSettings::default(),
 			ssgi_configuration,
 			ssgi_settings: SsgiSettings::default(),
 			contact_shadow_configuration,

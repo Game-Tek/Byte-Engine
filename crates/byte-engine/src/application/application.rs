@@ -35,7 +35,10 @@ impl BaseApplication {
 	/// With the `tracy` Cargo feature, spans and logs also stream to a connected Tracy profiler.
 	pub fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		let mut parameters = parameters.to_vec();
-		for parameter in read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME)) {
+		// A file that exists but cannot be read or parsed stops startup, so a typo does not silently drop settings.
+		let configuration = read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME))
+			.unwrap_or_else(|error| panic!("{error}"));
+		for parameter in configuration {
 			upsert_parameter(&mut parameters, parameter);
 		}
 		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {
@@ -116,7 +119,7 @@ impl BaseApplication {
 
 impl Parameters for BaseApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
-		self.parameters.iter().find(|p| p.name == name)
+		self.parameters.get_parameter(name)
 	}
 }
 
@@ -158,23 +161,6 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool) {
 	}
 }
 
-/// Reads the project's configuration file, or returns no parameters when the file does not exist.
-///
-/// # Panics
-///
-/// Panics when the file exists but cannot be read or parsed, so a typo does not silently drop settings.
-fn read_configuration_file(path: &std::path::Path) -> Vec<Parameter> {
-	let source = match std::fs::read_to_string(path) {
-		Ok(source) => source,
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-		Err(error) => panic!(
-			"Configuration file '{}' could not be read. The most likely cause is missing read permission: {error}",
-			path.display()
-		),
-	};
-	parameters_from_json(&source).unwrap_or_else(|error| panic!("{error} File: '{}'.", path.display()))
-}
-
 /// Resolves an explicit path as supplied, or `default_path` inside the application directory.
 ///
 /// The application directory is the Cargo package of a development binary, or the executable's directory otherwise.
@@ -214,4 +200,4 @@ fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, parameters_from_json, parse_argument};
+use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, parse_argument, read_configuration_file};

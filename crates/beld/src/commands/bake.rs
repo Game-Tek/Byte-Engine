@@ -13,8 +13,8 @@ use crate::{commands::shared::offload_file_operation, utils::get_asset_manager};
 ///
 /// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
 /// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
-/// `features` are the project's visibility features, usually read from its `config.json` with
-/// [`crate::read_visibility_features`]; discovery skips the engine assets only left-out features use.
+/// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
+/// assets only left-out features use.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]
@@ -73,8 +73,7 @@ pub async fn bake(
 			1
 		})?;
 		// Explicitly requested IDs still bake; only discovery skips what the project left out.
-		let excluded = features.excluded_assets().collect::<Vec<_>>();
-		ids.retain(|id| !excluded.contains(id));
+		ids.retain(|id| !features.excludes(id));
 		ids
 	} else {
 		ids
@@ -132,32 +131,4 @@ pub async fn bake(
 	);
 
 	if failed_count == 0 { Ok(()) } else { Err(1) }
-}
-
-/// Reads the visibility features from the project's `config.json` at `path`, the file the application also reads.
-///
-/// A missing file keeps every feature. Next, pass the result to [`bake`].
-pub fn read_visibility_features(path: &std::path::Path) -> Result<VisibilityFeatures, i32> {
-	let source = match std::fs::read_to_string(path) {
-		Ok(source) => source,
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-			log::info!(
-				"No configuration file at '{}', so every visibility feature is baked.",
-				path.display()
-			);
-			return Ok(VisibilityFeatures::default());
-		}
-		Err(error) => {
-			log::error!(
-				"Failed to read configuration file '{}'. The most likely cause is missing read permission. Error: {error}",
-				path.display()
-			);
-			return Err(1);
-		}
-	};
-	let parameters = byte_engine::application::parameters::parameters_from_json(&source).map_err(|error| {
-		log::error!("{error} File: '{}'.", path.display());
-		1
-	})?;
-	Ok(VisibilityFeatures::from_parameters(&parameters[..]))
 }

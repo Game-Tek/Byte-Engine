@@ -112,8 +112,9 @@ pub fn setup_default_resource_and_asset_management(
 ) {
 	#[cfg(debug_assertions)]
 	{
-		let assets_path =
-			crate::application::application::resolve_application_path(application.get_parameter("assets-path"), "assets");
+		use crate::application::application::resolve_application_path;
+
+		let assets_path = resolve_application_path(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 

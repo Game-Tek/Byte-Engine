@@ -77,13 +77,6 @@ impl<const N: usize> Pipelines<N> {
 		let pipelines = self.0.map(|pipeline| pipeline_manager.pipeline(pipeline));
 		pipelines.iter().all(Option::is_some).then(|| pipelines.map(Option::unwrap))
 	}
-
-	/// Returns whether any pipeline failed to load or compile, so [`Self::resolve`] cannot succeed until it is rebuilt.
-	pub(super) fn failed(&self, pipeline_manager: &PipelineManagerClient) -> bool {
-		self.0
-			.iter()
-			.any(|pipeline| matches!(pipeline_manager.get(*pipeline), crate::rendering::PipelineState::Failed))
-	}
 }
 
 impl Pipelines<4> {
@@ -527,12 +520,8 @@ impl VisibilityRenderPass {
 		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
 		let sun_visibility_pipelines = self.sun_visibility.pipelines.resolve(pipeline_manager)?;
-		// A disabled pass neither records nor holds the frame back while its pipelines compile. GTAO whose pipelines
-		// failed, such as a release whose `config.json` did not match the bake, shades without it instead of stalling.
-		let gtao = self
-			.gtao
-			.as_ref()
-			.filter(|gtao| gtao_settings.enabled && !gtao.pipelines.failed(pipeline_manager));
+		// A disabled pass neither records nor holds the frame back while its pipelines compile.
+		let gtao = self.gtao.as_ref().filter(|_| gtao_settings.enabled);
 		let gtao_pipelines = match gtao {
 			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
 			None => None,

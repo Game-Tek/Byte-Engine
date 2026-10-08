@@ -6,7 +6,7 @@ mod maintenance;
 mod query;
 mod shared;
 
-pub use bake::{bake, read_visibility_features};
+pub use bake::bake;
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
 #[cfg(test)]
@@ -18,6 +18,7 @@ use shared::{decode_query_cursor, encode_query_cursor};
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
@@ -98,7 +99,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
+			VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -126,7 +127,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
+			VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -158,7 +159,7 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
+			VisibilityFeatures::default(),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -198,7 +199,7 @@ mod tests {
 				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
-				byte_engine::rendering::pipelines::visibility::VisibilityFeatures::default(),
+				VisibilityFeatures::default(),
 			)),
 			Err(1)
 		);

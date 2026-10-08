@@ -33,31 +33,27 @@ impl VisibilityFeatures {
 	///
 	/// Panics when a feature parameter is neither `true` nor `false`.
 	pub fn from_parameters(parameters: &(impl Parameters + ?Sized)) -> Self {
-		let enabled = |name: &str, default: bool| {
-			parameters.get_parameter(name).map_or(default, |parameter| {
-				parameter.as_bool().unwrap_or_else(|| {
-					panic!(
-						"Parameter `{name}` is invalid. The most likely cause is that `{}` is neither `true` nor `false`.",
-						parameter.value()
-					)
-				})
+		let gtao = parameters.get_parameter(GTAO_ENABLED_PARAMETER).is_none_or(|parameter| {
+			parameter.as_bool().unwrap_or_else(|| {
+				panic!(
+					"Parameter `{GTAO_ENABLED_PARAMETER}` is invalid. The most likely cause is that `{}` is neither `true` nor `false`.",
+					parameter.value()
+				)
 			})
-		};
-		let default = Self::default();
-		Self {
-			gtao: enabled(GTAO_ENABLED_PARAMETER, default.gtao),
-		}
+		});
+		Self { gtao }
 	}
 
-	/// Returns the IDs of the engine assets that only left-out features use, so a bake can skip them.
-	pub fn excluded_assets(&self) -> impl Iterator<Item = String> {
-		let gtao = (!self.gtao)
-			.then_some(super::render_pass::GTAO_PIPELINES)
-			.into_iter()
-			.flatten();
-		gtao.flat_map(|name| {
-			["pipeline", "besl"].map(|extension| format!("byte-engine/rendering/visibility/{name}.{extension}"))
-		})
+	/// Returns whether the engine asset `id` is only used by a left-out feature, so a bake can skip it.
+	pub fn excludes(&self, id: &str) -> bool {
+		// Each GTAO pipeline and its shader share a stem, such as `gtao-upscale.pipeline` and `gtao-upscale.besl`.
+		let gtao_asset = id
+			.strip_prefix("byte-engine/rendering/visibility/")
+			.and_then(|file| file.rsplit_once('.'))
+			.is_some_and(|(stem, extension)| {
+				matches!(extension, "pipeline" | "besl") && super::render_pass::GTAO_PIPELINES.contains(&stem)
+			});
+		!self.gtao && gtao_asset
 	}
 }
 
@@ -73,9 +69,10 @@ mod tests {
 		let features = VisibilityFeatures::from_parameters(&parameters[..]);
 
 		assert_eq!(features, VisibilityFeatures { gtao: false });
-		let excluded = features.excluded_assets().collect::<Vec<_>>();
-		assert!(excluded.contains(&"byte-engine/rendering/visibility/gtao.pipeline".to_string()));
-		assert!(excluded.contains(&"byte-engine/rendering/visibility/gtao-upscale.besl".to_string()));
+		assert!(features.excludes("byte-engine/rendering/visibility/gtao.pipeline"));
+		assert!(features.excludes("byte-engine/rendering/visibility/gtao-upscale.besl"));
+		// The depth pyramid also serves contact shadows, SSGI, and the cascade fit.
+		assert!(!features.excludes("byte-engine/rendering/visibility/depth-pyramid.besl"));
 	}
 
 	#[test]
@@ -83,6 +80,6 @@ mod tests {
 		let features = VisibilityFeatures::from_parameters(&[][..]);
 
 		assert_eq!(features, VisibilityFeatures::default());
-		assert_eq!(features.excluded_assets().count(), 0);
+		assert!(!features.excludes("byte-engine/rendering/visibility/gtao.pipeline"));
 	}
 }

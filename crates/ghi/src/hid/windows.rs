@@ -22,50 +22,93 @@ use windows::{
 	core::PCWSTR,
 };
 
-use super::{Device, DevicePath, Match, find_match};
+use super::{DeviceInfo, DevicePathRef, Match, find_match};
 
 /// `HIDP_STATUS_SUCCESS`, which `HidP_GetCaps` returns on success.
 const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
 
-pub(super) fn scan(matches: &[Match]) -> Result<Vec<Device>, String> {
-	// SAFETY: `HidD_GetHidGuid` only writes the HID interface class GUID.
-	let guid = unsafe { HidD_GetHidGuid() };
-	let list = interface_list(&guid)?;
-	let mut devices = Vec::new();
+/// The most UTF-16 units a product string can hold, the USB string descriptor limit.
+const NAME_UNITS: usize = 126;
+/// The UTF-8 size of the longest product string.
+const NAME_CAPACITY: usize = NAME_UNITS * 3;
 
-	// The list holds NUL-terminated paths and ends with an empty one.
-	for path in list.split(|&unit| unit == 0).take_while(|path| !path.is_empty()) {
-		// SAFETY: `path` is followed by the NUL that `split` removed, so the pointer names a terminated string.
-		let Some(interface) = Interface::open(PCWSTR(path.as_ptr())) else {
-			continue;
-		};
-		let Some((vendor_id, product_id)) = interface.ids() else {
-			continue;
-		};
-		let Some(usages) = interface.usage() else {
-			continue;
-		};
-		let Some((usage_page, usage)) = find_match(matches, vendor_id, std::iter::once(usages)) else {
-			continue;
-		};
+/// A device path is the interface path in UTF-16, with its NUL terminator so it can be opened directly.
+pub(super) type Path = Box<[u16]>;
+/// A borrowed device path is the interface path in UTF-16, without its NUL terminator.
+pub(super) type PathRef<'a> = &'a [u16];
 
-		devices.push(Device {
-			path: DevicePath(String::from_utf16_lossy(path)),
-			vendor_id,
-			product_id,
-			usage_page,
-			usage,
-			product_name: interface.product_name(),
-		});
-	}
-
-	Ok(devices)
+pub(super) fn path_ref(path: &Path) -> PathRef<'_> {
+	&path[..path.len() - 1]
 }
 
-/// Returns the present interfaces of `guid` as one buffer of NUL-terminated wide strings.
+pub(super) fn owned_path(path: PathRef<'_>) -> Path {
+	path.iter().copied().chain([0]).collect()
+}
+
+pub(super) fn write_path(path: PathRef<'_>, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+	use std::fmt::Write as _;
+	for character in char::decode_utf16(path.iter().copied()) {
+		f.write_char(character.unwrap_or(char::REPLACEMENT_CHARACTER))?;
+	}
+	Ok(())
+}
+
+pub(super) struct Scanner<'a> {
+	matches: &'a [Match],
+	guid: windows::core::GUID,
+	/// The interface list of the last scan, kept so later scans reuse its capacity.
+	list: Vec<u16>,
+}
+
+impl<'a> Scanner<'a> {
+	pub(super) fn new(matches: &'a [Match]) -> Result<Self, String> {
+		Ok(Self {
+			matches,
+			// SAFETY: `HidD_GetHidGuid` only writes the HID interface class GUID.
+			guid: unsafe { HidD_GetHidGuid() },
+			list: Vec::new(),
+		})
+	}
+
+	/// Opens every present HID interface for queries and reports the ones whose attributes and usage match.
+	pub(super) fn scan(&mut self, mut found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
+		fill_interface_list(&self.guid, &mut self.list)?;
+		let mut name = [0u8; NAME_CAPACITY];
+
+		// The list holds NUL-terminated paths and ends with an empty one.
+		for path in self.list.split(|&unit| unit == 0).take_while(|path| !path.is_empty()) {
+			// SAFETY: `path` is followed by the NUL that `split` removed, so the pointer names a terminated string.
+			let Some(interface) = Interface::open(PCWSTR(path.as_ptr())) else {
+				continue;
+			};
+			let Some((vendor_id, product_id)) = interface.ids() else {
+				continue;
+			};
+			let Some(usages) = interface.usage() else {
+				continue;
+			};
+			let Some((usage_page, usage)) = find_match(self.matches, vendor_id, std::iter::once(usages)) else {
+				continue;
+			};
+
+			found(DeviceInfo {
+				path: DevicePathRef(path, std::marker::PhantomData),
+				vendor_id,
+				product_id,
+				usage_page,
+				usage,
+				product_name: interface.product_name(&mut name),
+			});
+		}
+
+		Ok(())
+	}
+}
+
+/// Fills `list` with the present interfaces of `guid` as NUL-terminated wide strings, reusing its capacity.
 ///
 /// The list can grow between the size query and the copy, so a too-small buffer retries with the new size.
-fn interface_list(guid: &windows::core::GUID) -> Result<Vec<u16>, String> {
+fn fill_interface_list(guid: &windows::core::GUID, list: &mut Vec<u16>) -> Result<(), String> {
 	loop {
 		let mut length = 0u32;
 		// SAFETY: `length` and `guid` are valid for the call, and a null device ID asks for every device.
@@ -79,12 +122,12 @@ fn interface_list(guid: &windows::core::GUID) -> Result<Vec<u16>, String> {
 			));
 		}
 
-		let mut list = vec![0u16; length as usize];
+		list.clear();
+		list.resize(length as usize, 0);
 		// SAFETY: `list` holds `length` units, the size the previous call reported.
-		let result =
-			unsafe { CM_Get_Device_Interface_ListW(guid, PCWSTR::null(), &mut list, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) };
+		let result = unsafe { CM_Get_Device_Interface_ListW(guid, PCWSTR::null(), list, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) };
 		match result {
-			CR_SUCCESS => return Ok(list),
+			CR_SUCCESS => return Ok(()),
 			CR_BUFFER_SMALL => continue,
 			result => {
 				return Err(format!(
@@ -142,13 +185,24 @@ impl Interface {
 		(status.0 == HIDP_STATUS_SUCCESS).then_some((caps.UsagePage, caps.Usage))
 	}
 
-	fn product_name(&self) -> Option<String> {
-		// USB string descriptors hold at most 126 UTF-16 units; the rest of the buffer keeps a terminator.
-		let mut name = [0u16; 128];
+	/// Decodes the product string into `buffer` and returns it, or `None` when the device reports none.
+	fn product_name<'b>(&self, buffer: &'b mut [u8; NAME_CAPACITY]) -> Option<&'b str> {
+		// The extra unit keeps a terminator after the longest name.
+		let mut name = [0u16; NAME_UNITS + 1];
 		// SAFETY: the buffer length passed is the size of `name` in bytes.
 		let read = unsafe { HidD_GetProductString(self.0, name.as_mut_ptr().cast(), size_of_val(&name) as u32) };
-		let length = name.iter().position(|&unit| unit == 0).unwrap_or(name.len());
-		(read && length > 0).then(|| String::from_utf16_lossy(&name[..length]))
+		let units = name.iter().position(|&unit| unit == 0).unwrap_or(NAME_UNITS);
+		if !read || units == 0 {
+			return None;
+		}
+
+		// Each UTF-16 unit becomes at most three UTF-8 bytes, and a surrogate pair four, so the name fits in `buffer`.
+		let mut length = 0;
+		for character in char::decode_utf16(name[..units].iter().copied()) {
+			let character = character.unwrap_or(char::REPLACEMENT_CHARACTER);
+			length += character.encode_utf8(&mut buffer[length..]).len();
+		}
+		std::str::from_utf8(&buffer[..length]).ok()
 	}
 }
 

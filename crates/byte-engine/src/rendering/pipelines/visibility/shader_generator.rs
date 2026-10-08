@@ -15,6 +15,7 @@ use ghi::AccessPolicies;
 use resource_management::asset::JsonObject;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
+pub(crate) use self::ast::remove_conditionals_reading;
 use self::ast::*;
 use self::sources::*;
 use super::VisibilityFeatures;

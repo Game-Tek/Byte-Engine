@@ -192,7 +192,7 @@ pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstruc
 
 /// Statements that light the material outputs after the authored body runs.
 ///
-/// Without `visibility_features.gtao`, the GTAO occlusion read is left out, so the shader declares no AO binding.
+/// The code of every feature `visibility_features` leaves out is removed, so the shader declares none of its bindings.
 pub(super) fn material_evaluation_suffix_statements(
 	features: MaterialReconstructionFeatures,
 	visibility_features: VisibilityFeatures,
@@ -204,9 +204,7 @@ pub(super) fn material_evaluation_suffix_statements(
 	};
 	let mut statements = parse_besl_statements(normal_source, "material_evaluation_normal");
 	let mut suffix = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
-	if !visibility_features.gtao {
-		remove_conditionals_reading(&mut suffix, "gtao");
-	}
+	visibility_features.remove_left_out_code(&mut suffix);
 	statements.extend(suffix);
 	statements
 }
@@ -214,7 +212,7 @@ pub(super) fn material_evaluation_suffix_statements(
 /// Removes every conditional block, at any depth, whose condition reads the member `name`.
 ///
 /// Backends emit only what `main` reaches, so this also drops the bindings and helpers only those blocks used.
-fn remove_conditionals_reading(statements: &mut Vec<Node<'_>>, name: &str) {
+pub(crate) fn remove_conditionals_reading(statements: &mut Vec<Node<'_>>, name: &str) {
 	statements.retain_mut(|statement| {
 		let Nodes::Conditional {
 			condition, statements, ..

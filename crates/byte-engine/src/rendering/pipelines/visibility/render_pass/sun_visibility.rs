@@ -17,7 +17,7 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::gtao::configuration_float;
+use super::gtao::{configuration_bool, configuration_float};
 use super::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps};
 use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
@@ -25,17 +25,24 @@ use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// The configuration namespace for contact-shadow runtime controls.
 pub const CONTACT_SHADOWS_CONFIGURATION_PREFIX: &str = "render.contact-shadows.";
+/// The trace pipeline, named as [`Pipelines::request`] takes it. Only contact shadows use it.
+pub(in crate::rendering::pipelines::visibility) const CONTACT_SHADOW_PIPELINES: [&str; 1] = ["contact-shadows"];
 
 /// The `ContactShadowSettings` struct defines the runtime controls for the contact-shadow trace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ContactShadowSettings {
+	/// Whether the trace runs. Without it, the sun's shadow comes from the shadow map alone.
+	pub(crate) enabled: bool,
 	/// The world-space reach of each ray toward the sun. Occluders further away are left to the shadow map.
 	pub(crate) max_distance: f32,
 }
 
 impl Default for ContactShadowSettings {
 	fn default() -> Self {
-		Self { max_distance: 0.15 }
+		Self {
+			enabled: true,
+			max_distance: 0.15,
+		}
 	}
 }
 
@@ -47,6 +54,12 @@ impl ContactShadowSettings {
 		value: &ConfigurationValue,
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
+			"enabled" => {
+				let enabled = configuration_bool(value).ok_or(
+					"Contact shadows enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
+				)?;
+				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
+			}
 			"distance" => {
 				let max_distance = configuration_float(value)
 					.filter(|distance| *distance >= 0.0 && *distance <= f32::MAX as f64)
@@ -55,6 +68,7 @@ impl ContactShadowSettings {
 					)?;
 				let settings = Self {
 					max_distance: max_distance as f32,
+					..self
 				};
 				Ok((settings, ConfigurationValue::Float(f64::from(settings.max_distance))))
 			}
@@ -137,7 +151,9 @@ struct SunVisibilityShaderParameters {
 	angular_radius_tangent: f32,
 	pixel_to_ray_mul: [f32; 2],
 	pixel_to_ray_add: [f32; 2],
-	_padding: [f32; 2],
+	/// Nonzero when the resolve multiplies in the contact-shadow trace this frame.
+	contact_shadows: u32,
+	_padding: f32,
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
@@ -158,8 +174,9 @@ pub(super) struct SunVisibilityPass {
 	trace_descriptor_set: ghi::DescriptorSetHandle,
 	/// The base visibility set, whose views hold the camera and the sun's cascades, then the resolve's own set.
 	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 2],
-	/// The trace and resolve pipelines.
-	pub(super) pipelines: Pipelines<2>,
+	/// The trace pipeline, absent when the project left contact shadows out of its shaders.
+	pub(super) trace_pipelines: Option<Pipelines<1>>,
+	pub(super) resolve_pipelines: Pipelines<1>,
 	parameters: ghi::DynamicBufferHandle<SunVisibilityShaderParameters>,
 }
 
@@ -169,7 +186,8 @@ impl SunVisibilityPass {
 	/// `base_descriptor_set` is the sink's base visibility set, whose views the resolve reads the cascades from.
 	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]: the trace marches mip
 	/// zero with the half-resolution camera constants, and the resolve reads the full-resolution `depth` with them.
-	/// `shadow_maps` holds the sun's cascades and their depth pyramid.
+	/// `shadow_maps` holds the sun's cascades and their depth pyramid. Without `contact_shadows`, the trace pipeline is
+	/// not requested.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
@@ -179,6 +197,7 @@ impl SunVisibilityPass {
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		shadow_maps: &ShadowMaps,
 		targets: SunVisibilityTargets,
+		contact_shadows: bool,
 	) -> Self {
 		let trace_descriptor_set = context.create_descriptor_set(Some("Contact Shadow Trace Descriptor Set"));
 		let resolve_descriptor_set = context.create_descriptor_set(Some("Sun Visibility Descriptor Set"));
@@ -261,7 +280,8 @@ impl SunVisibilityPass {
 		Self {
 			trace_descriptor_set,
 			resolve_descriptor_sets: [base_descriptor_set, resolve_descriptor_set],
-			pipelines: Pipelines::request(pipeline_manager, ["contact-shadows", "sun-visibility"]),
+			trace_pipelines: contact_shadows.then(|| Pipelines::request(pipeline_manager, CONTACT_SHADOW_PIPELINES)),
+			resolve_pipelines: Pipelines::request(pipeline_manager, ["sun-visibility"]),
 			parameters,
 		}
 	}
@@ -270,7 +290,8 @@ impl SunVisibilityPass {
 	/// shadow-casting sun, because material evaluation reads the result only for the sun.
 	///
 	/// `sun_direction` is the world-space direction the sun's light travels, and `angular_radius_tangent` the tangent
-	/// of its angular radius. `settings` sets the contact rays' reach.
+	/// of its angular radius. `trace` is the contact-shadow trace pipeline, or `None` to resolve the shadow map alone,
+	/// and `settings` sets the contact rays' reach.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -278,7 +299,8 @@ impl SunVisibilityPass {
 		sun_direction: Option<math::UnitVector>,
 		angular_radius_tangent: f32,
 		settings: ContactShadowSettings,
-		[trace, resolve]: [ghi::PipelineHandle; 2],
+		trace: Option<ghi::PipelineHandle>,
+		resolve: ghi::PipelineHandle,
 	) -> Option<SunVisibilityStages> {
 		let sun_direction = sun_direction?;
 		let extent = sink.extent();
@@ -289,17 +311,18 @@ impl SunVisibilityPass {
 			angular_radius_tangent,
 			pixel_to_ray_mul: screen.pixel_to_ray_mul,
 			pixel_to_ray_add: screen.pixel_to_ray_add,
-			_padding: [0.0; 2],
+			contact_shadows: u32::from(trace.is_some()),
+			_padding: 0.0,
 		};
 		frame.sync_buffer(self.parameters);
 		Some(SunVisibilityStages {
-			trace: ComputeStage {
+			trace: trace.map(|pipeline| ComputeStage {
 				label: "Contact Shadow Trace",
-				pipeline: trace,
+				pipeline,
 				descriptor_sets: [self.trace_descriptor_set],
 				extent: extent.scaled_down(CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
 				workgroup: Extent::new(8, 8, 1),
-			},
+			}),
 			resolve: ComputeStage {
 				label: "Sun Visibility Resolve",
 				pipeline: resolve,
@@ -316,8 +339,8 @@ impl SunVisibilityPass {
 /// second stages.
 #[derive(Clone, Copy)]
 pub(super) struct SunVisibilityStages {
-	/// The half-resolution contact-shadow trace; it reads only the depth pyramid.
-	pub(super) trace: ComputeStage<1>,
+	/// The half-resolution contact-shadow trace, absent when contact shadows are off; it reads only the depth pyramid.
+	pub(super) trace: Option<ComputeStage<1>>,
 	/// The full-resolution resolve; it reads the trace, the shadow maps, and their pyramids.
 	pub(super) resolve: ComputeStage<2>,
 }

@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
-use super::features::{GTAO_ENABLED_PARAMETER, VisibilityFeatures};
+use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, SSGI_ENABLED_PARAMETER, VisibilityFeatures};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
@@ -364,6 +364,17 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 		}
 		None => (profile.dimmer(), None),
 	}
+}
+
+/// Returns whether a runtime-enabled feature can run: a feature the project left out of its shaders stays off, with a
+/// warning, because `enabled` was turned on after startup.
+fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
+	if enabled && !built_in {
+		log::warn!(
+			"`{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
+		);
+	}
+	enabled && built_in
 }
 
 /// Applies queued runtime settings under `prefix`.
@@ -1012,12 +1023,6 @@ impl VisibilityPipelineManager {
 			&mut self.gtao_settings,
 			GtaoSettings::with_parameter,
 		);
-		if self.gtao_settings.enabled && !self.settings.features.gtao {
-			log::warn!(
-				"GTAO was not enabled. The most likely cause is that `{GTAO_ENABLED_PARAMETER}` was `false` at startup, so GTAO was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
-			);
-			self.gtao_settings.enabled = false;
-		}
 		drain_settings(
 			&self.ssgi_configuration,
 			SSGI_CONFIGURATION_PREFIX,
@@ -1031,6 +1036,15 @@ impl VisibilityPipelineManager {
 			"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
 			&mut self.contact_shadow_settings,
 			ContactShadowSettings::with_parameter,
+		);
+		// A feature left out of the shaders stays off, whatever the runtime asks for.
+		let features = self.settings.features;
+		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
+		self.ssgi_settings.enabled = built_in_or_off(self.ssgi_settings.enabled, features.ssgi, SSGI_ENABLED_PARAMETER);
+		self.contact_shadow_settings.enabled = built_in_or_off(
+			self.contact_shadow_settings.enabled,
+			features.contact_shadows,
+			CONTACT_SHADOWS_ENABLED_PARAMETER,
 		);
 	}
 

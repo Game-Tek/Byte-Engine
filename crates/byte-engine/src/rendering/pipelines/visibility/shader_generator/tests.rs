@@ -266,25 +266,53 @@ fn material_evaluation_texture_variables_produce_valid_besl() {
 	besl::lex(shader).expect("generated normal-mapped program should link");
 }
 
-/// Verifies that a project without GTAO bakes material shaders that never reach the AO image.
+/// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
 #[test]
-fn material_evaluation_without_gtao_reaches_no_occlusion_image() {
+fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	let material = material_metadata! { "variables": [] };
-	let reaches_ao = |features| {
+	let reaches = |features, binding: &str| {
 		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
 		let root = besl::lex(material_generator_with(features).transform(shader_node, &material))
 			.expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&main)
 			.iter()
-			.any(|node| node.borrow().get_name() == Some("ao"))
+			.any(|node| node.borrow().get_name() == Some(binding))
 	};
+	let cases = [
+		(
+			VisibilityFeatures {
+				gtao: false,
+				..Default::default()
+			},
+			"ao",
+		),
+		(
+			VisibilityFeatures {
+				ssgi: false,
+				..Default::default()
+			},
+			"ssgi_history",
+		),
+		(
+			VisibilityFeatures {
+				ssgi: false,
+				..Default::default()
+			},
+			"diffuse_radiance_map",
+		),
+	];
 
-	assert!(reaches_ao(VisibilityFeatures::default()), "GTAO should reach the AO image.");
-	assert!(
-		!reaches_ao(VisibilityFeatures { gtao: false }),
-		"Material evaluation reached the AO image without GTAO. The most likely cause is that the GTAO block in the material evaluation suffix no longer reads `push_constant.gtao`."
-	);
+	for (features, binding) in cases {
+		assert!(
+			reaches(VisibilityFeatures::default(), binding),
+			"Material evaluation should reach `{binding}`."
+		);
+		assert!(
+			!reaches(features, binding),
+			"Material evaluation reached `{binding}` without its feature. The most likely cause is a read outside the material evaluation suffix block that reads the feature's push-constant member."
+		);
+	}
 }
 
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.

@@ -92,14 +92,17 @@ Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows,
 
 ## Leave render features out of the bake
 
-Use your project's `config.json` to leave an optional render feature out of
-both the baked shaders and the running application. Put the file in the
+Use your project's `config.json` to leave optional render features out of
+both the baked shaders and the running application. You can leave out GTAO,
+SSGI, and contact shadows. Put the file in the
 application directory, next to `assets/` and `resources/`:
 
 ```json
 {
   "render": {
-    "gtao": { "enabled": false }
+    "gtao": { "enabled": false },
+    "ssgi": { "enabled": false },
+    "contact-shadows": { "enabled": false }
   }
 }
 ```
@@ -112,12 +115,17 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   --config "$PWD/config.json"
 ```
 
-With `render.gtao.enabled` set to `false`:
+When you set a feature's `enabled` value to `false`, BELD bakes shaders without
+its code and skips its pipelines:
 
-- BELD generates material shaders without the GTAO occlusion code and skips the
-  `gtao`, `gtao-blur-x`, and `gtao-upscale` pipelines.
-- The application reads the same file at startup and doesn't create the GTAO
-  pass. Turning GTAO on at runtime logs a warning instead.
+| Feature | Code left out | Pipelines skipped |
+| --- | --- | --- |
+| `render.gtao.enabled` | GTAO occlusion in material shaders | `gtao`, `gtao-blur-x`, `gtao-upscale` |
+| `render.ssgi.enabled` | SSGI lighting and its diffuse light output in material shaders | `ssgi-trace`, `ssgi-temporal` |
+| `render.contact-shadows.enabled` | The contact-shadow filter in `sun-visibility.besl` | `contact-shadows` |
+
+The application reads the same file at startup and doesn't create the left-out
+passes. Turning a left-out feature on at runtime logs a warning instead.
 
 A missing file keeps every feature. The application also loads every other value
 in `config.json` as a startup parameter, so `{"render": {"debug": true}}` sets

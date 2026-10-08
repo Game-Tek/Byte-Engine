@@ -144,8 +144,10 @@ pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork};
 pub use self::ssgi::SSGI_CONFIGURATION_PREFIX;
+pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
+pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 pub use self::sun_visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
@@ -264,7 +266,8 @@ pub(crate) struct VisibilityRenderPass {
 	sun_visibility: SunVisibilityPass,
 	/// Absent when the project left GTAO out of its shaders.
 	gtao: Option<GtaoPass>,
-	ssgi: SsgiPass,
+	/// Absent when the project left SSGI out of its shaders.
+	ssgi: Option<SsgiPass>,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
 	stage_counters: StageCounters,
@@ -343,13 +346,15 @@ impl VisibilityRenderPass {
 			cascade_fit.receiver_fit_parameters(),
 		);
 		let occlusion = OcclusionCulling::new(context, &pipeline_manager, targets.depth);
-		let ssgi = SsgiPass::new(
-			context,
-			&pipeline_manager,
-			depth_pyramid.depth_pyramid,
-			depth_pyramid.view_data,
-			targets.ssgi,
-		);
+		let ssgi = features.ssgi.then(|| {
+			SsgiPass::new(
+				context,
+				&pipeline_manager,
+				depth_pyramid.depth_pyramid,
+				depth_pyramid.view_data,
+				targets.ssgi,
+			)
+		});
 		let light_clusters = LightClusterPass::new(
 			context,
 			&pipeline_manager,
@@ -446,6 +451,7 @@ impl VisibilityRenderPass {
 				depth_pyramid.view_data,
 				shadow_maps,
 				targets.sun_visibility,
+				features.contact_shadows,
 			),
 			depth_pyramid,
 			ssgi,
@@ -519,16 +525,19 @@ impl VisibilityRenderPass {
 		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;
 		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
-		let sun_visibility_pipelines = self.sun_visibility.pipelines.resolve(pipeline_manager)?;
+		let [sun_visibility_pipeline] = self.sun_visibility.resolve_pipelines.resolve(pipeline_manager)?;
 		// A disabled pass neither records nor holds the frame back while its pipelines compile.
-		let gtao = self.gtao.as_ref().filter(|_| gtao_settings.enabled);
-		let gtao_pipelines = match gtao {
+		let contact_shadow_pipeline = match &self.sun_visibility.trace_pipelines {
+			Some(pipelines) if contact_shadow_settings.enabled => Some(pipelines.resolve(pipeline_manager)?[0]),
+			_ => None,
+		};
+		let gtao_pipelines = match self.gtao.as_ref().filter(|_| gtao_settings.enabled) {
 			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
-		let ssgi_pipelines = match ssgi_settings.enabled {
-			true => Some(self.ssgi.pipelines.resolve(pipeline_manager)?),
-			false => None,
+		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| ssgi_settings.enabled) {
+			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
+			None => None,
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let depth_pyramid = self
@@ -540,12 +549,13 @@ impl VisibilityRenderPass {
 			shadow_work.directional,
 			shadow_work.sun_angular_radius_tangent,
 			contact_shadow_settings,
-			sun_visibility_pipelines,
+			contact_shadow_pipeline,
+			sun_visibility_pipeline,
 		);
 		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
 		// SSGI history exists only if the pass also ran last frame.
 		let ssgi_history = history.filter(|history| history.ssgi);
-		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
+		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
 		self.reflections.prepare(frame, history);
 		let screen_space_lighting = ScreenSpaceLighting {
 			gtao: gtao.is_some(),
@@ -620,8 +630,8 @@ impl VisibilityRenderPass {
 			// every first stage, and the others need nothing more. The sun visibility resolve also reads the shadow
 			// maps and their pyramid, which both orders above record before it.
 			c.counter(counters.screen_space, |c| {
-				if let Some(sun_visibility) = &sun_visibility {
-					record_compute_stages(c, None, &[sun_visibility.trace]);
+				if let Some(trace) = sun_visibility.and_then(|sun_visibility| sun_visibility.trace) {
+					record_compute_stages(c, None, &[trace]);
 				}
 				if let Some(gtao) = &gtao {
 					record_compute_stages(c, None, &[gtao.evaluate]);

@@ -122,7 +122,8 @@ pub fn setup_default_resource_and_asset_management(
 
 		let (material_mips, ibl) = default_offline_generators();
 
-		register_default_asset_handlers(&mut asset_manager, generator, material_mips, ibl);
+		let features = VisibilityFeatures::from_parameters(&*application);
+		register_default_asset_handlers(&mut asset_manager, generator, features, material_mips, ibl);
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
@@ -131,11 +132,13 @@ pub fn setup_default_resource_and_asset_management(
 /// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`.
 ///
 /// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
-/// assets. `generator` adapts generated material shaders to the renderer, and `material_mips` and `ibl` select the
-/// offline texture backends; [`default_offline_generators`] returns the usual ones.
+/// assets. `generator` adapts generated material shaders to the renderer, `features` removes left-out features from
+/// standalone shaders, and `material_mips` and `ibl` select the offline texture backends; [`default_offline_generators`]
+/// returns the usual ones.
 pub fn register_default_asset_handlers(
 	asset_manager: &mut AssetManager,
 	generator: impl ProgramGenerator + Clone + 'static,
+	features: VisibilityFeatures,
 	material_mips: Arc<MipGenerator>,
 	ibl: IBLGenerator,
 ) {
@@ -166,7 +169,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
+	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new(features));
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 

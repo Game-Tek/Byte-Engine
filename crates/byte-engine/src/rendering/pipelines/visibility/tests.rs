@@ -2626,6 +2626,37 @@ fn sun_shadow_map() -> (Texture, Texture, Texture) {
 	)
 }
 
+/// Verifies that a project without contact shadows bakes a sun visibility resolve that never reads the trace.
+#[test]
+fn sun_visibility_without_contact_shadows_reaches_no_trace() {
+	use resource_management::asset::handler::implementations::bema::ProgramGenerator;
+
+	use crate::rendering::common_shader_generator::CommonShaderGenerator;
+
+	let context = resource_management::asset::JsonObject::new();
+	let reaches_trace = |features| {
+		let source = besl::parse(asset_source!("sun-visibility.besl")).expect("sun visibility should parse");
+		let root =
+			besl::lex(CommonShaderGenerator::new(features).transform(source, &context)).expect("sun visibility should link");
+		let main = root.get_main().expect("sun visibility should contain main");
+		resource_management::shader::besl::graph::dependency_order(&main)
+			.iter()
+			.any(|node| node.borrow().get_name() == Some("contact_shadow_trace"))
+	};
+
+	assert!(
+		reaches_trace(super::VisibilityFeatures::default()),
+		"Contact shadows should read the trace."
+	);
+	assert!(
+		!reaches_trace(super::VisibilityFeatures {
+			contact_shadows: false,
+			..Default::default()
+		}),
+		"The resolve read the trace without contact shadows. The most likely cause is a trace read in `sun-visibility.besl` outside a block that reads `contact_shadows`."
+	);
+}
+
 /// Runs the sun visibility resolve at one pixel of the floor scene with the low wall, over a half-resolution
 /// contact-shadow trace whose value at each texel is `trace(column, row, depth)`, where `depth` is the texel's linear
 /// depth as mip zero of the depth pyramid holds it, and returns the pixel's sun visibility. With `shadow_map`, the
@@ -2693,6 +2724,7 @@ fn run_sun_visibility(trace: impl Fn(u32, u32, f32) -> f32, shadow_map: bool, pi
 		("direction_to_light", Value::Vec4F([x, y, z, 0.0])),
 		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
 		("angular_radius_tangent", Value::F32(0.0)),
+		("contact_shadows", Value::U32(1)),
 		(
 			"pixel_to_ray_mul",
 			screen.read("pixel_to_ray_mul").expect("full-resolution rays"),

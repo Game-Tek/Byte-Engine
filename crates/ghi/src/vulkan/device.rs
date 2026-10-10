@@ -54,8 +54,9 @@ pub struct InnerDevice {
 
 	pub(super) debug_data: DebugDataRef,
 
-	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. [`Context::new`] moves them into its locked queue list.
-	pub(super) vk_queues: Vec<vk::Queue>,
+	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. Vulkan requires external synchronization
+	/// for submissions, so each queue has one lock that every context of the device shares.
+	pub(super) vk_queues: std::sync::Arc<[std::sync::Mutex<vk::Queue>]>,
 
 	pub(crate) physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,
@@ -87,16 +88,12 @@ impl Drop for Device {
 			unsafe { self.device.destroy_shader_module(shader.shader, None) };
 		}
 		// Detached factories borrow the native device; only the primary device owns it.
-		if self.inner.is_none() {
+		let Some(inner) = &self.inner else {
 			return;
-		}
+		};
 		// Callers must drop all contexts and factories before the primary device.
-		unsafe {
-			self.device.device_wait_idle().expect(
-				"Failed to wait for the Vulkan device during destruction. The most likely cause is that the device was lost.",
-			);
-			self.device.destroy_device(None);
-		}
+		inner.wait();
+		unsafe { self.device.destroy_device(None) };
 	}
 }
 
@@ -122,31 +119,6 @@ pub struct ComputePipeline {
 pub struct RasterPipeline {
 	pub(crate) pipeline: vk::Pipeline,
 	pub(crate) layout: crate::vulkan::PipelineLayout,
-}
-
-/// The `FactoryImage` struct carries Vulkan image parameters until a context interns them.
-pub struct FactoryImage {
-	pub(crate) name: Option<String>,
-	pub(crate) extent: Extent,
-	pub(crate) format: crate::Formats,
-	pub(crate) resource_uses: crate::Uses,
-	pub(crate) device_accesses: crate::DeviceAccesses,
-	pub(crate) use_case: crate::UseCases,
-	pub(crate) mip_levels: u32,
-	pub(crate) array_layers: Option<NonZeroU32>,
-	pub(crate) cube_compatible: bool,
-	pub(crate) cube_array_compatible: bool,
-}
-
-/// The `FactorySampler` struct carries Vulkan sampler parameters until a context interns them.
-pub struct FactorySampler {
-	pub(crate) filtering_mode: crate::FilteringModes,
-	pub(crate) reduction_mode: crate::SamplingReductionModes,
-	pub(crate) mip_map_mode: crate::FilteringModes,
-	pub(crate) addressing_mode: crate::SamplerAddressingModes,
-	pub(crate) anisotropy: Option<f32>,
-	pub(crate) min_lod: f32,
-	pub(crate) max_lod: f32,
 }
 
 /// Returns `flag` when `condition` holds and no flags otherwise.

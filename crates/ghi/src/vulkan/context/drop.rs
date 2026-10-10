@@ -2,10 +2,9 @@ use super::*;
 
 impl Drop for Context {
 	fn drop(&mut self) {
+		// The wait also covers the other contexts of the device, whose submissions may use buffers this context shared.
+		self.device.wait();
 		unsafe {
-			self.device.device_wait_idle().expect(
-				"Failed to wait for the Vulkan device during context destruction. The most likely cause is that the device was lost.",
-			);
 			// Retired storage is no longer referenced by any live resource, so the loops below would leak it.
 			self.destroy_retired_resources();
 			for frame in self.command_buffers.iter().flat_map(|command_buffer| &command_buffer.frames) {
@@ -23,7 +22,9 @@ impl Drop for Context {
 			}
 
 			let meshes = self.meshes.iter().map(|mesh| mesh.buffer);
-			for buffer in meshes.chain(self.buffers.iter().map(|buffer| buffer.buffer)) {
+			// Imported buffers belong to the context that shared them.
+			let owned_buffers = self.buffers.iter().filter(|buffer| !buffer.imported);
+			for buffer in meshes.chain(owned_buffers.map(|buffer| buffer.buffer)) {
 				self.device.destroy_buffer(buffer, None);
 			}
 			if let Some(heaps) = &self.descriptor_heaps {

@@ -68,6 +68,18 @@ impl Context {
 	}
 }
 
+impl Context {
+	/// Queues the upload of a new dynamic-buffer copy's zeroed staging bytes.
+	///
+	/// A frame uploads a copy only when it writes it, so without this a copy no frame wrote yet would expose
+	/// uninitialized device memory to the GPU.
+	fn queue_initial_upload(&mut self, handle: BufferHandle) {
+		if self.buffers.resource(handle).staging.is_some() {
+			self.pending_buffer_syncs.insert(handle);
+		}
+	}
+}
+
 impl crate::context::Context for Context {
 	type Queue<'a>
 		= crate::vulkan::queue::Queue<'a>
@@ -498,7 +510,7 @@ impl crate::context::Context for Context {
 		})
 	}
 
-	/// Grows every frame copy of a dynamic buffer, its staging, and its persistent source to `size`.
+	/// Grows every frame copy of a dynamic buffer and its staging to `size`.
 	///
 	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
 	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
@@ -515,44 +527,24 @@ impl crate::context::Context for Context {
 		let name = self.get_object_debug_name(master_handle.into());
 		let name = name.as_deref();
 
-		// Copies for later sequences may not exist yet; their pending build tasks copy the master's new size.
-		let mut frame_copies = SmallVec::<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>::new();
-		for sequence_index in 0..self.frames as usize {
-			let handle = self
-				.buffers
-				.nth_handle(master_handle, sequence_index)
-				.expect("Missing Vulkan dynamic buffer. The most likely cause is that the handle came from another context.");
-			if !frame_copies.contains(&handle) {
-				frame_copies.push(handle);
-			}
-		}
-
-		let mut persistent_source = None;
+		let frame_copies = self
+			.buffers
+			.chain(master_handle)
+			.collect::<SmallVec<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>>();
 		for handle in frame_copies {
 			let current = *self.buffers.resource(handle);
-			let mut replacement = self.build_buffer_internal(name, current.uses, size, current.access);
-			if let Some(source_handle) = current.source {
-				persistent_source = Some((source_handle, current.access));
-				replacement.source = Some(source_handle);
-			}
+			let replacement = self.build_buffer_internal(name, current.uses, size, current.access);
 
 			if let Some(staging_handle) = current.staging {
 				self.retire_buffer_storage(staging_handle);
 			}
 			self.retire_buffer_storage(handle);
 			*self.buffers.resource_mut(handle) = replacement;
+			self.queue_initial_upload(handle);
 
 			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
 			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
 			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
-		}
-
-		// Pending build tasks captured the shared source handle, so it is replaced in place rather than reallocated.
-		if let Some((source_handle, device_accesses)) = persistent_source {
-			let uses = self.buffers.resource(source_handle).uses;
-			let replacement = self.build_host_staging_buffer(name, size, uses, device_accesses);
-			self.retire_buffer_storage(source_handle);
-			*self.buffers.resource_mut(source_handle) = replacement;
 		}
 
 		for sequence_index in 0..self.frames {
@@ -873,7 +865,6 @@ impl crate::context::ContextCreate for Context {
 		self.buffers
 			.add(Buffer {
 				staging: None,
-				source: None,
 				buffer: buffer.resource,
 				size: buffer.size,
 				device_address,
@@ -881,6 +872,7 @@ impl crate::context::ContextCreate for Context {
 				allocation: Some(allocation),
 				uses: crate::Uses::empty(),
 				access,
+				imported: false,
 			})
 			.0
 	}
@@ -979,48 +971,31 @@ impl crate::context::ContextCreate for Context {
 
 	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
-		let buffer_handle =
-			self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
-			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
-			std::marker::PhantomData,
-		);
 
-		let source = if crate::vulkan::buffer::PERSISTENT_WRITE
-			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)
-			&& !Self::uses_only_host_access(builder.device_accesses)
-		{
-			// The master buffer's existing staging buffer becomes the shared, persistent CPU-writable source buffer,
-			// and a new per-frame staging buffer takes its place for frame 0.
-			let source_handle = self
-				.buffers
-				.resource(buffer_handle)
-				.staging
-				.expect("CpuWrite dynamic buffer must have a staging buffer");
-			let frame0_staging = self.create_staging_buffer(builder.name, size);
-			let buffer = self.buffers.resource_mut(buffer_handle);
-			buffer.staging = Some(frame0_staging);
-			buffer.source = Some(source_handle);
-
-			// Track this dynamic buffer for automatic per-frame memcpy.
-			self.persistent_write_dynamic_buffers.push(handle.into());
-			Some(source_handle)
-		} else {
-			None
-		};
-
-		for i in 1..self.frames {
-			assert!(i < 2, "This does not support more than one deferred buffer!");
-			self.tasks.push(Task::new(
-				Tasks::BuildBuffer(BuildBuffer {
-					previous: buffer_handle,
-					master: handle.into(),
-					source,
-				}),
-				Some(i),
-			));
+		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another
+		// frame in flight, which the CPU could rewrite while that frame still reads it.
+		let root = self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
+		self.queue_initial_upload(root);
+		let mut previous = root;
+		for _ in 1..self.frames {
+			previous = self.create_buffer_internal(
+				Some(previous),
+				builder.name,
+				builder.resource_uses,
+				size,
+				builder.device_accesses,
+			);
+			self.queue_initial_upload(previous);
 		}
 
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(root.0),
+			std::marker::PhantomData,
+		);
+		self.set_object_debug_name(
+			builder.name,
+			graphics_hardware_interface::BaseBufferHandle::from(handle).into(),
+		);
 		handle
 	}
 

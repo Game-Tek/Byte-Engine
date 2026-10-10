@@ -5,8 +5,6 @@ impl crate::device::Device for Device {
 	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
-	type Image = FactoryImage;
-	type Sampler = FactorySampler;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&std::alloc::Global
@@ -61,38 +59,25 @@ impl crate::device::Device for Device {
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
 		crate::vulkan::context::build_compute_pipeline(&self.device, &self.descriptor_heap_properties, &self.shaders, builder)
 	}
-
-	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
-		FactoryImage {
-			name: crate::debug_name(builder.name),
-			extent: builder.extent,
-			format: builder.format,
-			resource_uses: builder.resource_uses,
-			device_accesses: builder.device_accesses,
-			use_case: builder.use_case,
-			mip_levels: builder.mip_levels,
-			array_layers: builder.array_layers,
-			cube_compatible: builder.cube_compatible,
-			cube_array_compatible: builder.cube_array_compatible,
-		}
-	}
-
-	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
-		FactorySampler {
-			filtering_mode: builder.filtering_mode,
-			reduction_mode: builder.reduction_mode,
-			mip_map_mode: builder.mip_map_mode,
-			addressing_mode: builder.addressing_mode,
-			anisotropy: builder.anisotropy,
-			min_lod: builder.min_lod,
-			max_lod: builder.max_lod,
-		}
-	}
 }
 
 impl InnerDevice {
+	/// Waits until every queue of the device is idle.
+	///
+	/// Vulkan forbids submitting on any queue during the wait, so this holds the lock of every queue, in index order.
+	/// Submission paths hold one queue lock at a time, so the order cannot deadlock.
 	pub(crate) fn wait(&self) {
-		unsafe { self.device.device_wait_idle() }.unwrap();
+		let _queues = self
+			.vk_queues
+			.iter()
+			.map(|queue| {
+				queue.lock().expect(
+					"Failed to lock a Vulkan queue for a device wait. The most likely cause is that another thread panicked while holding the queue lock.",
+				)
+			})
+			.collect::<smallvec::SmallVec<[_; 4]>>();
+		unsafe { self.device.device_wait_idle() }
+			.expect("Failed to wait for the Vulkan device. The most likely cause is that the device was lost.");
 	}
 
 	/// Creates a Vulkan buffer and reports the memory requirements needed to bind it.

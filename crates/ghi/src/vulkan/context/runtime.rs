@@ -4,19 +4,14 @@ impl Context {
 	pub(crate) fn new(device: &Device) -> Result<Self, &'static str> {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let queues = std::mem::take(&mut device.queues);
-		let vk_queues = std::mem::take(&mut device.vk_queues)
-			.into_iter()
-			.map(std::sync::Mutex::new)
-			.collect();
 		let counter_query_pool = create_counter_query_pool(&device)?;
 
-		let mut context = Context {
+		Ok(Context {
 			device,
 
 			frames: 2, // Assuming double buffering
 
 			queues,
-			vk_queues,
 			allocations: Vec::new(),
 			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
@@ -24,6 +19,7 @@ impl Context {
 			pipeline_layouts: Vec::with_capacity(64),
 			pipeline_layout_indices: HashMap::with_capacity_and_hasher(64, Default::default()),
 			descriptor_sets: Vec::with_capacity(512),
+			// Created on first use, so a context that binds no descriptors, such as a loader's, reserves no heap memory.
 			descriptor_heaps: None,
 			descriptor_materializations: Vec::with_capacity(512),
 			materialization_indices: HashMap::with_capacity_and_hasher(512, Default::default()),
@@ -49,7 +45,7 @@ impl Context {
 			pending_buffer_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
 			pending_image_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
 
-			persistent_write_dynamic_buffers: Vec::with_capacity(64),
+			shared_buffers: std::cell::RefCell::new(Vec::new()),
 
 			tasks: Vec::with_capacity(1024),
 			last_started_frame: None,
@@ -59,17 +55,7 @@ impl Context {
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
-		};
-		context.descriptor_heaps = Some(context.create_descriptor_heaps());
-		Ok(context)
-	}
-
-	/// Creates a detached-resource factory backed by this Vulkan device.
-	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory::detached_with_resources(
-			self.device.device.clone(),
-			self.device.descriptor_heap_properties,
-		))
+		})
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -196,11 +182,7 @@ impl Context {
 			(swapchain.native_images, swapchain.images, swapchain.submit_synchronizers);
 
 		// Old swapchain images, their views, and proxies may still be referenced by in-flight frames.
-		unsafe {
-			self.device.device_wait_idle().expect(
-				"Failed to wait for the Vulkan device before recreating a swapchain. The most likely cause is that the device was lost.",
-			);
-		}
+		self.device.wait();
 
 		let new_swapchain = self.device.create_vulkan_swapchain(
 			surface,
@@ -362,6 +344,7 @@ impl Context {
 		self.release_retired_descriptor_materializations(sequence_index);
 		// Build lazy resources before the frame may need them.
 		self.process_tasks(sequence_index);
+		self.expect_shared_buffer_writes();
 		// Tasks processed after the fence can retire prior-frame snapshots immediately.
 		self.release_retired_descriptor_materializations(sequence_index);
 
@@ -628,27 +611,6 @@ impl Context {
 					if current {
 						self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, Some(sequence_index));
 					}
-				}
-				Tasks::BuildBuffer(builder) => {
-					let name = self.get_object_debug_name(builder.master.into());
-					let previous = self.buffers.resource(builder.previous);
-					let new_buffer_handle = self.create_buffer_internal(
-						Some(builder.previous),
-						name.as_deref(),
-						previous.uses,
-						previous.size,
-						previous.access,
-					);
-
-					// Persistent-write buffers get their own per-frame staging buffer, fed from the shared source buffer.
-					if let Some(source_handle) = builder.source {
-						let size = self.buffers.resource(new_buffer_handle).size;
-						let per_frame_staging = self.create_staging_buffer(name.as_deref(), size);
-						let buffer = self.buffers.resource_mut(new_buffer_handle);
-						buffer.staging = Some(per_frame_staging);
-						buffer.source = Some(source_handle);
-					}
-					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
 				Tasks::ResizeImage {
 					handle,

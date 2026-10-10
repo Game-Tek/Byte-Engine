@@ -4,7 +4,7 @@ use utils::Extent;
 use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
 	FrameKey, HandleLike as _, MasterHandle as _,
-	context::{Context as _, ContextCreate as _},
+	context::Context as _,
 	graphics_hardware_interface,
 	vulkan::{ImageHandle, Swapchain, Tasks},
 };
@@ -83,7 +83,7 @@ impl<'a> Frame<'a> {
 			.signal_semaphore_infos(&signal_semaphores);
 		let execution_completion_fence =
 			synchronizer.map_or(vk::Fence::null(), |handle| self.device.synchronizers[handle.0 as usize].fence);
-		let vk_queue = self.device.vk_queues[command_buffer.vk_queue_index]
+		let vk_queue = self.device.device.vk_queues[command_buffer.vk_queue_index]
 			.lock()
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 		unsafe {
@@ -132,7 +132,7 @@ impl<'a> Frame<'a> {
 		let index = self.device.get_syncronizer_handles(synchronizer_handle)[self.frame_key.sequence_index as usize].0 as usize;
 		let fence = self.device.synchronizers[index].fence;
 		{
-			let queue = self.device.vk_queues[self.device.queues[0].vk_queue_index]
+			let queue = self.device.device.vk_queues[self.device.queues[0].vk_queue_index]
 				.lock()
 				.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 			unsafe {
@@ -171,80 +171,12 @@ impl<'a> Frame<'a> {
 		// normal render recording path, and stealing them here makes helper transfer submissions write render-frame
 		// resources such as dynamic view buffers.
 		let pending_syncs = if include_implicit_sync {
-			let device = &mut *self.device;
-			// Copy each persistent source into this frame's staging buffer and enqueue the staging to GPU copy, so every
-			// frame gets the latest data even if the CPU didn't write this frame.
-			if super::buffer::PERSISTENT_WRITE {
-				for master_handle in &device.persistent_write_dynamic_buffers {
-					let frame_buffer_handle = device.buffers.nth_handle(*master_handle, sequence_index as _).unwrap();
-					let frame_buffer = device.buffers.resource(frame_buffer_handle);
-					let source_buffer = device.buffers.resource(
-						frame_buffer
-							.source
-							.expect("Persistent write dynamic buffer must have a source"),
-					);
-					let staging_buffer = device.buffers.resource(
-						frame_buffer
-							.staging
-							.expect("Persistent write dynamic buffer must have per-frame staging"),
-					);
-					let size = frame_buffer.size;
-
-					if size != 0 {
-						assert!(
-							size <= source_buffer.size
-								&& size <= staging_buffer.size
-								&& !source_buffer.pointer.0.is_null()
-								&& !staging_buffer.pointer.0.is_null(),
-							"Failed to copy a persistent Vulkan buffer. The most likely cause is that its source or frame-local staging allocation is missing mapped storage.",
-						);
-						// SAFETY: The source and staging buffers are distinct live allocations, and `size` is bounded by both.
-						unsafe {
-							std::ptr::copy_nonoverlapping(source_buffer.pointer.0, staging_buffer.pointer.0, size);
-						}
-					}
-
-					device.pending_buffer_syncs.insert(frame_buffer_handle);
-				}
-			}
-
-			device.take_pending_syncs()
+			self.device.take_pending_syncs()
 		} else {
 			(Vec::new(), Vec::new())
 		};
 
 		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), pending_syncs)
-	}
-
-	/// Interns a raster pipeline that a factory thread already compiled into this frame's device.
-	pub fn intern_raster_pipeline(
-		&mut self,
-		pipeline: crate::implementation::RasterPipeline,
-	) -> graphics_hardware_interface::PipelineHandle {
-		self.device
-			.add_pipeline(pipeline.pipeline, pipeline.layout, utils::hash::HashMap::default())
-	}
-
-	/// Interns a factory-built compute pipeline into this frame's device.
-	pub fn intern_compute_pipeline(
-		&mut self,
-		pipeline: crate::implementation::ComputePipeline,
-	) -> graphics_hardware_interface::PipelineHandle {
-		self.device
-			.add_pipeline(pipeline.pipeline, pipeline.layout, pipeline.shader_handles)
-	}
-
-	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
-		self.device.intern_image(image)
-	}
-
-	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
-		self.device.intern_sampler(sampler)
 	}
 
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
@@ -270,7 +202,15 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		self.device.sync_buffer(buffer_handle);
+		// A dynamic buffer uploads the copy this frame writes; a static buffer resolves to its only copy.
+		let handle = self
+			.device
+			.buffers
+			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
+			.unwrap();
+		if self.device.buffers.resource(handle).staging.is_some() {
+			self.device.pending_buffer_syncs.insert(handle);
+		}
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
@@ -349,13 +289,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.unwrap();
 		let buffer = buffers.resource(handle);
 
-		let (pointer, byte_count) = if super::buffer::PERSISTENT_WRITE
-			&& let Some(source_handle) = buffer.source
-		{
-			// The persistent source receives user writes. Frame recording copies it to the current staging buffer.
-			let source_buffer = buffers.resource(source_handle);
-			(source_buffer.pointer.0, source_buffer.size)
-		} else if let Some(staging_handle) = buffer.staging {
+		// A staged copy keeps what its last frame wrote in its staging buffer, and this frame's recording uploads it.
+		let (pointer, byte_count) = if let Some(staging_handle) = buffer.staging {
 			self.device.pending_buffer_syncs.insert(handle);
 			let staging_buffer = buffers.resource(staging_handle);
 			(staging_buffer.pointer.0, staging_buffer.size)
@@ -372,42 +307,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 impl<'a> crate::context::ContextCreate for Frame<'a> {
 	crate::context::delegate_context_create_to_device!();
-}
-
-impl Context {
-	/// Interns a factory-built image into this context, for loader threads that create objects outside a frame.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
-		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
-			.extent(image.extent)
-			.device_accesses(image.device_accesses)
-			.use_case(image.use_case)
-			.mip_levels(image.mip_levels);
-		builder.name = image.name.as_deref();
-		builder.array_layers = image.array_layers;
-		builder.cube_compatible = image.cube_compatible;
-		builder.cube_array_compatible = image.cube_array_compatible;
-
-		self.build_image(builder)
-	}
-
-	/// Interns a factory-built sampler into this context, for loader threads that create objects outside a frame.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
-		let mut builder = crate::sampler::Builder::new()
-			.filtering_mode(sampler.filtering_mode)
-			.reduction_mode(sampler.reduction_mode)
-			.mip_map_mode(sampler.mip_map_mode)
-			.addressing_mode(sampler.addressing_mode)
-			.min_lod(sampler.min_lod)
-			.max_lod(sampler.max_lod);
-		if let Some(anisotropy) = sampler.anisotropy {
-			builder = builder.anisotropy(anisotropy);
-		}
-
-		self.build_sampler(builder)
-	}
 }
 
 impl Frame<'_> {

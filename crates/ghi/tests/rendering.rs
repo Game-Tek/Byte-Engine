@@ -179,10 +179,6 @@ fn update_dynamic_data() {
 }
 
 #[test]
-#[cfg_attr(
-	target_os = "linux",
-	ignore = "Vulkan creates later dynamic-buffer copies through deferred tasks and shares one persistent write source; see todo.md"
-)]
 fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame() {
 	run(resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame);
 }

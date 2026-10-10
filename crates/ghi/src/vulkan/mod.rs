@@ -18,6 +18,7 @@ pub mod factory;
 pub mod frame;
 pub mod image;
 pub mod instance;
+pub mod io;
 pub mod queue;
 pub mod swapchain;
 pub mod synchronizer;
@@ -30,10 +31,11 @@ pub use self::context::*;
 pub(crate) use self::descriptor_heap::*;
 pub use self::descriptor_set::*;
 pub use self::device::*;
-pub use self::factory::Factory;
+pub use self::factory::{DetachedImage, Factory, SharedBuffer};
 pub use self::frame::*;
 pub(crate) use self::image::*;
 pub use self::instance::*;
+pub use self::io::{ResourceIoQueue, ResourceIoTicket};
 pub(crate) use self::swapchain::*;
 pub(crate) use self::synchronizer::*;
 
@@ -327,7 +329,7 @@ impl Sampler {
 
 #[derive(Clone)]
 pub(super) struct CommandBufferInternal {
-	/// Index into [`Context::vk_queues`] of the Vulkan queue this command buffer submits to.
+	/// Index into [`InnerDevice::vk_queues`] of the Vulkan queue this command buffer submits to.
 	vk_queue_index: usize,
 	command_pool: vk::CommandPool,
 	command_buffer: vk::CommandBuffer,
@@ -450,33 +452,16 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	alignment: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct BuildBuffer {
-	previous: BufferHandle,
-	master: graphics_hardware_interface::BaseBufferHandle,
-	/// When `PERSISTENT_WRITE` is enabled, carries the handle of the shared
-	/// CPU-writable source buffer so per-frame buffers can reference it.
-	pub(crate) source: Option<BufferHandle>,
-}
-
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
 	/// Deletes a Vulkan image once the frame recorded in [`Task`] has completed.
-	DeleteVulkanImage {
-		handle: vk::Image,
-	},
+	DeleteVulkanImage { handle: vk::Image },
 	/// Deletes a Vulkan image view once the frame recorded in [`Task`] has completed.
-	DeleteVulkanImageView {
-		handle: vk::ImageView,
-	},
+	DeleteVulkanImageView { handle: vk::ImageView },
 	/// Deletes a Vulkan buffer once the frame recorded in [`Task`] has completed.
-	DeleteVulkanBuffer {
-		handle: vk::Buffer,
-	},
+	DeleteVulkanBuffer { handle: vk::Buffer },
 	/// Frees device memory once the frame recorded in [`Task`] has completed.
-	FreeAllocation {
-		handle: crate::AllocationHandle,
-	},
+	FreeAllocation { handle: crate::AllocationHandle },
 	/// Resize an image.
 	ResizeImage {
 		handle: ImageHandle,
@@ -489,7 +474,6 @@ pub(crate) enum Tasks {
 		descriptor_write: crate::descriptors::DescriptorWrite,
 		expected_set_version: u64,
 	},
-	BuildBuffer(BuildBuffer),
 }
 
 /// The `Task` struct schedules backend work for a required time or frame.
@@ -528,7 +512,7 @@ impl Task {
 /// The `StoredQueue` struct provides per-queue device data to internal submission paths.
 #[derive(Clone)]
 pub(super) struct StoredQueue {
-	/// Index into [`InnerDevice::vk_queues`] and [`Context::vk_queues`]. Several GHI queues can share one Vulkan queue.
+	/// Index into [`InnerDevice::vk_queues`]. Several GHI queues can share one Vulkan queue.
 	pub(crate) vk_queue_index: usize,
 	pub(crate) queue_family_index: u32,
 }

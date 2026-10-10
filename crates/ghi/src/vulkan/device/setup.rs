@@ -73,59 +73,110 @@ impl InnerDevice {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
-		let queue_family_indices = queues
+		// Graphics and compute families also transfer, whether or not they report the flag.
+		let family_supports = |family: u32, required: vk::QueueFlags| {
+			let flags = queue_family_properties[family as usize].queue_flags;
+			let implied = flag_if(
+				flags.intersects(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE),
+				vk::QueueFlags::TRANSFER,
+			);
+			(flags | implied).contains(required)
+		};
+
+		let mut queue_family_indices = Vec::<u32>::with_capacity(queues.len());
+		for (selection, _) in queues.iter() {
+			use crate::types::WorkloadTypes;
+
+			let workloads = selection.r#type;
+			if workloads.is_empty() {
+				return Err(
+					"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
+				);
+			}
+			if workloads.intersects(WorkloadTypes::VIDEO) {
+				return Err(
+					"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
+				);
+			}
+			if workloads.intersects(WorkloadTypes::IO) {
+				return Err(
+					"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
+				);
+			}
+
+			let compute_workloads = WorkloadTypes::COMPUTE | WorkloadTypes::RAY_TRACING;
+			let required_queue_flags = flag_if(workloads.intersects(WorkloadTypes::RASTER), vk::QueueFlags::GRAPHICS)
+				| flag_if(workloads.intersects(compute_workloads), vk::QueueFlags::COMPUTE)
+				| flag_if(workloads.intersects(WorkloadTypes::TRANSFER), vk::QueueFlags::TRANSFER);
+
+			// Resources are exclusive to one queue family and never change owner, and a transfer-only family rejects
+			// the shader stages that barriers on rendered resources name. A selection therefore reuses a family an
+			// earlier selection picked whenever that family can run it, so resources can move between the contexts
+			// that submit on those queues.
+			let family = queue_family_indices
+				.iter()
+				.copied()
+				.find(|&family| family_supports(family, required_queue_flags))
+				.or_else(|| {
+					(0..queue_family_properties.len() as u32)
+						.filter(|&family| family_supports(family, required_queue_flags))
+						.min_by_key(|&family| queue_family_properties[family as usize].queue_flags.as_raw().count_ones())
+				})
+				.ok_or(
+					"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
+				)?;
+			queue_family_indices.push(family);
+		}
+
+		// Each selection gets a Vulkan queue of its own while its family has queues left, so the timelines that submit
+		// on them do not serialize on one queue lock. Selections beyond the family's queue count share its queues.
+		let mut vk_queue_keys = Vec::<(u32, u32)>::with_capacity(queues.len());
+		let stored_queues = queue_family_indices
 			.iter()
-			.map(|(selection, _)| {
-				use crate::types::WorkloadTypes;
-
-				let workloads = selection.r#type;
-				if workloads.is_empty() {
-					return Err(
-						"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
-					);
-				}
-				if workloads.intersects(WorkloadTypes::VIDEO) {
-					return Err(
-						"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
-					);
-				}
-				if workloads.intersects(WorkloadTypes::IO) {
-					return Err(
-						"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
-					);
-				}
-
-				let compute_workloads = WorkloadTypes::COMPUTE | WorkloadTypes::RAY_TRACING;
-				let required_queue_flags = flag_if(workloads.intersects(WorkloadTypes::RASTER), vk::QueueFlags::GRAPHICS)
-					| flag_if(workloads.intersects(compute_workloads), vk::QueueFlags::COMPUTE)
-					| flag_if(workloads.intersects(WorkloadTypes::TRANSFER), vk::QueueFlags::TRANSFER);
-
-				queue_family_properties
+			.enumerate()
+			.map(|(index, &queue_family_index)| {
+				let earlier = queue_family_indices[..index]
 					.iter()
-					.enumerate()
-					.filter(|(_, info)| info.queue_flags.contains(required_queue_flags))
-					.min_by_key(|(_, info)| info.queue_flags.as_raw().count_ones())
-					.map(|(index, _)| index as u32)
-					.ok_or(
-						"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
-					)
+					.filter(|&&family| family == queue_family_index)
+					.count() as u32;
+				let key = (
+					queue_family_index,
+					earlier % queue_family_properties[queue_family_index as usize].queue_count,
+				);
+				let vk_queue_index = vk_queue_keys.iter().position(|&existing| existing == key).unwrap_or_else(|| {
+					vk_queue_keys.push(key);
+					vk_queue_keys.len() - 1
+				});
+				StoredQueue {
+					vk_queue_index,
+					queue_family_index,
+				}
 			})
-			.collect::<Result<Vec<_>, _>>()?;
+			.collect::<Vec<_>>();
 
-		// Requests that resolve to the same family share one Vulkan queue, created in order of first use.
 		let mut queue_families = Vec::new();
-		for &queue_family_index in &queue_family_indices {
+		for &(queue_family_index, _) in &vk_queue_keys {
 			if !queue_families.contains(&queue_family_index) {
 				queue_families.push(queue_family_index);
 			}
 		}
 
+		// A family creates as many queues as it has distinct keys, since its queue indices are assigned from zero.
+		let queue_priorities = [1.0f32; 16];
 		let queue_create_infos = queue_families
 			.iter()
 			.map(|&queue_family_index| {
+				let queue_count = vk_queue_keys
+					.iter()
+					.filter(|(family, _)| *family == queue_family_index)
+					.count();
+				assert!(
+					queue_count <= queue_priorities.len(),
+					"Too many Vulkan queues were requested from one family. The most likely cause is more than 16 queue selections."
+				);
 				vk::DeviceQueueCreateInfo::default()
 					.queue_family_index(queue_family_index)
-					.queue_priorities(&[1.0])
+					.queue_priorities(&queue_priorities[..queue_count])
 			})
 			.collect::<Vec<_>>();
 
@@ -160,29 +211,15 @@ impl InnerDevice {
 		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
 			.map_err(|result| crate::vulkan::instance::creation_error(result, "Failed to create a device"))?;
 
-		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
-		// The context wraps each distinct queue in one mutex (see `Context::vk_queues`). This mutex is a temporary external
-		// synchronization fix; prefer internally synchronized Vulkan queues when available.
-		let vk_queues = queue_families
+		// Several GHI queues can resolve to one Vulkan queue, and every context of the device submits on these queues,
+		// so each distinct queue has one lock that the device and all its contexts share.
+		let vk_queues = vk_queue_keys
 			.iter()
-			.map(|&family| unsafe { device.get_device_queue(family, 0) })
-			.collect::<Vec<_>>();
-		let queues = queues
-			.iter_mut()
-			.zip(queue_family_indices)
-			.enumerate()
-			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
-				let vk_queue_index = queue_families
-					.iter()
-					.position(|&family| family == queue_family_index)
-					.unwrap();
-				StoredQueue {
-					vk_queue_index,
-					queue_family_index,
-				}
-			})
-			.collect();
+			.map(|&(family, index)| std::sync::Mutex::new(unsafe { device.get_device_queue(family, index) }))
+			.collect::<std::sync::Arc<[_]>>();
+		for ((_, queue_handle), index) in queues.iter_mut().zip(0u64..) {
+			**queue_handle = Some(graphics_hardware_interface::QueueHandle(index));
+		}
 
 		let supports_formatless_storage_write =
 			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
@@ -214,7 +251,7 @@ impl InnerDevice {
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
 			timestamp_period,
 			timestamp_valid_bits,
-			queues,
+			queues: stored_queues,
 			settings,
 			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
 			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),

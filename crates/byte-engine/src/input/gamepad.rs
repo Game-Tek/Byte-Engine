@@ -1,15 +1,10 @@
 //! Reads gamepads and joysticks over HID and records their sticks, triggers, and buttons as input.
 //!
-//! [`GamepadSystem`] finds the connected controllers when the application starts, watches for controllers that
-//! connect or disconnect later, and decodes each controller's reports into `Gamepad.*` triggers.
+//! [`GamepadSystem`] finds the connected controllers when the application starts, scans again when the operating
+//! system reports that a device connected or disconnected, and decodes each controller's reports into `Gamepad.*`
+//! triggers.
 
-use std::{
-	sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-	thread::{self, JoinHandle},
-	time::Duration,
-};
-
-use ghi::hid::{Device, DeviceInfo, DevicePath, Scanner, Usage};
+use ghi::hid::{Device, DeviceInfo, DevicePath, Monitor, Scanner, Usage};
 use log::{debug, warn};
 
 use super::Axis2;
@@ -84,23 +79,21 @@ pub(crate) enum GamepadKind {
 /// Joysticks and gamepads, the usages every supported controller declares.
 const GAMEPAD_USAGES: &[Usage] = &[Usage { page: 0x01, usage: 0x04 }, Usage { page: 0x01, usage: 0x05 }];
 
-/// How long the hotplug thread waits between scans for connected and disconnected controllers.
-const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
-
 /// The largest input report any supported controller sends; DualShock 4 Bluetooth reports are 78 bytes.
 const MAX_REPORT_SIZE: usize = 128;
 
 /// The `GamepadSystem` struct owns every connected controller so the application can turn their reports into input.
 ///
-/// Create it when the application starts, then call [`GamepadSystem::poll`] once per frame.
+/// Create it when the application starts, then call [`GamepadSystem::poll`] once per frame. Pass
+/// [`GamepadSystem::monitor`] to `ghi::window::App::wake_on_hid_changes` so a connecting controller wakes an idle
+/// application.
 pub(crate) struct GamepadSystem {
+	scanner: Scanner,
+	/// Reports device changes; `None` when the operating system refused the subscription.
+	monitor: Option<Monitor>,
 	devices: Vec<GamepadDevice>,
 	/// Controllers that connected but have no input device yet.
 	pending: Vec<Gamepad>,
-	changes: Receiver<Change>,
-	/// Dropping this sender tells the hotplug thread to stop.
-	stop: Option<Sender<()>>,
-	thread: Option<JoinHandle<()>>,
 }
 
 /// The `Gamepad` struct identifies a connected controller and how to decode its reports.
@@ -109,34 +102,30 @@ struct Gamepad {
 	kind: GamepadKind,
 	/// Steam's virtual pad already reports stick-up as negative. Hardware reports do not.
 	negate_stick_y: bool,
-}
-
-/// A controller connection change the hotplug thread found.
-enum Change {
-	Connected(Gamepad),
-	Disconnected(DevicePath),
+	/// Whether the latest scan found the controller.
+	seen: bool,
 }
 
 impl GamepadSystem {
-	/// Finds the controllers connected now, then watches for changes on a background thread.
+	/// Subscribes to device changes, then finds the controllers connected now.
 	///
-	/// The thread calls `wake` after each change so a waiting application loop polls again. Next, call
-	/// [`GamepadSystem::poll`] once per frame.
-	pub(crate) fn new(wake: impl Fn() + Send + 'static) -> Self {
-		let mut pending = Vec::new();
-		if let Err(error) = Scanner::new(GAMEPAD_USAGES).scan(|device| pending.extend(classify(device))) {
-			warn!("{error}");
-		}
-		let known = pending.iter().map(|gamepad: &Gamepad| gamepad.path.clone()).collect();
-		let (changes, stop, thread) = spawn_hotplug_thread(known, wake);
-
-		Self {
+	/// Next, call [`GamepadSystem::poll`] once per frame.
+	pub(crate) fn new() -> Self {
+		// Subscribing first means a controller that connects during the scan is reported as a change.
+		let monitor = Monitor::new().map_err(|error| warn!("{error}")).ok();
+		let mut system = Self {
+			scanner: Scanner::new(GAMEPAD_USAGES),
+			monitor,
 			devices: Vec::new(),
-			pending,
-			changes,
-			stop: Some(stop),
-			thread: Some(thread),
-		}
+			pending: Vec::new(),
+		};
+		system.rescan();
+		system
+	}
+
+	/// Returns the device change monitor, for the window event loop to wake on.
+	pub(crate) fn monitor(&self) -> Option<&Monitor> {
+		self.monitor.as_ref()
 	}
 
 	/// Reports whether any controller is connected, since their input is only seen by polling.
@@ -144,19 +133,13 @@ impl GamepadSystem {
 		!self.devices.is_empty()
 	}
 
-	/// Applies connection changes, then records every controller's state changes into `input`.
+	/// Applies device changes, then records every controller's state changes into `input`.
 	///
 	/// New controllers become devices of `device_class`. Without a device class, they are dropped with a warning,
 	/// because the application never called `setup_default_input`.
 	pub(crate) fn poll(&mut self, input: &mut InputCollector, device_class: Option<DeviceClassHandle>) {
-		for change in self.changes.try_iter() {
-			match change {
-				Change::Connected(gamepad) => self.pending.push(gamepad),
-				Change::Disconnected(path) => {
-					self.pending.retain(|gamepad| gamepad.path != path);
-					self.devices.retain(|device| device.path != path);
-				}
-			}
+		if self.monitor.as_mut().is_some_and(Monitor::take_changed) {
+			self.rescan();
 		}
 
 		if !self.pending.is_empty() {
@@ -169,6 +152,8 @@ impl GamepadSystem {
 								self.devices
 									.push(GamepadDevice::new(gamepad, device, input.create_device(&device_class)))
 							}
+							// Linux can report a node before its access rights are set; the change that sets them
+							// rescans, finds the controller unopened, and tries again.
 							Err(error) => warn!("{error}"),
 						}
 					}
@@ -196,15 +181,32 @@ impl GamepadSystem {
 			});
 		}
 	}
-}
 
-impl Drop for GamepadSystem {
-	fn drop(&mut self) {
-		// Disconnect the stop channel first so the thread wakes up and exits before the join.
-		drop(self.stop.take());
-		if let Some(thread) = self.thread.take() {
-			let _ = thread.join();
+	/// Scans the connected controllers, queues new ones as pending, and drops the ones that disconnected.
+	///
+	/// Known controllers are matched by borrowed path, so a scan allocates only for new controllers.
+	fn rescan(&mut self) {
+		self.devices.iter_mut().for_each(|device| device.seen = false);
+		self.pending.iter_mut().for_each(|gamepad| gamepad.seen = false);
+
+		let (devices, pending) = (&mut self.devices, &mut self.pending);
+		let scanned = self.scanner.scan(|device| {
+			if let Some(known) = devices.iter_mut().find(|known| device.path == known.path) {
+				known.seen = true;
+			} else if let Some(known) = pending.iter_mut().find(|known| device.path == known.path) {
+				known.seen = true;
+			} else if let Some(gamepad) = classify(device) {
+				pending.push(gamepad);
+			}
+		});
+		if let Err(error) = scanned {
+			// Keep the controllers as they are; the next change scans again.
+			warn!("{error}");
+			return;
 		}
+
+		self.devices.retain(|device| device.seen);
+		self.pending.retain(|gamepad| gamepad.seen);
 	}
 }
 
@@ -230,51 +232,8 @@ fn classify(device: DeviceInfo<'_>) -> Option<Gamepad> {
 		path: device.path.to_owned(),
 		kind,
 		negate_stick_y: stick_up_is_negative(kind, device.product_name),
+		seen: true,
 	})
-}
-
-/// Starts the thread that rescans every [`RESCAN_INTERVAL`] and sends the controllers that connected or
-/// disconnected since `known` was found.
-fn spawn_hotplug_thread(
-	known: Vec<DevicePath>,
-	wake: impl Fn() + Send + 'static,
-) -> (Receiver<Change>, Sender<()>, JoinHandle<()>) {
-	let (sender, receiver) = mpsc::channel();
-	let (stop, stop_receiver) = mpsc::channel::<()>();
-	let thread = thread::spawn(move || {
-		let mut scanner = Scanner::new(GAMEPAD_USAGES);
-		// Each known path with whether the latest scan saw it, so a scan allocates only for new controllers.
-		let mut known = known.into_iter().map(|path| (path, false)).collect::<Vec<_>>();
-
-		// Wait first: the application already scanned at startup.
-		while let Err(RecvTimeoutError::Timeout) = stop_receiver.recv_timeout(RESCAN_INTERVAL) {
-			let mut changed = false;
-			let scanned = scanner.scan(|device| {
-				if let Some((_, seen)) = known.iter_mut().find(|(path, _)| device.path == *path) {
-					*seen = true;
-				} else if let Some(gamepad) = classify(device) {
-					known.push((gamepad.path.clone(), true));
-					changed |= sender.send(Change::Connected(gamepad)).is_ok();
-				}
-			});
-			if let Err(error) = scanned {
-				warn!("{error}");
-				continue;
-			}
-
-			known.retain_mut(|(path, seen)| {
-				if !std::mem::take(seen) {
-					changed |= sender.send(Change::Disconnected(path.clone())).is_ok();
-					return false;
-				}
-				true
-			});
-			if changed {
-				wake();
-			}
-		}
-	});
-	(receiver, stop, thread)
 }
 
 /// The `GamepadDevice` struct keeps an open controller with the state its last report decoded to.
@@ -282,6 +241,8 @@ struct GamepadDevice {
 	path: DevicePath,
 	kind: GamepadKind,
 	negate_stick_y: bool,
+	/// Whether the latest scan found the controller.
+	seen: bool,
 	device: Device,
 	device_handle: DeviceHandle,
 	state: GamepadState,
@@ -294,6 +255,7 @@ impl GamepadDevice {
 			path: gamepad.path,
 			kind: gamepad.kind,
 			negate_stick_y: gamepad.negate_stick_y,
+			seen: true,
 			device,
 			device_handle,
 			state: GamepadState::default(),

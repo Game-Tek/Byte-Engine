@@ -350,10 +350,7 @@ impl GraphicsApplication {
 
 			input: services.input,
 			actions: services.actions,
-			gamepad_system: {
-				let waker = services.waker.clone();
-				input::gamepad::GamepadSystem::new(move || waker.wake())
-			},
+			gamepad_system: input::gamepad::GamepadSystem::new(),
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
@@ -511,6 +508,12 @@ impl GraphicsApplication {
 			};
 			self.waker.set_platform_waker(move || platform_waker.wake());
 			self.platform_waker_set = true;
+			// Connecting controllers report nothing through windows, so the event queue also wakes on device changes.
+			if let Some(monitor) = self.gamepad_system.monitor()
+				&& let Err(error) = self.renderer.wake_on_hid_changes(monitor)
+			{
+				log::warn!("{error}");
+			}
 		}
 
 		let woken = self.waker.begin_wait();

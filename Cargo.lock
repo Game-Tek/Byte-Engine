@@ -2167,6 +2167,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
 dependencies = [
  "bitflags 2.13.0",
+ "dispatch2",
  "libc",
  "objc2-core-foundation",
 ]

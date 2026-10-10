@@ -6,8 +6,8 @@
 use std::{ffi::CStr, io::Write as _, mem::MaybeUninit, path::Path};
 
 use rustix::{
-	fd::{AsFd, OwnedFd},
-	fs::{Mode, OFlags, RawDir},
+	fd::{AsFd, BorrowedFd, OwnedFd},
+	fs::{Mode, OFlags, RawDir, inotify},
 	io::Errno,
 };
 
@@ -34,6 +34,53 @@ impl Scanner {
 
 	pub(super) fn scan(&mut self, found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
 		scan_class_dir(Path::new("/sys/class/hidraw"), self.usages, found)
+	}
+}
+
+/// The `Monitor` struct watches `/dev` for hidraw nodes that appear, disappear, or change permissions.
+///
+/// Nothing in Linux calls back on a change, so the window event loop watches [`Monitor::fd`] instead.
+pub(crate) struct Monitor {
+	inotify: OwnedFd,
+}
+
+impl Monitor {
+	pub(super) fn new() -> Result<Self, String> {
+		Self::watching(Path::new("/dev"))
+	}
+
+	/// Watches `directory` for entries named `hidraw*`.
+	fn watching(directory: &Path) -> Result<Self, String> {
+		let inotify = inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC).map_err(|error| {
+			format!("Failed to create a HID device watch: {error}. The most likely cause is the inotify instance limit.")
+		})?;
+		// udev applies access rights after it creates a node, so attribute changes also count: a device that could
+		// not be opened at creation can be opened after them.
+		let flags = inotify::WatchFlags::CREATE | inotify::WatchFlags::DELETE | inotify::WatchFlags::ATTRIB;
+		inotify::add_watch(&inotify, directory, flags | inotify::WatchFlags::ONLYDIR).map_err(|error| {
+			format!(
+				"Failed to watch {} for HID devices: {error}. The most likely cause is the inotify watch limit.",
+				directory.display()
+			)
+		})?;
+		Ok(Self { inotify })
+	}
+
+	/// Reads every queued event and reports whether one named a hidraw node.
+	pub(super) fn take_changed(&mut self) -> bool {
+		let mut buffer = [MaybeUninit::<u8>::uninit(); 1024];
+		let mut events = inotify::Reader::new(&self.inotify, &mut buffer);
+		let mut changed = false;
+		// The descriptor does not block, so reading ends with `AGAIN` once the queue is empty.
+		while let Ok(event) = events.next() {
+			changed |= event.file_name().is_some_and(|name| name.to_bytes().starts_with(b"hidraw"));
+		}
+		changed
+	}
+
+	/// Returns the descriptor that becomes readable when `/dev` changes.
+	pub(crate) fn fd(&self) -> BorrowedFd<'_> {
+		self.inotify.as_fd()
 	}
 }
 
@@ -262,6 +309,25 @@ mod tests {
 
 		assert!(devices.is_empty());
 		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn monitor_reports_only_hidraw_changes() {
+		let directory = std::env::temp_dir().join(format!("byte-engine-ghi-hid-monitor-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&directory);
+		std::fs::create_dir_all(&directory).unwrap();
+		let mut monitor = Monitor::watching(&directory).unwrap();
+
+		std::fs::write(directory.join("tty9"), "").unwrap();
+		assert!(!monitor.take_changed());
+
+		std::fs::write(directory.join("hidraw3"), "").unwrap();
+		assert!(monitor.take_changed());
+		assert!(!monitor.take_changed());
+
+		std::fs::remove_file(directory.join("hidraw3")).unwrap();
+		assert!(monitor.take_changed());
+		std::fs::remove_dir_all(directory).unwrap();
 	}
 
 	#[test]

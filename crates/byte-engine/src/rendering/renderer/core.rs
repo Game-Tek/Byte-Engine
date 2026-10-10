@@ -443,6 +443,11 @@ impl Renderer {
 		self.app.as_ref().map(ghi::window::App::waker)
 	}
 
+	/// Makes a waiting [`Self::poll_windows`] return when a HID device connects or disconnects.
+	pub(crate) fn wake_on_hid_changes(&mut self, monitor: &ghi::hid::Monitor) -> Result<(), String> {
+		self.app.as_mut().map_or(Ok(()), |app| app.wake_on_hid_changes(monitor))
+	}
+
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {

@@ -10,15 +10,17 @@ use std::{
 	ptr::NonNull,
 };
 
+use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2_core_foundation::{CFDictionary, CFIndex, CFMutableDictionary, CFNumber, CFRetained, CFRunLoop, CFString, CFType};
 use objc2_io_kit::{
-	IOHIDDevice, IOHIDReportType, IOIteratorNext, IOObjectRelease, IORegistryEntryCreateCFProperty,
-	IORegistryEntryGetRegistryEntryID, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService,
-	IOServiceGetMatchingServices, IOServiceMatching, io_object_t, kIOMainPortDefault, kIOReturnSuccess,
+	IOHIDDevice, IOHIDReportType, IOIteratorNext, IONotificationPort, IONotificationPortRef, IOObjectRelease,
+	IORegistryEntryCreateCFProperty, IORegistryEntryGetRegistryEntryID, IORegistryEntryIDMatching, IOReturn,
+	IOServiceAddMatchingNotification, IOServiceGetMatchingService, IOServiceGetMatchingServices, IOServiceMatching,
+	io_iterator_t, io_object_t, kIOMainPortDefault, kIOReturnSuccess,
 };
 use smallvec::SmallVec;
 
-use super::{DeviceInfo, DevicePathRef, Usage};
+use super::{ChangeSignal, DeviceInfo, DevicePathRef, Usage};
 
 /// `kCFStringEncodingUTF8`.
 const UTF8: u32 = 0x0800_0100;
@@ -99,6 +101,121 @@ fn matching_dictionary(usage: Usage) -> CFRetained<CFDictionary> {
 		};
 	}
 	CFRetained::<CFDictionary>::from(&*matching)
+}
+
+/// The `Monitor` struct holds IOKit notifications for HID services that appear or terminate.
+///
+/// They arrive on a private dispatch queue, whose callback records the change and wakes the application loop.
+pub(crate) struct Monitor {
+	signal: std::sync::Arc<ChangeSignal>,
+	/// Runs every notification callback, one at a time.
+	queue: DispatchRetained<DispatchQueue>,
+	port: IONotificationPortRef,
+	/// The first-match and termination iterators, which IOKit re-arms each time they are drained.
+	iterators: [io_iterator_t; 2],
+}
+
+impl Monitor {
+	pub(super) fn new() -> Result<Self, String> {
+		let signal = std::sync::Arc::new(ChangeSignal::default());
+		// SAFETY: reading the default main port constant has no other effect.
+		let port = IONotificationPort::create(unsafe { kIOMainPortDefault });
+		if port.is_null() {
+			return Err(
+				"Failed to create an IOKit notification port. The most likely cause is that IOKit is unavailable.".into(),
+			);
+		}
+		let mut monitor = Self {
+			signal,
+			queue: DispatchQueue::new("com.byte-engine.hid", None),
+			port,
+			iterators: [0; 2],
+		};
+
+		for (iterator, kind) in monitor
+			.iterators
+			.iter_mut()
+			.zip([c"IOServiceFirstMatch", c"IOServiceTerminate"])
+		{
+			let mut name = [0; 128];
+			for (to, from) in name.iter_mut().zip(kind.to_bytes_with_nul()) {
+				*to = *from as std::ffi::c_char;
+			}
+			// SAFETY: the class name is a NUL-terminated string.
+			let matching = unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }.ok_or_else(|| {
+				"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that the process is out of memory.".to_string()
+			})?;
+			// SAFETY: the call consumes the extra dictionary reference; the refcon is the signal `Monitor` keeps alive
+			// until `Drop` destroys the port.
+			let result = unsafe {
+				IOServiceAddMatchingNotification(
+					port,
+					&mut name,
+					Some(CFRetained::<CFDictionary>::from(&*matching)),
+					Some(on_service_change),
+					std::sync::Arc::as_ptr(&monitor.signal).cast_mut().cast(),
+					iterator,
+				)
+			};
+			if result != kIOReturnSuccess {
+				return Err(format!(
+					"Failed to subscribe to HID device changes: kern_return_t {result}. The most likely cause is that IOKit is unavailable."
+				));
+			}
+			// Draining arms the notification. The services already present are not changes.
+			drain(*iterator);
+		}
+
+		// Callbacks start only once the port has a queue, after the iterators above are armed.
+		// SAFETY: the port is live and the queue outlives it.
+		unsafe { IONotificationPort::set_dispatch_queue(port, Some(&monitor.queue)) };
+		Ok(monitor)
+	}
+
+	pub(super) fn take_changed(&mut self) -> bool {
+		self.signal.take()
+	}
+
+	pub(crate) fn signal(&self) -> &ChangeSignal {
+		&self.signal
+	}
+}
+
+impl Drop for Monitor {
+	fn drop(&mut self) {
+		/// The `Notifications` struct moves the port and iterators onto the queue that owns their callbacks.
+		struct Notifications(IONotificationPortRef, [io_iterator_t; 2]);
+		// SAFETY: the port and iterators are only touched on the queue below, which serializes them with callbacks.
+		unsafe impl Send for Notifications {}
+
+		impl Notifications {
+			fn destroy(self) {
+				for iterator in self.1 {
+					IOObjectRelease(iterator);
+				}
+				// SAFETY: the port came from `IONotificationPort::create` and is destroyed exactly once.
+				unsafe { IONotificationPort::destroy(self.0) };
+			}
+		}
+
+		let notifications = Notifications(self.port, self.iterators);
+		// Tearing down on the queue waits for a running callback, so none runs after the signal is freed.
+		self.queue.exec_sync(move || notifications.destroy());
+	}
+}
+
+/// Releases every service an iterator holds, which also re-arms its notification.
+fn drain(iterator: io_iterator_t) {
+	while let Some(service) = Some(IOIteratorNext(iterator)).filter(|service| *service != 0) {
+		IOObjectRelease(service);
+	}
+}
+
+/// Records a HID service that appeared or terminated.
+unsafe extern "C-unwind" fn on_service_change(refcon: *mut c_void, iterator: io_iterator_t) {
+	drain(iterator);
+	// SAFETY: `refcon` is the `ChangeSignal` that `Monitor` keeps alive until its port is destroyed.
+	unsafe { &*refcon.cast::<ChangeSignal>() }.signal();
 }
 
 /// How many reports a device keeps between reads; older ones are dropped first.

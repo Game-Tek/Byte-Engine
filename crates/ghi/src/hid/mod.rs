@@ -3,7 +3,8 @@
 //! Input systems list the [`Usage`] values they can read, build a [`Scanner`] once, and call [`Scanner::scan`] at
 //! startup. Each platform filters by usage before it reads anything expensive, so only matching devices pay for
 //! their product name. A scan reports borrowed [`DeviceInfo`] values and allocates nothing per device; call
-//! [`DevicePathRef::to_owned`] only for the devices you keep, then read them through a [`Device`].
+//! [`DevicePathRef::to_owned`] only for the devices you keep, then read them through a [`Device`]. A [`Monitor`]
+//! reports when devices connect or disconnect, so you scan again only then.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -58,6 +59,61 @@ impl Scanner {
 	/// for example with [`DevicePathRef::to_owned`].
 	pub fn scan(&mut self, found: impl FnMut(DeviceInfo<'_>)) -> Result<(), String> {
 		self.os.scan(found)
+	}
+}
+
+/// The `Monitor` struct tells an input system when HID devices connect or disconnect, so it scans again only after
+/// a change instead of on a timer.
+///
+/// Create it before the startup [`Scanner::scan`] so no change slips between the two, call [`Monitor::take_changed`]
+/// once per frame, and pass it to [`crate::window::App::wake_on_hid_changes`] so a waiting application loop wakes
+/// up for a change.
+pub struct Monitor {
+	pub(crate) os: os::Monitor,
+}
+
+impl Monitor {
+	/// Subscribes to the operating system's device notifications.
+	///
+	/// Next, call [`Scanner::scan`] for the devices already connected.
+	pub fn new() -> Result<Self, String> {
+		Ok(Self { os: os::Monitor::new()? })
+	}
+
+	/// Returns whether a device connected or disconnected since the last call, then forgets the change.
+	///
+	/// When it returns `true`, call [`Scanner::scan`] and compare its devices with the ones you keep.
+	pub fn take_changed(&mut self) -> bool {
+		self.os.take_changed()
+	}
+}
+
+/// The `ChangeSignal` struct carries device notifications from the operating system's callback thread to the
+/// [`Monitor`] owner, and wakes the application loop that watches them.
+#[cfg(not(target_os = "linux"))]
+#[derive(Default)]
+pub(crate) struct ChangeSignal {
+	changed: std::sync::atomic::AtomicBool,
+	waker: std::sync::Mutex<Option<crate::window::AppWaker>>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ChangeSignal {
+	/// Records a change and wakes the watching application loop. Notification callbacks call it.
+	fn signal(&self) {
+		self.changed.store(true, std::sync::atomic::Ordering::Release);
+		if let Some(waker) = &*self.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+			waker.wake();
+		}
+	}
+
+	fn take(&self) -> bool {
+		self.changed.swap(false, std::sync::atomic::Ordering::Acquire)
+	}
+
+	/// Makes later changes wake `waker`'s application loop.
+	pub(crate) fn set_waker(&self, waker: crate::window::AppWaker) {
+		*self.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(waker);
 	}
 }
 

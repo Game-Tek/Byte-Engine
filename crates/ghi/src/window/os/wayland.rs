@@ -48,6 +48,8 @@ pub struct App {
 	next_window: u64,
 	/// The eventfd a waiting poll watches next to the display socket.
 	wake: Arc<OwnedFd>,
+	/// Other descriptors a waiting poll watches, such as a HID device monitor's; their owners drain them.
+	watched: Vec<OwnedFd>,
 }
 
 /// The `AppWaker` struct writes to the eventfd a waiting poll watches.

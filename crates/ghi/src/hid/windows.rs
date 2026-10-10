@@ -9,7 +9,9 @@ use windows::{
 		Devices::{
 			DeviceAndDriverInstallation::{
 				CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_ListW,
-				CR_BUFFER_SMALL, CR_SUCCESS,
+				CM_NOTIFY_ACTION, CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0, CM_NOTIFY_FILTER_0_0,
+				CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CM_Register_Notification, CM_Unregister_Notification, CR_BUFFER_SMALL,
+				CR_SUCCESS, HCMNOTIFICATION,
 			},
 			HumanInterfaceDevice::{
 				HIDD_ATTRIBUTES, HIDP_CAPS, HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetHidGuid, HidD_GetPreparsedData,
@@ -29,7 +31,7 @@ use windows::{
 	core::PCWSTR,
 };
 
-use super::{DeviceInfo, DevicePathRef, Usage};
+use super::{ChangeSignal, DeviceInfo, DevicePathRef, Usage};
 
 /// `HIDP_STATUS_SUCCESS`, which `HidP_GetCaps` returns on success.
 const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
@@ -93,6 +95,77 @@ impl Scanner {
 
 		Ok(())
 	}
+}
+
+/// The `Monitor` struct holds a Configuration Manager subscription to HID interface arrivals and removals.
+///
+/// Windows runs the callback on a thread pool thread, which records the change and wakes the application loop.
+pub(crate) struct Monitor {
+	signal: std::sync::Arc<ChangeSignal>,
+	registration: HCMNOTIFICATION,
+}
+
+impl Monitor {
+	pub(super) fn new() -> Result<Self, String> {
+		let signal = std::sync::Arc::new(ChangeSignal::default());
+		let filter = CM_NOTIFY_FILTER {
+			cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
+			FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+			u: CM_NOTIFY_FILTER_0 {
+				DeviceInterface: CM_NOTIFY_FILTER_0_0 {
+					// SAFETY: `HidD_GetHidGuid` only writes the HID interface class GUID.
+					ClassGuid: unsafe { HidD_GetHidGuid() },
+				},
+			},
+			..Default::default()
+		};
+		let mut registration = HCMNOTIFICATION::default();
+		// SAFETY: the context points at `signal`, which `Monitor` keeps alive until `Drop` unregisters the callback.
+		let result = unsafe {
+			CM_Register_Notification(
+				&filter,
+				Some(std::sync::Arc::as_ptr(&signal).cast()),
+				Some(on_interface_change),
+				&mut registration,
+			)
+		};
+		if result != CR_SUCCESS {
+			return Err(format!(
+				"Failed to subscribe to HID device changes: CONFIGRET {}. The most likely cause is that the Configuration Manager is unavailable.",
+				result.0
+			));
+		}
+		Ok(Self { signal, registration })
+	}
+
+	pub(super) fn take_changed(&mut self) -> bool {
+		self.signal.take()
+	}
+
+	pub(crate) fn signal(&self) -> &ChangeSignal {
+		&self.signal
+	}
+}
+
+impl Drop for Monitor {
+	fn drop(&mut self) {
+		// SAFETY: the registration came from `CM_Register_Notification`. Unregistering waits for running callbacks, so
+		// `signal` outlives every callback.
+		unsafe { CM_Unregister_Notification(self.registration) };
+	}
+}
+
+/// Records an HID interface arrival or removal. The filter only delivers those two actions.
+unsafe extern "system" fn on_interface_change(
+	_registration: HCMNOTIFICATION,
+	context: *const std::ffi::c_void,
+	_action: CM_NOTIFY_ACTION,
+	_data: *const CM_NOTIFY_EVENT_DATA,
+	_size: u32,
+) -> u32 {
+	// SAFETY: `context` is the `ChangeSignal` that `Monitor` keeps alive while registered.
+	unsafe { &*context.cast::<ChangeSignal>() }.signal();
+	0
 }
 
 /// Fills `list` with the present HID interfaces as NUL-terminated wide strings, reusing its capacity.

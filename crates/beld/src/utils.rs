@@ -1,10 +1,15 @@
+use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::asset::{StorageBackend, manager::AssetManager};
 
 /// Creates the asset manager BELD bakes with, registering the same handlers as the engine's debug runtime.
 ///
-/// Material shaders are generated for the visibility renderer. Tests bake with the CPU texture backends so they do not
-/// depend on a GPU.
-pub fn get_asset_manager<AS, RS>(storage_backend: AS, resource_storage_backend: RS) -> AssetManager
+/// Material shaders are generated for the visibility renderer with the project's `features`. Tests bake with the CPU
+/// texture backends so they do not depend on a GPU.
+pub fn get_asset_manager<AS, RS>(
+	storage_backend: AS,
+	resource_storage_backend: RS,
+	features: VisibilityFeatures,
+) -> AssetManager
 where
 	AS: StorageBackend + 'static,
 	RS: resource_management::resource::StorageBackend + 'static,
@@ -22,7 +27,8 @@ where
 
 	byte_engine::application::graphics::register_default_asset_handlers(
 		&mut asset_manager,
-		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new(),
+		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new(features),
+		features,
 		material_mips,
 		ibl,
 	);
@@ -43,7 +49,7 @@ mod tests {
 		resources::mesh::MeshModel,
 	};
 
-	use super::get_asset_manager;
+	use super::{VisibilityFeatures, get_asset_manager};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
@@ -76,6 +82,7 @@ mod tests {
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),
 				ReDBStorageBackend::new(resources_path.clone()),
+				VisibilityFeatures::default(),
 			);
 
 			let mesh: ReferenceModel<MeshModel> = asset_manager.bake_if_not_exists("triangle_move.fbx").await.expect(

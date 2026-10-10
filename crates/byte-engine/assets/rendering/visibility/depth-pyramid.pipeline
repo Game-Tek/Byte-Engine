@@ -1,0 +1,1 @@
+{"name":"Depth Pyramid","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/depth-pyramid.besl","push_constants":[{"offset":0,"size":4}]}}

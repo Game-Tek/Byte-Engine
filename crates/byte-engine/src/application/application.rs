@@ -23,9 +23,10 @@ pub struct BaseApplication {
 impl BaseApplication {
 	/// Creates the process configuration with the specified name and configuration parameters.
 	///
-	/// Parameters may be overridden by `BE_*` environment variables and then by `--name=value` command-line
-	/// arguments. Applications are singletons: this also installs the process logger and the `tracing` subscriber
-	/// that feeds span times into [`Self::metrics`].
+	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
+	/// `--name=value` command-line arguments. See [`parameters_from_json`] for the file's format. Applications are
+	/// singletons: this also installs the process logger and the `tracing` subscriber that feeds span times into
+	/// [`Self::metrics`].
 	///
 	/// # Configuration
 	/// - `log.level`: Sets the most verbose `log` level that is printed: `trace`, `debug`, `info`, `warn`, `error`, or `off`.
@@ -34,6 +35,12 @@ impl BaseApplication {
 	/// With the `tracy` Cargo feature, spans and logs also stream to a connected Tracy profiler.
 	pub fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		let mut parameters = parameters.to_vec();
+		// A file that exists but cannot be read or parsed stops startup, so a typo does not silently drop settings.
+		let configuration = read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME))
+			.unwrap_or_else(|error| panic!("{error}"));
+		for parameter in configuration {
+			upsert_parameter(&mut parameters, parameter);
+		}
 		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {
 			upsert_parameter(
 				&mut parameters,
@@ -112,7 +119,7 @@ impl BaseApplication {
 
 impl Parameters for BaseApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
-		self.parameters.iter().find(|p| p.name == name)
+		self.parameters.get_parameter(name)
 	}
 }
 
@@ -154,6 +161,33 @@ fn install_subscriber(metrics: Arc<Metrics>, trace: bool) {
 	}
 }
 
+/// Resolves an explicit path as supplied, or `default_path` inside the application directory.
+///
+/// The application directory is the Cargo package of a development binary, or the executable's directory otherwise.
+pub(crate) fn resolve_application_path(parameter: Option<&Parameter>, default_path: &str) -> std::path::PathBuf {
+	parameter.map(|parameter| parameter.value().into()).unwrap_or_else(|| {
+		// Cargo provides the application manifest directory while running development binaries.
+		#[cfg(debug_assertions)]
+		if let Some(manifest_directory) = std::env::var_os("CARGO_MANIFEST_DIR") {
+			return std::path::Path::new(&manifest_directory).join(default_path);
+		}
+
+		let executable = std::env::current_exe().unwrap_or_else(|error| {
+			panic!(
+				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
+			)
+		});
+		executable
+			.parent()
+			.unwrap_or_else(|| {
+				panic!(
+					"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
+				)
+			})
+			.join(default_path)
+	})
+}
+
 /// Replaces a previous parameter with the same name so later sources have deterministic precedence.
 fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
@@ -166,4 +200,4 @@ fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{Parameters, parse_argument};
+use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, parse_argument, read_configuration_file};

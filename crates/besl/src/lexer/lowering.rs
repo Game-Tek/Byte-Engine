@@ -301,9 +301,20 @@ impl Lexer {
 					return Ok(n);
 				}
 
-				let this: NodeReference = Node::r#struct(name, Vec::new()).into();
-				self.lex_children(&this, fields)?;
-				this
+				// Lex the fields before the struct joins the scope chain. A field typed as its own struct would
+				// otherwise hold a strong reference back to the struct, an `Rc` cycle that is never freed.
+				let fields = fields
+					.iter()
+					.map(|field| {
+						self.lex(field).map_err(|error| match error {
+							LexError::ReferenceToUndefinedType { type_name } if type_name == *name => LexError::invalid(format!(
+								"Struct `{name}` contains itself. The most likely cause is a field whose type is `{name}`, which would make the struct infinitely large."
+							)),
+							error => error,
+						})
+					})
+					.collect::<Result<Vec<_>, _>>()?;
+				Node::r#struct(name, fields).into()
 			}
 			parser::Nodes::Specialization { name, r#type, id } => {
 				Node::specialization(name, resolve_type(&self.scopes, r#type)?, *id).into()

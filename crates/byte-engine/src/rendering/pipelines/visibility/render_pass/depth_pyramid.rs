@@ -130,7 +130,7 @@ impl DepthPyramidPass {
 
 		Self {
 			descriptor_set,
-			pipelines: Pipelines::request(pipeline_manager, ["gtao-depth-pyramid"]),
+			pipelines: Pipelines::request(pipeline_manager, ["depth-pyramid"]),
 			view_data,
 			depth_pyramid,
 		}

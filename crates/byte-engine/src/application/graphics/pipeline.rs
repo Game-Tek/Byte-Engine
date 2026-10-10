@@ -220,7 +220,10 @@ fn visibility_pipeline_settings(application: &GraphicsApplication) -> Visibility
 			.with_directional_shadow_map_resolution(resolution)
 			.unwrap_or_else(|reason| panic!("{reason}"));
 	}
-	settings
+	// The same parameters chose what BELD baked, so the runtime creates exactly the passes the shaders expect.
+	settings.with_features(rendering::pipelines::visibility::VisibilityFeatures::from_parameters(
+		application,
+	))
 }
 
 /// Installs the retained UI render pass fed by UI render messages from `ui`.

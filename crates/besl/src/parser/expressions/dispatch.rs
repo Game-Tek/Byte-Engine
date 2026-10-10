@@ -3,8 +3,10 @@ use crate::parser::declarations::FeatureParser;
 
 /// Runs `attempt` with each parser in order and returns the first success.
 ///
-/// A parser that declines with [`ParsingFailReasons::NotMine`] lets the next one try. When none succeeds, the first
-/// real error wins, so the report comes from the parser that recognized the syntax.
+/// A parser that declines with [`ParsingFailReasons::NotMine`] or runs out of tokens lets the next one try. A parser
+/// that reports [`ParsingFailReasons::BadSyntax`] recognized the syntax, so its error is returned at once. Letting the
+/// next parser retry the same tokens would re-parse every nested construct once per alternative, which takes
+/// exponential time on deeply nested input.
 fn first_match<P, T>(
 	parsers: &[P],
 	iterator: &std::slice::Iter<'_, &str>,
@@ -15,6 +17,7 @@ fn first_match<P, T>(
 		match attempt(parser) {
 			Ok(result) => return Ok(result),
 			Err(ParsingFailReasons::NotMine) => {}
+			Err(error @ ParsingFailReasons::BadSyntax { .. }) => return Err(error),
 			Err(other) => {
 				error.get_or_insert(other);
 			}

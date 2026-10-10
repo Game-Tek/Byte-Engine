@@ -90,6 +90,52 @@ In packed mode, rebuilding or deleting a resource returns its old range to a coa
 
 Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
+## Leave render features out of the bake
+
+Use your project's `config.json` to leave optional render features out of
+both the baked shaders and the running application. You can leave out GTAO,
+SSGI, and contact shadows. Put the file in the
+application directory, next to `assets/` and `resources/`:
+
+```json
+{
+  "render": {
+    "gtao": { "enabled": false },
+    "ssgi": { "enabled": false },
+    "contact-shadows": { "enabled": false }
+  }
+}
+```
+
+BELD reads `config.json` from the current directory, so run it from the
+application directory or pass `--config`:
+
+```bash
+beld --source "$PWD/assets" --destination "$PWD/resources" bake \
+  --config "$PWD/config.json"
+```
+
+When you set a feature's `enabled` value to `false`, BELD bakes shaders without
+its code and skips its pipelines:
+
+| Feature | Code left out | Pipelines skipped |
+| --- | --- | --- |
+| `render.gtao.enabled` | GTAO occlusion in material shaders | `gtao`, `gtao-blur-x`, `gtao-upscale` |
+| `render.ssgi.enabled` | SSGI lighting and its diffuse light output in material shaders | `ssgi-trace`, `ssgi-temporal` |
+| `render.contact-shadows.enabled` | The contact-shadow filter in `sun-visibility.besl` | `contact-shadows` |
+
+The application reads the same file at startup and doesn't create the left-out
+passes. Turning a left-out feature on at runtime logs a warning instead.
+
+A missing file keeps every feature. The application also loads every other value
+in `config.json` as a startup parameter, so `{"render": {"debug": true}}` sets
+`render.debug`. Environment variables and command-line arguments still override
+the file.
+
+After you change a feature in `config.json`, run `beld bake --force`. Source
+file versions don't record the configuration, so a normal bake keeps the
+material shaders built with the old setting.
+
 ## Check the baked output
 
 Inspect the output before you package the application:
@@ -99,7 +145,7 @@ beld --destination "$PWD/resources" list
 beld --destination "$PWD/resources" inspect scene.glb
 ```
 
-Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor, run `beld bake --force` instead, because processor changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
+Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor or a feature in `config.json`, run `beld bake --force` instead, because those changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
 ## Use resources in development and release
 

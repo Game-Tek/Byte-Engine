@@ -3,6 +3,7 @@
 use besl::parser::{ElseBranch, Expressions, Node, Nodes, TypeName};
 
 use super::sources::*;
+use crate::rendering::pipelines::visibility::VisibilityFeatures;
 
 /// Parses one reusable BESL helper function from an isolated source scope.
 pub(super) fn parse_besl_function(source: &'static str, function_name: &str) -> Node<'static> {
@@ -191,18 +192,44 @@ pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstruc
 }
 
 /// Statements that light the material outputs after the authored body runs.
-pub(super) fn material_evaluation_suffix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
+///
+/// The code of every feature `visibility_features` leaves out is removed, so the shader declares none of its bindings.
+pub(super) fn material_evaluation_suffix_statements(
+	features: MaterialReconstructionFeatures,
+	visibility_features: VisibilityFeatures,
+) -> Vec<Node<'static>> {
 	let normal_source = if features.uses_tangent_frame {
 		MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE
 	} else {
 		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE
 	};
 	let mut statements = parse_besl_statements(normal_source, "material_evaluation_normal");
-	statements.extend(parse_besl_statements(
-		MATERIAL_EVALUATION_SUFFIX_SOURCE,
-		"material_evaluation_suffix",
-	));
+	let mut suffix = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
+	visibility_features.remove_left_out_code(&mut suffix);
+	statements.extend(suffix);
 	statements
+}
+
+/// Removes every conditional block, at any depth, whose condition reads the member `name`.
+///
+/// Backends emit only what `main` reaches, so this also drops the bindings and helpers only those blocks used.
+pub(crate) fn remove_conditionals_reading(statements: &mut Vec<Node<'_>>, name: &str) {
+	statements.retain_mut(|statement| {
+		let Nodes::Conditional {
+			condition, statements, ..
+		} = statement.node_mut()
+		else {
+			return true;
+		};
+		let mut reads_name = false;
+		walk_expressions(condition, &mut |expression| {
+			reads_name |= matches!(expression, Expressions::Member { name: member } if member.as_ref() == name);
+		});
+		if !reads_name {
+			remove_conditionals_reading(statements, name);
+		}
+		!reads_name
+	});
 }
 
 /// Narrows material property assignments so every material graph uses the compact evaluation ABI.

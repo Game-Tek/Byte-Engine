@@ -45,7 +45,7 @@ receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
 cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
 
-// Must match gtao-depth-pyramid.besl.
+// Must match depth-pyramid.besl.
 RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
 RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
 RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;

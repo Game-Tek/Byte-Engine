@@ -15,8 +15,10 @@ use ghi::AccessPolicies;
 use resource_management::asset::JsonObject;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
+pub(crate) use self::ast::remove_conditionals_reading;
 use self::ast::*;
 use self::sources::*;
+use super::VisibilityFeatures;
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES,
 	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
@@ -70,29 +72,30 @@ impl Default for ScopeAccess {
 
 /// The `VisibilityShaderGenerator` struct turns portable material programs into visibility material-evaluation shaders.
 ///
-/// Install it on the material, FBX, and glTF asset handlers so every baked material targets this pipeline.
+/// Install it on the material, FBX, and glTF asset handlers so every baked material targets this pipeline. Build it
+/// with the project's [`VisibilityFeatures`] so material shaders carry no code for a left-out feature.
 #[derive(Clone)]
 pub struct VisibilityShaderGenerator {
 	// Parsed once at construction so each material build only clones it.
 	common: Node<'static>,
 	scope: Node<'static>,
-}
-
-impl Default for VisibilityShaderGenerator {
-	fn default() -> Self {
-		Self::new()
-	}
+	features: VisibilityFeatures,
 }
 
 impl VisibilityShaderGenerator {
-	pub fn new() -> Self {
-		Self::with_access(ScopeAccess::default())
+	/// Creates a generator that declares read and write access to every material dispatch buffer.
+	///
+	/// Next, pass it to [`crate::application::graphics::register_default_asset_handlers`].
+	pub fn new(features: VisibilityFeatures) -> Self {
+		Self::with_access(features, ScopeAccess::default())
 	}
 
-	pub fn with_access(access: ScopeAccess) -> Self {
+	/// Creates a generator that declares `access` to the material dispatch buffers.
+	pub fn with_access(features: VisibilityFeatures, access: ScopeAccess) -> Self {
 		Self {
 			common: common_shader_scope(),
 			scope: visibility_shader_scope(access),
+			features,
 		}
 	}
 }
@@ -123,7 +126,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			// The injected reconstruction prefix reads compute builtins through the structural entry input.
 			params.push(Node::parameter("input", "StageInput"));
 			statements.splice(0..0, material_evaluation_prefix_statements(features));
-			statements.extend(material_evaluation_suffix_statements(features));
+			statements.extend(material_evaluation_suffix_statements(features, self.features));
 		}
 
 		root.add(declarations);

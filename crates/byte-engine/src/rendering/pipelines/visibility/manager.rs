@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
+use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, SSGI_ENABLED_PARAMETER, VisibilityFeatures};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
@@ -83,6 +84,7 @@ pub struct VisibilityPipelineSettings {
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
+	features: VisibilityFeatures,
 }
 
 impl Default for VisibilityPipelineSettings {
@@ -94,6 +96,7 @@ impl Default for VisibilityPipelineSettings {
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
+			features: VisibilityFeatures::default(),
 		}
 	}
 }
@@ -147,6 +150,15 @@ impl VisibilityPipelineSettings {
 		}
 		self.directional_shadow_map_resolution = resolution;
 		Ok(self)
+	}
+
+	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
+	/// configuration cannot turn it on.
+	///
+	/// Use the same [`VisibilityFeatures`] the material shaders were baked with.
+	pub fn with_features(mut self, features: VisibilityFeatures) -> Self {
+		self.features = features;
+		self
 	}
 
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
@@ -352,6 +364,17 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 		}
 		None => (profile.dimmer(), None),
 	}
+}
+
+/// Returns whether a runtime-enabled feature can run: a feature the project left out of its shaders stays off, with a
+/// warning, because `enabled` was turned on after startup.
+fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
+	if enabled && !built_in {
+		log::warn!(
+			"`{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
+		);
+	}
+	enabled && built_in
 }
 
 /// Applies queued runtime settings under `prefix`.
@@ -1014,6 +1037,15 @@ impl VisibilityPipelineManager {
 			&mut self.contact_shadow_settings,
 			ContactShadowSettings::with_parameter,
 		);
+		// A feature left out of the shaders stays off, whatever the runtime asks for.
+		let features = self.settings.features;
+		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
+		self.ssgi_settings.enabled = built_in_or_off(self.ssgi_settings.enabled, features.ssgi, SSGI_ENABLED_PARAMETER);
+		self.contact_shadow_settings.enabled = built_in_or_off(
+			self.contact_shadow_settings.enabled,
+			features.contact_shadows,
+			CONTACT_SHADOWS_ENABLED_PARAMETER,
+		);
 	}
 
 	/// Rebuilds the frame's instance lists from whole renderables whose dependencies are ready, and uploads skin palettes.
@@ -1358,6 +1390,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			},
 			&self.shadow_maps,
 			stage_counters,
+			self.settings.features,
 		);
 		context.write(
 			&self

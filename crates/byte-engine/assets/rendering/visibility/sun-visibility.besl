@@ -51,6 +51,10 @@ SunVisibilityParameters: struct {
 	// The camera's full-resolution pixel-to-ray constants, so a pixel's depth gives its view-space position.
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
+	// Nonzero when the contact-shadow trace ran this frame. The bake removes every block that reads it when the
+	// project leaves contact shadows out, which also drops the trace binding.
+	contact_shadows: u32,
+	_padding: f32,
 }
 
 views: descriptor<{ type: Views, binding: 0, access: read }>;
@@ -985,7 +989,9 @@ main: fn (input: StageInput) -> void {
 	if (depth != 0.0) {
 		shared_inverse_depth[tile_index] = 1.0 / depth;
 	}
-	shared_trace[tile_index] = fetch(contact_shadow_trace, texel).x;
+	if (sun_visibility_parameters.contact_shadows != 0) {
+		shared_trace[tile_index] = fetch(contact_shadow_trace, texel).x;
+	}
 	// Four lanes compute the cascades' scales while the tile loads; views 1 through 4 hold the cascades.
 	if (input.thread_idx < 4) {
 		let cascade_view_projection: mat4f = views.views[input.thread_idx + 1].view_projection;
@@ -1058,45 +1064,48 @@ main: fn (input: StageInput) -> void {
 		write(sun_visibility_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
-	// The first tap lies the filter radius above and left of the center texel. Its offset from the pixel, in trace
-	// texels, gives every tap's offset, and the Gaussian is separable, so the 25 taps need ten exponentials instead
-	// of one each.
-	let first_tap_index: u32 = center_index - CONTACT_SHADOW_FILTER_RADIUS * CONTACT_SHADOW_FILTER_TILE_WIDTH - CONTACT_SHADOW_FILTER_RADIUS;
-	let first_offset: vec2f = vec2f(
-		f32(tile_origin.x + center_texel.x - CONTACT_SHADOW_FILTER_RADIUS),
-		f32(tile_origin.y + center_texel.y - CONTACT_SHADOW_FILTER_RADIUS)
-	) - position;
-	let column_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
-	let row_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
-	for (let tap: u32 = 0; tap <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap = tap + 1) {
-		let column_offset: f32 = first_offset.x + f32(tap);
-		let row_offset: f32 = first_offset.y + f32(tap);
-		column_weights[tap] = exp(0.0 - column_offset * column_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		row_weights[tap] = exp(0.0 - row_offset * row_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-	}
+	// Without contact shadows, the shadow map alone shadows the pixel.
+	let result: f32 = 1.0;
+	if (sun_visibility_parameters.contact_shadows != 0) {
+		// The first tap lies the filter radius above and left of the center texel. Its offset from the pixel, in trace
+		// texels, gives every tap's offset, and the Gaussian is separable, so the 25 taps need ten exponentials instead
+		// of one each.
+		let first_tap_index: u32 = center_index - CONTACT_SHADOW_FILTER_RADIUS * CONTACT_SHADOW_FILTER_TILE_WIDTH - CONTACT_SHADOW_FILTER_RADIUS;
+		let first_offset: vec2f = vec2f(
+			f32(tile_origin.x + center_texel.x - CONTACT_SHADOW_FILTER_RADIUS),
+			f32(tile_origin.y + center_texel.y - CONTACT_SHADOW_FILTER_RADIUS)
+		) - position;
+		let column_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
+		let row_weights: f32[5] = f32[5](0.0, 0.0, 0.0, 0.0, 0.0);
+		for (let tap: u32 = 0; tap <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap = tap + 1) {
+			let column_offset: f32 = first_offset.x + f32(tap);
+			let row_offset: f32 = first_offset.y + f32(tap);
+			column_weights[tap] = exp(0.0 - column_offset * column_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+			row_weights[tap] = exp(0.0 - row_offset * row_offset * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
+		}
 
-	let lit: f32 = 0.0;
-	let total_weight: f32 = 0.0;
-	for (let tap_row: u32 = 0; tap_row <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_row = tap_row + 1) {
-		for (let tap_column: u32 = 0; tap_column <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_column = tap_column + 1) {
-			let tap_index: u32 = first_tap_index + tap_row * CONTACT_SHADOW_FILTER_TILE_WIDTH + tap_column;
-			let tap_inverse_z: f32 = shared_inverse_depth[tap_index];
-			if (tap_inverse_z != 0.0) {
-				let offset: vec2f = first_offset + vec2f(f32(tap_column), f32(tap_row));
-				let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
-				let plane_error: f32 = abs(tap_inverse_z - predicted_inverse_z) / center_inverse_z;
-				let weight: f32 = column_weights[tap_column] * row_weights[tap_row]
-					* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
-				lit = lit + weight * shared_trace[tap_index];
-				total_weight = total_weight + weight;
+		let lit: f32 = 0.0;
+		let total_weight: f32 = 0.0;
+		for (let tap_row: u32 = 0; tap_row <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_row = tap_row + 1) {
+			for (let tap_column: u32 = 0; tap_column <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_column = tap_column + 1) {
+				let tap_index: u32 = first_tap_index + tap_row * CONTACT_SHADOW_FILTER_TILE_WIDTH + tap_column;
+				let tap_inverse_z: f32 = shared_inverse_depth[tap_index];
+				if (tap_inverse_z != 0.0) {
+					let offset: vec2f = first_offset + vec2f(f32(tap_column), f32(tap_row));
+					let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
+					let plane_error: f32 = abs(tap_inverse_z - predicted_inverse_z) / center_inverse_z;
+					let weight: f32 = column_weights[tap_column] * row_weights[tap_row]
+						* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
+					lit = lit + weight * shared_trace[tap_index];
+					total_weight = total_weight + weight;
+				}
 			}
 		}
-	}
-	// A thin surface may have no trace texel on its plane, since each texel keeps the nearest of its pixels. The
-	// shadow map alone shadows it.
-	let result: f32 = 1.0;
-	if (total_weight > 0.00001) {
-		result = lit / total_weight;
+		// A thin surface may have no trace texel on its plane, since each texel keeps the nearest of its pixels. The
+		// shadow map alone shadows it.
+		if (total_weight > 0.00001) {
+			result = lit / total_weight;
+		}
 	}
 	write(sun_visibility_output, pixel, vec4f(sun * result, 0.0, 0.0, 0.0));
 }

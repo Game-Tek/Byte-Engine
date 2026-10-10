@@ -14,12 +14,15 @@
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
-		let generator = VisibilityShaderGenerator::with_access(ScopeAccess {
-			material_count: ghi::AccessPolicies::READ,
-			material_offset: ghi::AccessPolicies::NONE,
-			material_offset_scratch: ghi::AccessPolicies::NONE,
-			pixel_mapping: ghi::AccessPolicies::READ_WRITE,
-		});
+		let generator = VisibilityShaderGenerator::with_access(
+			VisibilityFeatures::from_parameters(&*application),
+			ScopeAccess {
+				material_count: ghi::AccessPolicies::READ,
+				material_offset: ghi::AccessPolicies::NONE,
+				material_offset_scratch: ghi::AccessPolicies::NONE,
+				pixel_mapping: ghi::AccessPolicies::READ_WRITE,
+			},
+		);
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -109,7 +112,9 @@ pub fn setup_default_resource_and_asset_management(
 ) {
 	#[cfg(debug_assertions)]
 	{
-		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
+		use crate::application::application::resolve_application_path;
+
+		let assets_path = resolve_application_path(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 
@@ -117,7 +122,8 @@ pub fn setup_default_resource_and_asset_management(
 
 		let (material_mips, ibl) = default_offline_generators();
 
-		register_default_asset_handlers(&mut asset_manager, generator, material_mips, ibl);
+		let features = VisibilityFeatures::from_parameters(&*application);
+		register_default_asset_handlers(&mut asset_manager, generator, features, material_mips, ibl);
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
@@ -126,11 +132,13 @@ pub fn setup_default_resource_and_asset_management(
 /// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`.
 ///
 /// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
-/// assets. `generator` adapts generated material shaders to the renderer, and `material_mips` and `ibl` select the
-/// offline texture backends; [`default_offline_generators`] returns the usual ones.
+/// assets. `generator` adapts generated material shaders to the renderer, `features` removes left-out features from
+/// standalone shaders, and `material_mips` and `ibl` select the offline texture backends; [`default_offline_generators`]
+/// returns the usual ones.
 pub fn register_default_asset_handlers(
 	asset_manager: &mut AssetManager,
 	generator: impl ProgramGenerator + Clone + 'static,
+	features: VisibilityFeatures,
 	material_mips: Arc<MipGenerator>,
 	ibl: IBLGenerator,
 ) {
@@ -161,7 +169,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
+	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new(features));
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 
@@ -333,7 +341,7 @@ use utils::Extent;
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
+use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityFeatures, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},

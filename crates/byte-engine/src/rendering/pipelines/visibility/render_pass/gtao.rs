@@ -14,6 +14,8 @@ use crate::rendering::{PipelineManagerClient, Sink};
 
 /// Configuration namespace of the runtime GTAO controls.
 pub const GTAO_CONFIGURATION_PREFIX: &str = "render.gtao.";
+/// The evaluate, blur, and upscale pipelines, named as [`Pipelines::request`] takes them.
+pub(in crate::rendering::pipelines::visibility) const GTAO_PIPELINES: [&str; 3] = ["gtao", "gtao-blur-x", "gtao-upscale"];
 const MIN_SAMPLES_PER_RAY: u32 = 1;
 const MAX_SAMPLES_PER_RAY: u32 = 32;
 const MIN_RADIAL_RAYS: u32 = 2;
@@ -225,7 +227,7 @@ impl GtaoPass {
 			gtao_descriptor_set,
 			blur_descriptor_set,
 			upscale_descriptor_set,
-			pipelines: Pipelines::request(pipeline_manager, ["gtao", "gtao-blur-x", "gtao-upscale"]),
+			pipelines: Pipelines::request(pipeline_manager, GTAO_PIPELINES),
 			parameters,
 			raw_ao_map,
 			blurred_ao_map,

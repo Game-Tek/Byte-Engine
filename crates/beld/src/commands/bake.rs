@@ -1,5 +1,6 @@
 use std::{num::NonZeroUsize, time::Instant};
 
+use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::{
 	asset::FileStorageBackend,
 	resource::{ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings},
@@ -11,9 +12,12 @@ use crate::{commands::shared::offload_file_operation, utils::get_asset_manager};
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
 ///
 /// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
-/// after changing an asset processor or `texture_compression`, because source versions don't record those.
+/// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
+/// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
+/// assets only left-out features use.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
+#[allow(clippy::too_many_arguments)]
 pub async fn bake(
 	source_path: String,
 	destination_path: String,
@@ -22,6 +26,7 @@ pub async fn bake(
 	texture_compression: Option<ResourceGpuCompressionPolicy>,
 	memory_budget: NonZeroUsize,
 	force: bool,
+	features: VisibilityFeatures,
 ) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
 	let asset_storage_backend = FileStorageBackend::open(source_path.clone()).await.map_err(|error| {
@@ -48,7 +53,7 @@ pub async fn bake(
 		1
 	})?;
 
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, features);
 
 	asset_manager.set_bake_memory_budget(memory_budget);
 
@@ -63,10 +68,13 @@ pub async fn bake(
 	);
 
 	let ids = if ids.is_empty() {
-		asset_manager.discover().await.map_err(|error| {
+		let mut ids = asset_manager.discover().await.map_err(|error| {
 			log::error!("Failed to discover assets. {error}");
 			1
-		})?
+		})?;
+		// Explicitly requested IDs still bake; only discovery skips what the project left out.
+		ids.retain(|id| !features.excludes(id));
+		ids
 	} else {
 		ids
 	};

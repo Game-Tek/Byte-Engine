@@ -1,8 +1,7 @@
 //! Lists HID device interfaces through the Configuration Manager.
 //!
-//! hidapi opens every HID interface and reads its strings and device-tree properties. This scan opens each
-//! interface without access rights, reads only its top-level usage and IDs, and reads the product string
-//! only for interfaces with a requested usage.
+//! The scan opens each interface without access rights and reads only its top-level usage and IDs. It reads the
+//! product string, which can query the device itself, only for interfaces with a requested usage.
 
 use windows::{
 	Win32::{

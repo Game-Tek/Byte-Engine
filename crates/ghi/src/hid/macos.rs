@@ -1,8 +1,7 @@
 //! Lists HID services from the I/O Registry.
 //!
-//! hidapi creates an `IOHIDManager` that builds a device object for every HID service, then copies its
-//! properties. This scan lets the kernel apply each requested usage as a matching dictionary and reads registry
-//! properties of the matching services only. The dictionaries and property keys are built once per
+//! The scan lets the kernel apply each requested usage as a matching dictionary and reads registry properties of
+//! the matching services only, without building an `IOHIDDevice` for services it skips. The dictionaries and property keys are built once per
 //! `Scanner`, so a scan allocates only the property values IOKit copies out.
 
 use std::{

@@ -160,8 +160,8 @@ pub struct DeviceInfo<'a> {
 /// The `DevicePath` struct names one device interface so input systems can tell devices apart and open them.
 ///
 /// Get one from [`DevicePathRef::to_owned`]. It allocates only on Windows, where it holds the interface path.
-/// It displays as the path hidapi reports on the same platform: `/dev/hidrawN` on Linux, the device interface
-/// path on Windows, and `DevSrvsID:<registry entry ID>` on macOS.
+/// It displays as `/dev/hidrawN` on Linux, the device interface path on Windows, and
+/// `DevSrvsID:<registry entry ID>` on macOS.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DevicePath(<os::PathData as ToOwned>::Owned);
 

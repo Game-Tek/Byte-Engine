@@ -20,14 +20,8 @@ name = "ghi"
 name = "retained_work"
 harness = false
 
-[[bench]]
-name = "hid_discovery"
-harness = false
-
 [dev-dependencies]
 divan = "0.1.21"
-# Only the HID discovery benchmark uses hidapi, as the baseline it compares against.
-hidapi = "2.6.1"
 
 [package.metadata.docs.rs]
 rustc-args = ["-C", "target-feature=+aes,+sse2"]

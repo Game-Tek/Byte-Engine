@@ -110,6 +110,30 @@ fn unordered_dispatches_write_their_own_rows() {
 	run(compute::unordered_dispatches_write_their_own_rows);
 }
 
+/// A context that loads another device's pipeline cache creates the same pipeline from it: the pipeline still
+/// computes the right pixels, and the cache has nothing new to save because nothing was compiled.
+///
+/// On a backend without an application-owned cache there is never anything to save, and this only checks that
+/// asking for one leaves pipelines working.
+#[test]
+fn pipelines_created_from_a_loaded_pipeline_cache_work() {
+	let features = ghi::device::Features::new().validation(true).pipeline_cache(true);
+
+	let compiled = {
+		let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
+		compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle);
+		ghi::context::Context::pipeline_cache_data(&context, |data| [data.loaded, data.added].concat())
+	};
+
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
+	ghi::context::Context::load_pipeline_cache(&context, compiled.clone());
+	compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle);
+	ghi::context::Context::pipeline_cache_data(&context, |data| {
+		assert_eq!(data.loaded, compiled);
+		assert!(data.added.is_empty());
+	});
+}
+
 #[test]
 fn image_group_members_keep_their_contents_until_reused() {
 	run(image_groups::members_keep_their_contents_until_another_member_reuses_them);

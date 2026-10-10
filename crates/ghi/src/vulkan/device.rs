@@ -5,6 +5,7 @@ use utils::{Extent, hash::HashMap};
 
 use super::{
 	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
+	pipeline_binaries::PipelineBinaries,
 	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
 };
 use crate::{
@@ -21,6 +22,8 @@ pub struct Device {
 	pub inner: Option<InnerDevice>,
 	device: ash::Device,
 	descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+	/// The application-owned pipeline cache, shared with every context and factory of the device.
+	pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
 	shaders: Vec<crate::vulkan::Shader>,
 }
 
@@ -67,6 +70,9 @@ pub struct InnerDevice {
 	pub(super) mesh_shading: ash::ext::mesh_shader::Device,
 	pub(super) descriptor_heap: ash::ext::descriptor_heap::Device,
 	pub(super) descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+	/// `None` unless the device was created with [`crate::device::Features::pipeline_cache`] and the driver supports
+	/// `VK_KHR_pipeline_binary`.
+	pub(super) pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,

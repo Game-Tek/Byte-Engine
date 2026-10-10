@@ -86,6 +86,7 @@ impl Context {
 		Some(Factory::detached_with_resources(
 			self.device.device.clone(),
 			self.device.descriptor_heap_properties,
+			self.device.pipeline_binaries.clone(),
 		))
 	}
 

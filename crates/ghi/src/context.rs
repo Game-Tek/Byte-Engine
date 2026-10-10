@@ -319,6 +319,24 @@ pub trait Context: ContextCreate {
 	/// Check this value before you create BC-compressed images or samplers.
 	fn supports_bc_texture_compression(&self) -> bool;
 
+	/// Loads the pipelines an earlier run compiled, so creating them again skips shader compilation.
+	///
+	/// Pass the bytes saved from [`Self::pipeline_cache_data`], before creating pipelines. The device keeps `data` as
+	/// the cache's storage instead of copying it. The cache belongs to the device, so every context and factory of
+	/// the device creates pipelines from it. Data from another GPU or driver version is ignored. This does nothing
+	/// unless the device was created with [`crate::device::Features::pipeline_cache`] and the backend supports an
+	/// application-owned cache.
+	fn load_pipeline_cache(&self, _data: Vec<u8>) {}
+
+	/// Lends the device's pipeline cache to `read`, as the bytes that were loaded and the bytes added since.
+	///
+	/// Call this once, before the application exits, and save what [`crate::pipelines::CacheData`] describes.
+	/// Pipelines are not created from the cache while `read` runs. Both parts are empty when the device keeps no
+	/// application-owned cache.
+	fn pipeline_cache_data<R>(&self, read: impl FnOnce(crate::pipelines::CacheData<'_>) -> R) -> R {
+		read(crate::pipelines::CacheData { loaded: &[], added: &[] })
+	}
+
 	/// Returns a borrowed queue wrapper that exposes queue-local command submission.
 	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
 

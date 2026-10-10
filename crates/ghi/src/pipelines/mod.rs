@@ -5,6 +5,24 @@ pub mod compute;
 pub mod raster;
 pub mod ray_tracing;
 
+/// The `CacheData` struct lends the bytes of a device's pipeline cache to the code that persists them, split so that
+/// saving writes only what is new.
+///
+/// The whole cache is `loaded` followed by `added`. Get one from
+/// [`Context::pipeline_cache_data`](crate::context::Context::pipeline_cache_data). To save, append `added` to the
+/// file `loaded` was read from. When `loaded` is empty, write `added` over that file instead, because the device
+/// kept nothing of it: there was none, it came from another GPU or driver version, or it was cut short. When `added`
+/// is empty, the file is already up to date. A file is always a whole cache that
+/// [`Context::load_pipeline_cache`](crate::context::Context::load_pipeline_cache) accepts, and one whose last write
+/// was interrupted loads up to the interruption.
+#[derive(Clone, Copy)]
+pub struct CacheData<'a> {
+	/// The bytes given to `load_pipeline_cache`, unchanged, or empty when the device kept none of them.
+	pub loaded: &'a [u8],
+	/// The pipelines compiled since, and the cache's header when nothing was loaded.
+	pub added: &'a [u8],
+}
+
 #[derive(Clone, Hash)]
 pub struct VertexElement<'a> {
 	pub(crate) name: &'a str,

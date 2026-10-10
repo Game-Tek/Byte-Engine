@@ -95,6 +95,19 @@ impl crate::context::Context for Context {
 		true
 	}
 
+	fn load_pipeline_cache(&self, data: Vec<u8>) {
+		if let Some(pipeline_binaries) = &self.device.pipeline_binaries {
+			pipeline_binaries.load(data);
+		}
+	}
+
+	fn pipeline_cache_data<R>(&self, read: impl FnOnce(crate::pipelines::CacheData<'_>) -> R) -> R {
+		match &self.device.pipeline_binaries {
+			Some(pipeline_binaries) => pipeline_binaries.data(read),
+			None => read(crate::pipelines::CacheData { loaded: &[], added: &[] }),
+		}
+	}
+
 	fn counter_duration(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<std::time::Duration> {
 		self.counters.duration(counter)
 	}
@@ -672,8 +685,13 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let (pipeline, layout) =
-			build_raster_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		let (pipeline, layout) = build_raster_pipeline(
+			&self.device,
+			&self.device.descriptor_heap_properties,
+			self.device.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		);
 		self.add_pipeline(pipeline, layout, HashMap::default())
 	}
 
@@ -681,7 +699,13 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_compute_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		let pipeline = build_compute_pipeline(
+			&self.device,
+			&self.device.descriptor_heap_properties,
+			self.device.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		);
 		self.add_pipeline(pipeline.pipeline, pipeline.layout, HashMap::default())
 	}
 
@@ -745,31 +769,36 @@ impl crate::context::ContextCreate for Context {
 			})
 			.collect::<Vec<_>>();
 
-		let mut descriptor_heap_flags =
-			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-			.push(&mut descriptor_heap_flags)
 			.layout(vk::PipelineLayout::null())
 			.stages(&stages)
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
 
-		let (pipeline, handle_buffer) = unsafe {
-			let pipeline = self
-				.ray_tracing_pipeline
-				.create_ray_tracing_pipelines(
-					vk::DeferredOperationKHR::null(),
-					vk::PipelineCache::null(),
-					&[create_info],
-					None,
-				)
-				.expect("No ray tracing pipeline")[0];
-			let handle_buffer = self
-				.ray_tracing_pipeline
+		let pipeline = crate::vulkan::pipeline_binaries::create_pipeline(
+			self.device.pipeline_binaries.as_deref(),
+			&create_info,
+			|create_info| {
+				unsafe {
+					self.ray_tracing_pipeline.create_ray_tracing_pipelines(
+						vk::DeferredOperationKHR::null(),
+						vk::PipelineCache::null(),
+						std::slice::from_ref(create_info),
+						None,
+					)
+				}
+				.map(|pipelines| pipelines[0])
+				.map_err(|(_, result)| result)
+			},
+		)
+		.expect(
+			"Vulkan ray tracing pipeline creation failed. The most likely cause is an invalid shader resource mapping or shader group.",
+		);
+		let handle_buffer = unsafe {
+			self.ray_tracing_pipeline
 				.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len())
-				.expect("Could not get ray tracing shader group handles");
-			(pipeline, handle_buffer)
-		};
+		}
+		.expect("Could not get ray tracing shader group handles");
 
 		let shader_handles = shaders
 			.iter()

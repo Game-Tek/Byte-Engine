@@ -19,6 +19,7 @@ pub mod frame;
 pub mod image;
 pub mod instance;
 pub mod io;
+pub(crate) mod pipeline_binaries;
 pub mod queue;
 pub mod swapchain;
 pub mod synchronizer;

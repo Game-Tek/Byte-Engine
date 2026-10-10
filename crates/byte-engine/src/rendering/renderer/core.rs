@@ -120,9 +120,48 @@ pub struct Renderer {
 	/// The counters scene pipelines and render passes created around their own stages, reported as `stage.<name>`.
 	stage_counters: SmallVec<[GpuCounter; 32]>,
 
+	/// Where the compiled pipeline cache is saved when the renderer drops. `None` leaves caching to the GPU driver.
+	pipeline_cache_path: Option<std::path::PathBuf>,
+
 	/// The GHI context where all rendering resources and operations are performed. Only the render thread uses it.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
+}
+
+impl Drop for Renderer {
+	/// Saves the pipelines this run compiled, so the next run creates them from the cache.
+	fn drop(&mut self) {
+		let Some(path) = &self.pipeline_cache_path else {
+			return;
+		};
+		if let Err(error) = self.context.pipeline_cache_data(|data| save_pipeline_cache(path, data)) {
+			log::warn!(
+				"Failed to save the pipeline cache at {}: {error}. The most likely cause is that the directory does not exist or is not writable. The next run will compile its pipelines again.",
+				path.display()
+			);
+		}
+	}
+}
+
+/// Brings the pipeline cache file up to date with one write of only the bytes it lacks, or with no disk access when
+/// nothing was compiled.
+///
+/// The cache is an append-only log, so new pipelines are appended to the file that was loaded. A file the device
+/// kept nothing of is overwritten. A write that is interrupted only costs the pipelines it was writing: loading
+/// keeps the records before the cut and the next save replaces the file.
+fn save_pipeline_cache(path: &std::path::Path, data: ghi::pipelines::CacheData) -> std::io::Result<()> {
+	use std::io::Write as _;
+
+	if data.added.is_empty() {
+		return Ok(());
+	}
+	let mut options = std::fs::OpenOptions::new();
+	if data.loaded.is_empty() {
+		options.write(true).create(true).truncate(true);
+	} else {
+		options.append(true);
+	}
+	options.open(path)?.write_all(data.added)
 }
 
 impl Renderer {
@@ -137,6 +176,10 @@ impl Renderer {
 	///   available cores, between one and four.
 	/// - `render.swapchain.images`: Sets how many swapchain images each window requests. Backends clamp it to what
 	///   they support (Metal takes 2 or 3). Defaults to the backend's choice for the presentation mode.
+	/// - `render.pipeline-cache.path`: Keeps compiled pipelines in this file, so later runs create them without
+	///   compiling shaders. The file is read here, before any pipeline is created. When the renderer drops, the
+	///   pipelines compiled since are appended to it, and a run that compiled none does not touch it. Create `device` with the same parameters, because the device decides whether it keeps a cache.
+	///   Defaults to none, which leaves pipeline caching to the GPU driver.
 	///
 	/// GPU times of every frame, scene pipeline, post-scene pass, and the stages those create with
 	/// [`RenderPassBuilder::create_gpu_counter`] are reported to `metrics` once each frame completes, under `frame`,
@@ -160,6 +203,23 @@ impl Renderer {
 
 		let mut context = device.create_context();
 		context.set_frames_in_flight(2);
+
+		let pipeline_cache_path = parameters
+			.get_parameter("render.pipeline-cache.path")
+			.map(|parameter| std::path::PathBuf::from(parameter.value()));
+		// The compilation servers below share the device's cache, so it is loaded before they can create pipelines.
+		if let Some(path) = &pipeline_cache_path {
+			match std::fs::read(path) {
+				// The device keeps the file's bytes as the cache itself, so they are read once and never copied.
+				Ok(data) => context.load_pipeline_cache(data),
+				// The first run has no cache yet.
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+				Err(error) => log::warn!(
+					"Failed to read the pipeline cache at {}: {error}. The most likely cause is that the file is not readable by this user. Pipelines will be compiled from their shaders.",
+					path.display()
+				),
+			}
+		}
 		let pipeline_compilation_server_count = parameters
 			.get_parameter("render.pipeline-compilation.threads")
 			.and_then(|parameter| parameter.parse::<usize>().ok())
@@ -217,6 +277,8 @@ impl Renderer {
 			frame_counter,
 			scene_counters: SmallVec::new(),
 			stage_counters: SmallVec::new(),
+
+			pipeline_cache_path,
 		};
 		(renderer, pipeline_compilation_servers)
 	}
@@ -1148,6 +1210,48 @@ use crate::{
 #[cfg(test)]
 mod tests {
 	use super::gpu_metric_name;
+
+	/// Saves `data` to a fresh path under the system's temporary directory and returns what the file holds
+	/// afterwards, or `None` when there is no file. `existing` is what the file holds before the save.
+	fn saved(name: &str, existing: Option<&[u8]>, data: ghi::pipelines::CacheData) -> Option<Vec<u8>> {
+		let path = std::env::temp_dir().join(format!("byte-engine-{}-{name}.pipelines", std::process::id()));
+		if let Some(existing) = existing {
+			std::fs::write(&path, existing).unwrap();
+		}
+		let result = super::save_pipeline_cache(&path, data);
+		let contents = std::fs::read(&path).ok();
+		let _ = std::fs::remove_file(&path);
+		result.unwrap();
+		contents
+	}
+
+	#[test]
+	fn pipeline_cache_save_appends_new_pipelines_to_the_loaded_file() {
+		let data = ghi::pipelines::CacheData {
+			loaded: b"old",
+			added: b"new",
+		};
+		assert_eq!(saved("append", Some(b"old"), data).as_deref(), Some(&b"oldnew"[..]));
+	}
+
+	#[test]
+	fn pipeline_cache_save_replaces_a_file_the_device_kept_nothing_of() {
+		let data = ghi::pipelines::CacheData {
+			loaded: b"",
+			added: b"new",
+		};
+		assert_eq!(saved("replace", Some(b"stale file"), data).as_deref(), Some(&b"new"[..]));
+		assert_eq!(saved("create", None, data).as_deref(), Some(&b"new"[..]));
+	}
+
+	#[test]
+	fn pipeline_cache_save_writes_nothing_when_nothing_was_compiled() {
+		let data = ghi::pipelines::CacheData {
+			loaded: b"old",
+			added: b"",
+		};
+		assert_eq!(saved("unchanged", None, data), None);
+	}
 
 	#[test]
 	fn gpu_metrics_are_named_by_kind_and_sink() {

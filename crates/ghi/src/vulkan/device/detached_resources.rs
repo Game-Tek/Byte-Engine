@@ -50,6 +50,7 @@ impl crate::device::Device for Device {
 		let (pipeline, layout) = crate::vulkan::context::build_raster_pipeline(
 			&self.device,
 			&self.descriptor_heap_properties,
+			self.pipeline_binaries.as_deref(),
 			&self.shaders,
 			builder,
 		);
@@ -57,7 +58,13 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		crate::vulkan::context::build_compute_pipeline(&self.device, &self.descriptor_heap_properties, &self.shaders, builder)
+		crate::vulkan::context::build_compute_pipeline(
+			&self.device,
+			&self.descriptor_heap_properties,
+			self.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		)
 	}
 }
 

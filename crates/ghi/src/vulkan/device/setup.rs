@@ -13,6 +13,7 @@ impl Device {
 		Ok(Self {
 			device: inner.device.clone(),
 			descriptor_heap_properties: inner.descriptor_heap_properties,
+			pipeline_binaries: inner.pipeline_binaries.clone(),
 			inner: Some(inner),
 			shaders: Vec::new(),
 		})
@@ -21,11 +22,13 @@ impl Device {
 	pub(crate) fn detached_with_resources(
 		device: ash::Device,
 		descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+		pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
 	) -> Self {
 		Self {
 			inner: None,
 			device,
 			descriptor_heap_properties,
+			pipeline_binaries,
 			shaders: Vec::with_capacity(64),
 		}
 	}
@@ -203,10 +206,30 @@ impl InnerDevice {
 		}
 		let mut enabled_features = features.chain(&settings);
 
+		// The pipeline cache is an optimization, so a driver without it still creates the device.
+		let pipeline_binary_properties = settings
+			.pipeline_cache
+			.then(|| pipeline_binary_properties(vk_instance, physical_device, &available_device_extensions))
+			.flatten();
+		if pipeline_binary_properties.is_some() {
+			device_extension_names.push(ash::khr::pipeline_binary::NAME.as_ptr());
+		}
+		let mut pipeline_binary_features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default().pipeline_binaries(true);
+		// The application persists the binaries, so a driver cache of the same data would only repeat the work. Not
+		// every driver lets its cache be turned off.
+		let mut internal_cache_control = vk::DevicePipelineBinaryInternalCacheControlKHR::default().disable_internal_cache(
+			pipeline_binary_properties.is_some_and(|properties| properties.pipeline_binary_internal_cache_control == vk::TRUE),
+		);
+
 		// SAFETY: The chain links only live structures of `features`, and its last structure is writable.
-		let device_create_info = unsafe { vk::DeviceCreateInfo::default().extend(&mut enabled_features) }
+		let mut device_create_info = unsafe { vk::DeviceCreateInfo::default().extend(&mut enabled_features) }
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names);
+		if pipeline_binary_properties.is_some() {
+			device_create_info = device_create_info
+				.push(&mut pipeline_binary_features)
+				.push(&mut internal_cache_control);
+		}
 
 		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
 			.map_err(|result| crate::vulkan::instance::creation_error(result, "Failed to create a device"))?;
@@ -246,6 +269,9 @@ impl InnerDevice {
 			mesh_shading: ash::ext::mesh_shader::Device::load(vk_instance, &device),
 			descriptor_heap: ash::ext::descriptor_heap::Device::load(vk_instance, &device),
 			descriptor_heap_properties,
+			pipeline_binaries: pipeline_binary_properties
+				.and_then(|_| PipelineBinaries::new(vk_instance, &device))
+				.map(std::sync::Arc::new),
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
@@ -351,6 +377,32 @@ fn available_device_extensions(
 	unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.map_err(
 		|_| "Failed to enumerate Vulkan device extensions. The most likely cause is that the GPU driver ran out of host memory.",
 	)
+}
+
+/// Returns the device's `VK_KHR_pipeline_binary` properties, or `None` when it should not have an application-owned
+/// pipeline cache.
+///
+/// A driver that asks applications to use its internal cache counts as unsupported, because capturing binaries there
+/// would duplicate the cache the driver insists on keeping.
+fn pipeline_binary_properties(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> Option<vk::PhysicalDevicePipelineBinaryPropertiesKHR<'static>> {
+	if !has_extension(available_extensions, ash::khr::pipeline_binary::NAME) {
+		return None;
+	}
+
+	let mut features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+
+	let mut properties = vk::PhysicalDevicePipelineBinaryPropertiesKHR::default();
+	let mut device_properties = vk::PhysicalDeviceProperties2::default().push(&mut properties);
+	unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut device_properties) };
+
+	(features.pipeline_binaries == vk::TRUE && properties.pipeline_binary_prefers_internal_cache == vk::FALSE)
+		.then_some(properties)
 }
 
 fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {

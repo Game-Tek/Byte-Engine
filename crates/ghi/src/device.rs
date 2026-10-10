@@ -43,9 +43,9 @@ where
 
 /// The `Features` struct selects optional GPU features during device creation.
 ///
-/// Validation, API tracing, ray tracing, sparse resources, and geometry shaders
-/// are disabled by default. Mesh shading is enabled by default. When `gpu` is
-/// `None`, the backend selects an appropriate GPU.
+/// Validation, API tracing, ray tracing, sparse resources, geometry shaders, and
+/// the application-owned pipeline cache are disabled by default. Mesh shading is
+/// enabled by default. When `gpu` is `None`, the backend selects an appropriate GPU.
 #[derive(Debug, Clone, Copy)]
 pub struct Features {
 	pub(crate) validation: bool,
@@ -58,6 +58,7 @@ pub struct Features {
 	pub(crate) sparse: bool,
 	pub(crate) geometry_shader: bool,
 	pub(crate) mesh_shading: bool,
+	pub(crate) pipeline_cache: bool,
 }
 
 impl Default for Features {
@@ -79,6 +80,7 @@ impl Features {
 			sparse: false,
 			geometry_shader: false,
 			mesh_shading: true,
+			pipeline_cache: false,
 		}
 	}
 
@@ -129,6 +131,17 @@ impl Features {
 
 	pub fn mesh_shading(mut self, mesh_shading: bool) -> Self {
 		self.mesh_shading = mesh_shading;
+		self
+	}
+
+	/// Makes the application the owner of the compiled pipeline cache instead of the GPU driver.
+	///
+	/// Enable this only when the application persists the cache: load it with
+	/// [`crate::context::Context::load_pipeline_cache`] before creating pipelines and save
+	/// [`crate::context::Context::pipeline_cache_data`] before exiting. The driver stops keeping its own cache where it can, so an
+	/// application that enables this without saving compiles every pipeline again in each run.
+	pub fn pipeline_cache(mut self, pipeline_cache: bool) -> Self {
+		self.pipeline_cache = pipeline_cache;
 		self
 	}
 }

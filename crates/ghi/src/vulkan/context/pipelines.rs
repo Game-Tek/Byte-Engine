@@ -1,4 +1,5 @@
 use super::*;
+use crate::vulkan::pipeline_binaries::{PipelineBinaries, create_pipeline};
 
 impl Context {
 	/// Adds a built pipeline and returns the handle commands bind it with.
@@ -52,6 +53,7 @@ pub(super) fn shader_pipeline_layout(
 pub(crate) fn build_raster_pipeline(
 	device: &ash::Device,
 	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
+	pipeline_binaries: Option<&PipelineBinaries>,
 	shaders: &[Shader],
 	builder: crate::pipelines::raster::Builder,
 ) -> (vk::Pipeline, PipelineLayout) {
@@ -204,8 +206,6 @@ pub(crate) fn build_raster_pipeline(
 		.rasterization_samples(vk::SampleCountFlags::TYPE_1)
 		.min_sample_shading(1.0);
 
-	let mut descriptor_heap_flags =
-		vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 	// The render pass and layout stay null because of VK_KHR_dynamic_rendering and descriptor heaps.
 	let mut pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
 		.vertex_input_state(&vertex_input_state)
@@ -216,17 +216,17 @@ pub(crate) fn build_raster_pipeline(
 		.dynamic_state(&dynamic_state)
 		.rasterization_state(&rasterization_state)
 		.multisample_state(&multisample_state)
-		.push(&mut descriptor_heap_flags)
 		.push(&mut rendering_info);
 	if depth_attachment.is_some() {
 		pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
 	}
 
-	let pipeline = unsafe {
-		device
-			.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None)
-			.expect("No pipeline")[0]
-	};
+	let pipeline = create_pipeline(pipeline_binaries, &pipeline_create_info, |create_info| {
+		unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+			.map(|pipelines| pipelines[0])
+			.map_err(|(_, result)| result)
+	})
+	.expect("Vulkan raster pipeline creation failed. The most likely cause is an invalid shader resource mapping or a shader interface that does not match the render targets.");
 
 	(pipeline, layout)
 }
@@ -237,6 +237,7 @@ pub(crate) fn build_raster_pipeline(
 pub(crate) fn build_compute_pipeline(
 	device: &ash::Device,
 	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
+	pipeline_binaries: Option<&PipelineBinaries>,
 	shaders: &[Shader],
 	builder: crate::pipelines::compute::Builder,
 ) -> crate::vulkan::ComputePipeline {
@@ -261,16 +262,15 @@ pub(crate) fn build_compute_pipeline(
 		.module(shader.shader)
 		.name(c"main")
 		.specialization_info(&specialization_info);
-	let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
-	let create_infos = [vk::ComputePipelineCreateInfo::default()
-		.push(&mut flags)
+	let create_info = vk::ComputePipelineCreateInfo::default()
 		.stage(stage)
-		.layout(vk::PipelineLayout::null())];
-	let pipeline = unsafe {
-		device
-			.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
-			.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.")[0]
-	};
+		.layout(vk::PipelineLayout::null());
+	let pipeline = create_pipeline(pipeline_binaries, &create_info, |create_info| {
+		unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+			.map(|pipelines| pipelines[0])
+			.map_err(|(_, result)| result)
+	})
+	.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.");
 
 	crate::vulkan::ComputePipeline {
 		pipeline,

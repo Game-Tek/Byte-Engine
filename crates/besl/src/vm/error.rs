@@ -113,6 +113,15 @@ pub enum VmError {
 		source_lane: u32,
 		subgroup_size: u32,
 	},
+	DivergentSubgroupShuffleMask {
+		lane: usize,
+		expected: u32,
+		found: u32,
+	},
+	SubgroupShuffleSourceInactive {
+		lane: usize,
+		source_lane: u32,
+	},
 	MissingSpecialization {
 		name: String,
 	},
@@ -349,6 +358,14 @@ impl std::fmt::Display for VmError {
 			} => write!(
 				f,
 				"Subgroup broadcast source lane {source_lane} is outside subgroup size {subgroup_size}. The most likely cause is that the shader selected a lane that is not active in this subgroup."
+			),
+			VmError::DivergentSubgroupShuffleMask { lane, expected, found } => write!(
+				f,
+				"Divergent subgroup shuffle mask in lane {lane}: expected {expected} but found {found}. The most likely cause is that subgroup lanes passed different masks to the same shuffle."
+			),
+			VmError::SubgroupShuffleSourceInactive { lane, source_lane } => write!(
+				f,
+				"Subgroup shuffle in lane {lane} reads lane {source_lane}, which is not active in this subgroup. The most likely cause is a mask that reaches past the subgroup's active lanes."
 			),
 			VmError::MissingSpecialization { name } => write!(
 				f,

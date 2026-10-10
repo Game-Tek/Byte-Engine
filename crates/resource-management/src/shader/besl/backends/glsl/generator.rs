@@ -116,6 +116,7 @@ impl Generator {
 			Stages::Compute { .. } if uses_subgroup_intrinsics => {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:require\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:require\n");
 			}
 			Stages::Mesh {
 				maximum_vertices,
@@ -202,7 +203,6 @@ impl NodeEmitter for Generator {
 			"vec4u" => "uvec4",
 			"vec3f" => "vec3",
 			"vec4f" => "vec4",
-			"packed_vec4f" => "vec4",
 			"mat2f" => "mat2",
 			"mat3f" => "mat3",
 			"mat4f" => "mat4",
@@ -222,8 +222,15 @@ impl NodeEmitter for Generator {
 		}
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "const";
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
-		let _ = write!(string, "layout(constant_id={index})const {type_name} {name}=1.0f;");
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		default: &str,
+	) {
+		let _ = write!(string, "layout(constant_id={id})const {type_name} {name}={default};");
 	}
 	fn minified(&self) -> bool {
 		self.minified
@@ -520,12 +527,14 @@ impl NodeEmitter for Generator {
 					"is_finite" => "_besl_is_finite",
 					"is_normal" => "_besl_is_normal",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
-					| "packed_vec4f" => Self::type_from_besl(name),
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::type_from_besl(name)
+					}
 					"subgroup_ballot" => "subgroupBallot",
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "subgroupBroadcast",
+					"subgroup_shuffle_xor_f32" => "subgroupShuffleXor",
 					"set_mesh_output_counts" => "SetMeshOutputsEXT",
 					name => name,
 				});
@@ -555,7 +564,7 @@ impl NodeEmitter for Generator {
 		true
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		self.emit_node(string, left);
+		self.emit_wrapped_expression(string, left);
 		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
 			// Any expression may pick the element, so the index cannot be assumed uniform across a draw.
 			string.push_str("[nonuniformEXT(");
@@ -603,14 +612,14 @@ impl NodeEmitter for Generator {
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
 					string,
-					"layout(push_constant){space_char}uniform PushConstant{space_char}{{{break_char}"
+					"layout(push_constant,{space_char}scalar){space_char}uniform PushConstant{space_char}{{{break_char}"
 				);
 				emit_statement_block(string, formatting, members, 1, |string, member| {
 					self.emit_node(string, member)
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
 			}
-			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					// A member may be a user struct, which is declared under its escaped name.

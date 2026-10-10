@@ -449,7 +449,8 @@ impl PipelineManager for ParticleManager {
 			let camera = math::inverse(sink.view().view()).get_column(3);
 			let push_constants = ParticlePushConstants {
 				view_projection: sink.view_projection().into(),
-				camera: [camera.x, camera.y, camera.z, sink.exposure_scale()],
+				camera_position: ghi::pod::Vec3f::new(camera.x, camera.y, camera.z),
+				exposure: sink.exposure_scale(),
 			};
 			// Every sink sees the same particles, so only the first recorded one simulates them.
 			let simulates = commands.is_empty();

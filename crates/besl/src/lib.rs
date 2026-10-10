@@ -25,6 +25,7 @@ pub use lexer::Expressions;
 pub use lexer::Node;
 pub use lexer::Nodes;
 pub use lexer::Operators;
+pub use lexer::UnaryOperators;
 pub use lexer::infer_expression_type;
 
 pub use crate::lexer::NodeReference;

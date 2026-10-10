@@ -223,7 +223,6 @@ impl Buffer {
 			ValueType::Vec2F => Value::Vec2F(read_lanes(bytes)),
 			ValueType::Vec3F => Value::Vec3F(read_lanes(bytes)),
 			ValueType::Vec4F => Value::Vec4F(read_lanes(bytes)),
-			ValueType::PackedVec4F => Value::PackedVec4F(read_lanes(bytes)),
 			ValueType::Mat4F => Value::Mat4F(read_lanes(bytes)),
 			ValueType::Mat4x3F => Value::Mat4x3F(read_lanes(bytes)),
 			ValueType::Texture2D
@@ -289,7 +288,7 @@ impl Buffer {
 			Value::Vec4F16(value) => write_lanes(self, offset, value),
 			Value::Vec2F(value) => write_lanes(self, offset, value),
 			Value::Vec3F(value) => write_lanes(self, offset, value),
-			Value::Vec4F(value) | Value::PackedVec4F(value) => write_lanes(self, offset, value),
+			Value::Vec4F(value) => write_lanes(self, offset, value),
 			Value::Mat4F(value) => write_lanes(self, offset, value),
 			Value::Mat4x3F(value) => write_lanes(self, offset, value),
 			Value::Resource { .. } => Err(VmError::UnsupportedBufferLayout {

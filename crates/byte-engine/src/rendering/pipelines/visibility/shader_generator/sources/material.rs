@@ -81,15 +81,15 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 			skinned_vertices.vertices[skinned_vertex_indices[1]],
 			skinned_vertices.vertices[skinned_vertex_indices[2]]
 		);
-		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
-		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
-		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-		let skinned_normal0: vec4f = skinned_vertices_for_triangle[0].normal;
-		let skinned_normal1: vec4f = skinned_vertices_for_triangle[1].normal;
-		let skinned_normal2: vec4f = skinned_vertices_for_triangle[2].normal;
-		model_space_vertex_normals[0] = vec3f(skinned_normal0.x, skinned_normal0.y, skinned_normal0.z);
-		model_space_vertex_normals[1] = vec3f(skinned_normal1.x, skinned_normal1.y, skinned_normal1.z);
-		model_space_vertex_normals[2] = vec3f(skinned_normal2.x, skinned_normal2.y, skinned_normal2.z);
+		let skinned_position0: vec3f = skinned_vertices_for_triangle[0].position;
+		let skinned_position1: vec3f = skinned_vertices_for_triangle[1].position;
+		let skinned_position2: vec3f = skinned_vertices_for_triangle[2].position;
+		model_space_vertex_positions[0] = vec4f(skinned_position0.x, skinned_position0.y, skinned_position0.z, 1.0);
+		model_space_vertex_positions[1] = vec4f(skinned_position1.x, skinned_position1.y, skinned_position1.z, 1.0);
+		model_space_vertex_positions[2] = vec4f(skinned_position2.x, skinned_position2.y, skinned_position2.z, 1.0);
+		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
+		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
+		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
 	} else {
 		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
 		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
@@ -297,7 +297,7 @@ material_evaluation_suffix: fn () -> void {
 	let environment_visibility: f32 = 1.0;
 	// Light from SSGI rays that hit on-screen geometry, already weighted by the fraction of rays that hit.
 	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			// SSGI works in view space at half resolution. The pixel's own surface picks the history texels that lie
 			// on it. Alpha is the fraction of rays that hit, so the rest reach the environment.
@@ -393,11 +393,7 @@ material_evaluation_suffix: fn () -> void {
 			let light_type: u32 = lighting_data.lights[light_index].type;
 			let L: vec3f = vec3f(0.0, 0.0, 0.0);
 			let attenuation: f32 = 1.0;
-			let light_position: vec3f = vec3f(
-				lighting_data.lights[light_index].position.x,
-				lighting_data.lights[light_index].position.y,
-				lighting_data.lights[light_index].position.z
-			);
+			let light_position: vec3f = lighting_data.lights[light_index].position;
 			if (light_type == 68) {
 				L = vec3f(0.0, 0.0, 0.0) - light_position;
 			} else {
@@ -420,9 +416,20 @@ material_evaluation_suffix: fn () -> void {
 			if (light_type == 68) {
 				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view0 != 0) {
-					if (push_constant.blend == 0) {
-						// The sun visibility pass resolved the shadow map and the contact shadows for every opaque pixel.
-						occlusion_factor = f16(fetch(sun_visibility, pixel_coordinates).x);
+					if (!transparent) {
+						// The sun visibility pass resolved every sun's shadow map and contact shadows for every opaque
+						// pixel, sun slot `s` in channel `s`.
+						let sun_slot: u32 = lighting_data.lights[light_index].shadow_layer;
+						let suns_visibility: vec4f = fetch(sun_visibility, pixel_coordinates);
+						let sun_visibility_value: f32 = suns_visibility.x;
+						if (sun_slot == 1) {
+							sun_visibility_value = suns_visibility.y;
+						} else if (sun_slot == 2) {
+							sun_visibility_value = suns_visibility.z;
+						} else if (sun_slot == 3) {
+							sun_visibility_value = suns_visibility.w;
+						}
+						occlusion_factor = f16(sun_visibility_value);
 					} else {
 						// A transparent surface lies in front of the opaque depth that pass resolved, so it filters the
 						// shadow map itself, without contact shadows, which trace that depth.
@@ -467,11 +474,7 @@ material_evaluation_suffix: fn () -> void {
 						}
 					}
 					1 => {
-						let cone_direction: vec3f16 = vec3f16(
-							lighting_data.lights[light_index].direction.x,
-							lighting_data.lights[light_index].direction.y,
-							lighting_data.lights[light_index].direction.z
-						);
+						let cone_direction: vec3f16 = vec3f16(lighting_data.lights[light_index].direction);
 						let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
 						let cone_factor: f16 = f16(cone_attenuation(
 							f32(cone_cosine),
@@ -502,11 +505,7 @@ material_evaluation_suffix: fn () -> void {
 				}
 				if (lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
 					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
-					let profile_axis: vec3f = vec3f(
-						lighting_data.lights[light_index].direction.x,
-						lighting_data.lights[light_index].direction.y,
-						lighting_data.lights[light_index].direction.z
-					);
+					let profile_axis: vec3f = lighting_data.lights[light_index].direction;
 					let intensity_factor: f32 = sample_ies_profile(
 						lighting_data.lights[light_index].ies_profile_texture,
 						emission_direction,
@@ -536,11 +535,7 @@ material_evaluation_suffix: fn () -> void {
 			let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
 			let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
 			let local_diffuse: vec3f16 = direct_diffuse_albedo * (f16(1.0) - light_fresnel_factor);
-			let light_color: vec3f = vec3f(
-				lighting_data.lights[light_index].color.x,
-				lighting_data.lights[light_index].color.y,
-				lighting_data.lights[light_index].color.z
-			);
+			let light_color: vec3f = lighting_data.lights[light_index].color;
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
 			specular = specular + vec3f(local_specular) * irradiance;
@@ -561,7 +556,7 @@ material_evaluation_suffix: fn () -> void {
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// It is written before the reflection trace, which cannot change it, so the diffuse sum does not stay live through
 	// the ray march. Only SSGI reads the diffuse light, so it is not written while SSGI is off.
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			let diffuse_radiance: vec3f = diffuse * lighting_data.exposure;
 			write(
@@ -601,8 +596,7 @@ material_evaluation_suffix: fn () -> void {
 			world_space_vertex_position,
 			vec3f(geometric_normal),
 			reflection_direction,
-			views.views[0].view_projection,
-			image_extent
+			views.views[0].view_projection
 		);
 	}
 	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
@@ -612,7 +606,7 @@ material_evaluation_suffix: fn () -> void {
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
 	let lit: vec3f = (direct_and_diffuse + specular_weight * specular_radiance) * lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
-	if (push_constant.blend != 0) {
+	if (transparent) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
 		let destination_color: vec4f = image_load(lit_map, pixel_coordinates);
 		output_color = source_over(
@@ -623,7 +617,7 @@ material_evaluation_suffix: fn () -> void {
 	write(lit_map, pixel_coordinates, output_color);
 	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
 	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
-	if (push_constant.blend == 0) {
+	if (!transparent) {
 		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
 	}
 }

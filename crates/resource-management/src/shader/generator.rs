@@ -357,6 +357,22 @@ pub(crate) fn is_texture_besl_type(name: &str) -> bool {
 	)
 }
 
+/// Returns the value a specialization constant of the scalar BESL type `name` takes when the host passes none.
+///
+/// The spelling is valid in GLSL, HLSL, and MSL. The types match the ones `ghi::pipelines::SpecializationConstant`
+/// carries.
+fn specialization_default(name: &str) -> &'static str {
+	match name {
+		"bool" => "false",
+		"u32" => "0u",
+		"i32" => "0",
+		"f32" => "0.0",
+		_ => panic!(
+			"Unsupported specialization type `{name}`. The most likely cause is a specialization declared with a type other than bool, u32, i32, f32, or a vector of f32."
+		),
+	}
+}
+
 pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 	matches!(
 		name,
@@ -369,9 +385,9 @@ pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 			| "vec3f16"
 			| "vec4f16"
 			| "vec2f" | "vec3f"
-			| "vec4f" | "packed_vec4f"
-			| "mat2f" | "mat3f"
-			| "mat4f" | "mat4x3f"
+			| "vec4f" | "mat2f"
+			| "mat3f" | "mat4f"
+			| "mat4x3f"
 			| "f16" | "f32"
 			| "u8" | "u16"
 			| "u32" | "i32"
@@ -546,6 +562,10 @@ fn expression_uses_f16(node: &besl::NodeReference) -> bool {
 			}
 			besl::Expressions::Expression { elements } if elements.len() == 1 => expression_uses_f16(&elements[0]),
 			besl::Expressions::Accessor { left, right } => expression_uses_f16(left) || expression_uses_f16(right),
+			besl::Expressions::Unary { operand, .. } => expression_uses_f16(operand),
+			besl::Expressions::Ternary { if_true, if_false, .. } => {
+				expression_uses_f16(if_true) || expression_uses_f16(if_false)
+			}
 			_ => false,
 		},
 		_ => false,
@@ -559,6 +579,11 @@ fn is_numeric_literal(node: &besl::NodeReference) -> bool {
 		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
 			is_numeric_literal(&elements[0])
 		}
+		// A negative literal such as `-1.0` narrows like the literal it negates.
+		besl::Nodes::Expression(besl::Expressions::Unary {
+			operator: besl::UnaryOperators::Negate,
+			operand,
+		}) => is_numeric_literal(operand),
 		_ => false,
 	}
 }
@@ -705,8 +730,10 @@ pub(crate) trait NodeEmitter {
 		false
 	}
 
+	/// Writes `left.right` or `left[right]`. A compound base such as `(a + b)` keeps its parentheses, because member
+	/// access and indexing bind tighter than any operator.
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		self.emit_node(string, left);
+		self.emit_wrapped_expression(string, left);
 		if left.borrow().node().is_indexable() {
 			string.push('[');
 			self.emit_node(string, right);
@@ -741,44 +768,68 @@ pub(crate) trait NodeEmitter {
 	/// The qualifier that declares a specialization aggregate, such as `const` or `static const`.
 	const SPECIALIZATION_QUALIFIER: &'static str;
 
-	/// Writes the declaration of one specialization constant, without the line break.
+	/// Writes the declaration of one scalar specialization constant, without the line break.
 	///
-	/// `type_name` is already translated, `name` is the constant's name, and `index` is its field position, which
-	/// backends with pipeline specialization use as the constant ID. [`Self::emit_specialization_node`] calls it.
-	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize);
+	/// `type_name` is already translated, `name` is the constant's name, `id` is the pipeline constant index, and
+	/// `default` is the value, spelled for the target language, that backends without a host override use.
+	/// [`Self::emit_specialization_node`] calls it.
+	fn emit_specialization_constant(
+		&self,
+		string: &mut String,
+		type_name: &str,
+		name: std::fmt::Arguments<'_>,
+		id: u32,
+		default: &str,
+	);
 
-	/// Writes a specialization block: one constant per field of its struct type, named `<name>_<field>`, then an
-	/// aggregate of that type named `name` that collects them.
+	/// Writes a specialization block.
+	///
+	/// A scalar becomes one constant at `id`. A vector becomes one constant per component, named `<name>_<field>`, at
+	/// `id + component`, followed by an aggregate named `name` that collects them.
 	///
 	/// Backends call it for [`besl::Nodes::Specialization`] and customize it through
 	/// [`Self::emit_specialization_constant`] and [`Self::SPECIALIZATION_QUALIFIER`].
-	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
+	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference, id: u32) {
 		let r#type = r#type.borrow();
-		let type_name = Self::type_identifier(r#type.get_name().unwrap());
+		let besl_type_name = r#type.get_name().unwrap();
+		let type_name = Self::type_identifier(besl_type_name);
+		let break_str = ShaderFormatting::new(self.minified()).break_str();
+		let constant = |string: &mut String, scalar: &str, constant_name: &dyn std::fmt::Display, id: u32| {
+			let default = specialization_default(scalar);
+			self.emit_specialization_constant(
+				string,
+				Self::type_from_besl(scalar),
+				format_args!("{constant_name}"),
+				id,
+				default,
+			);
+			string.push_str(break_str);
+		};
+		// Scalars are structs without fields.
 		let fields = match r#type.node() {
 			besl::Nodes::Struct { fields, .. } => fields.as_slice(),
 			_ => &[],
 		};
-		let break_str = ShaderFormatting::new(self.minified()).break_str();
+		if fields.is_empty() {
+			constant(string, besl_type_name, &Self::identifier(name), id);
+			return;
+		}
 
-		// Declare every constant, keeping the field position as its specialization ID.
-		for (index, field) in fields.iter().enumerate() {
-			let field = field.borrow();
-			let besl::Nodes::Member {
+		// Declare every component at consecutive IDs after the specialization's own.
+		for (component, field) in (0u32..).zip(fields) {
+			if let besl::Nodes::Member {
 				name: member_name,
 				r#type,
 				..
-			} = field.node()
-			else {
-				continue;
-			};
-			self.emit_specialization_constant(
-				string,
-				Self::type_from_besl(r#type.borrow().get_name().unwrap()),
-				format_args!("{name}_{member_name}"),
-				index,
-			);
-			string.push_str(break_str);
+			} = field.borrow().node()
+			{
+				constant(
+					string,
+					r#type.borrow().get_name().unwrap(),
+					&format_args!("{name}_{member_name}"),
+					id + component,
+				);
+			}
 		}
 
 		// Collect the constants into the aggregate the shader reads.
@@ -879,6 +930,39 @@ pub(crate) trait NodeEmitter {
 				string.push_str(operator_token(operator));
 				string.push_str(formatting.space_str());
 				emit_value(self, string, right, right_as_f16);
+			}
+			besl::Expressions::Unary { operator, operand } => {
+				string.push_str(operator.token());
+				self.emit_wrapped_expression(string, operand);
+			}
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => {
+				// As with binary operators, a numeric literal branch beside an f16 branch is cast, because GLSL does not
+				// implicitly narrow float literals to float16_t and both branches must have one type.
+				let true_as_f16 = is_numeric_literal(if_true) && expression_uses_f16(if_false);
+				let false_as_f16 = is_numeric_literal(if_false) && expression_uses_f16(if_true);
+				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
+					if as_f16 {
+						Self::emit_type_name(string, "f16");
+						string.push('(');
+						emitter.emit_node(string, value);
+						string.push(')');
+					} else {
+						emitter.emit_wrapped_expression(string, value);
+					}
+				};
+				self.emit_wrapped_expression(string, condition);
+				string.push_str(formatting.space_str());
+				string.push('?');
+				string.push_str(formatting.space_str());
+				emit_branch(self, string, if_true, true_as_f16);
+				string.push_str(formatting.space_str());
+				string.push(':');
+				string.push_str(formatting.space_str());
+				emit_branch(self, string, if_false, false_as_f16);
 			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
@@ -1116,7 +1200,13 @@ pub(crate) trait NodeEmitter {
 	/// expression, otherwise emits it directly.
 	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
 		match node.borrow().node() {
-			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
+			// A nested prefix operator is wrapped too, so `-(-x)` never prints as the decrement `--x`.
+			besl::Nodes::Expression(
+				besl::Expressions::Operator { .. }
+				| besl::Expressions::Expression { .. }
+				| besl::Expressions::Unary { .. }
+				| besl::Expressions::Ternary { .. },
+			) => {
 				string.push('(');
 				self.emit_node(string, node);
 				string.push(')');
@@ -1272,19 +1362,19 @@ pub mod tests {
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}
 
-	/// Builds the 52-byte meshlet record used to verify explicit packed-float storage across backends.
-	pub fn packed_vec4f_meshlet_binding() -> besl::NodeReference {
+	/// Builds the 52-byte meshlet record, whose `vec4f` members follow 16 bytes of scalars and are followed by a
+	/// `vec2u16`, to verify scalar-aligned vector storage across backends.
+	pub fn vec4f_meshlet_binding() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
-			let center: vec4f = vec4f(buff.meshlets[1].center_radius);
-			let packed: packed_vec4f = packed_vec4f(center);
-			packed.x;
+			let center: vec4f = buff.meshlets[1].center_radius;
+			center.x;
 			buff.meshlets[0].cone_apex_cutoff.w;
 		}
 		"#;
 		let mut root_node = besl::Node::root();
 		let u32_type = root_node.get_child("u32").expect("Expected u32 type");
-		let packed_vec4f_type = root_node.get_child("packed_vec4f").expect("Expected packed_vec4f type");
+		let vec4f_type = root_node.get_child("vec4f").expect("Expected vec4f type");
 		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
 		let meshlet = root_node.add_child(
 			besl::Node::r#struct(
@@ -1294,8 +1384,8 @@ pub mod tests {
 					besl::Node::member("triangle_offset", u32_type.clone()).into(),
 					besl::Node::member("primitive_count", u32_type.clone()).into(),
 					besl::Node::member("triangle_count", u32_type).into(),
-					besl::Node::member("center_radius", packed_vec4f_type.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", packed_vec4f_type).into(),
+					besl::Node::member("center_radius", vec4f_type.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", vec4f_type).into(),
 					besl::Node::member("cone_axis", vec2u16_type).into(),
 				],
 			)
@@ -1500,18 +1590,28 @@ pub mod tests {
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}
 
+	/// Builds a `main` that reads one specialization of each supported shape: `bool`, `u32`, and `f32` scalars at ids 0,
+	/// 1, and 2, and a `vec3f` whose components start at id 4.
 	pub fn specializations() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
+			enabled;
+			count;
+			scale;
 			color;
 		}
 		"#;
 
 		let mut root_node = besl::Node::root();
 
-		let vec3f_type = root_node.get_child("vec3f").unwrap();
-
-		root_node.add_children(vec![besl::Node::specialization("color", vec3f_type).into()]);
+		let specializations = [
+			("enabled", "bool", 0),
+			("count", "u32", 1),
+			("scale", "f32", 2),
+			("color", "vec3f", 4),
+		]
+		.map(|(name, r#type, id)| besl::Node::specialization(name, root_node.get_child(r#type).unwrap(), id).into());
+		root_node.add_children(specializations.into());
 
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}

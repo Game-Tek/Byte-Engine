@@ -33,6 +33,19 @@ pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
 pub(crate) const MAX_LIGHTS: usize = 1024;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 
+/// The specialization constant that compiles a material evaluation pipeline for the transparent phase.
+///
+/// The opaque and transparent phases light and write pixels differently, and a runtime flag would compile the
+/// transparent path's shadow-map filtering into every opaque pipeline. The loader sets it from the variant's alpha mode.
+pub(crate) const TRANSPARENT_SPECIALIZATION_ID: u32 = 0;
+/// Returns the first specialization constant of the material variable at `variable_index`.
+///
+/// Variables follow [`TRANSPARENT_SPECIALIZATION_ID`], four constants each: one per component of the widest
+/// variable type, `vec4f`.
+pub(crate) const fn material_variable_specialization_id(variable_index: u32) -> u32 {
+	TRANSPARENT_SPECIALIZATION_ID + 1 + variable_index * 4
+}
+
 /// Vertices and triangles one meshlet can hold.
 pub(crate) const VERTEX_COUNT: u32 = 64;
 pub(crate) const TRIANGLE_COUNT: u32 = 126;
@@ -47,13 +60,17 @@ pub(crate) const MAX_TASK_VIEWS: usize = 6;
 
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 /// Texels per side of each directional cascade unless the application sets `render.directional-shadows.resolution`.
-pub(crate) const DEFAULT_SHADOW_MAP_RESOLUTION: u32 = 4096;
-/// The largest local-light shadow pools. Every pooled map has a reserved slot in the `views` buffer.
-pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = 16;
-pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = 16;
-/// Pool capacities used when an application does not configure them.
-pub(crate) const DEFAULT_CONE_SHADOW_POOL_CAPACITY: usize = 4;
-pub(crate) const DEFAULT_POINT_SHADOW_POOL_CAPACITY: usize = 4;
+pub(crate) const DEFAULT_SHADOW_MAP_RESOLUTION: u32 = 2048;
+/// The most lights of each kind that can hold shadow maps at once. Every one has reserved slots in the `views` buffer;
+/// within these limits, the shadow-map budget decides how many lights get maps. See
+/// [`super::shadow_selection::ShadowBudget`].
+pub(crate) const MAX_DIRECTIONAL_SHADOW_COUNT: usize = 4;
+pub(crate) const MAX_CONE_SHADOW_COUNT: usize = 16;
+pub(crate) const MAX_POINT_SHADOW_COUNT: usize = 16;
+/// The shadow-map memory, in mebibytes, that lights share unless the application sets `render.shadow-maps.budget-mb`.
+/// One sun's cascades take 32 MiB of it at the default resolution, which leaves 96 MiB for local lights and other
+/// suns.
+pub(crate) const DEFAULT_SHADOW_MAP_BUDGET_MIB: u32 = 128;
 pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
 pub(crate) const POINT_SHADOW_MAP_RESOLUTION: u32 = 1024;
 /// Shadow maps use 16-bit depth to halve their memory. Directional cascades project orthographically, so their depth
@@ -61,15 +78,22 @@ pub(crate) const POINT_SHADOW_MAP_RESOLUTION: u32 = 1024;
 pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 pub(crate) const POINT_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
-/// Layout of the `views` buffer: camera, then cascades, then cone layers, then point cube faces.
-pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
+/// Layout of the `views` buffer: camera, then each sun's cascades, then cone layers, then point cube faces.
+///
+/// Sun slot `s` owns views `1 + 4s` through `4 + 4s`, and directional view `v` draws into layer `v - 1` of the
+/// directional shadow map. The shadow shaders find a cascade's layer from its view this way.
+pub(crate) const DIRECTIONAL_SHADOW_VIEW_OFFSET: usize = 1;
+pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize =
+	DIRECTIONAL_SHADOW_VIEW_OFFSET + MAX_DIRECTIONAL_SHADOW_COUNT * SHADOW_CASCADE_COUNT;
 pub(crate) const POINT_SHADOW_FACE_COUNT: usize = 6;
-pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
+pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_COUNT;
 /// The shaders declare the `views` buffer with this many entries.
-pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT;
+pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_COUNT * POINT_SHADOW_FACE_COUNT;
+/// The camera and every sun's cascades, the views the directional shadow passes declare.
+pub(crate) const DIRECTIONAL_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET;
 const _: () = assert!(
-	SHADOW_VIEW_COUNT == 117 && MAX_TASK_VIEWS == 6 && SHADOW_CASCADE_COUNT <= MAX_TASK_VIEWS,
-	"Update the `View[117]` declarations in the visibility shaders and the material shader generator, and the task payload, when shadow view limits change."
+	SHADOW_VIEW_COUNT == 129 && DIRECTIONAL_VIEW_COUNT == 17 && MAX_TASK_VIEWS == 6 && SHADOW_CASCADE_COUNT <= MAX_TASK_VIEWS,
+	"Update the `View[129]` declarations in the visibility shaders and the material shader generator, the `View[17]` declarations in the directional shadow shaders, and the task payload, when shadow view limits change."
 );
 
 /* Light clusters */
@@ -94,7 +118,6 @@ pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
 // Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
 pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderViewData>() as u32;
-// ShaderMesh retains an explicit 16-byte record alignment while its affine matrix occupies 48 bytes.
 pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMesh>() as u32;
 // HLSL reads packed narrow indices through 32-bit structured words. Metal and Vulkan expose native widths.
 pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
@@ -146,7 +169,7 @@ pub(crate) const MESH_DATA_BINDING: ShaderResourceDescriptor = buffer(1, AccessP
 pub(crate) const VERTEX_POSITIONS_BINDING: ShaderResourceDescriptor = buffer(2, AccessPolicies::READ, 12);
 pub(crate) const VERTEX_NORMALS_BINDING: ShaderResourceDescriptor =
 	buffer(3, AccessPolicies::READ, VERTEX_NORMAL_BUFFER_STRIDE);
-pub(crate) const SKINNED_VERTICES_BINDING: ShaderResourceDescriptor = buffer(4, AccessPolicies::READ, 32);
+pub(crate) const SKINNED_VERTICES_BINDING: ShaderResourceDescriptor = buffer(4, AccessPolicies::READ, 24);
 pub(crate) const VERTEX_UV_BINDING: ShaderResourceDescriptor = buffer(5, AccessPolicies::READ, VERTEX_UV_BUFFER_STRIDE);
 pub(crate) const VERTEX_INDICES_BINDING: ShaderResourceDescriptor = buffer(6, AccessPolicies::READ, VERTEX_INDEX_BUFFER_STRIDE);
 pub(crate) const PRIMITIVE_INDICES_BINDING: ShaderResourceDescriptor =

@@ -174,6 +174,7 @@ impl crate::context::Context for Context {
 		&mut self,
 		window_os_handles: &window::Handles,
 		presentation_mode: graphics_hardware_interface::PresentationModes,
+		desired_image_count: Option<u8>,
 		_fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
@@ -187,6 +188,7 @@ impl crate::context::Context for Context {
 			graphics_hardware_interface::PresentationModes::FIFO => (true, 2),
 			graphics_hardware_interface::PresentationModes::Mailbox => (true, 3),
 		};
+		let drawable_count = desired_image_count.map_or(drawable_count, |count| count.clamp(2, 3) as usize);
 		layer.setDisplaySyncEnabled(display_sync_enabled);
 		// A value other than 2 or 3 causes an exception
 		layer.setMaximumDrawableCount(drawable_count);

@@ -85,17 +85,19 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	}
 "#;
 
-/// Uses every subgroup ballot operation in a compute shader.
+/// Uses every subgroup ballot, broadcast, and shuffle operation in a compute shader.
 #[cfg(test)]
 const SUBGROUP_COMPUTE: &str = r#"
 	main: fn () -> void {
 		let mask: vec4u = subgroup_ballot(thread_idx() < 4);
 		let leader: u32 = subgroup_ballot_find_lsb(mask);
 		let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+		let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
 		let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
 		if (subgroup_ballot_any(remaining)) {
 			let count: u32 = subgroup_ballot_count(remaining);
 			count;
+			neighbor;
 		}
 	}
 "#;
@@ -169,6 +171,46 @@ const CONST_ARRAY: &str = r#"
 	main: fn () -> void {
 		let value: f32 = WEIGHTS[1];
 		value;
+	}
+"#;
+
+/// Reads a member and an element of parenthesized values, whose parentheses must survive lowering.
+#[cfg(test)]
+const GROUPED_ACCESSOR_BASES: &str = r#"
+	main: fn () -> void {
+		let v: vec2f = vec2f(1.0, 2.0);
+		let w: vec2f = vec2f(3.0, 4.0);
+		let sum_y: f32 = (v + w).y;
+		let values: u32[2] = u32[2](1, 2);
+		let i: u32 = 1;
+		let picked: u32 = (values)[i];
+		sum_y;
+		picked;
+	}
+"#;
+
+/// Uses an `if` and a `match` whose branches run statements, so the lexer hoists each in front of its statement, and a
+/// left operand that runs before the `match` is captured first.
+#[cfg(test)]
+const BRANCH_VALUES: &str = r#"
+	main: fn () -> void {
+		let n: u32 = 3;
+		let scale: f32 = 2.0;
+		let weight: f32 = scale * match n {
+			0 => 0.5,
+			1 | 2 => {
+				let half_scale: f32 = scale * 0.5;
+				half_scale + 1.0
+			}
+			_ => 1.0,
+		};
+		let shade: f32 = if (n > 1) {
+			let lit: f32 = weight * weight;
+			lit
+		} else {
+			0.0
+		};
+		shade;
 	}
 "#;
 
@@ -299,7 +341,7 @@ fn is_intrinsic_call(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
 }
 
 /// The BESL subgroup operations, which every backend supports only in compute shaders.
-const SUBGROUP_INTRINSICS: [&str; 8] = [
+const SUBGROUP_INTRINSICS: [&str; 9] = [
 	"subgroup_lane_index",
 	"subgroup_ballot",
 	"subgroup_ballot_any",
@@ -308,6 +350,7 @@ const SUBGROUP_INTRINSICS: [&str; 8] = [
 	"subgroup_ballot_and_not",
 	"subgroup_broadcast_u32",
 	"subgroup_broadcast_f32",
+	"subgroup_shuffle_xor_f32",
 ];
 
 /// The `IntrinsicRequirements` struct records which intrinsics a shader calls, so each backend declares only the

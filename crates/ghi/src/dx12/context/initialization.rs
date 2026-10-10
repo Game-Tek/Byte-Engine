@@ -425,12 +425,13 @@ impl Device {
 			}
 		}
 
-		let image_count = frames.max(2);
 		let retired_backbuffer_keys = self
 			.swapchains
 			.iter()
 			.filter(|swapchain| {
-				swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0
+				swapchain.image_count != swapchain_image_count(frames, swapchain.desired_image_count)
+					&& swapchain.extent.width() > 0
+					&& swapchain.extent.height() > 0
 			})
 			.flat_map(|swapchain| swapchain.backbuffers.iter().flatten().map(Self::native_resource_key))
 			.collect::<SmallVec<[usize; 8]>>();
@@ -440,6 +441,7 @@ impl Device {
 		}
 
 		for swapchain in &mut self.swapchains {
+			let image_count = swapchain_image_count(frames, swapchain.desired_image_count);
 			if swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0 {
 				// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
 				swapchain.backbuffers = std::array::from_fn(|_| None);

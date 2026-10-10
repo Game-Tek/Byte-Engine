@@ -619,7 +619,7 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 				require_argument_count(arguments, 1)?;
 				// The selected overload carries the source type. This also distinguishes
 				// vec4f conversions from f16 and packed storage vectors.
@@ -763,6 +763,14 @@ impl<'a> Compiler<'a> {
 					source_lane,
 					value_type,
 				});
+				Ok(register)
+			}
+			"subgroup_shuffle_xor_f32" => {
+				require_argument_count(arguments, 2)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32)?;
+				let mask = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
+				let register = self.allocate_register();
+				self.emit(Instruction::SubgroupShuffleXor { register, value, mask });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {

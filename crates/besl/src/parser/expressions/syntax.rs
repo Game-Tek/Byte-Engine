@@ -195,6 +195,8 @@ pub(crate) fn parse_rvalue<'i, 'a: 'i>(
 ) -> ExpressionParserResult<'i, 'a> {
 	execute_expression_parsers(
 		&[
+			parse_branch_value,
+			parse_unary,
 			parse_record_literal,
 			parse_function_call,
 			parse_grouped_expression,
@@ -218,6 +220,43 @@ pub(crate) fn parse_operator<'i, 'a: 'i>(
 	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
 }
 
+/// Parses a prefix operator and the operand it applies to, such as `-x`, `!flag`, or `~mask`.
+pub(crate) fn parse_unary<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	expressions: &mut Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	let token = iterator.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	let operator = crate::UnaryOperators::from_token(token).ok_or(ParsingFailReasons::NotMine)?;
+
+	expressions.push(Atoms::Unary { operator });
+
+	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
+		.map_err(|error| error.claimed(|| format!("Expected a value after the prefix operator `{token}`.")))
+}
+
+/// Parses an `if` or `match` used as a value, such as `if (c) { a } else { b }`, as one whole operand. The lexer
+/// checks that every branch ends in a value; see [`Expressions::Yield`].
+pub(crate) fn parse_branch_value<'i, 'a: 'i>(
+	iterator: std::slice::Iter<'i, &'a str>,
+	expressions: &mut Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	let (branch, iterator) = match iterator.as_slice().first() {
+		Some(&"if") => parse_conditional(iterator),
+		Some(&"match") => parse_match(iterator),
+		_ => return Err(ParsingFailReasons::NotMine),
+	}
+	.map_err(|error| {
+		error.claimed(|| {
+			"Invalid `if` or `match` value. The most likely cause is a missing parenthesis around the condition, or a missing brace."
+				.to_string()
+		})
+	})?;
+
+	expressions.push(Atoms::Branch(branch));
+
+	Ok(parse_followers(iterator, expressions))
+}
+
 pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 	if matches!(atoms.first(), Some(Atoms::Keyword)) {
 		return Node {
@@ -230,14 +269,26 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 		};
 	}
 
-	// The expression splits at the atom with the highest precedence, the last one on a tie.
-	let Some((i, atom)) = atoms.iter().enumerate().max_by_key(|(_, atom)| match atom {
+	// The expression splits at its loosest atom. Binary operators group left to right, so a tie splits at the last of
+	// them. Prefix operators group right to left, so `- -x` is `-(-x)`, and a tie splits at the first. Operands,
+	// groups, calls, and `if` or `match` values are whole operands.
+	let precedence = |atom: &Atoms<'a>| match atom {
 		Atoms::Accessor => 1,
+		Atoms::Unary { .. } => crate::lexer::UNARY_PRECEDENCE,
 		Atoms::Operator { operator } => operator.precedence(),
 		_ => 0,
-	}) else {
+	};
+	let Some(loosest) = atoms.iter().map(precedence).max() else {
 		panic!("No max precedence item");
 	};
+	let groups_right_to_left = loosest == crate::lexer::UNARY_PRECEDENCE;
+	let split = if groups_right_to_left {
+		atoms.iter().position(|atom| precedence(atom) == loosest)
+	} else {
+		atoms.iter().rposition(|atom| precedence(atom) == loosest)
+	};
+	let i = split.expect("The loosest atom exists");
+	let atom = &atoms[i];
 
 	match atom {
 		Atoms::Keyword => Node {
@@ -259,6 +310,17 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				right: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
 			}),
 		},
+		Atoms::Unary { operator } => {
+			// The parser reads a prefix operator only where an operand starts, so it is the first atom of its operand.
+			debug_assert_eq!(i, 0, "A prefix operator must start the expression it applies to.");
+			Node {
+				node: Nodes::Expression(Expressions::Unary {
+					operator: *operator,
+					operand: Box::new(expression_atoms_to_node(&atoms[i + 1..])),
+				}),
+			}
+		}
+		Atoms::Branch(branch) => branch.clone(),
 		Atoms::Accessor => Node::accessor(
 			expression_atoms_to_node(&atoms[..i]),
 			expression_atoms_to_node(&atoms[i + 1..]),
@@ -320,7 +382,8 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 	Ok((Node::conditional(condition, statements, else_branch), iterator))
 }
 
-/// Parses a braced statement block, such as the body of an `if` or `else` branch.
+/// Parses a braced statement block, such as the body of an `if` or `else` branch. The block may end in a value
+/// written without `;`; see [`Expressions::Yield`].
 fn parse_block<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 ) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
@@ -429,29 +492,72 @@ fn statement_expression_parsers<'i, 'a: 'i>() -> [ExpressionParser<'i, 'a>; 7] {
 	]
 }
 
+/// Parses one statement of a block or function body. Before the closing `}`, a statement may leave out its `;`:
+/// `return`, `break`, `continue`, and `discard` still end the block, and any other expression becomes the value the
+/// block yields, as an [`Expressions::Yield`]. The `}` is left for the caller.
 pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
-	// `match` is a keyword, so syntax errors inside a match are reported instead of retried as an expression.
-	if iterator.as_slice().first() == Some(&"match") {
-		return parse_match(iterator);
-	}
-
-	if let Ok(result) = parse_conditional(iterator.clone()) {
-		return Ok(result);
+	// `match` and `if` are keywords, so syntax errors inside them are reported instead of retried as an expression.
+	match iterator.as_slice().first() {
+		Some(&"match") => return parse_match(iterator),
+		Some(&"if") => return parse_conditional(iterator),
+		_ => {}
 	}
 
 	if let Ok(result) = parse_for_loop(iterator.clone()) {
 		return Ok(result);
 	}
 
-	let (statement, mut iterator) = parse_expression_node(&statement_expression_parsers(), iterator)?;
+	if let Ok((statement, mut next)) = parse_expression_node(&statement_expression_parsers(), iterator.clone()) {
+		match next.as_slice().first() {
+			Some(&";") => {
+				next.next();
+				return Ok((statement, next));
+			}
+			Some(&"}") if is_control_flow(&statement) => return Ok((statement, next)),
+			Some(&"}") if is_let(&statement) => {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: "Expected `;` after a `let`. The most likely cause is a `let` written as the last line of a block, which can't be the block's value."
+						.to_string(),
+				});
+			}
+			_ => {}
+		}
+	}
 
-	iterator.next_str(";")?; // Skip semicolon
+	// Any other expression before `}` is the block's value. It is parsed as a value, because the statement parsers
+	// read a literal such as `1` as a name.
+	let (value, next) = parse_expression_node(&[parse_rvalue], iterator)?;
+	if next.as_slice().first() != Some(&"}") {
+		return Err(ParsingFailReasons::NotMine);
+	}
 
-	Ok((statement, iterator))
+	Ok((Node::r#yield(value), next))
 }
 
-/// Parses a Rust-style `match` statement, such as `match n { 0 => a = 1, 1 | 2 => { a = 2; } _ => {} }`.
-/// See [`crate::lexer`] for the type and exhaustiveness checks that follow parsing.
+/// Reports whether `node` is `return`, `break`, `continue`, or `discard`, which end a block themselves instead of
+/// yielding a value.
+fn is_control_flow(node: &Node<'_>) -> bool {
+	matches!(
+		node.node(),
+		Nodes::Expression(Expressions::Return { .. } | Expressions::Continue | Expressions::Break | Expressions::Discard)
+	)
+}
+
+/// Reports whether `node` is a `let` declaration.
+fn is_let(node: &Node<'_>) -> bool {
+	matches!(
+		node.node(),
+		Nodes::Expression(Expressions::Operator {
+			operator: crate::Operators::Assignment,
+			left,
+			..
+		}) if matches!(left.node(), Nodes::Expression(Expressions::VariableDeclaration { .. }))
+	)
+}
+
+/// Parses a Rust-style `match`, as a statement such as `match n { 0 => a = 1, 1 | 2 => { a = 2; } _ => {} }` or as a
+/// value such as `match n { 0 => 1.0, _ => 2.0 }`. See [`crate::lexer`] for the type and exhaustiveness checks that
+/// follow parsing.
 pub(crate) fn parse_match<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	iterator.next_str("match")?;
 
@@ -521,8 +627,9 @@ fn parse_match_patterns<'i, 'a: 'i>(
 	}
 }
 
-/// Parses the body of one match arm and the comma after it. A block or nested `match` body doesn't need a comma,
-/// and neither does the last arm, as in Rust.
+/// Parses the body of one match arm and the comma after it. A block, `if`, or `match` body doesn't need a comma, and
+/// neither does the last arm, as in Rust. An unbraced expression body is the arm's [`Expressions::Yield`], so
+/// `0 => x,` means `0 => { x }`; `return`, `break`, `continue`, `discard`, and `let` stay statements.
 fn parse_match_arm_body<'i, 'a: 'i>(
 	iterator: std::slice::Iter<'i, &'a str>,
 ) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
@@ -531,13 +638,23 @@ fn parse_match_arm_body<'i, 'a: 'i>(
 			let (statements, iterator) = parse_block(iterator)?;
 			(statements, true, iterator)
 		}
-		Some(&"match") => {
-			let (statement, iterator) = parse_match(iterator)?;
+		Some(&"match" | &"if") => {
+			let (statement, iterator) = parse_statement(iterator)?;
 			(vec![statement], true, iterator)
 		}
 		_ => {
-			let (statement, iterator) = parse_expression_node(&statement_expression_parsers(), iterator)?;
-			(vec![statement], false, iterator)
+			// As at a block's end, any other expression is parsed as a value, so a literal such as `1` stays a literal.
+			let statement = parse_expression_node(&statement_expression_parsers(), iterator.clone())
+				.ok()
+				.filter(|(statement, _)| is_control_flow(statement) || is_let(statement));
+			let (body, iterator) = match statement {
+				Some(statement) => statement,
+				None => {
+					let (value, iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
+					(Node::r#yield(value), iterator)
+				}
+			};
+			(vec![body], false, iterator)
 		}
 	};
 

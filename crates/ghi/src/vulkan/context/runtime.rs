@@ -183,6 +183,7 @@ impl Context {
 
 		let (surface, present_mode, old_swapchain) = (swapchain.surface, swapchain.vk_present_mode, swapchain.swapchain);
 		let native_image_usage = swapchain.native_image_usage;
+		let desired_image_count = swapchain.desired_image_count;
 		let uses_proxy_images = swapchain.uses_proxy_images;
 		let native_uses = if uses_proxy_images {
 			crate::Uses::TransferDestination
@@ -201,9 +202,15 @@ impl Context {
 			);
 		}
 
-		let new_swapchain =
-			self.device
-				.create_vulkan_swapchain(surface, present_mode, capabilities, extent, native_image_usage, old_swapchain);
+		let new_swapchain = self.device.create_vulkan_swapchain(
+			surface,
+			present_mode,
+			capabilities,
+			extent,
+			native_image_usage,
+			desired_image_count,
+			old_swapchain,
+		);
 		let vk_images = unsafe {
 			self.device.swapchain.destroy_swapchain(old_swapchain, None);
 			self.device
@@ -230,7 +237,7 @@ impl Context {
 				self.images[native.0 as usize] = image;
 
 				if uses_proxy_images {
-					self.resize_image_internal(images[index], proxy_extent, 0);
+					self.resize_image_internal(images[index], proxy_extent, None, 0);
 				}
 			} else {
 				native_images[index] = self.create_swapchain_image(
@@ -643,10 +650,14 @@ impl Context {
 					}
 					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
-				Tasks::ResizeImage { handle, extent } => {
+				Tasks::ResizeImage {
+					handle,
+					extent,
+					array_layers,
+				} => {
 					// The task names the resized frame's own image, which need not be the chain's first.
 					let handle = self.image_handle_for_sequence(handle.root(&self.images), sequence_index as usize);
-					self.resize_image_internal(handle, *extent, sequence_index);
+					self.resize_image_internal(handle, *extent, *array_layers, sequence_index);
 				}
 			}
 

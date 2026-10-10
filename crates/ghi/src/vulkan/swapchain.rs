@@ -30,6 +30,8 @@ pub(crate) struct Swapchain {
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,
 	pub max_image_count: u32,
+	/// The image count requested when binding the window, preserved so recreation asks for the same count.
+	pub desired_image_count: Option<u8>,
 	/// The minimum time between presented frames; `None` presents on the next refresh.
 	pub present_interval: Option<std::time::Duration>,
 	/// The earliest time the next acquisition may start when `present_interval` is set.

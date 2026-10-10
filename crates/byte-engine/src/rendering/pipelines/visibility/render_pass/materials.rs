@@ -142,7 +142,7 @@ impl MaterialEvaluationPass {
 					c.start_region(|label| label.write_str(&evaluation.name));
 					let c = c.bind_compute_pipeline(evaluation.pipeline);
 					c.bind_descriptor_sets(&descriptor_sets);
-					c.write_push_constant(0, [evaluation.index, phase as u32, u32::from(gtao), u32::from(ssgi)]);
+					c.write_push_constant(0, [evaluation.index, u32::from(gtao), u32::from(ssgi)]);
 					c.indirect_dispatch(evaluation_dispatches, evaluation.index as usize);
 					c.end_region();
 				}

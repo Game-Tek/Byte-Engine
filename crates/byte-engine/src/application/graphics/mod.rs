@@ -40,9 +40,8 @@
 /// - `render.ssgi.enabled`: Runs screen-space global illumination, which adds light bounced off visible surfaces and darkens environment light that nearby geometry blocks. Like `render.gtao.enabled`, its startup value also decides whether SSGI is built into the baked shaders. The default is `true`.
 /// - `render.contact-shadows.enabled`: Traces short rays toward the sun to shadow where objects touch, such as under a foot on a floor. Like `render.gtao.enabled`, its startup value also decides whether contact shadows are built into the baked shaders. The default is `true`.
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.15`.
-/// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
-/// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
-/// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 16. Halving it quarters the shadow raster and depth pyramid work. The default is `4096`.
+/// - `render.shadow-maps.budget-mb`: Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares. The first directional light takes its cascades first, cone and point lights then share what remains by how much of the screen they light, and other directional lights take what is left. One sun takes 32 MiB at the default resolution and four times that per doubling of `render.directional-shadows.resolution`; a cone light takes 2 MiB and a point light 12 MiB. Maps allocate on first use; the default is `128`.
+/// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 16. Halving it quarters the shadow raster and depth pyramid work, and each sun's cost from the shadow-map budget. The default is `2048`.
 ///
 /// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -1231,10 +1230,10 @@ use crate::{
 		pipelines::{
 			simple::SimplePipelineManager,
 			visibility::{
-				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER,
-				DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
-				DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX,
-				POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
+				DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER,
+				DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
+				GEOMETRY_CAPACITY_PARAMETER_PREFIX, SHADOW_MAP_BUDGET_PARAMETER, VisibilityPipelineManager,
+				VisibilityPipelineSettings,
 			},
 		},
 		render_passes::{

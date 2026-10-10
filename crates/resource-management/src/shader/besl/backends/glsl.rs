@@ -201,10 +201,14 @@ mod tests {
 		);
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_basic:require");
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_ballot:require");
+		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_shuffle:require");
+		assert_string_contains!(shader, "subgroupShuffleXor(float(value),1)");
 		assert_string_contains!(shader, "subgroupBallot(uint(gl_LocalInvocationIndex)<4)");
 		assert_string_contains!(shader, "subgroupBroadcast(uint(gl_LocalInvocationIndex),leader)");
 		assert_string_contains!(shader, "subgroupBallotFindLSB(mask)");
 		assert_string_contains!(shader, "subgroupBallotBitCount(remaining)");
+
+		compile(&shader, "besl-subgroup-compute");
 	}
 
 	#[test]
@@ -221,14 +225,13 @@ mod tests {
 	}
 
 	#[test]
-	fn packed_vec4f_uses_native_vectors_with_scalar_buffer_layout() {
+	fn vec4f_meshlet_record_uses_scalar_buffer_layout() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::packed_vec4f_meshlet_binding(),
+			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
-		assert!(!shader.contains("struct packed_vec4f"));
 	}
 
 	#[test]
@@ -240,12 +243,13 @@ mod tests {
 		assert_string_contains!(shader, "pixel_mapping[0]=meshes[1];");
 	}
 
+	/// Verifies each specialization becomes a constant at its declared id with a typed default.
 	#[test]
-	fn specializtions() {
+	fn specializations_lower_to_constant_ids() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
 		assert_string_contains!(
 			shader,
-			"layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}"
+			"layout(constant_id=0)const bool enabled=false;layout(constant_id=1)const uint32_t count=0u;layout(constant_id=2)const float scale=0.0;layout(constant_id=4)const float color_x=0.0;layout(constant_id=5)const float color_y=0.0;layout(constant_id=6)const float color_z=0.0;const vec3 color=vec3(color_x,color_y,color_z);void main(){enabled;count;scale;color;}"
 		);
 	}
 
@@ -323,7 +327,7 @@ mod tests {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::push_constant());
 		assert_string_contains!(
 			shader,
-			"layout(push_constant)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
+			"layout(push_constant,scalar)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
 		);
 	}
 
@@ -405,6 +409,35 @@ mod tests {
 	}
 
 	#[test]
+	fn grouped_accessor_bases_keep_their_parentheses_in_glsl() {
+		let shader = lower_fixture(
+			super::super::GROUPED_ACCESSOR_BASES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "float sum_y=(v+w).y;");
+		assert_string_contains!(shader, "uint32_t picked=(values)[i];");
+
+		compile(&shader, "besl-grouped-accessor-bases");
+	}
+
+	#[test]
+	fn if_and_match_values_with_statements_lower_to_glsl() {
+		let shader = lower_fixture(
+			super::super::BRANCH_VALUES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		// `scale` ran before the `match`, so it is captured before the switch that sets the match's value.
+		assert_string_contains!(shader, "_besl_value_1=scale;float _besl_value_0;switch(n){");
+		assert_string_contains!(shader, "float weight=(_besl_value_1*_besl_value_0);");
+		assert_string_contains!(
+			shader,
+			"float _besl_value_2;if(n>1){float lit=(weight*weight);_besl_value_2=lit;}else{_besl_value_2=0.0;}"
+		);
+
+		compile(&shader, "besl-branch-values");
+	}
+
+	#[test]
 	fn match_lowers_to_glsl_switch() {
 		let script = r#"
 		main: fn () -> void {
@@ -463,6 +496,33 @@ mod tests {
 		assert_string_contains!(shader, "weight16*float16_t(2.0)");
 		assert_string_contains!(shader, "uv16*float16_t(2.0)");
 		assert!(!shader.contains("struct vec2f16"));
+	}
+
+	#[test]
+	fn prefix_operators_and_if_values_lower_to_glsl() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+			Frame: struct { projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let flag: bool = bodies[item].bits > 3;
+				bodies[item].bits = ~bodies[item].bits ^ (if (flag) { 1 } else { 2 });
+				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+				bodies[item].weight = if (!flag) { bodies[item].weight } else { 1.0 };
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (if (flag) { bodies[item].color } else { bodies[item].color });
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "((~bodies[item].bits)^(flag?1:2))");
+		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
+		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
+		// GLSL does not narrow float literals to float16_t, so a literal branch beside an f16 branch is cast.
+		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
+		compile(&shader, "besl-prefix-operators-and-if-values");
 	}
 
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.

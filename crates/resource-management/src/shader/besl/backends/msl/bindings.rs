@@ -1,14 +1,5 @@
 use super::*;
 
-/// Reports whether Metal stores a member declared directly in a buffer binding as a packed type.
-///
-/// The MSL emitter and storage-layout reflection both call it, so reflected buffer strides always match the emitted
-/// Metal struct layout. Array members, and 16-bit vectors in mixed structs, are packed; other members keep their
-/// natural Metal alignment.
-pub(crate) fn msl_packs_direct_binding_member(type_name: &str, is_array: bool) -> bool {
-	is_array || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16")
-}
-
 /// Selects the Metal texture element type and access for a storage image.
 pub(crate) fn storage_image_type(format: &str, read: bool, write: bool) -> (&'static str, &'static str) {
 	let element_type = match format {
@@ -167,38 +158,31 @@ impl Generator {
 
 		self.emit_named_struct_start(string, format_args!("_{name}"));
 
-		let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
-		self.in_buffer_binding_struct = true;
-
 		let formatting = ShaderFormatting::new(self.minified);
 		emit_statement_block(string, formatting, members, 1, |string, member| {
 			self.emit_node_string(string, member)
 		});
 
-		self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
-
 		self.emit_struct_declaration_end(string);
 	}
 
-	/// Emits the storage-buffer spelling of a member or array-buffer element type. User struct names keep their
+	/// Emits the storage spelling of a struct member or array-buffer element type. User struct names keep their
 	/// backend-safe name.
+	///
+	/// Every vector is packed, so it keeps the size and scalar alignment that HLSL, GLSL scalar layout, and the
+	/// CPU-side `ghi::pod` vectors use: a native `float3` takes 16 bytes, and a native `float2` or `float4` needs an 8-
+	/// or 16-byte offset. On Apple GPUs packed loads and stores at native offsets compile to the same instructions and
+	/// run at the same speed as native ones. A shader that writes a lone `vec4` member into a buffer record measured
+	/// about 10 % slower when the member crosses a 16-byte boundary, so keep written `vec4` members on 16-byte offsets.
 	pub(crate) fn emit_buffer_member_type(string: &mut String, source: &str) {
-		// Metal storage buffers need packed vectors when the CPU data is tightly packed. Array buffers use this for
-		// their elements, such as 12-byte `vec3f` and 48-byte `mat4x3f`.
-		// Float vectors retain the existing array-only policy, while 16-bit vectors stay packed inside mixed structs.
-		let packed = match source {
-			"vec2f16" => "packed_half2",
-			"vec3f16" => "packed_half3",
-			"vec4f16" => "packed_half4",
-			"vec2f" => "packed_float2",
-			"vec3f" => "packed_float3",
-			"vec3u" => "packed_uint3",
-			"mat4x3f" => "_besl_packed_float4x3",
-			"vec2u16" => "packed_ushort2",
-			"vec4u16" => "packed_ushort4",
-			_ => return Self::type_identifier(source).push_to(string),
-		};
-		string.push_str(packed);
+		if source == "mat4x3f" {
+			string.push_str("_besl_packed_float4x3");
+		} else if source.starts_with("vec") {
+			string.push_str("packed_");
+			string.push_str(Self::translate_type(source));
+		} else {
+			Self::type_identifier(source).push_to(string);
+		}
 	}
 
 	pub(crate) fn emit_compute_entry_point(

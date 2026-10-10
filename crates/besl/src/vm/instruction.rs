@@ -29,6 +29,12 @@ pub(super) enum Instruction {
 		source_lane: usize,
 		value_type: ValueType,
 	},
+	/// Copies the `f32` in `value` from the subgroup lane whose index is the reading lane's index XOR `mask`.
+	SubgroupShuffleXor {
+		register: usize,
+		value: usize,
+		mask: usize,
+	},
 	WorkgroupBarrier,
 }
 
@@ -467,8 +473,6 @@ pub(super) enum ArithmeticOperator {
 	BitwiseAnd,
 	BitwiseOr,
 	BitwiseXor,
-	LogicalAnd,
-	LogicalOr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -521,6 +525,12 @@ pub(super) enum ScalarUnaryOperator {
 	Fwidth,
 	/// The index of the lowest set bit of a `u32`, or `u32::MAX` when no bit is set.
 	FindLsb,
+	/// `-value`. Integers wrap, so negating an unsigned value gives its two's complement.
+	Negate,
+	/// `!value` of a `bool`.
+	LogicalNot,
+	/// `~value` of an integer scalar or vector.
+	BitwiseNot,
 	FromF16ToF32,
 	FromU32ToF32,
 	FromI32ToF32,

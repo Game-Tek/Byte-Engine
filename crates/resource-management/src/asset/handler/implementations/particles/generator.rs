@@ -21,8 +21,7 @@ const DECAY_STEPS: f32 = 1024.0;
 
 /// Declarations the simulation and vertex stages share with the renderer.
 ///
-/// Particles store only scalars, because backends pad a `vec3f` struct member to 16 bytes and would double the
-/// stride. `packed` holds the emitter slot in its low 16 bits and the life lost per second, in [`DECAY_STEPS`]
+/// A particle takes 32 bytes on every backend. `packed` holds the emitter slot in its low 16 bits and the life lost per second, in [`DECAY_STEPS`]
 /// steps, in its high 16 bits.
 const SHARED_DECLARATIONS: &str = "Spawn: struct {
 	first: u32,
@@ -47,13 +46,9 @@ ParticleFrame: struct {
 }
 
 Particle: struct {
-	position_x: f32,
-	position_y: f32,
-	position_z: f32,
+	position: vec3f,
 	life: f32,
-	velocity_x: f32,
-	velocity_y: f32,
-	velocity_z: f32,
+	velocity: vec3f,
 	packed: u32,
 }
 ";
@@ -182,8 +177,8 @@ main: fn (input: StageInput) -> void {{
 
 	if (index < alive) {{
 		let particle: Particle = particles[previous * frame.capacity + index];
-		position = vec3f(particle.position_x, particle.position_y, particle.position_z);
-		velocity = vec3f(particle.velocity_x, particle.velocity_y, particle.velocity_z);
+		position = particle.position;
+		velocity = particle.velocity;
 		life = particle.life;
 		packed = particle.packed;
 	}} else if (index < alive + emitted) {{
@@ -245,7 +240,7 @@ main: fn (input: StageInput) -> void {{
 
 	if (keep) {{
 		let destination: u32 = frame.side * frame.capacity + atomic_load(group_base) + local_index;
-		particles[destination] = Particle(position.x, position.y, position.z, life, velocity.x, velocity.y, velocity.z, packed);
+		particles[destination] = Particle(position, life, velocity, packed);
 	}}
 }}
 ",
@@ -305,8 +300,8 @@ particles: descriptor<{{ type: Particle[], binding: 1, access: read }}>;
 
 push_constant: push_constant {{
 	view_projection: mat4f,
-	// The camera position in `xyz` and the camera exposure in `w`.
-	camera: vec4f,
+	camera_position: vec3f,
+	exposure: f32,
 }}
 
 main: fn (input: StageInput) -> interface {{ position: vec4f, radiance: vec3f, uv: vec2f }} {{
@@ -315,14 +310,14 @@ main: fn (input: StageInput) -> interface {{ position: vec4f, radiance: vec3f, u
 	let corner_index: u32 = input.vertex_index % 6;
 	let corner: vec2f = vec2f(f32((14 >> corner_index) & 1), f32((28 >> corner_index) & 1));
 
-	let center: vec3f = vec3f(particle.position_x, particle.position_y, particle.position_z);
-	let velocity: vec3f = vec3f(particle.velocity_x, particle.velocity_y, particle.velocity_z);
-	let to_camera: vec3f = vec3f(push_constant.camera.x, push_constant.camera.y, push_constant.camera.z) - center;
+	let center: vec3f = particle.position;
+	let velocity: vec3f = particle.velocity;
+	let to_camera: vec3f = push_constant.camera_position - center;
 {shape}	let position: vec4f = push_constant.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
 
 	let age: f32 = 1.0 - clamp(particle.life, 0.0, 1.0);
 {color}
-	return {{ position, radiance: color * push_constant.camera.w, uv: vec2f(corner.x * 2.0 - 1.0, corner.y * 2.0 - 1.0) }};
+	return {{ position, radiance: color * push_constant.exposure, uv: vec2f(corner.x * 2.0 - 1.0, corner.y * 2.0 - 1.0) }};
 }}
 ",
 		color = color_gradient(&system.render.color),

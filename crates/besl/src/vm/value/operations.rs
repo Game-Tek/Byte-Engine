@@ -55,9 +55,10 @@ pub(crate) fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOper
 		Operators::BitwiseAnd => Some(ArithmeticOperator::BitwiseAnd),
 		Operators::BitwiseOr => Some(ArithmeticOperator::BitwiseOr),
 		Operators::BitwiseXor => Some(ArithmeticOperator::BitwiseXor),
-		Operators::LogicalAnd => Some(ArithmeticOperator::LogicalAnd),
-		Operators::LogicalOr => Some(ArithmeticOperator::LogicalOr),
-		Operators::Assignment
+		// `&&` and `||` short-circuit, so they lower to jumps instead of an arithmetic instruction.
+		Operators::LogicalAnd
+		| Operators::LogicalOr
+		| Operators::Assignment
 		| Operators::Equality
 		| Operators::LessThan
 		| Operators::Inequality
@@ -72,9 +73,6 @@ pub(crate) fn binary_result_type(
 	left: &ValueType,
 	right: &ValueType,
 ) -> Result<ValueType, VmError> {
-	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-		return Ok(ValueType::Bool);
-	}
 	if operator == ArithmeticOperator::Multiply {
 		match (left, right) {
 			(ValueType::Mat4F, ValueType::Vec4F) => return Ok(ValueType::Vec4F),
@@ -93,6 +91,38 @@ pub(crate) fn binary_result_type(
 		return Ok(right.clone());
 	}
 	Err(type_mismatch(left, right))
+}
+
+/// Selects the instruction operator for a BESL prefix operator.
+pub(crate) fn prefix_operator(operator: UnaryOperators) -> ScalarUnaryOperator {
+	match operator {
+		UnaryOperators::Negate => ScalarUnaryOperator::Negate,
+		UnaryOperators::LogicalNot => ScalarUnaryOperator::LogicalNot,
+		UnaryOperators::BitwiseNot => ScalarUnaryOperator::BitwiseNot,
+	}
+}
+
+/// Returns the type a prefix operator produces from an `operand` of that type: `!` takes a `bool`, `~` an integer
+/// scalar or vector, and `-` an integer or float scalar or vector, and each keeps its operand's type.
+pub(crate) fn prefix_result_type(operator: UnaryOperators, operand: &ValueType) -> Result<ValueType, VmError> {
+	let scalar = vector_scalar_type(operand).unwrap_or_else(|| operand.clone());
+	let integer = matches!(scalar, ValueType::U8 | ValueType::U16 | ValueType::U32 | ValueType::I32);
+	let (accepted, expected) = match operator {
+		UnaryOperators::LogicalNot => (*operand == ValueType::Bool, "bool"),
+		UnaryOperators::BitwiseNot => (integer, "integer scalar or vector"),
+		UnaryOperators::Negate => (
+			integer || matches!(scalar, ValueType::F16 | ValueType::F32),
+			"integer or float scalar or vector",
+		),
+	};
+	if accepted {
+		Ok(operand.clone())
+	} else {
+		Err(VmError::TypeMismatch {
+			expected: expected.to_string(),
+			found: operand.name().to_string(),
+		})
+	}
 }
 
 pub(crate) fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
@@ -122,15 +152,6 @@ pub(crate) fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
 }
 
 pub(crate) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right: &Value) -> Result<Value, VmError> {
-	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-		let left = !is_zero_value(left)?;
-		let right = !is_zero_value(right)?;
-		return Ok(Value::Bool(match operator {
-			ArithmeticOperator::LogicalAnd => left && right,
-			ArithmeticOperator::LogicalOr => left || right,
-			_ => unreachable!("Logical operators are handled before arithmetic"),
-		}));
-	}
 	if operator == ArithmeticOperator::Multiply {
 		match (left, right) {
 			(Value::Mat4F(matrix), Value::Vec4F(vector)) => {
@@ -330,10 +351,18 @@ pub(crate) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 		Value::I32(value) => Ok(*value == 0),
 		Value::F16(value) => Ok(*value == f16::from_f32(0.0)),
 		Value::F32(value) => Ok(*value == 0.0),
-		value => Err(VmError::TypeMismatch {
-			expected: "u32, i32, f16, or f32".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(non_scalar_condition(value)),
+	}
+}
+
+/// Builds the error for a branch condition that isn't a scalar. It stays out of line, so the interpreter loop that
+/// inlines [`is_zero_value`] doesn't grow by the error formatting.
+#[cold]
+#[inline(never)]
+fn non_scalar_condition(value: &Value) -> VmError {
+	VmError::TypeMismatch {
+		expected: "u32, i32, f16, or f32".to_string(),
+		found: value.value_type().name().to_string(),
 	}
 }
 
@@ -401,9 +430,6 @@ fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: Arithmeti
 		ArithmeticOperator::BitwiseAnd => Ok(left & right),
 		ArithmeticOperator::BitwiseOr => Ok(left | right),
 		ArithmeticOperator::BitwiseXor => Ok(left ^ right),
-		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
-			unreachable!("Logical operations are evaluated before integer arithmetic")
-		}
 	}
 }
 
@@ -432,9 +458,7 @@ fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> 
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
-		| ArithmeticOperator::BitwiseXor
-		| ArithmeticOperator::LogicalAnd
-		| ArithmeticOperator::LogicalOr => {
+		| ArithmeticOperator::BitwiseXor => {
 			return Err(VmError::TypeMismatch {
 				expected: "integer operands".to_string(),
 				found: ValueType::F16.name().to_string(),
@@ -455,9 +479,7 @@ pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: Arithmetic
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
-		| ArithmeticOperator::BitwiseXor
-		| ArithmeticOperator::LogicalAnd
-		| ArithmeticOperator::LogicalOr => Err(VmError::TypeMismatch {
+		| ArithmeticOperator::BitwiseXor => Err(VmError::TypeMismatch {
 			expected: "integer operands".to_string(),
 			found: ValueType::F32.name().to_string(),
 		}),
@@ -562,6 +584,9 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::FromU16ToU32, _) => mismatch(ValueType::U16),
 		(Unary::FromU32ToF32 | Unary::FromU32ToF16 | Unary::FromU32ToU16 | Unary::FindLsb, _) => mismatch(ValueType::U32),
 		(Unary::FromI32ToF32 | Unary::FromI32ToF16 | Unary::FromI32ToU32, _) => mismatch(ValueType::I32),
+		(Unary::LogicalNot, Value::Bool(value)) => Ok(Value::Bool(!value)),
+		(Unary::LogicalNot, _) => mismatch(ValueType::Bool),
+		(Unary::Negate | Unary::BitwiseNot, _) => apply_sign_or_bit_flip(operator, value),
 		_ => map_float_value(value, |value| match operator {
 			Unary::Abs => value.abs(),
 			Unary::Sqrt => value.sqrt(),
@@ -577,7 +602,38 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			Unary::InverseSqrt => 1.0 / value.sqrt(),
 			Unary::Log2 => value.log2(),
 			Unary::Fwidth => 0.0,
-			_ => unreachable!("Conversions and find_lsb are matched above"),
+			_ => unreachable!("Conversions, find_lsb, and the prefix operators are matched above"),
+		}),
+	}
+}
+
+/// Applies `-value` or `~value` lane by lane. Integers negate with wrapping, as C-family shading languages do, and
+/// floats only negate, since they have no bits to flip in BESL.
+fn apply_sign_or_bit_flip(operator: ScalarUnaryOperator, value: &Value) -> Result<Value, VmError> {
+	let negate = operator == ScalarUnaryOperator::Negate;
+	macro_rules! integer {
+		($value:expr) => {
+			if negate { $value.wrapping_neg() } else { !$value }
+		};
+	}
+	match value {
+		Value::U8(value) => Ok(Value::U8(integer!(value))),
+		Value::U16(value) => Ok(Value::U16(integer!(value))),
+		Value::U32(value) => Ok(Value::U32(integer!(value))),
+		Value::I32(value) => Ok(Value::I32(integer!(value))),
+		Value::Vec2U16(value) => Ok(Value::Vec2U16(value.map(|value| integer!(value)))),
+		Value::Vec4U16(value) => Ok(Value::Vec4U16(value.map(|value| integer!(value)))),
+		Value::Vec2I(value) => Ok(Value::Vec2I(value.map(|value| integer!(value)))),
+		Value::Vec2U(value) => Ok(Value::Vec2U(value.map(|value| integer!(value)))),
+		Value::Vec3U(value) => Ok(Value::Vec3U(value.map(|value| integer!(value)))),
+		Value::Vec4U(value) => Ok(Value::Vec4U(value.map(|value| integer!(value)))),
+		value if negate => map_float_value(value, |value| -value).map_err(|_| VmError::TypeMismatch {
+			expected: "integer, float, or vector".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+		value => Err(VmError::TypeMismatch {
+			expected: "integer scalar or vector".to_string(),
+			found: value.value_type().name().to_string(),
 		}),
 	}
 }
@@ -785,7 +841,6 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec2F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec3F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
-		Value::PackedVec4F(value) => value.get(index).copied().map(Value::F32),
 		Value::Mat4F(value) => value.as_chunks::<4>().0.get(index).copied().map(Value::Vec4F),
 		Value::Mat4x3F(value) => value.as_chunks::<3>().0.get(index).copied().map(Value::Vec3F),
 		Value::Struct { fields, .. } => fields.get(index).cloned(),
@@ -820,7 +875,7 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 		(Value::Vec4F16(slots), Value::F16(value)) => set(slots, index, value),
 		(Value::Vec2F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Vec3F(slots), Value::F32(value)) => set(slots, index, value),
-		(Value::Vec4F(slots) | Value::PackedVec4F(slots), Value::F32(value)) => set(slots, index, value),
+		(Value::Vec4F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
 		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
 		// Copy-on-write: a local store copies the shared fields once, and only when another copy still reads them.
@@ -850,7 +905,7 @@ pub(crate) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
 		ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16 => Some(ValueType::F16),
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::PackedVec4F => Some(ValueType::F32),
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),
 		_ => None,
 	}
 }

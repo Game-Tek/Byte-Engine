@@ -523,6 +523,175 @@ main: fn () -> void {
 		));
 	}
 
+	/// Returns the right side of the assignment that `source`'s `main` holds as its only statement.
+	fn assigned_value(source: &'static str) -> Node<'static> {
+		// The tokens outlive the parsed node, which borrows them, so the test leaks them.
+		let tokens: &'static [&'static str] = Box::leak(tokenize(source).into_boxed_slice());
+		let node = parse(tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected main function");
+		};
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Assignment,
+			right,
+			..
+		}) = &statements[0].node
+		else {
+			panic!("Expected an assignment");
+		};
+		(**right).clone()
+	}
+
+	#[test]
+	fn prefix_operators_bind_tighter_than_binary_operators_and_looser_than_member_access() {
+		// `-a * b` is `(-a) * b`.
+		let value = assigned_value("main: fn () -> void { x = -a * b; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Multiply,
+			left,
+			..
+		}) = &value.node
+		else {
+			panic!("Expected a product, found {value:?}");
+		};
+		assert!(matches!(
+			left.node,
+			Nodes::Expression(Expressions::Unary {
+				operator: crate::UnaryOperators::Negate,
+				..
+			})
+		));
+
+		// `!a && b` is `(!a) && b`, and `~a & b` is `(~a) & b`.
+		for (source, operator, prefix) in [
+			(
+				"main: fn () -> void { x = !a && b; }",
+				Operators::LogicalAnd,
+				crate::UnaryOperators::LogicalNot,
+			),
+			(
+				"main: fn () -> void { x = ~a & b; }",
+				Operators::BitwiseAnd,
+				crate::UnaryOperators::BitwiseNot,
+			),
+		] {
+			let value = assigned_value(source);
+			let Nodes::Expression(Expressions::Operator {
+				operator: found, left, ..
+			}) = &value.node
+			else {
+				panic!("Expected a binary operator for {source}");
+			};
+			assert_eq!(*found, operator, "{source}");
+			assert!(
+				matches!(left.node, Nodes::Expression(Expressions::Unary { operator: found, .. }) if found == prefix),
+				"{source}"
+			);
+		}
+		// `a - -b` subtracts a negation.
+		let value = assigned_value("main: fn () -> void { x = a - -b; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Minus,
+			right,
+			..
+		}) = &value.node
+		else {
+			panic!("Expected a difference, found {value:?}");
+		};
+		assert!(matches!(right.node, Nodes::Expression(Expressions::Unary { .. })));
+
+		// `-a.b` negates the member, and `- -a` nests two negations.
+		let value = assigned_value("main: fn () -> void { x = -a.b; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Expression(Expressions::Accessor { .. })));
+		let value = assigned_value("main: fn () -> void { x = - -a; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Expression(Expressions::Unary { .. })));
+	}
+
+	/// An `if` or `match` value is one whole operand, like a parenthesized expression.
+	#[test]
+	fn if_and_match_values_bind_like_parenthesized_operands() {
+		// `a + if (c) { b } else { d } * 2` is `a + ((if …) * 2)`.
+		let value = assigned_value("main: fn () -> void { x = a + if (c) { b } else { d } * 2; }");
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Plus,
+			right,
+			..
+		}) = &value.node
+		else {
+			panic!("Expected a sum, found {value:?}");
+		};
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Multiply,
+			left,
+			..
+		}) = &right.node
+		else {
+			panic!("Expected a product, found {right:?}");
+		};
+		let Nodes::Conditional {
+			statements, else_branch, ..
+		} = &left.node
+		else {
+			panic!("Expected an `if` value, found {left:?}");
+		};
+		assert!(matches!(
+			statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Yield { .. })
+			}]
+		));
+		assert!(matches!(else_branch, Some(ElseBranch::Block(statements)) if statements.len() == 1));
+
+		// A member access applies to the whole `match`, and a prefix operator to the whole `if`.
+		let value = assigned_value("main: fn () -> void { x = match n { 0 => a, _ => b }.y; }");
+		let Nodes::Expression(Expressions::Accessor { left, .. }) = &value.node else {
+			panic!("Expected a member access, found {value:?}");
+		};
+		assert!(matches!(left.node, Nodes::Match { .. }));
+		let value = assigned_value("main: fn () -> void { x = -if (c) { a } else { b }; }");
+		let Nodes::Expression(Expressions::Unary { operand, .. }) = &value.node else {
+			panic!("Expected a negation, found {value:?}");
+		};
+		assert!(matches!(operand.node, Nodes::Conditional { .. }));
+	}
+
+	/// A block's last expression without `;` is its value, while control flow stays a statement.
+	#[test]
+	fn block_values_are_final_expressions_without_a_semicolon() {
+		let value = assigned_value(
+			"main: fn () -> void { x = match n { 0 => 1.0, 1 => return y, _ => { let t: f32 = y; t * 2.0 } }; }",
+		);
+		let Nodes::Match { arms, .. } = &value.node else {
+			panic!("Expected a match, found {value:?}");
+		};
+		let is_yield = |node: &Node| matches!(node.node, Nodes::Expression(Expressions::Yield { .. }));
+		assert!(matches!(&arms[0].statements[..], [value] if is_yield(value)));
+		assert!(matches!(
+			&arms[1].statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Return { value: Some(_) })
+			}]
+		));
+		assert!(matches!(&arms[2].statements[..], [_, value] if is_yield(value)));
+
+		let value = assigned_value("main: fn () -> void { x = if (c) { return y } else { y }; }");
+		let Nodes::Conditional { statements, .. } = &value.node else {
+			panic!("Expected an `if` value, found {value:?}");
+		};
+		assert!(matches!(
+			statements[..],
+			[Node {
+				node: Nodes::Expression(Expressions::Return { value: Some(_) })
+			}]
+		));
+	}
+
 	#[test]
 	fn parse_grouping_parentheses() {
 		// Minimal repro: grouping parentheses inside a function call

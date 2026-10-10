@@ -64,6 +64,31 @@ mod tests {
 	}
 
 	#[test]
+	fn prefix_operators_and_if_values_lower_to_hlsl() {
+		let shader = lower_fixture(
+			r#"
+			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+			Frame: struct { projection: mat4f }
+			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let flag: bool = bodies[item].bits > 3;
+				bodies[item].bits = ~bodies[item].bits ^ (if (flag) { 1 } else { 2 });
+				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+				bodies[item].weight = if (!flag) { bodies[item].weight } else { 1.0 };
+				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (if (flag) { bodies[item].color } else { bodies[item].color });
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "((~bodies[item].bits)^(flag?1:2))");
+		assert_string_contains!(shader, "((-(-bodies[item].velocity))-(-bodies[item].velocity))");
+		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
+		assert_string_contains!(shader, "mul(frame[0].projection, -bodies[item].color)");
+	}
+
+	#[test]
 	fn gather_reads_the_texel_quad_with_gather_in_hlsl() {
 		let source = r#"
 			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
@@ -473,13 +498,12 @@ mod tests {
 	}
 
 	#[test]
-	fn packed_vec4f_uses_native_hlsl_vectors_in_nested_records() {
+	fn vec4f_meshlet_record_uses_native_hlsl_vectors() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::packed_vec4f_meshlet_binding(),
+			&generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
-		assert_string_does_not_contain!(shader, "struct packed_vec4f");
 	}
 
 	#[test]
@@ -1275,6 +1299,35 @@ mod tests {
 	}
 
 	#[test]
+	fn grouped_accessor_bases_keep_their_parentheses_in_hlsl() {
+		let shader = lower_fixture(
+			super::super::GROUPED_ACCESSOR_BASES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "float sum_y=(v+w).y;");
+		assert_string_contains!(shader, "uint32_t picked=(values)[i];");
+
+		compile_dxil(&shader, "besl-grouped-accessor-bases", ShaderTypes::Compute);
+	}
+
+	#[test]
+	fn if_and_match_values_with_statements_lower_to_hlsl() {
+		let shader = lower_fixture(
+			super::super::BRANCH_VALUES,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		// `scale` ran before the `match`, so it is captured before the switch that sets the match's value.
+		assert_string_contains!(shader, "_besl_value_1=scale;float _besl_value_0;switch(n){");
+		assert_string_contains!(shader, "float weight=(_besl_value_1*_besl_value_0);");
+		assert_string_contains!(
+			shader,
+			"float _besl_value_2;if(n>1){float lit=(weight*weight);_besl_value_2=lit;}else{_besl_value_2=0.0;}"
+		);
+
+		compile_dxil(&shader, "besl-branch-values", ShaderTypes::Compute);
+	}
+
+	#[test]
 	fn match_lowers_to_hlsl_switch() {
 		let shader = lower_fixture(
 			super::super::MATCH_IN_LOOP,
@@ -1389,6 +1442,8 @@ mod tests {
 		);
 		assert_string_contains!(shader, "WaveActiveBallot(group_thread_index<4)");
 		assert_string_contains!(shader, "WaveReadLaneAt(group_thread_index,leader)");
+		assert_string_contains!(shader, "WaveReadLaneAt(value, WaveGetLaneIndex() ^ mask)");
+		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 
@@ -1407,13 +1462,25 @@ mod tests {
 		compile_dxil(&shader, "besl-find-lsb", ShaderTypes::Compute);
 	}
 
-	/// Verifies specialization constants become `static const` values, because DX12 has no Vulkan-style specialization constants.
+	/// Verifies specialization constants read the `SPEC_CONSTANT_<id>` defines the DX12 backend passes, with a typed
+	/// default, because DX12 has no Vulkan-style specialization constants.
 	#[test]
-	fn specializations_lower_to_static_constants() {
+	fn specializations_lower_to_overridable_defines() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
-		assert_string_contains!(shader, "static const float color_x=1.0f;");
-		assert_string_contains!(shader, "static const float color_y=1.0f;");
-		assert_string_contains!(shader, "static const float color_z=1.0f;");
+		assert_string_contains!(
+			shader,
+			"#ifndef SPEC_CONSTANT_0\n#define SPEC_CONSTANT_0 false\n#endif\nstatic const bool enabled=SPEC_CONSTANT_0;"
+		);
+		assert_string_contains!(
+			shader,
+			"#define SPEC_CONSTANT_1 0u\n#endif\nstatic const uint32_t count=SPEC_CONSTANT_1;"
+		);
+		assert_string_contains!(
+			shader,
+			"#define SPEC_CONSTANT_2 0.0\n#endif\nstatic const float scale=SPEC_CONSTANT_2;"
+		);
+		assert_string_contains!(shader, "static const float color_x=SPEC_CONSTANT_4;");
+		assert_string_contains!(shader, "static const float color_z=SPEC_CONSTANT_6;");
 		assert_string_contains!(shader, "static const float3 color=float3(color_x,color_y,color_z);");
 		assert_string_does_not_contain!(shader, "vk::constant_id");
 	}

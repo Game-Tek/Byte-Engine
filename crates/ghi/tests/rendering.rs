@@ -154,6 +154,11 @@ fn resize_static_render_target() {
 }
 
 #[test]
+fn resize_render_target_layers() {
+	run(resources::resize_layers);
+}
+
+#[test]
 fn resize_static_render_target_in_flight() {
 	run(|context, queue_handle| resources::resize_render_target_in_flight(context, queue_handle, UseCases::STATIC));
 }

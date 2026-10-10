@@ -99,7 +99,6 @@ pub enum ValueType {
 	Vec2F,
 	Vec3F,
 	Vec4F,
-	PackedVec4F,
 	Mat4F,
 	Mat4x3F,
 	Texture2D,
@@ -116,7 +115,7 @@ pub enum ValueType {
 
 /// Pairs each fieldless [`ValueType`] with its BESL type name. [`ValueType::name`] and [`ValueType::builtin`] both
 /// read it, so the two directions cannot drift apart. Add new built-in value types here.
-static BUILTIN_VALUE_TYPES: [(&str, ValueType); 27] = [
+static BUILTIN_VALUE_TYPES: [(&str, ValueType); 26] = [
 	("bool", ValueType::Bool),
 	("u8", ValueType::U8),
 	("u16", ValueType::U16),
@@ -136,7 +135,6 @@ static BUILTIN_VALUE_TYPES: [(&str, ValueType); 27] = [
 	("vec2f", ValueType::Vec2F),
 	("vec3f", ValueType::Vec3F),
 	("vec4f", ValueType::Vec4F),
-	("packed_vec4f", ValueType::PackedVec4F),
 	("mat4f", ValueType::Mat4F),
 	("mat4x3f", ValueType::Mat4x3F),
 	("Texture2D", ValueType::Texture2D),
@@ -159,7 +157,7 @@ impl ValueType {
 			ValueType::Vec2I => 8,
 			ValueType::Vec2U | ValueType::Vec2F => 8,
 			ValueType::Vec3U => 12,
-			ValueType::Vec4U | ValueType::Vec4F | ValueType::PackedVec4F => 16,
+			ValueType::Vec4U | ValueType::Vec4F => 16,
 			ValueType::Vec2F16 => 4,
 			ValueType::Vec3F16 => 6,
 			ValueType::Vec4F16 => 8,

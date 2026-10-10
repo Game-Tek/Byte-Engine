@@ -8,6 +8,9 @@
 "continue"
 "break"
 "if"
+"else"
+"match"
+"=>"
 "for"
 "descriptor"
 "type"
@@ -57,6 +60,12 @@
 ">"
 "&&"
 "||"
+
+# Single-character operators, including the prefix operators.
+"^"
+"~"
+"!"
+"-"
 
 # Grammar punctuation.
 "{"

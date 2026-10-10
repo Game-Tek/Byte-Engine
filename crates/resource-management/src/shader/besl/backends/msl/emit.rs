@@ -190,7 +190,6 @@ impl Generator {
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
-			"packed_vec4f" => "packed_float4",
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
@@ -241,11 +240,12 @@ impl Generator {
 				self.emit_statement_end(string);
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
-			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
+					// Stage interfaces keep native vectors, because Metal rejects packed ones there.
 					if self.is_packed_mat4x3_member(this_node)
-						|| (self.in_buffer_binding_struct && msl_packs_direct_binding_member(type_name, count.is_some()))
+						|| (!self.in_stage_interface_struct && type_name.starts_with("vec"))
 					{
 						Self::emit_buffer_member_type(string, type_name);
 					} else {
@@ -501,7 +501,8 @@ impl Generator {
 				 inline uint _besl_subgroup_ballot_count(uint4 mask) { return popcount(mask.x) + popcount(mask.y) + popcount(mask.z) + popcount(mask.w); }\n\
 				 inline uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
 					 inline uint _besl_subgroup_broadcast_u32(uint value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n\
-					 inline float _besl_subgroup_broadcast_f32(float value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n",
+					 inline float _besl_subgroup_broadcast_f32(float value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n\
+					 inline float _besl_subgroup_shuffle_xor_f32(float value, uint mask) { return simd_shuffle_xor(value, ushort(mask)); }\n",
 			);
 		}
 

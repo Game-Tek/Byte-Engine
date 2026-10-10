@@ -211,16 +211,12 @@ impl FrameBuffers {
 		for (index, life) in lives.iter().enumerate() {
 			let element = previous * CAPACITY + index;
 			for (member, value) in [
-				("position_x", index as f32),
-				("position_y", 0.0),
-				("position_z", 0.0),
-				("velocity_x", 0.0),
-				("velocity_y", 1.0),
-				("velocity_z", 0.0),
-				("life", *life),
+				("position", Value::Vec3F([index as f32, 0.0, 0.0])),
+				("velocity", Value::Vec3F([0.0, 1.0, 0.0])),
+				("life", Value::F32(*life)),
 			] {
 				self.particles
-					.write_array_member(element, member, Value::F32(value))
+					.write_array_member(element, member, value)
 					.expect("particle member");
 			}
 			// Slot 3, losing one whole life per second.
@@ -262,15 +258,11 @@ impl FrameBuffers {
 	/// Returns the position, velocity, and life of the particle at `index` in `side`'s half.
 	fn particle(&self, side: usize, index: usize) -> ([f32; 3], [f32; 3], f32) {
 		let element = side * CAPACITY + index;
-		let read = |member| match self.particles.read_array_member(element, member).expect("particle member") {
-			Value::F32(value) => value,
-			value => panic!("Unexpected particle value: {value:?}."),
-		};
-		(
-			[read("position_x"), read("position_y"), read("position_z")],
-			[read("velocity_x"), read("velocity_y"), read("velocity_z")],
-			read("life"),
-		)
+		let read = |member| self.particles.read_array_member(element, member).expect("particle member");
+		match (read("position"), read("velocity"), read("life")) {
+			(Value::Vec3F(position), Value::Vec3F(velocity), Value::F32(life)) => (position, velocity, life),
+			values => panic!("Unexpected particle values: {values:?}."),
+		}
 	}
 }
 

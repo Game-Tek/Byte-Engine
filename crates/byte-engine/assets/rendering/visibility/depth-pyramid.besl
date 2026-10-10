@@ -2,9 +2,10 @@
 // nonzero depth of each footprint: every 16x16 workgroup reads one 32x32 tile of the depth buffer once, as texel
 // quads, and emits the pyramid's half-, quarter-, and eighth-resolution mips from workgroup memory.
 //
-// The same read serves the directional shadow cascade fit. When the push constant asks, each thread also folds its
-// pixels into the box its cascade's receivers fill, the workgroup merges threads with shared atomics, and each tile
-// merges into the frame's boxes with at most one global atomic per bound. Positions are measured in the normalized
+// The same read serves the directional shadow cascade fit. For each sun the push constant asks for, each thread also
+// folds its pixels into the box its cascade's receivers fill, the workgroup merges threads with shared atomics, and
+// each tile merges into the frame's boxes with at most one global atomic per bound. Cascade `c` of sun slot `s` is
+// fitted box `4s + c`. Positions are measured in the normalized
 // device coordinates of the cascade as the CPU fitted it to the camera frustum, where every receiver lies inside -1..1
 // in x and y and 0..1 in z. The cascade fit then shrinks each cascade to its box and resets the bounds.
 FastGTAOView: struct {
@@ -18,17 +19,17 @@ FastGTAOView: struct {
 
 // The CPU's cascade fit, which the receiver bounds are measured against. Must match directional-shadow-cascade-fit.besl.
 ReceiverFit: struct {
-	view_to_cascade_rows: vec4f[12],
-	cascade_frames: vec4f[4],
+	view_to_cascade_rows: vec4f[48],
+	cascade_frames: vec4f[16],
 	split_far: vec4f,
 	pixel_to_ray: vec4f,
 	depth_unproject: vec4f,
 	fit_constants: vec4f,
 }
 
-// Per cascade, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.
+// Per fitted box, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.
 ReceiverBounds: struct {
-	bounds: atomicu32[24],
+	bounds: atomicu32[96],
 }
 
 gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
@@ -39,17 +40,17 @@ reduced_depth_3: descriptor<{ type: StorageImage<r32f>, binding: 1036, access: w
 receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1037, access: read_write, memory: device }>;
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1038, access: read }>;
 
-// Whether to find the receiver bounds: zero on frames no cascade fits receivers.
+// How many suns' receiver bounds to find: zero on frames no cascade fits receivers.
 push_constant: push_constant {
-	fit_receivers: u32,
+	fitted_suns: u32,
 }
 
 // The workgroup's 16x16 half-resolution depths, then its 8x8 quarter-resolution depths after them.
 shared_depth: workgroup<f32, 320>;
-// Per thread, the cascade of the box its pixels fill, or NO_CASCADE, and the box: lower x, y, z, then upper x, y, z.
+// Per thread, the fitted box its pixels fill, or NO_CASCADE, and the box: lower x, y, z, then upper x, y, z.
 shared_box_cascade: workgroup<u32, 256>;
 shared_box_bounds: workgroup<f32, 1536>;
-tile_bounds: workgroup<atomicu32, 24>;
+tile_bounds: workgroup<atomicu32, 96>;
 
 DEPTH_PYRAMID_WORKGROUP_WIDTH: const u32 = 16;
 DEPTH_PYRAMID_WORKGROUP_SIZE: const u32 = 256;
@@ -58,8 +59,10 @@ DEPTH_PYRAMID_LEVEL_2_OFFSET: const u32 = 256;
 DEPTH_PYRAMID_PIXELS_PER_THREAD: const u32 = 9;
 // Threads that combine the workgroup's boxes before they merge, sixteen boxes each.
 DEPTH_PYRAMID_BOX_COMBINERS: const u32 = 16;
-RECEIVER_BOUNDS_COUNT: const u32 = 24;
-NO_CASCADE: const u32 = 4;
+// Six bounds for each of a sun's four cascades.
+RECEIVER_BOUNDS_PER_SUN: const u32 = 24;
+// Past every sun's fitted boxes.
+NO_CASCADE: const u32 = 16;
 // Bounds are fixed point, 2^22 steps per unit, offset by 2^23 so every coordinate in -2..2 encodes to a positive whole
 // number below 2^24, which f32 holds exactly. Every bound merges with atomic max: an upper bound stores its code, and a
 // lower bound stores 2^24 minus its code, so a larger stored value is a lower bound. Zero then means no receiver.
@@ -99,8 +102,8 @@ encode_upper_bound: fn (coordinate: f32) -> u32 {
 	return u32(RECEIVER_BOUNDS_OFFSET - floor(0.0 - clamped * RECEIVER_BOUNDS_STEPS_PER_UNIT));
 }
 
-merge_tile_bounds: fn (cascade: u32, lower: vec3f, upper: vec3f) -> void {
-	let first: u32 = cascade * 6;
+merge_tile_bounds: fn (fitted_box: u32, lower: vec3f, upper: vec3f) -> void {
+	let first: u32 = fitted_box * 6;
 	atomic_max(tile_bounds[first], encode_lower_bound(lower.x));
 	atomic_max(tile_bounds[first + 1], encode_lower_bound(lower.y));
 	atomic_max(tile_bounds[first + 2], encode_lower_bound(lower.z));
@@ -149,12 +152,100 @@ pixel_offset: fn (index: u32) -> vec2u {
 	}
 }
 
+// Folds a thread's pixels into the box they fill in their cascade of sun `sun`, leaves the box in workgroup memory for
+// the combiners, and returns its fitted box, or NO_CASCADE when `fits` is false or no pixel is a receiver.
+fold_thread_box: fn (sun: u32, fits: bool, lane: u32, first_pixel: vec2u, pixel_depths: f32[9]) -> u32 {
+	let cascade: u32 = NO_CASCADE;
+	if (fits) {
+		let lower: vec3f = vec3f(0.0, 0.0, 0.0);
+		let upper: vec3f = vec3f(0.0, 0.0, 0.0);
+		for (let index: u32 = 0; index < DEPTH_PYRAMID_PIXELS_PER_THREAD; index = index + 1) {
+			let depth: f32 = pixel_depths[index];
+			// Zero depth is the sky, which receives no shadow.
+			if (depth != 0.0) {
+				let distance: f32 = receiver_fit.depth_unproject.x / (depth + receiver_fit.depth_unproject.y);
+				let pixel_cascade: u32 = receiver_cascade(distance);
+				if (pixel_cascade != NO_CASCADE) {
+					let pixel_box: u32 = sun * 4 + pixel_cascade;
+					let pixel: vec2u = first_pixel + pixel_offset(index);
+					let ray_x: f32 = f32(pixel.x) * receiver_fit.pixel_to_ray.x + receiver_fit.pixel_to_ray.z;
+					let ray_y: f32 = f32(pixel.y) * receiver_fit.pixel_to_ray.y + receiver_fit.pixel_to_ray.w;
+					let view_position: vec4f = vec4f(ray_x * distance, ray_y * distance, distance, 1.0);
+					let first_row: u32 = pixel_box * 3;
+					let position: vec3f = vec3f(
+						dot(receiver_fit.view_to_cascade_rows[first_row], view_position),
+						dot(receiver_fit.view_to_cascade_rows[first_row + 1], view_position),
+						dot(receiver_fit.view_to_cascade_rows[first_row + 2], view_position)
+					);
+					// A thread's pixels almost always share a cascade, so it merges only when the cascade changes.
+					if (pixel_box != cascade) {
+						if (cascade != NO_CASCADE) {
+							merge_tile_bounds(cascade, lower, upper);
+						}
+						cascade = pixel_box;
+						lower = position;
+						upper = position;
+					}
+					lower = vec3f(min(lower.x, position.x), min(lower.y, position.y), min(lower.z, position.z));
+					upper = vec3f(max(upper.x, position.x), max(upper.y, position.y), max(upper.z, position.z));
+				}
+			}
+		}
+		let first_bound: u32 = lane * 6;
+		shared_box_bounds[first_bound] = lower.x;
+		shared_box_bounds[first_bound + 1] = lower.y;
+		shared_box_bounds[first_bound + 2] = lower.z;
+		shared_box_bounds[first_bound + 3] = upper.x;
+		shared_box_bounds[first_bound + 4] = upper.y;
+		shared_box_bounds[first_bound + 5] = upper.z;
+	}
+	return cascade;
+}
+
+// Combines sixteen threads' boxes, from thread `lane * 16` on, and merges them into the tile's bounds.
+combine_thread_boxes: fn (lane: u32) -> void {
+	let combined_cascade: u32 = NO_CASCADE;
+	let lower: vec3f = vec3f(0.0, 0.0, 0.0);
+	let upper: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let entry: u32 = 0; entry < DEPTH_PYRAMID_WORKGROUP_SIZE / DEPTH_PYRAMID_BOX_COMBINERS; entry = entry + 1) {
+		let thread: u32 = lane * (DEPTH_PYRAMID_WORKGROUP_SIZE / DEPTH_PYRAMID_BOX_COMBINERS) + entry;
+		let entry_cascade: u32 = shared_box_cascade[thread];
+		if (entry_cascade != NO_CASCADE) {
+			let first_bound: u32 = thread * 6;
+			let entry_lower: vec3f = vec3f(
+				shared_box_bounds[first_bound],
+				shared_box_bounds[first_bound + 1],
+				shared_box_bounds[first_bound + 2]
+			);
+			let entry_upper: vec3f = vec3f(
+				shared_box_bounds[first_bound + 3],
+				shared_box_bounds[first_bound + 4],
+				shared_box_bounds[first_bound + 5]
+			);
+			if (entry_cascade != combined_cascade) {
+				if (combined_cascade != NO_CASCADE) {
+					merge_tile_bounds(combined_cascade, lower, upper);
+				}
+				combined_cascade = entry_cascade;
+				lower = entry_lower;
+				upper = entry_upper;
+			}
+			lower = vec3f(min(lower.x, entry_lower.x), min(lower.y, entry_lower.y), min(lower.z, entry_lower.z));
+			upper = vec3f(max(upper.x, entry_upper.x), max(upper.y, entry_upper.y), max(upper.z, entry_upper.z));
+		}
+	}
+	if (combined_cascade != NO_CASCADE) {
+		merge_tile_bounds(combined_cascade, lower, upper);
+	}
+}
+
 main: fn (input: StageInput) -> void {
 	let lane: u32 = input.thread_idx;
-	let fit_receivers: bool = push_constant.fit_receivers != 0;
+	let fitted_suns: u32 = push_constant.fitted_suns;
+	let receiver_bounds_count: u32 = fitted_suns * RECEIVER_BOUNDS_PER_SUN;
 	// A thread whose pixels span two cascades merges its first box before the combiners run, so the zeroing is complete
 	// before any thread starts.
-	if (fit_receivers && lane < RECEIVER_BOUNDS_COUNT) {
+	if (lane < receiver_bounds_count) {
 		atomic_store(tile_bounds[lane], 0);
 	}
 	workgroup_barrier();
@@ -203,51 +294,9 @@ main: fn (input: StageInput) -> void {
 		write(reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
 	}
 
-	// The box the thread's pixels fill in their cascade, left in workgroup memory for the combiners.
-	let cascade: u32 = NO_CASCADE;
-	if (fit_receivers && in_range) {
-		let lower: vec3f = vec3f(0.0, 0.0, 0.0);
-		let upper: vec3f = vec3f(0.0, 0.0, 0.0);
-		for (let index: u32 = 0; index < DEPTH_PYRAMID_PIXELS_PER_THREAD; index = index + 1) {
-			let depth: f32 = pixel_depths[index];
-			// Zero depth is the sky, which receives no shadow.
-			if (depth != 0.0) {
-				let distance: f32 = receiver_fit.depth_unproject.x / (depth + receiver_fit.depth_unproject.y);
-				let pixel_cascade: u32 = receiver_cascade(distance);
-				if (pixel_cascade != NO_CASCADE) {
-					let pixel: vec2u = first_pixel + pixel_offset(index);
-					let ray_x: f32 = f32(pixel.x) * receiver_fit.pixel_to_ray.x + receiver_fit.pixel_to_ray.z;
-					let ray_y: f32 = f32(pixel.y) * receiver_fit.pixel_to_ray.y + receiver_fit.pixel_to_ray.w;
-					let view_position: vec4f = vec4f(ray_x * distance, ray_y * distance, distance, 1.0);
-					let first_row: u32 = pixel_cascade * 3;
-					let position: vec3f = vec3f(
-						dot(receiver_fit.view_to_cascade_rows[first_row], view_position),
-						dot(receiver_fit.view_to_cascade_rows[first_row + 1], view_position),
-						dot(receiver_fit.view_to_cascade_rows[first_row + 2], view_position)
-					);
-					// A thread's pixels almost always share a cascade, so it merges only when the cascade changes.
-					if (pixel_cascade != cascade) {
-						if (cascade != NO_CASCADE) {
-							merge_tile_bounds(cascade, lower, upper);
-						}
-						cascade = pixel_cascade;
-						lower = position;
-						upper = position;
-					}
-					lower = vec3f(min(lower.x, position.x), min(lower.y, position.y), min(lower.z, position.z));
-					upper = vec3f(max(upper.x, position.x), max(upper.y, position.y), max(upper.z, position.z));
-				}
-			}
-		}
-		let first_bound: u32 = lane * 6;
-		shared_box_bounds[first_bound] = lower.x;
-		shared_box_bounds[first_bound + 1] = lower.y;
-		shared_box_bounds[first_bound + 2] = lower.z;
-		shared_box_bounds[first_bound + 3] = upper.x;
-		shared_box_bounds[first_bound + 4] = upper.y;
-		shared_box_bounds[first_bound + 5] = upper.z;
-	}
-	shared_box_cascade[lane] = cascade;
+	// The first sun's boxes fold while the half-resolution depths reduce, behind the barriers the reduction needs
+	// anyway. Later suns fold after the pyramid, so a frame with one sun pays nothing for them.
+	shared_box_cascade[lane] = fold_thread_box(0, fitted_suns != 0 && in_range, lane, first_pixel, pixel_depths);
 	workgroup_barrier();
 
 	// Lanes 0-63 reduce the 16x16 half-resolution depths to 8x8 quarter-resolution ones, kept after them.
@@ -270,40 +319,8 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 	// Meanwhile sixteen lanes each combine sixteen threads' boxes, so the tile's bounds take few contended atomics.
-	if (fit_receivers && lane < DEPTH_PYRAMID_BOX_COMBINERS) {
-		let combined_cascade: u32 = NO_CASCADE;
-		let lower: vec3f = vec3f(0.0, 0.0, 0.0);
-		let upper: vec3f = vec3f(0.0, 0.0, 0.0);
-		for (let entry: u32 = 0; entry < DEPTH_PYRAMID_WORKGROUP_SIZE / DEPTH_PYRAMID_BOX_COMBINERS; entry = entry + 1) {
-			let thread: u32 = lane * (DEPTH_PYRAMID_WORKGROUP_SIZE / DEPTH_PYRAMID_BOX_COMBINERS) + entry;
-			let entry_cascade: u32 = shared_box_cascade[thread];
-			if (entry_cascade != NO_CASCADE) {
-				let first_bound: u32 = thread * 6;
-				let entry_lower: vec3f = vec3f(
-					shared_box_bounds[first_bound],
-					shared_box_bounds[first_bound + 1],
-					shared_box_bounds[first_bound + 2]
-				);
-				let entry_upper: vec3f = vec3f(
-					shared_box_bounds[first_bound + 3],
-					shared_box_bounds[first_bound + 4],
-					shared_box_bounds[first_bound + 5]
-				);
-				if (entry_cascade != combined_cascade) {
-					if (combined_cascade != NO_CASCADE) {
-						merge_tile_bounds(combined_cascade, lower, upper);
-					}
-					combined_cascade = entry_cascade;
-					lower = entry_lower;
-					upper = entry_upper;
-				}
-				lower = vec3f(min(lower.x, entry_lower.x), min(lower.y, entry_lower.y), min(lower.z, entry_lower.z));
-				upper = vec3f(max(upper.x, entry_upper.x), max(upper.y, entry_upper.y), max(upper.z, entry_upper.z));
-			}
-		}
-		if (combined_cascade != NO_CASCADE) {
-			merge_tile_bounds(combined_cascade, lower, upper);
-		}
+	if (fitted_suns != 0 && lane < DEPTH_PYRAMID_BOX_COMBINERS) {
+		combine_thread_boxes(lane);
 	}
 	workgroup_barrier();
 
@@ -322,8 +339,18 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 
-	// The tile's boxes, complete since the barrier after the combiners, join the frame's.
-	if (fit_receivers && lane < RECEIVER_BOUNDS_COUNT) {
+	// Every later sun folds and combines its boxes in turn.
+	for (let sun: u32 = 1; sun < fitted_suns; sun = sun + 1) {
+		shared_box_cascade[lane] = fold_thread_box(sun, in_range, lane, first_pixel, pixel_depths);
+		workgroup_barrier();
+		if (lane < DEPTH_PYRAMID_BOX_COMBINERS) {
+			combine_thread_boxes(lane);
+		}
+		workgroup_barrier();
+	}
+
+	// The tile's boxes, complete since the barrier after the last combiners, join the frame's.
+	if (lane < receiver_bounds_count) {
 		let bound: u32 = atomic_load(tile_bounds[lane]);
 		if (bound != 0) {
 			atomic_max(receiver_bounds.bounds[lane], bound);

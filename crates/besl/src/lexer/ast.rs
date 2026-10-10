@@ -229,7 +229,6 @@ impl Node {
 		let vec4f16 = vector_type("vec4f16", &f16_t, 4);
 		let vec4f32 = vector_type("vec4f", &f32_t, 4);
 		// Packed vectors keep scalar alignment when they are embedded in storage records.
-		let packed_vec4f32 = vector_type("packed_vec4f", &f32_t, 4);
 		let mat4f32 = vector_type("mat4f", &vec4f32, 4);
 		let mat4x3f32 = vector_type("mat4x3f", &vec3f32, 4);
 
@@ -262,7 +261,6 @@ impl Node {
 			vec4u32.clone(),
 			vec4f16.clone(),
 			vec4f32.clone(),
-			packed_vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
 			texture_2d.clone(),
@@ -417,6 +415,11 @@ impl Node {
 				vec![("value", f32_t.clone()), ("source_lane", u32_t.clone())],
 				f32_t.clone(),
 			),
+			builtin_intrinsic(
+				"subgroup_shuffle_xor_f32",
+				vec![("value", f32_t.clone()), ("mask", u32_t.clone())],
+				f32_t.clone(),
+			),
 			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
 			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
 			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),
@@ -561,7 +564,7 @@ impl Node {
 			));
 		}
 		// Conversions take one `value` of the source type and return the target type.
-		let conversions: [(&str, &[&NodeReference], &NodeReference); 10] = [
+		let conversions: [(&str, &[&NodeReference], &NodeReference); 9] = [
 			("f16", &[&f32_t, &f16_t, &u32_t, &i32_t], &f16_t),
 			("u16", &[&u32_t], &u16_t),
 			("f32", &[&f16_t, &u32_t, &i32_t], &f32_t),
@@ -570,8 +573,7 @@ impl Node {
 			("vec4f16", &[&vec4f32, &vec4f16], &vec4f16),
 			("vec2f", &[&vec2f16], &vec2f32),
 			("vec3f", &[&vec3f16], &vec3f32),
-			("vec4f", &[&vec4f16, &packed_vec4f32], &vec4f32),
-			("packed_vec4f", &[&vec4f32], &packed_vec4f32),
+			("vec4f", &[&vec4f16], &vec4f32),
 		];
 		for (name, sources, target) in conversions {
 			builtins.extend(converted_overloads(
@@ -804,11 +806,13 @@ impl Node {
 		}
 	}
 
-	pub fn specialization(name: &str, r#type: NodeReference) -> Node {
+	/// Declares a host-selected constant whose backend index starts at `id`. See [`crate::parser::Node::specialization`].
+	pub fn specialization(name: &str, r#type: NodeReference, id: u32) -> Node {
 		Node {
 			node: Nodes::Specialization {
 				name: name.to_string(),
 				r#type,
+				id,
 			},
 		}
 	}
@@ -1095,6 +1099,8 @@ pub enum Nodes {
 	Specialization {
 		name: String,
 		r#type: NodeReference,
+		/// The first backend constant index. Vector components take consecutive indices.
+		id: u32,
 	},
 	Expression(Expressions),
 	Raw {
@@ -1183,6 +1189,12 @@ impl Nodes {
 				Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
 					([Some(left), Some(right), None], &[], &[])
 				}
+				Expressions::Unary { operand, .. } => ([Some(operand), None, None], &[], &[]),
+				Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => ([Some(condition), Some(if_true), Some(if_false)], &[], &[]),
 				Expressions::Macro { body, .. } => ([Some(body), None, None], &[], &[]),
 				Expressions::Continue
 				| Expressions::Break
@@ -1277,6 +1289,10 @@ impl Nodes {
 				_ => source.borrow().node().is_indexable(),
 			},
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
+			// A parenthesized value indexes like the value inside it, as in `(values)[i]`.
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				elements[0].borrow().node().is_indexable()
+			}
 			_ => false,
 		}
 	}
@@ -1349,8 +1365,12 @@ impl std::fmt::Debug for Node {
 				f,
 				"ForLoop {{ initializer: {initializer:?}, condition: {condition:?}, update: {update:?}, statements: {statements:?} }}"
 			),
-			Nodes::Specialization { name, r#type } => {
-				write!(f, "Specialization {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
+			Nodes::Specialization { name, r#type, id } => {
+				write!(
+					f,
+					"Specialization {{ name: {name}, type: {:?}, id: {id} }}",
+					r#type.borrow().get_name()
+				)
 			}
 			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
 			Nodes::Raw {
@@ -1453,29 +1473,34 @@ pub enum Operators {
 	LogicalOr,
 }
 
-/// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter.
+/// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter. Member
+/// access binds tightest, at 1, then the prefix [`UnaryOperators`], at [`UNARY_PRECEDENCE`].
 const OPERATOR_TOKENS: [(&str, Operators, u8); 19] = [
-	("=", Operators::Assignment, 9),
-	("||", Operators::LogicalOr, 8),
-	("|", Operators::BitwiseOr, 8),
+	("=", Operators::Assignment, 11),
+	("||", Operators::LogicalOr, 9),
+	("|", Operators::BitwiseOr, 9),
 	// XOR binds tighter than OR and looser than AND, matching C-family shading languages.
-	("^", Operators::BitwiseXor, 7),
-	("&&", Operators::LogicalAnd, 6),
-	("&", Operators::BitwiseAnd, 6),
-	("==", Operators::Equality, 5),
-	("!=", Operators::Inequality, 5),
-	("<", Operators::LessThan, 5),
-	(">", Operators::GreaterThan, 5),
-	("<=", Operators::LessThanOrEqual, 5),
-	(">=", Operators::GreaterThanOrEqual, 5),
-	("<<", Operators::ShiftLeft, 4),
-	(">>", Operators::ShiftRight, 4),
-	("+", Operators::Plus, 3),
-	("-", Operators::Minus, 3),
-	("*", Operators::Multiply, 2),
-	("/", Operators::Divide, 2),
-	("%", Operators::Modulo, 2),
+	("^", Operators::BitwiseXor, 8),
+	("&&", Operators::LogicalAnd, 7),
+	("&", Operators::BitwiseAnd, 7),
+	("==", Operators::Equality, 6),
+	("!=", Operators::Inequality, 6),
+	("<", Operators::LessThan, 6),
+	(">", Operators::GreaterThan, 6),
+	("<=", Operators::LessThanOrEqual, 6),
+	(">=", Operators::GreaterThanOrEqual, 6),
+	("<<", Operators::ShiftLeft, 5),
+	(">>", Operators::ShiftRight, 5),
+	("+", Operators::Plus, 4),
+	("-", Operators::Minus, 4),
+	("*", Operators::Multiply, 3),
+	("/", Operators::Divide, 3),
+	("%", Operators::Modulo, 3),
 ];
+
+/// How loosely the prefix [`UnaryOperators`] bind: tighter than every binary operator, so `-a * b` is `(-a) * b`, and
+/// looser than member access, so `-a.b` is `-(a.b)`. See [`Operators::precedence`] for the scale.
+pub(crate) const UNARY_PRECEDENCE: u8 = 2;
 
 impl Operators {
 	/// Reads the operator a source token spells, or returns `None` for any other token.
@@ -1492,6 +1517,40 @@ impl Operators {
 			.iter()
 			.find(|(_, operator, _)| operator == self)
 			.map_or(0, |(.., precedence)| *precedence)
+	}
+}
+
+/// The `UnaryOperators` enum names the BESL prefix operators. The parser reads them from source tokens with
+/// [`UnaryOperators::from_token`], and backends write them back with [`UnaryOperators::token`], which every target
+/// shading language spells the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOperators {
+	/// `-value` negates a float or integer scalar or vector. An unsigned value wraps, as in C-family shading languages.
+	Negate,
+	/// `!value` negates a `bool`.
+	LogicalNot,
+	/// `~value` flips every bit of an integer scalar or vector.
+	BitwiseNot,
+}
+
+impl UnaryOperators {
+	/// Reads the prefix operator a source token spells, or returns `None` for any other token.
+	pub fn from_token(token: &str) -> Option<Self> {
+		match token {
+			"-" => Some(Self::Negate),
+			"!" => Some(Self::LogicalNot),
+			"~" => Some(Self::BitwiseNot),
+			_ => None,
+		}
+	}
+
+	/// Returns the token that spells this operator in BESL and in every target shading language.
+	pub fn token(self) -> &'static str {
+		match self {
+			Self::Negate => "-",
+			Self::LogicalNot => "!",
+			Self::BitwiseNot => "~",
+		}
 	}
 }
 
@@ -1527,6 +1586,20 @@ pub enum Expressions {
 		operator: Operators,
 		left: NodeReference,
 		right: NodeReference,
+	},
+	/// A prefix operator applied to `operand`, such as `-x`, `!flag`, or `~mask`.
+	Unary {
+		operator: UnaryOperators,
+		operand: NodeReference,
+	},
+	/// The value of an `if`/`else` whose branches are plain values: `if_true` when the `bool` `condition` holds, and
+	/// `if_false` otherwise. Only the selected operand is evaluated, so backends write it as their `?:` operator. The
+	/// lexer builds it from `if (condition) { if_true } else { if_false }`; an `if` whose branches run statements is
+	/// lowered to statements instead.
+	Ternary {
+		condition: NodeReference,
+		if_true: NodeReference,
+		if_false: NodeReference,
 	},
 	VariableDeclaration {
 		name: String,

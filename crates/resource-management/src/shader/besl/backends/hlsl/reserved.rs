@@ -243,6 +243,7 @@ fn is_backend_name(name: &str) -> bool {
 			| "_besl_subgroup_ballot_find_lsb"
 			| "_besl_subgroup_ballot_count"
 			| "_besl_subgroup_ballot_and_not"
+			| "_besl_subgroup_shuffle_xor_f32"
 			| "_besl_fma_f16"
 	)
 }

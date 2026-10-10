@@ -1,5 +1,6 @@
-// Shrinks each directional shadow cascade from the CPU's fit to its slice of the camera frustum down to the box its
-// receivers fill, as the linear depth pyramid pass found it. One thread rewrites one cascade's view in place, and a
+// Shrinks each shadowed sun's directional cascades from the CPU's fit to its slice of the camera frustum down to the box
+// its receivers fill, as the linear depth pyramid pass found it. Cascade `c` of sun slot `s` is fitted box `4s + c` and
+// view `1 + 4s + c`. One workgroup of four threads fits each sun, one thread rewriting one cascade's view in place, and a
 // cascade without receivers keeps the CPU's fit. Each thread then resets its cascade's bounds, so the next frame's
 // pyramid pass merges into empty boxes without a clear.
 //
@@ -16,14 +17,14 @@ View: struct {
 	far: f32,
 }
 
-// The camera, then the four cascades.
+// The camera, then four cascades per sun slot.
 Views: struct {
-	views: View[5],
+	views: View[17],
 }
 
 ReceiverFit: struct {
-	view_to_cascade_rows: vec4f[12],
-	cascade_frames: vec4f[4],
+	view_to_cascade_rows: vec4f[48],
+	cascade_frames: vec4f[16],
 	split_far: vec4f,
 	pixel_to_ray: vec4f,
 	depth_unproject: vec4f,
@@ -31,12 +32,12 @@ ReceiverFit: struct {
 }
 
 ReceiverBounds: struct {
-	bounds: atomicu32[24],
+	bounds: atomicu32[96],
 }
 
 // Each cascade's size, as a step on the ladder offset by CASCADE_SIZE_STEP_OFFSET. It persists across frames.
 CascadeSizeSteps: struct {
-	steps: u32[4],
+	steps: u32[16],
 }
 
 views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
@@ -48,7 +49,8 @@ cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: 
 RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
 RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
 RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
-CASCADE_COUNT: const u32 = 4;
+// Four cascades for each of up to four suns.
+FITTED_CASCADE_COUNT: const u32 = 16;
 // Keeps stored steps positive for sizes down to about a millimeter.
 CASCADE_SIZE_STEP_OFFSET: const f32 = 1024.0;
 
@@ -71,8 +73,8 @@ refit_column: fn (column: vec4f, scale: vec3f, offset: vec3f) -> vec4f {
 }
 
 main: fn (input: StageInput) -> void {
-	let cascade: u32 = input.thread_idx;
-	if (cascade < CASCADE_COUNT) {
+	let cascade: u32 = input.thread_id.x;
+	if (cascade < FITTED_CASCADE_COUNT) {
 		let first: u32 = cascade * 6;
 		let lower_x_code: u32 = atomic_load(receiver_bounds.bounds[first]);
 		if (lower_x_code != 0) {

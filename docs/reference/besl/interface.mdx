@@ -131,6 +131,23 @@ push_constant: push_constant {
 }
 ```
 
+Write the block from the CPU with the same tight layout as buffer records,
+using the `ghi::pod` types. Metal and Vulkan read that layout directly. DX12
+reads push constants as a constant buffer, which counts in 16-byte registers, so
+a push constant must also follow these rules:
+
+- A vector must not cross a 16-byte boundary. For example, a `vec3f` after two
+  `f32` members starts at byte 8 and ends at byte 20, so move it or add an `f32`
+  of padding first.
+- Arrays and `mat4f` members start on a 16-byte boundary, and array elements
+  must each take a multiple of 16 bytes, such as `vec4f[4]`. Store eight
+  scalars as two `vec4f` members instead of an `f32[8]`.
+- Use `mat4f` for matrices, and `u32` instead of `bool` or `u8`.
+
+Shader baking checks these rules on every platform. If a push constant breaks
+one, the error names the member and its byte offset on each backend; reorder the
+members or add explicit padding.
+
 ## Descriptors
 
 A descriptor declares a named binding between the shader and one GPU resource.
@@ -225,6 +242,16 @@ main: fn (pipeline_input: interface { instance_index: u32 }) -> void {
 `ElementType[]` describes the contents of one buffer. It doesn't declare an
 array of descriptors. Reflection reports one storage-buffer binding and the
 element stride.
+
+Stored records use the same layout on every backend. Vector members such as
+`vec2f`, `vec3f`, and `vec4f` take their component size and align to one
+component, so you can declare them in any order without padding. Push constants
+have extra rules; see [Push constants](#push-constants). Mirror a
+record on the CPU with the `ghi::pod` vector types, which use the same layout.
+Matrices keep their backend alignment, so place `mat4f` members on 16-byte
+offsets. If a shader writes a single `vec4` member of a buffer record, keep that
+member on a 16-byte offset too: on Apple GPUs, a lone write that crosses a
+16-byte boundary is slower.
 
 `Texture2DArray` also describes one resource: a layered two-dimensional
 texture. Indexing it selects a layer from that resource before sampling:

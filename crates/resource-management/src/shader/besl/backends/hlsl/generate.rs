@@ -192,7 +192,6 @@ impl Generator {
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
-			"packed_vec4f" => "float4",
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
@@ -268,7 +267,7 @@ impl Generator {
 				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					// A member may be a user struct, which is declared under its escaped name.
@@ -521,7 +520,8 @@ impl Generator {
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
 				 uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return firstbitlow(mask.x); } if (mask.y != 0u) { return 32u + firstbitlow(mask.y); } if (mask.z != 0u) { return 64u + firstbitlow(mask.z); } if (mask.w != 0u) { return 96u + firstbitlow(mask.w); } return 0xffffffffu; }\n\
 				 uint _besl_subgroup_ballot_count(uint4 mask) { return countbits(mask.x) + countbits(mask.y) + countbits(mask.z) + countbits(mask.w); }\n\
-				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
+				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
+				 float _besl_subgroup_shuffle_xor_f32(float value, uint mask) { return WaveReadLaneAt(value, WaveGetLaneIndex() ^ mask); }\n",
 			);
 		}
 		if requirements.uses_fma {

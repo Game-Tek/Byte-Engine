@@ -2,7 +2,7 @@
 //! `assets/rendering/particles/prepare.besl` and in the kernels resource management generates from `.particles`
 //! assets.
 
-use ghi::pod::{Mat4f, Mat4x3f};
+use ghi::pod::{Mat4f, Mat4x3f, Vec3f};
 
 /// How many emitters of one system can be alive, or have particles in flight, at once.
 pub(crate) const MAX_EMITTERS: usize = 256;
@@ -46,14 +46,12 @@ pub(crate) struct ParticleFrameData {
 }
 
 /// The `ShaderParticle` struct sizes one particle in the GPU-only particle buffer; the CPU never reads it.
-///
-/// The kernels spell every component as a scalar, because backends pad a `vec3f` struct member to 16 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ShaderParticle {
-	pub(crate) position: [f32; 3],
+	pub(crate) position: Vec3f,
 	pub(crate) life: f32,
-	pub(crate) velocity: [f32; 3],
+	pub(crate) velocity: Vec3f,
 	pub(crate) packed: u32,
 }
 
@@ -62,8 +60,9 @@ pub(crate) struct ShaderParticle {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ParticlePushConstants {
 	pub(crate) view_projection: Mat4f,
-	/// The camera position in `xyz` and the camera exposure in `w`. One vector keeps the layout free of `vec3f` padding.
-	pub(crate) camera: [f32; 4],
+	pub(crate) camera_position: Vec3f,
+	/// The camera exposure as a linear factor.
+	pub(crate) exposure: f32,
 }
 
 const _: () = assert!(std::mem::offset_of!(ParticleFrameData, spawns) == 32);

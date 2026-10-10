@@ -147,7 +147,18 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
 		self.device.image_groups.assert_resizable(image_handle);
 		self.device
-			.resize_image_internal(ImageHandle(image_handle), extent, self.frame_key.sequence_index);
+			.resize_image_internal(ImageHandle(image_handle), extent, None, self.frame_key.sequence_index);
+	}
+
+	fn resize_image_layers(&mut self, image_handle: BaseImageHandle, extent: Extent, array_layers: std::num::NonZeroU32) {
+		// DX12 images keep no cube-array flag; their cube views come from the descriptor that binds them.
+		self.device.image_groups.assert_resizable(image_handle);
+		self.device.resize_image_internal(
+			ImageHandle(image_handle),
+			extent,
+			Some(array_layers.get()),
+			self.frame_key.sequence_index,
+		);
 	}
 
 	fn place_image_group(&mut self, group: crate::ImageGroupHandle, members: &[crate::ImageGroupMember]) {

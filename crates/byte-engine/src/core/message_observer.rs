@@ -231,9 +231,7 @@ impl MessageObserver {
 			type_name::<T>()
 		);
 		let index = registry.len() as u16;
-		let installed = inner.types[usize::from(index)]
-			.set(type_name::<T>())
-			.is_ok();
+		let installed = inner.types[usize::from(index)].set(type_name::<T>()).is_ok();
 		debug_assert!(installed, "A catalog type slot was initialized twice");
 		registry.insert(TypeId::of::<T>(), index);
 		ObservedType(index)

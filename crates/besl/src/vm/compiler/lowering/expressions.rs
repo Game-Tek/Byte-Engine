@@ -61,6 +61,21 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type)
 			}
+			Nodes::Expression(Expressions::Operator {
+				operator: operator @ (Operators::LogicalAnd | Operators::LogicalOr),
+				left,
+				right,
+			}) => {
+				let (operator, left, right) = (*operator, left.clone(), right.clone());
+				drop(borrowed);
+				if expected_type != &ValueType::Bool {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::Bool.name().to_string(),
+					});
+				}
+				self.compile_short_circuit(operator, &left, &right)
+			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				let comparison = comparison_operator(operator);
 				let arithmetic = if comparison.is_none() {
@@ -76,11 +91,6 @@ impl<'a> Compiler<'a> {
 
 				let operand_hint = if comparison.is_some() {
 					&ValueType::U32
-				} else if matches!(
-					arithmetic,
-					Some(ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr)
-				) {
-					&ValueType::Bool
 				} else {
 					expected_type
 				};
@@ -194,7 +204,7 @@ impl<'a> Compiler<'a> {
 					let source_value = {
 						let source_ref = source.borrow();
 						match source_ref.node() {
-							Nodes::Specialization { name, r#type } => {
+							Nodes::Specialization { name, r#type, .. } => {
 								let declared_type = resolve_value_type(r#type)?;
 								let value = self
 									.specializations
@@ -238,6 +248,37 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_accessor_expression(expression, expected_type)
 			}
+			Nodes::Expression(Expressions::Unary { operator, operand }) => {
+				let operator = *operator;
+				let operand = operand.clone();
+				drop(borrowed);
+
+				let operand_type = self.infer_expression_type(&operand, expected_type)?;
+				let result_type = prefix_result_type(operator, &operand_type)?;
+				if &result_type != expected_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: result_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&operand, &operand_type)?;
+				let register = self.allocate_register();
+				self.emit(NumericInstruction::UnaryScalar {
+					register,
+					operator: prefix_operator(operator),
+					value,
+				});
+				Ok(register)
+			}
+			Nodes::Expression(Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			}) => {
+				let (condition, if_true, if_false) = (condition.clone(), if_true.clone(), if_false.clone());
+				drop(borrowed);
+				self.compile_ternary(&condition, &if_true, &if_false, expected_type)
+			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
 			}),
@@ -245,6 +286,78 @@ impl<'a> Compiler<'a> {
 				message: format!("Unsupported value node: {}", describe_node(node)),
 			}),
 		}
+	}
+
+	/// Compiles a plain-value `if`, such as `if (index < count) { values[index] } else { 0.0 }`, so that only the
+	/// selected branch runs, as it does on the GPU, which lets a branch read what the condition guards. Both branches
+	/// store into one hidden local that the result loads.
+	fn compile_ternary(
+		&mut self,
+		condition: &NodeReference,
+		if_true: &NodeReference,
+		if_false: &NodeReference,
+		expected_type: &ValueType,
+	) -> Result<usize, VmError> {
+		let condition = self.compile_value_expression(condition, &ValueType::Bool)?;
+		let local = self.local_types.len();
+		self.local_types.push(expected_type.clone());
+
+		let skip_true_index = self.instructions.len();
+		self.emit(ControlInstruction::JumpIfZero {
+			register: condition,
+			target: usize::MAX,
+		});
+		let value = self.compile_value_expression(if_true, expected_type)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: value });
+		let skip_false_index = self.instructions.len();
+		self.emit(ControlInstruction::Jump { target: usize::MAX });
+
+		self.patch_jump(skip_true_index, self.instructions.len());
+		let value = self.compile_value_expression(if_false, expected_type)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: value });
+		self.patch_jump(skip_false_index, self.instructions.len());
+
+		let register = self.allocate_register();
+		self.emit(LocalInstruction::LoadLocal { register, local });
+		Ok(register)
+	}
+
+	/// Compiles `left && right` or `left || right` so that `right` runs only when `left` doesn't decide the result, as
+	/// on the GPU, which lets `right` read what `left` guards, such as `index < count && values[index] > 0`. Both
+	/// operands store into one hidden local that the result loads.
+	fn compile_short_circuit(
+		&mut self,
+		operator: Operators,
+		left: &NodeReference,
+		right: &NodeReference,
+	) -> Result<usize, VmError> {
+		let local = self.local_types.len();
+		self.local_types.push(ValueType::Bool);
+
+		let left = self.compile_value_expression(left, &ValueType::Bool)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: left });
+		let false_index = self.instructions.len();
+		self.emit(ControlInstruction::JumpIfZero {
+			register: left,
+			target: usize::MAX,
+		});
+		// A false left side decides `&&`, so it skips the right one. A true left side decides `||`, which falls through
+		// to a jump over the right side, and a false one jumps to it.
+		let skip_right_index = if operator == Operators::LogicalOr {
+			let skip_right_index = self.instructions.len();
+			self.emit(ControlInstruction::Jump { target: usize::MAX });
+			self.patch_jump(false_index, self.instructions.len());
+			skip_right_index
+		} else {
+			false_index
+		};
+		let right = self.compile_value_expression(right, &ValueType::Bool)?;
+		self.emit(LocalInstruction::StoreLocal { local, register: right });
+		self.patch_jump(skip_right_index, self.instructions.len());
+
+		let register = self.allocate_register();
+		self.emit(LocalInstruction::LoadLocal { register, local });
+		Ok(register)
 	}
 
 	/// Compiles a resource or buffer access, or a projection from a temporary aggregate value.
@@ -494,15 +607,12 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(&function.get()),
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-				if comparison_operator(operator).is_some() {
+				if comparison_operator(operator).is_some() || matches!(operator, Operators::LogicalAnd | Operators::LogicalOr) {
 					Ok(ValueType::Bool)
 				} else {
 					let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!("Unsupported value operator: {:?}", operator),
 					})?;
-					if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
-						return Ok(ValueType::Bool);
-					}
 					let left = left.clone();
 					let right = right.clone();
 					drop(borrowed);
@@ -510,6 +620,25 @@ impl<'a> Compiler<'a> {
 					let right_type = self.infer_expression_type(&right, expected_type)?;
 					binary_result_type(operator, &left_type, &right_type)
 				}
+			}
+			Nodes::Expression(Expressions::Unary {
+				operator: UnaryOperators::LogicalNot,
+				..
+			}) => Ok(ValueType::Bool),
+			Nodes::Expression(Expressions::Unary { operand, .. }) => {
+				let operand = operand.clone();
+				drop(borrowed);
+				self.infer_expression_type(&operand, expected_type)
+			}
+			Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) => {
+				// A literal branch takes its type from the context, so the other branch decides when it can.
+				let branch = if is_literal_expression(if_true) {
+					if_false.clone()
+				} else {
+					if_true.clone()
+				};
+				drop(borrowed);
+				self.infer_expression_type(&branch, expected_type)
 			}
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
 				message: "`continue` is only valid as a statement".to_string(),

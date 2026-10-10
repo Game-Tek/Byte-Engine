@@ -22,19 +22,19 @@ const SOURCE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = buffer(1, ghi::Acc
 const SOURCE_JOINTS_BINDING: ghi::ShaderResourceDescriptor = buffer(2, ghi::AccessPolicies::READ, 8);
 const SOURCE_WEIGHTS_BINDING: ghi::ShaderResourceDescriptor = buffer(3, ghi::AccessPolicies::READ, 16);
 const MATRIX_PALETTE_BINDING: ghi::ShaderResourceDescriptor = buffer(4, ghi::AccessPolicies::READ, 48);
-const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = buffer(5, ghi::AccessPolicies::WRITE, 32);
+const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = buffer(5, ghi::AccessPolicies::WRITE, 24);
 const DUAL_QUATERNION_PALETTE_BINDING: ghi::ShaderResourceDescriptor = buffer(6, ghi::AccessPolicies::READ, 32);
 
-/// The `SkinnedVertex` struct is one aligned position-and-normal record read by every visibility stage after deformation.
-#[repr(C, align(16))]
+/// The `SkinnedVertex` struct is one position-and-normal record read by every visibility stage after deformation.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SkinnedVertex {
-	pub(crate) position: [f32; 4],
-	pub(crate) normal: [f32; 4],
+	pub(crate) position: ghi::pod::Vec3f,
+	pub(crate) normal: ghi::pod::Vec3f,
 }
 
-/// The `DualQuaternion` struct is the aligned rigid-transform palette layout consumed by GPU skinning.
-#[repr(C, align(16))]
+/// The `DualQuaternion` struct is the rigid-transform palette layout consumed by GPU skinning.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct DualQuaternion {
 	pub(crate) real: [f32; 4],
@@ -260,9 +260,9 @@ mod tests {
 		}
 	}
 
-	fn read_vec4(buffer: &Buffer, index: usize, field: &str) -> [f32; 4] {
+	fn read_vec3(buffer: &Buffer, index: usize, field: &str) -> [f32; 3] {
 		match buffer.read_array_member(index, field).expect("Missing skinned output.") {
-			Value::Vec4F(value) => value,
+			Value::Vec3F(value) => value,
 			_ => panic!("Skinning wrote a non-vector {field}."),
 		}
 	}
@@ -273,10 +273,9 @@ mod tests {
 		assert_eq!(std::mem::size_of::<ghi::pod::Mat4x3f>(), 48);
 		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
 		assert_eq!(std::mem::size_of::<DualQuaternion>(), 32);
-		assert_eq!(std::mem::align_of::<DualQuaternion>(), 16);
 		assert_eq!(DUAL_QUATERNION_PALETTE_BINDING.buffer_element_stride(), 32);
-		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 32);
-		assert_eq!(std::mem::align_of::<SkinnedVertex>(), 16);
+		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 24);
+		assert_eq!(SKINNED_VERTICES_BINDING.buffer_element_stride(), 24);
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 24);
 	}
 
@@ -372,8 +371,8 @@ mod tests {
 
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		assert_eq!(read_vec4(&buffers[5], 2, "position"), [2.0, 3.0, 1.0, 1.0]);
-		assert_eq!(read_vec4(&buffers[5], 2, "normal"), [0.0, 0.0, 1.0, 0.0]);
+		assert_eq!(read_vec3(&buffers[5], 2, "position"), [2.0, 3.0, 1.0]);
+		assert_eq!(read_vec3(&buffers[5], 2, "normal"), [0.0, 0.0, 1.0]);
 
 		// A malformed legacy joint must produce legal bind-pose output without indexing beyond the palette.
 		buffers[2]
@@ -384,7 +383,7 @@ mod tests {
 			.expect("skinning destination");
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		assert_eq!(read_vec4(&buffers[5], 3, "position"), [1.0, 1.0, 1.0, 1.0]);
+		assert_eq!(read_vec3(&buffers[5], 3, "position"), [1.0, 1.0, 1.0]);
 	}
 
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
@@ -442,10 +441,10 @@ mod tests {
 
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		for (actual, expected) in read_vec4(&buffers[5], 0, "position").into_iter().zip([2.0, 1.0, 0.0, 1.0]) {
+		for (actual, expected) in read_vec3(&buffers[5], 0, "position").into_iter().zip([2.0, 1.0, 0.0]) {
 			math::assert_float_eq!(actual, expected);
 		}
-		for (actual, expected) in read_vec4(&buffers[5], 0, "normal").into_iter().zip([0.0, 1.0, 0.0, 0.0]) {
+		for (actual, expected) in read_vec3(&buffers[5], 0, "normal").into_iter().zip([0.0, 1.0, 0.0]) {
 			math::assert_float_eq!(actual, expected);
 		}
 	}

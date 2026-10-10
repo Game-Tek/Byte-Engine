@@ -116,6 +116,16 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				collect_local_output_symbols(left, local_output_symbols);
 				collect_local_output_symbols(right, local_output_symbols);
 			}
+			besl::Expressions::Unary { operand, .. } => collect_local_output_symbols(operand, local_output_symbols),
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => {
+				for part in [condition, if_true, if_false] {
+					collect_local_output_symbols(part, local_output_symbols);
+				}
+			}
 			besl::Expressions::Expression { elements } => {
 				for element in elements {
 					collect_local_output_symbols(element, local_output_symbols);
@@ -234,6 +244,14 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 				references_non_local_output(left, local_output_symbols)
 					|| references_non_local_output(right, local_output_symbols)
 			}
+			besl::Expressions::Unary { operand, .. } => references_non_local_output(operand, local_output_symbols),
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => [condition, if_true, if_false]
+				.into_iter()
+				.any(|part| references_non_local_output(part, local_output_symbols)),
 			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				references_non_local_output(nested, local_output_symbols)
 			}
@@ -338,6 +356,16 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				writes_non_opaque_vec4f_to_non_local_output(left, local_output_symbols)
 					|| writes_non_opaque_vec4f_to_non_local_output(right, local_output_symbols)
 			}
+			besl::Expressions::Unary { operand, .. } => {
+				writes_non_opaque_vec4f_to_non_local_output(operand, local_output_symbols)
+			}
+			besl::Expressions::Ternary {
+				condition,
+				if_true,
+				if_false,
+			} => [condition, if_true, if_false]
+				.into_iter()
+				.any(|part| writes_non_opaque_vec4f_to_non_local_output(part, local_output_symbols)),
 			besl::Expressions::Member { source, .. } => {
 				writes_non_opaque_vec4f_to_non_local_output(source, local_output_symbols)
 			}
@@ -425,6 +453,10 @@ fn is_non_opaque_vec4f_constructor(node: &besl::NodeReference) -> bool {
 				None => false,
 			}
 		}
+		// Either branch of a ternary can be the value written.
+		besl::Nodes::Expression(besl::Expressions::Ternary { if_true, if_false, .. }) => {
+			is_non_opaque_vec4f_constructor(if_true) || is_non_opaque_vec4f_constructor(if_false)
+		}
 		_ => false,
 	}
 }
@@ -449,6 +481,10 @@ fn parse_literal_number(node: &besl::NodeReference) -> Option<f64> {
 
 	match node_ref {
 		besl::Nodes::Expression(besl::Expressions::Literal { value }) => value.parse().ok(),
+		besl::Nodes::Expression(besl::Expressions::Unary {
+			operator: besl::UnaryOperators::Negate,
+			operand,
+		}) => parse_literal_number(operand).map(|value| -value),
 		_ => None,
 	}
 }

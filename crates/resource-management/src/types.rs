@@ -114,6 +114,20 @@ impl VertexComponent {
 			channel: 0,
 		}
 	}
+
+	/// Returns the byte size of one element of this stream, or `None` when its format is not a known vertex format.
+	///
+	/// The size depends only on the declared format; the semantic says what the stream holds, not how it is stored.
+	pub fn size(&self) -> Option<usize> {
+		let (components, rest) = self.format.strip_prefix("vec")?.split_at_checked(1)?;
+		let components: usize = components.parse().ok().filter(|count| (2..=4).contains(count))?;
+		let component_size = match rest {
+			"f" | "u" | "i" => 4,
+			"f16" | "u16" | "i16" => 2,
+			_ => return None,
+		};
+		Some(components * component_size)
+	}
 }
 
 #[derive(
@@ -151,27 +165,6 @@ pub enum Streams {
 	Vertices(VertexSemantics),
 	Indices(IndexStreamTypes),
 	Meshlets,
-}
-
-pub trait Size {
-	fn size(&self) -> usize;
-}
-
-impl Size for VertexSemantics {
-	fn size(&self) -> usize {
-		match self {
-			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => 3 * 4,
-			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => 4 * 4,
-			VertexSemantics::UV => 2 * 4,
-			VertexSemantics::Joints => 4 * 2,
-		}
-	}
-}
-
-impl Size for Vec<VertexComponent> {
-	fn size(&self) -> usize {
-		self.iter().map(|component| component.semantic.size()).sum()
-	}
 }
 
 // Image

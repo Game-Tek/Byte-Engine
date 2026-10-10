@@ -304,22 +304,25 @@ impl Context {
 				.images
 				.nth_handle(task.handle, sequence_index as usize)
 				.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
-			self.resize_image_internal(handle, task.extent);
+			self.resize_image_internal(handle, task.extent, task.array_layers);
 		}
 	}
 
 	/// Replaces one frame-local image while preserving its private handle and descriptor references.
 	///
-	/// Returns `true` when the backing image changed.
-	pub(crate) fn resize_image_internal(&mut self, handle: ImageHandle, extent: Extent) -> bool {
+	/// `array_layers` replaces the image's layer count, or keeps it when `None`. Returns `true` when the backing image
+	/// changed.
+	pub(crate) fn resize_image_internal(&mut self, handle: ImageHandle, extent: Extent, array_layers: Option<u32>) -> bool {
 		let image = self.images.resource(handle);
+		let array_layers = array_layers.unwrap_or(image.description.array_layers);
 
-		if image.description.extent == extent {
+		if image.description.extent == extent && image.description.array_layers == array_layers {
 			return false;
 		}
 
 		let description = ImageDescription {
 			extent,
+			array_layers,
 			..image.description
 		};
 		let replacement = build_image(&self.device, image.name.as_deref(), description, self.settings.debug_labels);

@@ -454,8 +454,9 @@ impl Generator {
 					"fract" => "frac",
 					"mix" => "lerp",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16"
-					| "packed_vec4f" => Self::translate_type(name),
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::translate_type(name)
+					}
 					"inversesqrt" => "rsqrt",
 					"subgroup_ballot" => "WaveActiveBallot",
 					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",
@@ -463,6 +464,7 @@ impl Generator {
 					"subgroup_ballot_count" => "_besl_subgroup_ballot_count",
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
+					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
 					"fma" if matches!(r#return.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
 						"_besl_fma_f16"
 					}

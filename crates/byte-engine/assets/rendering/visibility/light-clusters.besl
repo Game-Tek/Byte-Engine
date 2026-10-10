@@ -3,9 +3,9 @@
 // exponentially with depth. Each cluster stores one bit per light. One workgroup fills one cluster, and each of its
 // 32 threads tests 32 lights and writes one mask word, so no two threads write the same word.
 Light: struct {
-	position: vec4f,
-	color: vec4f,
-	direction: vec4f,
+	position: vec3f,
+	color: vec3f,
+	direction: vec3f,
 	cone_cosines: vec2f,
 	type: u32,
 	// This pass never reads shadow assignments. Eight scalars hold the bytes of the `u32[8]` that material evaluation
@@ -22,14 +22,13 @@ Light: struct {
 	ies_profile_texture: u32,
 	ies_c0_tangent: vec2u16,
 	reach: f32,
-	_padding: u32,
+	_angular_radius_tangent: f32,
 }
 
 LightingBuffer: struct {
 	light_count: u32,
 	exposure: f32,
 	environment_intensity: f32,
-	_light_count_padding: u32,
 	lights: Light[1024],
 }
 
@@ -111,11 +110,7 @@ main: fn (input: StageInput) -> void {
 		}
 		let radius: f32 = lighting_data.lights[light_index].reach * reach_scale;
 		if (radius > 0.0) {
-			let center: vec3f = vec3f(
-				lighting_data.lights[light_index].position.x,
-				lighting_data.lights[light_index].position.y,
-				lighting_data.lights[light_index].position.z
-			);
+			let center: vec3f = lighting_data.lights[light_index].position;
 			// A narrow cone fits in the sphere through its apex and the rim of its cap. Past a 45 degree half angle
 			// that sphere grows larger than the ball around the apex, so wide cones keep the ball.
 			if (light_type == CONE_LIGHT) {
@@ -123,11 +118,7 @@ main: fn (input: StageInput) -> void {
 				let squared_cosine: f32 = outer_cosine * outer_cosine;
 				if (outer_cosine > 0.0 && squared_cosine > 0.5) {
 					radius = radius / (2.0 * squared_cosine);
-					center = center + vec3f(
-						lighting_data.lights[light_index].direction.x,
-						lighting_data.lights[light_index].direction.y,
-						lighting_data.lights[light_index].direction.z
-					) * radius;
+					center = center + lighting_data.lights[light_index].direction * radius;
 				}
 			}
 			let view_center: vec3f = light_cluster_parameters.view * vec4f(center.x, center.y, center.z, 1.0);

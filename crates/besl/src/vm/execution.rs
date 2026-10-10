@@ -325,6 +325,38 @@ impl ExecutableProgram {
 					lanes[*lane_index].frame.registers[*register] = Some(source_value.clone());
 				}
 			}
+			Instruction::SubgroupShuffleXor { register, value, mask } => {
+				// Metal requires one mask for the whole SIMD-group, so the first lane's mask is the reference.
+				let expected_mask = expect_u32(register_ref(&lanes[first_lane].frame.registers, *mask)?)?;
+				for lane_index in subgroup {
+					let found = expect_u32(register_ref(&lanes[*lane_index].frame.registers, *mask)?)?;
+					if found != expected_mask {
+						return Err(VmError::DivergentSubgroupShuffleMask {
+							lane: *lane_index,
+							expected: expected_mask,
+							found,
+						});
+					}
+				}
+				// Lowering gives the result a register of its own, so writing one lane's result never changes the value
+				// a later lane reads.
+				for lane_index in subgroup {
+					let source_lane = (lanes[*lane_index].state.config.thread_idx() % subgroup_size) ^ expected_mask;
+					let source = subgroup
+						.iter()
+						.copied()
+						.find(|candidate| lanes[*candidate].state.config.thread_idx() % subgroup_size == source_lane)
+						.ok_or(VmError::SubgroupShuffleSourceInactive {
+							lane: *lane_index,
+							source_lane,
+						})?;
+					let source_value = register_ref(&lanes[source].frame.registers, *value)?;
+					let &Value::F32(shuffled) = source_value else {
+						return Err(type_mismatch(&ValueType::F32, &source_value.value_type()));
+					};
+					lanes[*lane_index].frame.registers[*register] = Some(Value::F32(shuffled));
+				}
+			}
 			_ => {
 				return Err(VmError::UnsupportedStatement {
 					message: "Expected a subgroup collective instruction".to_string(),
@@ -519,7 +551,9 @@ impl ExecutableProgram {
 			Instruction::SubgroupBallot { register, predicate } => {
 				return Self::execute_subgroup_ballot(*register, *predicate, registers, collective_behavior);
 			}
-			Instruction::SubgroupBroadcast { .. } => return Self::execute_subgroup_broadcast(collective_behavior),
+			Instruction::SubgroupBroadcast { .. } | Instruction::SubgroupShuffleXor { .. } => {
+				return Self::execute_subgroup_exchange(collective_behavior);
+			}
 			Instruction::WorkgroupBarrier => return Self::execute_workgroup_barrier(collective_behavior),
 		}
 		Ok(InstructionProgress::Advance)
@@ -776,11 +810,11 @@ impl ExecutableProgram {
 		}
 	}
 
-	/// Rejects or suspends subgroup broadcasts when peer lanes are required.
-	fn execute_subgroup_broadcast(collective_behavior: CollectiveBehavior) -> Result<InstructionProgress, VmError> {
+	/// Rejects or suspends subgroup broadcasts and shuffles, which read peer lanes.
+	fn execute_subgroup_exchange(collective_behavior: CollectiveBehavior) -> Result<InstructionProgress, VmError> {
 		match collective_behavior {
 			CollectiveBehavior::Ignore => Err(VmError::UnsupportedStatement {
-				message: "Subgroup broadcasts require run_workgroup so the VM can supply peer lanes".to_string(),
+				message: "Subgroup broadcasts and shuffles require run_workgroup so the VM can supply peer lanes".to_string(),
 			}),
 			CollectiveBehavior::Suspend => Ok(InstructionProgress::SuspendSubgroupCollective),
 			CollectiveBehavior::Reject => Err(VmError::UnsupportedStatement {

@@ -89,6 +89,12 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 					visit(left);
 					visit(right);
 				}
+				besl::Expressions::Unary { operand, .. } => visit(operand),
+				besl::Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => [condition, if_true, if_false].into_iter().for_each(&mut visit),
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
 				} => {

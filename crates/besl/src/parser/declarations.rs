@@ -48,7 +48,8 @@ impl<'a> ElseBranch<'a> {
 pub struct MatchArm<'a> {
 	/// The alternatives of an or-pattern such as `1 | 2`. A single pattern is a one-element list.
 	pub patterns: Vec<MatchPattern<'a>>,
-	/// The arm body. An expression arm such as `0 => n = 1,` is one statement.
+	/// The arm body. An expression arm such as `0 => n = 1,` is one [`Expressions::Yield`] of that expression, the same
+	/// as the block `0 => { n = 1 }`.
 	pub statements: Vec<Node<'a>>,
 }
 
@@ -326,9 +327,14 @@ impl<'a> Node<'a> {
 		Self::binding_with_count(name, r#type, slot, read, write, None, Some(count))
 	}
 
-	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
+	/// Declares a constant the host selects when it creates a pipeline.
+	///
+	/// `id` is the backend constant index. A scalar uses `id`; vector component `k` uses `id + k`, so the host gives each
+	/// specialization a range that does not overlap another one. Pass the values with
+	/// `ghi::pipelines::SpecializationMapEntry` at the same ids.
+	pub fn specialization(name: &'a str, r#type: &'a str, id: u32) -> Node<'a> {
 		Node {
-			node: Nodes::Specialization { name, r#type },
+			node: Nodes::Specialization { name, r#type, id },
 		}
 	}
 
@@ -464,6 +470,13 @@ impl<'a> Node<'a> {
 			node: Nodes::Expression(Expressions::Return {
 				value: Some(Box::new(value)),
 			}),
+		}
+	}
+
+	/// Builds the value a block ends with, written without `;`. See [`Expressions::Yield`].
+	pub fn r#yield(value: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Yield { value: Box::new(value) }),
 		}
 	}
 
@@ -684,13 +697,16 @@ pub enum Nodes<'a> {
 		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
 	},
-	/// An `if` statement, with an optional `else` or `else if` branch.
+	/// An `if`, with an optional `else` or `else if` branch. As a statement its blocks run for their effects. As an
+	/// operand, such as `let x: f32 = if (c) { a } else { b };`, each block ends in the value it yields; see
+	/// [`Expressions::Yield`].
 	Conditional {
 		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 		else_branch: Option<ElseBranch<'a>>,
 	},
-	/// A `match` statement over a scalar value. It runs the first arm whose pattern matches.
+	/// A `match` over a scalar value. It runs the first arm whose pattern matches. Like [`Nodes::Conditional`], it is a
+	/// statement or, as an operand, a value its arms yield.
 	Match {
 		scrutinee: Box<Node<'a>>,
 		arms: Vec<MatchArm<'a>>,
@@ -727,6 +743,8 @@ pub enum Nodes<'a> {
 	Specialization {
 		name: &'a str,
 		r#type: &'a str,
+		/// The first backend constant index. Vector components take consecutive indices.
+		id: u32,
 	},
 	/// A small constant buffer updated during rendering.
 	PushConstant {
@@ -808,6 +826,17 @@ pub enum Expressions<'a> {
 		left: Box<Node<'a>>,
 		right: Box<Node<'a>>,
 	},
+	/// A prefix operator applied to `operand`, such as `-x`, `!flag`, or `~mask`.
+	Unary {
+		operator: crate::UnaryOperators,
+		operand: Box<Node<'a>>,
+	},
+	/// The value a block ends with: its last expression, written without `;`, as in Rust. The blocks of an `if` or
+	/// `match` used as a value yield one. At the end of a statement block, the lexer accepts it only when it produces
+	/// nothing, such as an assignment.
+	Yield {
+		value: Box<Node<'a>>,
+	},
 	VariableDeclaration {
 		name: Cow<'a, str>,
 		r#type: TypeName<'a>,
@@ -855,6 +884,12 @@ pub(super) enum Atoms<'a> {
 	Operator {
 		operator: crate::Operators,
 	},
+	/// A prefix operator that applies to the operand after it.
+	Unary {
+		operator: crate::UnaryOperators,
+	},
+	/// An `if` or `match` used as an operand. It is a whole operand, so precedence treats it like a group.
+	Branch(Node<'a>),
 	VariableDeclaration {
 		name: &'a str,
 		r#type: TypeName<'a>,

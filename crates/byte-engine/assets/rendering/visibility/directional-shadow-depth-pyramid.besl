@@ -1,59 +1,60 @@
-// Build the 8x8 conservative max-depth and min-depth levels for every directional cascade in one dispatch.
-// One SIMD group processes two adjacent 8x8 source tiles so all 32 lanes remain useful.
+// Build the 8x8 conservative max-depth and min-depth cells for every directional cascade in one dispatch.
+// Each thread gathers one 4x4 block of a cell, and the cell's four threads combine their blocks with two subgroup
+// shuffles, so no thread waits at a barrier.
 source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
 reduced_depth_1: descriptor<{ type: StorageImage<r16>, binding: 1034, access: write }>;
 // The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
 reduced_minimum_1: descriptor<{ type: StorageImage<r16>, binding: 1035, access: write }>;
 
-shared_depth: workgroup<f32, 32>;
-shared_minimum: workgroup<f32, 32>;
-
+// A workgroup's 32 threads reduce four by two cells.
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
-DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH: const u32 = 4;
+
+largest: fn (quad: vec4f) -> f32 {
+	return max(max(quad.x, quad.y), max(quad.z, quad.w));
+}
+
+smallest: fn (quad: vec4f) -> f32 {
+	return min(min(quad.x, quad.y), min(quad.z, quad.w));
+}
 
 main: fn (input: StageInput) -> void {
-	let source_quad_coordinate: vec2u = input.thread_id;
-	let lane: u32 = input.thread_idx;
 	let source_extent: vec2u = texture_size(source_depth);
-	let source_quad_cascade_height: u32 = source_extent.y / 2;
-	let shadow_layer: u32 = source_quad_coordinate.y / source_quad_cascade_height;
-	let workgroup_origin: vec2u = vec2u(
-		source_quad_coordinate.x - source_quad_coordinate.x % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
-		source_quad_coordinate.y - source_quad_coordinate.y % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT
-	);
-	let cascade_source_quad_coordinate: vec2u = vec2u(
-		source_quad_coordinate.x,
-		source_quad_coordinate.y - shadow_layer * source_quad_cascade_height
-	);
+	let cascade_cell_height: u32 = source_extent.y / 8;
 
-	// One gather returns the quad's four texels, so its maximum and minimum cost one texture instruction.
-	let source_center_coordinate: vec2u = cascade_source_quad_coordinate * vec2u(2, 2) + vec2u(1, 1);
-	let source_uv: vec2f = vec2f(f32(source_center_coordinate.x), f32(source_center_coordinate.y))
-		/ vec2f(f32(source_extent.x), f32(source_extent.y));
-	let quad: vec4f = gather(source_depth, source_uv, shadow_layer);
-	shared_depth[lane] = max(max(quad.x, quad.y), max(quad.z, quad.w));
-	shared_minimum[lane] = min(min(quad.x, quad.y), min(quad.z, quad.w));
-	workgroup_barrier();
+	// A cell's four threads have consecutive local indices that start at a multiple of four, so they share a
+	// subgroup and their lane indices differ only in the two lowest bits: bit 0 picks the block's column, bit 1 its row.
+	let cell_in_workgroup: u32 = input.thread_idx / 4;
+	let block_in_cell: u32 = input.thread_idx % 4;
+	let packed_cell: vec2u = (input.thread_id
+		/ vec2u(DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH, DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT)) * vec2u(4, 2)
+		+ vec2u(cell_in_workgroup % 4, cell_in_workgroup / 4);
+	let shadow_layer: u32 = packed_cell.y / cascade_cell_height;
+	let block_texel: vec2u = vec2u(packed_cell.x, packed_cell.y % cascade_cell_height) * vec2u(8, 8)
+		+ vec2u(block_in_cell % 2, block_in_cell / 2) * vec2u(4, 4);
 
-	// Lanes 0 and 1 each reduce the 4x4 source quads of one tile, the left and the right, into its cell.
-	if (lane < 2) {
-		let maximum_depth: f32 = 0.0;
-		let minimum_depth: f32 = 1.0;
-		for (let row: u32 = 0; row < DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT; row = row + 1) {
-			for (let column: u32 = 0; column < DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH; column = column + 1) {
-				let source_index: u32 = row * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH
-					+ lane * DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH
-					+ column;
-				maximum_depth = max(maximum_depth, shared_depth[source_index]);
-				minimum_depth = min(minimum_depth, shared_minimum[source_index]);
-			}
-		}
+	// The block's four quads surround its texel corners at offsets 1 and 3. Issue every gather before reducing, so
+	// they overlap.
+	let extent: vec2f = vec2f(f32(source_extent.x), f32(source_extent.y));
+	let low: vec2f = vec2f(f32(block_texel.x + 1), f32(block_texel.y + 1)) / extent;
+	let high: vec2f = vec2f(f32(block_texel.x + 3), f32(block_texel.y + 3)) / extent;
+	let top_left: vec4f = gather(source_depth, low, shadow_layer);
+	let top_right: vec4f = gather(source_depth, vec2f(high.x, low.y), shadow_layer);
+	let bottom_left: vec4f = gather(source_depth, vec2f(low.x, high.y), shadow_layer);
+	let bottom_right: vec4f = gather(source_depth, high, shadow_layer);
+	let maximum_depth: f32 = max(max(largest(top_left), largest(top_right)), max(largest(bottom_left), largest(bottom_right)));
+	let minimum_depth: f32 = min(min(smallest(top_left), smallest(top_right)), min(smallest(bottom_left), smallest(bottom_right)));
 
-		// The workgroup's first quad is a multiple of its 8x4-quad size, so dividing by four quads per cell names its
-		// first cell.
-		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + vec2u(lane, 0);
-		write(reduced_depth_1, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
-		write(reduced_minimum_1, output_coordinate, vec4f(minimum_depth, 0.0, 0.0, 1.0));
+	// Combine the left and right blocks, then the upper and lower pairs; every thread then holds its cell's bounds.
+	maximum_depth = max(maximum_depth, subgroup_shuffle_xor_f32(maximum_depth, 1));
+	minimum_depth = min(minimum_depth, subgroup_shuffle_xor_f32(minimum_depth, 1));
+	maximum_depth = max(maximum_depth, subgroup_shuffle_xor_f32(maximum_depth, 2));
+	minimum_depth = min(minimum_depth, subgroup_shuffle_xor_f32(minimum_depth, 2));
+
+	// When the resolution is an odd multiple of 16, each row's last workgroup reaches past the cascade. Its threads
+	// still take part in the shuffles, but only cells inside the cascade are written.
+	if (block_in_cell == 0 && packed_cell.x < source_extent.x / 8) {
+		write(reduced_depth_1, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		write(reduced_minimum_1, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
 	}
 }

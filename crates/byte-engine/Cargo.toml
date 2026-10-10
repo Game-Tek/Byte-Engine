@@ -99,7 +99,6 @@ hashbrown = { version = "0.17.1", default-features = false, features = ["nightly
 smallbox = "0.8"
 rustfft = "6.4.1"
 realfft = "3.5.0"
-hidapi = "2.6.1"
 ctrlc = "3.5.1"
 fontdue = "0.9.3"
 # Reads glyph outlines for GPU text. Keep fontdue's feature set: with the default features unified into

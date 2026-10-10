@@ -28,6 +28,7 @@
 #![feature(f16)]
 #![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to))]
 
+pub mod hid;
 pub mod window;
 
 pub mod frame_resources;

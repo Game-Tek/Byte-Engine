@@ -27,6 +27,7 @@ use crate::core::factory::Handle;
 
 mod axis;
 mod collector;
+#[cfg(feature = "headed")]
 pub(crate) mod gamepad;
 mod gesture;
 mod queue;

@@ -1,16 +1,16 @@
-use std::{
-	collections::{HashMap, HashSet},
-	ffi::CString,
-	sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-	thread::{self, JoinHandle},
-	time::Duration,
-};
+//! Reads gamepads and joysticks over HID and records their sticks, triggers, and buttons as input.
+//!
+//! [`GamepadSystem`] finds the connected controllers when the application starts, scans again when the operating
+//! system reports that a device connected or disconnected, and decodes each controller's reports into `Gamepad.*`
+//! triggers.
 
-use hidapi::{HidApi, HidDevice};
+use std::time::{Duration, Instant};
+
+use ghi::hid::{Device, DeviceInfo, DevicePath, Monitor, Scanner, Usage};
 use log::{debug, warn};
 
 use super::Axis2;
-use super::{DeviceHandle, TriggerReference, Value};
+use super::{DeviceHandle, InputCollector, SeatHandle, TriggerReference, Value, device::DeviceClassHandle};
 
 const STICK_EPSILON: f32 = 0.001;
 const TRIGGER_EPSILON: f32 = 0.001;
@@ -78,246 +78,192 @@ pub(crate) enum GamepadKind {
 	Xbox,
 }
 
+/// Joysticks and gamepads, the usages every supported controller declares.
+const GAMEPAD_USAGES: &[Usage] = &[Usage { page: 0x01, usage: 0x04 }, Usage { page: 0x01, usage: 0x05 }];
+
+/// How often to scan for controllers when the operating system refused device notifications.
+const FALLBACK_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The largest input report any supported controller sends; DualShock 4 Bluetooth reports are 78 bytes.
+const MAX_REPORT_SIZE: usize = 128;
+
+/// The `GamepadSystem` struct owns every connected controller so the application can turn their reports into input.
+///
+/// Create it when the application starts, then call [`GamepadSystem::poll`] once per frame. Pass
+/// [`GamepadSystem::monitor`] to `ghi::window::App::wake_on_hid_changes` so a connecting controller wakes an idle
+/// application.
 pub(crate) struct GamepadSystem {
-	api: HidApi,
-	devices: HashMap<String, GamepadDevice>,
-	refresh_receiver: Receiver<Result<Vec<GamepadCandidate>, String>>,
-	// Dropping this sender tells the refresh thread to stop.
-	refresh_stop: Option<Sender<()>>,
-	refresh_thread: Option<JoinHandle<()>>,
+	scanner: Scanner,
+	/// Reports device changes; `None` when the operating system refused the subscription.
+	monitor: Option<Monitor>,
+	/// When the last scan ran, which paces the timed scans that stand in for a missing monitor.
+	last_scan: Instant,
+	devices: Vec<GamepadDevice>,
 }
 
 impl GamepadSystem {
-	pub(crate) fn new() -> Result<Self, String> {
-		let api = HidApi::new().map_err(|e| {
-			format!(
-				"Failed to initialize HID API. The most likely cause is that the system HID backend is unavailable: {}",
-				e
-			)
-		})?;
-		let (refresh_receiver, refresh_stop, refresh_thread) = spawn_refresh_thread();
-
-		Ok(Self {
-			api,
-			devices: HashMap::new(),
-			refresh_receiver,
-			refresh_stop: Some(refresh_stop),
-			refresh_thread: Some(refresh_thread),
-		})
-	}
-
-	pub(crate) fn poll(&mut self) -> (Vec<(String, GamepadKind, bool, HidDevice)>, Vec<GamepadEvent>) {
-		let new_devices = self.drain_device_refreshes();
-		let mut events = Vec::new();
-
-		for device in self.devices.values_mut() {
-			events.extend(device.poll());
-		}
-
-		(new_devices, events)
-	}
-
-	/// Reports whether any gamepad is connected, since their input is only seen by polling.
-	pub(crate) fn has_devices(&self) -> bool {
-		!self.devices.is_empty()
-	}
-
-	pub(crate) fn add_device(
-		&mut self,
-		path: String,
-		kind: GamepadKind,
-		negate_stick_y: bool,
-		device: HidDevice,
-		device_handle: DeviceHandle,
-	) {
-		self.devices
-			.insert(path, GamepadDevice::new(kind, negate_stick_y, device, device_handle));
-	}
-
-	fn drain_device_refreshes(&mut self) -> Vec<(String, GamepadKind, bool, HidDevice)> {
-		let mut latest_snapshot = None;
-		for refresh in self.refresh_receiver.try_iter() {
-			match refresh {
-				Ok(snapshot) => latest_snapshot = Some(snapshot),
-				Err(error) => warn!("{}", error),
-			}
-		}
-
-		let Some(snapshot) = latest_snapshot else {
-			return Vec::new();
+	/// Subscribes to device changes, then opens the controllers connected now.
+	///
+	/// Next, call [`GamepadSystem::poll`] once per frame.
+	pub(crate) fn new() -> Self {
+		// Subscribing first means a controller that connects during the scan is reported as a change.
+		let monitor = Monitor::new().map_err(|error| warn!("{error}")).ok();
+		let mut system = Self {
+			scanner: Scanner::new(GAMEPAD_USAGES),
+			monitor,
+			last_scan: Instant::now(),
+			devices: Vec::new(),
 		};
+		system.rescan();
+		system
+	}
 
-		let present_paths = snapshot
-			.iter()
-			.map(|candidate| candidate.path_key.clone())
-			.collect::<HashSet<_>>();
-		let mut new_devices = Vec::new();
+	/// Returns the device change monitor, for the window event loop to wake on.
+	pub(crate) fn monitor(&self) -> Option<&Monitor> {
+		self.monitor.as_ref()
+	}
 
-		for candidate in snapshot {
-			if self.devices.contains_key(&candidate.path_key) {
-				continue;
-			}
+	/// Reports whether the application must poll on a timer: controllers report input only when read, and without
+	/// a monitor new controllers only appear through timed scans.
+	pub(crate) fn needs_polling(&self) -> bool {
+		!self.devices.is_empty() || self.monitor.is_none()
+	}
 
-			let device = match self.api.open_path(candidate.path.as_c_str()) {
-				Ok(device) => device,
-				Err(error) => {
-					warn!(
-						"Failed to open HID device. The most likely cause is insufficient permissions or the device being in use: {}",
-						error
-					);
-					continue;
+	/// Applies device changes, then records every controller's state changes into `input`.
+	///
+	/// New controllers become devices of `device_class`. Without a device class, they are dropped with a warning,
+	/// because the application never called `setup_default_input`.
+	pub(crate) fn poll(&mut self, input: &mut InputCollector, device_class: Option<DeviceClassHandle>) {
+		let changed = match &mut self.monitor {
+			Some(monitor) => monitor.take_changed(),
+			// Without notifications, scan on a timer so controllers connected later still appear.
+			None => self.last_scan.elapsed() >= FALLBACK_RESCAN_INTERVAL,
+		};
+		if changed {
+			self.rescan();
+		}
+
+		// The device class is registered after startup, so controllers get their input device on their first poll.
+		if self.devices.iter().any(|device| device.device_handle.is_none()) {
+			match device_class {
+				Some(device_class) => {
+					for device in self.devices.iter_mut().filter(|device| device.device_handle.is_none()) {
+						// Keep physical HID identity distinct so player and device routing is preserved.
+						device.device_handle = Some(input.create_device(&device_class));
+					}
 				}
-			};
+				None => {
+					self.devices.retain(|device| device.device_handle.is_some());
+					warn!(
+						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
+						crate::online_docs_url("reference/input")
+					);
+				}
+			}
+		}
 
-			if let Err(error) = device.set_blocking_mode(false) {
-				warn!(
-					"Failed to set HID device to non-blocking mode. The most likely cause is a platform HID backend limitation: {}",
-					error
+		for device in &mut self.devices {
+			device.poll(|event| {
+				debug!(
+					target: "byte_engine::input::events",
+					"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+					event.device_handle,
+					event.trigger,
+					event.value
 				);
-			}
-
-			debug!(
-				target: "byte_engine::input::events",
-				"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
-				candidate.path_key,
-				candidate.kind,
-				candidate.vendor_id,
-				candidate.product_id,
-				candidate.product_name.as_deref().unwrap_or("<unknown>")
-			);
-
-			new_devices.push((
-				candidate.path_key,
-				candidate.kind,
-				stick_up_is_negative(candidate.kind, candidate.product_name.as_deref()),
-				device,
-			));
-		}
-
-		self.devices.retain(|path, _| present_paths.contains(path));
-		new_devices
-	}
-}
-
-impl Drop for GamepadSystem {
-	fn drop(&mut self) {
-		// Disconnect the stop channel first so the thread wakes up and exits before the join.
-		drop(self.refresh_stop.take());
-		if let Some(thread) = self.refresh_thread.take() {
-			let _ = thread.join();
+				input.record(SeatHandle::stub(), event.device_handle, event.trigger, event.value);
+			});
 		}
 	}
-}
 
-#[derive(Clone)]
-struct GamepadCandidate {
-	path: CString,
-	path_key: String,
-	kind: GamepadKind,
-	vendor_id: u16,
-	product_id: u16,
-	product_name: Option<String>,
-}
+	/// Scans the connected controllers, opens new ones, and drops the ones that disconnected.
+	///
+	/// Known controllers are matched by borrowed path, so a scan allocates only for new controllers. A controller
+	/// that fails to open is skipped and retried on the next change. On Linux that change comes when udev grants
+	/// access to a node it reported too early.
+	fn rescan(&mut self) {
+		self.last_scan = Instant::now();
+		self.devices.iter_mut().for_each(|device| device.seen = false);
 
-fn spawn_refresh_thread() -> (Receiver<Result<Vec<GamepadCandidate>, String>>, Sender<()>, JoinHandle<()>) {
-	let (sender, receiver) = mpsc::channel();
-	let (stop, stop_receiver) = mpsc::channel::<()>();
-	let thread = thread::spawn(move || {
-		let mut api = match HidApi::new() {
-			Ok(api) => api,
-			Err(error) => {
-				let _ = sender.send(Err(format!(
-					"Failed to initialize HID API refresher. The most likely cause is that the system HID backend is unavailable: {}",
-					error
-				)));
-				return;
+		let devices = &mut self.devices;
+		let scanned = self.scanner.scan(|info| {
+			if let Some(known) = devices.iter_mut().find(|known| info.path == known.path) {
+				known.seen = true;
+			} else if let Some(device) = GamepadDevice::open(info) {
+				devices.push(device);
 			}
-		};
-
-		loop {
-			let result = refresh_gamepad_candidates(&mut api);
-			if sender.send(result).is_err() {
-				return;
-			}
-
-			// Wait one second between refreshes. The owner stops the thread by
-			// dropping its sender, which ends the wait right away.
-			match stop_receiver.recv_timeout(Duration::from_secs(1)) {
-				Err(RecvTimeoutError::Timeout) => {}
-				Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
-			}
-		}
-	});
-	(receiver, stop, thread)
-}
-
-fn refresh_gamepad_candidates(api: &mut HidApi) -> Result<Vec<GamepadCandidate>, String> {
-	api.refresh_devices().map_err(|error| {
-		format!(
-			"Failed to refresh HID devices. The most likely cause is that the HID backend could not enumerate devices: {}",
-			error
-		)
-	})?;
-
-	let mut candidates = Vec::new();
-	for device_info in api.device_list() {
-		let Some(kind) = classify_gamepad(
-			device_info.vendor_id(),
-			device_info.product_id(),
-			device_info.product_string(),
-			device_info.usage_page(),
-			device_info.usage(),
-		) else {
-			continue;
-		};
-
-		candidates.push(GamepadCandidate {
-			path: device_info.path().to_owned(),
-			path_key: device_info.path().to_string_lossy().to_string(),
-			kind,
-			vendor_id: device_info.vendor_id(),
-			product_id: device_info.product_id(),
-			product_name: device_info.product_string().map(str::to_string),
 		});
+		if let Err(error) = scanned {
+			// Keep the controllers as they are; the next change scans again.
+			warn!("{error}");
+			return;
+		}
+
+		self.devices.retain(|device| device.seen);
 	}
-	Ok(candidates)
 }
 
+/// The `GamepadDevice` struct keeps an open controller with the state its last report decoded to.
 struct GamepadDevice {
+	path: DevicePath,
 	kind: GamepadKind,
 	/// Steam's virtual pad already reports stick-up as negative. Hardware reports do not.
 	negate_stick_y: bool,
-	device: HidDevice,
-	device_handle: DeviceHandle,
+	/// Whether the latest scan found the controller.
+	seen: bool,
+	device: Device,
+	/// The input device its events belong to, created on the first poll after it connected.
+	device_handle: Option<DeviceHandle>,
 	state: GamepadState,
 	initialized: bool,
 }
 
 impl GamepadDevice {
-	fn new(kind: GamepadKind, negate_stick_y: bool, device: HidDevice, device_handle: DeviceHandle) -> Self {
-		Self {
+	/// Opens a scanned device when it is a supported controller, or returns `None` for other devices and failures.
+	fn open(info: DeviceInfo<'_>) -> Option<Self> {
+		let kind = classify_gamepad(
+			info.vendor_id,
+			info.product_id,
+			info.product_name,
+			info.usage.page,
+			info.usage.usage,
+		)?;
+		debug!(
+			target: "byte_engine::input::events",
+			"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
+			info.path,
 			kind,
-			negate_stick_y,
+			info.vendor_id,
+			info.product_id,
+			info.product_name.unwrap_or("<unknown>")
+		);
+		let path = info.path.to_owned();
+		let device = Device::open(&path).map_err(|error| warn!("{error}")).ok()?;
+		Some(Self {
+			path,
+			kind,
+			negate_stick_y: stick_up_is_negative(kind, info.product_name),
+			seen: true,
 			device,
-			device_handle,
+			device_handle: None,
 			state: GamepadState::default(),
 			initialized: false,
-		}
+		})
 	}
 
-	fn poll(&mut self) -> Vec<GamepadEvent> {
-		let mut buffer = [0u8; 128];
-		let mut events = Vec::new();
+	/// Decodes every waiting report and passes each state change to `emit`.
+	fn poll(&mut self, mut emit: impl FnMut(GamepadEvent)) {
+		let Some(device_handle) = self.device_handle else {
+			return;
+		};
+		let mut buffer = [0u8; MAX_REPORT_SIZE];
 
 		loop {
-			let size = match self.device.read_timeout(&mut buffer, 0) {
-				Ok(0) => break,
-				Ok(size) => size,
+			let size = match self.device.read(&mut buffer) {
+				Ok(Some(size)) => size,
+				Ok(None) => break,
 				Err(error) => {
-					warn!(
-						"Failed to read HID input report. The most likely cause is that the device disconnected unexpectedly: {}",
-						error
-					);
+					warn!("{error}");
 					break;
 				}
 			};
@@ -331,38 +277,32 @@ impl GamepadDevice {
 			};
 
 			if let Some(state) = state {
-				events.extend(self.emit_changes(state));
+				transition_gamepad_state(device_handle, &mut self.state, &mut self.initialized, state, &mut emit);
 			}
 		}
-
-		events
-	}
-
-	fn emit_changes(&mut self, state: GamepadState) -> Vec<GamepadEvent> {
-		transition_gamepad_state(self.device_handle, &mut self.state, &mut self.initialized, state)
 	}
 }
 
+/// Passes each meaningful difference between `previous` and `state` to `emit`, then stores `state`.
 fn transition_gamepad_state(
 	device_handle: DeviceHandle,
 	previous: &mut GamepadState,
 	initialized: &mut bool,
 	state: GamepadState,
-) -> Vec<GamepadEvent> {
-	let mut events = Vec::new();
-
+	emit: &mut impl FnMut(GamepadEvent),
+) {
 	if !*initialized {
 		// The first HID report is the physical device's current state. Treat it as
 		// baseline so neutral axes or held buttons do not replay as startup input.
 		*previous = state;
 		*initialized = true;
-		return events;
+		return;
 	}
 
 	if (previous.left_stick.x - state.left_stick.x).abs() > STICK_EPSILON
 		|| (previous.left_stick.y - state.left_stick.y).abs() > STICK_EPSILON
 	{
-		events.push(GamepadEvent::new(
+		emit(GamepadEvent::new(
 			device_handle,
 			TriggerReference::Name("Gamepad.LeftStick"),
 			Value::Vector2(state.left_stick),
@@ -372,7 +312,7 @@ fn transition_gamepad_state(
 	if (previous.right_stick.x - state.right_stick.x).abs() > STICK_EPSILON
 		|| (previous.right_stick.y - state.right_stick.y).abs() > STICK_EPSILON
 	{
-		events.push(GamepadEvent::new(
+		emit(GamepadEvent::new(
 			device_handle,
 			TriggerReference::Name("Gamepad.RightStick"),
 			Value::Vector2(state.right_stick),
@@ -380,7 +320,7 @@ fn transition_gamepad_state(
 	}
 
 	if (previous.left_trigger - state.left_trigger).abs() > TRIGGER_EPSILON {
-		events.push(GamepadEvent::new(
+		emit(GamepadEvent::new(
 			device_handle,
 			TriggerReference::Name("Gamepad.LeftTrigger"),
 			Value::Float(state.left_trigger),
@@ -388,7 +328,7 @@ fn transition_gamepad_state(
 	}
 
 	if (previous.right_trigger - state.right_trigger).abs() > TRIGGER_EPSILON {
-		events.push(GamepadEvent::new(
+		emit(GamepadEvent::new(
 			device_handle,
 			TriggerReference::Name("Gamepad.RightTrigger"),
 			Value::Float(state.right_trigger),
@@ -399,7 +339,7 @@ fn transition_gamepad_state(
 		let was_pressed = (previous.buttons & mask) != 0;
 		let current = (state.buttons & mask) != 0;
 		if was_pressed != current {
-			events.push(GamepadEvent::new(
+			emit(GamepadEvent::new(
 				device_handle,
 				TriggerReference::Name(name),
 				Value::Bool(current),
@@ -408,10 +348,10 @@ fn transition_gamepad_state(
 	}
 
 	*previous = state;
-	events
 }
 
-pub(crate) struct GamepadEvent {
+/// The `GamepadEvent` struct carries one decoded state change to the input collector.
+struct GamepadEvent {
 	device_handle: DeviceHandle,
 	trigger: TriggerReference,
 	value: Value,
@@ -424,18 +364,6 @@ impl GamepadEvent {
 			trigger,
 			value,
 		}
-	}
-
-	pub(crate) fn device_handle(&self) -> DeviceHandle {
-		self.device_handle
-	}
-
-	pub(crate) fn trigger(&self) -> TriggerReference {
-		self.trigger
-	}
-
-	pub(crate) fn value(&self) -> Value {
-		self.value
 	}
 }
 
@@ -1159,7 +1087,11 @@ mod tests {
 			..GamepadState::default()
 		};
 
-		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, baseline).is_empty());
+		let mut events = Vec::new();
+		transition_gamepad_state(device, &mut previous, &mut initialized, baseline, &mut |event| {
+			events.push(event)
+		});
+		assert!(events.is_empty());
 		assert!(initialized);
 		assert_eq!(previous.buttons, BUTTON_A);
 
@@ -1170,7 +1102,10 @@ mod tests {
 			..GamepadState::default()
 		};
 
-		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, noise).is_empty());
+		transition_gamepad_state(device, &mut previous, &mut initialized, noise, &mut |event| {
+			events.push(event)
+		});
+		assert!(events.is_empty());
 
 		let changed = GamepadState {
 			left_stick: Axis2::new(0.5, -0.25),
@@ -1179,14 +1114,16 @@ mod tests {
 			right_trigger: 1.0,
 			buttons: BUTTON_B,
 		};
-		let events = transition_gamepad_state(device, &mut previous, &mut initialized, changed);
+		transition_gamepad_state(device, &mut previous, &mut initialized, changed, &mut |event| {
+			events.push(event)
+		});
 
 		assert_eq!(events.len(), 6);
-		assert!(events.iter().all(|event| event.device_handle() == device));
+		assert!(events.iter().all(|event| event.device_handle == device));
 		let observed = events
 			.iter()
-			.map(|event| match event.trigger() {
-				TriggerReference::Name(name) => (name, event.value()),
+			.map(|event| match event.trigger {
+				TriggerReference::Name(name) => (name, event.value),
 				TriggerReference::Handle(_) => panic!("gamepad transitions use named triggers"),
 			})
 			.collect::<Vec<_>>();

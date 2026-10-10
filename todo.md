@@ -74,7 +74,6 @@
 ## Audio and input
 
 - Resolve named input triggers to handles during action registration and index device classes and triggers by name.
-- Reuse gamepad event, new-device, and present-path scratch storage; allocate owned HID paths only for confirmed new devices.
 - Decide how modifier keys behave across input sinks: a sink that captures `Ctrl` currently claims it, so a later sink's `Ctrl+S` no longer resolves. Consider modifier-only controls that sinks read without claiming.
 
 ## Metal-specific

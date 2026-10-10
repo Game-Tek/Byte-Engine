@@ -1,3 +1,5 @@
+use std::os::fd::AsFd as _;
+
 use super::*;
 
 impl App {
@@ -69,6 +71,7 @@ impl App {
 			id_name: id_name.to_owned(),
 			next_window: 1,
 			wake: Arc::new(wake),
+			watched: Vec::new(),
 		};
 
 		// Receive seat and output state before the first window picks its scale.
@@ -148,10 +151,11 @@ impl App {
 					tv_nsec: timeout.subsec_nanos() as _,
 				});
 				let connection = guard.connection_fd();
-				let mut fds = [
-					rustix::event::PollFd::new(&connection, rustix::event::PollFlags::IN),
-					rustix::event::PollFd::new(&*self.wake, rustix::event::PollFlags::IN),
-				];
+				let mut fds = [connection, self.wake.as_fd()]
+					.into_iter()
+					.chain(self.watched.iter().map(|fd| fd.as_fd()))
+					.map(|fd| rustix::event::PollFd::from_borrowed_fd(fd, rustix::event::PollFlags::IN))
+					.collect::<smallvec::SmallVec<[_; 4]>>();
 				// An interrupted wait is an early return, which the caller treats like any wake.
 				let _ = rustix::event::poll(&mut fds, timeout.as_ref());
 				// Reset the counter so the next wait sleeps again; an empty counter reports `WouldBlock`.
@@ -176,6 +180,17 @@ impl App {
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake))
+	}
+
+	/// Makes a waiting poll also return when the HID monitor's descriptor becomes readable.
+	pub(crate) fn wake_on_hid_changes(&mut self, monitor: &crate::hid::Monitor) -> Result<(), String> {
+		let fd = monitor.os.fd().try_clone_to_owned().map_err(|error| {
+			format!(
+				"Failed to watch HID device changes: {error}. The most likely cause is that the process ran out of file descriptors."
+			)
+		})?;
+		self.watched.push(fd);
+		Ok(())
 	}
 }
 

@@ -37,6 +37,22 @@ impl App {
 		self.os_app.poll(wait)
 	}
 
+	/// Makes a waiting [`Self::poll`] return when a HID device connects or disconnects, so the caller can check
+	/// [`crate::hid::Monitor::take_changed`] without polling on a timer.
+	///
+	/// Without it, changes are still seen on the next poll that another event ends.
+	pub fn wake_on_hid_changes(&mut self, monitor: &crate::hid::Monitor) -> Result<(), String> {
+		// Linux has no callback for device changes, so the event loop watches the monitor's descriptor; other
+		// platforms call back on their own threads and wake the loop through its waker.
+		#[cfg(target_os = "linux")]
+		return self.os_app.wake_on_hid_changes(monitor);
+		#[cfg(not(target_os = "linux"))]
+		{
+			monitor.os.signal.set_waker(self.waker());
+			Ok(())
+		}
+	}
+
 	/// Returns a handle other threads use to interrupt a waiting [`Self::poll`].
 	pub fn waker(&self) -> AppWaker {
 		AppWaker(self.os_app.waker())

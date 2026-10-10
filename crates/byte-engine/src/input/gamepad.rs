@@ -4,6 +4,8 @@
 //! system reports that a device connected or disconnected, and decodes each controller's reports into `Gamepad.*`
 //! triggers.
 
+use std::time::{Duration, Instant};
+
 use ghi::hid::{Device, DeviceInfo, DevicePath, Monitor, Scanner, Usage};
 use log::{debug, warn};
 
@@ -79,6 +81,9 @@ pub(crate) enum GamepadKind {
 /// Joysticks and gamepads, the usages every supported controller declares.
 const GAMEPAD_USAGES: &[Usage] = &[Usage { page: 0x01, usage: 0x04 }, Usage { page: 0x01, usage: 0x05 }];
 
+/// How often to scan for controllers when the operating system refused device notifications.
+const FALLBACK_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
+
 /// The largest input report any supported controller sends; DualShock 4 Bluetooth reports are 78 bytes.
 const MAX_REPORT_SIZE: usize = 128;
 
@@ -91,6 +96,8 @@ pub(crate) struct GamepadSystem {
 	scanner: Scanner,
 	/// Reports device changes; `None` when the operating system refused the subscription.
 	monitor: Option<Monitor>,
+	/// When the last scan ran, which paces the timed scans that stand in for a missing monitor.
+	last_scan: Instant,
 	devices: Vec<GamepadDevice>,
 }
 
@@ -104,6 +111,7 @@ impl GamepadSystem {
 		let mut system = Self {
 			scanner: Scanner::new(GAMEPAD_USAGES),
 			monitor,
+			last_scan: Instant::now(),
 			devices: Vec::new(),
 		};
 		system.rescan();
@@ -115,9 +123,10 @@ impl GamepadSystem {
 		self.monitor.as_ref()
 	}
 
-	/// Reports whether any controller is connected, since their input is only seen by polling.
-	pub(crate) fn has_devices(&self) -> bool {
-		!self.devices.is_empty()
+	/// Reports whether the application must poll on a timer: controllers report input only when read, and without
+	/// a monitor new controllers only appear through timed scans.
+	pub(crate) fn needs_polling(&self) -> bool {
+		!self.devices.is_empty() || self.monitor.is_none()
 	}
 
 	/// Applies device changes, then records every controller's state changes into `input`.
@@ -125,7 +134,12 @@ impl GamepadSystem {
 	/// New controllers become devices of `device_class`. Without a device class, they are dropped with a warning,
 	/// because the application never called `setup_default_input`.
 	pub(crate) fn poll(&mut self, input: &mut InputCollector, device_class: Option<DeviceClassHandle>) {
-		if self.monitor.as_mut().is_some_and(Monitor::take_changed) {
+		let changed = match &mut self.monitor {
+			Some(monitor) => monitor.take_changed(),
+			// Without notifications, scan on a timer so controllers connected later still appear.
+			None => self.last_scan.elapsed() >= FALLBACK_RESCAN_INTERVAL,
+		};
+		if changed {
 			self.rescan();
 		}
 
@@ -168,6 +182,7 @@ impl GamepadSystem {
 	/// that fails to open is skipped and retried on the next change. On Linux that change comes when udev grants
 	/// access to a node it reported too early.
 	fn rescan(&mut self) {
+		self.last_scan = Instant::now();
 		self.devices.iter_mut().for_each(|device| device.seen = false);
 
 		let devices = &mut self.devices;

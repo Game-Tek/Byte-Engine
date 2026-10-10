@@ -97,11 +97,12 @@ impl Device {
 		let mut node = [0u8; 32];
 		let node = c_path(&mut node, format_args!("/dev/hidraw{path}")).expect("A hidraw node path always fits its buffer.");
 
-		rustix::fs::open(node, OFlags::RDWR | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())
+		// Reading reports needs no write access, so read-only works under policies that grant only that.
+		rustix::fs::open(node, OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())
 			.map(Self)
 			.map_err(|error| {
 				format!(
-					"Failed to open /dev/hidraw{path}: {error}. The most likely cause is that a udev rule does not grant your user access to the device."
+					"Failed to open /dev/hidraw{path}: {error}. The most likely cause is that a udev rule does not grant your user read access to the device."
 				)
 			})
 	}
@@ -109,8 +110,9 @@ impl Device {
 	pub(super) fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
 		loop {
 			match rustix::io::read(&self.0, &mut *report) {
+				// hidraw never sends empty reports, so an empty read means nothing is waiting rather than a report.
+				Ok(0) | Err(Errno::AGAIN) => return Ok(None),
 				Ok(length) => return Ok(Some(length)),
-				Err(Errno::AGAIN) => return Ok(None),
 				Err(Errno::INTR) => {}
 				Err(error) => {
 					return Err(format!(

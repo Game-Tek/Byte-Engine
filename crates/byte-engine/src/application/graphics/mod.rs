@@ -518,8 +518,8 @@ impl GraphicsApplication {
 
 		let woken = self.waker.begin_wait();
 		let now = std::time::Instant::now();
-		// Gamepads report nothing through the window system, so connected ones are polled once per frame.
-		let poll_at = self.gamepad_system.has_devices().then(|| now + self.skipped_frame_pace);
+		// Gamepads report nothing through the window system, so they are polled once per frame when they need it.
+		let poll_at = self.gamepad_system.needs_polling().then(|| now + self.skipped_frame_pace);
 		let wait = idle_wait(woken, self.requested_tick.take(), poll_at, now);
 		if wait == ghi::window::Wait::Immediate {
 			self.waker.end_wait();

@@ -17,7 +17,7 @@ use windows::{
 				HidD_GetProductString, HidP_GetCaps, PHIDP_PREPARSED_DATA,
 			},
 		},
-		Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE},
+		Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GENERIC_READ, HANDLE},
 		Storage::FileSystem::{
 			CreateFileW, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 			ReadFile,
@@ -295,17 +295,14 @@ pub(super) struct Device {
 impl Device {
 	pub(super) fn open(path: &PathData) -> Result<Self, String> {
 		let terminated = path.iter().copied().chain([0]).collect::<Vec<u16>>();
-		let interface = Interface::open(
-			PCWSTR(terminated.as_ptr()),
-			GENERIC_READ.0 | GENERIC_WRITE.0,
-			FILE_FLAG_OVERLAPPED,
-		)
-		.ok_or_else(|| {
-			format!(
-				"Failed to open HID device {}. The most likely cause is that another application holds it exclusively.",
-				String::from_utf16_lossy(path)
-			)
-		})?;
+		// Reading reports needs no write access, and some devices refuse it.
+		let interface =
+			Interface::open(PCWSTR(terminated.as_ptr()), GENERIC_READ.0, FILE_FLAG_OVERLAPPED).ok_or_else(|| {
+				format!(
+					"Failed to open HID device {}. The most likely cause is that another application holds it exclusively.",
+					String::from_utf16_lossy(path)
+				)
+			})?;
 		let caps = interface.caps().ok_or_else(|| {
 			"Failed to read HID device capabilities. The most likely cause is that the device was unplugged.".to_string()
 		})?;

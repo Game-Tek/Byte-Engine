@@ -95,9 +95,7 @@ impl Device {
 	pub(super) fn open(path: &PathData) -> Result<Self, String> {
 		// The node is at most `/dev/hidraw4294967295` plus a NUL terminator.
 		let mut node = [0u8; 32];
-		let mut cursor = &mut node[..];
-		write!(cursor, "/dev/hidraw{path}\0").expect("A hidraw node path always fits its buffer.");
-		let node = CStr::from_bytes_until_nul(&node).expect("The hidraw node path was written with its terminator.");
+		let node = c_path(&mut node, format_args!("/dev/hidraw{path}")).expect("A hidraw node path always fits its buffer.");
 
 		rustix::fs::open(node, OFlags::RDWR | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())
 			.map(Self)
@@ -193,9 +191,7 @@ fn hidraw_index(name: &CStr) -> Option<u32> {
 fn read_attribute<'a>(directory: impl AsFd, index: u32, attribute: &str, buffer: &'a mut [u8]) -> Option<&'a [u8]> {
 	// The path is at most `hidraw4294967295/device/report_descriptor` plus a NUL terminator.
 	let mut path = [0u8; 64];
-	let mut cursor = &mut path[..];
-	write!(cursor, "hidraw{index}/device/{attribute}\0").ok()?;
-	let path = CStr::from_bytes_until_nul(&path).ok()?;
+	let path = c_path(&mut path, format_args!("hidraw{index}/device/{attribute}"))?;
 
 	let file: OwnedFd = rustix::fs::openat(directory, path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).ok()?;
 	let mut length = 0;
@@ -209,6 +205,15 @@ fn read_attribute<'a>(directory: impl AsFd, index: u32, attribute: &str, buffer:
 		}
 	}
 	Some(&buffer[..length])
+}
+
+/// Writes `path` and a NUL terminator into `buffer`, so opening it allocates nothing. Returns `None` when it does
+/// not fit.
+fn c_path<'a>(buffer: &'a mut [u8], path: std::fmt::Arguments<'_>) -> Option<&'a CStr> {
+	let mut cursor = &mut *buffer;
+	cursor.write_fmt(path).ok()?;
+	cursor.write_all(&[0]).ok()?;
+	CStr::from_bytes_until_nul(buffer).ok()
 }
 
 /// Reads `HID_ID=<bus>:<vendor>:<product>` and `HID_NAME=<name>` from a HID device's `uevent` attribute.

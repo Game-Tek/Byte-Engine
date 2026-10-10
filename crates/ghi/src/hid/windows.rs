@@ -101,7 +101,7 @@ impl Scanner {
 ///
 /// Windows runs the callback on a thread pool thread, which records the change and wakes the application loop.
 pub(crate) struct Monitor {
-	signal: std::sync::Arc<ChangeSignal>,
+	pub(crate) signal: std::sync::Arc<ChangeSignal>,
 	registration: HCMNOTIFICATION,
 }
 
@@ -140,10 +140,6 @@ impl Monitor {
 
 	pub(super) fn take_changed(&mut self) -> bool {
 		self.signal.take()
-	}
-
-	pub(crate) fn signal(&self) -> &ChangeSignal {
-		&self.signal
 	}
 }
 

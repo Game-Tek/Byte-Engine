@@ -48,7 +48,7 @@ impl App {
 		return self.os_app.wake_on_hid_changes(monitor);
 		#[cfg(not(target_os = "linux"))]
 		{
-			monitor.os.signal().set_waker(self.waker());
+			monitor.os.signal.set_waker(self.waker());
 			Ok(())
 		}
 	}

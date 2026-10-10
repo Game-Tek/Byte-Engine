@@ -84,10 +84,7 @@ impl Scanner {
 ///
 /// `DeviceUsagePage` and `DeviceUsage` match any usage pair a device declares, like `IOHIDManager` matching does.
 fn matching_dictionary(usage: Usage) -> CFRetained<CFDictionary> {
-	// SAFETY: the class name is a NUL-terminated string.
-	let matching = unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }.expect(
-		"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that the process is out of memory.",
-	);
+	let matching = hid_device_matching();
 	for (key, value) in [("DeviceUsagePage", usage.page), ("DeviceUsage", usage.usage)] {
 		let key = CFString::from_static_str(key);
 		let value = CFNumber::new_i32(value as i32);
@@ -103,11 +100,19 @@ fn matching_dictionary(usage: Usage) -> CFRetained<CFDictionary> {
 	CFRetained::<CFDictionary>::from(&*matching)
 }
 
+/// Builds a dictionary that matches every `IOHIDDevice` service.
+fn hid_device_matching() -> CFRetained<CFMutableDictionary> {
+	// SAFETY: the class name is a NUL-terminated string.
+	unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }.expect(
+		"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that the process is out of memory.",
+	)
+}
+
 /// The `Monitor` struct holds IOKit notifications for HID services that appear or terminate.
 ///
 /// They arrive on a private dispatch queue, whose callback records the change and wakes the application loop.
 pub(crate) struct Monitor {
-	signal: std::sync::Arc<ChangeSignal>,
+	pub(crate) signal: std::sync::Arc<ChangeSignal>,
 	/// Runs every notification callback, one at a time.
 	queue: DispatchRetained<DispatchQueue>,
 	port: IONotificationPortRef,
@@ -141,10 +146,7 @@ impl Monitor {
 			for (to, from) in name.iter_mut().zip(kind.to_bytes_with_nul()) {
 				*to = *from as std::ffi::c_char;
 			}
-			// SAFETY: the class name is a NUL-terminated string.
-			let matching = unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr()) }.ok_or_else(|| {
-				"Failed to create an IOHIDDevice matching dictionary. The most likely cause is that the process is out of memory.".to_string()
-			})?;
+			let matching = hid_device_matching();
 			// SAFETY: the call consumes the extra dictionary reference; the refcon is the signal `Monitor` keeps alive
 			// until `Drop` destroys the port.
 			let result = unsafe {
@@ -174,10 +176,6 @@ impl Monitor {
 
 	pub(super) fn take_changed(&mut self) -> bool {
 		self.signal.take()
-	}
-
-	pub(crate) fn signal(&self) -> &ChangeSignal {
-		&self.signal
 	}
 }
 

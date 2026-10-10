@@ -92,22 +92,10 @@ pub(crate) struct GamepadSystem {
 	/// Reports device changes; `None` when the operating system refused the subscription.
 	monitor: Option<Monitor>,
 	devices: Vec<GamepadDevice>,
-	/// Controllers that connected but have no input device yet.
-	pending: Vec<Gamepad>,
-}
-
-/// The `Gamepad` struct identifies a connected controller and how to decode its reports.
-struct Gamepad {
-	path: DevicePath,
-	kind: GamepadKind,
-	/// Steam's virtual pad already reports stick-up as negative. Hardware reports do not.
-	negate_stick_y: bool,
-	/// Whether the latest scan found the controller.
-	seen: bool,
 }
 
 impl GamepadSystem {
-	/// Subscribes to device changes, then finds the controllers connected now.
+	/// Subscribes to device changes, then opens the controllers connected now.
 	///
 	/// Next, call [`GamepadSystem::poll`] once per frame.
 	pub(crate) fn new() -> Self {
@@ -117,7 +105,6 @@ impl GamepadSystem {
 			scanner: Scanner::new(GAMEPAD_USAGES),
 			monitor,
 			devices: Vec::new(),
-			pending: Vec::new(),
 		};
 		system.rescan();
 		system
@@ -142,24 +129,17 @@ impl GamepadSystem {
 			self.rescan();
 		}
 
-		if !self.pending.is_empty() {
+		// The device class is registered after startup, so controllers get their input device on their first poll.
+		if self.devices.iter().any(|device| device.device_handle.is_none()) {
 			match device_class {
 				Some(device_class) => {
-					for gamepad in self.pending.drain(..) {
-						match Device::open(&gamepad.path) {
-							// Keep physical HID identity distinct so player and device routing is preserved.
-							Ok(device) => {
-								self.devices
-									.push(GamepadDevice::new(gamepad, device, input.create_device(&device_class)))
-							}
-							// Linux can report a node before udev grants access to it. Granting access is itself a
-							// reported change, so a later poll rescans, finds the controller unopened, and retries.
-							Err(error) => warn!("{error}"),
-						}
+					for device in self.devices.iter_mut().filter(|device| device.device_handle.is_none()) {
+						// Keep physical HID identity distinct so player and device routing is preserved.
+						device.device_handle = Some(input.create_device(&device_class));
 					}
 				}
 				None => {
-					self.pending.clear();
+					self.devices.retain(|device| device.device_handle.is_some());
 					warn!(
 						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
 						crate::online_docs_url("reference/input")
@@ -182,21 +162,20 @@ impl GamepadSystem {
 		}
 	}
 
-	/// Scans the connected controllers, queues new ones as pending, and drops the ones that disconnected.
+	/// Scans the connected controllers, opens new ones, and drops the ones that disconnected.
 	///
-	/// Known controllers are matched by borrowed path, so a scan allocates only for new controllers.
+	/// Known controllers are matched by borrowed path, so a scan allocates only for new controllers. A controller
+	/// that fails to open is skipped and retried on the next change. On Linux that change comes when udev grants
+	/// access to a node it reported too early.
 	fn rescan(&mut self) {
 		self.devices.iter_mut().for_each(|device| device.seen = false);
-		self.pending.iter_mut().for_each(|gamepad| gamepad.seen = false);
 
-		let (devices, pending) = (&mut self.devices, &mut self.pending);
-		let scanned = self.scanner.scan(|device| {
-			if let Some(known) = devices.iter_mut().find(|known| device.path == known.path) {
+		let devices = &mut self.devices;
+		let scanned = self.scanner.scan(|info| {
+			if let Some(known) = devices.iter_mut().find(|known| info.path == known.path) {
 				known.seen = true;
-			} else if let Some(known) = pending.iter_mut().find(|known| device.path == known.path) {
-				known.seen = true;
-			} else if let Some(gamepad) = classify(device) {
-				pending.push(gamepad);
+			} else if let Some(device) = GamepadDevice::open(info) {
+				devices.push(device);
 			}
 		});
 		if let Err(error) = scanned {
@@ -206,65 +185,62 @@ impl GamepadSystem {
 		}
 
 		self.devices.retain(|device| device.seen);
-		self.pending.retain(|gamepad| gamepad.seen);
 	}
-}
-
-/// Returns the controller behind a scanned device, or `None` when no supported controller matches it.
-fn classify(device: DeviceInfo<'_>) -> Option<Gamepad> {
-	let kind = classify_gamepad(
-		device.vendor_id,
-		device.product_id,
-		device.product_name,
-		device.usage.page,
-		device.usage.usage,
-	)?;
-	debug!(
-		target: "byte_engine::input::events",
-		"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
-		device.path,
-		kind,
-		device.vendor_id,
-		device.product_id,
-		device.product_name.unwrap_or("<unknown>")
-	);
-	Some(Gamepad {
-		path: device.path.to_owned(),
-		kind,
-		negate_stick_y: stick_up_is_negative(kind, device.product_name),
-		seen: true,
-	})
 }
 
 /// The `GamepadDevice` struct keeps an open controller with the state its last report decoded to.
 struct GamepadDevice {
 	path: DevicePath,
 	kind: GamepadKind,
+	/// Steam's virtual pad already reports stick-up as negative. Hardware reports do not.
 	negate_stick_y: bool,
 	/// Whether the latest scan found the controller.
 	seen: bool,
 	device: Device,
-	device_handle: DeviceHandle,
+	/// The input device its events belong to, created on the first poll after it connected.
+	device_handle: Option<DeviceHandle>,
 	state: GamepadState,
 	initialized: bool,
 }
 
 impl GamepadDevice {
-	fn new(gamepad: Gamepad, device: Device, device_handle: DeviceHandle) -> Self {
-		Self {
-			path: gamepad.path,
-			kind: gamepad.kind,
-			negate_stick_y: gamepad.negate_stick_y,
+	/// Opens a scanned device when it is a supported controller, or returns `None` for other devices and failures.
+	fn open(info: DeviceInfo<'_>) -> Option<Self> {
+		let kind = classify_gamepad(
+			info.vendor_id,
+			info.product_id,
+			info.product_name,
+			info.usage.page,
+			info.usage.usage,
+		)?;
+		debug!(
+			target: "byte_engine::input::events",
+			"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
+			info.path,
+			kind,
+			info.vendor_id,
+			info.product_id,
+			info.product_name.unwrap_or("<unknown>")
+		);
+		let path = info.path.to_owned();
+		let device = Device::open(&path).map_err(|error| warn!("{error}")).ok()?;
+		Some(Self {
+			path,
+			kind,
+			negate_stick_y: stick_up_is_negative(kind, info.product_name),
 			seen: true,
 			device,
-			device_handle,
+			device_handle: None,
 			state: GamepadState::default(),
 			initialized: false,
-		}
+		})
 	}
 
 	/// Decodes every waiting report and passes each state change to `emit`.
 	fn poll(&mut self, mut emit: impl FnMut(GamepadEvent)) {
+		let Some(device_handle) = self.device_handle else {
+			return;
+		};
 		let mut buffer = [0u8; MAX_REPORT_SIZE];
 
 		loop {
@@ -286,7 +262,7 @@ impl GamepadDevice {
 			};
 
 			if let Some(state) = state {
-				transition_gamepad_state(self.device_handle, &mut self.state, &mut self.initialized, state, &mut emit);
+				transition_gamepad_state(device_handle, &mut self.state, &mut self.initialized, state, &mut emit);
 			}
 		}
 	}

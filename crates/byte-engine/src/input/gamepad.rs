@@ -152,8 +152,8 @@ impl GamepadSystem {
 								self.devices
 									.push(GamepadDevice::new(gamepad, device, input.create_device(&device_class)))
 							}
-							// Linux can report a node before its access rights are set; the change that sets them
-							// rescans, finds the controller unopened, and tries again.
+							// Linux can report a node before udev grants access to it. Granting access is itself a
+							// reported change, so a later poll rescans, finds the controller unopened, and retries.
 							Err(error) => warn!("{error}"),
 						}
 					}

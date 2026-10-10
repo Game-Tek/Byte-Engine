@@ -66,14 +66,19 @@ impl Monitor {
 		Ok(Self { inotify })
 	}
 
-	/// Reads every queued event and reports whether one named a hidraw node.
+	/// Reads every queued event and reports whether one named a hidraw node or events were lost.
+	///
+	/// Reading before the caller scans and opens is what makes failed opens retry: a permission change that lands
+	/// after the read queues a new event, which the next call reports.
 	pub(super) fn take_changed(&mut self) -> bool {
 		let mut buffer = [MaybeUninit::<u8>::uninit(); 1024];
 		let mut events = inotify::Reader::new(&self.inotify, &mut buffer);
 		let mut changed = false;
 		// The descriptor does not block, so reading ends with `AGAIN` once the queue is empty.
 		while let Ok(event) = events.next() {
-			changed |= event.file_name().is_some_and(|name| name.to_bytes().starts_with(b"hidraw"));
+			// A full queue drops events and reports one overflow, so any hidraw change may be among them.
+			changed |= event.events().contains(inotify::ReadFlags::QUEUE_OVERFLOW)
+				|| event.file_name().is_some_and(|name| name.to_bytes().starts_with(b"hidraw"));
 		}
 		changed
 	}
@@ -324,6 +329,12 @@ mod tests {
 		std::fs::write(directory.join("hidraw3"), "").unwrap();
 		assert!(monitor.take_changed());
 		assert!(!monitor.take_changed());
+
+		// udev grants access after it creates a node; that change must be reported so a failed open is retried.
+		let mut permissions = std::fs::metadata(directory.join("hidraw3")).unwrap().permissions();
+		permissions.set_readonly(true);
+		std::fs::set_permissions(directory.join("hidraw3"), permissions).unwrap();
+		assert!(monitor.take_changed());
 
 		std::fs::remove_file(directory.join("hidraw3")).unwrap();
 		assert!(monitor.take_changed());

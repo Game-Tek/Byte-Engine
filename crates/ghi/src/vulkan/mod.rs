@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::Extent;
@@ -134,11 +135,97 @@ pub(super) struct VulkanConsumption {
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
 
-#[derive(Clone)]
+/// The `Shader` struct holds what pipeline creation needs of one shader: its stage, its resources, and how to hand
+/// its code to the driver.
+///
+/// There is no native shader module. A pipeline that is compiled gets the SPIR-V inline, and a pipeline that comes
+/// from the pipeline cache only gets the identifier. Create one with [`Self::new`].
 pub(crate) struct Shader {
-	shader: vk::ShaderModule,
+	/// The shader's SPIR-V, or `None` for a keyed shader, whose caller lends the code to each pipeline instead.
+	code: Option<ShaderCode>,
+	/// The driver's name for the code, which stands in for it when a pipeline is looked up in the pipeline cache.
+	/// `None` without a pipeline cache or without `VK_EXT_shader_module_identifier`.
+	identifier: Option<pipeline_binaries::Key>,
 	stage: crate::Stages,
 	shader_resource_descriptors: Vec<crate::shader::ShaderResourceDescriptor>,
+}
+
+/// The `ShaderCode` enum is SPIR-V a shader keeps, in whichever buffer avoided a copy.
+enum ShaderCode {
+	/// Bytes the caller handed over, which happen to lie on a word boundary.
+	Bytes(Vec<u8>),
+	Words(Box<[u32]>),
+}
+
+impl ShaderCode {
+	fn words(&self) -> &[u32] {
+		match self {
+			// Only word-aligned whole words are stored as bytes, so the cast cannot fail.
+			Self::Bytes(bytes) => bytemuck::cast_slice(bytes),
+			Self::Words(words) => words,
+		}
+	}
+}
+
+/// Views SPIR-V bytes as words: in place when they lie on a word boundary, and through a copy otherwise.
+///
+/// Returns `None` when the bytes are empty or not a whole number of words. Only the copy reads the bytes, so a
+/// mapped file that is merely viewed is not read from disk.
+pub(crate) fn spirv_words(bytes: &[u8]) -> Option<Cow<'_, [u32]>> {
+	let (words, rest) = bytes.as_chunks::<4>();
+	if words.is_empty() || !rest.is_empty() {
+		return None;
+	}
+	Some(match bytemuck::try_cast_slice(bytes) {
+		Ok(aligned) => Cow::Borrowed(aligned),
+		Err(_) => Cow::Owned(words.iter().copied().map(u32::from_ne_bytes).collect()),
+	})
+}
+
+impl Shader {
+	/// Creates a shader from SPIR-V, keeping as little of it as the source allows.
+	///
+	/// Owned bytes are kept as they are and borrowed bytes are copied, because pipelines are created after the
+	/// caller's buffer is gone. A keyed source keeps nothing: when the pipeline cache already knows the key, the code
+	/// is not even read, and otherwise it is read once to ask the driver for its identifier, which the cache then
+	/// remembers under the key. Returns an error when `source` is not SPIR-V or is not a whole number of words.
+	pub(crate) fn new(
+		source: crate::shader::Sources,
+		stage: crate::ShaderTypes,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		pipeline_binaries: Option<&pipeline_binaries::PipelineBinaries>,
+	) -> Result<Self, ()> {
+		let (code, identifier) = match source {
+			crate::shader::Sources::SPIRV(bytes) => {
+				let code = match bytes {
+					// Owned bytes on a word boundary are kept as they are. A cast of anything else fails.
+					Cow::Owned(bytes) if !bytes.is_empty() && bytemuck::try_cast_slice::<u8, u32>(&bytes).is_ok() => {
+						ShaderCode::Bytes(bytes)
+					}
+					bytes => ShaderCode::Words(spirv_words(&bytes).ok_or(())?.into_owned().into_boxed_slice()),
+				};
+				let identifier =
+					pipeline_binaries.and_then(|pipeline_binaries| pipeline_binaries.shader_identifier(code.words()));
+				(Some(code), identifier)
+			}
+			crate::shader::Sources::KeyedSPIRV { key, code } => {
+				// Checking the length reads none of the code.
+				if code.is_empty() || !code.len().is_multiple_of(4) {
+					return Err(());
+				}
+				let identifier = pipeline_binaries
+					.and_then(|pipeline_binaries| pipeline_binaries.keyed_shader_identifier(key, || spirv_words(code)));
+				(None, identifier)
+			}
+			_ => return Err(()),
+		};
+		Ok(Self {
+			code,
+			identifier,
+			stage: stage.into(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+		})
+	}
 }
 
 #[derive(Clone)]

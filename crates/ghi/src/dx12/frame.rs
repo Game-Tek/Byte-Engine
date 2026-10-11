@@ -80,7 +80,9 @@ impl<'a> Frame<'a> {
 			.iter()
 			.map(|shader| {
 				let source = match &shader.source {
-					crate::dx12::factory::ShaderSource::Spirv(bytes) => crate::shader::Sources::SPIRV(bytes),
+					crate::dx12::factory::ShaderSource::Spirv(bytes) => {
+						crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(bytes))
+					}
 					crate::dx12::factory::ShaderSource::Dxil(bytes) => crate::shader::Sources::DXIL(bytes),
 					crate::dx12::factory::ShaderSource::Hlsl { source, entry_point } => {
 						crate::shader::Sources::HLSL { source, entry_point }

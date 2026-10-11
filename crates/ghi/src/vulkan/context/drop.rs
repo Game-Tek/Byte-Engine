@@ -55,11 +55,7 @@ impl Drop for Context {
 
 			for image in self.images.iter().filter(|image| image.owns_image) {
 				self.device.destroy_image(image.image, None);
-			}
-
-			for shader in &self.shaders {
-				self.device.destroy_shader_module(shader.shader, None);
-			}
+				does			}
 
 			for allocation in self
 				.allocations

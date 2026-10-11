@@ -135,7 +135,7 @@ mod tests {
 		let shader = device
 			.create_shader(
 				None,
-				crate::shader::Sources::SPIRV(&[]),
+				crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(&[])),
 				crate::ShaderTypes::Compute,
 				resources,
 			)
@@ -872,7 +872,12 @@ void main() {
 			return;
 		};
 		let shader = device
-			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(&[])),
+				crate::ShaderTypes::Compute,
+				[],
+			)
 			.expect("Failed to create DX12 shader metadata.");
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

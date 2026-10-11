@@ -26,23 +26,13 @@ impl crate::device::Device for Device {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
-		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
-			return Err(());
-		};
-		let code = if spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
-			Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr().cast::<u32>(), spirv.len() / 4) })
-		} else {
-			Cow::Owned(spirv.as_chunks().0.iter().copied().map(u32::from_ne_bytes).collect())
-		};
-
-		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&code);
-		let shader = unsafe { self.device.create_shader_module(&shader_module_create_info, None) }.map_err(|_| ())?;
-		self.shaders.push(crate::vulkan::Shader {
-			shader,
-			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
-		});
-
+		let shader = crate::vulkan::Shader::new(
+			shader_source_type,
+			stage,
+			shader_resource_descriptors,
+			self.pipeline_binaries.as_deref(),
+		)?;
+		self.shaders.push(shader);
 		Ok(crate::ShaderHandle(self.shaders.len() as u64 - 1))
 	}
 

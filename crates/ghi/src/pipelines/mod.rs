@@ -41,6 +41,8 @@ pub struct ShaderParameter<'a> {
 	pub(crate) handle: &'a ShaderHandle,
 	pub(crate) stage: ShaderTypes,
 	pub(crate) specialization_map: &'a [SpecializationMapEntry],
+	/// The shader's code, lent for this pipeline's creation. See [`Self::with_code`].
+	pub(crate) code: Option<&'a [u8]>,
 }
 
 impl<'a> ShaderParameter<'a> {
@@ -49,7 +51,19 @@ impl<'a> ShaderParameter<'a> {
 			handle,
 			stage,
 			specialization_map: &[],
+			code: None,
 		}
+	}
+
+	/// Lends the shader's code for the creation of this pipeline.
+	///
+	/// A shader created from [`crate::shader::Sources::KeyedSPIRV`] keeps no code, so every pipeline that uses it
+	/// needs this. Pass the same bytes the shader was created from. They are read only when the pipeline has to be
+	/// compiled, so lending a mapped file costs nothing for a pipeline that comes from the pipeline cache. Shaders
+	/// that keep their code ignore it.
+	pub fn with_code(mut self, code: &'a [u8]) -> Self {
+		self.code = Some(code);
+		self
 	}
 
 	pub fn with_specialization_map(mut self, specialization_map: &'a [SpecializationMapEntry]) -> Self {

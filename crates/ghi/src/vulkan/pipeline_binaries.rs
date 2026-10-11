@@ -9,7 +9,8 @@ use std::sync::RwLock;
 use ash::vk;
 use smallvec::SmallVec;
 
-use self::store::{Key, Store};
+pub(crate) use self::store::Key;
+use self::store::Store;
 
 mod store;
 
@@ -20,6 +21,8 @@ mod store;
 /// `VK_KHR_pipeline_binary`. Pass it to [`create_pipeline`] to create pipelines through it.
 pub(crate) struct PipelineBinaries {
 	functions: ash::khr::pipeline_binary::Device,
+	/// `VK_EXT_shader_module_identifier`, when the device has it. See [`Self::shader_identifier`].
+	identifiers: Option<ash::ext::shader_module_identifier::Device>,
 	/// Names the driver configuration the binaries belong to. Binaries of another configuration are unusable.
 	global_key: Key,
 	/// Compiler threads create pipelines concurrently, and most creations only read.
@@ -28,15 +31,55 @@ pub(crate) struct PipelineBinaries {
 
 impl PipelineBinaries {
 	/// Starts an empty cache for `device`, or returns `None` when the driver cannot name its configuration.
-	pub(crate) fn new(instance: &ash::Instance, device: &ash::Device) -> Option<Self> {
+	///
+	/// `shader_identifiers` tells whether `VK_EXT_shader_module_identifier` is enabled on `device`.
+	pub(crate) fn new(instance: &ash::Instance, device: &ash::Device, shader_identifiers: bool) -> Option<Self> {
 		let functions = ash::khr::pipeline_binary::Device::load(instance, device);
 		// A null create info asks for the global key.
 		let global_key = pipeline_key(&functions, std::ptr::null())?;
 		Some(Self {
 			functions,
+			identifiers: shader_identifiers.then(|| ash::ext::shader_module_identifier::Device::load(instance, device)),
 			global_key,
 			store: RwLock::new(Store::new(&global_key)),
 		})
+	}
+
+	/// Returns the driver's identifier for a shader's SPIR-V, or `None` when the device cannot identify shaders.
+	///
+	/// A pipeline create info that names its shaders by identifier needs no code, so [`create_pipeline`] can look a
+	/// pipeline up and create it from stored binaries without the driver reading SPIR-V again. Ask once per shader:
+	/// the driver hashes the whole code to answer.
+	pub(crate) fn shader_identifier(&self, spirv: &[u32]) -> Option<Key> {
+		let identifiers = self.identifiers.as_ref()?;
+		let create_info = vk::ShaderModuleCreateInfo::default().code(spirv);
+		let mut identifier = vk::ShaderModuleIdentifierEXT::default();
+		// SAFETY: The create info points at live SPIR-V, and the identifier is a writable local.
+		unsafe {
+			(identifiers.fp().get_shader_module_create_info_identifier_ext)(identifiers.device(), &create_info, &mut identifier)
+		};
+		let identifier = identifier.identifier.get(..identifier.identifier_size as usize)?;
+		Key::new(identifier).filter(|identifier| !identifier.bytes().is_empty())
+	}
+
+	/// Returns the identifier of the shader whose code the caller names `key`, without the code when the cache
+	/// remembers it.
+	///
+	/// `spirv` is only called for a key the cache has not seen: the driver then identifies the code, and the cache
+	/// remembers the answer under `key` for this run and, once saved, for later ones. The identifier depends on the
+	/// driver, which is why it lives in the cache, whose header names the driver, and not next to the shader.
+	pub(crate) fn keyed_shader_identifier<'a>(
+		&self,
+		key: u64,
+		spirv: impl FnOnce() -> Option<std::borrow::Cow<'a, [u32]>>,
+	) -> Option<Key> {
+		self.identifiers.as_ref()?;
+		if let Some(identifier) = self.read().shader_identifier(key) {
+			return Some(identifier);
+		}
+		let identifier = self.shader_identifier(&spirv()?)?;
+		self.write().insert_shader(key, identifier);
+		Some(identifier)
 	}
 
 	/// Replaces the cache with a blob [`Self::data`] lent out, and keeps the blob as the cache's storage.
@@ -193,13 +236,22 @@ impl Drop for Binaries<'_> {
 /// Creates a descriptor-heap pipeline, from stored binaries when `binaries` holds the pipeline and from its shaders
 /// otherwise.
 ///
-/// `create_info` must not carry a `VkPipelineCreateFlags2CreateInfo`; this function adds one with the descriptor-heap
-/// flag every pipeline of this backend needs. `create` calls the creation function of the pipeline's kind and may run
-/// twice, because a pipeline whose stored binaries the driver rejects is compiled from its shaders instead. A
-/// pipeline compiled from shaders has its binaries stored for the next creation and the next run.
+/// `compiled` carries the shaders' SPIR-V and is what a pipeline is compiled from. `identified` is the same pipeline
+/// with its shaders named by identifier instead, when every shader has one. The pipeline is looked up and created
+/// from stored binaries through `identified`, so the driver reads no SPIR-V unless it has to compile; without it,
+/// `compiled` serves both purposes.
+///
+/// Pass `compiled` as `None` to try the cache alone. The result is then `VK_PIPELINE_COMPILE_REQUIRED` when the
+/// pipeline has to be compiled, which tells the caller to come back with the code.
+///
+/// Neither create info may carry a `VkPipelineCreateFlags2CreateInfo`; this function adds one with the
+/// descriptor-heap flag every pipeline of this backend needs. `create` calls the creation function of the pipeline's
+/// kind and may run twice, because a pipeline whose stored binaries the driver rejects is compiled from its shaders
+/// instead. A pipeline compiled from shaders has its binaries stored for the next creation and the next run.
 pub(crate) fn create_pipeline<T>(
 	binaries: Option<&PipelineBinaries>,
-	create_info: &T,
+	compiled: Option<&T>,
+	identified: Option<&T>,
 	create: impl Fn(&T) -> Result<vk::Pipeline, vk::Result>,
 ) -> Result<vk::Pipeline, vk::Result>
 where
@@ -208,20 +260,35 @@ where
 	for<'a> vk::PipelineBinaryInfoKHR<'a>: vk::Extends<T>,
 {
 	let heap_flags = vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT;
-	let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(heap_flags);
-	// SAFETY: The bounds make the flags a valid extension of `T`, and `flags` outlives every use of `keyed`.
-	let keyed = unsafe { chained(create_info, &mut flags) };
+	let compile = |extra_flags| {
+		let compiled = compiled.ok_or(vk::Result::PIPELINE_COMPILE_REQUIRED)?;
+		let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(heap_flags | extra_flags);
+		// SAFETY: The bounds make the flags a valid extension of `T`, and `flags` outlives the creation call.
+		create(&unsafe { chained(compiled, &mut flags) })
+	};
 	let Some(binaries) = binaries else {
-		return create(&keyed);
+		return compile(vk::PipelineCreateFlags2::empty());
 	};
 
+	// Shaders named by identifier are only valid in a pipeline that must not compile, which a lookup never does.
+	let (lookup, lookup_flags) = match (identified, compiled) {
+		(Some(identified), _) => (
+			identified,
+			heap_flags | vk::PipelineCreateFlags2::FAIL_ON_PIPELINE_COMPILE_REQUIRED,
+		),
+		(None, Some(compiled)) => (compiled, heap_flags),
+		(None, None) => return Err(vk::Result::PIPELINE_COMPILE_REQUIRED),
+	};
+	let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(lookup_flags);
+	// SAFETY: As above, and `flags` outlives every use of `keyed`.
+	let keyed = unsafe { chained(lookup, &mut flags) };
 	// The driver derives the key from the state that affects the binaries, so equal keys mean reusable binaries.
 	let key_info = vk::PipelineCreateInfoKHR {
 		p_next: (&raw const keyed).cast_mut().cast(),
 		..Default::default()
 	};
 	let Some(key) = pipeline_key(&binaries.functions, &key_info) else {
-		return create(&keyed);
+		return compile(vk::PipelineCreateFlags2::empty());
 	};
 
 	if let Some(stored) = binaries.stored_binaries(&key) {
@@ -232,10 +299,7 @@ where
 		}
 	}
 
-	let mut capture_flags =
-		vk::PipelineCreateFlags2CreateInfo::default().flags(heap_flags | vk::PipelineCreateFlags2::CAPTURE_DATA_KHR);
-	// SAFETY: As above, and `capture_flags` outlives the creation call.
-	let pipeline = create(&unsafe { chained(create_info, &mut capture_flags) })?;
+	let pipeline = compile(vk::PipelineCreateFlags2::CAPTURE_DATA_KHR)?;
 	binaries.capture(pipeline, key);
 	Ok(pipeline)
 }

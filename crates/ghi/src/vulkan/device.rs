@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU32};
+use std::num::NonZeroU32;
 
 use ash::vk::{self, TaggedStructure as _};
 use utils::{Extent, hash::HashMap};
@@ -89,10 +89,6 @@ pub struct InnerDevice {
 impl Drop for Device {
 	/// Waits for pending device work before destroying the Vulkan device.
 	fn drop(&mut self) {
-		// Pipelines keep what they need from their shader modules, so modules can go before the pipelines using them.
-		for shader in &self.shaders {
-			unsafe { self.device.destroy_shader_module(shader.shader, None) };
-		}
 		// Detached factories borrow the native device; only the primary device owns it.
 		let Some(inner) = &self.inner else {
 			return;

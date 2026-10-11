@@ -5,7 +5,8 @@
 //!
 //! The buffer is an append-only log: a header naming the driver configuration, then records. A binary record is a
 //! tag, the binary's key, a size, and the data. A pipeline record is a tag, the pipeline's key, a count, and the keys
-//! of its binaries in driver order. Counts and sizes are little-endian. Because records are only ever appended, the
+//! of its binaries in driver order. A shader record is a tag, the caller's key for the shader's code, and the
+//! driver's identifier for that code. Counts and sizes are little-endian. Because records are only ever appended, the
 //! bytes that were loaded stay a prefix of the buffer, and saving is appending the rest to the same file.
 
 use std::{mem::MaybeUninit, ops::Range};
@@ -24,6 +25,7 @@ const HEADER_SIZE: usize = MAGIC.len() + KEY_RECORD_SIZE;
 
 const BINARY_TAG: u8 = 1;
 const PIPELINE_TAG: u8 = 2;
+const SHADER_TAG: u8 = 3;
 
 /// The `Key` struct names a pipeline, a pipeline binary, or a driver configuration with the opaque bytes the driver
 /// chose for it.
@@ -67,7 +69,9 @@ impl Key {
 ///
 /// It owns one buffer, the log, and indexes into it, so loading copies no binary, creating a stored pipeline lends
 /// the driver bytes of the log, and saving writes the log as it is. Pipelines that share a shader share its binary.
-/// Start one with [`Self::new`] or [`Self::load`], fill it with [`Self::insert`], read it with [`Self::binaries`],
+/// It also remembers the driver's identifier for each shader the caller names with a key, so a later run can look
+/// pipelines up without reading the shader's code. Start one with [`Self::new`] or [`Self::load`], fill it with
+/// [`Self::insert`] and [`Self::insert_shader`], read it with [`Self::binaries`] and [`Self::shader_identifier`],
 /// and persist it with [`Self::bytes`].
 pub(crate) struct Store {
 	log: Vec<u8>,
@@ -77,6 +81,8 @@ pub(crate) struct Store {
 	pipelines: HashMap<Key, (usize, u32)>,
 	/// Where each binary's data lies in `log`.
 	binaries: HashMap<Key, Range<usize>>,
+	/// The driver's identifier for each shader, by the caller's key for the shader's code.
+	shaders: HashMap<u64, Key>,
 }
 
 impl Store {
@@ -90,6 +96,7 @@ impl Store {
 			loaded: 0,
 			pipelines: HashMap::default(),
 			binaries: HashMap::default(),
+			shaders: HashMap::default(),
 		}
 	}
 
@@ -106,16 +113,22 @@ impl Store {
 			return Self::new(identity);
 		}
 
-		// Counting first sizes both indexes exactly, so indexing allocates twice no matter how many records there are.
-		let (mut pipeline_count, mut binary_count) = (0, 0);
+		// Counting first sizes every index exactly, so indexing allocates once per index no matter how many records
+		// there are.
+		let (mut pipeline_count, mut binary_count, mut shader_count) = (0, 0, 0);
 		let valid = scan(&blob, |record| match record {
 			Record::Binary { .. } => binary_count += 1,
 			Record::Pipeline { .. } => pipeline_count += 1,
+			Record::Shader { .. } => shader_count += 1,
 		});
 
 		let mut pipelines = HashMap::with_capacity_and_hasher(pipeline_count, Default::default());
 		let mut binaries = HashMap::with_capacity_and_hasher(binary_count, Default::default());
+		let mut shaders = HashMap::with_capacity_and_hasher(shader_count, Default::default());
 		scan(&blob[..valid], |record| match record {
+			Record::Shader { shader, identifier } => {
+				shaders.insert(shader, identifier);
+			}
 			Record::Binary { key, data } => {
 				binaries.insert(key, data);
 			}
@@ -137,7 +150,23 @@ impl Store {
 			loaded,
 			pipelines,
 			binaries,
+			shaders,
 		}
+	}
+
+	/// Returns the driver's identifier for the shader whose code the caller names `shader`, when it is stored.
+	pub(crate) fn shader_identifier(&self, shader: u64) -> Option<Key> {
+		self.shaders.get(&shader).copied()
+	}
+
+	/// Appends the driver's identifier for the shader whose code the caller names `shader`.
+	pub(crate) fn insert_shader(&mut self, shader: u64, identifier: Key) {
+		if self.shaders.insert(shader, identifier) == Some(identifier) {
+			return;
+		}
+		self.log.push(SHADER_TAG);
+		shader_key(shader).write(&mut self.log);
+		identifier.write(&mut self.log);
 	}
 
 	/// Returns the binaries of a pipeline in driver order, borrowed from the log, or `None` when the pipeline is not
@@ -227,6 +256,16 @@ enum Record {
 		keys: usize,
 		count: u32,
 	},
+	Shader {
+		shader: u64,
+		identifier: Key,
+	},
+}
+
+/// Returns the log form of a caller's shader key. Every record starts with a [`Key`], so the eight bytes ride in one.
+fn shader_key(shader: u64) -> Key {
+	Key::new(&shader.to_le_bytes())
+		.expect("Shader key does not fit a log key. The most likely cause is a backend bug that shrank the log's key size.")
 }
 
 /// Visits every whole record after the header and returns where the well-formed part of the log ends.
@@ -255,6 +294,11 @@ fn scan(log: &[u8], mut visit: impl FnMut(Record)) -> usize {
 					},
 					end,
 				)
+			}
+			SHADER_TAG => {
+				let shader = u64::from_le_bytes(key.bytes().try_into().ok()?);
+				let identifier = Key::read(log.get(body..)?)?;
+				(Record::Shader { shader, identifier }, body + KEY_RECORD_SIZE)
 			}
 			_ => return None,
 		};
@@ -377,6 +421,25 @@ mod tests {
 		let appended = Store::load(&key(99), [loaded, added].concat());
 		assert_eq!(stored(&appended, &key(1)), stored(&restored, &key(1)));
 		assert_eq!(stored(&appended, &key(2)), stored(&restored, &key(2)));
+	}
+
+	#[test]
+	fn loaded_store_returns_shader_identifiers() {
+		let mut store = Store::new(&key(99));
+		store.insert_shader(7, key(70));
+		insert(&mut store, key(1), &[(key(10), 1)]);
+		store.insert_shader(8, key(80));
+		let saved = blob(&store);
+		// Naming a shader the store already knows the same way adds nothing to save.
+		store.insert_shader(7, key(70));
+		assert_eq!(blob(&store), saved);
+
+		let restored = Store::load(&key(99), saved);
+
+		assert_eq!(restored.shader_identifier(7), Some(key(70)));
+		assert_eq!(restored.shader_identifier(8), Some(key(80)));
+		assert_eq!(restored.shader_identifier(9), None);
+		assert_eq!(stored(&restored, &key(1)), stored(&store, &key(1)));
 	}
 
 	#[test]

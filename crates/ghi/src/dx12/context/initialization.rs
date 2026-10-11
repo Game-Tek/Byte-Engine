@@ -585,7 +585,8 @@ impl Device {
 		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		let (spirv, dxil, hlsl) = match shader_source_type {
-			Sources::SPIRV(bytes) => (Some(bytes.to_vec()), None, None),
+			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, None),
+			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, None),
 			Sources::DXIL(bytes) => (None, Some(bytes.to_vec()), None),
 			Sources::HLSL { source, entry_point } => (
 				None,

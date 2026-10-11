@@ -214,6 +214,14 @@ impl InnerDevice {
 		if pipeline_binary_properties.is_some() {
 			device_extension_names.push(ash::khr::pipeline_binary::NAME.as_ptr());
 		}
+		// Identifiers let the cache find a pipeline without its shaders' code, so they only matter with a cache.
+		let shader_identifiers = pipeline_binary_properties.is_some()
+			&& supports_shader_module_identifiers(vk_instance, physical_device, &available_device_extensions);
+		if shader_identifiers {
+			device_extension_names.push(ash::ext::shader_module_identifier::NAME.as_ptr());
+		}
+		let mut shader_identifier_features =
+			vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default().shader_module_identifier(true);
 		let mut pipeline_binary_features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default().pipeline_binaries(true);
 		// The application persists the binaries, so a driver cache of the same data would only repeat the work. Not
 		// every driver lets its cache be turned off.
@@ -229,6 +237,9 @@ impl InnerDevice {
 			device_create_info = device_create_info
 				.push(&mut pipeline_binary_features)
 				.push(&mut internal_cache_control);
+		}
+		if shader_identifiers {
+			device_create_info = device_create_info.push(&mut shader_identifier_features);
 		}
 
 		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
@@ -270,7 +281,7 @@ impl InnerDevice {
 			descriptor_heap: ash::ext::descriptor_heap::Device::load(vk_instance, &device),
 			descriptor_heap_properties,
 			pipeline_binaries: pipeline_binary_properties
-				.and_then(|_| PipelineBinaries::new(vk_instance, &device))
+				.and_then(|_| PipelineBinaries::new(vk_instance, &device, shader_identifiers))
 				.map(std::sync::Arc::new),
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
@@ -403,6 +414,23 @@ fn pipeline_binary_properties(
 
 	(features.pipeline_binaries == vk::TRUE && properties.pipeline_binary_prefers_internal_cache == vk::FALSE)
 		.then_some(properties)
+}
+
+/// Returns whether the device can name a shader's SPIR-V with an identifier, through
+/// `VK_EXT_shader_module_identifier`.
+fn supports_shader_module_identifiers(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> bool {
+	if !has_extension(available_extensions, ash::ext::shader_module_identifier::NAME) {
+		return false;
+	}
+
+	let mut features = vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+	features.shader_module_identifier == vk::TRUE
 }
 
 fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {

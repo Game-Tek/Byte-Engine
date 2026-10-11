@@ -107,31 +107,44 @@ fn counters_ended_after_the_last_dispatch_resolve() {
 
 #[test]
 fn unordered_dispatches_write_their_own_rows() {
-	run(compute::unordered_dispatches_write_their_own_rows);
+	run(|context, queue_handle| compute::unordered_dispatches_write_their_own_rows(context, queue_handle, None));
 }
 
-/// A context that loads another device's pipeline cache creates the same pipeline from it: the pipeline still
-/// computes the right pixels, and the cache has nothing new to save because nothing was compiled.
+/// Runs the unordered dispatch scenario on a first device, then again on a second device that loaded the first
+/// one's pipeline cache, and checks that the second run still computes the right pixels with nothing new to save,
+/// because nothing was compiled.
 ///
 /// On a backend without an application-owned cache there is never anything to save, and this only checks that
 /// asking for one leaves pipelines working.
-#[test]
-fn pipelines_created_from_a_loaded_pipeline_cache_work() {
+fn pipeline_from_a_loaded_pipeline_cache_works(shader_key: Option<u64>) {
 	let features = ghi::device::Features::new().validation(true).pipeline_cache(true);
 
 	let compiled = {
 		let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
-		compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle);
+		compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle, shader_key);
 		ghi::context::Context::pipeline_cache_data(&context, |data| [data.loaded, data.added].concat())
 	};
 
 	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
 	ghi::context::Context::load_pipeline_cache(&context, compiled.clone());
-	compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle);
+	compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle, shader_key);
 	ghi::context::Context::pipeline_cache_data(&context, |data| {
 		assert_eq!(data.loaded, compiled);
 		assert!(data.added.is_empty());
 	});
+}
+
+/// A pipeline whose shader the backend keeps the code of comes from a loaded pipeline cache.
+#[test]
+fn pipelines_created_from_a_loaded_pipeline_cache_work() {
+	pipeline_from_a_loaded_pipeline_cache_works(None);
+}
+
+/// A pipeline whose shader is named by a key and lends its code comes from a loaded pipeline cache, which also
+/// remembers the shader, so neither the shader nor the pipeline adds anything to save.
+#[test]
+fn keyed_shader_pipelines_created_from_a_loaded_pipeline_cache_work() {
+	pipeline_from_a_loaded_pipeline_cache_works(Some(0x5EED));
 }
 
 #[test]

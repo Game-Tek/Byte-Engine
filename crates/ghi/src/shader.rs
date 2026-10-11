@@ -4,8 +4,18 @@ use crate::{AccessPolicies, TextureViewTypes};
 
 /// A native shader-source representation accepted by a backend.
 pub enum Sources<'a> {
-	/// SPIR-V binary.
-	SPIRV(&'a [u8]),
+	/// SPIR-V binary that the backend keeps for as long as the shader exists.
+	///
+	/// Pass owned bytes to hand them over without a copy; borrowed bytes are copied. When the bytes stay alive
+	/// elsewhere, such as in a mapped file, [`Self::KeyedSPIRV`] avoids keeping a second copy.
+	SPIRV(std::borrow::Cow<'a, [u8]>),
+	/// SPIR-V binary that the caller keeps and names with `key`.
+	///
+	/// `key` must be a hash of `code`, so it changes whenever the code does. A device with a pipeline cache remembers
+	/// shaders by key across runs, and then creates a shader it already knows, and every pipeline the cache holds,
+	/// without reading `code`. The backend keeps no code for these shaders, so lend it to every pipeline that
+	/// uses the shader with [`crate::pipelines::ShaderParameter::with_code`]; it is read only to compile.
+	KeyedSPIRV { key: u64, code: &'a [u8] },
 	/// DirectX Intermediate Language bytecode for DX12 backends.
 	DXIL(&'a [u8]),
 	/// HLSL source and entry-point name for DX12 backends.
@@ -50,7 +60,7 @@ pub enum CompiledShaderSource {
 impl CompiledShaderSource {
 	pub fn as_source(&self) -> Sources<'_> {
 		match self {
-			Self::SPIRV(binary) => Sources::SPIRV(binary.as_slice()),
+			Self::SPIRV(binary) => Sources::SPIRV(std::borrow::Cow::Borrowed(binary.as_slice())),
 			Self::HLSL { source, entry_point } => Sources::HLSL {
 				source: source.as_str(),
 				entry_point: entry_point.as_str(),

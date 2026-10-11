@@ -279,9 +279,10 @@ impl PipelineManagerServer {
 					.iter()
 					.map(|shader| self.adopt_shader(shader))
 					.collect::<Result<Vec<_>, _>>()?;
-				let parameters = loaded
+				let parameters = prepared
 					.iter()
-					.map(|(handle, stage)| ghi::ShaderParameter::new(handle, *stage))
+					.zip(&loaded)
+					.map(|(shader, (handle, _))| shader.parameter(handle))
 					.collect::<Vec<_>>();
 				let vertices = vertex_elements
 					.iter()
@@ -348,8 +349,8 @@ impl PipelineManagerServer {
 		use ghi::Device as _;
 
 		let workgroup = prepared.workgroup.ok_or_else(missing_workgroup)?;
-		let (shader, stage) = self.adopt_shader(prepared)?;
-		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(specialization);
+		let (shader, _) = self.adopt_shader(prepared)?;
+		let shader = prepared.parameter(&shader).with_specialization_map(specialization);
 
 		Ok(DetachedPipeline::Compute {
 			pipeline: self
@@ -369,7 +370,12 @@ impl PipelineManagerServer {
 		{
 			return Ok((*handle, prepared.stage));
 		}
-		let source = shader_artifact_source(&prepared.artifact, prepared.workgroup, prepared.backing.as_slice())?;
+		let source = shader_artifact_source(
+			&prepared.artifact,
+			prepared.workgroup,
+			prepared.backing.as_slice(),
+			prepared.hash,
+		)?;
 		let handle = self
 			.factory
 			.create_shader(
@@ -400,6 +406,26 @@ struct PreparedShader {
 	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
 	bindings: Arc<[Binding]>,
 	backing: resource_management::resource::reader::ResourceReaderBacking,
+	/// The hash of the shader's bytes, which names them to GHI so its pipeline cache can know the shader across runs
+	/// without reading the bytes.
+	hash: u64,
+}
+
+impl PreparedShader {
+	/// Returns the pipeline parameter for this shader's `handle` in one factory.
+	///
+	/// SPIR-V shaders are created from a keyed source, so GHI keeps none of their code and each pipeline is lent the
+	/// bytes instead. They are usually a mapped file, which is only read from disk if the pipeline has to be
+	/// compiled.
+	fn parameter<'a>(&'a self, handle: &'a ghi::ShaderHandle) -> ghi::ShaderParameter<'a> {
+		use resource_management::resources::material::ShaderArtifact;
+
+		let parameter = ghi::ShaderParameter::new(handle, self.stage);
+		match self.artifact {
+			ShaderArtifact::Spirv => parameter.with_code(self.backing.as_slice()),
+			_ => parameter,
+		}
+	}
 }
 
 /// The `ShaderPreparation` type is one shader's pending or finished preparation, shared by every compilation server.
@@ -490,6 +516,7 @@ fn shader_artifact_source<'a>(
 	artifact: &'a resource_management::resources::material::ShaderArtifact,
 	workgroup_size: Option<utils::Extent>,
 	bytes: &'a [u8],
+	hash: u64,
 ) -> Result<ghi::shader::Sources<'a>, String> {
 	use resource_management::resources::material::ShaderArtifact;
 
@@ -499,7 +526,8 @@ fn shader_artifact_source<'a>(
 		})
 	};
 	match artifact {
-		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
+		// The key lets GHI skip the bytes for shaders its pipeline cache knows; see `PreparedShader::parameter`.
+		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::KeyedSPIRV { key: hash, code: bytes }),
 		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL(bytes)),
 		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
 			source: text("HLSL")?,
@@ -537,11 +565,12 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.map(binding_to_descriptor)
 		.collect::<Vec<_>>();
 	let bindings = Arc::from(resource.interface.bindings.as_slice());
+	let hash = shader.hash();
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
 	// Validate persisted source metadata before mutable GHI adoption begins.
-	let _ = shader_artifact_source(&artifact, workgroup, backing.as_slice())?;
+	let _ = shader_artifact_source(&artifact, workgroup, backing.as_slice(), hash)?;
 	Ok(PreparedShader {
 		id: id.to_string(),
 		stage,
@@ -550,6 +579,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		descriptors,
 		bindings,
 		backing,
+		hash,
 	})
 }
 

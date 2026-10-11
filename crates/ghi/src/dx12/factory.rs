@@ -117,7 +117,8 @@ impl crate::device::Device for Factory {
 		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		let source = match shader_source_type {
-			Sources::SPIRV(bytes) => ShaderSource::Spirv(bytes.to_vec()),
+			Sources::SPIRV(bytes) => ShaderSource::Spirv(bytes.into_owned()),
+			Sources::KeyedSPIRV { code, .. } => ShaderSource::Spirv(code.to_vec()),
 			Sources::DXIL(bytes) => ShaderSource::Dxil(bytes.to_vec()),
 			Sources::HLSL { source, entry_point } => ShaderSource::Hlsl {
 				source: source.to_string(),

@@ -638,35 +638,20 @@ impl crate::context::ContextCreate for Context {
 	/// Creates a shader.
 	fn create_shader(
 		&mut self,
-		name: Option<&str>,
+		// A shader is no native object anymore, so there is nothing to name.
+		_name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
-			return Err(());
-		};
-		if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
-			return Err(());
-		}
-		// SAFETY: shader was checked to be aligned to 4 bytes.
-		let code = unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) };
-
-		let shader_module = unsafe {
-			self.device
-				.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(code), None)
-				.unwrap()
-		};
-
-		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
-		self.shaders.push(Shader {
-			shader: shader_module,
-			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
-		});
-		self.set_name(shader_module, name);
-
-		Ok(handle)
+		let shader = Shader::new(
+			shader_source_type,
+			stage,
+			shader_resource_descriptors,
+			self.device.pipeline_binaries.as_deref(),
+		)?;
+		self.shaders.push(shader);
+		Ok(graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64 - 1))
 	}
 
 	fn create_descriptor_set(&mut self, name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
@@ -720,29 +705,6 @@ impl crate::context::ContextCreate for Context {
 			builder.push_constant_ranges,
 			&self.device.descriptor_heap_properties,
 		);
-		let stage_mappings = shaders
-			.iter()
-			.map(|stage| {
-				let shader = &self.shaders[stage.handle.0 as usize];
-				crate::vulkan::build_shader_mappings(&pipeline_layout, &shader.shader_resource_descriptors)
-			})
-			.collect::<Vec<_>>();
-		let mut mapping_infos = stage_mappings
-			.iter()
-			.map(|mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings))
-			.collect::<Vec<_>>();
-		let stages = shaders
-			.iter()
-			.zip(mapping_infos.iter_mut())
-			.map(|(stage, mapping_info)| {
-				vk::PipelineShaderStageCreateInfo::default()
-					.push(mapping_info)
-					.stage(stage.stage.into())
-					.module(self.shaders[stage.handle.0 as usize].shader)
-					.name(c"main")
-			})
-			.collect::<Vec<_>>();
-
 		let groups = shaders
 			.iter()
 			.enumerate()
@@ -767,30 +729,33 @@ impl crate::context::ContextCreate for Context {
 					_ => return None,
 				})
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 
-		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-			.layout(vk::PipelineLayout::null())
-			.stages(&stages)
-			.groups(&groups)
-			.max_pipeline_ray_recursion_depth(1);
-
-		let pipeline = crate::vulkan::pipeline_binaries::create_pipeline(
-			self.device.pipeline_binaries.as_deref(),
-			&create_info,
-			|create_info| {
-				unsafe {
-					self.ray_tracing_pipeline.create_ray_tracing_pipelines(
-						vk::DeferredOperationKHR::null(),
-						vk::PipelineCache::null(),
-						std::slice::from_ref(create_info),
-						None,
-					)
-				}
-				.map(|pipelines| pipelines[0])
-				.map_err(|(_, result)| result)
-			},
-		)
+		let pipeline = pipelines::with_shader_stages(&self.shaders, shaders, &pipeline_layout, |stages, identified_stages| {
+			let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
+				.layout(vk::PipelineLayout::null())
+				.groups(&groups)
+				.max_pipeline_ray_recursion_depth(1);
+			let compiled = stages.map(|stages| create_info.stages(stages));
+			let identified = identified_stages.map(|stages| create_info.stages(stages));
+			crate::vulkan::pipeline_binaries::create_pipeline(
+				self.device.pipeline_binaries.as_deref(),
+				compiled.as_ref(),
+				identified.as_ref(),
+				|create_info| {
+					unsafe {
+						self.ray_tracing_pipeline.create_ray_tracing_pipelines(
+							vk::DeferredOperationKHR::null(),
+							vk::PipelineCache::null(),
+							std::slice::from_ref(create_info),
+							None,
+						)
+					}
+					.map(|pipelines| pipelines[0])
+					.map_err(|(_, result)| result)
+				},
+			)
+		})
 		.expect(
 			"Vulkan ray tracing pipeline creation failed. The most likely cause is an invalid shader resource mapping or shader group.",
 		);

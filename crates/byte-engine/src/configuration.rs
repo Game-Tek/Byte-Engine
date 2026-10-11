@@ -45,6 +45,35 @@ impl ConfigurationValue {
 			_ => None,
 		}
 	}
+
+	/// Reads a Boolean, or the text `true` or `false` that startup parameters arrive as.
+	pub(crate) fn to_bool(&self) -> Option<bool> {
+		match self {
+			Self::Bool(value) => Some(*value),
+			Self::Text(value) => value.parse().ok(),
+			Self::Integer(_) | Self::Float(_) => None,
+		}
+	}
+
+	/// Reads a finite number, or the text of one that startup parameters arrive as.
+	pub(crate) fn to_f64(&self) -> Option<f64> {
+		match self {
+			Self::Integer(value) => Some(*value as f64),
+			Self::Float(value) if value.is_finite() => Some(*value),
+			Self::Text(value) => value.parse().ok().filter(|value: &f64| value.is_finite()),
+			Self::Bool(_) | Self::Float(_) => None,
+		}
+	}
+
+	/// Reads a whole number that fits 32 unsigned bits, or the text of one that startup parameters arrive as.
+	pub(crate) fn to_u32(&self) -> Option<u32> {
+		match self {
+			Self::Integer(value) => (*value).try_into().ok(),
+			Self::Float(value) if value.is_finite() && value.fract() == 0.0 => (*value as i128).try_into().ok(),
+			Self::Text(value) => value.parse().ok(),
+			Self::Bool(_) | Self::Float(_) => None,
+		}
+	}
 }
 
 impl From<&str> for ConfigurationValue {

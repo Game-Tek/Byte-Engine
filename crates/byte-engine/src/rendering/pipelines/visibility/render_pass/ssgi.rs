@@ -18,7 +18,6 @@ use math::Matrix;
 use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
-use super::gtao::configuration_bool;
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -52,7 +51,7 @@ impl SsgiSettings {
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
 			"enabled" => {
-				let enabled = configuration_bool(value).ok_or(
+				let enabled = value.to_bool().ok_or(
 					"SSGI enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
 				)?;
 				Ok((Self { enabled }, ConfigurationValue::Bool(enabled)))

@@ -20,7 +20,6 @@ use utils::Extent;
 use super::super::layout::MAX_DIRECTIONAL_SHADOW_COUNT;
 use super::super::shadow_selection::SunShadow;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::gtao::{configuration_bool, configuration_float};
 use super::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps};
 use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
@@ -56,13 +55,14 @@ impl ContactShadowSettings {
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
 			"enabled" => {
-				let enabled = configuration_bool(value).ok_or(
+				let enabled = value.to_bool().ok_or(
 					"Contact shadows enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
 				)?;
 				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
 			}
 			"distance" => {
-				let max_distance = configuration_float(value)
+				let max_distance = value
+					.to_f64()
 					.filter(|distance| *distance >= 0.0 && *distance <= f32::MAX as f64)
 					.ok_or(
 						"Contact shadow distance was not set. The most likely cause is that the value is not a finite nonnegative number.",

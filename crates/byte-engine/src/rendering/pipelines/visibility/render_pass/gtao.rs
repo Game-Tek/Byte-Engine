@@ -60,13 +60,13 @@ impl GtaoSettings {
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
 			"enabled" => {
-				let enabled = configuration_bool(value).ok_or(
+				let enabled = value.to_bool().ok_or(
 					"GTAO enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
 				)?;
 				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
 			}
 			"radius" => {
-				let radius = configuration_float(value)
+				let radius = value.to_f64()
 					.filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64)
 					.ok_or(
 						"GTAO radius was not set. The most likely cause is that the value is not a finite nonnegative number.",
@@ -78,7 +78,7 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
 			}
 			"samples-per-ray" => {
-				let samples_per_ray = configuration_u32(value)
+				let samples_per_ray = value.to_u32()
 					.filter(|samples| (MIN_SAMPLES_PER_RAY..=MAX_SAMPLES_PER_RAY).contains(samples))
 					.ok_or(format!(
 						"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number in the range {MIN_SAMPLES_PER_RAY}..={MAX_SAMPLES_PER_RAY}."
@@ -89,7 +89,7 @@ impl GtaoSettings {
 				))
 			}
 			"radial-rays" => {
-				let radial_rays = configuration_u32(value)
+				let radial_rays = value.to_u32()
 					.filter(|rays| (MIN_RADIAL_RAYS..=MAX_RADIAL_RAYS).contains(rays) && rays % 2 == 0)
 					.ok_or(format!(
 						"GTAO radial-rays was not set. The most likely cause is that the value is not an even whole number in the range {MIN_RADIAL_RAYS}..={MAX_RADIAL_RAYS}."
@@ -103,33 +103,6 @@ impl GtaoSettings {
 				Err("GTAO parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
 			}
 		}
-	}
-}
-
-/// Reads a Boolean, or the text `true` or `false` that startup parameters arrive as.
-pub(super) fn configuration_bool(value: &ConfigurationValue) -> Option<bool> {
-	match value {
-		ConfigurationValue::Bool(value) => Some(*value),
-		ConfigurationValue::Text(value) => value.parse().ok(),
-		ConfigurationValue::Integer(_) | ConfigurationValue::Float(_) => None,
-	}
-}
-
-pub(super) fn configuration_float(value: &ConfigurationValue) -> Option<f64> {
-	match value {
-		ConfigurationValue::Integer(value) => Some(*value as f64),
-		ConfigurationValue::Float(value) if value.is_finite() => Some(*value),
-		ConfigurationValue::Text(value) => value.parse().ok().filter(|value: &f64| value.is_finite()),
-		ConfigurationValue::Bool(_) | ConfigurationValue::Float(_) => None,
-	}
-}
-
-fn configuration_u32(value: &ConfigurationValue) -> Option<u32> {
-	match value {
-		ConfigurationValue::Integer(value) => (*value).try_into().ok(),
-		ConfigurationValue::Float(value) if value.is_finite() && value.fract() == 0.0 => (*value as i128).try_into().ok(),
-		ConfigurationValue::Text(value) => value.parse().ok(),
-		ConfigurationValue::Bool(_) | ConfigurationValue::Float(_) => None,
 	}
 }
 

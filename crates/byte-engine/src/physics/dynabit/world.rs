@@ -19,6 +19,7 @@ use crate::{
 			body::{Motion, PhysicsBody, intersect},
 			contact::Contact,
 			solver::{self, ContactBatches, Response},
+			step_lanes::StepLanes,
 		},
 		intersection::SweepBounds,
 	},
@@ -31,26 +32,6 @@ use crate::{
 /// to resolve on one lane. With four lanes on an Apple M4, steps of 1,000 and of 4,000 stacked cubes got no
 /// faster below this size.
 const SHARED_BATCH_CONTACTS: usize = 128;
-
-/// The number of bodies below which [`World::update_with_alley`] runs the step on the calling thread alone.
-///
-/// Starting lanes and meeting them at every stage costs more than they save on a step this small. On an Apple
-/// M4, two lanes matched one at about 400 stacked cubes in steps run back to back. Lanes that slept since the
-/// last frame take longer to start, so the limit sits above that.
-const SERIAL_STEP_BODIES: usize = 512;
-
-/// The number of bodies from which [`World::update_with_alley`] runs a step on [`LARGE_STEP_LANES`] lanes
-/// instead of [`SMALL_STEP_LANES`].
-const LARGE_STEP_BODIES: usize = 4000;
-
-/// The lanes that run a step of fewer than [`LARGE_STEP_BODIES`] bodies.
-///
-/// Every stage of a step ends only once each running lane has reached it, and a small step's shares are short,
-/// so more lanes spend longer meeting than they save.
-const SMALL_STEP_LANES: usize = 2;
-
-/// The lanes that run a step of at least [`LARGE_STEP_BODIES`] bodies.
-const LARGE_STEP_LANES: usize = 4;
 
 /// The most batches of one step [`World::update_with_alley`] shares between lanes.
 ///
@@ -70,6 +51,8 @@ pub struct World {
 	bounds: SweepBounds,
 	/// What each lane produced from its share of a stage, indexed by lane. Each lane locks only its own entry.
 	shares: Vec<Mutex<Share>>,
+	/// How many lanes [`Self::update_with_alley`] runs a step on.
+	step_lanes: StepLanes,
 	/// The step's contacts in time-of-impact order, kept between steps so gathering them does not allocate.
 	contacts: Vec<Contact>,
 	/// The contacts at the start of the step, sorted into batches that can each be resolved in any order.
@@ -91,9 +74,18 @@ impl World {
 			body_times: Vec::new(),
 			bounds: SweepBounds::default(),
 			shares: Vec::new(),
+			step_lanes: StepLanes::for_machine(),
 			contacts: Vec::new(),
 			batches: ContactBatches::default(),
 		}
+	}
+
+	/// Replaces how many lanes [`Self::update_with_alley`] runs a step on, which starts as
+	/// [`StepLanes::for_machine`].
+	///
+	/// Use this when measurements on a machine show that other lane counts step faster there.
+	pub fn set_step_lanes(&mut self, step_lanes: StepLanes) {
+		self.step_lanes = step_lanes;
 	}
 
 	/// Applies a world-space linear impulse to the simulated body identified by `handle`.
@@ -137,10 +129,11 @@ impl World {
 
 	/// Processes entity updates, advances physics as one execution of `alley`, and publishes resulting transforms.
 	///
-	/// A step of fewer than 512 bodies runs on the calling thread, like [`Self::update`], because lanes would cost
-	/// more than they save. A step of fewer than 4,000 bodies runs on two of `alley`'s lanes and a larger one on
-	/// four; the other lanes stay asleep. Every running lane runs the same step. One lane applies gravity and sorts
-	/// the bodies' bounds while the others wait, every lane then finds the contacts in its share of the bounds, one
+	/// The world's [`StepLanes`] decide from the number of bodies how many of `alley`'s lanes run the step; the
+	/// other lanes stay asleep. A step they give one lane runs on the calling thread, like [`Self::update`],
+	/// because lanes would cost more than they save. Every running lane runs the same step. One lane applies
+	/// gravity and sorts the bodies' bounds while the others wait, every lane then finds the contacts in its share
+	/// of the bounds, one
 	/// lane resolves them, every lane moves its share of the bodies, and one lane publishes their transforms.
 	/// Lanes also share the larger batches of simultaneous contacts. Contacts are resolved in the order
 	/// [`Self::update`] resolves them, so both produce the same simulation with any number of lanes.
@@ -155,15 +148,10 @@ impl World {
 		self.adopt_updates(transforms_rx);
 
 		let step = time.delta();
-		if self.bodies.len() < SERIAL_STEP_BODIES {
+		let lanes = self.step_lanes.lanes(self.bodies.len()).min(alley.parallelism());
+		if lanes <= 1 {
 			return self.step(step, transforms_tx);
 		}
-		let preferred_lanes = if self.bodies.len() < LARGE_STEP_BODIES {
-			SMALL_STEP_LANES
-		} else {
-			LARGE_STEP_LANES
-		};
-		let lanes = preferred_lanes.min(alley.parallelism());
 		// Entries are only added, so each lane keeps the storage it grew in earlier steps.
 		if self.shares.len() < lanes {
 			self.shares.resize_with(lanes, Default::default);
@@ -667,12 +655,11 @@ mod tests {
 	}
 
 	/// The bodies along each side of the grid [`crowded_bodies`] returns.
-	const CROWD_SIDE: usize = 24;
+	const CROWD_SIDE: usize = 16;
 
-	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other. There are enough of
-	/// them for a step to run on lanes, and enough contacts with the ground alone for lanes to share a batch.
+	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other, so one step has
+	/// enough contacts with the ground alone for lanes to share a batch.
 	fn crowded_bodies() -> Vec<PhysicsBody> {
-		const { assert!(CROWD_SIDE * CROWD_SIDE >= SERIAL_STEP_BODIES) };
 		const { assert!(CROWD_SIDE * CROWD_SIDE >= 2 * SHARED_BATCH_CONTACTS) };
 		const SPACING: f32 = 0.8;
 		let reach = (CROWD_SIDE - 1) as f32 * SPACING * 0.5;
@@ -700,6 +687,8 @@ mod tests {
 		mut step: impl FnMut(&mut World, Time, &mut DefaultListener<TransformationUpdate>, &DefaultChannel<TransformationUpdate>),
 	) -> Vec<(math::Point, Orientation)> {
 		let mut world = make_world();
+		// Every step runs on lanes, whatever the machine running the test would choose.
+		world.set_step_lanes(StepLanes::new([(0, 4)]));
 		world.bodies = crowded_bodies().into_iter().collect();
 		let authored = DefaultChannel::new();
 		let mut authored_rx = authored.listener();

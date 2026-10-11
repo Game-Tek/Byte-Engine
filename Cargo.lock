@@ -254,6 +254,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "hidapi",
  "kanal",
+ "libc",
  "log",
  "maths-rs",
  "oxhttp",

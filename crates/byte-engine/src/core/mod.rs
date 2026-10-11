@@ -26,6 +26,7 @@ pub mod targeted_message;
 
 #[doc(hidden)]
 pub mod alley;
+pub mod machine;
 #[doc(hidden)]
 pub mod threadpool;
 

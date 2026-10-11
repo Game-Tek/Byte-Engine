@@ -115,6 +115,10 @@ kanal = "0.1.1"
 # Lets pipeline compilation servers wait on a shader another server is already preparing.
 announcement = "0.1.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Reads how many of the processor's cores are performance cores.
+libc = "0.2"
+
 [dev-dependencies]
 divan = "0.1.21"
 

@@ -109,6 +109,14 @@ impl DefaultWorld {
 			.update_with_alley(time, transforms_rx, &self.transforms, alley);
 	}
 
+	/// Replaces how many lanes [`Self::update_with_alley`] runs a physics step on.
+	///
+	/// The world starts with [`StepLanes::for_machine`]. Use this when measurements on a machine show that other
+	/// lane counts step faster there.
+	pub fn set_physics_step_lanes(&mut self, step_lanes: StepLanes) {
+		self.physics_system.set_step_lanes(step_lanes);
+	}
+
 	pub fn flush_deletions(&mut self) {
 		self.physics_system.process_pending_deletions();
 	}
@@ -231,7 +239,7 @@ use crate::{
 		scene::{Scene, SceneGraph, SceneNode},
 		transform::TransformationUpdate,
 	},
-	physics::dynabit,
+	physics::{StepLanes, dynabit},
 	rendering::{Camera, UpdatePose},
 };
 

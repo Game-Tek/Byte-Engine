@@ -1,40 +1,9 @@
-Mesh: struct {
-	model: mat4x3f,
-	material_index: u32,
-	base_vertex_index: u32,
-	base_primitive_index: u32,
-	base_triangle_index: u32,
-	base_meshlet_index: u32,
-	meshlet_count: u32,
-	skinned_base_vertex_index: u32,
-	flags: u32,
-	bounding_sphere: vec4f,
-}
-
-MeshData: struct {
-	meshes: Mesh[1024],
-}
-
-// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
-// and 4294967295 marks a material no evaluation shades.
-MaterialEvaluations: struct {
-	evaluation_indices: u32[1024],
-}
-
-// Indexed by evaluation slot, like the counts the offsets were scanned from.
-MaterialOffsetScratch: struct {
-	material_offset_scratch: atomicu32[1024],
-}
-
 PixelMapping: struct {
 	pixel_mapping: vec2u16[8294400],
 }
 
-mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device }>;
-material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
 material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
 pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
-instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
 // Material evaluation writes these at every pixel it maps; the opaque phase zeroes them at every other pixel here.
 lit: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1041, access: write }>;
 diffuse_radiance_history: descriptor<{ type: StorageImage<rgba16f>, binding: 1057, access: write }>;
@@ -45,8 +14,6 @@ push_constant: push_constant {
 	phase: u32,
 }
 
-tile_histogram_keys: workgroup<atomicu32, 32>;
-tile_histogram_counts: workgroup<atomicu32, 32>;
 tile_mapping_bases: workgroup<u32, 32>;
 
 PIXEL_MAPPING_TILE_CAPACITY: const u32 = 32;

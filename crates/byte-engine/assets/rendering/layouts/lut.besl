@@ -1,0 +1,23 @@
+// The pipeline layout of a pass that maps an image through a 3D lookup table: its source, table, result, and the
+// table's domain, with the helper that samples the table.
+
+LutParameters: struct {
+	domain_min: vec4f,
+	domain_scale: vec4f,
+	sampling: vec4f,
+}
+
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
+result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
+
+// Maps a color through the table. The domain controls coordinates, not output clipping.
+apply_lut: fn(color: vec3f) -> vec3f {
+	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
+	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
+	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}

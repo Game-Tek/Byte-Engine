@@ -122,23 +122,23 @@ mod tests {
 			),
 			(
 				"agx_tone_mapping",
-				include_str!("../../../assets/rendering/agx/tone-mapping.besl"),
+				crate::rendering::shader_vm_test::asset_source("agx/tone-mapping.besl"),
 			),
 			(
 				"aces_tone_mapping",
 				include_str!("../../../assets/rendering/aces/tone-mapping.besl"),
 			),
 			("ui_composite", include_str!("../../../assets/rendering/ui/composite.besl")),
-			("sky", include_str!("../../../assets/rendering/sky.besl")),
+			("sky", crate::rendering::shader_vm_test::asset_source("sky.besl")),
 			(
 				"sky_transmittance",
-				include_str!("../../../assets/rendering/sky-transmittance.besl"),
+				crate::rendering::shader_vm_test::asset_source("sky-transmittance.besl"),
 			),
 			(
 				"sky_multiple_scattering",
-				include_str!("../../../assets/rendering/sky-multiple-scattering.besl"),
+				crate::rendering::shader_vm_test::asset_source("sky-multiple-scattering.besl"),
 			),
-			("sky_view", include_str!("../../../assets/rendering/sky-view.besl")),
+			("sky_view", crate::rendering::shader_vm_test::asset_source("sky-view.besl")),
 		] {
 			let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
 			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);

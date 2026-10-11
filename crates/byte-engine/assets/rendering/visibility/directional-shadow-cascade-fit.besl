@@ -8,31 +8,10 @@
 // doubling, centered on the texel grid fixed in the world, and reaching the caster reach toward the light. It is never
 // larger than the CPU's fit. Both views share an orientation, so the new view is the old one scaled and moved along
 // the light's axes: its view-projection maps each old normalized device coordinate c to c * scale + offset.
-View: struct {
-	view: mat4x3f,
-	view_projection: mat4f,
-	inverse_view: mat4x3f,
-	fov: vec2f,
-	near: f32,
-	far: f32,
-}
 
 // The camera, then four cascades per sun slot.
 Views: struct {
 	views: View[17],
-}
-
-ReceiverFit: struct {
-	view_to_cascade_rows: vec4f[48],
-	cascade_frames: vec4f[16],
-	split_far: vec4f,
-	pixel_to_ray: vec4f,
-	depth_unproject: vec4f,
-	fit_constants: vec4f,
-}
-
-ReceiverBounds: struct {
-	bounds: atomicu32[96],
 }
 
 // Each cascade's size, as a step on the ladder offset by CASCADE_SIZE_STEP_OFFSET. It persists across frames.
@@ -45,10 +24,6 @@ receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
 cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
 
-// Must match depth-pyramid.besl.
-RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
-RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
-RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
 // Four cascades for each of up to four suns.
 FITTED_CASCADE_COUNT: const u32 = 16;
 // Keeps stored steps positive for sizes down to about a millimeter.

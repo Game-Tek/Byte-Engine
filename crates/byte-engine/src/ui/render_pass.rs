@@ -1116,8 +1116,10 @@ mod tests {
 
 	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
 	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
-	const UI_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/ui-vertex.besl");
-	const UI_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/ui-fragment.besl");
+	static UI_VERTEX_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-vertex.besl"));
+	static UI_FRAGMENT_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-fragment.besl"));
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -1206,7 +1208,7 @@ mod tests {
 
 	impl UiFragmentVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
-			let executable = compile_shader_vm(link_program(UI_FRAGMENT_BESL, "UI fragment shader"));
+			let executable = compile_shader_vm(link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
@@ -1305,7 +1307,7 @@ mod tests {
 
 	impl UiVertexVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], viewport: [f32; 2]) -> Self {
-			let executable = compile_shader_vm(link_program(UI_VERTEX_BESL, "UI vertex shader"));
+			let executable = compile_shader_vm(link_program(*UI_VERTEX_BESL, "UI vertex shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let masks = vm_masks(&executable, masks);
 			Self {

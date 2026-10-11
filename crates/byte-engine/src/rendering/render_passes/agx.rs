@@ -15,12 +15,13 @@ mod tests {
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
-	const TONE_MAPPING_SHADER: &str = include_str!("../../../assets/rendering/agx/tone-mapping.besl");
+	static TONE_MAPPING_SHADER: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("agx/tone-mapping.besl"));
 
 	/// Verifies display-encoded reference colors, neutral highlights, channel ordering, and bounded output through the VM.
 	#[test]
 	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(TONE_MAPPING_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*TONE_MAPPING_SHADER));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),

@@ -230,10 +230,8 @@ mod tests {
 	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, link_program, push_constant_buffer, run_at};
 
 	/// The exact checked-in shader consumed by the runtime resource path.
-	const SKINNING_BESL: &str = include_str!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/assets/rendering/visibility/skinning.besl"
-	));
+	static SKINNING_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("visibility/skinning.besl"));
 
 	/// Binds every skinning slot and runs one lane at the origin.
 	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 7], push_constant: &mut Buffer) {
@@ -339,7 +337,7 @@ mod tests {
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
-		let program = compile(link_program(SKINNING_BESL, "visibility skinning shader"));
+		let program = compile(link_program(*SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, palette, ..] = &mut buffers;
@@ -389,7 +387,7 @@ mod tests {
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
 	#[test]
 	fn skinning_besl_vm_dual_quaternions_preserve_twist_volume_and_handle_antipodality() {
-		let program = compile(link_program(SKINNING_BESL, "visibility skinning shader"));
+		let program = compile(link_program(*SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, _, _, dual_quaternion_palette] = &mut buffers;

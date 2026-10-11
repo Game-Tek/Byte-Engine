@@ -1,36 +1,3 @@
-Material: struct {
-	textures: u32[16],
-	coverage_factor: f32,
-	coverage_texture_slot: u32,
-	alpha_cutoff: f32,
-	padding: u32,
-}
-
-Materials: struct {
-	materials: Material[1024],
-}
-
-Mesh: struct {
-	model: mat4x3f,
-	material_index: u32,
-	base_vertex_index: u32,
-	base_primitive_index: u32,
-	base_triangle_index: u32,
-	base_meshlet_index: u32,
-	meshlet_count: u32,
-	skinned_base_vertex_index: u32,
-	flags: u32,
-	bounding_sphere: vec4f,
-}
-
-Meshes: struct {
-	meshes: Mesh[1024],
-}
-
-meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
-material_textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024 }>;
-materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
-
 main: fn (
 	input: StageInput,
 	pipeline_input: interface {

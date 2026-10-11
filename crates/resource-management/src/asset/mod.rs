@@ -26,8 +26,8 @@ pub type BEADType = Value;
 
 pub type JsonObject = Map<String, Value>;
 
-/// Parses authored JSON5 text into a Serde JSON value.
-pub(crate) fn parse_json(source: &str) -> Result<BEADType, json5::Error> {
+/// Parses authored JSON5 text, such as a BEAD sidecar, into a Serde JSON value.
+pub fn parse_json(source: &str) -> Result<BEADType, json5::Error> {
 	json5::from_str(source)
 }
 

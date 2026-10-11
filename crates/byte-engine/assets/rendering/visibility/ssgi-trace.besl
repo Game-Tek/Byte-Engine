@@ -5,24 +5,6 @@
 // the surface it was gathered for.
 // Each 8x8 workgroup first loads the depth of its texels and a two-texel border into workgroup memory, so every
 // texel rebuilds its normal from shared values instead of fetching eight neighbors again.
-ScreenView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
-
-SsgiParameters: struct {
-	current_view_to_previous_clip: mat4f,
-	current_view_to_previous_view: mat4f,
-	frame_index: u32,
-	history_valid: u32,
-	// Converts last frame's pre-exposed light to this frame's exposure without changing hit alpha.
-	history_exposure_ratio: f32,
-	padding_1: u32,
-}
 
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line.
 SsgiRay: struct {
@@ -32,10 +14,6 @@ SsgiRay: struct {
 	inverse_end_z: f32,
 }
 
-screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
-ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
-// Mip zero holds positive linear depth at the trace resolution.
-depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
 previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
 normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;
@@ -79,11 +57,6 @@ SSGI_TRACE_WORKGROUP_SIZE: const u32 = 64;
 // The workgroup's texels plus the reconstruction radius on every side.
 SSGI_TRACE_TILE_WIDTH: const u32 = 12;
 SSGI_TRACE_TILE_SIZE: const u32 = 144;
-
-// Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly.
-interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
-	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
-}
 
 // Converts scalar animated IGN to a uniform 32x32 Hilbert grid. Using a space-filling curve gives the
 // hemisphere two distinct coordinates while retaining IGN's stratification and 64-frame scrolling.
@@ -173,12 +146,6 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	return vec3f(f32(nearest_texel.x), f32(nearest_texel.y), nearest_z);
 }
 
-// Returns the view-space position at continuous half-resolution pixel coordinates, where integers are texel centers.
-view_position: fn (pixel: vec2f, z: f32) -> vec3f {
-	let ray: vec2f = pixel * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
-	return vec3f(ray.x * z, ray.y * z, z);
-}
-
 // Screen-space interpolation is linear in 1/z, which keeps the ray depth perspective-correct.
 ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 	return 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, fraction);
@@ -195,12 +162,6 @@ ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
 	return ray_depth(ray, fraction) - scene_z;
 }
 
-// Projects a view-space position to continuous half-resolution pixel coordinates, where integers are texel centers.
-project_to_pixel: fn (position: vec3f) -> vec2f {
-	let ray: vec2f = vec2f(position.x / position.z, position.y / position.z);
-	return (ray - screen_view.pixel_to_ray_add) / screen_view.pixel_to_ray_mul;
-}
-
 // Reads the depth `offset` texels away from `pixel`, or zero when that texel is outside the image.
 neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -> f32 {
 	let x: f32 = f32(pixel.x) + offset_x;
@@ -209,15 +170,6 @@ neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -
 		return 0.0;
 	}
 	return fetch(depth_pyramid, vec2u(u32(x), u32(y))).x;
-}
-
-// Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
-// 1/z is linear across the screen on a plane, so a side on the center's own surface predicts it exactly.
-side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
-	if (near_z == 0.0 || far_z == 0.0) {
-		return 1000000.0;
-	}
-	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
 }
 
 // Returns the view-space tangent along one screen axis, oriented toward the positive axis, or zero without one.

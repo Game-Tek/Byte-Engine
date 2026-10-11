@@ -10,19 +10,23 @@ platform shader source or executes the program in the VM.
 ## Follow the compilation path
 
 1. `parse` tokenizes the source and builds a syntax tree.
-2. An optional `ProgramGenerator` transforms that tree to add the renderer's
+2. `stack_layers` places the declarations of the shader's
+   [layout layers](/docs/reference/besl/interface#layout-layers) under that
+   tree, lowest layer first. A shader without layers skips this step.
+3. An optional `ProgramGenerator` transforms that tree to add the renderer's
    bindings, declarations, helpers, and entry-point contract.
-3. `lex` resolves names, types, members, calls, overloads, and references into a
+4. `lex` resolves names, types, members, calls, overloads, and references into a
    semantic graph. It normalizes `StageInput`, `interface`, `output`, and record
    returns into the stage input and output nodes that the VM and generators use.
    `compile_to_besl` combines parsing and linking and can link the source to a
    supplied parent scope.
-4. The optimizer removes semantically dead portable code.
-5. Reflection evaluates the reachable graph, and the active generator emits
+5. The optimizer removes semantically dead portable code.
+6. Reflection evaluates the reachable graph, and the active generator emits
    GLSL, HLSL, or MSL. Tests can compile the same graph for VM execution.
 
 Standalone `.besl` assets use this path during baking and take their stage
-settings from the adjacent [`.besl.bead` file](/docs/reference/besl/interface#standalone-stage-metadata).
+settings and layout layers from the adjacent
+[`.besl.bead` file](/docs/reference/besl/interface#standalone-stage-metadata).
 
 ## Extend a program from Rust
 
@@ -36,6 +40,7 @@ code. They are not syntax you can write in a `.besl` file.
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
 | Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
 | Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
+| Layout layers | `stack_layers(module, layers)` | Link a parsed module against shared BESL declarations, such as a descriptor set that several shaders bind. Baking does this for the layers a `.besl.bead` file lists. |
 
 Raw nodes declare their dependencies explicitly. For example, renderer code can
 add one GLSL-only expression with named graph inputs and outputs:
@@ -105,6 +110,7 @@ invocation coordinates, subgroup size, and task or mesh output limits.
 ## Rust API
 
 - [`parse`](https://docs.rs/byte-engine-besl/latest/besl/fn.parse.html)
+- [`stack_layers`](https://docs.rs/byte-engine-besl/latest/besl/fn.stack_layers.html)
 - [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
 - [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
 - [`optimization` module](https://docs.rs/byte-engine-besl/latest/besl/optimization/)

@@ -11,6 +11,11 @@
   ],
   "$defs": {
     "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "layouts": {
+      "description": "Layout layer .besl files this shader builds on, relative to the shader's directory. Layers stack in order: each layer can reference the layers before it, and the shader can reference all of them.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "workgroup": {
       "description": "Positive workgroup dimensions. Omitted width, height, or depth dimensions default to 1.",
       "oneOf": [
@@ -36,13 +41,13 @@
     },
     "raster": {
       "type": "object",
-      "properties": { "$schema": { "type": "string" }, "stage": { "enum": ["Vertex", "Fragment"] } },
+      "properties": { "$schema": { "type": "string" }, "stage": { "enum": ["Vertex", "Fragment"] }, "layouts": { "$ref": "#/$defs/layouts" } },
       "required": ["stage"],
       "additionalProperties": false
     },
     "compute": {
       "type": "object",
-      "properties": { "$schema": { "type": "string" }, "stage": { "const": "Compute" }, "workgroup": { "$ref": "#/$defs/workgroup" } },
+      "properties": { "$schema": { "type": "string" }, "stage": { "const": "Compute" }, "layouts": { "$ref": "#/$defs/layouts" }, "workgroup": { "$ref": "#/$defs/workgroup" } },
       "required": ["stage"],
       "additionalProperties": false
     },
@@ -51,6 +56,7 @@
       "properties": {
 		"$schema": { "type": "string" },
         "stage": { "const": "Task" },
+        "layouts": { "$ref": "#/$defs/layouts" },
         "workgroup": { "$ref": "#/$defs/workgroup" },
         "maximum_mesh_threadgroups": { "$ref": "#/$defs/positiveInteger" }
       },
@@ -62,6 +68,7 @@
       "properties": {
 		"$schema": { "type": "string" },
         "stage": { "const": "Mesh" },
+        "layouts": { "$ref": "#/$defs/layouts" },
         "workgroup": { "$ref": "#/$defs/workgroup" },
         "maximum_vertices": { "$ref": "#/$defs/positiveInteger" },
         "maximum_primitives": { "$ref": "#/$defs/positiveInteger" }

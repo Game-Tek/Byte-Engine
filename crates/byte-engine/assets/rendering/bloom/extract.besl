@@ -9,10 +9,6 @@
 // those texels unfiltered instead of through the sampler: a half-float scene overflows to infinity on strong
 // highlights, and a sampler blending an infinite texel with its neighbors yields NaN before the shader can
 // clamp it. NaN at any level smears into a black block the size of the pyramid's coarsest texel.
-BloomParameters: struct {
-	prefilter: vec4f[1],
-	filter: vec4f[1],
-}
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;

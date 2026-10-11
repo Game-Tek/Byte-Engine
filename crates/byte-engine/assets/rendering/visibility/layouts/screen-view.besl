@@ -1,0 +1,12 @@
+// The camera constants a screen-space pass uses to turn a texel and its linear depth into a view-space position.
+// The CPU uploads them as `ScreenViewData`, sized for the resolution the pass works at. This layer declares the type
+// only; a shader, or a layer listed after this one, declares the buffer that holds it.
+
+ScreenView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}

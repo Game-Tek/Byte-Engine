@@ -1,10 +1,6 @@
 // Climbs one level of the bloom pyramid: the lower level is blurred with a 3x3 tent filter, spread `filter.x`
 // lower-level texels wide, and added to the same-resolution level from the downsample chain. Adding instead of
 // blending means every level contributes, so the glow falls off smoothly over the whole pyramid.
-BloomParameters: struct {
-	prefilter: vec4f[1],
-	filter: vec4f[1],
-}
 
 low_resolution_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 high_resolution_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;

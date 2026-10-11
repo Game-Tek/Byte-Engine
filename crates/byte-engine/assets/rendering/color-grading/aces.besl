@@ -1,14 +1,3 @@
-ColorGradingParameters: struct {
-	domain_min: vec4f,
-	domain_scale: vec4f,
-	sampling: vec4f,
-}
-
-source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
-result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
-parameters: descriptor<{ type: ColorGradingParameters, binding: 3, access: read, memory: constant }>;
-
 // This D65-to-D60-adapted matrix converts the renderer's linear-sRGB output to ACEScg AP1.
 linear_srgb_to_acescg: fn(color: vec3f) -> vec3f {
 	let x: f32 = 0.6130974024 * color.x + 0.3395231462 * color.y + 0.0473794514 * color.z;
@@ -43,16 +32,6 @@ acescct_to_acescg: fn(color: vec3f) -> vec3f {
 	);
 }
 
-// The LUT operates entirely in ACEScct. Its domain controls coordinates, not output clipping.
-apply_lut: fn(color: vec3f) -> vec3f {
-	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
-	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
-	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
-	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
-	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
-	return vec3f(sampled.x, sampled.y, sampled.z);
-}
-
 rrt_saturation: fn(color: vec3f) -> vec3f {
 	let x: f32 = 0.9708891487 * color.x + 0.0269632706 * color.y + 0.0021475807 * color.z;
 	let y: f32 = 0.0108891487 * color.x + 0.9869632706 * color.y + 0.0021475807 * color.z;
@@ -84,21 +63,6 @@ aces_fitted_sdr: fn(color: vec3f) -> vec3f {
 	return clamp(vec3f(x, y, z), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
 }
 
-linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
-	if (channel <= 0.0031308) {
-		return 12.92 * channel;
-	}
-	return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
-}
-
-linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
-	return vec3f(
-		linear_srgb_channel_to_srgb(color.x),
-		linear_srgb_channel_to_srgb(color.y),
-		linear_srgb_channel_to_srgb(color.z)
-	);
-}
-
 // Convert to ACEScct, apply the creative look, then render the result to the SDR sRGB display.
 main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
@@ -108,6 +72,7 @@ main: fn(input: StageInput) -> void {
 	let source_color: vec4f = texture_lod(source_texture, uv);
 	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
 	let grading_color: vec3f = acescct(linear_srgb_to_acescg(source_rgb));
+	// The LUT operates entirely in ACEScct.
 	let looked_acescg: vec3f = acescct_to_acescg(apply_lut(grading_color));
 	let result_color: vec3f = linear_srgb_to_srgb(aces_fitted_sdr(looked_acescg));
 	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));

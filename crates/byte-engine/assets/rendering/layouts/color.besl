@@ -1,0 +1,48 @@
+// Color space conversions shared by the tone mapping and color grading passes.
+
+splat3: fn(value: f32) -> vec3f {
+	return vec3f(value, value, value);
+}
+
+linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
+	if (channel <= 0.0031308) {
+		return 12.92 * channel;
+	}
+	return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
+}
+
+linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		linear_srgb_channel_to_srgb(color.x),
+		linear_srgb_channel_to_srgb(color.y),
+		linear_srgb_channel_to_srgb(color.z)
+	);
+}
+
+linear_srgb_to_linear_rec2020: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z;
+	let y: f32 = 0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z;
+	let z: f32 = 0.0164 * color.x + 0.0880 * color.y + 0.8956 * color.z;
+	return vec3f(x, y, z);
+}
+
+linear_rec2020_to_linear_srgb: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.6605 * color.x - 0.5876 * color.y - 0.0728 * color.z;
+	let y: f32 = 0.0 - 0.1246 * color.x + 1.1329 * color.y - 0.0083 * color.z;
+	let z: f32 = 0.0 - 0.0182 * color.x - 0.1006 * color.y + 1.1187 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_inset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.856627153315983 * color.x + 0.0951212405381588 * color.y + 0.0482516061458583 * color.z;
+	let y: f32 = 0.137318972929847 * color.x + 0.761241990602591 * color.y + 0.101439036467562 * color.z;
+	let z: f32 = 0.11189821299995 * color.x + 0.0767994186031903 * color.y + 0.811302368396859 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_outset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.1271005818144368 * color.x - 0.11060664309660323 * color.y - 0.016493938717834573 * color.z;
+	let y: f32 = 0.0 - 0.1413297634984383 * color.x + 1.157823702216272 * color.y - 0.016493938717834257 * color.z;
+	let z: f32 = 0.0 - 0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z;
+	return vec3f(x, y, z);
+}

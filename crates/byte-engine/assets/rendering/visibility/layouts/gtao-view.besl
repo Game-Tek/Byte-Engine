@@ -1,0 +1,12 @@
+// The screen view constants of the GTAO passes, with the helper that turns device depth into linear depth. List it
+// after `screen-view.besl`.
+
+gtao_view: descriptor<{ type: ScreenView, binding: 0, access: read, memory: constant }>;
+
+// Returns the linear depth of a device depth. A device depth of zero stays zero.
+linearize_depth: fn (depth: f32) -> f32 {
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
+}

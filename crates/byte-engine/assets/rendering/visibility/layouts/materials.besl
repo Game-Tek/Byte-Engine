@@ -1,0 +1,17 @@
+// The material table and the bindless textures its entries name, as the masked fragment stages read them to test
+// coverage. The slots mirror `rendering/pipelines/visibility/layout.rs`.
+
+Material: struct {
+	textures: u32[16],
+	coverage_factor: f32,
+	coverage_texture_slot: u32,
+	alpha_cutoff: f32,
+	padding: u32,
+}
+
+Materials: struct {
+	materials: Material[1024],
+}
+
+material_textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024 }>;
+materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;

@@ -1,0 +1,24 @@
+// The shadow receiver bounds the depth pyramid pass and the cascade fit pass share, with the encoding both sides must
+// agree on.
+
+// The CPU's cascade fit, which the receiver bounds are measured against.
+ReceiverFit: struct {
+	view_to_cascade_rows: vec4f[48],
+	cascade_frames: vec4f[16],
+	split_far: vec4f,
+	pixel_to_ray: vec4f,
+	depth_unproject: vec4f,
+	fit_constants: vec4f,
+}
+
+// Per fitted box, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.
+ReceiverBounds: struct {
+	bounds: atomicu32[96],
+}
+
+// Bounds are fixed point, 2^22 steps per unit, offset by 2^23 so every coordinate in -2..2 encodes to a positive whole
+// number below 2^24, which f32 holds exactly. Every bound merges with atomic max: an upper bound stores its code, and a
+// lower bound stores 2^24 minus its code, so a larger stored value is a lower bound. Zero then means no receiver.
+RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
+RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
+RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;

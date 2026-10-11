@@ -90,7 +90,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 		// resources and the reported error the same as compiling one stage at a time.
 		let compiled = utils::r#async::join_all(stages.map(|(stage, source, settings)| async move {
 			let id = shader(stage);
-			let result = self.compiler.compile(&source, None, settings.name(id.clone())).await;
+			let result = self.compiler.compile(&source, &[], None, settings.name(id.clone())).await;
 			(stage, id, result)
 		}))
 		.await;

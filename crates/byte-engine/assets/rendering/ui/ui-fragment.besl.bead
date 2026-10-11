@@ -1,1 +1,1 @@
-{"$schema":"../../schemas/besl.bead.schema.json","stage":"Fragment"}
+{"$schema":"../../schemas/besl.bead.schema.json","stage":"Fragment","layouts":["layouts/primitives.besl"]}

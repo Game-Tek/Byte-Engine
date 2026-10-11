@@ -1,0 +1,12 @@
+// The vertex and index buffers a mesh stage assembles a meshlet's triangles from. List it after `scene-records.besl`.
+// The slots mirror the base descriptor set in `rendering/pipelines/visibility/layout.rs`.
+
+SkinnedVertices: struct {
+	vertices: SkinnedVertex[262144],
+}
+
+vertex_positions: descriptor<{ type: vec3f[], binding: 2, access: read, memory: device }>;
+vertex_uvs: descriptor<{ type: vec2f16[], binding: 5, access: read, memory: device }>;
+skinned_vertices: descriptor<{ type: SkinnedVertices, binding: 4, access: read, memory: device }>;
+vertex_indices: descriptor<{ type: u16[], binding: 6, access: read, memory: device }>;
+primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;

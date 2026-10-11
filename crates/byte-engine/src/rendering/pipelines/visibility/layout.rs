@@ -3,7 +3,8 @@
 //! Slots below 1024 belong to the base descriptor set that every visibility stage binds. Slots from 1033
 //! belong to the per-sink visibility set (material dispatch bookkeeping and the visibility buffer images)
 //! and the material-evaluation set (lighting, materials, shadow maps, and environment). Keep the numbers in
-//! sync with [`super::shader_generator::visibility_shader_scope`] and the checked-in BESL assets.
+//! sync with [`super::shader_generator::visibility_shader_scope`] and the checked-in BESL assets. The assets share
+//! their declarations through the layout layers in `assets/rendering/visibility/layouts`.
 
 use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
 

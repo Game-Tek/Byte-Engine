@@ -1,14 +1,6 @@
 // depth_pyramid stores conservative nearest-nonzero positive view-space distance.
 // GTAO reads mip levels zero through two. Mip zero matches the half-resolution
 // AO output, and later mips serve distant samples.
-FastGTAOView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
 
 GTAOParameters: struct {
 	radius: f32,
@@ -33,7 +25,6 @@ SampleAddress: struct {
 	key: u32,
 }
 
-gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
 gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;

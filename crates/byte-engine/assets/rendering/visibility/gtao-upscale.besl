@@ -1,16 +1,7 @@
 // The final GTAO stage reconstructs full-resolution AO while completing the
 // vertical denoise. Horizontal interpolation adds the smoothing that would
 // otherwise require a separate upscale pass.
-FastGTAOView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
 
-gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
 visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
 ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
@@ -41,13 +32,6 @@ GTAO_UPSCALE_EVEN_VERTICAL_WEIGHTS: const f32[6] = f32[6](
 GTAO_UPSCALE_HORIZONTAL_WEIGHTS: const f32[3] = f32[3](0.25, 0.75, 0.25);
 // A 2% relative-depth sigma gives a Gaussian inverse variance of 1,250.
 GTAO_UPSCALE_INVERSE_DEPTH_VARIANCE: const f32 = 1250.0;
-
-linearize_depth: fn (depth: f32) -> f32 {
-	if (depth == 0.0) {
-		return 0.0;
-	}
-	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
-}
 
 // Maps one shared-tile coordinate to its clamped low-resolution texture texel. The upper clamp holds only while `origin`
 // lies inside the image: past it, `extent - 1 - origin` wraps and the coordinate passes through unclamped.

@@ -60,6 +60,7 @@ impl ShaderCompiler for LinkingCompiler {
 	fn compile<'a>(
 		&'a self,
 		source: &'a str,
+		_layers: &'a [(String, String)],
 		_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {

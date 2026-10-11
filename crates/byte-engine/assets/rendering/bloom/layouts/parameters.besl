@@ -1,0 +1,7 @@
+// The settings the bloom passes share. This layer declares the type only, because each pass binds the buffer at its
+// own slot.
+
+BloomParameters: struct {
+	prefilter: vec4f[1],
+	filter: vec4f[1],
+}

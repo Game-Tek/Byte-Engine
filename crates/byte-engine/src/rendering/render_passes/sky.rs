@@ -346,9 +346,12 @@ mod tests {
 	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
-	const SKY_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky.besl");
-	const SKY_VIEW_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-view.besl");
-	const SKY_MULTIPLE_SCATTERING_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-multiple-scattering.besl");
+	static SKY_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky.besl"));
+	static SKY_VIEW_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-view.besl"));
+	static SKY_MULTIPLE_SCATTERING_SHADER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("sky-multiple-scattering.besl"));
 
 	/// Sunlight used by tests that don't depend on the sun's brightness.
 	const TEST_SUN_ILLUMINANCE: [f32; 3] = [10.0, 10.0, 10.0];
@@ -400,7 +403,7 @@ mod tests {
 
 	/// Runs one sky-view texel with full sun transmittance and a multiple-scattering LUT holding `higher_orders`.
 	fn run_sky_view(higher_orders: [f32; 4]) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_VIEW_SHADER_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_VIEW_SHADER_BESL));
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), TEST_SUN_ILLUMINANCE, 1.0);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
@@ -431,7 +434,7 @@ mod tests {
 	/// Builds the multiple-scattering LUT texel for a sun straight overhead at ground level, under full transmittance.
 	fn overhead_sun_multiple_scattering(ground_albedo: f32) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(
-			SKY_MULTIPLE_SCATTERING_SHADER_BESL,
+			*SKY_MULTIPLE_SCATTERING_SHADER_BESL,
 		));
 		let parameter_slot = ResourceSlot::new(2);
 		let settings = super::AtmosphereSkyRenderPassSettings {
@@ -479,7 +482,7 @@ mod tests {
 	/// Verifies that surfaces keep their color and that the background receives scene-linear HDR sky.
 	#[test]
 	fn sky_besl_vm_preserves_surfaces_and_writes_hdr_background() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
 		let sentinel = [0.2, 0.3, 0.4, 0.5];
 		let mut surface_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
 		let mut surface_color = texture_2d(1, 1, &[sentinel]);
@@ -499,7 +502,7 @@ mod tests {
 
 	/// Composites one background pixel whose view misses the sun disk, over a sky-view LUT of `sky_scattering` per lux.
 	fn composite_background(sky_scattering: [f32; 4], sun_illuminance: [f32; 3], exposure_scale: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*SKY_SHADER_BESL));
 		let parameter_slot = ResourceSlot::new(5);
 		let mut parameters = sky_parameters(&program, parameter_slot, &Default::default(), sun_illuminance, exposure_scale);
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);

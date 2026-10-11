@@ -1,6 +1,6 @@
 ---
 title: Interface
-description: Declare BESL stage values, descriptors, shared storage, and stage metadata.
+description: Declare BESL stage values, descriptors, shared storage, layout layers, and stage metadata.
 icon: Cable
 ---
 
@@ -316,6 +316,63 @@ Mesh stages require positive `maximum_vertices` and `maximum_primitives` values:
 ```
 
 `Vertex` and `Fragment` stages don't accept `workgroup` or mesh limits.
+
+## Layout layers
+
+Use a layout layer to declare an interface once and share it between shaders. A
+layer is a `.besl` file without a `main` function and without a `.besl.bead`
+file. It holds the declarations several shaders need: structs, descriptors, a
+push constant block, constants, and helper functions. A layer can describe one
+descriptor set, part of one, or a whole pipeline layout.
+
+```rust
+// layouts/frame.besl
+Frame: struct {
+	view_projection: mat4f,
+}
+
+frame: descriptor<{ type: Frame, binding: 0, access: read, memory: constant }>;
+```
+
+List the layers a shader builds on under `layouts` in its `.besl.bead` file.
+Write each path relative to the shader's directory. Use `../` to reach a layer
+that shaders in several directories share:
+
+```json
+{ "stage": "Vertex", "layouts": ["layouts/frame.besl", "layouts/geometry.besl"] }
+```
+
+The shader then uses the layers' declarations as if it declared them itself:
+
+```rust
+in_position: input<vec3f, 0>;
+
+main: fn () -> interface { position: vec4f } {
+	let position: vec4f = frame.view_projection * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+	return { position };
+}
+```
+
+Layers stack in the order you list them. Each layer can use the layers before
+it, and the shader can use all of them. A layer can't use a layer listed after
+it.
+
+A name can be declared only once across a shader and its layers. Baking fails
+if a shader keeps its own copy of a layer declaration, if two layers declare
+the same name, or if a layer declares `main`. The error names the declaration
+and the layer; delete the copy to fix it. A shader and its layers can hold one
+`push_constant` block between them.
+
+A shader binds everything its layers declare. Reflection reports every
+descriptor of every listed layer, whether or not `main` uses it, exactly as it
+does for a descriptor the shader declares itself. Keep each layer to resources
+that all of its shaders bind. When one shader needs only part of a layer, split
+the layer in two and list both where the whole set is needed. A layer that
+declares only structs, constants, and helper functions adds nothing to a
+shader's bindings, so you can share record types freely.
+
+Baking tracks each listed layer as a dependency of the shader. When you edit a
+layer, the next bake rebuilds every shader that lists it.
 
 ## Stage and backend support
 

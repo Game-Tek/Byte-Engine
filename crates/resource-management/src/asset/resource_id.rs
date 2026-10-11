@@ -64,15 +64,37 @@ impl<'a> ResourceId<'a> {
 	///
 	/// URIs with a scheme and absolute paths pass through unchanged. Importers undo their format's own encoding, such
 	/// as glTF percent-encoding or FBX backslashes, before calling this. The result always uses `/` separators.
+	///
+	/// `.` and `..` segments are folded away, so every path to one file yields one ID. A `..` that would leave the
+	/// asset root is kept, and the storage backend then decides whether the path resolves.
 	pub fn resolve_relative(&self, path: &str) -> String {
 		if path.contains("://") || path.starts_with('/') {
 			return path.to_string();
 		}
 
-		match std::path::Path::new(self.get_base().as_ref()).parent() {
-			Some(parent) => parent.join(path).to_string_lossy().replace('\\', "/"),
-			None => path.to_string(),
+		let base = self.get_base();
+		let directory = base.as_ref().rsplit_once(['/', '\\']).map_or("", |(directory, _)| directory);
+
+		let mut resolved = String::with_capacity(directory.len() + 1 + path.len());
+
+		for segment in directory.split(['/', '\\']).chain(path.split(['/', '\\'])) {
+			match segment {
+				"" | "." => {}
+				// Step out of the last directory, unless nothing is left to step out of.
+				".." if !resolved.is_empty() && !resolved.ends_with("..") => {
+					resolved.truncate(resolved.rfind('/').unwrap_or(0));
+				}
+				segment => {
+					if !resolved.is_empty() {
+						resolved.push('/');
+					}
+
+					resolved.push_str(segment);
+				}
+			}
 		}
+
+		resolved
 	}
 
 	/// Returns the source type used to select an asset handler.
@@ -159,6 +181,33 @@ pub mod tests {
 		assert_eq!(super::ResourceId::new("buffers/skeleton").get_extension(), "");
 		assert_eq!(super::ResourceId::new("").get_asset_type(), "");
 		assert_eq!(super::ResourceId::new("#fragment").get_asset_type(), "");
+	}
+
+	#[test]
+	fn relative_paths_resolve_against_the_container_directory() {
+		let shader = ResourceId::new("rendering/color-grading/dwg.besl");
+
+		assert_eq!(
+			shader.resolve_relative("layouts/lut.besl"),
+			"rendering/color-grading/layouts/lut.besl"
+		);
+		assert_eq!(
+			shader.resolve_relative("./layouts\\lut.besl"),
+			"rendering/color-grading/layouts/lut.besl"
+		);
+		assert_eq!(shader.resolve_relative("../layouts/lut.besl"), "rendering/layouts/lut.besl");
+		assert_eq!(shader.resolve_relative("../../shared/../lut.besl"), "lut.besl");
+		// A path that leaves the asset root keeps the steps it could not take.
+		assert_eq!(shader.resolve_relative("../../../lut.besl"), "../lut.besl");
+		assert_eq!(shader.resolve_relative("/absolute/lut.besl"), "/absolute/lut.besl");
+		assert_eq!(
+			shader.resolve_relative("https://example.com/lut.besl"),
+			"https://example.com/lut.besl"
+		);
+		assert_eq!(
+			ResourceId::new("mesh.gltf#Scene").resolve_relative("textures/albedo.png"),
+			"textures/albedo.png"
+		);
 	}
 
 	#[test]

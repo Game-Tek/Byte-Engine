@@ -2,35 +2,6 @@
 // the quad is shaded. A record is constant across its quad, so every branch on it is coherent and
 // the work a primitive does not need is skipped instead of being multiplied by zero.
 
-Primitive: struct {
-	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
-	bounds: vec4f,
-	color: vec4f,
-	a: vec4f,
-	b: vec4f,
-	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
-	color_end: vec4f,
-	gradient: vec4f,
-	kind: u32,
-	// Index into `masks`. Zero means no clip and no mask.
-	mask: u32,
-	data0: u32,
-	data1: u32,
-}
-
-ClipMask: struct {
-	// Hard clip as (x0, y0, x1, y1).
-	clip: vec4f,
-	// Feathered mask rectangle as (x, y, width, height). A zero size disables it.
-	rect: vec4f,
-	// Feather widths for the top, right, bottom, and left edges.
-	edges: vec4f,
-	// Corner radius and corner exponent.
-	corner: vec4f,
-	// The turn the vertex stage applied. The clip and the mask are tested before it.
-	rotation: vec4f,
-}
-
 GlyphCurve: struct {
 	// The first and second control points as (x1, y1, x2, y2). The third control point is the first
 	// point of the next element, which a contour's following curve shares.
@@ -41,8 +12,6 @@ GlyphBand: struct {
 	value: u32,
 }
 
-primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
-masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
 glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
 // Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
 // vertical band, then the lists of curve indices those offsets point at, relative to the glyph.

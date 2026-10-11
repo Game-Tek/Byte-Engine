@@ -1,10 +1,6 @@
 // Adds the finished, half-resolution bloom pyramid onto the HDR scene, scaled by `prefilter.z`. The scene passes
 // through untouched at zero intensity, and the result stays scene-linear for the tone mapper that follows. The sum
 // is held to the half-float range: a scene texel already near it would otherwise overflow to infinity on store.
-BloomParameters: struct {
-	prefilter: vec4f[1],
-	filter: vec4f[1],
-}
 
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 bloom_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;

@@ -1,0 +1,13 @@
+// The settings the SSGI trace and its temporal filter share.
+
+SsgiParameters: struct {
+	current_view_to_previous_clip: mat4f,
+	current_view_to_previous_view: mat4f,
+	frame_index: u32,
+	history_valid: u32,
+	// Converts last frame's pre-exposed light to this frame's exposure without changing hit alpha.
+	history_exposure_ratio: f32,
+	padding_1: u32,
+}
+
+ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;

@@ -8,31 +8,7 @@
 // fitted box `4s + c`. Positions are measured in the normalized
 // device coordinates of the cascade as the CPU fitted it to the camera frustum, where every receiver lies inside -1..1
 // in x and y and 0..1 in z. The cascade fit then shrinks each cascade to its box and resets the bounds.
-FastGTAOView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
 
-// The CPU's cascade fit, which the receiver bounds are measured against. Must match directional-shadow-cascade-fit.besl.
-ReceiverFit: struct {
-	view_to_cascade_rows: vec4f[48],
-	cascade_frames: vec4f[16],
-	split_far: vec4f,
-	pixel_to_ray: vec4f,
-	depth_unproject: vec4f,
-	fit_constants: vec4f,
-}
-
-// Per fitted box, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.
-ReceiverBounds: struct {
-	bounds: atomicu32[96],
-}
-
-gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
 source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
 reduced_depth_2: descriptor<{ type: StorageImage<r32f>, binding: 1035, access: write }>;
@@ -63,21 +39,7 @@ DEPTH_PYRAMID_BOX_COMBINERS: const u32 = 16;
 RECEIVER_BOUNDS_PER_SUN: const u32 = 24;
 // Past every sun's fitted boxes.
 NO_CASCADE: const u32 = 16;
-// Bounds are fixed point, 2^22 steps per unit, offset by 2^23 so every coordinate in -2..2 encodes to a positive whole
-// number below 2^24, which f32 holds exactly. Every bound merges with atomic max: an upper bound stores its code, and a
-// lower bound stores 2^24 minus its code, so a larger stored value is a lower bound. Zero then means no receiver.
-RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
-RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
-RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
 RECEIVER_BOUNDS_LIMIT: const f32 = 1.99;
-
-linearize_depth: fn (depth: f32) -> f32 {
-	if (depth == 0.0) {
-		return 0.0;
-	}
-
-	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
-}
 
 // Keeps the nearest geometry while allowing zero to remain the background sentinel.
 nearest_nonzero: fn (a: f32, b: f32) -> f32 {

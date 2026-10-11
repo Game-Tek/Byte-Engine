@@ -60,7 +60,7 @@ const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 const TILE_WORKGROUP_WIDTH: u32 = 8;
 const TILE_WORKGROUP_SIZE: usize = 64;
 
-/// Parses and links one checked-in BESL asset that production baking consumes.
+/// Parses and links one visibility shader source that production baking consumes.
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls.
 fn asset_program(source: &str) -> besl::NodeReference {
@@ -75,14 +75,10 @@ fn asset_program(source: &str) -> besl::NodeReference {
 	program
 }
 
-/// Reads one checked-in visibility asset's source.
+/// Reads one checked-in visibility asset's source, with the layout layers its sidecar lists placed before it.
 macro_rules! asset_source {
 	($name:literal) => {
-		include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/",
-			$name
-		))
+		crate::rendering::shader_vm_test::asset_source(concat!("visibility/", $name))
 	};
 }
 

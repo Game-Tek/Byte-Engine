@@ -146,7 +146,7 @@ impl BEMAAssetHandler {
 		let settings = material_shader_stage(name, stage).map_err(compile_error)?;
 		let (shader, result_shader_bytes) = self
 			.compiler
-			.compile(shader_code, Some((generator, material)), settings)
+			.compile(shader_code, &[], Some((generator, material)), settings)
 			.await
 			.map_err(compile_error)?;
 
@@ -604,6 +604,7 @@ pub mod tests {
 		fn compile<'a>(
 			&'a self,
 			_source: &'a str,
+			_layers: &'a [(String, String)],
 			_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 			settings: ShaderGenerationSettings,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {

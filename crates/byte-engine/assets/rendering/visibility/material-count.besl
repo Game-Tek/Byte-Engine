@@ -1,38 +1,4 @@
-Mesh: struct {
-	model: mat4x3f,
-	material_index: u32,
-	base_vertex_index: u32,
-	base_primitive_index: u32,
-	base_triangle_index: u32,
-	base_meshlet_index: u32,
-	meshlet_count: u32,
-	skinned_base_vertex_index: u32,
-	flags: u32,
-	bounding_sphere: vec4f,
-}
-
-MeshData: struct {
-	meshes: Mesh[1024],
-}
-
-// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
-// and 4294967295 marks a material no evaluation shades.
-MaterialEvaluations: struct {
-	evaluation_indices: u32[1024],
-}
-
-// Indexed by evaluation slot: materials that compile to one evaluation pipeline share a slot and its count.
-MaterialCount: struct {
-	material_count: atomicu32[1024],
-}
-
-mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device }>;
-material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
 material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write, memory: device }>;
-instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
-
-tile_histogram_keys: workgroup<atomicu32, 32>;
-tile_histogram_counts: workgroup<atomicu32, 32>;
 
 MATERIAL_COUNT_TILE_CAPACITY: const u32 = 32;
 INVALID_EVALUATION_INDEX: const u32 = 4294967295;

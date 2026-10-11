@@ -1,0 +1,13 @@
+// The atmosphere and camera constants every sky pass reads. This layer declares the type only, because each pass binds
+// the buffer at its own slot.
+
+SkyParameters: struct {
+	inverse_view_projection: mat4f,
+	camera_position: vec4f,
+	sun_direction: vec4f,
+	planet_center: vec4f,
+	atmosphere: vec4f,
+	misc: vec4f,
+	sun_illuminance: vec4f,
+	sun_disk_radiance: vec4f,
+}

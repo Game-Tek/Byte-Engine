@@ -19,23 +19,6 @@
 // which turns the dither into a smooth ramp. A texel on another surface, such as a foot in front of the floor, does
 // not count, so shadows keep to their surface. Each 8x8 workgroup first loads the linear depth and trace of the 8x8
 // texels its pixels tap into workgroup memory, so every pixel's 25 taps and depth gradient read shared values.
-ScreenView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
-
-View: struct {
-	view: mat4x3f,
-	view_projection: mat4f,
-	inverse_view: mat4x3f,
-	fov: vec2f,
-	near: f32,
-	far: f32,
-}
 
 // The camera, then four cascades per sun slot.
 Views: struct {

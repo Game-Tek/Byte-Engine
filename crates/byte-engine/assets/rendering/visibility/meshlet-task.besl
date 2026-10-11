@@ -1,43 +1,3 @@
-View: struct {
-	view: mat4x3f,
-	view_projection: mat4f,
-	inverse_view: mat4x3f,
-	fov: vec2f,
-	near: f32,
-	far: f32,
-}
-
-Mesh: struct {
-	model: mat4x3f,
-	material_index: u32,
-	base_vertex_index: u32,
-	base_primitive_index: u32,
-	base_triangle_index: u32,
-	base_meshlet_index: u32,
-	meshlet_count: u32,
-	skinned_base_vertex_index: u32,
-	flags: u32,
-	bounding_sphere: vec4f,
-}
-
-Meshlet: struct {
-	primitive_offset: u32,
-	triangle_offset: u32,
-	primitive_count: u32,
-	triangle_count: u32,
-	center_radius: vec4f,
-	cone_apex_cutoff: vec4f,
-	cone_axis: vec2u16,
-}
-
-Views: struct {
-	views: View[129],
-}
-
-Meshes: struct {
-	meshes: Mesh[1024],
-}
-
 MeshDispatchWork: struct {
 	items: u32[131072],
 }
@@ -48,9 +8,6 @@ OcclusionVisibility: struct {
 	words: u32[131072],
 }
 
-views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
-meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
-meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
 // Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
 occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read }>;

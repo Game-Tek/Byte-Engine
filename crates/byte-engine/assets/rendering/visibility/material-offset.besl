@@ -1,13 +1,5 @@
-MaterialCount: struct {
-	material_count: atomicu32[1024],
-}
-
 MaterialOffset: struct {
 	material_offset: u32[1024],
-}
-
-MaterialOffsetScratch: struct {
-	material_offset_scratch: atomicu32[1024],
 }
 
 MaterialEvaluationDispatches: struct {

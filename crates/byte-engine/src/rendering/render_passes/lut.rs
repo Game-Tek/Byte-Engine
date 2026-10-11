@@ -300,10 +300,13 @@ mod tests {
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
-	const LUT_SHADER: &str = include_str!("../../../assets/rendering/lut/apply.besl");
+	static LUT_SHADER: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("lut/apply.besl"));
 
-	const ACES_SHADER: &str = include_str!("../../../assets/rendering/color-grading/aces.besl");
-	const DWG_SHADER: &str = include_str!("../../../assets/rendering/color-grading/dwg.besl");
+	static ACES_SHADER: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/aces.besl"));
+	static DWG_SHADER: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("color-grading/dwg.besl"));
 
 	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
 	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
@@ -343,12 +346,12 @@ mod tests {
 	#[test]
 	fn grading_workflows_preserve_neutral_middle_gray_through_their_sdr_transforms() {
 		assert_rgba_close(
-			run_workflow(ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			run_workflow(*ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
 			[0.3584574, 0.3584574, 0.3584574, 0.4],
 			4e-4,
 		);
 		assert_rgba_close(
-			run_workflow(DWG_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			run_workflow(*DWG_SHADER, [0.18, 0.18, 0.18, 0.4]),
 			[0.45925015, 0.45925015, 0.45925015, 0.4],
 			4e-4,
 		);
@@ -356,7 +359,7 @@ mod tests {
 
 	#[test]
 	fn grading_workflows_bound_black_and_hdr_values_for_sdr_output() {
-		for shader in [ACES_SHADER, DWG_SHADER] {
+		for shader in [*ACES_SHADER, *DWG_SHADER] {
 			for input in [0.0, 1.0, 16.0] {
 				let output = run_workflow(shader, [input, input, input, 0.25]);
 				assert!(
@@ -379,7 +382,7 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(LUT_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*LUT_SHADER));
 		let parameter_slot = ResourceSlot::new(3);
 		let shader_parameters = lut_shader_parameters(&lut);
 		let mut parameters = buffer(&program, parameter_slot);
@@ -423,7 +426,7 @@ mod tests {
 
 	#[test]
 	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let program = simple_compute::compile_test_program(LUT_SHADER);
+		let program = simple_compute::compile_test_program(*LUT_SHADER);
 		let main_node = program.get_main().expect("Canonical LUT shader should define main");
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")

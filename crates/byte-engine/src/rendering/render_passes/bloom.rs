@@ -334,17 +334,20 @@ mod tests {
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
-	const BLOOM_EXTRACT_BESL: &str = include_str!("../../../assets/rendering/bloom/extract.besl");
+	static BLOOM_EXTRACT_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract.besl"));
 	const BLOOM_DOWNSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/downsample.besl");
-	const BLOOM_UPSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/upsample.besl");
-	const BLOOM_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/bloom/composite.besl");
+	static BLOOM_UPSAMPLE_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/upsample.besl"));
+	static BLOOM_COMPOSITE_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/composite.besl"));
 
 	/// A prefilter ceiling above any test input, so it does not take part.
 	const NO_CEILING: f32 = 65504.0;
 
 	/// Runs the prefilter over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_EXTRACT_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -444,7 +447,7 @@ mod tests {
 
 	/// Runs one upsample step with the given radius, returning every result texel in row-major order.
 	fn upsample(size: u32, low_texels: &[[f32; 4]], high_texels: &[[f32; 4]], radius: f32) -> Vec<[f32; 4]> {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_UPSAMPLE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
 		let parameter_slot = ResourceSlot::new(3);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -497,7 +500,7 @@ mod tests {
 
 	/// Runs the composite over 1x1 inputs with the given intensity.
 	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_COMPOSITE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
 		let parameter_slot = ResourceSlot::new(3);
 		let mut scene = texture_2d(1, 1, &[scene_color]);
 		let mut bloom = texture_2d(1, 1, &[bloom_color]);
@@ -545,10 +548,10 @@ mod tests {
 		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 		for (name, source) in [
-			("bloom_extract", BLOOM_EXTRACT_BESL),
+			("bloom_extract", *BLOOM_EXTRACT_BESL),
 			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL),
-			("bloom_upsample", BLOOM_UPSAMPLE_BESL),
-			("bloom_composite", BLOOM_COMPOSITE_BESL),
+			("bloom_upsample", *BLOOM_UPSAMPLE_BESL),
+			("bloom_composite", *BLOOM_COMPOSITE_BESL),
 		] {
 			let mut root = besl::parse(source).expect("bloom shader should parse");
 			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);

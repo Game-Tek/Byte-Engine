@@ -4,27 +4,7 @@
 // Both steps compare the view-space normals the trace rebuilt from depth, this frame's and last frame's.
 // Each 8x8 workgroup first loads the position, normal, and rays of its texels and a two-texel border into workgroup
 // memory, so the 25 filter taps of every texel read shared values instead of fetching them again.
-ScreenView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
 
-SsgiParameters: struct {
-	current_view_to_previous_clip: mat4f,
-	current_view_to_previous_view: mat4f,
-	frame_index: u32,
-	history_valid: u32,
-	history_exposure_ratio: f32,
-	padding_1: u32,
-}
-
-screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
-ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
-depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 raw_radiance: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
 history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1035, access: write }>;
 previous_history: descriptor<{ type: Texture2D, binding: 1036, access: read }>;

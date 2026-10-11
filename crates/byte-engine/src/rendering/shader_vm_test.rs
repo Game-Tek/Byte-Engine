@@ -43,6 +43,72 @@ pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
 	)
 }
 
+/// Reads one checked-in rendering shader together with the layout layers its sidecar lists, as one source.
+///
+/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`. The result holds each
+/// layer's declarations, lowest layer first, and then the shader's own, which is the order baking links them in. A
+/// shader without layers returns its own source. Tests read shaders through this function so they follow the sidecar
+/// and never name a shader's layers themselves.
+///
+/// The layers are also stacked with [`besl::stack_layers`], so a shader that redeclares a layer's name fails here as
+/// it does when baked. Each source is read once and kept for the rest of the test run.
+pub(crate) fn asset_source(asset: &str) -> &'static str {
+	use std::{
+		collections::HashMap,
+		sync::{LazyLock, Mutex},
+	};
+
+	use resource_management::asset::{ResourceId, parse_json};
+
+	static SOURCES: LazyLock<Mutex<HashMap<String, &'static str>>> = LazyLock::new(Default::default);
+
+	let mut sources = SOURCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+	if let Some(source) = sources.get(asset) {
+		return source;
+	}
+
+	let read = |path: &str| {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("assets/rendering")
+			.join(path);
+		std::fs::read_to_string(&path).unwrap_or_else(|error| {
+			panic!(
+				"Failed to read {}: {error}. The most likely cause is a test or a sidecar naming a file that does not exist.",
+				path.display()
+			)
+		})
+	};
+
+	let sidecar = parse_json(&read(&format!("{asset}.bead")))
+		.expect("Failed to parse a shader sidecar. The most likely cause is invalid JSON in a `.besl.bead` file.");
+	let layers: Vec<(String, String)> = sidecar
+		.get("layouts")
+		.and_then(|layouts| layouts.as_array())
+		.into_iter()
+		.flatten()
+		.map(|layout| {
+			let layer = ResourceId::new(asset).resolve_relative(layout.as_str().expect("Expected a layout layer path."));
+			let source = read(&layer);
+			(layer, source)
+		})
+		.collect();
+	let shader = read(asset);
+
+	let module = besl::parse(&shader)
+		.unwrap_or_else(|error| panic!("Failed to parse {asset}: {error:?}. The most likely cause is invalid BESL syntax."));
+	if let Err(error) = besl::stack_layers(module, layers.iter().map(|(layer, source)| (layer.as_str(), source.as_str()))) {
+		panic!("Failed to stack {asset} on its layout layers: {error:?}");
+	}
+
+	// One text holds the same declarations in the order the stacked tree has them, so callers keep passing a source.
+	let mut source: String = layers.iter().flat_map(|(_, layer)| [layer.as_str(), "\n"]).collect();
+	source.push_str(&shader);
+
+	let source: &'static str = source.leak();
+	sources.insert(asset.to_string(), source);
+	source
+}
+
 /// Links one checked-in BESL shader through the frontend production baking uses.
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls. Pass the result to

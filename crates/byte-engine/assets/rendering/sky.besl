@@ -1,14 +1,3 @@
-SkyParameters: struct {
-	inverse_view_projection: mat4f,
-	camera_position: vec4f,
-	sun_direction: vec4f,
-	planet_center: vec4f,
-	atmosphere: vec4f,
-	misc: vec4f,
-	sun_illuminance: vec4f,
-	sun_disk_radiance: vec4f,
-}
-
 depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 sky_view_lut: descriptor<{ type: Texture2D, binding: 3, access: read }>;

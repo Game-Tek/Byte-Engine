@@ -47,22 +47,28 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		let source = std::str::from_utf8(&source).map_err(|_| LoadErrors::FailedToProcess)?;
 
-		let settings = parse_shader_settings(spec.as_ref()).map_err(|error| {
+		let settings_error = |error: String| {
 			log::error!(
-				"Failed to read standalone BESL shader settings for '{}': {error}. See {}.",
+				"Failed to read standalone BESL shader settings for '{}': {error} See {}.",
 				id.as_ref(),
 				online_docs_url(BESL_DOCS_PATH)
 			);
 
 			LoadErrors::FailedToProcess
-		})?;
+		};
+
+		let settings = parse_shader_settings(spec.as_ref()).map_err(settings_error)?;
+
+		let layers = read_layout_layers(&context, spec.as_ref(), id)
+			.await
+			.map_err(settings_error)?;
 
 		let generator = self.generator.as_deref().map(|generator| (generator, &*STANDALONE_CONTEXT));
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = self
 			.compiler
-			.compile(source, generator, settings.name(id.as_ref().to_string()))
+			.compile(source, &layers, generator, settings.name(id.as_ref().to_string()))
 			.await
 			.map_err(|error| {
 				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
@@ -81,9 +87,13 @@ impl AssetHandler for BESLShaderAssetHandler {
 /// [`PreparedBeslShader::compile`].
 pub(crate) trait ShaderCompiler: Send + Sync {
 	/// Compiles `source` for the stage in `settings` into the shader named by `settings`.
+	///
+	/// `layers` holds the asset ID and source of each layout layer `source` builds on, lowest layer first. See
+	/// [`besl::stack_layers`].
 	fn compile<'a>(
 		&'a self,
 		source: &'a str,
+		layers: &'a [(String, String)],
 		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
@@ -96,6 +106,7 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
 		source: &'a str,
+		layers: &'a [(String, String)],
 		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
@@ -103,11 +114,63 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 			let parsed = besl::parse(source).map_err(|error| {
 				format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax.")
 			})?;
+			let parsed = stack_layout_layers(parsed, layers)?;
 			prepare_besl_shader(parsed, generator, &settings)?
 				.compile(&settings.name)
 				.await
 		})
 	}
+}
+
+/// Places the declarations of `layers` under `module`, lowest layer first.
+///
+/// The program generator runs on the result, so it adapts a module that already carries its layers.
+pub(crate) fn stack_layout_layers<'a>(
+	module: besl::parser::Node<'a>,
+	layers: &'a [(String, String)],
+) -> Result<besl::parser::Node<'a>, String> {
+	let layers = layers.iter().map(|(id, source)| (id.as_str(), source.as_str()));
+
+	// The error names the declaration, the layer, and the likely cause.
+	besl::stack_layers(module, layers).map_err(|error| format!("Failed to link BESL source to its layout layers ({error:?})."))
+}
+
+/// Reads the layout layers a sidecar lists under `layouts`, as asset ID and source pairs in stacking order.
+///
+/// The sidecar names each layer relative to the shader's directory. Reading through `context` records each layer as a
+/// bake dependency, so editing a layer rebakes the shader.
+async fn read_layout_layers(
+	context: &BakeContext<'_>,
+	spec: Option<&BEADType>,
+	id: ResourceId<'_>,
+) -> Result<Vec<(String, String)>, String> {
+	let Some(layouts) = spec.and_then(|spec| spec.get("layouts")) else {
+		return Ok(Vec::new());
+	};
+
+	let invalid = || {
+		"Invalid BESL layout layers. The most likely cause is that `layouts` is not an array of layer file paths.".to_string()
+	};
+
+	let mut layers = Vec::new();
+
+	for layout in layouts.as_array().ok_or_else(invalid)? {
+		let layer_id = id.resolve_relative(layout.as_str().ok_or_else(invalid)?);
+
+		let source = match context.resolve(ResourceId::new(&layer_id)).await {
+			Ok((source, _)) => std::str::from_utf8(&source).ok().map(str::to_string),
+			Err(_) => None,
+		}
+		.ok_or_else(|| {
+			format!(
+				"Layout layer '{layer_id}' could not be read as BESL text. The most likely cause is that `layouts` names a file that does not exist; layer paths are relative to the shader's directory."
+			)
+		})?;
+
+		layers.push((layer_id, source));
+	}
+
+	Ok(layers)
 }
 
 /// Reads the stage contract used to compile one standalone BESL source file.
@@ -468,7 +531,7 @@ mod tests {
 	use super::{
 		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH,
 		parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
-		shader_compilation_error_message,
+		shader_compilation_error_message, stack_layout_layers,
 	};
 	use crate::{
 		asset::{
@@ -511,6 +574,7 @@ mod tests {
 		fn compile<'a>(
 			&'a self,
 			source: &'a str,
+			layers: &'a [(String, String)],
 			generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
 			settings: ShaderGenerationSettings,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
@@ -523,7 +587,7 @@ mod tests {
 				));
 
 				prepare_shader(
-					besl::parse(source).map_err(|error| format!("{error:?}"))?,
+					stack_layout_layers(besl::parse(source).map_err(|error| format!("{error:?}"))?, layers)?,
 					Some((8, 8, 1)),
 					generator,
 				)?;
@@ -649,6 +713,77 @@ mod tests {
 			.expect(
 				"Failed to bake a generated standalone shader. The most likely cause is that the configured program generator was not forwarded to compilation.",
 			);
+	}
+
+	#[r#async::test]
+	async fn standalone_besl_handler_links_the_layout_layers_its_sidecar_lists() {
+		// The shader declares nothing itself: its struct, descriptors, and helper all come from the two layers.
+		let source = "main: fn () -> void { results[0] = scaled(frame.exposure); }";
+
+		let frame_layer = "Frame: struct { exposure: f32 }\nframe: descriptor<{ type: Frame, binding: 0, access: read }>;";
+
+		let result_layer = "results: descriptor<{ type: f32[], binding: 1, access: write }>;\nscaled: fn (value: f32) -> f32 { return value * 2.0; }";
+
+		let bead =
+			r#"{ "stage": "Compute", "workgroup": [8, 8, 1], "layouts": ["layouts/frame.besl", "layouts/result.besl"] }"#;
+
+		let bake = async |files: &[(&'static str, &str)]| {
+			let asset_storage = AssetTestStorageBackend::new();
+
+			for (path, contents) in files {
+				asset_storage.add_file(path, contents.as_bytes());
+			}
+
+			let mut asset_manager = AssetManager::new(asset_storage, ResourceTestStorageBackend::new());
+
+			asset_manager.add_asset_handler(BESLShaderAssetHandler {
+				compiler: Box::new(TestShaderCompiler),
+				generator: None,
+			});
+
+			asset_manager.bake("passes/resolve.besl").await
+		};
+
+		bake(&[
+			("passes/resolve.besl", source),
+			("passes/resolve.besl.bead", bead),
+			("passes/layouts/frame.besl", frame_layer),
+			("passes/layouts/result.besl", result_layer),
+		])
+		.await
+		.expect(
+			"Failed to bake a layered standalone shader. The most likely cause is that the sidecar's layout layers were not linked under the shader.",
+		);
+
+		let failed = Err(LoadMessages::FailedToBake {
+			asset: "passes/resolve.besl".to_string(),
+			error: LoadErrors::FailedToProcess,
+		});
+
+		// A listed layer that does not exist fails the bake instead of compiling without it.
+		assert_eq!(
+			bake(&[
+				("passes/resolve.besl", source),
+				("passes/resolve.besl.bead", bead),
+				("passes/layouts/frame.besl", frame_layer),
+			])
+			.await,
+			failed
+		);
+
+		let stale_copy = format!("Frame: struct {{ exposure: f32 }}\n{source}");
+
+		// A shader that keeps its own copy of a layer declaration fails instead of shadowing the layer.
+		assert_eq!(
+			bake(&[
+				("passes/resolve.besl", &stale_copy),
+				("passes/resolve.besl.bead", bead),
+				("passes/layouts/frame.besl", frame_layer),
+				("passes/layouts/result.besl", result_layer),
+			])
+			.await,
+			failed
+		);
 	}
 
 	#[test]

@@ -1,0 +1,19 @@
+// The bookkeeping records of material dispatch, which the count, offset, and pixel-mapping passes share. Every table
+// is indexed by evaluation slot: materials that compile to one evaluation pipeline share a slot. This layer declares
+// types only, because each pass binds the tables with the access it needs.
+
+// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
+// and 4294967295 marks a material no evaluation shades.
+MaterialEvaluations: struct {
+	evaluation_indices: u32[1024],
+}
+
+// The number of pixels each evaluation slot shades.
+MaterialCount: struct {
+	material_count: atomicu32[1024],
+}
+
+// Indexed by evaluation slot, like the counts the offsets were scanned from.
+MaterialOffsetScratch: struct {
+	material_offset_scratch: atomicu32[1024],
+}

@@ -1,33 +1,6 @@
 // The UI ubershader's vertex stage. No vertex or index buffer is bound: six vertices pull one
 // record from `primitives` and place the corners of its quad.
 
-Primitive: struct {
-	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
-	bounds: vec4f,
-	color: vec4f,
-	a: vec4f,
-	b: vec4f,
-	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
-	color_end: vec4f,
-	gradient: vec4f,
-	kind: u32,
-	mask: u32,
-	data0: u32,
-	data1: u32,
-}
-
-ClipMask: struct {
-	clip: vec4f,
-	rect: vec4f,
-	edges: vec4f,
-	corner: vec4f,
-	// The turn a primitive draws with, as (cos, sin, x, y) in pixels.
-	rotation: vec4f,
-}
-
-primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
-masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
-
 push_constant: push_constant {
 	viewport: vec2f,
 	// The record the draw's first vertex belongs to. A push constant means the same on every backend,

@@ -600,7 +600,7 @@ impl crate::context::ContextCreate for Context {
 		_resource_uses: crate::Uses,
 		resource_device_accesses: crate::DeviceAccesses,
 	) -> graphics_hardware_interface::AllocationHandle {
-		self.create_allocation_internal(size, None, resource_device_accesses).0
+		self.create_allocation_internal(size, None, resource_device_accesses, None).0
 	}
 
 	fn add_mesh_from_vertices_and_indices(

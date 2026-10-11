@@ -530,7 +530,7 @@ struct AccelerationStructure {
 
 #[derive(Clone, Copy)]
 /// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
-pub struct MemoryBackedResourceCreationResult<T> {
+pub(crate) struct MemoryBackedResourceCreationResult<T> {
 	resource: T,
 	/// The final size of the resource.
 	size: usize,
@@ -538,6 +538,40 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	memory_flags: u32,
 	/// The alignment the resource's memory offset must satisfy.
 	alignment: u64,
+	/// Whether the driver prefers or requires an allocation that backs only this resource.
+	dedicated: bool,
+}
+
+impl<T: Copy + Into<DedicatedResource>> MemoryBackedResourceCreationResult<T> {
+	/// Returns the resource to name in a dedicated allocation, or `None` when the resource may share memory.
+	///
+	/// Pass the result to [`Context::create_allocation_internal`] to allocate the memory this resource is bound to.
+	pub(crate) fn dedicated_resource(&self) -> Option<DedicatedResource> {
+		self.dedicated.then(|| self.resource.into())
+	}
+}
+
+/// The `DedicatedResource` enum names the single resource a dedicated Vulkan allocation backs, so the driver can
+/// tailor that allocation to it.
+///
+/// A dedicated allocation must have the size the resource's memory requirements report, and the resource must be
+/// bound at offset 0. Get one from [`MemoryBackedResourceCreationResult::dedicated_resource`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DedicatedResource {
+	Buffer(vk::Buffer),
+	Image(vk::Image),
+}
+
+impl From<vk::Buffer> for DedicatedResource {
+	fn from(buffer: vk::Buffer) -> Self {
+		Self::Buffer(buffer)
+	}
+}
+
+impl From<vk::Image> for DedicatedResource {
+	fn from(image: vk::Image) -> Self {
+		Self::Image(image)
+	}
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]

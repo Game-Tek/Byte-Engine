@@ -92,13 +92,14 @@ impl Context {
 			}
 			error
 		};
-		let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+		let (requirements, dedicated) = self.buffer_memory_requirements(buffer);
 		let memory = self
 			.allocate_memory_from_candidates(
 				requirements.size,
 				requirements.memory_type_bits,
 				DeviceAccesses::CpuRead,
 				false,
+				dedicated.then_some(DedicatedResource::Buffer(buffer)),
 			)
 			.ok_or_else(|| fail(None, AllocationFailed))?;
 		unsafe { device.bind_buffer_memory(buffer, memory, 0) }.map_err(|_| fail(Some(memory), AllocationFailed))?;
@@ -149,6 +150,9 @@ impl Context {
 
 	/// Allocates from the best memory type for `device_accesses`, moving to the next candidate when a heap is full.
 	///
+	/// Pass `dedicated` to make the allocation dedicated to one resource. `size` must then be the size the resource's
+	/// memory requirements report, and the resource must be bound at offset 0.
+	///
 	/// Returns `None` when no memory type is compatible or every compatible type failed to allocate.
 	pub(crate) fn allocate_memory_from_candidates(
 		&self,
@@ -156,6 +160,7 @@ impl Context {
 		memory_type_bits: u32,
 		device_accesses: DeviceAccesses,
 		device_address: bool,
+		dedicated: Option<DedicatedResource>,
 	) -> Option<vk::DeviceMemory> {
 		crate::vulkan::utils::memory_type_candidates(&self.memory_properties, memory_type_bits, device_accesses)
 			.into_iter()
@@ -168,22 +173,36 @@ impl Context {
 				if device_address {
 					memory_allocate_info = memory_allocate_info.push(&mut memory_allocate_flags_info);
 				}
+				// Naming the only resource the memory backs lets the driver tailor the allocation to it.
+				let mut memory_dedicated_allocate_info = match dedicated {
+					Some(DedicatedResource::Buffer(buffer)) => vk::MemoryDedicatedAllocateInfo::default().buffer(buffer),
+					Some(DedicatedResource::Image(image)) => vk::MemoryDedicatedAllocateInfo::default().image(image),
+					None => vk::MemoryDedicatedAllocateInfo::default(),
+				};
+				if dedicated.is_some() {
+					memory_allocate_info = memory_allocate_info.push(&mut memory_dedicated_allocate_info);
+				}
 
 				unsafe { self.device.allocate_memory(&memory_allocate_info, None) }.ok()
 			})
 	}
 
 	/// Allocates memory from the device.
+	///
+	/// Pass [`MemoryBackedResourceCreationResult::dedicated_resource`] as `dedicated` when the allocation backs exactly
+	/// that resource, and `None` when it is shared or not tied to a resource yet. A dedicated allocation must use the
+	/// resource's reported size and be bound at offset 0.
 	pub(crate) fn create_allocation_internal(
 		&mut self,
 		size: usize,
 		memory_bits: Option<u32>,
 		device_accesses: DeviceAccesses,
+		dedicated: Option<DedicatedResource>,
 	) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
 		// Allocations not tied to a resource yet may use any memory type.
 		let memory_type_bits = memory_bits.unwrap_or(u32::MAX);
 		let memory = self
-			.allocate_memory_from_candidates(size as u64, memory_type_bits, device_accesses, true)
+			.allocate_memory_from_candidates(size as u64, memory_type_bits, device_accesses, true, dedicated)
 			.expect(
 				"Failed to allocate Vulkan memory. The most likely cause is that every memory heap compatible with the resource is exhausted or the device allocation count limit was reached.",
 			);
@@ -219,7 +238,12 @@ impl Context {
 		*mut u8,
 	) {
 		let buffer = self.create_vulkan_buffer(name, size, usage);
-		let (allocation_handle, _) = self.create_allocation_internal(buffer.size, buffer.memory_flags.into(), device_accesses);
+		let (allocation_handle, _) = self.create_allocation_internal(
+			buffer.size,
+			buffer.memory_flags.into(),
+			device_accesses,
+			buffer.dedicated_resource(),
+		);
 		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer, allocation_handle, 0);
 		(buffer, allocation_handle, address, pointer)
 	}
@@ -391,6 +415,7 @@ impl Context {
 			} else {
 				device_accesses
 			},
+			texture_creation_result.dedicated_resource(),
 		);
 		unsafe {
 			self.device
@@ -406,6 +431,7 @@ impl Context {
 				buffer_creation_result.size,
 				buffer_creation_result.memory_flags.into(),
 				device_accesses & DeviceAccesses::HostOnly,
+				buffer_creation_result.dedicated_resource(),
 			);
 			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -551,8 +577,14 @@ impl Context {
 			.heaps
 			.iter()
 			.map(|layout| {
-				self.create_allocation_internal(layout.size as usize, Some(1 << layout.category), DeviceAccesses::DeviceOnly)
-					.0
+				// A heap backs several members, so it is never dedicated to one of them.
+				self.create_allocation_internal(
+					layout.size as usize,
+					Some(1 << layout.category),
+					DeviceAccesses::DeviceOnly,
+					None,
+				)
+				.0
 			})
 			.collect::<SmallVec<[_; 2]>>();
 

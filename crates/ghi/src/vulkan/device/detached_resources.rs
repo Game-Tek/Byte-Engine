@@ -58,6 +58,11 @@ impl crate::device::Device for Device {
 	}
 }
 
+/// Returns whether a resource should get its own allocation: the driver either requires it or runs faster with it.
+fn wants_dedicated_allocation(requirements: &vk::MemoryDedicatedRequirements) -> bool {
+	requirements.prefers_dedicated_allocation != vk::FALSE || requirements.requires_dedicated_allocation != vk::FALSE
+}
+
 impl InnerDevice {
 	/// Waits until every queue of the device is idle.
 	///
@@ -93,14 +98,35 @@ impl InnerDevice {
 
 		self.set_name(buffer, name);
 
-		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+		let (memory_requirements, dedicated) = self.buffer_memory_requirements(buffer);
 
 		MemoryBackedResourceCreationResult {
 			resource: buffer,
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
+			dedicated,
 		}
+	}
+
+	/// Reports a buffer's memory requirements and whether the driver prefers or requires a dedicated allocation for it.
+	pub(crate) fn buffer_memory_requirements(&self, buffer: vk::Buffer) -> (vk::MemoryRequirements, bool) {
+		let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+		let mut memory_requirements = vk::MemoryRequirements2::default().push(&mut dedicated_requirements);
+		let info = vk::BufferMemoryRequirementsInfo2::default().buffer(buffer);
+		unsafe { self.device.get_buffer_memory_requirements2(&info, &mut memory_requirements) };
+		let memory_requirements = memory_requirements.memory_requirements;
+		(memory_requirements, wants_dedicated_allocation(&dedicated_requirements))
+	}
+
+	/// Reports an image's memory requirements and whether the driver prefers or requires a dedicated allocation for it.
+	pub(crate) fn image_memory_requirements(&self, image: vk::Image) -> (vk::MemoryRequirements, bool) {
+		let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+		let mut memory_requirements = vk::MemoryRequirements2::default().push(&mut dedicated_requirements);
+		let info = vk::ImageMemoryRequirementsInfo2::default().image(image);
+		unsafe { self.device.get_image_memory_requirements2(&info, &mut memory_requirements) };
+		let memory_requirements = memory_requirements.memory_requirements;
+		(memory_requirements, wants_dedicated_allocation(&dedicated_requirements))
 	}
 
 	/// Creates a Vulkan image and reports the memory requirements needed to bind it.
@@ -139,7 +165,7 @@ impl InnerDevice {
 			.initial_layout(vk::ImageLayout::UNDEFINED);
 
 		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
-		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
+		let (memory_requirements, dedicated) = self.image_memory_requirements(image);
 		self.set_name(image, name);
 
 		MemoryBackedResourceCreationResult {
@@ -147,6 +173,7 @@ impl InnerDevice {
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
+			dedicated,
 		}
 	}
 

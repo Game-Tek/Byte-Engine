@@ -26,7 +26,12 @@ impl Context {
 		);
 		// Prefers device-local host-visible memory and falls back to plain host memory when the device has none.
 		let device_accesses = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
-		let (allocation, _) = self.create_allocation_internal(creation.size, creation.memory_flags.into(), device_accesses);
+		let (allocation, _) = self.create_allocation_internal(
+			creation.size,
+			creation.memory_flags.into(),
+			device_accesses,
+			creation.dedicated_resource(),
+		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
 		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
 		let base_offset = aligned_address - device_address;

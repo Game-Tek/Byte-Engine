@@ -55,7 +55,7 @@ impl Drop for Context {
 
 			for image in self.images.iter().filter(|image| image.owns_image) {
 				self.device.destroy_image(image.image, None);
-				does			}
+			}
 
 			for allocation in self
 				.allocations

@@ -259,6 +259,13 @@ impl AssetHandler for FBXAssetHandler {
 		// Geometry doesn't depend on material contents, so it is processed while the material textures and shaders
 		// bake on the worker pool, and the resolved materials are attached when the mesh is committed.
 		let material_keys = used_material_keys(&scene, allocator);
+		let lods = mesh_lod_settings(spec.as_ref()).map_err(|error| {
+			context.error(format_args!(
+				"Failed to read FBX detail level settings '{}': {error}. The most likely cause is a mistyped `lods` object in the asset's BEAD file.",
+				url.as_ref()
+			));
+			LoadErrors::FailedToProcess
+		})?;
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let (materials, mesh) = std::future::join!(
 			resolve_fbx_materials(
@@ -277,6 +284,7 @@ impl AssetHandler for FBXAssetHandler {
 					&source_to_skeleton,
 					allocator,
 					&mut culled_polygons,
+					lods,
 				)
 			},
 		)

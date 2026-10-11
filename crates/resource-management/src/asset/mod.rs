@@ -5,8 +5,11 @@ use std::alloc::Allocator;
 use serde_json::{Map, Value};
 
 use crate::{
-	processors::image::{ImageSource, Semantic, gamma_from_semantic, process_image_in},
-	resources::mips::MipGenerator,
+	processors::{
+		image::{ImageSource, Semantic, gamma_from_semantic, process_image_in},
+		mesh::MeshLodSettings,
+	},
+	resources::{mesh::MAX_PRIMITIVE_LODS, mips::MipGenerator},
 };
 
 mod bake_memory;
@@ -54,6 +57,54 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 			"`default_resource` is '{value}', but only `mesh` and `animation` are supported; skeletons require an explicit fragment"
 		))
 	}
+}
+
+/// The `MeshLodsManifest` struct is the optional `lods` object of an FBX or glTF BEAD manifest. A key left out keeps
+/// its default, and an unknown key is an error, so a misspelled key cannot silently leave the defaults in place.
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct MeshLodsManifest {
+	enabled: bool,
+	max_levels: u8,
+	max_error: f32,
+	lock_borders: bool,
+}
+
+impl Default for MeshLodsManifest {
+	fn default() -> Self {
+		let MeshLodSettings {
+			max_levels,
+			max_error,
+			lock_borders,
+		} = MeshLodSettings::default();
+		Self {
+			enabled: true,
+			max_levels,
+			max_error,
+			lock_borders,
+		}
+	}
+}
+
+/// Reads the detail level settings an FBX or glTF BEAD manifest gives its meshes, or the defaults when it gives none.
+pub(crate) fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String> {
+	let Some(value) = spec.and_then(|spec| spec.get("lods")) else {
+		return Ok(MeshLodSettings::default());
+	};
+	let manifest =
+		<MeshLodsManifest as serde::Deserialize>::deserialize(value).map_err(|error| format!("`lods` is invalid: {error}"))?;
+	if !(1..=MAX_PRIMITIVE_LODS).contains(&(manifest.max_levels as usize)) {
+		return Err(format!("`lods.max_levels` must be from 1 to {MAX_PRIMITIVE_LODS}"));
+	}
+	if !(manifest.max_error > 0.0 && manifest.max_error <= 1.0) {
+		return Err("`lods.max_error` must be above 0 and at most 1".to_string());
+	}
+	Ok(MeshLodSettings {
+		// One level is full detail alone.
+		max_levels: if manifest.enabled { manifest.max_levels } else { 1 },
+		max_error: manifest.max_error,
+		lock_borders: manifest.lock_borders,
+	})
 }
 
 /// The fragment that selects a container's only animation clip.
@@ -198,6 +249,52 @@ mod container_default_resource_tests {
 		let skeleton = super::parse_json(r#"{ "default_resource": "skeleton" }"#).unwrap();
 
 		assert!(container_default_resource(Some(&skeleton)).is_err());
+	}
+}
+
+#[cfg(test)]
+mod mesh_lod_settings_tests {
+	use super::mesh_lod_settings;
+	use crate::processors::mesh::MeshLodSettings;
+
+	fn settings(source: &str) -> Result<MeshLodSettings, String> {
+		mesh_lod_settings(Some(&super::parse_json(source).unwrap()))
+	}
+
+	#[test]
+	fn bead_lods_default_when_absent_and_override_each_key() {
+		assert_eq!(mesh_lod_settings(None), Ok(MeshLodSettings::default()));
+		assert_eq!(settings("{ default_resource: 'mesh' }"), Ok(MeshLodSettings::default()));
+		assert_eq!(settings("{ lods: {} }"), Ok(MeshLodSettings::default()));
+
+		assert_eq!(
+			settings("{ lods: { max_levels: 3, max_error: 0.05, lock_borders: true } }"),
+			Ok(MeshLodSettings {
+				max_levels: 3,
+				max_error: 0.05,
+				lock_borders: true,
+			})
+		);
+	}
+
+	#[test]
+	fn bead_lods_turn_generation_off_and_reject_what_they_cannot_apply() {
+		assert_eq!(
+			settings("{ lods: { enabled: false, max_levels: 4 } }").map(|lods| lods.max_levels),
+			Ok(1)
+		);
+
+		for source in [
+			"{ lods: true }",
+			"{ lods: { levels: 4 } }",
+			"{ lods: { enabled: 1 } }",
+			"{ lods: { max_levels: 0 } }",
+			"{ lods: { max_levels: 9 } }",
+			"{ lods: { max_error: 0 } }",
+			"{ lods: { max_error: 1.5 } }",
+		] {
+			assert!(settings(source).is_err(), "{source} should be rejected");
+		}
 	}
 }
 

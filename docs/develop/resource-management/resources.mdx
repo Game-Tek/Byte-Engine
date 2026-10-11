@@ -100,6 +100,8 @@ can query resources without scanning and deserializing every entry.
 Some resources contain multiple logical byte ranges in one payload.
 Meshes are the common example: positions, normals, UVs, triangle indices, meshlet data, and other streams can live in one packed buffer.
 
+A mesh primitive's meshlet streams hold every detail level, full detail first. `Primitive::lods` lists each level's meshlet count and error; the triangle index stream holds full detail only.
+
 `StreamDescription` names those byte ranges. Provide stream read targets when you
 need selected streams instead of the complete payload.
 

@@ -1,7 +1,9 @@
+mod lod;
 mod packing;
 mod source;
 mod validation;
 
+pub use lod::MeshLodSettings;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
@@ -11,7 +13,8 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessorSession, ProcessedMesh, VertexSkin,
+		MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessorSession,
+		ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
 	};
 	use crate::{
 		ReferenceModel,
@@ -20,7 +23,7 @@ mod tests {
 			material::VariantModel,
 			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
 		},
-		types::{AlphaMode, VertexComponent, VertexSemantics},
+		types::{AlphaMode, IndexStreamTypes, Streams, VertexComponent, VertexSemantics},
 	};
 
 	#[test]
@@ -37,7 +40,7 @@ mod tests {
 			Vec::new(),
 		)
 		.unwrap();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new()).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshLodSettings::default()).unwrap();
 		session
 			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
 			.unwrap();
@@ -65,8 +68,13 @@ mod tests {
 			variant("materials/a.variant"),
 			variant("materials/c.variant"),
 		];
-		let mut session =
-			MeshProcessorSession::new(vec![VertexComponent::canonical(VertexSemantics::Position)], None, Vec::new()).unwrap();
+		let mut session = MeshProcessorSession::new(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			None,
+			Vec::new(),
+			MeshLodSettings::default(),
+		)
+		.unwrap();
 		for slot in [2, 1, 0] {
 			session
 				.push_primitive(&TestPrimitive::triangle().with_material_slot(slot))
@@ -248,7 +256,7 @@ mod tests {
 		let duplicate = [VertexSemantics::UV, VertexSemantics::UV]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let error = MeshProcessorSession::new(duplicate, None, Vec::new())
+		let error = MeshProcessorSession::new(duplicate, None, Vec::new(), MeshLodSettings::default())
 			.err()
 			.expect("duplicate layout should fail");
 		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
@@ -285,13 +293,116 @@ mod tests {
 		);
 	}
 
+	#[test]
+	fn detailed_primitives_gain_coarser_levels_over_the_same_vertices() {
+		for with_normals in [true, false] {
+			let mut layout = vec![VertexComponent::canonical(VertexSemantics::Position)];
+			let mut primitive = TestPrimitive::wavy_grid(32);
+			if with_normals {
+				layout.push(VertexComponent::canonical(VertexSemantics::Normal));
+				primitive = primitive.with_normals();
+			}
+			let (vertex_count, index_count) = (primitive.positions.len(), primitive.indices.len());
+			let processed = process(layout, &[primitive], None, Vec::new()).unwrap();
+			let lods = &processed.mesh.primitives[0].lods;
+
+			// Each meshlet record starts with its vertex count and its triangle count. The levels' records follow
+			// one another, full detail first.
+			let mut records = stream_bytes(&processed, Streams::Meshlets)
+				.as_chunks::<MESHLET_STREAM_STRIDE>()
+				.0;
+			let triangles = lods
+				.iter()
+				.map(|lod| {
+					let (level, coarser) = records.split_at(lod.meshlet_count as usize);
+					records = coarser;
+					level.iter().map(|record| record[1] as usize).sum::<usize>()
+				})
+				.collect::<Vec<_>>();
+			assert!(records.is_empty(), "the levels should cover every meshlet");
+
+			assert!(
+				lods.len() >= 2,
+				"a 2,048-triangle surface should get at least one coarser level"
+			);
+			assert_eq!((triangles[0], lods[0].error), (index_count / 3, 0.0));
+			assert!(triangles.is_sorted_by(|finer, coarser| finer > coarser));
+			assert!(lods[1..].is_sorted_by(|finer, coarser| finer.error < coarser.error) && lods[1].error > 0.0);
+
+			// Every level's meshlets index the primitive's own vertices.
+			let vertex_indices = stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Vertices))
+				.as_chunks::<2>()
+				.0;
+			assert!(
+				vertex_indices
+					.iter()
+					.all(|index| (u16::from_le_bytes(*index) as usize) < vertex_count)
+			);
+			assert_eq!(
+				stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets)).len(),
+				triangles.iter().sum::<usize>() * 3
+			);
+			// The plain triangle list stays at full detail for renderers that draw without meshlets.
+			assert_eq!(
+				stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Triangles)).len(),
+				index_count * size_of::<u16>()
+			);
+		}
+	}
+
+	#[test]
+	fn small_skinned_and_limited_primitives_keep_fewer_levels() {
+		let level_count = |processed: ProcessedMesh| processed.mesh.primitives[0].lods.len();
+		let position_layout = || vec![VertexComponent::canonical(VertexSemantics::Position)];
+		let limited_to = |max_levels| {
+			let settings = MeshLodSettings {
+				max_levels,
+				..MeshLodSettings::default()
+			};
+			let grid = [TestPrimitive::wavy_grid(32)];
+			level_count(process_with_lods(position_layout(), &grid, None, Vec::new(), settings).unwrap())
+		};
+
+		assert_eq!(
+			level_count(process(position_layout(), &[TestPrimitive::triangle()], None, Vec::new()).unwrap()),
+			1
+		);
+		assert_eq!(limited_to(1), 1);
+		assert_eq!(limited_to(2), 2);
+
+		let grid = TestPrimitive::wavy_grid(32);
+		let skin = vec![valid_vertex_skin(); grid.positions.len()];
+		assert_eq!(level_count(process_skinned(grid.with_skin(0, skin)).unwrap()), 1);
+	}
+
+	/// Returns the bytes of one stream of a mesh that was processed from a single primitive.
+	fn stream_bytes(processed: &ProcessedMesh, stream_type: Streams) -> &[u8] {
+		let stream = processed
+			.mesh
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("processed mesh should hold the stream");
+		&processed.buffer[stream.offset..stream.offset + stream.size]
+	}
+
 	fn process(
 		layout: Vec<VertexComponent>,
 		primitives: &[TestPrimitive],
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
 	) -> Result<ProcessedMesh, MeshProcessingError> {
-		let mut processor = MeshProcessorSession::new(layout, skeleton, skins)?;
+		process_with_lods(layout, primitives, skeleton, skins, MeshLodSettings::default())
+	}
+
+	fn process_with_lods(
+		layout: Vec<VertexComponent>,
+		primitives: &[TestPrimitive],
+		skeleton: Option<ReferenceModel<SkeletonModel>>,
+		skins: Vec<SkinBinding>,
+		lods: MeshLodSettings,
+	) -> Result<ProcessedMesh, MeshProcessingError> {
+		let mut processor = MeshProcessorSession::new(layout, skeleton, skins, lods)?;
 		for primitive in primitives {
 			processor.push_primitive(primitive).map_err(|error| match error {
 				MeshPrimitiveProcessingError::Source(never) => match never {},
@@ -397,13 +508,40 @@ mod tests {
 			}
 		}
 
+		/// Returns a rippled square surface of `side` by `side` quads, z = 0.5 sin(x) cos(y).
+		///
+		/// The ripples make simplification cost measurable error; a flat grid would simplify for free.
+		fn wavy_grid(side: u32) -> Self {
+			let step = 0.25f32;
+			let mut positions = Vec::new();
+			for row in 0..=side {
+				for column in 0..=side {
+					let (x, y) = (column as f32 * step, row as f32 * step);
+					positions.push([x, y, 0.5 * x.sin() * y.cos()]);
+				}
+			}
+			let mut indices = Vec::new();
+			for row in 0..side {
+				for column in 0..side {
+					let corner = row * (side + 1) + column;
+					let (right, above) = (corner + 1, corner + side + 1);
+					indices.extend([corner, right, above, right, above + 1, above]);
+				}
+			}
+			Self {
+				indices,
+				positions,
+				..Self::triangle()
+			}
+		}
+
 		fn with_material_slot(mut self, material_slot: usize) -> Self {
 			self.material_slot = material_slot;
 			self
 		}
 
 		fn with_normals(mut self) -> Self {
-			self.normals = Some(vec![[0.0, 0.0, 1.0]; 3]);
+			self.normals = Some(vec![[0.0, 0.0, 1.0]; self.positions.len()]);
 			self
 		}
 

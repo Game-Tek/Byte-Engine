@@ -19,6 +19,27 @@ pub struct Primitive {
 	pub streams: Vec<Stream>,
 	pub bounding_box: math::AABB<crate::resources::ModelSpace>,
 	pub vertex_count: u32,
+	/// The detail levels of this primitive, finest first. Level 0 is full detail and is always present.
+	pub lods: Vec<PrimitiveLod>,
+}
+
+/// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
+pub const MAX_PRIMITIVE_LODS: usize = 8;
+
+/// The `PrimitiveLod` struct lets a renderer draw one detail level of a primitive by naming the meshlets that hold it.
+///
+/// Every level indexes the primitive's own vertices, and the levels' meshlets follow one another in the primitive's
+/// meshlet streams, full detail first. So a renderer switches levels by drawing another meshlet range and nothing
+/// else. Read the levels from [`Primitive::lods`], and pick the coarsest one whose [`Self::error`] stays invisible at
+/// the distance the primitive is drawn from.
+#[derive(
+	Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub struct PrimitiveLod {
+	pub meshlet_count: u32,
+	/// Estimated largest distance, in model-space units, between this level's surface and full detail. Zero for
+	/// level 0.
+	pub error: f32,
 }
 
 impl Primitive {
@@ -99,18 +120,6 @@ impl Mesh {
 	cloned_stream_accessor!(vertex_indices_stream, Streams::Indices(IndexStreamTypes::Vertices));
 	cloned_stream_accessor!(meshlet_indices_stream, Streams::Indices(IndexStreamTypes::Meshlets));
 	cloned_stream_accessor!(meshlets_stream, Streams::Meshlets);
-
-	pub fn vertex_count(&self) -> usize {
-		self.primitives.iter().map(|p| p.vertex_count as usize).sum()
-	}
-
-	pub fn triangle_count(&self) -> usize {
-		self.meshlet_indices_stream().map(|s| s.count()).unwrap_or(0) / 3
-	}
-
-	pub fn primitive_count(&self) -> usize {
-		self.vertex_indices_stream().map(|s| s.count()).unwrap_or(0)
-	}
 }
 
 /// The `MeshModel` struct preserves processed geometry and skeletal bindings for storage and later runtime solving.
@@ -156,6 +165,7 @@ impl crate::StoredModel for MeshModel {
 			};
 			validate_skin_metadata(skeleton.as_ref(), &skins, &vertex_components, &primitives)?;
 			validate_material_indices(materials.len(), &primitives)?;
+			validate_lods(&primitives)?;
 
 			Ok(Reference::from_stored(
 				gr,
@@ -185,6 +195,36 @@ fn validate_material_indices(material_count: usize, primitives: &[Primitive]) ->
 		))),
 		None => Ok(()),
 	}
+}
+
+/// Rejects a primitive whose detail levels do not split its meshlets into ranges of rising error.
+///
+/// Renderers index meshlets straight from these ranges, so levels that cover more meshlets than the primitive stores
+/// would draw another primitive's geometry.
+fn validate_lods(primitives: &[Primitive]) -> Result<(), SolveError> {
+	for (index, primitive) in primitives.iter().enumerate() {
+		let lods = &primitive.lods;
+		let meshlets = primitive.meshlet_stream().map_or(0, Stream::count);
+		let covered = lods.iter().map(|lod| lod.meshlet_count as usize).sum::<usize>();
+		// A NaN error fails the comparison, so it is rejected with the falling ones.
+		let errors_rise = lods.iter().is_sorted_by(|finer, coarser| finer.error <= coarser.error);
+		let reason = if lods.is_empty() || lods.len() > MAX_PRIMITIVE_LODS {
+			format!("it stores {} levels, outside 1..={MAX_PRIMITIVE_LODS}", lods.len())
+		} else if lods[0].error != 0.0 || !errors_rise || !lods[lods.len() - 1].error.is_finite() {
+			"the level errors do not rise from zero through finite values".to_string()
+		} else if lods.len() > 1 && lods.iter().any(|lod| lod.meshlet_count == 0) {
+			// Only a primitive without triangles holds an empty level, and then it is the only one.
+			"a level holds no meshlets".to_string()
+		} else if covered != meshlets {
+			format!("the levels cover {covered} meshlets, but the primitive stores {meshlets}")
+		} else {
+			continue;
+		};
+		return Err(SolveError::DeserializationFailed(format!(
+			"Mesh primitive {index} has invalid detail levels. The most likely cause is corrupted mesh metadata or a mesh baked by an incompatible version: {reason}."
+		)));
+	}
+	Ok(())
 }
 
 /// Validates that mesh skin tables, palette nodes, and primitive streams form a processable contract.
@@ -306,7 +346,9 @@ fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-	use super::{Primitive, validate_material_indices, validate_skin_metadata};
+	use super::{
+		MAX_PRIMITIVE_LODS, Primitive, PrimitiveLod, validate_lods, validate_material_indices, validate_skin_metadata,
+	};
 	use crate::{
 		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
@@ -409,7 +451,39 @@ mod tests {
 			streams,
 			bounding_box: math::AABB::new(math::Point::origin(), math::Point::origin()),
 			vertex_count: 1,
+			lods: vec![lod(0, 0.0)],
 		}
+	}
+
+	fn lod(meshlet_count: u32, error: f32) -> PrimitiveLod {
+		PrimitiveLod { meshlet_count, error }
+	}
+
+	#[test]
+	fn detail_levels_must_split_the_primitive_meshlets_with_rising_error() {
+		let valid = |meshlets: usize, lods: Vec<PrimitiveLod>| {
+			let mut primitive = test_primitive(None, false, false);
+			primitive.streams.push(stream(Streams::Meshlets, 0, meshlets * 52, 52));
+			primitive.lods = lods;
+			validate_lods(&[primitive]).is_ok()
+		};
+
+		assert!(valid(7, vec![lod(4, 0.0), lod(2, 0.5), lod(1, 0.5)]));
+		// A primitive with no triangles keeps one empty level.
+		assert!(valid(0, vec![lod(0, 0.0)]));
+
+		assert!(!valid(4, Vec::new()));
+		assert!(!valid(MAX_PRIMITIVE_LODS + 1, vec![lod(1, 0.0); MAX_PRIMITIVE_LODS + 1]));
+		// Full detail has no error to speak of.
+		assert!(!valid(4, vec![lod(4, 0.25)]));
+		// Levels may not be empty, and together they cover exactly the primitive's meshlets.
+		assert!(!valid(4, vec![lod(4, 0.0), lod(0, 0.5)]));
+		assert!(!valid(4, vec![lod(4, 0.0), lod(2, 0.5)]));
+		assert!(!valid(8, vec![lod(4, 0.0), lod(2, 0.5)]));
+		// A coarser level never claims less error than a finer one.
+		assert!(!valid(7, vec![lod(4, 0.0), lod(2, 0.5), lod(1, 0.25)]));
+		assert!(!valid(6, vec![lod(4, 0.0), lod(2, f32::NAN)]));
+		assert!(!valid(6, vec![lod(4, 0.0), lod(2, f32::INFINITY)]));
 	}
 
 	#[test]

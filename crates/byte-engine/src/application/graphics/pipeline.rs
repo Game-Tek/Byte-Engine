@@ -93,15 +93,21 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	use crate::rendering::pipelines::visibility::{
-		CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX,
+		CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, LOD_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX,
 	};
 
 	let visibility_pipeline_settings = visibility_pipeline_settings(application);
 	// Each port subscribes before its startup parameters are queued, so it reports every one of them.
-	let [gtao_configuration, ssgi_configuration, contact_shadow_configuration] = [
+	let [
+		gtao_configuration,
+		ssgi_configuration,
+		contact_shadow_configuration,
+		lod_configuration,
+	] = [
 		GTAO_CONFIGURATION_PREFIX,
 		SSGI_CONFIGURATION_PREFIX,
 		CONTACT_SHADOWS_CONFIGURATION_PREFIX,
+		LOD_CONFIGURATION_PREFIX,
 	]
 	.map(|prefix| {
 		let port = application.configuration.register(prefix);
@@ -137,6 +143,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		gtao_configuration,
 		ssgi_configuration,
 		contact_shadow_configuration,
+		lod_configuration,
 		visibility_pipeline_settings,
 	);
 	application.renderer.add_pipeline_manager(visibility_pipeline_manager);

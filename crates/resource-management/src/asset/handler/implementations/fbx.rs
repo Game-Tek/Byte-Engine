@@ -83,6 +83,7 @@ mod tests {
 			source_to_skeleton,
 			allocator,
 			&mut FbxCulledPolygonCounts::default(),
+			crate::processors::mesh::MeshLodSettings::default(),
 		)?;
 		Ok(session.finish(&materials))
 	}
@@ -1069,7 +1070,7 @@ use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
+	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
@@ -1079,7 +1080,7 @@ use crate::{
 	pbr::{BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 	processors::{
 		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
-		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
+		mesh::{MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
 	resources::{
 		ModelSpace,

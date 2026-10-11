@@ -21,6 +21,7 @@ use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices
 use crate::rendering::pipelines::visibility::layout::{
 	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
+use crate::rendering::pipelines::visibility::lod::MeshLods;
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
 
 /// Byte size of one baked meshlet record: two u8 counts, padding, and three packed vec4 bounds.
@@ -136,7 +137,7 @@ impl PreparedMesh {
 			primitives: vec![PreparedPrimitive {
 				material_id: GENERATED_MESH_MATERIAL.to_string(),
 				primitive: MeshPrimitive {
-					meshlet_count: meshlets.len() as u32,
+					lods: MeshLods::single(meshlets.len() as u32),
 					bounding_sphere: enclosing_sphere(&meshlets),
 					..MeshPrimitive::default()
 				},
@@ -514,6 +515,12 @@ fn build_resource_primitives(
 			meshlets.push(meshlet);
 		}
 
+		// Solving the mesh resource checked that the levels cover exactly these meshlets. Every level draws the
+		// full-detail vertices, so the sphere around full detail bounds all of them.
+		let lods = MeshLods::from_resource(&primitive.lods);
+		let full_detail = &meshlets[meshlet_offset as usize..][..lods.levels()[0].meshlet_count as usize];
+		let bounding_sphere = enclosing_sphere(full_detail);
+
 		let skinning = primitive.skin.map(|_| {
 			let (joints, weights) = source
 				.skinning
@@ -545,8 +552,8 @@ fn build_resource_primitives(
 			material_id: mesh.material(primitive).id().as_ref().to_string(),
 			primitive: MeshPrimitive {
 				material_index: 0,
-				meshlet_count: (meshlet_source.len() / RESOURCE_MESHLET_STRIDE) as u32,
-				bounding_sphere: enclosing_sphere(&meshlets[meshlet_offset as usize..]),
+				lods,
+				bounding_sphere,
 				meshlet_offset,
 				vertex_offset: counts.vertices,
 				primitive_offset: counts.primitive_indices,

@@ -17,6 +17,7 @@ use super::layout::{
 	MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData,
 	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
+use super::lod::MeshLods;
 use crate::rendering::loading::{BufferRegion, Loader};
 
 /// Byte strides of the compact bind-pose streams consumed by GPU skinning.
@@ -28,7 +29,9 @@ pub(crate) const SKINNING_WEIGHTS_STRIDE: usize = std::mem::size_of::<[f32; 4]>(
 /// The `GeometryCapacity` struct sizes the scene-wide geometry buffers that every resident mesh is appended to.
 ///
 /// All loaded meshes share these buffers, so size them for the most geometry an application keeps resident at once.
-/// A mesh that does not fit is rejected when it is uploaded. Pass the capacity to
+/// A mesh that does not fit is rejected when it is uploaded. A baked mesh stores its coarser detail levels as extra
+/// meshlets over the same vertices, which about doubles the vertex indices, triangles, and meshlets of a detailed mesh
+/// but adds no vertices. Pass the capacity to
 /// [`super::VisibilityPipelineSettings::with_geometry_capacity`], or set it with the startup parameters under
 /// [`super::GEOMETRY_CAPACITY_PARAMETER_PREFIX`], such as `render.geometry.triangle-capacity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,9 +50,10 @@ impl Default for GeometryCapacity {
 	fn default() -> Self {
 		Self {
 			vertices: 65536 * 4,
-			vertex_indices: 65536 * 4,
-			triangles: 65536 * 4,
-			meshlets: 1024 * 4,
+			// Twice the vertices, so a scene's detail levels fit beside the full detail that fills the vertex budget.
+			vertex_indices: 65536 * 8,
+			triangles: 65536 * 8,
+			meshlets: 1024 * 8,
 			skinning_vertices: 65536 * 4,
 		}
 	}
@@ -142,8 +146,11 @@ pub(crate) struct MeshData {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MeshPrimitive {
 	pub(crate) material_index: u32,
-	pub(crate) meshlet_count: u32,
-	/// Object-space sphere around every meshlet, as xyz center and w radius. Task shaders cull whole instances with it.
+	/// The primitive's detail levels as meshlet ranges relative to [`Self::meshlet_offset`]. Together they cover
+	/// every meshlet the primitive stores.
+	pub(crate) lods: MeshLods,
+	/// Object-space sphere around the full-detail meshlets, as xyz center and w radius. Task shaders cull whole
+	/// instances with it.
 	pub(crate) bounding_sphere: [f32; 4],
 	/// Offsets relative to the owning mesh.
 	pub(crate) meshlet_offset: u32,
@@ -265,15 +272,19 @@ impl GeometryBuffers {
 		prepared: &PreparedMesh,
 		material_indices: &[u32],
 	) -> Option<(MeshData, SmallVec<[BufferRegion; 16]>)> {
-		// Task shaders address an instance's meshlets relative to its first one, with a bounded index width.
-		if let Some(primitive) = prepared
+		// Task shaders address an instance's meshlets relative to the first one of the level it draws, with a bounded
+		// index width. So the limit applies to each level, not to the primitive's levels together.
+		let levels = prepared
 			.primitives
 			.iter()
-			.find(|prepared| prepared.primitive.meshlet_count as usize > MAX_INSTANCE_MESHLETS)
+			.flat_map(|prepared| prepared.primitive.lods.levels());
+		if let Some(level) = levels
+			.into_iter()
+			.find(|level| level.meshlet_count as usize > MAX_INSTANCE_MESHLETS)
 		{
 			log::error!(
 				"Visibility mesh upload was rejected. The most likely cause is that a primitive has {} meshlets, more than the {MAX_INSTANCE_MESHLETS} one instance can address; split the primitive.",
-				primitive.primitive.meshlet_count
+				level.meshlet_count
 			);
 			return None;
 		}

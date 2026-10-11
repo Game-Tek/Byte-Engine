@@ -35,10 +35,11 @@ impl GLTFAssetHandler {
 		skin_bindings: Vec<SkinBinding>,
 		primitives: &[(gltf::Primitive<'a>, math::Matrix, Option<u32>, Option<u32>)],
 		material_slots: &[usize],
+		lods: MeshLodSettings,
 	) -> Result<MeshProcessorSession, LoadErrors> {
 		let skin_joint_counts = skin_bindings.iter().map(|skin| skin.entries.len()).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
-		let mut mesh_processor = MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings).map_err(|error| {
+		let mut mesh_processor = MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings, lods).map_err(|error| {
 			log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
 		})?;
@@ -94,6 +95,13 @@ impl GLTFAssetHandler {
 		gltf: &'a gltf::Gltf,
 		buffers: &[Cow<'_, [u8]>],
 	) -> Result<(), LoadErrors> {
+		let lods = mesh_lod_settings(spec).map_err(|error| {
+			log::error!(
+				"Failed to read glTF detail level settings '{}': {error}. The most likely cause is a mistyped `lods` object in the asset's BEAD file.",
+				url.as_ref()
+			);
+			LoadErrors::FailedToProcess
+		})?;
 		let graph = import_gltf_node_graph(gltf).map_err(|error| {
 			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
@@ -175,6 +183,7 @@ impl GLTFAssetHandler {
 				skin_bindings,
 				&primitives_and_transform,
 				&material_slots,
+				lods,
 			),
 		)
 		.await;

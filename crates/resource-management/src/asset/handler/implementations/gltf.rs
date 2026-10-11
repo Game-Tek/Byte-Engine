@@ -751,6 +751,20 @@ mod tests {
 		assert_eq!(mesh.primitives[1].skin, None);
 	}
 
+	#[r#async::test]
+	async fn a_mistyped_bead_lods_key_fails_the_mesh_bake() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		let (document, binary) = generated_triangle_gltf();
+		asset_storage_backend.add_file("triangle.glb", &package_fixture_glb(&document, binary));
+		asset_storage_backend.add_file("triangle.glb.bead", b"{ lods: { levels: 2 } }");
+
+		let asset_manager = gltf_asset_manager(asset_storage_backend, ResourceTestStorageBackend::new());
+
+		let mesh: Result<ReferenceModel<MeshModel>, _> = asset_manager.bake_if_not_exists("triangle.glb").await;
+
+		assert!(mesh.is_err());
+	}
+
 	#[test]
 	fn normalizes_gltf_layouts_to_shared_supported_streams() {
 		let normalized = normalize_vertex_layouts(&[
@@ -1312,7 +1326,7 @@ use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
+	mesh_lod_settings, sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
@@ -1326,7 +1340,7 @@ use crate::{
 			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,
 			guess_semantic_from_name,
 		},
-		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
+		mesh::{MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
 	resources::{
 		ModelSpace,

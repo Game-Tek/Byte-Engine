@@ -12,6 +12,7 @@ use utils::{AvailabilityHandle, StableVec, StableVecHandle};
 
 use super::geometry::encode_octahedral_unit_vector;
 use super::layout::{ActiveEvaluationMask, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, SHADOW_CASCADE_COUNT, SHADOW_VIEW_COUNT};
+use super::lod::MeshLods;
 use super::render_pass::VisibilityRenderPass;
 use super::shader_data::{
 	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
@@ -35,7 +36,10 @@ pub struct RenderEntity {
 	pub(crate) handle: Handle,
 	/// Dependency-closure handle checked during frame-local admission.
 	pub(crate) availability: AvailabilityHandle,
+	/// The record of the primitive at full detail. Each frame copies it and names the level picked for that frame.
 	pub(crate) shader_mesh: ShaderMesh,
+	/// The primitive's detail levels as meshlet ranges relative to its first meshlet.
+	pub(crate) lods: MeshLods,
 	pub(crate) skinning: Option<RenderSkin>,
 }
 

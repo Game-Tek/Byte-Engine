@@ -8,6 +8,7 @@
 //! * [`scene`]: what the renderer retains between frames, and the per-frame instance lists it derives.
 //! * [`loader`]: the single loader object and request protocol that make every pipeline resource resident.
 //! * [`geometry`]: GPU geometry buffers and the worker-side conversion of meshes into them.
+//! * [`lod`]: which of a primitive's baked detail levels each instance draws.
 //! * [`render_pass`]: the per-sink GPU passes.
 //! * [`shader_generator`]: turns authored materials into material-evaluation compute shaders.
 //! * [`layout`] and [`shader_data`]: the binding slots, limits, and GPU records everything above shares.
@@ -18,6 +19,7 @@ mod features;
 mod geometry;
 mod layout;
 mod loader;
+mod lod;
 mod manager;
 mod mesh_dispatch;
 mod render_pass;
@@ -33,6 +35,7 @@ pub use features::{GTAO_ENABLED_PARAMETER, VisibilityFeatures};
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;
+pub use lod::LOD_CONFIGURATION_PREFIX;
 pub use manager::{
 	DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
 	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, SHADOW_MAP_BUDGET_PARAMETER,

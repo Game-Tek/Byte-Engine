@@ -2,8 +2,8 @@
 
 pub(crate) use crate::asset::{
 	ANIMATION_FRAGMENT_PREFIX, BEADType, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
-	commit_mesh, generated_skeleton_id, handler, manager, sanitize_material_name, select_unfragmented_resource,
-	store_imported_image, store_model, store_model_owned,
+	commit_mesh, generated_skeleton_id, handler, manager, mesh_lod_settings, sanitize_material_name,
+	select_unfragmented_resource, store_imported_image, store_model, store_model_owned,
 };
 
 pub mod bema;

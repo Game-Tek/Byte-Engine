@@ -14,6 +14,37 @@
       "type": "string",
       "description": "The canonical skeleton resource used to remap imported animation tracks by node name."
     },
+    "lods": {
+      "type": "object",
+      "description": "Detail level generation for the model's meshes. Skinned primitives always keep full detail only.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether meshes get coarser detail levels. When false, the other keys have no effect."
+        },
+        "max_levels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 8,
+          "description": "The most levels a primitive stores, counting full detail."
+        },
+        "max_error": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.25,
+          "description": "The largest error a level may carry, as a fraction of the primitive's largest extent."
+        },
+        "lock_borders": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether open borders keep their vertices. Set it when primitives that meet along a border show gaps at a distance."
+        }
+      },
+      "additionalProperties": false
+    },
     "asset": {
       "type": "object",
       "description": "FBX material-name overrides. Use default for an unassigned material slot.",

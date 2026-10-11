@@ -53,6 +53,7 @@
 - Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
 - Coalesce visibility instance render calls into one dispatch over a compact instance and meshlet work list.
 - Sort visibility and transparent work by camera distance where required.
+- Select mesh detail levels per view in `meshlet-task.besl` instead of once per instance on the CPU (`VisibilityPipelineManager::rebuild_active_instances`, `crates/byte-engine/src/rendering/pipelines/visibility/lod.rs`). Shadow views draw the main camera's level today, so a caster far from the camera casts a coarse shadow even where that shadow lands near the camera, and a distant cascade draws more detail than its texels show. Per-view selection needs each primitive's level table on the GPU and work items sized for the largest level.
 - Write exponential height fog in place into `main` instead of into a replacement. `ExponentialHeightFogRenderPass` (`crates/byte-engine/src/rendering/render_passes/height_fog.rs`) calls `create_main_render_target`, so with no `ExponentialHeightFog` created, or with the pass bypassed, it still copies the whole frame through `ImageBypassPass` to forward `main`. That costs as much memory traffic as fogging it, plus one full-resolution target per sink. Bind `main` with `render_to("main")` the way particles do (`crates/byte-engine/src/rendering/particles/manager.rs`), read it with `image_load` in `crates/byte-engine/assets/rendering/height-fog.besl`, and record nothing when there is no fog. Delete the `main_copy` field and the custom `bypass`. First confirm that the scene color format, `RGBu11u11u10`, supports read-write storage-image access on Metal, Vulkan, and DX12; if a backend doesn't, keep the replacement on that backend. Check that the inspector can still capture the fogged `main` by name, then verify in the Sponza model viewer that the fog looks unchanged and that removing the fog costs no full-screen pass.
 
 ## UI
@@ -122,6 +123,8 @@
 - Add a starburst and a lens dirt texture to the screen-space lens flare in `crates/byte-engine/src/rendering/render_passes/lens_flare.rs`. The starburst should rotate with the camera's orientation from `Sink::view`, and the dirt texture should modulate the flare, and optionally the bloom, at composite time. Both need texture assets loaded by the pass.
 - Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
+- Give skinned primitives detail levels once animation-safe bounds exist. `MeshProcessorSession` keeps them at full detail because simplification error is measured in the bind pose and the instance sphere is the rest pose, so the renderer could not tell when a coarser level is safe.
+
 ## Shader behavior
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
@@ -183,6 +186,9 @@
 - Split image processing into source-format conversion, mip-chain generation, BC compression, and image-layout modules.
 - Keep processor tests beside the conversion or compression module they verify.
 - Separate mesh source models and normalization from final mesh stream packing in `mesh_processor`.
+- Lock only the vertices that mesh primitives share when simplifying detail levels. `lods.lock_borders` locks every open border, which also stops open sheets from simplifying; finding the shared ones needs a pass over all primitives before `MeshProcessorSession` packs the first.
+- Weld positions before simplifying detail levels, or use meshopt's `Permissive` option, for meshes whose vertices are split per face. Every vertex of such a mesh is an attribute seam, so `simplify_levels` stalls at once and the mesh keeps full detail only; `Suzanne.gltf` in the model viewer is one.
+- Weigh UVs in detail level simplification without letting tiling UVs inflate the stored error. `simplify_levels` passes normals only, so a level can stretch a texture across a flat region and still report no error.
 
 ## BESL and shader generation
 

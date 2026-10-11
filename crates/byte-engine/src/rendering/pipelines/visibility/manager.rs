@@ -28,6 +28,7 @@ use super::layout::{
 	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
+use super::lod::{LOD_CONFIGURATION_PREFIX, LodSettings, LodView};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
@@ -527,6 +528,8 @@ pub struct VisibilityPipelineManager {
 	ssgi_settings: SsgiSettings,
 	contact_shadow_configuration: crate::configuration::ConfigurationPort,
 	contact_shadow_settings: ContactShadowSettings,
+	lod_configuration: crate::configuration::ConfigurationPort,
+	lod_settings: LodSettings,
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
 	/// per-frame images hold usable history, and only while the extent is unchanged.
 	recorded_sinks: SmallVec<[Sink; 4]>,
@@ -553,6 +556,7 @@ impl VisibilityPipelineManager {
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		ssgi_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
+		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
 		let environment = create_fallback_environment(context, loader.environment_sampler);
@@ -640,6 +644,8 @@ impl VisibilityPipelineManager {
 			ssgi_settings: SsgiSettings::default(),
 			contact_shadow_configuration,
 			contact_shadow_settings: ContactShadowSettings::default(),
+			lod_configuration,
+			lod_settings: LodSettings::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
 			recorded_ssgi: false,
@@ -985,11 +991,12 @@ impl VisibilityPipelineManager {
 					base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
 					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
-					meshlet_count: primitive.meshlet_count,
+					meshlet_count: primitive.lods.levels()[0].meshlet_count,
 					skinned_base_vertex_index: u32::MAX,
 					flags: 0,
 					bounding_sphere: primitive.bounding_sphere,
 				},
+				lods: primitive.lods,
 				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
 					binding: binding.clone(),
 					source_vertex_offset: primitive
@@ -1004,8 +1011,16 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO, SSGI, and contact-shadow controls before any sink records this frame's commands.
+	/// Applies queued GTAO, SSGI, contact-shadow, and detail level controls before any sink records this frame's
+	/// commands.
 	fn apply_runtime_settings(&mut self) {
+		drain_settings(
+			&self.lod_configuration,
+			LOD_CONFIGURATION_PREFIX,
+			"Detail level parameter was not set. The most likely cause is that the parameter is outside the `render.lod.` namespace.",
+			&mut self.lod_settings,
+			LodSettings::with_parameter,
+		);
 		drain_settings(
 			&self.gtao_configuration,
 			GTAO_CONFIGURATION_PREFIX,
@@ -1039,7 +1054,9 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Rebuilds the frame's instance lists from whole renderables whose dependencies are ready, and uploads skin palettes.
-	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
+	///
+	/// Each instance draws the detail level `lod_view` picks for it, or full detail when the frame has no camera.
+	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame, lod_view: Option<LodView>) {
 		let render_info = &mut self.scene.render_info;
 		render_info.clear_active_instances();
 		self.skinning_frame.clear();
@@ -1069,6 +1086,13 @@ impl VisibilityPipelineManager {
 			shader_mesh.skinned_base_vertex_index = u32::MAX;
 			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
 			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
+			// Naming another meshlet range is all a level switch takes. Every view of the frame, shadows included,
+			// then draws this level.
+			if let Some(view) = lod_view {
+				let lod = view.select(&entity.lods, &shader_mesh.model, shader_mesh.bounding_sphere);
+				shader_mesh.base_meshlet_index += lod.first_meshlet;
+				shader_mesh.meshlet_count = lod.meshlet_count;
+			}
 			if let Some(skin) = &entity.skinning
 				&& let Some(pose) = self.scene.skinning_poses.get(&entity.handle)
 			{
@@ -1224,7 +1248,9 @@ impl PipelineManager for VisibilityPipelineManager {
 				.copy_from_slice(&*self.material_evaluations);
 			frame.sync_buffer(self.material_evaluations_buffer);
 		}
-		self.rebuild_active_instances(frame);
+		// Detail levels follow the first sink's camera, like the views and exposure below.
+		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
+		self.rebuild_active_instances(frame, lod_view);
 		let dispatches = self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info);
 
 		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {

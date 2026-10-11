@@ -101,7 +101,25 @@ EXR images keep their linear HDR values in an `RGBA16F` image and don't generate
 Material textures from glTF and FBX models get a full mip chain. Byte Engine filters the levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `fast` profile. Without a compatible GPU, the CPU filters and compresses the chain instead, at comparable quality.
 A glTF metallic-roughness texture that every material in the file reads only through its green and blue channels is stored as a two-channel `RG8` image, or `RG16` from a sixteen-bit source, holding roughness in red and metallic in green. The generated materials read those channels, so the image samples the same values it did with all four channels. An image that a material also reads through another channel, such as an occlusion-roughness-metallic texture, keeps all of its channels. This layout is part of the image fragment's contract: a hand-written material that samples `model.gltf#images/<index>` for metallic and roughness must read red and green.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
-When you write a mesh importer, have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
+Mesh processing also builds detail levels. It simplifies each primitive into coarser versions, each with about half the triangles of the one before, until a level stops getting smaller, fits in about two meshlets, or reaches the level limit. Every level uses the primitive's own vertices and is stored as extra meshlets after the full-detail ones, so levels add vertex indices, triangles, and meshlets but no vertices. Each level records an error: the estimated largest distance, in model units, between it and full detail. The renderer draws the coarsest level whose error covers at most a pixel. Skinned primitives keep full detail only.
+
+To tune detail levels for one model, add a `lods` object to its BEAD file, for example `Sponza.gltf.bead`:
+
+```json5
+{
+  lods: {
+    enabled: true,       // false keeps full detail only
+    max_levels: 8,       // levels per primitive, counting full detail; 1 to 8
+    max_error: 0.25,     // largest error of a level, as a fraction of the primitive's largest extent
+    lock_borders: false, // true keeps open borders in place
+  },
+}
+```
+
+Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
+
+When you write a mesh importer, pass a `MeshLodSettings` to `MeshProcessorSession::new`; `MeshLodSettings::default()` gives the settings above.
+Have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
 
 ## Environment maps

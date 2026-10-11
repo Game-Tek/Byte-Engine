@@ -8,4 +8,3 @@ mod solver;
 pub mod step_lanes;
 
 pub use world::World;
-pub use world::World as DynabitWorld;

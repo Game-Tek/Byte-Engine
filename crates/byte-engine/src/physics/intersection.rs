@@ -7,8 +7,6 @@ use std::{
 
 use math::AABB;
 
-use crate::physics::dynabit::contact::Pair;
-
 /// The number of bounds one sweep step tests at once.
 const WIDTH: usize = 4;
 
@@ -47,8 +45,6 @@ pub struct SweepBounds {
 	is_wide: Vec<bool>,
 	/// The sorted indices of the boxes that are too wide for the grid. Each is scanned against every box.
 	wide: Vec<u32>,
-	/// Whether the boxes are split into cells. Few boxes are scanned as one sorted list instead.
-	in_cells: bool,
 	/// The grid over the two axes that are not swept.
 	grid: Grid,
 	/// Where each cell's boxes start in `cells`, followed by where the last cell's end.
@@ -139,9 +135,10 @@ impl Grid {
 		(((position - self.origin[axis]) * self.cells_per_unit[axis]) as u32).min(self.cells[axis] - 1)
 	}
 
-	/// Returns the cells a box reaches into along both axes, as inclusive coordinate ranges.
-	fn reach(&self, min: [f32; 3], max: [f32; 3]) -> [(u32, u32); 2] {
-		[0, 1].map(|axis| (self.coordinate(axis, min[axis + 1]), self.coordinate(axis, max[axis + 1])))
+	/// Returns the indices of the cells a box reaches into.
+	fn cells(self, min: [f32; 3], max: [f32; 3]) -> impl Iterator<Item = usize> {
+		let [first, second] = [0, 1].map(|axis| self.coordinate(axis, min[axis + 1])..=self.coordinate(axis, max[axis + 1]));
+		second.flat_map(move |second| first.clone().map(move |first| self.cell(first, second)))
 	}
 
 	/// Returns the index of the cell at the given coordinates.
@@ -185,7 +182,7 @@ impl SweepBounds {
 	///
 	/// A box that reaches into several cells has a position in each, so this is not the number of boxes.
 	pub fn count(&self) -> usize {
-		if self.in_cells {
+		if self.in_cells() {
 			self.wide.len() + self.cells.ids.len()
 		} else {
 			self.boxes()
@@ -195,6 +192,11 @@ impl SweepBounds {
 	/// Returns the number of boxes.
 	fn boxes(&self) -> usize {
 		self.order.len()
+	}
+
+	/// Returns whether the boxes are split into cells. Few boxes are scanned as one sorted list instead.
+	fn in_cells(&self) -> bool {
+		self.boxes() >= GRID_BOXES
 	}
 
 	/// Replaces the stored boxes with `bounds`, each identified by the distinct `usize` it comes with.
@@ -268,8 +270,7 @@ impl SweepBounds {
 			max.clear();
 			max.extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
 		}
-		self.in_cells = count >= GRID_BOXES;
-		if self.in_cells {
+		if self.in_cells() {
 			self.fill_cells(count);
 		}
 	}
@@ -337,21 +338,16 @@ impl SweepBounds {
 		// Count the boxes of each cell, give each cell its stretch of entries, then write the boxes in sweep order,
 		// which leaves every cell sorted like the whole.
 		let grid = self.grid;
-		let cell_count = grid.count();
 		self.cell_fills.clear();
-		self.cell_fills.resize(cell_count, 0);
-		let boxes = |sorted: &BoundsArrays, is_wide: &[bool], place: &mut dyn FnMut(usize, usize)| {
-			for index in (0..count).filter(|index| !is_wide[*index]) {
-				let (min, max) = sorted.get(index);
-				let [(first_low, first_high), (second_low, second_high)] = grid.reach(min, max);
-				for second in second_low..=second_high {
-					for first in first_low..=first_high {
-						place(index, grid.cell(first, second));
-					}
+		self.cell_fills.resize(grid.count(), 0);
+		for index in 0..count {
+			if !self.is_wide[index] {
+				let (min, max) = self.sorted.get(index);
+				for cell in grid.cells(min, max) {
+					self.cell_fills[cell] += 1;
 				}
 			}
-		};
-		boxes(&self.sorted, &self.is_wide, &mut |_, cell| self.cell_fills[cell] += 1);
+		}
 		self.cell_starts.clear();
 		let mut start = 0;
 		for fill in &mut self.cell_fills {
@@ -363,20 +359,24 @@ impl SweepBounds {
 		}
 		self.cell_starts.push(start);
 		self.cells.reset(start as usize);
-		boxes(&self.sorted, &self.is_wide, &mut |index, cell| {
-			let (min, max) = self.sorted.get(index);
-			self.cells
-				.set(self.cell_fills[cell] as usize, self.sorted.ids[index], min, max);
-			self.cell_fills[cell] += 1;
-		});
+		for index in 0..count {
+			if !self.is_wide[index] {
+				let (min, max) = self.sorted.get(index);
+				for cell in grid.cells(min, max) {
+					self.cells
+						.set(self.cell_fills[cell] as usize, self.sorted.ids[index], min, max);
+					self.cell_fills[cell] += 1;
+				}
+			}
+		}
 	}
 
 	/// Calls `found` with every pair of overlapping boxes whose first box has its scan position in `range`.
 	///
 	/// Boxes that only touch count as overlapping. Ranges that together cover `0..`[`Self::count`] report every pair
 	/// exactly once, and reading them in ascending order gives the same sequence as one scan of the whole range.
-	pub fn overlaps(&self, range: Range<usize>, mut found: impl FnMut(Pair)) {
-		if !self.in_cells {
+	pub fn overlaps(&self, range: Range<usize>, mut found: impl FnMut([usize; 2])) {
+		if !self.in_cells() {
 			// Every box is a neighbor of every other one, as if they shared one cell.
 			return self.scan_cell(&self.sorted, None, range, self.boxes(), &mut found);
 		}
@@ -417,7 +417,7 @@ impl SweepBounds {
 		cell: Option<usize>,
 		range: Range<usize>,
 		boxes_end: usize,
-		found: &mut impl FnMut(Pair),
+		found: &mut impl FnMut([usize; 2]),
 	) {
 		let [min_sweep, min_second, min_third] = &boxes.min;
 		let [max_sweep, max_second, max_third] = &boxes.max;
@@ -450,7 +450,7 @@ impl SweepBounds {
 							== cell
 					});
 					if reports {
-						found(Pair::new(boxes.ids[first] as usize, boxes.ids[second] as usize));
+						found([boxes.ids[first] as usize, boxes.ids[second] as usize]);
 					}
 				}
 				// Boxes are sorted by where they start on the sweep axis, so the first one that starts past this
@@ -466,8 +466,8 @@ impl SweepBounds {
 	/// Calls `found` with the pairs the wide box at `index` of the sorted boxes forms with every other box.
 	///
 	/// A pair of wide boxes is reported by the one that comes first in the sweep order.
-	fn scan_wide(&self, index: usize, found: &mut impl FnMut(Pair)) {
-		let count = self.is_wide.len();
+	fn scan_wide(&self, index: usize, found: &mut impl FnMut([usize; 2])) {
+		let count = self.boxes();
 		let (min, max) = self.sorted.get(index);
 		let (low, high) = (min.map(f32x4::splat), max.map(f32x4::splat));
 		for next in (0..count).step_by(WIDTH) {
@@ -483,7 +483,7 @@ impl SweepBounds {
 				let other = next + lanes.trailing_zeros() as usize;
 				lanes &= lanes - 1;
 				if other != index && !(self.is_wide[other] && other < index) {
-					found(Pair::new(self.sorted.ids[index] as usize, self.sorted.ids[other] as usize));
+					found([self.sorted.ids[index] as usize, self.sorted.ids[other] as usize]);
 				}
 			}
 		}
@@ -578,7 +578,9 @@ mod tests {
 		let mut sweep = SweepBounds::default();
 		sweep.rebuild(boxes.iter().copied().enumerate());
 		let mut pairs = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| pairs.push((pair.a.min(pair.b), pair.a.max(pair.b))));
+		sweep.overlaps(0..sweep.count(), |[first, second]| {
+			pairs.push((first.min(second), first.max(second)))
+		});
 		pairs.sort_unstable();
 		pairs
 	}
@@ -637,11 +639,11 @@ mod tests {
 		let mut sweep = SweepBounds::default();
 		sweep.rebuild(boxes.iter().copied().enumerate());
 		let mut whole = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| whole.push((pair.a, pair.b)));
+		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
 
 		let mut split = Vec::new();
 		for range in [0..9, 9..9, 9..40, 40..sweep.count()] {
-			sweep.overlaps(range, |pair| split.push((pair.a, pair.b)));
+			sweep.overlaps(range, |pair| split.push(pair));
 		}
 
 		assert_eq!(split, whole);
@@ -702,7 +704,7 @@ mod tests {
 		let mut sweep = SweepBounds::default();
 		sweep.rebuild(boxes.iter().copied().enumerate());
 		let mut whole = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| whole.push((pair.a, pair.b)));
+		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
 
 		let mut split = Vec::new();
 		let count = sweep.count();
@@ -714,7 +716,7 @@ mod tests {
 			count / 3..count - 5,
 			count - 5..count,
 		] {
-			sweep.overlaps(range, |pair| split.push((pair.a, pair.b)));
+			sweep.overlaps(range, |pair| split.push(pair));
 		}
 
 		assert_eq!(split, whole);
@@ -744,12 +746,12 @@ mod tests {
 			.collect::<Vec<_>>();
 		sweep.rebuild(moved.iter().copied().enumerate());
 		let mut repaired = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| repaired.push((pair.a, pair.b)));
+		sweep.overlaps(0..sweep.count(), |pair| repaired.push(pair));
 
 		let mut first = SweepBounds::default();
 		first.rebuild(moved.iter().copied().enumerate());
 		let mut expected = Vec::new();
-		first.overlaps(0..first.count(), |pair| expected.push((pair.a, pair.b)));
+		first.overlaps(0..first.count(), |pair| expected.push(pair));
 
 		assert!(!expected.is_empty());
 		assert_eq!(repaired, expected);
@@ -769,8 +771,8 @@ mod tests {
 			.enumerate(),
 		);
 		let mut pairs = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| pairs.push((pair.a, pair.b)));
+		sweep.overlaps(0..sweep.count(), |pair| pairs.push(pair));
 
-		assert_eq!(pairs, [(0, 1)]);
+		assert_eq!(pairs, [[0, 1]]);
 	}
 }

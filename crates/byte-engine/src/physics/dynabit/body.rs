@@ -2,7 +2,6 @@ use math::{
 	AABB, Orientation, Point, Scale, Sphere, Vector,
 	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere, sphere_vs_sphere_dynamic},
 };
-use maths_rs::mat::MatTranspose as _;
 
 use crate::{
 	core::factory::Handle,
@@ -10,11 +9,7 @@ use crate::{
 	time::MediaTime,
 };
 
-/// The fastest a contact may leave a body spinning, in radians per second.
-pub(crate) const MAX_ANGULAR_SPEED: f32 = 30.0;
-
 /// The `PhysicsBody` struct stores the mutable world-space state used by Dynabit.
-#[derive(Clone)]
 pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
 	pub(crate) collision_shape: Shapes,
@@ -45,6 +40,25 @@ impl PhysicsBody {
 		1.0 / self.inv_mass
 	}
 
+	/// Returns how easily contacts turn the body about each of its local axes: its inverse mass over each moment of
+	/// inertia, or zero for a body that contacts do not turn.
+	///
+	/// A box collides as an axis-aligned box whatever its orientation. If contacts turned it, friction would spin
+	/// it until it rolled along on its faces like a wheel, so contacts only move it.
+	pub(crate) fn inverse_moments(&self) -> [f32; 3] {
+		match self.collision_shape {
+			Shapes::Cube { .. } => [0.0; 3],
+			Shapes::Sphere { .. } => {
+				let moments = self.collision_shape.principal_inertia();
+				[
+					self.inv_mass / moments.x,
+					self.inv_mass / moments.y,
+					self.inv_mass / moments.z,
+				]
+			}
+		}
+	}
+
 	/// Returns the center of mass in world coordinates.
 	pub fn world_space_center_of_mass(&self) -> Point {
 		let local_offset = self.center_of_mass - Point::origin();
@@ -70,22 +84,21 @@ impl PhysicsBody {
 		let center_offset = position - center_of_mass;
 
 		// The spin changes when the body's moments of inertia differ. That change is worked out in the body's own
-		// frame, where the inertia tensor is the diagonal of those moments, and then rotated into the world.
-		let rotation = self.orientation.into_maths().get_matrix();
-		let moments = self.collision_shape.principal_inertia();
-		let local_velocity = rotation.transpose() * self.angular_velocity.into_maths();
-		let local_acceleration = maths_rs::cross(local_velocity, local_velocity * moments) / moments;
-		let angular_velocity = self.angular_velocity + Vector::from_maths(rotation * local_acceleration) * seconds;
+		// frame, where the inertia tensor is the diagonal of those moments, and then rotated into the world. With no
+		// torque acting, angular momentum stays as it is, so the spin changes by the inverse inertia times the cross
+		// product of the momentum with the spin. A body that is not spinning, as boxes never are, has none to change.
+		let angular_velocity = if self.angular_velocity.to_array() == [0.0; 3] {
+			self.angular_velocity
+		} else {
+			let moments = self.collision_shape.principal_inertia();
+			let local_velocity = self.orientation.inverse().rotate_vector(self.angular_velocity).into_maths();
+			let local_acceleration = maths_rs::cross(local_velocity * moments, local_velocity) / moments;
+			self.angular_velocity + self.orientation.rotate_vector(Vector::from_maths(local_acceleration)) * seconds
+		};
 
-		let angular_step = angular_velocity * seconds;
-		// Check the axis and measure its rotation in one operation.
-		let delta_orientation = angular_step
-			.normalize_with_length()
-			.map(|(axis, angle)| {
-				Orientation::try_from_axis_angle(axis, math::Radians::new(angle))
-					.expect("a finite unit axis and finite angle form an orientation")
-			})
-			.unwrap_or_else(|_| Orientation::identity());
+		// A spin that is not finite turns the body by nothing.
+		let delta_orientation =
+			Orientation::try_from_rotation_vector(angular_velocity * seconds).unwrap_or_else(|_| Orientation::identity());
 		Motion {
 			position: center_of_mass + delta_orientation.rotate_vector(center_offset),
 			orientation: delta_orientation.compose(self.orientation),
@@ -162,29 +175,28 @@ pub(crate) struct Motion {
 
 /// Finds a collision contact for the two world-space bodies.
 pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
-	let contact = match (&a.collision_shape, &b.collision_shape) {
+	let touching = match (&a.collision_shape, &b.collision_shape) {
 		(Shapes::Sphere { radius: a_radius }, Shapes::Sphere { radius: b_radius }) => {
 			let (a_sphere, b_sphere) = (Sphere::new(a.position, *a_radius), Sphere::new(b.position, *b_radius));
 			if a.outruns_its_shape(dt) || b.outruns_its_shape(dt) {
 				// A fast sphere could pass through the other one between two steps, so find where their paths meet.
-				let contact = sphere_vs_sphere_dynamic(&a_sphere, &b_sphere, a.linear_velocity, b.linear_velocity, dt)?;
-				Contact::from_dynamic(i, j, contact)
-			} else {
-				Contact::from_static(i, j, sphere_vs_sphere(&a_sphere, &b_sphere)?, 0.0)
+				let impact = sphere_vs_sphere_dynamic(&a_sphere, &b_sphere, a.linear_velocity, b.linear_velocity, dt)?;
+				let mut contact = Contact::from_dynamic(i, j, impact);
+				// The points are where the spheres will touch. Contacts are solved from where the bodies are now, so
+				// the points move back to where they are on the spheres now.
+				contact.a.point = contact.a.point - a.linear_velocity * contact.toi;
+				contact.b.point = contact.b.point - b.linear_velocity * contact.toi;
+				return Some(contact);
 			}
+			sphere_vs_sphere(&a_sphere, &b_sphere)?
 		}
-		(Shapes::Cube { .. }, Shapes::Cube { .. }) => Contact::from_static(i, j, aabb_vs_aabb(&a.bounds(), &b.bounds())?, 0.0),
-		(Shapes::Sphere { radius }, Shapes::Cube { .. }) => {
-			Contact::from_static(i, j, sphere_vs_aabb(&Sphere::new(a.position, *radius), &b.bounds())?, 0.0)
+		(Shapes::Cube { .. }, Shapes::Cube { .. }) => aabb_vs_aabb(&a.bounds(), &b.bounds())?,
+		(Shapes::Sphere { radius }, Shapes::Cube { .. }) => sphere_vs_aabb(&Sphere::new(a.position, *radius), &b.bounds())?,
+		(Shapes::Cube { .. }, Shapes::Sphere { radius }) => {
+			sphere_vs_aabb(&Sphere::new(b.position, *radius), &a.bounds())?.swap()
 		}
-		(Shapes::Cube { .. }, Shapes::Sphere { radius }) => Contact::from_static(
-			i,
-			j,
-			sphere_vs_aabb(&Sphere::new(b.position, *radius), &a.bounds())?.swap(),
-			0.0,
-		),
 	};
-	Some(contact)
+	Some(Contact::from_static(i, j, touching))
 }
 
 #[cfg(test)]
@@ -262,6 +274,9 @@ mod tests {
 		// The spheres have a radius of one, so they touch after the first has moved two units.
 		let contact = intersect((&first, 0), (&apart, 1), 1.0).expect("the path reaches the other sphere");
 		assert!((contact.toi - 0.5).abs() <= 1e-6);
+		// The contact points are the facing points of the spheres where they are now.
+		assert!((contact.a.point - Point::new(1.0, 0.0, 0.0)).length() <= 1e-5);
+		assert!((contact.b.point - Point::new(3.0, 0.0, 0.0)).length() <= 1e-5);
 	}
 
 	#[test]
@@ -275,6 +290,19 @@ mod tests {
 
 		assert_eq!(swept.min(), body.bounds().min());
 		assert_eq!(swept.max(), body.bounds().max());
+	}
+
+	#[test]
+	fn a_spinning_body_with_unequal_moments_keeps_its_angular_momentum() {
+		let mut body = body();
+		// A box of 1 by 2 by 3 units has unit-mass moments of 13/12, 10/12, and 5/12.
+		body.collision_shape = Shapes::cube(Vector::new(0.5, 1.0, 1.5));
+		body.angular_velocity = Vector::new(1.0, 1.0, 0.0);
+
+		body.update(MediaTime::from_seconds_f32(0.01));
+
+		// With no torque, the spin about the third axis changes at (13/12 - 10/12) / (5/12) = 0.6 per second.
+		assert!((body.angular_velocity.z() - 0.006).abs() <= 1e-5);
 	}
 
 	#[test]

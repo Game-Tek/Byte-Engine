@@ -311,7 +311,15 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	///
 	/// Every lane must pass the same slice so the partitions cover it exactly once.
 	pub fn share<'values, T>(&self, values: &'values [T]) -> &'values [T] {
-		shared_partition(values, self.lane_idx, self.state.lane_count)
+		&values[self.share_range(values.len())]
+	}
+
+	/// Returns this lane's balanced range of `len` items, the indices [`Self::share`] covers in a slice of that length.
+	///
+	/// Use it to partition data that is not one slice, such as parallel arrays. Every lane must pass the same length
+	/// so the ranges cover it exactly once.
+	pub fn share_range(&self, len: usize) -> Range<usize> {
+		shared_range(len, self.lane_idx, self.state.lane_count)
 	}
 
 	/// Returns the value produced by the first lane to reach this broadcast section.
@@ -413,13 +421,12 @@ impl<T> Lane for SharedLane<'_, '_, T> {
 	}
 }
 
-/// Returns the balanced read-only partition assigned to one lane.
-fn shared_partition<T>(values: &[T], lane_idx: usize, lane_count: usize) -> &[T] {
-	let minimum_len = values.len() / lane_count;
-	let larger_partition_count = values.len() % lane_count;
+/// Returns the balanced index range assigned to one lane out of `value_count` values.
+fn shared_range(value_count: usize, lane_idx: usize, lane_count: usize) -> Range<usize> {
+	let minimum_len = value_count / lane_count;
+	let larger_partition_count = value_count % lane_count;
 	let start = lane_idx * minimum_len + lane_idx.min(larger_partition_count);
-	let len = balanced_partition_len(values.len(), lane_idx, lane_count);
-	&values[start..start + len]
+	start..start + balanced_partition_len(value_count, lane_idx, lane_count)
 }
 
 fn balanced_partition_len(value_count: usize, lane_idx: usize, lane_count: usize) -> usize {
@@ -427,7 +434,9 @@ fn balanced_partition_len(value_count: usize, lane_idx: usize, lane_count: usize
 }
 
 const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
-const COLLECTIVE_SECTION_COUNT: usize = 32;
+/// The most collective sections, such as [`ConcreteLane::broadcast_mut`] and [`ConcreteLane::each_ref`], one
+/// dispatch can run.
+pub(crate) const COLLECTIVE_SECTION_COUNT: usize = 32;
 const COLLECTIVE_LANE_CAPACITY: usize = 64;
 const COLLECTIVE_VALUE_SIZE: usize = 64;
 const COLLECTIVE_VALUE_ALIGNMENT: usize = 64;
@@ -1559,7 +1568,7 @@ use std::{
 	cell::UnsafeCell,
 	hint::spin_loop,
 	mem::{MaybeUninit, align_of, size_of},
-	ops::{Deref, DerefMut},
+	ops::{Deref, DerefMut, Range},
 	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 	sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 	thread::yield_now,

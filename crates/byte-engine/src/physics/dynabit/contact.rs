@@ -7,12 +7,14 @@ pub struct Contact {
 	pub(crate) b: Side,
 	pub(crate) normal: UnitVector,
 	pub(crate) depth: f32,
+	/// How far into the step the bodies touch, in seconds. Zero for bodies that touch where they are. For bodies
+	/// that touch later, the contact holds them to the speed that brings them together as the step ends.
 	pub(crate) toi: f32,
 }
 
 impl Contact {
-	/// Converts a static math intersection into a physics contact.
-	pub(crate) fn from_static(a: usize, b: usize, intersection: Intersection, toi: f32) -> Self {
+	/// Converts a static math intersection into a physics contact between bodies that touch where they are.
+	pub(crate) fn from_static(a: usize, b: usize, intersection: Intersection) -> Self {
 		Self {
 			a: Side {
 				object: a,
@@ -24,34 +26,17 @@ impl Contact {
 			},
 			normal: intersection.normal(),
 			depth: intersection.depth(),
-			toi,
+			toi: 0.0,
 		}
 	}
 
-	/// Converts a dynamic math intersection into a physics contact.
+	/// Converts a dynamic math intersection into a physics contact at the time the bodies touch.
 	pub(crate) fn from_dynamic(a: usize, b: usize, intersection: DynamicIntersection) -> Self {
 		let toi = intersection.toi();
-		Self::from_static(a, b, intersection.into_contact(), toi)
-	}
-}
-
-impl PartialEq for Contact {
-	fn eq(&self, other: &Self) -> bool {
-		self.toi == other.toi
-	}
-}
-
-impl Eq for Contact {}
-
-impl PartialOrd for Contact {
-	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		Some(self.cmp(other))
-	}
-}
-
-impl Ord for Contact {
-	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-		self.toi.total_cmp(&other.toi)
+		Self {
+			toi,
+			..Self::from_static(a, b, intersection.into_contact())
+		}
 	}
 }
 
@@ -60,26 +45,4 @@ impl Ord for Contact {
 pub struct Side {
 	pub(crate) object: usize,
 	pub(crate) point: Point,
-}
-
-/// The `Pair` struct identifies two broad-phase body indices.
-#[derive(Debug, Clone, Copy)]
-pub struct Pair {
-	pub a: usize,
-	pub b: usize,
-}
-
-impl Pair {
-	/// Creates a pair from two body indices.
-	pub fn new(a: usize, b: usize) -> Self {
-		Self { a, b }
-	}
-}
-
-impl Eq for Pair {}
-
-impl PartialEq for Pair {
-	fn eq(&self, other: &Self) -> bool {
-		(self.a == other.a && self.b == other.b) || (self.a == other.b && self.b == other.a)
-	}
 }

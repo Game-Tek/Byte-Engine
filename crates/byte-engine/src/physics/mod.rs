@@ -8,8 +8,6 @@
 #[doc(hidden)]
 pub mod body;
 #[doc(hidden)]
-pub mod bounds;
-#[doc(hidden)]
 pub mod collider;
 #[doc(hidden)]
 pub mod dynabit;
@@ -21,10 +19,9 @@ pub mod intersection;
 pub struct LocalSpace;
 
 pub use body::{Body, BodyTypes};
-pub use bounds::Bounds;
 pub use collider::Shapes;
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;
-pub use dynabit::contact::{Contact, Pair, Side};
+pub use dynabit::contact::{Contact, Side};
 pub use dynabit::step_lanes::{StepLanes, StepLanesError};
 pub use intersection::SweepBounds;

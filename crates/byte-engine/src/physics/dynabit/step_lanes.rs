@@ -22,8 +22,8 @@ const WIDE_STEP_BODIES: usize = 4000;
 
 /// The most lanes a step runs on by default.
 ///
-/// One lane at a time resolves contacts and publishes transforms, which bounds what more lanes can save: on an
-/// Apple M4, four lanes were 9% faster than two at 16,000 stacked cubes.
+/// One lane at a time sorts the bounds, batches the contacts, and publishes transforms, which bounds what more lanes
+/// can save.
 const WIDEST_STEP_LANES: usize = 4;
 
 /// The `StepLanes` struct tells [`World::update_with_alley`](super::World::update_with_alley) how many lanes to
@@ -84,12 +84,6 @@ impl StepLanes {
 			.take_while(|(from, _)| *from <= bodies)
 			.last()
 			.map_or(1, |(_, lanes)| *lanes)
-	}
-}
-
-impl Default for StepLanes {
-	fn default() -> Self {
-		Self::for_machine()
 	}
 }
 

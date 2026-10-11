@@ -621,14 +621,15 @@ impl GraphicsApplication {
 		while self.physics_transforms_listener.read().is_some() {}
 	}
 
-	/// Advances physics by `time`, then marks the step's end for the renderer.
+	/// Advances physics by `time` on the application's alley, then marks the step's end for the renderer.
 	fn update_world(&mut self, time: Time) {
 		let _span = debug_span!("GraphicsApplication::update_world").entered();
-		self.world.update(
-			time,
-			&mut self.physics_transforms_listener,
-			&mut self.application.frame_allocator,
+		// Every tick callback has returned by now, so no execution of theirs still holds the lanes.
+		let alley = self.alley.as_mut().expect(
+			"Alley is not available. The most likely cause is that the world was updated during an alley execution, which holds the lanes.",
 		);
+		self.world
+			.update_with_alley(time, &mut self.physics_transforms_listener, alley);
 		self.renderer.step();
 	}
 

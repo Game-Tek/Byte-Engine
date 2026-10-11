@@ -89,20 +89,15 @@ impl DefaultWorld {
 		self.messages.factory()
 	}
 
-	pub fn update(
-		&mut self,
-		time: Time,
-		transforms_rx: &mut impl Listener<TransformationUpdate>,
-		allocator: &mut bumpalo::Bump,
-	) {
+	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>) {
 		self.cascade_posted_deletions();
-		self.physics_system.update(time, transforms_rx, &self.transforms, allocator);
+		self.physics_system.update(time, transforms_rx, &self.transforms);
 	}
 
 	/// Advances the world like [`Self::update`], running the physics step as one execution of `alley`.
 	///
-	/// Every lane takes part in the step; see [`dynabit::World::update_with_alley`]. No other dispatch of `alley`
-	/// may be running.
+	/// The step runs on as many of `alley`'s lanes as its size pays for; see
+	/// [`dynabit::World::update_with_alley`]. No other dispatch of `alley` may be running.
 	pub fn update_with_alley(
 		&mut self,
 		time: Time,
@@ -254,11 +249,9 @@ mod tests {
 	/// Runs the update that cascades deletions posted since the last call.
 	fn cascade(world: &mut DefaultWorld) {
 		let mut transforms = world.transforms_channel().listener();
-		let mut allocator = bumpalo::Bump::new();
 		world.update(
 			Time::new(crate::time::MediaTime::ZERO, crate::time::MediaTime::ZERO),
 			&mut transforms,
-			&mut allocator,
 		);
 	}
 

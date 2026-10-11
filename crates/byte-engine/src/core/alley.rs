@@ -834,6 +834,22 @@ impl Alley {
 			.try_dispatch_all(move |lane_idx| f(&mut ConcreteLane::new(lane_idx, state)))
 	}
 
+	/// Executes `f` once on each of the first `lane_count` lanes and returns after they finish.
+	///
+	/// The other lanes stay asleep and take no part in the dispatch's collectives.
+	fn execute_lanes<R>(&mut self, lane_count: usize, f: impl AlleyFunction<R>) -> std::thread::Result<Vec<R>>
+	where
+		R: Send,
+	{
+		let state = DispatchState::new(lane_count);
+		let state = &state;
+		let jobs = (0..lane_count).map(|lane_idx| {
+			let f = f.clone();
+			move || f(&mut ConcreteLane::new(lane_idx, state))
+		});
+		self.threadpool.try_dispatch_many(jobs)
+	}
+
 	/// Executes `f` once on every lane alongside work confined to the calling thread, then returns both results.
 	///
 	/// Lanes follow the rules of [`Self::execute`]. The caller and its result stay on this thread and need not be
@@ -878,12 +894,18 @@ impl Alley {
 		self.execute(move |lane| f(lane, resources))
 	}
 
-	/// Executes every lane with one resource that lanes access in alternating exclusive and shared phases.
+	/// Executes up to `lanes` lanes with one resource that they access in alternating exclusive and shared phases.
 	///
 	/// Use this to run a whole algorithm as one lane function: [`ConcreteLane::broadcast_mut`] runs a serial stage
-	/// on one lane while the others wait, and [`ConcreteLane::each_ref`] runs a parallel stage on every lane.
-	/// The blocking dispatch keeps the mutable borrow bound until all lanes finish.
-	pub fn execute_phased<T, R, F>(&mut self, resource: &mut T, f: F) -> std::thread::Result<Vec<R>>
+	/// on one lane while the others wait, and [`ConcreteLane::each_ref`] runs a parallel stage on every running
+	/// lane. The blocking dispatch keeps the mutable borrow bound until all lanes finish.
+	///
+	/// Pass [`Self::parallelism`] to run every lane. Pass fewer when the work is too small to pay for all of them:
+	/// every stage ends only once each running lane has reached it, so lanes with little to do slow a small job
+	/// down. The lanes left out stay asleep, [`ConcreteLane::share`] splits work among the running lanes only, and
+	/// the result holds one value for each of them. A count above [`Self::parallelism`] runs every lane, and a
+	/// count of zero runs none, so `f` is never called.
+	pub fn execute_phased<T, R, F>(&mut self, resource: &mut T, lanes: usize, f: F) -> std::thread::Result<Vec<R>>
 	where
 		T: Send + Sync,
 		R: Send,
@@ -898,7 +920,7 @@ impl Alley {
 			value: UnsafeCell::new(resource),
 		};
 		let resource = &resource;
-		self.execute(move |lane| f(lane, resource))
+		self.execute_lanes(lanes.min(self.threadpool.parallelism()), move |lane| f(lane, resource))
 	}
 
 	/// Runs resource-owning lanes alongside caller-bound work, then joins every lane.
@@ -1440,7 +1462,7 @@ mod tests {
 		let mut values = Vec::new();
 		let writers = AtomicUsize::new(0);
 
-		let totals = unwrap_dispatch(alley.execute_phased(&mut values, |lane, values| {
+		let totals = unwrap_dispatch(alley.execute_phased(&mut values, 4, |lane, values| {
 			// One lane fills the resource while the others wait for it.
 			let count = lane.broadcast_mut(values, |values| {
 				writers.fetch_add(1, Ordering::Relaxed);
@@ -1471,12 +1493,32 @@ mod tests {
 		let mut alley = Alley::with_parallelism(4);
 		let mut value = 0usize;
 
-		let result = alley.execute_phased(&mut value, |lane, value| {
+		let result = alley.execute_phased(&mut value, 4, |lane, value| {
 			let _: usize = lane.broadcast_mut(value, |_| panic!("expected exclusive stage panic"));
 		});
 
 		assert!(result.is_err());
 		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
+	}
+
+	#[test]
+	fn phased_dispatch_runs_only_the_lanes_it_is_given() {
+		let mut alley = Alley::with_parallelism(4);
+		let values = (1..=10usize).collect::<Vec<_>>();
+
+		for (lanes, running) in [(1, 1), (2, 2), (4, 4), (9, 4)] {
+			let mut shared = values.clone();
+			let sums = unwrap_dispatch(alley.execute_phased(&mut shared, lanes, |lane, values| {
+				// Each running lane sums its share, and every lane reads all the sums once the stage ends.
+				let sums = lane.each_ref(values, |values, lane| lane.share(values).iter().sum::<usize>());
+				let (count, total) = sums.fold((0, 0), |(count, total), sum| (count + 1, total + sum));
+				(lane.idx(), count, total)
+			}));
+
+			// The running lanes are the first ones, they meet without the others, and their shares cover the values.
+			let expected = (0..running).map(|lane| (lane, running, 55)).collect::<Vec<_>>();
+			assert_eq!(sums, expected);
+		}
 	}
 
 	#[test]

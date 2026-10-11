@@ -1,227 +1,262 @@
-use math::Vector;
-use smallvec::SmallVec;
+//! The broad phase finds the world bounds that overlap, so the narrow phase only tests those pairs.
 
-use crate::physics::dynabit::{body::PhysicsBody, contact::Pair};
+use std::{
+	ops::Range,
+	simd::{cmp::SimdPartialOrd as _, f32x4},
+};
 
-/// The `PseudoBody` struct represents one sortable swept-bounds endpoint.
-pub struct PseudoBody {
-	id: usize,
-	value: f32,
-	is_min: bool,
+use math::AABB;
+
+use crate::physics::dynabit::contact::Pair;
+
+/// The number of bounds one sweep step tests at once.
+const WIDTH: usize = 4;
+
+/// The `SweepBounds` struct keeps a step's world bounds sorted along one axis, so the pairs that overlap are found by
+/// scanning each box's neighbors instead of testing every pair.
+///
+/// Call [`Self::rebuild`] with the step's bounds, then [`Self::overlaps`] to read the overlapping pairs. To spread
+/// the scan over lanes, give each lane its own range of `0..`[`Self::count`].
+#[derive(Default)]
+pub struct SweepBounds {
+	/// The identifier each sorted box was staged with.
+	ids: Vec<u32>,
+	/// The smallest corner of each sorted box as one array per axis. Index 0 is the sweep axis.
+	///
+	/// Every array ends in `WIDTH` entries that overlap nothing, so a scan can read whole groups past the last box.
+	min: [Vec<f32>; 3],
+	/// The largest corner of each sorted box, laid out like `min`.
+	max: [Vec<f32>; 3],
+	/// The boxes as they were received, kept between rebuilds so staging them does not allocate.
+	staged: Vec<StagedBounds>,
 }
 
-impl Eq for PseudoBody {}
+/// The `StagedBounds` struct holds one box between being received and being sorted along the sweep axis.
+struct StagedBounds {
+	id: u32,
+	min: [f32; 3],
+	max: [f32; 3],
+}
 
-impl PartialEq for PseudoBody {
-	fn eq(&self, other: &Self) -> bool {
-		self.cmp(other) == std::cmp::Ordering::Equal
+impl SweepBounds {
+	/// Returns the number of boxes [`Self::overlaps`] can scan.
+	pub fn count(&self) -> usize {
+		self.ids.len()
 	}
-}
 
-impl Ord for PseudoBody {
-	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-		self.value
-			.total_cmp(&other.value)
-			.then_with(|| other.is_min.cmp(&self.is_min))
-			.then_with(|| self.id.cmp(&other.id))
-	}
-}
-
-impl PartialOrd for PseudoBody {
-	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		Some(self.cmp(other))
-	}
-}
-
-/// Projects swept world bounds onto a stable axis and sorts their endpoints.
-pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[PseudoBody; 32]> {
-	debug_assert!(
-		dt.is_finite() && dt >= 0.0,
-		"Broad-phase delta is invalid. The most likely cause is passing a negative or non-finite frame interval."
-	);
-	let minimum_body_count = bodies.size_hint().0;
-	debug_assert!(
-		minimum_body_count.checked_mul(2).is_some(),
-		"Broad-phase endpoint capacity overflowed. The most likely cause is an invalid iterator size hint."
-	);
-	// A positive scaling of this axis preserves endpoint ordering, so unit length is unnecessary.
-	let axis: Vector = Vector::new(1.0, 1.0, 1.0);
-	let mut endpoints = SmallVec::with_capacity(minimum_body_count.saturating_mul(2));
-	for (id, body) in bodies {
-		let current = body.bounds();
-		let future_min = current.min() + body.linear_velocity * dt;
-		let future_max = current.max() + body.linear_velocity * dt;
-		let min = math::Point::new(
-			current.min().x().min(future_min.x()) - 0.01,
-			current.min().y().min(future_min.y()) - 0.01,
-			current.min().z().min(future_min.z()) - 0.01,
-		);
-		let max = math::Point::new(
-			current.max().x().max(future_max.x()) + 0.01,
-			current.max().y().max(future_max.y()) + 0.01,
-			current.max().z().max(future_max.z()) + 0.01,
-		);
-		endpoints.push(PseudoBody {
-			id,
-			value: axis.dot(min - math::Point::origin()),
-			is_min: true,
-		});
-		endpoints.push(PseudoBody {
-			id,
-			value: axis.dot(max - math::Point::origin()),
-			is_min: false,
-		});
-	}
-	endpoints.sort();
-	endpoints
-}
-
-/// Builds every unique pair whose projected intervals overlap.
-pub fn build_pairs(endpoints: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
-	let mut pairs = SmallVec::new();
-	let mut active = SmallVec::<[usize; 32]>::new();
-	for endpoint in endpoints {
-		if endpoint.is_min {
-			pairs.extend(active.iter().copied().map(|id| Pair::new(id, endpoint.id)));
-			active.push(endpoint.id);
-		} else if let Some(index) = active.iter().position(|id| *id == endpoint.id) {
-			// Preserve opening order so contact generation remains deterministic.
-			active.remove(index);
-		} else {
+	/// Replaces the stored boxes with `bounds`, each identified by the `usize` it comes with.
+	///
+	/// The boxes are sorted along the axis on which the fewest of them share a stretch, which keeps each box's scan
+	/// in [`Self::overlaps`] short.
+	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
+		self.staged.clear();
+		self.staged.extend(bounds.map(|(id, bounds)| {
 			debug_assert!(
-				false,
-				"Broad-phase interval closes before opening. The most likely cause is malformed or unsorted endpoint input."
+				u32::try_from(id).is_ok(),
+				"Broad-phase identifier is too large. The most likely cause is a body index above the 32-bit slot range."
 			);
+			StagedBounds {
+				id: id as u32,
+				min: bounds.min().to_array(),
+				max: bounds.max().to_array(),
+			}
+		}));
+
+		let sweep_axis = least_crowded_axis(&self.staged);
+		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
+
+		// Identifiers break ties, so equal bounds come out in the same order whatever order they were staged in.
+		self.staged.sort_unstable_by(|first, second| {
+			first.min[sweep_axis]
+				.total_cmp(&second.min[sweep_axis])
+				.then_with(|| first.id.cmp(&second.id))
+		});
+
+		self.ids.clear();
+		self.ids.extend(self.staged.iter().map(|staged| staged.id));
+		for (slot, axis) in axes.into_iter().enumerate() {
+			// A comparison with NaN is never true, so the padding overlaps nothing, not even unbounded boxes.
+			let padding = std::iter::repeat_n(f32::NAN, WIDTH);
+			self.min[slot].clear();
+			self.min[slot].extend(self.staged.iter().map(|staged| staged.min[axis]).chain(padding.clone()));
+			self.max[slot].clear();
+			self.max[slot].extend(self.staged.iter().map(|staged| staged.max[axis]).chain(padding));
 		}
 	}
-	debug_assert!(
-		active.is_empty(),
-		"Broad-phase intervals remain open. The most likely cause is a missing maximum endpoint."
-	);
-	pairs
+
+	/// Calls `found` with every pair of overlapping boxes whose first box, in sweep order, lies in `range`.
+	///
+	/// Boxes that only touch count as overlapping. Ranges that together cover `0..`[`Self::count`] report every pair
+	/// exactly once, and reading them in ascending order gives the same sequence as one scan of the whole range.
+	pub fn overlaps(&self, range: Range<usize>, mut found: impl FnMut(Pair)) {
+		let count = self.ids.len();
+		let [min_sweep, min_second, min_third] = &self.min;
+		let [max_sweep, max_second, max_third] = &self.max;
+		for first in range {
+			let reach = f32x4::splat(max_sweep[first]);
+			let (low_second, high_second) = (f32x4::splat(min_second[first]), f32x4::splat(max_second[first]));
+			let (low_third, high_third) = (f32x4::splat(min_third[first]), f32x4::splat(max_third[first]));
+			let mut next = first + 1;
+			while next < count {
+				let group = next..next + WIDTH;
+				let within_reach = f32x4::from_slice(&min_sweep[group.clone()]).simd_le(reach);
+				let overlapping = within_reach
+					& f32x4::from_slice(&min_second[group.clone()]).simd_le(high_second)
+					& f32x4::from_slice(&max_second[group.clone()]).simd_ge(low_second)
+					& f32x4::from_slice(&min_third[group.clone()]).simd_le(high_third)
+					& f32x4::from_slice(&max_third[group]).simd_ge(low_third);
+				let mut lanes = overlapping.to_bitmask();
+				while lanes != 0 {
+					let lane = lanes.trailing_zeros() as usize;
+					found(Pair::new(self.ids[first] as usize, self.ids[next + lane] as usize));
+					lanes &= lanes - 1;
+				}
+				// Boxes are sorted by where they start on the sweep axis, so the first one that starts past this
+				// box's end is followed only by boxes that do too.
+				if !within_reach.all() {
+					break;
+				}
+				next += WIDTH;
+			}
+		}
+	}
 }
 
-/// Returns broad-phase candidate pairs using sweep and prune.
-pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[Pair; 32]> {
-	build_pairs(&sort_bodies_bounds(bodies, dt))
+/// Returns the axis on which the fewest boxes overlap each other, judged from an evenly spaced sample of `boxes`.
+///
+/// Counting real overlaps, instead of measuring how far the boxes spread, keeps a few distant boxes from picking an
+/// axis that the rest are stacked along. Ties go to the lower axis.
+fn least_crowded_axis(boxes: &[StagedBounds]) -> usize {
+	/// Enough boxes to tell a crowded axis from a sparse one, and few enough to compare every pair of them.
+	const SAMPLES: usize = 64;
+	let samples = boxes.len().min(SAMPLES);
+	let sample = |index: usize| &boxes[index * boxes.len() / samples];
+	let mut overlaps = [0u32; 3];
+	for first in 0..samples {
+		for second in first + 1..samples {
+			let (first, second) = (sample(first), sample(second));
+			for axis in 0..3 {
+				overlaps[axis] += u32::from(first.min[axis] <= second.max[axis] && second.min[axis] <= first.max[axis]);
+			}
+		}
+	}
+	let mut least = 0;
+	for axis in 1..3 {
+		if overlaps[axis] < overlaps[least] {
+			least = axis;
+		}
+	}
+	least
 }
 
 #[cfg(test)]
 mod tests {
-	use math::Orientation;
+	use math::{Point, Vector};
 
 	use super::*;
-	use crate::{
-		core::factory::Factory,
-		physics::{body::BodyTypes, collider::Shapes},
-	};
 
-	fn endpoint(id: usize, value: f32, is_min: bool) -> PseudoBody {
-		PseudoBody { id, value, is_min }
+	/// Returns a box from its center and half extents.
+	fn bounds(center: [f32; 3], half_extents: [f32; 3]) -> AABB {
+		AABB::from_center_and_half_extents(Point::from_array(center), Vector::from_array(half_extents))
 	}
 
-	fn sorted_endpoints(endpoints: impl IntoIterator<Item = PseudoBody>) -> Vec<PseudoBody> {
-		let mut endpoints = endpoints.into_iter().collect::<Vec<_>>();
-		endpoints.sort();
-		endpoints
-	}
-
-	fn canonical_pairs(pairs: impl IntoIterator<Item = Pair>) -> Vec<(usize, usize)> {
-		let mut pairs = pairs
-			.into_iter()
-			.map(|pair| (pair.a.min(pair.b), pair.a.max(pair.b)))
-			.collect::<Vec<_>>();
+	/// Returns the pairs a sweep of `boxes` reports, each ordered by identifier and sorted.
+	fn swept_pairs(boxes: &[AABB]) -> Vec<(usize, usize)> {
+		let mut sweep = SweepBounds::default();
+		sweep.rebuild(boxes.iter().copied().enumerate());
+		let mut pairs = Vec::new();
+		sweep.overlaps(0..sweep.count(), |pair| pairs.push((pair.a.min(pair.b), pair.a.max(pair.b))));
 		pairs.sort_unstable();
 		pairs
 	}
 
-	fn body(position: math::Point, linear_velocity: Vector) -> PhysicsBody {
-		let factory = Factory::<()>::new();
-		PhysicsBody {
-			body_type: BodyTypes::Dynamic,
-			collision_shape: Shapes::Sphere { radius: 0.5 },
-			position,
-			orientation: Orientation::identity(),
-			scale: math::Scale::identity(),
-			linear_velocity,
-			angular_velocity: Vector::zero(),
-			inv_mass: 1.0,
-			center_of_mass: math::Point::origin(),
-			elasticity: 0.0,
-			friction: 1.0,
-			handle: factory.create(()),
+	/// Returns boxes scattered through a volume by a fixed integer hash, densely enough that many overlap.
+	fn scattered_boxes(count: usize) -> Vec<AABB> {
+		let unit = |seed: u32| (seed.wrapping_mul(0x9E37_79B9) >> 8) as f32 / (1u32 << 24) as f32;
+		(0..count as u32)
+			.map(|index| {
+				let center = [unit(index * 3) * 12.0, unit(index * 3 + 1) * 4.0, unit(index * 3 + 2) * 9.0];
+				let half_extents = [0.2 + unit(index + 500), 0.2 + unit(index + 900), 0.2 + unit(index + 1300)];
+				bounds(center, half_extents)
+			})
+			.collect()
+	}
+
+	#[test]
+	fn boxes_that_overlap_on_every_axis_are_paired() {
+		let boxes = [
+			bounds([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+			// Overlaps the first box on every axis.
+			bounds([1.5, 0.5, -0.5], [1.0, 1.0, 1.0]),
+			// Overlaps the first box on two axes only.
+			bounds([0.0, 5.0, 0.0], [1.0, 1.0, 1.0]),
+			// Lies inside the first box.
+			bounds([0.2, 0.2, 0.2], [0.1, 0.1, 0.1]),
+		];
+
+		assert_eq!(swept_pairs(&boxes), [(0, 1), (0, 3)]);
+	}
+
+	#[test]
+	fn boxes_that_only_touch_are_paired() {
+		for axis in 0..3 {
+			let mut center = [0.0; 3];
+			center[axis] = 2.0;
+			let boxes = [bounds([0.0; 3], [1.0; 3]), bounds(center, [1.0; 3])];
+
+			assert_eq!(swept_pairs(&boxes), [(0, 1)]);
 		}
 	}
 
 	#[test]
-	fn endpoint_order_is_total_and_opens_touching_intervals_before_closing() {
-		let endpoints = sorted_endpoints([
-			endpoint(2, 1.0, false),
-			endpoint(1, 1.0, false),
-			endpoint(2, 1.0, true),
-			endpoint(1, 1.0, true),
-		]);
+	fn sweep_reports_the_pairs_an_exhaustive_test_finds() {
+		// More boxes than one group holds, in an order unrelated to their positions.
+		let boxes = scattered_boxes(67);
+		let mut expected = Vec::new();
+		for first in 0..boxes.len() {
+			for second in first + 1..boxes.len() {
+				let (a, b) = (&boxes[first], &boxes[second]);
+				let (a_min, a_max) = (a.min().to_array(), a.max().to_array());
+				let (b_min, b_max) = (b.min().to_array(), b.max().to_array());
+				if (0..3).all(|axis| a_min[axis] <= b_max[axis] && b_min[axis] <= a_max[axis]) {
+					expected.push((first, second));
+				}
+			}
+		}
 
-		assert_eq!(
-			endpoints
-				.iter()
-				.map(|endpoint| (endpoint.id, endpoint.is_min))
-				.collect::<Vec<_>>(),
-			[(1, true), (2, true), (1, false), (2, false)]
+		assert!(expected.len() > boxes.len());
+		assert_eq!(swept_pairs(&boxes), expected);
+	}
+
+	#[test]
+	fn split_ranges_report_the_same_sequence_as_one_scan() {
+		let boxes = scattered_boxes(67);
+		let mut sweep = SweepBounds::default();
+		sweep.rebuild(boxes.iter().copied().enumerate());
+		let mut whole = Vec::new();
+		sweep.overlaps(0..sweep.count(), |pair| whole.push((pair.a, pair.b)));
+
+		let mut split = Vec::new();
+		for range in [0..9, 9..9, 9..40, 40..sweep.count()] {
+			sweep.overlaps(range, |pair| split.push((pair.a, pair.b)));
+		}
+
+		assert_eq!(split, whole);
+	}
+
+	#[test]
+	fn rebuilding_replaces_the_previous_boxes() {
+		let mut sweep = SweepBounds::default();
+		sweep.rebuild(scattered_boxes(67).into_iter().enumerate());
+		sweep.rebuild(
+			[bounds([0.0; 3], [1.0; 3]), bounds([5.0, 0.0, 0.0], [1.0; 3])]
+				.into_iter()
+				.enumerate(),
 		);
-	}
+		let mut pairs = 0;
+		sweep.overlaps(0..sweep.count(), |_| pairs += 1);
 
-	#[test]
-	fn sweep_generates_all_pairs_among_simultaneously_active_bodies() {
-		let endpoints = sorted_endpoints([
-			endpoint(0, 0.0, true),
-			endpoint(0, 3.0, false),
-			endpoint(1, 1.0, true),
-			endpoint(1, 4.0, false),
-			endpoint(2, 2.0, true),
-			endpoint(2, 5.0, false),
-		]);
-
-		assert_eq!(canonical_pairs(build_pairs(&endpoints)), [(0, 1), (0, 2), (1, 2)]);
-	}
-
-	#[test]
-	fn sweep_distinguishes_disjoint_nested_and_touching_intervals() {
-		let disjoint = sorted_endpoints([
-			endpoint(0, 0.0, true),
-			endpoint(0, 1.0, false),
-			endpoint(1, 2.0, true),
-			endpoint(1, 3.0, false),
-		]);
-
-		assert!(build_pairs(&disjoint).is_empty());
-
-		let nested = sorted_endpoints([
-			endpoint(0, 0.0, true),
-			endpoint(0, 3.0, false),
-			endpoint(1, 1.0, true),
-			endpoint(1, 2.0, false),
-		]);
-
-		assert_eq!(canonical_pairs(build_pairs(&nested)), [(0, 1)]);
-
-		let touching = sorted_endpoints([
-			endpoint(0, 0.0, true),
-			endpoint(0, 1.0, false),
-			endpoint(1, 1.0, true),
-			endpoint(1, 2.0, false),
-		]);
-
-		assert_eq!(canonical_pairs(build_pairs(&touching)), [(0, 1)]);
-	}
-
-	#[test]
-	fn swept_bounds_keep_fast_crossing_bodies_in_the_candidate_set() {
-		let bodies = [
-			body(math::Point::new(-5.0, -5.0, -5.0), Vector::new(10.0, 10.0, 10.0)),
-			body(math::Point::origin(), Vector::zero()),
-		];
-
-		assert_eq!(canonical_pairs(broadphase(bodies.iter().enumerate(), 1.0)), [(0, 1)]);
+		assert_eq!(sweep.count(), 2);
+		assert_eq!(pairs, 0);
 	}
 }

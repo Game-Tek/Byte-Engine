@@ -26,4 +26,4 @@ pub use collider::Shapes;
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;
 pub use dynabit::contact::{Contact, Pair, Side};
-pub use intersection::PseudoBody;
+pub use intersection::SweepBounds;

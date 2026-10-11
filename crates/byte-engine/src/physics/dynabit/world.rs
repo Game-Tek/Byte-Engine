@@ -1,11 +1,12 @@
+use std::ops::Range;
+
 use math::{Scale, Vector};
-use smallvec::SmallVec;
 use utils::{StableVec, StableVecHandle, hash::HashMap, sync::Mutex};
 
 use crate::{
 	application::Time,
 	core::{
-		alley::{Alley, ConcreteLane, Lane as _},
+		alley::{Alley, Lane as _},
 		channel::Channel,
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
@@ -16,12 +17,38 @@ use crate::{
 		body::{Body, BodyTypes},
 		dynabit::{
 			body::{PhysicsBody, intersect},
-			contact::{Contact, Pair},
+			contact::Contact,
+			solver::{self, ContactBatches, Response},
 		},
-		intersection::broadphase,
+		intersection::SweepBounds,
 	},
 	time::MediaTime,
 };
+
+/// The fewest contacts a batch needs before [`World::update_with_alley`] shares it between lanes.
+///
+/// Sharing a batch costs two more stages that every lane has to meet at, which is more than a small batch takes
+/// to resolve on one lane. With four lanes on an Apple M4, steps of 1,000 and of 4,000 stacked cubes got no
+/// faster below this size.
+const SHARED_BATCH_CONTACTS: usize = 128;
+
+/// The number of bodies from which [`World::update_with_alley`] runs a step on [`LARGE_STEP_LANES`] lanes
+/// instead of [`SMALL_STEP_LANES`].
+const LARGE_STEP_BODIES: usize = 4000;
+
+/// The lanes that run a step of fewer than [`LARGE_STEP_BODIES`] bodies.
+///
+/// Every stage of a step ends only once each running lane has reached it, and a small step's shares are short,
+/// so more lanes spend longer meeting than they save.
+const SMALL_STEP_LANES: usize = 2;
+
+/// The lanes that run a step of at least [`LARGE_STEP_BODIES`] bodies.
+const LARGE_STEP_LANES: usize = 4;
+
+/// The most batches of one step [`World::update_with_alley`] shares between lanes.
+///
+/// An alley execution has a fixed number of stages, and every shared batch takes two of them.
+const MAX_SHARED_BATCHES: usize = 8;
 
 /// The `World` struct owns Dynabit simulation state and synchronizes it with entity handles.
 pub struct World {
@@ -32,12 +59,16 @@ pub struct World {
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 	/// Scratch buffer, indexed by body slot, recording how far into the current step each body has advanced.
 	body_times: Vec<MediaTime>,
-	/// The candidate pairs of the step [`Self::update_with_alley`] is running, shared by every lane's narrow phase.
-	pairs: SmallVec<[Pair; 32]>,
-	/// The contacts each lane found in its share of `pairs`, indexed by lane. Each lane locks only its own entry.
-	lane_contacts: Vec<Mutex<Vec<Contact>>>,
-	/// The step's contacts gathered from every lane, kept between steps so gathering does not allocate.
+	/// The bounds every body sweeps through during the current step, which contact detection scans for overlaps.
+	bounds: SweepBounds,
+	/// The contacts each lane found in its share of `bounds`, indexed by lane. Each lane locks only its own entry.
+	share_contacts: Vec<Mutex<Vec<Contact>>>,
+	/// The step's contacts in time-of-impact order, kept between steps so gathering them does not allocate.
 	contacts: Vec<Contact>,
+	/// The contacts at the start of the step, sorted into batches that can each be resolved in any order.
+	batches: ContactBatches,
+	/// The responses each lane computed for its share of one batch, indexed by lane like `share_contacts`.
+	share_responses: Vec<Mutex<Vec<Response>>>,
 }
 
 impl World {
@@ -53,9 +84,11 @@ impl World {
 			body_delete_listener,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 			body_times: Vec::new(),
-			pairs: SmallVec::new(),
-			lane_contacts: Vec::new(),
+			bounds: SweepBounds::default(),
+			share_contacts: Vec::new(),
 			contacts: Vec::new(),
+			batches: ContactBatches::default(),
+			share_responses: Vec::new(),
 		}
 	}
 
@@ -86,21 +119,23 @@ impl World {
 		time: Time,
 		transforms_rx: &mut impl Listener<TransformationUpdate>,
 		transforms_tx: &impl Channel<TransformationUpdate>,
-		allocator: &mut bumpalo::Bump,
 	) {
 		self.adopt_updates(transforms_rx);
 
 		let step = time.delta();
 		self.update_velocities(step);
-		let remaining = step - self.update_collisions(step, allocator);
+		let remaining = step - self.update_collisions(step);
 		self.update_bodies(remaining, transforms_tx);
 	}
 
 	/// Processes entity updates, advances physics as one execution of `alley`, and publishes resulting transforms.
 	///
-	/// Every lane runs the same step. One lane applies gravity and finds the candidate pairs while the others wait,
-	/// every lane then tests its share of the pairs, and one lane resolves the contacts and moves the bodies.
-	/// Contacts are resolved in the order [`Self::update`] resolves them, so both produce the same simulation.
+	/// A step of fewer than 4,000 bodies runs on two of `alley`'s lanes and a larger one on four; the other lanes
+	/// stay asleep. Every running lane runs the same step. One lane applies gravity and sorts the bodies' bounds
+	/// while the others wait, every lane then finds the contacts in its share of the bounds, and one lane resolves
+	/// them and moves the bodies. Lanes also share the larger batches of simultaneous contacts. Contacts are
+	/// resolved in the order [`Self::update`] resolves them, so both produce the same simulation with any number
+	/// of lanes.
 	pub fn update_with_alley(
 		&mut self,
 		time: Time,
@@ -112,14 +147,32 @@ impl World {
 		self.adopt_updates(transforms_rx);
 
 		let step = time.delta();
-		// Entries are only added, so each lane keeps the contact storage it grew in earlier steps.
-		if self.lane_contacts.len() < alley.parallelism() {
-			self.lane_contacts.resize_with(alley.parallelism(), Default::default);
+		let preferred_lanes = if self.bodies.len() < LARGE_STEP_BODIES {
+			SMALL_STEP_LANES
+		} else {
+			LARGE_STEP_LANES
+		};
+		let lanes = preferred_lanes.min(alley.parallelism());
+		// Entries are only added, so each lane keeps the storage it grew in earlier steps.
+		if self.share_contacts.len() < lanes {
+			self.share_contacts.resize_with(lanes, Default::default);
+			self.share_responses.resize_with(lanes, Default::default);
 		}
-		let executed = alley.execute_phased(self, |lane, world| {
-			lane.broadcast_mut(world, |world| world.find_pairs(step));
-			let _ = lane.each_ref(world, |world, lane| world.detect_lane_contacts(lane, step));
-			lane.broadcast_mut(world, |world| world.resolve_lane_contacts(step, transforms_tx));
+		let executed = alley.execute_phased(self, lanes, |lane, world| {
+			lane.broadcast_mut(world, |world| {
+				world.update_velocities(step);
+				world.sweep_bodies(step);
+			});
+			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane.idx(), lanes, step));
+			let shared_batches = lane.broadcast_mut(world, |world| world.batch_share_contacts());
+			for batch in 0..shared_batches {
+				let _ = lane.each_ref(world, |world, lane| world.respond_to_share(batch, lane.idx(), lanes));
+				lane.broadcast_mut(world, |world| world.apply_share_responses());
+			}
+			lane.broadcast_mut(world, |world| {
+				let remaining = step - world.resolve_contacts(shared_batches);
+				world.update_bodies(remaining, transforms_tx);
+			});
 		});
 		if let Err(panic) = executed {
 			std::panic::resume_unwind(panic);
@@ -143,32 +196,105 @@ impl World {
 		}
 	}
 
-	/// Applies gravity and finds the step's candidate pairs for every lane's narrow phase.
-	fn find_pairs(&mut self, dt: MediaTime) {
-		self.update_velocities(dt);
-		self.pairs = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
+	/// Sorts the bounds every body sweeps through during the step, ready for [`Self::detect_contacts`].
+	fn sweep_bodies(&mut self, dt: MediaTime) {
+		let seconds = dt.as_seconds_f32();
+		self.bounds.rebuild(
+			self.bodies
+				.indexed_iter()
+				.map(|(index, body)| (index, body.swept_bounds(seconds))),
+		);
 	}
 
-	/// Tests one lane's share of the candidate pairs and keeps the contacts found in that lane's storage.
-	fn detect_lane_contacts(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
-		let storage = &self.lane_contacts[lane.idx()];
-		// Work on the stack so lanes do not write to neighboring storage headers while they test pairs.
+	/// Adds to `contacts` the contacts between each body in `range` of the swept bounds and the bodies after it.
+	///
+	/// Ranges that cover every swept bound find each contact once, in the same order whatever the ranges are.
+	fn detect_contacts(&self, range: Range<usize>, dt: f32, contacts: &mut Vec<Contact>) {
+		self.bounds.overlaps(range, |pair| {
+			let (Some(a), Some(b)) = (self.bodies.get_slot(pair.a), self.bodies.get_slot(pair.b)) else {
+				return;
+			};
+			// Two bodies without mass cannot exchange an impulse, so their contact would change nothing.
+			if a.inv_mass + b.inv_mass != 0.0 {
+				contacts.extend(intersect((a, pair.a), (b, pair.b), dt));
+			}
+		});
+	}
+
+	/// Finds the contacts in one of `shares` equal parts of the swept bounds and keeps them in that share's storage.
+	fn detect_share_contacts(&self, share: usize, shares: usize, dt: MediaTime) {
+		let storage = &self.share_contacts[share];
+		// Work on the stack so lanes do not write to neighboring storage headers while they test bodies.
 		let mut contacts = std::mem::take(&mut *storage.lock());
-		contacts.extend(self.detect_collisions_from_pairs(lane.share(&self.pairs), dt.as_seconds_f32()));
+		self.detect_contacts(
+			share_range(self.bounds.count(), share, shares),
+			dt.as_seconds_f32(),
+			&mut contacts,
+		);
 		*storage.lock() = contacts;
 	}
 
-	/// Resolves the contacts every lane found, then moves the bodies through the rest of the step.
-	fn resolve_lane_contacts(&mut self, dt: MediaTime, transforms_tx: &impl Channel<TransformationUpdate>) {
-		let mut contacts = std::mem::take(&mut self.contacts);
-		// Lane shares are contiguous and in pair order, so gathering by lane keeps the order pairs were found in.
-		for lane_contacts in &mut self.lane_contacts {
-			contacts.append(lane_contacts.get_mut());
+	/// Gathers the contacts found in every share and batches them, then returns how many batches lanes should share.
+	fn batch_share_contacts(&mut self) -> usize {
+		// Shares are consecutive ranges of the swept bounds, so gathering by share keeps the order one scan finds.
+		for share_contacts in &mut self.share_contacts {
+			self.contacts.append(share_contacts.get_mut());
 		}
-		let remaining = dt - self.resolve_contacts(&mut contacts);
-		contacts.clear();
-		self.contacts = contacts;
-		self.update_bodies(remaining, transforms_tx);
+		self.batch_contacts();
+		// Batches fill from the first one, so the large ones lead.
+		(0..self.batches.len().min(MAX_SHARED_BATCHES))
+			.take_while(|batch| self.batches.batch(*batch).len() >= SHARED_BATCH_CONTACTS)
+			.count()
+	}
+
+	/// Orders the step's contacts by time of impact and batches the ones at the start of the step.
+	///
+	/// Bodies that already overlap are in contact at the same time, so no order among their contacts is more
+	/// correct than another. Batching picks one that lets a batch's contacts be resolved together.
+	fn batch_contacts(&mut self) {
+		self.contacts.sort();
+		let immediate = self.immediate_contacts();
+		let bodies = &self.bodies;
+		// A body without mass is never changed by a contact, so any number of a batch's contacts can touch it.
+		let movable = |index: usize| {
+			bodies
+				.get_slot(index)
+				.is_some_and(|body| body.inv_mass != 0.0)
+				.then_some(index)
+		};
+		self.batches.rebuild(
+			bodies.slots_len(),
+			self.contacts[..immediate]
+				.iter()
+				.map(|contact| [movable(contact.a.object), movable(contact.b.object)]),
+		);
+	}
+
+	/// Returns how many of the sorted contacts happen at the start of the step.
+	fn immediate_contacts(&self) -> usize {
+		self.contacts.partition_point(|contact| contact.toi <= 0.0)
+	}
+
+	/// Computes the responses to one of `shares` equal parts of a batch and keeps them in that share's storage.
+	fn respond_to_share(&self, batch: usize, share: usize, shares: usize) {
+		let storage = &self.share_responses[share];
+		let mut responses = std::mem::take(&mut *storage.lock());
+		let batch = self.batches.batch(batch);
+		responses.extend(
+			batch[share_range(batch.len(), share, shares)]
+				.chunks(solver::WIDTH)
+				.map(|group| solver::respond(&self.bodies, &self.contacts, group)),
+		);
+		*storage.lock() = responses;
+	}
+
+	/// Writes the responses computed for every share of a batch to the bodies.
+	fn apply_share_responses(&mut self) {
+		for share_responses in &mut self.share_responses {
+			for response in share_responses.get_mut().drain(..) {
+				solver::apply(&mut self.bodies, &response);
+			}
+		}
 	}
 
 	/// Applies gravity-derived impulses to dynamic bodies.
@@ -179,40 +305,59 @@ impl World {
 		}
 	}
 
-	/// Detects and resolves contacts for this time step.
-	pub fn update_collisions(&mut self, dt: MediaTime, allocator: &mut bumpalo::Bump) -> MediaTime {
-		let mut contacts = bumpalo::collections::Vec::with_capacity_in(64, allocator);
-		let pairs = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
-		contacts.extend(self.detect_collisions_from_pairs(&pairs, dt.as_seconds_f32()));
-		self.resolve_contacts(&mut contacts)
+	/// Detects and resolves contacts for this time step, and returns how far into the step the last one happened.
+	pub fn update_collisions(&mut self, dt: MediaTime) -> MediaTime {
+		self.sweep_bodies(dt);
+		let mut contacts = std::mem::take(&mut self.contacts);
+		self.detect_contacts(0..self.bounds.count(), dt.as_seconds_f32(), &mut contacts);
+		self.contacts = contacts;
+		self.batch_contacts();
+		self.resolve_contacts(0)
 	}
 
-	/// Resolves `contacts` in time-of-impact order and returns how far into the step the last one happened.
+	/// Resolves the step's batches from `first_batch` on, then the remaining contacts in time-of-impact order, and
+	/// returns how far into the step the last contact happened.
 	///
-	/// Every body is left advanced to that time.
-	fn resolve_contacts(&mut self, contacts: &mut [Contact]) -> MediaTime {
-		contacts.sort();
-
-		// Each body records how far into the step it has advanced. A contact then only advances its own two bodies,
-		// so the loop costs O(contacts + bodies) instead of advancing every body once per contact.
-		self.body_times.clear();
-		self.body_times.resize(self.bodies.slots_len(), MediaTime::ZERO);
-		let mut accumulated = MediaTime::ZERO;
-		for contact in contacts.iter() {
-			// Contacts are sorted by time of impact, so contact times never go backwards.
-			let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
-			for index in [contact.a.object, contact.b.object] {
-				if let Some(body) = self.bodies.get_slot_mut(index) {
-					advance_body(body, &mut self.body_times[index], contact_time);
-				}
+	/// Every body is left advanced to that time, and the step's contacts are cleared.
+	fn resolve_contacts(&mut self, first_batch: usize) -> MediaTime {
+		for batch in first_batch..self.batches.len() {
+			for group in self.batches.batch(batch).chunks(solver::WIDTH) {
+				let response = solver::respond(&self.bodies, &self.contacts, group);
+				solver::apply(&mut self.bodies, &response);
 			}
-			self.resolve_contact(contact);
-			accumulated = contact_time;
 		}
-		// Catch up the bodies that no contact touched, or that were last touched earlier in the step.
-		for (index, body) in self.bodies.indexed_iter_mut() {
-			advance_body(body, &mut self.body_times[index], accumulated);
+		// Contacts that fit in no batch share bodies, so each one has to see the result of the one before it.
+		for contact in self.batches.leftover() {
+			let response = solver::respond(&self.bodies, &self.contacts, std::slice::from_ref(contact));
+			solver::apply(&mut self.bodies, &response);
 		}
+
+		let immediate = self.immediate_contacts();
+		let mut accumulated = MediaTime::ZERO;
+		if immediate < self.contacts.len() {
+			// Each body records how far into the step it has advanced. A contact then only advances its own two
+			// bodies, so the loop costs O(contacts + bodies) instead of advancing every body once per contact.
+			self.body_times.clear();
+			self.body_times.resize(self.bodies.slots_len(), MediaTime::ZERO);
+			for index in immediate..self.contacts.len() {
+				let contact = &self.contacts[index];
+				// Contacts are sorted by time of impact, so contact times never go backwards.
+				let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
+				for body_index in [contact.a.object, contact.b.object] {
+					if let Some(body) = self.bodies.get_slot_mut(body_index) {
+						advance_body(body, &mut self.body_times[body_index], contact_time);
+					}
+				}
+				let response = solver::respond(&self.bodies, &self.contacts, &[index as u32]);
+				solver::apply(&mut self.bodies, &response);
+				accumulated = contact_time;
+			}
+			// Catch up the bodies that no contact touched, or that were last touched earlier in the step.
+			for (index, body) in self.bodies.indexed_iter_mut() {
+				advance_body(body, &mut self.body_times[index], accumulated);
+			}
+		}
+		self.contacts.clear();
 		accumulated
 	}
 
@@ -224,104 +369,6 @@ impl World {
 				body.handle,
 				Transform::new(body.position, body.scale, body.orientation),
 			));
-		}
-	}
-
-	fn detect_collisions_from_pairs<'a>(&'a self, pairs: &'a [Pair], dt: f32) -> impl Iterator<Item = Contact> + 'a {
-		pairs
-			.iter()
-			.filter_map(move |pair| {
-				Some((
-					(self.bodies.get_slot(pair.a)?, pair.a),
-					(self.bodies.get_slot(pair.b)?, pair.b),
-				))
-			})
-			// Two bodies without mass cannot exchange an impulse, so their contact would be discarded when resolved.
-			.filter(|((a, _), (b, _))| a.inv_mass + b.inv_mass != 0.0)
-			.filter_map(move |(a, b)| intersect(a, b, dt))
-	}
-
-	fn resolve_contact(&mut self, contact: &Contact) {
-		let Some(a) = self.bodies.get_slot(contact.a.object).cloned() else {
-			return;
-		};
-		let Some(b) = self.bodies.get_slot(contact.b.object).cloned() else {
-			return;
-		};
-		let inverse_mass_sum = a.inv_mass + b.inv_mass;
-		if inverse_mass_sum == 0.0 {
-			return;
-		}
-
-		let a_center_of_mass = a.world_space_center_of_mass();
-		let b_center_of_mass = b.world_space_center_of_mass();
-		let mut normal = contact.normal;
-		if (b_center_of_mass - a_center_of_mass).dot(normal.into_vector()) < 0.0 {
-			normal = -normal;
-		}
-		let a_radius = contact.a.point - a_center_of_mass;
-		let b_radius = contact.b.point - b_center_of_mass;
-		let normal_vector = normal.into_vector();
-		let a_inverse_inertia = a.inverse_world_space_inertia_tensor();
-		let b_inverse_inertia = b.inverse_world_space_inertia_tensor();
-		let a_angular_factor =
-			Vector::from_maths(a_inverse_inertia * a_radius.cross(normal_vector).into_maths()).cross(a_radius);
-		let b_angular_factor =
-			Vector::from_maths(b_inverse_inertia * b_radius.cross(normal_vector).into_maths()).cross(b_radius);
-		let angular_factor = (a_angular_factor + b_angular_factor).dot(normal_vector);
-		let a_velocity = a.linear_velocity + a.angular_velocity.cross(a_radius);
-		let b_velocity = b.linear_velocity + b.angular_velocity.cross(b_radius);
-		let relative_velocity = a_velocity - b_velocity;
-		let impulse_denominator = inverse_mass_sum + angular_factor;
-		debug_assert!(
-			impulse_denominator.is_finite() && impulse_denominator > f32::EPSILON,
-			"Collision impulse denominator is invalid. The most likely cause is non-finite body mass or inertia data."
-		);
-		if !impulse_denominator.is_finite() || impulse_denominator <= f32::EPSILON {
-			return;
-		}
-		let impulse = (1.0 + a.elasticity * b.elasticity) * relative_velocity.dot(normal_vector) / impulse_denominator;
-		let impulse_vector = normal * impulse;
-		if let Some(a) = self.bodies.get_slot_mut(contact.a.object) {
-			a.apply_impulse(contact.a.point, -impulse_vector);
-		}
-		if let Some(b) = self.bodies.get_slot_mut(contact.b.object) {
-			b.apply_impulse(contact.b.point, impulse_vector);
-		}
-
-		let normal_velocity = normal * relative_velocity.dot(normal_vector);
-		let tangent_velocity = relative_velocity - normal_velocity;
-		if tangent_velocity.length_squared() > f32::EPSILON {
-			let tangent = tangent_velocity.normalized().expect("non-zero tangent velocity");
-			let tangent_vector = tangent.into_vector();
-			let a_friction_factor =
-				Vector::from_maths(a_inverse_inertia * a_radius.cross(tangent_vector).into_maths()).cross(a_radius);
-			let b_friction_factor =
-				Vector::from_maths(b_inverse_inertia * b_radius.cross(tangent_vector).into_maths()).cross(b_radius);
-			let friction_denominator = inverse_mass_sum + (a_friction_factor + b_friction_factor).dot(tangent_vector);
-			debug_assert!(
-				friction_denominator.is_finite() && friction_denominator > f32::EPSILON,
-				"Friction impulse denominator is invalid. The most likely cause is non-finite body mass or inertia data."
-			);
-			if friction_denominator.is_finite() && friction_denominator > f32::EPSILON {
-				let friction_impulse = tangent_velocity * ((a.friction * b.friction) / friction_denominator);
-				if let Some(a) = self.bodies.get_slot_mut(contact.a.object) {
-					a.apply_impulse(contact.a.point, -friction_impulse);
-				}
-				if let Some(b) = self.bodies.get_slot_mut(contact.b.object) {
-					b.apply_impulse(contact.b.point, friction_impulse);
-				}
-			}
-		}
-
-		if contact.toi == 0.0 {
-			let separation = normal * contact.depth;
-			if let Some(a) = self.bodies.get_slot_mut(contact.a.object) {
-				a.position = a.position - separation * (a.inv_mass / inverse_mass_sum);
-			}
-			if let Some(b) = self.bodies.get_slot_mut(contact.b.object) {
-				b.position += separation * (b.inv_mass / inverse_mass_sum);
-			}
 		}
 	}
 
@@ -374,6 +421,11 @@ impl World {
 	}
 }
 
+/// Returns part `share` of `count` items split into `shares` consecutive parts of nearly equal size.
+fn share_range(count: usize, share: usize, shares: usize) -> Range<usize> {
+	count * share / shares..count * (share + 1) / shares
+}
+
 /// Advances a dynamic `body` from `body_time` to `time`, which is never earlier, within the current step.
 ///
 /// Only dynamic bodies move, matching [`World::update_bodies`].
@@ -388,7 +440,6 @@ fn advance_body(body: &mut PhysicsBody, body_time: &mut MediaTime, time: MediaTi
 mod tests {
 
 	use math::Orientation;
-	use smallvec::SmallVec;
 
 	use super::*;
 	use crate::{
@@ -443,16 +494,20 @@ mod tests {
 		}
 	}
 
+	/// Returns the contacts one step of `dt` seconds finds between the world's bodies.
+	fn detected_contacts(world: &mut World, dt: f32) -> Vec<Contact> {
+		world.sweep_bodies(MediaTime::from_seconds_f32(dt));
+		let mut contacts = Vec::new();
+		world.detect_contacts(0..world.bounds.count(), dt, &mut contacts);
+		contacts
+	}
+
 	fn resolve_penetration_depth(bodies: Vec<PhysicsBody>, dt: f32) -> f32 {
 		let mut world = make_world();
 		world.bodies = bodies.into_iter().collect();
-		let pairs = broadphase(world.bodies.indexed_iter(), dt);
-		let contacts = world
-			.detect_collisions_from_pairs(&pairs, dt)
-			.collect::<SmallVec<[Contact; 8]>>();
 
-		assert_eq!(contacts.len(), 1);
-		world.resolve_contact(&contacts[0]);
+		assert_eq!(detected_contacts(&mut world, dt).len(), 1);
+		world.update_collisions(MediaTime::from_seconds_f32(dt));
 
 		intersect(
 			(world.bodies.get_slot(0).expect("first test body"), 0),
@@ -510,10 +565,7 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
-		let pairs = broadphase(world.bodies.indexed_iter(), 1.0);
-		let contacts = world
-			.detect_collisions_from_pairs(&pairs, 1.0)
-			.collect::<SmallVec<[Contact; 8]>>();
+		let contacts = detected_contacts(&mut world, 1.0);
 
 		assert_eq!(contacts.len(), 1);
 		assert_eq!((contacts[0].a.object, contacts[0].b.object), (0, 1));
@@ -554,19 +606,28 @@ mod tests {
 		let transforms = DefaultChannel::new();
 		let step = MediaTime::from_seconds_f32(0.5);
 
-		let remaining = step - world.update_collisions(step, &mut bumpalo::Bump::new());
+		let remaining = step - world.update_collisions(step);
 		world.update_bodies(remaining, &transforms);
 
 		let free_body = world.bodies.get_slot(2).expect("free test body");
 		assert!((free_body.position - math::Point::new(20.0, 0.0, 1.0)).length() <= 1e-4);
 	}
 
-	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other, so one step
-	/// produces more contacts than lanes.
+	/// The bodies along each side of the grid [`crowded_bodies`] returns.
+	const CROWD_SIDE: usize = 16;
+
+	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other, so one step has
+	/// enough contacts with the ground alone for lanes to share a batch.
 	fn crowded_bodies() -> Vec<PhysicsBody> {
-		let mut bodies = vec![make_ground_body()];
-		for index in 0..24 {
-			let position = math::Point::new((index % 6) as f32 * 0.8 - 2.0, 1.4, (index / 6) as f32 * 0.8 - 1.2);
+		const { assert!(CROWD_SIDE * CROWD_SIDE >= 2 * SHARED_BATCH_CONTACTS) };
+		let mut ground = make_ground_body();
+		ground.collision_shape = Shapes::Cube {
+			size: Vector::new(8.0, 1.0, 8.0),
+		};
+		let mut bodies = vec![ground];
+		for index in 0..CROWD_SIDE * CROWD_SIDE {
+			let (column, row) = ((index % CROWD_SIDE) as f32, (index / CROWD_SIDE) as f32);
+			let position = math::Point::new(column * 0.8 - 6.0, 1.4, row * 0.8 - 6.0);
 			let mut body = make_dynamic_sphere_body(position, Vector::new(0.0, -1.0, 0.0), 0.5);
 			if index % 3 == 0 {
 				body.collision_shape = Shapes::Cube {
@@ -604,18 +665,38 @@ mod tests {
 
 	#[test]
 	fn alley_step_publishes_the_same_transforms_as_the_serial_step() {
-		let mut allocator = bumpalo::Bump::new();
 		let serial = published_positions(|world, time, authored, published| {
-			world.update(time, authored, published, &mut allocator);
-			allocator.reset();
+			world.update(time, authored, published);
 		});
 		let mut alley = Alley::with_parallelism(4);
 		let with_alley = published_positions(|world, time, authored, published| {
 			world.update_with_alley(time, authored, published, &mut alley);
 		});
 
-		assert_eq!(serial.len(), 30 * 24);
+		assert_eq!(serial.len(), 30 * CROWD_SIDE * CROWD_SIDE);
 		assert_eq!(with_alley, serial);
+	}
+
+	#[test]
+	fn spheres_that_meet_during_the_step_stop_where_they_touch() {
+		let mut world = make_world();
+		world.bodies = [
+			make_dynamic_sphere_body(math::Point::new(-2.0, 0.0, 0.0), Vector::new(4.0, 0.0, 0.0), 0.5),
+			make_dynamic_sphere_body(math::Point::new(2.0, 0.0, 0.0), Vector::new(-4.0, 0.0, 0.0), 0.5),
+		]
+		.into_iter()
+		.collect();
+
+		// The spheres close a three-meter gap at eight meters per second.
+		let impact = world.update_collisions(MediaTime::from_seconds_f32(1.0));
+
+		assert!((impact.as_seconds_f32() - 0.375).abs() <= 1e-4);
+		let (first, second) = (world.bodies.get_slot(0).unwrap(), world.bodies.get_slot(1).unwrap());
+		assert!((first.position - math::Point::new(-0.5, 0.0, 0.0)).length() <= 1e-3);
+		assert!((second.position - math::Point::new(0.5, 0.0, 0.0)).length() <= 1e-3);
+		// Equal masses without elasticity cancel each other's approach.
+		assert!(first.linear_velocity.length() <= 1e-3);
+		assert!(second.linear_velocity.length() <= 1e-3);
 	}
 
 	#[test]

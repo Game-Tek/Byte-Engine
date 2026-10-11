@@ -66,9 +66,7 @@
 
 ## Physics
 
-- Persist broadphase endpoints and implement a true sweep-and-prune active set with insertion sorting for temporal coherence.
-- Reuse endpoint, pair, and contact scratch storage based on body count and previous overlap counts.
-- Resolve contacts through disjoint mutable body access instead of cloning complete bodies.
+- Keep the broad phase's sweep order between steps and repair it with an insertion sort, since bodies move little from one step to the next.
 - Group contacts by time of impact or use collision substeps so every body is not advanced once per contact.
 
 ## Audio and input

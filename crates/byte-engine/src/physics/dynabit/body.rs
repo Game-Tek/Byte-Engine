@@ -13,6 +13,9 @@ use crate::{
 	time::MediaTime,
 };
 
+/// The fastest a contact may leave a body spinning, in radians per second.
+pub(crate) const MAX_ANGULAR_SPEED: f32 = 30.0;
+
 /// The `PhysicsBody` struct stores the mutable world-space state used by Dynabit.
 #[derive(Clone)]
 pub struct PhysicsBody {
@@ -33,31 +36,10 @@ pub struct PhysicsBody {
 }
 
 impl PhysicsBody {
-	/// Applies an impulse at a world-space contact point.
-	pub fn apply_impulse(&mut self, point: Point, impulse: Vector) {
-		if self.inv_mass == 0.0 {
-			return;
-		}
-		self.apply_linear_impulse(impulse);
-		self.apply_angular_impulse((point - self.world_space_center_of_mass()).cross(impulse));
-	}
-
 	/// Applies a world-space linear impulse.
 	pub fn apply_linear_impulse(&mut self, impulse: Vector) {
 		if self.inv_mass != 0.0 {
 			self.linear_velocity += impulse * self.inv_mass;
-		}
-	}
-
-	/// Applies a world-space angular impulse.
-	pub fn apply_angular_impulse(&mut self, impulse: Vector) {
-		if self.inv_mass == 0.0 {
-			return;
-		}
-		self.angular_velocity += Vector::from_maths(self.inverse_world_space_inertia_tensor() * impulse.into_maths());
-		const MAX_ANGULAR_SPEED: f32 = 30.0;
-		if self.angular_velocity.length_squared() > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
-			self.angular_velocity = self.angular_velocity.normalized().expect("finite angular velocity") * MAX_ANGULAR_SPEED;
 		}
 	}
 
@@ -71,18 +53,6 @@ impl PhysicsBody {
 		let local_offset = self.center_of_mass - Point::origin();
 		// Rotating a local offset into the world frame crosses a spatial math boundary.
 		self.position + Vector::from_maths(self.orientation.into_maths() * local_offset.into_maths())
-	}
-
-	/// Returns the inverse local inertia tensor as a raw matrix boundary value.
-	pub fn inverse_body_space_inertia_tensor(&self) -> Mat3f {
-		// The local tensor is diagonal, so its inverse is the reciprocal of each moment.
-		Mat3f::from_scale(maths_rs::recip(self.collision_shape.principal_inertia()) * self.inv_mass)
-	}
-
-	/// Returns the inverse world inertia tensor as a raw matrix boundary value.
-	pub fn inverse_world_space_inertia_tensor(&self) -> Mat3f {
-		let rotation = self.orientation.into_maths().get_matrix();
-		rotation * self.inverse_body_space_inertia_tensor() * rotation.transpose()
 	}
 
 	/// Advances the body by `dt` using its current linear and angular velocities.
@@ -125,6 +95,25 @@ impl PhysicsBody {
 			self.position + Vector::from_maths(local.min().into_maths()),
 			self.position + Vector::from_maths(local.max().into_maths()),
 		)
+	}
+
+	/// Returns world-space bounds around everywhere the body is during the next `dt` seconds at its current linear
+	/// velocity.
+	///
+	/// The bounds are slightly larger than the body, so bodies that are about to touch still count as overlapping.
+	/// Pass them to [`crate::physics::SweepBounds::rebuild`] to find the bodies this one may collide with.
+	pub fn swept_bounds(&self, dt: f32) -> AABB {
+		debug_assert!(
+			dt.is_finite() && dt >= 0.0,
+			"Swept bounds interval is invalid. The most likely cause is passing a negative or non-finite frame interval."
+		);
+		const MARGIN: f32 = 0.01;
+		let margin = Vector::new(MARGIN, MARGIN, MARGIN);
+		let current = self.bounds();
+		let travel = self.linear_velocity * dt;
+		let min = maths_rs::min(current.min().into_maths(), (current.min() + travel).into_maths());
+		let max = maths_rs::max(current.max().into_maths(), (current.max() + travel).into_maths());
+		AABB::new(Point::from_maths(min) - margin, Point::from_maths(max) + margin)
 	}
 }
 
@@ -175,6 +164,20 @@ mod tests {
 			friction: 1.0,
 			handle: crate::core::factory::Factory::<()>::new().create(()),
 		}
+	}
+
+	#[test]
+	fn swept_bounds_reach_where_a_fast_body_ends_the_step() {
+		let mut body = body();
+		body.position = Point::new(-5.0, -5.0, -5.0);
+		body.linear_velocity = Vector::new(10.0, 10.0, 10.0);
+
+		let swept = body.swept_bounds(1.0);
+
+		// The body has a radius of one and ends the step centered five units past the origin.
+		assert!(swept.min().x() <= -6.0 && swept.max().x() >= 6.0);
+		assert!(swept.min().y() <= -6.0 && swept.max().y() >= 6.0);
+		assert!(swept.min().z() <= -6.0 && swept.max().z() >= 6.0);
 	}
 
 	#[test]

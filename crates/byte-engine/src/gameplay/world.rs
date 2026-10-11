@@ -99,6 +99,21 @@ impl DefaultWorld {
 		self.physics_system.update(time, transforms_rx, &self.transforms, allocator);
 	}
 
+	/// Advances the world like [`Self::update`], running the physics step as one execution of `alley`.
+	///
+	/// Every lane takes part in the step; see [`dynabit::World::update_with_alley`]. No other dispatch of `alley`
+	/// may be running.
+	pub fn update_with_alley(
+		&mut self,
+		time: Time,
+		transforms_rx: &mut impl Listener<TransformationUpdate>,
+		alley: &mut Alley,
+	) {
+		self.cascade_posted_deletions();
+		self.physics_system
+			.update_with_alley(time, transforms_rx, &self.transforms, alley);
+	}
+
 	pub fn flush_deletions(&mut self) {
 		self.physics_system.process_pending_deletions();
 	}
@@ -207,6 +222,7 @@ use crate::{
 	application::Time,
 	audio::graph::{AudioGraph, AudioGraphFactory},
 	core::{
+		alley::Alley,
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Creator, Factory, Handle},
 		listener::{DefaultListener, Listener},

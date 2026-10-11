@@ -31,6 +31,21 @@ impl<'value, T> LaneMut<'value, T> {
 #[allow(unsafe_code, reason = "A stable owner lane provides exclusive mutable resource access.")]
 unsafe impl<T: Send> Sync for LaneMut<'_, T> {}
 
+/// The `LanePhased` struct gives every lane access to one resource in alternating exclusive and shared phases.
+///
+/// Use it when one lane function runs a whole algorithm: serial stages mutate the resource through
+/// [`ConcreteLane::broadcast_mut`] while the other lanes wait, and parallel stages read it from every lane through
+/// [`ConcreteLane::each_ref`]. Create one by dispatching with [`Alley::execute_phased`].
+pub struct LanePhased<'value, T> {
+	value: UnsafeCell<&'value mut T>,
+}
+
+// SAFETY: Lanes only reach the resource inside collective sections. A broadcast section admits one elected lane
+// while the others wait, and an `each` section admits only shared references and ends for every lane together.
+// The blocking dispatch prevents either access from outliving the original `&mut T`.
+#[allow(unsafe_code, reason = "Collective sections separate exclusive and shared resource access.")]
+unsafe impl<T: Send + Sync> Sync for LanePhased<'_, T> {}
+
 mod lane_resources_private {
 	// This token keeps wrapper construction inside the Alley dispatch API.
 	pub struct BindToken;
@@ -248,6 +263,57 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		}
 	}
 
+	/// Runs `f` with exclusive access to the resource on the first lane to reach this section and returns its
+	/// value to every lane.
+	///
+	/// Every other lane waits until `f` finishes, so a following [`Self::each_ref`] sees everything `f` wrote.
+	/// Every lane must encounter this section in the same order and with the same result type.
+	#[allow(unsafe_code, reason = "The elected lane exclusively dereferences the phased resource.")]
+	pub fn broadcast_mut<T, R, F>(&mut self, resource: &LanePhased<'_, T>, f: F) -> R
+	where
+		R: Copy + Send + Sync + 'static,
+		F: FnOnce(&mut T) -> R,
+	{
+		let (section, collective) = self.next_collective();
+		collective.broadcast(section, || {
+			// SAFETY: Only the lane elected for this registered broadcast section runs this closure. Every earlier
+			// `each_ref` section has ended on all lanes, and no lane passes this section before the value is ready.
+			let value = unsafe { &mut **resource.value.get() };
+			f(value)
+		})
+	}
+
+	/// Runs `f` on every lane with shared access to the resource and returns lane-ordered values after every
+	/// lane finished.
+	///
+	/// `f` also receives this lane, for [`Lane::idx`] and [`Self::share`]. Every lane must encounter this section
+	/// in the same order and with the same result type.
+	#[allow(unsafe_code, reason = "Every lane shares the phased resource for one collective section.")]
+	pub fn each_ref<T, R, F>(&mut self, resource: &LanePhased<'_, T>, f: F) -> LaneValues<'dispatch, R>
+	where
+		R: Copy + Send + Sync + 'static,
+		F: FnOnce(&T, &Self) -> R,
+	{
+		let lane_idx = self.lane_idx;
+		let lane_count = self.state.lane_count;
+		let (section, collective) = self.next_collective();
+		let lane = &*self;
+		collective.each(lane_idx, lane_count, section, || {
+			// SAFETY: This closure runs after the section registered as `each`, so no lane holds exclusive access:
+			// every earlier broadcast section has published. The section ends for all lanes only after every
+			// closure returned, so no shared reference reaches a later exclusive section.
+			let value = unsafe { &**resource.value.get() };
+			f(value, lane)
+		})
+	}
+
+	/// Returns this lane's balanced partition of `values`, the one [`Self::each_shared`] passes to its closure.
+	///
+	/// Every lane must pass the same slice so the partitions cover it exactly once.
+	pub fn share<'values, T>(&self, values: &'values [T]) -> &'values [T] {
+		shared_partition(values, self.lane_idx, self.state.lane_count)
+	}
+
 	/// Returns the value produced by the first lane to reach this broadcast section.
 	///
 	/// Every lane must encounter broadcast sections in the same order and with the same types.
@@ -283,7 +349,7 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		R: Copy + Send + Sync + 'static,
 		F: FnOnce(&[T]) -> R,
 	{
-		let partition = shared_partition(values, self.lane_idx, self.state.lane_count);
+		let partition = self.share(values);
 		self.each(move || f(partition))
 	}
 
@@ -732,6 +798,13 @@ impl Alley {
 		}
 	}
 
+	/// Returns the number of lanes every full dispatch runs.
+	///
+	/// Use it to size per-lane storage before a dispatch indexes it by [`Lane::idx`].
+	pub fn parallelism(&self) -> usize {
+		self.threadpool.parallelism()
+	}
+
 	/// Runs worker work alongside work confined to the calling thread, then returns both results.
 	///
 	/// Neither caller work nor its result needs to be `Send`. Both jobs finish before a captured panic
@@ -803,6 +876,29 @@ impl Alley {
 		let resources = resources.bind(parallelism, &mut next_index, lane_resources_private::BindToken);
 		let resources = &resources;
 		self.execute(move |lane| f(lane, resources))
+	}
+
+	/// Executes every lane with one resource that lanes access in alternating exclusive and shared phases.
+	///
+	/// Use this to run a whole algorithm as one lane function: [`ConcreteLane::broadcast_mut`] runs a serial stage
+	/// on one lane while the others wait, and [`ConcreteLane::each_ref`] runs a parallel stage on every lane.
+	/// The blocking dispatch keeps the mutable borrow bound until all lanes finish.
+	pub fn execute_phased<T, R, F>(&mut self, resource: &mut T, f: F) -> std::thread::Result<Vec<R>>
+	where
+		T: Send + Sync,
+		R: Send,
+		F: for<'dispatch, 'lane, 'resource, 'value> Fn(
+				&'lane mut ConcreteLane<'dispatch>,
+				&'resource LanePhased<'value, T>,
+			) -> R
+			+ Clone
+			+ Send,
+	{
+		let resource = LanePhased {
+			value: UnsafeCell::new(resource),
+		};
+		let resource = &resource;
+		self.execute(move |lane| f(lane, resource))
 	}
 
 	/// Runs resource-owning lanes alongside caller-bound work, then joins every lane.
@@ -1336,6 +1432,51 @@ mod tests {
 
 		assert_eq!(values, (1..=16).collect::<Vec<_>>());
 		assert_eq!(value.load(Ordering::Relaxed), 136);
+	}
+
+	#[test]
+	fn phased_resource_alternates_exclusive_and_shared_stages() {
+		let mut alley = Alley::with_parallelism(4);
+		let mut values = Vec::new();
+		let writers = AtomicUsize::new(0);
+
+		let totals = unwrap_dispatch(alley.execute_phased(&mut values, |lane, values| {
+			// One lane fills the resource while the others wait for it.
+			let count = lane.broadcast_mut(values, |values| {
+				writers.fetch_add(1, Ordering::Relaxed);
+				values.extend(1..=10usize);
+				values.len()
+			});
+			// Every lane then reads the finished resource and sums its own share.
+			let sums = lane.each_ref(values, |values, lane| {
+				assert_eq!(values.len(), count);
+				lane.share(values).iter().sum::<usize>()
+			});
+			let total = sums.sum::<usize>();
+			// A later exclusive stage sees the resource again after every reader left.
+			lane.broadcast_mut(values, |values| {
+				values.push(total);
+				total
+			})
+		}));
+
+		assert_eq!(writers.load(Ordering::Relaxed), 1);
+		assert_eq!(totals, [55; 4]);
+		assert_eq!(values.len(), 11);
+		assert_eq!(values[10], 55);
+	}
+
+	#[test]
+	fn phased_exclusive_stage_panic_releases_waiting_lanes() {
+		let mut alley = Alley::with_parallelism(4);
+		let mut value = 0usize;
+
+		let result = alley.execute_phased(&mut value, |lane, value| {
+			let _: usize = lane.broadcast_mut(value, |_| panic!("expected exclusive stage panic"));
+		});
+
+		assert!(result.is_err());
+		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
 	}
 
 	#[test]

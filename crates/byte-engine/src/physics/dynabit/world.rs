@@ -1,9 +1,11 @@
 use math::{Scale, Vector};
-use utils::{StableVec, StableVecHandle, hash::HashMap};
+use smallvec::SmallVec;
+use utils::{StableVec, StableVecHandle, hash::HashMap, sync::Mutex};
 
 use crate::{
 	application::Time,
 	core::{
+		alley::{Alley, ConcreteLane, Lane as _},
 		channel::Channel,
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
@@ -30,6 +32,12 @@ pub struct World {
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 	/// Scratch buffer, indexed by body slot, recording how far into the current step each body has advanced.
 	body_times: Vec<MediaTime>,
+	/// The candidate pairs of the step [`Self::update_with_alley`] is running, shared by every lane's narrow phase.
+	pairs: SmallVec<[Pair; 32]>,
+	/// The contacts each lane found in its share of `pairs`, indexed by lane. Each lane locks only its own entry.
+	lane_contacts: Vec<Mutex<Vec<Contact>>>,
+	/// The step's contacts gathered from every lane, kept between steps so gathering does not allocate.
+	contacts: Vec<Contact>,
 }
 
 impl World {
@@ -45,6 +53,9 @@ impl World {
 			body_delete_listener,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 			body_times: Vec::new(),
+			pairs: SmallVec::new(),
+			lane_contacts: Vec::new(),
+			contacts: Vec::new(),
 		}
 	}
 
@@ -77,6 +88,46 @@ impl World {
 		transforms_tx: &impl Channel<TransformationUpdate>,
 		allocator: &mut bumpalo::Bump,
 	) {
+		self.adopt_updates(transforms_rx);
+
+		let step = time.delta();
+		self.update_velocities(step);
+		let remaining = step - self.update_collisions(step, allocator);
+		self.update_bodies(remaining, transforms_tx);
+	}
+
+	/// Processes entity updates, advances physics as one execution of `alley`, and publishes resulting transforms.
+	///
+	/// Every lane runs the same step. One lane applies gravity and finds the candidate pairs while the others wait,
+	/// every lane then tests its share of the pairs, and one lane resolves the contacts and moves the bodies.
+	/// Contacts are resolved in the order [`Self::update`] resolves them, so both produce the same simulation.
+	pub fn update_with_alley(
+		&mut self,
+		time: Time,
+		transforms_rx: &mut impl Listener<TransformationUpdate>,
+		transforms_tx: &(impl Channel<TransformationUpdate> + Sync),
+		alley: &mut Alley,
+	) {
+		// Listeners belong to the calling thread, so messages are adopted before the lanes start.
+		self.adopt_updates(transforms_rx);
+
+		let step = time.delta();
+		// Entries are only added, so each lane keeps the contact storage it grew in earlier steps.
+		if self.lane_contacts.len() < alley.parallelism() {
+			self.lane_contacts.resize_with(alley.parallelism(), Default::default);
+		}
+		let executed = alley.execute_phased(self, |lane, world| {
+			lane.broadcast_mut(world, |world| world.find_pairs(step));
+			let _ = lane.each_ref(world, |world, lane| world.detect_lane_contacts(lane, step));
+			lane.broadcast_mut(world, |world| world.resolve_lane_contacts(step, transforms_tx));
+		});
+		if let Err(panic) = executed {
+			std::panic::resume_unwind(panic);
+		}
+	}
+
+	/// Registers created bodies and applies authored transforms to the bodies they target.
+	fn adopt_updates(&mut self, transforms_rx: &mut impl Listener<TransformationUpdate>) {
 		while let Some(message) = self.body_listener.read() {
 			let handle = message.handle();
 			let body = message.into_data();
@@ -90,10 +141,33 @@ impl World {
 				body.scale = message.transform().scale();
 			}
 		}
+	}
 
-		let step = time.delta();
-		self.update_velocities(step);
-		let remaining = step - self.update_collisions(step, allocator);
+	/// Applies gravity and finds the step's candidate pairs for every lane's narrow phase.
+	fn find_pairs(&mut self, dt: MediaTime) {
+		self.update_velocities(dt);
+		self.pairs = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
+	}
+
+	/// Tests one lane's share of the candidate pairs and keeps the contacts found in that lane's storage.
+	fn detect_lane_contacts(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
+		let storage = &self.lane_contacts[lane.idx()];
+		// Work on the stack so lanes do not write to neighboring storage headers while they test pairs.
+		let mut contacts = std::mem::take(&mut *storage.lock());
+		contacts.extend(self.detect_collisions_from_pairs(lane.share(&self.pairs), dt.as_seconds_f32()));
+		*storage.lock() = contacts;
+	}
+
+	/// Resolves the contacts every lane found, then moves the bodies through the rest of the step.
+	fn resolve_lane_contacts(&mut self, dt: MediaTime, transforms_tx: &impl Channel<TransformationUpdate>) {
+		let mut contacts = std::mem::take(&mut self.contacts);
+		// Lane shares are contiguous and in pair order, so gathering by lane keeps the order pairs were found in.
+		for lane_contacts in &mut self.lane_contacts {
+			contacts.append(lane_contacts.get_mut());
+		}
+		let remaining = dt - self.resolve_contacts(&mut contacts);
+		contacts.clear();
+		self.contacts = contacts;
 		self.update_bodies(remaining, transforms_tx);
 	}
 
@@ -110,6 +184,13 @@ impl World {
 		let mut contacts = bumpalo::collections::Vec::with_capacity_in(64, allocator);
 		let pairs = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
 		contacts.extend(self.detect_collisions_from_pairs(&pairs, dt.as_seconds_f32()));
+		self.resolve_contacts(&mut contacts)
+	}
+
+	/// Resolves `contacts` in time-of-impact order and returns how far into the step the last one happened.
+	///
+	/// Every body is left advanced to that time.
+	fn resolve_contacts(&mut self, contacts: &mut [Contact]) -> MediaTime {
 		contacts.sort();
 
 		// Each body records how far into the step it has advanced. A contact then only advances its own two bodies,
@@ -117,7 +198,7 @@ impl World {
 		self.body_times.clear();
 		self.body_times.resize(self.bodies.slots_len(), MediaTime::ZERO);
 		let mut accumulated = MediaTime::ZERO;
-		for contact in &contacts {
+		for contact in contacts.iter() {
 			// Contacts are sorted by time of impact, so contact times never go backwards.
 			let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
 			for index in [contact.a.object, contact.b.object] {
@@ -478,6 +559,63 @@ mod tests {
 
 		let free_body = world.bodies.get_slot(2).expect("free test body");
 		assert!((free_body.position - math::Point::new(20.0, 0.0, 1.0)).length() <= 1e-4);
+	}
+
+	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other, so one step
+	/// produces more contacts than lanes.
+	fn crowded_bodies() -> Vec<PhysicsBody> {
+		let mut bodies = vec![make_ground_body()];
+		for index in 0..24 {
+			let position = math::Point::new((index % 6) as f32 * 0.8 - 2.0, 1.4, (index / 6) as f32 * 0.8 - 1.2);
+			let mut body = make_dynamic_sphere_body(position, Vector::new(0.0, -1.0, 0.0), 0.5);
+			if index % 3 == 0 {
+				body.collision_shape = Shapes::Cube {
+					size: Vector::new(0.5, 0.5, 0.5),
+				};
+			}
+			bodies.push(body);
+		}
+		bodies
+	}
+
+	/// Steps a world of [`crowded_bodies`] and returns every transform it published, in publication order.
+	fn published_positions(
+		mut step: impl FnMut(&mut World, Time, &mut DefaultListener<TransformationUpdate>, &DefaultChannel<TransformationUpdate>),
+	) -> Vec<(math::Point, Orientation)> {
+		let mut world = make_world();
+		world.bodies = crowded_bodies().into_iter().collect();
+		let authored = DefaultChannel::new();
+		let mut authored_rx = authored.listener();
+		let published = DefaultChannel::new();
+		let mut published_rx = published.listener();
+		let delta = MediaTime::from_seconds_f32(1.0 / 60.0);
+		let mut elapsed = MediaTime::ZERO;
+		let mut positions = Vec::new();
+
+		for _ in 0..30 {
+			elapsed += delta;
+			step(&mut world, Time::new(elapsed, delta), &mut authored_rx, &published);
+			while let Some(update) = published_rx.read() {
+				positions.push((update.transform().get_position(), update.transform().get_orientation()));
+			}
+		}
+		positions
+	}
+
+	#[test]
+	fn alley_step_publishes_the_same_transforms_as_the_serial_step() {
+		let mut allocator = bumpalo::Bump::new();
+		let serial = published_positions(|world, time, authored, published| {
+			world.update(time, authored, published, &mut allocator);
+			allocator.reset();
+		});
+		let mut alley = Alley::with_parallelism(4);
+		let with_alley = published_positions(|world, time, authored, published| {
+			world.update_with_alley(time, authored, published, &mut alley);
+		});
+
+		assert_eq!(serial.len(), 30 * 24);
+		assert_eq!(with_alley, serial);
 	}
 
 	#[test]

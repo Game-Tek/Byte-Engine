@@ -12,21 +12,52 @@ use crate::physics::dynabit::contact::Pair;
 /// The number of bounds one sweep step tests at once.
 const WIDTH: usize = 4;
 
-/// The `SweepBounds` struct keeps a step's world bounds sorted along one axis, so the pairs that overlap are found by
-/// scanning each box's neighbors instead of testing every pair.
+/// The edge of a grid cell along an axis, in extents of a typical box along that axis.
+///
+/// Smaller cells leave each box fewer neighbors to scan, and larger ones leave fewer boxes straddling several
+/// cells. On an Apple M4, piles of 1,000 to 16,000 one-meter bodies stepped fastest at about this size.
+const CELL_EXTENTS: f32 = 4.0;
+
+/// The cells a box may reach across along one axis before it is scanned on its own instead of through the grid.
+///
+/// A box as wide as a floor would otherwise be listed in every cell it covers.
+const WIDE_BOX_CELLS: f32 = 2.0;
+
+/// The most cells the grid has along one axis.
+const MAX_AXIS_CELLS: u32 = 1024;
+
+/// The number of boxes from which they are split into cells.
+///
+/// Listing the boxes in cells takes time that only a long scan gives back. On an Apple M4, cells made steps of
+/// 2,000 one-meter bodies about 4% slower, left 4,000 about even, and made 8,000 12% to 26% faster and 16,000 25%
+/// to 33% faster, depending on how far the pile had spread.
+const GRID_BOXES: usize = 4096;
+
+/// The `SweepBounds` struct keeps a step's world bounds sorted along one axis and split into the cells of a grid
+/// over the other two, so the pairs that overlap are found by scanning each box's neighbors in its cells instead of
+/// testing every pair.
 ///
 /// Call [`Self::rebuild`] with the step's bounds, then [`Self::overlaps`] to read the overlapping pairs. To spread
 /// the scan over lanes, give each lane its own range of `0..`[`Self::count`].
 #[derive(Default)]
 pub struct SweepBounds {
-	/// The identifier each sorted box was staged with.
-	ids: Vec<u32>,
-	/// The smallest corner of each sorted box as one array per axis. Index 0 is the sweep axis.
-	///
-	/// Every array ends in `WIDTH` entries that overlap nothing, so a scan can read whole groups past the last box.
-	min: [Vec<f32>; 3],
-	/// The largest corner of each sorted box, laid out like `min`.
-	max: [Vec<f32>; 3],
+	/// Every box, sorted along the sweep axis.
+	sorted: BoundsArrays,
+	/// Whether each sorted box is too wide for the grid.
+	is_wide: Vec<bool>,
+	/// The sorted indices of the boxes that are too wide for the grid. Each is scanned against every box.
+	wide: Vec<u32>,
+	/// Whether the boxes are split into cells. Few boxes are scanned as one sorted list instead.
+	in_cells: bool,
+	/// The grid over the two axes that are not swept.
+	grid: Grid,
+	/// Where each cell's boxes start in `cells`, followed by where the last cell's end.
+	cell_starts: Vec<u32>,
+	/// The boxes of every cell, cell after cell, in sweep order within a cell. A box is listed in every cell it
+	/// reaches into, and the boxes of a cell are followed by `WIDTH` entries that overlap nothing.
+	cells: BoundsArrays,
+	/// The number of boxes placed in each cell so far, kept between rebuilds so filling the cells does not allocate.
+	cell_fills: Vec<u32>,
 	/// The boxes as they were received, kept between rebuilds so staging them does not allocate.
 	staged: Vec<StagedBounds>,
 	/// The order the last rebuild sorted `staged` into. Boxes move little between steps, so the next rebuild
@@ -34,6 +65,94 @@ pub struct SweepBounds {
 	order: Vec<SweepKey>,
 	/// The axis the last rebuild sorted along.
 	axis: usize,
+}
+
+/// The `BoundsArrays` struct holds boxes as one array per corner coordinate, so a scan reads the same coordinate
+/// of several boxes at once.
+#[derive(Default)]
+struct BoundsArrays {
+	/// The identifier each box was staged with.
+	ids: Vec<u32>,
+	/// The smallest corner of each box as one array per axis. Index 0 is the sweep axis.
+	min: [Vec<f32>; 3],
+	/// The largest corner of each box, laid out like `min`.
+	max: [Vec<f32>; 3],
+}
+
+impl BoundsArrays {
+	/// Replaces the boxes with `count` entries that overlap nothing, ready to be written with [`Self::set`].
+	fn reset(&mut self, count: usize) {
+		self.ids.clear();
+		self.ids.resize(count, 0);
+		for corner in self.min.iter_mut().chain(&mut self.max) {
+			// A comparison with NaN is never true, so an entry left unwritten overlaps nothing, not even an
+			// unbounded box.
+			corner.clear();
+			corner.resize(count, f32::NAN);
+		}
+	}
+
+	/// Writes a box to entry `index`.
+	fn set(&mut self, index: usize, id: u32, min: [f32; 3], max: [f32; 3]) {
+		self.ids[index] = id;
+		for axis in 0..3 {
+			self.min[axis][index] = min[axis];
+			self.max[axis][index] = max[axis];
+		}
+	}
+
+	/// Returns the corners of the box at entry `index`.
+	fn get(&self, index: usize) -> ([f32; 3], [f32; 3]) {
+		(
+			[0, 1, 2].map(|axis| self.min[axis][index]),
+			[0, 1, 2].map(|axis| self.max[axis][index]),
+		)
+	}
+}
+
+/// The `Grid` struct maps positions on the two axes that are not swept to the cells boxes are split into.
+#[derive(Clone, Copy)]
+struct Grid {
+	/// Where the first cell starts on each axis.
+	origin: [f32; 2],
+	/// The number of cells in one unit of length on each axis.
+	cells_per_unit: [f32; 2],
+	/// The number of cells along each axis, at least one.
+	cells: [u32; 2],
+}
+
+impl Default for Grid {
+	fn default() -> Self {
+		Self {
+			origin: [0.0; 2],
+			cells_per_unit: [0.0; 2],
+			cells: [1; 2],
+		}
+	}
+}
+
+impl Grid {
+	/// Returns the cell that holds `position` along one of the grid's axes. Positions outside the grid belong to
+	/// its first or last cell.
+	fn coordinate(&self, axis: usize, position: f32) -> u32 {
+		// The conversion turns a negative or NaN offset into the first cell and saturates large ones.
+		(((position - self.origin[axis]) * self.cells_per_unit[axis]) as u32).min(self.cells[axis] - 1)
+	}
+
+	/// Returns the cells a box reaches into along both axes, as inclusive coordinate ranges.
+	fn reach(&self, min: [f32; 3], max: [f32; 3]) -> [(u32, u32); 2] {
+		[0, 1].map(|axis| (self.coordinate(axis, min[axis + 1]), self.coordinate(axis, max[axis + 1])))
+	}
+
+	/// Returns the index of the cell at the given coordinates.
+	fn cell(&self, first: u32, second: u32) -> usize {
+		(second * self.cells[0] + first) as usize
+	}
+
+	/// Returns the number of cells.
+	fn count(&self) -> usize {
+		(self.cells[0] * self.cells[1]) as usize
+	}
 }
 
 /// The `StagedBounds` struct holds one box between being received and being sorted along the sweep axis.
@@ -62,16 +181,28 @@ impl SweepKey {
 }
 
 impl SweepBounds {
-	/// Returns the number of boxes [`Self::overlaps`] can scan.
+	/// Returns the number of scan positions [`Self::overlaps`] takes ranges of.
+	///
+	/// A box that reaches into several cells has a position in each, so this is not the number of boxes.
 	pub fn count(&self) -> usize {
-		self.ids.len()
+		if self.in_cells {
+			self.wide.len() + self.cells.ids.len()
+		} else {
+			self.boxes()
+		}
+	}
+
+	/// Returns the number of boxes.
+	fn boxes(&self) -> usize {
+		self.order.len()
 	}
 
 	/// Replaces the stored boxes with `bounds`, each identified by the distinct `usize` it comes with.
 	///
-	/// The boxes are sorted along the axis on which the fewest of them share a stretch, which keeps each box's scan
-	/// in [`Self::overlaps`] short. When `bounds` yields the boxes of the last rebuild again, in the same order,
-	/// the sort starts from the order they had then, which is quick when they have moved little.
+	/// The boxes are sorted along the axis on which the fewest of them share a stretch and split into cells along
+	/// the other two, which keeps each box's scan in [`Self::overlaps`] short. When `bounds` yields the boxes of
+	/// the last rebuild again, in the same order, the sort starts from the order they had then, which is quick
+	/// when they have moved little.
 	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
 		// Staging over the last rebuild's boxes shows whether these are the same boxes.
 		let mut count = 0;
@@ -124,33 +255,178 @@ impl SweepBounds {
 		}
 		self.axis = sweep_axis;
 
-		self.ids.clear();
-		self.ids.extend(self.order.iter().map(|key| key.id));
+		self.sorted.ids.clear();
+		self.sorted.ids.extend(self.order.iter().map(|key| key.id));
 		let staged = |key: &SweepKey| &self.staged[key.staged as usize];
 		for (slot, axis) in axes.into_iter().enumerate() {
-			// A comparison with NaN is never true, so the padding overlaps nothing, not even unbounded boxes.
+			// The padding lets a scan read whole groups past the last box. A comparison with NaN is never true, so
+			// it overlaps nothing, not even an unbounded box.
 			let padding = std::iter::repeat_n(f32::NAN, WIDTH);
-			self.min[slot].clear();
-			self.min[slot].extend(self.order.iter().map(|key| staged(key).min[axis]).chain(padding.clone()));
-			self.max[slot].clear();
-			self.max[slot].extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
+			let (min, max) = (&mut self.sorted.min[slot], &mut self.sorted.max[slot]);
+			min.clear();
+			min.extend(self.order.iter().map(|key| staged(key).min[axis]).chain(padding.clone()));
+			max.clear();
+			max.extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
+		}
+		self.in_cells = count >= GRID_BOXES;
+		if self.in_cells {
+			self.fill_cells(count);
 		}
 	}
 
-	/// Calls `found` with every pair of overlapping boxes whose first box, in sweep order, lies in `range`.
+	/// Lays a grid over the two axes that are not swept and lists the `count` sorted boxes in its cells.
+	///
+	/// Cells are a few typical boxes wide, so a box shares its cells with few others. Boxes much wider than a
+	/// cell stay out of the grid.
+	fn fill_cells(&mut self, count: usize) {
+		let extent = |index: usize, axis: usize| self.sorted.max[axis + 1][index] - self.sorted.min[axis + 1][index];
+		// A cell edge that is not a positive length, as when the boxes are flat along an axis, means one cell
+		// along that axis that no box is too wide for.
+		let edges = [0, 1].map(|axis| {
+			let edge = CELL_EXTENTS * typical(count, |index| extent(index, axis));
+			if edge > 0.0 && edge.is_finite() { edge } else { f32::INFINITY }
+		});
+
+		self.is_wide.clear();
+		self.wide.clear();
+		let mut low = [f32::INFINITY; 2];
+		let mut high = [f32::NEG_INFINITY; 2];
+		for index in 0..count {
+			// Written so that a box with a NaN or unbounded extent is wide: the grid cannot place it.
+			let fits = (0..2).all(|axis| extent(index, axis) <= WIDE_BOX_CELLS * edges[axis]);
+			self.is_wide.push(!fits);
+			if fits {
+				for axis in 0..2 {
+					low[axis] = low[axis].min(self.sorted.min[axis + 1][index]);
+					high[axis] = high[axis].max(self.sorted.max[axis + 1][index]);
+				}
+			} else {
+				self.wide.push(index as u32);
+			}
+		}
+
+		let mut cells = [0, 1].map(|axis| {
+			let span = high[axis] - low[axis];
+			if span > 0.0 && edges[axis].is_finite() {
+				((span / edges[axis]).ceil() as u32).clamp(1, MAX_AXIS_CELLS)
+			} else {
+				1
+			}
+		});
+		// Boxes spread thinly over a large area would leave most cells empty, so there are never more cells than
+		// boxes.
+		let most = count.max(1) as f32;
+		let total = (cells[0] * cells[1]) as f32;
+		if total > most {
+			let shrink = (total / most).sqrt();
+			cells = cells.map(|axis_cells| ((axis_cells as f32 / shrink) as u32).max(1));
+		}
+		self.grid = Grid {
+			origin: low,
+			cells_per_unit: [0, 1].map(|axis| {
+				let span = high[axis] - low[axis];
+				if span > 0.0 && span.is_finite() {
+					cells[axis] as f32 / span
+				} else {
+					0.0
+				}
+			}),
+			cells,
+		};
+
+		// Count the boxes of each cell, give each cell its stretch of entries, then write the boxes in sweep order,
+		// which leaves every cell sorted like the whole.
+		let grid = self.grid;
+		let cell_count = grid.count();
+		self.cell_fills.clear();
+		self.cell_fills.resize(cell_count, 0);
+		let boxes = |sorted: &BoundsArrays, is_wide: &[bool], place: &mut dyn FnMut(usize, usize)| {
+			for index in (0..count).filter(|index| !is_wide[*index]) {
+				let (min, max) = sorted.get(index);
+				let [(first_low, first_high), (second_low, second_high)] = grid.reach(min, max);
+				for second in second_low..=second_high {
+					for first in first_low..=first_high {
+						place(index, grid.cell(first, second));
+					}
+				}
+			}
+		};
+		boxes(&self.sorted, &self.is_wide, &mut |_, cell| self.cell_fills[cell] += 1);
+		self.cell_starts.clear();
+		let mut start = 0;
+		for fill in &mut self.cell_fills {
+			self.cell_starts.push(start);
+			// A cell with boxes ends in entries that overlap nothing, so a scan can read whole groups past its end.
+			let entries = if *fill == 0 { 0 } else { *fill + WIDTH as u32 };
+			*fill = start;
+			start += entries;
+		}
+		self.cell_starts.push(start);
+		self.cells.reset(start as usize);
+		boxes(&self.sorted, &self.is_wide, &mut |index, cell| {
+			let (min, max) = self.sorted.get(index);
+			self.cells
+				.set(self.cell_fills[cell] as usize, self.sorted.ids[index], min, max);
+			self.cell_fills[cell] += 1;
+		});
+	}
+
+	/// Calls `found` with every pair of overlapping boxes whose first box has its scan position in `range`.
 	///
 	/// Boxes that only touch count as overlapping. Ranges that together cover `0..`[`Self::count`] report every pair
 	/// exactly once, and reading them in ascending order gives the same sequence as one scan of the whole range.
 	pub fn overlaps(&self, range: Range<usize>, mut found: impl FnMut(Pair)) {
-		let count = self.ids.len();
-		let [min_sweep, min_second, min_third] = &self.min;
-		let [max_sweep, max_second, max_third] = &self.max;
+		if !self.in_cells {
+			// Every box is a neighbor of every other one, as if they shared one cell.
+			return self.scan_cell(&self.sorted, None, range, self.boxes(), &mut found);
+		}
+		// The wide boxes take the first positions, and the cells' entries follow.
+		let wide = self.wide.len();
+		for position in range.start.min(wide)..range.end.min(wide) {
+			self.scan_wide(self.wide[position] as usize, &mut found);
+		}
+		let entries = range.start.saturating_sub(wide)..range.end.saturating_sub(wide);
+		if entries.is_empty() {
+			return;
+		}
+		let first_cell = self
+			.cell_starts
+			.partition_point(|start| *start as usize <= entries.start)
+			.saturating_sub(1);
+		for cell in first_cell..self.cell_starts.len().saturating_sub(1) {
+			let (start, end) = (self.cell_starts[cell] as usize, self.cell_starts[cell + 1] as usize);
+			if start >= entries.end {
+				break;
+			}
+			if start < end {
+				let boxes_end = end - WIDTH;
+				let range = entries.start.max(start)..entries.end.min(boxes_end);
+				self.scan_cell(&self.cells, Some(cell), range, boxes_end, &mut found);
+			}
+		}
+	}
+
+	/// Calls `found` with the pairs each box in `range` of `boxes` forms with the boxes after it, up to `boxes_end`.
+	///
+	/// `boxes` are sorted along the sweep axis. When they are the entries of a grid cell, `cell` names it.
+	// Inlined so the scan without cells is compiled without the checks that only cells need.
+	#[inline(always)]
+	fn scan_cell(
+		&self,
+		boxes: &BoundsArrays,
+		cell: Option<usize>,
+		range: Range<usize>,
+		boxes_end: usize,
+		found: &mut impl FnMut(Pair),
+	) {
+		let [min_sweep, min_second, min_third] = &boxes.min;
+		let [max_sweep, max_second, max_third] = &boxes.max;
 		for first in range {
 			let reach = f32x4::splat(max_sweep[first]);
 			let (low_second, high_second) = (f32x4::splat(min_second[first]), f32x4::splat(max_second[first]));
 			let (low_third, high_third) = (f32x4::splat(min_third[first]), f32x4::splat(max_third[first]));
 			let mut next = first + 1;
-			while next < count {
+			while next < boxes_end {
 				let group = next..next + WIDTH;
 				let within_reach = f32x4::from_slice(&min_sweep[group.clone()]).simd_le(reach);
 				let overlapping = within_reach
@@ -160,9 +436,22 @@ impl SweepBounds {
 					& f32x4::from_slice(&max_third[group]).simd_ge(low_third);
 				let mut lanes = overlapping.to_bitmask();
 				while lanes != 0 {
-					let lane = lanes.trailing_zeros() as usize;
-					found(Pair::new(self.ids[first] as usize, self.ids[next + lane] as usize));
+					let second = next + lanes.trailing_zeros() as usize;
 					lanes &= lanes - 1;
+					// Two boxes that both reach into several cells meet in each cell they share. Only the cell
+					// that holds the lowest corner of their overlap reports them.
+					let reports = cell.is_none_or(|cell| {
+						let corner = [
+							min_second[first].max(min_second[second]),
+							min_third[first].max(min_third[second]),
+						];
+						self.grid
+							.cell(self.grid.coordinate(0, corner[0]), self.grid.coordinate(1, corner[1]))
+							== cell
+					});
+					if reports {
+						found(Pair::new(boxes.ids[first] as usize, boxes.ids[second] as usize));
+					}
 				}
 				// Boxes are sorted by where they start on the sweep axis, so the first one that starts past this
 				// box's end is followed only by boxes that do too.
@@ -173,6 +462,52 @@ impl SweepBounds {
 			}
 		}
 	}
+
+	/// Calls `found` with the pairs the wide box at `index` of the sorted boxes forms with every other box.
+	///
+	/// A pair of wide boxes is reported by the one that comes first in the sweep order.
+	fn scan_wide(&self, index: usize, found: &mut impl FnMut(Pair)) {
+		let count = self.is_wide.len();
+		let (min, max) = self.sorted.get(index);
+		let (low, high) = (min.map(f32x4::splat), max.map(f32x4::splat));
+		for next in (0..count).step_by(WIDTH) {
+			let group = next..next + WIDTH;
+			let mut overlapping = f32x4::from_slice(&self.sorted.min[0][group.clone()]).simd_le(high[0])
+				& f32x4::from_slice(&self.sorted.max[0][group.clone()]).simd_ge(low[0]);
+			for axis in 1..3 {
+				overlapping &= f32x4::from_slice(&self.sorted.min[axis][group.clone()]).simd_le(high[axis])
+					& f32x4::from_slice(&self.sorted.max[axis][group.clone()]).simd_ge(low[axis]);
+			}
+			let mut lanes = overlapping.to_bitmask();
+			while lanes != 0 {
+				let other = next + lanes.trailing_zeros() as usize;
+				lanes &= lanes - 1;
+				if other != index && !(self.is_wide[other] && other < index) {
+					found(Pair::new(self.sorted.ids[index] as usize, self.sorted.ids[other] as usize));
+				}
+			}
+		}
+	}
+}
+
+/// Returns a typical value among the `count` extents that `extent` returns by index: the median of an evenly spaced
+/// sample of them, or zero when there are none.
+///
+/// A median ignores the few boxes that are far larger than the rest, such as a floor under a pile.
+fn typical(count: usize, extent: impl Fn(usize) -> f32) -> f32 {
+	/// Enough boxes to find the usual size, and few enough to sort on every rebuild.
+	const SAMPLES: usize = 64;
+	let samples = count.min(SAMPLES);
+	if samples == 0 {
+		return 0.0;
+	}
+	let mut sample = [0.0f32; SAMPLES];
+	for (slot, value) in sample.iter_mut().enumerate().take(samples) {
+		*value = extent(slot * count / samples);
+	}
+	let sample = &mut sample[..samples];
+	sample.sort_unstable_by(f32::total_cmp);
+	sample[samples / 2]
 }
 
 /// Sorts `keys` that are already nearly in order and returns whether it finished.
@@ -290,17 +625,7 @@ mod tests {
 	fn sweep_reports_the_pairs_an_exhaustive_test_finds() {
 		// More boxes than one group holds, in an order unrelated to their positions.
 		let boxes = scattered_boxes(67);
-		let mut expected = Vec::new();
-		for first in 0..boxes.len() {
-			for second in first + 1..boxes.len() {
-				let (a, b) = (&boxes[first], &boxes[second]);
-				let (a_min, a_max) = (a.min().to_array(), a.max().to_array());
-				let (b_min, b_max) = (b.min().to_array(), b.max().to_array());
-				if (0..3).all(|axis| a_min[axis] <= b_max[axis] && b_min[axis] <= a_max[axis]) {
-					expected.push((first, second));
-				}
-			}
-		}
+		let expected = exhaustive_pairs(&boxes);
 
 		assert!(expected.len() > boxes.len());
 		assert_eq!(swept_pairs(&boxes), expected);
@@ -316,6 +641,79 @@ mod tests {
 
 		let mut split = Vec::new();
 		for range in [0..9, 9..9, 9..40, 40..sweep.count()] {
+			sweep.overlaps(range, |pair| split.push((pair.a, pair.b)));
+		}
+
+		assert_eq!(split, whole);
+	}
+
+	/// Returns every pair of `boxes` that overlap, found by testing each pair.
+	fn exhaustive_pairs(boxes: &[AABB]) -> Vec<(usize, usize)> {
+		let mut pairs = Vec::new();
+		for first in 0..boxes.len() {
+			for second in first + 1..boxes.len() {
+				let (a_min, a_max) = (boxes[first].min().to_array(), boxes[first].max().to_array());
+				let (b_min, b_max) = (boxes[second].min().to_array(), boxes[second].max().to_array());
+				if (0..3).all(|axis| a_min[axis] <= b_max[axis] && b_min[axis] <= a_max[axis]) {
+					pairs.push((first, second));
+				}
+			}
+		}
+		pairs
+	}
+
+	/// The small boxes [`spread_boxes`] returns, enough for them to be split into cells.
+	const SPREAD_BOXES: usize = GRID_BOXES + 100;
+
+	/// Returns small boxes spread over a wide, flat area by a fixed integer hash, with two floors under them: boxes
+	/// in many cells, boxes that straddle cells, and boxes too wide for any cell.
+	fn spread_boxes() -> Vec<AABB> {
+		let unit = |seed: u32| (seed.wrapping_mul(0x9E37_79B9) >> 8) as f32 / (1u32 << 24) as f32;
+		let mut boxes = (0..SPREAD_BOXES as u32)
+			.map(|index| {
+				let center = [
+					unit(index * 3) * 200.0,
+					unit(index * 3 + 1) * 6.0,
+					unit(index * 3 + 2) * 200.0,
+				];
+				let half_extents = [0.3 + unit(index + 500), 0.3 + unit(index + 900), 0.3 + unit(index + 1300)];
+				bounds(center, half_extents)
+			})
+			.collect::<Vec<_>>();
+		boxes.push(bounds([100.0, -0.5, 100.0], [250.0, 0.6, 250.0]));
+		boxes.push(bounds([150.0, 0.0, 100.0], [75.0, 0.6, 250.0]));
+		boxes
+	}
+
+	#[test]
+	fn boxes_across_many_cells_pair_once_with_each_other_and_with_wide_boxes() {
+		let boxes = spread_boxes();
+		let expected = exhaustive_pairs(&boxes);
+
+		// The floors overlap each other and many of the small boxes.
+		assert!(expected.contains(&(SPREAD_BOXES, SPREAD_BOXES + 1)));
+		assert!(expected.len() > boxes.len());
+		assert_eq!(swept_pairs(&boxes), expected);
+	}
+
+	#[test]
+	fn split_ranges_cover_cells_and_wide_boxes_like_one_scan() {
+		let boxes = spread_boxes();
+		let mut sweep = SweepBounds::default();
+		sweep.rebuild(boxes.iter().copied().enumerate());
+		let mut whole = Vec::new();
+		sweep.overlaps(0..sweep.count(), |pair| whole.push((pair.a, pair.b)));
+
+		let mut split = Vec::new();
+		let count = sweep.count();
+		for range in [
+			0..1,
+			1..3,
+			3..count / 3,
+			count / 3..count / 3,
+			count / 3..count - 5,
+			count - 5..count,
+		] {
 			sweep.overlaps(range, |pair| split.push((pair.a, pair.b)));
 		}
 
@@ -362,14 +760,17 @@ mod tests {
 		let mut sweep = SweepBounds::default();
 		sweep.rebuild(scattered_boxes(67).into_iter().enumerate());
 		sweep.rebuild(
-			[bounds([0.0; 3], [1.0; 3]), bounds([5.0, 0.0, 0.0], [1.0; 3])]
-				.into_iter()
-				.enumerate(),
+			[
+				bounds([0.0; 3], [1.0; 3]),
+				bounds([1.5, 0.0, 0.0], [1.0; 3]),
+				bounds([9.0, 0.0, 0.0], [1.0; 3]),
+			]
+			.into_iter()
+			.enumerate(),
 		);
-		let mut pairs = 0;
-		sweep.overlaps(0..sweep.count(), |_| pairs += 1);
+		let mut pairs = Vec::new();
+		sweep.overlaps(0..sweep.count(), |pair| pairs.push((pair.a, pair.b)));
 
-		assert_eq!(sweep.count(), 2);
-		assert_eq!(pairs, 0);
+		assert_eq!(pairs, [(0, 1)]);
 	}
 }

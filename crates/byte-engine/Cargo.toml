@@ -57,6 +57,10 @@ name = "pathfinding"
 harness = false
 
 [[bench]]
+name = "physics"
+harness = false
+
+[[bench]]
 name = "ui"
 harness = false
 required-features = ["headed"]

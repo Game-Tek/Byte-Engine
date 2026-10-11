@@ -340,8 +340,9 @@ use utils::Extent;
 
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
+use crate::rendering::pipelines::visibility::VisibilityFeatures;
 #[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityFeatures, VisibilityShaderGenerator};
+use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},

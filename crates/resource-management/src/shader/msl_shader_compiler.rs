@@ -1,6 +1,10 @@
 use std::{
 	fs,
 	path::{Path, PathBuf},
+	sync::{
+		OnceLock,
+		atomic::{AtomicBool, Ordering},
+	},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -129,29 +133,108 @@ pub async fn metal_compiler_identity() -> Result<String, String> {
 	))
 }
 
-/// Compiles Metal Shading Language source into a Metal library binary.
-pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
-	if !cfg!(target_os = "macos") {
-		return Err(error(
-			"MSL compilation is only supported on macOS",
-			"The Metal toolchain is not available on this platform",
-		));
+/// The standard-library types the MSL backend emits, completed once so the Metal compiler can reuse them.
+///
+/// Completing a texture type makes the compiler instantiate its whole class template. That takes about 80 ms for each
+/// type on an Apple M4 and dominates the compile time of every shader that reads a texture. The compiler also
+/// completes the `memory_coherence_device` form of every sampled texture a shader names, so the header lists both. A
+/// type this header leaves out still compiles; its shaders only pay for it again. Keep the list in step with the
+/// texture types [`MSLTranspiler`] writes.
+const PRELUDE_HEADER: &str = "\
+#include <metal_stdlib>
+using namespace metal;
+struct _besl_prelude {
+	texture2d<float> t0;
+	texture2d<float, access::sample, memory_coherence_device> t1;
+	texture2d<uint> t2;
+	texture2d<uint, access::sample, memory_coherence_device> t3;
+	texture2d_array<float> t4;
+	texture2d_array<float, access::sample, memory_coherence_device> t5;
+	texture3d<float> t6;
+	texture3d<float, access::sample, memory_coherence_device> t7;
+	texturecube<float> t8;
+	texturecube<float, access::sample, memory_coherence_device> t9;
+	texturecube_array<float> t10;
+	texturecube_array<float, access::sample, memory_coherence_device> t11;
+	texture2d<float, access::read> t12;
+	texture2d<float, access::write> t13;
+	texture2d<float, access::read_write> t14;
+	texture2d<uint, access::read> t15;
+	texture2d<uint, access::write> t16;
+	texture2d<uint, access::read_write> t17;
+	float4x4 m0;
+	float4x3 m1;
+};
+";
+
+/// Returns the precompiled form of [`PRELUDE_HEADER`], building it when this machine has none yet.
+///
+/// The file lives in the system temporary directory under a name derived from the compiler version, the build
+/// arguments, the deployment target, and the header, so every process reuses it until one of them changes. Returns
+/// `None` while another compile is building the header, or when it could not be built; shaders then compile without
+/// it.
+async fn precompiled_prelude() -> Option<&'static Path> {
+	static PATH: OnceLock<PathBuf> = OnceLock::new();
+	static BUILD_STARTED: AtomicBool = AtomicBool::new(false);
+
+	let path = match PATH.get() {
+		Some(path) => path,
+		None => {
+			// The compiler takes its target from this variable, which Cargo sets for tests, and a header built for
+			// one target is rejected for another.
+			let deployment_target = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_default();
+			let identity = metal_compiler_identity().await.ok()?;
+			let key = md5::compute(format!("{identity}\0{deployment_target}\0{PRELUDE_HEADER}"));
+			PATH.get_or_init(|| std::env::temp_dir().join(format!("byte-engine-msl-prelude-{key:x}.pch")))
+		}
+	};
+
+	if path.is_file() {
+		return Some(path);
 	}
 
-	// The Metal driver compiles and links in one process when it writes a library, so no AIR intermediate is written
-	// and `metallib` is not started separately. Source is piped through stdin to avoid writing it to disk.
-	let safe_name = sanitize_shader_name(name);
-	let temp_dir = TempShaderDir::new(&safe_name)?;
-	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
-	let metallib_path_argument = metallib_path
+	// A process builds the header once. Compiles that arrive meanwhile, or after a failed build, go without it.
+	if BUILD_STARTED.swap(true, Ordering::Relaxed) {
+		return None;
+	}
+
+	// Build in a private directory and rename, so no compile ever reads a half-written header.
+	let built = async {
+		let temp_dir = TempShaderDir::new("prelude")?;
+		let building = temp_dir.path().join("prelude.pch");
+		let output = run_metal(PRELUDE_HEADER, &["-x", "metal-header"], &building).await?;
+
+		if !output.status.success() {
+			return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+		}
+
+		fs::rename(&building, path).map_err(|error| error.to_string())
+	}
+	.await;
+
+	if let Err(error) = &built {
+		log::warn!(
+			"Failed to precompile the MSL prelude header, so shaders compile without it and take longer. The most likely cause is a Metal toolchain that does not accept the header.\n{error}"
+		);
+	}
+
+	built.ok().map(|()| path.as_path())
+}
+
+/// Runs the Metal compiler on `source`, with the build arguments every compile shares, and writes `output_path`.
+async fn run_metal(source: &str, arguments: &[&str], output_path: &Path) -> Result<std::process::Output, String> {
+	let output_path = output_path
 		.to_str()
 		.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?;
 
+	// The Metal driver compiles and links in one process when it writes a library, so no AIR intermediate is written
+	// and `metallib` is not started separately. Source is piped through stdin to avoid writing it to disk.
 	let mut metal_cmd = crate::r#async::Command::new("xcrun");
 	metal_cmd
-		.args(["-sdk", "macosx", "metal", "-x", "metal"])
+		.args(["-sdk", "macosx", "metal"])
+		.args(arguments)
 		.args(metal_build_arguments())
-		.args(["-", "-o", metallib_path_argument]);
+		.args(["-", "-o", output_path]);
 	metal_cmd
 		.stdin(std::process::Stdio::piped())
 		.map_err(|_| error("Failed to configure Metal compiler stdin", "Stdio pipe failed"))?;
@@ -167,13 +250,54 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 	if let Some(mut stdin) = metal_process.stdin.take() {
 		use compio::io::AsyncWriteExt;
 		stdin
-			.write_all(msl_source.as_bytes().to_vec())
+			.write_all(source.as_bytes().to_vec())
 			.await
 			.0
 			.map_err(|_| error("Failed to write MSL source to Metal compiler", "Stdin write failed"))?;
 	}
 
-	let metal_output = metal_process.wait_with_output().await.map_err(invoke_error)?;
+	metal_process.wait_with_output().await.map_err(invoke_error)
+}
+
+/// Compiles Metal Shading Language source into a Metal library binary.
+///
+/// The compile reuses the precompiled [`PRELUDE_HEADER`] when the toolchain accepts it. The header only saves the
+/// compiler work, so the library is the same with or without it.
+pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
+	if !cfg!(target_os = "macos") {
+		return Err(error(
+			"MSL compilation is only supported on macOS",
+			"The Metal toolchain is not available on this platform",
+		));
+	}
+
+	let safe_name = sanitize_shader_name(name);
+	let temp_dir = TempShaderDir::new(&safe_name)?;
+	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
+
+	let prelude = precompiled_prelude().await.and_then(Path::to_str);
+	let mut metal_output = match prelude {
+		Some(prelude) => run_metal(msl_source, &["-x", "metal", "-include-pch", prelude], &metallib_path).await?,
+		None => run_metal(msl_source, &["-x", "metal"], &metallib_path).await?,
+	};
+
+	// A failure with the prelude is either a shader error or a prelude this toolchain no longer accepts, such as one
+	// built before an SDK update. Compiling without it tells them apart and reports the shader's own error.
+	if let Some(prelude) = prelude.filter(|_| !metal_output.status.success()) {
+		let rejection = std::mem::replace(
+			&mut metal_output,
+			run_metal(msl_source, &["-x", "metal"], &metallib_path).await?,
+		);
+
+		// Removing the rejected prelude lets a later compile or run rebuild it. Of the concurrent compiles that
+		// meet the same rejection, only the one that removes the file reports it.
+		if metal_output.status.success() && fs::remove_file(prelude).is_ok() {
+			log::warn!(
+				"The Metal compiler rejected the precompiled MSL prelude header, so it was removed. The most likely cause is a toolchain or SDK update.\n{}",
+				String::from_utf8_lossy(&rejection.stderr).trim()
+			);
+		}
+	}
 
 	if !metal_output.status.success() {
 		return Err(format_tool_failure(

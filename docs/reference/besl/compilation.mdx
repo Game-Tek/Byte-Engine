@@ -28,6 +28,13 @@ Standalone `.besl` assets use this path during baking and take their stage
 settings and layout layers from the adjacent
 [`.besl.bead` file](/docs/reference/besl/interface#standalone-stage-metadata).
 
+On macOS, baking keeps a precompiled header of the Metal standard-library
+texture types in the system temporary directory, named
+`byte-engine-msl-prelude-<hash>.pch`. Every shader compile reuses it, which
+roughly halves the time a bake takes. Byte Engine builds one header for each
+Metal toolchain and deployment target, and compiles without it if the compiler
+rejects it, so you can delete these files at any time.
+
 ## Extend a program from Rust
 
 Some graph features are intentionally available only to engine and render-model

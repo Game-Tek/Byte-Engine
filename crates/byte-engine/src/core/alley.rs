@@ -761,6 +761,29 @@ impl Alley {
 			.try_dispatch_all(move |lane_idx| f(&mut ConcreteLane::new(lane_idx, state)))
 	}
 
+	/// Executes `f` once on every lane alongside work confined to the calling thread, then returns both results.
+	///
+	/// Lanes follow the rules of [`Self::execute`]. The caller and its result stay on this thread and need not be
+	/// `Send`, as with [`Self::join`]. Every lane and the caller finish before a captured panic is returned, so
+	/// their borrowed inputs remain valid. Use this to overlap lane work with a caller that owns thread-bound state.
+	pub fn execute_with_caller<R, C>(
+		&mut self,
+		f: impl AlleyFunction<R>,
+		caller: impl FnOnce() -> C,
+	) -> std::thread::Result<(Vec<R>, C)>
+	where
+		R: Send,
+	{
+		let lane_count = self.threadpool.parallelism();
+		let state = DispatchState::new(lane_count);
+		let state = &state;
+		let jobs = (0..lane_count).map(|lane_idx| {
+			let f = f.clone();
+			move || f(&mut ConcreteLane::new(lane_idx, state))
+		});
+		self.threadpool.try_dispatch_many_with_caller(jobs, caller)
+	}
+
 	/// Executes every lane with mutable resources assigned to stable owner lanes.
 	///
 	/// Resources are assigned by tuple position in round-robin order across this alley's
@@ -1047,6 +1070,51 @@ mod tests {
 		let values = unwrap_dispatch(alley.execute(|lane| lane.idx() * 10));
 
 		assert_eq!(values, [0, 10, 20, 30]);
+	}
+
+	#[test]
+	fn execute_with_caller_overlaps_every_lane_with_caller_bound_work() {
+		let mut alley = Alley::with_parallelism(3);
+		// Every lane and the caller must wait together, so the barrier only opens when all of them overlap.
+		let barrier = Barrier::new(4);
+		let caller_thread = std::thread::current().id();
+		let local = std::rc::Rc::new(7);
+
+		let (lanes, returned) = alley
+			.execute_with_caller(
+				|lane| {
+					barrier.wait();
+					assert_ne!(std::thread::current().id(), caller_thread);
+					lane.idx()
+				},
+				|| {
+					barrier.wait();
+					assert_eq!(std::thread::current().id(), caller_thread);
+					local.clone()
+				},
+			)
+			.unwrap_or_else(|payload| resume_unwind(payload));
+
+		assert_eq!(lanes, [0, 1, 2]);
+		assert_eq!(*returned, 7);
+	}
+
+	#[test]
+	fn execute_with_caller_waits_for_the_caller_after_a_lane_panics() {
+		let mut alley = Alley::with_parallelism(2);
+		let mut finished = false;
+
+		let result = alley.execute_with_caller(
+			|lane| assert_ne!(lane.idx(), 0, "expected lane panic"),
+			|| {
+				sleep(Duration::from_millis(10));
+				finished = true;
+			},
+		);
+
+		assert!(result.is_err());
+		assert!(finished);
+		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1]);
 	}
 
 	#[test]

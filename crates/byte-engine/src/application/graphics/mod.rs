@@ -18,7 +18,8 @@
 /// [`setup_default_window`], [`setup_default_input`], and the render-pass setup
 /// functions independently when an application needs explicit composition.
 /// After setup, call [`Self::do_loop`] to run the application, or
-/// [`Self::tick_with`] when application code must run during each tick.
+/// [`Self::tick_with`] when application code must run during each tick. Use
+/// [`Self::tick_with_lanes`] when part of that code should run on every lane of the application's alley.
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
@@ -117,8 +118,9 @@ pub struct GraphicsApplication {
 	deferred_tasks: Vec<defaults::DeferredTask>,
 
 	threads: SmallVec<[Thread; 64]>,
-	/// Persistent lanes shared by initialization and application frame work.
-	alley: crate::core::alley::Alley,
+	/// Persistent lanes shared by initialization and application frame work. `None` while an alley execution's
+	/// caller borrows the whole application; see [`Self::execute_lanes`].
+	alley: Option<crate::core::alley::Alley>,
 
 	/// Where the metrics summary or rows are written when the application closes, until written.
 	metrics_out: Option<std::path::PathBuf>,
@@ -362,7 +364,7 @@ impl GraphicsApplication {
 			deferred_tasks: Vec::with_capacity(8),
 
 			threads,
-			alley,
+			alley: Some(alley),
 
 			close: false,
 
@@ -689,6 +691,45 @@ impl GraphicsApplication {
 		})
 	}
 
+	/// Runs one graphics tick like [`Self::tick_with`], with `lanes` running once on every lane of the
+	/// application's alley alongside `f`.
+	///
+	/// `lanes` receives each lane's [`ConcreteLane`](crate::core::alley::ConcreteLane), the context for lane
+	/// indices, single-runner sections, and collectives such as
+	/// [`ConcreteLane::each_shared`](crate::core::alley::ConcreteLane::each_shared).
+	///
+	/// `lanes` and `f` form one alley execution. It starts where `f` would run alone, and every lane finishes
+	/// before the world updates. So what lanes publish, such as created bodies and their transforms, reaches this
+	/// tick's simulation whole instead of racing it. A lane panic resumes here.
+	///
+	/// `f` holds the application for the execution, so `lanes` cannot borrow it. Take the handles lanes publish
+	/// through beforehand, such as [`DefaultWorld::factory`], and share other state through `Sync` values both
+	/// closures borrow.
+	pub fn tick_with_lanes<R, L, F>(&mut self, lanes: L, f: F) -> Option<R>
+	where
+		L: crate::core::alley::AlleyFunction<()>,
+		F: FnOnce(&mut Self, Time) -> R,
+	{
+		self.tick_with(|application, time| application.execute_lanes(lanes, |application| f(application, time)))
+	}
+
+	/// Runs one alley execution: `lanes` once on every lane while `caller` holds the application on this thread.
+	///
+	/// Returns after `caller` and every lane have finished. A panic on either side resumes here.
+	fn execute_lanes<R, L>(&mut self, lanes: L, caller: impl FnOnce(&mut Self) -> R) -> R
+	where
+		L: crate::core::alley::AlleyFunction<()>,
+	{
+		// The caller borrows the whole application, so the lanes leave it for as long as the execution runs.
+		let mut alley = self.alley.take().expect(
+			"Alley is already executing. The most likely cause is that a tick with lanes was started from the callback of another one.",
+		);
+		let executed = alley.execute_with_caller(lanes, || caller(self));
+		// Return the lanes before a panic resumes, so the application drops with them in place.
+		self.alley = Some(alley);
+		executed.unwrap_or_else(|panic| std::panic::resume_unwind(panic)).1
+	}
+
 	/// Runs one graphics tick whose simulation advances in fixed steps, independent of the frame rate.
 	///
 	/// `simulate` runs zero or more times before the frame, each time with a [`Time`] whose delta is the fixed
@@ -869,8 +910,13 @@ impl GraphicsApplication {
 	/// Use [`crate::core::alley::Alley::join`] for caller-bound work or
 	/// [`crate::core::alley::Alley::execute_with_mut`] for resources with stable lane ownership.
 	/// Every dispatch finishes before returning to the application's next phase.
+	///
+	/// Panics when called from the callback of [`Self::tick_with_lanes`]: that callback runs inside an execution of
+	/// these lanes, which cannot nest.
 	pub fn alley_mut(&mut self) -> &mut crate::core::alley::Alley {
-		&mut self.alley
+		self.alley.as_mut().expect(
+			"Alley is not available. The most likely cause is that alley_mut was called from the callback of tick_with_lanes, whose execution holds the lanes.",
+		)
 	}
 
 	/// Returns the collector that owns the registered devices and their control values.

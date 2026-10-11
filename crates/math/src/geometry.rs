@@ -346,7 +346,7 @@ branded_vec3!(UnitVector);
 
 impl<Space> UnitVector<Space> {
 	/// Wraps components the caller already knows are finite and unit length.
-	const fn unchecked(value: Vec3f) -> Self {
+	pub(crate) const fn unchecked(value: Vec3f) -> Self {
 		Self {
 			value,
 			space: PhantomData,

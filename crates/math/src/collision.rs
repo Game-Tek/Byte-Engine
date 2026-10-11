@@ -1,3 +1,5 @@
+use maths_rs::Vec3f;
+
 use crate::{AABB, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
 
 /// The `Intersection` struct records a static contact using a normal that points from shape A toward shape B.
@@ -192,103 +194,46 @@ pub fn sphere_vs_sphere<Space>(sphere_a: &Sphere<Space>, sphere_b: &Sphere<Space
 
 /// Returns the contact between two overlapping axis-aligned boxes.
 pub fn aabb_vs_aabb<Space>(a: &AABB<Space>, b: &AABB<Space>) -> Option<Intersection<Space>> {
-	let a_min = a.min();
-	let a_max = a.max();
-	let b_min = b.min();
-	let b_max = b.max();
+	let (a_min, a_max) = (a.min().to_array(), a.max().to_array());
+	let (b_min, b_max) = (b.min().to_array(), b.max().to_array());
 	// Keep the overlap endpoints for both the separating-axis test and contact points.
-	let overlap_min_x = a_min.x().max(b_min.x());
-	let overlap_max_x = a_max.x().min(b_max.x());
-	let overlap_min_y = a_min.y().max(b_min.y());
-	let overlap_max_y = a_max.y().min(b_max.y());
-	let overlap_min_z = a_min.z().max(b_min.z());
-	let overlap_max_z = a_max.z().min(b_max.z());
-	let overlap_x = overlap_max_x - overlap_min_x;
-	let overlap_y = overlap_max_y - overlap_min_y;
-	let overlap_z = overlap_max_z - overlap_min_z;
-	if overlap_x < 0.0 || overlap_y < 0.0 || overlap_z < 0.0 {
+	let overlap_min: [f32; 3] = std::array::from_fn(|axis| a_min[axis].max(b_min[axis]));
+	let overlap_max: [f32; 3] = std::array::from_fn(|axis| a_max[axis].min(b_max[axis]));
+	let overlap: [f32; 3] = std::array::from_fn(|axis| overlap_max[axis] - overlap_min[axis]);
+	if overlap[0] < 0.0 || overlap[1] < 0.0 || overlap[2] < 0.0 {
 		return None;
 	}
 
-	// Choose the shallowest axis, which is the minimum translation direction.
-	let (axis, depth) = shallowest_axis(overlap_x, overlap_y, overlap_z);
-	// Only the selected axis contributes to the normal's orientation.
-	let sign = signed_axis(aabb_axis_center_delta(axis, a_min, a_max, b_min, b_max));
-	let normal = axis_normal(axis, sign);
-	let overlap_center: Point<Space> = Point::new(
-		(overlap_min_x + overlap_max_x) * 0.5,
-		(overlap_min_y + overlap_max_y) * 0.5,
-		(overlap_min_z + overlap_max_z) * 0.5,
-	);
-	let (point_on_a, point_on_b) = aabb_contact_points(axis, sign, overlap_center, a_min, a_max, b_min, b_max);
+	// Choose the shallowest axis, which is the minimum translation direction. Everything after this reads that
+	// axis by index instead of branching on it: the axis changes from one pair of boxes to the next with no
+	// pattern, so a processor would guess such branches wrong about as often as right.
+	let axis = shallowest_axis(overlap);
+	// Only the selected axis contributes to the normal's orientation. The sign points from A's center to B's.
+	let a_center = a_min[axis] + (a_max[axis] - a_min[axis]) * 0.5;
+	let b_center = b_min[axis] + (b_max[axis] - b_min[axis]) * 0.5;
+	let sign = signed_axis(b_center - a_center);
+	// The contact points lie on the facing surfaces of the boxes, in the middle of the overlap.
+	let mut point_on_a: [f32; 3] = std::array::from_fn(|axis| (overlap_min[axis] + overlap_max[axis]) * 0.5);
+	let mut point_on_b = point_on_a;
+	(point_on_a[axis], point_on_b[axis]) = if sign > 0.0 {
+		(a_max[axis], b_min[axis])
+	} else {
+		(a_min[axis], b_max[axis])
+	};
 
 	Some(Intersection {
-		normal,
-		depth,
-		point_on_a,
-		point_on_b,
+		normal: axis_normal(axis, sign),
+		depth: overlap[axis],
+		point_on_a: Point::from_array(point_on_a),
+		point_on_b: Point::from_array(point_on_b),
 	})
 }
 
 // Selects the minimum-translation axis with stable tie-breaking toward X, then Y.
-fn shallowest_axis(overlap_x: f32, overlap_y: f32, overlap_z: f32) -> (usize, f32) {
-	if overlap_y < overlap_x && overlap_y <= overlap_z {
-		(1, overlap_y)
-	} else if overlap_z < overlap_x && overlap_z < overlap_y {
-		(2, overlap_z)
-	} else {
-		(0, overlap_x)
-	}
-}
-
-// Returns B's center offset from A along the selected contact axis.
-fn aabb_axis_center_delta<Space>(
-	axis: usize,
-	a_min: Point<Space>,
-	a_max: Point<Space>,
-	b_min: Point<Space>,
-	b_max: Point<Space>,
-) -> f32 {
-	match axis {
-		0 => (b_min.x() + (b_max.x() - b_min.x()) * 0.5) - (a_min.x() + (a_max.x() - a_min.x()) * 0.5),
-		1 => (b_min.y() + (b_max.y() - b_min.y()) * 0.5) - (a_min.y() + (a_max.y() - a_min.y()) * 0.5),
-		2 => (b_min.z() + (b_max.z() - b_min.z()) * 0.5) - (a_min.z() + (a_max.z() - a_min.z()) * 0.5),
-		_ => unreachable!(),
-	}
-}
-
-// Builds corresponding surface points on the selected faces of both boxes.
-fn aabb_contact_points<Space>(
-	axis: usize,
-	sign: f32,
-	overlap_center: Point<Space>,
-	a_min: Point<Space>,
-	a_max: Point<Space>,
-	b_min: Point<Space>,
-	b_max: Point<Space>,
-) -> (Point<Space>, Point<Space>) {
-	let (a_x, b_x) = oriented_surfaces(sign, a_min.x(), a_max.x(), b_min.x(), b_max.x());
-	let (a_y, b_y) = oriented_surfaces(sign, a_min.y(), a_max.y(), b_min.y(), b_max.y());
-	let (a_z, b_z) = oriented_surfaces(sign, a_min.z(), a_max.z(), b_min.z(), b_max.z());
-	match axis {
-		0 => (
-			Point::new(a_x, overlap_center.y(), overlap_center.z()),
-			Point::new(b_x, overlap_center.y(), overlap_center.z()),
-		),
-		1 => (
-			Point::new(overlap_center.x(), a_y, overlap_center.z()),
-			Point::new(overlap_center.x(), b_y, overlap_center.z()),
-		),
-		2 => (
-			Point::new(overlap_center.x(), overlap_center.y(), a_z),
-			Point::new(overlap_center.x(), overlap_center.y(), b_z),
-		),
-		_ => unreachable!(),
-	}
-}
-
-fn oriented_surfaces(sign: f32, a_min: f32, a_max: f32, b_min: f32, b_max: f32) -> (f32, f32) {
-	if sign > 0.0 { (a_max, b_min) } else { (a_min, b_max) }
+fn shallowest_axis([overlap_x, overlap_y, overlap_z]: [f32; 3]) -> usize {
+	let y_is_shallowest = (overlap_y < overlap_x) & (overlap_y <= overlap_z);
+	let z_is_shallowest = !y_is_shallowest & (overlap_z < overlap_x) & (overlap_z < overlap_y);
+	usize::from(y_is_shallowest) + 2 * usize::from(z_is_shallowest)
 }
 
 /// Returns the contact between a sphere and an axis-aligned box.
@@ -426,15 +371,10 @@ fn signed_axis(value: f32) -> f32 {
 }
 
 fn axis_normal<Space>(axis: usize, sign: f32) -> UnitVector<Space> {
-	match axis {
-		0 if sign < 0.0 => -UnitVector::x_axis(),
-		0 => UnitVector::x_axis(),
-		1 if sign < 0.0 => -UnitVector::y_axis(),
-		1 => UnitVector::y_axis(),
-		2 if sign < 0.0 => -UnitVector::z_axis(),
-		2 => UnitVector::z_axis(),
-		_ => unreachable!(),
-	}
+	// Scaling the whole axis by the sign keeps the direction unit length without a branch on the axis.
+	let mut components = [0.0; 3];
+	components[axis] = 1.0;
+	UnitVector::unchecked(Vec3f::new(components[0] * sign, components[1] * sign, components[2] * sign))
 }
 
 #[cfg(test)]
@@ -499,6 +439,41 @@ mod tests {
 		assert_eq!(aabb_contact.depth(), 1.0);
 		assert_eq!(aabb_contact.point_on_a(), Point::new(1.0, 0.0, 0.0));
 		assert_eq!(aabb_contact.point_on_b(), Point::new(0.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn aabb_contacts_face_the_other_box_along_the_shallowest_axis() {
+		let first: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(1.0, 1.0, 1.0));
+		let axes = [UnitVector::x_axis(), UnitVector::y_axis(), UnitVector::z_axis()];
+
+		for (axis, direction) in axes.into_iter().enumerate() {
+			for sign in [1.0, -1.0] {
+				// The second box overlaps the first by a quarter along this axis and by more along the others.
+				let mut center = [0.5, 0.5, 0.5];
+				center[axis] = 1.75 * sign;
+				let second = AABB::from_center_and_half_extents(Point::from_array(center), Vector::new(1.0, 1.0, 1.0));
+				let contact = aabb_vs_aabb(&first, &second).unwrap();
+
+				let mut on_first = [0.25, 0.25, 0.25];
+				on_first[axis] = sign;
+				let mut on_second = on_first;
+				on_second[axis] = 0.75 * sign;
+				assert_eq!(contact.normal(), if sign > 0.0 { direction } else { -direction });
+				assert_eq!(contact.depth(), 0.25);
+				assert_eq!(contact.point_on_a(), Point::from_array(on_first));
+				assert_eq!(contact.point_on_b(), Point::from_array(on_second));
+			}
+		}
+	}
+
+	#[test]
+	fn aabb_contacts_break_depth_ties_toward_x_then_y() {
+		let first: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(1.0, 1.0, 1.0));
+		let corner = AABB::from_center_and_half_extents(Point::new(1.5, 1.5, 1.5), Vector::new(1.0, 1.0, 1.0));
+		let edge = AABB::from_center_and_half_extents(Point::new(0.0, 1.5, 1.5), Vector::new(1.0, 1.0, 1.0));
+
+		assert_eq!(aabb_vs_aabb(&first, &corner).unwrap().normal(), UnitVector::x_axis());
+		assert_eq!(aabb_vs_aabb(&first, &edge).unwrap().normal(), UnitVector::y_axis());
 	}
 
 	#[test]

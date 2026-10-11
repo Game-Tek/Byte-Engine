@@ -29,6 +29,11 @@ pub struct SweepBounds {
 	max: [Vec<f32>; 3],
 	/// The boxes as they were received, kept between rebuilds so staging them does not allocate.
 	staged: Vec<StagedBounds>,
+	/// The order the last rebuild sorted `staged` into. Boxes move little between steps, so the next rebuild
+	/// usually only has to repair it.
+	order: Vec<SweepKey>,
+	/// The axis the last rebuild sorted along.
+	axis: usize,
 }
 
 /// The `StagedBounds` struct holds one box between being received and being sorted along the sweep axis.
@@ -38,49 +43,97 @@ struct StagedBounds {
 	max: [f32; 3],
 }
 
+/// The `SweepKey` struct places one staged box in the sweep order.
+#[derive(Clone, Copy)]
+struct SweepKey {
+	/// Where the box starts on the sweep axis.
+	start: f32,
+	id: u32,
+	/// The box's index in the staged boxes.
+	staged: u32,
+}
+
+impl SweepKey {
+	/// Orders keys by where their boxes start. Identifiers break ties, so equal boxes come out in the same order
+	/// whatever order they were staged in and whatever order an earlier rebuild left.
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		self.start.total_cmp(&other.start).then_with(|| self.id.cmp(&other.id))
+	}
+}
+
 impl SweepBounds {
 	/// Returns the number of boxes [`Self::overlaps`] can scan.
 	pub fn count(&self) -> usize {
 		self.ids.len()
 	}
 
-	/// Replaces the stored boxes with `bounds`, each identified by the `usize` it comes with.
+	/// Replaces the stored boxes with `bounds`, each identified by the distinct `usize` it comes with.
 	///
 	/// The boxes are sorted along the axis on which the fewest of them share a stretch, which keeps each box's scan
-	/// in [`Self::overlaps`] short.
+	/// in [`Self::overlaps`] short. When `bounds` yields the boxes of the last rebuild again, in the same order,
+	/// the sort starts from the order they had then, which is quick when they have moved little.
 	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
-		self.staged.clear();
-		self.staged.extend(bounds.map(|(id, bounds)| {
+		// Staging over the last rebuild's boxes shows whether these are the same boxes.
+		let mut count = 0;
+		let mut same_boxes = true;
+		for (id, bounds) in bounds {
 			debug_assert!(
 				u32::try_from(id).is_ok(),
 				"Broad-phase identifier is too large. The most likely cause is a body index above the 32-bit slot range."
 			);
-			StagedBounds {
+			let staged = StagedBounds {
 				id: id as u32,
 				min: bounds.min().to_array(),
 				max: bounds.max().to_array(),
+			};
+			match self.staged.get_mut(count) {
+				Some(previous) => {
+					same_boxes &= previous.id == staged.id;
+					*previous = staged;
+				}
+				None => {
+					same_boxes = false;
+					self.staged.push(staged);
+				}
 			}
-		}));
+			count += 1;
+		}
+		same_boxes &= count == self.staged.len();
+		self.staged.truncate(count);
 
 		let sweep_axis = least_crowded_axis(&self.staged);
 		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
 
-		// Identifiers break ties, so equal bounds come out in the same order whatever order they were staged in.
-		self.staged.sort_unstable_by(|first, second| {
-			first.min[sweep_axis]
-				.total_cmp(&second.min[sweep_axis])
-				.then_with(|| first.id.cmp(&second.id))
-		});
+		// The last order only helps for the same boxes along the same axis.
+		let repairable = same_boxes && sweep_axis == self.axis;
+		if repairable {
+			for key in &mut self.order {
+				key.start = self.staged[key.staged as usize].min[sweep_axis];
+			}
+		} else {
+			self.order.clear();
+			self.order
+				.extend(self.staged.iter().enumerate().map(|(index, staged)| SweepKey {
+					start: staged.min[sweep_axis],
+					id: staged.id,
+					staged: index as u32,
+				}));
+		}
+		if !(repairable && repair(&mut self.order)) {
+			self.order.sort_unstable_by(SweepKey::cmp);
+		}
+		self.axis = sweep_axis;
 
 		self.ids.clear();
-		self.ids.extend(self.staged.iter().map(|staged| staged.id));
+		self.ids.extend(self.order.iter().map(|key| key.id));
+		let staged = |key: &SweepKey| &self.staged[key.staged as usize];
 		for (slot, axis) in axes.into_iter().enumerate() {
 			// A comparison with NaN is never true, so the padding overlaps nothing, not even unbounded boxes.
 			let padding = std::iter::repeat_n(f32::NAN, WIDTH);
 			self.min[slot].clear();
-			self.min[slot].extend(self.staged.iter().map(|staged| staged.min[axis]).chain(padding.clone()));
+			self.min[slot].extend(self.order.iter().map(|key| staged(key).min[axis]).chain(padding.clone()));
 			self.max[slot].clear();
-			self.max[slot].extend(self.staged.iter().map(|staged| staged.max[axis]).chain(padding));
+			self.max[slot].extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
 		}
 	}
 
@@ -120,6 +173,31 @@ impl SweepBounds {
 			}
 		}
 	}
+}
+
+/// Sorts `keys` that are already nearly in order and returns whether it finished.
+///
+/// It moves each key back past the keys that belong after it, which is quick while keys are close to their places.
+/// It gives up, leaving the keys in some other order, once that has taken more moves than a full sort is worth.
+fn repair(keys: &mut [SweepKey]) -> bool {
+	/// The moves allowed for each key on average before a full sort is the better choice.
+	const MOVES_PER_KEY: usize = 8;
+	let mut moves_left = keys.len() * MOVES_PER_KEY;
+	for sorted in 1..keys.len() {
+		let key = keys[sorted];
+		let mut place = sorted;
+		while place > 0 && key.cmp(&keys[place - 1]).is_lt() {
+			keys[place] = keys[place - 1];
+			place -= 1;
+		}
+		keys[place] = key;
+		let moves = sorted - place;
+		if moves > moves_left {
+			return false;
+		}
+		moves_left -= moves;
+	}
+	true
 }
 
 /// Returns the axis on which the fewest boxes overlap each other, judged from an evenly spaced sample of `boxes`.
@@ -242,6 +320,41 @@ mod tests {
 		}
 
 		assert_eq!(split, whole);
+	}
+
+	#[test]
+	fn rebuilding_moved_boxes_reports_the_same_sequence_as_a_first_sweep() {
+		let boxes = scattered_boxes(67);
+		let mut sweep = SweepBounds::default();
+		sweep.rebuild(boxes.iter().copied().enumerate());
+
+		// The same boxes again, some moved a little and some moved far past their neighbors.
+		let moved = boxes
+			.iter()
+			.enumerate()
+			.map(|(index, bounds)| {
+				let shift = match index % 5 {
+					0 => 0.0,
+					4 => 7.5,
+					step => step as f32 * -0.15,
+				};
+				AABB::new(
+					bounds.min() + Vector::new(shift, shift * 0.5, 0.0),
+					bounds.max() + Vector::new(shift, shift * 0.5, 0.0),
+				)
+			})
+			.collect::<Vec<_>>();
+		sweep.rebuild(moved.iter().copied().enumerate());
+		let mut repaired = Vec::new();
+		sweep.overlaps(0..sweep.count(), |pair| repaired.push((pair.a, pair.b)));
+
+		let mut first = SweepBounds::default();
+		first.rebuild(moved.iter().copied().enumerate());
+		let mut expected = Vec::new();
+		first.overlaps(0..first.count(), |pair| expected.push((pair.a, pair.b)));
+
+		assert!(!expected.is_empty());
+		assert_eq!(repaired, expected);
 	}
 
 	#[test]

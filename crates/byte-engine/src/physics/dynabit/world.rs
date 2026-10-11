@@ -16,7 +16,7 @@ use crate::{
 	physics::{
 		body::{Body, BodyTypes},
 		dynabit::{
-			body::{PhysicsBody, intersect},
+			body::{Motion, PhysicsBody, intersect},
 			contact::Contact,
 			solver::{self, ContactBatches, Response},
 		},
@@ -31,6 +31,13 @@ use crate::{
 /// to resolve on one lane. With four lanes on an Apple M4, steps of 1,000 and of 4,000 stacked cubes got no
 /// faster below this size.
 const SHARED_BATCH_CONTACTS: usize = 128;
+
+/// The number of bodies below which [`World::update_with_alley`] runs the step on the calling thread alone.
+///
+/// Starting lanes and meeting them at every stage costs more than they save on a step this small. On an Apple
+/// M4, two lanes matched one at about 400 stacked cubes in steps run back to back. Lanes that slept since the
+/// last frame take longer to start, so the limit sits above that.
+const SERIAL_STEP_BODIES: usize = 512;
 
 /// The number of bodies from which [`World::update_with_alley`] runs a step on [`LARGE_STEP_LANES`] lanes
 /// instead of [`SMALL_STEP_LANES`].
@@ -61,14 +68,12 @@ pub struct World {
 	body_times: Vec<MediaTime>,
 	/// The bounds every body sweeps through during the current step, which contact detection scans for overlaps.
 	bounds: SweepBounds,
-	/// The contacts each lane found in its share of `bounds`, indexed by lane. Each lane locks only its own entry.
-	share_contacts: Vec<Mutex<Vec<Contact>>>,
+	/// What each lane produced from its share of a stage, indexed by lane. Each lane locks only its own entry.
+	shares: Vec<Mutex<Share>>,
 	/// The step's contacts in time-of-impact order, kept between steps so gathering them does not allocate.
 	contacts: Vec<Contact>,
 	/// The contacts at the start of the step, sorted into batches that can each be resolved in any order.
 	batches: ContactBatches,
-	/// The responses each lane computed for its share of one batch, indexed by lane like `share_contacts`.
-	share_responses: Vec<Mutex<Vec<Response>>>,
 }
 
 impl World {
@@ -85,10 +90,9 @@ impl World {
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 			body_times: Vec::new(),
 			bounds: SweepBounds::default(),
-			share_contacts: Vec::new(),
+			shares: Vec::new(),
 			contacts: Vec::new(),
 			batches: ContactBatches::default(),
-			share_responses: Vec::new(),
 		}
 	}
 
@@ -121,8 +125,11 @@ impl World {
 		transforms_tx: &impl Channel<TransformationUpdate>,
 	) {
 		self.adopt_updates(transforms_rx);
+		self.step(time.delta(), transforms_tx);
+	}
 
-		let step = time.delta();
+	/// Advances physics by `step` on the calling thread and publishes the resulting transforms.
+	fn step(&mut self, step: MediaTime, transforms_tx: &impl Channel<TransformationUpdate>) {
 		self.update_velocities(step);
 		let remaining = step - self.update_collisions(step);
 		self.update_bodies(remaining, transforms_tx);
@@ -130,12 +137,13 @@ impl World {
 
 	/// Processes entity updates, advances physics as one execution of `alley`, and publishes resulting transforms.
 	///
-	/// A step of fewer than 4,000 bodies runs on two of `alley`'s lanes and a larger one on four; the other lanes
-	/// stay asleep. Every running lane runs the same step. One lane applies gravity and sorts the bodies' bounds
-	/// while the others wait, every lane then finds the contacts in its share of the bounds, and one lane resolves
-	/// them and moves the bodies. Lanes also share the larger batches of simultaneous contacts. Contacts are
-	/// resolved in the order [`Self::update`] resolves them, so both produce the same simulation with any number
-	/// of lanes.
+	/// A step of fewer than 512 bodies runs on the calling thread, like [`Self::update`], because lanes would cost
+	/// more than they save. A step of fewer than 4,000 bodies runs on two of `alley`'s lanes and a larger one on
+	/// four; the other lanes stay asleep. Every running lane runs the same step. One lane applies gravity and sorts
+	/// the bodies' bounds while the others wait, every lane then finds the contacts in its share of the bounds, one
+	/// lane resolves them, every lane moves its share of the bodies, and one lane publishes their transforms.
+	/// Lanes also share the larger batches of simultaneous contacts. Contacts are resolved in the order
+	/// [`Self::update`] resolves them, so both produce the same simulation with any number of lanes.
 	pub fn update_with_alley(
 		&mut self,
 		time: Time,
@@ -147,6 +155,9 @@ impl World {
 		self.adopt_updates(transforms_rx);
 
 		let step = time.delta();
+		if self.bodies.len() < SERIAL_STEP_BODIES {
+			return self.step(step, transforms_tx);
+		}
 		let preferred_lanes = if self.bodies.len() < LARGE_STEP_BODIES {
 			SMALL_STEP_LANES
 		} else {
@@ -154,9 +165,8 @@ impl World {
 		};
 		let lanes = preferred_lanes.min(alley.parallelism());
 		// Entries are only added, so each lane keeps the storage it grew in earlier steps.
-		if self.share_contacts.len() < lanes {
-			self.share_contacts.resize_with(lanes, Default::default);
-			self.share_responses.resize_with(lanes, Default::default);
+		if self.shares.len() < lanes {
+			self.shares.resize_with(lanes, Default::default);
 		}
 		let executed = alley.execute_phased(self, lanes, |lane, world| {
 			lane.broadcast_mut(world, |world| {
@@ -169,10 +179,9 @@ impl World {
 				let _ = lane.each_ref(world, |world, lane| world.respond_to_share(batch, lane.idx(), lanes));
 				lane.broadcast_mut(world, |world| world.apply_share_responses());
 			}
-			lane.broadcast_mut(world, |world| {
-				let remaining = step - world.resolve_contacts(shared_batches);
-				world.update_bodies(remaining, transforms_tx);
-			});
+			let remaining = lane.broadcast_mut(world, |world| step - world.resolve_contacts(shared_batches));
+			let _ = lane.each_ref(world, |world, lane| world.advance_share(lane.idx(), lanes, remaining));
+			lane.broadcast_mut(world, |world| world.publish_share_motions(transforms_tx));
 		});
 		if let Err(panic) = executed {
 			std::panic::resume_unwind(panic);
@@ -223,22 +232,22 @@ impl World {
 
 	/// Finds the contacts in one of `shares` equal parts of the swept bounds and keeps them in that share's storage.
 	fn detect_share_contacts(&self, share: usize, shares: usize, dt: MediaTime) {
-		let storage = &self.share_contacts[share];
+		let storage = &self.shares[share];
 		// Work on the stack so lanes do not write to neighboring storage headers while they test bodies.
-		let mut contacts = std::mem::take(&mut *storage.lock());
+		let mut contacts = std::mem::take(&mut storage.lock().contacts);
 		self.detect_contacts(
 			share_range(self.bounds.count(), share, shares),
 			dt.as_seconds_f32(),
 			&mut contacts,
 		);
-		*storage.lock() = contacts;
+		storage.lock().contacts = contacts;
 	}
 
 	/// Gathers the contacts found in every share and batches them, then returns how many batches lanes should share.
 	fn batch_share_contacts(&mut self) -> usize {
 		// Shares are consecutive ranges of the swept bounds, so gathering by share keeps the order one scan finds.
-		for share_contacts in &mut self.share_contacts {
-			self.contacts.append(share_contacts.get_mut());
+		for share in &mut self.shares {
+			self.contacts.append(&mut share.get_mut().contacts);
 		}
 		self.batch_contacts();
 		// Batches fill from the first one, so the large ones lead.
@@ -277,22 +286,53 @@ impl World {
 
 	/// Computes the responses to one of `shares` equal parts of a batch and keeps them in that share's storage.
 	fn respond_to_share(&self, batch: usize, share: usize, shares: usize) {
-		let storage = &self.share_responses[share];
-		let mut responses = std::mem::take(&mut *storage.lock());
+		let storage = &self.shares[share];
+		let mut responses = std::mem::take(&mut storage.lock().responses);
 		let batch = self.batches.batch(batch);
 		responses.extend(
 			batch[share_range(batch.len(), share, shares)]
 				.chunks(solver::WIDTH)
 				.map(|group| solver::respond(&self.bodies, &self.contacts, group)),
 		);
-		*storage.lock() = responses;
+		storage.lock().responses = responses;
 	}
 
 	/// Writes the responses computed for every share of a batch to the bodies.
 	fn apply_share_responses(&mut self) {
-		for share_responses in &mut self.share_responses {
-			for response in share_responses.get_mut().drain(..) {
+		for share in &mut self.shares {
+			for response in share.get_mut().responses.drain(..) {
 				solver::apply(&mut self.bodies, &response);
+			}
+		}
+	}
+
+	/// Works out where the dynamic bodies in one of `shares` equal parts of the body slots are after `dt`, and keeps
+	/// the results in that share's storage.
+	fn advance_share(&self, share: usize, shares: usize, dt: MediaTime) {
+		let storage = &self.shares[share];
+		let mut motions = std::mem::take(&mut storage.lock().motions);
+		motions.extend(
+			share_range(self.bodies.slots_len(), share, shares)
+				.filter_map(|slot| Some((slot, self.bodies.get_slot(slot)?)))
+				.filter(|(_, body)| body.body_type == BodyTypes::Dynamic)
+				.map(|(slot, body)| (slot, body.advanced(dt))),
+		);
+		storage.lock().motions = motions;
+	}
+
+	/// Moves the bodies to where [`Self::advance_share`] found them to be and publishes their transforms.
+	///
+	/// Shares are consecutive ranges of the body slots, so this publishes in the order [`Self::update_bodies`] does.
+	fn publish_share_motions(&mut self, transforms_tx: &impl Channel<TransformationUpdate>) {
+		for share in &mut self.shares {
+			for (slot, motion) in share.get_mut().motions.drain(..) {
+				if let Some(body) = self.bodies.get_slot_mut(slot) {
+					body.apply(motion);
+					transforms_tx.send(TransformationUpdate::new(
+						body.handle,
+						Transform::new(body.position, body.scale, body.orientation),
+					));
+				}
 			}
 		}
 	}
@@ -419,6 +459,19 @@ impl World {
 			.remove(&handle)
 			.and_then(|index| self.bodies.remove(index))
 	}
+}
+
+/// The `Share` struct holds what one lane produces from its share of a stage until a serial stage collects it.
+///
+/// The storage is kept between steps so lanes do not allocate.
+#[derive(Default)]
+struct Share {
+	/// The contacts found in a share of the swept bounds.
+	contacts: Vec<Contact>,
+	/// The responses to a share of one batch of contacts.
+	responses: Vec<Response>,
+	/// Where the bodies in a share of the body slots end the step, with the slot of each.
+	motions: Vec<(usize, Motion)>,
 }
 
 /// Returns part `share` of `count` items split into `shares` consecutive parts of nearly equal size.
@@ -614,20 +667,23 @@ mod tests {
 	}
 
 	/// The bodies along each side of the grid [`crowded_bodies`] returns.
-	const CROWD_SIDE: usize = 16;
+	const CROWD_SIDE: usize = 24;
 
-	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other, so one step has
-	/// enough contacts with the ground alone for lanes to share a batch.
+	/// Returns a ground body under a grid of spheres and boxes that overlap it and each other. There are enough of
+	/// them for a step to run on lanes, and enough contacts with the ground alone for lanes to share a batch.
 	fn crowded_bodies() -> Vec<PhysicsBody> {
+		const { assert!(CROWD_SIDE * CROWD_SIDE >= SERIAL_STEP_BODIES) };
 		const { assert!(CROWD_SIDE * CROWD_SIDE >= 2 * SHARED_BATCH_CONTACTS) };
+		const SPACING: f32 = 0.8;
+		let reach = (CROWD_SIDE - 1) as f32 * SPACING * 0.5;
 		let mut ground = make_ground_body();
 		ground.collision_shape = Shapes::Cube {
-			size: Vector::new(8.0, 1.0, 8.0),
+			size: Vector::new(reach + 2.0, 1.0, reach + 2.0),
 		};
 		let mut bodies = vec![ground];
 		for index in 0..CROWD_SIDE * CROWD_SIDE {
 			let (column, row) = ((index % CROWD_SIDE) as f32, (index / CROWD_SIDE) as f32);
-			let position = math::Point::new(column * 0.8 - 6.0, 1.4, row * 0.8 - 6.0);
+			let position = math::Point::new(column * SPACING - reach, 1.4, row * SPACING - reach);
 			let mut body = make_dynamic_sphere_body(position, Vector::new(0.0, -1.0, 0.0), 0.5);
 			if index % 3 == 0 {
 				body.collision_shape = Shapes::Cube {

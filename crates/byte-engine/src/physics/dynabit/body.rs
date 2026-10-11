@@ -2,10 +2,7 @@ use math::{
 	AABB, Orientation, Point, Scale, Sphere, Vector,
 	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere_dynamic},
 };
-use maths_rs::{
-	Mat3f,
-	mat::{MatScale as _, MatTranspose as _},
-};
+use maths_rs::mat::MatTranspose as _;
 
 use crate::{
 	core::factory::Handle,
@@ -57,24 +54,30 @@ impl PhysicsBody {
 
 	/// Advances the body by `dt` using its current linear and angular velocities.
 	pub fn update(&mut self, dt: MediaTime) {
+		let motion = self.advanced(dt);
+		self.apply(motion);
+	}
+
+	/// Returns where the body is, and how it spins, after moving for `dt` at its current velocities.
+	///
+	/// This reads the body without changing it, so lanes can advance bodies side by side. Write the result back
+	/// with [`Self::apply`].
+	pub(crate) fn advanced(&self, dt: MediaTime) -> Motion {
 		let seconds = dt.as_seconds_f32();
-		self.position += self.linear_velocity * seconds;
+		let travel = self.linear_velocity * seconds;
+		let position = self.position + travel;
+		let center_of_mass = self.world_space_center_of_mass() + travel;
+		let center_offset = position - center_of_mass;
 
-		let center_of_mass = self.world_space_center_of_mass();
-		let center_offset = self.position - center_of_mass;
+		// The spin changes when the body's moments of inertia differ. That change is worked out in the body's own
+		// frame, where the inertia tensor is the diagonal of those moments, and then rotated into the world.
 		let rotation = self.orientation.into_maths().get_matrix();
-		let rotation_transpose = rotation.transpose();
-		// Rotating the diagonal local tensor and its reciprocal gives the world tensor and its inverse
-		// without a general 3x3 inversion.
-		let local_inertia = self.collision_shape.principal_inertia();
-		let inertia = rotation * Mat3f::from_scale(local_inertia) * rotation_transpose;
-		let inverse_inertia = rotation * Mat3f::from_scale(maths_rs::recip(local_inertia)) * rotation_transpose;
-		let angular_momentum = Vector::from_maths(inertia * self.angular_velocity.into_maths());
-		let angular_acceleration =
-			Vector::from_maths(inverse_inertia * self.angular_velocity.cross(angular_momentum).into_maths());
-		self.angular_velocity += angular_acceleration * seconds;
+		let moments = self.collision_shape.principal_inertia();
+		let local_velocity = rotation.transpose() * self.angular_velocity.into_maths();
+		let local_acceleration = maths_rs::cross(local_velocity, local_velocity * moments) / moments;
+		let angular_velocity = self.angular_velocity + Vector::from_maths(rotation * local_acceleration) * seconds;
 
-		let angular_step = self.angular_velocity * seconds;
+		let angular_step = angular_velocity * seconds;
 		// Check the axis and measure its rotation in one operation.
 		let delta_orientation = angular_step
 			.normalize_with_length()
@@ -83,8 +86,18 @@ impl PhysicsBody {
 					.expect("a finite unit axis and finite angle form an orientation")
 			})
 			.unwrap_or_else(|_| Orientation::identity());
-		self.orientation = delta_orientation.compose(self.orientation);
-		self.position = center_of_mass + delta_orientation.rotate_vector(center_offset);
+		Motion {
+			position: center_of_mass + delta_orientation.rotate_vector(center_offset),
+			orientation: delta_orientation.compose(self.orientation),
+			angular_velocity,
+		}
+	}
+
+	/// Moves the body to where [`Self::advanced`] found it to be.
+	pub(crate) fn apply(&mut self, motion: Motion) {
+		self.position = motion.position;
+		self.orientation = motion.orientation;
+		self.angular_velocity = motion.angular_velocity;
 	}
 
 	/// Returns the current world-space axis-aligned bounds.
@@ -97,24 +110,37 @@ impl PhysicsBody {
 		)
 	}
 
-	/// Returns world-space bounds around everywhere the body is during the next `dt` seconds at its current linear
-	/// velocity.
+	/// Returns world-space bounds around everywhere [`intersect`] can find this body in contact during the next
+	/// `dt` seconds.
 	///
-	/// The bounds are slightly larger than the body, so bodies that are about to touch still count as overlapping.
-	/// Pass them to [`crate::physics::SweepBounds::rebuild`] to find the bodies this one may collide with.
+	/// A sphere is tested along its path, so its bounds cover the path at its current linear velocity, slightly
+	/// enlarged so spheres that are about to touch still count as overlapping. A box is only tested where it is
+	/// now, so its bounds are exact and no pair is tested that cannot be in contact. Pass the bounds to
+	/// [`crate::physics::SweepBounds::rebuild`] to find the bodies this one may collide with.
 	pub fn swept_bounds(&self, dt: f32) -> AABB {
 		debug_assert!(
 			dt.is_finite() && dt >= 0.0,
 			"Swept bounds interval is invalid. The most likely cause is passing a negative or non-finite frame interval."
 		);
+		let current = self.bounds();
+		if matches!(self.collision_shape, Shapes::Cube { .. }) {
+			return current;
+		}
 		const MARGIN: f32 = 0.01;
 		let margin = Vector::new(MARGIN, MARGIN, MARGIN);
-		let current = self.bounds();
 		let travel = self.linear_velocity * dt;
 		let min = maths_rs::min(current.min().into_maths(), (current.min() + travel).into_maths());
 		let max = maths_rs::max(current.max().into_maths(), (current.max() + travel).into_maths());
 		AABB::new(Point::from_maths(min) - margin, Point::from_maths(max) + margin)
 	}
+}
+
+/// The `Motion` struct holds the state a body has after moving for a while, between working it out and writing it
+/// to the body.
+pub(crate) struct Motion {
+	position: Point,
+	orientation: Orientation,
+	angular_velocity: Vector,
 }
 
 /// Finds a collision contact for the two world-space bodies.
@@ -178,6 +204,19 @@ mod tests {
 		assert!(swept.min().x() <= -6.0 && swept.max().x() >= 6.0);
 		assert!(swept.min().y() <= -6.0 && swept.max().y() >= 6.0);
 		assert!(swept.min().z() <= -6.0 && swept.max().z() >= 6.0);
+	}
+
+	#[test]
+	fn swept_bounds_of_a_box_are_its_bounds() {
+		let mut body = body();
+		body.collision_shape = Shapes::cube(Vector::new(0.5, 1.0, 1.5));
+		body.position = Point::new(2.0, 0.0, 0.0);
+		body.linear_velocity = Vector::new(10.0, 10.0, 10.0);
+
+		let swept = body.swept_bounds(1.0);
+
+		assert_eq!(swept.min(), body.bounds().min());
+		assert_eq!(swept.max(), body.bounds().max());
 	}
 
 	#[test]

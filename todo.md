@@ -66,7 +66,6 @@
 
 ## Physics
 
-- Keep the broad phase's sweep order between steps and repair it with an insertion sort, since bodies move little from one step to the next.
 - Group contacts by time of impact or use collision substeps so every body is not advanced once per contact.
 
 ## Audio and input

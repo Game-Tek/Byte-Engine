@@ -72,42 +72,6 @@ fn build_vertex_descriptor(vertex_elements: &[crate::pipelines::VertexElement]) 
 	Some(vertex_descriptor)
 }
 
-/// Creates a Metal image, with a host staging copy when the CPU may access it.
-///
-/// Both [`Context`] and [`Factory`] create images through this function.
-pub(crate) fn build_image(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	name: Option<&str>,
-	description: ImageDescription,
-	debug_labels: bool,
-) -> Image {
-	let texture = device
-		.newTextureWithDescriptor(&build_texture_descriptor(description))
-		.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
-
-	#[cfg(debug_assertions)]
-	if let Some(name) = name.filter(|_| debug_labels) {
-		texture.setLabel(Some(&NSString::from_str(name)));
-	}
-
-	// Device-only images are written through uploads or transfers, so they need no host copy.
-	let staging = description
-		.access
-		.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
-		.then(|| {
-			let (_, _, bytes_per_image) = utils::texture_upload_layout(description.format, description.extent);
-			vec![0u8; bytes_per_image * description.extent.depth().max(1) as usize * description.array_layers as usize]
-		});
-
-	Image {
-		name: crate::debug_name(name),
-		texture,
-		description,
-		staging,
-		slot: None,
-	}
-}
-
 /// Builds a Metal texture descriptor from GHI image creation parameters.
 pub(crate) fn build_texture_descriptor(
 	ImageDescription {

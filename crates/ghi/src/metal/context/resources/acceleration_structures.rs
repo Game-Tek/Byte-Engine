@@ -31,10 +31,7 @@ impl Context {
 		);
 
 		let sizes = self.device.accelerationStructureSizesWithDescriptor(sizing);
-		let structure = self
-			.device
-			.newAccelerationStructureWithSize(sizes.accelerationStructureSize)
-			.expect("Metal acceleration structure creation failed. The most likely cause is that the device is out of memory.");
+		let structure = self.allocator.acceleration_structure(sizes.accelerationStructureSize);
 
 		#[cfg(debug_assertions)]
 		if let Some(name) = name.filter(|_| self.settings.debug_labels) {

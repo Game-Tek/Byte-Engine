@@ -62,6 +62,7 @@ impl Context {
 			synchronizers.add_chain((0..frames).map(|_| Synchronizer::default()));
 		Ok(Context {
 			factory: Factory::new(device.clone(), compiler, settings),
+			allocator: allocator::Allocator::new(device.clone(), settings.debug_labels),
 			device,
 			frames,
 			queues,
@@ -96,6 +97,7 @@ impl Context {
 		})
 	}
 
+	/// Creates a zeroed buffer and, for a device-only buffer, the staging copy the CPU maps in its place.
 	pub(super) fn create_buffer_resource(
 		&mut self,
 		name: Option<&str>,
@@ -105,16 +107,10 @@ impl Context {
 	) -> Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
 		let name = crate::debug_name(name);
-		let buffer = self
-			.device
-			.newBufferWithLength_options(size as _, options)
-			.expect("Metal buffer creation failed. The most likely cause is that the device is out of memory.");
+		let buffer = self.allocator.buffer(size, options);
 
-		let staging = (device_accesses == crate::DeviceAccesses::DeviceOnly).then(|| {
-			self.device
-				.newBufferWithLength_options(size as _, mtl::MTLResourceOptions::StorageModeShared)
-				.expect("Metal staging buffer creation failed. The most likely cause is that the device is out of memory.")
-		});
+		let staging = (device_accesses == crate::DeviceAccesses::DeviceOnly)
+			.then(|| self.allocator.buffer(size, mtl::MTLResourceOptions::StorageModeShared));
 
 		#[cfg(debug_assertions)]
 		if let Some(name) = name.as_deref().filter(|_| self.settings.debug_labels) {
@@ -127,7 +123,8 @@ impl Context {
 		// A device-only buffer is mapped through its staging copy.
 		let pointer = staging.as_ref().unwrap_or(&buffer).contents().as_ptr().cast::<u8>();
 		if size != 0 && !pointer.is_null() {
-			// Typed buffer APIs expose the mapped bytes as zeroable POD values, so initialize the complete representation.
+			// Typed buffer APIs expose the mapped bytes as zeroable POD values, and the memory may have held another
+			// resource, so initialize the complete representation.
 			unsafe { std::ptr::write_bytes(pointer, 0, size) };
 		}
 		let gpu_address = buffer.gpuAddress();
@@ -155,6 +152,45 @@ impl Context {
 			pointer,
 			uses: resource_uses,
 			access: device_accesses,
+		}
+	}
+
+	/// Creates a CPU-visible buffer that holds a copy of `bytes`.
+	pub(super) fn create_buffer_with_bytes(&mut self, bytes: &[u8]) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+		let buffer = self.allocator.buffer(bytes.len(), mtl::MTLResourceOptions::StorageModeShared);
+		// SAFETY: The buffer was created with `bytes.len()` bytes of CPU-visible storage, which no other allocation
+		// overlaps.
+		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.contents().as_ptr().cast::<u8>(), bytes.len()) };
+		buffer
+	}
+
+	/// Creates an image in the context's heaps, with a host staging copy when the CPU may access it.
+	///
+	/// An image whose memory another resource used before starts with what that resource left there, so write it
+	/// before reading it.
+	pub(crate) fn create_image_resource(&mut self, name: Option<&str>, description: ImageDescription) -> Image {
+		let texture = self.allocator.texture(&build_texture_descriptor(description));
+
+		#[cfg(debug_assertions)]
+		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
+			texture.setLabel(Some(&NSString::from_str(name)));
+		}
+
+		// Device-only images are written through uploads or transfers, so they need no host copy.
+		let staging = description
+			.access
+			.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
+			.then(|| {
+				let (_, _, bytes_per_image) = utils::texture_upload_layout(description.format, description.extent);
+				vec![0u8; bytes_per_image * description.extent.depth().max(1) as usize * description.array_layers as usize]
+			});
+
+		Image {
+			name: crate::debug_name(name),
+			texture,
+			description,
+			staging,
+			slot: None,
 		}
 	}
 
@@ -371,7 +407,8 @@ impl Context {
 			array_layers,
 			..image.description
 		};
-		let replacement = build_image(&self.device, image.name.as_deref(), description, self.settings.debug_labels);
+		let name = image.name.clone();
+		let replacement = self.create_image_resource(name.as_deref(), description);
 		*self.images.resource_mut(handle) = replacement;
 		self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 		true
@@ -450,14 +487,13 @@ impl Context {
 			if let Some(name) = image.name.as_deref().filter(|_| self.settings.debug_labels) {
 				texture.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
 			}
-			// In-flight commands retained the previous texture and heap, so replacing them here is safe.
+			// In-flight commands retained the previous texture, which keeps its heap, so replacing them here is safe.
 			*image = Image {
 				name: image.name.take(),
 				texture,
 				description,
 				staging: None,
 				slot: Some(GroupSlot {
-					heap: heap.clone(),
 					heap_serial: *heap_serial,
 					offset: slot.offset as usize,
 					size: slot.size as usize,

@@ -551,9 +551,13 @@ pub trait ContextCreate {
 	fn build_dynamic_buffer<T: Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.
+	///
+	/// The image starts without valid contents. Write it before reading it.
 	fn build_dynamic_image(&mut self, builder: image::Builder) -> DynamicImageHandle;
 
 	/// Creates an image from a builder.
+	///
+	/// The image starts without valid contents. Write it before reading it.
 	///
 	/// When the builder names a group with [`image::Builder::group`], the image joins that group and has no usable
 	/// memory until [`crate::frame::Frame::place_image_group`] places it.

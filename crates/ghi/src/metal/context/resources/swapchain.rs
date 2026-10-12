@@ -60,7 +60,7 @@ impl Context {
 					let description = ImageDescription::new(
 						&image_builder::Builder::new(SWAPCHAIN_FORMAT, uses | Uses::BlitSource).extent(extent),
 					);
-					let image = build_image(&self.device, Some("Swapchain Image"), description, self.settings.debug_labels);
+					let image = self.create_image_resource(Some("Swapchain Image"), description);
 					self.swapchains[swapchain_handle.0 as usize].images[sequence_index] = Some(self.images.add(image).1);
 					changed = true;
 				}

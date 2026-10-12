@@ -22,6 +22,8 @@ impl Context {
 		// The sequence's previous frame has completed, so its timestamps are final.
 		self.resolve_counters(frame_key.sequence_index);
 		self.retire_internal_uploads(frame_key.sequence_index);
+		// Resources replaced in earlier frames are gone once those frames completed, so their memory can be reused.
+		self.allocator.collect(allocator::COLLECTION_STEP);
 		// Every command that read this sequence's upload pages has completed, so the pages can be rewound.
 		self.upload_arenas[frame_key.sequence_index as usize].reset();
 		self.process_tasks(frame_key.sequence_index);

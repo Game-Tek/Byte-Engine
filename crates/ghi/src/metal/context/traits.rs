@@ -381,10 +381,7 @@ impl crate::context::ContextCreate for Context {
 		device_accesses: crate::DeviceAccesses,
 	) -> graphics_hardware_interface::AllocationHandle {
 		let options = utils::resource_options_from_access(device_accesses);
-		let buffer = self
-			.device
-			.newBufferWithLength_options(size as _, options)
-			.expect("Metal allocation failed. The most likely cause is that the device is out of memory.");
+		let buffer = self.allocator.buffer(size, options);
 		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
 			buffer.setLabel(Some(&NSString::from_str(&format!("Allocation {}", self.allocations.len()))));
@@ -402,13 +399,7 @@ impl crate::context::ContextCreate for Context {
 		vertex_layout: &[crate::pipelines::VertexElement],
 	) -> graphics_hardware_interface::MeshHandle {
 		// Split interleaved vertices into one packed stream per Metal vertex binding.
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-		// SAFETY: `indices` holds `indices.len()` initialized bytes for the duration of buffer creation.
-		let index_buffer = unsafe {
-			self.device
-				.newBufferWithBytes_length_options(NonNull::from(indices).cast(), indices.len() as _, options)
-		}
-		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
+		let index_buffer = self.create_buffer_with_bytes(indices);
 		// Meshes carry no name, so labels identify them by handle.
 		#[cfg(debug_assertions)]
 		let mesh_index = self.meshes.len();
@@ -452,15 +443,7 @@ impl crate::context::ContextCreate for Context {
 						}
 					}
 
-					// SAFETY: `binding_vertices` holds the initialized packed binding bytes for the duration of buffer creation.
-					let buffer = unsafe {
-						self.device.newBufferWithBytes_length_options(
-							NonNull::from(&binding_vertices[..]).cast(),
-							binding_vertices.len() as _,
-							options,
-						)
-					}
-					.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory.");
+					let buffer = self.create_buffer_with_bytes(&binding_vertices);
 					#[cfg(debug_assertions)]
 					if self.settings.debug_labels {
 						buffer.setLabel(Some(&NSString::from_str(&format!(
@@ -554,9 +537,10 @@ impl crate::context::ContextCreate for Context {
 		crate::image_group::ImageGroups::reject_dynamic_member(&builder);
 		let description = ImageDescription::new(&builder);
 		// Create every frame sequence's image up front, like dynamic buffers, so frames in flight never share one.
-		let master = self.images.add_chain(
-			(0..self.frames).map(|_| build_image(&self.device, builder.get_name(), description, self.settings.debug_labels)),
-		);
+		let images = (0..self.frames)
+			.map(|_| self.create_image_resource(builder.get_name(), description))
+			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+		let master = self.images.add_chain(images);
 
 		graphics_hardware_interface::DynamicImageHandle(master)
 	}
@@ -567,12 +551,7 @@ impl crate::context::ContextCreate for Context {
 		}
 		// A member starts with its own texture at the builder's extent, so descriptors can reference it before the
 		// group is placed. Placement replaces the texture with one in the group heap.
-		let image = build_image(
-			&self.device,
-			builder.get_name(),
-			ImageDescription::new(&builder),
-			self.settings.debug_labels,
-		);
+		let image = self.create_image_resource(builder.get_name(), ImageDescription::new(&builder));
 		let (handle, _) = self.images.add(image);
 		if let Some(group) = builder.group {
 			self.image_groups.add_member(group, handle);

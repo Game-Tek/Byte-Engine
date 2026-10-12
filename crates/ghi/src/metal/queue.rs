@@ -10,7 +10,7 @@ const IDLE: u64 = u64::MAX;
 /// How long an allocation stays resident after the last command that used it, at the least; it leaves within twice
 /// this time. Frames reuse most of their allocations, so lingering keeps a steady frame from changing the residency
 /// set at all, while memory the application stopped using is still given back promptly.
-const RESIDENCY_LINGER: std::time::Duration = std::time::Duration::from_millis(250);
+pub(super) const RESIDENCY_LINGER: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The `NativeCommand` struct owns reusable Metal 4 recording state for one queue submission.
 pub(crate) struct NativeCommand {
@@ -145,6 +145,10 @@ impl NativeCommand {
 /// command uses it. It leaves once no descriptor set holds it, every recording that could reach it has finished, and
 /// no recording used it for [`RESIDENCY_LINGER`]. The queue holds a strong reference to each resident allocation,
 /// which keeps it alive while the GPU may still use it and keeps its address unique as a key.
+///
+/// A resource placed in a heap, as an [`allocator::Allocator`] places them, has no memory of its own. The Metal set
+/// holds its heap instead, for as long as the queue keeps any resource of that heap resident. Many resources share
+/// a heap, so the set changes only when a heap enters or leaves it.
 pub(crate) struct QueueResidency {
 	set: Retained<ProtocolObject<dyn mtl::MTLResidencySet>>,
 	/// Resident allocations by object address.
@@ -167,8 +171,21 @@ struct Resident {
 	allocation: Retained<ProtocolObject<dyn mtl::MTLAllocation>>,
 	/// Recordings numbered below this may use the allocation.
 	users_below: u64,
-	/// How many descriptor set entries hold the allocation.
+	/// How many descriptor set entries hold the allocation, and for a heap, how many of its resources are resident.
 	pins: u32,
+	/// The address of the heap that holds the allocation's memory, which this entry pins, or zero for an allocation
+	/// with memory of its own.
+	heap: usize,
+}
+
+/// Returns the heap that holds the memory of `allocation`, or `None` when it has memory of its own.
+fn heap_of(allocation: &ProtocolObject<dyn mtl::MTLAllocation>) -> Option<Retained<ProtocolObject<dyn mtl::MTLHeap>>> {
+	// Heaps and pipeline states are allocations too, and only resources can live in a heap.
+	if !allocation.respondsToSelector(sel!(heap)) {
+		return None;
+	}
+	// SAFETY: The object responds to `heap`, which Metal resources declare as a property that returns a nullable heap.
+	unsafe { msg_send![allocation, heap] }
 }
 
 impl QueueResidency {
@@ -192,18 +209,38 @@ impl QueueResidency {
 	/// Makes `allocation` resident for as long as a descriptor set entry holds it, so commands that bind the set
 	/// do not have to name its resources. Every call needs one [`Self::unpin`] of the same allocation.
 	pub(crate) fn pin(&mut self, allocation: &ProtocolObject<dyn mtl::MTLAllocation>) {
-		match self.resident.entry(std::ptr::from_ref(allocation).cast::<()>() as usize) {
-			std::collections::hash_map::Entry::Occupied(mut entry) => entry.get_mut().pins += 1,
-			std::collections::hash_map::Entry::Vacant(entry) => {
-				self.set.addAllocation(allocation);
-				entry.insert(Resident {
-					allocation: allocation.retain(),
-					users_below: 0,
-					pins: 1,
-				});
-				self.dirty = true;
-			}
+		match self.resident.get_mut(&(std::ptr::from_ref(allocation).cast::<()>() as usize)) {
+			Some(resident) => resident.pins += 1,
+			None => self.hold(allocation.retain(), 0, 1),
 		}
+	}
+
+	/// Starts to hold an allocation the queue does not hold yet, and makes its memory resident.
+	///
+	/// An allocation with memory of its own enters the Metal set. A resource placed in a heap pins that heap instead,
+	/// which enters the set with the first of its resources.
+	fn hold(&mut self, allocation: Retained<ProtocolObject<dyn mtl::MTLAllocation>>, users_below: u64, pins: u32) {
+		let heap = match heap_of(&allocation) {
+			Some(heap) => {
+				let heap: &ProtocolObject<dyn mtl::MTLAllocation> = ProtocolObject::from_ref(&*heap);
+				self.pin(heap);
+				std::ptr::from_ref(heap).cast::<()>() as usize
+			}
+			None => {
+				self.set.addAllocation(&allocation);
+				self.dirty = true;
+				0
+			}
+		};
+		self.resident.insert(
+			Retained::as_ptr(&allocation).cast::<()>() as usize,
+			Resident {
+				allocation,
+				users_below,
+				pins,
+				heap,
+			},
+		);
 	}
 
 	/// Releases one [`Self::pin`] of the allocation at `address`.
@@ -232,20 +269,9 @@ impl QueueResidency {
 			// A command is numbered when its recording starts, so it always has a serial here.
 			let users_below = command.serial().saturating_add(1);
 			for allocation in command.retained_allocations.drain(..) {
-				match self.resident.entry(Retained::as_ptr(&allocation) as *const () as usize) {
-					std::collections::hash_map::Entry::Occupied(mut entry) => {
-						let resident = entry.get_mut();
-						resident.users_below = resident.users_below.max(users_below);
-					}
-					std::collections::hash_map::Entry::Vacant(entry) => {
-						self.set.addAllocation(allocation.as_ref());
-						entry.insert(Resident {
-							allocation,
-							users_below,
-							pins: 0,
-						});
-						self.dirty = true;
-					}
+				match self.resident.get_mut(&(Retained::as_ptr(&allocation).cast::<()>() as usize)) {
+					Some(resident) => resident.users_below = resident.users_below.max(users_below),
+					None => self.hold(allocation, users_below, 0),
 				}
 			}
 		}
@@ -275,14 +301,24 @@ impl QueueResidency {
 			.map_or(self.next_command, |oldest| oldest.min(self.next_command));
 		let unused_below = finished_below.min(self.swept_command);
 		let (set, removed) = (&self.set, &mut self.removed);
+		let mut released_heaps = SmallVec::<[usize; 8]>::new();
 		self.resident.retain(|_, resident| {
 			if resident.pins != 0 || resident.users_below > unused_below {
 				return true;
 			}
-			set.removeAllocation(resident.allocation.as_ref());
-			removed.push(resident.allocation.clone());
+			if resident.heap == 0 {
+				set.removeAllocation(resident.allocation.as_ref());
+				removed.push(resident.allocation.clone());
+			} else {
+				// The set holds the heap for this resource, which only gives up its pin on it.
+				released_heaps.push(resident.heap);
+			}
 			false
 		});
+		// A heap that lost its last resource leaves in a later sweep, like any allocation nothing pins.
+		for heap in released_heaps {
+			self.unpin(heap);
+		}
 		self.dirty |= !self.removed.is_empty();
 		self.swept_command = self.next_command;
 		self.swept_at = std::time::Instant::now();
@@ -553,8 +589,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use block2::StackBlock;
-use objc2::Message;
 use objc2::runtime::{ImplementedBy, NSObjectProtocol};
+use objc2::{Message, msg_send, sel};
 use objc2_foundation::NSString;
 use objc2_metal::{MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice, MTLResidencySet};
 

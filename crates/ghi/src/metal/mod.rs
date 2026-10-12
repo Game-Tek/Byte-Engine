@@ -28,6 +28,7 @@ use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 
+mod allocator;
 mod io;
 mod pipeline;
 pub mod queue;

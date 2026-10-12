@@ -63,11 +63,10 @@ pub struct Image {
 
 /// The `GroupSlot` struct locates an image-group member inside a group heap.
 ///
-/// Recording uses it to make the heap resident and to track the member by the bytes it occupies, so hazards
-/// between members that share memory are ordered like hazards on one buffer.
+/// Recording uses it to track the member by the bytes it occupies, so hazards between members that share memory
+/// are ordered like hazards on one buffer.
 #[derive(Clone)]
 pub(crate) struct GroupSlot {
-	pub(crate) heap: Retained<ProtocolObject<dyn mtl::MTLHeap>>,
 	/// Identifies the heap for hazard tracking. It is never reused, so a replaced heap's history cannot leak into
 	/// its replacement.
 	pub(crate) heap_serial: u64,
@@ -79,9 +78,9 @@ pub(crate) struct GroupSlot {
 // metadata. Moving it between threads adds no shared state.
 unsafe impl Send for Image {}
 
-/// The allocations one descriptor set element keeps resident, by object address: its buffer, texture, texture view
-/// or acceleration structure, and the heap an image-group member lives in. Zero is no allocation.
-pub(crate) type ElementPins = [usize; 3];
+/// The allocations one descriptor set element keeps resident, by object address: its buffer, texture or
+/// acceleration structure, and the view when it binds one mip of a texture. Zero is no allocation.
+pub(crate) type ElementPins = [usize; 2];
 
 /// The `DescriptorSet` struct holds one frame sequence's copy of a descriptor set: the resources written to it and
 /// the argument buffer every pipeline that declares its layout reads them from.
@@ -171,14 +170,6 @@ impl DescriptorSet {
 			pins[pinned] = std::ptr::from_ref(allocation).cast::<()>() as usize;
 			pinned += 1;
 		};
-		// An image-group member lives in its group's heap, which is what Metal makes resident.
-		let mut pin_image = |image: &Image| {
-			pin(allocation(&*image.texture));
-			if let Some(slot) = &image.slot {
-				pin(allocation(&*slot.heap));
-			}
-		};
-
 		match self.descriptors[element as usize] {
 			None => self.words[word] = 0,
 			Some(Descriptor::Buffer { buffer, .. }) => {
@@ -188,7 +179,7 @@ impl DescriptorSet {
 			}
 			Some(Descriptor::Image { image, mip_level, .. }) => {
 				let image = resources.images.resource(image);
-				pin_image(image);
+				pin(allocation(&*image.texture));
 				self.words[word] = match mip_level {
 					Some(mip_level) => {
 						let view = command_buffer::texture_view_2d(&image.texture, image.description.format, mip_level, 0);
@@ -202,7 +193,7 @@ impl DescriptorSet {
 			}
 			Some(Descriptor::CombinedImageSampler { image, sampler, .. }) => {
 				let image = resources.images.resource(image);
-				pin_image(image);
+				pin(allocation(&*image.texture));
 				self.words[word] = resource_id(image.texture.gpuResourceID());
 				// A combined image sampler's samplers follow its textures.
 				self.words[word + count as usize] = resource_id(resources.samplers[sampler.0 as usize].gpuResourceID());
@@ -221,7 +212,7 @@ impl DescriptorSet {
 				self.words[word] = match resources.swapchains[handle.0 as usize].images[self.sequence as usize] {
 					Some(image) => {
 						let image = resources.images.resource(image);
-						pin_image(image);
+						pin(allocation(&*image.texture));
 						resource_id(image.texture.gpuResourceID())
 					}
 					None => 0,

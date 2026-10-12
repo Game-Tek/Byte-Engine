@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
@@ -46,6 +45,8 @@ pub struct Context {
 	pub(crate) factory: Factory,
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::StoredQueue>,
+	/// Places the resources this context creates in heaps.
+	pub(crate) allocator: allocator::Allocator,
 	pub(crate) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<Retained<ProtocolObject<dyn mtl::MTLSamplerState>>>,
@@ -117,6 +118,126 @@ mod tests {
 
 	fn test_context() -> Context {
 		crate::metal::test_context(crate::WorkloadTypes::TRANSFER).0
+	}
+
+	#[test]
+	fn created_resources_are_placed_in_heaps() {
+		let mut context = test_context();
+		context.build_buffer::<[u32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		context.build_dynamic_buffer::<[u32; 16]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		context.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(Extent::square(4))
+				.device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		context.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA16F, crate::Uses::RenderTarget).extent(Extent::square(4)),
+		);
+		let mesh = context.add_mesh_from_vertices_and_indices(
+			3,
+			3,
+			&[0; 36],
+			&[0; 6],
+			&[crate::pipelines::VertexElement::new("POSITION", crate::DataTypes::Float3, 0)],
+		);
+		if context.device.supportsRaytracing() {
+			context.create_top_level_acceleration_structure(None, 4);
+		}
+
+		assert!(context.buffers.iter().all(|buffer| buffer.buffer.heap().is_some()));
+		assert!(context.images.iter().all(|image| image.texture.heap().is_some()));
+		let mesh = &context.meshes[mesh.0 as usize];
+		assert!(mesh.index_buffer.heap().is_some());
+		assert!(mesh.vertex_buffers.iter().flatten().all(|buffer| buffer.heap().is_some()));
+		assert!(
+			context
+				.acceleration_structures
+				.iter()
+				.all(|structure| structure.structure.heap().is_some())
+		);
+	}
+
+	/// Verifies the memory of a resized image goes back to the system once no command can reach the old image.
+	#[test]
+	fn replaced_image_releases_its_heap() {
+		use crate::frame::Frame as _;
+		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
+		use crate::shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
+
+		let (mut context, queue_handle) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
+		// Large enough that it does not share its heap, so the heap has nothing else to stay for.
+		let image = context
+			.build_image(crate::image::Builder::new(crate::Formats::R8UNORM, crate::Uses::Image).extent(Extent::square(2048)));
+		let replaced_heap = {
+			let texture = &context.images.get_single(image.0).unwrap().texture;
+			objc2::rc::Weak::from_retained(&texture.heap().unwrap())
+		};
+		// A descriptor set keeps the image resident, as a material that samples it would.
+		let slot = ResourceSlot::new(0);
+		let layout = crate::DescriptorSetLayout::new(
+			"Replaced Image",
+			[ShaderResourceDescriptor::new(
+				slot,
+				ResourceKind::SampledImage,
+				1,
+				crate::AccessPolicies::READ,
+			)],
+		);
+		let descriptor_set = context.create_descriptor_set(None, &layout);
+		context.write(&[crate::DescriptorWrite::image(
+			descriptor_set,
+			slot,
+			image,
+			crate::Layouts::Read,
+		)]);
+		let buffers = [(); 2].map(|_| {
+			context.build_buffer::<[u8; 4]>(
+				crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination)
+					.device_accesses(crate::DeviceAccesses::HostOnly),
+			)
+		});
+		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+		let signal = context.create_synchronizer(None, true);
+		let mut frame_index = 0;
+		// Runs one frame that submits a small copy, and resizes the image first when given an extent.
+		let mut run_frame = |context: &mut Context, extent: Option<Extent>| {
+			context
+				.queue(queue_handle)
+				.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
+					if let Some(extent) = extent {
+						execution.frame().unwrap().resize_image(image.into(), extent);
+					}
+					execution.record(command_buffer, |recording| {
+						recording.copy_buffers(&[crate::BufferCopyDescriptor::new(
+							buffers[0].into(),
+							0,
+							buffers[1].into(),
+							0,
+							4,
+						)]);
+					});
+					[]
+				});
+			context.wait();
+			frame_index += 1;
+		};
+
+		run_frame(&mut context, None);
+		run_frame(&mut context, Some(Extent::square(64)));
+		assert!(replaced_heap.load().is_some());
+
+		// The queue lets go of the image two sweeps after its last use, and of its heap one sweep after that.
+		for _ in 0..3 {
+			std::thread::sleep(queue::RESIDENCY_LINGER + std::time::Duration::from_millis(10));
+			run_frame(&mut context, None);
+		}
+
+		assert!(
+			replaced_heap.load().is_none(),
+			"The replaced image's heap is still alive. The most likely cause is that the queue's residency still holds the heap of an image nothing uses.",
+		);
 	}
 
 	#[test]

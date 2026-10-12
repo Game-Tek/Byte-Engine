@@ -883,20 +883,11 @@ fn retain_tracked_use(
 			let member = resource_use.member.expect(
 				"Metal image-group use has no member. The most likely cause is that a heap use was built outside in_group_memory.",
 			);
-			retain_image(device, command_buffer, member);
+			command_buffer.retain_allocation(&*device.images.resource(member).texture);
 		}
 		synchronization::MetalResourceKey::AccelerationStructure(index) => {
 			command_buffer.retain_allocation(&*device.acceleration_structures[index].structure);
 		}
 		synchronization::MetalResourceKey::SwapchainDrawable(_) => {}
-	}
-}
-
-/// Retains an image's texture and, for an image-group member, the heap that holds its memory.
-fn retain_image(device: &RecordingDevice<'_>, command_buffer: &mut queue::NativeCommand, handle: ImageHandle) {
-	let image = device.images.resource(handle);
-	command_buffer.retain_allocation(&*image.texture);
-	if let Some(slot) = &image.slot {
-		command_buffer.retain_allocation(&*slot.heap);
 	}
 }

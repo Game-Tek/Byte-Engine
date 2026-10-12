@@ -594,7 +594,7 @@ pub mod tests {
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
-		resources::material::{Binding, BindingKind, Shader, ShaderArtifact, ShaderInterface, VariantModel},
+		resources::material::{Binding, BindingKind, SetInterface, Shader, ShaderArtifact, ShaderInterface, VariantModel},
 		shader::{besl::backends::msl::MSL_ENTRY_POINT, generator::ShaderGenerationSettings},
 	};
 
@@ -615,7 +615,10 @@ pub mod tests {
 						stage: settings.stage.into(),
 						interface: ShaderInterface {
 							workgroup_size: Some((128, 0, 0)),
-							bindings: vec![Binding::new(0, BindingKind::StorageBuffer, 1, Some(4), true, false)],
+							sets: vec![SetInterface::with_bindings(
+								"material",
+								vec![Binding::new(0, BindingKind::StorageBuffer, 1, Some(4), true, false)],
+							)],
 						},
 						artifact: ShaderArtifact::Msl {
 							entry_point: MSL_ENTRY_POINT.to_string(),

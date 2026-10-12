@@ -1,37 +1,25 @@
 //! UI draw-list data, blur planning, and text-overlay preparation.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use super::*;
+use crate::rendering::{SetLayout, set_layout::layer};
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
-/// Bindings of the UI ubershader. They match `ui-vertex.besl` and `ui-fragment.besl`.
-pub(super) const UI_PRIMITIVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-pub(super) const UI_MASKS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-pub(super) const UI_GLYPH_CURVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(2);
-pub(super) const UI_GLYPH_BANDS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(3);
-/// The full and half resolution blurred backdrops a backdrop blur primitive samples.
-pub(super) const UI_BLUR_FULL_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(4);
-pub(super) const UI_BLUR_HALF_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(5);
-pub(super) const UI_TEXTURES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(6);
-pub(super) const UI_PATH_CURVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(UI_TEXTURES_SLOT.index() + UI_TEXTURE_SLOTS);
-pub(super) const UI_PATH_BANDS_SLOT: ghi::ResourceSlot =
-	ghi::ResourceSlot::new(UI_TEXTURES_SLOT.index() + UI_TEXTURE_SLOTS + 1);
+/// The descriptor set of the UI ubershader, declared by `ui/layouts/ui.besl`. Its resources are bound by the names
+/// that layer gives them.
+pub(super) static UI_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| SetLayout::from_layers(&[layer!("ui/layouts/ui.besl")]));
+/// The descriptor set of the composite pass, declared by `ui/layouts/composite.besl`.
+pub(super) static UI_COMPOSITE_LAYOUT: LazyLock<SetLayout> =
+	LazyLock::new(|| SetLayout::from_layers(&[layer!("ui/layouts/composite.besl")]));
+/// The descriptor set of one backdrop blur stage, declared by `ui/layouts/backdrop-blur.besl`.
+pub(super) static UI_BLUR_LAYOUT: LazyLock<SetLayout> =
+	LazyLock::new(|| SetLayout::from_layers(&[layer!("ui/layouts/backdrop-blur.besl")]));
 /// Elements of the ubershader's texture array. The first is the glyph atlas and the rest hold images.
 pub(super) const UI_TEXTURE_SLOTS: u32 = 32;
 pub(super) const UI_ATLAS_TEXTURE_SLOT: u32 = 0;
 pub(super) const UI_FIRST_IMAGE_TEXTURE_SLOT: u32 = 1;
-pub(super) const UI_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-pub(super) const UI_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
 pub(super) const UI_BLUR_HALF_DOWNSCALE: u32 = 2;
 pub(super) const UI_BLUR_GAUSSIAN_SUPPORT: u32 = 22;
 pub(super) const UI_BLUR_GAUSSIAN_PAIR_COUNT: usize = 11;

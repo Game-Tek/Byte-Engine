@@ -1,19 +1,16 @@
-//! Reusable construction for flat-resource BESL compute render passes.
+//! Reusable construction for BESL compute render passes that bind their resources by name.
 
-use ghi::{
-	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	frame::Frame as _,
-};
-use resource_management::resources::material::{Binding, BindingKind};
-use smallvec::SmallVec;
+use ghi::command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _};
 use utils::Extent;
 
 use super::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::Sink;
 #[cfg(test)]
 use crate::rendering::common_shader_generator::common_shader_scope;
+pub use crate::rendering::set_layout::Resource;
+use crate::rendering::set_layout::{PipelineSets, create_sets};
 
-/// The `Descriptor` struct identifies one single-set compute pipeline and its command label.
+/// The `Descriptor` struct identifies one compute pipeline and its command label.
 pub struct Descriptor<'a> {
 	label: &'static str,
 	pipeline_id: &'a str,
@@ -68,8 +65,8 @@ impl Pipeline {
 
 	/// Freezes the named resources for one sink.
 	///
-	/// The pass validates them against the reflected bindings and creates its descriptor set once the pipeline is
-	/// published, in [`Pass::ready`], and logs an error there when they do not match.
+	/// The pass validates them against the pipeline's descriptor set layouts and creates its descriptor sets once the
+	/// pipeline is published, in [`Pass::ready`], and logs an error there when they do not match.
 	pub fn bind(&self, descriptor_set_name: &'static str, resources: &[Resource]) -> Pass {
 		Pass {
 			pipeline: self.reference,
@@ -84,78 +81,7 @@ impl Pipeline {
 	}
 }
 
-/// The `Resource` enum names one concrete resource for a reachable or planned BESL binding.
-#[derive(Clone, Copy)]
-pub enum Resource {
-	Buffer(&'static str, ghi::BaseBufferHandle),
-	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
-	Image(&'static str, ghi::ImageOrSwapchain),
-	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
-}
-
-impl Resource {
-	pub fn buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
-		Self::Buffer(name, buffer.into())
-	}
-
-	/// Keeps a buffer ready for a BESL binding that is intentionally not reachable yet.
-	pub fn planned_buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
-		Self::PlannedBuffer(name, buffer.into())
-	}
-
-	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
-	pub fn image(name: &'static str, image: impl Into<ghi::ImageOrSwapchain>) -> Self {
-		Self::Image(name, image.into())
-	}
-
-	pub fn combined_image_sampler(
-		name: &'static str,
-		image: impl Into<ghi::BaseImageHandle>,
-		sampler: ghi::SamplerHandle,
-		layout: ghi::Layouts,
-	) -> Self {
-		Self::CombinedImageSampler(name, image.into(), sampler, layout)
-	}
-
-	fn name(&self) -> &str {
-		match self {
-			Self::Buffer(name, ..)
-			| Self::PlannedBuffer(name, ..)
-			| Self::Image(name, ..)
-			| Self::CombinedImageSampler(name, ..) => name,
-		}
-	}
-
-	fn matches(&self, binding: BindingKind) -> bool {
-		matches!(
-			(binding, self),
-			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-				| (BindingKind::StorageImage, Self::Image(..))
-				| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..))
-		)
-	}
-
-	fn descriptor_write(&self, set: ghi::DescriptorSetHandle, slot: ghi::ResourceSlot) -> ghi::DescriptorWrite {
-		match *self {
-			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => ghi::DescriptorWrite::buffer(set, slot, buffer),
-			Self::Image(_, ghi::ImageOrSwapchain::Image(image)) => {
-				ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General)
-			}
-			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
-				ghi::DescriptorWrite::swapchain(set, slot, swapchain)
-			}
-			Self::CombinedImageSampler(_, image, sampler, layout) => {
-				ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, layout)
-			}
-		}
-	}
-
-	fn is_planned(&self) -> bool {
-		matches!(self, Self::PlannedBuffer(..))
-	}
-}
-
-/// The `Pass` struct provides one sink with a validated pipeline and descriptor set for a single compute dispatch.
+/// The `Pass` struct provides one sink with a validated pipeline and descriptor sets for a single compute dispatch.
 #[derive(Clone)]
 pub struct Pass {
 	pipeline: crate::rendering::PipelineRef,
@@ -169,10 +95,8 @@ pub struct Pass {
 }
 
 impl Pass {
-	/// Adopts a published pipeline and creates this sink's descriptor set once.
+	/// Adopts a published pipeline and creates this sink's descriptor sets once, one per layout the shader uses.
 	pub fn ready(&mut self, frame: &mut ghi::implementation::Frame) -> Option<ReadyPass> {
-		use ghi::context::ContextCreate as _;
-
 		let revision = self.pipeline_manager.revision(self.pipeline);
 		if self.revision == revision
 			&& let Some(ready) = self.ready
@@ -197,35 +121,22 @@ impl Pass {
 			}
 			crate::rendering::PipelineState::Ready(_) => {}
 		}
-		// Borrow the reflected bindings under one read view instead of copying them.
+		// Borrow the reflected layouts under one read view instead of copying them.
 		let pipelines = self.pipeline_manager.compute_pipelines();
 		let compiled = pipelines.get(self.pipeline).expect(
 			"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
 		);
-		if let Err(error) = validate_binding_schema(&compiled.bindings) {
-			log::error!("Simple compute pipeline adoption failed: {error}");
-			self.failed = true;
-			return None;
-		}
-		if let Err(error) = validate_resources(&compiled.bindings, &self.resources) {
-			log::error!("Simple compute pipeline adoption failed: {error}");
-			self.failed = true;
-			return None;
-		}
-		let descriptor_set = frame.create_descriptor_set(Some(self.descriptor_set_name));
-		let mut writes = SmallVec::<[ghi::DescriptorWrite; 8]>::with_capacity(compiled.bindings.len());
-		for binding in compiled.bindings.iter() {
-			let resource = self
-				.resources
-				.iter()
-				.find(|resource| resource.name() == binding.name)
-				.unwrap();
-			writes.push(resource.descriptor_write(descriptor_set, ghi::ResourceSlot::new(binding.slot)));
-		}
-		frame.write(&writes);
+		let descriptor_sets = match create_sets(frame, self.descriptor_set_name, &compiled.sets, &self.resources) {
+			Ok(descriptor_sets) => descriptor_sets,
+			Err(error) => {
+				log::error!("Simple compute pipeline adoption failed: {error}");
+				self.failed = true;
+				return None;
+			}
+		};
 		let ready = ReadyPass {
 			pipeline: compiled.handle,
-			descriptor_set,
+			descriptor_sets,
 			label: self.label,
 			workgroup: compiled.workgroup,
 		};
@@ -258,7 +169,7 @@ impl Pass {
 #[derive(Clone, Copy)]
 pub struct ReadyPass {
 	pipeline: ghi::PipelineHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
+	descriptor_sets: PipelineSets,
 	label: &'static str,
 	workgroup: Extent,
 }
@@ -267,157 +178,7 @@ impl ReadyPass {
 	/// Records this pass without allocating a render-command closure.
 	pub fn record(&self, command_buffer: &mut ghi::implementation::CommandBufferRecording, extent: Extent) {
 		let command_buffer = command_buffer.bind_compute_pipeline(self.pipeline);
-		command_buffer.bind_descriptor_sets(&[self.descriptor_set]);
+		command_buffer.bind_descriptor_sets(&self.descriptor_sets.handles());
 		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
-	}
-}
-
-fn validate_binding_schema(bindings: &[Binding]) -> Result<(), &'static str> {
-	for (index, binding) in bindings.iter().enumerate() {
-		if binding.count != 1 {
-			return Err(
-				"Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.",
-			);
-		}
-		if !binding.read && !binding.write {
-			return Err(
-				"Inaccessible binding in simple compute pass. The most likely cause is that a BESL binding declares neither read nor write access.",
-			);
-		}
-		if matches!(binding.kind, BindingKind::CombinedImageSampler { .. }) && (!binding.read || binding.write) {
-			return Err(
-				"Sampled texture access is invalid in a simple compute pass. The most likely cause is that a combined image sampler was declared writable.",
-			);
-		}
-		if bindings[..index].iter().any(|previous| previous.name == binding.name) {
-			return Err("Duplicate BESL binding name. The most likely cause is that two descriptor slots use the same symbol.");
-		}
-	}
-	Ok(())
-}
-
-fn validate_resources(bindings: &[Binding], resources: &[Resource]) -> Result<(), String> {
-	if let Some(resource) = resources
-		.iter()
-		.find(|resource| !resource.is_planned() && !bindings.iter().any(|binding| binding.name == resource.name()))
-	{
-		return Err(format!(
-			"Unknown compute resource `{}`. The most likely cause is that the resource name does not match a reachable BESL binding.",
-			resource.name()
-		));
-	}
-	for binding in bindings {
-		let mut matches = resources.iter().filter(|resource| resource.name() == binding.name);
-		let resource = matches.next().ok_or_else(|| {
-			format!(
-				"Missing compute resource `{}`. The most likely cause is that the caller did not bind every reachable BESL descriptor.",
-				binding.name
-			)
-		})?;
-		if matches.next().is_some() {
-			return Err(format!(
-				"Duplicate compute resource `{}`. The most likely cause is that the same BESL symbol was bound twice.",
-				binding.name
-			));
-		}
-		if !resource.matches(binding.kind) {
-			return Err(format!(
-				"Compute resource `{}` has the wrong type. The most likely cause is that an image, sampler, or buffer was bound to an incompatible BESL binding.",
-				binding.name
-			));
-		}
-	}
-	Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-	use resource_management::resources::material::{Binding, BindingKind, TextureView};
-
-	use super::{Resource, validate_binding_schema, validate_resources};
-
-	fn binding(name: &str, kind: BindingKind, slot: u32, read: bool, write: bool) -> Binding {
-		Binding {
-			name: name.to_string(),
-			kind,
-			count: 1,
-			slot,
-			buffer_stride: matches!(kind, BindingKind::StorageBuffer).then_some(4),
-			read,
-			write,
-		}
-	}
-
-	#[test]
-	fn named_resources_validate_complete_type_safe_order_independent_sets() {
-		let bindings = [
-			binding("parameters", BindingKind::StorageBuffer, 0, true, false),
-			binding(
-				"source",
-				BindingKind::CombinedImageSampler {
-					view: TextureView::Texture2D,
-				},
-				1,
-				true,
-				false,
-			),
-			binding("result", BindingKind::StorageImage, 2, false, true),
-		];
-		let mut device = ghi::debug::Device::new();
-		let buffer = device.create_acceleration_structure_instance_buffer(None, 1);
-		let image = device.build_dynamic_image(ghi::image::Builder::new(
-			ghi::Formats::RGBA16F,
-			ghi::Uses::Image | ghi::Uses::Storage,
-		));
-		let sampler = device.build_sampler(ghi::sampler::Builder::new());
-		let resources = [
-			Resource::image("result", image),
-			Resource::buffer("parameters", buffer),
-			Resource::combined_image_sampler("source", image, sampler, ghi::Layouts::Read),
-		];
-		validate_resources(&bindings, &resources).expect("complete resources should validate");
-
-		assert!(bindings[0].read && !bindings[0].write);
-		let mut array = bindings[0].clone();
-		array.count = 2;
-
-		assert!(validate_binding_schema(&[array]).is_err());
-		let mut writable_sampler = bindings[1].clone();
-		writable_sampler.write = true;
-
-		assert!(validate_binding_schema(&[writable_sampler]).is_err());
-		assert!(
-			validate_resources(&bindings, &resources[..2])
-				.expect_err("Expected a missing resource")
-				.starts_with("Missing compute resource `source`.")
-		);
-		let duplicate = [resources[0], resources[1], resources[2], resources[2]];
-
-		assert!(
-			validate_resources(&bindings, &duplicate)
-				.expect_err("Expected a duplicate resource")
-				.starts_with("Duplicate compute resource `source`.")
-		);
-		let wrong = [resources[0], resources[2], Resource::image("parameters", image)];
-
-		assert!(
-			validate_resources(&bindings, &wrong)
-				.expect_err("Expected a resource type mismatch")
-				.starts_with("Compute resource `parameters` has the wrong type.")
-		);
-		let unknown = [resources[0], resources[1], resources[2], Resource::image("typo", image)];
-
-		assert!(
-			validate_resources(&bindings, &unknown)
-				.expect_err("Expected an unknown resource")
-				.starts_with("Unknown compute resource `typo`.")
-		);
-		let planned = [
-			resources[0],
-			resources[1],
-			resources[2],
-			Resource::planned_buffer("future", buffer),
-		];
-		validate_resources(&bindings, &planned).expect("planned resources should validate");
 	}
 }

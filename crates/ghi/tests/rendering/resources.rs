@@ -854,7 +854,7 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 		using namespace metal;
 		struct Resources {
 			texture2d<float, access::write> image [[id(0)]];
-			texture2d<float, access::read> last_frame_image [[id(2)]];
+			texture2d<float, access::read> last_frame_image [[id(1)]];
 		};
 		kernel void compute_main(
 			uint2 gid [[thread_position_in_grid]],
@@ -897,12 +897,13 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 		ghi::AccessPolicies::READ,
 	);
 
+	let layout = ghi::DescriptorSetLayout::new("Multiframe Images", [image_resource, last_frame_image_resource]);
 	let compute_shader = device
 		.create_shader(
 			None,
 			compute_shader_artifact.as_source(),
 			ShaderTypes::Compute,
-			[image_resource, last_frame_image_resource],
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		)
 		.expect("Failed to create compute shader");
 
@@ -918,7 +919,7 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 			.device_accesses(DeviceAccesses::DeviceToHost),
 	);
 
-	let descriptor_set = device.create_descriptor_set(None);
+	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[
 		ghi::DescriptorWrite::image(descriptor_set, image_resource.slot(), image, Layouts::General),
 		ghi::DescriptorWrite::image_with_frame(descriptor_set, last_frame_image_resource.slot(), image, Layouts::General, -1),
@@ -1157,7 +1158,7 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 				using namespace metal;
 				struct Resources {
 					texture3d<float, access::read> source_texture [[id(0)]];
-					texture3d<float, access::write> destination_texture [[id(2)]];
+					texture3d<float, access::write> destination_texture [[id(1)]];
 				};
 				kernel void compute_main(
 					uint3 gid [[thread_position_in_grid]],
@@ -1190,19 +1191,20 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 		ghi::AccessPolicies::WRITE,
 	)
 	.texture_view_type(ghi::TextureViewTypes::Texture3D);
+	let layout = ghi::DescriptorSetLayout::new("Texture3D LUT descriptors", [source_resource, destination_resource]);
 	let compute_shader = device
 		.create_shader(
 			Some("Texture3D LUT round trip"),
 			compute_shader_artifact.as_source(),
 			ShaderTypes::Compute,
-			[source_resource, destination_resource],
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		)
 		.expect("Failed to create the Texture3D LUT shader. The most likely cause is invalid native shader metadata.");
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[],
 		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 	));
-	let descriptor_set = device.create_descriptor_set(Some("Texture3D LUT descriptors"));
+	let descriptor_set = device.create_descriptor_set(Some("Texture3D LUT descriptors"), &layout);
 	device.write(&[
 		ghi::DescriptorWrite::image(descriptor_set, source_resource.slot(), source, Layouts::Read),
 		ghi::DescriptorWrite::image(descriptor_set, destination_resource.slot(), destination, Layouts::General),

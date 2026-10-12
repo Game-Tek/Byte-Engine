@@ -11,6 +11,8 @@ use ghi::{
 
 #[path = "retained_work/raster.rs"]
 mod raster;
+#[path = "retained_work/shared_sets.rs"]
+mod shared_sets;
 
 // Count transient Rust allocations along with time; native driver allocations are outside this allocator.
 #[global_allocator]

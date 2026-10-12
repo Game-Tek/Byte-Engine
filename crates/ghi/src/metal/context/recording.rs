@@ -193,7 +193,13 @@ impl Context {
 		}
 	}
 
-	/// Stores one resolved retained descriptor and advances the set version used by immutable native snapshots.
+	/// Stores one resolved resource in a set, patches its argument-buffer entry, and advances the set version, so
+	/// the next command that binds the set encodes a new buffer.
+	///
+	/// # Panics
+	///
+	/// Panics when the set's layout declares no resource at `slot`, when `array_element` is outside the resource's
+	/// array, or when `descriptor` is not the kind of resource the layout declares there.
 	pub(crate) fn update_descriptor_slot(
 		&mut self,
 		set_handle: DescriptorSetHandle,
@@ -201,16 +207,44 @@ impl Context {
 		descriptor: Descriptor,
 		array_element: u32,
 	) {
-		let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
-		let previous = descriptor_set
-			.descriptors
-			.entry(slot)
-			.or_default()
-			.insert(array_element, descriptor);
+		let layout = self.descriptor_sets.resource(set_handle).layout.clone();
+		let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
+			panic!(
+				"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element.",
+				layout.name(),
+				slot.index(),
+			)
+		});
+		let resource = layout.resources()[resource_index];
+		assert!(
+			array_element < resource.count(),
+			"Descriptor array element {array_element} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares.",
+			slot.index(),
+			layout.name(),
+		);
+		assert!(
+			descriptor.matches_kind(resource.kind()),
+			"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares another kind of resource.",
+			slot.index(),
+			layout.name(),
+		);
+
+		let element = (layout.element_base(resource_index) + array_element) as usize;
+		let previous = self.descriptor_sets.resource_mut(set_handle).descriptors[element].replace(descriptor);
 		if previous == Some(descriptor) {
 			return;
 		}
+
+		let resources = ArgumentResources {
+			buffers: &self.buffers,
+			images: &self.images,
+			samplers: &self.samplers,
+			acceleration_structures: &self.acceleration_structures,
+			swapchains: &self.swapchains,
+		};
+		let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
 		descriptor_set.version = descriptor_set.version.wrapping_add(1);
+		descriptor_set.encode_element(resource_index, array_element, resources, &mut self.queues);
 
 		// Keep the reverse index in step so replacing a resource's backing can invalidate every set that binds it.
 		let binding = (set_handle, slot, array_element);
@@ -280,14 +314,26 @@ impl Context {
 		}
 	}
 
-	/// Invalidates every retained set that references a resource whose native backing changed.
+	/// Encodes again every set entry that names a resource whose native backing changed, so the next command that
+	/// binds one of those sets reads the new backing.
 	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: PrivateHandles) {
 		let Some(bindings) = self.resource_to_descriptor.get(&handle) else {
 			return;
 		};
 
-		for &(set_handle, ..) in bindings {
+		let resources = ArgumentResources {
+			buffers: &self.buffers,
+			images: &self.images,
+			samplers: &self.samplers,
+			acceleration_structures: &self.acceleration_structures,
+			swapchains: &self.swapchains,
+		};
+		for &(set_handle, slot, array_element) in bindings {
 			let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
+			let resource_index = descriptor_set.layout.resource_index(slot).expect(
+				"Retained descriptor slot left its layout. The most likely cause is that the descriptor reverse index was not updated with a write.",
+			);
+			descriptor_set.encode_element(resource_index, array_element, resources, &mut self.queues);
 			descriptor_set.version = descriptor_set.version.wrapping_add(1);
 		}
 	}

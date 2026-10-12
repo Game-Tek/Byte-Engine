@@ -78,21 +78,10 @@ fn main() {
 	// is the one to use when an app also owns animation-loading workers.
 	#[cfg(debug_assertions)]
 	{
-		use byte_engine::rendering::pipelines::visibility::{ScopeAccess, VisibilityFeatures, VisibilityShaderGenerator};
+		use byte_engine::rendering::pipelines::visibility::{VisibilityFeatures, VisibilityShaderGenerator};
 
 		let features = VisibilityFeatures::from_parameters(&app);
-		setup_default_resource_and_asset_management(
-			&mut app,
-			VisibilityShaderGenerator::with_access(
-				features,
-				ScopeAccess {
-					material_count: byte_engine::ghi::AccessPolicies::READ,
-					material_offset: byte_engine::ghi::AccessPolicies::NONE,
-					material_offset_scratch: byte_engine::ghi::AccessPolicies::NONE,
-					pixel_mapping: byte_engine::ghi::AccessPolicies::READ_WRITE,
-				},
-			),
-		);
+		setup_default_resource_and_asset_management(&mut app, VisibilityShaderGenerator::new(features));
 	}
 	setup_default_input(&mut app);
 	setup_default_audio(&mut app);

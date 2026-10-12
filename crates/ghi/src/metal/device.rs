@@ -68,7 +68,7 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 		_name: Option<&str>,
 		_shader_source_type: crate::shader::Sources,
 		_stage: crate::ShaderTypes,
-		_shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		_descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		panic!(
 			"Metal device shader creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."

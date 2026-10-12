@@ -7,11 +7,6 @@ use ghi::pod::{Mat4f, Mat4x3f, Vec3f};
 /// How many emitters of one system can be alive, or have particles in flight, at once.
 pub(crate) const MAX_EMITTERS: usize = 256;
 
-pub(crate) const FRAME_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-pub(crate) const PARTICLES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-pub(crate) const DRAWS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(2);
-pub(crate) const DISPATCH_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(3);
-
 /// The `ShaderSpawn` struct names the emitter that owns a run of this frame's new particles.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]

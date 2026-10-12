@@ -1,18 +1,3 @@
-Camera: struct {
-	view_projection: mat4f,
-}
-
-Cameras: struct {
-	cameras: Camera[8],
-}
-
-Instances: struct {
-	transforms: mat4x3f[1024],
-}
-
-cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
-instances: descriptor<{ type: Instances, binding: 1, access: read, memory: device }>;
-
 in_position: input<vec3f, 0>;
 
 main: fn (input: StageInput) -> interface { position: vec4f, instance_index: u32, local_position: vec3f } {

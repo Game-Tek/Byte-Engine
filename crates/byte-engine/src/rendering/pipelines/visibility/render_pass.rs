@@ -130,6 +130,8 @@ pub(super) fn record_meshlet_dispatches(
 }
 
 use self::depth_pyramid::DepthPyramidPass;
+// Only the layout tests compare the record with the stride its layout layer reflects.
+#[cfg(test)]
 pub(crate) use self::depth_pyramid::ScreenViewData;
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 pub(super) use self::gtao::GTAO_PIPELINES;
@@ -159,15 +161,10 @@ pub(crate) use self::{
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
 use super::features::VisibilityFeatures;
-use super::layout::{
-	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DIFFUSE_RADIANCE_HISTORY_BINDING, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
-	INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
-	MAX_TASK_VIEWS, POINT_SHADOW_MAP_BINDING, SHADOW_MAP_BINDING, SSGI_HISTORY_BINDING, SSGI_NORMALS_BINDING,
-	SSGI_VIEW_BINDING, SUN_VISIBILITY_BINDING, TRIANGLE_INDEX_BINDING,
-};
+use super::layout::{MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS};
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
+use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
@@ -285,14 +282,21 @@ impl VisibilityRenderPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
+		views_buffer: ghi::BaseBufferHandle,
 		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
 	) -> Self {
-		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
-		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
+		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
+		// another, so evaluation is not an access that the next dispatch has to wait for.
+		let material_dispatch_descriptor_set =
+			set_layouts::MATERIAL_DISPATCH.create_set(context, "Material Dispatch Descriptor Set");
+		let visibility_buffer_descriptor_set =
+			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
+		let material_evaluation_descriptor_set =
+			set_layouts::MATERIAL_EVALUATION.create_set(context, "Material Evaluation Descriptor Set");
 		// The material prepasses write these buffers, and material evaluation reads them.
 		let material_buffer = |name, extra_uses| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses)
@@ -328,16 +332,7 @@ impl VisibilityRenderPass {
 				.reduction_mode(ghi::SamplingReductionModes::Max)
 				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let sampled = |binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle, sampler| {
-			ghi::DescriptorWrite::combined_image_sampler(
-				material_evaluation_descriptor_set,
-				binding.slot(),
-				image,
-				sampler,
-				ghi::Layouts::Read,
-			)
-		};
-		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, base_descriptor_set);
+		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
 		let depth_pyramid = DepthPyramidPass::new(
 			context,
 			&pipeline_manager,
@@ -367,49 +362,38 @@ impl VisibilityRenderPass {
 			depth_pyramid.depth_pyramid,
 			targets.radiance_history,
 		);
-		let visibility_buffer = |binding: ghi::ShaderResourceDescriptor, buffer: ghi::BaseBufferHandle| {
-			ghi::DescriptorWrite::buffer(visibility_descriptor_set, binding.slot(), buffer)
-		};
-		let storage = |set, binding: ghi::ShaderResourceDescriptor, image: ghi::BaseImageHandle| {
-			ghi::DescriptorWrite::image(set, binding.slot(), image, ghi::Layouts::General)
-		};
+		let dispatch = set_layouts::MATERIAL_DISPATCH.binder(material_dispatch_descriptor_set);
+		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
+		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		context.write(&[
-			storage(material_evaluation_descriptor_set, LIT_BINDING, targets.lit),
-			storage(
-				material_evaluation_descriptor_set,
-				DIFFUSE_RADIANCE_HISTORY_BINDING,
-				targets.ssgi.diffuse_radiance_history.into(),
-			),
-			ghi::DescriptorWrite::buffer(
-				material_evaluation_descriptor_set,
-				LIGHTING_DATA_BINDING.slot(),
-				lighting_buffer.into(),
-			),
-			sampled(AO_MAP_BINDING, ao_map.into(), linear_sampler),
+			evaluation.image("lit_map", targets.lit),
+			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
+			evaluation.buffer("lighting_data", lighting_buffer),
+			evaluation.sampled("ao", ao_map, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself, so it point-samples its images.
-			sampled(SSGI_HISTORY_BINDING, targets.ssgi.history.into(), depth_sampler),
-			sampled(SSGI_NORMALS_BINDING, targets.ssgi.normals.into(), depth_sampler),
-			ghi::DescriptorWrite::buffer(
-				material_evaluation_descriptor_set,
-				SSGI_VIEW_BINDING.slot(),
-				depth_pyramid.view_data.into(),
-			),
-			sampled(SUN_VISIBILITY_BINDING, targets.sun_visibility.visibility, depth_sampler),
-			sampled(SHADOW_MAP_BINDING, shadow_maps.directional, depth_sampler),
-			sampled(
-				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
+			evaluation.sampled("ssgi_history", targets.ssgi.history, depth_sampler),
+			evaluation.sampled("ssgi_normals", targets.ssgi.normals, depth_sampler),
+			evaluation.buffer("ssgi_view", depth_pyramid.view_data),
+			evaluation.sampled("sun_visibility", targets.sun_visibility.visibility, depth_sampler),
+			evaluation.sampled("depth_shadow_map", shadow_maps.directional, depth_sampler),
+			evaluation.sampled(
+				"directional_shadow_depth_pyramid",
 				shadow_maps.directional_depth_pyramid,
 				depth_pyramid_sampler,
 			),
-			sampled(CONE_SHADOW_MAP_BINDING, shadow_maps.cone, depth_sampler),
-			sampled(POINT_SHADOW_MAP_BINDING, shadow_maps.point, depth_sampler),
-			visibility_buffer(MATERIAL_COUNT_BINDING, material_count.into()),
-			visibility_buffer(MATERIAL_OFFSET_BINDING, material_offset.into()),
-			visibility_buffer(MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_scratch.into()),
-			visibility_buffer(MATERIAL_EVALUATION_DISPATCHES_BINDING, evaluation_dispatches.into()),
-			visibility_buffer(MATERIAL_XY_BINDING, pixel_mapping.into()),
-			storage(visibility_descriptor_set, TRIANGLE_INDEX_BINDING, targets.primitive_index),
-			storage(visibility_descriptor_set, INSTANCE_ID_BINDING, targets.instance_id),
+			evaluation.sampled("cone_shadow_map", shadow_maps.cone, depth_sampler),
+			evaluation.sampled("point_shadow_map", shadow_maps.point, depth_sampler),
+			dispatch.buffer("material_count_buffer", material_count),
+			dispatch.buffer("material_offset_buffer", material_offset),
+			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),
+			dispatch.buffer("material_evaluation_dispatches", evaluation_dispatches),
+			dispatch.buffer("pixel_mapping_buffer", pixel_mapping),
+			dispatch.image("instance_index_render_target", targets.instance_id),
+			visibility.buffer("material_count", material_count),
+			visibility.buffer("material_offset", material_offset),
+			visibility.buffer("pixel_mapping", pixel_mapping),
+			visibility.image("triangle_index", targets.primitive_index),
+			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
 
 		Self {
@@ -426,7 +410,7 @@ impl VisibilityRenderPass {
 			material_prepasses: MaterialPrepasses {
 				descriptor_sets: [
 					base_descriptor_set,
-					visibility_descriptor_set,
+					material_dispatch_descriptor_set,
 					material_evaluation_descriptor_set,
 				],
 				count_buffer: material_count,
@@ -438,7 +422,7 @@ impl VisibilityRenderPass {
 					&pipeline_manager,
 					targets.depth,
 					depth_pyramid.depth_pyramid,
-					depth_pyramid.view_data,
+					depth_pyramid.view_descriptor_set,
 					ao_map.into(),
 				)
 			}),
@@ -458,7 +442,7 @@ impl VisibilityRenderPass {
 			reflections,
 			material_evaluation: MaterialEvaluationPass {
 				base_descriptor_set,
-				visibility_descriptor_set,
+				visibility_descriptor_set: visibility_buffer_descriptor_set,
 				descriptor_set: material_evaluation_descriptor_set,
 				evaluation_dispatches,
 			},

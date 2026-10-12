@@ -777,8 +777,20 @@ impl Node {
 				write,
 				memory_class,
 				count,
+				layout: None,
 			},
 		}
+	}
+
+	/// Moves a binding into the descriptor set layout named `layout`. Other nodes are returned unchanged.
+	///
+	/// A binding built without a layout belongs to its program's own layout. Bindings that share a layout name form
+	/// one descriptor set, which every program that declares that layout binds as a whole.
+	pub fn in_layout(mut self, layout: &str) -> Node {
+		if let Nodes::Binding { layout: target, .. } = &mut self.node {
+			*target = Some(layout.to_string());
+		}
+		self
 	}
 
 	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
@@ -1118,6 +1130,9 @@ pub enum Nodes {
 		memory_class: BufferMemoryClass,
 		r#type: BindingTypes,
 		count: Option<NonZeroU32>,
+		/// The name of the descriptor set layout that declares the binding: the layout layer it came from, or `None`
+		/// for the program's own layout. Bindings that share a layout form one descriptor set.
+		layout: Option<String>,
 	},
 	PushConstant {
 		members: Vec<NodeReference>,
@@ -1393,9 +1408,10 @@ impl std::fmt::Debug for Node {
 				memory_class,
 				r#type,
 				count,
+				layout,
 			} => write!(
 				f,
-				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?} }}",
+				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?} }}",
 				r#type
 			),
 			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(members)),

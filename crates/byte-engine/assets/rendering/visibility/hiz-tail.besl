@@ -1,13 +1,3 @@
-// Builds the last four levels of the camera's occlusion-culling pyramid, from its 32x16 mip four down to the 2x1 top,
-// in one 16x8 workgroup: each thread reduces one 2x2 block of mip four to a texel of mip five, kept in workgroup
-// memory, and the workgroup reduces those in place through the remaining levels. The levels below hold 16-bit floats
-// rounded toward the far plane, and the minimum of such values is one of them, so every level here is exact.
-source_level: descriptor<{ type: StorageImage<r16f>, binding: 1033, access: read }>;
-level_5: descriptor<{ type: StorageImage<r16f>, binding: 1034, access: write }>;
-level_6: descriptor<{ type: StorageImage<r16f>, binding: 1035, access: write }>;
-level_7: descriptor<{ type: StorageImage<r16f>, binding: 1036, access: write }>;
-level_8: descriptor<{ type: StorageImage<r16f>, binding: 1037, access: write }>;
-
 // Mip five's 16x8 depths, then the 8x4 and 4x2 reductions after them.
 shared_depth: workgroup<f32, 168>;
 

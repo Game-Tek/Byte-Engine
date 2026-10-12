@@ -1,9 +1,0 @@
-// The views a meshlet stage draws into and the meshlets it draws. The task and mesh stages both bind them. List it after
-// `scene-records.besl`. The slots mirror the base descriptor set in `rendering/pipelines/visibility/layout.rs`.
-
-Views: struct {
-	views: View[129],
-}
-
-views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
-meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;

@@ -310,138 +310,85 @@ fn compile_metal4_compute_pipeline(
 		})
 }
 
-/// The `StageArgumentLayout` struct provides one pipeline-wide Metal argument-buffer layout shared by its shader stages.
-#[derive(Clone)]
-pub(crate) struct StageArgumentLayout {
-	pub(crate) stage: crate::Stages,
-	pub(crate) bindings: Vec<StageArgumentBinding>,
-	pub(crate) argument_encoder: Retained<ProtocolObject<dyn mtl::MTLArgumentEncoder>>,
-	pub(crate) encoded_length: usize,
+/// Returns the first argument ID of each resource of `layout`, and how many IDs the layout takes.
+///
+/// IDs are dense and follow slot order: a resource takes one ID per array element, and a combined image sampler
+/// takes its textures first and then as many samplers. An ID is also the index of the resource's 64-bit entry in the
+/// set's argument buffer. The MSL generator in resource-management declares its argument-buffer structs by the same
+/// rule, so every shader that declares a layout reads one buffer.
+pub(crate) fn argument_bases(layout: &crate::shader::DescriptorSetLayout) -> (Box<[u32]>, u32) {
+	let mut next = 0u32;
+	let bases = layout
+		.resources()
+		.iter()
+		.map(|resource| {
+			let base = next;
+			let ids = match resource.kind() {
+				crate::shader::ResourceKind::CombinedImageSampler => resource.count().checked_mul(2),
+				_ => Some(resource.count()),
+			};
+			next = ids.and_then(|ids| next.checked_add(ids)).expect(
+				"Metal argument ID overflowed. The most likely cause is a resource array too large for one descriptor set.",
+			);
+			base
+		})
+		.collect();
+	(bases, next)
 }
 
-/// The `StageArgumentBinding` struct retains stable Metal argument IDs derived from one flat resource slot.
-#[derive(Clone)]
-pub(crate) struct StageArgumentBinding {
-	pub(crate) descriptor: crate::shader::ShaderResourceDescriptor,
-	pub(crate) argument_slots: ArgumentBindingSlots,
-}
-
-/// The `ArgumentSlotRange` struct identifies one dense run of native argument IDs.
+/// The `PipelineResource` struct is one layout resource a pipeline's shaders use, with the stages that use it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ArgumentSlotRange {
-	pub(crate) base: u32,
-	pub(crate) count: u32,
-}
-
-impl ArgumentSlotRange {
-	fn slot(self, array_element: u32) -> u32 {
-		assert!(
-			array_element < self.count,
-			"Metal argument array element is out of range. The most likely cause is that descriptor validation was bypassed.",
-		);
-		self.base
-			.checked_add(array_element)
-			.expect("Metal argument index overflowed. The most likely cause is an invalid argument base or array element.")
-	}
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ArgumentBindingSlots {
-	Buffer(ArgumentSlotRange),
-	Texture(ArgumentSlotRange),
-	Sampler(ArgumentSlotRange),
-	AccelerationStructure(ArgumentSlotRange),
-	CombinedImageSampler {
-		textures: ArgumentSlotRange,
-		samplers: ArgumentSlotRange,
-	},
-}
-
-impl StageArgumentBinding {
-	pub(crate) fn slot_for_array_element(&self, array_element: u32) -> DescriptorBindingSlot {
-		match &self.argument_slots {
-			ArgumentBindingSlots::Buffer(range) => DescriptorBindingSlot::Buffer(range.slot(array_element)),
-			ArgumentBindingSlots::Texture(range) => DescriptorBindingSlot::Texture(range.slot(array_element)),
-			ArgumentBindingSlots::Sampler(range) => DescriptorBindingSlot::Sampler(range.slot(array_element)),
-			ArgumentBindingSlots::AccelerationStructure(range) => {
-				DescriptorBindingSlot::AccelerationStructure(range.slot(array_element))
-			}
-			ArgumentBindingSlots::CombinedImageSampler { textures, samplers } => DescriptorBindingSlot::CombinedImageSampler {
-				texture: textures.slot(array_element),
-				sampler: samplers.slot(array_element),
-			},
-		}
-	}
-}
-
-impl ArgumentBindingSlots {
-	/// Visits each native argument range without allocating a flattened list of array elements.
-	fn for_each_metal_argument(&self, mut visit: impl FnMut(ArgumentSlotRange, mtl::MTLDataType)) {
-		match *self {
-			Self::Buffer(range) => visit(range, mtl::MTLDataType::Pointer),
-			Self::Texture(range) => visit(range, mtl::MTLDataType::Texture),
-			Self::Sampler(range) => visit(range, mtl::MTLDataType::Sampler),
-			Self::AccelerationStructure(range) => visit(range, mtl::MTLDataType::InstanceAccelerationStructure),
-			Self::CombinedImageSampler { textures, samplers } => {
-				visit(textures, mtl::MTLDataType::Texture);
-				visit(samplers, mtl::MTLDataType::Sampler);
-			}
-		}
-	}
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum DescriptorBindingSlot {
-	Buffer(u32),
-	Texture(u32),
-	Sampler(u32),
-	AccelerationStructure(u32),
-	CombinedImageSampler { texture: u32, sampler: u32 },
-}
-
-/// The `PipelineResourceDescriptor` struct exists to retain the merged stage visibility for one flat pipeline resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PipelineResourceDescriptor {
+pub(crate) struct PipelineResource {
+	/// The resource's position in its layout.
+	pub(crate) resource_index: usize,
 	pub(crate) descriptor: crate::shader::ShaderResourceDescriptor,
 	pub(crate) stages: crate::Stages,
 }
 
-/// The `PipelineLayout` struct exists to retain the native resource layouts derived from a pipeline's shaders.
+/// The `PipelineSet` struct is one descriptor set layout a pipeline's shaders declare, and where each stage reads it.
+#[derive(Clone)]
+pub(crate) struct PipelineSet {
+	pub(crate) layout: crate::shader::DescriptorSetLayout,
+	/// The layout resources the shaders use, ordered by position in the layout. Only they are the pipeline's
+	/// accesses, and only they need a resource written.
+	pub(crate) resources: Vec<PipelineResource>,
+	/// The stages that read the set and the buffer index their argument tables take it at.
+	pub(crate) bindings: SmallVec<[(crate::Stages, u32); 3]>,
+	/// A value that is equal for two pipelines that use the same resources of the layout from the same stages, so
+	/// they share the set's resource uses. See [`SetUses`].
+	pub(crate) usage: u64,
+}
+
+/// The `PipelineLayout` struct exists to retain what a pipeline needs bound: the descriptor sets its shaders declare
+/// and its push-constant storage.
 #[derive(Clone)]
 pub(crate) struct PipelineLayout {
-	pub(crate) resources: Vec<PipelineResourceDescriptor>,
-	pub(crate) stage_argument_layouts: Vec<StageArgumentLayout>,
+	pub(crate) sets: Vec<PipelineSet>,
 	pub(crate) push_constant_size: usize,
 }
 
-/// The `DescriptorBindingKey` struct identifies what one argument-buffer snapshot was encoded from: a pipeline and
+/// The `DescriptorBindingKey` struct identifies what one binding of descriptor sets was resolved from: a pipeline and
 /// every bound frame-local descriptor set at its version.
 ///
-/// Recording compares keys to decide whether an encoder's bound snapshot, or a retained one, still applies.
+/// Recording compares keys to decide whether an encoder's bound sets, or their retained resource uses, still apply.
 #[derive(Clone, PartialEq)]
 pub(crate) struct DescriptorBindingKey {
 	pub(crate) pipeline: graphics_hardware_interface::PipelineHandle,
 	pub(crate) sets: SmallVec<[(crate::descriptors::DescriptorSetHandle, u64); 4]>,
 }
 
-/// The `Materialization` struct owns one encoded argument-buffer snapshot and its hazard metadata.
+/// The `SetUses` struct keeps the resource accesses of every pipeline that uses one descriptor set the same way, so
+/// hazard tracking resolves them once per set, and plans a set's reads once per encoder however many pipelines bind
+/// it there.
 ///
-/// The first bound descriptor set retains the snapshot. It stays valid while every set in its key keeps the
-/// version the key records.
+/// The descriptor set retains it while the set keeps the version it records.
 #[derive(Clone)]
-pub(crate) struct Materialization {
-	pub(crate) key: DescriptorBindingKey,
-	/// One encoded range per stage layout: the stage, its backing buffer, and the range's GPU address.
-	pub(crate) argument_buffers: SmallVec<
-		[(
-			crate::Stages,
-			Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
-			mtl::MTLGPUAddress,
-		); 5],
-	>,
-	pub(crate) resource_uses: synchronization::DescriptorUses,
-	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
-	pub(crate) _texture_views: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,
+pub(crate) struct SetUses {
+	/// The [`PipelineSet::usage`] the uses were resolved for.
+	pub(crate) usage: u64,
+	/// The set version the uses were resolved from.
+	pub(crate) version: u64,
+	pub(crate) uses: std::sync::Arc<synchronization::DescriptorUses>,
 }
 
 /// The `Shader` struct keeps one loaded Metal library entry point and the resources it declares until pipelines use it.
@@ -449,7 +396,7 @@ pub(crate) struct Materialization {
 pub(crate) struct Shader {
 	pub(crate) name: Option<String>,
 	pub(crate) stage: crate::Stages,
-	pub(crate) shader_resource_descriptors: Vec<crate::shader::ShaderResourceDescriptor>,
+	pub(crate) descriptor_sets: Vec<crate::shader::ShaderDescriptorSet>,
 	pub(crate) library: Retained<ProtocolObject<dyn mtl::MTLLibrary>>,
 	pub(crate) entry_point: String,
 	pub(crate) threadgroup_size: Option<Extent>,
@@ -517,240 +464,73 @@ pub(crate) struct RasterState {
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
 }
 
-pub(crate) fn resource_ranges_overlap(
-	left: crate::shader::ShaderResourceDescriptor,
-	right: crate::shader::ShaderResourceDescriptor,
-) -> bool {
-	let (left_end, right_end) = (resource_range_end(left), resource_range_end(right));
-	left.slot().index() < right_end && right.slot().index() < left_end
-}
-
-pub(crate) fn resource_range_end(descriptor: crate::shader::ShaderResourceDescriptor) -> u32 {
-	descriptor
-		.slot()
-		.index()
-		.checked_add(descriptor.count())
-		.expect("Metal shader resource range overflowed. The most likely cause is an invalid flat slot or resource count.")
-}
-
-pub(crate) fn resource_accepts_retained_slot_key(
-	descriptor: crate::shader::ShaderResourceDescriptor,
-	stored_slot: crate::shader::ResourceSlot,
-) -> bool {
-	let stored = stored_slot.index();
-	stored <= descriptor.slot().index() || stored >= resource_range_end(descriptor)
-}
-
-pub(crate) fn resource_representations_match(
-	left: crate::shader::ShaderResourceDescriptor,
-	right: crate::shader::ShaderResourceDescriptor,
-) -> bool {
-	left.slot() == right.slot()
-		&& left.kind() == right.kind()
-		&& left.count() == right.count()
-		&& left.texture_view() == right.texture_view()
-		&& left.buffer_element_stride() == right.buffer_element_stride()
-}
-
-/// Returns `descriptor` with the access of `other` added. Both must describe the same resource representation.
-fn with_merged_access(
-	descriptor: crate::shader::ShaderResourceDescriptor,
-	other: crate::shader::ShaderResourceDescriptor,
-) -> crate::shader::ShaderResourceDescriptor {
-	crate::shader::ShaderResourceDescriptor::new(
-		descriptor.slot(),
-		descriptor.kind(),
-		descriptor.count(),
-		descriptor.access() | other.access(),
-	)
-	.texture_view_type(descriptor.texture_view())
-	.buffer_stride(descriptor.buffer_element_stride())
-}
-
-/// Canonicalizes one stage interface so native layouts and materialization sharing do not depend on declaration order.
-pub(crate) fn canonicalize_stage_resources(
-	resources: &[crate::shader::ShaderResourceDescriptor],
-) -> Vec<crate::shader::ShaderResourceDescriptor> {
-	let mut sorted = resources.to_vec();
-	sorted.sort_by_key(|descriptor| descriptor.slot());
-
-	let mut canonical = Vec::<crate::shader::ShaderResourceDescriptor>::with_capacity(sorted.len());
-	for descriptor in sorted {
-		if let Some(previous) = canonical.last_mut() {
-			if previous.slot() == descriptor.slot() {
-				assert!(
-					resource_representations_match(*previous, descriptor),
-					"Conflicting Metal shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
-				);
-				*previous = with_merged_access(*previous, descriptor);
-				continue;
-			}
-
-			assert!(
-				!resource_ranges_overlap(*previous, descriptor),
-				"Overlapping Metal shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
-			);
-		}
-		canonical.push(descriptor);
-	}
-
-	canonical
-}
-
-/// Assigns stable Metal argument IDs from one flat GHI resource interval.
+/// Builds the private Metal pipeline layout from the descriptor set layouts each shader stage declares.
 ///
-/// Slot `n` reserves IDs from `2n`: the primary range first, then a secondary range of the same length that only
-/// combined image samplers use for their samplers.
-pub(crate) fn allocate_argument_binding_slots(descriptor: crate::shader::ShaderResourceDescriptor) -> ArgumentBindingSlots {
-	let count = descriptor.count();
-	let primary = descriptor.slot().index().checked_mul(2).expect(
-		"Metal argument index overflowed. The most likely cause is a flat resource slot too large for the fixed Metal ABI.",
-	);
-	let secondary = primary
-		.checked_add(count)
-		.expect("Metal argument index overflowed. The most likely cause is an invalid flat resource slot or resource count.");
-	secondary.checked_add(count).expect(
-		"Metal argument reservation overflowed. The most likely cause is a flat resource range too large for the fixed Metal ABI.",
-	);
-	let (primary, secondary) = (
-		ArgumentSlotRange { base: primary, count },
-		ArgumentSlotRange { base: secondary, count },
-	);
-	match descriptor.kind() {
-		crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer => {
-			ArgumentBindingSlots::Buffer(primary)
-		}
-		crate::shader::ResourceKind::SampledImage
-		| crate::shader::ResourceKind::StorageImage
-		| crate::shader::ResourceKind::InputAttachment => ArgumentBindingSlots::Texture(primary),
-		crate::shader::ResourceKind::Sampler => ArgumentBindingSlots::Sampler(primary),
-		crate::shader::ResourceKind::CombinedImageSampler => ArgumentBindingSlots::CombinedImageSampler {
-			textures: primary,
-			samplers: secondary,
-		},
-		crate::shader::ResourceKind::AccelerationStructure => ArgumentBindingSlots::AccelerationStructure(primary),
-	}
-}
-
-/// Builds one fixed-ID Metal argument-buffer layout matching one shader stage's packed resource struct.
-pub(crate) fn build_stage_argument_layout(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	stage: crate::Stages,
-	resources: &[crate::shader::ShaderResourceDescriptor],
-) -> StageArgumentLayout {
-	let mut metal_argument_descriptors = Vec::new();
-	let bindings = resources
-		.iter()
-		.copied()
-		.map(|resource| {
-			let access = if resource.access().intersects(crate::AccessPolicies::WRITE) {
-				mtl::MTLBindingAccess::ReadWrite
-			} else {
-				mtl::MTLBindingAccess::ReadOnly
-			};
-			let argument_slots = allocate_argument_binding_slots(resource);
-			argument_slots.for_each_metal_argument(|range, data_type| {
-				let descriptor = mtl::MTLArgumentDescriptor::argumentDescriptor();
-				descriptor.setDataType(data_type);
-				descriptor.setIndex(range.base as _);
-				if range.count > 1 {
-					descriptor.setArrayLength(range.count as _);
-				}
-				descriptor.setAccess(access);
-				if data_type == mtl::MTLDataType::Texture {
-					let texture_type = match resource.texture_view() {
-						crate::TextureViewTypes::Texture2D => mtl::MTLTextureType::Type2D,
-						crate::TextureViewTypes::Texture2DArray => mtl::MTLTextureType::Type2DArray,
-						crate::TextureViewTypes::TextureCube => mtl::MTLTextureType::TypeCube,
-						crate::TextureViewTypes::TextureCubeArray => mtl::MTLTextureType::TypeCubeArray,
-						crate::TextureViewTypes::Texture3D => mtl::MTLTextureType::Type3D,
-					};
-					descriptor.setTextureType(texture_type);
-				}
-				metal_argument_descriptors.push(descriptor);
-			});
-
-			StageArgumentBinding {
-				descriptor: resource,
-				argument_slots,
-			}
-		})
-		.collect::<Vec<_>>();
-	let argument_descriptors = NSArray::from_retained_slice(&metal_argument_descriptors);
-	let argument_encoder = device
-		.newArgumentEncoderWithArguments(&argument_descriptors)
-		.expect("Metal argument layout creation failed. The most likely cause is an unsupported shader resource interface.");
-
-	StageArgumentLayout {
-		stage,
-		bindings,
-		encoded_length: argument_encoder.encodedLength().max(1),
-		argument_encoder,
-	}
-}
-
-/// Builds the private Metal pipeline layout from the packed resource interface of each shader stage.
-///
-/// `parameters` select the stage shaders from `shaders`, the shaders of the factory that builds the pipeline.
+/// `parameters` select the stage shaders from `shaders`, the shaders of the factory that builds the pipeline. Each
+/// stage takes the sets it uses at consecutive buffer indices, in the order its shader declares them, which is the
+/// order its native source declares their argument buffers. Stages that declare the same layout share its set.
 fn build_pipeline_layout(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	shaders: &[Shader],
 	parameters: &[crate::pipelines::ShaderParameter],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 ) -> PipelineLayout {
-	let mut resources = Vec::<PipelineResourceDescriptor>::new();
-	let mut stage_argument_layouts = Vec::<StageArgumentLayout>::new();
+	let mut sets = Vec::<PipelineSet>::new();
 
 	for parameter in parameters {
 		let Shader {
-			stage,
-			shader_resource_descriptors,
-			..
+			stage, descriptor_sets, ..
 		} = &shaders[parameter.handle.0 as usize];
-		let stage_descriptors = canonicalize_stage_resources(shader_resource_descriptors);
-		if !stage_descriptors.is_empty() {
-			if let Some(existing) = stage_argument_layouts.iter_mut().find(|layout| {
-				layout
-					.bindings
-					.iter()
-					.map(|binding| binding.descriptor)
-					.eq(stage_descriptors.iter().copied())
-			}) {
-				// Identical stage structs can share one immutable argument buffer at index 16.
-				existing.stage |= *stage;
-			} else {
-				stage_argument_layouts.push(build_stage_argument_layout(device, *stage, &stage_descriptors));
-			}
-		}
 
-		for descriptor in stage_descriptors {
-			if let Some(existing) = resources
-				.iter_mut()
-				.find(|existing| existing.descriptor.slot() == descriptor.slot())
+		// A layout the shader uses no resource of has no argument buffer in its source, so it takes no index.
+		let used_sets = descriptor_sets.iter().filter(|set| set.used() != 0);
+		for (index, shader_set) in used_sets.enumerate() {
+			let binding = command_buffer::ARGUMENT_BUFFER_BINDING_BASE + index as u32;
+			let position = match sets
+				.iter()
+				.position(|set| set.layout.identity() == shader_set.layout().identity())
 			{
-				assert!(
-					resource_representations_match(existing.descriptor, descriptor),
-					"Conflicting pipeline resource slot. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",
-				);
-				existing.stages |= *stage;
-				existing.descriptor = with_merged_access(existing.descriptor, descriptor);
-				continue;
+				Some(position) => position,
+				None => {
+					sets.push(PipelineSet {
+						layout: shader_set.layout().clone(),
+						resources: Vec::new(),
+						bindings: SmallVec::new(),
+						usage: 0,
+					});
+					sets.len() - 1
+				}
+			};
+			let set = &mut sets[position];
+
+			match set.bindings.iter_mut().find(|(_, existing)| *existing == binding) {
+				Some((stages, _)) => *stages |= *stage,
+				None => set.bindings.push((*stage, binding)),
 			}
 
-			assert!(
-				resources
-					.iter()
-					.all(|existing| !resource_ranges_overlap(existing.descriptor, descriptor)),
-				"Overlapping pipeline resource slots. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
-			);
-			resources.push(PipelineResourceDescriptor {
-				descriptor,
-				stages: *stage,
-			});
+			for (resource_index, descriptor) in shader_set.used_resources() {
+				match set
+					.resources
+					.iter_mut()
+					.find(|resource| resource.resource_index == resource_index)
+				{
+					Some(resource) => resource.stages |= *stage,
+					None => set.resources.push(PipelineResource {
+						resource_index,
+						descriptor,
+						stages: *stage,
+					}),
+				}
+			}
 		}
 	}
 
-	resources.sort_by_key(|resource| resource.descriptor.slot());
+	for set in &mut sets {
+		set.resources.sort_by_key(|resource| resource.resource_index);
+		// The layout already fixes each resource's access, so the resources and their stages name the usage.
+		set.usage = set.resources.iter().fold(0xcbf2_9ce4_8422_2325, |hash: u64, resource| {
+			(hash ^ resource.resource_index as u64).wrapping_mul(0x0000_0100_0000_01b3) ^ resource.stages.bits().rotate_left(17)
+		});
+	}
 	let push_constant_size = push_constant_ranges
 		.iter()
 		.map(|range| range.offset as usize + range.size as usize)
@@ -758,8 +538,7 @@ fn build_pipeline_layout(
 		.unwrap_or(0);
 
 	PipelineLayout {
-		resources,
-		stage_argument_layouts,
+		sets,
 		push_constant_size,
 	}
 }
@@ -793,7 +572,7 @@ impl crate::device::Device for Factory {
 		name: Option<&str>,
 		source: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (library, entry_point, threadgroup_size) = match source {
 			crate::shader::Sources::SPIRV(_) => {
@@ -840,7 +619,7 @@ impl crate::device::Device for Factory {
 		self.shaders.push(Shader {
 			name: crate::debug_name(name),
 			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			descriptor_sets: descriptor_sets.into_iter().collect(),
 			library,
 			entry_point: entry_point.to_owned(),
 			threadgroup_size,
@@ -941,7 +720,7 @@ impl crate::device::Device for Factory {
 				object_threadgroup_size,
 				mesh_threadgroup_size,
 			}),
-			layout: build_pipeline_layout(&self.device, &self.shaders, builder.shaders, builder.push_constant_ranges),
+			layout: build_pipeline_layout(&self.shaders, builder.shaders, builder.push_constant_ranges),
 		}
 	}
 
@@ -961,7 +740,6 @@ impl crate::device::Device for Factory {
 				threadgroup_size: shader.threadgroup_size,
 			},
 			layout: build_pipeline_layout(
-				&self.device,
 				&self.shaders,
 				std::slice::from_ref(&builder.shader),
 				builder.push_constant_ranges,
@@ -995,7 +773,7 @@ impl Factory {
 				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
 				threadgroup_size: shader.threadgroup_size,
 			},
-			layout: build_pipeline_layout(&self.device, &self.shaders, builder.shaders, builder.push_constant_ranges),
+			layout: build_pipeline_layout(&self.shaders, builder.shaders, builder.push_constant_ranges),
 		}
 	}
 }

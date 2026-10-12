@@ -10,7 +10,8 @@ use crate::rendering::{
 };
 use crate::ui::{Size, flow::Location3, layout::Geometry, style::LayerKind};
 
-const UI_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/ui/composite.besl");
+static UI_COMPOSITE_BESL: std::sync::LazyLock<&str> =
+	std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/composite.besl"));
 
 fn region(x: u32, y: u32, width: u32, height: u32) -> UiPixelRegion {
 	UiPixelRegion {
@@ -166,7 +167,7 @@ fn region_push_constant(executable: &ExecutableProgram, region: UiPixelRegion) -
 
 #[test]
 fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_region() {
-	let program = compile_shader_vm(simple_compute::compile_test_program(UI_COMPOSITE_BESL));
+	let program = compile_shader_vm(simple_compute::compile_test_program(*UI_COMPOSITE_BESL));
 	let mut scene = texture_2d(3, 1, &[[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
 	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
 	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);

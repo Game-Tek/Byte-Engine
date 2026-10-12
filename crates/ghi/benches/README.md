@@ -42,6 +42,26 @@ skipping drawing, recording, or frame submission. The public API currently needs
 newly uploaded resources transitioned before active Vulkan rendering; the shared
 object buffer avoids introducing unsupported per-object transitions mid-pass.
 
+## Measure a shared set that changes
+
+`streamed_texture_shared_by_pipelines_completed` draws one triangle with each of 4
+or 32 pipelines. Every pipeline samples its own element of one descriptor set
+that holds 1,024 textures, the size of a bindless texture table, and one element
+of that set is rewritten before every frame, as when a streamed texture arrives.
+One placeholder texture fills the rest of the set, as before a scene's textures
+arrive.
+
+`streamed_texture_in_loaded_table_completed` is the same frame with a different
+texture in every element, as in a loaded scene.
+
+Compare the two pipeline counts. A backend that shares one native set between
+pipelines pays for the changed set once, so both cases cost about the same. A
+backend that rebuilds per-pipeline descriptor state pays once per pipeline.
+
+Compare the two tables. The difference is what the backend does once per
+resource a set holds: keeping it alive and resident, and ordering its accesses.
+A backend that does this per set costs the same for both.
+
 ## Verify before interpreting performance
 
 In a POSIX shell, run:
@@ -62,7 +82,11 @@ case warms up with 32 complete changing frames before Divan measures iterations.
 The harness retains its vectors and uses stack values in the measured loop.
 
 Times are **completed-frame latency**, including CPU data preparation, upload
-scheduling, recording, submission, and `Context::wait`. Two frame slots are reused,
+scheduling, recording, submission, and `Context::wait`. On an Apple M4 the wait
+is about 0.3 ms of every frame and varies by a few percent between runs, so a
+change of a few microseconds in recording does not show in these times. To
+judge such a change, time the frame up to the wait and the wait separately,
+with the same temporary instrumentation in both versions. Two frame slots are reused,
 but completion is serialized. These results are not isolated CPU encoding time,
 GPU timestamp measurements, or throughput with overlapping frames. Do not remove
 the wait merely to obtain a smaller number.

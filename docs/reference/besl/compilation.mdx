@@ -83,6 +83,13 @@ The resource-management shader layer reflects descriptors into stable metadata:
 - storage-buffer stride for the active layout target; and
 - read and write usage.
 
+Reflection groups the descriptors into descriptor sets: one for each
+[layout layer](/docs/reference/besl/interface#layout-layers) that declares
+descriptors, in the order the shader lists them, and one for the descriptors the
+shader declares itself. Each set holds its layer's whole layout and marks the
+descriptors that code reachable from `main` uses. Two sets with the same
+descriptors have the same identity, whichever shader they were reflected from.
+
 It rejects distinct bindings that alias one flat slot. Reflection also classifies
 the reachable output as `Opaque`, `NonOpaque`, or `Unknown` for material
 decisions. Raw backend code can make that classification unknown because its

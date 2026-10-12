@@ -330,20 +330,20 @@ impl UiRenderPass {
 					.device_accesses(ghi::DeviceAccesses::HostToDevice),
 			)
 			.into();
-		let descriptor_set = context.create_descriptor_set(Some("UI"));
+		let descriptor_set = UI_LAYOUT.create_set(context, "UI");
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_PRIMITIVES_SLOT, primitive_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_MASKS_SLOT, mask_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("primitives"), primitive_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("masks"), mask_buffer.into()),
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				UI_BLUR_FULL_SLOT,
+				UI_LAYOUT.slot("full_blurred_texture"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				UI_BLUR_HALF_SLOT,
+				UI_LAYOUT.slot("half_blurred_texture"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
@@ -352,7 +352,7 @@ impl UiRenderPass {
 		for slot in 0..UI_TEXTURE_SLOTS {
 			context.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 				descriptor_set,
-				UI_TEXTURES_SLOT,
+				UI_LAYOUT.slot("textures"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
@@ -372,8 +372,8 @@ impl UiRenderPass {
 						.device_accesses(ghi::DeviceAccesses::HostToDevice),
 				);
 				context.write(&[
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_CURVES_SLOT, curve_buffer.into()),
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_BANDS_SLOT, band_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_curves"), curve_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_bands"), band_buffer.into()),
 				]);
 				UiText::Slug {
 					glyphs: UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY),
@@ -401,15 +401,15 @@ impl UiRenderPass {
 				context.write(&[
 					ghi::DescriptorWrite::combined_image_sampler_array(
 						descriptor_set,
-						UI_TEXTURES_SLOT,
+						UI_LAYOUT.slot("textures"),
 						image,
 						sampler,
 						ghi::Layouts::Read,
 						UI_ATLAS_TEXTURE_SLOT,
 					),
 					// No atlas glyph reads outline data, but the shader's bindings still need a buffer.
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_CURVES_SLOT, mask_buffer.into()),
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_BANDS_SLOT, mask_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_curves"), mask_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_bands"), mask_buffer.into()),
 				]);
 				UiText::Atlas { atlas, image }
 			}
@@ -425,8 +425,8 @@ impl UiRenderPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_PATH_CURVES_SLOT, path_curve_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_PATH_BANDS_SLOT, path_band_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("path_curves"), path_curve_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("path_bands"), path_band_buffer.into()),
 		]);
 		let blur_images: [ghi::BaseImageHandle; UI_BLUR_IMAGES.len()] = std::array::from_fn(|index| {
 			// Shadows draw their caster into the backdrop, so it is a render target as well as the resolve's output.
@@ -441,62 +441,67 @@ impl UiRenderPass {
 		});
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
 		let source_image: ghi::BaseImageHandle = source.into();
-		let blur_resolve_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Resolve"));
-		let composite_descriptor_set = context.create_descriptor_set(Some("UI Composite"));
+		let blur_resolve_descriptor_set = UI_COMPOSITE_LAYOUT.create_set(context, "UI Backdrop Resolve");
+		let composite_descriptor_set = UI_COMPOSITE_LAYOUT.create_set(context, "UI Composite");
 		context.write(&[
 			ghi::DescriptorWrite::image(
 				composite_descriptor_set,
-				ghi::ResourceSlot::new(0),
+				UI_COMPOSITE_LAYOUT.slot("scene"),
 				source_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::image(
 				composite_descriptor_set,
-				ghi::ResourceSlot::new(1),
+				UI_COMPOSITE_LAYOUT.slot("layer"),
 				main_attachment_image,
 				ghi::Layouts::General,
 			),
 			match output {
 				ghi::ImageOrSwapchain::Image(image) => ghi::DescriptorWrite::image(
 					composite_descriptor_set,
-					ghi::ResourceSlot::new(2),
+					UI_COMPOSITE_LAYOUT.slot("result"),
 					image,
 					ghi::Layouts::General,
 				),
 				ghi::ImageOrSwapchain::Swapchain(swapchain) => {
-					ghi::DescriptorWrite::swapchain(composite_descriptor_set, ghi::ResourceSlot::new(2), swapchain)
+					ghi::DescriptorWrite::swapchain(composite_descriptor_set, UI_COMPOSITE_LAYOUT.slot("result"), swapchain)
 				}
 			},
 			ghi::DescriptorWrite::image(
 				blur_resolve_descriptor_set,
-				ghi::ResourceSlot::new(0),
+				UI_COMPOSITE_LAYOUT.slot("scene"),
 				source_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::image(
 				blur_resolve_descriptor_set,
-				ghi::ResourceSlot::new(1),
+				UI_COMPOSITE_LAYOUT.slot("layer"),
 				main_attachment_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::image(
 				blur_resolve_descriptor_set,
-				ghi::ResourceSlot::new(2),
+				UI_COMPOSITE_LAYOUT.slot("result"),
 				blur_images[UI_BLUR_BACKDROP],
 				ghi::Layouts::General,
 			),
 		]);
 		let blur_sets = UI_BLUR_STAGES.map(|(name, source, output)| {
-			let set = context.create_descriptor_set(Some(name));
+			let set = UI_BLUR_LAYOUT.create_set(context, name);
 			context.write(&[
 				ghi::DescriptorWrite::combined_image_sampler(
 					set,
-					UI_BLUR_SOURCE_BINDING.slot(),
+					UI_BLUR_LAYOUT.slot("source_texture"),
 					blur_images[source],
 					image_sampler,
 					ghi::Layouts::Read,
 				),
-				ghi::DescriptorWrite::image(set, UI_BLUR_OUTPUT_BINDING.slot(), blur_images[output], ghi::Layouts::General),
+				ghi::DescriptorWrite::image(
+					set,
+					UI_BLUR_LAYOUT.slot("result_texture"),
+					blur_images[output],
+					ghi::Layouts::General,
+				),
 			]);
 			set
 		});
@@ -564,7 +569,7 @@ impl UiRenderPass {
 					.into();
 				frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 					self.descriptor_set,
-					UI_TEXTURES_SLOT,
+					UI_LAYOUT.slot("textures"),
 					texture,
 					self.image_sampler,
 					ghi::Layouts::Read,
@@ -760,14 +765,14 @@ impl UiRenderPass {
 				frame.write(&[
 					ghi::DescriptorWrite::combined_image_sampler(
 						self.descriptor_set,
-						UI_BLUR_FULL_SLOT,
+						UI_LAYOUT.slot("full_blurred_texture"),
 						self.blur_images[UI_BLUR_FULL_OUTPUT],
 						self.image_sampler,
 						ghi::Layouts::Read,
 					),
 					ghi::DescriptorWrite::combined_image_sampler(
 						self.descriptor_set,
-						UI_BLUR_HALF_SLOT,
+						UI_LAYOUT.slot("half_blurred_texture"),
 						self.blur_images[UI_BLUR_HALF_OUTPUT],
 						self.image_sampler,
 						ghi::Layouts::Read,
@@ -1087,15 +1092,15 @@ mod tests {
 	use super::Rotation;
 	use super::{
 		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_INSET_SCALE,
-		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT,
-		UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT, UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR,
-		UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR,
-		UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush,
-		UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement,
-		UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement,
-		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma,
-		blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry,
-		clear_primitive, curve_piece_count, encode_shadow_offset, update_from_render,
+		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE,
+		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
+		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_LAYOUT,
+		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry,
+		UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion,
+		UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions, blur_half_extent,
+		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
+		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, encode_shadow_offset,
+		update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1114,8 +1119,10 @@ mod tests {
 		style::{ConcreteLayer, ConcreteStyle, LayerKind},
 	};
 
-	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
-	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
+	static UI_BLUR_DOWNSAMPLE_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/backdrop-blur-downsample.besl"));
+	static UI_BLUR_FILTER_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/backdrop-blur-filter.besl"));
 	static UI_VERTEX_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-vertex.besl"));
 	static UI_FRAGMENT_BESL: std::sync::LazyLock<&str> =
@@ -1539,8 +1546,8 @@ mod tests {
 				..UiVaryings::default()
 			},
 			&mut [
-				(UI_BLUR_FULL_SLOT.index(), full_blurred),
-				(UI_BLUR_HALF_SLOT.index(), half_blurred),
+				(UI_LAYOUT.slot("full_blurred_texture").index(), full_blurred),
+				(UI_LAYOUT.slot("half_blurred_texture").index(), half_blurred),
 			],
 		)
 	}
@@ -1705,7 +1712,7 @@ mod tests {
 	/// Verifies the half-resolution prefilter uses the positive binomial marginal and guards extra lanes.
 	#[test]
 	fn backdrop_blur_downsample_besl_vm_uses_binomial_prefilter() {
-		let executable = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let executable = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
 		let mut texels = [[0.0; 4]; 6];
 		texels[1] = [1.0, 0.0, 0.0, 0.0];
 		texels[2] = [0.0, 1.0, 0.0, 0.0];
@@ -1741,7 +1748,7 @@ mod tests {
 		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_4_7), 96);
 		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_8_10_pad), 112);
 
-		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let layout = executable
 			.push_constant_layout()
 			.expect("Missing production blur push constants. The most likely cause is a changed filter interface.");
@@ -1840,7 +1847,7 @@ mod tests {
 	/// Verifies the production Gaussian preserves constants, selects one axis, and guards extra lanes.
 	#[test]
 	fn backdrop_blur_filter_besl_vm_preserves_constants_and_direction() {
-		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let region = UiPixelRegion {
 			origin: [1, 1],
 			extent: Extent::rectangle(1, 1),
@@ -1887,7 +1894,7 @@ mod tests {
 	/// Verifies the effective-radius-36 production profile has one Gaussian peak without secondary bands.
 	#[test]
 	fn backdrop_blur_filter_besl_vm_has_no_secondary_lobe_at_effective_radius_36() {
-		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let width = 65;
 		let center = width / 2;
 		let sigma = blur_half_sigma(blur_sigma(36.0));
@@ -2068,8 +2075,8 @@ mod tests {
 	// The sweep keeps all radius, scale, and sampled-color assertions in one production-chain regression.
 	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 5);
 		let radii = [0.0, 0.25, 1.0, 4.0, 18.0, 32.0, 64.0];
@@ -2129,8 +2136,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_production_chain_changes_continuously_across_radius_sweep() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 1);
 		let texels = blur_chain_fixture(BlurChainPattern::ThinLine, extent);
@@ -2178,8 +2185,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_awkward_width_impulse_centroid_stays_phase_aligned() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		for width in [2_801, 2_802] {
 			let extent = Extent::rectangle(width, 1);
@@ -2198,8 +2205,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_regional_production_chain_never_samples_stale_texels() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let viewport = Extent::rectangle(129, 33);
 		let bounds = [45.25, 10.25, 83.75, 22.75];
@@ -2838,7 +2845,7 @@ mod tests {
 				..UiVaryings::default()
 			},
 			// The atlas is the first element of the texture array.
-			&mut [(UI_TEXTURES_SLOT.index() + UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
+			&mut [(UI_LAYOUT.slot("textures").index() + UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
 		);
 
 		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
@@ -2971,7 +2978,10 @@ mod tests {
 				pixel_position: [1.5, 1.5],
 				..UiVaryings::default()
 			},
-			&mut [(UI_BLUR_FULL_SLOT.index(), &mut full), (UI_BLUR_HALF_SLOT.index(), &mut half)],
+			&mut [
+				(UI_LAYOUT.slot("full_blurred_texture").index(), &mut full),
+				(UI_LAYOUT.slot("half_blurred_texture").index(), &mut half),
+			],
 		);
 
 		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.2]);
@@ -2995,7 +3005,7 @@ mod tests {
 				uv: [0.5, 0.5],
 				..UiVaryings::default()
 			},
-			&mut [(UI_TEXTURES_SLOT.index() + 7, &mut texture)],
+			&mut [(UI_LAYOUT.slot("textures").index() + 7, &mut texture)],
 		);
 
 		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.4]);

@@ -1,0 +1,18 @@
+// The descriptor set of the directional shadow cascade fit. The pass rewrites each cascade's view to fit the
+// receivers the depth pyramid pass measured, so it binds the scene's views for writing through a set of its own.
+// List it after `scene-records.besl` and `receiver-bounds.besl`.
+
+// The camera, then four cascades per sun slot.
+CascadeViews: struct {
+	views: View[17],
+}
+
+// Each cascade's size, as a step on the ladder offset by CASCADE_SIZE_STEP_OFFSET. It persists across frames.
+CascadeSizeSteps: struct {
+	steps: u32[16],
+}
+
+views: descriptor<{ type: CascadeViews, binding: 0, access: read_write, memory: device }>;
+receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_write, memory: device }>;
+receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
+cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;

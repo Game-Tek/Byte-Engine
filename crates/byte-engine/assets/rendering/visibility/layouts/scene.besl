@@ -1,0 +1,58 @@
+// The scene descriptor set of the visibility pipeline: the views, the instance and material tables, the geometry
+// streams, and the bindless textures. Every stage that draws or shades the scene binds it, and reads what it needs
+// from it. `rendering/pipelines/visibility/manager.rs` creates it and binds its resources by these names.
+// List it after `scene-records.besl`.
+
+// The camera, then each sun's cascades, then cone layers, then point cube faces.
+Views: struct {
+	views: View[129],
+}
+
+Meshes: struct {
+	meshes: Mesh[1024],
+}
+
+SkinnedVertices: struct {
+	vertices: SkinnedVertex[262144],
+}
+
+Material: struct {
+	textures: u32[16],
+	coverage_factor: f32,
+	coverage_texture_slot: u32,
+	alpha_cutoff: f32,
+	padding: u32,
+}
+
+Materials: struct {
+	materials: Material[1024],
+}
+
+// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
+// and 4294967295 marks a material no evaluation shades.
+MaterialEvaluations: struct {
+	evaluation_indices: u32[1024],
+}
+
+MeshDispatchWork: struct {
+	items: u32[131072],
+}
+
+views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
+meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
+vertex_positions: descriptor<{ type: vec3f[], binding: 2, access: read, memory: device }>;
+// Octahedrally encoded unit normals.
+vertex_normals: descriptor<{ type: vec2u16[], binding: 3, access: read, memory: device }>;
+skinned_vertices: descriptor<{ type: SkinnedVertices, binding: 4, access: read, memory: device }>;
+vertex_uvs: descriptor<{ type: vec2f16[], binding: 5, access: read, memory: device }>;
+vertex_indices: descriptor<{ type: u16[], binding: 6, access: read, memory: device }>;
+// Three meshlet-local vertex indices per triangle.
+primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;
+meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
+// The bindless texture pool that material table entries index.
+textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024 }>;
+materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
+// One packed work item per group of meshlets a task workgroup culls.
+mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
+// The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
+material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;

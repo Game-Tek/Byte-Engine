@@ -154,6 +154,28 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 }
 
 /// Creates a host buffer using the layout discovered while compiling the shader.
+/// Returns the slot of the descriptor a linked program declares as `name`, so tests bind resources by the name the
+/// shader gives them.
+pub(crate) fn binding_slot(program: &besl::NodeReference, name: &str) -> ResourceSlot {
+	/// Finds the descriptor among the declarations of `scope` and of the scopes nested in it. A struct member or a
+	/// local of the same name is not a declaration.
+	fn find(scope: &besl::NodeReference, name: &str) -> Option<u32> {
+		let scope = scope.borrow();
+		let besl::Nodes::Scope { children, .. } = scope.node() else {
+			return None;
+		};
+		children.iter().find_map(|child| match child.borrow().node() {
+			besl::Nodes::Binding {
+				name: declared, slot, ..
+			} if declared == name => Some(*slot),
+			besl::Nodes::Scope { .. } => find(child, name),
+			_ => None,
+		})
+	}
+
+	ResourceSlot::new(find(program, name).unwrap_or_else(|| panic!("Expected the program to declare a descriptor `{name}`")))
+}
+
 pub(crate) fn buffer(program: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
 	Buffer::new(buffer_layout(program, slot))
 }

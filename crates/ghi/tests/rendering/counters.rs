@@ -222,8 +222,14 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 		ghi::shader::ResourceKind::StorageImage,
 		ghi::AccessPolicies::WRITE,
 	);
+	let layout = ghi::DescriptorSetLayout::new("Counter Target", [image_resource]);
 	let compute_shader = device
-		.create_shader(None, shader.as_source(), ShaderTypes::Compute, [image_resource])
+		.create_shader(
+			None,
+			shader.as_source(),
+			ShaderTypes::Compute,
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
+		)
 		.expect("Failed to create the counter test compute shader");
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[],
@@ -234,7 +240,7 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 			.name("Counter Dispatch Target")
 			.extent(Extent::square(64)),
 	);
-	let descriptor_set = device.create_descriptor_set(None);
+	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[ghi::DescriptorWrite::image(
 		descriptor_set,
 		image_resource.slot(),

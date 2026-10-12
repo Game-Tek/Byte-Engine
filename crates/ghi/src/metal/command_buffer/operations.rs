@@ -959,8 +959,8 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
 		self.note_command();
-		let resource_uses = self.bound_vertex_resource_uses();
-		self.prepare_draw("draw", resource_uses);
+		self.use_bound_vertex_buffers();
+		self.prepare_draw("draw", []);
 		self.apply_bound_vertex_buffers();
 		// SAFETY: An active render encoder exists and the validated vertex range belongs to the bound pipeline.
 		unsafe {
@@ -1014,9 +1014,9 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let index_buffer_address = buffer.gpu_address.checked_add(index_buffer_offset as u64).expect(
 			"Metal index-buffer GPU address overflowed. The most likely cause is that the bound index range exceeds the native address space.",
 		);
-		let mut resource_uses = self.bound_vertex_resource_uses();
+		self.use_bound_vertex_buffers();
 		if index_data_size > 0 {
-			resource_uses.push(synchronization::MetalResourceUse::buffer(
+			self.command_uses.push(synchronization::MetalResourceUse::buffer(
 				internal_buffer,
 				index_buffer_offset,
 				index_data_size,
@@ -1027,7 +1027,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 			// An empty index range is not tracked, but the draw still names the buffer, so the command retains it.
 			self.command_buffer.retain_allocation(&*buffer.buffer);
 		}
-		self.prepare_draw("draw_indexed", resource_uses);
+		self.prepare_draw("draw_indexed", []);
 		self.apply_bound_vertex_buffers();
 
 		// SAFETY: An active render encoder exists and the index-buffer address and draw ranges were validated above.
@@ -1082,9 +1082,8 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		// The vertex stage consumes the draw record, so it must wait for whichever GPU work wrote the counts.
 		let (indirect_buffer_address, record_use) =
 			self.resolve_indirect_record(buffer_handle.into(), entry, mtl::MTLStages::Vertex);
-		let mut resource_uses = self.bound_vertex_resource_uses();
-		resource_uses.push(record_use);
-		self.prepare_draw("draw_indirect", resource_uses);
+		self.use_bound_vertex_buffers();
+		self.prepare_draw("draw_indirect", [record_use]);
 		self.apply_bound_vertex_buffers();
 
 		self.render_encoder("draw_indirect")

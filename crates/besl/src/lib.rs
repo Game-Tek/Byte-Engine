@@ -94,13 +94,17 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 /// Places layout layers under a parsed module so the module can reference their declarations.
 ///
 /// A layout layer is BESL source without a `main` function. It holds the declarations several shaders share, such as
-/// structs, descriptors, a push constant block, constants, and helper functions. Use layers to declare a descriptor
-/// set or a whole pipeline layout once, then compile each shader module against the layers it needs.
+/// structs, descriptors, a push constant block, constants, and helper functions.
+///
+/// The descriptors one layer declares form one descriptor set layout, named after the layer: every shader that lists
+/// the layer shares that set, and the application binds it as a whole. Declare each descriptor set in a layer of its
+/// own, and keep shared structs and helpers that no set owns in layers without descriptors. The descriptors a module
+/// declares itself form the module's own layout.
 ///
 /// `layers` yields each layer's name and source. Layers stack in that order: each layer can reference the layers
-/// before it, and the module can reference all of them. A layer's name is used only in error messages. A declaration
-/// name may appear only once across the module and its layers, so a stale copy left in a shader fails instead of
-/// silently diverging from the layer.
+/// before it, and the module can reference all of them. A layer's name identifies its descriptor set layout and
+/// appears in error messages. A declaration name may appear only once across the module and its layers, so a stale
+/// copy left in a shader fails instead of silently diverging from the layer.
 ///
 /// Next, pass the returned node to [`lex`].
 pub fn stack_layers<'a>(
@@ -133,7 +137,10 @@ pub fn stack_layers<'a>(
 			continue;
 		};
 
-		for declaration in children.drain(..) {
+		for mut declaration in children.drain(..) {
+			// The resources one layer declares form one descriptor set layout, named after the layer.
+			declaration.set_layout(layer);
+
 			if let Some(name) = declared_name(&declaration) {
 				if name == "main" {
 					return Err(invalid(format!(

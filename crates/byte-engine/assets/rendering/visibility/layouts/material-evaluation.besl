@@ -1,0 +1,81 @@
+// The descriptor set of material evaluation: the images it shades into and everything lighting reads. The pixel
+// mapping pass lists it too, to clear the images before evaluation. Bindings of a feature a project leaves out stay
+// declared and are never reached, so they need no resource.
+// `rendering/pipelines/visibility/render_pass.rs` creates it and binds its resources by these names.
+
+Light: struct {
+	position: vec3f,
+	color: vec3f,
+	direction: vec3f,
+	cone_cosines: vec2f,
+	type: u32,
+	shadow_views: u32[8],
+	shadow_layer: u32,
+	ies_profile_texture: u32,
+	ies_c0_tangent: vec2u16,
+	reach: f32,
+	angular_radius_tangent: f32,
+}
+
+// The light table outgrows constant-buffer limits, so it is a read-only storage buffer.
+LightingData: struct {
+	light_count: u32,
+	exposure: f32,
+	environment_intensity: f32,
+	lights: Light[1024],
+}
+
+// One bit per light-table entry for every cluster. See `light-clusters.besl`.
+LightClusterMasks: struct {
+	words: u32[98304],
+}
+
+LightClusterParameters: struct {
+	view: mat4x3f,
+	edge_slopes: vec2f,
+	near: f32,
+	depth_slice_scale: f32,
+}
+
+// The camera constants of the half-resolution SSGI images, as `ScreenViewData` lays them out.
+SsgiView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+ReflectionParameters: struct {
+	world_to_previous_clip: mat4f,
+	previous_exposure: f32,
+	history_valid: u32,
+	_padding: u32[2],
+}
+
+lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1041, access: read_write }>;
+lighting_data: descriptor<{ type: LightingData, binding: 1045, access: read, memory: device }>;
+// The half-resolution SSGI history and normals, from which opaque evaluation reconstructs indirect diffuse light.
+ssgi_normals: descriptor<{ type: Texture2D, binding: 1047, access: read }>;
+ssgi_view: descriptor<{ type: SsgiView, binding: 1048, access: read, memory: device }>;
+ao: descriptor<{ type: Texture2D, binding: 1051, access: read }>;
+depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1052, access: read }>;
+directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1053, access: read }>;
+environment_irradiance: descriptor<{ type: TextureCube, binding: 1054, access: read }>;
+environment_specular: descriptor<{ type: TextureCube, binding: 1055, access: read }>;
+ssgi_history: descriptor<{ type: Texture2D, binding: 1056, access: read }>;
+// This frame's diffuse radiance, which the next frame's SSGI rays read.
+diffuse_radiance_map: descriptor<{ type: StorageImage<rgba16f>, binding: 1057, access: write }>;
+// The sun's resolved visibility per opaque pixel, one channel per sun slot.
+sun_visibility: descriptor<{ type: Texture2D, binding: 1058, access: read }>;
+reflection_parameters: descriptor<{ type: ReflectionParameters, binding: 1059, access: read, memory: constant }>;
+// Mip zero of the linear depth pyramid, which reflection rays march and the indirect diffuse upsample reads.
+depth_pyramid: descriptor<{ type: Texture2D, binding: 1060, access: read }>;
+previous_radiance: descriptor<{ type: Texture2D, binding: 1061, access: read }>;
+// This frame's radiance, which the next frame's reflection rays read.
+radiance_history_map: descriptor<{ type: StorageImage<rgba16f>, binding: 1062, access: write }>;
+cone_shadow_map: descriptor<{ type: Texture2DArray, binding: 1064, access: read }>;
+point_shadow_map: descriptor<{ type: TextureCubeArray, binding: 1065, access: read }>;
+light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1066, access: read, memory: device }>;
+light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1067, access: read, memory: constant }>;

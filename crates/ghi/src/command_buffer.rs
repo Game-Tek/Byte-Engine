@@ -223,7 +223,15 @@ pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 
 /// The `BoundPipelineLayoutMode` trait provides resource binding for a selected pipeline layout.
 pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
-	/// Binds retained descriptor-set groups whose flat shader slots do not overlap.
+	/// Binds the descriptor sets the bound pipeline reads, replacing every set bound before.
+	///
+	/// Each layout the pipeline's shaders declare takes the set created from that layout, so the order of `sets`
+	/// does not matter. A set the pipeline declares no layout for is ignored, which lets pipelines that differ in the
+	/// layouts they declare share one call.
+	///
+	/// # Panics
+	///
+	/// A later draw or dispatch panics when `sets` holds no set for a layout the pipeline declares.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
 	/// Writes plain data without padding to the push-constant register.

@@ -4,13 +4,9 @@
 
 use besl::vm::{DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
 
-use super::shader_data;
 use crate::rendering::render_pass::simple_compute::compile_test_program;
-use crate::rendering::shader_vm_test::{buffer, compile, run_at};
+use crate::rendering::shader_vm_test::{binding_slot, buffer, compile, run_at};
 
-const FRAME_SLOT: ResourceSlot = ResourceSlot::new(shader_data::FRAME_SLOT.index());
-const DRAWS_SLOT: ResourceSlot = ResourceSlot::new(shader_data::DRAWS_SLOT.index());
-const DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(shader_data::DISPATCH_SLOT.index());
 const CAPACITY: u32 = 4096;
 
 fn prepare_program() -> besl::NodeReference {
@@ -20,8 +16,11 @@ fn prepare_program() -> besl::NodeReference {
 /// Runs the prepare pass for a frame that writes half 0 and returns the simulation's workgroup count and the reset
 /// draw record.
 fn prepare(previous_vertex_count: u32, spawn_total: u32, reset: bool) -> ([u32; 3], [u32; 4]) {
-	let program: ExecutableProgram = compile(prepare_program());
-	let mut frame = buffer(&program, FRAME_SLOT);
+	let linked = prepare_program();
+	let [frame_slot, draws_slot, dispatch_slot]: [ResourceSlot; 3] =
+		["frame", "draws", "dispatch"].map(|name| binding_slot(&linked, name));
+	let program: ExecutableProgram = compile(linked);
+	let mut frame = buffer(&program, frame_slot);
 	for (field, value) in [
 		("side", 0),
 		("capacity", CAPACITY),
@@ -30,18 +29,18 @@ fn prepare(previous_vertex_count: u32, spawn_total: u32, reset: bool) -> ([u32; 
 	] {
 		frame.write(field, Value::U32(value)).expect("frame field");
 	}
-	let mut draws = buffer(&program, DRAWS_SLOT);
+	let mut draws = buffer(&program, draws_slot);
 	draws
 		.write_array_element(4, Value::U32(previous_vertex_count))
 		.expect("previous draw count");
 	// Leftovers from an older frame that the pass must reset.
 	draws.write_array_element(0, Value::U32(600)).expect("stale draw count");
-	let mut dispatch = buffer(&program, DISPATCH_SLOT);
+	let mut dispatch = buffer(&program, dispatch_slot);
 
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(FRAME_SLOT, &mut frame);
-	descriptors.bind_buffer(DRAWS_SLOT, &mut draws);
-	descriptors.bind_buffer(DISPATCH_SLOT, &mut dispatch);
+	descriptors.bind_buffer(frame_slot, &mut frame);
+	descriptors.bind_buffer(draws_slot, &mut draws);
+	descriptors.bind_buffer(dispatch_slot, &mut dispatch);
 	run_at(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 

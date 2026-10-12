@@ -1,0 +1,6 @@
+// The descriptor set of the UI composite pass: the scene, the premultiplied UI layer over it, and the image the
+// composite writes. The frame output and the backdrop resolve each bind one.
+
+scene: descriptor<{ type: StorageImage, binding: 0, access: read }>;
+layer: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 2, access: write }>;

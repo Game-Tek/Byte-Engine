@@ -486,19 +486,20 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		self.factory
-			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
+		self.factory.create_shader(name, shader_source_type, stage, descriptor_sets)
 	}
 
-	/// Creates one retained logical descriptor set per in-flight frame without allocating a native layout.
-	fn create_descriptor_set(&mut self, _name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
-		self.descriptor_sets.add_chain((0..self.frames).map(|_| DescriptorSet {
-			version: 0,
-			descriptors: HashMap::default(),
-			argument_buffers: Vec::new(),
-		}))
+	/// Creates one copy of the set per frame in flight, each sized for `layout`. A copy allocates its argument
+	/// buffer when a command first binds it.
+	fn create_descriptor_set(
+		&mut self,
+		_name: Option<&str>,
+		layout: &crate::shader::DescriptorSetLayout,
+	) -> graphics_hardware_interface::DescriptorSetHandle {
+		self.descriptor_sets
+			.add_chain((0..self.frames).map(|sequence| DescriptorSet::new(layout, sequence)))
 	}
 
 	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {

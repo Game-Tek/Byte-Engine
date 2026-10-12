@@ -1,0 +1,5 @@
+// The descriptor set of the SSGI trace: the rays and normals it writes and last frame's radiance, which a hit reads.
+
+raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
+previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
+normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;

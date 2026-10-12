@@ -1,0 +1,7 @@
+// The descriptor set of the final GTAO stage: the full- and half-resolution depths it compares, the occlusion it
+// reconstructs from, and the full-resolution image it writes.
+
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
+low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;

@@ -1,11 +1,13 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
+use std::sync::LazyLock;
+
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		RasterizationRenderPassMode as _,
 	},
-	context::{Context as _, ContextCreate as _},
+	context::Context as _,
 	frame::Frame as _,
 };
 use utils::RGBA;
@@ -13,10 +15,11 @@ use utils::RGBA;
 use crate::{
 	core::Entity,
 	rendering::{
-		Sink,
+		SetLayout, Sink,
 		pipelines::simple::pipeline_manager::InstanceBatch,
 		pipelines::simple::{CameraShaderData, PipelineManager},
 		render_pass::RenderPassFunction,
+		set_layout::layer,
 	},
 };
 
@@ -31,6 +34,9 @@ pub struct RenderPass {
 	background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
+/// The descriptor set the simple pipeline's shaders share, declared by `simple/layouts/scene.besl`.
+static SCENE_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| SetLayout::from_layers(&[layer!("simple/layouts/scene.besl")]));
+
 impl RenderPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,
@@ -40,11 +46,12 @@ impl RenderPass {
 		targets: [ghi::BaseImageHandle; 2],
 		background: Option<crate::rendering::render_pass::SceneBackground>,
 	) -> Self {
-		let descriptor_set = context.create_descriptor_set(None);
+		let descriptor_set = SCENE_LAYOUT.create_set(context, "Simple Scene Descriptor Set");
+		let scene = SCENE_LAYOUT.binder(descriptor_set);
 
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(0), camera_data_buffer),
-			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
+			scene.buffer("cameras", camera_data_buffer),
+			scene.buffer("instances", instance_data_buffer),
 		]);
 
 		let attachments = targets.map(|target| {

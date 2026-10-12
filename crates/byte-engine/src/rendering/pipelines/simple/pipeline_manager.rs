@@ -368,17 +368,15 @@ mod tests {
 		assert_eq!((batches[2].index_count, batches[2].base_instance), (30, 4));
 	}
 
-	use besl::vm::{
-		DescriptorBindings, ResourceSlot, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot,
-	};
+	use besl::vm::{DescriptorBindings, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot};
 
 	use crate::rendering::shader_vm_test::{
-		IDENTITY_MATRIX, buffer, builtin_position_buffer, compile, input_buffer, link_program, output_buffer, run_at,
+		IDENTITY_MATRIX, asset_source, binding_slot, buffer, builtin_position_buffer, compile, input_buffer, link_program,
+		output_buffer, run_at,
 	};
 
 	const SIMPLE_FRAGMENT_BESL: &str =
 		include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/fragment.besl"));
-	const SIMPLE_VERTEX_BESL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/vertex.besl"));
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
@@ -426,11 +424,13 @@ mod tests {
 	/// Verifies the production vertex program applies indexed transforms and preserves its varyings.
 	#[test]
 	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
-		let program = compile(link_program(SIMPLE_VERTEX_BESL, "Simple vertex shader"));
+		let linked = link_program(asset_source("simple/vertex.besl"), "Simple vertex shader");
+		let [cameras_slot, instances_slot] = ["cameras", "instances"].map(|name| binding_slot(&linked, name));
+		let program = compile(linked);
 
-		let mut cameras = buffer(&program, ResourceSlot::new(0));
+		let mut cameras = buffer(&program, cameras_slot);
 
-		let mut instances = buffer(&program, ResourceSlot::new(1));
+		let mut instances = buffer(&program, instances_slot);
 
 		let mut input_position = input_buffer(&program, 0);
 
@@ -464,9 +464,9 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 
-			descriptors.bind_buffer(ResourceSlot::new(0), &mut cameras);
+			descriptors.bind_buffer(cameras_slot, &mut cameras);
 
-			descriptors.bind_buffer(ResourceSlot::new(1), &mut instances);
+			descriptors.bind_buffer(instances_slot, &mut instances);
 
 			descriptors.bind_buffer(input_slot(0), &mut input_position);
 

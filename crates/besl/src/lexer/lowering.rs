@@ -96,6 +96,14 @@ fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
 	)
 }
 
+/// Moves `binding` into the layout layer a parsed resource was declared in, or leaves it in the program's own layout.
+fn binding_in_declared_layout(binding: Node, layout: Option<&str>) -> Node {
+	match layout {
+		Some(layout) => binding.in_layout(layout),
+		None => binding,
+	}
+}
+
 /// Selects the memory class of a binding from its declared `constant` or `device` class, the same way for bindings
 /// declared in source and bindings built by engine code. Buffers default to device memory. Other resources have no
 /// buffer memory, so they reject a declared class.
@@ -463,6 +471,7 @@ impl Lexer {
 				write,
 				memory_class,
 				count,
+				layout,
 			} => {
 				let r#type = match r#type {
 					parser::BindingResource::Buffer { members } => BindingTypes::Buffer {
@@ -479,7 +488,11 @@ impl Lexer {
 					},
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
-				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
+				binding_in_declared_layout(
+					Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count),
+					*layout,
+				)
+				.into()
 			}
 			parser::Nodes::Descriptor {
 				name,
@@ -491,11 +504,16 @@ impl Lexer {
 				write,
 				memory_class,
 				count,
+				layout,
 			} => {
 				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
 
-				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
+				binding_in_declared_layout(
+					Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count),
+					*layout,
+				)
+				.into()
 			}
 			parser::Nodes::RawCode {
 				glsl,

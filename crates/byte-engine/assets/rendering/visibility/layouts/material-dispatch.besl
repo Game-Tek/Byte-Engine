@@ -1,12 +1,7 @@
-// The bookkeeping records of material dispatch, which the count, offset, and pixel-mapping passes share. Every table
-// is indexed by evaluation slot: materials that compile to one evaluation pipeline share a slot. This layer declares
-// types only, because each pass binds the tables with the access it needs.
-
-// The evaluation slot of every material table entry. Materials that compile to one evaluation pipeline share a slot,
-// and 4294967295 marks a material no evaluation shades.
-MaterialEvaluations: struct {
-	evaluation_indices: u32[1024],
-}
+// The descriptor set of the material dispatch passes, which count the pixels of each material evaluation slot, turn
+// the counts into list offsets and indirect dispatches, and write each slot's pixel list. Every table is indexed by
+// evaluation slot: materials that compile to one evaluation pipeline share a slot. Material evaluation reads the
+// same buffers through `visibility-buffer.besl`, which declares them read-only.
 
 // The number of pixels each evaluation slot shades.
 MaterialCount: struct {
@@ -17,3 +12,23 @@ MaterialCount: struct {
 MaterialOffsetScratch: struct {
 	material_offset_scratch: atomicu32[1024],
 }
+
+MaterialOffset: struct {
+	material_offset: u32[1024],
+}
+
+MaterialEvaluationDispatches: struct {
+	material_evaluation_dispatches: vec3u[1024],
+}
+
+PixelMapping: struct {
+	pixel_mapping: vec2u16[8294400],
+}
+
+material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write, memory: device }>;
+material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access: read_write, memory: device }>;
+material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
+material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write, memory: device }>;
+pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
+// The instance under each pixel, from the visibility buffer.
+instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;

@@ -41,11 +41,17 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 		hlsl_entry_point: "fragment_main",
 	}).expect("Failed to compile benchmark fragment shader. The most likely cause is invalid native shader source.");
 	let resource = ShaderResourceDescriptor::single(ResourceSlot::new(0), ResourceKind::StorageBuffer, AccessPolicies::READ);
+	let layout = ghi::DescriptorSetLayout::new("Benchmark Colors", [resource]);
 	let vertex = context
 		.create_shader(None, vertex_source.as_source(), ShaderTypes::Vertex, [])
 		.expect("Failed to create benchmark vertex shader. The most likely cause is unsupported shader code.");
 	let fragment = context
-		.create_shader(None, fragment_source.as_source(), ShaderTypes::Fragment, [resource])
+		.create_shader(
+			None,
+			fragment_source.as_source(),
+			ShaderTypes::Fragment,
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
+		)
 		.expect("Failed to create benchmark fragment shader. The most likely cause is unsupported shader resources.");
 	let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 		&[ghi::pipelines::PushConstantRange::new(0, 32)],
@@ -71,7 +77,7 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 			ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
 		)
 	});
-	let set = context.create_descriptor_set(None);
+	let set = context.create_descriptor_set(None, &layout);
 	let writes = buffers.map(|buffer| DescriptorWrite::buffer(set, resource.slot(), buffer.into()));
 	context.write(&[writes[0]]);
 	let mut expected = vec![[0u8; 4]; objects];

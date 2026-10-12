@@ -529,7 +529,7 @@ mod debug_tests {
 							stage: ShaderTypes::Compute,
 							interface: ShaderInterface {
 								workgroup_size: None,
-								bindings: Vec::new(),
+								sets: Vec::new(),
 							},
 							artifact: ShaderArtifact::Spirv,
 						},
@@ -569,7 +569,7 @@ mod debug_tests {
 							stage: ShaderTypes::Compute,
 							interface: ShaderInterface {
 								workgroup_size: None,
-								bindings: Vec::new(),
+								sets: Vec::new(),
 							},
 							artifact: ShaderArtifact::Spirv,
 						},

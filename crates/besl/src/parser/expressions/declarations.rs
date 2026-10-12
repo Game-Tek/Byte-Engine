@@ -231,6 +231,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 				write,
 				memory_class,
 				count,
+				layout: None,
 			},
 		},
 		iterator,

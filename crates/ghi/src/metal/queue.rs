@@ -4,6 +4,14 @@ pub(crate) enum BatchCommitFeedbackStatus {
 	HandlerFailed,
 }
 
+/// The serial a native command holds while no recording uses it.
+const IDLE: u64 = u64::MAX;
+
+/// How long an allocation stays resident after the last command that used it, at the least; it leaves within twice
+/// this time. Frames reuse most of their allocations, so lingering keeps a steady frame from changing the residency
+/// set at all, while memory the application stopped using is still given back promptly.
+const RESIDENCY_LINGER: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// The `NativeCommand` struct owns reusable Metal 4 recording state for one queue submission.
 pub(crate) struct NativeCommand {
 	allocator: Retained<ProtocolObject<dyn mtl::MTL4CommandAllocator>>,
@@ -14,11 +22,12 @@ pub(crate) struct NativeCommand {
 	/// Addresses of every allocation and object this recording retains, so repeats cost one set probe.
 	retained_addresses: ::utils::hash::HashSet<usize>,
 	retained_objects: SmallVec<[Retained<ProtocolObject<dyn NSObjectProtocol>>; 4]>,
-	/// Descriptor-set slots, at the set version, whose resources this recording already retains.
-	///
-	/// A slot's resources depend only on the set's contents, which its version identifies, so a pipeline switch
-	/// that re-applies the same sets skips every slot it already walked, including large bindless arrays.
-	retained_descriptor_slots: ::utils::hash::HashSet<(u64, u64, crate::shader::ResourceSlot)>,
+	/// The argument buffers this recording reads. A descriptor set writes over its buffer only while no command
+	/// holds it, so holding one here keeps its contents as the recording bound them.
+	argument_buffers: SmallVec<[Arc<ArgumentBufferSnapshot>; 16]>,
+	/// The number of the recording in progress or in flight, or [`IDLE`]. The queue's [`QueueResidency`] shares it
+	/// to learn which recordings are still running, including when a recording is dropped without being submitted.
+	serial: Arc<AtomicU64>,
 	/// The number the queue's resource tracker published this recording's accesses under, which completion hands
 	/// back to it. Commands recorded without the tracker, such as an empty frame command, have none.
 	tracked_recording: Option<u64>,
@@ -41,7 +50,8 @@ impl NativeCommand {
 			retained_allocations: SmallVec::new(),
 			retained_addresses: ::utils::hash::HashSet::default(),
 			retained_objects: SmallVec::new(),
-			retained_descriptor_slots: ::utils::hash::HashSet::default(),
+			argument_buffers: SmallVec::new(),
+			serial: Arc::new(AtomicU64::new(IDLE)),
 			tracked_recording: None,
 		}
 	}
@@ -55,6 +65,11 @@ impl NativeCommand {
 		if debug_labels {
 			self.command_buffer.setLabel(label.map(NSString::from_str).as_deref());
 		}
+	}
+
+	/// Returns the number of this recording among its queue's recordings.
+	pub(crate) fn serial(&self) -> u64 {
+		self.serial.load(Ordering::Relaxed)
 	}
 
 	/// Retains a buffer, texture, heap, pipeline state, or acceleration structure until GPU completion and makes it
@@ -74,7 +89,7 @@ impl NativeCommand {
 		}
 	}
 
-	/// Retains an object that needs no residency, such as a sampler or an argument table, until GPU completion.
+	/// Retains an object that needs no residency, such as an argument table, until GPU completion.
 	pub(crate) fn retain_object<T: Message + 'static>(&mut self, object: &T)
 	where
 		dyn NSObjectProtocol: ImplementedBy<T>,
@@ -94,16 +109,16 @@ impl NativeCommand {
 		self.retain_object(drawable);
 	}
 
+	/// Keeps the argument buffer of a descriptor set as this recording bound it, and makes it resident, until GPU
+	/// completion.
+	pub(crate) fn retain_argument_buffer(&mut self, snapshot: &Arc<ArgumentBufferSnapshot>) {
+		self.retain_allocation(&*snapshot.buffer);
+		self.argument_buffers.push(snapshot.clone());
+	}
+
 	/// Records the number [`synchronization::MetalResourceTracker::finish_recording`] published this recording under.
 	pub(crate) fn set_tracked_recording(&mut self, recording: u64) {
 		self.tracked_recording = Some(recording);
-	}
-
-	/// Records that this recording retains the resources of `slot` in the descriptor set `set` at `version`.
-	///
-	/// Returns `false` when an earlier application already retained them, so the caller can skip the slot.
-	pub(crate) fn retain_descriptor_slot(&mut self, set: u64, version: u64, slot: crate::shader::ResourceSlot) -> bool {
-		self.retained_descriptor_slots.insert((set, version, slot))
 	}
 
 	// Ends recording before queue submission.
@@ -117,7 +132,8 @@ impl NativeCommand {
 		self.retained_allocations.clear();
 		self.retained_addresses.clear();
 		self.retained_objects.clear();
-		self.retained_descriptor_slots.clear();
+		self.argument_buffers.clear();
+		self.serial.store(IDLE, Ordering::Relaxed);
 		self.tracked_recording = None;
 	}
 }
@@ -125,27 +141,34 @@ impl NativeCommand {
 /// The `QueueResidency` struct keeps one long-lived residency set per queue, so frames that reuse the same resources
 /// neither rebuild nor recommit residency.
 ///
-/// Submission adds only the allocations the set does not hold yet. An allocation leaves the set once every batch that
-/// used it has completed. The queue holds a strong reference to each resident allocation, which keeps it alive while
-/// the GPU may still use it and keeps its address unique as a key.
-struct QueueResidency {
+/// An allocation enters the set when a descriptor set starts to hold it, see [`Self::pin`], or when a submitted
+/// command uses it. It leaves once no descriptor set holds it, every recording that could reach it has finished, and
+/// no recording used it for [`RESIDENCY_LINGER`]. The queue holds a strong reference to each resident allocation,
+/// which keeps it alive while the GPU may still use it and keeps its address unique as a key.
+pub(crate) struct QueueResidency {
 	set: Retained<ProtocolObject<dyn mtl::MTLResidencySet>>,
-	/// Resident allocations by object address, with the last batch that used each one.
-	resident: ::utils::hash::HashMap<usize, (Retained<ProtocolObject<dyn mtl::MTLAllocation>>, u64)>,
-	/// Submitted batches in submission order, with the addresses each one was the latest user of when submitted.
-	in_flight: std::collections::VecDeque<InFlightBatch>,
-	/// Address lists of retired batches, reused by later submissions so steady frames do not allocate.
-	spare_addresses: Vec<Vec<usize>>,
+	/// Resident allocations by object address.
+	resident: ::utils::hash::HashMap<usize, Resident>,
+	/// The serial of every native command of the queue, see [`NativeCommand::serial`].
+	commands: Vec<Arc<AtomicU64>>,
+	/// The number the next recording takes.
+	next_command: u64,
+	/// What `next_command` was at the last sweep. An allocation no recording from then on used has lingered.
+	swept_command: u64,
+	swept_at: std::time::Instant,
 	/// Allocations removed from the set but not yet committed as removed. They stay alive until that commit.
 	removed: Vec<Retained<ProtocolObject<dyn mtl::MTLAllocation>>>,
-	next_batch: u64,
+	/// Whether the set holds additions or removals it has not committed.
+	dirty: bool,
 }
 
-/// The `InFlightBatch` struct records which resident allocations one submitted batch used last.
-struct InFlightBatch {
-	batch: u64,
-	completed: bool,
-	addresses: Vec<usize>,
+/// The `Resident` struct is one allocation the queue keeps resident, with what still needs it.
+struct Resident {
+	allocation: Retained<ProtocolObject<dyn mtl::MTLAllocation>>,
+	/// Recordings numbered below this may use the allocation.
+	users_below: u64,
+	/// How many descriptor set entries hold the allocation.
+	pins: u32,
 }
 
 impl QueueResidency {
@@ -157,79 +180,112 @@ impl QueueResidency {
 		Self {
 			set,
 			resident: ::utils::hash::HashMap::default(),
-			in_flight: std::collections::VecDeque::new(),
-			spare_addresses: Vec::new(),
+			commands: Vec::new(),
+			next_command: 0,
+			swept_command: 0,
+			swept_at: std::time::Instant::now(),
 			removed: Vec::new(),
-			next_batch: 0,
+			dirty: false,
 		}
 	}
 
-	/// Makes every allocation the batch's commands retained resident, commits the set if it changed, and returns
-	/// the new batch's number.
+	/// Makes `allocation` resident for as long as a descriptor set entry holds it, so commands that bind the set
+	/// do not have to name its resources. Every call needs one [`Self::unpin`] of the same allocation.
+	pub(crate) fn pin(&mut self, allocation: &ProtocolObject<dyn mtl::MTLAllocation>) {
+		match self.resident.entry(std::ptr::from_ref(allocation).cast::<()>() as usize) {
+			std::collections::hash_map::Entry::Occupied(mut entry) => entry.get_mut().pins += 1,
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				self.set.addAllocation(allocation);
+				entry.insert(Resident {
+					allocation: allocation.retain(),
+					users_below: 0,
+					pins: 1,
+				});
+				self.dirty = true;
+			}
+		}
+	}
+
+	/// Releases one [`Self::pin`] of the allocation at `address`.
+	///
+	/// Recordings started before the call may still read the descriptor set as it was, so the allocation stays
+	/// resident until they have all finished.
+	pub(crate) fn unpin(&mut self, address: usize) {
+		let resident = self.resident.get_mut(&address).expect(
+			"Unpinned Metal allocation is not resident. The most likely cause is that a descriptor set released an allocation it never held.",
+		);
+		resident.pins -= 1;
+		resident.users_below = resident.users_below.max(self.next_command);
+	}
+
+	/// Numbers the recording `command` starts.
+	fn begin_command(&mut self, command: &NativeCommand) {
+		command.serial.store(self.next_command, Ordering::Relaxed);
+		self.next_command += 1;
+	}
+
+	/// Makes every allocation the batch's commands retained resident and commits the set if it changed.
 	///
 	/// Call it before committing the commands, since Metal needs the set committed before work that relies on it.
-	fn admit(&mut self, commands: &mut [NativeCommand]) -> u64 {
-		let batch = self.next_batch;
-		self.next_batch += 1;
-		let mut addresses = self.spare_addresses.pop().unwrap_or_default();
-		let mut added = false;
+	fn admit(&mut self, commands: &mut [NativeCommand]) {
 		for command in commands {
+			// A command is numbered when its recording starts, so it always has a serial here.
+			let users_below = command.serial().saturating_add(1);
 			for allocation in command.retained_allocations.drain(..) {
-				let address = Retained::as_ptr(&allocation) as *const () as usize;
-				match self.resident.entry(address) {
+				match self.resident.entry(Retained::as_ptr(&allocation) as *const () as usize) {
 					std::collections::hash_map::Entry::Occupied(mut entry) => {
-						// Commands in one batch can share an allocation; list it once per batch.
-						if entry.get().1 != batch {
-							entry.get_mut().1 = batch;
-							addresses.push(address);
-						}
+						let resident = entry.get_mut();
+						resident.users_below = resident.users_below.max(users_below);
 					}
 					std::collections::hash_map::Entry::Vacant(entry) => {
 						self.set.addAllocation(allocation.as_ref());
-						entry.insert((allocation, batch));
-						addresses.push(address);
-						added = true;
+						entry.insert(Resident {
+							allocation,
+							users_below,
+							pins: 0,
+						});
+						self.dirty = true;
 					}
 				}
 			}
 		}
-		if added || !self.removed.is_empty() {
+		if self.swept_at.elapsed() >= RESIDENCY_LINGER {
+			self.sweep();
+		}
+		if std::mem::take(&mut self.dirty) {
 			self.set.commit();
 			// The commit published the removals, so the GPU no longer references these allocations.
 			self.removed.clear();
 		}
-		self.in_flight.push_back(InFlightBatch {
-			batch,
-			completed: false,
-			addresses,
-		});
-		batch
 	}
 
-	/// Records that `batch` completed and removes allocations whose last user is a batch at or before the oldest
-	/// batch still running.
+	/// Removes the allocations nothing needs any more: no descriptor set holds them, every recording that could
+	/// use them has finished, and no recording used them since the previous sweep.
 	///
-	/// Batches can complete out of order, so allocations only leave once every earlier batch has completed too.
 	/// The removals are committed with the next submission.
-	fn complete(&mut self, batch: u64) {
-		if let Some(entry) = self.in_flight.iter_mut().find(|entry| entry.batch == batch) {
-			entry.completed = true;
-		}
-		while self.in_flight.front().is_some_and(|entry| entry.completed) {
-			let Some(mut retired) = self.in_flight.pop_front() else {
-				break;
-			};
-			for address in retired.addresses.drain(..) {
-				// A later batch that reused the allocation took over as its last user and keeps it resident.
-				if self.resident.get(&address).is_some_and(|(_, last)| *last == retired.batch)
-					&& let Some((allocation, _)) = self.resident.remove(&address)
-				{
-					self.set.removeAllocation(allocation.as_ref());
-					self.removed.push(allocation);
-				}
+	fn sweep(&mut self) {
+		// A command that was dropped, as an abandoned recording's is, runs nothing.
+		self.commands.retain(|serial| Arc::strong_count(serial) > 1);
+		// Recordings finish out of order, so only those before the oldest running one are known to be done.
+		let finished_below = self
+			.commands
+			.iter()
+			.map(|serial| serial.load(Ordering::Relaxed))
+			.min()
+			.map_or(self.next_command, |oldest| oldest.min(self.next_command));
+		let unused_below = finished_below.min(self.swept_command);
+		let (set, removed) = (&self.set, &mut self.removed);
+		self.resident.retain(|_, resident| {
+			if resident.pins != 0 || resident.users_below > unused_below {
+				return true;
 			}
-			self.spare_addresses.push(retired.addresses);
-		}
+			set.removeAllocation(resident.allocation.as_ref());
+			removed.push(resident.allocation.clone());
+			false
+		});
+		self.dirty |= !self.removed.is_empty();
+		self.swept_command = self.next_command;
+		self.swept_at = std::time::Instant::now();
 	}
 }
 
@@ -244,8 +300,6 @@ impl Deref for NativeCommand {
 /// The `SubmittedBatch` struct owns one queue submission until Metal reports completion.
 pub(crate) struct SubmittedBatch {
 	queue_handle: graphics_hardware_interface::QueueHandle,
-	/// The queue residency number of this batch, which releases its allocations once it completes.
-	batch: u64,
 	commands: SmallVec<[NativeCommand; 4]>,
 	feedback: std::sync::mpsc::Receiver<BatchCommitFeedbackStatus>,
 	_commit_options: Retained<mtl::MTL4CommitOptions>,
@@ -285,9 +339,9 @@ impl SubmittedBatch {
 			if let Some(recording) = command.tracked_recording {
 				queue.resource_tracker.complete_recording(recording);
 			}
+			// Resetting a command also tells the queue's residency that its recording finished.
 			command.reset();
 		}
-		queue.residency.complete(self.batch);
 		queue.command_pool.extend(self.commands);
 		error
 	}
@@ -298,7 +352,8 @@ pub(crate) struct StoredQueue {
 	pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTL4CommandQueue>>,
 	pub(crate) resource_tracker: synchronization::MetalResourceTracker,
 	command_pool: Vec<NativeCommand>,
-	residency: QueueResidency,
+	/// What the queue keeps resident. Descriptor sets pin the allocations they hold here.
+	pub(crate) residency: QueueResidency,
 }
 
 impl StoredQueue {
@@ -314,7 +369,15 @@ impl StoredQueue {
 
 	/// Acquires a reset native command and begins recording with its paired allocator.
 	pub(crate) fn acquire_native_command(&mut self, label: Option<&str>, debug_labels: bool) -> NativeCommand {
-		let mut command = self.command_pool.pop().unwrap_or_else(|| NativeCommand::new(self));
+		let mut command = match self.command_pool.pop() {
+			Some(command) => command,
+			None => {
+				let command = NativeCommand::new(self);
+				self.residency.commands.push(command.serial.clone());
+				command
+			}
+		};
+		self.residency.begin_command(&command);
 		command.begin(&self.residency.set, label, debug_labels);
 		command
 	}
@@ -329,7 +392,7 @@ impl StoredQueue {
 			!commands.is_empty(),
 			"Metal 4 command batch submission failed. The most likely cause is that an empty command batch reached submission.",
 		);
-		let batch = self.residency.admit(&mut commands);
+		self.residency.admit(&mut commands);
 		let mut command_buffers = SmallVec::<[NonNull<ProtocolObject<dyn mtl::MTL4CommandBuffer>>; 4]>::new();
 		for command in &mut commands {
 			command.finish();
@@ -364,7 +427,6 @@ impl StoredQueue {
 		};
 		SubmittedBatch {
 			queue_handle,
-			batch,
 			commands,
 			feedback,
 			_commit_options: commit_options,
@@ -487,6 +549,8 @@ impl crate::queue::Queue for Queue<'_> {
 
 use std::ops::Deref;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use block2::StackBlock;
 use objc2::Message;

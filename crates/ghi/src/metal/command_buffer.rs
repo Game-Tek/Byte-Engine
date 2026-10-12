@@ -1,4 +1,4 @@
-use ::utils::{Extent, hash::HashMap};
+use ::utils::Extent;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
@@ -17,37 +17,25 @@ use crate::{
 	descriptors::DescriptorSetHandle,
 };
 
-const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
+/// The buffer index of a stage's first descriptor set. Each further set the stage uses takes the next index, as
+/// the MSL generator in resource-management declares them.
+pub(super) const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
-const ARGUMENT_TABLE_BUFFER_COUNT: usize = 17;
+/// Every buffer index Metal offers: vertex buffers, the push constants, and up to fifteen descriptor sets.
+const ARGUMENT_TABLE_BUFFER_COUNT: usize = 31;
 /// Upload ranges start at the texture copy alignment, so any range can be the source of a buffer-to-texture copy.
 pub(super) const UPLOAD_ALIGNMENT: usize = crate::TEXTURE_COPY_PITCH_ALIGNMENT;
 const UPLOAD_PAGE_SIZE: usize = 256 * 1024;
 
-/// The `AppliedDescriptorBinding` struct records which argument-buffer snapshot the active native encoder references.
+/// The `AppliedDescriptorBinding` struct records which descriptor sets the active native encoder's tables reference,
+/// and the resource accesses of the pipeline that reads them, one table per set.
 struct AppliedDescriptorBinding {
 	key: DescriptorBindingKey,
-	snapshot: AppliedSnapshot,
-	settled: synchronization::SettledDescriptors,
-}
-
-/// The `AppliedSnapshot` enum locates the resource uses of an applied snapshot without copying them.
-enum AppliedSnapshot {
-	/// A snapshot that descriptor set `owner` retains at `index` of its snapshot list. The list only grows or
-	/// replaces entries in place, so the location stays valid for the whole recording.
-	Retained { owner: DescriptorSetHandle, index: usize },
-	/// A snapshot encoded for this command alone, which owns its uses.
-	Transient(synchronization::DescriptorUses),
-}
-
-impl AppliedSnapshot {
-	/// Returns the snapshot's resource uses.
-	fn uses<'s>(&'s self, descriptor_sets: &'s context::DescriptorSets) -> &'s synchronization::DescriptorUses {
-		match self {
-			Self::Retained { owner, index } => &descriptor_sets.resource(*owner).argument_buffers[*index].resource_uses,
-			Self::Transient(uses) => uses,
-		}
-	}
+	/// The table of each set the pipeline declares, as an index into [`EncoderState::tables`].
+	tables: SmallVec<[u32; 4]>,
+	/// One table of every set's uses, present when two of the sets reach the same memory and one writes it. Such
+	/// sets cannot settle on their own, so the command plans them as one table.
+	merged: Option<synchronization::TrackedTable>,
 }
 
 /// The panic message for a surface a command needs but cannot resolve.
@@ -94,8 +82,11 @@ struct EncoderState {
 	scope: synchronization::MetalEncoderScope,
 	/// The pipeline whose native state this encoder has set.
 	pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	/// The argument-buffer snapshot this encoder's tables reference.
+	/// The descriptor sets this encoder's tables reference.
 	descriptors: Option<AppliedDescriptorBinding>,
+	/// Every descriptor table a command of this encoder applied, with whether its reads are still to be planned.
+	/// Bindings index it, so a table keeps that state while the pipeline changes around the set it came from.
+	tables: SmallVec<[synchronization::TrackedTable; 8]>,
 	/// The stages whose shared argument table this encoder already holds, one bit per `ArgumentTableStage as usize`.
 	bound_argument_tables: u8,
 	push_constants_dirty: bool,
@@ -110,7 +101,7 @@ struct EncoderState {
 }
 
 /// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.
-fn texture_view_2d(
+pub(super) fn texture_view_2d(
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
 	mip_level: u32,
@@ -154,7 +145,6 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
 	pub(super) buffers: &'a ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) samplers: &'a [Retained<ProtocolObject<dyn mtl::MTLSamplerState>>],
 	pub(super) acceleration_structures: &'a [AccelerationStructure],
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
@@ -400,6 +390,9 @@ pub struct CommandBufferRecording<'a> {
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,
 	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
+	/// The uses of the command being prepared, besides those of its descriptor tables. Commands fill it in place and
+	/// preparing the command empties it, so no draw or dispatch moves its uses.
+	command_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// Readbacks recorded but not yet handed to submission. Dropping the recording abandons whatever is left.
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,

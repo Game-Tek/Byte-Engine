@@ -1,14 +1,5 @@
-// What a pass reads to find the evaluation slot of the material under each pixel, and the workgroup memory it buckets
-// a tile's pixels in. The count and pixel-mapping passes share it. List it after `scene-records.besl` and
-// `material-dispatch.besl`.
-
-MeshData: struct {
-	meshes: Mesh[1024],
-}
-
-mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device }>;
-material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
-instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
+// The workgroup memory a material dispatch pass buckets one tile's pixels in. The count and pixel-mapping passes
+// share it.
 
 // One tile's distinct evaluation slots and the pixels counted for each.
 tile_histogram_keys: workgroup<atomicu32, 32>;

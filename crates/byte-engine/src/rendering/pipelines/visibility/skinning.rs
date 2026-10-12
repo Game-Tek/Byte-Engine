@@ -8,22 +8,11 @@ use utils::Extent;
 
 use super::geometry::GeometryHandles;
 use crate::rendering::PipelineManagerClient;
+use crate::rendering::pipelines::visibility::set_layouts;
 
 const WORKGROUP_SIZE: u32 = 64;
 pub(crate) const MAX_SKINNED_VERTICES: usize = 65_536 * 4;
 pub(crate) const MAX_SKINNING_MATRICES: usize = 65_536;
-
-const fn buffer(slot: u32, access: ghi::AccessPolicies, stride: u32) -> ghi::ShaderResourceDescriptor {
-	ghi::ShaderResourceDescriptor::single(ghi::ResourceSlot::new(slot), ghi::ResourceKind::StorageBuffer, access)
-		.buffer_stride(stride)
-}
-const SOURCE_POSITIONS_BINDING: ghi::ShaderResourceDescriptor = buffer(0, ghi::AccessPolicies::READ, 12);
-const SOURCE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = buffer(1, ghi::AccessPolicies::READ, 12);
-const SOURCE_JOINTS_BINDING: ghi::ShaderResourceDescriptor = buffer(2, ghi::AccessPolicies::READ, 8);
-const SOURCE_WEIGHTS_BINDING: ghi::ShaderResourceDescriptor = buffer(3, ghi::AccessPolicies::READ, 16);
-const MATRIX_PALETTE_BINDING: ghi::ShaderResourceDescriptor = buffer(4, ghi::AccessPolicies::READ, 48);
-const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = buffer(5, ghi::AccessPolicies::WRITE, 24);
-const DUAL_QUATERNION_PALETTE_BINDING: ghi::ShaderResourceDescriptor = buffer(6, ghi::AccessPolicies::READ, 32);
 
 /// The `SkinnedVertex` struct is one position-and-normal record read by every visibility stage after deformation.
 #[repr(C)]
@@ -94,18 +83,16 @@ impl SkinningPass {
 		));
 		let skinned_vertices_buffer =
 			context.build_dynamic_buffer(dynamic("Visibility Skinned Vertices", ghi::DeviceAccesses::DeviceOnly));
-		let descriptor_set = context.create_descriptor_set(Some("Visibility Skinning Compute Set"));
-		let write = |binding: ghi::ShaderResourceDescriptor, buffer| {
-			ghi::DescriptorWrite::buffer(descriptor_set, binding.slot(), buffer)
-		};
+		let descriptor_set = set_layouts::SKINNING.create_set(context, "Visibility Skinning Compute Set");
+		let skinning = set_layouts::SKINNING.binder(descriptor_set);
 		context.write(&[
-			write(SOURCE_POSITIONS_BINDING, sources.skinning_rest_positions.into()),
-			write(SOURCE_NORMALS_BINDING, sources.skinning_rest_normals.into()),
-			write(SOURCE_JOINTS_BINDING, sources.skinning_joints.into()),
-			write(SOURCE_WEIGHTS_BINDING, sources.skinning_weights.into()),
-			write(MATRIX_PALETTE_BINDING, matrix_palette_buffer.into()),
-			write(DUAL_QUATERNION_PALETTE_BINDING, dual_quaternion_palette_buffer.into()),
-			write(SKINNED_VERTICES_BINDING, skinned_vertices_buffer.into()),
+			skinning.buffer("source_positions", sources.skinning_rest_positions),
+			skinning.buffer("source_normals", sources.skinning_rest_normals),
+			skinning.buffer("source_joints", sources.skinning_joints),
+			skinning.buffer("source_weights", sources.skinning_weights),
+			skinning.buffer("matrix_palette", matrix_palette_buffer),
+			skinning.buffer("dual_quaternion_palette", dual_quaternion_palette_buffer),
+			skinning.buffer("skinned_vertices", skinned_vertices_buffer),
 		]);
 		Self {
 			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/skinning.pipeline"),
@@ -267,13 +254,18 @@ mod tests {
 
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
-		assert_eq!(std::mem::size_of::<[u16; 4]>(), 8);
-		assert_eq!(std::mem::size_of::<ghi::pod::Mat4x3f>(), 48);
-		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
-		assert_eq!(std::mem::size_of::<DualQuaternion>(), 32);
-		assert_eq!(DUAL_QUATERNION_PALETTE_BINDING.buffer_element_stride(), 32);
-		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 24);
-		assert_eq!(SKINNED_VERTICES_BINDING.buffer_element_stride(), 24);
+		// The strides are the ones the skinning layout layer reflects, so a record that changes on one side fails here.
+		let stride = |name: &str| {
+			set_layouts::SKINNING
+				.interface()
+				.binding(name)
+				.and_then(|binding| binding.buffer_stride)
+				.expect("Expected the skinning layout to declare the buffer") as usize
+		};
+		assert_eq!(stride("source_joints"), std::mem::size_of::<[u16; 4]>());
+		assert_eq!(stride("matrix_palette"), std::mem::size_of::<ghi::pod::Mat4x3f>());
+		assert_eq!(stride("dual_quaternion_palette"), std::mem::size_of::<DualQuaternion>());
+		assert_eq!(stride("skinned_vertices"), std::mem::size_of::<SkinnedVertex>());
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 24);
 	}
 

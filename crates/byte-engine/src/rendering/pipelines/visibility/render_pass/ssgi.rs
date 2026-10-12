@@ -20,6 +20,7 @@ use utils::Extent;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::configuration::ConfigurationValue;
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// Configuration namespace of the runtime SSGI controls.
@@ -129,20 +130,6 @@ const RADIANCE_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// [`RADIANCE_FORMAT`]. The temporal pass and material evaluation read each normal many times.
 const NORMAL_FORMAT: ghi::Formats = ghi::Formats::RG16SNORM;
 
-const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-// Both stages read linear depth at 1033 and write their output at 1034 or 1035. See each BESL asset for the rest.
-const DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-const TRACE_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const TRACE_PREVIOUS_RADIANCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const TRACE_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
-const TEMPORAL_RAW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const TEMPORAL_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const TEMPORAL_PREVIOUS_HISTORY_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
-const TEMPORAL_PREVIOUS_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
-const TEMPORAL_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
-const TEMPORAL_PREVIOUS_NORMALS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1039);
-
 /// The `SsgiShaderParameters` struct carries the per-frame values every SSGI stage needs to use history.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -170,8 +157,10 @@ fn current_view_to_previous_view(current: View, previous: View) -> Matrix {
 /// It runs after [`super::depth_pyramid::DepthPyramidPass`] and before opaque material evaluation, which upsamples
 /// the half-resolution result and writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next frame's rays.
 pub(super) struct SsgiPass {
-	trace_descriptor_set: ghi::DescriptorSetHandle,
-	temporal_descriptor_set: ghi::DescriptorSetHandle,
+	/// The screen view constants and depth pyramid, then the settings, which both stages read, then each stage's own
+	/// images.
+	trace_descriptor_sets: [ghi::DescriptorSetHandle; 3],
+	temporal_descriptor_sets: [ghi::DescriptorSetHandle; 3],
 	/// The trace and temporal pipelines.
 	pub(super) pipelines: Pipelines<2>,
 	parameters: ghi::DynamicBufferHandle<SsgiShaderParameters>,
@@ -190,8 +179,10 @@ impl SsgiPass {
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
 	) -> Self {
-		let trace_descriptor_set = context.create_descriptor_set(Some("SSGI Trace Descriptor Set"));
-		let temporal_descriptor_set = context.create_descriptor_set(Some("SSGI Temporal Descriptor Set"));
+		let screen_trace_descriptor_set = set_layouts::SCREEN_TRACE.create_set(context, "SSGI Screen Trace Descriptor Set");
+		let parameters_descriptor_set = set_layouts::SSGI.create_set(context, "SSGI Parameters Descriptor Set");
+		let trace_descriptor_set = set_layouts::SSGI_TRACE.create_set(context, "SSGI Trace Descriptor Set");
+		let temporal_descriptor_set = set_layouts::SSGI_TEMPORAL.create_set(context, "SSGI Temporal Descriptor Set");
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("SSGI Parameters")
@@ -209,40 +200,34 @@ impl SsgiPass {
 			history,
 			diffuse_radiance_history,
 		} = targets;
-		let sampled = |set, slot, image: ghi::BaseImageHandle| {
-			ghi::DescriptorWrite::combined_image_sampler(set, slot, image, point_sampler, ghi::Layouts::Read)
-		};
-		let previous = |set, slot, image| {
-			ghi::DescriptorWrite::combined_image_sampler_with_frame(set, slot, image, point_sampler, ghi::Layouts::Read, -1)
-		};
-		let storage =
-			|set, slot, image: ghi::BaseImageHandle| ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General);
+		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
+		let trace = set_layouts::SSGI_TRACE.binder(trace_descriptor_set);
+		let temporal = set_layouts::SSGI_TEMPORAL.binder(temporal_descriptor_set);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(trace_descriptor_set, VIEW_BINDING, view_data.into()),
-			ghi::DescriptorWrite::buffer(trace_descriptor_set, PARAMETERS_BINDING, parameters.into()),
-			sampled(trace_descriptor_set, DEPTH_BINDING, depth_pyramid.into()),
-			storage(trace_descriptor_set, TRACE_OUTPUT_BINDING, raw),
-			storage(trace_descriptor_set, TRACE_NORMALS_BINDING, normals.into()),
+			screen_trace.buffer("screen_view", view_data),
+			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
+			set_layouts::SSGI
+				.binder(parameters_descriptor_set)
+				.buffer("ssgi_parameters", parameters),
+			trace.image("raw_output", raw),
+			trace.image("normal_output", normals),
 			// Point sampling keeps a hit's light from blending with the background next to the hit object.
-			previous(
-				trace_descriptor_set,
-				TRACE_PREVIOUS_RADIANCE_BINDING,
-				diffuse_radiance_history,
-			),
-			ghi::DescriptorWrite::buffer(temporal_descriptor_set, VIEW_BINDING, view_data.into()),
-			ghi::DescriptorWrite::buffer(temporal_descriptor_set, PARAMETERS_BINDING, parameters.into()),
-			sampled(temporal_descriptor_set, DEPTH_BINDING, depth_pyramid.into()),
-			sampled(temporal_descriptor_set, TEMPORAL_RAW_BINDING, raw),
-			storage(temporal_descriptor_set, TEMPORAL_OUTPUT_BINDING, history.into()),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_HISTORY_BINDING, history),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_DEPTH_BINDING, depth_pyramid),
-			sampled(temporal_descriptor_set, TEMPORAL_NORMALS_BINDING, normals.into()),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_NORMALS_BINDING, normals),
+			trace.sampled_with_frame("previous_radiance_map", diffuse_radiance_history, point_sampler, -1),
+			temporal.sampled("raw_radiance", raw, point_sampler),
+			temporal.image("history_output", history),
+			temporal.sampled_with_frame("previous_history", history, point_sampler, -1),
+			temporal.sampled_with_frame("previous_depth_pyramid", depth_pyramid, point_sampler, -1),
+			temporal.sampled("surface_normals", normals, point_sampler),
+			temporal.sampled_with_frame("previous_surface_normals", normals, point_sampler, -1),
 		]);
 
 		Self {
-			trace_descriptor_set,
-			temporal_descriptor_set,
+			trace_descriptor_sets: [screen_trace_descriptor_set, parameters_descriptor_set, trace_descriptor_set],
+			temporal_descriptor_sets: [
+				screen_trace_descriptor_set,
+				parameters_descriptor_set,
+				temporal_descriptor_set,
+			],
 			pipelines: Pipelines::request(pipeline_manager, SSGI_PIPELINES),
 			parameters,
 		}
@@ -280,16 +265,16 @@ impl SsgiPass {
 		};
 		frame.sync_buffer(self.parameters);
 
-		let stage = |label, pipeline, descriptor_set| ComputeStage {
+		let stage = |label, pipeline, descriptor_sets| ComputeStage {
 			label,
 			pipeline,
-			descriptor_sets: [descriptor_set],
+			descriptor_sets,
 			extent: half_extent,
 			workgroup: Extent::new(8, 8, 1),
 		};
 		SsgiStages {
-			trace: stage("SSGI Trace", trace, self.trace_descriptor_set),
-			temporal: stage("SSGI Denoise and Accumulate", temporal, self.temporal_descriptor_set),
+			trace: stage("SSGI Trace", trace, self.trace_descriptor_sets),
+			temporal: stage("SSGI Denoise and Accumulate", temporal, self.temporal_descriptor_sets),
 		}
 	}
 }
@@ -299,9 +284,9 @@ impl SsgiPass {
 #[derive(Clone, Copy)]
 pub(super) struct SsgiStages {
 	/// The half-resolution trace; it reads the depth pyramid and last frame's radiance.
-	pub(super) trace: ComputeStage<1>,
+	pub(super) trace: ComputeStage<3>,
 	/// The denoise and accumulation; it reads the trace and the history.
-	pub(super) temporal: ComputeStage<1>,
+	pub(super) temporal: ComputeStage<3>,
 }
 
 #[cfg(test)]

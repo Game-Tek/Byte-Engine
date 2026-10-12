@@ -1,8 +1,0 @@
-// The instance table every visibility stage that looks up a drawn instance binds. List it after `scene-records.besl`.
-// The slot mirrors the base descriptor set in `rendering/pipelines/visibility/layout.rs`.
-
-Meshes: struct {
-	meshes: Mesh[1024],
-}
-
-meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;

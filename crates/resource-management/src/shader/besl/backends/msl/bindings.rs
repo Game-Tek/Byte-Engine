@@ -53,26 +53,33 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	/// Maps one logical flat-slot interval to a stable Metal argument-ID reservation.
-	pub(crate) fn fixed_argument_ids(slot: u32, count: u32) -> Result<(u32, u32), ()> {
-		let primary = slot.checked_mul(2).ok_or(())?;
-		let secondary = primary.checked_add(count).ok_or(())?;
-		secondary.checked_add(count).ok_or(())?;
-		Ok((primary, secondary))
-	}
+	/// Emits one argument-buffer struct per descriptor set, named `_set<n>`.
+	///
+	/// Argument IDs are dense and follow slot order: a binding takes one ID per array element, and a combined image
+	/// sampler takes its textures first and then as many samplers. An ID is also the entry's index in the encoded
+	/// buffer, which the Metal GHI backend lays out by the same rule, so every shader that shares a layout reads one
+	/// buffer.
+	pub(crate) fn emit_argument_buffer_structs(&mut self, string: &mut String) {
+		for set in 0..self.argument_sets.len() {
+			self.emit_named_struct_start(string, format_args!("_set{set}"));
 
-	pub(crate) fn emit_argument_buffer_struct(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
-		self.emit_named_struct_start(string, "_resources");
+			let bindings = self.argument_sets[set].clone();
+			let mut next_id = 0;
+			for binding in &bindings {
+				self.emit_argument_buffer_field(string, binding, &mut next_id);
+			}
 
-		for binding in bindings {
-			self.emit_argument_buffer_field(string, binding);
+			self.emit_struct_declaration_end(string);
 		}
-
-		self.emit_struct_declaration_end(string);
 	}
 
-	/// Emits one field using IDs derived only from its logical flat-slot interval.
-	pub(crate) fn emit_argument_buffer_field(&mut self, string: &mut String, binding_node: &besl::NodeReference) {
+	/// Emits one field at `next_id` and advances `next_id` past the IDs the field takes.
+	pub(crate) fn emit_argument_buffer_field(
+		&mut self,
+		string: &mut String,
+		binding_node: &besl::NodeReference,
+		next_id: &mut u32,
+	) {
 		let node = binding_node.borrow();
 		let besl::Nodes::Binding {
 			name,
@@ -81,7 +88,6 @@ impl Generator {
 			memory_class,
 			r#type,
 			count,
-			slot,
 			..
 		} = node.node()
 		else {
@@ -89,9 +95,11 @@ impl Generator {
 		};
 
 		let descriptor_count = count.map(|count| count.get()).unwrap_or(1);
-		let (primary_id, secondary_id) = Self::fixed_argument_ids(*slot, descriptor_count).expect(
-			"Invalid fixed Metal argument ID range. The most likely cause is that binding validation was bypassed before source emission.",
-		);
+		let (primary_id, secondary_id) = (*next_id, *next_id + descriptor_count);
+		*next_id += match r#type {
+			besl::BindingTypes::CombinedImageSampler { .. } => 2 * descriptor_count,
+			_ => descriptor_count,
+		};
 		let emit_suffix = |string: &mut String, argument_id: u32| {
 			let _ = write!(string, " [[id({argument_id})]]");
 			if let Some(count) = count {
@@ -233,7 +241,7 @@ impl Generator {
 		}
 
 		match self.compute_binding_mode {
-			ComputeBindingMode::ArgumentBuffers if !bindings.is_empty() => {
+			ComputeBindingMode::ArgumentBuffers if self.has_argument_sets() => {
 				self.emit_separator(string);
 				self.emit_argument_buffer_parameter(string);
 			}
@@ -470,11 +478,13 @@ impl Generator {
 		}
 	}
 
-	/// Qualifies a resource through the argument buffer, or names it directly in a compute or object kernel that takes
-	/// bare resources.
+	/// Qualifies a resource through the argument buffer of its descriptor set, or names it directly in a compute or
+	/// object kernel that takes bare resources.
 	pub(crate) fn emit_binding_reference(&self, string: &mut String, name: &str) {
-		if !(self.in_compute_body && self.compute_binding_mode == ComputeBindingMode::BareResources) {
-			string.push_str("resources.");
+		if !(self.in_compute_body && self.compute_binding_mode == ComputeBindingMode::BareResources)
+			&& let Some(set) = self.binding_sets.get(name)
+		{
+			let _ = write!(string, "{}.", SetArgument(*set));
 		}
 		Self::identifier(name).push_to(string);
 	}
@@ -522,7 +532,9 @@ impl Generator {
 				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
 			if mesh.has_resources {
-				push(string, format_args!("constant _resources& "), &"resources");
+				for set in 0..self.argument_sets.len() {
+					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				}
 			}
 			push(string, format_args!("uint "), &"threadgroup_position");
 			push(string, format_args!("uint "), &"thread_index");
@@ -542,7 +554,9 @@ impl Generator {
 				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
 			if task.has_resources {
-				push(string, format_args!("constant _resources& "), &"resources");
+				for set in 0..self.argument_sets.len() {
+					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				}
 			}
 			if task.has_task_payload {
 				push(string, format_args!("object_data ObjectPayload& "), &"payload");
@@ -577,7 +591,9 @@ impl Generator {
 				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
 			if compute.has_resources {
-				push(string, format_args!("constant _resources& "), &"resources");
+				for set in 0..self.argument_sets.len() {
+					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				}
 			}
 			for workgroup in &compute.workgroups {
 				let pointer = if workgroup.count.is_some() { "*" } else { "&" };
@@ -595,7 +611,9 @@ impl Generator {
 				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
 			if raster.has_resources {
-				push(string, format_args!("constant _resources& "), &"resources");
+				for set in 0..self.argument_sets.len() {
+					push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+				}
 			}
 			if raster.has_vertex_index {
 				push(string, format_args!("uint "), &besl::VERTEX_INDEX_BUILTIN);

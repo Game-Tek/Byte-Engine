@@ -30,6 +30,11 @@ pub struct Generator {
 	pub(crate) match_break_depth: Option<usize>,
 	/// The hidden kernel values each emitted function needs, analyzed once per shader before emission.
 	pub(crate) hidden_contexts: HashMap<besl::NodeReference, HiddenContext>,
+	/// The descriptor sets the shader takes as argument buffers, each with every binding of its layout in slot
+	/// order. Set `n` binds at buffer index [`ARGUMENT_BUFFER_BINDING_BASE`] plus `n`.
+	pub(crate) argument_sets: Vec<Vec<besl::NodeReference>>,
+	/// The argument set that holds each binding, by binding name.
+	pub(crate) binding_sets: HashMap<String, usize>,
 }
 
 /// The `HiddenContext` struct records which hidden kernel values one function forwards, so that emitting its
@@ -43,6 +48,25 @@ pub(crate) struct HiddenContext {
 }
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+
+/// The Metal buffer index of a shader's first descriptor set. Each further set takes the next index.
+///
+/// The Metal GHI backend binds each set's argument buffer at the same indices.
+pub(crate) const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
+
+/// The most descriptor sets one shader can take: Metal has 31 buffer indices, and the sets start at
+/// [`ARGUMENT_BUFFER_BINDING_BASE`].
+pub(crate) const MAX_ARGUMENT_SETS: usize = 15;
+
+/// The `SetArgument` struct writes the name of the entry-point parameter that carries one descriptor set, so every
+/// declaration, forwarded argument, and resource reference spells it the same way.
+pub(crate) struct SetArgument(pub(crate) usize);
+
+impl std::fmt::Display for SetArgument {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(formatter, "set{}", self.0)
+	}
+}
 
 /// Selects the Metal address space from the buffer's declared memory class and access mode.
 pub(crate) fn buffer_address_space(memory_class: besl::BufferMemoryClass, write: bool) -> &'static str {
@@ -145,6 +169,8 @@ impl Generator {
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
 			hidden_contexts: HashMap::default(),
+			argument_sets: Vec::new(),
+			binding_sets: HashMap::default(),
 		}
 	}
 

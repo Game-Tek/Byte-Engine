@@ -282,6 +282,7 @@ impl<'a> Node<'a> {
 				write,
 				memory_class: Some(BufferMemoryClass::Device),
 				count: None,
+				layout: None,
 			},
 		}
 	}
@@ -309,6 +310,7 @@ impl<'a> Node<'a> {
 				write,
 				memory_class,
 				count,
+				layout: None,
 			},
 		}
 	}
@@ -632,6 +634,16 @@ impl<'a> Node<'a> {
 		&mut self.node
 	}
 
+	/// Names the layout layer that declares this resource. Nodes that are not resources are left unchanged.
+	///
+	/// Resources that share a layout name form one descriptor set, which every shader that lists the layer binds as
+	/// a whole. [`crate::stack_layers`] calls it for the resources each layer declares.
+	pub fn set_layout(&mut self, layout: &'a str) {
+		if let Nodes::Binding { layout: target, .. } | Nodes::Descriptor { layout: target, .. } = &mut self.node {
+			*target = Some(layout);
+		}
+	}
+
 	pub fn node(&self) -> &Nodes<'a> {
 		&self.node
 	}
@@ -726,6 +738,9 @@ pub enum Nodes<'a> {
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroU32>,
+		/// The layout layer that declares the resource, or `None` for the module's own layout. See
+		/// [`Node::set_layout`].
+		layout: Option<&'a str>,
 	},
 	/// A named resource descriptor declared directly in BESL source.
 	Descriptor {
@@ -738,6 +753,9 @@ pub enum Nodes<'a> {
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroU32>,
+		/// The layout layer that declares the resource, or `None` for the module's own layout. See
+		/// [`Node::set_layout`].
+		layout: Option<&'a str>,
 	},
 	/// A constant selected when the application creates a pipeline.
 	Specialization {

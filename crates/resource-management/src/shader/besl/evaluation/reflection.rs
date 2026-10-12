@@ -10,6 +10,41 @@ pub struct BindingUsage {
 	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
+	/// The layout layer that declares the binding, or `None` for the program's own layout. See [`SetUsage`].
+	pub layout: Option<String>,
+}
+
+/// The `SetUsage` struct describes one descriptor set layout a BESL program declares, so a backend can lay the set
+/// out once for every program that shares it, and the renderer can bind it as a whole.
+///
+/// A layout holds every binding its layout layer declares, whether or not this program reads it, because the
+/// native set must look the same to every program. `used` records which of them this program can reach, and only
+/// those count as the program's resource accesses. Get the sets of a program from
+/// [`ProgramEvaluation::sets`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetUsage {
+	/// The layout layer that declares the set, or `None` for the program's own layout.
+	pub layout: Option<String>,
+	/// Every binding of the layout, ordered by slot.
+	pub bindings: Vec<BindingUsage>,
+	/// Bit `i` is set when code reachable from `main` uses `bindings[i]`.
+	pub used: u64,
+}
+
+impl SetUsage {
+	/// The most bindings one layout can declare, the width of [`Self::used`].
+	pub const MAX_BINDINGS: usize = u64::BITS as usize;
+}
+
+/// The `ProgramSet` struct holds the binding nodes of one descriptor set layout a program declares, in the order
+/// [`SetUsage`] reflects them, so a backend emits exactly the layout that reflection reports.
+pub(crate) struct ProgramSet {
+	/// The layout layer that declares the set, or `None` for the program's own layout.
+	pub(crate) layout: Option<String>,
+	/// Every binding of the layout, ordered by slot.
+	pub(crate) nodes: Vec<besl::NodeReference>,
+	/// Bit `i` is set when code reachable from `main` uses `nodes[i]`.
+	pub(crate) used: u64,
 }
 
 /// The `BindingKind` enum identifies the descriptor category declared by a BESL binding.
@@ -40,6 +75,8 @@ pub enum TextureView {
 /// The `BindingCollectionState` struct keeps reflection traversal aligned with graph identity deduplication.
 struct BindingCollectionState {
 	visited: utils::hash::HashSet<besl::NodeReference>,
+	/// The node of each collected binding, in collection order.
+	nodes: Vec<besl::NodeReference>,
 	error: Option<String>,
 }
 
@@ -276,6 +313,7 @@ use super::opacity::{OpacityEvaluation, evaluate_opacity};
 /// The `ProgramEvaluation` struct holds binding reflection and output opacity for one BESL program.
 pub struct ProgramEvaluation {
 	bindings: Vec<BindingUsage>,
+	sets: Vec<SetUsage>,
 	opacity: OpacityEvaluation,
 }
 
@@ -290,6 +328,7 @@ impl ProgramEvaluation {
 
 		Ok(Self {
 			bindings: collect_bindings(program)?,
+			sets: collect_sets(program)?,
 			opacity: evaluate_opacity(&main),
 		})
 	}
@@ -320,14 +359,21 @@ impl ProgramEvaluation {
 		besl::optimization::optimize(main_function_node);
 
 		let bindings = collect_bindings(main_function_node)?;
+		let sets = collect_sets(main_function_node)?;
 
 		let opacity = evaluate_opacity(main_function_node);
 
-		Ok(Self { bindings, opacity })
+		Ok(Self { bindings, sets, opacity })
 	}
 
 	pub fn bindings(&self) -> &[BindingUsage] {
 		&self.bindings
+	}
+
+	/// Returns the descriptor set layouts the program declares. Next, persist them with
+	/// [`crate::resources::material::SetInterface`].
+	pub fn into_sets(self) -> Vec<SetUsage> {
+		self.sets
 	}
 
 	pub fn into_bindings(self) -> Vec<BindingUsage> {
@@ -341,40 +387,200 @@ impl ProgramEvaluation {
 
 /// Collects sorted binding metadata while sharing repeated references and rejecting distinct slot aliases.
 pub(crate) fn collect_bindings(node: &besl::NodeReference) -> Result<Vec<BindingUsage>, String> {
-	let mut bindings = Vec::with_capacity(16);
+	let mut bindings = collect_binding_nodes(node)?
+		.iter()
+		.map(reflect_binding)
+		.collect::<Result<Vec<_>, _>>()?;
+	bindings.sort_by_key(|binding| binding.slot);
+	Ok(bindings)
+}
+
+/// Groups every binding declared under `program` into the descriptor set layouts it declares, and reflects them.
+///
+/// See [`collect_set_nodes`] for the grouping rules.
+pub(crate) fn collect_sets(program: &besl::NodeReference) -> Result<Vec<SetUsage>, String> {
+	collect_set_nodes(program)?
+		.into_iter()
+		.map(|set| {
+			Ok(SetUsage {
+				layout: set.layout,
+				bindings: set.nodes.iter().map(reflect_binding).collect::<Result<_, String>>()?,
+				used: set.used,
+			})
+		})
+		.collect()
+}
+
+/// Groups the binding nodes declared under `program` into the descriptor set layouts it declares.
+///
+/// `program` is a linked program, or its `main` function when only reachable bindings should form the layouts.
+/// Layouts declared by layout layers come first, in the order the program first declares one of their bindings, and
+/// the program's own layout comes last. Each layout's bindings are ordered by slot. A binding counts as used when
+/// code reachable from `main` uses it; without a `main`, every binding does.
+///
+/// Reflection and every backend take their sets from here, so a lowered shader and its interface cannot disagree.
+pub(crate) fn collect_set_nodes(program: &besl::NodeReference) -> Result<Vec<ProgramSet>, String> {
+	let declared = collect_binding_nodes(program)?;
+	let reachable = match program.get_main() {
+		Some(main) => Some(collect_binding_nodes(&main)?),
+		None => None,
+	};
+
+	let mut sets = Vec::<ProgramSet>::new();
+	for node in declared {
+		let layout = binding_layout(&node);
+		let position = match sets.iter().position(|set| set.layout == layout) {
+			Some(position) => position,
+			None => {
+				sets.push(ProgramSet {
+					layout,
+					nodes: Vec::new(),
+					used: 0,
+				});
+				sets.len() - 1
+			}
+		};
+		sets[position].nodes.push(node);
+	}
+
+	// The program's own layout goes last, so listing another layer never renumbers the sets before it.
+	sets.sort_by_key(|set| set.layout.is_none());
+
+	for set in &mut sets {
+		set.nodes.sort_by_key(|node| binding_slot_range(node).0);
+
+		if set.nodes.len() > SetUsage::MAX_BINDINGS {
+			return Err(format!(
+				"Descriptor set layout `{}` declares {} bindings, more than the {} one layout can hold. The most likely cause is that one layout layer groups resources that belong to several descriptor sets.",
+				set.layout.as_deref().unwrap_or("<shader>"),
+				set.nodes.len(),
+				SetUsage::MAX_BINDINGS
+			));
+		}
+
+		for (index, node) in set.nodes.iter().enumerate() {
+			let used = reachable.as_ref().is_none_or(|reachable| reachable.contains(node));
+			set.used |= u64::from(used) << index;
+		}
+	}
+
+	Ok(sets)
+}
+
+/// Returns the layout layer that declares a binding node, or `None` for the program's own layout.
+fn binding_layout(node: &besl::NodeReference) -> Option<String> {
+	match node.borrow().node() {
+		besl::Nodes::Binding { layout, .. } => layout.clone(),
+		_ => None,
+	}
+}
+
+/// Returns the first slot of a binding node and how many slots it reserves.
+fn binding_slot_range(node: &besl::NodeReference) -> (u32, u32) {
+	match node.borrow().node() {
+		besl::Nodes::Binding { slot, count, .. } => (*slot, count.map_or(1, |count| count.get())),
+		_ => (u32::MAX, 0),
+	}
+}
+
+/// Collects the binding nodes the traversal reaches from `node`, in the order it first reaches each one, after
+/// rejecting duplicate and overlapping slot ranges.
+fn collect_binding_nodes(node: &besl::NodeReference) -> Result<Vec<besl::NodeReference>, String> {
 	let mut state = BindingCollectionState {
 		visited: utils::hash::HashSet::default(),
+		nodes: Vec::with_capacity(16),
 		error: None,
 	};
-	build_bindings(&mut bindings, node, &mut state);
+	build_bindings(node, &mut state);
 	if let Some(error) = state.error {
 		return Err(error);
 	}
 
-	bindings.sort_by_key(|binding| binding.slot);
-	for (index, binding) in bindings.iter().enumerate() {
-		let (slot, count) = (binding.slot, binding.count);
-		let end_slot = slot.checked_add(count).ok_or_else(|| {
+	let mut ranges = state.nodes.iter().map(binding_slot_range).collect::<Vec<_>>();
+	ranges.sort_unstable();
+	for (index, (slot, count)) in ranges.iter().enumerate() {
+		let end_slot = slot.checked_add(*count).ok_or_else(|| {
 			format!(
 				"Resource slot range overflow at slot {slot}. The most likely cause is that the declared resource range has no representable exclusive end."
 			)
 		})?;
-		if let Some(next) = bindings.get(index + 1) {
-			let next_slot = next.slot;
-			if next_slot < end_slot {
-				return Err(format!(
-					"Resource slot ranges overlap at slots {slot} and {next_slot}. The most likely cause is that a resource array reserves a slot used by another declaration."
-				));
-			}
+		if let Some((next_slot, _)) = ranges.get(index + 1)
+			&& *next_slot < end_slot
+		{
+			return Err(format!(
+				"Resource slot ranges overlap at slots {slot} and {next_slot}. The most likely cause is that a resource array reserves a slot used by another declaration."
+			));
 		}
 	}
 
-	Ok(bindings)
+	Ok(state.nodes)
+}
+
+/// Reflects the persisted metadata of one binding node.
+fn reflect_binding(node: &besl::NodeReference) -> Result<BindingUsage, String> {
+	let node = node.borrow();
+	let besl::Nodes::Binding {
+		name,
+		slot,
+		read,
+		write,
+		r#type,
+		count,
+		layout,
+		..
+	} = node.node()
+	else {
+		return Err(
+			"Invalid binding node. The most likely cause is that reflection collected a node that is not a binding."
+				.to_string(),
+		);
+	};
+
+	let (kind, buffer_stride) = match r#type {
+		besl::BindingTypes::Buffer { members } => (
+			BindingKind::StorageBuffer,
+			Some(
+				reflected_storage_buffer_stride(members)
+					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}"))?,
+			),
+		),
+		besl::BindingTypes::BufferArray { element, .. } => (
+			BindingKind::StorageBuffer,
+			Some(
+				reflected_array_buffer_stride(element)
+					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}"))?,
+			),
+		),
+		besl::BindingTypes::CombinedImageSampler { format } => (
+			BindingKind::CombinedImageSampler {
+				view: match format.as_str() {
+					"Texture3D" => TextureView::Texture3D,
+					"TextureCube" => TextureView::TextureCube,
+					"TextureCubeArray" => TextureView::TextureCubeArray,
+					"ArrayTexture2D" => TextureView::Texture2DArray,
+					_ => TextureView::Texture2D,
+				},
+			},
+			None,
+		),
+		besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
+	};
+
+	Ok(BindingUsage {
+		name: name.to_string(),
+		kind,
+		count: count.map_or(1, |count| count.get()),
+		slot: *slot,
+		buffer_stride,
+		read: *read,
+		write: *write,
+		layout: layout.clone(),
+	})
 }
 
 // This is the exhaustive BESL-node traversal contract for reflection; splitting it would duplicate child-edge rules.
 #[allow(clippy::too_many_lines)]
-fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, state: &mut BindingCollectionState) {
+fn build_bindings(node: &besl::NodeReference, state: &mut BindingCollectionState) {
 	if state.error.is_some() || !state.visited.insert(node.clone()) {
 		return;
 	}
@@ -384,12 +590,12 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 	match node_ref {
 		besl::Nodes::Function { statements, .. } => {
 			for statement in statements {
-				build_bindings(bindings, statement, state);
+				build_bindings(statement, state);
 			}
 		}
 		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
 			for child in branch.branch_children() {
-				build_bindings(bindings, child, state);
+				build_bindings(child, state);
 			}
 		}
 		besl::Nodes::ForLoop {
@@ -398,11 +604,11 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 			update,
 			statements,
 		} => {
-			build_bindings(bindings, initializer, state);
-			build_bindings(bindings, condition, state);
-			build_bindings(bindings, update, state);
+			build_bindings(initializer, state);
+			build_bindings(condition, state);
+			build_bindings(update, state);
 			for statement in statements {
-				build_bindings(bindings, statement, state);
+				build_bindings(statement, state);
 			}
 		}
 		besl::Nodes::Expression(expression) => match expression {
@@ -410,49 +616,49 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 				function: callable,
 				parameters: arguments,
 			} => {
-				build_bindings(bindings, &callable.get(), state);
+				build_bindings(&callable.get(), state);
 				for argument in arguments {
-					build_bindings(bindings, argument, state);
+					build_bindings(argument, state);
 				}
 			}
 			besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
 				// Intrinsic lowering emits the instantiated elements, not the definition template.
 				for element in arguments.iter().chain(elements) {
-					build_bindings(bindings, element, state);
+					build_bindings(element, state);
 				}
 			}
 			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
-				build_bindings(bindings, left, state);
-				build_bindings(bindings, right, state);
+				build_bindings(left, state);
+				build_bindings(right, state);
 			}
-			besl::Expressions::Unary { operand, .. } => build_bindings(bindings, operand, state),
+			besl::Expressions::Unary { operand, .. } => build_bindings(operand, state),
 			besl::Expressions::Ternary {
 				condition,
 				if_true,
 				if_false,
 			} => {
 				for part in [condition, if_true, if_false] {
-					build_bindings(bindings, part, state);
+					build_bindings(part, state);
 				}
 			}
 			besl::Expressions::Expression { elements } => {
 				for element in elements {
-					build_bindings(bindings, element, state);
+					build_bindings(element, state);
 				}
 			}
 			besl::Expressions::Macro { body, .. } => {
-				build_bindings(bindings, body, state);
+				build_bindings(body, state);
 			}
 			besl::Expressions::Member { source, .. } => {
-				build_bindings(bindings, source, state);
+				build_bindings(source, state);
 			}
 			besl::Expressions::VariableDeclaration { r#type, .. } => {
-				build_bindings(bindings, r#type, state);
+				build_bindings(r#type, state);
 			}
 			besl::Expressions::Return { value } => {
 				// A returned expression can be the only path from main to a resource used by a helper function.
 				if let Some(value) = value {
-					build_bindings(bindings, value, state);
+					build_bindings(value, state);
 				}
 			}
 			besl::Expressions::Literal { .. }
@@ -460,88 +666,39 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 			| besl::Expressions::Break
 			| besl::Expressions::Discard => {}
 		},
-		besl::Nodes::Binding {
-			name,
-			slot,
-			read,
-			write,
-			r#type,
-			count,
-			..
-		} => {
-			let (kind, buffer_stride) = match r#type {
-				besl::BindingTypes::Buffer { members } => {
-					let stride = match reflected_storage_buffer_stride(members) {
-						Ok(stride) => stride,
-						Err(error) => {
-							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));
-							return;
-						}
-					};
-					(BindingKind::StorageBuffer, Some(stride))
-				}
-				besl::BindingTypes::BufferArray { element, .. } => {
-					let stride = match reflected_array_buffer_stride(element) {
-						Ok(stride) => stride,
-						Err(error) => {
-							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));
-							return;
-						}
-					};
-					(BindingKind::StorageBuffer, Some(stride))
-				}
-				besl::BindingTypes::CombinedImageSampler { format } => (
-					BindingKind::CombinedImageSampler {
-						view: match format.as_str() {
-							"Texture3D" => TextureView::Texture3D,
-							"TextureCube" => TextureView::TextureCube,
-							"TextureCubeArray" => TextureView::TextureCubeArray,
-							"ArrayTexture2D" => TextureView::Texture2DArray,
-							_ => TextureView::Texture2D,
-						},
-					},
-					None,
-				),
-				besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
-			};
-			let count = count.map_or(1, |count| count.get());
-			if bindings.iter().any(|record| record.slot == *slot) {
+		besl::Nodes::Binding { slot, .. } => {
+			let duplicate = state.nodes.iter().any(
+				|collected| matches!(collected.borrow().node(), besl::Nodes::Binding { slot: collected, .. } if collected == slot),
+			);
+			if duplicate {
 				state.error = Some(format!(
 					"Duplicate resource declaration at slot {slot}. The most likely cause is that distinct binding nodes reuse one flat slot instead of sharing the same binding reference."
 				));
 			} else {
-				bindings.push(BindingUsage {
-					name: name.to_string(),
-					kind,
-					count,
-					slot: *slot,
-					buffer_stride,
-					read: *read,
-					write: *write,
-				});
+				state.nodes.push(node.clone());
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {
 			for reference in input.iter().chain(output.iter()) {
-				build_bindings(bindings, reference, state);
+				build_bindings(reference, state);
 			}
 		}
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
-				build_bindings(bindings, element, state);
+				build_bindings(element, state);
 			}
-			build_bindings(bindings, r#return, state);
+			build_bindings(r#return, state);
 		}
 		besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
-			build_bindings(bindings, nested, state);
+			build_bindings(nested, state);
 		}
 		besl::Nodes::Input { format, .. }
 		| besl::Nodes::Output { format, .. }
 		| besl::Nodes::TaskPayload { format, .. }
 		| besl::Nodes::Workgroup { format, .. } => {
-			build_bindings(bindings, format, state);
+			build_bindings(format, state);
 		}
 		besl::Nodes::PushConstant { members: nested } => {
 			if let Err(error) = super::push_constant_layout::validate_push_constant_layout(nested) {
@@ -549,17 +706,17 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, 
 				return;
 			}
 			for child in nested {
-				build_bindings(bindings, child, state);
+				build_bindings(child, state);
 			}
 		}
 		besl::Nodes::Struct { fields: nested, .. } | besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
-				build_bindings(bindings, child, state);
+				build_bindings(child, state);
 			}
 		}
 		besl::Nodes::Const { r#type, value, .. } => {
-			build_bindings(bindings, r#type, state);
-			build_bindings(bindings, value, state);
+			build_bindings(r#type, state);
+			build_bindings(value, state);
 		}
 	}
 }

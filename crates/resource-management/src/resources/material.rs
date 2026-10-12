@@ -317,10 +317,127 @@ impl From<crate::shader::besl::evaluation::BindingUsage> for Binding {
 	}
 }
 
+/// The `SetInterface` struct preserves one descriptor set layout a shader declares, so the renderer can create a
+/// descriptor set for it, bind resources to it by name, and share it between every shader that lists the same
+/// layout layer.
+///
+/// `bindings` holds the whole layout, because the native set must look the same to every shader that shares it.
+/// `used` records which bindings this shader can reach; only those are its resource accesses, and only those need a
+/// resource before the shader runs. Compare layouts with [`Self::identity`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct SetInterface {
+	/// The layout layer that declares the set, or the shader's own name for the descriptors the shader declares
+	/// itself. Diagnostics name the set with it.
+	pub layout: String,
+	/// Every binding of the layout, ordered by slot.
+	pub bindings: Vec<Binding>,
+	/// Bit `i` is set when the shader uses `bindings[i]`.
+	pub used: u64,
+}
+
+impl SetInterface {
+	/// Persists one reflected set. `own_layout` names the layout of the descriptors the shader declares itself.
+	pub fn new(set: crate::shader::besl::evaluation::SetUsage, own_layout: &str) -> Self {
+		Self {
+			layout: set.layout.unwrap_or_else(|| own_layout.to_string()),
+			bindings: set.bindings.into_iter().map(Binding::from).collect(),
+			used: set.used,
+		}
+	}
+
+	/// Builds a layout named `layout` whose every binding the shader uses.
+	pub fn with_bindings(layout: impl Into<String>, bindings: Vec<Binding>) -> Self {
+		assert!(
+			bindings.len() <= u64::BITS as usize,
+			"Too many bindings in one descriptor set layout. The most likely cause is that one layout groups resources that belong to several descriptor sets."
+		);
+		// One bit per binding, without shifting a whole word out when the layout is full.
+		let used = match bindings.len() {
+			0 => 0,
+			count => u64::MAX >> (u64::BITS as usize - count),
+		};
+		Self {
+			layout: layout.into(),
+			bindings,
+			used,
+		}
+	}
+
+	/// Returns whether the shader uses the binding at `index`.
+	pub fn is_used(&self, index: usize) -> bool {
+		self.used & (1 << index) != 0
+	}
+
+	/// Returns the binding named `name`.
+	pub fn binding(&self, name: &str) -> Option<&Binding> {
+		self.bindings.iter().find(|binding| binding.name == name)
+	}
+
+	/// Returns a value that is equal for two layouts exactly when their bindings are equal: names, slots, kinds,
+	/// counts, strides, and access.
+	///
+	/// A descriptor set created for one layout can be bound wherever a shader declares a layout of the same identity.
+	/// The layout's name and the bindings a shader uses are not part of it, so a set built from a layer's source matches
+	/// every shader baked from that source, and a shader baked from an older layer does not.
+	pub fn identity(&self) -> u64 {
+		layout_identity(&self.bindings)
+	}
+}
+
+/// Hashes a layout's bindings with FNV-1a, which is stable across processes and builds.
+fn layout_identity(bindings: &[Binding]) -> u64 {
+	const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+	const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+	let mut hash = OFFSET_BASIS;
+	let mut write = |bytes: &[u8]| {
+		for byte in bytes {
+			hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
+		}
+	};
+
+	for binding in bindings {
+		let (kind, view) = match binding.kind {
+			BindingKind::StorageBuffer => (0u8, 0u8),
+			BindingKind::StorageImage => (1, 0),
+			BindingKind::CombinedImageSampler { view } => (
+				2,
+				match view {
+					TextureView::Texture2D => 0,
+					TextureView::Texture2DArray => 1,
+					TextureView::TextureCube => 2,
+					TextureView::TextureCubeArray => 3,
+					TextureView::Texture3D => 4,
+				},
+			),
+		};
+
+		write(binding.name.as_bytes());
+		// The separator keeps a name from running into the fields after it.
+		write(&[0, kind, view, u8::from(binding.read), u8::from(binding.write)]);
+		write(&binding.slot.to_le_bytes());
+		write(&binding.count.to_le_bytes());
+		write(&binding.buffer_stride.unwrap_or(0).to_le_bytes());
+	}
+
+	hash
+}
+
+/// The `ShaderInterface` struct preserves what a baked shader needs from the renderer: its workgroup and the
+/// descriptor set layouts it declares.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ShaderInterface {
 	pub workgroup_size: Option<(u32, u32, u32)>,
-	pub bindings: Vec<Binding>,
+	/// The descriptor set layouts the shader declares: one per layout layer it lists that declares descriptors, in
+	/// listing order, then its own.
+	pub sets: Vec<SetInterface>,
+}
+
+impl ShaderInterface {
+	/// Returns every binding of every set, the flat interface a backend without native per-layout sets consumes.
+	pub fn bindings(&self) -> impl Iterator<Item = &Binding> {
+		self.sets.iter().flat_map(|set| &set.bindings)
+	}
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

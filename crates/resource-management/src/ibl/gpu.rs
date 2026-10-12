@@ -62,7 +62,7 @@ impl From<GpuWorkerError> for GPUIBLBakeError {
 /// [`crate::ibl::IBLGenerator::with_gpu_processor_factory`].
 pub struct GPUIBLProcessor {
 	gpu: OwnedContext,
-	pipeline: ghi::PipelineHandle,
+	kernel: ComputeKernel,
 	queue: ghi::QueueHandle,
 	source_sampler: ghi::SamplerHandle,
 	scratch: Vec<GPUIBLScratch>,
@@ -97,7 +97,7 @@ impl GPUIBLProcessor {
 			context,
 			owner: Box::new(owner),
 		};
-		let pipeline = create_compute_kernel(
+		let kernel = create_compute_kernel(
 			&mut gpu.context,
 			"GPU environment-map generation",
 			ghi::shader::ShaderSource::PlatformNative {
@@ -113,7 +113,7 @@ impl GPUIBLProcessor {
 
 		Ok(Self {
 			gpu,
-			pipeline,
+			kernel,
 			queue,
 			source_sampler,
 			scratch: Vec::with_capacity(2),
@@ -202,7 +202,10 @@ impl GPUIBLProcessor {
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let descriptor_set = self.gpu.context.create_descriptor_set(Some("Environment-map atlases"));
+		let descriptor_set = self
+			.gpu
+			.context
+			.create_descriptor_set(Some("Environment-map atlases"), &self.kernel.layout);
 		self.gpu.context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
@@ -243,7 +246,7 @@ impl GPUIBLProcessor {
 		let source_solid_angle_scale =
 			(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
 		let mut recording = self.gpu.context.create_command_buffer_recording(scratch.command_buffer);
-		let command = recording.bind_compute_pipeline(self.pipeline);
+		let command = recording.bind_compute_pipeline(self.kernel.pipeline);
 		command.bind_descriptor_sets(&[scratch.descriptor_set]);
 		// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
 		let specular = layout
@@ -694,8 +697,8 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission, create_compute_context,
-		create_compute_kernel,
+		ComputeKernel, GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
+		create_compute_context, create_compute_kernel,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},
 };

@@ -112,7 +112,7 @@ pub use frame::Frame;
 pub use image_group::ImageGroupMember;
 pub use pipelines::ShaderParameter;
 pub use queue::Queue;
-pub use shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
+pub use shader::{DescriptorSetLayout, ResourceKind, ResourceSlot, ShaderDescriptorSet, ShaderResourceDescriptor};
 use smallvec::SmallVec;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,

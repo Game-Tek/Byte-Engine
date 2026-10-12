@@ -14,7 +14,6 @@ use objc2_metal as mtl;
 use objc2_metal::MTL4CommandBuffer as _;
 use objc2_metal::MTL4CounterHeap as _;
 use objc2_metal::MTLAccelerationStructure as _;
-use objc2_metal::MTLArgumentEncoder as _;
 use objc2_metal::MTLDevice as _;
 use objc2_metal::MTLResource as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
@@ -334,7 +333,9 @@ pub(crate) mod utils {
 pub(crate) use pipeline::*;
 pub(crate) use resources::*;
 pub use state::Image;
-pub(crate) use state::{Buffer, DescriptorSet, GroupSlot, ImageDescription, Swapchain, Synchronizer};
+pub(crate) use state::{
+	ArgumentBufferSnapshot, ArgumentResources, Buffer, DescriptorSet, GroupSlot, ImageDescription, Swapchain, Synchronizer,
+};
 
 /// Creates a real Metal context with one queue for the requested workloads, for tests that run GPU work.
 #[cfg(test)]
@@ -369,53 +370,13 @@ mod flat_binding_tests {
 		crate::shader::ShaderResourceDescriptor::new(ResourceSlot::new(slot), kind, count, access)
 	}
 
-	#[test]
-	fn flat_resource_ranges_treat_arrays_as_reserved_slot_intervals() {
-		let array = resource(9, ResourceKind::SampledImage, 1024, AccessPolicies::READ);
-		let inside = resource(10, ResourceKind::Sampler, 1, AccessPolicies::READ);
-		let after = resource(1033, ResourceKind::Sampler, 1, AccessPolicies::READ);
-
-		assert!(resource_ranges_overlap(array, inside));
-		assert!(!resource_ranges_overlap(array, after));
-	}
-
-	#[test]
-	fn active_array_interiors_are_not_independent_retained_slot_keys() {
-		let array = resource(9, ResourceKind::SampledImage, 4, AccessPolicies::READ);
-
-		assert!(resource_accepts_retained_slot_key(array, ResourceSlot::new(9)));
-		assert!(!resource_accepts_retained_slot_key(array, ResourceSlot::new(10)));
-		assert!(!resource_accepts_retained_slot_key(array, ResourceSlot::new(12)));
-		assert!(resource_accepts_retained_slot_key(array, ResourceSlot::new(13)));
-	}
-
-	#[test]
-	#[should_panic(expected = "Overlapping Metal shader resources")]
-	fn canonical_stage_interface_rejects_overlapping_ranges() {
-		canonicalize_stage_resources(&[
-			resource(4, ResourceKind::StorageBuffer, 4, AccessPolicies::READ),
-			resource(7, ResourceKind::Sampler, 1, AccessPolicies::READ),
-		]);
-	}
-
-	#[test]
-	fn canonical_stage_interfaces_share_only_when_representation_and_access_match() {
-		let split_declarations = canonicalize_stage_resources(&[
-			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
-			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-		]);
-		let merged_declaration = canonicalize_stage_resources(&[
-			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ_WRITE),
-			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
-		]);
-		let read_only = canonicalize_stage_resources(&[
-			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
-		]);
-
-		assert_eq!(split_declarations, merged_declaration);
-		assert_ne!(split_declarations, read_only);
+	/// Builds a layout and declares it to a shader that uses every resource of it.
+	fn layout(
+		name: &str,
+		resources: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+	) -> (crate::DescriptorSetLayout, [crate::ShaderDescriptorSet; 1]) {
+		let layout = crate::DescriptorSetLayout::new(name, resources);
+		(layout.clone(), [crate::ShaderDescriptorSet::new(layout)])
 	}
 
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
@@ -433,24 +394,27 @@ mod flat_binding_tests {
 			#include <metal_stdlib>
 			using namespace metal;
 
-			struct _resources {
-				texture2d<float> textures [[id(18)]][1024];
-				sampler textures_sampler [[id(1042)]][1024];
-				constant uint* material_texture_index [[id(2092)]];
-				texture2d<float> ao [[id(2102)]];
-				sampler ao_sampler [[id(2103)]];
-				device uint* output [[id(2108)]];
+			struct _set0 {
+				texture2d<float> textures [[id(0)]][1024];
+				sampler textures_sampler [[id(1024)]][1024];
+				constant uint* material_texture_index [[id(2048)]];
+			};
+			struct _set1 {
+				texture2d<float> ao [[id(0)]];
+				sampler ao_sampler [[id(1)]];
+				device uint* output [[id(2)]];
 			};
 
 			kernel void besl_main(
 				uint2 gid [[thread_position_in_grid]],
-				constant _resources& resources [[buffer(16)]]) {
+				constant _set0& scene [[buffer(16)]],
+				constant _set1& material [[buffer(17)]]) {
 				if (gid.x != 0 || gid.y != 0) { return; }
-				uint texture_index = resources.material_texture_index[0];
-				float material = resources.textures[texture_index].sample(
-					resources.textures_sampler[texture_index], float2(0.5)).r;
-				float ao = resources.ao.sample(resources.ao_sampler, float2(0.5)).r;
-				resources.output[0] = uint(round(material * 255.0)) | (uint(round(ao * 255.0)) << 8);
+				uint texture_index = scene.material_texture_index[0];
+				float albedo = scene.textures[texture_index].sample(
+					scene.textures_sampler[texture_index], float2(0.5)).r;
+				float ao = material.ao.sample(material.ao_sampler, float2(0.5)).r;
+				material.output[0] = uint(round(albedo * 255.0)) | (uint(round(ao * 255.0)) << 8);
 			}
 		"#;
 
@@ -465,6 +429,8 @@ mod flat_binding_tests {
 		let material_resource = resource(MATERIAL_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ);
 		let ao_resource = resource(AO_SLOT.index(), ResourceKind::CombinedImageSampler, 1, AccessPolicies::READ);
 		let output_resource = resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
+		let (scene_layout, [scene]) = layout("Scene", [material_resource, texture_resource]);
+		let (material_layout, [material]) = layout("Material", [output_resource, ao_resource]);
 		let shader = context
 			.create_shader(
 				Some("Retained Material Binding Probe"),
@@ -473,7 +439,7 @@ mod flat_binding_tests {
 					entry_point: "besl_main",
 				},
 				crate::ShaderTypes::Compute,
-				[output_resource, ao_resource, texture_resource, material_resource],
+				[scene, material],
 			)
 			.expect("Failed to create the material binding probe. The most likely cause is invalid Metal test source.");
 		let pipeline = context.create_compute_pipeline(
@@ -534,8 +500,8 @@ mod flat_binding_tests {
 				.mip_map_mode(crate::FilteringModes::Closest),
 		);
 
-		let scene_set = context.create_descriptor_set(Some("Material Binding Probe Scene Set"));
-		let material_set = context.create_descriptor_set(Some("Material Binding Probe Material Set"));
+		let scene_set = context.create_descriptor_set(Some("Material Binding Probe Scene Set"), &scene_layout);
+		let material_set = context.create_descriptor_set(Some("Material Binding Probe Material Set"), &material_layout);
 		context.write(&[
 			crate::DescriptorWrite::combined_image_sampler_array(
 				scene_set,
@@ -560,7 +526,8 @@ mod flat_binding_tests {
 				execution.record(command_buffer, |recording| {
 					recording
 						.bind_compute_pipeline(pipeline)
-						.bind_descriptor_sets(&[scene_set, material_set])
+						// Sets reach their layouts whatever order they are bound in.
+						.bind_descriptor_sets(&[material_set, scene_set])
 						.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
 				});
 				[]
@@ -570,7 +537,7 @@ mod flat_binding_tests {
 		assert_eq!(
 			*context.get_buffer_slice(output),
 			64 | (192 << 8),
-			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that retained materialization and the fixed MSL slot mapping disagree.",
+			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that a set's argument buffer and the shader's argument-buffer struct lay out its layout differently.",
 		);
 	}
 
@@ -591,7 +558,15 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let output_resource = resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
+		let (output_layout, output_set) = layout(
+			"Output",
+			[resource(
+				OUTPUT_SLOT.index(),
+				ResourceKind::StorageBuffer,
+				1,
+				AccessPolicies::WRITE,
+			)],
+		);
 		let shader = context
 			.create_shader(
 				Some("Metal 4 Specialization Probe"),
@@ -600,7 +575,7 @@ mod flat_binding_tests {
 					entry_point: "specialized_main",
 				},
 				crate::ShaderTypes::Compute,
-				[output_resource],
+				output_set,
 			)
 			.expect("Metal 4 specialization shader creation failed. The most likely cause is invalid Metal test source.");
 		let specialization_map = [crate::pipelines::SpecializationMapEntry::new(0, 73u32)];
@@ -614,7 +589,7 @@ mod flat_binding_tests {
 				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
 		);
 		*context.get_mut_buffer_slice(output) = 0;
-		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"));
+		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"), &output_layout);
 		context.write(&[crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into())]);
 		let command_buffer = context
 			.queue(queue_handle)
@@ -658,6 +633,13 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
+		let (probe_layout, probe_set) = layout(
+			"Retention Probe",
+			[
+				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
+			],
+		);
 		let shader = context
 			.create_shader(
 				Some("Metal Retention Probe"),
@@ -666,10 +648,7 @@ mod flat_binding_tests {
 					entry_point: "retention_main",
 				},
 				crate::ShaderTypes::Compute,
-				[
-					resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-					resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-				],
+				probe_set,
 			)
 			.expect("Metal retention shader creation failed. The most likely cause is invalid Metal test source.");
 		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
@@ -689,7 +668,7 @@ mod flat_binding_tests {
 			crate::buffer::Builder::new(crate::Uses::Storage)
 				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
 		);
-		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"));
+		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"), &probe_layout);
 		context.write(&[
 			crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into()),
 			crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into()),
@@ -699,13 +678,15 @@ mod flat_binding_tests {
 			.create_command_buffer(Some("Metal Retention Probe"));
 		let signal = context.create_synchronizer(Some("Metal Retention Probe"), true);
 		let frames = u64::from(context.frames);
-		let retained_snapshots = |context: &super::context::Context| {
+		// The argument buffer each frame-local set holds, which changes only when the set is encoded again.
+		let argument_buffers = |context: &super::context::Context| {
 			context
 				.descriptor_sets
 				.iter()
-				.map(|set| set.argument_buffers.len())
-				.sum::<usize>()
+				.map(|set| set.argument_buffer.as_ref().map(|snapshot| snapshot.address))
+				.collect::<Vec<_>>()
 		};
+		let encoded_sets = |context: &super::context::Context| argument_buffers(context).iter().flatten().count();
 
 		let run_frame = |context: &mut super::context::Context, frame_index: u64, push: u32| -> u32 {
 			*context.get_mut_buffer_slice(output) = 0;
@@ -724,17 +705,24 @@ mod flat_binding_tests {
 			*context.get_buffer_slice(output)
 		};
 
-		// One snapshot per frame-local set, then every later frame reuses its sequence's snapshot and pages.
+		// One argument buffer per frame-local set, then every later frame reuses its sequence's buffer and pages.
+		let mut first_encoding = Vec::new();
 		for frame_index in 0..frames * 2 {
 			assert_eq!(
 				run_frame(&mut context, frame_index, frame_index as u32),
 				10 + frame_index as u32
 			);
-			assert_eq!(
-				retained_snapshots(&context),
-				(frame_index + 1).min(frames) as usize,
-				"Argument buffers were re-encoded for an unchanged descriptor set on frame {frame_index}. The most likely cause is that the cache key or version comparison changed.",
-			);
+			assert_eq!(encoded_sets(&context), (frame_index + 1).min(frames) as usize);
+			if frame_index + 1 == frames {
+				first_encoding = argument_buffers(&context);
+			}
+			if frame_index >= frames {
+				assert_eq!(
+					argument_buffers(&context),
+					first_encoding,
+					"Argument buffers were re-encoded for an unchanged descriptor set on frame {frame_index}. The most likely cause is that the set version comparison changed.",
+				);
+			}
 		}
 		for sequence_index in 0..frames as usize {
 			assert_eq!(
@@ -754,9 +742,111 @@ mod flat_binding_tests {
 			assert_eq!(
 				run_frame(&mut context, frame_index, 1),
 				21,
-				"A rewritten descriptor did not reach the GPU on frame {frame_index}. The most likely cause is that a stale argument-buffer snapshot was reused after its set version changed.",
+				"A rewritten descriptor did not reach the GPU on frame {frame_index}. The most likely cause is that a stale argument buffer was reused after its set version changed.",
 			);
-			assert_eq!(retained_snapshots(&context), frames as usize);
+			assert_eq!(encoded_sets(&context), frames as usize);
+		}
+	}
+
+	/// Verifies a recorded command keeps reading a descriptor set as it bound it, when the set is written before a
+	/// later command of the same submission binds it.
+	#[test]
+	fn recorded_command_keeps_the_descriptor_set_it_bound_after_the_set_is_written() {
+		use crate::frame::Frame as _;
+
+		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
+		let source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct Resources { constant uint* input [[id(0)]]; device uint* output [[id(1)]]; };
+			kernel void copy_main(
+				uint gid [[thread_position_in_grid]],
+				constant Resources& resources [[buffer(16)]],
+				constant uint& element [[buffer(15)]]) {
+				if (gid == 0) { resources.output[element] = resources.input[0]; }
+			}
+		"#;
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
+		let (probe_layout, probe_set) = layout(
+			"Snapshot Probe",
+			[
+				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
+			],
+		);
+		let shader = context
+			.create_shader(
+				Some("Metal Snapshot Probe"),
+				crate::shader::Sources::MTL {
+					source,
+					entry_point: "copy_main",
+				},
+				crate::ShaderTypes::Compute,
+				probe_set,
+			)
+			.expect("Metal snapshot shader creation failed. The most likely cause is invalid Metal test source.");
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[crate::pipelines::PushConstantRange::new(0, 4)],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let mut input_buffer = |value: u32| {
+			let buffer = context.build_buffer::<u32>(
+				crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+			);
+			*context.get_mut_buffer_slice(buffer) = value;
+			buffer
+		};
+		let first_input = input_buffer(10);
+		let second_input = input_buffer(20);
+		let output = context.build_buffer::<[u32; 2]>(
+			crate::buffer::Builder::new(crate::Uses::Storage)
+				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+		);
+		let descriptor_set = context.create_descriptor_set(Some("Metal Snapshot Probe"), &probe_layout);
+		context.write(&[
+			crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into()),
+		]);
+		let command_buffers = [(); 2].map(|_| {
+			context
+				.queue(queue_handle)
+				.create_command_buffer(Some("Metal Snapshot Probe"))
+		});
+		let signal = context.create_synchronizer(Some("Metal Snapshot Probe"), true);
+
+		// Each frame-local copy of the set is bound, written and bound again while its first reader is not submitted.
+		for frame_index in 0..u64::from(context.frames) * 2 {
+			*context.get_mut_buffer_slice(output) = [0; 2];
+			context.write(&[crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into())]);
+			context
+				.queue(queue_handle)
+				.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
+					for (element, command_buffer) in command_buffers.into_iter().enumerate() {
+						if element == 1 {
+							execution.frame().unwrap().write(&[crate::DescriptorWrite::buffer(
+								descriptor_set,
+								INPUT_SLOT,
+								second_input.into(),
+							)]);
+						}
+						execution.record(command_buffer, |recording| {
+							let recording = recording.bind_compute_pipeline(pipeline);
+							recording.bind_descriptor_sets(&[descriptor_set]);
+							recording.write_push_constant(0, element as u32);
+							recording.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+						});
+					}
+					[]
+				});
+			context.wait();
+
+			assert_eq!(
+				*context.get_buffer_slice(output),
+				[10, 20],
+				"A recorded command read a descriptor set write made after it bound the set, on frame {frame_index}. The most likely cause is that the set's argument buffer was written over while a command still read it.",
+			);
 		}
 	}
 
@@ -769,8 +859,8 @@ mod flat_binding_tests {
 
 			struct _resources {
 				texture2d<float, access::write> mip_one [[id(0)]];
-				texture2d<float, access::write> mip_two [[id(2)]];
-				texture2d<float, access::write> mip_three [[id(4)]];
+				texture2d<float, access::write> mip_two [[id(1)]];
+				texture2d<float, access::write> mip_three [[id(2)]];
 			};
 
 			kernel void write_mips(
@@ -823,6 +913,8 @@ mod flat_binding_tests {
 		let mip_three = resource(2, ResourceKind::StorageImage, 1, AccessPolicies::WRITE);
 		let pyramid = resource(0, ResourceKind::CombinedImageSampler, 1, AccessPolicies::READ);
 		let output = resource(1, ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
+		let (writer_layout, writer_shader_set) = layout("Mip Writer", [mip_one, mip_two, mip_three]);
+		let (reader_layout, reader_shader_set) = layout("Mip Reader", [pyramid, output]);
 		let writer_shader = context
 			.create_shader(
 				Some("Dynamic Storage Mip Writer"),
@@ -831,7 +923,7 @@ mod flat_binding_tests {
 					entry_point: "write_mips",
 				},
 				crate::ShaderTypes::Compute,
-				[mip_one, mip_two, mip_three],
+				writer_shader_set,
 			)
 			.expect("Failed to create the Metal mip writer. The most likely cause is invalid test source.");
 		let reader_shader = context
@@ -842,7 +934,7 @@ mod flat_binding_tests {
 					entry_point: "read_mips",
 				},
 				crate::ShaderTypes::Compute,
-				[pyramid, output],
+				reader_shader_set,
 			)
 			.expect("Failed to create the Metal mip reader. The most likely cause is invalid test source.");
 		let writer_pipeline = context.create_compute_pipeline(
@@ -879,8 +971,8 @@ mod flat_binding_tests {
 				.min_lod(0.0)
 				.max_lod(3.0),
 		);
-		let writer_set = context.create_descriptor_set(Some("Dynamic Storage Mip Writer Set"));
-		let reader_set = context.create_descriptor_set(Some("Dynamic Storage Mip Reader Set"));
+		let writer_set = context.create_descriptor_set(Some("Dynamic Storage Mip Writer Set"), &writer_layout);
+		let reader_set = context.create_descriptor_set(Some("Dynamic Storage Mip Reader Set"), &reader_layout);
 		context.write(&[
 			crate::DescriptorWrite::image_mip(writer_set, ResourceSlot::new(0), depth_pyramid, crate::Layouts::General, 1),
 			crate::DescriptorWrite::image_mip(writer_set, ResourceSlot::new(1), depth_pyramid, crate::Layouts::General, 2),

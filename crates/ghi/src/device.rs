@@ -25,13 +25,14 @@ where
 	/// Creates a new rendering context that operates on this device.
 	fn create_context(&self) -> Result<Self::Context, &'static str>;
 
-	/// Creates a shader.
+	/// Creates a shader. `descriptor_sets` declares its descriptor set layouts, in the order its native source
+	/// declares them; see [`shader::ShaderDescriptorSet`].
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()>;
 
 	/// Creates a graphics/rasterization pipeline from a builder.

@@ -338,8 +338,11 @@ fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 
 /// Links a parsed shader, after the renderer's program generator adapts it, and reflects its resource interface
 /// before platform lowering starts.
+///
+/// `name` names the layout of the descriptors the shader declares itself; layout layers name their own.
 fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
+	name: &str,
 	workgroup_size: Option<(u32, u32, u32)>,
 	generator: Option<(&dyn ProgramGenerator, &JsonObject)>,
 ) -> Result<(besl::NodeReference, ShaderInterface), String> {
@@ -356,19 +359,13 @@ fn prepare_shader(
 		"Missing BESL main function. The most likely cause is that the shader does not declare `main`.".to_string()
 	})?;
 
-	let bindings = ProgramEvaluation::from_program(&program)?
-		.into_bindings()
+	let sets = ProgramEvaluation::from_program(&program)?
+		.into_sets()
 		.into_iter()
-		.map(Binding::from)
+		.map(|set| SetInterface::new(set, name))
 		.collect();
 
-	Ok((
-		program,
-		ShaderInterface {
-			workgroup_size,
-			bindings,
-		},
-	))
+	Ok((program, ShaderInterface { workgroup_size, sets }))
 }
 
 /// The `PreparedBeslShader` struct holds a linked and lowered BESL shader whose platform compilation has not run yet.
@@ -390,7 +387,7 @@ pub(crate) fn prepare_besl_shader(
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
 	let workgroup_size = settings.stage.local_size().map(|local_size| local_size.as_tuple());
-	let (program, interface) = prepare_shader(parsed, workgroup_size, generator)?;
+	let (program, interface) = prepare_shader(parsed, &settings.name, workgroup_size, generator)?;
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
 	Ok(PreparedBeslShader {
@@ -430,28 +427,27 @@ impl PreparedBeslShader {
 		let compiled = self.lowered.compile().await?;
 
 		// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
-		let bindings_match = compiled.bindings.len() == self.interface.bindings.len()
-			&& compiled
-				.bindings
-				.iter()
-				.zip(&self.interface.bindings)
-				.all(|(actual, expected)| {
-					(
-						actual.slot,
-						actual.kind,
-						actual.count,
-						actual.buffer_stride,
-						actual.read,
-						actual.write,
-					) == (
-						expected.slot,
-						expected.kind,
-						expected.count,
-						expected.buffer_stride,
-						expected.read,
-						expected.write,
-					)
-				});
+		// The compiler reports one flat list ordered by slot, so the sets are flattened the same way to compare.
+		let mut declared = self.interface.bindings().collect::<Vec<_>>();
+		declared.sort_by_key(|binding| binding.slot);
+		let bindings_match = compiled.bindings.len() == declared.len()
+			&& compiled.bindings.iter().zip(declared).all(|(actual, expected)| {
+				(
+					actual.slot,
+					actual.kind,
+					actual.count,
+					actual.buffer_stride,
+					actual.read,
+					actual.write,
+				) == (
+					expected.slot,
+					expected.kind,
+					expected.count,
+					expected.buffer_stride,
+					expected.read,
+					expected.write,
+				)
+			});
 
 		if !bindings_match {
 			return Err(
@@ -542,7 +538,7 @@ mod tests {
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
-		resources::material::{Binding, BindingKind, Shader, ShaderArtifact, ShaderInterface, TextureView},
+		resources::material::{Binding, BindingKind, SetInterface, Shader, ShaderArtifact, ShaderInterface, TextureView},
 		shader::generator::{ShaderGenerationSettings, Stages},
 		types::ShaderTypes,
 	};
@@ -588,6 +584,7 @@ mod tests {
 
 				prepare_shader(
 					stack_layout_layers(besl::parse(source).map_err(|error| format!("{error:?}"))?, layers)?,
+					&settings.name,
 					Some((8, 8, 1)),
 					generator,
 				)?;
@@ -598,7 +595,10 @@ mod tests {
 						stage: settings.stage.into(),
 						interface: ShaderInterface {
 							workgroup_size: Some((8, 8, 1)),
-							bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
+							sets: vec![SetInterface::with_bindings(
+								"passes/resolve.besl",
+								vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
+							)],
 						},
 						artifact: ShaderArtifact::Spirv,
 					},
@@ -931,10 +931,16 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), None, None).expect(
+		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", None, None).expect(
 			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
 		);
 
+		// The shader's own descriptors form one layout, named after the shader.
+		let [interface] = interface.sets.as_slice() else {
+			panic!("Expected one descriptor set layout");
+		};
+		assert_eq!(interface.layout, "reflection.besl");
+		assert_eq!(interface.used, 0b11);
 		assert_eq!(interface.bindings.len(), 2);
 		assert_eq!(interface.bindings[0].name, "data");
 		assert_eq!(interface.bindings[0].slot, 2);
@@ -965,11 +971,14 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), Some((32, 32, 1)), None).expect(
+		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "atomics.besl", Some((32, 32, 1)), None).expect(
 			"Failed to prepare atomic descriptor reflection. The most likely cause is invalid visibility fixture syntax.",
 		);
 
 		assert_eq!(interface.workgroup_size, Some((32, 32, 1)));
+		let [interface] = interface.sets.as_slice() else {
+			panic!("Expected one descriptor set layout");
+		};
 		assert_eq!(interface.bindings.len(), 2);
 		assert_eq!(interface.bindings[0].name, "counters");
 		assert_eq!(interface.bindings[0].slot, 1033);
@@ -981,6 +990,81 @@ mod tests {
 		assert_eq!(interface.bindings[1].kind, BindingKind::StorageImage);
 		assert!(interface.bindings[1].read);
 		assert!(!interface.bindings[1].write);
+	}
+
+	#[test]
+	fn each_layout_layer_reflects_as_one_set_with_the_bindings_the_shader_reaches() {
+		let layers = [
+			(
+				"layouts/scene.besl".to_string(),
+				r#"
+					views: descriptor<{ type: f32[], binding: 0, access: read }>;
+					meshes: descriptor<{ type: f32[], binding: 1, access: read }>;
+				"#
+				.to_string(),
+			),
+			(
+				"layouts/unused.besl".to_string(),
+				"history: descriptor<{ type: Texture2D, binding: 2, access: read }>;".to_string(),
+			),
+			// A layer without descriptors declares no set.
+			("layouts/types.besl".to_string(), "Scale: struct { value: f32, }".to_string()),
+		];
+		let source = r#"
+			result: descriptor<{ type: f32[], binding: 3, access: write }>;
+			main: fn () -> void {
+				result[0] = meshes[0];
+			}
+		"#;
+
+		let parsed = stack_layout_layers(besl::parse(source).unwrap(), &layers).expect("Expected the layers to stack");
+		let (_, interface) = prepare_shader(parsed, "passes/resolve.besl", None, None)
+			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
+
+		let sets = interface
+			.sets
+			.iter()
+			.map(|set| {
+				let names = set.bindings.iter().map(|binding| binding.name.as_str()).collect::<Vec<_>>();
+				(set.layout.as_str(), names, set.used)
+			})
+			.collect::<Vec<_>>();
+
+		// A layer's set keeps its whole layout, and the shader's own set comes last.
+		assert_eq!(
+			sets,
+			vec![
+				("layouts/scene.besl", vec!["views", "meshes"], 0b10),
+				("layouts/unused.besl", vec!["history"], 0),
+				("passes/resolve.besl", vec!["result"], 0b1),
+			]
+		);
+	}
+
+	#[test]
+	fn a_layout_identity_follows_its_bindings_and_not_the_shader_that_lists_it() {
+		let layer = |declaration: &str| {
+			vec![(
+				"layouts/scene.besl".to_string(),
+				format!("views: descriptor<{{ type: f32[], binding: 0, access: read }}>; {declaration}"),
+			)]
+		};
+		let identity = |layers: &[(String, String)], source: &str| {
+			let parsed = stack_layout_layers(besl::parse(source).unwrap(), layers).expect("Expected the layer to stack");
+			let (_, interface) = prepare_shader(parsed, "shader.besl", None, None).expect("Expected the shader to link");
+			interface.sets[0].identity()
+		};
+
+		let scene = layer("meshes: descriptor<{ type: f32[], binding: 1, access: read }>;");
+		let reader = identity(&scene, "main: fn () -> void { views[0]; }");
+		let other_reader = identity(&scene, "main: fn () -> void { meshes[0]; }");
+		let renamed = identity(
+			&layer("instances: descriptor<{ type: f32[], binding: 1, access: read }>;"),
+			"main: fn () -> void { views[0]; }",
+		);
+
+		assert_eq!(reader, other_reader, "shaders that share a layer should share its set");
+		assert_ne!(reader, renamed, "a changed layer should not match sets built for the old one");
 	}
 }
 
@@ -1003,7 +1087,7 @@ use crate::{
 	asset::JsonObject,
 	r#async::spawn_cpu_task,
 	online_docs_url,
-	resources::material::{Binding, Shader, ShaderInterface},
+	resources::material::{SetInterface, Shader, ShaderInterface},
 	shader::{
 		artifact::finalize_platform_shader_artifact,
 		besl::{

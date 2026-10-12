@@ -54,11 +54,12 @@ pub enum PipelineState {
 pub(crate) struct ComputePipeline {
 	pub(crate) handle: ghi::PipelineHandle,
 	pub(crate) workgroup: utils::Extent,
-	pub(crate) bindings: Arc<[Binding]>,
+	/// The descriptor set layouts the pipeline's shader declares, in the order it declares them.
+	pub(crate) sets: Arc<[SetLayout]>,
 }
 
 /// The `ComputePipelines` struct lends published pipeline entries under one read lock, so descriptor adoption reads
-/// reflected bindings without copying them and pollers check many pipeline states with one lock.
+/// reflected layouts without copying them and pollers check many pipeline states with one lock.
 pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineRef, PipelineEntry>>);
 
 impl ComputePipelines<'_> {
@@ -152,6 +153,14 @@ impl PipelineManagerClient {
 		}
 	}
 
+	/// Returns the descriptor set layouts a published pipeline's shaders declare, or `None` while it is unavailable.
+	///
+	/// A pipeline of several stages reports each layout once, with the bindings any stage reaches marked as used. Next,
+	/// create the pipeline's sets with [`crate::rendering::set_layout::create_sets`].
+	pub fn sets(&self, pipeline: PipelineRef) -> Option<Arc<[SetLayout]>> {
+		self.shared.entries.read().get(&pipeline).and_then(|entry| entry.sets.clone())
+	}
+
 	/// Borrows the published compute pipelines and the metadata needed for descriptor adoption.
 	///
 	/// Keep the returned view short-lived: it holds a read lock on every pipeline entry that blocks
@@ -182,6 +191,7 @@ impl PipelineManagerClient {
 					published_revision: 0,
 					kind: kind.clone(),
 					compute: None,
+					sets: None,
 				},
 			);
 		}
@@ -306,7 +316,10 @@ impl PipelineManagerServer {
 						FillMode::Wireframe => raster::FillMode::Wireframe,
 					})
 					.depth_write(*depth_write);
-				Ok(DetachedPipeline::Raster(self.factory.create_raster_pipeline(builder)))
+				Ok(DetachedPipeline::Raster {
+					pipeline: self.factory.create_raster_pipeline(builder),
+					sets: SetLayout::merged(prepared.iter().flat_map(|shader| shader.sets.iter())),
+				})
 			}
 		}
 	}
@@ -356,7 +369,7 @@ impl PipelineManagerServer {
 				.factory
 				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(push_constant_ranges, shader).name(name)),
 			workgroup,
-			bindings: prepared.bindings.clone(),
+			sets: prepared.sets.clone(),
 		})
 	}
 
@@ -376,7 +389,11 @@ impl PipelineManagerServer {
 				Some(&prepared.id),
 				source,
 				prepared.stage,
-				prepared.descriptors.iter().copied(),
+				// Each set declares its whole layout, with the resources this shader reaches marked as used.
+				prepared
+					.sets
+					.iter()
+					.map(|set| ghi::ShaderDescriptorSet::with_used(set.layout().clone(), set.interface().used)),
 			)
 			.map_err(|_| {
 				format!(
@@ -397,8 +414,8 @@ struct PreparedShader {
 	stage: ghi::ShaderTypes,
 	artifact: resource_management::resources::material::ShaderArtifact,
 	workgroup: Option<utils::Extent>,
-	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
-	bindings: Arc<[Binding]>,
+	/// The descriptor set layouts the shader declares, in the order it declares them.
+	sets: Arc<[SetLayout]>,
 	backing: resource_management::resource::reader::ResourceReaderBacking,
 }
 
@@ -457,34 +474,6 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 	}
 }
 
-/// Converts one persisted binding into the descriptor used for detached shader creation.
-fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
-	use resource_management::resources::material::{BindingKind, TextureView};
-
-	let mut access = ghi::AccessPolicies::empty();
-	access.set(ghi::AccessPolicies::READ, binding.read);
-	access.set(ghi::AccessPolicies::WRITE, binding.write);
-	let descriptor =
-		|kind| ghi::ShaderResourceDescriptor::new(ghi::ResourceSlot::new(binding.slot), kind, binding.count, access);
-	match binding.kind {
-		BindingKind::StorageBuffer => descriptor(ghi::ResourceKind::StorageBuffer).buffer_stride(
-			binding
-				.buffer_stride
-				.expect("Missing persisted storage-buffer stride. The most likely cause is a stale shader interface resource."),
-		),
-		BindingKind::CombinedImageSampler { view } => {
-			descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(match view {
-				TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
-				TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
-				TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
-				TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
-				TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
-			})
-		}
-		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
-	}
-}
-
 /// Borrows persisted shader bytes in the source representation expected by GHI.
 fn shader_artifact_source<'a>(
 	artifact: &'a resource_management::resources::material::ShaderArtifact,
@@ -530,13 +519,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.interface
 		.workgroup_size
 		.map(|(width, height, depth)| utils::Extent::new(width, height, depth));
-	let descriptors = resource
-		.interface
-		.bindings
-		.iter()
-		.map(binding_to_descriptor)
-		.collect::<Vec<_>>();
-	let bindings = Arc::from(resource.interface.bindings.as_slice());
+	let sets = resource.interface.sets.iter().map(SetLayout::new).collect();
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
@@ -547,8 +530,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		stage,
 		artifact,
 		workgroup,
-		descriptors,
-		bindings,
+		sets,
 		backing,
 	})
 }
@@ -805,19 +787,17 @@ impl PipelineManager {
 				Ok(DetachedPipeline::Compute {
 					pipeline,
 					workgroup,
-					bindings,
+					sets,
 				}) => {
 					let handle = frame.intern_compute_pipeline(pipeline);
-					entry.compute = Some(ComputePipeline {
-						handle,
-						workgroup,
-						bindings,
-					});
+					entry.sets = Some(sets.clone());
+					entry.compute = Some(ComputePipeline { handle, workgroup, sets });
 					entry.state = PipelineState::Ready(handle);
 					entry.published_revision = completion.revision;
 				}
-				Ok(DetachedPipeline::Raster(pipeline)) => {
+				Ok(DetachedPipeline::Raster { pipeline, sets }) => {
 					entry.compute = None;
+					entry.sets = Some(sets);
 					entry.state = PipelineState::Ready(frame.intern_raster_pipeline(pipeline));
 					entry.published_revision = completion.revision;
 				}
@@ -847,6 +827,8 @@ struct PipelineEntry {
 	kind: PipelineRequestKind,
 	/// The dispatch contract of the latest compute pipeline; `None` until one publishes or for raster pipelines.
 	compute: Option<ComputePipeline>,
+	/// The descriptor set layouts of the latest published pipeline; `None` until one publishes.
+	sets: Option<Arc<[SetLayout]>>,
 }
 
 struct PipelineRequest {
@@ -882,15 +864,19 @@ enum DetachedPipeline {
 	Compute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		bindings: Arc<[Binding]>,
+		sets: Arc<[SetLayout]>,
 	},
-	Raster(ghi::factory::RasterPipeline),
+	Raster {
+		pipeline: ghi::factory::RasterPipeline,
+		sets: Arc<[SetLayout]>,
+	},
 }
 
 use std::sync::Arc;
 
-use resource_management::resources::material::Binding;
 use utils::{
 	hash::HashMap,
 	sync::{Mutex, RwLock},
 };
+
+use crate::rendering::SetLayout;

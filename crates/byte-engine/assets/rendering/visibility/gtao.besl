@@ -2,12 +2,6 @@
 // GTAO reads mip levels zero through two. Mip zero matches the half-resolution
 // AO output, and later mips serve distant samples.
 
-GTAOParameters: struct {
-	radius: f32,
-	samples_per_ray: u32,
-	radial_rays: u32,
-}
-
 NormalDelta: struct {
 	value: vec3f,
 	valid: bool,
@@ -24,10 +18,6 @@ SampleAddress: struct {
 	level: u32,
 	key: u32,
 }
-
-gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
-depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
 
 GTAO_BIAS: const f32 = 0.05;
 GTAO_STRENGTH: const f32 = 1.0;

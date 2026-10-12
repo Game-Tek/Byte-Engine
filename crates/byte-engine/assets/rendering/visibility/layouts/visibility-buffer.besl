@@ -1,0 +1,24 @@
+// The descriptor set material evaluation reads the visibility buffer and its pixel lists through: which triangle of
+// which instance covers each pixel, and the pixels each evaluation slot shades. The material dispatch passes write
+// the same buffers through `material-dispatch.besl`.
+
+// The number of pixels each evaluation slot shades.
+MaterialCounts: struct {
+	material_count: u32[1024],
+}
+
+// The first entry of each evaluation slot's pixel list.
+MaterialOffsets: struct {
+	material_offset: u32[1024],
+}
+
+// The pixel coordinates of every evaluation slot's list, back to back.
+PixelCoordinates: struct {
+	pixel_mapping: vec2u16[8294400],
+}
+
+material_count: descriptor<{ type: MaterialCounts, binding: 1033, access: read, memory: device }>;
+material_offset: descriptor<{ type: MaterialOffsets, binding: 1034, access: read, memory: device }>;
+pixel_mapping: descriptor<{ type: PixelCoordinates, binding: 1037, access: read, memory: device }>;
+triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 1039, access: read }>;
+instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;

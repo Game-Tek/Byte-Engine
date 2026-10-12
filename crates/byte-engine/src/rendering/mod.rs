@@ -45,6 +45,7 @@ mod pipeline_compilation;
 pub mod pipeline_manager;
 mod pose;
 mod resource;
+pub mod set_layout;
 
 #[doc(hidden)]
 pub mod renderer;
@@ -89,6 +90,7 @@ pub use render_pass::{
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
+pub use set_layout::{SetBinder, SetLayout};
 pub use sink::Sink;
 pub use view::View;
 pub use window::{Features, Window};

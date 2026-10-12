@@ -8,18 +8,12 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::super::layout::{
-	LIGHT_CLUSTER_COUNT, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_MASK_WORDS, LIGHT_CLUSTER_MASKS_BINDING,
-	LIGHT_CLUSTER_PARAMETERS_BINDING,
-};
+use super::super::layout::{LIGHT_CLUSTER_COUNT, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_MASK_WORDS};
 use super::super::shader_data::{LightClusterParameters, LightingData};
 use super::Pipelines;
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
-
-const LIGHTING_DATA_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-const MASKS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 
 /// The `LightClusterPass` struct buckets the light table into one sink's clusters before material evaluation reads them.
 ///
@@ -39,7 +33,7 @@ impl LightClusterPass {
 		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	) -> Self {
-		let descriptor_set = context.create_descriptor_set(Some("Light Cluster Descriptor Set"));
+		let descriptor_set = set_layouts::LIGHT_CLUSTERS.create_set(context, "Light Cluster Descriptor Set");
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Light Cluster Parameters")
@@ -50,20 +44,14 @@ impl LightClusterPass {
 				.name("Light Cluster Masks")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
+		let clusters = set_layouts::LIGHT_CLUSTERS.binder(descriptor_set);
+		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, LIGHTING_DATA_BINDING, lighting_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING, parameters.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, MASKS_BINDING, masks.into()),
-			ghi::DescriptorWrite::buffer(
-				material_evaluation_descriptor_set,
-				LIGHT_CLUSTER_MASKS_BINDING.slot(),
-				masks.into(),
-			),
-			ghi::DescriptorWrite::buffer(
-				material_evaluation_descriptor_set,
-				LIGHT_CLUSTER_PARAMETERS_BINDING.slot(),
-				parameters.into(),
-			),
+			clusters.buffer("lighting_data", lighting_buffer),
+			clusters.buffer("light_cluster_parameters", parameters),
+			clusters.buffer("light_cluster_masks", masks),
+			evaluation.buffer("light_cluster_masks", masks),
+			evaluation.buffer("light_cluster_parameters", parameters),
 		]);
 
 		Self {

@@ -6,8 +6,29 @@ mod reflection;
 use std::collections::HashSet;
 
 pub use opacity::OpacityEvaluation;
-pub(crate) use reflection::collect_bindings;
-pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
+pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, SetUsage, TextureView};
+pub(crate) use reflection::{collect_bindings, collect_set_nodes};
+
+/// Reflects the descriptor set layouts that layout layers declare, without a shader that lists them.
+///
+/// `layers` yields each layer's name and source, lowest first, as [`besl::stack_layers`] takes them. Each layer that
+/// declares descriptors becomes one [`SetUsage`], named after the layer, with every binding marked as used.
+///
+/// A renderer uses it to build the descriptor sets it shares with its shaders from the same source the shaders are
+/// baked from. Next, persist a set with [`crate::resources::material::SetInterface::new`]; its identity equals the
+/// identity of the set every shader that lists the layer was baked with.
+pub fn reflect_layers<'a>(layers: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<Vec<SetUsage>, String> {
+	let module = besl::stack_layers(besl::parser::Node::root(), layers).map_err(|error| {
+		format!("Failed to stack layout layers ({error:?}). The most likely cause is invalid layer source.")
+	})?;
+	let program = besl::lex(module).map_err(|error| {
+		format!(
+			"Failed to link layout layers ({error:?}). The most likely cause is a layer that uses a declaration of a layer listed after it, or of a shader."
+		)
+	})?;
+
+	reflection::collect_sets(&program)
+}
 #[cfg(test)]
 use reflection::{
 	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_array_buffer_stride_for_target,

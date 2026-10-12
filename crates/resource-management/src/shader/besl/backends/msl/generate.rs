@@ -20,12 +20,15 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes(main_function_node, "MSL");
+		self.collect_argument_sets(main_function_node)?;
 		self.generate_order(shader_compilation_settings, main_function_node, &order)
 	}
 
-	/// Generates an MSL shader whose resource ABI contains every binding declared by `program`.
+	/// Generates an MSL shader whose resource ABI holds every descriptor set layout `main` uses.
 	///
-	/// Code reachable from `main` is emitted, while every program binding stays in the Metal resource ABI.
+	/// Code reachable from `main` is emitted. Each layout with a binding that code uses becomes one argument buffer
+	/// that declares the layout's every binding, so every shader that shares the layout reads one native set. A layout
+	/// `main` never reaches takes no argument buffer.
 	pub fn generate_program(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
@@ -34,7 +37,43 @@ impl Generator {
 		let main = program.get_main().ok_or(())?;
 		let mut order = ordered_shader_nodes(&main, "MSL");
 		Self::append_declared_bindings(program, &mut order);
+		self.collect_argument_sets(program)?;
 		self.generate_order(shader_compilation_settings, &main, &order)
+	}
+
+	/// Records the descriptor sets the shader takes as argument buffers: every layout `program` declares that code
+	/// reachable from `main` uses.
+	///
+	/// The sets come from the same reflection that produces the shader's persisted interface, in the same order, so
+	/// set `n` here is the `n`th used set there.
+	fn collect_argument_sets(&mut self, program: &besl::NodeReference) -> Result<(), ()> {
+		let sets = crate::shader::besl::evaluation::collect_set_nodes(program).map_err(|_| ())?;
+
+		self.argument_sets.clear();
+		self.binding_sets.clear();
+		for set in sets.into_iter().filter(|set| set.used != 0) {
+			// Every argument ID of the set must fit, so emission never wraps one.
+			let mut ids = 0u32;
+			for node in &set.nodes {
+				let node = node.borrow();
+				let besl::Nodes::Binding { name, r#type, count, .. } = node.node() else {
+					continue;
+				};
+				let count = count.map_or(1, |count| count.get());
+				let reserved = match r#type {
+					besl::BindingTypes::CombinedImageSampler { .. } => count.checked_mul(2).ok_or(())?,
+					_ => count,
+				};
+				ids = ids.checked_add(reserved).ok_or(())?;
+				self.binding_sets.insert(name.clone(), self.argument_sets.len());
+			}
+			self.argument_sets.push(set.nodes);
+		}
+
+		if self.argument_sets.len() > MAX_ARGUMENT_SETS {
+			return Err(());
+		}
+		Ok(())
 	}
 
 	/// Appends authored binding declarations without traversing unreachable executable nodes.
@@ -393,7 +432,7 @@ impl Generator {
 			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
-	/// Validates logical flat-slot intervals and fixed Metal argument-ID reservations before source emission.
+	/// Validates logical flat-slot intervals before source emission.
 	pub(crate) fn validate_reachable_binding_layout(order: &[besl::NodeReference]) -> Result<(), ()> {
 		let mut ranges = Vec::new();
 
@@ -404,7 +443,6 @@ impl Generator {
 			};
 			let count = count.map_or(1, |count| count.get());
 			let end = slot.checked_add(count).ok_or(())?;
-			Self::fixed_argument_ids(*slot, count)?;
 			ranges.push((*slot, end));
 		}
 
@@ -424,8 +462,24 @@ impl Generator {
 		)
 	}
 
+	/// Writes one entry-point parameter per descriptor set, each bound at its own buffer index.
 	pub(crate) fn emit_argument_buffer_parameter(&self, string: &mut String) {
-		string.push_str("constant _resources& resources [[buffer(16)]]");
+		for set in 0..self.argument_sets.len() {
+			if set > 0 {
+				self.emit_separator(string);
+			}
+			let _ = write!(
+				string,
+				"constant _set{set}& {} [[buffer({})]]",
+				SetArgument(set),
+				ARGUMENT_BUFFER_BINDING_BASE + set as u32
+			);
+		}
+	}
+
+	/// Returns whether the shader takes any descriptor set as an argument buffer.
+	pub(crate) fn has_argument_sets(&self) -> bool {
+		!self.argument_sets.is_empty()
 	}
 
 	pub(crate) fn classify_nodes(order: &[besl::NodeReference]) -> ClassifiedNodes<'_> {

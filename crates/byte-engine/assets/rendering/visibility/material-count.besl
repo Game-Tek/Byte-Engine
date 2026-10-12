@@ -1,5 +1,3 @@
-material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write, memory: device }>;
-
 MATERIAL_COUNT_TILE_CAPACITY: const u32 = 32;
 INVALID_EVALUATION_INDEX: const u32 = 4294967295;
 
@@ -13,7 +11,7 @@ main: fn (input: StageInput) -> void {
 	if (coord.x < extent.x && coord.y < extent.y) {
 		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 		if (pixel_instance_index < 1024) {
-			evaluation_index = material_evaluations.evaluation_indices[mesh_data.meshes[pixel_instance_index].material_index];
+			evaluation_index = material_evaluations.evaluation_indices[meshes.meshes[pixel_instance_index].material_index];
 		}
 	}
 

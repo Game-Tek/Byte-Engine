@@ -9,6 +9,7 @@ use ghi::frame::Frame as _;
 use utils::Extent;
 
 use super::Pipelines;
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -16,16 +17,8 @@ use crate::rendering::{PipelineManagerClient, Sink};
 /// the pyramid starts at half resolution.
 pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 
-const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const INPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured against.
-const RECEIVER_BOUNDS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
-const RECEIVER_FIT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
-const OUTPUT_BINDINGS: [ghi::ResourceSlot; 3] = [
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceSlot::new(1036),
-];
+/// The pyramid's mips, as `layouts/depth-pyramid.besl` names the image each one is written through.
+const REDUCED_DEPTH_NAMES: [&str; DEPTH_PYRAMID_MIP_COUNT as usize] = ["reduced_depth_1", "reduced_depth_2", "reduced_depth_3"];
 
 /// The `ScreenViewData` struct gives half-resolution screen-space passes compact camera reconstruction constants.
 ///
@@ -75,6 +68,8 @@ pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
 /// disocclusion.
 pub(super) struct DepthPyramidPass {
 	descriptor_set: ghi::DescriptorSetHandle,
+	/// The set that holds [`Self::view_data`], which the GTAO passes bind too.
+	pub(super) view_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) pipelines: Pipelines<1>,
 	/// The half-resolution camera constants that match the pyramid's mip zero.
 	pub(super) view_data: ghi::DynamicBufferHandle<ScreenViewData>,
@@ -91,7 +86,8 @@ impl DepthPyramidPass {
 		receiver_bounds: ghi::BaseBufferHandle,
 		receiver_fit: ghi::BaseBufferHandle,
 	) -> Self {
-		let descriptor_set = context.create_descriptor_set(Some("Depth Pyramid Descriptor Set"));
+		let descriptor_set = set_layouts::DEPTH_PYRAMID.create_set(context, "Depth Pyramid Descriptor Set");
+		let view_descriptor_set = set_layouts::GTAO_VIEW.create_set(context, "Screen View Descriptor Set");
 		let view_data = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Screen View Data")
@@ -111,25 +107,25 @@ impl DepthPyramidPass {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DEPTH_PYRAMID_MIP_COUNT),
 		);
-		let mut writes = vec![
-			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING, view_data.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				INPUT_BINDING,
-				depth,
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::buffer(descriptor_set, RECEIVER_BOUNDS_BINDING, receiver_bounds),
-			ghi::DescriptorWrite::buffer(descriptor_set, RECEIVER_FIT_BINDING, receiver_fit),
-		];
-		writes.extend(OUTPUT_BINDINGS.iter().enumerate().map(|(index, &binding)| {
-			ghi::DescriptorWrite::image_mip(descriptor_set, binding, depth_pyramid, ghi::Layouts::General, index as u32)
-		}));
-		context.write(&writes);
+		let pyramid = set_layouts::DEPTH_PYRAMID.binder(descriptor_set);
+		let [first, second, third] =
+			[0, 1, 2].map(|mip| pyramid.image_mip(REDUCED_DEPTH_NAMES[mip], depth_pyramid, mip as u32));
+		context.write(&[
+			set_layouts::GTAO_VIEW
+				.binder(view_descriptor_set)
+				.buffer("gtao_view", view_data),
+			pyramid.sampled("source_depth", depth, point_sampler),
+			// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured against.
+			pyramid.buffer("receiver_bounds", receiver_bounds),
+			pyramid.buffer("receiver_fit", receiver_fit),
+			first,
+			second,
+			third,
+		]);
 
 		Self {
 			descriptor_set,
+			view_descriptor_set,
 			pipelines: Pipelines::request(pipeline_manager, ["depth-pyramid"]),
 			view_data,
 			depth_pyramid,
@@ -150,7 +146,7 @@ impl DepthPyramidPass {
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
 		frame.sync_buffer(self.view_data);
 		frame.resize_image(self.depth_pyramid.into(), half_extent);
-		let descriptor_set = self.descriptor_set;
+		let descriptor_sets = [self.view_descriptor_set, self.descriptor_set];
 
 		move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::{
@@ -159,7 +155,7 @@ impl DepthPyramidPass {
 
 			c.start_region(|label| label.write_str("Linear Depth Pyramid"));
 			let c = c.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
+			c.bind_descriptor_sets(&descriptor_sets);
 			c.write_push_constant(0, [fitted_suns]);
 			c.dispatch(ghi::DispatchExtent::new(half_extent, Extent::square(16)));
 			c.end_region();

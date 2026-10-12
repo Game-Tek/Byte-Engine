@@ -1,20 +1,3 @@
-// Builds the first five levels of the camera's occlusion-culling pyramid from reversed visibility depth. Each 16x16
-// workgroup seeds a block of mip zero, keeps it in workgroup memory, and reduces it in place to one texel of mip
-// four, writing every level on the way. Each mip-zero texel keeps the farthest depth, the smallest reversed value, of
-// every depth pixel its footprint touches; the pyramid has a fixed extent, so a texel can cover a fraction of a pixel
-// or several pixels. The pyramid's extent is a multiple of the block on both axes, so no thread is idle and no write
-// needs a bound.
-//
-// The pyramid stores 16-bit floats. A depth that no 16-bit float holds exactly is rounded toward the far plane, never
-// toward the camera, so the pyramid never claims a surface nearer than the one drawn and culling stays conservative.
-// Every reduction then takes minimums of 16-bit values, which are exact.
-source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-level_0: descriptor<{ type: StorageImage<r16f>, binding: 1034, access: write }>;
-level_1: descriptor<{ type: StorageImage<r16f>, binding: 1035, access: write }>;
-level_2: descriptor<{ type: StorageImage<r16f>, binding: 1036, access: write }>;
-level_3: descriptor<{ type: StorageImage<r16f>, binding: 1037, access: write }>;
-level_4: descriptor<{ type: StorageImage<r16f>, binding: 1038, access: write }>;
-
 // The block's 16x16 mip-zero depths, then its 8x8, 4x4, and 2x2 reductions after them.
 shared_depth: workgroup<f32, 340>;
 

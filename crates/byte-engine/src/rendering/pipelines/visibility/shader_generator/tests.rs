@@ -1,5 +1,4 @@
 use besl::vm::{DescriptorBindings, ResourceSlot, Sampler, Texture, Value};
-use ghi::AccessPolicies;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
 use super::super::tests::{
@@ -24,15 +23,7 @@ fn material_generator() -> VisibilityShaderGenerator {
 
 /// Builds the baking generator for a project that selected `features`.
 fn material_generator_with(features: VisibilityFeatures) -> VisibilityShaderGenerator {
-	VisibilityShaderGenerator::with_access(
-		features,
-		ScopeAccess {
-			material_count: AccessPolicies::READ,
-			material_offset: AccessPolicies::READ,
-			material_offset_scratch: AccessPolicies::NONE,
-			pixel_mapping: AccessPolicies::READ,
-		},
-	)
+	VisibilityShaderGenerator::new(features)
 }
 
 /// Parses `source` as a `main`, adds `nodes`, such as helper functions and bindings, and compiles the result for the
@@ -43,6 +34,17 @@ fn compile_with(source: &str, nodes: Vec<Node<'static>>) -> besl::vm::Executable
 	compile(
 		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
+}
+
+/// Returns the declarations of the material evaluation layout layer, whose descriptors the screen-space helpers read.
+fn material_evaluation_declarations() -> Vec<Node<'static>> {
+	let (_, source) = layer!("visibility/layouts/material-evaluation.besl");
+	let mut root = besl::parse(source)
+		.expect("Failed to parse the material evaluation layer. The most likely cause is invalid BESL in the layer.");
+	match root.node_mut() {
+		besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
+		_ => unreachable!("Invalid layer root. The most likely cause is a parser contract regression."),
+	}
 }
 
 fn results_binding(members: Vec<Node<'static>>, slot: ResourceSlot) -> Node<'static> {
@@ -1275,8 +1277,8 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 		}
 		"#,
 		{
-			// The shared pyramid binding comes first, as in the material shader, since helpers read it.
-			let mut bindings = vec![depth_pyramid_binding()];
+			// The set's descriptors come first, as in the material shader, since helpers read them.
+			let mut bindings = material_evaluation_declarations();
 			bindings.extend(screen_space_reflection_scope());
 			bindings.push(Node::binding(
 				"inputs",
@@ -1434,7 +1436,7 @@ fn sample_indirect_diffuse(
 		}
 		"#,
 		{
-			let mut bindings = vec![depth_pyramid_binding()];
+			let mut bindings = material_evaluation_declarations();
 			bindings.extend(screen_space_indirect_diffuse_scope());
 			bindings.push(Node::binding(
 				"inputs",

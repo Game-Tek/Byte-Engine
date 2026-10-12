@@ -1,0 +1,12 @@
+// The descriptor set of camera occlusion culling: the farthest-depth pyramid of the camera's early pass, which the
+// task stage tests meshlet bounds against, and the meshlets its late pass found unoccluded.
+
+// One word per packed work item: bit `m` marks meshlet `m` of the item's chunk as unoccluded when the camera's late pass
+// last culled it.
+OcclusionVisibility: struct {
+	words: u32[131072],
+}
+
+// Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
+occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read }>;
+occlusion_visibility: descriptor<{ type: OcclusionVisibility, binding: 1070, access: read_write, memory: device }>;

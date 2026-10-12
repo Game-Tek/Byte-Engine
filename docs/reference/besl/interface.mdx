@@ -322,8 +322,14 @@ Mesh stages require positive `maximum_vertices` and `maximum_primitives` values:
 Use a layout layer to declare an interface once and share it between shaders. A
 layer is a `.besl` file without a `main` function and without a `.besl.bead`
 file. It holds the declarations several shaders need: structs, descriptors, a
-push constant block, constants, and helper functions. A layer can describe one
-descriptor set, part of one, or a whole pipeline layout.
+push constant block, constants, and helper functions.
+
+The descriptors of one layer form one descriptor set. Every shader that lists
+the layer reads the same set, and the application creates that set once and
+binds it wherever one of those shaders runs. Put the resources you bind
+together in one layer, and put each group you bind separately in a layer of
+its own. The descriptors a shader declares itself form one more set, which
+belongs to that shader.
 
 ```rust
 // layouts/frame.besl
@@ -363,13 +369,28 @@ the same name, or if a layer declares `main`. The error names the declaration
 and the layer; delete the copy to fix it. A shader and its layers can hold one
 `push_constant` block between them.
 
-A shader binds everything its layers declare. Reflection reports every
-descriptor of every listed layer, whether or not `main` uses it, exactly as it
-does for a descriptor the shader declares itself. Keep each layer to resources
-that all of its shaders bind. When one shader needs only part of a layer, split
-the layer in two and list both where the whole set is needed. A layer that
-declares only structs, constants, and helper functions adds nothing to a
-shader's bindings, so you can share record types freely.
+A shader declares the whole set of every layer it lists, so that every shader
+that shares a layer sees the same set. Only the descriptors that code reachable
+from `main` uses count as the shader's resource accesses, and only those need
+a resource before the shader runs. A shader that uses no descriptor of a layer
+doesn't need that layer's set bound at all. A layer that declares only
+structs, constants, and helper functions declares no set, so you can share
+record types freely.
+
+`binding` numbers are unique across a shader and all of its layers. Give each
+layer its own range, so layers that are listed together never collide.
+
+A descriptor's `access` applies to every shader that lists its layer. When some
+shaders write a resource and others only read it, declare it in two layers:
+one with `access: write` or `read_write` for the writers, and one with
+`access: read` for the readers. Bind the same resource in both sets. A shader
+that only reads then isn't ordered after other readers of the resource.
+
+In Byte Engine, build the set a layer declares with
+`rendering::SetLayout::from_layers`, and bind its resources by the names the
+layer gives them. A set made from a layer matches every shader baked against
+that version of the layer. If you edit a layer and run with shaders baked
+against the old version, binding fails with an error that names the layer.
 
 Baking tracks each listed layer as a dependency of the shader. When you edit a
 layer, the next bake rebuilds every shader that lists it.

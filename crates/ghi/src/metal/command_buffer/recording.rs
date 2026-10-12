@@ -208,7 +208,6 @@ impl<'a> CommandBufferRecording<'a> {
 			metal_device: context.device.as_ref(),
 			buffers: &context.buffers,
 			images: &context.images,
-			samplers: &context.samplers,
 			acceleration_structures: &context.acceleration_structures,
 			meshes: &context.meshes,
 			pipelines: &context.pipelines,
@@ -258,6 +257,7 @@ impl<'a> CommandBufferRecording<'a> {
 			next_encoder_id: 0,
 			resource_tracker,
 			active_render_attachment_uses: SmallVec::new(),
+			command_uses: SmallVec::new(),
 			texture_readbacks: SmallVec::new(),
 			_autorelease_pool: autorelease_pool,
 		}
@@ -377,6 +377,7 @@ impl<'a> CommandBufferRecording<'a> {
 			scope: synchronization::MetalEncoderScope::Encoder(id),
 			pipeline: None,
 			descriptors: None,
+			tables: SmallVec::new(),
 			bound_argument_tables: 0,
 			push_constants_dirty: !self.push_constant_data.is_empty(),
 			tail_timestamp: None,
@@ -528,9 +529,10 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Applies the dependencies one command needs on the active encoder and retains what it uses.
 	///
-	/// With `bind_descriptors`, the command also binds the active encoder's applied snapshot, whose uses are read in
-	/// place. Every use in `additional_uses` has its native allocation retained here, so commands only retain objects
-	/// hazard tracking never sees.
+	/// The command's own uses are `additional_uses` plus whatever the caller already put in `command_uses`, which
+	/// is left empty. With `bind_descriptors`, the command also binds the active encoder's applied snapshot, whose
+	/// uses are read in place. Every one of the command's own uses has its native allocation retained here, so
+	/// commands only retain objects hazard tracking never sees.
 	pub(super) fn consume_resources_with_descriptors(
 		&mut self,
 		bind_descriptors: bool,
@@ -543,27 +545,34 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer,
 			resource_tracker,
 			encoder,
+			command_uses,
 			..
 		} = self;
-		let additional_uses = additional_uses
-			.into_iter()
-			.map(|resource_use| resource_use.in_group_memory(device.images))
-			.collect::<SmallVec<[_; 8]>>();
-		for resource_use in &additional_uses {
+		// The uses are gathered, consolidated and read in the recording's own storage, so no command moves them.
+		command_uses.extend(additional_uses);
+		for resource_use in command_uses.iter_mut() {
+			*resource_use = resource_use.in_group_memory(device.images);
 			retain_tracked_use(device, command_buffer, resource_use);
 		}
-		// The applied binding stays in the encoder state and is borrowed in place.
-		let descriptors = if bind_descriptors {
-			let binding = encoder.as_mut().and_then(|state| state.descriptors.as_mut()).expect(
-				"Metal descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
-			);
-			Some((binding.snapshot.uses(commit.descriptor_sets), &mut binding.settled))
+		synchronization::MetalResourceTracker::consolidate_in_place(command_uses);
+		let additional_uses = &command_uses[..];
+		// The applied binding and the tables it indexes stay in the encoder state and are borrowed in place.
+		let EncoderState { descriptors, tables, .. } = encoder.as_mut().expect(
+			"No active Metal encoder. The most likely cause is that a command consumed resources after its encoder ended.",
+		);
+		let binding = if bind_descriptors {
+			Some(descriptors.as_mut().expect(
+				"Metal descriptors are missing. The most likely cause is that descriptor application did not retain its binding.",
+			))
 		} else {
 			None
 		};
-		// Only debug builds check members; descriptor members' memory was retained when their snapshot was applied.
+		// Only debug builds check members; descriptor members' memory is pinned by the sets that hold them.
 		if cfg!(debug_assertions) {
-			let descriptor_members = descriptors.iter().flat_map(|(uses, _)| uses.members());
+			let descriptor_members = binding
+				.iter()
+				.flat_map(|binding| binding.tables.iter())
+				.flat_map(|&table| tables[table as usize].uses.members());
 			for member in descriptor_members.chain(additional_uses.iter().filter_map(|resource_use| resource_use.member)) {
 				commit
 					.image_groups
@@ -572,10 +581,16 @@ impl<'a> CommandBufferRecording<'a> {
 					});
 			}
 		}
-		let barrier = match descriptors {
-			Some((uses, settled)) => resource_tracker.consume_descriptors(scope, uses, settled, additional_uses),
-			None => resource_tracker.consume(scope, additional_uses),
+		let barrier = match binding {
+			Some(AppliedDescriptorBinding { merged: Some(table), .. }) => {
+				resource_tracker.consume_descriptor_tables(scope, std::slice::from_mut(table), &[0], additional_uses)
+			}
+			// Each set settles on its own, so changing the pipeline does not plan the reads of a set that stays bound
+			// again.
+			Some(binding) => resource_tracker.consume_descriptor_tables(scope, tables, &binding.tables, additional_uses),
+			None => resource_tracker.consume_consolidated(scope, additional_uses),
 		};
+		command_uses.clear();
 		let encoder = self.encoder_state().encoder.common();
 		#[cfg(debug_assertions)]
 		self.signpost_barrier_hazards(encoder);
@@ -601,7 +616,7 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
 		assert!(
 			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
-			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
+			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader declared more descriptor sets than Metal has buffer indices. binding={binding}",
 		);
 		let Self {
 			device,
@@ -701,101 +716,36 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	pub(super) fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
-		descriptors_at_slot(self.commit.descriptor_sets, &self.bound_descriptor_sets, slot).map(|(_, descriptors)| descriptors)
-	}
-
-	/// Returns the frame-local handles of the bound descriptor sets.
-	fn bound_descriptor_set_handles(&self) -> impl Iterator<Item = DescriptorSetHandle> + '_ {
-		self.bound_descriptor_sets.iter().map(|(handle, _)| *handle)
-	}
-
-	pub(super) fn descriptor_matches_kind(descriptor: Descriptor, kind: crate::shader::ResourceKind) -> bool {
-		match descriptor {
-			Descriptor::Buffer { .. } => matches!(
-				kind,
-				crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer
-			),
-			Descriptor::Image { .. } | Descriptor::Swapchain { .. } => matches!(
-				kind,
-				crate::shader::ResourceKind::SampledImage
-					| crate::shader::ResourceKind::StorageImage
-					| crate::shader::ResourceKind::InputAttachment
-			),
-			Descriptor::CombinedImageSampler { .. } => kind == crate::shader::ResourceKind::CombinedImageSampler,
-			Descriptor::Sampler { .. } => kind == crate::shader::ResourceKind::Sampler,
-			Descriptor::AccelerationStructure { .. } => kind == crate::shader::ResourceKind::AccelerationStructure,
-		}
-	}
-
-	/// Validates the retained set union against the active pipeline without requiring fixed arrays to be fully populated.
+	/// Checks that the bound sets give the active pipeline every resource it uses, with `resolved` holding the bound
+	/// set of each layout the pipeline declares.
 	///
-	/// Only debug builds call it, because it scans every bound set against every pipeline resource.
-	pub(super) fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout) {
-		for (left_index, left_handle) in self.bound_descriptor_set_handles().enumerate() {
-			let left = self.commit.descriptor_sets.resource(left_handle);
-			for right_handle in self.bound_descriptor_set_handles().skip(left_index + 1) {
-				let right = self.commit.descriptor_sets.resource(right_handle);
-
-				assert!(
-					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
-					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
-				);
-			}
-		}
-
-		for resource in &layout.resources {
-			let descriptor = resource.descriptor;
-			let range_start = descriptor.slot().index();
-			let range_end = resource_range_end(descriptor);
-			for set_handle in self.bound_descriptor_set_handles() {
-				let descriptor_set = self.commit.descriptor_sets.resource(set_handle);
-
-				assert!(
-					descriptor_set
-						.descriptors
-						.keys()
-						.all(|slot| resource_accepts_retained_slot_key(descriptor, *slot)),
-					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
-				);
-			}
-			let owner_count = self
-				.bound_descriptor_set_handles()
-				.filter(|set_handle| {
-					self.commit
-						.descriptor_sets
-						.resource(*set_handle)
-						.descriptors
-						.keys()
-						.any(|slot| (range_start..range_end).contains(&slot.index()))
-				})
+	/// A write already checks a resource's kind and array element against its set's layout. Only debug builds call
+	/// this, because it scans every resource the pipeline uses.
+	pub(super) fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout, resolved: &[DescriptorSetHandle]) {
+		for (set, set_handle) in layout.sets.iter().zip(resolved) {
+			let matches = self
+				.bound_descriptor_sets
+				.iter()
+				.filter(|(handle, _)| self.commit.descriptor_sets.resource(*handle).layout.identity() == set.layout.identity())
 				.count();
-
 			assert!(
-				owner_count <= 1,
-				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own slots within the same active shader resource range.",
+				matches == 1,
+				"Ambiguous descriptor sets for layout `{}`. The most likely cause is that two sets created from the same layout were bound for one pipeline.",
+				set.layout.name(),
 			);
 
-			let descriptors = self.descriptors_at_slot(descriptor.slot());
-			if descriptor.count() == 1 {
-				assert!(
-					descriptors.is_some_and(|descriptors| descriptors.contains_key(&0)),
-					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
-					descriptor.slot().index(),
-				);
-			}
-
-			if let Some(descriptors) = descriptors {
-				for (&array_element, &value) in descriptors {
-					assert!(
-						array_element < descriptor.count(),
-						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
-					);
-					assert!(
-						Self::descriptor_matches_kind(value, descriptor.kind()),
-						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
-					);
+			let descriptor_set = self.commit.descriptor_sets.resource(*set_handle);
+			for resource in &set.resources {
+				// An array may be populated in part; a single resource the pipeline uses must be written.
+				if resource.descriptor.count() != 1 {
+					continue;
 				}
+				assert!(
+					descriptor_set.resource_descriptors(resource.resource_index)[0].is_some(),
+					"Missing descriptor at resource slot {} of layout `{}`. The most likely cause is that a resource the pipeline uses was not written before rendering.",
+					resource.descriptor.slot().index(),
+					set.layout.name(),
+				);
 			}
 		}
 	}
@@ -814,22 +764,24 @@ impl<'a> CommandBufferRecording<'a> {
 		self
 	}
 
-	/// Returns the buffer ranges consumed by the next ordinary vertex draw.
-	pub(super) fn bound_vertex_resource_uses(&self) -> SmallVec<[synchronization::MetalResourceUse; 8]> {
-		self.bound_vertex_buffers
-			.iter()
-			.map(|(buffer_handle, offset)| {
-				let handle = self.get_internal_buffer_handle(*buffer_handle);
-				let buffer = self.device.buffers.resource(handle);
-				synchronization::MetalResourceUse::buffer(
-					handle,
-					*offset,
-					buffer.size.saturating_sub(*offset),
-					mtl::MTLStages::Vertex,
-					crate::AccessPolicies::READ,
-				)
-			})
-			.collect()
+	/// Adds the buffer ranges the next ordinary vertex draw consumes to the uses of the command being prepared.
+	pub(super) fn use_bound_vertex_buffers(&mut self) {
+		debug_assert!(
+			self.command_uses.is_empty(),
+			"Metal command uses were left over. The most likely cause is that a command gathered its uses and was never prepared.",
+		);
+		for index in 0..self.bound_vertex_buffers.len() {
+			let (buffer_handle, offset) = self.bound_vertex_buffers[index];
+			let handle = self.get_internal_buffer_handle(buffer_handle);
+			let buffer = self.device.buffers.resource(handle);
+			self.command_uses.push(synchronization::MetalResourceUse::buffer(
+				handle,
+				offset,
+				buffer.size.saturating_sub(offset),
+				mtl::MTLStages::Vertex,
+				crate::AccessPolicies::READ,
+			));
+		}
 	}
 
 	/// Applies changed logical vertex-buffer addresses once before the next ordinary draw.
@@ -912,21 +864,6 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 }
 
-/// Returns the first bound set that writes `slot`, and that set's descriptors there.
-pub(super) fn descriptors_at_slot<'s>(
-	descriptor_sets: &'s context::DescriptorSets,
-	bound_descriptor_sets: &[(DescriptorSetHandle, u64)],
-	slot: crate::shader::ResourceSlot,
-) -> Option<(DescriptorSetHandle, &'s HashMap<u32, Descriptor>)> {
-	bound_descriptor_sets.iter().find_map(|&(set_handle, _)| {
-		descriptor_sets
-			.resource(set_handle)
-			.descriptors
-			.get(&slot)
-			.map(|descriptors| (set_handle, descriptors))
-	})
-}
-
 /// Retains the native allocation behind one tracked use until the command completes.
 ///
 /// Drawables need nothing here: only the present resolve writes one, and its command retains the drawable.
@@ -956,7 +893,7 @@ fn retain_tracked_use(
 }
 
 /// Retains an image's texture and, for an image-group member, the heap that holds its memory.
-pub(super) fn retain_image(device: &RecordingDevice<'_>, command_buffer: &mut queue::NativeCommand, handle: ImageHandle) {
+fn retain_image(device: &RecordingDevice<'_>, command_buffer: &mut queue::NativeCommand, handle: ImageHandle) {
 	let image = device.images.resource(handle);
 	command_buffer.retain_allocation(&*image.texture);
 	if let Some(slot) = &image.slot {

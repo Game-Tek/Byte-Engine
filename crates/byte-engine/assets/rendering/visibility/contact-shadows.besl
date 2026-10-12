@@ -5,18 +5,6 @@
 // full-resolution image, and material evaluation multiplies the sun's shadow by the filtered result.
 // The screen view constants describe the half-resolution image, mip zero of the linear depth pyramid.
 
-// Must match the sun visibility parameters in sun-visibility.besl.
-ContactShadowParameters: struct {
-	// Per sun slot: the view-space unit direction from a surface toward the sun in xyz. The trace ignores w.
-	suns: vec4f[4],
-	// The resolve's full-resolution pixel rays, which the trace does not read.
-	pixel_to_ray: vec4f,
-	// World-space reach of one ray. Occluders further away are left to the shadow map.
-	max_distance: f32,
-	// How many sun slots hold a shadowed sun.
-	sun_count: u32,
-}
-
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line. The ray starts on the
 // pixel's own surface, whose 1/z changes across the screen by `surface_gradient` per pixel.
 ContactShadowRay: struct {
@@ -26,9 +14,6 @@ ContactShadowRay: struct {
 	inverse_start_z: f32,
 	inverse_end_z: f32,
 }
-
-contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 1, access: read }>;
-contact_shadow_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
 
 CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
 // Screen-space reach in half-resolution texels. It bounds the march cost for texels close to the camera.

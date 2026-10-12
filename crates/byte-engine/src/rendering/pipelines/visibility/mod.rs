@@ -24,6 +24,7 @@ mod manager;
 mod mesh_dispatch;
 mod render_pass;
 mod scene;
+mod set_layouts;
 mod shader_data;
 mod shader_generator;
 mod shadow_selection;
@@ -42,4 +43,4 @@ pub use manager::{
 	VisibilityPipelineManager, VisibilityPipelineSettings,
 };
 pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX};
-pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator};
+pub use shader_generator::VisibilityShaderGenerator;

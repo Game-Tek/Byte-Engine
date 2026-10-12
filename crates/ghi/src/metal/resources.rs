@@ -61,6 +61,22 @@ pub(crate) enum Descriptor {
 }
 
 impl Descriptor {
+	/// Returns whether this resource can be bound where a layout declares a resource of `kind`.
+	pub(crate) fn matches_kind(self, kind: crate::shader::ResourceKind) -> bool {
+		use crate::shader::ResourceKind;
+
+		match self {
+			Descriptor::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
+			Descriptor::Image { .. } | Descriptor::Swapchain { .. } => matches!(
+				kind,
+				ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
+			),
+			Descriptor::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
+			Descriptor::Sampler { .. } => kind == ResourceKind::Sampler,
+			Descriptor::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
+		}
+	}
+
 	pub(crate) fn tracked_resource(self) -> Option<PrivateHandles> {
 		match self {
 			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(buffer)),

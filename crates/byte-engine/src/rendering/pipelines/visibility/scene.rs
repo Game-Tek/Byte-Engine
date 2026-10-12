@@ -149,7 +149,7 @@ pub struct VisibilityScene {
 	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
 	/// Light slots grouped by light handle.
 	pub(crate) light_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
-	/// Shared base descriptor set bound by every visibility pass.
+	/// The scene descriptor set every visibility pass binds, created from [`super::set_layouts::SCENE`].
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	pub(crate) meshes_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,

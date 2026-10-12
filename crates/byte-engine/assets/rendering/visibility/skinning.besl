@@ -1,29 +1,3 @@
-MatrixPalette: struct {
-	values: mat4x3f[65536],
-}
-
-DualQuaternion: struct {
-	real: vec4f,
-	dual: vec4f,
-}
-
-DualQuaternionPalette: struct {
-	values: DualQuaternion[65536],
-}
-
-SkinnedVertices: struct {
-	values: SkinnedVertex[262144],
-}
-
-// Bind-pose sources are sized by the geometry capacity at runtime.
-source_positions: descriptor<{ type: vec3f[], binding: 0, access: read, memory: device }>;
-source_normals: descriptor<{ type: vec3f[], binding: 1, access: read, memory: device }>;
-source_joints: descriptor<{ type: vec4u16[], binding: 2, access: read, memory: device }>;
-source_weights: descriptor<{ type: vec4f[], binding: 3, access: read, memory: device }>;
-matrix_palette: descriptor<{ type: MatrixPalette, binding: 4, access: read, memory: device }>;
-skinned_vertices: descriptor<{ type: SkinnedVertices, binding: 5, access: write, memory: device }>;
-dual_quaternion_palette: descriptor<{ type: DualQuaternionPalette, binding: 6, access: read, memory: device }>;
-
 push_constant: push_constant {
 	source_vertex_base: u32,
 	destination_vertex_base: u32,

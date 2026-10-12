@@ -1,0 +1,9 @@
+// The descriptor set of the depth pyramid pass: the depth buffer it reads, the three pyramid mips it writes, and the
+// shadow receiver bounds it measures against the CPU's cascade fit. List it after `receiver-bounds.besl`.
+
+source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
+reduced_depth_2: descriptor<{ type: StorageImage<r32f>, binding: 1035, access: write }>;
+reduced_depth_3: descriptor<{ type: StorageImage<r32f>, binding: 1036, access: write }>;
+receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1037, access: read_write, memory: device }>;
+receiver_fit: descriptor<{ type: ReceiverFit, binding: 1038, access: read }>;

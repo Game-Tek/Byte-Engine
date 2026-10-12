@@ -1,16 +1,3 @@
-MaterialOffset: struct {
-	material_offset: u32[1024],
-}
-
-MaterialEvaluationDispatches: struct {
-	material_evaluation_dispatches: vec3u[1024],
-}
-
-material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write }>;
-material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access: read_write }>;
-material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write }>;
-material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write }>;
-
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
 

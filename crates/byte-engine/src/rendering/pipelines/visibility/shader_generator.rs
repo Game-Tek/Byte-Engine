@@ -11,7 +11,6 @@ mod sources;
 mod tests;
 
 use besl::parser::Node;
-use ghi::AccessPolicies;
 use resource_management::asset::JsonObject;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
@@ -25,22 +24,18 @@ use super::layout::{
 	material_variable_specialization_id,
 };
 use crate::rendering::common_shader_generator::common_shader_scope;
+use crate::rendering::set_layout::layer;
 
-// BESL array types are spelled out so the scope stays a plain literal; these guards catch limit changes.
-const LIGHT_ARRAY: &str = "Light[1024]";
-const LIGHT_CLUSTER_MASK_ARRAY: &str = "u32[98304]";
-const MATERIAL_ARRAY: &str = "Material[1024]";
-const MATERIAL_TEXTURE_ARRAY: &str = "u32[16]";
-const SKINNED_VERTEX_ARRAY: &str = "SkinnedVertex[262144]";
-const PIXEL_MAPPING_ARRAY: &str = "vec2u16[8294400]";
+// The layout layers spell out their array sizes; these guards catch limit changes.
 const _: () = assert!(
 	MAX_LIGHTS == 1024
 		&& LIGHT_CLUSTER_MASK_WORD_COUNT == 98304
 		&& MAX_MATERIALS == 1024
 		&& MAX_MATERIAL_TEXTURES == 16
+		&& MAX_BINDLESS_TEXTURES == 1024
 		&& super::skinning::MAX_SKINNED_VERTICES == 262144
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
-	"Update the visibility shader scope array types when visibility limits change."
+	"Update the array sizes in `scene.besl`, `visibility-buffer.besl`, `material-dispatch.besl`, and `material-evaluation.besl` when visibility limits change."
 );
 // The material evaluation suffix in `sources` and `light-clusters.besl` spell out the cluster grid.
 const _: () = assert!(
@@ -48,28 +43,17 @@ const _: () = assert!(
 	"Update the light cluster grid in the material evaluation suffix and light-clusters.besl when it changes."
 );
 
-/// The `ScopeAccess` struct declares how a generated shader touches the per-sink material dispatch buffers.
+/// The layout layers every material-evaluation shader builds on, lowest first: the scene records, then the scene,
+/// visibility buffer, and material evaluation descriptor sets.
 ///
-/// The default grants read and write access everywhere, which suits baking every visibility shader with one
-/// generator. Narrow it when a backend needs exact access declarations for one shader family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScopeAccess {
-	pub material_count: AccessPolicies,
-	pub material_offset: AccessPolicies,
-	pub material_offset_scratch: AccessPolicies,
-	pub pixel_mapping: AccessPolicies,
-}
-
-impl Default for ScopeAccess {
-	fn default() -> Self {
-		Self {
-			material_count: AccessPolicies::READ_WRITE,
-			material_offset: AccessPolicies::READ_WRITE,
-			material_offset_scratch: AccessPolicies::READ_WRITE,
-			pixel_mapping: AccessPolicies::READ_WRITE,
-		}
-	}
-}
+/// The render pass creates those sets from the same layers, see [`super::set_layouts`], so a generated shader and the
+/// sets it is bound with cannot disagree.
+const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 4] = [
+	layer!("visibility/layouts/scene-records.besl"),
+	layer!("visibility/layouts/scene.besl"),
+	layer!("visibility/layouts/visibility-buffer.besl"),
+	layer!("visibility/layouts/material-evaluation.besl"),
+];
 
 /// The `VisibilityShaderGenerator` struct turns portable material programs into visibility material-evaluation shaders.
 ///
@@ -88,21 +72,22 @@ impl VisibilityShaderGenerator {
 	///
 	/// Next, pass it to [`crate::application::graphics::register_default_asset_handlers`].
 	pub fn new(features: VisibilityFeatures) -> Self {
-		Self::with_access(features, ScopeAccess::default())
-	}
-
-	/// Creates a generator that declares `access` to the material dispatch buffers.
-	pub fn with_access(features: VisibilityFeatures, access: ScopeAccess) -> Self {
 		Self {
 			common: common_shader_scope(),
-			scope: visibility_shader_scope(access),
+			scope: visibility_shader_scope(),
 			features,
 		}
 	}
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform<'a>(&self, mut root: Node<'a>, material: &'a JsonObject) -> Node<'a> {
+	fn transform<'a>(&self, root: Node<'a>, material: &'a JsonObject) -> Node<'a> {
+		// The layers declare the descriptor sets and the records they hold, ahead of everything that reads them.
+		let mut root = besl::stack_layers(root, MATERIAL_EVALUATION_LAYERS).unwrap_or_else(|error| {
+			panic!(
+				"Failed to stack a material on the visibility layout layers ({error:?}). The most likely cause is a material that declares a name one of the layers already declares."
+			)
+		});
 		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path.
 		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
 		let mut texture_slots = Vec::new();
@@ -143,48 +128,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 	}
 }
 
-/// Builds the scope that gives material programs the shared visibility data and lighting contract. Every binding slot
-/// here mirrors [`super::layout`].
-pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
+/// Builds the scope that gives material programs the helpers of the visibility lighting contract.
+///
+/// The descriptors and records the helpers read come from [`MATERIAL_EVALUATION_LAYERS`], which
+/// [`VisibilityShaderGenerator`] stacks under every material.
+pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 	let structs = vec![
-		Node::r#struct(
-			"View",
-			vec![
-				Node::member("view", "mat4x3f"),
-				Node::member("view_projection", "mat4f"),
-				Node::member("inverse_view", "mat4x3f"),
-				Node::member("fov", "vec2f"),
-				Node::member("near", "f32"),
-				Node::member("far", "f32"),
-			],
-		),
-		// Holds every entry of `views`, `SHADOW_VIEW_COUNT`: shadow sampling reads cone and point views past the cascades.
-		Node::constant_buffer_binding(
-			"views",
-			Node::buffer(vec![Node::member("views", "View[129]")]),
-			0,
-			true,
-			false,
-		),
-		Node::r#struct(
-			"Mesh",
-			vec![
-				Node::member("model", "mat4x3f"),
-				Node::member("material_index", "u32"),
-				Node::member("base_vertex_index", "u32"),
-				Node::member("base_primitive_index", "u32"),
-				Node::member("base_triangle_index", "u32"),
-				Node::member("base_meshlet_index", "u32"),
-				Node::member("meshlet_count", "u32"),
-				Node::member("skinned_base_vertex_index", "u32"),
-				Node::member("flags", "u32"),
-				Node::member("bounding_sphere", "vec4f"),
-			],
-		),
-		Node::r#struct(
-			"SkinnedVertex",
-			vec![Node::member("position", "vec3f"), Node::member("normal", "vec3f")],
-		),
 		Node::r#struct(
 			"TriangleInterpolation",
 			vec![
@@ -194,126 +143,6 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 				Node::member("raw_ddy", "vec3f"),
 			],
 		),
-		Node::r#struct(
-			"Meshlet",
-			vec![
-				Node::member("primitive_offset", "u32"),
-				Node::member("triangle_offset", "u32"),
-				Node::member("primitive_count", "u32"),
-				Node::member("triangle_count", "u32"),
-				Node::member("center_radius", "vec4f"),
-				Node::member("cone_apex_cutoff", "vec4f"),
-				Node::member("cone_axis", "vec2u16"),
-			],
-		),
-		Node::r#struct(
-			"Light",
-			vec![
-				Node::member("position", "vec3f"),
-				Node::member("color", "vec3f"),
-				Node::member("direction", "vec3f"),
-				Node::member("cone_cosines", "vec2f"),
-				Node::member("type", "u32"),
-				Node::member("shadow_views", "u32[8]"),
-				Node::member("shadow_layer", "u32"),
-				Node::member("ies_profile_texture", "u32"),
-				Node::member("ies_c0_tangent", "vec2u16"),
-				Node::member("reach", "f32"),
-				Node::member("angular_radius_tangent", "f32"),
-			],
-		),
-		Node::r#struct(
-			"Material",
-			vec![
-				Node::member("textures", MATERIAL_TEXTURE_ARRAY),
-				Node::member("coverage_factor", "f32"),
-				Node::member("coverage_texture_slot", "u32"),
-				Node::member("alpha_cutoff", "f32"),
-				Node::member("padding", "u32"),
-			],
-		),
-	];
-
-	let read_buffer = |name, member, r#type, slot| {
-		Node::device_buffer_binding(name, Node::buffer(vec![Node::member(member, r#type)]), slot, true, false)
-	};
-	// Each dispatch buffer holds one member named like its binding.
-	let access_buffer = |name, r#type, slot, access: AccessPolicies| {
-		Node::device_buffer_binding(
-			name,
-			Node::buffer(vec![Node::member(name, r#type)]),
-			slot,
-			access.contains(AccessPolicies::READ),
-			access.contains(AccessPolicies::WRITE),
-		)
-	};
-	// Geometry streams are runtime-length arrays sized by `GeometryCapacity`, so their capacity is not compiled in.
-	let geometry_stream = |name, element, slot| Node::runtime_array_binding(name, element, slot, true, false);
-	let sampled = |name, image, slot| Node::binding(name, image, slot, true, false);
-	let base_bindings = vec![
-		read_buffer("meshes", "meshes", "Mesh[1024]", 1),
-		geometry_stream("vertex_positions", "vec3f", 2),
-		geometry_stream("vertex_normals", "vec2u16", 3),
-		read_buffer("skinned_vertices", "vertices", SKINNED_VERTEX_ARRAY, 4),
-		geometry_stream("vertex_uvs", "vec2f16", 5),
-		geometry_stream("vertex_indices", "u16", 6),
-		// Three meshlet-local vertex indices per triangle, read as `primitive_indices[triangle * 3 + corner]`.
-		geometry_stream("primitive_indices", "u8", 7),
-		geometry_stream("meshlets", "Meshlet", 8),
-		Node::binding_array(
-			"textures",
-			Node::combined_image_sampler(),
-			9,
-			true,
-			false,
-			MAX_BINDLESS_TEXTURES as u32,
-		),
-		access_buffer("material_count", "u32[1024]", 1033, access.material_count),
-		access_buffer("material_offset", "u32[1024]", 1034, access.material_offset),
-		access_buffer("material_offset_scratch", "u32[1024]", 1035, access.material_offset_scratch),
-		access_buffer("pixel_mapping", PIXEL_MAPPING_ARRAY, 1037, access.pixel_mapping),
-		Node::binding("triangle_index", Node::image("r32ui"), 1039, true, false),
-		Node::binding("instance_index_render_target", Node::image("r32ui"), 1040, true, false),
-	];
-	let material_evaluation_bindings = vec![
-		Node::binding("lit_map", Node::image("r11f_g11f_b10f"), 1041, true, true),
-		Node::binding("diffuse_radiance_map", Node::image("rgba16f"), 1057, false, true),
-		// The light table outgrows constant-buffer limits, so it is a read-only storage buffer.
-		Node::device_buffer_binding(
-			"lighting_data",
-			Node::buffer(vec![
-				Node::member("light_count", "u32"),
-				Node::member("exposure", "f32"),
-				Node::member("environment_intensity", "f32"),
-				Node::member("lights", LIGHT_ARRAY),
-			]),
-			1045,
-			true,
-			false,
-		),
-		read_buffer("light_cluster_masks", "words", LIGHT_CLUSTER_MASK_ARRAY, 1066),
-		Node::constant_buffer_binding(
-			"light_cluster_parameters",
-			Node::buffer(vec![
-				Node::member("view", "mat4x3f"),
-				Node::member("edge_slopes", "vec2f"),
-				Node::member("near", "f32"),
-				Node::member("depth_slice_scale", "f32"),
-			]),
-			1067,
-			true,
-			false,
-		),
-		read_buffer("materials", "materials", MATERIAL_ARRAY, 1046),
-		sampled("ao", Node::combined_image_sampler(), 1051),
-		sampled("sun_visibility", Node::combined_image_sampler(), 1058),
-		depth_pyramid_binding(),
-		sampled("depth_shadow_map", Node::combined_array_image_sampler(), 1052),
-		sampled("directional_shadow_depth_pyramid", Node::combined_image_sampler(), 1053),
-		sampled("environment_irradiance", Node::combined_cube_image_sampler(), 1054),
-		sampled("environment_specular", Node::combined_cube_image_sampler(), 1055),
-		sampled("cone_shadow_map", Node::combined_array_image_sampler(), 1064),
-		sampled("point_shadow_map", Node::combined_cube_array_image_sampler(), 1065),
 		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` and
 		// `ssgi` are nonzero when those passes wrote their images this frame. The phase is the `transparent`
 		// specialization instead, so each phase's pipeline compiles only its own path.
@@ -406,8 +235,6 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 	];
 
 	let mut children = structs;
-	children.extend(base_bindings);
-	children.extend(material_evaluation_bindings);
 	children.extend(screen_space_reflection_scope());
 	children.extend(screen_space_indirect_diffuse_scope());
 	children.push(sample_texture);
@@ -415,40 +242,13 @@ pub(super) fn visibility_shader_scope<'a>(access: ScopeAccess) -> Node<'a> {
 	Node::scope("Visibility", children)
 }
 
-/// Declares mip zero of the linear depth pyramid, which holds half-resolution positive linear depth.
-///
-/// Reflection rays march it and the indirect diffuse upsample reads it. The slot mirrors
-/// [`super::layout::DEPTH_PYRAMID_BINDING`].
-fn depth_pyramid_binding() -> Node<'static> {
-	Node::binding("depth_pyramid", Node::combined_image_sampler(), 1060, true, false)
-}
-
-/// Declares the screen-space indirect diffuse helpers from [`sources`], with the bindings they read.
+/// Declares the screen-space indirect diffuse helpers from [`sources`].
 ///
 /// Opaque material evaluation reconstructs each pixel's indirect diffuse light from the half-resolution SSGI history
-/// with them, next to [`depth_pyramid_binding`], so SSGI writes no full-resolution image. The slots mirror
-/// [`super::layout::SSGI_NORMALS_BINDING`], [`super::layout::SSGI_VIEW_BINDING`], and
-/// [`super::layout::SSGI_HISTORY_BINDING`].
+/// with them, so SSGI writes no full-resolution image. They read `ssgi_normals`, `ssgi_view`, `ssgi_history`, and
+/// `depth_pyramid` of the material evaluation set.
 fn screen_space_indirect_diffuse_scope() -> Vec<Node<'static>> {
-	let mut nodes = vec![
-		Node::binding("ssgi_normals", Node::combined_image_sampler(), 1047, true, false),
-		// The camera constants of the half-resolution SSGI images, as `ScreenViewData` lays them out.
-		Node::device_buffer_binding(
-			"ssgi_view",
-			Node::buffer(vec![
-				Node::member("pixel_to_ray_mul", "vec2f"),
-				Node::member("pixel_to_ray_add", "vec2f"),
-				Node::member("projection_pixels_y", "f32"),
-				Node::member("view_z_sign", "f32"),
-				Node::member("depth_unproject_numerator", "f32"),
-				Node::member("depth_unproject_denominator_offset", "f32"),
-			]),
-			1048,
-			true,
-			false,
-		),
-		Node::binding("ssgi_history", Node::combined_image_sampler(), 1056, true, false),
-	];
+	let mut nodes = Vec::new();
 	// Helpers follow the bindings they read, in dependency order.
 	nodes.extend(
 		[
@@ -464,11 +264,11 @@ fn screen_space_indirect_diffuse_scope() -> Vec<Node<'static>> {
 	nodes
 }
 
-/// Declares the screen-space reflection helpers from [`sources`], with the ray struct and bindings they read.
+/// Declares the screen-space reflection helpers from [`sources`], with the ray struct they share.
 ///
-/// Material evaluation traces its reflection rays with them through [`depth_pyramid_binding`], and writes this
-/// frame's radiance history for the next frame's rays. The slots mirror
-/// [`super::layout::REFLECTION_PARAMETERS_BINDING`] and the bindings after it.
+/// Material evaluation traces its reflection rays with them through `depth_pyramid`, and writes this frame's radiance
+/// history for the next frame's rays. They read `reflection_parameters` and `previous_radiance` of the material
+/// evaluation set.
 fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	let mut nodes = vec![
 		// One ray's screen-space path, in normalized image coordinates. Screen position and 1/z are both linear along a
@@ -482,20 +282,6 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 				Node::member("inverse_end_z", "f32"),
 			],
 		),
-		Node::constant_buffer_binding(
-			"reflection_parameters",
-			Node::buffer(vec![
-				Node::member("world_to_previous_clip", "mat4f"),
-				Node::member("previous_exposure", "f32"),
-				Node::member("history_valid", "u32"),
-				Node::member("_padding", "u32[2]"),
-			]),
-			1059,
-			true,
-			false,
-		),
-		Node::binding("previous_radiance", Node::combined_image_sampler(), 1061, true, false),
-		Node::binding("radiance_history_map", Node::image("rgba16f"), 1062, false, true),
 	];
 	// Helpers follow the bindings they read, in dependency order.
 	nodes.extend(

@@ -7,7 +7,7 @@
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 
-use super::layout::{MAX_INSTANCE_MESHLETS, MAX_INSTANCES, MESH_DISPATCH_WORK_BINDING, MESHLET_CULLING_TASK_GROUP_SIZE};
+use super::layout::{MAX_INSTANCE_MESHLETS, MAX_INSTANCES, MESHLET_CULLING_TASK_GROUP_SIZE};
 use super::scene::{Instance, RenderInfo};
 
 const MAX_WORK_ITEMS_PER_INSTANCE: usize = MAX_INSTANCE_MESHLETS.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE as usize);
@@ -68,18 +68,16 @@ pub(crate) struct MeshDispatchWorkBuffer {
 }
 
 impl MeshDispatchWorkBuffer {
-	/// Creates the work buffer and binds it to the base descriptor set.
-	pub(crate) fn new(context: &mut ghi::implementation::Context, descriptor_set: ghi::DescriptorSetHandle) -> Self {
+	/// Creates the work buffer and binds it in `scene_set`, the pipeline's scene descriptor set.
+	pub(crate) fn new(context: &mut ghi::implementation::Context, scene_set: ghi::DescriptorSetHandle) -> Self {
 		let handle = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Mesh Dispatch Work")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		context.write(&[ghi::DescriptorWrite::buffer(
-			descriptor_set,
-			MESH_DISPATCH_WORK_BINDING.slot(),
-			handle.into(),
-		)]);
+		context.write(&[super::set_layouts::SCENE
+			.binder(scene_set)
+			.buffer("mesh_dispatch_work", handle)]);
 		Self { handle }
 	}
 

@@ -20,6 +20,7 @@ use super::super::shadow_selection::{ShadowLayout, SunShadow};
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::{ComputeStage, OcclusionPhase, Pipelines, StageCounters, record_compute_stages, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -28,12 +29,6 @@ pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
 /// Shadow-map texels on each side of one max-depth cell in the cascade depth pyramid. The directional shadow helpers
 /// and `directional-shadow-depth-pyramid.besl` assume this size.
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 8;
-const DEPTH_PYRAMID_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-const DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const DEPTH_PYRAMID_MINIMUM_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const RECEIVER_BOUNDS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const RECEIVER_FIT_PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const CASCADE_SIZE_STEPS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
 /// Encoded bounds per cascade: the lower then the upper corner of the box its receivers fill.
 const RECEIVER_BOUNDS_PER_CASCADE: usize = 6;
 /// Every sun's cascades, one fitted box each.
@@ -218,31 +213,14 @@ impl ShadowMaps {
 			.build_image(depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(NonZeroU32::MIN))
 			.into();
 		let depth_pyramid_descriptor_set =
-			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
+			set_layouts::SHADOW_DEPTH_PYRAMID.create_set(context, "Directional Shadow Depth Pyramid Descriptor Set");
 		// The pyramid gathers texel quads, which no sampler filter or reduction touches.
 		let source_sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let pyramid = set_layouts::SHADOW_DEPTH_PYRAMID.binder(depth_pyramid_descriptor_set);
 		context.write(&[
-			ghi::DescriptorWrite::combined_image_sampler(
-				depth_pyramid_descriptor_set,
-				DEPTH_PYRAMID_SOURCE_BINDING,
-				directional,
-				source_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::image_mip(
-				depth_pyramid_descriptor_set,
-				DEPTH_PYRAMID_OUTPUT_BINDING,
-				directional_depth_pyramid,
-				ghi::Layouts::General,
-				0,
-			),
-			ghi::DescriptorWrite::image_mip(
-				depth_pyramid_descriptor_set,
-				DEPTH_PYRAMID_MINIMUM_OUTPUT_BINDING,
-				directional_depth_minimum_pyramid,
-				ghi::Layouts::General,
-				0,
-			),
+			pyramid.sampled("source_depth", directional, source_sampler),
+			pyramid.image_mip("reduced_depth_1", directional_depth_pyramid, 0),
+			pyramid.image_mip("reduced_minimum_1", directional_depth_minimum_pyramid, 0),
 		]);
 		Self {
 			depth_pyramid_descriptor_set,
@@ -409,7 +387,6 @@ impl ShadowMaps {
 /// Each sink owns one, because the fit reads that sink's depth. Only the sink the views were made for fits them; see
 /// [`ShadowWork::receiver_fit`].
 pub(super) struct CascadeFitPass {
-	descriptor_set: ghi::DescriptorSetHandle,
 	receiver_fit_descriptor_set: ghi::DescriptorSetHandle,
 	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
 	/// The box each cascade's receivers fill. The linear depth pyramid pass merges every frame's receivers into it,
@@ -420,15 +397,17 @@ pub(super) struct CascadeFitPass {
 }
 
 impl CascadeFitPass {
-	/// Creates the fit's buffers and requests its pipeline. `descriptor_set` is the base visibility set, whose views
-	/// the fit rewrites. Hand [`Self::receiver_bounds`] and [`Self::receiver_fit_parameters`] to the sink's
-	/// [`super::DepthPyramidPass`], which finds the bounds.
+	/// Creates the fit's buffers and requests its pipeline. `views` is the scene's views buffer, whose cascade views
+	/// the fit rewrites through its own set, the only one that binds them for writing. Hand
+	/// [`Self::receiver_bounds`] and [`Self::receiver_fit_parameters`] to the sink's [`super::DepthPyramidPass`],
+	/// which finds the bounds.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		descriptor_set: ghi::DescriptorSetHandle,
+		views: ghi::BaseBufferHandle,
 	) -> Self {
-		let receiver_fit_descriptor_set = context.create_descriptor_set(Some("Directional Shadow Receiver Fit Descriptor Set"));
+		let receiver_fit_descriptor_set =
+			set_layouts::CASCADE_FIT.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
 		let receiver_fit_parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Directional Shadow Receiver Fit Parameters")
@@ -446,15 +425,14 @@ impl CascadeFitPass {
 		// The fit clamps whatever size a new buffer holds to a valid one, so it needs no initial contents.
 		let cascade_size_steps: ghi::BufferHandle<[u32; RECEIVER_FIT_CASCADES]> =
 			context.build_buffer(device_buffer("Directional Shadow Cascade Size Steps", ghi::Uses::empty()));
-		let fit_buffer =
-			|binding, buffer: ghi::BaseBufferHandle| ghi::DescriptorWrite::buffer(receiver_fit_descriptor_set, binding, buffer);
+		let fit = set_layouts::CASCADE_FIT.binder(receiver_fit_descriptor_set);
 		context.write(&[
-			fit_buffer(RECEIVER_BOUNDS_BINDING, receiver_bounds.into()),
-			fit_buffer(RECEIVER_FIT_PARAMETERS_BINDING, receiver_fit_parameters.into()),
-			fit_buffer(CASCADE_SIZE_STEPS_BINDING, cascade_size_steps.into()),
+			fit.buffer("views", views),
+			fit.buffer("receiver_bounds", receiver_bounds),
+			fit.buffer("receiver_fit", receiver_fit_parameters),
+			fit.buffer("cascade_size_steps", cascade_size_steps),
 		]);
 		Self {
-			descriptor_set,
 			receiver_fit_descriptor_set,
 			receiver_fit_parameters,
 			receiver_bounds,
@@ -504,7 +482,6 @@ impl CascadeFitPass {
 		let clear_bounds = fits_receivers && !self.bounds_cleared.swap(true, std::sync::atomic::Ordering::Relaxed);
 		let receiver_fit_descriptor_set = self.receiver_fit_descriptor_set;
 		let receiver_bounds = self.receiver_bounds;
-		let descriptor_set = self.descriptor_set;
 
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::{
@@ -519,9 +496,9 @@ impl CascadeFitPass {
 			if clear_bounds {
 				c.clear_buffers(&[receiver_bounds.into()]);
 			}
-			// One thread per cascade of every sun rewrites its view in the base set's views buffer, one workgroup per sun.
+			// One thread per cascade of every sun rewrites its view in the scene's views buffer, one workgroup per sun.
 			let fit = c.bind_compute_pipeline(cascade_fit_pipeline);
-			fit.bind_descriptor_sets(&[descriptor_set, receiver_fit_descriptor_set]);
+			fit.bind_descriptor_sets(&[receiver_fit_descriptor_set]);
 			fit.dispatch(ghi::DispatchExtent::new(
 				Extent::line(fitted_cascades),
 				Extent::line(SHADOW_CASCADE_COUNT as u32),

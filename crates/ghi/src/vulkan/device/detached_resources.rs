@@ -26,7 +26,7 @@ impl crate::device::Device for Device {
 		_name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<crate::ShaderHandle, ()> {
 		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
 			return Err(());
@@ -42,7 +42,8 @@ impl crate::device::Device for Device {
 		self.shaders.push(crate::vulkan::Shader {
 			shader,
 			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			// This backend still derives its native layouts from flat slots.
+			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets),
 		});
 
 		Ok(crate::ShaderHandle(self.shaders.len() as u64 - 1))

@@ -9,13 +9,6 @@
 // device coordinates of the cascade as the CPU fitted it to the camera frustum, where every receiver lies inside -1..1
 // in x and y and 0..1 in z. The cascade fit then shrinks each cascade to its box and resets the bounds.
 
-source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
-reduced_depth_2: descriptor<{ type: StorageImage<r32f>, binding: 1035, access: write }>;
-reduced_depth_3: descriptor<{ type: StorageImage<r32f>, binding: 1036, access: write }>;
-receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1037, access: read_write, memory: device }>;
-receiver_fit: descriptor<{ type: ReceiverFit, binding: 1038, access: read }>;
-
 // How many suns' receiver bounds to find: zero on frames no cascade fits receivers.
 push_constant: push_constant {
 	fitted_suns: u32,

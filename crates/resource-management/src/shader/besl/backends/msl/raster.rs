@@ -53,10 +53,8 @@ impl Generator {
 		self.emit_storage_declarations(string, &nodes.declarations, return_type.as_ref());
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
-		if !bindings.is_empty() {
-			self.emit_argument_buffer_struct(string, &bindings);
-		}
+		let has_resources = self.has_argument_sets();
+		self.emit_argument_buffer_structs(string);
 
 		if vertex {
 			self.emit_vertex_input_struct(string, &nodes.inputs);
@@ -76,7 +74,7 @@ impl Generator {
 					.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == builtin))
 		};
 		let context = RasterStageContext {
-			has_resources: !bindings.is_empty(),
+			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
 			has_vertex_index: has_input(besl::VERTEX_INDEX_BUILTIN),
 			has_instance_index: has_input(besl::INSTANCE_INDEX_BUILTIN),
@@ -489,9 +487,11 @@ impl Generator {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
+		// A kernel that takes bare resources has no argument buffers to forward to its helpers.
+		let has_resources =
+			matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) && self.has_argument_sets();
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
-			has_resources: !bindings.is_empty(),
+			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
 			workgroups: Self::stage_workgroups(&nodes.workgroups),
 		});
@@ -500,8 +500,8 @@ impl Generator {
 
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		if matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) && !bindings.is_empty() {
-			self.emit_argument_buffer_struct(string, &bindings);
+		if has_resources {
+			self.emit_argument_buffer_structs(string);
 		}
 
 		self.emit_functions(string, &nodes.functions);
@@ -530,9 +530,9 @@ impl Generator {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
+		let has_resources = self.has_argument_sets();
 		let previous_task_stage_context = self.task_stage_context.replace(TaskStageContext {
-			has_resources: !bindings.is_empty(),
+			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
 			workgroups: Self::stage_workgroups(&nodes.workgroups),
@@ -542,16 +542,14 @@ impl Generator {
 
 		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
-		if !bindings.is_empty() {
-			self.emit_argument_buffer_struct(string, &bindings);
-		}
+		self.emit_argument_buffer_structs(string);
 		self.emit_object_payload_struct(string, &nodes.task_payloads);
 
 		self.emit_functions(string, &nodes.functions);
 		self.emit_task_entry_point(
 			string,
 			main_function_node,
-			!bindings.is_empty(),
+			has_resources,
 			nodes.push_constant,
 			&nodes.task_payloads,
 			&nodes.workgroups,
@@ -576,7 +574,7 @@ impl Generator {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let bindings = Self::sort_bindings_by_slot(&nodes.bindings);
+		let has_resources = self.has_argument_sets();
 		let mesh_output_fields = nodes
 			.outputs
 			.iter()
@@ -595,7 +593,7 @@ impl Generator {
 			})
 			.collect();
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
-			has_resources: !bindings.is_empty(),
+			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
 			uses_render_target_array_index,
@@ -607,9 +605,7 @@ impl Generator {
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		if !bindings.is_empty() {
-			self.emit_argument_buffer_struct(string, &bindings);
-		}
+		self.emit_argument_buffer_structs(string);
 		self.emit_object_payload_struct(string, &nodes.task_payloads);
 
 		if !Self::has_raw_mesh_output_structs(&nodes.declarations) {
@@ -620,7 +616,7 @@ impl Generator {
 		self.emit_mesh_entry_point_argument_buffers(
 			string,
 			main_function_node,
-			!bindings.is_empty(),
+			has_resources,
 			nodes.push_constant,
 			!nodes.task_payloads.is_empty(),
 			maximum_vertices,
@@ -685,15 +681,5 @@ impl Generator {
 				self.emit_user_attribute(string, Self::mesh_output_field_name(name), format, *location);
 			}
 		}
-	}
-
-	/// Returns resources in logical-slot order so generated MSL remains deterministic.
-	pub(crate) fn sort_bindings_by_slot<'a>(bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference> {
-		let mut sorted = bindings.to_vec();
-		sorted.sort_unstable_by_key(|binding| match binding.borrow().node() {
-			besl::Nodes::Binding { slot, .. } => *slot,
-			_ => u32::MAX,
-		});
-		sorted
 	}
 }

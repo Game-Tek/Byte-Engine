@@ -1030,7 +1030,7 @@ impl crate::device::Device for Device {
 		_name: Option<&str>,
 		_shader_source_type: Sources,
 		_stage: ShaderTypes,
-		_shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
+		_descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
 		detached_creation_unavailable("shader")
 	}
@@ -1076,11 +1076,24 @@ impl crate::context::ContextCreate for Device {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		Device::create_shader(self, name, shader_source_type, stage, shader_resource_descriptors)
+		// This backend still derives its root signature from flat slots, so it reads the sets as one flat interface.
+		Device::create_shader(
+			self,
+			name,
+			shader_source_type,
+			stage,
+			crate::shader::flatten_used_resources(descriptor_sets),
+		)
 	}
-	fn create_descriptor_set(&mut self, name: Option<&str>) -> DescriptorSetHandle {
+	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
+	/// not lay the set out from `layout` yet.
+	fn create_descriptor_set(
+		&mut self,
+		name: Option<&str>,
+		_layout: &crate::shader::DescriptorSetLayout,
+	) -> DescriptorSetHandle {
 		Device::create_descriptor_set(self, name)
 	}
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle {

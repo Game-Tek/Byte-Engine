@@ -1,0 +1,12 @@
+// The descriptor set of the GTAO evaluation pass: its settings, the linear depth pyramid it reads, and the
+// half-resolution occlusion it writes. The screen view constants come from `gtao-view.besl`.
+
+GTAOParameters: struct {
+	radius: f32,
+	samples_per_ray: u32,
+	radial_rays: u32,
+}
+
+gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
+depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;

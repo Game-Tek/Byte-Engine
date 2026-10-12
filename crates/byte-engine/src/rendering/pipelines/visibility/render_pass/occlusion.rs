@@ -14,10 +14,10 @@
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
-use super::super::layout::{OCCLUSION_PYRAMID_BINDING, OCCLUSION_VISIBILITY_BINDING};
 use super::super::mesh_dispatch::MAX_MESH_DISPATCH_WORK_ITEMS;
 use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::rendering::PipelineManagerClient;
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 
 /// The pyramid has a fixed extent, so its mip count does not depend on the sink's. Culling maps it over the whole
@@ -37,9 +37,11 @@ const _: () =
 const _: () =
 	assert!(OCCLUSION_PYRAMID_WIDTH >> (BASE_LEVELS - 1) == 32 && OCCLUSION_PYRAMID_HEIGHT >> (BASE_LEVELS - 1) == 16);
 
-// Both build stages read their source at 1033 and write their levels from 1034 up.
-const SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-const FIRST_LEVEL_BINDING: u32 = 1034;
+/// The pyramid's levels, as `layouts/hiz-base.besl` and `layouts/hiz-tail.besl` name the image each one is written
+/// through. The base stage writes the first [`BASE_LEVELS`] and the tail stage the rest.
+const LEVEL_NAMES: [&str; OCCLUSION_PYRAMID_MIP_COUNT as usize] = [
+	"level_0", "level_1", "level_2", "level_3", "level_4", "level_5", "level_6", "level_7", "level_8",
+];
 
 /// The `OcclusionPhase` enum selects how one meshlet pass culls by occlusion. `meshlet-task.besl` spells each phase as an
 /// `OCCLUSION_*` constant.
@@ -80,10 +82,10 @@ impl OcclusionCulling {
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 	) -> Self {
-		let descriptor_set = context.create_descriptor_set(Some("Occlusion Culling Descriptor Set"));
+		let descriptor_set = set_layouts::OCCLUSION.create_set(context, "Occlusion Culling Descriptor Set");
 		let build_descriptor_sets = [
-			context.create_descriptor_set(Some("Occlusion Pyramid Base Descriptor Set")),
-			context.create_descriptor_set(Some("Occlusion Pyramid Tail Descriptor Set")),
+			set_layouts::HIZ_BASE.create_set(context, "Occlusion Pyramid Base Descriptor Set"),
+			set_layouts::HIZ_TAIL.create_set(context, "Occlusion Pyramid Tail Descriptor Set"),
 		];
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
@@ -113,27 +115,20 @@ impl OcclusionCulling {
 				.name("Occlusion Visibility")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let level = |set, slot, level| ghi::DescriptorWrite::image_mip(set, slot, pyramid, ghi::Layouts::General, level);
 		let [base_set, tail_set] = build_descriptor_sets;
-		let mut writes = vec![
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				OCCLUSION_PYRAMID_BINDING.slot(),
-				pyramid,
-				min_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::buffer(descriptor_set, OCCLUSION_VISIBILITY_BINDING.slot(), visibility.into()),
-			ghi::DescriptorWrite::combined_image_sampler(base_set, SOURCE_BINDING, depth, point_sampler, ghi::Layouts::Read),
-			level(tail_set, SOURCE_BINDING, BASE_LEVELS as u32 - 1),
-		];
-		for mip in 0..OCCLUSION_PYRAMID_MIP_COUNT {
-			let (set, first) = if (mip as usize) < BASE_LEVELS {
-				(base_set, 0)
-			} else {
-				(tail_set, BASE_LEVELS as u32)
-			};
-			writes.push(level(set, ghi::ResourceSlot::new(FIRST_LEVEL_BINDING + mip - first), mip));
+		let culling = set_layouts::OCCLUSION.binder(descriptor_set);
+		let base = set_layouts::HIZ_BASE.binder(base_set);
+		let tail = set_layouts::HIZ_TAIL.binder(tail_set);
+		let mut writes = smallvec::SmallVec::<[ghi::DescriptorWrite; 16]>::from_iter([
+			culling.sampled("occlusion_pyramid", pyramid, min_sampler),
+			culling.buffer("occlusion_visibility", visibility),
+			base.sampled("source_depth", depth, point_sampler),
+			// The tail stage reduces the last level the base stage wrote.
+			tail.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1),
+		]);
+		for (mip, name) in LEVEL_NAMES.into_iter().enumerate() {
+			let stage = if mip < BASE_LEVELS { base } else { tail };
+			writes.push(stage.image_mip(name, pyramid, mip as u32));
 		}
 		context.write(&writes);
 

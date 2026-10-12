@@ -2,29 +2,6 @@
 // the quad is shaded. A record is constant across its quad, so every branch on it is coherent and
 // the work a primitive does not need is skipped instead of being multiplied by zero.
 
-GlyphCurve: struct {
-	// The first and second control points as (x1, y1, x2, y2). The third control point is the first
-	// point of the next element, which a contour's following curve shares.
-	points: vec4f,
-}
-
-GlyphBand: struct {
-	value: u32,
-}
-
-glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
-// Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
-// vertical band, then the lists of curve indices those offsets point at, relative to the glyph.
-glyph_bands: descriptor<{ type: GlyphBand[], binding: 3, access: read }>;
-// The full and half resolution blurred backdrops that a backdrop blur primitive samples.
-full_blurred_texture: descriptor<{ type: Texture2D, binding: 4, access: read }>;
-half_blurred_texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
-// Element 0 is the glyph atlas and the rest are images.
-textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
-// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
-path_curves: descriptor<{ type: GlyphCurve[], binding: 38, access: read }>;
-path_bands: descriptor<{ type: GlyphBand[], binding: 39, access: read }>;
-
 // Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels and `shape` is
 // the corner radius, the corner exponent, and the stroke width, where zero fills.
 rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {

@@ -108,10 +108,10 @@ fn encodes_on_gpu(format: Formats) -> bool {
 /// The `GPUMipProcessor` struct owns the thread-confined compute context used for offline filtering and compression.
 pub struct GPUMipProcessor {
 	gpu: OwnedContext,
-	mip_pipeline: ghi::PipelineHandle,
+	mip_kernel: ComputeKernel,
 	/// The BC7 pipeline, compiled on the first BC7 request. `Some(None)` records a failed compilation, after which BC7
 	/// requests are unsupported and take the CPU path.
-	block_pipeline: Option<Option<ghi::PipelineHandle>>,
+	block_kernel: Option<Option<ComputeKernel>>,
 	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
 	/// Pyramids, each idle or bound to one in-flight request. An extent gains another pyramid only while all of its
@@ -131,7 +131,7 @@ enum InFlight {
 impl GPUMipProcessor {
 	fn try_new() -> Result<Self, GPUMipError> {
 		let (mut gpu, queue) = create_compute_context()?;
-		let mip_pipeline = create_compute_kernel(
+		let mip_kernel = create_compute_kernel(
 			&mut gpu.context,
 			"GPU material mip generation",
 			ghi::shader::ShaderSource::PlatformNative {
@@ -151,45 +151,47 @@ impl GPUMipProcessor {
 		);
 		Ok(Self {
 			gpu,
-			mip_pipeline,
-			block_pipeline: None,
+			mip_kernel,
+			block_kernel: None,
 			queue,
 			sampler,
 			scratch: Vec::new(),
 		})
 	}
 
-	/// Returns the BC7 pipeline, compiling it on first use, or `None` when it can't be compiled.
-	fn block_pipeline(&mut self) -> Option<ghi::PipelineHandle> {
+	/// Returns the BC7 kernel, compiling it on first use, or `None` when it can't be compiled.
+	fn block_kernel(&mut self) -> Option<ComputeKernel> {
 		let context = &mut self.gpu.context;
-		*self.block_pipeline.get_or_insert_with(|| {
-			let resources = [
-				ghi::ShaderResourceDescriptor::single(
-					SOURCE_SLOT,
-					ghi::ResourceKind::CombinedImageSampler,
-					ghi::AccessPolicies::READ,
-				),
-				ghi::ShaderResourceDescriptor::single(
-					OUTPUT_SLOT,
-					ghi::ResourceKind::StorageBuffer,
-					ghi::AccessPolicies::WRITE,
+		self.block_kernel
+			.get_or_insert_with(|| {
+				let resources = [
+					ghi::ShaderResourceDescriptor::single(
+						SOURCE_SLOT,
+						ghi::ResourceKind::CombinedImageSampler,
+						ghi::AccessPolicies::READ,
+					),
+					ghi::ShaderResourceDescriptor::single(
+						OUTPUT_SLOT,
+						ghi::ResourceKind::StorageBuffer,
+						ghi::AccessPolicies::WRITE,
+					)
+					.buffer_stride(BLOCK_BYTES as u32),
+				];
+				create_besl_compute_kernel(
+					context,
+					"GPU material BC7 encoding",
+					BC7_ENCODER,
+					Extent::square(BC7_WORKGROUP_SIZE),
+					resources,
+					std::mem::size_of::<BlockPushConstants>(),
 				)
-				.buffer_stride(BLOCK_BYTES as u32),
-			];
-			create_besl_compute_kernel(
-				context,
-				"GPU material BC7 encoding",
-				BC7_ENCODER,
-				Extent::square(BC7_WORKGROUP_SIZE),
-				resources,
-				std::mem::size_of::<BlockPushConstants>(),
-			)
-			.map_err(GPUMipError::from)
-			.inspect_err(|error| {
-				log::warn!("GPU BC7 encoder is unavailable; BC7 textures filter and compress on the CPU. {error}")
+				.map_err(GPUMipError::from)
+				.inspect_err(|error| {
+					log::warn!("GPU BC7 encoder is unavailable; BC7 textures filter and compress on the CPU. {error}")
+				})
+				.ok()
 			})
-			.ok()
-		})
+			.clone()
 	}
 
 	/// Returns an idle pyramid for the extent, creating one when every existing one is busy.
@@ -199,8 +201,14 @@ impl GPUMipProcessor {
 			.iter()
 			.position(|scratch| scratch.in_flight.is_none() && scratch.width == width && scratch.height == height);
 		idle.unwrap_or_else(|| {
-			self.scratch
-				.push(create_scratch(&mut self.gpu.context, self.queue, self.sampler, width, height));
+			self.scratch.push(create_scratch(
+				&mut self.gpu.context,
+				&self.mip_kernel.layout,
+				self.queue,
+				self.sampler,
+				width,
+				height,
+			));
 			self.scratch.len() - 1
 		})
 	}
@@ -220,17 +228,19 @@ impl GpuProcessor for GPUMipProcessor {
 	/// Uploads the RGBA8 base level and records the filter dispatches, then either the BC7 dispatches into the block
 	/// buffer or one readback per filtered level, on an idle pyramid of the request's extent.
 	fn submit(&mut self, &(width, height, gamma, format): &Self::Request, base: &[u8]) -> Submission<usize, Self::Result> {
-		let block_pipeline = match encodes_on_gpu(format).then(|| self.block_pipeline()) {
+		let block_kernel = match encodes_on_gpu(format).then(|| self.block_kernel()) {
 			// The kernel's failure was logged once when it was compiled; the caller takes the CPU path quietly.
 			Some(None) => return Submission::Complete(Err(GPUMipError::UnsupportedRequest)),
-			pipeline => pipeline.flatten(),
+			kernel => kernel.flatten(),
 		};
 		let scratch_index = self.acquire_scratch(width, height);
 
 		let context = &mut self.gpu.context;
 		let scratch = &mut self.scratch[scratch_index];
-		if block_pipeline.is_some() && scratch.blocks.is_none() {
-			scratch.blocks = Some(create_block_scratch(context, self.sampler, scratch));
+		if let Some(kernel) = &block_kernel
+			&& scratch.blocks.is_none()
+		{
+			scratch.blocks = Some(create_block_scratch(context, &kernel.layout, self.sampler, scratch));
 		}
 
 		let upload = context.get_texture_slice_mut(scratch.base_image);
@@ -247,7 +257,7 @@ impl GpuProcessor for GPUMipProcessor {
 		let srgb = u32::from(gamma == Gamma::SRGB);
 		let mut recording = context.create_command_buffer_recording(scratch.command_buffer);
 		for level in &scratch.levels {
-			let command = recording.bind_compute_pipeline(self.mip_pipeline);
+			let command = recording.bind_compute_pipeline(self.mip_kernel.pipeline);
 			command.bind_descriptor_sets(&[level.descriptor_set]);
 			command.write_push_constant(
 				0,
@@ -264,9 +274,9 @@ impl GpuProcessor for GPUMipProcessor {
 				Extent::rectangle(8, 8),
 			));
 		}
-		let in_flight = if let Some((pipeline, blocks)) = block_pipeline.zip(scratch.blocks.as_ref()) {
+		let in_flight = if let Some((kernel, blocks)) = block_kernel.zip(scratch.blocks.as_ref()) {
 			for level in &blocks.levels {
-				let command = recording.bind_compute_pipeline(pipeline);
+				let command = recording.bind_compute_pipeline(kernel.pipeline);
 				command.bind_descriptor_sets(&[level.descriptor_set]);
 				command.write_push_constant(0, level.push_constants);
 				command.dispatch(ghi::DispatchExtent::new(
@@ -370,6 +380,7 @@ struct BlockScratchLevel {
 /// Allocates and binds one reusable GPU pyramid for a base extent.
 fn create_scratch(
 	context: &mut ghi::implementation::Context,
+	layout: &ghi::DescriptorSetLayout,
 	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
 	width: u32,
@@ -397,7 +408,7 @@ fn create_scratch(
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
 				.use_case(ghi::UseCases::STATIC),
 			);
-			let descriptor_set = context.create_descriptor_set(Some("Material mip level"));
+			let descriptor_set = context.create_descriptor_set(Some("Material mip level"), layout);
 			context.write(&[
 				ghi::DescriptorWrite::combined_image_sampler(descriptor_set, SOURCE_SLOT, source, sampler, ghi::Layouts::Read),
 				ghi::DescriptorWrite::image(descriptor_set, OUTPUT_SLOT, image, ghi::Layouts::General),
@@ -430,6 +441,7 @@ fn create_scratch(
 /// Allocates the block buffer for a pyramid and binds every level, base level first, as a BC7 source.
 fn create_block_scratch(
 	context: &mut ghi::implementation::Context,
+	layout: &ghi::DescriptorSetLayout,
 	sampler: ghi::SamplerHandle,
 	scratch: &GPUMipScratch,
 ) -> BlockScratch {
@@ -447,7 +459,7 @@ fn create_block_scratch(
 	let levels = images
 		.zip(mip_extents(scratch.width, scratch.height))
 		.map(|(image, (width, height))| {
-			let descriptor_set = context.create_descriptor_set(Some("Material BC7 level"));
+			let descriptor_set = context.create_descriptor_set(Some("Material BC7 level"), layout);
 			context.write(&[
 				ghi::DescriptorWrite::combined_image_sampler(descriptor_set, SOURCE_SLOT, image, sampler, ghi::Layouts::Read),
 				ghi::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, buffer.into()),
@@ -889,7 +901,7 @@ use utils::Extent;
 use super::{bc7::BC7_ENCODER, encode_levels, encoded_mip_chain_size, filtering_format, mip_extents, packed_lower_levels_size};
 use crate::{
 	gpu_worker::{
-		GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
+		ComputeKernel, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,
 		create_besl_compute_kernel, create_compute_context, create_compute_kernel,
 	},
 	types::{Formats, Gamma},

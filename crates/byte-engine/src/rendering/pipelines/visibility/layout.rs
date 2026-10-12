@@ -1,17 +1,8 @@
-//! Fixed limits, buffer strides, and descriptor bindings shared by every visibility shader and the CPU code that feeds them.
+//! Fixed limits and record layouts shared by every visibility shader and the CPU code that feeds them.
 //!
-//! Slots below 1024 belong to the base descriptor set that every visibility stage binds. Slots from 1033
-//! belong to the per-sink visibility set (material dispatch bookkeeping and the visibility buffer images)
-//! and the material-evaluation set (lighting, materials, shadow maps, and environment). Keep the numbers in
-//! sync with [`super::shader_generator::visibility_shader_scope`] and the checked-in BESL assets. The assets share
-//! their declarations through the layout layers in `assets/rendering/visibility/layouts`.
-
-use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
-
-use super::render_pass::ScreenViewData;
-use super::shader_data::{
-	LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
-};
+//! The descriptor sets the shaders read these records through are declared by the layout layers in
+//! `assets/rendering/visibility/layouts`; see [`super::set_layouts`]. The layers spell out the array sizes, so the
+//! guards here and in [`super::shader_generator`] fail the build when a limit changes without them.
 
 /* Limits */
 
@@ -117,13 +108,6 @@ pub(crate) const VERTEX_NORMAL_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeV
 /// Half-float UVs preserve sampler wrapping coordinates outside `[0, 1]`.
 pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
-// Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
-pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderViewData>() as u32;
-pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMesh>() as u32;
-// HLSL reads packed narrow indices through 32-bit structured words. Metal and Vulkan expose native widths.
-pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
-pub(crate) const PRIMITIVE_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 1 };
-pub(crate) const MESHLET_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMeshletData>() as u32;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -145,116 +129,9 @@ pub(crate) struct ShaderMeshletData {
 	pub(crate) cone_axis: RuntimeVertexNormal,
 }
 
-/* Binding helpers */
-
-const fn buffer(slot: u32, access: AccessPolicies, stride: u32) -> ShaderResourceDescriptor {
-	ShaderResourceDescriptor::single(ResourceSlot::new(slot), ResourceKind::StorageBuffer, access).buffer_stride(stride)
-}
-
-const fn storage_image(slot: u32, access: AccessPolicies) -> ShaderResourceDescriptor {
-	ShaderResourceDescriptor::single(ResourceSlot::new(slot), ResourceKind::StorageImage, access)
-}
-
-const fn sampled_image(slot: u32) -> ShaderResourceDescriptor {
-	ShaderResourceDescriptor::single(
-		ResourceSlot::new(slot),
-		ResourceKind::CombinedImageSampler,
-		AccessPolicies::READ,
-	)
-}
-
-/* Base descriptor set */
-
-pub(crate) const VIEWS_DATA_BINDING: ShaderResourceDescriptor = buffer(0, AccessPolicies::READ, VIEW_DATA_BUFFER_STRIDE);
-pub(crate) const MESH_DATA_BINDING: ShaderResourceDescriptor = buffer(1, AccessPolicies::READ, MESH_DATA_BUFFER_STRIDE);
-pub(crate) const VERTEX_POSITIONS_BINDING: ShaderResourceDescriptor = buffer(2, AccessPolicies::READ, 12);
-pub(crate) const VERTEX_NORMALS_BINDING: ShaderResourceDescriptor =
-	buffer(3, AccessPolicies::READ, VERTEX_NORMAL_BUFFER_STRIDE);
-pub(crate) const SKINNED_VERTICES_BINDING: ShaderResourceDescriptor = buffer(4, AccessPolicies::READ, 24);
-pub(crate) const VERTEX_UV_BINDING: ShaderResourceDescriptor = buffer(5, AccessPolicies::READ, VERTEX_UV_BUFFER_STRIDE);
-pub(crate) const VERTEX_INDICES_BINDING: ShaderResourceDescriptor = buffer(6, AccessPolicies::READ, VERTEX_INDEX_BUFFER_STRIDE);
-pub(crate) const PRIMITIVE_INDICES_BINDING: ShaderResourceDescriptor =
-	buffer(7, AccessPolicies::READ, PRIMITIVE_INDEX_BUFFER_STRIDE);
-pub(crate) const MESHLET_DATA_BINDING: ShaderResourceDescriptor = buffer(8, AccessPolicies::READ, MESHLET_DATA_BUFFER_STRIDE);
-pub(crate) const TEXTURES_BINDING: ShaderResourceDescriptor = ShaderResourceDescriptor::new(
-	ResourceSlot::new(9),
-	ResourceKind::CombinedImageSampler,
-	MAX_BINDLESS_TEXTURES as u32,
-	AccessPolicies::READ,
-);
-pub(crate) const MATERIALS_DATA_BINDING: ShaderResourceDescriptor =
-	buffer(1046, AccessPolicies::READ, std::mem::size_of::<MaterialData>() as u32);
-/// The evaluation slot of every material table entry, or [`NO_EVALUATION`]. The material prepasses bucket each pixel by
-/// its material's slot. See [`super::scene::MaterialEvaluation`].
-pub(crate) const MATERIAL_EVALUATIONS_BINDING: ShaderResourceDescriptor = buffer(1068, AccessPolicies::READ, 4);
-/// The [`MATERIAL_EVALUATIONS_BINDING`] entry of a material that no evaluation dispatch shades. The material prepasses
-/// skip its pixels; the shaders spell it as `4294967295`, which fails their `< 1024` slot tests.
+/// The [`super::set_layouts::SCENE`] `material_evaluations` entry of a material that no evaluation dispatch shades. The
+/// material prepasses skip its pixels; the shaders spell it as `4294967295`, which fails their `< 1024` slot tests.
 pub(crate) const NO_EVALUATION: u32 = u32::MAX;
-pub(crate) const MESH_DISPATCH_WORK_BINDING: ShaderResourceDescriptor = buffer(1063, AccessPolicies::READ, 4);
-
-/* Occlusion descriptor set */
-
-/// The farthest-depth pyramid of the camera's early pass, which later camera passes test bounds against.
-pub(crate) const OCCLUSION_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1069);
-/// One word per packed mesh dispatch work item: which of its meshlets the camera's late pass found unoccluded.
-pub(crate) const OCCLUSION_VISIBILITY_BINDING: ShaderResourceDescriptor = buffer(1070, AccessPolicies::READ_WRITE, 4);
-
-/* Visibility descriptor set */
-
-// The material dispatch bookkeeping is indexed by evaluation slot, not by material: materials that compile to one
-// evaluation pipeline share a slot, its pixel list, and its indirect dispatch.
-pub(crate) const MATERIAL_COUNT_BINDING: ShaderResourceDescriptor = buffer(1033, AccessPolicies::READ_WRITE, 4);
-pub(crate) const MATERIAL_OFFSET_BINDING: ShaderResourceDescriptor = buffer(1034, AccessPolicies::READ_WRITE, 4);
-pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ShaderResourceDescriptor = buffer(1035, AccessPolicies::READ_WRITE, 4);
-pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ShaderResourceDescriptor =
-	buffer(1036, AccessPolicies::READ_WRITE, 12);
-pub(crate) const MATERIAL_XY_BINDING: ShaderResourceDescriptor = buffer(1037, AccessPolicies::WRITE, 4);
-pub(crate) const TRIANGLE_INDEX_BINDING: ShaderResourceDescriptor = storage_image(1039, AccessPolicies::READ);
-pub(crate) const INSTANCE_ID_BINDING: ShaderResourceDescriptor = storage_image(1040, AccessPolicies::READ);
-
-/* Material evaluation descriptor set */
-
-pub(crate) const LIT_BINDING: ShaderResourceDescriptor = storage_image(1041, AccessPolicies::READ_WRITE);
-pub(crate) const DIFFUSE_RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = storage_image(1057, AccessPolicies::WRITE);
-pub(crate) const LIGHTING_DATA_BINDING: ShaderResourceDescriptor =
-	buffer(1045, AccessPolicies::READ, std::mem::size_of::<LightingData>() as u32);
-pub(crate) const AO_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1051);
-/// The half-resolution SSGI history and normals, and the camera constants of their resolution, from which opaque
-/// material evaluation reconstructs each pixel's indirect diffuse light. See [`super::render_pass::SsgiTargets`].
-pub(crate) const SSGI_NORMALS_BINDING: ShaderResourceDescriptor = sampled_image(1047);
-pub(crate) const SSGI_VIEW_BINDING: ShaderResourceDescriptor =
-	buffer(1048, AccessPolicies::READ, std::mem::size_of::<ScreenViewData>() as u32);
-pub(crate) const SSGI_HISTORY_BINDING: ShaderResourceDescriptor = sampled_image(1056);
-/// The sun's resolved visibility per opaque pixel. See [`super::render_pass::SunVisibilityTargets`].
-pub(crate) const SUN_VISIBILITY_BINDING: ShaderResourceDescriptor = sampled_image(1058);
-pub(crate) const SHADOW_MAP_BINDING: ShaderResourceDescriptor =
-	sampled_image(1052).texture_view_type(TextureViewTypes::Texture2DArray);
-pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1053);
-pub(crate) const ENVIRONMENT_BINDING: ShaderResourceDescriptor =
-	sampled_image(1054).texture_view_type(TextureViewTypes::TextureCube);
-pub(crate) const SPECULAR_ENVIRONMENT_BINDING: ShaderResourceDescriptor =
-	sampled_image(1055).texture_view_type(TextureViewTypes::TextureCube);
-pub(crate) const CONE_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
-	sampled_image(1064).texture_view_type(TextureViewTypes::Texture2DArray);
-pub(crate) const POINT_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
-	sampled_image(1065).texture_view_type(TextureViewTypes::TextureCubeArray);
-/// The light clusters material evaluation reads. See [`super::render_pass::LightClusterPass`].
-pub(crate) const LIGHT_CLUSTER_MASKS_BINDING: ShaderResourceDescriptor = buffer(1066, AccessPolicies::READ, 4);
-pub(crate) const LIGHT_CLUSTER_PARAMETERS_BINDING: ShaderResourceDescriptor = buffer(
-	1067,
-	AccessPolicies::READ,
-	std::mem::size_of::<LightClusterParameters>() as u32,
-);
-/// Screen-space reflection inputs. See [`super::render_pass::ScreenSpaceReflections`].
-pub(crate) const REFLECTION_PARAMETERS_BINDING: ShaderResourceDescriptor = buffer(
-	1059,
-	AccessPolicies::READ,
-	std::mem::size_of::<ReflectionShaderParameters>() as u32,
-);
-/// Mip zero of the linear depth pyramid, which reflection rays march and the indirect diffuse upsample reads.
-pub(crate) const DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1060);
-pub(crate) const PREVIOUS_RADIANCE_BINDING: ShaderResourceDescriptor = sampled_image(1061);
-pub(crate) const RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = storage_image(1062, AccessPolicies::WRITE);
 
 /// `ShaderMeshletData` must keep the packed layout the meshlet buffer is read with.
 ///

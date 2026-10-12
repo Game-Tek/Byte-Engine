@@ -305,6 +305,16 @@ pub(crate) fn create_compute_context() -> Result<(OwnedContext, ghi::QueueHandle
 	Ok((OwnedContext { context, owner }, queue))
 }
 
+/// The `ComputeKernel` struct holds a bake kernel's pipeline with the layout of the one descriptor set it reads, so
+/// a processor can create that set for each texture it processes.
+///
+/// Next, create a set with `create_descriptor_set(.., &kernel.layout)` and bind it after `kernel.pipeline`.
+#[derive(Clone)]
+pub(crate) struct ComputeKernel {
+	pub(crate) pipeline: ghi::PipelineHandle,
+	pub(crate) layout: ghi::DescriptorSetLayout,
+}
+
 /// Compiles one native compute kernel that samples [`SOURCE_SLOT`] and writes the storage image at [`OUTPUT_SLOT`], and
 /// builds its pipeline.
 ///
@@ -314,7 +324,7 @@ pub(crate) fn create_compute_kernel(
 	label: &'static str,
 	source: ghi::shader::ShaderSource<'_>,
 	push_constant_size: usize,
-) -> Result<ghi::PipelineHandle, GpuWorkerError> {
+) -> Result<ComputeKernel, GpuWorkerError> {
 	let compiled = ghi::shader::compile(label, source).map_err(GpuWorkerError::ShaderCompilation)?;
 	let resources = [
 		ghi::ShaderResourceDescriptor::single(
@@ -338,7 +348,7 @@ pub(crate) fn create_besl_compute_kernel(
 	workgroup: utils::Extent,
 	resources: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 	push_constant_size: usize,
-) -> Result<ghi::PipelineHandle, GpuWorkerError> {
+) -> Result<ComputeKernel, GpuWorkerError> {
 	let program = besl::compile_to_besl(source, None).map_err(|error| {
 		GpuWorkerError::ShaderCompilation(format!(
 			"BESL kernel '{label}' failed to parse or link. The most likely cause is invalid kernel source. Error: {error:?}"
@@ -384,26 +394,34 @@ fn native_kernel_source(
 	})
 }
 
-/// Creates the shader and compute pipeline for compiled kernel source.
+/// Creates the shader and compute pipeline for compiled kernel source, whose `resources` form the one descriptor set
+/// the kernel reads.
 fn build_compute_pipeline(
 	context: &mut ghi::implementation::Context,
 	label: &'static str,
 	compiled: &ghi::shader::CompiledShaderSource,
 	resources: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 	push_constant_size: usize,
-) -> Result<ghi::PipelineHandle, GpuWorkerError> {
+) -> Result<ComputeKernel, GpuWorkerError> {
+	let layout = ghi::DescriptorSetLayout::new(label, resources);
 	let shader = context
-		.create_shader(Some(label), compiled.as_source(), ghi::ShaderTypes::Compute, resources)
+		.create_shader(
+			Some(label),
+			compiled.as_source(),
+			ghi::ShaderTypes::Compute,
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
+		)
 		.map_err(|_| GpuWorkerError::ShaderCreation)?;
 	let push_constant_ranges = [ghi::pipelines::PushConstantRange::new(0, push_constant_size as u32)];
 
-	Ok(context.create_compute_pipeline(
+	let pipeline = context.create_compute_pipeline(
 		ghi::pipelines::compute::Builder::new(
 			&push_constant_ranges,
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 		)
 		.name(label),
-	))
+	);
+	Ok(ComputeKernel { pipeline, layout })
 }
 
 #[cfg(test)]

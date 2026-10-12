@@ -11,10 +11,7 @@ use utils::hash::HashMap;
 
 use super::emitter::ParticleEmitter;
 use super::loader::ParticleSystemLoader;
-use super::shader_data::{
-	DISPATCH_SLOT, DRAWS_SLOT, FRAME_SLOT, MAX_EMITTERS, PARTICLES_SLOT, ParticleFrameData, ParticlePushConstants,
-	ShaderParticle, ShaderSpawn,
-};
+use super::shader_data::{MAX_EMITTERS, ParticleFrameData, ParticlePushConstants, ShaderParticle, ShaderSpawn};
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
@@ -23,6 +20,7 @@ use crate::gameplay::world::DefaultWorld;
 use crate::rendering::loading::{Event, LoaderClient};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
+use crate::rendering::set_layout::{PipelineSets, PublishedSets, Resource};
 use crate::rendering::{PipelineManagerClient, PipelineRef, Sink};
 use crate::time::MediaTime;
 
@@ -79,8 +77,13 @@ struct SystemPool {
 	system: ParticleSystem,
 	simulate_pipeline: PipelineRef,
 	draw_pipeline: PipelineRef,
-	descriptor_set: ghi::DescriptorSetHandle,
+	/// The pool's descriptor sets as the prepare, simulate, and draw pipelines each declare them. Each pipeline reads
+	/// the pool's buffers through its own shader's descriptors, so its sets exist once it is published.
+	prepare_sets: PublishedSets,
+	simulate_sets: PublishedSets,
+	draw_sets: PublishedSets,
 	frame_data: ghi::DynamicBufferHandle<ParticleFrameData>,
+	particles: ghi::BufferHandle<[ShaderParticle]>,
 	draws: ghi::BufferHandle<[[u32; 4]; 2]>,
 	dispatch: ghi::BufferHandle<[[u32; 3]; 1]>,
 	/// A particle stores its emitter's slot, so a slot stays taken until its last particle dies.
@@ -106,7 +109,9 @@ enum Slot {
 struct PoolFrame {
 	simulate: ghi::PipelineHandle,
 	draw: ghi::PipelineHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
+	prepare_sets: PipelineSets,
+	simulate_sets: PipelineSets,
+	draw_sets: PipelineSets,
 	draws: ghi::BufferHandle<[[u32; 4]; 2]>,
 	dispatch: ghi::BufferHandle<[[u32; 3]; 1]>,
 	side: u32,
@@ -266,20 +271,16 @@ impl SystemPool {
 				.name("Particle Simulation Dispatch")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let descriptor_set = frame.create_descriptor_set(Some("Particle Descriptor Set"));
-		frame.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, FRAME_SLOT, frame_data.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, PARTICLES_SLOT, particles.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, DRAWS_SLOT, draws.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, DISPATCH_SLOT, dispatch.into()),
-		]);
 
 		Self {
 			simulate_pipeline: pipeline_manager.request_pipeline(&system.simulate_pipeline),
 			draw_pipeline: pipeline_manager.request_pipeline(&system.draw_pipeline),
 			system,
-			descriptor_set,
+			prepare_sets: PublishedSets::default(),
+			simulate_sets: PublishedSets::default(),
+			draw_sets: PublishedSets::default(),
 			frame_data,
+			particles,
 			draws,
 			dispatch,
 			slots: [Slot::Free; MAX_EMITTERS],
@@ -399,6 +400,38 @@ impl PipelineManager for ParticleManager {
 			) else {
 				continue;
 			};
+			// Each pipeline names the pool's buffers as its own shader declares them.
+			let (frame_data, particles, draws, dispatch) = (
+				Resource::buffer("frame", pool.frame_data),
+				Resource::buffer("particles", pool.particles),
+				Resource::buffer("draws", pool.draws),
+				Resource::buffer("dispatch", pool.dispatch),
+			);
+			let (Some(prepare_sets), Some(simulate_sets), Some(draw_sets)) = (
+				pool.prepare_sets.get(
+					frame,
+					&self.pipeline_manager,
+					self.prepare_pipeline,
+					"Particle Prepare Descriptor Set",
+					&[frame_data, draws, dispatch],
+				),
+				pool.simulate_sets.get(
+					frame,
+					&self.pipeline_manager,
+					pool.simulate_pipeline,
+					"Particle Simulate Descriptor Set",
+					&[frame_data, particles, draws],
+				),
+				pool.draw_sets.get(
+					frame,
+					&self.pipeline_manager,
+					pool.draw_pipeline,
+					"Particle Draw Descriptor Set",
+					&[frame_data, particles],
+				),
+			) else {
+				continue;
+			};
 			// The simulation reads the half the last one filled and packs survivors into the other.
 			let side = pool.side ^ 1;
 			let spawn_total = write_frame_data(
@@ -425,7 +458,9 @@ impl PipelineManager for ParticleManager {
 			pools.push(PoolFrame {
 				simulate,
 				draw,
-				descriptor_set: pool.descriptor_set,
+				prepare_sets,
+				simulate_sets,
+				draw_sets,
 				draws: pool.draws,
 				dispatch: pool.dispatch,
 				side,
@@ -464,12 +499,12 @@ impl PipelineManager for ParticleManager {
 							// Every prepare pass first, so the simulations that read their results wait on one barrier.
 							for pool in pools {
 								let c = c.bind_compute_pipeline(prepare);
-								c.bind_descriptor_sets(&[pool.descriptor_set]);
+								c.bind_descriptor_sets(&pool.prepare_sets.handles());
 								c.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 							}
 							for pool in pools {
 								let c = c.bind_compute_pipeline(pool.simulate);
-								c.bind_descriptor_sets(&[pool.descriptor_set]);
+								c.bind_descriptor_sets(&pool.simulate_sets.handles());
 								c.indirect_dispatch(pool.dispatch, 0);
 							}
 						}
@@ -477,7 +512,7 @@ impl PipelineManager for ParticleManager {
 						let render_pass = c.start_render_pass(extent, &attachments);
 						for pool in pools {
 							let c = render_pass.bind_raster_pipeline(pool.draw);
-							c.bind_descriptor_sets(&[pool.descriptor_set]);
+							c.bind_descriptor_sets(&pool.draw_sets.handles());
 							c.write_push_constant(0, push_constants);
 							c.draw_indirect(pool.draws, pool.side as usize);
 						}

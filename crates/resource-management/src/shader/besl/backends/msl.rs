@@ -101,9 +101,9 @@ mod tests {
 		crate::shader::besl::evaluation::ProgramEvaluation::from_main(&main)
 			.expect("Expected sampled binding array reflection");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
-		assert_string_contains!(shader, "texture2d<float> textures [[id(18)]][4];");
-		assert_string_contains!(shader, "sampler textures_sampler [[id(22)]][4];");
-		assert_string_contains!(shader, "resources.textures[0].sample(resources.textures_sampler[0]");
+		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
+		assert_string_contains!(shader, "sampler textures_sampler [[id(4)]][4];");
+		assert_string_contains!(shader, "set0.textures[0].sample(set0.textures_sampler[0]");
 
 		compile_natively(&shader, "besl-fixed-slot-array").await;
 	}
@@ -114,8 +114,8 @@ mod tests {
 
 		assert_string_contains!(shader, "const device Instance* instances [[id(2)]];");
 		assert_string_contains!(shader, "texture2d_array<float> sprites [[id(0)]];");
-		assert_string_contains!(shader, "Instance instance=resources.instances[");
-		assert_string_contains!(shader, "resources.sprites.sample(resources.sprites_sampler, ");
+		assert_string_contains!(shader, "Instance instance=set0.instances[");
+		assert_string_contains!(shader, "set0.sprites.sample(set0.sprites_sampler, ");
 		assert_string_contains!(shader, ", instance.sprite_id)");
 
 		compile_natively(&shader, "besl-runtime-array-texture-layer").await;
@@ -138,8 +138,8 @@ mod tests {
 
 		// Packed 48-byte matrices match the CPU stride; a native float4x3 would read with a 64-byte stride.
 		assert_string_contains!(shader, "device _besl_packed_float4x3* palette");
-		assert_string_contains!(shader, "_besl_load_mat4x3(resources.palette[item])");
-		assert_string_contains!(shader, "_besl_store_mat4x3(resources.palette[item+1],affine)");
+		assert_string_contains!(shader, "_besl_load_mat4x3(set0.palette[item])");
+		assert_string_contains!(shader, "_besl_store_mat4x3(set0.palette[item+1],affine)");
 
 		compile_natively(&shader, "besl-affine-matrix-array").await;
 	}
@@ -168,9 +168,9 @@ mod tests {
 		);
 
 		// Metal multiplies matrices only by native vectors, so packed member reads in a matrix product are unpacked.
-		assert_string_contains!(shader, "float3(resources.bodies[item].velocity)*_besl_load_mat4x3(");
+		assert_string_contains!(shader, "float3(set0.bodies[item].velocity)*_besl_load_mat4x3(");
 		assert_string_contains!(shader, "float3(push_constant.offset)*_besl_load_mat4x3(");
-		assert_string_contains!(shader, "resources.frame->projection*float4(resources.bodies[item].color)");
+		assert_string_contains!(shader, "set0.frame->projection*float4(set0.bodies[item].color)");
 
 		compile_natively(&shader, "besl-packed-vector-matrix-products").await;
 	}
@@ -194,19 +194,16 @@ mod tests {
 			"#,
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
-		assert_string_contains!(shader, "((~resources.bodies[item].bits)^(flag?1:2))");
+		assert_string_contains!(shader, "((~set0.bodies[item].bits)^(flag?1:2))");
 		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
-		assert_string_contains!(
-			shader,
-			"((-(-resources.bodies[item].velocity))-(-resources.bodies[item].velocity))"
-		);
+		assert_string_contains!(shader, "((-(-set0.bodies[item].velocity))-(-set0.bodies[item].velocity))");
 		// A literal branch beside an f16 branch is narrowed so both branches share one type.
-		assert_string_contains!(shader, "((!flag)?resources.bodies[item].weight:half(1.0))");
+		assert_string_contains!(shader, "((!flag)?set0.bodies[item].weight:half(1.0))");
 		// Negating or selecting packed reads keeps them packed, so a matrix product unpacks the whole operand.
-		assert_string_contains!(shader, "resources.frame->projection*float4(-resources.bodies[item].color)");
+		assert_string_contains!(shader, "set0.frame->projection*float4(-set0.bodies[item].color)");
 		assert_string_contains!(
 			shader,
-			"resources.frame->projection*float4(flag?resources.bodies[item].color:resources.bodies[item].color)"
+			"set0.frame->projection*float4(flag?set0.bodies[item].color:set0.bodies[item].color)"
 		);
 
 		compile_natively(&shader, "besl-prefix-operators-and-if-values").await;
@@ -270,15 +267,15 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"uint2(resources.textures[resources.items[index].slot].get_width(),resources.textures[resources.items[index].slot].get_height())"
+			"uint2(set0.textures[set0.items[index].slot].get_width(),set0.textures[set0.items[index].slot].get_height())"
 		);
 		assert_string_contains!(
 			shader,
-			"resources.textures[index+1].sample(resources.textures_sampler[index+1], uv, metal::level(0.0))"
+			"set0.textures[index+1].sample(set0.textures_sampler[index+1], uv, metal::level(0.0))"
 		);
 		assert_string_contains!(
 			shader,
-			"resources.textures[resources.items[index].slot].sample(resources.textures_sampler[resources.items[index].slot], uv)"
+			"set0.textures[set0.items[index].slot].sample(set0.textures_sampler[set0.items[index].slot], uv)"
 		);
 
 		compile_natively(&shader, "besl-descriptor-array-intrinsics").await;
@@ -319,20 +316,65 @@ mod tests {
 		assert_string_contains!(shader, "struct besl_half{float besl_float3;};");
 		assert_string_contains!(shader, "struct _thread{");
 		assert_string_contains!(shader, "device _thread* besl_thread [[id(0)]];");
-		assert_string_contains!(shader, "texture2d<float> besl_constant [[id(2)]];");
-		assert_string_contains!(shader, "sampler besl_constant_sampler [[id(3)]];");
+		assert_string_contains!(shader, "texture2d<float> besl_constant [[id(1)]];");
+		assert_string_contains!(shader, "sampler besl_constant_sampler [[id(2)]];");
 		assert_string_contains!(shader, "besl_half scale(float besl_sampler");
 		assert_string_contains!(shader, "besl_half besl_device=besl_half{besl_sampler};");
 		assert_string_contains!(shader, "return besl_device;");
 		assert_string_contains!(
 			shader,
-			"float4 besl_kernel=resources.besl_constant.sample(resources.besl_constant_sampler, float2(0.0,0.0))"
+			"float4 besl_kernel=set0.besl_constant.sample(set0.besl_constant_sampler, float2(0.0,0.0))"
 		);
-		assert_string_contains!(shader, "resources.besl_thread->besl_float3=scale(besl_kernel.x");
+		assert_string_contains!(shader, "set0.besl_thread->besl_float3=scale(besl_kernel.x");
+	}
+
+	#[compio::test]
+	async fn each_used_layout_becomes_one_argument_buffer() {
+		// The layers stack as their sidecar would list them: a shared set, a set the shader never reaches, and types.
+		let layers = [
+			(
+				"scene",
+				"views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>;",
+			),
+			(
+				"history",
+				"history: descriptor<{ type: Texture2D, binding: 3, access: read }>;",
+			),
+		];
+		let module = besl::parse(
+			"result: descriptor<{ type: f32[], binding: 4, access: write }>; scale: fn () -> f32 { return meshes[0]; } main: fn () -> void { result[0] = scale(); }",
+		)
+		.expect("Expected the layered fixture to parse");
+		let program = besl::lex(besl::stack_layers(module, layers).expect("Expected the layers to stack"))
+			.expect("Expected the layered fixture to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)
+			.expect("Expected layered MSL generation");
+
+		// The shared set keeps its whole layout with dense argument IDs, so every shader that lists it reads one buffer.
+		assert_string_contains!(
+			shader,
+			"struct _set0{const device float* views [[id(0)]];texture2d<float> shadow_map [[id(1)]];sampler shadow_map_sampler [[id(2)]];const device float* meshes [[id(3)]];};"
+		);
+		assert_string_contains!(shader, "struct _set1{device float* result [[id(0)]];};");
+		assert!(
+			!shader.contains("history"),
+			"an unreached layout should take no argument buffer"
+		);
+		assert_string_contains!(
+			shader,
+			"constant _set0& set0 [[buffer(16)]],constant _set1& set1 [[buffer(17)]])"
+		);
+		// Helpers receive every set and read each resource through its own.
+		assert_string_contains!(shader, "constant _set0& set0,constant _set1& set1){return set0.meshes[0];}");
+		assert_string_contains!(shader, "set1.result[0]=scale(");
+
+		compile_natively(&shader, "besl-layout-sets").await;
 	}
 
 	#[test]
-	fn full_program_resource_abi_retains_unreachable_declared_bindings() {
+	fn a_descriptor_set_keeps_the_bindings_its_shader_does_not_reach() {
 		let program = besl::compile_to_besl(
 			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 3, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 9, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
 			None,
@@ -343,10 +385,11 @@ mod tests {
 			.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)
 			.expect("Expected full-program MSL generation");
 		assert_string_contains!(shader, "struct Payload");
-		assert_string_contains!(shader, "constant _unused* unused [[id(6)]];");
-		assert_string_contains!(shader, "device _used* used [[id(18)]];");
-		assert_string_contains!(shader, "resources.used->value=7;");
-		assert!(!shader.contains("resources.unused"));
+		// Both descriptors belong to the shader's own layout, so the set keeps both, in slot order.
+		assert_string_contains!(shader, "constant _unused* unused [[id(0)]];");
+		assert_string_contains!(shader, "device _used* used [[id(1)]];");
+		assert_string_contains!(shader, "set0.used->value=7;");
+		assert!(!shader.contains("set0.unused"));
 	}
 
 	#[test]
@@ -392,7 +435,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fixed_metal_argument_id_ranges_cannot_overflow() {
+	fn metal_argument_ids_cannot_overflow() {
 		let binding: besl::NodeReference = besl::Node::binding_array(
 			"textures",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -407,7 +450,7 @@ mod tests {
 			Generator::new()
 				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 				.is_err(),
-			"Fixed Metal argument IDs must not wrap"
+			"Metal argument IDs must not wrap"
 		);
 	}
 
@@ -478,13 +521,13 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"struct _resources{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(2)]];texture2d<float> texture [[id(4)]];sampler texture_sampler [[id(5)]];};"
+			"struct _set0{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(1)]];texture2d<float> texture [[id(2)]];sampler texture_sampler [[id(3)]];};"
 		);
 		assert_string_contains!(
 			shader,
-			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint2 threadgroup_position [[threadgroup_position_in_grid]],constant _resources& resources [[buffer(16)]])"
+			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint2 threadgroup_position [[threadgroup_position_in_grid]],constant _set0& set0 [[buffer(16)]])"
 		);
-		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
+		assert_string_contains!(shader, "set0.buff;set0.image;set0.texture;");
 	}
 
 	#[compio::test]
@@ -517,11 +560,8 @@ mod tests {
 			}
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(shader, "resources.depth_texture.gather(resources.depth_texture_sampler, ");
-		assert_string_contains!(
-			shader,
-			"resources.array_depth_texture.gather(resources.array_depth_texture_sampler, "
-		);
+		assert_string_contains!(shader, "set0.depth_texture.gather(set0.depth_texture_sampler, ");
+		assert_string_contains!(shader, "set0.array_depth_texture.gather(set0.array_depth_texture_sampler, ");
 		assert_string_contains!(shader, ", int2(0), component::x)");
 
 		compile_natively(&shader, "besl-gather").await;
@@ -555,7 +595,7 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"first_layer_maximum(resources.array_depth_texture,resources.array_depth_texture_sampler,"
+			"first_layer_maximum(set0.array_depth_texture,set0.array_depth_texture_sampler,"
 		);
 
 		compile_natively(&shader, "besl-texture-parameter-sampler").await;
@@ -577,14 +617,8 @@ mod tests {
 		"#;
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
 		let shader = lower_fixture(source, &settings);
-		assert_string_contains!(
-			shader,
-			"_besl_downsample_min(resources.depth_texture, resources.depth_texture_sampler"
-		);
-		assert_string_contains!(
-			shader,
-			"_besl_downsample_max(resources.depth_texture, resources.depth_texture_sampler"
-		);
+		assert_string_contains!(shader, "_besl_downsample_min(set0.depth_texture, set0.depth_texture_sampler");
+		assert_string_contains!(shader, "_besl_downsample_max(set0.depth_texture, set0.depth_texture_sampler");
 		assert_string_contains!(shader, ".gather(texture_sampler, uv, int2(0), component::x)");
 		assert_string_contains!(shader, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
 		assert_string_contains!(shader, "texture.read(a, level).x");
@@ -615,8 +649,8 @@ mod tests {
 			argument_buffer_shader,
 			"constant _dispatch_values* dispatch_values [[id(0)]];"
 		);
-		assert_string_contains!(argument_buffer_shader, "const device uint* vertices [[id(2)]];");
-		assert_string_contains!(argument_buffer_shader, "device uint* counters [[id(4)]];");
+		assert_string_contains!(argument_buffer_shader, "const device uint* vertices [[id(1)]];");
+		assert_string_contains!(argument_buffer_shader, "device uint* counters [[id(2)]];");
 
 		let bare_resource_shader = Generator::new()
 			.minified(true)
@@ -1215,7 +1249,7 @@ struct PrimitiveOutput {
 		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
 			Some("".into()),
 			None,
-			Some("position = resources.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;".into()),
+			Some("position = set0.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;".into()),
 			&["cameras", "in_position", "out_instance_index"],
 			&[],
 		)]);
@@ -1232,7 +1266,7 @@ struct PrimitiveOutput {
 
 		let main = besl::lex(root).unwrap().get_main().unwrap();
 		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
-		assert_string_contains!(shader, "struct _resources{constant Camera* cameras [[id(0)]];};");
+		assert_string_contains!(shader, "struct _set0{constant Camera* cameras [[id(0)]];};");
 		assert_string_contains!(shader, "struct VertexInput{float3 in_position [[attribute(0)]];};");
 		assert_string_contains!(
 			shader,
@@ -1240,9 +1274,9 @@ struct PrimitiveOutput {
 		);
 		assert_string_contains!(
 			shader,
-			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _resources& resources [[buffer(16)]])"
+			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _set0& set0 [[buffer(16)]])"
 		);
-		assert_string_contains!(shader, "position = resources.cameras[0].view_projection");
+		assert_string_contains!(shader, "position = set0.cameras[0].view_projection");
 		assert_string_contains!(shader, "return out;");
 	}
 
@@ -1286,14 +1320,14 @@ struct PrimitiveOutput {
 		.expect("Failed to compile the raster helper fixture. The most likely cause is invalid BESL syntax.");
 		let main = program.get_main().expect("Expected raster helper fixture main function");
 		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
-		assert_string_contains!(shader, "float4x4 camera_matrix(constant _resources& resources);");
+		assert_string_contains!(shader, "float4x4 camera_matrix(constant _set0& set0);");
 		assert_string_contains!(
 			shader,
-			"float4x4 camera_matrix(constant _resources& resources){return resources.cameras[0].view_projection;}"
+			"float4x4 camera_matrix(constant _set0& set0){return set0.cameras[0].view_projection;}"
 		);
 		assert_string_contains!(
 			shader,
-			"position=(camera_matrix(resources)*float4(in_position.x,in_position.y,in_position.z,1.0));"
+			"position=(camera_matrix(set0)*float4(in_position.x,in_position.y,in_position.z,1.0));"
 		);
 	}
 
@@ -1506,7 +1540,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
 		assert_string_contains!(shader, ".read(coord).x");
 		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
-		assert_string_contains!(shader, "_besl_atomic_compare_exchange(resources.counters[index],old,7)");
+		assert_string_contains!(shader, "_besl_atomic_compare_exchange(set0.counters[index],old,7)");
 		assert_string_contains!(shader, "_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)");
 		assert_string_contains!(
 			shader,
@@ -1653,7 +1687,7 @@ struct PrimitiveOutput {
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
 			&generator::tests::texel_fetch(),
 		);
-		assert_string_contains!(shader, "float4 texel=resources.texture.read(coord);");
+		assert_string_contains!(shader, "float4 texel=set0.texture.read(coord);");
 
 		compile_natively(&shader, "besl-fetch").await;
 	}
@@ -1683,10 +1717,7 @@ struct PrimitiveOutput {
 			}
 		"#;
 		let shader = lower_fixture(source, &ShaderGenerationSettings::fragment());
-		assert_string_contains!(
-			shader,
-			"resources.image_texture.sample(resources.image_texture_sampler, in_uv)"
-		);
+		assert_string_contains!(shader, "set0.image_texture.sample(set0.image_texture_sampler, in_uv)");
 
 		compile_natively(&shader, "besl-sample-intrinsic").await;
 	}

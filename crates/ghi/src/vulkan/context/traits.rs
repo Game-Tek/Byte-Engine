@@ -636,7 +636,7 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
 			return Err(());
@@ -657,14 +657,21 @@ impl crate::context::ContextCreate for Context {
 		self.shaders.push(Shader {
 			shader: shader_module,
 			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			// This backend still derives its native layouts from flat slots.
+			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets),
 		});
 		self.set_name(shader_module, name);
 
 		Ok(handle)
 	}
 
-	fn create_descriptor_set(&mut self, name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
+	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
+	/// not lay the set out from `layout` yet.
+	fn create_descriptor_set(
+		&mut self,
+		name: Option<&str>,
+		_layout: &crate::shader::DescriptorSetLayout,
+	) -> graphics_hardware_interface::DescriptorSetHandle {
 		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
 		self.descriptor_sets.push(DescriptorSet {
 			next: None,

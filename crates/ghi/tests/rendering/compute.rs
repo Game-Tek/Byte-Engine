@@ -58,8 +58,14 @@ pub(super) fn unordered_dispatches_write_their_own_rows(device: &mut impl ghi::c
 		ghi::shader::ResourceKind::StorageImage,
 		ghi::AccessPolicies::WRITE,
 	);
+	let layout = ghi::DescriptorSetLayout::new("Unordered Dispatch Target", [image_resource]);
 	let compute_shader = device
-		.create_shader(None, shader.as_source(), ShaderTypes::Compute, [image_resource])
+		.create_shader(
+			None,
+			shader.as_source(),
+			ShaderTypes::Compute,
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
+		)
 		.expect("Failed to create the unordered dispatch test compute shader");
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[PushConstantRange::new(0, 4)],
@@ -72,7 +78,7 @@ pub(super) fn unordered_dispatches_write_their_own_rows(device: &mut impl ghi::c
 			.extent(extent)
 			.device_accesses(DeviceAccesses::DeviceToHost),
 	);
-	let descriptor_set = device.create_descriptor_set(None);
+	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[ghi::DescriptorWrite::image(
 		descriptor_set,
 		image_resource.slot(),

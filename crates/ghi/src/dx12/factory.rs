@@ -114,7 +114,7 @@ impl crate::device::Device for Factory {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
 		let source = match shader_source_type {
 			Sources::SPIRV(bytes) => ShaderSource::Spirv(bytes.to_vec()),
@@ -130,7 +130,8 @@ impl crate::device::Device for Factory {
 			name: crate::debug_name(name),
 			source,
 			stage,
-			resources: shader_resource_descriptors.into_iter().collect(),
+			// This backend still derives its root signature from flat slots.
+			resources: crate::shader::flatten_used_resources(descriptor_sets),
 		});
 
 		Ok(ShaderHandle((self.shaders.len() - 1) as u64))

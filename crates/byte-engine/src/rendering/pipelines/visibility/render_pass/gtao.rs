@@ -7,9 +7,10 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// Configuration namespace of the runtime GTAO controls.
@@ -20,15 +21,6 @@ const MIN_SAMPLES_PER_RAY: u32 = 1;
 const MAX_SAMPLES_PER_RAY: u32 = 32;
 const MIN_RADIAL_RAYS: u32 = 2;
 const MAX_RADIAL_RAYS: u32 = 32;
-
-const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-// Every GTAO stage reads its input at 1033 and writes its output at 1034/1035; the upscale adds low-res depth at 1036.
-const INPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
-const OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const BLUR_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
-const BLUR_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
-const UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
 
 /// The `GtaoSettings` struct defines the runtime quality and world-space search controls for GTAO.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +58,8 @@ impl GtaoSettings {
 				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
 			}
 			"radius" => {
-				let radius = value.to_f64()
+				let radius = value
+					.to_f64()
 					.filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64)
 					.ok_or(
 						"GTAO radius was not set. The most likely cause is that the value is not a finite nonnegative number.",
@@ -116,6 +109,8 @@ struct GtaoShaderParameters {
 
 /// The `GtaoPass` struct builds a depth-based ambient occlusion term before material evaluation shades the frame.
 pub(super) struct GtaoPass {
+	/// The set that holds the screen view constants, which the evaluate and upscale stages read.
+	view_descriptor_set: ghi::DescriptorSetHandle,
 	gtao_descriptor_set: ghi::DescriptorSetHandle,
 	blur_descriptor_set: ghi::DescriptorSetHandle,
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
@@ -130,18 +125,19 @@ pub(super) struct GtaoPass {
 impl GtaoPass {
 	/// Creates the intermediate images and wires the three-stage descriptor graph.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`], which must run first.
+	/// `depth_pyramid` and `view_descriptor_set`, the set that holds the screen view constants, come from
+	/// [`super::depth_pyramid::DepthPyramidPass`], which must run first.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		depth_pyramid: ghi::DynamicImageHandle,
-		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+		view_descriptor_set: ghi::DescriptorSetHandle,
 		ao_map: ghi::BaseImageHandle,
 	) -> Self {
-		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"));
-		let blur_descriptor_set = context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"));
-		let upscale_descriptor_set = context.create_descriptor_set(Some("GTAO Depth-Aware Upscale Descriptor Set"));
+		let gtao_descriptor_set = set_layouts::GTAO.create_set(context, "GTAO Descriptor Set");
+		let blur_descriptor_set = set_layouts::GTAO_BLUR.create_set(context, "GTAO Blur X Descriptor Set");
+		let upscale_descriptor_set = set_layouts::GTAO_UPSCALE.create_set(context, "GTAO Depth-Aware Upscale Descriptor Set");
 		let dynamic_buffer = |name| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
@@ -168,35 +164,24 @@ impl GtaoPass {
 		};
 		let raw_ao_map = context.build_dynamic_image(half_resolution_image("GTAO Half-Resolution Raw"));
 		let blurred_ao_map = context.build_dynamic_image(half_resolution_image("GTAO Half-Resolution Blur Intermediate"));
-		let sampled = |set, slot, image: ghi::BaseImageHandle, sampler| {
-			ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, ghi::Layouts::Read)
-		};
+		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
+		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
+		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(gtao_descriptor_set, VIEW_BINDING, view_data.into()),
-			ghi::DescriptorWrite::buffer(gtao_descriptor_set, PARAMETERS_BINDING, parameters.into()),
-			sampled(gtao_descriptor_set, INPUT_BINDING, depth_pyramid.into(), depth_sampler),
-			ghi::DescriptorWrite::image(gtao_descriptor_set, OUTPUT_BINDING, raw_ao_map, ghi::Layouts::General),
-			sampled(blur_descriptor_set, INPUT_BINDING, depth_pyramid.into(), depth_sampler),
-			sampled(blur_descriptor_set, BLUR_SOURCE_BINDING, raw_ao_map.into(), ao_sampler),
-			ghi::DescriptorWrite::image(
-				blur_descriptor_set,
-				BLUR_OUTPUT_BINDING,
-				blurred_ao_map,
-				ghi::Layouts::General,
-			),
-			ghi::DescriptorWrite::buffer(upscale_descriptor_set, VIEW_BINDING, view_data.into()),
-			sampled(upscale_descriptor_set, INPUT_BINDING, depth, depth_sampler),
-			sampled(upscale_descriptor_set, BLUR_SOURCE_BINDING, blurred_ao_map.into(), ao_sampler),
-			ghi::DescriptorWrite::image(upscale_descriptor_set, BLUR_OUTPUT_BINDING, ao_map, ghi::Layouts::General),
-			sampled(
-				upscale_descriptor_set,
-				UPSCALE_LOW_RESOLUTION_DEPTH_BINDING,
-				depth_pyramid.into(),
-				depth_sampler,
-			),
+			evaluate.buffer("gtao_parameters", parameters),
+			evaluate.sampled("depth_pyramid", depth_pyramid, depth_sampler),
+			evaluate.image("ao_output", raw_ao_map),
+			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
+			blur.sampled("ao_source", raw_ao_map, ao_sampler),
+			blur.image("ao_output", blurred_ao_map),
+			upscale.sampled("visibility_depth", depth, depth_sampler),
+			upscale.sampled("ao_source", blurred_ao_map, ao_sampler),
+			upscale.image("ao_output", ao_map),
+			upscale.sampled("low_resolution_depth", depth_pyramid, depth_sampler),
 		]);
 
 		Self {
+			view_descriptor_set,
 			gtao_descriptor_set,
 			blur_descriptor_set,
 			upscale_descriptor_set,
@@ -232,7 +217,7 @@ impl GtaoPass {
 			evaluate: ComputeStage {
 				label: "GTAO Evaluate",
 				pipeline: gtao,
-				descriptor_sets: [self.gtao_descriptor_set],
+				descriptor_sets: [self.view_descriptor_set, self.gtao_descriptor_set],
 				extent: gtao_extent,
 				workgroup: Extent::new(16, 8, 1),
 			},
@@ -246,7 +231,7 @@ impl GtaoPass {
 			upscale: ComputeStage {
 				label: "GTAO Denoise and Depth-Aware Upscale",
 				pipeline: upscale,
-				descriptor_sets: [self.upscale_descriptor_set],
+				descriptor_sets: [self.view_descriptor_set, self.upscale_descriptor_set],
 				extent,
 				workgroup: Extent::new(8, 8, 1),
 			},
@@ -259,11 +244,11 @@ impl GtaoPass {
 #[derive(Clone, Copy)]
 pub(super) struct GtaoStages {
 	/// The half-resolution evaluation; it reads only the depth pyramid.
-	pub(super) evaluate: ComputeStage<1>,
+	pub(super) evaluate: ComputeStage<2>,
 	/// The horizontal denoise; it reads the evaluation.
 	pub(super) blur: ComputeStage<1>,
 	/// The full-resolution denoise and upscale; it reads the blur.
-	pub(super) upscale: ComputeStage<1>,
+	pub(super) upscale: ComputeStage<2>,
 }
 
 #[cfg(test)]

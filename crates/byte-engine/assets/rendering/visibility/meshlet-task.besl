@@ -1,18 +1,3 @@
-MeshDispatchWork: struct {
-	items: u32[131072],
-}
-
-// One word per packed work item: bit `m` marks meshlet `m` of the item's chunk as unoccluded when the camera's late pass
-// last culled it.
-OcclusionVisibility: struct {
-	words: u32[131072],
-}
-
-mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
-// Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
-occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read }>;
-occlusion_visibility: descriptor<{ type: OcclusionVisibility, binding: 1070, access: read_write, memory: device }>;
-
 // Up to six views of each of the workgroup's 32 meshlets.
 meshlet_instances: task_payload<u32, 192>;
 visible_count: workgroup<atomicu32>;

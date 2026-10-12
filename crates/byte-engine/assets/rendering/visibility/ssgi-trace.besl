@@ -14,10 +14,6 @@ SsgiRay: struct {
 	inverse_end_z: f32,
 }
 
-raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
-previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
-normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;
-
 // Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
 

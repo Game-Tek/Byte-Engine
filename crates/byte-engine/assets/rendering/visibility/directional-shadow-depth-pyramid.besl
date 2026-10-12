@@ -1,11 +1,3 @@
-// Build the 8x8 conservative max-depth and min-depth cells for every directional cascade in one dispatch.
-// Each thread gathers one 4x4 block of a cell, and the cell's four threads combine their blocks with two subgroup
-// shuffles, so no thread waits at a barrier.
-source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
-reduced_depth_1: descriptor<{ type: StorageImage<r16>, binding: 1034, access: write }>;
-// The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
-reduced_minimum_1: descriptor<{ type: StorageImage<r16>, binding: 1035, access: write }>;
-
 // A workgroup's 32 threads reduce four by two cells.
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;

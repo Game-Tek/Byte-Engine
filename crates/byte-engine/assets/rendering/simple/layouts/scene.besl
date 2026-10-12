@@ -1,0 +1,17 @@
+// The descriptor set of the simple pipeline: the cameras that view the scene and the transform of every instance it
+// draws. `rendering/pipelines/simple/render_pass.rs` creates one per sink and binds its buffers by these names.
+
+Camera: struct {
+	view_projection: mat4f,
+}
+
+Cameras: struct {
+	cameras: Camera[8],
+}
+
+Instances: struct {
+	transforms: mat4x3f[1024],
+}
+
+cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
+instances: descriptor<{ type: Instances, binding: 1, access: read, memory: device }>;

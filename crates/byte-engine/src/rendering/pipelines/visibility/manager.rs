@@ -20,12 +20,9 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, SSGI_ENABLED_PARAMETER, VisibilityFeatures};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
-	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, ENVIRONMENT_BINDING,
-	MATERIAL_EVALUATIONS_BINDING, MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_INSTANCES, MAX_LIGHTS,
-	MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MESH_DATA_BINDING, MESHLET_DATA_BINDING, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SKINNED_VERTICES_BINDING,
-	SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
+	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
+	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::lod::{LOD_CONFIGURATION_PREFIX, LodSettings, LodView};
@@ -36,6 +33,7 @@ use super::render_pass::{
 	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkState, VisibilityScene};
+use super::set_layouts;
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, make_cone_shadow_view,
@@ -218,22 +216,12 @@ struct LoadedMaterial {
 }
 
 impl ResidentEnvironment {
-	fn descriptor_writes(self, descriptor_set: ghi::DescriptorSetHandle) -> [ghi::DescriptorWrite; 2] {
+	/// Returns the writes that bind this environment's maps in a sink's material evaluation set.
+	fn descriptor_writes(self, material_evaluation_set: ghi::DescriptorSetHandle) -> [ghi::DescriptorWrite; 2] {
+		let set = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_set);
 		[
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				ENVIRONMENT_BINDING.slot(),
-				self.diffuse_image,
-				self.sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				SPECULAR_ENVIRONMENT_BINDING.slot(),
-				self.specular_image,
-				self.sampler,
-				ghi::Layouts::Read,
-			),
+			set.sampled("environment_irradiance", self.diffuse_image, self.sampler),
+			set.sampled("environment_specular", self.specular_image, self.sampler),
 		]
 	}
 }
@@ -578,24 +566,22 @@ impl VisibilityPipelineManager {
 		let meshes_buffer = context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage));
 		let lighting_buffer =
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
-		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"));
+		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
 		let mesh_dispatch_work = MeshDispatchWorkBuffer::new(context, descriptor_set);
 		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
-		let write = |binding: ghi::ShaderResourceDescriptor, buffer| {
-			ghi::DescriptorWrite::buffer(descriptor_set, binding.slot(), buffer)
-		};
+		let scene = set_layouts::SCENE.binder(descriptor_set);
 		context.write(&[
-			write(VIEWS_DATA_BINDING, views_buffer.into()),
-			write(MESH_DATA_BINDING, meshes_buffer.into()),
-			write(VERTEX_POSITIONS_BINDING, geometry.vertex_positions.into()),
-			write(VERTEX_NORMALS_BINDING, geometry.vertex_normals.into()),
-			write(SKINNED_VERTICES_BINDING, skinning_pass.skinned_vertices_buffer.into()),
-			write(VERTEX_UV_BINDING, geometry.vertex_uvs.into()),
-			write(VERTEX_INDICES_BINDING, geometry.vertex_indices.into()),
-			write(PRIMITIVE_INDICES_BINDING, geometry.primitive_indices.into()),
-			write(MESHLET_DATA_BINDING, geometry.meshlets.into()),
-			write(MATERIALS_DATA_BINDING, materials_buffer.into()),
-			write(MATERIAL_EVALUATIONS_BINDING, material_evaluations_buffer.into()),
+			scene.buffer("views", views_buffer),
+			scene.buffer("meshes", meshes_buffer),
+			scene.buffer("vertex_positions", geometry.vertex_positions),
+			scene.buffer("vertex_normals", geometry.vertex_normals),
+			scene.buffer("skinned_vertices", skinning_pass.skinned_vertices_buffer),
+			scene.buffer("vertex_uvs", geometry.vertex_uvs),
+			scene.buffer("vertex_indices", geometry.vertex_indices),
+			scene.buffer("primitive_indices", geometry.primitive_indices),
+			scene.buffer("meshlets", geometry.meshlets),
+			scene.buffer("materials", materials_buffer),
+			scene.buffer("material_evaluations", material_evaluations_buffer),
 		]);
 		Self {
 			loader,
@@ -813,14 +799,9 @@ impl VisibilityPipelineManager {
 			sampler,
 			photometry,
 		} = texture;
-		frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
-			self.scene.descriptor_set,
-			TEXTURES_BINDING.slot(),
-			image,
-			sampler,
-			ghi::Layouts::Read,
-			index,
-		)]);
+		frame.write(&[set_layouts::SCENE
+			.binder(self.scene.descriptor_set)
+			.sampled_element("textures", image, sampler, index)]);
 		match photometry {
 			Some(photometry) if photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0 => {
 				self.loaded_ies_profiles.insert(
@@ -1387,6 +1368,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			context,
 			self.pipeline_manager.clone(),
 			self.scene.descriptor_set,
+			self.scene.views_buffer.into(),
 			self.scene.lighting_buffer,
 			SinkTargets {
 				lit: lit.into(),

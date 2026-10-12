@@ -128,7 +128,10 @@ mod tests {
 				"aces_tone_mapping",
 				include_str!("../../../assets/rendering/aces/tone-mapping.besl"),
 			),
-			("ui_composite", include_str!("../../../assets/rendering/ui/composite.besl")),
+			(
+				"ui_composite",
+				crate::rendering::shader_vm_test::asset_source("ui/composite.besl"),
+			),
 			("sky", crate::rendering::shader_vm_test::asset_source("sky.besl")),
 			(
 				"sky_transmittance",

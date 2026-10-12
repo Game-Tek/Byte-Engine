@@ -3,5 +3,5 @@
 	"stage": "Task",
 	"workgroup": [32, 1, 1],
 	"maximum_mesh_threadgroups": 192,
-	"layouts": ["layouts/scene-records.besl", "layouts/instances.besl", "layouts/meshlets.besl"]
+	"layouts": ["layouts/scene-records.besl", "layouts/scene.besl", "layouts/occlusion.besl"]
 }

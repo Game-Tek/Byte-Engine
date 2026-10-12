@@ -120,3 +120,30 @@ fn stacking_rejects_a_layer_that_is_not_a_set_of_shared_declarations() {
 	let message = stacking_error("main: fn () -> void {}", &[("broken", "Frame: struct {")]);
 	assert!(message.contains("`broken` did not parse"));
 }
+
+#[test]
+fn a_layer_names_the_layout_of_the_descriptors_it_declares() {
+	let module = stacked(
+		r#"
+			scratch: descriptor<{ type: f32[], binding: 2, access: write }>;
+			main: fn () -> void { scratch[0] = transformed(1, 3.0); }
+		"#,
+		[("scene", SCENE_LAYER), ("result", RESULT_LAYER)],
+	);
+
+	let program = lex(module).expect("Expected the module to link");
+
+	let layout = |name: &str| {
+		let binding = program.get_descendant(name).expect("Expected the descriptor to link");
+		let binding = binding.borrow();
+		match binding.node() {
+			besl::Nodes::Binding { layout, .. } => layout.clone(),
+			_ => panic!("Expected `{name}` to be a binding"),
+		}
+	};
+
+	// Each layer is one descriptor set layout, and the module's own descriptors form its own.
+	assert_eq!(layout("instances").as_deref(), Some("scene"));
+	assert_eq!(layout("results").as_deref(), Some("result"));
+	assert_eq!(layout("scratch"), None);
+}

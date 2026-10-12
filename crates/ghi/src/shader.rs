@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use utils::Extent;
 
 use crate::{AccessPolicies, TextureViewTypes};
@@ -135,11 +137,9 @@ fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, Stri
 
 /// The `ResourceSlot` struct identifies one resource in a shader's flat resource namespace.
 ///
-/// Slots are global to the pipeline interface. Descriptor sets may group resources by lifetime,
-/// but they never introduce another shader-visible coordinate.
-///
-/// Direct MSL argument-buffer fields use `2 * slot` as their primary `[[id]]`. Combined image
-/// samplers place their sampler range at `2 * slot + count`. This mapping is shared by every stage.
+/// Slots are unique across the descriptor set layouts a pipeline declares, so a slot names one resource whichever
+/// set holds it. A [`DescriptorSetLayout`] groups the slots that one descriptor set holds, and a write names its
+/// resource by slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct ResourceSlot(u32);
@@ -243,9 +243,291 @@ impl ShaderResourceDescriptor {
 	}
 }
 
+/// The most resources one [`DescriptorSetLayout`] can declare, the width of [`ShaderDescriptorSet::used`].
+pub const MAX_LAYOUT_RESOURCES: usize = u64::BITS as usize;
+
+/// The `DescriptorSetLayout` struct declares the resources one descriptor set holds, so a backend lays the set out
+/// once, and every pipeline whose shaders declare the same layout shares the sets created from it.
+///
+/// Build one layout per group of resources that is bound together, such as a scene's buffers or one pass's inputs.
+/// Next, create sets with [`crate::context::ContextCreate::create_descriptor_set`], and declare the layout to each
+/// shader that reads it with [`ShaderDescriptorSet`]. Cloning is cheap; clones are the same layout.
+#[derive(Clone, Debug)]
+pub struct DescriptorSetLayout {
+	inner: Arc<DescriptorSetLayoutInner>,
+}
+
+#[derive(Debug)]
+struct DescriptorSetLayoutInner {
+	name: Box<str>,
+	identity: u64,
+	/// Ordered by slot.
+	resources: Box<[ShaderResourceDescriptor]>,
+	/// For each resource, how many array elements the resources before it hold.
+	element_bases: Box<[u32]>,
+	element_count: u32,
+}
+
+impl DescriptorSetLayout {
+	/// Builds a layout from its resources, in any order. `name` identifies the layout in diagnostics.
+	///
+	/// # Panics
+	///
+	/// Panics when two resources reserve the same slot, or when the layout declares more than
+	/// [`MAX_LAYOUT_RESOURCES`] resources.
+	pub fn new(name: &str, resources: impl IntoIterator<Item = ShaderResourceDescriptor>) -> Self {
+		let mut resources = resources.into_iter().collect::<Vec<_>>();
+		resources.sort_by_key(|resource| resource.slot());
+
+		assert!(
+			resources.len() <= MAX_LAYOUT_RESOURCES,
+			"Too many resources in descriptor set layout `{name}`. The most likely cause is that one layout groups resources that belong to several descriptor sets."
+		);
+		assert!(
+			resources
+				.windows(2)
+				.all(|pair| pair[0].slot().index() + pair[0].count() <= pair[1].slot().index()),
+			"Overlapping resource slots in descriptor set layout `{name}`. The most likely cause is that a resource array reserves a slot another resource declares."
+		);
+
+		let mut element_bases = Vec::with_capacity(resources.len());
+		let mut element_count = 0u32;
+		for resource in &resources {
+			element_bases.push(element_count);
+			element_count = element_count.checked_add(resource.count()).expect(
+				"Descriptor set layout element count overflowed. The most likely cause is an invalid resource array count.",
+			);
+		}
+
+		Self {
+			inner: Arc::new(DescriptorSetLayoutInner {
+				name: name.into(),
+				identity: resources_identity(&resources, 0),
+				resources: resources.into(),
+				element_bases: element_bases.into(),
+				element_count,
+			}),
+		}
+	}
+
+	/// Returns this layout with `signature` made part of its identity.
+	///
+	/// Two layouts with equal resources are interchangeable to a backend. Pass a signature of what the application
+	/// also requires to match, such as the names its shaders give the resources, so that a set built for one layout
+	/// is rejected where another one with the same shape was meant.
+	pub fn with_signature(self, signature: u64) -> Self {
+		Self {
+			inner: Arc::new(DescriptorSetLayoutInner {
+				name: self.inner.name.clone(),
+				identity: resources_identity(&self.inner.resources, signature),
+				resources: self.inner.resources.clone(),
+				element_bases: self.inner.element_bases.clone(),
+				element_count: self.inner.element_count,
+			}),
+		}
+	}
+
+	/// Returns the name diagnostics identify the layout by.
+	pub fn name(&self) -> &str {
+		&self.inner.name
+	}
+
+	/// Returns a value that is equal for two layouts exactly when a set created from one can be bound where a
+	/// shader declares the other.
+	pub fn identity(&self) -> u64 {
+		self.inner.identity
+	}
+
+	/// Returns the layout's resources, ordered by slot.
+	pub fn resources(&self) -> &[ShaderResourceDescriptor] {
+		&self.inner.resources
+	}
+
+	/// Returns the position in [`Self::resources`] of the resource declared at `slot`.
+	///
+	/// A resource array is declared at its first slot.
+	pub fn resource_index(&self, slot: ResourceSlot) -> Option<usize> {
+		self.inner
+			.resources
+			.binary_search_by_key(&slot, |resource| resource.slot())
+			.ok()
+	}
+
+	/// Returns how many array elements the resources before `resource_index` hold, the position of that resource's
+	/// first element in a set's dense storage.
+	pub(crate) fn element_base(&self, resource_index: usize) -> u32 {
+		self.inner.element_bases[resource_index]
+	}
+
+	/// Returns how many array elements the layout's resources hold in total.
+	pub(crate) fn element_count(&self) -> u32 {
+		self.inner.element_count
+	}
+}
+
+/// Hashes what makes two layouts interchangeable, with FNV-1a.
+fn resources_identity(resources: &[ShaderResourceDescriptor], signature: u64) -> u64 {
+	const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+	const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+	let mut hash = OFFSET_BASIS;
+	let mut write = |value: u64| {
+		for byte in value.to_le_bytes() {
+			hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
+		}
+	};
+
+	write(signature);
+	for resource in resources {
+		write(u64::from(resource.slot.index()));
+		write(resource.kind as u64);
+		write(u64::from(resource.count));
+		write(u64::from(resource.access.bits()));
+		write(resource.texture_view_type as u64);
+		write(u64::from(resource.buffer_stride));
+	}
+
+	hash
+}
+
+/// The `ShaderDescriptorSet` struct declares one descriptor set layout to a shader, with the resources of it the
+/// shader uses.
+///
+/// A shader declares the whole layout, so every shader that shares it reads one native set. Only the resources a
+/// shader uses count as its accesses and need a resource written before it runs. Pass one per layout to
+/// [`crate::context::ContextCreate::create_shader`], in the order the shader's native source declares its sets;
+/// layouts the shader uses no resource of take no native binding.
+#[derive(Clone, Debug)]
+pub struct ShaderDescriptorSet {
+	layout: DescriptorSetLayout,
+	used: u64,
+}
+
+impl ShaderDescriptorSet {
+	/// Declares `layout` to a shader that uses every resource of it.
+	pub fn new(layout: DescriptorSetLayout) -> Self {
+		let used = match layout.resources().len() {
+			0 => 0,
+			count => u64::MAX >> (MAX_LAYOUT_RESOURCES - count),
+		};
+		Self { layout, used }
+	}
+
+	/// Declares `layout` to a shader that uses the resources whose bit is set in `used`: bit `i` is
+	/// `layout.resources()[i]`.
+	pub fn with_used(layout: DescriptorSetLayout, used: u64) -> Self {
+		let declared = Self::new(layout);
+		Self {
+			used: used & declared.used,
+			..declared
+		}
+	}
+
+	pub fn layout(&self) -> &DescriptorSetLayout {
+		&self.layout
+	}
+
+	/// Returns the used resources as a mask over [`DescriptorSetLayout::resources`].
+	pub fn used(&self) -> u64 {
+		self.used
+	}
+
+	/// Returns the resources of the layout the shader uses, with their position in the layout.
+	pub fn used_resources(&self) -> impl Iterator<Item = (usize, ShaderResourceDescriptor)> + '_ {
+		self.layout
+			.resources()
+			.iter()
+			.copied()
+			.enumerate()
+			.filter(|(index, _)| self.used & (1 << index) != 0)
+	}
+}
+
+/// Returns the resources a shader uses across its descriptor sets as one list ordered by slot.
+///
+/// The Vulkan and DX12 backends derive their native layouts from this flat interface, and treat descriptor sets as
+/// groups of flat slots. Slots are unique across the sets a pipeline declares, so the list names each resource once.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn flatten_used_resources(
+	descriptor_sets: impl IntoIterator<Item = ShaderDescriptorSet>,
+) -> Vec<ShaderResourceDescriptor> {
+	let mut resources = descriptor_sets
+		.into_iter()
+		.flat_map(|set| set.used_resources().map(|(_, resource)| resource).collect::<Vec<_>>())
+		.collect::<Vec<_>>();
+	resources.sort_by_key(|resource| resource.slot());
+	resources
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_layout_orders_its_resources_by_slot_and_finds_them_by_slot() {
+		let layout = DescriptorSetLayout::new(
+			"test",
+			[
+				ShaderResourceDescriptor::new(
+					ResourceSlot::new(9),
+					ResourceKind::CombinedImageSampler,
+					4,
+					AccessPolicies::READ,
+				),
+				ShaderResourceDescriptor::single(ResourceSlot::new(2), ResourceKind::StorageBuffer, AccessPolicies::READ),
+				ShaderResourceDescriptor::single(ResourceSlot::new(13), ResourceKind::StorageImage, AccessPolicies::WRITE),
+			],
+		);
+
+		let slots = layout
+			.resources()
+			.iter()
+			.map(|resource| resource.slot().index())
+			.collect::<Vec<_>>();
+		assert_eq!(slots, [2, 9, 13]);
+		assert_eq!(layout.resource_index(ResourceSlot::new(9)), Some(1));
+		// An array is declared at its first slot only.
+		assert_eq!(layout.resource_index(ResourceSlot::new(10)), None);
+		assert_eq!((layout.element_base(2), layout.element_count()), (5, 6));
+	}
+
+	#[test]
+	fn layouts_are_interchangeable_only_with_equal_resources_and_signature() {
+		let resources = |access| {
+			[ShaderResourceDescriptor::single(
+				ResourceSlot::new(0),
+				ResourceKind::StorageBuffer,
+				access,
+			)]
+		};
+		let layout = DescriptorSetLayout::new("first", resources(AccessPolicies::READ));
+
+		assert_eq!(
+			layout.identity(),
+			DescriptorSetLayout::new("second", resources(AccessPolicies::READ)).identity()
+		);
+		assert_ne!(
+			layout.identity(),
+			DescriptorSetLayout::new("first", resources(AccessPolicies::WRITE)).identity()
+		);
+		assert_ne!(layout.identity(), layout.clone().with_signature(7).identity());
+	}
+
+	#[test]
+	fn a_shader_set_uses_only_resources_its_layout_declares() {
+		let layout = DescriptorSetLayout::new(
+			"test",
+			[
+				ShaderResourceDescriptor::single(ResourceSlot::new(0), ResourceKind::StorageBuffer, AccessPolicies::READ),
+				ShaderResourceDescriptor::single(ResourceSlot::new(1), ResourceKind::StorageImage, AccessPolicies::WRITE),
+			],
+		);
+
+		assert_eq!(ShaderDescriptorSet::new(layout.clone()).used(), 0b11);
+		let used = ShaderDescriptorSet::with_used(layout, 0b110);
+		assert_eq!(used.used(), 0b10);
+		assert_eq!(used.used_resources().map(|(index, _)| index).collect::<Vec<_>>(), [1]);
+	}
 
 	#[test]
 	fn platform_native_selects_backend_specific_shader_variant() {

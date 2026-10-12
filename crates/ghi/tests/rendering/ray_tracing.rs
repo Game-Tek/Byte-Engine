@@ -141,9 +141,11 @@ using namespace raytracing;
 
 struct Resources {
 	instance_acceleration_structure top_level_as [[id(0)]];
-	texture2d<float, access::write> output_image [[id(2)]];
-	device const packed_float4* colors [[id(6)]];
-	device const ushort* indices [[id(8)]];
+	texture2d<float, access::write> output_image [[id(1)]];
+	// The set holds the vertex positions for backends whose closest-hit shader reads them.
+	device const packed_float3* positions [[id(2)]];
+	device const packed_float4* colors [[id(3)]];
+	device const ushort* indices [[id(4)]];
 };
 
 kernel void raygen_main(uint2 launch_id [[thread_position_in_grid]], constant Resources& resources [[buffer(16)]]) {
@@ -296,19 +298,26 @@ payload.hit_value = float3(0.0, 0.0, 0.0);
 		ghi::AccessPolicies::READ,
 	);
 
+	// Every stage declares the one layout, and each uses the resources it reads: position 0 is the acceleration
+	// structure, then the output, the positions, the colors, and the indices.
+	let layout = ghi::DescriptorSetLayout::new(
+		"Ray Tracing Scene",
+		[
+			acceleration_structure_resource,
+			output_resource,
+			position_resource,
+			color_resource,
+			index_resource,
+		],
+	);
 	let raygen_shader = renderer
 		.create_shader(
 			None,
 			raygen_shader_artifact.as_source(),
 			ShaderTypes::RayGen,
 			// Metal resolves hits inside the ray-generation function, so it reads the hit attributes that other
-			// backends reach through a closest-hit shader. Every backend already unions these into one layout.
-			[
-				acceleration_structure_resource,
-				output_resource,
-				color_resource,
-				index_resource,
-			],
+			// backends reach through a closest-hit shader.
+			[ghi::ShaderDescriptorSet::with_used(layout.clone(), 0b11011)],
 		)
 		.expect("Failed to create raygen shader");
 	let closest_hit_shader = renderer
@@ -316,7 +325,7 @@ payload.hit_value = float3(0.0, 0.0, 0.0);
 			None,
 			closest_hit_shader_artifact.as_source(),
 			ShaderTypes::ClosestHit,
-			[position_resource, color_resource, index_resource],
+			[ghi::ShaderDescriptorSet::with_used(layout.clone(), 0b11100)],
 		)
 		.expect("Failed to create closest hit shader");
 	let miss_shader = renderer
@@ -334,7 +343,7 @@ payload.hit_value = float3(0.0, 0.0, 0.0);
 			},
 		});
 
-	let descriptor_set = renderer.create_descriptor_set(None);
+	let descriptor_set = renderer.create_descriptor_set(None, &layout);
 
 	let render_target = renderer.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)

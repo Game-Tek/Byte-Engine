@@ -72,7 +72,7 @@ impl ShaderCompiler for LinkingCompiler {
 					stage: settings.stage.into(),
 					interface: ShaderInterface {
 						workgroup_size: None,
-						bindings: Vec::new(),
+						sets: Vec::new(),
 					},
 					artifact: ShaderArtifact::Spirv,
 				},

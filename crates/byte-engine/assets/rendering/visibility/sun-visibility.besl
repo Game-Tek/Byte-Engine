@@ -20,43 +20,6 @@
 // not count, so shadows keep to their surface. Each 8x8 workgroup first loads the linear depth and trace of the 8x8
 // texels its pixels tap into workgroup memory, so every pixel's 25 taps and depth gradient read shared values.
 
-// The camera, then four cascades per sun slot.
-Views: struct {
-	views: View[17],
-}
-
-// Must match contact-shadows.besl.
-SunVisibilityParameters: struct {
-	// Per sun slot: the view-space unit direction from a surface toward the sun, which the contact-shadow trace
-	// marches, in xyz, and the tangent of the sun's angular radius, which sizes its penumbrae, in w.
-	suns: vec4f[4],
-	// The camera's full-resolution pixel-to-ray scale in xy and offset in zw, so a pixel's depth gives its view-space
-	// position.
-	pixel_to_ray: vec4f,
-	// World-space reach of one contact-shadow ray.
-	max_distance: f32,
-	// How many sun slots hold a shadowed sun. Slot `s` writes channel `s` of every output.
-	sun_count: u32,
-	// Nonzero when the contact-shadow trace ran this frame. The bake removes every block that reads it when the
-	// project leaves contact shadows out, which also drops the trace binding.
-	contact_shadows: u32,
-}
-
-views: descriptor<{ type: Views, binding: 0, access: read }>;
-visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
-sun_visibility_output: descriptor<{ type: StorageImage<rgba8>, binding: 1034, access: write }>;
-contact_shadow_trace: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
-// Mip zero holds positive linear depth at the trace resolution.
-depth_pyramid: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
-// The screen view constants describe the half-resolution trace image.
-screen_view: descriptor<{ type: ScreenView, binding: 1037, access: read }>;
-sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 1038, access: read }>;
-depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1039, access: read }>;
-directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, access: read }>;
-directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read }>;
-// The maximum pyramid again, with a plain sampler: the blocker search gathers its cells four at a time.
-directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 1042, access: read }>;
-
 // Returns the view-space position at continuous full-resolution pixel coordinates, where integers are pixel centers.
 sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
 	let pixel_to_ray: vec4f = sun_visibility_parameters.pixel_to_ray;

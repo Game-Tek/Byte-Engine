@@ -506,19 +506,23 @@ pub trait ContextCreate {
 	///
 	/// Returns an error when GLSL compilation fails or SPIR-V input is not aligned
 	/// to four bytes.
+	///
+	/// `descriptor_sets` declares the shader's descriptor set layouts, in the order its native source declares
+	/// them. See [`shader::ShaderDescriptorSet`].
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()>;
 
-	/// Creates an empty retained descriptor set.
+	/// Creates an empty descriptor set that holds the resources `layout` declares.
 	///
-	/// The set is a lifetime/update grouping only. Its shader-visible slots are established by
-	/// [`Context::write`] calls and validated against the active pipeline when it is bound.
-	fn create_descriptor_set(&mut self, name: Option<&str>) -> DescriptorSetHandle;
+	/// Next, give it resources with [`Context::write`], then bind it with
+	/// [`crate::command_buffer::BoundPipelineLayoutMode::bind_descriptor_sets`] for any pipeline whose shaders
+	/// declare a layout of the same [`shader::DescriptorSetLayout::identity`].
+	fn create_descriptor_set(&mut self, name: Option<&str>, layout: &shader::DescriptorSetLayout) -> DescriptorSetHandle;
 
 	/// Creates a graphics/rasterization pipeline from a builder.
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle;
@@ -639,14 +643,18 @@ macro_rules! delegate_context_create_to_device {
 			name: Option<&str>,
 			shader_source_type: $crate::shader::Sources,
 			stage: $crate::ShaderTypes,
-			shader_resource_descriptors: impl IntoIterator<Item = $crate::shader::ShaderResourceDescriptor>,
+			descriptor_sets: impl IntoIterator<Item = $crate::shader::ShaderDescriptorSet>,
 		) -> Result<$crate::ShaderHandle, ()> {
 			self.device
-				.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
+				.create_shader(name, shader_source_type, stage, descriptor_sets)
 		}
 
-		fn create_descriptor_set(&mut self, name: Option<&str>) -> $crate::DescriptorSetHandle {
-			self.device.create_descriptor_set(name)
+		fn create_descriptor_set(
+			&mut self,
+			name: Option<&str>,
+			layout: &$crate::shader::DescriptorSetLayout,
+		) -> $crate::DescriptorSetHandle {
+			self.device.create_descriptor_set(name, layout)
 		}
 
 		fn create_raster_pipeline(&mut self, builder: $crate::pipelines::raster::Builder) -> $crate::PipelineHandle {

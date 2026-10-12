@@ -13,9 +13,7 @@ use ghi::frame::Frame as _;
 
 use super::SinkHistory;
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
-use crate::rendering::pipelines::visibility::layout::{
-	DEPTH_PYRAMID_BINDING, PREVIOUS_RADIANCE_BINDING, RADIANCE_HISTORY_BINDING, REFLECTION_PARAMETERS_BINDING,
-};
+use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::pipelines::visibility::shader_data::ReflectionShaderParameters;
 
 /// The render-graph name of the light leaving opaque surfaces toward the camera, which reflection rays read one frame
@@ -76,30 +74,12 @@ impl ScreenSpaceReflections {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let set = material_evaluation_descriptor_set;
+		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(set, REFLECTION_PARAMETERS_BINDING.slot(), parameters.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				set,
-				DEPTH_PYRAMID_BINDING.slot(),
-				ghi::BaseImageHandle::from(depth_pyramid),
-				point_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler_with_frame(
-				set,
-				PREVIOUS_RADIANCE_BINDING.slot(),
-				radiance_history,
-				point_sampler,
-				ghi::Layouts::Read,
-				-1,
-			),
-			ghi::DescriptorWrite::image(
-				set,
-				RADIANCE_HISTORY_BINDING.slot(),
-				ghi::BaseImageHandle::from(radiance_history),
-				ghi::Layouts::General,
-			),
+			evaluation.buffer("reflection_parameters", parameters),
+			evaluation.sampled("depth_pyramid", depth_pyramid, point_sampler),
+			evaluation.sampled_with_frame("previous_radiance", radiance_history, point_sampler, -1),
+			evaluation.image("radiance_history_map", radiance_history),
 		]);
 
 		Self { parameters }

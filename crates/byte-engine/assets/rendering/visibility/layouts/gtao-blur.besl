@@ -1,0 +1,6 @@
+// The descriptor set of the horizontal GTAO denoise: the linear depth that guards edges, the occlusion it filters,
+// and the image it writes.
+
+linear_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;

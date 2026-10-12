@@ -19,13 +19,16 @@ pub struct Body {
 
 impl Body {
 	/// Creates a body payload with default material and motion properties.
+	///
+	/// The center of mass starts in the middle of `shape`: the `center` of a [`Shapes::Capsule`], and the collider
+	/// origin for the other shapes. Replace it with [`Self::with_center_of_mass`].
 	pub fn new(body_type: BodyTypes, shape: Shapes) -> Self {
 		Self {
 			body_type,
-			shape,
 			velocity: Vector::zero(),
 			mass: 1.0,
-			center_of_mass: Point::origin(),
+			center_of_mass: shape.bounds().center(),
+			shape,
 			elasticity: 0.1,
 			friction: 0.5,
 		}

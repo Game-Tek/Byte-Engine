@@ -1,6 +1,6 @@
 use maths_rs::Vec3f;
 
-use crate::{AABB, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
+use crate::{AABB, Capsule, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
 
 /// The `Intersection` struct records a static contact using a normal that points from shape A toward shape B.
 pub struct Intersection<Space = WorldSpace> {
@@ -173,6 +173,9 @@ pub fn sphere_in_frustum<Space>(sphere: &Sphere<Space>, frustum_planes: &[Plane<
 }
 
 /// Returns the contact between two overlapping or tangent spheres.
+// Inlined because the capsule tests end in this one, which would otherwise leave every caller with a call to a shared
+// copy. With that call, physics steps of capsule piles were 2% to 3% slower on an Apple M4.
+#[inline]
 pub fn sphere_vs_sphere<Space>(sphere_a: &Sphere<Space>, sphere_b: &Sphere<Space>) -> Option<Intersection<Space>> {
 	let offset = sphere_b.center() - sphere_a.center();
 	let radius_sum = sphere_a.radius() + sphere_b.radius();
@@ -292,6 +295,159 @@ pub fn sphere_vs_aabb<Space>(sphere: &Sphere<Space>, aabb: &AABB<Space>) -> Opti
 	})
 }
 
+/// Returns the contact between a capsule and a sphere that overlap or touch.
+///
+/// The capsule is shape A, so the normal points from the capsule toward the sphere.
+pub fn capsule_vs_sphere<Space>(capsule: &Capsule<Space>, sphere: &Sphere<Space>) -> Option<Intersection<Space>> {
+	// A capsule is a sphere swept along its segment, so it touches another shape where the sphere around the
+	// segment's nearest point does.
+	let nearest = closest_point_on_segment(capsule.start(), capsule.end(), sphere.center());
+	sphere_vs_sphere(&Sphere::new(nearest, capsule.radius()), sphere)
+}
+
+/// Returns the contact between two capsules that overlap or touch.
+///
+/// Capsules that lie side by side touch along a stretch. Their contact is in the middle of it.
+pub fn capsule_vs_capsule<Space>(a: &Capsule<Space>, b: &Capsule<Space>) -> Option<Intersection<Space>> {
+	let (on_a, on_b) = closest_points_between_segments([a.start(), a.end()], [b.start(), b.end()]);
+	sphere_vs_sphere(&Sphere::new(on_a, a.radius()), &Sphere::new(on_b, b.radius()))
+}
+
+/// Returns the contact between a capsule and an axis-aligned box that overlap or touch.
+///
+/// The capsule is shape A, so the normal points from the capsule toward the box. A capsule that lies along a face
+/// touches it along a stretch, and its contact is in the middle of it. A capsule whose segment enters the box is
+/// pushed out through the face nearest to the deepest of the segment's two ends and the middle of the part inside.
+pub fn capsule_vs_aabb<Space>(capsule: &Capsule<Space>, aabb: &AABB<Space>) -> Option<Intersection<Space>> {
+	let nearest = closest_point_on_segment_to_aabb(capsule.start(), capsule.end(), aabb);
+	sphere_vs_aabb(&Sphere::new(nearest, capsule.radius()), aabb)
+}
+
+/// Returns the point of the segment from `start` to `end` that is closest to `point`.
+fn closest_point_on_segment<Space>(start: Point<Space>, end: Point<Space>, point: Point<Space>) -> Point<Space> {
+	let along = end - start;
+	let length_squared = along.length_squared();
+	// A segment without length is a single point.
+	if length_squared == 0.0 {
+		return start;
+	}
+	start + along * ((point - start).dot(along) / length_squared).clamp(0.0, 1.0)
+}
+
+/// Returns the closest pair of points between two segments, each given as its two ends: first the point on `a`,
+/// then the point on `b`.
+///
+/// Parallel segments are equally close along a stretch. The points are then in the middle of it.
+fn closest_points_between_segments<Space>(a: [Point<Space>; 2], b: [Point<Space>; 2]) -> (Point<Space>, Point<Space>) {
+	let (a_along, b_along) = (a[1] - a[0], b[1] - b[0]);
+	let (a_length, b_length) = (a_along.length_squared(), b_along.length_squared());
+	let between = a[0] - b[0];
+	let (a_offset, b_offset) = (a_along.dot(between), b_along.dot(between));
+	let alignment = a_along.dot(b_along);
+
+	// Where the lines through the segments pass closest, as a share of the way along `a`. The divisor is the squared
+	// area the two segments span, which is zero when they are parallel or one of them has no length.
+	let spanned = a_length * b_length - alignment * alignment;
+	let share = if spanned > f32::EPSILON * a_length * b_length {
+		((alignment * b_offset - a_offset * b_length) / spanned).clamp(0.0, 1.0)
+	} else if a_length > 0.0 {
+		// The stretch of `a` that lies beside `b` runs between where `b`'s two ends project onto it.
+		let beside = [-a_offset, alignment - a_offset].map(|projection| (projection / a_length).clamp(0.0, 1.0));
+		(beside[0] + beside[1]) * 0.5
+	} else {
+		// `a` is a single point.
+		0.0
+	};
+
+	// The closest point on `b` to that point may be one of `b`'s ends, which in turn may be closer to another point
+	// of `a`.
+	let on_b = closest_point_on_segment(b[0], b[1], a[0] + a_along * share);
+	(closest_point_on_segment(a[0], a[1], on_b), on_b)
+}
+
+/// Returns the point of the segment from `start` to `end` that is closest to `aabb`.
+///
+/// A segment that runs beside a face, or through the box, has a stretch of points that are all as close as each
+/// other. Of the two ends and the middle of that stretch, this returns the one deepest inside the box, and the
+/// middle when none is deeper than the others.
+fn closest_point_on_segment_to_aabb<Space>(start: Point<Space>, end: Point<Space>, aabb: &AABB<Space>) -> Point<Space> {
+	let (origin, along) = (start.to_array(), (end - start).to_array());
+	let (min, max) = (aabb.min().to_array(), aabb.max().to_array());
+	let at = |time: f32| start + (end - start) * time;
+
+	// The times, from zero at `start` to one at `end`, at which the segment crosses the plane of a box face. Between
+	// two neighboring times the segment stays on one side of every face.
+	let mut times = [0.0f32; 8];
+	let mut count = 1;
+	for axis in 0..3 {
+		for face in [min[axis], max[axis]] {
+			// A segment that runs along a plane never crosses it. The division then gives no time between zero and one.
+			let time = (face - origin[axis]) / along[axis];
+			if time > 0.0 && time < 1.0 {
+				times[count] = time;
+				count += 1;
+			}
+		}
+	}
+	times[count] = 1.0;
+	let times = &mut times[..=count];
+	times.sort_unstable_by(f32::total_cmp);
+
+	// The distance to a box never falls again once it has started to grow along a line. So the closest point is in
+	// the first stretch between two times where the distance stops falling.
+	for stretch in times.windows(2) {
+		let (from, to) = (stretch[0], stretch[1]);
+		if to <= from {
+			// The segment crosses two planes at once, through an edge or a corner of the box.
+			continue;
+		}
+		// Half the rate at which the squared distance changes is `offset + rate * time` over this stretch. Only the
+		// axes along which the segment is outside the box add to it, and the middle of the stretch tells which those
+		// are without landing on a face.
+		let middle = (from + to) * 0.5;
+		let (mut offset, mut rate) = (0.0, 0.0);
+		for axis in 0..3 {
+			let position = origin[axis] + along[axis] * middle;
+			let face = if position < min[axis] {
+				min[axis]
+			} else if position > max[axis] {
+				max[axis]
+			} else {
+				continue;
+			};
+			offset += along[axis] * (origin[axis] - face);
+			rate += along[axis] * along[axis];
+		}
+
+		if rate == 0.0 {
+			// The distance stays the same over the whole stretch: the segment runs beside a face or inside the box.
+			// How deep a point is inside the box is its distance to the nearest face plane, below zero outside.
+			let depth = |time: f32| {
+				(0..3)
+					.map(|axis| {
+						let position = origin[axis] + along[axis] * time;
+						(position - min[axis]).min(max[axis] - position)
+					})
+					.fold(f32::INFINITY, f32::min)
+			};
+			let mut deepest = middle;
+			for time in [from, to] {
+				if depth(time) > depth(deepest) {
+					deepest = time;
+				}
+			}
+			return at(deepest);
+		}
+
+		let closest = -offset / rate;
+		if closest < to {
+			// A time before the stretch means the distance was already growing when the stretch started.
+			return at(closest.max(from));
+		}
+	}
+	end
+}
+
 /// Returns the entry and exit distances where `ray` intersects `sphere`.
 pub fn ray_vs_sphere<Space>(ray: &Ray<Space>, sphere: &Sphere<Space>) -> Option<(f32, f32)> {
 	let offset = sphere.center() - ray.origin();
@@ -380,7 +536,7 @@ fn axis_normal<Space>(axis: usize, sign: f32) -> UnitVector<Space> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{Point, UnitVector, WorldSpace, assert_float_eq_with_epsilon};
+	use crate::{Point, UnitVector, WorldSpace, assert_float_eq_with_epsilon, assert_geometry_near};
 
 	#[test]
 	fn ray_aabb_intersection_handles_axis_aligned_diagonal_and_parallel_rays() {
@@ -496,6 +652,154 @@ mod tests {
 		assert_eq!(inside_contact.normal(), UnitVector::y_axis());
 		assert_eq!(inside_contact.point_on_b(), Point::new(0.0, 0.5, 0.0));
 		assert_float_eq_with_epsilon!(inside_contact.depth(), 0.51, 0.000001);
+	}
+
+	/// Returns a capsule that stands on the origin: 0.5 in radius and 2 tall, so its cap centers are at heights 0.5
+	/// and 1.5.
+	fn standing_capsule() -> Capsule<WorldSpace> {
+		Capsule::new(Point::new(0.0, 0.5, 0.0), Point::new(0.0, 1.5, 0.0), 0.5)
+	}
+
+	#[test]
+	fn a_sphere_beside_a_capsule_touches_its_side() {
+		let sphere = Sphere::new(Point::new(0.9, 1.2, 0.0), 0.5);
+		let contact = capsule_vs_sphere(&standing_capsule(), &sphere).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::x_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_eq!(contact.point_on_a(), Point::new(0.5, 1.2, 0.0));
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.4, 1.2, 0.0));
+	}
+
+	#[test]
+	fn a_sphere_past_the_end_of_a_capsule_touches_its_round_cap() {
+		let capsule = standing_capsule();
+		let above = Sphere::new(Point::new(0.0, 2.4, 0.0), 0.5);
+		let contact = capsule_vs_sphere(&capsule, &above).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::y_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_eq!(contact.point_on_a(), Point::new(0.0, 2.0, 0.0));
+
+		// A cylinder of the same size would reach this sphere with its rim. The cap curves away from it.
+		let beside_the_cap = Sphere::new(Point::new(0.8, 2.3, 0.0), 0.5);
+		assert_eq!(capsule_vs_sphere(&capsule, &beside_the_cap), None);
+	}
+
+	#[test]
+	fn capsules_side_by_side_touch_in_the_middle_of_the_stretch_they_share() {
+		let first = standing_capsule();
+		// The second capsule stands half a unit higher, so the segments are side by side from heights 1 to 1.5.
+		let second = Capsule::new(Point::new(0.8, 1.0, 0.0), Point::new(0.8, 2.0, 0.0), 0.5);
+		let contact = capsule_vs_capsule(&first, &second).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::x_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.2, 0.000001);
+		assert_geometry_near!(contact.point_on_a(), Point::<WorldSpace>::new(0.5, 1.25, 0.0));
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.3, 1.25, 0.0));
+		assert_eq!(capsule_vs_capsule(&second, &first).unwrap(), contact.swap());
+	}
+
+	#[test]
+	fn crossed_capsules_touch_where_their_segments_pass_closest() {
+		let upright = standing_capsule();
+		// Lies across the upright capsule, 0.8 in front of it.
+		let lying = Capsule::new(Point::new(-2.0, 1.0, 0.8), Point::new(2.0, 1.0, 0.8), 0.5);
+		let contact = capsule_vs_capsule(&upright, &lying).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::z_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.2, 0.000001);
+		assert_geometry_near!(contact.point_on_a(), Point::<WorldSpace>::new(0.0, 1.0, 0.5));
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 1.0, 0.3));
+	}
+
+	#[test]
+	fn capsules_end_to_end_touch_at_their_caps() {
+		let lower = standing_capsule();
+		let upper = Capsule::new(Point::new(0.0, 2.4, 0.0), Point::new(0.0, 3.4, 0.0), 0.5);
+		let contact = capsule_vs_capsule(&lower, &upper).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::y_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_eq!(contact.point_on_a(), Point::new(0.0, 2.0, 0.0));
+
+		let apart = Capsule::new(Point::new(0.0, 2.6, 0.0), Point::new(0.0, 3.6, 0.0), 0.5);
+		assert_eq!(capsule_vs_capsule(&lower, &apart), None);
+	}
+
+	#[test]
+	fn a_capsule_standing_on_a_box_touches_it_under_its_lower_cap() {
+		let floor: AABB<WorldSpace> = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(5.0, 0.1, 5.0));
+		let contact = capsule_vs_aabb(&standing_capsule(), &floor).unwrap();
+
+		assert_eq!(contact.normal(), -UnitVector::y_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_eq!(contact.point_on_a(), Point::new(0.0, 0.0, 0.0));
+		assert_eq!(contact.point_on_b(), Point::new(0.0, 0.1, 0.0));
+	}
+
+	#[test]
+	fn a_capsule_beside_a_box_touches_it_with_its_side_and_misses_it_past_a_corner() {
+		let capsule = standing_capsule();
+		// A wall whose near face is 0.4 from the capsule's segment, from height 1 up.
+		let wall = AABB::new(Point::new(0.4, 1.0, -5.0), Point::new(1.0, 5.0, 5.0));
+		let contact = capsule_vs_aabb(&capsule, &wall).unwrap();
+
+		assert_eq!(contact.normal(), UnitVector::x_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		// The segment runs beside the wall from heights 1 to 1.5.
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.4, 1.25, 0.0));
+
+		// The bounds of the capsule and this box overlap, but the cap curves away from the box's edge.
+		let past_the_cap = AABB::new(Point::new(0.4, 1.9, -5.0), Point::new(1.0, 5.0, 5.0));
+		assert_eq!(capsule_vs_aabb(&capsule, &past_the_cap), None);
+	}
+
+	#[test]
+	fn a_capsule_lying_on_a_box_touches_it_in_the_middle_of_the_stretch_above_it() {
+		// The capsule sticks out past the box's edge at x = 1, so only the stretch from x = -1 to 1 is above the box.
+		let lying: Capsule<WorldSpace> = Capsule::new(Point::new(-1.0, 0.4, 0.0), Point::new(3.0, 0.4, 0.0), 0.5);
+		let floor = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(1.0, 0.0, 5.0));
+		let contact = capsule_vs_aabb(&lying, &floor).unwrap();
+
+		assert_eq!(contact.normal(), -UnitVector::y_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn a_capsule_leaning_toward_a_box_touches_it_with_its_nearest_end() {
+		// The lower end is the closest point of the segment to the floor, and the upper end leans away over it.
+		let leaning: Capsule<WorldSpace> = Capsule::new(Point::new(0.0, 0.4, 0.0), Point::new(1.0, 2.0, 0.0), 0.5);
+		let floor = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(5.0, 0.0, 5.0));
+		let contact = capsule_vs_aabb(&leaning, &floor).unwrap();
+
+		assert_eq!(contact.normal(), -UnitVector::y_axis());
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
+		assert_eq!(contact.point_on_b(), Point::new(0.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn a_capsule_with_an_end_inside_a_box_leaves_by_the_face_nearest_to_that_end() {
+		let floor: AABB<WorldSpace> = AABB::new(Point::new(-5.0, -4.0, -5.0), Point::new(5.0, 0.0, 5.0));
+		// The lower cap center is 0.3 under the floor's top, and the upper one is above it.
+		let sunk = Capsule::new(Point::new(0.0, -0.3, 0.0), Point::new(0.0, 0.7, 0.0), 0.5);
+		let contact = capsule_vs_aabb(&sunk, &floor).unwrap();
+
+		// Moving the capsule up by the depth leaves it standing on the floor's top.
+		assert_float_eq_with_epsilon!(contact.depth(), 0.8, 0.000001);
+		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn a_capsule_that_passes_through_a_box_leaves_by_the_face_nearest_to_the_middle_of_the_part_inside() {
+		let slab: AABB<WorldSpace> = AABB::new(Point::new(-5.0, 0.1, -5.0), Point::new(5.0, 0.3, 5.0));
+		// Both cap centers are outside the slab, and the segment between them crosses it from one side to the other.
+		let through = Capsule::new(Point::new(0.0, -0.3, 0.0), Point::new(0.0, 0.7, 0.0), 0.5);
+		let contact = capsule_vs_aabb(&through, &slab).unwrap();
+
+		// The middle of the part inside is 0.1 from both the top and the bottom of the slab.
+		assert_float_eq_with_epsilon!(contact.depth(), 0.6, 0.000001);
 	}
 
 	#[test]

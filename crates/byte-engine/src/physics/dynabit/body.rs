@@ -1,11 +1,19 @@
 use math::{
-	AABB, Orientation, Point, Scale, Sphere, Vector,
-	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere, sphere_vs_sphere_dynamic},
+	AABB, Capsule, Orientation, Point, Scale, Sphere, Vector,
+	collision::{
+		Intersection, aabb_vs_aabb, capsule_vs_aabb, capsule_vs_capsule, capsule_vs_sphere, sphere_vs_aabb, sphere_vs_sphere,
+		sphere_vs_sphere_dynamic,
+	},
 };
 
 use crate::{
 	core::factory::Handle,
-	physics::{LocalSpace, body::BodyTypes, collider::Shapes, dynabit::contact::Contact},
+	physics::{
+		LocalSpace,
+		body::BodyTypes,
+		collider::{Shapes, capsule_reach, sphere_moment},
+		dynabit::contact::Contact,
+	},
 	time::MediaTime,
 };
 
@@ -44,18 +52,12 @@ impl PhysicsBody {
 	/// inertia, or zero for a body that contacts do not turn.
 	///
 	/// A box collides as an axis-aligned box whatever its orientation. If contacts turned it, friction would spin
-	/// it until it rolled along on its faces like a wheel, so contacts only move it.
+	/// it until it rolled along on its faces like a wheel, so contacts only move it. A capsule collides upright in
+	/// the same way, which also keeps a character on its feet.
 	pub(crate) fn inverse_moments(&self) -> [f32; 3] {
 		match self.collision_shape {
-			Shapes::Cube { .. } => [0.0; 3],
-			Shapes::Sphere { .. } => {
-				let moments = self.collision_shape.principal_inertia();
-				[
-					self.inv_mass / moments.x,
-					self.inv_mass / moments.y,
-					self.inv_mass / moments.z,
-				]
-			}
+			Shapes::Cube { .. } | Shapes::Capsule { .. } => [0.0; 3],
+			Shapes::Sphere { radius } => [self.inv_mass / sphere_moment(radius); 3],
 		}
 	}
 
@@ -86,7 +88,8 @@ impl PhysicsBody {
 		// The spin changes when the body's moments of inertia differ. That change is worked out in the body's own
 		// frame, where the inertia tensor is the diagonal of those moments, and then rotated into the world. With no
 		// torque acting, angular momentum stays as it is, so the spin changes by the inverse inertia times the cross
-		// product of the momentum with the spin. A body that is not spinning, as boxes never are, has none to change.
+		// product of the momentum with the spin. A body that is not spinning, as boxes and capsules never are, has none to
+		// change.
 		let angular_velocity = if self.angular_velocity.to_array() == [0.0; 3] {
 			self.angular_velocity
 		} else {
@@ -135,7 +138,7 @@ impl PhysicsBody {
 				let reach = radius * 0.5;
 				self.linear_velocity.length_squared() * dt * dt > reach * reach
 			}
-			Shapes::Cube { .. } => false,
+			Shapes::Cube { .. } | Shapes::Capsule { .. } => false,
 		}
 	}
 
@@ -195,8 +198,36 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 		(Shapes::Cube { .. }, Shapes::Sphere { radius }) => {
 			sphere_vs_aabb(&Sphere::new(b.position, *radius), &a.bounds())?.swap()
 		}
+		(Shapes::Capsule { radius, height, center }, _) => {
+			capsule_contact(&world_capsule(a.position, *radius, *height, *center), b)?
+		}
+		(_, Shapes::Capsule { radius, height, center }) => {
+			capsule_contact(&world_capsule(b.position, *radius, *height, *center), a)?.swap()
+		}
 	};
 	Some(Contact::from_static(i, j, touching))
+}
+
+/// Returns where `capsule` touches the body `other`, with the capsule as the first shape of the intersection.
+fn capsule_contact(capsule: &Capsule, other: &PhysicsBody) -> Option<Intersection> {
+	match &other.collision_shape {
+		Shapes::Sphere { radius } => capsule_vs_sphere(capsule, &Sphere::new(other.position, *radius)),
+		Shapes::Cube { .. } => capsule_vs_aabb(capsule, &other.bounds()),
+		Shapes::Capsule { radius, height, center } => {
+			capsule_vs_capsule(capsule, &world_capsule(other.position, *radius, *height, *center))
+		}
+	}
+}
+
+/// Returns the world-space capsule of a body at `position` whose collider is a [`Shapes::Capsule`] with these
+/// properties.
+///
+/// A capsule collides upright whatever the body's orientation, so placing it only moves it.
+fn world_capsule(position: Point, radius: f32, height: f32, center: Point<LocalSpace>) -> Capsule {
+	// Crossing from authored local geometry to world simulation requires an explicit raw boundary conversion.
+	let middle = position + Vector::from_maths(center.into_maths());
+	let reach = Vector::new(0.0, capsule_reach(radius, height), 0.0);
+	Capsule::new(middle - reach, middle + reach, radius)
 }
 
 #[cfg(test)]
@@ -290,6 +321,51 @@ mod tests {
 
 		assert_eq!(swept.min(), body.bounds().min());
 		assert_eq!(swept.max(), body.bounds().max());
+	}
+
+	#[test]
+	fn a_capsule_stands_upright_on_its_body_whatever_the_orientation() {
+		let mut character = body();
+		// A character 1.8 tall whose origin is at its feet.
+		character.collision_shape = Shapes::capsule(0.3, 1.8, Point::new(0.0, 0.9, 0.0));
+		character.position = Point::new(2.0, 1.0, 0.0);
+		// Lying on its side, as an animation might leave a character's transform.
+		let quarter_turn = Vector::<math::WorldSpace>::new(0.0, 0.0, std::f32::consts::FRAC_PI_2);
+		character.orientation = Orientation::try_from_rotation_vector(quarter_turn).unwrap();
+
+		assert!((character.bounds().min() - Point::new(1.7, 1.0, -0.3)).length() <= 1e-5);
+		assert!((character.bounds().max() - Point::new(2.3, 2.8, 0.3)).length() <= 1e-5);
+
+		// A box whose top is 0.05 above the capsule's feet touches it from below, under its lower cap.
+		let mut floor = body();
+		floor.collision_shape = Shapes::cube(Vector::new(4.0, 0.5, 4.0));
+		floor.position = Point::new(0.0, 0.55, 0.0);
+		let contact = intersect((&character, 0), (&floor, 1), 1.0 / 60.0).expect("the capsule stands in the box");
+		assert!((contact.a.point - Point::new(2.0, 1.0, 0.0)).length() <= 1e-5);
+		assert!((contact.b.point - Point::new(2.0, 1.05, 0.0)).length() <= 1e-5);
+		assert!((contact.depth - 0.05).abs() <= 1e-5);
+	}
+
+	#[test]
+	fn contacts_between_two_shapes_are_the_same_for_both_body_orders() {
+		let mut capsule = body();
+		capsule.collision_shape = Shapes::capsule(0.3, 1.8, Point::new(0.0, 0.9, 0.0));
+		let mut sphere = body();
+		sphere.position = Point::new(1.0, 1.0, 0.0);
+		let mut cube = body();
+		cube.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+		cube.position = Point::new(-0.7, 1.0, 0.0);
+
+		for other in [&sphere, &cube] {
+			let forward = intersect((&capsule, 0), (other, 1), 1.0 / 60.0).expect("the shapes overlap");
+			let backward = intersect((other, 0), (&capsule, 1), 1.0 / 60.0).expect("the shapes overlap");
+
+			assert_eq!(forward.normal, -backward.normal);
+			assert_eq!(forward.depth, backward.depth);
+			assert_eq!((forward.a.point, forward.b.point), (backward.b.point, backward.a.point));
+			// The capsule reaches 0.3 to each side. The sphere reaches back to 0 and the cube forward to -0.2.
+			assert!(forward.depth > 0.0 && forward.depth <= 0.3 + 1e-6);
+		}
 	}
 
 	#[test]

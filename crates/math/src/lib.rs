@@ -34,6 +34,7 @@ mod scale;
 mod serialization;
 
 pub mod aabb;
+pub mod capsule;
 pub mod collision;
 pub mod plane;
 pub mod ray;
@@ -42,6 +43,7 @@ pub mod sphere;
 pub use aabb::AABB;
 pub use affine::AffineMatrix;
 pub use angle::{Degrees, Radians};
+pub use capsule::Capsule;
 pub use geometry::{
 	NormalizationError, Point, UnitVector, Vector, WorldSpace, barycentric_xz, distance_xz, is_finite, point_on_segment_xz,
 	segments_intersect_xz, signed_area_xz,

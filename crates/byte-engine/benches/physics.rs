@@ -1,12 +1,15 @@
 //! Run with `cargo bench -p byte-engine --bench physics`.
 //!
 //! Every benchmark drops a block of bodies on a floor, lets them pile up, and then times steps of the pile. Scenes
-//! differ in the number of bodies and in their shapes, because boxes and spheres take different paths through
-//! contact detection.
+//! differ in the number of bodies and in their shapes, because boxes, spheres, and capsules take different paths
+//! through contact detection.
 //!
 //! Each sample times 30 steps, so the item rate is steps per second and a sample's time divided by 30 is one step.
 //! Compare the fastest samples of two or three runs: the system sometimes runs a whole row on its slower cores,
-//! which more than doubles that row's times.
+//! which more than doubles that row's times. The largest scenes are the ones to compare two builds by: on an Apple
+//! M4 their times repeat to within about 1%, where a scene of 1,000 bodies varied by up to 4%.
+//!
+//! A run takes about six minutes on an Apple M4. Add `-- --sample-count 4` to halve that.
 
 use byte_engine::{
 	application::Time,
@@ -16,6 +19,7 @@ use byte_engine::{
 		factory::Factory,
 		listener::{DefaultListener, Listener as _},
 		message::DeleteMessage,
+		message_bus::{MessageBus, MessageBusConfig},
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
 	physics::{Body, BodyTypes, DynabitWorld, LocalSpace, Shapes},
@@ -24,47 +28,63 @@ use byte_engine::{
 use divan::{Bencher, counter::ItemsCount};
 use math::{Point, Vector};
 
-/// The steps a scene runs before it is timed, which is long enough for most of the bodies to land.
-const SETTLING_STEPS: usize = 120;
+/// The steps a scene runs before it is timed, which is long enough for the top of the largest block to land: its
+/// 40 layers reach 60 meters up, and a body falls that far in about 165 steps.
+const SETTLING_STEPS: usize = 180;
 /// The steps timed in each sample.
 const TIMED_STEPS: usize = 30;
 /// The distance between neighboring spawn positions, which leaves a gap between one-meter bodies.
 const SPACING: f32 = 1.5;
 /// The height of the lowest layer of bodies above the floor.
 const FIRST_LAYER_HEIGHT: f32 = 2.0;
+/// The bytes of messages a scene can hold at once. A scene publishes every body and where it starts before its
+/// world reads any of them, which for the largest scene is more than a standalone channel's pool holds.
+const MESSAGE_CAPACITY: usize = 64 * 1024 * 1024;
 
 fn main() {
 	divan::main();
 }
 
-/// The `Mix` trait selects which bodies of a scene are spheres.
+/// The `Mix` trait selects the shapes of a scene's bodies.
 trait Mix {
-	/// Returns whether the body at `index` is a sphere instead of a box.
-	fn is_sphere(index: usize) -> bool;
+	/// Returns the shape of the body at `index`, which fits in a one-meter cube.
+	fn shape(index: usize) -> Shapes;
 }
 
 /// Every body is a box.
 struct Boxes;
-/// Every other body is a sphere.
+/// Every other body is a sphere, and the rest are boxes.
 struct Mixed;
 /// Every body is a sphere.
 struct Spheres;
+/// Every body is a capsule.
+struct Capsules;
 
 impl Mix for Boxes {
-	fn is_sphere(_: usize) -> bool {
-		false
+	fn shape(_: usize) -> Shapes {
+		Shapes::cube(Vector::new(0.5, 0.5, 0.5))
 	}
 }
 
 impl Mix for Mixed {
-	fn is_sphere(index: usize) -> bool {
-		index.is_multiple_of(2)
+	fn shape(index: usize) -> Shapes {
+		if index.is_multiple_of(2) {
+			Spheres::shape(index)
+		} else {
+			Boxes::shape(index)
+		}
 	}
 }
 
 impl Mix for Spheres {
-	fn is_sphere(_: usize) -> bool {
-		true
+	fn shape(_: usize) -> Shapes {
+		Shapes::sphere(0.5)
+	}
+}
+
+impl Mix for Capsules {
+	fn shape(_: usize) -> Shapes {
+		Shapes::capsule(0.25, 1.0, Point::origin())
 	}
 }
 
@@ -79,13 +99,21 @@ struct Scene {
 
 impl Scene {
 	/// Creates a floor with a block of `bodies` one-meter bodies above it, as wide as it is tall, and steps the
-	/// world with `step` until most of them have landed.
+	/// world with `step` until they have landed.
 	fn settled<M: Mix>(bodies: usize, mut step: impl FnMut(&mut Self, Time)) -> Self {
-		let body_factory = Factory::<Body>::new();
-		let handles = Factory::<()>::new();
-		let deletes = DefaultChannel::<DeleteMessage>::new();
-		let authored = DefaultChannel::<TransformationUpdate>::new();
-		let published = DefaultChannel::<TransformationUpdate>::new();
+		// One pool for every channel, without ticks, so its storage is free again once the world has read it.
+		let messages = MessageBus::new(MessageBusConfig {
+			capacity: MESSAGE_CAPACITY,
+			ticks: false,
+		})
+		.expect("the capacity holds more than two chunks");
+		let authoring = messages.new_scope("authoring");
+		let body_factory: Factory<Body> = authoring.factory();
+		let handles: Factory<()> = authoring.factory();
+		let deletes: DefaultChannel<DeleteMessage> = authoring.channel();
+		let authored: DefaultChannel<TransformationUpdate> = authoring.channel();
+		// A scope of its own keeps what the world publishes apart from what it reads, which is the same message type.
+		let published: DefaultChannel<TransformationUpdate> = messages.new_scope("simulation").channel();
 		let mut scene = Self {
 			world: DynabitWorld::new(body_factory.listener(), deletes.listener()),
 			authored: authored.listener(),
@@ -116,13 +144,8 @@ impl Scene {
 				FIRST_LAYER_HEIGHT + layer as f32 * SPACING,
 				row as f32 * SPACING - reach + nudge(16),
 			);
-			let shape = if M::is_sphere(index) {
-				Shapes::sphere(0.5)
-			} else {
-				Shapes::cube(Vector::new(0.5, 0.5, 0.5))
-			};
 			let handle = handles.create(());
-			body_factory.derive(handle, Body::new(BodyTypes::Dynamic, shape));
+			body_factory.derive(handle, Body::new(BodyTypes::Dynamic, M::shape(index)));
 			authored.send(TransformationUpdate::new(handle, Transform::from_position(position)));
 		}
 
@@ -142,7 +165,7 @@ impl Scene {
 }
 
 /// Measures a step of a pile on the calling thread.
-#[divan::bench(types = [Boxes, Mixed, Spheres], args = [1_000, 4_000, 16_000], sample_count = 8, sample_size = 1)]
+#[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
 fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
 	let step = |scene: &mut Scene, time: Time| scene.world.update(time, &mut scene.authored, &scene.published);
 
@@ -156,7 +179,7 @@ fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
 }
 
 /// Measures a step of a pile on an alley with one lane for each hardware thread, as an application runs it.
-#[divan::bench(types = [Boxes, Mixed, Spheres], args = [1_000, 4_000, 16_000], sample_count = 8, sample_size = 1)]
+#[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
 fn alley<M: Mix>(bencher: Bencher, bodies: usize) {
 	let lanes = std::cell::RefCell::new(Alley::new());
 	let step = |scene: &mut Scene, time: Time| {

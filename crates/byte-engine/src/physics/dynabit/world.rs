@@ -496,6 +496,98 @@ mod tests {
 		body
 	}
 
+	/// The radius of the capsule [`make_dynamic_character_body`] returns.
+	const CHARACTER_RADIUS: f32 = 0.3;
+
+	/// Returns a dynamic capsule 1.8 meters tall, as a character would use, with its origin at its feet.
+	fn make_dynamic_character_body(position: math::Point, linear_velocity: Vector) -> PhysicsBody {
+		let middle = math::Point::new(0.0, 0.9, 0.0);
+		let mut body = make_dynamic_sphere_body(position, linear_velocity, CHARACTER_RADIUS);
+		body.collision_shape = Shapes::capsule(CHARACTER_RADIUS, 1.8, middle);
+		body.center_of_mass = middle;
+		body
+	}
+
+	#[test]
+	fn a_character_capsule_dropped_on_the_ground_comes_to_rest_standing_on_its_feet() {
+		// The ground's top is one unit up, so the character's feet start half a unit above it.
+		let mut character = make_dynamic_character_body(math::Point::new(0.0, 1.5, 0.0), Vector::zero());
+		character.friction = 0.5;
+		let mut ground = make_ground_body();
+		ground.friction = 0.5;
+		let world = stepped(vec![ground, character], 3.0);
+
+		let character = world.bodies.get_slot(1).unwrap();
+		assert!(
+			(character.position.y() - 1.0).abs() <= 0.01,
+			"the character rests at {}",
+			character.position.y()
+		);
+		assert!(character.position.x().abs() <= 1e-4 && character.position.z().abs() <= 1e-4);
+		assert!(character.linear_velocity.length() <= 0.01);
+		// Contacts do not turn a capsule, so the character cannot fall over.
+		assert_eq!(character.orientation, Orientation::identity());
+		assert!(character.angular_velocity.length() <= 1e-6);
+	}
+
+	#[test]
+	fn a_character_capsule_walking_into_a_wall_stops_against_it() {
+		// A wall that stands on the ground, with its near face two and a half units ahead of the character.
+		let mut wall = make_ground_body();
+		wall.collision_shape = Shapes::Cube {
+			size: Vector::new(0.5, 2.0, 2.0),
+		};
+		wall.position = math::Point::new(3.0, 3.0, 0.0);
+		// Nothing has friction, so only the wall can stop the character.
+		let character = make_dynamic_character_body(math::Point::new(0.0, 1.0, 0.0), Vector::new(3.0, 0.0, 0.0));
+		let world = stepped(vec![make_ground_body(), wall, character], 2.0);
+
+		let character = world.bodies.get_slot(2).unwrap();
+		assert!(
+			(character.position.x() - (2.5 - CHARACTER_RADIUS)).abs() <= 0.02,
+			"the character stopped at {}",
+			character.position.x()
+		);
+		assert!(character.linear_velocity.x().abs() <= 0.01);
+		assert!((character.position.y() - 1.0).abs() <= 0.01);
+	}
+
+	#[test]
+	fn character_capsules_that_walk_into_each_other_stop_side_by_side() {
+		let first = make_dynamic_character_body(math::Point::new(-1.0, 1.0, 0.0), Vector::new(1.0, 0.0, 0.0));
+		let second = make_dynamic_character_body(math::Point::new(1.0, 1.0, 0.0), Vector::new(-1.0, 0.0, 0.0));
+		let world = stepped(vec![make_ground_body(), first, second], 2.0);
+
+		let (first, second) = (world.bodies.get_slot(1).unwrap(), world.bodies.get_slot(2).unwrap());
+		let gap = second.position.x() - first.position.x();
+		assert!(
+			(gap - 2.0 * CHARACTER_RADIUS).abs() <= 0.02,
+			"the characters stopped {gap} apart"
+		);
+		// Equal masses without elasticity cancel each other's approach.
+		assert!(first.linear_velocity.length() <= 0.01 && second.linear_velocity.length() <= 0.01);
+	}
+
+	#[test]
+	fn a_sphere_that_rolls_into_a_standing_capsule_stops_against_it() {
+		// A capsule that nothing moves, like a character that stands its ground.
+		let mut character = make_dynamic_character_body(math::Point::new(3.0, 1.0, 0.0), Vector::zero());
+		character.body_type = BodyTypes::Static;
+		character.inv_mass = 0.0;
+		let ball = make_dynamic_sphere_body(math::Point::new(0.0, 1.5, 0.0), Vector::new(2.0, 0.0, 0.0), 0.5);
+		let world = stepped(vec![make_ground_body(), character, ball], 2.0);
+
+		// The ball's center is as high as the capsule's side, so they touch when their centers are 0.8 apart.
+		let ball = world.bodies.get_slot(2).unwrap();
+		assert!(
+			(ball.position.x() - (3.0 - CHARACTER_RADIUS - 0.5)).abs() <= 0.02,
+			"the ball stopped at {}",
+			ball.position.x()
+		);
+		assert!(ball.linear_velocity.x().abs() <= 0.01);
+		assert_eq!(world.bodies.get_slot(1).unwrap().position, math::Point::new(3.0, 1.0, 0.0));
+	}
+
 	#[test]
 	fn creation_with_an_existing_handle_replaces_the_registered_body() {
 		let mut world = make_world();

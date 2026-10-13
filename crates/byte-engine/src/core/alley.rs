@@ -138,9 +138,10 @@ pub struct LaneValues<'dispatch, T> {
 }
 
 impl<'dispatch, T> LaneValues<'dispatch, T> {
-	fn new(collective: &'dispatch CollectiveSlot, lane_count: usize) -> Self {
+	/// Makes the values of `lane_count` lanes at `storage`, which is only read for values with a size.
+	fn new(storage: *const u8, lane_count: usize) -> Self {
 		Self {
-			storage: collective.storage.get().cast::<u8>(),
+			storage,
 			next_lane: 0,
 			lane_count,
 			marker: std::marker::PhantomData,
@@ -152,12 +153,17 @@ impl<'dispatch, T> LaneValues<'dispatch, T> {
 	where
 		T: Copy,
 	{
-		// SAFETY: `CollectiveSlot::each` constructs this iterator only after every lane
-		// initialized its aligned slot and the collective reached ready. `T: Copy` leaves storage valid.
+		if size_of::<T>() == 0 {
+			// SAFETY: `Section::values` makes these values only after the lane's work returned a `T`, which this
+			// copies. A read of no bytes is valid at any aligned address.
+			return unsafe { std::ptr::NonNull::<T>::dangling().as_ptr().read() };
+		}
+		// SAFETY: `Section::values` constructs this iterator only after each of its lanes initialized its aligned
+		// slot with a `T` and the section ended. `T: Copy` leaves storage valid.
 		let lane_offset = lane_idx * COLLECTIVE_VALUE_SIZE;
 		// SAFETY: The validated lane index and fixed stride keep this address inside collective storage.
 		let lane = unsafe { self.storage.add(lane_offset) };
-		// SAFETY: Registration validated `T` alignment and initialization before the ready state was published.
+		// SAFETY: The section checked that a `T` fits a slot and that the lane wrote one before it made these values.
 		unsafe { lane.cast::<T>().read() }
 	}
 }
@@ -200,7 +206,10 @@ pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
 	state: &'dispatch DispatchState,
 	next_limited_parallelism_section: usize,
-	next_collective_section: usize,
+	/// The collective section this lane runs next.
+	next_section: usize,
+	/// The slot that the next collective section with values keeps them in.
+	next_slot: usize,
 }
 
 impl<'dispatch> ConcreteLane<'dispatch> {
@@ -209,7 +218,8 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 			lane_idx,
 			state,
 			next_limited_parallelism_section: 0,
-			next_collective_section: 0,
+			next_section: 0,
+			next_slot: 0,
 		}
 	}
 
@@ -268,16 +278,18 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	///
 	/// Every other lane waits until `f` finishes, so a following [`Self::each_ref`] sees everything `f` wrote.
 	/// Every lane must encounter this section in the same order and with the same result type.
+	///
+	/// Return `()` from stages that run in a loop. A dispatch runs any number of sections that return a value without
+	/// size, but it keeps other values until it ends and has room for those of 32 sections.
 	#[allow(unsafe_code, reason = "The elected lane exclusively dereferences the phased resource.")]
 	pub fn broadcast_mut<T, R, F>(&mut self, resource: &LanePhased<'_, T>, f: F) -> R
 	where
 		R: Copy + Send + Sync + 'static,
 		F: FnOnce(&mut T) -> R,
 	{
-		let (section, collective) = self.next_collective();
-		collective.broadcast(section, || {
-			// SAFETY: Only the lane elected for this registered broadcast section runs this closure. Every earlier
-			// `each_ref` section has ended on all lanes, and no lane passes this section before the value is ready.
+		self.next_section::<R>().broadcast(|| {
+			// SAFETY: Only the first lane to enter this broadcast section runs this closure. Every earlier section
+			// has ended on all lanes, and no lane passes this section before the closure returned.
 			let value = unsafe { &mut **resource.value.get() };
 			f(value)
 		})
@@ -288,20 +300,22 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	///
 	/// `f` also receives this lane, for [`Lane::idx`] and [`Self::share`]. Every lane must encounter this section
 	/// in the same order and with the same result type.
+	///
+	/// Return `()` from stages that run in a loop, as with [`Self::broadcast_mut`]: only sections that return a
+	/// value with a size count toward the 32 a dispatch has room for.
 	#[allow(unsafe_code, reason = "Every lane shares the phased resource for one collective section.")]
 	pub fn each_ref<T, R, F>(&mut self, resource: &LanePhased<'_, T>, f: F) -> LaneValues<'dispatch, R>
 	where
 		R: Copy + Send + Sync + 'static,
 		F: FnOnce(&T, &Self) -> R,
 	{
-		let lane_idx = self.lane_idx;
-		let lane_count = self.state.lane_count;
-		let (section, collective) = self.next_collective();
+		let section = self.next_section::<R>();
 		let lane = &*self;
-		collective.each(lane_idx, lane_count, section, || {
-			// SAFETY: This closure runs after the section registered as `each`, so no lane holds exclusive access:
-			// every earlier broadcast section has published. The section ends for all lanes only after every
-			// closure returned, so no shared reference reaches a later exclusive section.
+		section.each(|| {
+			// SAFETY: This closure runs once this lane entered the section as `each`. Every earlier section has
+			// ended, and a lane that enters this one as a broadcast fails before it runs anything, so no lane holds
+			// exclusive access. The section ends for all lanes only after every closure returned, so no shared
+			// reference reaches a later exclusive section.
 			let value = unsafe { &**resource.value.get() };
 			f(value, lane)
 		})
@@ -324,28 +338,28 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 
 	/// Returns the value produced by the first lane to reach this broadcast section.
 	///
-	/// Every lane must encounter broadcast sections in the same order and with the same types.
+	/// Every lane must encounter broadcast sections in the same order and with the same types. A dispatch keeps the
+	/// values of at most 32 collective sections, and runs any number of sections whose value has no size, such as
+	/// `()`.
 	pub fn broadcast<T, F>(&mut self, f: F) -> T
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		let (section, collective) = self.next_collective();
-		collective.broadcast(section, f)
+		self.next_section::<T>().broadcast(f)
 	}
 
 	/// Runs `f` on every lane and returns lane-ordered values after every result is published.
 	///
-	/// Every lane must encounter `each` sections in the same order and with the same types.
+	/// Every lane must encounter `each` sections in the same order and with the same types. A dispatch keeps the
+	/// values of at most 32 collective sections, and runs any number of sections whose value has no size, such as
+	/// `()`.
 	pub fn each<T, F>(&mut self, f: F) -> LaneValues<'dispatch, T>
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		let lane_idx = self.lane_idx;
-		let lane_count = self.state.lane_count;
-		let (section, collective) = self.next_collective();
-		collective.each(lane_idx, lane_count, section, f)
+		self.next_section::<T>().each(f)
 	}
 
 	/// Runs `f` on each lane's balanced partition and returns all lane results.
@@ -361,13 +375,36 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		self.each(move || f(partition))
 	}
 
-	fn next_collective(&mut self) -> (usize, &'dispatch CollectiveSlot) {
-		let section = self.next_collective_section;
-		self.next_collective_section += 1;
-		let collective = self.state.collectives.get(section).unwrap_or_else(|| {
-			panic!("Collective capacity exceeded. A dispatch supports at most {COLLECTIVE_SECTION_COUNT} collective sections.")
+	/// Takes this lane's turn at the next collective section, which returns a `T` to the lane.
+	fn next_section<T>(&mut self) -> Section<'dispatch> {
+		let index = self.next_section;
+		self.next_section += 1;
+		let slot_holder = self.state.slot_holders.get(self.next_slot);
+		// A value without size needs no storage, so only the other sections take one of the dispatch's slots.
+		let slot = (size_of::<T>() != 0).then(|| {
+			if size_of::<T>() > COLLECTIVE_VALUE_SIZE || align_of::<T>() > COLLECTIVE_VALUE_ALIGNMENT {
+				self.state.gate.poison();
+				panic!(
+					"Collective value does not fit. Section {index} returns a value of more than {COLLECTIVE_VALUE_SIZE} bytes or aligned to more than {COLLECTIVE_VALUE_ALIGNMENT}. The most likely cause is returning the data itself where a count or an index would do."
+				);
+			}
+			let slot = self.next_slot;
+			self.next_slot += 1;
+			self.state.slots.get(slot).unwrap_or_else(|| {
+				self.state.gate.poison();
+				panic!(
+					"Collective value capacity exceeded. A dispatch keeps the values of at most {COLLECTIVE_SECTION_COUNT} collective sections. The most likely cause is a loop of sections that return a value where `()` would do."
+				)
+			})
 		});
-		(section, collective)
+		Section {
+			index,
+			lane_idx: self.lane_idx,
+			lane_count: self.state.lane_count,
+			gate: &self.state.gate,
+			slot,
+			slot_holder,
+		}
 	}
 }
 
@@ -434,73 +471,24 @@ fn balanced_partition_len(value_count: usize, lane_idx: usize, lane_count: usize
 }
 
 const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
-/// The most collective sections, such as [`ConcreteLane::broadcast_mut`] and [`ConcreteLane::each_ref`], one
-/// dispatch can run.
-pub(crate) const COLLECTIVE_SECTION_COUNT: usize = 32;
+/// The most collective sections of one dispatch that can return a value with a size.
+///
+/// A dispatch keeps those values until it ends, so it has storage for a fixed number of them. Sections that return
+/// a value without size, such as `()`, are not counted.
+const COLLECTIVE_SECTION_COUNT: usize = 32;
 const COLLECTIVE_LANE_CAPACITY: usize = 64;
 const COLLECTIVE_VALUE_SIZE: usize = 64;
 const COLLECTIVE_VALUE_ALIGNMENT: usize = 64;
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum CollectiveKind {
-	Unset,
-	Broadcast,
-	Each,
-}
-
-impl CollectiveKind {
-	const fn as_raw(self) -> u8 {
-		self as u8
-	}
-
-	/// Converts atomic storage into a collective operation kind.
-	fn from_raw(raw: u8) -> Self {
-		match raw {
-			0 => Self::Unset,
-			1 => Self::Broadcast,
-			2 => Self::Each,
-			_ => {
-				unreachable!("Unknown collective kind raw value {raw}. Atomic collective metadata contained an invalid value.")
-			}
-		}
-	}
-}
-
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum CollectiveState {
-	Empty,
-	Registering,
-	Active,
-	Ready,
-	Poisoned,
-}
-
-impl CollectiveState {
-	const fn as_raw(self) -> u8 {
-		self as u8
-	}
-
-	/// Converts atomic storage into a collective lifecycle state.
-	fn from_raw(raw: u8) -> Self {
-		match raw {
-			0 => Self::Empty,
-			1 => Self::Registering,
-			2 => Self::Active,
-			3 => Self::Ready,
-			4 => Self::Poisoned,
-			_ => {
-				unreachable!("Unknown collective state raw value {raw}. Atomic collective metadata contained an invalid value.")
-			}
-		}
-	}
-}
-
 struct DispatchState {
 	lane_count: usize,
 	limited_parallelism: [AtomicUsize; LIMITED_PARALLELISM_SECTION_COUNT],
-	collectives: [CollectiveSlot; COLLECTIVE_SECTION_COUNT],
+	gate: SectionGate,
+	/// For each slot, the broadcast section whose value it holds, plus one. Zero until a broadcast writes the slot.
+	///
+	/// These are apart from the slots so that making a dispatch's state writes no slot.
+	slot_holders: [AtomicUsize; COLLECTIVE_SECTION_COUNT],
+	slots: [CollectiveSlot; COLLECTIVE_SECTION_COUNT],
 }
 
 impl DispatchState {
@@ -508,108 +496,191 @@ impl DispatchState {
 		Self {
 			lane_count,
 			limited_parallelism: std::array::from_fn(|_| AtomicUsize::new(0)),
-			collectives: std::array::from_fn(|_| CollectiveSlot::new()),
+			gate: SectionGate::default(),
+			slot_holders: std::array::from_fn(|_| AtomicUsize::new(0)),
+			slots: std::array::from_fn(|_| CollectiveSlot::new()),
 		}
 	}
 }
 
-struct CollectiveSlot {
-	kind: AtomicU8,
-	state: AtomicU8,
-	producer_claimed: AtomicBool,
-	published: AtomicUsize,
-	type_id: UnsafeCell<MaybeUninit<TypeId>>,
-	storage: UnsafeCell<CollectiveStorage>,
+/// The `SectionGate` struct keeps the lanes of a dispatch together through its collective sections.
+///
+/// Every lane enters a section, the lanes it admits run their work, and the section ends for all of them at once.
+/// One set of counters serves every section in turn, so a dispatch can run any number of sections.
+///
+/// A broadcast section ends when the lane that runs it finishes, so that lane may be sections ahead of the others
+/// until the next `each` section, which ends when every lane finished.
+#[derive(Default)]
+#[repr(align(64))]
+struct SectionGate {
+	/// The section that lanes entered last and what they run there, as [`Self::enter`] packs them.
+	entered: AtomicUsize,
+	/// How many lanes are done with the `each` section that is running.
+	done: AtomicUsize,
+	/// How many sections have ended, or [`Self::POISONED`] once a lane failed in one.
+	ended: AtomicUsize,
 }
 
-impl CollectiveSlot {
-	fn new() -> Self {
-		Self {
-			kind: AtomicU8::new(CollectiveKind::Unset.as_raw()),
-			state: AtomicU8::new(CollectiveState::Empty.as_raw()),
-			producer_claimed: AtomicBool::new(false),
-			published: AtomicUsize::new(0),
-			type_id: UnsafeCell::new(MaybeUninit::uninit()),
-			storage: UnsafeCell::new(CollectiveStorage::new()),
+impl SectionGate {
+	const POISONED: usize = usize::MAX;
+
+	/// Enters `section` as a lane that runs a broadcast or an `each` there, and returns whether it is the first lane
+	/// to enter.
+	///
+	/// `valued` tells whether the section keeps values in a [`CollectiveSlot`]. A lane that enters to run something
+	/// else than the lanes before it fails the section for every lane.
+	///
+	/// The lanes ahead may have left a broadcast section behind and entered a later one. A lane that then enters the
+	/// earlier one cannot compare itself with them here, so [`Section::broadcast`] does it once the section ended.
+	fn enter(&self, section: usize, broadcast: bool, valued: bool) -> bool {
+		let entry = (section + 1) << 2 | usize::from(valued) << 1 | usize::from(broadcast);
+		// A later section packs to a larger number, so the first lane to enter a section is the one that raises it.
+		let before = self.entered.fetch_max(entry, Ordering::Relaxed);
+		if before >> 2 <= section {
+			return true;
+		}
+		// Lanes only leave a section behind without this lane when it is a broadcast.
+		let left_behind = before >> 2 > section + 1 && broadcast;
+		if before != entry && !left_behind {
+			self.fail_mismatch(section);
+		}
+		false
+	}
+
+	/// Counts this lane as done with the `each` section `section`, and returns once every lane is.
+	///
+	/// What every lane wrote before it was done is visible to all of them afterwards.
+	fn finish(&self, section: usize, lane_count: usize) {
+		if self.done.fetch_add(1, Ordering::AcqRel) + 1 != lane_count {
+			return self.wait_until_ended(section);
+		}
+		// Every other lane waits for the section to end, so none counts again before it does.
+		self.done.store(0, Ordering::Relaxed);
+		self.end(section);
+	}
+
+	/// Ends `section` for every lane. What this lane wrote before is visible to all of them afterwards.
+	fn end(&self, section: usize) {
+		let ended = self
+			.ended
+			.compare_exchange(section, section + 1, Ordering::Release, Ordering::Relaxed);
+		if ended.is_err() {
+			self.panic_poisoned(section);
 		}
 	}
 
-	/// Publishes one elected lane value and returns it to every lane.
+	/// Fails `section` for every lane because this lane runs something else in it than another lane.
+	fn fail_mismatch(&self, section: usize) -> ! {
+		self.poison();
+		panic!(
+			"Collective operation mismatch at section {section}. The most likely cause is that lanes took different branches, so they did not all run the same operation, with or without a value, in the same order."
+		)
+	}
+
+	fn wait_until_ended(&self, section: usize) {
+		let mut spins = 0usize;
+		loop {
+			let ended = self.ended.load(Ordering::Acquire);
+			if ended == Self::POISONED {
+				self.panic_poisoned(section);
+			}
+			if ended > section {
+				return;
+			}
+			wait_briefly(&mut spins);
+		}
+	}
+
+	/// Fails the running section, and with it the dispatch, for every lane that waits on it or reaches it.
+	fn poison(&self) {
+		self.ended.store(Self::POISONED, Ordering::Release);
+	}
+
+	fn panic_poisoned(&self, section: usize) -> ! {
+		panic!("Collective failed. A lane in section {section} panicked or used a different operation or type.")
+	}
+}
+
+/// The `Section` struct lets one lane run a collective section in step with the other lanes of its dispatch.
+struct Section<'dispatch> {
+	index: usize,
+	lane_idx: usize,
+	lane_count: usize,
+	gate: &'dispatch SectionGate,
+	/// Where the section keeps its values. `None` when they have no size, so there is nothing to keep.
+	slot: Option<&'dispatch CollectiveSlot>,
+	/// Which broadcast section wrote the dispatch's next free slot, the one this section takes when it has values.
+	/// `None` when no slot is free. See [`DispatchState::slot_holders`].
+	slot_holder: Option<&'dispatch AtomicUsize>,
+}
+
+impl<'dispatch> Section<'dispatch> {
+	/// Runs `f` on the first lane to enter the section, and returns its value on every lane once it finished.
 	#[allow(
 		unsafe_code,
-		reason = "Broadcast reads a synchronized value from inline collective storage."
+		reason = "Broadcast copies one value between lanes through the section's slot."
 	)]
-	fn broadcast<T, F>(&self, section: usize, f: F) -> T
+	fn broadcast<T, F>(self, f: F) -> T
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		self.validate_value::<T>(section);
-		self.register::<T>(CollectiveKind::Broadcast, section);
-
-		if self
-			.producer_claimed
-			.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-			.is_ok()
-		{
+		if self.gate.enter(self.index, true, self.slot.is_some()) {
 			let value = self.compute(f);
-			// SAFETY: Registration validates the type layout, and producer election
-			// grants this lane exclusive write access to lane slot zero.
-			// SAFETY: Registration validated the type layout and lane zero is within storage.
-			let value_ptr = unsafe { self.value_ptr::<T>(0) };
-			// SAFETY: Producer election grants this lane exclusive initialization of the slot.
-			unsafe { value_ptr.write(value) };
-			self.published.store(1, Ordering::Release);
-			self.publish_ready(section);
-		} else {
-			self.wait_until_ready(section);
+			if let (Some(slot), Some(holder)) = (self.slot, self.slot_holder) {
+				// SAFETY: Only the first lane to enter writes lane slot zero, which `ConcreteLane::next_section`
+				// checked that a `T` fits. The other lanes read it after the section ended.
+				unsafe { slot.write(0, value) };
+				// The section ends after this, which is when other lanes read it.
+				holder.store(self.index + 1, Ordering::Relaxed);
+			}
+			self.gate.end(self.index);
+			return value;
 		}
 
-		// SAFETY: Ready was published after lane slot zero was initialized, and `T: Copy`.
-		// SAFETY: Registration validated the type layout and lane zero is within storage.
-		let value_ptr = unsafe { self.value_ptr::<T>(0) };
-		// SAFETY: The ready state guarantees that the elected producer initialized this `T`.
-		unsafe { value_ptr.read() }
+		self.gate.wait_until_ended(self.index);
+		// The first lane may have been sections ahead when this lane entered, so the gate could not tell whether it
+		// kept a value. The slot can: every lane takes the same slot next, and only a broadcast in this section
+		// leaves this section's number in it.
+		let kept = self
+			.slot_holder
+			.is_some_and(|holder| holder.load(Ordering::Relaxed) == self.index + 1);
+		if kept != self.slot.is_some() {
+			self.gate.fail_mismatch(self.index);
+		}
+		// SAFETY: The section ended, and when it keeps a value the first lane wrote it to lane slot zero.
+		unsafe { self.values(1) }.read_lane(0)
 	}
 
-	/// Publishes one value per lane and returns completed values in lane order.
-	#[allow(unsafe_code, reason = "Each writes synchronized lane values to strided inline storage.")]
-	fn each<'dispatch, T, F>(
-		&'dispatch self,
-		lane_idx: usize,
-		lane_count: usize,
-		section: usize,
-		f: F,
-	) -> LaneValues<'dispatch, T>
+	/// Runs `f` on every lane, and returns the values in lane order once every lane finished.
+	#[allow(unsafe_code, reason = "Each lane writes its value to its own part of the section's slot.")]
+	fn each<T, F>(self, f: F) -> LaneValues<'dispatch, T>
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		if lane_count > COLLECTIVE_LANE_CAPACITY {
-			self.poison();
+		if self.slot.is_some() && self.lane_count > COLLECTIVE_LANE_CAPACITY {
+			self.gate.poison();
 			panic!(
-				"Collective lane capacity exceeded. Section {section} has {lane_count} lanes but supports at most {COLLECTIVE_LANE_CAPACITY}."
+				"Collective lane capacity exceeded. Section {} has {} lanes but keeps values for at most {COLLECTIVE_LANE_CAPACITY}.",
+				self.index, self.lane_count
 			);
 		}
-		self.validate_value::<T>(section);
-		self.register::<T>(CollectiveKind::Each, section);
+		self.gate.enter(self.index, false, self.slot.is_some());
 
 		let value = self.compute(f);
-		// SAFETY: Each lane writes to its unique cache-line-sized slot after layout validation.
-		// SAFETY: Capacity and layout checks keep this lane's slot within storage.
-		let value_ptr = unsafe { self.value_ptr::<T>(lane_idx) };
-		// SAFETY: Each lane exclusively initializes its own slot before publication.
-		unsafe { value_ptr.write(value) };
-		let published = self.published.fetch_add(1, Ordering::AcqRel) + 1;
-		if published == lane_count {
-			self.publish_ready(section);
-		} else {
-			self.wait_until_ready(section);
+		if let Some(slot) = self.slot {
+			// SAFETY: The capacity check keeps this lane's slot within storage, `ConcreteLane::next_section`
+			// checked that a `T` fits it, and only this lane writes it. The other lanes read it after the
+			// section ended.
+			unsafe { slot.write(self.lane_idx, value) };
 		}
-
-		LaneValues::new(self, lane_count)
+		self.gate.finish(self.index, self.lane_count);
+		// SAFETY: The section ended, which it does once every lane wrote its value.
+		unsafe { self.values(self.lane_count) }
 	}
 
+	/// Runs `f`, and fails the section for every lane when it panics.
 	fn compute<T, F>(&self, f: F) -> T
 	where
 		F: FnOnce() -> T,
@@ -617,134 +688,77 @@ impl CollectiveSlot {
 		match catch_unwind(AssertUnwindSafe(f)) {
 			Ok(value) => value,
 			Err(payload) => {
-				self.poison();
+				self.gate.poison();
 				resume_unwind(payload);
 			}
 		}
 	}
 
-	fn validate_value<T>(&self, section: usize) {
-		if size_of::<T>() > COLLECTIVE_VALUE_SIZE {
-			self.poison();
-			panic!("Collective value is too large. Section {section} exceeds the {COLLECTIVE_VALUE_SIZE}-byte value capacity.");
-		}
-		if align_of::<T>() > COLLECTIVE_VALUE_ALIGNMENT {
-			self.poison();
+	/// Returns the values that the first `lanes` lanes gave the section, and fails it unless each is a `T`.
+	///
+	/// Every lane checks every value it can read, so lanes that disagree on the type never read each other's values.
+	///
+	/// # Safety
+	///
+	/// The section must have ended. If it keeps values, each of the first `lanes` lanes must have written one.
+	#[allow(unsafe_code, reason = "Reads the types lanes recorded next to their values.")]
+	unsafe fn values<T: 'static>(&self, lanes: usize) -> LaneValues<'dispatch, T> {
+		let Some(slot) = self.slot else {
+			return LaneValues::new(std::ptr::NonNull::<T>::dangling().as_ptr().cast(), lanes);
+		};
+		// SAFETY: The caller guarantees that each of these lanes wrote a value, and with it the value's type.
+		if (0..lanes).any(|lane_idx| unsafe { slot.value_type(lane_idx) } != TypeId::of::<T>()) {
+			self.gate.poison();
 			panic!(
-				"Collective value alignment is unsupported. Section {section} requires more than {COLLECTIVE_VALUE_ALIGNMENT}-byte alignment."
+				"Collective type mismatch at section {}. Every lane must use the same result type for that section.",
+				self.index
 			);
 		}
+		LaneValues::new(slot.storage.get().cast(), lanes)
 	}
+}
 
-	/// Registers and validates the operation kind and value type shared by every lane.
-	#[allow(unsafe_code, reason = "Collective type metadata is published through atomic state.")]
-	fn register<T>(&self, kind: CollectiveKind, section: usize)
-	where
-		T: 'static,
-	{
-		match self.kind.compare_exchange(
-			CollectiveKind::Unset.as_raw(),
-			kind.as_raw(),
-			Ordering::Relaxed,
-			Ordering::Relaxed,
-		) {
-			Ok(_) => {}
-			Err(registered) if CollectiveKind::from_raw(registered) == kind => {}
-			Err(_) => {
-				self.poison();
-				panic!(
-					"Collective operation mismatch at section {section}. Every lane must call broadcast or each consistently."
-				);
-			}
-		}
+/// The `CollectiveSlot` struct keeps the values lanes give one collective section until the dispatch ends.
+///
+/// The [`SectionGate`] decides when a lane may write its value and when all lanes may read them.
+struct CollectiveSlot {
+	/// The type of the value each lane wrote, so that lanes that disagree on it never read each other's values.
+	types: UnsafeCell<[MaybeUninit<TypeId>; COLLECTIVE_LANE_CAPACITY]>,
+	storage: UnsafeCell<CollectiveStorage>,
+}
 
-		if self
-			.state
-			.compare_exchange(
-				CollectiveState::Empty.as_raw(),
-				CollectiveState::Registering.as_raw(),
-				Ordering::Relaxed,
-				Ordering::Relaxed,
-			)
-			.is_ok()
-		{
-			// SAFETY: The successful state transition grants exclusive type write access.
-			unsafe { self.type_id.get().write(MaybeUninit::new(TypeId::of::<T>())) };
-			if self
-				.state
-				.compare_exchange(
-					CollectiveState::Registering.as_raw(),
-					CollectiveState::Active.as_raw(),
-					Ordering::Release,
-					Ordering::Acquire,
-				)
-				.is_err()
-			{
-				self.panic_poisoned(section);
-			}
-		} else {
-			self.wait_until_registered(section);
-		}
-
-		// SAFETY: Active or ready was observed with `Acquire` after type publication.
-		// SAFETY: Type publication initialized the cell before the active state became visible.
-		let stored_type = unsafe { self.type_id.get().read() };
-		// SAFETY: The acquired active or ready state proves `stored_type` is initialized.
-		let stored_type = unsafe { stored_type.assume_init() };
-		if stored_type != TypeId::of::<T>() {
-			self.poison();
-			panic!("Collective type mismatch at section {section}. Every lane must use the same result type for that section.");
+impl CollectiveSlot {
+	fn new() -> Self {
+		Self {
+			types: UnsafeCell::new([MaybeUninit::uninit(); COLLECTIVE_LANE_CAPACITY]),
+			storage: UnsafeCell::new(CollectiveStorage::new()),
 		}
 	}
 
-	fn publish_ready(&self, section: usize) {
-		match self.state.compare_exchange(
-			CollectiveState::Active.as_raw(),
-			CollectiveState::Ready.as_raw(),
-			Ordering::Release,
-			Ordering::Acquire,
-		) {
-			Ok(_) => {}
-			Err(state) => match CollectiveState::from_raw(state) {
-				CollectiveState::Ready => {}
-				CollectiveState::Poisoned => self.panic_poisoned(section),
-				state => {
-					unreachable!("Cannot publish a collective from state {state:?}. The collective lifecycle is inconsistent.")
-				}
-			},
+	/// Keeps `value` as the one lane `lane_idx` gives the section.
+	///
+	/// # Safety
+	///
+	/// `lane_idx` must be below [`COLLECTIVE_LANE_CAPACITY`], `T` must fit a lane's storage in size and alignment, and
+	/// no other lane may read or write this lane's value during the call.
+	#[allow(unsafe_code, reason = "Collective values occupy cache-line-sized inline slots.")]
+	unsafe fn write<T: 'static>(&self, lane_idx: usize, value: T) {
+		// SAFETY: The caller keeps the lane within capacity and other lanes away from its value.
+		unsafe {
+			self.types.get().cast::<TypeId>().add(lane_idx).write(TypeId::of::<T>());
+			self.value_ptr::<T>(lane_idx).write(value);
 		}
 	}
 
-	fn wait_until_registered(&self, section: usize) {
-		let mut spins = 0usize;
-		loop {
-			match CollectiveState::from_raw(self.state.load(Ordering::Acquire)) {
-				CollectiveState::Active | CollectiveState::Ready => return,
-				CollectiveState::Poisoned => self.panic_poisoned(section),
-				CollectiveState::Empty | CollectiveState::Registering => wait_briefly(&mut spins),
-			}
-		}
-	}
-
-	fn wait_until_ready(&self, section: usize) {
-		let mut spins = 0usize;
-		loop {
-			match CollectiveState::from_raw(self.state.load(Ordering::Acquire)) {
-				CollectiveState::Ready => return,
-				CollectiveState::Poisoned => self.panic_poisoned(section),
-				CollectiveState::Empty | CollectiveState::Registering | CollectiveState::Active => {
-					wait_briefly(&mut spins);
-				}
-			}
-		}
-	}
-
-	fn poison(&self) {
-		self.state.store(CollectiveState::Poisoned.as_raw(), Ordering::Release);
-	}
-
-	fn panic_poisoned(&self, section: usize) -> ! {
-		panic!("Collective failed. A lane in section {section} panicked or used a different operation or type.")
+	/// Returns the type of the value lane `lane_idx` wrote.
+	///
+	/// # Safety
+	///
+	/// The lane must have written a value with [`Self::write`], and no lane may be writing it.
+	#[allow(unsafe_code, reason = "Reads a type a lane wrote before the section ended.")]
+	unsafe fn value_type(&self, lane_idx: usize) -> TypeId {
+		// SAFETY: The caller guarantees the lane initialized this entry and that nothing writes it now.
+		unsafe { self.types.get().cast::<TypeId>().add(lane_idx).read() }
 	}
 
 	#[allow(unsafe_code, reason = "Collective values occupy cache-line-sized inline slots.")]
@@ -761,9 +775,9 @@ impl CollectiveSlot {
 	}
 }
 
-// SAFETY: Producers write exclusive elements, then publish with release ordering.
-// Readers wait for an acquire observation of ready before reading inline storage.
-#[allow(unsafe_code, reason = "Atomic publication synchronizes CollectiveSlot inline storage.")]
+// SAFETY: A lane writes only its own value and type, while the section runs. Lanes read values and types after
+// the section ended, which the gate publishes with release ordering and lanes observe with acquire ordering.
+#[allow(unsafe_code, reason = "The section gate synchronizes CollectiveSlot inline storage.")]
 unsafe impl Sync for CollectiveSlot {}
 
 #[repr(C, align(64))]
@@ -1427,6 +1441,103 @@ mod tests {
 	}
 
 	#[test]
+	fn lanes_that_disagree_on_a_value_type_fail_the_dispatch() {
+		let mut alley = Alley::with_parallelism(8);
+		let result = alley.execute(|lane| {
+			if lane.idx() == 0 {
+				let _ = lane.each(|| 1u64);
+			} else {
+				let _ = lane.each(|| 1usize);
+			}
+		});
+
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn lanes_that_disagree_on_whether_a_section_has_a_value_fail_the_dispatch() {
+		let mut alley = Alley::with_parallelism(8);
+		let result = alley.execute(|lane| {
+			if lane.idx() == 0 {
+				lane.broadcast(|| ());
+			} else {
+				let _ = lane.broadcast(|| 1usize);
+			}
+		});
+
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn a_lane_that_enters_a_broadcast_late_with_another_kind_of_value_fails_the_dispatch() {
+		let mut alley = Alley::with_parallelism(2);
+
+		for late_has_value in [false, true] {
+			let ahead = AtomicUsize::new(0);
+			let result = alley.execute(|lane| {
+				if lane.idx() == 0 {
+					// The first lane is two sections ahead before the other one enters the first section.
+					for _ in 0..2 {
+						if late_has_value {
+							lane.broadcast(|| ());
+						} else {
+							let _ = lane.broadcast(|| 1usize);
+						}
+					}
+					ahead.store(1, Ordering::Release);
+					return;
+				}
+				while ahead.load(Ordering::Acquire) == 0 {
+					std::thread::yield_now();
+				}
+				if late_has_value {
+					let _ = lane.broadcast(|| 1usize);
+				} else {
+					lane.broadcast(|| ());
+				}
+			});
+
+			assert!(result.is_err());
+		}
+	}
+
+	#[test]
+	fn a_dispatch_runs_any_number_of_sections_without_values() {
+		let mut alley = Alley::with_parallelism(4);
+		let broadcasts = AtomicUsize::new(0);
+		let eaches = AtomicUsize::new(0);
+
+		unwrap_dispatch(alley.execute(|lane| {
+			for _ in 0..1_000 {
+				lane.broadcast(|| {
+					broadcasts.fetch_add(1, Ordering::Relaxed);
+				});
+				let all = lane.each(|| {
+					eaches.fetch_add(1, Ordering::Relaxed);
+				});
+				assert_eq!(all.len(), 4);
+			}
+			// Sections with values still work after them.
+			assert_eq!(lane.broadcast(|| 7usize), 7);
+		}));
+
+		assert_eq!(broadcasts.load(Ordering::Relaxed), 1_000);
+		assert_eq!(eaches.load(Ordering::Relaxed), 4_000);
+	}
+
+	#[test]
+	fn a_dispatch_fails_when_it_runs_out_of_room_for_values() {
+		let mut alley = Alley::with_parallelism(4);
+		let result = alley.execute(|lane| {
+			for value in 0..33usize {
+				let _ = lane.broadcast(|| value);
+			}
+		});
+
+		assert!(result.is_err());
+	}
+
+	#[test]
 	fn each_shared_balances_uneven_and_empty_partitions() {
 		let mut alley = Alley::with_parallelism(5);
 		let values = [1usize, 2, 3];
@@ -1495,6 +1606,27 @@ mod tests {
 		assert_eq!(totals, [55; 4]);
 		assert_eq!(values.len(), 11);
 		assert_eq!(values[10], 55);
+	}
+
+	#[test]
+	fn phased_stages_without_values_alternate_any_number_of_times() {
+		let mut alley = Alley::with_parallelism(4);
+		let mut values = vec![0usize; 64];
+		let seen = AtomicUsize::new(0);
+
+		unwrap_dispatch(alley.execute_phased(&mut values, 4, |lane, values| {
+			for round in 0..500 {
+				// One lane writes every value, then every lane checks its share of them.
+				lane.broadcast_mut(values, |values| values.fill(round));
+				let _ = lane.each_ref(values, |values, lane| {
+					assert!(lane.share(values).iter().all(|value| *value == round));
+					seen.fetch_add(lane.share(values).len(), Ordering::Relaxed);
+				});
+			}
+		}));
+
+		assert_eq!(seen.load(Ordering::Relaxed), 500 * 64);
+		assert_eq!(values, [499; 64]);
 	}
 
 	#[test]
@@ -1570,7 +1702,7 @@ use std::{
 	mem::{MaybeUninit, align_of, size_of},
 	ops::{Deref, DerefMut, Range},
 	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-	sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+	sync::atomic::{AtomicUsize, Ordering},
 	thread::yield_now,
 };
 

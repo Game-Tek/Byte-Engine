@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, time::Instant};
 
 use math::{Scale, Vector};
 use utils::{StableVec, StableVecHandle, hash::HashMap, sync::Mutex};
@@ -6,7 +6,7 @@ use utils::{StableVec, StableVecHandle, hash::HashMap, sync::Mutex};
 use crate::{
 	application::Time,
 	core::{
-		alley::{Alley, COLLECTIVE_SECTION_COUNT, ConcreteLane, Lane as _},
+		alley::{Alley, ConcreteLane, Lane as _},
 		channel::Channel,
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
@@ -20,6 +20,7 @@ use crate::{
 			contact::{Contact, Contacts},
 			solver::{self, ContactSolver, WideContact},
 			step_lanes::StepLanes,
+			work_shares::WorkShares,
 		},
 		epa::ContactScratch,
 		intersection::SweepBounds,
@@ -34,16 +35,6 @@ use crate::{
 /// spheres stepped fastest with batches shared from about this size, and up to a third slower with none shared.
 const SHARED_BATCH_CONTACTS: usize = 32;
 
-/// The stages of an alley step besides the ones that prepare and solve contacts: three to find them, one to batch
-/// them, one to finish them, and two to move the bodies.
-const OTHER_STEP_STAGES: usize = 7;
-
-/// The most batches of one step [`World::update_with_alley`] shares between lanes.
-///
-/// An alley execution has a fixed number of stages. Preparing the contacts, and then every pass over them, takes one
-/// for each shared batch and one for the rest.
-const MAX_SHARED_BATCHES: usize = (COLLECTIVE_SECTION_COUNT - OTHER_STEP_STAGES) / (solver::ITERATIONS + 1) - 1;
-
 /// The `World` struct owns Dynabit simulation state and synchronizes it with entity handles.
 pub struct World {
 	bodies: StableVec<PhysicsBody>,
@@ -57,6 +48,8 @@ pub struct World {
 	shares: Vec<Mutex<Share>>,
 	/// How many lanes [`Self::update_with_alley`] runs a step on.
 	step_lanes: StepLanes,
+	/// How the lanes split the swept bounds to find contacts, by how long each share took in the last step.
+	detection: WorkShares,
 	/// The step's contacts in the order they were found, kept between steps so gathering them does not allocate.
 	contacts: Contacts,
 	/// Working storage for finding contacts on the calling thread, kept between steps so that it does not allocate.
@@ -81,6 +74,7 @@ impl World {
 			bounds: SweepBounds::default(),
 			shares: Vec::new(),
 			step_lanes: StepLanes::for_machine(),
+			detection: WorkShares::default(),
 			contacts: Contacts::default(),
 			scratch: ContactScratch::default(),
 			solver: ContactSolver::default(),
@@ -141,8 +135,9 @@ impl World {
 	/// because lanes would cost more than they save. Every running lane runs the same step. One lane applies
 	/// gravity and sorts the bodies' bounds while the others wait, every lane then lists its part of the bounds in
 	/// grid cells, gives the solver its share of the bodies, and finds the contacts in its share of the bounds, and
-	/// one lane batches them. The lanes then prepare the contacts and pass over them several times, sharing the
-	/// larger batches, before every lane moves its share of the bodies and one lane publishes their transforms.
+	/// one lane batches them. The lanes then prepare the contacts and pass over them several times, sharing every
+	/// batch that is large enough, before every lane moves its share of the bodies and one lane publishes their
+	/// transforms.
 	/// Contacts are prepared and solved in the order [`Self::update`] does it in, so both produce the same
 	/// simulation with any number of lanes.
 	pub fn update_with_alley(
@@ -175,7 +170,7 @@ impl World {
 			}
 			let _ = lane.each_ref(world, |world, lane| {
 				world.take_share_bodies(lane);
-				world.detect_share_contacts(lane, step)
+				world.detect_share_contacts(lane, lanes, step)
 			});
 			let (shared_batches, rest) = lane.broadcast_mut(world, |world| world.batch_share_contacts());
 			for batch in 0..shared_batches {
@@ -243,15 +238,22 @@ impl World {
 		unsafe { self.solver.take_bodies(&self.bodies, share) };
 	}
 
-	/// Finds the contacts in one lane's share of the swept bounds and keeps them in that lane's storage.
-	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
+	/// Finds the contacts in the share of the swept bounds that one of `lanes` lanes has, and keeps them in that
+	/// lane's storage.
+	///
+	/// Bodies in a dense part of a pile, or with shapes that cost more to test, take longer than others. The shares
+	/// are sized by how long each took in the last step, so that no lane keeps the others waiting. The contacts come
+	/// out in the same order whatever the shares are.
+	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, lanes: usize, dt: MediaTime) {
 		let storage = &self.shares[lane.idx()];
 		// Work on the stack so lanes do not write to neighboring storage headers while they test bodies.
 		let (mut contacts, mut scratch) = {
 			let mut storage = storage.lock();
 			(std::mem::take(&mut storage.contacts), std::mem::take(&mut storage.scratch))
 		};
-		let range = lane.share_range(self.bounds.count());
+		let range = self.detection.range(lane.idx(), lanes, self.bounds.count());
+		let positions = range.len();
+		let started = Instant::now();
 		detect_contacts(
 			&self.bounds,
 			&self.bodies,
@@ -260,9 +262,11 @@ impl World {
 			&mut contacts,
 			&mut scratch,
 		);
+		let taken = started.elapsed().as_nanos() as u64;
 		let mut storage = storage.lock();
 		storage.contacts = contacts;
 		storage.scratch = scratch;
+		storage.detection = (positions, taken);
 	}
 
 	/// Gathers the contacts found in every share and sorts them into batches. Returns how many batches lanes should
@@ -273,10 +277,16 @@ impl World {
 		for (lane, share) in self.shares.iter_mut().enumerate() {
 			std::mem::swap(self.contacts.part_mut(lane), &mut share.get_mut().contacts);
 		}
+		// A lane that did not run this step leaves nothing, which changes no share.
+		let taken = self
+			.shares
+			.iter_mut()
+			.map(|share| std::mem::take(&mut share.get_mut().detection));
+		self.detection.record(taken);
 		self.contacts.seal();
 		self.solver.begin(&self.contacts);
 		// Batches fill from the first one, so the large ones lead.
-		let shared = (0..self.solver.batches().min(MAX_SHARED_BATCHES))
+		let shared = (0..self.solver.batches())
 			.take_while(|batch| self.solver.batch_contacts(*batch) >= SHARED_BATCH_CONTACTS)
 			.count();
 		(shared, self.solver.has_rest(shared))
@@ -495,6 +505,8 @@ struct Share {
 	contacts: Vec<Contact>,
 	/// Working storage for finding those contacts.
 	scratch: ContactScratch,
+	/// How many scan positions of the swept bounds that share had, and how long it took, in nanoseconds.
+	detection: (usize, u64),
 	/// Where the bodies in a share of the body slots end the step, with the slot of each.
 	motions: Vec<(usize, Motion)>,
 	/// What solving the lane's share of each shared batch needs, batch after batch.

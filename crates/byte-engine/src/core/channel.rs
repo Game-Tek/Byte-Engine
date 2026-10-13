@@ -20,6 +20,17 @@ const STANDALONE_CAPACITY: usize = 4 * 1024 * 1024;
 /// The `Channel` trait defines message publication independently of the underlying transport.
 pub trait Channel<M> {
 	fn send(&self, message: M);
+
+	/// Publishes every one of `messages`, in order.
+	///
+	/// Use it when one publisher has many messages at once, as a system that publishes one for each entity does: a
+	/// transport can make room for all of them at once.
+	fn send_many(&self, messages: impl ExactSizeIterator<Item = M>)
+	where
+		Self: Sized,
+	{
+		messages.for_each(|message| self.send(message));
+	}
 }
 
 /// The `DefaultChannel` struct provides a cached typed route into shared message-bus storage.
@@ -111,5 +122,11 @@ where
 	/// Publishes one message. Waits only when the bus's pool has no free chunk.
 	fn send(&self, message: M) {
 		self.topic.send(message);
+	}
+
+	/// Publishes every message, reserving room for a run of them at once. Messages of other publishers can come
+	/// between two runs.
+	fn send_many(&self, messages: impl ExactSizeIterator<Item = M>) {
+		self.topic.send_many(messages);
 	}
 }

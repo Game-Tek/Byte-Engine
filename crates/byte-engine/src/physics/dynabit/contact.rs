@@ -1,5 +1,7 @@
 use math::{Point, UnitVector, collision::DynamicIntersection, collision::Intersection};
 
+use crate::core::alley::PairBatches;
+
 /// The `Contact` struct stores the world-space data required to resolve one collision.
 #[derive(Debug)]
 pub struct Contact {
@@ -59,27 +61,37 @@ pub struct Side {
 #[derive(Default)]
 pub(crate) struct ContactPart {
 	contacts: Vec<Contact>,
-	/// For each contact, the slots of its two bodies, or [`Self::UNMOVED`] for a body that contacts never change.
-	moved: Vec<[u32; 2]>,
+	/// For each contact, the slots of its two bodies, with [`PairBatches::FIXED`] added to the slot of a body that
+	/// contacts never change, such as a static one.
+	bodies: Vec<[u32; 2]>,
 }
 
 impl ContactPart {
-	/// Stands for a body that contacts never change, such as a static one.
-	const UNMOVED: u32 = u32::MAX;
-
-	/// Adds the contacts `find` finds between two bodies. When it finds any, `moved` is asked for the slot of each
-	/// body that contacts can change, with `None` for one that they cannot.
+	/// Adds the contacts `find` finds between two bodies. When it finds any, `bodies` is asked for the slot of each
+	/// body, and whether contacts can change it.
 	#[inline]
-	pub(crate) fn find(&mut self, find: impl FnOnce(&mut Vec<Contact>), moved: impl FnOnce() -> [Option<usize>; 2]) {
+	pub(crate) fn find(&mut self, find: impl FnOnce(&mut Vec<Contact>), bodies: impl FnOnce() -> [(usize, bool); 2]) {
 		let before = self.contacts.len();
 		find(&mut self.contacts);
 		// Most pairs that are tested turn out to be apart.
 		if self.contacts.len() != before {
-			let moved = moved().map(|slot| slot.map_or(Self::UNMOVED, |slot| slot as u32));
+			let bodies = bodies().map(|(slot, movable)| {
+				debug_assert!(
+					slot < PairBatches::FIXED as usize,
+					"Body slot is too large. The most likely cause is a body index above the 31-bit slot range."
+				);
+				slot as u32 | if movable { 0 } else { PairBatches::FIXED }
+			});
 			for _ in before..self.contacts.len() {
-				self.moved.push(moved);
+				self.bodies.push(bodies);
 			}
 		}
+	}
+
+	/// Empties the part, ready for the contacts of the next step.
+	pub(crate) fn clear(&mut self) {
+		self.contacts.clear();
+		self.bodies.clear();
 	}
 
 	/// Returns the contacts in the order they were found.
@@ -134,19 +146,17 @@ impl Contacts {
 		&self.parts[part].contacts[index - self.starts[part]]
 	}
 
-	/// Returns, for each contact in order, the slots of its bodies that contacts can change.
-	pub(crate) fn moved(&self) -> impl Iterator<Item = [Option<usize>; 2]> {
-		let slots = |moved: &[u32; 2]| moved.map(|slot| (slot != ContactPart::UNMOVED).then_some(slot as usize));
-		self.parts.iter().flat_map(move |part| part.moved.iter().map(slots))
+	/// Returns, for each contact in order, the slots of its two bodies, with [`PairBatches::FIXED`] added to the
+	/// slot of a body that contacts never change. The contacts come as the runs the parts hold, one after the other.
+	pub(crate) fn bodies(&self) -> impl Iterator<Item = &[[u32; 2]]> {
+		self.parts.iter().map(|part| part.bodies.as_slice())
 	}
 
-	/// Empties every part, ready for the next step.
-	pub(crate) fn clear(&mut self) {
-		for part in &mut self.parts {
-			part.contacts.clear();
-			part.moved.clear();
+	/// Empties the parts from `part` on, which no lane filled in this step.
+	pub(crate) fn clear_from(&mut self, part: usize) {
+		for part in self.parts.iter_mut().skip(part) {
+			part.clear();
 		}
-		self.starts.clear();
 	}
 }
 
@@ -172,15 +182,16 @@ mod tests {
 		// The floor in slot 6 is a body that contacts never change.
 		contacts
 			.part_mut(2)
-			.find(|found| found.push(contact(4, 5)), || [Some(4), Some(5)]);
+			.find(|found| found.push(contact(4, 5)), || [(4, true), (5, true)]);
 		contacts
 			.part_mut(2)
-			.find(|found| found.push(contact(6, 7)), || [None, Some(7)]);
+			.find(|found| found.push(contact(6, 7)), || [(6, false), (7, true)]);
 		// Bodies that touch at two places have two contacts, and bodies that are apart have none.
-		contacts
-			.part_mut(0)
-			.find(|found| found.extend([contact(0, 1), contact(2, 3)]), || [Some(0), Some(1)]);
-		contacts.part_mut(0).find(|_| (), || [Some(8), Some(9)]);
+		contacts.part_mut(0).find(
+			|found| found.extend([contact(0, 1), contact(2, 3)]),
+			|| [(0, true), (1, true)],
+		);
+		contacts.part_mut(0).find(|_| (), || [(8, true), (9, true)]);
 		contacts.seal();
 
 		assert_eq!(contacts.len(), 4);
@@ -197,12 +208,12 @@ mod tests {
 			[1, 3, 5, 7]
 		);
 		assert_eq!(
-			contacts.moved().collect::<Vec<_>>(),
-			[[Some(0), Some(1)], [Some(0), Some(1)], [Some(4), Some(5)], [None, Some(7)]]
+			contacts.bodies().flatten().copied().collect::<Vec<_>>(),
+			[[0, 1], [0, 1], [4, 5], [6 | PairBatches::FIXED, 7]]
 		);
 
-		contacts.clear();
+		contacts.clear_from(1);
 		contacts.seal();
-		assert_eq!(contacts.len(), 0);
+		assert_eq!(contacts.len(), 2);
 	}
 }

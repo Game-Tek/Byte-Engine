@@ -1233,9 +1233,35 @@ where
 {
 	/// Publishes one message, waiting for a free chunk if the pool is exhausted.
 	pub(crate) fn send(&self, message: M) {
+		let (chunk, slot, _) = self.reserve(1);
+		self.publish(chunk, slot, message);
+	}
+
+	/// Publishes every one of `messages`, in order, waiting for free chunks if the pool is exhausted.
+	///
+	/// The slots are reserved a chunk's worth at a time, not one for each message, so publishers that each send
+	/// many messages at once do not contend for every slot. Messages of other publishers can come between two such
+	/// runs, but not within one.
+	///
+	/// `messages` must yield as many messages as it says it holds: listeners wait for every reserved slot.
+	pub(crate) fn send_many(&self, mut messages: impl ExactSizeIterator<Item = M>) {
+		let mut left = messages.len();
+		while left != 0 {
+			let (chunk, first, count) = self.reserve(u32::try_from(left).unwrap_or(u32::MAX));
+			for slot in first..first + count {
+				let message = messages.next().expect(
+					"Message batch ended early. The most likely cause is an iterator that reports more messages than it yields.",
+				);
+				self.publish(chunk, slot, message);
+			}
+			left -= count as usize;
+		}
+	}
+
+	/// Writes `message` to a slot this publisher reserved and lets listeners take it.
+	fn publish(&self, chunk: u32, slot: u32, message: M) {
 		let layout = self.state.layout;
 		let pool = &self.core.pool;
-		let (chunk, slot) = self.reserve();
 		let sequence = pool.chunks[chunk as usize].first_sequence.load(Ordering::Relaxed) + u64::from(slot);
 		if std::mem::needs_drop::<M>() {
 			// Read membership only after the reservation is visible. A listener that
@@ -1261,8 +1287,9 @@ where
 			.store(self.state.stamp(sequence), Ordering::Release);
 	}
 
-	/// Reserves one slot in the route's current chunk, attaching chunks as they fill.
-	fn reserve(&self) -> (u32, u32) {
+	/// Reserves up to `wanted` slots that follow each other in the route's current chunk, attaching chunks as they
+	/// fill. Returns the chunk, the first slot, and how many slots were reserved, which is at least one.
+	fn reserve(&self, wanted: u32) -> (u32, u32, u32) {
 		let layout = self.state.layout;
 		loop {
 			let current = self.state.current.load(Ordering::Acquire);
@@ -1285,11 +1312,15 @@ where
 					self.core.attach_next_chunk(&self.state, chunk, generation);
 					break;
 				}
-				match meta
-					.reservation
-					.compare_exchange_weak(reservation, reservation + 1, Ordering::SeqCst, Ordering::Relaxed)
-				{
-					Ok(_) => return (chunk, reserved),
+				// A reservation never reaches past the chunk, so the count stays below the generation's bits.
+				let count = wanted.min(layout.slots_per_chunk - reserved);
+				match meta.reservation.compare_exchange_weak(
+					reservation,
+					reservation + u64::from(count),
+					Ordering::SeqCst,
+					Ordering::Relaxed,
+				) {
+					Ok(_) => return (chunk, reserved, count),
 					Err(actual) => {
 						reservation = actual;
 						// Losing publishers pause for growing intervals so the winner
@@ -1670,6 +1701,43 @@ mod tests {
 	/// Creates a ticking bus whose pool holds exactly `chunks` chunks.
 	fn ticking_bus(chunks: usize) -> MessageBus {
 		MessageBus::new(MessageBusConfig::new(chunks * CHUNK_BYTES)).expect("valid test bus")
+	}
+
+	#[test]
+	fn messages_sent_at_once_arrive_in_order_across_chunks() {
+		let channel: DefaultChannel<u64> = test_bus(8).root_scope("test").channel();
+		let mut listener = channel.listener();
+		// One message was sent before, so the run starts inside a chunk and ends in the third one after it.
+		let count = 2 * u64_slots_per_chunk() + 5;
+
+		channel.send(u64::MAX);
+		channel.send_many((0..count).map(|message| message as u64));
+		channel.send_many(std::iter::empty());
+
+		assert_eq!(listener.read(), Some(u64::MAX));
+		assert!((0..count).all(|message| listener.read() == Some(message as u64)));
+		assert_eq!(listener.read(), None);
+	}
+
+	#[test]
+	fn runs_of_messages_from_several_threads_each_stay_in_order() {
+		let channel: DefaultChannel<(u8, u32)> = test_bus(8).root_scope("test").channel();
+		let mut listener = channel.listener();
+
+		std::thread::scope(|scope| {
+			for thread in 0..4u8 {
+				let channel = &channel;
+				scope.spawn(move || channel.send_many((0..3_000u32).map(move |message| (thread, message))));
+			}
+		});
+
+		// The runs of different threads come one after the other or mixed, but each thread's messages keep their order.
+		let mut next = [0u32; 4];
+		while let Some((thread, message)) = listener.read() {
+			assert_eq!(message, next[thread as usize]);
+			next[thread as usize] += 1;
+		}
+		assert_eq!(next, [3_000; 4]);
 	}
 
 	/// Returns how many `u64` messages one chunk holds: each slot is an 8-byte stamp plus the value.

@@ -11,7 +11,9 @@ use std::{
 };
 
 use math::AABB;
-use utils::sync::{Mutex, RwLock};
+use smallvec::SmallVec;
+
+use crate::core::alley::{Alley, AlleyId, ConcreteLane, Lane as _, LaneCells, LaneOwned, LaneRanges, RangeOwned};
 
 /// The number of bounds one sweep step tests at once.
 const WIDTH: usize = 4;
@@ -42,37 +44,165 @@ const GRID_BOXES: usize = 4096;
 /// testing every pair.
 ///
 /// Call [`Self::rebuild`] with the step's bounds, then [`Self::overlaps`] to read the overlapping pairs. To spread
-/// the scan over lanes, give each lane its own range of `0..`[`Self::count`]. To spread the rebuild over lanes too,
-/// call [`Self::stage`] instead, give each lane one part to [`Self::repair`], call [`Self::lay_out`], and give each
-/// lane one part to [`Self::fill`].
+/// the scan over lanes, give each lane its own range of `0..`[`Self::count`].
+///
+/// To make the rebuild a part of a dispatch of your own, call [`Self::lend`] before the dispatch. Then call
+/// [`Self::stage`], have every lane [`Self::repair`], call [`Self::share_order`], have every lane [`Self::merge`],
+/// and call [`Self::lay_out`]. If that splits the boxes into cells, have every lane [`Self::fill`] and call
+/// [`Self::share_cells`].
 #[derive(Default)]
 pub struct SweepBounds {
-	/// Every box, sorted along the sweep axis.
-	sorted: BoundsArrays,
-	/// Whether each sorted box is too wide for the grid.
-	is_wide: Vec<bool>,
+	/// Every box, sorted along the sweep axis. Lanes write it side by side, each the boxes of its part.
+	sorted: SortedBounds,
 	/// The sorted indices of the boxes that are too wide for the grid. Each is scanned against every box.
 	wide: Vec<u32>,
 	/// The grid over the two axes that are not swept.
 	grid: Grid,
 	/// The boxes of the grid's cells, split into parts that each hold a run of neighboring cells, so that lanes can
-	/// each fill one. Every part has its own lock, which only its lane takes to fill it.
-	parts: Vec<RwLock<CellPart>>,
+	/// each fill one.
+	parts: LaneOwned<CellPart>,
 	/// One past the last cell of each part that the last [`Self::stage`] laid out. A part starts where the one
 	/// before it ends, and no part is laid out while the boxes are not split into cells.
 	part_ends: Vec<usize>,
 	/// The boxes as they were received, kept between rebuilds so staging them does not allocate.
 	staged: Vec<StagedBounds>,
-	/// The order the last rebuild sorted `staged` into. Boxes move little between steps, so the next rebuild
-	/// usually only has to repair it.
-	order: Vec<SweepKey>,
-	/// The runs that [`Self::stage`] split `order` into, for lanes to each repair one. Every run has its own lock,
-	/// which only its lane takes to repair it.
-	runs: Vec<Mutex<OrderRun>>,
-	/// How many of `runs` the last [`Self::stage`] left to be repaired. None when the order has to be sorted anew.
+	/// The order the last rebuild sorted `staged` into, as runs that follow each other. Boxes move little between
+	/// steps, so the next rebuild usually only has to repair it, and lanes can each repair one run.
+	runs: LaneOwned<OrderRun>,
+	/// What each lane merged of the repaired runs, until [`Self::lay_out`] takes it.
+	merged: LaneOwned<MergedRun>,
+	/// How many of `runs` hold the order of the last rebuild. None before the first one.
+	ordered_runs: usize,
+	/// How many of `runs` the last [`Self::stage`] left to be repaired and merged. None once [`Self::lay_out`] has
+	/// taken them.
 	staged_runs: usize,
+	/// Working storage for sorting boxes that have no order to repair.
+	unordered: Vec<SweepKey>,
+	/// Where the repaired runs start, in order, which is where the parts that lanes merge start too. Working storage
+	/// of [`Self::share_order`].
+	splitters: Vec<SweepKey>,
+	/// The keys each part takes of each run, for every part in turn, as [`Self::share_order`] worked them out.
+	takes: Vec<Range<usize>>,
+	/// Where each part's boxes start among the sorted boxes, followed by the number of boxes. Working storage of
+	/// [`Self::share_order`].
+	starts: Vec<usize>,
+	/// The number of boxes.
+	boxes: usize,
+	/// How long a grid cell is along each of the two axes that are not swept, for the boxes of the last
+	/// [`Self::stage`].
+	edges: [f32; 2],
 	/// The axis the last rebuild sorted along.
 	axis: usize,
+}
+
+/// The `Boxes` struct reads boxes that are held as one array per corner coordinate, wherever those arrays are kept.
+#[derive(Clone, Copy)]
+struct Boxes<'a> {
+	/// The identifier each box was staged with.
+	ids: &'a [u32],
+	/// The smallest corner of each box as one array per axis. Index 0 is the sweep axis.
+	min: [&'a [f32]; 3],
+	/// The largest corner of each box, laid out like `min`.
+	max: [&'a [f32]; 3],
+}
+
+impl Boxes<'_> {
+	/// Returns the corners of the box at entry `index`.
+	fn get(&self, index: usize) -> ([f32; 3], [f32; 3]) {
+		(
+			[0, 1, 2].map(|axis| self.min[axis][index]),
+			[0, 1, 2].map(|axis| self.max[axis][index]),
+		)
+	}
+}
+
+/// The `SortedBounds` struct holds every box in sweep order, as arrays that lanes write side by side: each lane
+/// merges one part of the order and writes the boxes of that part.
+///
+/// Size it with [`Self::resize`]. Give each lane its boxes with [`Self::split_at`], which the lane reaches with
+/// [`Self::own`]. Call [`Self::join`] before reading the boxes with [`Self::boxes`] and [`Self::is_wide`].
+#[derive(Default)]
+struct SortedBounds {
+	ids: LaneRanges<LaneCells<u32>>,
+	/// The corners, each followed by `WIDTH` entries that overlap nothing.
+	min: [LaneRanges<LaneCells<f32>>; 3],
+	max: [LaneRanges<LaneCells<f32>>; 3],
+	/// Whether each box is too wide for the grid.
+	is_wide: LaneRanges<LaneCells<bool>>,
+}
+
+/// The `SortedPart` struct lends a lane the entries of one part of a [`SortedBounds`], to write its boxes to.
+struct SortedPart<'a> {
+	ids: RangeOwned<'a, LaneCells<u32>>,
+	min: [RangeOwned<'a, LaneCells<f32>>; 3],
+	max: [RangeOwned<'a, LaneCells<f32>>; 3],
+	is_wide: RangeOwned<'a, LaneCells<bool>>,
+}
+
+impl SortedBounds {
+	/// Returns every array of corners.
+	fn corners_mut(&mut self) -> impl Iterator<Item = &mut LaneRanges<LaneCells<f32>>> {
+		self.min.iter_mut().chain(&mut self.max)
+	}
+
+	/// Lets the lanes of `alley` write the boxes.
+	fn lend(&mut self, alley: AlleyId) {
+		self.ids.lend(alley);
+		self.is_wide.lend(alley);
+		self.corners_mut().for_each(|corner| corner.lend(alley));
+	}
+
+	/// Makes room for `count` boxes. The entries that were there keep what they held, so every box has to be written
+	/// again.
+	fn resize(&mut self, count: usize) {
+		self.ids.get_mut().resize(count, 0);
+		self.is_wide.get_mut().resize(count, false);
+		for corner in self.corners_mut() {
+			// The padding lets a scan read whole groups past the last box. A comparison with NaN is never true, so
+			// it overlaps nothing, not even an unbounded box.
+			let corner = corner.get_mut();
+			corner.resize(count + WIDTH, f32::NAN);
+			corner[count..].fill(f32::NAN);
+		}
+	}
+
+	/// Gives each lane the boxes from its entry of `starts` to the next one, to write through [`Self::own`].
+	fn split_at(&mut self, starts: &[usize]) {
+		self.ids.split_at(starts.iter().copied());
+		self.is_wide.split_at(starts.iter().copied());
+		self.corners_mut().for_each(|corner| corner.split_at(starts.iter().copied()));
+	}
+
+	/// Lets every lane read every box.
+	fn join(&mut self) {
+		self.ids.join();
+		self.is_wide.join();
+		self.corners_mut().for_each(LaneRanges::join);
+	}
+
+	/// Returns the entries of this lane's boxes.
+	fn own(&self, lane: &ConcreteLane<'_>) -> SortedPart<'_> {
+		SortedPart {
+			ids: self.ids.own(lane),
+			min: self.min.each_ref().map(|corner| corner.own(lane)),
+			max: self.max.each_ref().map(|corner| corner.own(lane)),
+			is_wide: self.is_wide.own(lane),
+		}
+	}
+
+	/// Returns the boxes, once they are joined.
+	fn boxes(&self) -> Boxes<'_> {
+		Boxes {
+			ids: self.ids.all(),
+			min: self.min.each_ref().map(|corner| &corner.all()[..]),
+			max: self.max.each_ref().map(|corner| &corner.all()[..]),
+		}
+	}
+
+	/// Returns whether each box is too wide for the grid, once the boxes are joined.
+	fn is_wide(&self) -> &[bool] {
+		self.is_wide.all()
+	}
 }
 
 /// The `BoundsArrays` struct holds boxes as one array per corner coordinate, so a scan reads the same coordinate
@@ -114,21 +244,39 @@ impl BoundsArrays {
 		}
 	}
 
-	/// Returns the corners of the box at entry `index`.
-	fn get(&self, index: usize) -> ([f32; 3], [f32; 3]) {
-		(
-			[0, 1, 2].map(|axis| self.min[axis][index]),
-			[0, 1, 2].map(|axis| self.max[axis][index]),
-		)
+	/// Returns the boxes, to read.
+	fn view(&self) -> Boxes<'_> {
+		Boxes {
+			ids: &self.ids,
+			min: self.min.each_ref().map(Vec::as_slice),
+			max: self.max.each_ref().map(Vec::as_slice),
+		}
 	}
 }
 
-/// The `OrderRun` struct holds one run of the sweep order while a lane repairs it.
+/// The `OrderRun` struct holds one run of the sweep order, which one lane keeps in order.
 #[derive(Default)]
 struct OrderRun {
 	keys: Vec<SweepKey>,
-	/// Whether the last repair left `keys` in order.
+	/// Whether `keys` are in order for the boxes of the last [`SweepBounds::stage`].
 	repaired: bool,
+}
+
+/// The `MergedRun` struct holds what one lane found while it merged its part of the repaired runs, until one lane
+/// collects it.
+#[derive(Default)]
+struct MergedRun {
+	/// The keys of the part, in order. They become the run its lane repairs in the next rebuild.
+	keys: Vec<SweepKey>,
+	/// Working storage for the keys that came from other runs than the lane's longest.
+	strays: Vec<SweepKey>,
+	/// The sorted indices of the part's boxes that are too wide for the grid, in order.
+	wide: Vec<u32>,
+	/// The smallest and largest corner of the part's other boxes along the two axes that are not swept.
+	low: [f32; 2],
+	high: [f32; 2],
+	/// Whether the part was merged for the boxes of the last [`SweepBounds::stage`].
+	merged: bool,
 }
 
 /// The `CellPart` struct holds the boxes of a run of neighboring grid cells, so that the cells of a grid can be
@@ -151,34 +299,37 @@ struct CellPart {
 impl CellPart {
 	/// Replaces the part's boxes with the ones `bounds` has in `cells`.
 	fn fill(&mut self, bounds: &SweepBounds, cells: Range<usize>) {
+		let (sorted, is_wide) = (bounds.sorted.boxes(), bounds.sorted.is_wide());
 		if cells.len() == bounds.grid.count() {
 			// A part that holds every cell holds every box of the grid, so there are no members to pick.
-			let every_box = (0..bounds.boxes()).filter(|index| !bounds.is_wide[*index]);
-			self.list(bounds, cells, every_box);
+			let every_box = (0..bounds.boxes()).filter(|index| !is_wide[*index]);
+			self.list(sorted, bounds.grid, cells, every_box);
 		} else {
 			let mut members = std::mem::take(&mut self.members);
-			bounds.cell_members(&cells, &mut members);
-			self.list(bounds, cells, members.iter().map(|index| *index as usize));
+			bounds.cell_members(sorted, is_wide, &cells, &mut members);
+			self.list(sorted, bounds.grid, cells, members.iter().map(|index| *index as usize));
 			self.members = members;
 		}
 	}
 
-	/// Replaces the part's boxes with the ones that `members`, sorted indices in sweep order, have in `cells`.
+	/// Replaces the part's boxes with the ones that `members`, indices into `sorted` in sweep order, have in `cells`
+	/// of `grid`.
 	///
 	/// It counts the boxes of each cell, gives each cell its stretch of entries, then writes the boxes in sweep
 	/// order, which leaves every cell sorted like the whole.
-	fn list(&mut self, bounds: &SweepBounds, cells: Range<usize>, members: impl Iterator<Item = usize> + Clone) {
+	fn list(&mut self, sorted: Boxes<'_>, grid: Grid, cells: Range<usize>, members: impl Iterator<Item = usize> + Clone) {
 		/// Calls `entry` with each of `cells` that a member reaches into, counted from the first of them, and the
 		/// member's sorted index.
 		fn for_each_entry(
-			bounds: &SweepBounds,
+			sorted: Boxes<'_>,
+			grid: Grid,
 			cells: &Range<usize>,
 			members: impl Iterator<Item = usize>,
 			mut entry: impl FnMut(usize, usize),
 		) {
 			for index in members {
-				let (min, max) = bounds.sorted.get(index);
-				for cell in bounds.grid.cells(min, max).filter(|cell| cells.contains(cell)) {
+				let (min, max) = sorted.get(index);
+				for cell in grid.cells(min, max).filter(|cell| cells.contains(cell)) {
 					entry(cell - cells.start, index);
 				}
 			}
@@ -187,7 +338,7 @@ impl CellPart {
 		self.fills.clear();
 		self.fills.resize(cells.len(), 0);
 		let fills = &mut self.fills;
-		for_each_entry(bounds, &cells, members.clone(), |cell, _| fills[cell] += 1);
+		for_each_entry(sorted, grid, &cells, members.clone(), |cell, _| fills[cell] += 1);
 
 		self.starts.clear();
 		let mut start = 0;
@@ -202,10 +353,10 @@ impl CellPart {
 
 		self.boxes.resize(start as usize);
 		let (fills, boxes) = (&mut self.fills, &mut self.boxes);
-		for_each_entry(bounds, &cells, members, |cell, index| {
+		for_each_entry(sorted, grid, &cells, members, |cell, index| {
 			let fill = &mut fills[cell];
-			let (min, max) = bounds.sorted.get(index);
-			boxes.set(*fill as usize, bounds.sorted.ids[index], min, max);
+			let (min, max) = sorted.get(index);
+			boxes.set(*fill as usize, sorted.ids[index], min, max);
 			*fill += 1;
 		});
 		// Every fill now points past its cell's last box, at the entries that have to overlap nothing.
@@ -295,21 +446,20 @@ impl SweepBounds {
 	/// A box that reaches into several cells has a position in each, so this is not the number of boxes.
 	pub fn count(&self) -> usize {
 		if self.in_cells() {
-			let entries = |part: &RwLock<CellPart>| part.read().boxes.ids.len();
-			self.wide.len() + self.laid_out_parts().iter().map(entries).sum::<usize>()
+			self.wide.len() + self.laid_out_parts().map(|part| part.boxes.ids.len()).sum::<usize>()
 		} else {
 			self.boxes()
 		}
 	}
 
-	/// Returns the parts the last [`Self::stage`] laid out.
-	fn laid_out_parts(&self) -> &[RwLock<CellPart>] {
-		&self.parts[..self.part_ends.len()]
+	/// Returns the parts the last [`Self::stage`] laid out, once [`Self::share_cells`] let every lane read them.
+	fn laid_out_parts(&self) -> impl Iterator<Item = &CellPart> {
+		self.parts.all().take(self.part_ends.len())
 	}
 
 	/// Returns the number of boxes.
 	fn boxes(&self) -> usize {
-		self.order.len()
+		self.boxes
 	}
 
 	/// Returns whether the boxes are split into cells. Few boxes are scanned as one sorted list instead.
@@ -317,25 +467,46 @@ impl SweepBounds {
 		self.boxes() >= GRID_BOXES
 	}
 
-	/// Replaces the stored boxes with `bounds`, each identified by the distinct `usize` it comes with.
+	/// Replaces the stored boxes with `bounds`, each identified by the distinct `usize` it comes with, as one
+	/// dispatch on every lane of `alley`.
 	///
 	/// The boxes are sorted along the axis on which the fewest of them share a stretch and split into cells along
 	/// the other two, which keeps each box's scan in [`Self::overlaps`] short. When `bounds` yields the boxes of
 	/// the last rebuild again, in the same order, the sort starts from the order they had then, which is quick
-	/// when they have moved little.
-	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
-		self.stage(bounds, 1);
-		self.repair(0);
-		if self.lay_out(1) {
-			self.fill(0);
+	/// when they have moved little. The pairs come out in the same sequence whatever the number of lanes.
+	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>, alley: &mut Alley) {
+		let parts = alley.parallelism();
+		self.lend(alley.id());
+		self.stage(bounds, parts);
+		let rebuilt = alley.execute_phased(self, parts, |lane, sweep| {
+			let _ = lane.each_ref(sweep, |sweep, lane| sweep.repair(lane));
+			lane.broadcast_mut(sweep, |sweep| sweep.share_order());
+			let _ = lane.each_ref(sweep, |sweep, lane| sweep.merge(lane));
+			if lane.broadcast_mut(sweep, |sweep| sweep.lay_out(parts)) {
+				let _ = lane.each_ref(sweep, |sweep, lane| sweep.fill(lane));
+				lane.broadcast_mut(sweep, |sweep| sweep.share_cells());
+			}
+		});
+		if let Err(panic) = rebuilt {
+			std::panic::resume_unwind(panic);
 		}
 	}
 
-	/// Replaces the stored boxes like [`Self::rebuild`], but leaves their order to be repaired, and then the grid's
-	/// cells to be filled, as `parts` parts each.
+	/// Lets the lanes of `alley` do their parts of the rebuilds that follow. Call it before a dispatch on that alley
+	/// that calls [`Self::stage`].
+	pub fn lend(&mut self, alley: AlleyId) {
+		self.sorted.lend(alley);
+		self.runs.lend(alley);
+		self.merged.lend(alley);
+		self.parts.lend(alley);
+	}
+
+	/// Replaces the stored boxes like [`Self::rebuild`], but leaves their order to be repaired and merged, and then
+	/// the grid's cells to be filled, as `parts` parts each, by a dispatch on `parts` lanes of the alley that
+	/// [`Self::lend`] was called with.
 	///
-	/// Call [`Self::repair`] with every part from `0` up to `parts`, where each call can come from another lane, and
-	/// then [`Self::lay_out`]. The pairs come out in the same sequence whatever the number of parts.
+	/// Have every lane call [`Self::repair`] next, then call [`Self::share_order`]. The pairs come out in the same
+	/// sequence whatever the number of parts.
 	pub fn stage(&mut self, bounds: impl Iterator<Item = (usize, AABB)>, parts: usize) {
 		debug_assert!(
 			parts != 0,
@@ -370,137 +541,267 @@ impl SweepBounds {
 		self.staged.truncate(count);
 
 		let sweep_axis = least_crowded_axis(&self.staged);
-		// The last order only helps for the same boxes along the same axis.
-		let repairable = same_boxes && sweep_axis == self.axis;
+		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
+		// The last order only helps for the same boxes along the same axis, in the runs it was left in.
+		let repairable = same_boxes && sweep_axis == self.axis && self.ordered_runs == parts;
 		self.axis = sweep_axis;
-		if repairable {
-			// Boxes move little between steps, so most keys that are out of place belong a few places away, inside
-			// their own run. Each run goes to a lane.
-			if self.runs.len() < parts {
-				self.runs.resize_with(parts, Default::default);
+		self.runs.grow(parts);
+		self.merged.grow(parts);
+		// Each lane repairs its own run, whatever the last rebuild left the runs as.
+		self.runs.split();
+		// Boxes that keep moving one way along the axis gather in the runs at that end, which would leave most of the
+		// work to few lanes.
+		let longest = self.runs.iter_mut().take(parts).map(|run| run.keys.len()).max();
+		let uneven = longest.is_some_and(|longest| longest > 2 * count.div_ceil(parts));
+		if !repairable || uneven {
+			self.unordered.clear();
+			if repairable {
+				// The runs follow each other in order, so together they are the last order.
+				for run in self.runs.iter_mut().take(parts) {
+					self.unordered.extend_from_slice(&run.keys);
+				}
+			} else {
+				self.unordered
+					.extend(self.staged.iter().enumerate().map(|(index, staged)| SweepKey {
+						start: staged.min[sweep_axis],
+						id: staged.id,
+						staged: index as u32,
+					}));
+				self.unordered.sort_unstable_by(SweepKey::cmp);
 			}
-			for (part, run) in self.runs[..parts].iter_mut().enumerate() {
-				let keys = &mut run.get_mut().keys;
-				keys.clear();
-				keys.extend_from_slice(&self.order[part * count / parts..(part + 1) * count / parts]);
+			// The boxes go to the runs in equal shares. From the next rebuild on, lanes keep them in order.
+			for (part, run) in self.runs.iter_mut().take(parts).enumerate() {
+				run.keys.clear();
+				run.keys
+					.extend_from_slice(&self.unordered[part * count / parts..(part + 1) * count / parts]);
 			}
-			self.staged_runs = parts;
-		} else {
-			// The order holds the boxes as they came, for [`Self::lay_out`] to sort.
-			self.order.clear();
-			self.order
-				.extend(self.staged.iter().enumerate().map(|(index, staged)| SweepKey {
-					start: staged.min[sweep_axis],
-					id: staged.id,
-					staged: index as u32,
-				}));
-			self.staged_runs = 0;
 		}
+		for (run, merged) in self.runs.iter_mut().zip(self.merged.iter_mut()).take(parts) {
+			run.repaired = false;
+			merged.merged = false;
+		}
+		self.staged_runs = parts;
+		self.boxes = count;
+
+		// Lanes write the sorted boxes, each a range of them, so the room for all of them is made here.
+		self.sorted.resize(count);
+		// Cells are a few typical boxes wide, so a box shares its cells with few others. A cell edge that is not a
+		// positive length, as when the boxes are flat along an axis, means one cell along that axis that no box is
+		// too wide for.
+		self.edges = [axes[1], axes[2]].map(|axis| {
+			let extent = |index: usize| self.staged[index].max[axis] - self.staged[index].min[axis];
+			let edge = CELL_EXTENTS * typical(count, extent);
+			if edge > 0.0 && edge.is_finite() { edge } else { f32::INFINITY }
+		});
 	}
 
-	/// Brings run `part` of the last order up to date with the boxes that [`Self::stage`] received, and sorts it.
+	/// Brings this lane's run of the last order up to date with the boxes that [`Self::stage`] received, and sorts
+	/// it. Call [`Self::share_order`] once every lane has.
 	///
-	/// This only reads what [`Self::stage`] left and writes the one run, so every run can be repaired from another
-	/// lane at the same time. A run that was not staged is left as it is.
-	pub fn repair(&self, part: usize) {
-		let Some(run) = self.runs[..self.staged_runs].get(part) else {
+	/// This only reads what [`Self::stage`] left and writes the lane's own run, so every lane can repair its run at
+	/// the same time. A lane whose run was not staged does nothing.
+	pub fn repair(&self, lane: &ConcreteLane<'_>) {
+		if lane.idx() >= self.staged_runs {
 			return;
-		};
-		let mut run = run.lock();
+		}
+		let mut run = self.runs.own(lane);
 		for key in &mut run.keys {
 			key.start = self.staged[key.staged as usize].min[self.axis];
 		}
-		run.repaired = repair(&mut run.keys);
+		if !repair(&mut run.keys) {
+			run.keys.sort_unstable_by(SweepKey::cmp);
+		}
+		run.repaired = true;
 	}
 
-	/// Sorts the boxes that [`Self::stage`] received along the sweep axis, from the runs that [`Self::repair`]
-	/// repaired when there are any, and lays the grid's cells out as `parts` parts.
+	/// Splits the order that [`Self::repair`] left as runs into the parts lanes merge, and lets every lane read every
+	/// run. Call it once every lane repaired its run, and then have every lane call [`Self::merge`].
 	///
-	/// Returns whether the boxes are split into cells. If they are, call [`Self::fill`] with every part from `0` up
-	/// to `parts` before reading [`Self::count`] or [`Self::overlaps`]; each call can come from another lane.
-	pub fn lay_out(&mut self, parts: usize) -> bool {
-		let mut repaired = self.staged_runs != 0;
-		if repaired {
-			self.order.clear();
-			for run in &mut self.runs[..self.staged_runs] {
-				let run = run.get_mut();
-				repaired &= run.repaired;
-				self.order.extend_from_slice(&run.keys);
+	/// A box that moved past the end of its run belongs in another one. Each part takes the boxes from where one
+	/// run starts to where the next one does, out of every run, so that the parts follow each other in order and
+	/// every lane can merge one at the same time.
+	pub fn share_order(&mut self) {
+		let runs = self.staged_runs;
+		self.splitters.clear();
+		let mut keys = 0;
+		for run in self.runs.iter_mut().take(runs) {
+			assert!(
+				run.repaired,
+				"Sweep order is not repaired. The most likely cause is sharing the order before every lane repaired its run."
+			);
+			self.splitters.extend(run.keys.first());
+			keys += run.keys.len();
+		}
+		assert!(
+			keys == self.boxes,
+			"Sweep order holds other boxes than were staged. The most likely cause is a run that was changed outside a rebuild."
+		);
+		// The parts start where the runs do, in order. A part past the last run that has boxes is empty.
+		self.splitters.sort_unstable_by(SweepKey::cmp);
+		self.takes.clear();
+		self.starts.clear();
+		for part in 0..runs {
+			let (from, to) = (self.splitters.get(part).filter(|_| part != 0), self.splitters.get(part + 1));
+			let empty = part != 0 && part >= self.splitters.len();
+			// The boxes before the part in every run are the ones before it in the order.
+			let mut first = 0;
+			for run in self.runs.iter_mut().take(runs) {
+				let keys = &run.keys;
+				let before = |end: &SweepKey| keys.partition_point(|key| key.cmp(end).is_lt());
+				let take = if empty {
+					keys.len()..keys.len()
+				} else {
+					from.map_or(0, before)..to.map_or(keys.len(), before)
+				};
+				first += take.start;
+				self.takes.push(take);
 			}
-			self.staged_runs = 0;
+			self.starts.push(first);
 		}
-		// Every run is in order, so repairing the whole order only moves the keys that belong in another run.
-		if !(repaired && repair(&mut self.order)) {
-			self.order.sort_unstable_by(SweepKey::cmp);
-		}
-		let count = self.order.len();
-		let sweep_axis = self.axis;
-		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
+		self.starts.push(self.boxes);
+		self.sorted.split_at(&self.starts);
+		self.runs.join();
+	}
 
-		self.sorted.ids.clear();
-		self.sorted.ids.extend(self.order.iter().map(|key| key.id));
-		let staged = |key: &SweepKey| &self.staged[key.staged as usize];
-		for (slot, axis) in axes.into_iter().enumerate() {
-			// The padding lets a scan read whole groups past the last box. A comparison with NaN is never true, so
-			// it overlaps nothing, not even an unbounded box.
-			let padding = std::iter::repeat_n(f32::NAN, WIDTH);
-			let (min, max) = (&mut self.sorted.min[slot], &mut self.sorted.max[slot]);
-			min.clear();
-			min.extend(self.order.iter().map(|key| staged(key).min[axis]).chain(padding.clone()));
-			max.clear();
-			max.extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
+	/// Merges this lane's part of the runs that [`Self::share_order`] split into the sorted boxes. Call
+	/// [`Self::lay_out`] once every lane has.
+	///
+	/// This only reads the runs and writes the lane's own part of the sorted boxes, so every lane can merge its part
+	/// at the same time. The parts are the runs of the next rebuild. A lane whose run was not staged does nothing.
+	pub fn merge(&self, lane: &ConcreteLane<'_>) {
+		let (part, runs) = (lane.idx(), self.staged_runs);
+		if part >= runs {
+			return;
 		}
+		let mut merged = self.merged.own(lane);
+		let merged = &mut *merged;
+		let takes = &self.takes[part * runs..(part + 1) * runs];
+		let taken: SmallVec<[&[SweepKey]; 8]> = (self.runs.all().take(runs).zip(takes))
+			.map(|(run, take)| &run.keys[take.clone()])
+			.collect();
+		let mut sorted = self.sorted.own(lane);
+		let (first, count) = (sorted.ids.range().start, sorted.ids.len());
+		// The slices are taken once, so that writing a box does not look each of them up again.
+		let (ids, is_wide) = (&mut sorted.ids[..], &mut sorted.is_wide[..]);
+		let (sorted_min, sorted_max) = (
+			sorted.min.each_mut().map(|corner| &mut corner[..]),
+			sorted.max.each_mut().map(|corner| &mut corner[..]),
+		);
+
+		// Most of the part's boxes come from one run, and the others are few, so they are sorted among themselves
+		// and the two are merged.
+		let longest = (0..taken.len()).max_by_key(|run| taken[*run].len()).unwrap_or(0);
+		merged.keys.clear();
+		merged.keys.reserve(count);
+		merged.strays.clear();
+		merged.wide.clear();
+		for (_, keys) in taken.iter().enumerate().filter(|(run, _)| *run != longest) {
+			merged.strays.extend_from_slice(keys);
+		}
+		merged.strays.sort_unstable_by(SweepKey::cmp);
+		let longest = taken.get(longest).copied().unwrap_or(&[]);
+
+		let axes = [self.axis, (self.axis + 1) % 3, (self.axis + 2) % 3];
+		let in_cells = self.in_cells();
+		let (mut low, mut high) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+		let (mut longest, mut strays) = (longest.iter().peekable(), merged.strays.iter().peekable());
+		loop {
+			let key = match (longest.peek(), strays.peek()) {
+				(Some(key), Some(stray)) if stray.cmp(key).is_lt() => strays.next(),
+				(Some(_), _) => longest.next(),
+				(None, _) => strays.next(),
+			};
+			let Some(key) = key else {
+				break;
+			};
+			// The box's place among this part's boxes.
+			let place = merged.keys.len();
+			merged.keys.push(*key);
+			let staged = &self.staged[key.staged as usize];
+			let (min, max) = (axes.map(|axis| staged.min[axis]), axes.map(|axis| staged.max[axis]));
+			ids[place] = key.id;
+			for slot in 0..3 {
+				sorted_min[slot][place] = min[slot];
+				sorted_max[slot][place] = max[slot];
+			}
+			if in_cells {
+				// Written so that a box with a NaN or unbounded extent is wide: the grid cannot place it.
+				let fits = (0..2).all(|axis| max[axis + 1] - min[axis + 1] <= WIDE_BOX_CELLS * self.edges[axis]);
+				is_wide[place] = !fits;
+				if fits {
+					for axis in 0..2 {
+						low[axis] = low[axis].min(min[axis + 1]);
+						high[axis] = high[axis].max(max[axis + 1]);
+					}
+				} else {
+					merged.wide.push((first + place) as u32);
+				}
+			}
+		}
+		debug_assert_eq!(
+			merged.keys.len(),
+			count,
+			"Sweep part holds other boxes than it was given room for. The most likely cause is a run that changed after the order was shared."
+		);
+		(merged.low, merged.high) = (low, high);
+		merged.merged = true;
+	}
+
+	/// Takes what every lane's [`Self::merge`] left, lets every lane read the sorted boxes, and lays the grid's
+	/// cells out as `parts` parts.
+	///
+	/// Returns whether the boxes are split into cells. If they are, have every lane call [`Self::fill`], and then
+	/// call [`Self::share_cells`], before reading [`Self::count`] or [`Self::overlaps`].
+	pub fn lay_out(&mut self, parts: usize) -> bool {
+		let runs = std::mem::take(&mut self.staged_runs);
+		self.sorted.join();
+		self.wide.clear();
+		let (mut low, mut high) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+		for (run, merged) in self.runs.iter_mut().zip(self.merged.iter_mut()).take(runs) {
+			assert!(
+				merged.merged,
+				"Sweep order is not merged. The most likely cause is laying out the cells before every lane merged its part."
+			);
+			// The parts follow each other in order, so they are the runs the next rebuild repairs.
+			std::mem::swap(&mut run.keys, &mut merged.keys);
+			self.wide.extend_from_slice(&merged.wide);
+			for axis in 0..2 {
+				low[axis] = low[axis].min(merged.low[axis]);
+				high[axis] = high[axis].max(merged.high[axis]);
+			}
+		}
+		self.ordered_runs = runs;
 		self.part_ends.clear();
 		if self.in_cells() {
-			self.lay_out_cells(count, parts);
+			self.lay_out_cells(low, high, parts);
 		}
 		self.in_cells()
 	}
 
-	/// Lists in part `part` the boxes of the cells that [`Self::lay_out`] gave it.
+	/// Lists in this lane's part the boxes of the cells that [`Self::lay_out`] gave it. Call [`Self::share_cells`]
+	/// once every lane has.
 	///
-	/// This only reads what [`Self::lay_out`] left and writes the one part, so every part can be filled from another
-	/// lane at the same time. A part that was not laid out is left as it is.
-	pub fn fill(&self, part: usize) {
+	/// This only reads what [`Self::lay_out`] left and writes the lane's own part, so every lane can fill its part
+	/// at the same time. A lane whose part was not laid out does nothing.
+	pub fn fill(&self, lane: &ConcreteLane<'_>) {
+		let part = lane.idx();
 		let Some(end) = self.part_ends.get(part).copied() else {
 			return;
 		};
 		let start = part.checked_sub(1).map_or(0, |previous| self.part_ends[previous]);
-		self.parts[part].write().fill(self, start..end);
+		self.parts.own(lane).fill(self, start..end);
 	}
 
-	/// Lays a grid over the two axes that are not swept, and splits its cells into `parts` runs that hold about as
-	/// many of the `count` sorted boxes each.
-	///
-	/// Cells are a few typical boxes wide, so a box shares its cells with few others. Boxes much wider than a
-	/// cell stay out of the grid.
-	fn lay_out_cells(&mut self, count: usize, parts: usize) {
-		let extent = |index: usize, axis: usize| self.sorted.max[axis + 1][index] - self.sorted.min[axis + 1][index];
-		// A cell edge that is not a positive length, as when the boxes are flat along an axis, means one cell
-		// along that axis that no box is too wide for.
-		let edges = [0, 1].map(|axis| {
-			let edge = CELL_EXTENTS * typical(count, |index| extent(index, axis));
-			if edge > 0.0 && edge.is_finite() { edge } else { f32::INFINITY }
-		});
+	/// Lets every lane read the cells that the lanes filled, which [`Self::count`] and [`Self::overlaps`] do. Call
+	/// it once every lane has called [`Self::fill`].
+	pub fn share_cells(&mut self) {
+		self.parts.join();
+	}
 
-		self.is_wide.clear();
-		self.wide.clear();
-		let mut low = [f32::INFINITY; 2];
-		let mut high = [f32::NEG_INFINITY; 2];
-		for index in 0..count {
-			// Written so that a box with a NaN or unbounded extent is wide: the grid cannot place it.
-			let fits = (0..2).all(|axis| extent(index, axis) <= WIDE_BOX_CELLS * edges[axis]);
-			self.is_wide.push(!fits);
-			if fits {
-				for axis in 0..2 {
-					low[axis] = low[axis].min(self.sorted.min[axis + 1][index]);
-					high[axis] = high[axis].max(self.sorted.max[axis + 1][index]);
-				}
-			} else {
-				self.wide.push(index as u32);
-			}
-		}
-
+	/// Lays a grid over the two axes that are not swept, from `low` to `high`, which hold every box that is not too
+	/// wide for it. Splits its cells into `parts` runs that hold about as many of the sorted boxes each.
+	fn lay_out_cells(&mut self, low: [f32; 2], high: [f32; 2], parts: usize) {
+		let (count, edges) = (self.boxes, self.edges);
 		let mut cells = [0, 1].map(|axis| {
 			let span = high[axis] - low[axis];
 			if span > 0.0 && edges[axis].is_finite() {
@@ -530,9 +831,9 @@ impl SweepBounds {
 			cells,
 		};
 
-		if self.parts.len() < parts {
-			self.parts.resize_with(parts, Default::default);
-		}
+		self.parts.grow(parts);
+		// Each lane fills its own part.
+		self.parts.split();
 		if parts > 1 {
 			self.split_cells(count, parts);
 		}
@@ -549,9 +850,9 @@ impl SweepBounds {
 		// spaced sample of the boxes start in.
 		let samples = count.min(SAMPLES);
 		let mut sample = [0u32; SAMPLES];
-		let grid = self.grid;
+		let (grid, sorted) = (self.grid, self.sorted.boxes());
 		for (slot, cell) in sample.iter_mut().enumerate().take(samples) {
-			let (min, _) = self.sorted.get(slot * count / samples);
+			let (min, _) = sorted.get(slot * count / samples);
 			*cell = grid.cell(grid.coordinate(0, min[1]), grid.coordinate(1, min[2])) as u32;
 		}
 		let sample = &mut sample[..samples];
@@ -560,11 +861,12 @@ impl SweepBounds {
 			.extend((1..parts).map(|part| sample[part * samples / parts] as usize));
 	}
 
-	/// Replaces `members` with the sorted indices of the grid's boxes that may reach into `cells`, in sweep order.
+	/// Replaces `members` with the indices of the boxes in `sorted` that the grid holds and that may reach into
+	/// `cells`, in sweep order. `is_wide` tells which boxes the grid does not hold.
 	///
 	/// Every box that reaches into one of `cells` is a member. A box that reaches around them, into cells before
 	/// and after, is one too.
-	fn cell_members(&self, cells: &Range<usize>, members: &mut Vec<u32>) {
+	fn cell_members(&self, sorted: Boxes<'_>, is_wide: &[bool], cells: &Range<usize>, members: &mut Vec<u32>) {
 		members.clear();
 		if cells.is_empty() {
 			return;
@@ -578,7 +880,7 @@ impl SweepBounds {
 				.cast::<u32>()
 				.simd_min(u32x4::splat(grid.cells[axis] - 1))
 		};
-		let cell = |corner: &[Vec<f32>; 3], group: Range<usize>| {
+		let cell = |corner: &[&[f32]; 3], group: Range<usize>| {
 			coordinate(1, &corner[2][group.clone()]) * u32x4::splat(grid.cells[0]) + coordinate(0, &corner[1][group])
 		};
 		let (start, end) = (u32x4::splat(cells.start as u32), u32x4::splat(cells.end as u32));
@@ -586,13 +888,12 @@ impl SweepBounds {
 			// The sorted boxes end in entries that are not boxes, so the last group can be read whole. A box's
 			// cells lie between the cell of its smallest corner and the cell of its largest.
 			let group_range = group..group + WIDTH;
-			let reaches =
-				cell(&self.sorted.max, group_range.clone()).simd_ge(start) & cell(&self.sorted.min, group_range).simd_lt(end);
+			let reaches = cell(&sorted.max, group_range.clone()).simd_ge(start) & cell(&sorted.min, group_range).simd_lt(end);
 			let mut lanes = reaches.to_bitmask();
 			while lanes != 0 {
 				let index = group + lanes.trailing_zeros() as usize;
 				lanes &= lanes - 1;
-				if index < count && !self.is_wide[index] {
+				if index < count && !is_wide[index] {
 					members.push(index as u32);
 				}
 			}
@@ -604,22 +905,22 @@ impl SweepBounds {
 	/// Boxes that only touch count as overlapping. Ranges that together cover `0..`[`Self::count`] report every pair
 	/// exactly once, and reading them in ascending order gives the same sequence as one scan of the whole range.
 	pub fn overlaps(&self, range: Range<usize>, mut found: impl FnMut([usize; 2])) {
+		let sorted = self.sorted.boxes();
 		if !self.in_cells() {
 			// Every box is a neighbor of every other one, as if they shared one cell.
-			return self.scan_cell(&self.sorted, None, range, self.boxes(), &mut found);
+			return self.scan_cell(sorted, None, range, self.boxes(), &mut found);
 		}
 		// The wide boxes take the first positions, and the entries of each part in turn follow.
 		let wide = self.wide.len();
 		for position in range.start.min(wide)..range.end.min(wide) {
-			self.scan_wide(self.wide[position] as usize, &mut found);
+			self.scan_wide(sorted, self.wide[position] as usize, &mut found);
 		}
 		let mut first = wide;
 		for part in self.laid_out_parts() {
-			let part = part.read();
 			let entries = part.boxes.ids.len();
 			let range = range.start.saturating_sub(first).min(entries)..range.end.saturating_sub(first).min(entries);
 			if !range.is_empty() {
-				self.scan_part(&part, range, &mut found);
+				self.scan_part(part, range, &mut found);
 			}
 			first += entries;
 		}
@@ -639,7 +940,7 @@ impl SweepBounds {
 			if start < end {
 				let boxes_end = end - WIDTH;
 				let range = entries.start.max(start)..entries.end.min(boxes_end);
-				self.scan_cell(&part.boxes, Some(part.cells.start + cell), range, boxes_end, found);
+				self.scan_cell(part.boxes.view(), Some(part.cells.start + cell), range, boxes_end, found);
 			}
 		}
 	}
@@ -651,14 +952,14 @@ impl SweepBounds {
 	#[inline(always)]
 	fn scan_cell(
 		&self,
-		boxes: &BoundsArrays,
+		boxes: Boxes<'_>,
 		cell: Option<usize>,
 		range: Range<usize>,
 		boxes_end: usize,
 		found: &mut impl FnMut([usize; 2]),
 	) {
-		let [min_sweep, min_second, min_third] = &boxes.min;
-		let [max_sweep, max_second, max_third] = &boxes.max;
+		let [min_sweep, min_second, min_third] = boxes.min;
+		let [max_sweep, max_second, max_third] = boxes.max;
 		for first in range {
 			let reach = f32x4::splat(max_sweep[first]);
 			let (low_second, high_second) = (f32x4::splat(min_second[first]), f32x4::splat(max_second[first]));
@@ -701,27 +1002,27 @@ impl SweepBounds {
 		}
 	}
 
-	/// Calls `found` with the pairs the wide box at `index` of the sorted boxes forms with every other box.
+	/// Calls `found` with the pairs the wide box at `index` of the `sorted` boxes forms with every other box.
 	///
 	/// A pair of wide boxes is reported by the one that comes first in the sweep order.
-	fn scan_wide(&self, index: usize, found: &mut impl FnMut([usize; 2])) {
-		let count = self.boxes();
-		let (min, max) = self.sorted.get(index);
+	fn scan_wide(&self, sorted: Boxes<'_>, index: usize, found: &mut impl FnMut([usize; 2])) {
+		let (count, is_wide) = (self.boxes(), self.sorted.is_wide());
+		let (min, max) = sorted.get(index);
 		let (low, high) = (min.map(f32x4::splat), max.map(f32x4::splat));
 		for next in (0..count).step_by(WIDTH) {
 			let group = next..next + WIDTH;
-			let mut overlapping = f32x4::from_slice(&self.sorted.min[0][group.clone()]).simd_le(high[0])
-				& f32x4::from_slice(&self.sorted.max[0][group.clone()]).simd_ge(low[0]);
+			let mut overlapping = f32x4::from_slice(&sorted.min[0][group.clone()]).simd_le(high[0])
+				& f32x4::from_slice(&sorted.max[0][group.clone()]).simd_ge(low[0]);
 			for axis in 1..3 {
-				overlapping &= f32x4::from_slice(&self.sorted.min[axis][group.clone()]).simd_le(high[axis])
-					& f32x4::from_slice(&self.sorted.max[axis][group.clone()]).simd_ge(low[axis]);
+				overlapping &= f32x4::from_slice(&sorted.min[axis][group.clone()]).simd_le(high[axis])
+					& f32x4::from_slice(&sorted.max[axis][group.clone()]).simd_ge(low[axis]);
 			}
 			let mut lanes = overlapping.to_bitmask();
 			while lanes != 0 {
 				let other = next + lanes.trailing_zeros() as usize;
 				lanes &= lanes - 1;
-				if other != index && !(self.is_wide[other] && other < index) {
-					found([self.sorted.ids[index] as usize, self.sorted.ids[other] as usize]);
+				if other != index && !(is_wide[other] && other < index) {
+					found([sorted.ids[index] as usize, sorted.ids[other] as usize]);
 				}
 			}
 		}
@@ -806,6 +1107,11 @@ mod tests {
 
 	use super::*;
 
+	/// Returns an alley that rebuilds on the calling thread.
+	fn one_lane() -> Alley {
+		Alley::with_parallelism(1)
+	}
+
 	/// Returns a box from its center and half extents.
 	fn bounds(center: [f32; 3], half_extents: [f32; 3]) -> AABB {
 		AABB::from_center_and_half_extents(Point::from_array(center), Vector::from_array(half_extents))
@@ -814,7 +1120,7 @@ mod tests {
 	/// Returns the pairs a sweep of `boxes` reports, each ordered by identifier and sorted.
 	fn swept_pairs(boxes: &[AABB]) -> Vec<(usize, usize)> {
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate());
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
 		let mut pairs = Vec::new();
 		sweep.overlaps(0..sweep.count(), |[first, second]| {
 			pairs.push((first.min(second), first.max(second)))
@@ -875,7 +1181,7 @@ mod tests {
 	fn split_ranges_report_the_same_sequence_as_one_scan() {
 		let boxes = scattered_boxes(67);
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate());
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
 		let mut whole = Vec::new();
 		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
 
@@ -940,7 +1246,7 @@ mod tests {
 	fn split_ranges_cover_cells_and_wide_boxes_like_one_scan() {
 		let boxes = spread_boxes();
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate());
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
 		let mut whole = Vec::new();
 		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
 
@@ -961,7 +1267,7 @@ mod tests {
 	}
 
 	#[test]
-	fn cells_filled_as_several_parts_report_the_same_sequence_as_one_part() {
+	fn boxes_rebuilt_on_several_lanes_report_the_same_sequence_as_on_one() {
 		let boxes = spread_boxes();
 		// Every other box moves along each axis, so neighbors trade places in the order.
 		let step = Vector::new(0.4, 0.4, 0.4);
@@ -975,19 +1281,16 @@ mod tests {
 			})
 			.collect();
 		let mut whole = SweepBounds::default();
-		whole.rebuild(moved.iter().copied().enumerate());
+		whole.rebuild(moved.iter().copied().enumerate(), &mut one_lane());
 		let mut expected = Vec::new();
 		whole.overlaps(0..whole.count(), |pair| expected.push(pair));
 
-		for parts in [2, 3, 7] {
+		for lanes in [2, 3, 7] {
+			let mut alley = Alley::with_parallelism(lanes);
 			let mut sweep = SweepBounds::default();
-			// The second time, the boxes have moved and the order of the first time is repaired as parts.
+			// The second time, the boxes have moved and each lane repairs its part of the first order.
 			for boxes in [&boxes, &moved] {
-				sweep.stage(boxes.iter().copied().enumerate(), parts);
-				// Parts are repaired and filled in any order, as lanes would.
-				(0..parts).rev().for_each(|part| sweep.repair(part));
-				assert!(sweep.lay_out(parts));
-				(0..parts).rev().for_each(|part| sweep.fill(part));
+				sweep.rebuild(boxes.iter().copied().enumerate(), &mut alley);
 			}
 			let mut pairs = Vec::new();
 			let count = sweep.count();
@@ -996,25 +1299,60 @@ mod tests {
 			}
 
 			assert_eq!(count, whole.count());
-			assert_eq!(pairs, expected, "with {parts} parts");
+			assert_eq!(pairs, expected, "with {lanes} lanes");
 		}
 	}
 
 	#[test]
-	fn few_boxes_have_no_cells_to_fill() {
+	fn boxes_that_trade_ends_along_the_sweep_axis_report_the_same_sequence_as_a_first_sweep() {
+		let boxes = spread_boxes();
+		// Every rebuild moves the boxes one way, the first ones the furthest, so they pass the others and gather at
+		// one end of the order.
+		let moved = |round: usize| {
+			let travel = |index: usize| Vector::new(1.0, 1.0, 1.0) * (round * (boxes.len() - index)) as f32 * 0.05;
+			let moved = boxes.iter().enumerate();
+			moved
+				.map(|(index, bounds)| AABB::new(bounds.min() + travel(index), bounds.max() + travel(index)))
+				.collect::<Vec<AABB>>()
+		};
+		let mut alley = Alley::with_parallelism(3);
 		let mut sweep = SweepBounds::default();
 
-		sweep.stage(scattered_boxes(67).into_iter().enumerate(), 4);
-		(0..4).for_each(|part| sweep.repair(part));
-		assert!(!sweep.lay_out(4));
+		for round in 0..6 {
+			let boxes = moved(round);
+			sweep.rebuild(boxes.iter().copied().enumerate(), &mut alley);
+			let mut pairs = Vec::new();
+			sweep.overlaps(0..sweep.count(), |pair| pairs.push(pair));
+
+			let mut first = SweepBounds::default();
+			first.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
+			let mut expected = Vec::new();
+			first.overlaps(0..first.count(), |pair| expected.push(pair));
+			assert_eq!(pairs, expected, "in round {round}");
+		}
+	}
+
+	#[test]
+	fn few_boxes_on_several_lanes_are_scanned_without_cells() {
+		let boxes = scattered_boxes(67);
+		let mut sweep = SweepBounds::default();
+
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut Alley::with_parallelism(4));
+
 		assert_eq!(sweep.count(), 67);
+		let mut pairs = Vec::new();
+		sweep.overlaps(0..sweep.count(), |[first, second]| {
+			pairs.push((first.min(second), first.max(second)))
+		});
+		pairs.sort_unstable();
+		assert_eq!(pairs, exhaustive_pairs(&boxes));
 	}
 
 	#[test]
 	fn rebuilding_moved_boxes_reports_the_same_sequence_as_a_first_sweep() {
 		let boxes = scattered_boxes(67);
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate());
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
 
 		// The same boxes again, some moved a little and some moved far past their neighbors.
 		let moved = boxes
@@ -1032,12 +1370,12 @@ mod tests {
 				)
 			})
 			.collect::<Vec<_>>();
-		sweep.rebuild(moved.iter().copied().enumerate());
+		sweep.rebuild(moved.iter().copied().enumerate(), &mut one_lane());
 		let mut repaired = Vec::new();
 		sweep.overlaps(0..sweep.count(), |pair| repaired.push(pair));
 
 		let mut first = SweepBounds::default();
-		first.rebuild(moved.iter().copied().enumerate());
+		first.rebuild(moved.iter().copied().enumerate(), &mut one_lane());
 		let mut expected = Vec::new();
 		first.overlaps(0..first.count(), |pair| expected.push(pair));
 
@@ -1048,7 +1386,7 @@ mod tests {
 	#[test]
 	fn rebuilding_replaces_the_previous_boxes() {
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(scattered_boxes(67).into_iter().enumerate());
+		sweep.rebuild(scattered_boxes(67).into_iter().enumerate(), &mut one_lane());
 		sweep.rebuild(
 			[
 				bounds([0.0; 3], [1.0; 3]),
@@ -1057,6 +1395,7 @@ mod tests {
 			]
 			.into_iter()
 			.enumerate(),
+			&mut one_lane(),
 		);
 		let mut pairs = Vec::new();
 		sweep.overlaps(0..sweep.count(), |pair| pairs.push(pair));

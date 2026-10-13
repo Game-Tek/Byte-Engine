@@ -1,13 +1,12 @@
 //! Contact response for Dynabit: which contacts can be solved together, and the velocity changes that solve them.
 //!
-//! [`ContactSolver`] takes a step's contacts through it. [`ContactBatches`] sorts simultaneous contacts into batches
-//! that touch every movable body at most once. The contacts of one batch do not depend on each other, so they are
-//! solved several at a time and lanes can share a batch. [`prepare`] works out what each group of contacts needs,
-//! and [`solve`] passes over a group, changing the [`Velocities`] of its bodies.
+//! [`ContactSolver`] takes a step's contacts through it. The alley's [`PairBatches`] sort simultaneous contacts into
+//! batches that touch every movable body at most once. The contacts of one batch do not depend on each other, so
+//! they are solved several at a time and lanes can share a batch. [`prepare`] works out what each group of contacts
+//! needs, and [`solve`] passes over a group, changing the [`BodyMotion`] of its bodies.
 
 use std::{
-	cell::UnsafeCell,
-	ops::{Add, Mul, Range, Sub},
+	ops::{Add, Mul, Sub},
 	simd::{
 		Select as _, StdFloat as _,
 		cmp::{SimdPartialEq as _, SimdPartialOrd as _},
@@ -20,100 +19,16 @@ use std::{
 
 use math::Vector;
 
-use crate::physics::dynabit::{
-	body::PhysicsBody,
-	contact::{Contact, Contacts, Side},
+use crate::{
+	core::alley::{AlleyId, BatchOwned, Claim, ConcreteLane, LaneCells, LaneRanges, PairBatches, RangeOwned, Stage},
+	physics::dynabit::{
+		body::PhysicsBody,
+		contact::{Contact, Contacts, Side},
+	},
 };
 
 /// The number of contacts one [`WideContact`] holds.
 const WIDTH: usize = 4;
-
-/// The number of batches [`ContactBatches`] can form, one for each bit of a body's record of the batches it is in.
-const BATCH_LIMIT: usize = u64::BITS as usize;
-
-/// The `ContactBatches` struct sorts a step's simultaneous contacts into batches in which no movable body appears
-/// twice, so the contacts of one batch can be solved in any order, or at the same time, with the same result.
-///
-/// Call [`Self::rebuild`] once the step's contacts are known. In every pass, solve [`Self::batch`] `0` to
-/// [`Self::len`] in order, and then [`Self::leftover`] one contact at a time.
-#[derive(Default)]
-struct ContactBatches {
-	/// Contact indices, grouped by batch.
-	order: Vec<u32>,
-	/// Where each batch ends in `order`.
-	ends: Vec<usize>,
-	/// The contacts that fit in no batch, in the order they were given.
-	leftover: Vec<u32>,
-	/// The batch each contact was given, kept between rebuilds so batching does not allocate.
-	assigned: Vec<u8>,
-	/// For each body, the batches that already hold one of its contacts, one bit per batch.
-	taken: Vec<u64>,
-}
-
-impl ContactBatches {
-	/// Replaces the batches with ones for `contacts`, each given as the movable bodies it changes.
-	///
-	/// A body that contacts never change, such as a static one, is `None`: any number of a batch's contacts can
-	/// read it. Bodies are indices below `body_count`. Each contact joins the first batch that holds neither of its
-	/// bodies, so the batches depend only on the order of `contacts`.
-	fn rebuild(&mut self, body_count: usize, contacts: impl Iterator<Item = [Option<usize>; 2]>) {
-		self.taken.clear();
-		self.taken.resize(body_count, 0);
-		self.assigned.clear();
-		self.leftover.clear();
-		let mut sizes = [0usize; BATCH_LIMIT];
-		for (index, bodies) in contacts.enumerate() {
-			let taken = bodies.iter().flatten().fold(0, |taken, body| taken | self.taken[*body]);
-			let batch = (!taken).trailing_zeros() as usize;
-			if batch == BATCH_LIMIT {
-				// One of the bodies is already in every batch.
-				self.leftover.push(index as u32);
-			} else {
-				for body in bodies.iter().flatten() {
-					self.taken[*body] |= 1 << batch;
-				}
-				sizes[batch] += 1;
-			}
-			self.assigned.push(batch as u8);
-		}
-
-		// A contact only opens a batch when its bodies fill every earlier one, so the used batches are the first ones.
-		let mut starts = [0usize; BATCH_LIMIT];
-		self.ends.clear();
-		let mut end = 0;
-		for (batch, size) in sizes.into_iter().enumerate().take_while(|(_, size)| *size != 0) {
-			starts[batch] = end;
-			end += size;
-			self.ends.push(end);
-		}
-		self.order.clear();
-		self.order.resize(end, 0);
-		for (index, batch) in self.assigned.iter().map(|batch| usize::from(*batch)).enumerate() {
-			if batch != BATCH_LIMIT {
-				self.order[starts[batch]] = index as u32;
-				starts[batch] += 1;
-			}
-		}
-	}
-
-	/// Returns the number of batches.
-	fn len(&self) -> usize {
-		self.ends.len()
-	}
-
-	/// Returns the contacts of one batch, in the order they were given to [`Self::rebuild`].
-	fn batch(&self, batch: usize) -> &[u32] {
-		let start = if batch == 0 { 0 } else { self.ends[batch - 1] };
-		&self.order[start..self.ends[batch]]
-	}
-
-	/// Returns the contacts that fit in no batch, in the order they were given to [`Self::rebuild`].
-	///
-	/// Solve them one at a time after every batch, because they share bodies with each other.
-	fn leftover(&self) -> &[u32] {
-		&self.leftover
-	}
-}
 
 /// The `WideVector` struct holds one vector for each contact of a group, so vector math runs on the whole group.
 #[derive(Clone, Copy)]
@@ -201,8 +116,8 @@ fn transform(rows: &[WideVector; 3], vector: WideVector) -> WideVector {
 /// The `BodyState` struct holds what a step's contacts need to know about one body, so that they read it from one
 /// cache line and work none of it out again. A body in a pile is in four or five contacts, and each reads it.
 ///
-/// The first three lanes of each vector are a vector's coordinates. [`BodyStates`] keeps one for every body. The
-/// body's angular velocity before contacts change it would make this longer than a cache line, so it is kept in the
+/// The first three lanes of each vector are a vector's coordinates. [`ContactSolver`] keeps one for every body, by
+/// body slot. The body's angular velocity before contacts change it would make this longer than a cache line, so it is kept in the
 /// body's [`BodyMotion`], which has room for it.
 #[derive(Clone, Copy, Default)]
 #[repr(align(64))]
@@ -278,59 +193,6 @@ impl BodyState {
 	}
 }
 
-/// The `BodyStates` struct keeps a [`BodyState`] for every body of a step, indexed by body slot, so that preparing
-/// a contact reads two short records and not the bodies themselves.
-///
-/// Lanes fill it side by side, each its own slots, through a shared reference. Size it with [`Self::resize`], fill
-/// it with [`Self::write`], and read it with [`Self::read`].
-#[derive(Default)]
-struct BodyStates {
-	bodies: Vec<StateCell>,
-}
-
-/// The `StateCell` struct lets lanes write the states of different bodies through one shared reference.
-#[derive(Default)]
-struct StateCell(UnsafeCell<BodyState>);
-
-// SAFETY: A `StateCell` is only reached through `BodyStates`. Its methods that take `&mut self` have exclusive
-// access, and the others are `unsafe` functions whose callers keep any two threads from reaching the state of one
-// body while either writes it.
-#[allow(unsafe_code, reason = "Lanes write the states of different bodies.")]
-unsafe impl Sync for StateCell {}
-
-impl BodyStates {
-	/// Makes room for the state of every body slot below `slots`.
-	fn resize(&mut self, slots: usize) {
-		self.bodies.resize_with(slots, Default::default);
-	}
-
-	/// Returns the state of the body in `slot`.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the state of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's state.")]
-	#[inline]
-	unsafe fn read(&self, slot: usize) -> BodyState {
-		// SAFETY: The caller keeps every other thread from writing this body's state, so nothing changes it while
-		// it is copied out.
-		unsafe { *self.bodies[slot].0.get() }
-	}
-
-	/// Replaces the state of the body in `slot`.
-	///
-	/// # Safety
-	///
-	/// No other thread may read or write the state of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads away from this body's state.")]
-	#[inline]
-	unsafe fn write(&self, slot: usize, state: BodyState) {
-		// SAFETY: The caller keeps every other thread from reading or writing this body's state, so this is the
-		// only access to it.
-		unsafe { *self.bodies[slot].0.get() = state }
-	}
-}
-
 /// The `WideSide` struct holds the state [`prepare`] reads from one body of each contact in a group.
 struct WideSide {
 	/// The center of mass in world space.
@@ -347,29 +209,18 @@ struct WideSide {
 }
 
 impl WideSide {
-	/// Reads the states of the bodies `sides` name, and from `velocities` how they spin before contacts change it.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the state, in `states`, or the motion, in `velocities`, of any of those bodies
-	/// during the call.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from writing these bodies' states and motions."
-	)]
+	/// Reads the states of the bodies `sides` name. `motions` are the motions of those bodies, which tell how they
+	/// spin before contacts change it.
 	#[inline]
-	unsafe fn gather(states: &BodyStates, velocities: &Velocities, sides: [&Side; WIDTH]) -> Self {
-		// SAFETY: The caller keeps every other thread from writing the states of these bodies.
-		let bodies = sides.map(|side| unsafe { states.read(side.object) });
+	fn gather(states: &[BodyState], motions: [&BodyMotion; WIDTH], sides: [&Side; WIDTH]) -> Self {
+		let bodies = sides.map(|side| states[side.object]);
 		let [x, y, z, inverse_mass] = columns(bodies.map(|body| body.center));
 		let [xx, yy, zz, elasticity] = columns(bodies.map(|body| body.moments));
 		let [xy, xz, yz, friction] = columns(bodies.map(|body| body.products));
-		// SAFETY: The caller keeps every other thread from writing the motions of these bodies.
-		let spins = sides.map(|side| unsafe { velocities.spin_before(side.object) });
 		Self {
 			center: WideVector { x, y, z },
 			linear_velocity: coordinates(bodies.map(|body| body.linear_velocity)),
-			angular_velocity: coordinates(spins),
+			angular_velocity: coordinates(motions.map(|motion| motion.0[3])),
 			inverse_mass,
 			inverse_inertia: [
 				WideVector { x: xx, y: xy, z: xz },
@@ -383,37 +234,51 @@ impl WideSide {
 	}
 }
 
-/// The `Velocities` struct holds the linear and angular velocity of every body while a step's contacts are solved,
-/// along with how far contacts shift the body out of overlap.
+/// The `BodyMotion` struct holds one body's linear velocity, angular velocity, and shift while a step's contacts are
+/// solved, in that order, each in the first three lanes of a vector. The shift is how far contacts move the body out
+/// of overlap. They are followed by the angular velocity the body had before the step's contacts changed it, which
+/// [`prepare`] reads with the rest and nothing changes. It fills one cache line, so reading a body never waits for
+/// two.
 ///
-/// Solving passes over the contacts several times, and every pass reads and changes the velocities of the bodies in
-/// contact. Keeping them here, apart from the bodies, lets lanes solve different contacts of a batch at the same
-/// time: lanes write them through a shared reference, and a batch never has two contacts that change the same body.
+/// Solving passes over the contacts several times, and every pass reads and changes the motions of the bodies in
+/// contact. Keeping them apart from the bodies lets lanes solve different contacts of a batch at the same time: a
+/// batch never has two contacts that change the same body, and each group of contacts reaches the motions of its
+/// bodies through its [`Claim`].
 ///
 /// Each body's values are three whole vectors, which a group of contacts loads and stores as such. Reading them one
 /// number at a time took a quarter of a step of a large pile.
-///
-/// Size it with [`Self::resize`], give every body its velocities with [`Self::start`], pass it to [`solve`], and
-/// write each body's result back with [`Self::store`].
-#[derive(Default)]
-struct Velocities {
-	/// Each body's motion, indexed by body slot.
-	bodies: Vec<BodyMotion>,
-}
-
-/// The `BodyMotion` struct holds one body's linear velocity, angular velocity, and shift, in that order, each in the
-/// first three lanes of a vector. They are followed by the angular velocity the body had before the step's contacts
-/// changed it, which [`prepare`] reads with the rest and nothing changes. It fills one cache line, so reading a body
-/// never waits for two.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 #[repr(align(64))]
-struct BodyMotion(UnsafeCell<[f32x4; 4]>);
+struct BodyMotion([f32x4; 4]);
 
-// SAFETY: A `BodyMotion` is only reached through `Velocities`. Its methods that take `&mut self` have exclusive
-// access, and the others are `unsafe` functions whose callers keep any two threads from reaching the motion of one
-// body while either writes it.
-#[allow(unsafe_code, reason = "Batches keep lanes from writing the motion of the same body.")]
-unsafe impl Sync for BodyMotion {}
+impl BodyMotion {
+	/// Returns the motion of a body that starts the step's contacts at these velocities, with no shift.
+	fn starting(linear: f32x4, angular: f32x4) -> Self {
+		Self([linear, angular, f32x4::splat(0.0), angular])
+	}
+
+	/// Gives `body` these velocities, and shifts it out of overlap.
+	fn give(&self, body: &mut PhysicsBody) {
+		// A body that contacts cannot move is left as it is.
+		if body.inv_mass == 0.0 {
+			return;
+		}
+		let [linear, angular, shift] = [self.0[0], self.0[1], self.0[2]].map(|vector| {
+			let [x, y, z, _] = vector.to_array();
+			Vector::new(x, y, z)
+		});
+		body.position += shift;
+		body.linear_velocity = linear;
+		// A contact far from the center of mass can spin a body faster than the simulation can follow, so the spin
+		// is capped.
+		let speed_squared = angular.length_squared();
+		body.angular_velocity = if speed_squared > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
+			angular * (MAX_ANGULAR_SPEED / speed_squared.sqrt())
+		} else {
+			angular
+		};
+	}
+}
 
 /// The `WideMotion` struct holds the velocities and the shift of one body of each contact in a group.
 #[derive(Clone, Copy)]
@@ -459,139 +324,25 @@ fn per_body(coordinates: WideVector) -> [f32x4; WIDTH] {
 	[first, second, third, fourth]
 }
 
-impl Velocities {
-	/// Makes room for the motion of every body slot below `slots`.
-	fn resize(&mut self, slots: usize) {
-		self.bodies.resize_with(slots, Default::default);
-	}
+/// Returns the motions of the two bodies of each contact of a group as one vector for each coordinate.
+#[inline]
+fn gather(motions: [[&BodyMotion; WIDTH]; 2]) -> [WideMotion; 2] {
+	motions.map(|bodies| WideMotion {
+		linear: coordinates(bodies.map(|motion| motion.0[0])),
+		angular: coordinates(bodies.map(|motion| motion.0[1])),
+		shift: coordinates(bodies.map(|motion| motion.0[2])),
+	})
+}
 
-	/// Gives `body`, the one in `slot`, its solved velocities, and shifts it out of overlap.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the motion of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's motion.")]
-	unsafe fn store(&self, slot: usize, body: &mut PhysicsBody) {
-		// A body that contacts cannot move is left as it is.
-		if body.inv_mass == 0.0 {
-			return;
-		}
-		// SAFETY: The caller keeps every other thread from writing this body's motion.
-		let [linear, angular, shift] = unsafe { self.read(slot) }.map(|vector| {
-			let [x, y, z, _] = vector.to_array();
-			Vector::new(x, y, z)
-		});
-		body.position += shift;
-		body.linear_velocity = linear;
-		// A contact far from the center of mass can spin a body faster than the simulation can follow, so the spin
-		// is capped.
-		let speed_squared = angular.length_squared();
-		body.angular_velocity = if speed_squared > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
-			angular * (MAX_ANGULAR_SPEED / speed_squared.sqrt())
-		} else {
-			angular
-		};
-	}
-
-	/// Returns the linear velocity, angular velocity, and shift of the body in `slot`.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the motion of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's motion.")]
-	#[inline]
-	unsafe fn read(&self, slot: usize) -> [f32x4; 3] {
-		// SAFETY: The caller keeps every other thread from writing this body's motion, so nothing changes it while
-		// it is copied out.
-		let [linear, angular, shift, _] = unsafe { *self.bodies[slot].0.get() };
-		[linear, angular, shift]
-	}
-
-	/// Returns the angular velocity that the body in `slot` had before the step's contacts changed it.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the motion of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's motion.")]
-	#[inline]
-	unsafe fn spin_before(&self, slot: usize) -> f32x4 {
-		// SAFETY: The caller keeps every other thread from writing this body's motion, so nothing changes it while
-		// it is copied out.
-		unsafe { (*self.bodies[slot].0.get())[3] }
-	}
-
-	/// Starts the body in `slot` off at these velocities, with no shift.
-	///
-	/// # Safety
-	///
-	/// No other thread may read or write the motion of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads away from this body's motion.")]
-	#[inline]
-	unsafe fn start(&self, slot: usize, linear: f32x4, angular: f32x4) {
-		// SAFETY: The caller keeps every other thread from reading or writing this body's motion, so this is the
-		// only access to it.
-		unsafe { *self.bodies[slot].0.get() = [linear, angular, f32x4::splat(0.0), angular] }
-	}
-
-	/// Replaces the linear velocity, angular velocity, and shift of the body in `slot`.
-	///
-	/// # Safety
-	///
-	/// No other thread may read or write the motion of the body in `slot` during the call.
-	#[allow(unsafe_code, reason = "The caller keeps other threads away from this body's motion.")]
-	#[inline]
-	unsafe fn write(&self, slot: usize, motion: [f32x4; 3]) {
-		// SAFETY: The caller keeps every other thread from reading or writing this body's motion, so this is the
-		// only access to it. The angular velocity from before the contacts stays as it is.
-		unsafe { (&mut *self.bodies[slot].0.get())[..3].copy_from_slice(&motion) }
-	}
-
-	/// Reads the motion of the two bodies of each contact of `contact`.
-	///
-	/// # Safety
-	///
-	/// No other thread may write the motion of any body of `contact` during the call.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from writing the motion of the contact's bodies."
-	)]
-	#[inline]
-	unsafe fn gather(&self, contact: &WideContact) -> [WideMotion; 2] {
-		contact.bodies.map(|slots| {
-			// SAFETY: The caller keeps every other thread from writing the motion of these bodies.
-			let bodies = slots.map(|slot| unsafe { self.read(slot) });
-			WideMotion {
-				linear: coordinates(bodies.map(|motion| motion[0])),
-				angular: coordinates(bodies.map(|motion| motion[1])),
-				shift: coordinates(bodies.map(|motion| motion[2])),
-			}
-		})
-	}
-
-	/// Writes `motions` to the bodies of `contact` that contacts can move.
-	///
-	/// # Safety
-	///
-	/// No other thread may read or write the motion of any movable body of `contact` during the call.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads away from the motion of the contact's movable bodies."
-	)]
-	#[inline]
-	unsafe fn scatter(&self, contact: &WideContact, motions: [WideMotion; 2]) {
-		for side in 0..2 {
-			let motion = motions[side];
-			let (linear, angular, shift) = (per_body(motion.linear), per_body(motion.angular), per_body(motion.shift));
-			let mut lanes = contact.movable[side];
-			while lanes != 0 {
-				let lane = lanes.trailing_zeros() as usize;
-				lanes &= lanes - 1;
-				// SAFETY: The lane's body is movable, and the caller keeps every other thread away from the motion
-				// of the contact's movable bodies.
-				unsafe { self.write(contact.bodies[side][lane], [linear[lane], angular[lane], shift[lane]]) };
-			}
-		}
-	}
+/// Writes `motions` to the bodies of the group of `claim` that contacts can move.
+#[inline]
+fn scatter(bodies: &mut BatchOwned<'_, BodyMotion>, claim: &Claim<WIDTH>, motions: [WideMotion; 2]) {
+	let motions = motions.map(|motion| [per_body(motion.linear), per_body(motion.angular), per_body(motion.shift)]);
+	bodies.write(claim, |side, place, body| {
+		let [linear, angular, shift] = &motions[side];
+		// The angular velocity from before the contacts stays as it is.
+		body.0[..3].copy_from_slice(&[linear[place], angular[place], shift[place]]);
+	});
 }
 
 /// The fastest a contact may leave a body spinning, in radians per second.
@@ -627,14 +378,13 @@ const MAX_SHIFT: f32 = 0.05;
 /// [`prepare`] builds it. Each contact acts along three directions: its normal, where the bodies can only push
 /// each other apart, and two directions across it, where friction holds them.
 pub(crate) struct WideContact {
-	/// The slots of the two bodies of each contact.
-	bodies: [[usize; WIDTH]; 2],
+	/// The slots of the two bodies of each contact, and the right to change the motion of the movable ones while
+	/// the contacts' batch is solved.
+	bodies: Claim<WIDTH>,
 	/// Which of the contacts between its two bodies each contact is.
 	corners: [u8; WIDTH],
 	/// The lanes that hold a contact, one bit per lane.
 	in_use: u64,
-	/// The lanes whose body takes new velocities, one bit per lane, for each of the two bodies.
-	movable: [u64; 2],
 	/// The normal, from the first body toward the second, and the two friction directions.
 	directions: [WideVector; 3],
 	/// For each body and direction, how the body's spin moves the contact point along the direction.
@@ -664,31 +414,26 @@ impl WideContact {
 	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], u8, f32)> + '_ {
 		(0..WIDTH).filter(|lane| (self.in_use >> lane) & 1 == 1).map(|lane| {
 			let push = f32::from_bits(self.applied[0][lane].load(Ordering::Relaxed));
-			([self.bodies[0][lane], self.bodies[1][lane]], self.corners[lane], push)
+			(
+				[self.bodies.entry(0, lane), self.bodies.entry(1, lane)],
+				self.corners[lane],
+				push,
+			)
 		})
 	}
 }
 
 /// Works out what [`solve`] needs for the contacts `group` names in `contacts`, from the `states` of their bodies.
 ///
-/// `group` holds at most [`WIDTH`] contacts, and no movable body may be in two of them. `dt` is the length of the
-/// step in seconds. `last_push` returns the
-/// impulse that held two bodies apart in the last step, or zero: resting bodies need about the same again, so it
-/// is applied to `velocities` right away and [`solve`] only has to adjust it. Pass the result to [`solve`] once
-/// per pass.
-///
-/// # Safety
-///
-/// During the call no other thread may write the state, in `states`, or the motion, in `velocities`, of any body of
-/// the group's contacts, or read the motion of a movable one.
-#[allow(
-	unsafe_code,
-	reason = "The caller keeps other threads away from the state and motion of the group's bodies."
-)]
-unsafe fn prepare(
-	states: &BodyStates,
-	velocities: &Velocities,
+/// `group` holds at most [`WIDTH`] contacts, and `bodies` is the batches' claim on the motions of their bodies, in
+/// `motions`. `dt` is the length of the step in seconds. `last_push` returns the impulse that held two bodies apart
+/// in the last step, or zero: resting bodies need about the same again, so it is applied to `motions` right away and
+/// [`solve`] only has to adjust it. Pass the result to [`solve`] once per pass.
+fn prepare(
+	states: &[BodyState],
+	motions: &mut BatchOwned<'_, BodyMotion>,
 	contacts: &Contacts,
+	bodies: Claim<WIDTH>,
 	group: &[u32],
 	dt: f32,
 	last_push: impl Fn([usize; 2], u8) -> f32,
@@ -701,8 +446,13 @@ unsafe fn prepare(
 	let contacts: [&Contact; WIDTH] = std::array::from_fn(|lane| contacts.get(group[lane.min(group.len() - 1)] as usize));
 	let in_use = mask32x4::from_array(std::array::from_fn(|lane| lane < group.len()));
 	let sides = [contacts.map(|contact| &contact.a), contacts.map(|contact| &contact.b)];
-	// SAFETY: The caller keeps every other thread from writing the states and the motions of the group's bodies.
-	let [a, b] = sides.map(|sides| unsafe { WideSide::gather(states, velocities, sides) });
+	let before = motions.get(&bodies);
+	let [a, b] = [
+		WideSide::gather(states, before[0], sides[0]),
+		WideSide::gather(states, before[1], sides[1]),
+	];
+	// Start the bodies off from where they are, before the claim on them moves into what is prepared.
+	let mut started = gather(before);
 	let (zero, one) = (f32x4::splat(0.0), f32x4::splat(1.0));
 
 	// The normal must point from A toward B.
@@ -761,11 +511,10 @@ unsafe fn prepare(
 	let overlap =
 		((depth - f32x4::splat(OVERLAP_SLACK)).simd_max(zero) * f32x4::splat(OVERLAP_SHARE)).simd_min(f32x4::splat(MAX_SHIFT));
 
-	let bodies = sides.map(|sides| sides.map(|side| side.object));
 	let corners = contacts.map(|contact| contact.corner);
 	let pushes = f32x4::from_array(std::array::from_fn(|lane| {
 		if lane < group.len() {
-			last_push([bodies[0][lane], bodies[1][lane]], corners[lane])
+			last_push([sides[0][lane].object, sides[1][lane].object], corners[lane])
 		} else {
 			0.0
 		}
@@ -775,10 +524,6 @@ unsafe fn prepare(
 		bodies,
 		corners,
 		in_use: in_use.to_bitmask(),
-		movable: [
-			(in_use & a.inverse_mass.simd_ne(zero)).to_bitmask(),
-			(in_use & b.inverse_mass.simd_ne(zero)).to_bitmask(),
-		],
 		directions,
 		arms,
 		turns,
@@ -799,16 +544,13 @@ unsafe fn prepare(
 		],
 	};
 
-	// Start the bodies off with the push that held them apart in the last step.
-	// SAFETY: The caller keeps every other thread from writing the motion of the group's bodies.
-	let mut motions = unsafe { velocities.gather(&contact) };
-	push(&contact, &mut motions, 0, pushes);
-	// SAFETY: The caller keeps every other thread away from the motion of the group's movable bodies.
-	unsafe { velocities.scatter(&contact, motions) };
+	// The push that held the bodies apart in the last step is where the passes start from.
+	push(&contact, &mut started, 0, pushes);
+	scatter(motions, &contact.bodies, started);
 	contact
 }
 
-/// Passes once over the contacts of `contact`, changing the motion of their bodies in `velocities`.
+/// Passes once over the contacts of `contact`, changing the motion of their bodies in `bodies`.
 ///
 /// Along the normal, the bodies are pushed until they close no faster than their contact allows: not at all when
 /// they touch, apart from a bounce, and for bodies that only meet later in the step, just fast enough to meet as it
@@ -817,19 +559,9 @@ unsafe fn prepare(
 /// instead of pulling them together. Across the normal, friction slows their sliding by at most the push times
 /// their friction. Bodies that overlap are also shifted apart, which moves them without changing their
 /// velocities, so closing an overlap does not throw them.
-///
-/// # Safety
-///
-/// During the call no other thread may write the motion, in `velocities`, of any body of the contacts, or read that
-/// of a movable one.
-#[allow(
-	unsafe_code,
-	reason = "The caller keeps other threads away from the motion of the contacts' bodies."
-)]
-unsafe fn solve(contact: &WideContact, velocities: &Velocities) {
+fn solve(contact: &WideContact, bodies: &mut BatchOwned<'_, BodyMotion>) {
 	let zero = f32x4::splat(0.0);
-	// SAFETY: The caller keeps every other thread from writing the motion of the contacts' bodies.
-	let mut motions = unsafe { velocities.gather(contact) };
+	let mut motions = gather(bodies.get(&contact.bodies));
 	let mut applied = contact
 		.applied
 		.each_ref()
@@ -865,8 +597,7 @@ unsafe fn solve(contact: &WideContact, velocities: &Velocities) {
 			lane.store(applied.to_bits(), Ordering::Relaxed);
 		}
 	}
-	// SAFETY: The caller keeps every other thread away from the motion of the contacts' movable bodies.
-	unsafe { velocities.scatter(contact, motions) };
+	scatter(bodies, &contact.bodies, motions);
 }
 
 /// Returns how fast the two bodies of each contact close along one of its directions.
@@ -1003,29 +734,75 @@ impl LastPushes {
 
 /// The `ContactSolver` struct takes a physics step's contacts from detection to the bodies' new velocities.
 ///
-/// Every step, call [`Self::reserve`] and give it the bodies as they are before contacts change them, with
-/// [`Self::take_body`]. Call [`Self::begin`] with the step's contacts. Then get every batch ready, in order: the
-/// first ones with [`Self::prepare_batch`], whose groups lanes can share, and the others with
-/// [`Self::prepare_rest`]. Pass over the groups [`ITERATIONS`] times, batch after batch in the same order, with
-/// [`Self::solve`] and [`Self::solve_rest`]. Then call [`Self::finish_body`] for every body, [`Self::keep_pushes`]
-/// for every lane's groups, and [`Self::keep_rest_pushes`].
+/// Every step, call [`Self::reserve`], and have every lane give it the bodies as they are before contacts change
+/// them, with [`Self::take_bodies`]. Call [`Self::begin`] with the step's contacts. Then get every batch ready, in
+/// order: the first ones with [`Self::prepare_batch`], whose groups lanes share in a stage for each batch, and the
+/// others with [`Self::prepare_rest`]. Pass over the groups [`ITERATIONS`] times, batch after batch in the same
+/// order, with [`Self::solve`] and [`Self::solve_rest`], and call [`Self::end_passes`]. Then give every body its
+/// velocities with [`Self::solved`], and call [`Self::keep_pushes`] for every lane's groups and
+/// [`Self::keep_rest_pushes`].
 #[derive(Default)]
 pub(crate) struct ContactSolver {
 	/// The step's contacts, sorted into batches that can each be solved in any order.
-	batches: ContactBatches,
+	batches: PairBatches,
 	/// What [`Self::prepare_rest`] worked out, in groups: the groups of each of its batches in turn, then one group
 	/// for each contact that fit in no batch. They share bodies, so one lane passes over them in order.
 	rest: Vec<WideContact>,
-	/// What the step's contacts need to know about each body, as it is before they change it.
-	states: BodyStates,
-	/// The velocities of the bodies while the step's contacts are solved.
-	velocities: Velocities,
+	/// What the step's contacts need to know about each body, as it is before they change it, by body slot. Lanes
+	/// fill it side by side, each for its own range of the slots.
+	states: LaneRanges<LaneCells<BodyState>>,
+	/// The velocities of the bodies while the step's contacts are solved, by body slot. Lanes start them off like
+	/// `states`.
+	motions: LaneRanges<LaneCells<BodyMotion>>,
 	/// The impulse that held each pair of bodies apart at each of their contacts in the last step.
 	pushes: LastPushes,
 	/// The slots whose body was replaced since the last step. Their pairs' impulses belonged to other bodies.
 	replaced: Vec<usize>,
 	/// Whether the step has contacts.
 	active: bool,
+}
+
+/// The `TakenBodies` struct lets one lane give a [`ContactSolver`] the bodies in its range of the body slots.
+/// [`ContactSolver::take_bodies`] returns it.
+pub(crate) struct TakenBodies<'a> {
+	states: RangeOwned<'a, LaneCells<BodyState>>,
+	motions: RangeOwned<'a, LaneCells<BodyMotion>>,
+	/// The first slot of the lane's range.
+	first: usize,
+}
+
+impl TakenBodies<'_> {
+	/// Takes what the step's contacts need of `body`, the one in `slot`: where it is, how easily it moves and
+	/// turns, and its velocities. Call it once the body is as the step's contacts should find it.
+	///
+	/// # Panics
+	///
+	/// Panics if `slot` is outside the lane's range of the body slots.
+	pub(crate) fn take(&mut self, slot: usize, body: &PhysicsBody) {
+		let state = BodyState::of(body);
+		let [x, y, z] = body.angular_velocity.to_array();
+		let place = slot - self.first;
+		self.states[place] = state;
+		// Every body starts the step's contacts at its own velocities.
+		self.motions[place] = BodyMotion::starting(state.linear_velocity, f32x4::from_array([x, y, z, 0.0]));
+	}
+}
+
+/// The `SolvedBodies` struct holds the velocities that the passes over a step's contacts left every body with.
+/// [`ContactSolver::solved`] returns it.
+pub(crate) struct SolvedBodies<'a> {
+	/// The motion of every body, by body slot. None for a step without contacts, where no pass changed a body.
+	motions: Option<&'a [BodyMotion]>,
+}
+
+impl SolvedBodies<'_> {
+	/// Gives `body`, the one in `slot`, the velocities the passes left it with, and shifts it out of overlap.
+	pub(crate) fn give(&self, slot: usize, body: &mut PhysicsBody) {
+		// Without contacts each body keeps the velocities it has.
+		if let Some(motions) = self.motions {
+			motions[slot].give(body);
+		}
+	}
 }
 
 impl ContactSolver {
@@ -1035,43 +812,37 @@ impl ContactSolver {
 		self.replaced.push(slot);
 	}
 
-	/// Makes room for what the solver keeps of every body slot below `slots`, ready for [`Self::take_body`].
-	pub(crate) fn reserve(&mut self, slots: usize) {
-		self.states.resize(slots);
-		self.velocities.resize(slots);
+	/// Makes room for what the solver keeps of every body slot below `slots`, and gives each of `lanes` lanes of
+	/// `alley` a range of those slots to fill with [`Self::take_bodies`].
+	pub(crate) fn reserve(&mut self, slots: usize, alley: AlleyId, lanes: usize) {
+		self.states.get_mut().resize(slots, BodyState::default());
+		self.motions.get_mut().resize(slots, BodyMotion::default());
+		self.states.lend(alley);
+		self.motions.lend(alley);
+		self.batches.lend(alley);
+		self.states.split(lanes);
+		self.motions.split(lanes);
 	}
 
-	/// Takes what the step's contacts need of `body`, the one in `slot`: where it is, how easily it moves and
-	/// turns, and its velocities. Call it once the body is as the step's contacts should find it, for every body in
-	/// a slot that [`Self::reserve`] made room for.
+	/// Returns what `lane` takes the bodies in its range of the body slots with. Have every lane take every body in
+	/// its range before [`Self::begin`].
 	///
-	/// Each body is worked out on its own, so lanes can each take some of the bodies at the same time.
-	///
-	/// # Safety
-	///
-	/// While this runs, no other thread may take the body in `slot`, or prepare or solve any contact.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads away from what is kept of the body in this slot."
-	)]
-	pub(crate) unsafe fn take_body(&self, slot: usize, body: &PhysicsBody) {
-		let state = BodyState::of(body);
-		let [x, y, z] = body.angular_velocity.to_array();
-		// SAFETY: The caller keeps every other thread away from the state and the motion of the body in this slot.
-		unsafe {
-			self.states.write(slot, state);
-			// Every body starts the step's contacts at its own velocities.
-			self.velocities
-				.start(slot, state.linear_velocity, f32x4::from_array([x, y, z, 0.0]));
+	/// Each body is worked out on its own, so lanes can each take their bodies at the same time.
+	pub(crate) fn take_bodies(&self, lane: &ConcreteLane<'_>) -> TakenBodies<'_> {
+		let states = self.states.own(lane);
+		TakenBodies {
+			first: states.range().start,
+			states,
+			motions: self.motions.own(lane),
 		}
 	}
 
-	/// Sorts a step's `contacts` into batches, ready for the batches to be prepared once the bodies of the contacts
-	/// are taken, with [`Self::take_body`].
+	/// Sorts a step's `contacts` into batches, ready for `lanes` lanes to prepare them. Call it once every lane has
+	/// taken its bodies, with [`Self::take_bodies`].
 	///
 	/// The contacts of a step are solved together, so no order among them is more correct than another. Batching
 	/// picks one that lets a batch's contacts be solved at the same time.
-	pub(crate) fn begin(&mut self, contacts: &Contacts) {
+	pub(crate) fn begin(&mut self, contacts: &Contacts, lanes: usize) {
 		self.rest.clear();
 		// The impulses kept in the last step are the ones this step starts from.
 		self.pushes.turn(contacts.len());
@@ -1083,13 +854,12 @@ impl ContactSolver {
 			self.replaced.clear();
 		}
 		self.active = contacts.len() != 0;
-		if !self.active {
-			// Without contacts there are no batches either.
-			self.batches.rebuild(0, std::iter::empty());
-			return;
-		}
 		// The contacts come with the bodies each one changes, so this reads neither the contacts nor the bodies.
-		self.batches.rebuild(self.states.bodies.len(), contacts.moved());
+		self.batches.rebuild(self.states.get_mut().len(), contacts.bodies());
+		// From here until the passes end, every lane reads what was taken of every body, and only reaches the motions
+		// of the bodies in its groups of a batch.
+		self.states.join();
+		self.motions.split_by(&self.batches, lanes);
 	}
 
 	/// Returns the number of batches the step's contacts were sorted into. Batches fill from the first one, so the
@@ -1103,133 +873,76 @@ impl ContactSolver {
 		self.batches.batch(batch).len()
 	}
 
-	/// Returns the number of groups the contacts of `batch` are prepared and solved in.
-	pub(crate) fn batch_groups(&self, batch: usize) -> usize {
-		self.batch_contacts(batch).div_ceil(WIDTH)
-	}
-
 	/// Returns whether any contact is left for [`Self::prepare_rest`] once the first `batches` batches are prepared.
 	pub(crate) fn has_rest(&self, batches: usize) -> bool {
 		batches < self.batches.len() || !self.batches.leftover().is_empty()
 	}
 
-	/// Works out what solving `groups` of the groups of `batch` needs, and adds it to `prepared` in order. `dt` is
-	/// the length of the step in seconds.
+	/// Works out what solving this lane's share of the groups of the stage's batch needs, and adds it to `prepared`
+	/// in order. `dt` is the length of the step in seconds.
 	///
-	/// The groups of one batch share no movable body, so lanes can each prepare some of them at the same time.
-	/// Batches have to follow each other in order, because preparing a group starts its bodies off with the last
-	/// step's impulses.
-	///
-	/// # Safety
-	///
-	/// While this runs, no other thread may prepare or solve a group that shares a movable body with one of
-	/// `groups`. Other groups of the same batch never do.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from groups that share a movable body with these."
-	)]
-	pub(crate) unsafe fn prepare_batch(
-		&self,
-		contacts: &Contacts,
-		dt: f32,
-		batch: usize,
-		groups: Range<usize>,
-		prepared: &mut Vec<WideContact>,
-	) {
-		let batch = self.batches.batch(batch);
-		prepared.reserve(groups.len());
-		for group in groups {
-			let group = &batch[group * WIDTH..((group + 1) * WIDTH).min(batch.len())];
-			// SAFETY: The caller keeps every other thread from the groups that share a movable body with this one.
-			prepared.push(unsafe { self.prepare_group(contacts, dt, group) });
+	/// The groups of one batch share no movable body, so every lane prepares its share in the same stage, whose key
+	/// is the batch. Batches have to follow each other in order, because preparing a group starts its bodies off
+	/// with the last step's impulses.
+	pub(crate) fn prepare_batch(&self, contacts: &Contacts, dt: f32, stage: &Stage<'_, '_>, prepared: &mut Vec<WideContact>) {
+		let (states, mut motions) = (self.states.all(), self.motions.batch(stage));
+		let last_push = |pair, corner| self.pushes.get(pair_key(pair, corner));
+		let groups = self.batches.share(stage);
+		prepared.reserve(groups.size_hint().0);
+		for (bodies, group) in groups {
+			prepared.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
 		}
 	}
 
 	/// Prepares the batches from `first_batch` on, and then the contacts that fit in no batch, for one lane to
 	/// solve with [`Self::solve_rest`].
-	#[allow(
-		unsafe_code,
-		reason = "Exclusive access to the solver keeps other threads from every group."
-	)]
 	pub(crate) fn prepare_rest(&mut self, contacts: &Contacts, dt: f32, first_batch: usize) {
-		let mut rest = std::mem::take(&mut self.rest);
+		let (states, mut motions) = (self.states.all(), self.motions.batch_mut());
+		let last_push = |pair, corner| self.pushes.get(pair_key(pair, corner));
 		for batch in first_batch..self.batches.len() {
-			let groups = 0..self.batch_groups(batch);
-			// SAFETY: This call has the only reference to the solver, so no other thread prepares or solves a group.
-			unsafe { self.prepare_batch(contacts, dt, batch, groups, &mut rest) };
+			for (bodies, group) in self.batches.batch_groups(batch) {
+				self.rest
+					.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
+			}
 		}
 		// Contacts that fit in no batch share bodies, so each one is a group of its own and they are solved in turn.
-		for contact in self.batches.leftover() {
-			// SAFETY: This call has the only reference to the solver, so no other thread prepares or solves a group.
-			rest.push(unsafe { self.prepare_group(contacts, dt, std::slice::from_ref(contact)) });
+		for (bodies, group) in self.batches.leftover_groups() {
+			self.rest
+				.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
 		}
-		self.rest = rest;
 	}
 
-	/// Works out what solving the contacts `group` names needs, starting from the impulse that held each pair of
-	/// bodies apart in the last step.
-	///
-	/// # Safety
-	///
-	/// While this runs, no other thread may prepare or solve a group that shares a movable body with this one.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from groups that share a movable body with this one."
-	)]
-	unsafe fn prepare_group(&self, contacts: &Contacts, dt: f32, group: &[u32]) -> WideContact {
-		let last_push = |pair, corner| self.pushes.get(pair_key(pair, corner));
-		// SAFETY: Preparing and solving a group only reads the states of its bodies, which nothing writes once the
-		// bodies are taken. It only reaches the motion of its bodies, and only writes that of its movable ones. The
-		// caller keeps every other thread from the groups that have one of those.
-		unsafe { prepare(&self.states, &self.velocities, contacts, group, dt, last_push) }
-	}
-
-	/// Passes once over `groups`, which [`Self::prepare_batch`] prepared. The groups of one batch can be passed
-	/// over in any order and by several lanes at once; batches, and [`Self::solve_rest`], have to follow each other.
-	///
-	/// # Safety
-	///
-	/// While this runs, no other thread may prepare or solve a group that shares a movable body with one of
-	/// `groups`. Other groups of the same batch never do.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from groups that share a movable body with these."
-	)]
-	pub(crate) unsafe fn solve(&self, groups: &[WideContact]) {
+	/// Passes once over `groups`, which this lane prepared of the stage's batch with [`Self::prepare_batch`]. Every
+	/// lane passes over its groups of the batch in the same stage; batches, and [`Self::solve_rest`], have to follow
+	/// each other.
+	pub(crate) fn solve(&self, stage: &Stage<'_, '_>, groups: &[WideContact]) {
+		let mut motions = self.motions.batch(stage);
 		for group in groups {
-			// SAFETY: Preparing and solving a group only reaches the motion of its bodies, and only writes that of
-			// its movable ones. The caller keeps every other thread from the groups that have one of those.
-			unsafe { solve(group, &self.velocities) };
+			solve(group, &mut motions);
 		}
 	}
 
 	/// Passes once over the groups [`Self::prepare_rest`] prepared.
-	#[allow(
-		unsafe_code,
-		reason = "Exclusive access to the solver keeps other threads from every group."
-	)]
 	pub(crate) fn solve_rest(&mut self) {
-		// SAFETY: This call has the only reference to the solver, so no other thread prepares or solves a group.
-		unsafe { self.solve(&self.rest) };
+		let mut motions = self.motions.batch_mut();
+		for group in &self.rest {
+			solve(group, &mut motions);
+		}
 	}
 
-	/// Gives `body`, the one in `slot`, the velocities the passes left it with. Call it for every body once the
-	/// passes are done.
+	/// Lets every lane read the motions the passes left, which [`Self::solved`] does. Call it once the passes are
+	/// done.
+	pub(crate) fn end_passes(&mut self) {
+		self.motions.join();
+	}
+
+	/// Returns the velocities the passes left every body with. Call it once the passes are done, and
+	/// [`SolvedBodies::give`] for every body.
 	///
-	/// Each body is given its own, so lanes can each finish some of the bodies at the same time.
-	///
-	/// # Safety
-	///
-	/// While this runs, no other thread may finish the body in `slot`, or prepare or solve any contact.
-	#[allow(
-		unsafe_code,
-		reason = "The caller keeps other threads from the motion of the body in this slot."
-	)]
-	pub(crate) unsafe fn finish_body(&self, slot: usize, body: &mut PhysicsBody) {
-		// Without contacts no pass changed a body, and each keeps the velocities it has.
-		if self.active {
-			// SAFETY: The caller keeps every other thread from writing this body's motion.
-			unsafe { self.velocities.store(slot, body) };
+	/// Each body is given its own, so lanes can each finish their bodies at the same time.
+	pub(crate) fn solved(&self) -> SolvedBodies<'_> {
+		SolvedBodies {
+			motions: self.active.then(|| &self.motions.all()[..]),
 		}
 	}
 
@@ -1321,89 +1034,6 @@ mod tests {
 		assert!((0..4_000usize).all(|body| pushes.get(pair_key([body, body + 7], 1)) == body as f32));
 	}
 
-	/// Returns the bodies of contacts that chain `count` movable bodies to their neighbors and to one static body.
-	fn chained_contacts(count: usize) -> Vec<[Option<usize>; 2]> {
-		let mut contacts = Vec::new();
-		for body in 0..count {
-			contacts.push([Some(body), None]);
-			if body + 1 < count {
-				contacts.push([Some(body), Some(body + 1)]);
-			}
-		}
-		contacts
-	}
-
-	#[test]
-	fn a_batch_holds_each_movable_body_once() {
-		let contacts = chained_contacts(9);
-		let mut batches = ContactBatches::default();
-		batches.rebuild(9, contacts.iter().copied());
-
-		for batch in 0..batches.len() {
-			let mut seen = [false; 9];
-			for body in batches
-				.batch(batch)
-				.iter()
-				.flat_map(|contact| contacts[*contact as usize])
-				.flatten()
-			{
-				assert!(!seen[body]);
-				seen[body] = true;
-			}
-		}
-	}
-
-	#[test]
-	fn every_contact_is_placed_once() {
-		let contacts = chained_contacts(9);
-		let mut batches = ContactBatches::default();
-		batches.rebuild(9, contacts.iter().copied());
-
-		let mut placed = (0..batches.len())
-			.flat_map(|batch| batches.batch(batch).iter().copied())
-			.chain(batches.leftover().iter().copied())
-			.collect::<Vec<_>>();
-		placed.sort_unstable();
-
-		assert_eq!(placed, (0..contacts.len() as u32).collect::<Vec<_>>());
-	}
-
-	#[test]
-	fn contacts_that_only_share_immovable_bodies_fill_one_batch() {
-		let contacts = (0..5).map(|body| [Some(body), None]).collect::<Vec<_>>();
-		let mut batches = ContactBatches::default();
-		batches.rebuild(5, contacts.iter().copied());
-
-		assert_eq!(batches.len(), 1);
-		assert_eq!(batches.batch(0), [0, 1, 2, 3, 4]);
-	}
-
-	#[test]
-	fn contacts_beyond_the_batch_limit_are_left_over_in_order() {
-		// One body in more contacts than there are batches.
-		let contacts = (0..BATCH_LIMIT + 3)
-			.map(|other| [Some(0), Some(other + 1)])
-			.collect::<Vec<_>>();
-		let mut batches = ContactBatches::default();
-		batches.rebuild(BATCH_LIMIT + 4, contacts.iter().copied());
-
-		assert_eq!(batches.len(), BATCH_LIMIT);
-		assert_eq!(
-			batches.leftover(),
-			[BATCH_LIMIT as u32, BATCH_LIMIT as u32 + 1, BATCH_LIMIT as u32 + 2]
-		);
-	}
-
-	#[test]
-	fn rebuilding_replaces_the_previous_batches() {
-		let mut batches = ContactBatches::default();
-		batches.rebuild(9, chained_contacts(9).into_iter());
-		batches.rebuild(2, [[Some(0), Some(1)]].into_iter());
-
-		assert_eq!(batches.len(), 1);
-		assert_eq!(batches.batch(0), [0]);
-		assert!(batches.leftover().is_empty());
-	}
 	#[test]
 	fn every_contact_of_a_pair_has_a_key_of_its_own() {
 		let keys: Vec<u64> = (0..4).map(|corner| pair_key([7, 3], corner)).collect();

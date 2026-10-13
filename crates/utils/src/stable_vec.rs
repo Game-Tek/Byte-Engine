@@ -74,6 +74,44 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Entry<T> {
 // thread, so the values have to be `Send` too.
 unsafe impl<T: Send + Sync, A: Allocator + Sync> Sync for StableVec<T, A> {}
 
+/// The `SlotsMut` struct yields the live values in a range of a [`StableVec`]'s slots, each with its slot, for one
+/// thread to change. [`StableVec::slots_mut_unchecked`] returns it.
+pub struct SlotsMut<'a, T> {
+	entries: std::slice::Iter<'a, Entry<T>>,
+	/// The slots of the entries that are left.
+	slots: Range<usize>,
+}
+
+impl<T> SlotsMut<'_, T> {
+	/// Returns an iterator over the values that are left, for as long as this one is borrowed. This one yields them
+	/// again afterwards.
+	pub fn reborrow(&mut self) -> SlotsMut<'_, T> {
+		SlotsMut {
+			entries: self.entries.clone(),
+			slots: self.slots.clone(),
+		}
+	}
+}
+
+impl<'a, T> Iterator for SlotsMut<'a, T> {
+	type Item = (usize, &'a mut T);
+
+	fn next(&mut self) -> Option<Self::Item> {
+		loop {
+			let (entry, slot) = (self.entries.next()?, self.slots.next()?);
+			// SAFETY: Whoever made this iterator keeps everything else from the values in its slots, and it yields
+			// each slot once, so this is the only reference to the value.
+			if let Some(value) = unsafe { &mut *entry.value.get() }.as_mut() {
+				return Some((slot, value));
+			}
+		}
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		(0, Some(self.entries.len()))
+	}
+}
+
 /// The `StableVec` struct provides vector-like storage whose handles reject stale slot reuse.
 #[derive(Clone)]
 pub struct StableVec<T, A: Allocator = Global> {
@@ -251,12 +289,12 @@ impl<T, A: Allocator> StableVec<T, A> {
 	///
 	/// Until the last use of the values this returns, nothing else may reach the values in `slots`: not another call
 	/// with a range that overlaps, and not any other method, on any thread.
-	pub unsafe fn slots_mut_unchecked(&self, slots: Range<usize>) -> impl Iterator<Item = (usize, &mut T)> {
+	pub unsafe fn slots_mut_unchecked(&self, slots: Range<usize>) -> SlotsMut<'_, T> {
 		let slots = slots.start.min(self.entries.len())..slots.end.min(self.entries.len());
-		self.entries[slots.clone()].iter().zip(slots).filter_map(|(entry, slot)| {
-			// SAFETY: The caller keeps everything else from this slot's value, so this is the only reference to it.
-			unsafe { &mut *entry.value.get() }.as_mut().map(|value| (slot, value))
-		})
+		SlotsMut {
+			entries: self.entries[slots.clone()].iter(),
+			slots,
+		}
 	}
 
 	pub fn handled_iter(&self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &T)> {

@@ -1,12 +1,12 @@
 use std::{ops::Range, time::Instant};
 
 use math::{AABB, Scale, Vector};
-use utils::{StableVec, StableVecHandle, hash::HashMap, sync::Mutex};
+use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::{
 	application::Time,
 	core::{
-		alley::{Alley, ConcreteLane, Lane as _},
+		alley::{Alley, ConcreteLane, Lane as _, LaneOwned, LaneRanges, Stage},
 		channel::Channel,
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
@@ -37,15 +37,16 @@ const SHARED_BATCH_CONTACTS: usize = 32;
 
 /// The `World` struct owns Dynabit simulation state and synchronizes it with entity handles.
 pub struct World {
-	bodies: StableVec<PhysicsBody>,
+	/// The bodies, by slot. Lanes change them side by side, each the bodies in its own range of the slots.
+	bodies: LaneRanges<StableVec<PhysicsBody>>,
 	gravity: Vector,
 	body_listener: DefaultListener<CreateMessage<Body>>,
 	body_delete_listener: DefaultListener<DeleteMessage>,
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 	/// The bounds every body sweeps through during the current step, which contact detection scans for overlaps.
 	bounds: SweepBounds,
-	/// What each lane produced from its share of a stage, indexed by lane. Each lane locks only its own entry.
-	shares: Vec<Mutex<Share>>,
+	/// What each lane produced from its share of a stage, until one lane collects it.
+	shares: LaneOwned<Share>,
 	/// How many lanes [`Self::update`] runs a step on.
 	step_lanes: StepLanes,
 	/// How the lanes split the swept bounds to find contacts, by how long each share took in the last step.
@@ -63,13 +64,13 @@ impl World {
 		body_delete_listener: DefaultListener<DeleteMessage>,
 	) -> Self {
 		Self {
-			bodies: StableVec::new(),
+			bodies: LaneRanges::new(StableVec::new()),
 			gravity: Vector::new(0.0, -16.0, 0.0),
 			body_listener,
 			body_delete_listener,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 			bounds: SweepBounds::default(),
-			shares: Vec::new(),
+			shares: LaneOwned::default(),
 			step_lanes: StepLanes::for_machine(),
 			detection: WorkShares::default(),
 			contacts: Contacts::default(),
@@ -98,7 +99,7 @@ impl World {
 		let Some(index) = self.handles_to_bodies.get(&handle).copied() else {
 			return false;
 		};
-		let Some(body) = self.bodies.get_mut(index) else {
+		let Some(body) = self.bodies.get_mut().get_mut(index) else {
 			return false;
 		};
 
@@ -115,15 +116,17 @@ impl World {
 	/// 1. Every lane applies gravity to its share of the bodies, gives the solver what it needs of them, and works
 	///    out the bounds they sweep through.
 	/// 2. One lane gathers the bounds while the others wait, every lane repairs its part of their order, one lane
-	///    lays out grid cells over them, and every lane lists its part of the bounds in those cells.
+	///    splits the order into the parts that every lane then merges, one lane lays out grid cells over the bounds,
+	///    and every lane lists its part of the bounds in those cells.
 	/// 3. Every lane finds the contacts in its share of the bounds, and one lane batches them.
 	/// 4. The lanes prepare the contacts and pass over them several times, sharing every batch that is large
-	///    enough. One lane takes the small ones.
+	///    enough, one batch to a stage. One lane takes the small ones.
 	/// 5. Every lane keeps the impulses of its contacts for the next step, gives its share of the bodies their new
-	///    velocities, and moves them. One lane publishes their transforms.
+	///    velocities, moves them, and publishes their transforms.
 	///
 	/// Contacts are prepared and solved in the same order whatever the number of lanes, so the simulation does not
-	/// depend on it.
+	/// depend on it. The order transforms are published in does: each lane publishes the bodies of its share in slot
+	/// order, and the lanes' runs follow each other as they finish.
 	pub fn update(
 		&mut self,
 		time: Time,
@@ -135,39 +138,49 @@ impl World {
 		self.adopt_updates(transforms_rx);
 
 		let step = time.delta();
-		let lanes = self.step_lanes.lanes(self.bodies.len()).min(alley.parallelism());
-		// Entries are only added, so each lane keeps the storage it grew in earlier steps.
-		if self.shares.len() < lanes {
-			self.shares.resize_with(lanes, Default::default);
-		}
-		self.solver.reserve(self.bodies.slots_len());
+		let bodies = self.bodies.get_mut();
+		let (count, slots) = (bodies.len(), bodies.slots_len());
+		let lanes = self.step_lanes.lanes(count).min(alley.parallelism());
+		// What lanes write side by side is lent to this alley's lanes, each lane its own part.
+		self.shares.lend(alley.id());
+		self.shares.grow(lanes);
+		self.bodies.lend(alley.id());
+		self.bodies.split(lanes);
+		self.bounds.lend(alley.id());
+		self.solver.reserve(slots, alley.id(), lanes);
 		let executed = alley.execute_phased(self, lanes, |lane, world| {
 			let _ = lane.each_ref(world, |world, lane| world.start_share(lane, step));
 			lane.broadcast_mut(world, |world| world.stage_shares(lanes));
-			let _ = lane.each_ref(world, |world, lane| world.bounds.repair(lane.idx()));
+			let _ = lane.each_ref(world, |world, lane| world.bounds.repair(lane));
+			lane.broadcast_mut(world, |world| world.bounds.share_order());
+			let _ = lane.each_ref(world, |world, lane| world.bounds.merge(lane));
 			let in_cells = lane.broadcast_mut(world, |world| world.bounds.lay_out(lanes));
 			if in_cells {
-				let _ = lane.each_ref(world, |world, lane| world.bounds.fill(lane.idx()));
+				let _ = lane.each_ref(world, |world, lane| world.bounds.fill(lane));
+				lane.broadcast_mut(world, |world| world.bounds.share_cells());
 			}
 			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, lanes, step));
-			let (shared_batches, rest) = lane.broadcast_mut(world, |world| world.batch_share_contacts());
+			let (shared_batches, rest) = lane.broadcast_mut(world, |world| world.batch_share_contacts(lanes));
+			// Every lane works on one batch at a time, which the stage's key says.
 			for batch in 0..shared_batches {
-				let _ = lane.each_ref(world, |world, lane| world.prepare_share(batch, lane, step));
+				let _ = lane.each_ref_keyed(world, batch, |world, stage| world.prepare_share(stage, step));
 			}
 			if rest {
 				lane.broadcast_mut(world, |world| world.prepare_rest(shared_batches, step));
 			}
 			for _ in 0..solver::ITERATIONS {
 				for batch in 0..shared_batches {
-					let _ = lane.each_ref(world, |world, lane| world.solve_share(batch, lane));
+					let _ = lane.each_ref_keyed(world, batch, |world, stage| world.solve_share(stage));
 				}
 				if rest {
 					lane.broadcast_mut(world, |world| world.solver.solve_rest());
 				}
 			}
-			let _ = lane.each_ref(world, |world, lane| world.finish_share(lane, step));
-			lane.broadcast_mut(world, |world| world.publish_shares(transforms_tx));
+			lane.broadcast_mut(world, |world| world.solver.end_passes());
+			let _ = lane.each_ref(world, |world, lane| world.finish_share(lane, step, transforms_tx));
 		});
+		// Between steps the bodies are read as a whole.
+		self.bodies.join();
 		if let Err(panic) = executed {
 			std::panic::resume_unwind(panic);
 		}
@@ -182,7 +195,7 @@ impl World {
 		}
 		while let Some(message) = transforms_rx.read() {
 			if let Some(index) = self.handles_to_bodies.get(&message.handle()).copied() {
-				let body = &mut self.bodies[index];
+				let body = &mut self.bodies.get_mut()[index];
 				body.position = message.transform().get_position();
 				body.orientation = message.transform().get_orientation();
 				body.scale = message.transform().scale();
@@ -192,33 +205,28 @@ impl World {
 
 	/// Starts the step for the bodies in one lane's share of the body slots: applies gravity, gives the solver what
 	/// the step's contacts need of each body, and keeps the bounds each sweeps through in that lane's storage.
-	#[allow(unsafe_code, reason = "Lanes start different shares of the body slots.")]
 	fn start_share(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
-		let storage = &self.shares[lane.idx()];
-		// Work on the stack so lanes do not write to neighboring storage headers while they pass over bodies.
-		let mut bounds = std::mem::take(&mut storage.lock().bounds);
+		let mut share = self.shares.own(lane);
+		let mut taken = self.solver.take_bodies(lane);
 		let seconds = dt.as_seconds_f32();
-		// SAFETY: This runs in a stage where every lane only reaches the bodies in its own share of the slots, which
-		// do not overlap, and nothing else reaches a body.
-		for (slot, body) in unsafe { self.bodies.slots_mut_unchecked(lane.share_range(self.bodies.slots_len())) } {
+		for (slot, body) in self.bodies.own(lane).items() {
 			if body.body_type == BodyTypes::Dynamic {
 				body.apply_linear_impulse(self.gravity * body.mass() * seconds);
 			}
-			// SAFETY: Only this lane takes this body, and no contact is prepared or solved in this stage.
-			unsafe { self.solver.take_body(slot, body) };
-			bounds.push((slot, body.swept_bounds(seconds)));
+			taken.take(slot, body);
+			share.bounds.push((slot, body.swept_bounds(seconds)));
 		}
-		storage.lock().bounds = bounds;
 	}
 
 	/// Gathers the bounds that [`Self::start_share`] kept, and leaves their order to be repaired as `parts` parts,
-	/// with [`SweepBounds::repair`].
+	/// with [`SweepBounds::repair`]. From here until the contacts are batched, every lane reads every body.
 	///
 	/// Shares are consecutive ranges of the body slots, so taking them in lane order gives the bounds in slot order
 	/// whatever the number of lanes.
 	fn stage_shares(&mut self, parts: usize) {
-		let bounds = self.shares.iter_mut().flat_map(|share| share.get_mut().bounds.drain(..));
+		let bounds = self.shares.iter_mut().flat_map(|share| share.bounds.drain(..));
 		self.bounds.stage(bounds, parts);
+		self.bodies.join();
 	}
 
 	/// Finds the contacts in the share of the swept bounds that one of `lanes` lanes has, and keeps them in that
@@ -228,137 +236,97 @@ impl World {
 	/// are sized by how long each took in the last step, so that no lane keeps the others waiting. The contacts come
 	/// out in the same order whatever the shares are.
 	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, lanes: usize, dt: MediaTime) {
-		let storage = &self.shares[lane.idx()];
-		// Work on the stack so lanes do not write to neighboring storage headers while they test bodies.
-		let (mut contacts, mut scratch) = {
-			let mut storage = storage.lock();
-			(std::mem::take(&mut storage.contacts), std::mem::take(&mut storage.scratch))
-		};
+		let mut share = self.shares.own(lane);
+		let share = &mut *share;
+		// The part holds what an earlier step found.
+		share.contacts.clear();
 		let range = self.detection.range(lane.idx(), lanes, self.bounds.count());
 		let positions = range.len();
 		let started = Instant::now();
 		detect_contacts(
 			&self.bounds,
-			&self.bodies,
+			self.bodies.all(),
 			range,
 			dt.as_seconds_f32(),
-			&mut contacts,
-			&mut scratch,
+			&mut share.contacts,
+			&mut share.scratch,
 		);
-		let taken = started.elapsed().as_nanos() as u64;
-		let mut storage = storage.lock();
-		storage.contacts = contacts;
-		storage.scratch = scratch;
-		storage.detection = (positions, taken);
+		share.detection = (positions, started.elapsed().as_nanos() as u64);
 	}
 
 	/// Gathers the contacts found in every share and sorts them into batches. Returns how many batches lanes should
-	/// share, and whether any contacts are left for one lane to prepare and solve.
-	fn batch_share_contacts(&mut self) -> (usize, bool) {
+	/// share, and whether any contacts are left for one lane to prepare and solve. From here on, each of `lanes`
+	/// lanes has its own bodies again.
+	fn batch_share_contacts(&mut self, lanes: usize) -> (u32, bool) {
 		// Shares are consecutive ranges of the swept bounds, so taking them in lane order keeps the order one scan
-		// finds. Each share gets the storage its contacts had in the last step.
-		for (lane, share) in self.shares.iter_mut().enumerate() {
-			std::mem::swap(self.contacts.part_mut(lane), &mut share.get_mut().contacts);
+		// finds. Each share gets the storage its contacts had in an earlier step.
+		for (lane, share) in self.shares.iter_mut().take(lanes).enumerate() {
+			std::mem::swap(self.contacts.part_mut(lane), &mut share.contacts);
 		}
+		self.contacts.clear_from(lanes);
 		// A lane that did not run this step leaves nothing, which changes no share.
-		let taken = self
-			.shares
-			.iter_mut()
-			.map(|share| std::mem::take(&mut share.get_mut().detection));
+		let taken = self.shares.iter_mut().map(|share| std::mem::take(&mut share.detection));
 		self.detection.record(taken);
 		self.contacts.seal();
-		self.solver.begin(&self.contacts);
+		self.solver.begin(&self.contacts, lanes);
+		self.bodies.split(lanes);
 		// Batches fill from the first one, so the large ones lead.
 		let shared = (0..self.solver.batches())
 			.take_while(|batch| self.solver.batch_contacts(*batch) >= SHARED_BATCH_CONTACTS)
 			.count();
-		(shared, self.solver.has_rest(shared))
+		(shared as u32, self.solver.has_rest(shared))
 	}
 
-	/// Prepares one lane's share of a batch's groups and keeps them in that lane's storage, after the groups of the
-	/// batches before it.
-	#[allow(
-		unsafe_code,
-		reason = "Lanes prepare shares of one batch, whose groups share no movable body."
-	)]
-	fn prepare_share(&self, batch: usize, lane: &ConcreteLane<'_>, dt: MediaTime) {
-		let storage = &self.shares[lane.idx()];
-		// Work on the stack so lanes do not write to neighboring storage headers while they prepare groups.
-		let mut groups = std::mem::take(&mut storage.lock().groups);
-		let share = lane.share_range(self.solver.batch_groups(batch));
-		let seconds = dt.as_seconds_f32();
-		// SAFETY: This runs in a stage where every lane prepares its own share of the groups of this one batch, and
-		// nothing else touches the solver. Shares do not overlap, and the groups of a batch share no movable body.
-		unsafe { self.solver.prepare_batch(&self.contacts, seconds, batch, share, &mut groups) };
-		let mut storage = storage.lock();
-		storage.batch_ends.push(groups.len());
-		storage.groups = groups;
+	/// Prepares one lane's share of the groups of the stage's batch and keeps them in that lane's storage, after the
+	/// groups of the batches before it.
+	fn prepare_share(&self, stage: &Stage<'_, '_>, dt: MediaTime) {
+		let mut share = self.shares.own(stage.lane());
+		self.solver
+			.prepare_batch(&self.contacts, dt.as_seconds_f32(), stage, &mut share.groups);
+		let end = share.groups.len();
+		share.batch_ends.push(end);
 	}
 
 	/// Prepares the contacts that follow the first `shared_batches` batches, which one lane then passes over in turn.
-	fn prepare_rest(&mut self, shared_batches: usize, dt: MediaTime) {
-		self.solver.prepare_rest(&self.contacts, dt.as_seconds_f32(), shared_batches);
+	fn prepare_rest(&mut self, shared_batches: u32, dt: MediaTime) {
+		self.solver
+			.prepare_rest(&self.contacts, dt.as_seconds_f32(), shared_batches as usize);
 	}
 
-	/// Passes once over the groups one lane prepared of a batch.
-	#[allow(
-		unsafe_code,
-		reason = "Lanes solve shares of one batch, whose groups share no movable body."
-	)]
-	fn solve_share(&self, batch: usize, lane: &ConcreteLane<'_>) {
-		let storage = self.shares[lane.idx()].lock();
-		let start = batch.checked_sub(1).map_or(0, |previous| storage.batch_ends[previous]);
-		// SAFETY: This runs in a stage where every lane passes over the groups it prepared of this one batch, and
-		// nothing else touches the solver. Those are different groups for every lane, and the groups of a batch
-		// share no movable body.
-		unsafe { self.solver.solve(&storage.groups[start..storage.batch_ends[batch]]) };
+	/// Passes once over the groups one lane prepared of the stage's batch.
+	fn solve_share(&self, stage: &Stage<'_, '_>) {
+		let share = self.shares.own(stage.lane());
+		let batch = stage.key() as usize;
+		let start = batch.checked_sub(1).map_or(0, |previous| share.batch_ends[previous]);
+		self.solver.solve(stage, &share.groups[start..share.batch_ends[batch]]);
 	}
 
 	/// Ends the step for one lane's share of the work that follows the passes over the contacts.
 	///
 	/// The lane keeps the impulses of the contacts it prepared for the next step to start from. It then gives the
 	/// bodies in its share of the body slots the velocities the passes left them with, moves the dynamic ones to
-	/// where they are after `dt`, and keeps their transforms in its storage for [`Self::publish_shares`].
-	#[allow(unsafe_code, reason = "Lanes end different shares of the body slots.")]
-	fn finish_share(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
-		let storage = &self.shares[lane.idx()];
-		self.solver.keep_pushes(&storage.lock().groups);
+	/// where they are after `dt`, and publishes their transforms to `transforms_tx`, in slot order.
+	fn finish_share(&self, lane: &ConcreteLane<'_>, dt: MediaTime, transforms_tx: &impl Channel<TransformationUpdate>) {
+		let mut share = self.shares.own(lane);
+		self.solver.keep_pushes(&share.groups);
+		share.groups.clear();
+		share.batch_ends.clear();
 		// One lane prepared and solved the contacts that are in no shared batch, so one lane keeps their impulses.
 		if lane.idx() == 0 {
 			self.solver.keep_rest_pushes();
 		}
 
-		// Work on the stack so lanes do not write to neighboring storage headers while they pass over bodies.
-		let mut transforms = std::mem::take(&mut storage.lock().transforms);
-		// SAFETY: This runs in a stage where every lane only reaches the bodies in its own share of the slots, which
-		// do not overlap, and nothing else reaches a body.
-		for (slot, body) in unsafe { self.bodies.slots_mut_unchecked(lane.share_range(self.bodies.slots_len())) } {
-			// SAFETY: Only this lane finishes this body, and no contact is prepared or solved in this stage.
-			unsafe { self.solver.finish_body(slot, body) };
+		let solved = self.solver.solved();
+		for (slot, body) in self.bodies.own(lane).items() {
+			solved.give(slot, body);
 			if body.body_type == BodyTypes::Dynamic {
 				body.update(dt);
 				let transform = Transform::new(body.position, body.scale, body.orientation);
-				transforms.push(TransformationUpdate::new(body.handle, transform));
+				share.transforms.push(TransformationUpdate::new(body.handle, transform));
 			}
 		}
-		storage.lock().transforms = transforms;
-	}
-
-	/// Publishes the transforms that [`Self::finish_share`] kept, and clears the step's contacts.
-	///
-	/// Shares are consecutive ranges of the body slots, so this publishes in slot order whatever the number of lanes.
-	fn publish_shares(&mut self, transforms_tx: &impl Channel<TransformationUpdate>) {
-		for share in &mut self.shares {
-			for transform in share.get_mut().transforms.drain(..) {
-				transforms_tx.send(transform);
-			}
-		}
-		for share in &mut self.shares {
-			let share = share.get_mut();
-			share.groups.clear();
-			share.batch_ends.clear();
-		}
-		self.contacts.clear();
+		// One run for the whole share, so that lanes do not contend for a place in the channel with every body.
+		transforms_tx.send_many(share.transforms.drain(..));
 	}
 
 	fn create_body(&mut self, handle: Handle, body: Body) {
@@ -378,7 +346,7 @@ impl World {
 		let friction = body.friction();
 		let rotates = body.rotates();
 		let collision_shape = body.into_shape();
-		let index = self.bodies.push(PhysicsBody {
+		let index = self.bodies.get_mut().push(PhysicsBody {
 			body_type,
 			// Spatial state arrives independently through TransformationUpdate.
 			position: math::Point::origin(),
@@ -410,7 +378,7 @@ impl World {
 	pub fn remove_body(&mut self, handle: Handle) -> Option<PhysicsBody> {
 		self.handles_to_bodies
 			.remove(&handle)
-			.and_then(|index| self.bodies.remove(index))
+			.and_then(|index| self.bodies.get_mut().remove(index))
 	}
 }
 
@@ -433,8 +401,8 @@ fn detect_contacts(
 		// Two bodies without mass cannot exchange an impulse, so their contact would change nothing.
 		if a.inv_mass + b.inv_mass != 0.0 {
 			// A body without mass is never changed by a contact.
-			let moved = || [(a, first), (b, second)].map(|(body, slot)| (body.inv_mass != 0.0).then_some(slot));
-			found.find(|contacts| intersect((a, first), (b, second), dt, contacts, scratch), moved);
+			let bodies = || [(a, first), (b, second)].map(|(body, slot)| (slot, body.inv_mass != 0.0));
+			found.find(|contacts| intersect((a, first), (b, second), dt, contacts, scratch), bodies);
 		}
 	});
 }
@@ -452,7 +420,7 @@ struct Share {
 	detection: (usize, u64),
 	/// The bounds that the bodies in a share of the body slots sweep through during the step, with the slot of each.
 	bounds: Vec<(usize, AABB)>,
-	/// Where the dynamic bodies in a share of the body slots end the step.
+	/// Where the dynamic bodies in a share of the body slots end the step, between working it out and publishing it.
 	transforms: Vec<TransformationUpdate>,
 	/// What solving the lane's share of each shared batch needs, batch after batch.
 	groups: Vec<WideContact>,
@@ -522,12 +490,15 @@ mod tests {
 
 	/// Returns the contacts one step of `dt` seconds finds between the world's bodies.
 	fn detected_contacts(world: &mut World, dt: f32) -> Vec<Contact> {
-		let bounds = world.bodies.indexed_iter();
-		world.bounds.rebuild(bounds.map(|(slot, body)| (slot, body.swept_bounds(dt))));
+		let bounds = world.bodies.all().indexed_iter();
+		world.bounds.rebuild(
+			bounds.map(|(slot, body)| (slot, body.swept_bounds(dt))),
+			&mut Alley::with_parallelism(1),
+		);
 		let mut found = ContactPart::default();
 		detect_contacts(
 			&world.bounds,
-			&world.bodies,
+			world.bodies.all(),
 			0..world.bounds.count(),
 			dt,
 			&mut found,
@@ -549,7 +520,7 @@ mod tests {
 	/// Steps a world of `bodies` for `seconds` at sixty steps a second and returns it.
 	fn stepped(bodies: Vec<PhysicsBody>, seconds: f32) -> World {
 		let mut world = make_world();
-		world.bodies = bodies.into_iter().collect();
+		*world.bodies.get_mut() = bodies.into_iter().collect();
 		let steps = (seconds * 60.0).round() as usize;
 		step(
 			&mut world,
@@ -564,8 +535,8 @@ mod tests {
 	fn overlap(world: &World) -> f32 {
 		let mut contacts = Vec::new();
 		intersect(
-			(world.bodies.get_slot(0).expect("first test body"), 0),
-			(world.bodies.get_slot(1).expect("second test body"), 1),
+			(world.bodies.all().get_slot(0).expect("first test body"), 0),
+			(world.bodies.all().get_slot(1).expect("second test body"), 1),
 			0.0,
 			&mut contacts,
 			&mut ContactScratch::default(),
@@ -606,7 +577,7 @@ mod tests {
 		ground.friction = 0.5;
 		let world = stepped(vec![ground, character], 3.0);
 
-		let character = world.bodies.get_slot(1).unwrap();
+		let character = world.bodies.all().get_slot(1).unwrap();
 		assert!(
 			(character.position.y() - 1.0).abs() <= 0.01,
 			"the character rests at {}",
@@ -631,7 +602,7 @@ mod tests {
 		let character = make_dynamic_character_body(math::Point::new(0.0, 1.0, 0.0), Vector::new(3.0, 0.0, 0.0));
 		let world = stepped(vec![make_ground_body(), wall, character], 2.0);
 
-		let character = world.bodies.get_slot(2).unwrap();
+		let character = world.bodies.all().get_slot(2).unwrap();
 		assert!(
 			(character.position.x() - (2.5 - CHARACTER_RADIUS)).abs() <= 0.02,
 			"the character stopped at {}",
@@ -647,7 +618,10 @@ mod tests {
 		let second = make_dynamic_character_body(math::Point::new(1.0, 1.0, 0.0), Vector::new(-1.0, 0.0, 0.0));
 		let world = stepped(vec![make_ground_body(), first, second], 2.0);
 
-		let (first, second) = (world.bodies.get_slot(1).unwrap(), world.bodies.get_slot(2).unwrap());
+		let (first, second) = (
+			world.bodies.all().get_slot(1).unwrap(),
+			world.bodies.all().get_slot(2).unwrap(),
+		);
 		let gap = second.position.x() - first.position.x();
 		assert!(
 			(gap - 2.0 * CHARACTER_RADIUS).abs() <= 0.02,
@@ -667,14 +641,17 @@ mod tests {
 		let world = stepped(vec![make_ground_body(), character, ball], 2.0);
 
 		// The ball's center is as high as the capsule's side, so they touch when their centers are 0.8 apart.
-		let ball = world.bodies.get_slot(2).unwrap();
+		let ball = world.bodies.all().get_slot(2).unwrap();
 		assert!(
 			(ball.position.x() - (3.0 - CHARACTER_RADIUS - 0.5)).abs() <= 0.02,
 			"the ball stopped at {}",
 			ball.position.x()
 		);
 		assert!(ball.linear_velocity.x().abs() <= 0.01);
-		assert_eq!(world.bodies.get_slot(1).unwrap().position, math::Point::new(3.0, 1.0, 0.0));
+		assert_eq!(
+			world.bodies.all().get_slot(1).unwrap().position,
+			math::Point::new(3.0, 1.0, 0.0)
+		);
 	}
 
 	#[test]
@@ -688,12 +665,12 @@ mod tests {
 		world.create_body(handle, first);
 		world.create_body(handle, replacement);
 
-		assert_eq!(world.bodies.len(), 1);
+		assert_eq!(world.bodies.all().len(), 1);
 		let index = world.handles_to_bodies[&handle];
-		assert_eq!(world.bodies[index].position, math::Point::origin());
-		assert_eq!(world.bodies[index].linear_velocity, replacement_velocity);
+		assert_eq!(world.bodies.all()[index].position, math::Point::origin());
+		assert_eq!(world.bodies.all()[index].linear_velocity, replacement_velocity);
 		assert!(matches!(
-			&world.bodies[index].collision_shape,
+			&world.bodies.all()[index].collision_shape,
 			Shapes::Sphere { radius } if *radius == 2.0
 		));
 	}
@@ -705,7 +682,7 @@ mod tests {
 		body.scale = Scale::new(2.0, 3.0, 4.0);
 		let expected_scale = body.scale;
 		let handle = body.handle;
-		world.bodies.push(body);
+		world.bodies.get_mut().push(body);
 		let transforms = DefaultChannel::new();
 		let mut transforms_rx = transforms.listener();
 
@@ -719,7 +696,7 @@ mod tests {
 	#[test]
 	fn detects_each_pair_once() {
 		let mut world = make_world();
-		world.bodies = [
+		*world.bodies.get_mut() = [
 			make_ground_body(),
 			make_dynamic_sphere_body(math::Point::new(0.0, 1.4, 0.0), Vector::zero(), 0.5),
 		]
@@ -741,8 +718,8 @@ mod tests {
 		// A resting body keeps a few millimeters of overlap, which holds it in contact from step to step.
 		assert!(overlap(&ground_first) <= 0.01);
 		assert!(overlap(&sphere_first) <= 0.01);
-		assert!((ground_first.bodies.get_slot(1).unwrap().position.y() - 1.5).abs() <= 0.01);
-		assert!((sphere_first.bodies.get_slot(0).unwrap().position.y() - 1.5).abs() <= 0.01);
+		assert!((ground_first.bodies.all().get_slot(1).unwrap().position.y() - 1.5).abs() <= 0.01);
+		assert!((sphere_first.bodies.all().get_slot(0).unwrap().position.y() - 1.5).abs() <= 0.01);
 	}
 
 	#[test]
@@ -750,7 +727,7 @@ mod tests {
 		let mut world = make_world();
 		world.gravity = Vector::zero();
 		let velocity = Vector::new(0.0, 0.0, 2.0);
-		world.bodies = [
+		*world.bodies.get_mut() = [
 			make_ground_body(),
 			make_dynamic_sphere_body(math::Point::new(0.0, 1.4, 0.0), Vector::zero(), 0.5),
 			make_dynamic_sphere_body(math::Point::new(20.0, 0.0, 0.0), velocity, 0.5),
@@ -759,7 +736,7 @@ mod tests {
 		.collect();
 		step(&mut world, MediaTime::from_seconds_f32(0.5), 1, &DefaultChannel::new());
 
-		let free_body = world.bodies.get_slot(2).expect("free test body");
+		let free_body = world.bodies.all().get_slot(2).expect("free test body");
 		assert!((free_body.position - math::Point::new(20.0, 0.0, 1.0)).length() <= 1e-4);
 	}
 
@@ -791,12 +768,13 @@ mod tests {
 		bodies
 	}
 
-	/// Steps a world of [`crowded_bodies`] and returns every transform it published, in publication order.
+	/// Steps a world of [`crowded_bodies`] and returns every transform it published, step after step. The transforms
+	/// of one step are sorted, because lanes publish their shares of a step in the order they finish.
 	fn published_positions(
 		mut step: impl FnMut(&mut World, Time, &mut DefaultListener<TransformationUpdate>, &DefaultChannel<TransformationUpdate>),
 	) -> Vec<(math::Point, Orientation)> {
 		let mut world = make_world();
-		world.bodies = crowded_bodies().into_iter().collect();
+		*world.bodies.get_mut() = crowded_bodies().into_iter().collect();
 		let authored = DefaultChannel::new();
 		let mut authored_rx = authored.listener();
 		let published = DefaultChannel::new();
@@ -808,9 +786,13 @@ mod tests {
 		for _ in 0..30 {
 			elapsed += delta;
 			step(&mut world, Time::new(elapsed, delta), &mut authored_rx, &published);
+			let first = positions.len();
 			while let Some(update) = published_rx.read() {
 				positions.push((update.transform().get_position(), update.transform().get_orientation()));
 			}
+			// No two bodies of the crowd are at the same place.
+			let place = |(position, _): &(math::Point, Orientation)| position.to_array().map(f32::to_bits);
+			positions[first..].sort_unstable_by_key(place);
 		}
 		positions
 	}
@@ -837,7 +819,7 @@ mod tests {
 	fn fast_spheres_that_would_pass_through_each_other_meet_and_stop() {
 		let mut world = make_world();
 		world.gravity = Vector::zero();
-		world.bodies = [
+		*world.bodies.get_mut() = [
 			make_dynamic_sphere_body(math::Point::new(-2.0, 0.0, 0.0), Vector::new(4.0, 0.0, 0.0), 0.5),
 			make_dynamic_sphere_body(math::Point::new(2.0, 0.0, 0.0), Vector::new(-4.0, 0.0, 0.0), 0.5),
 		]
@@ -849,13 +831,19 @@ mod tests {
 		// The spheres would close their three-meter gap in under half the step and end it past each other. Their
 		// contact slows them so that they end it touching.
 		step(&mut world, one_second, 1, &transforms);
-		let (first, second) = (world.bodies.get_slot(0).unwrap(), world.bodies.get_slot(1).unwrap());
+		let (first, second) = (
+			world.bodies.all().get_slot(0).unwrap(),
+			world.bodies.all().get_slot(1).unwrap(),
+		);
 		assert!((first.position - math::Point::new(-0.5, 0.0, 0.0)).length() <= 1e-3);
 		assert!((second.position - math::Point::new(0.5, 0.0, 0.0)).length() <= 1e-3);
 
 		// Once they touch, equal masses without elasticity cancel each other's approach.
 		step(&mut world, one_second, 1, &transforms);
-		let (first, second) = (world.bodies.get_slot(0).unwrap(), world.bodies.get_slot(1).unwrap());
+		let (first, second) = (
+			world.bodies.all().get_slot(0).unwrap(),
+			world.bodies.all().get_slot(1).unwrap(),
+		);
 		assert!(first.linear_velocity.length() <= 1e-3);
 		assert!(second.linear_velocity.length() <= 1e-3);
 	}
@@ -872,7 +860,7 @@ mod tests {
 		let place = |world: &mut World, handle: Handle, body: Body, height: f32| {
 			world.create_body(handle, body);
 			let slot = world.handles_to_bodies[&handle];
-			world.bodies[slot].position = math::Point::new(0.0, height, 0.0);
+			world.bodies.get_mut()[slot].position = math::Point::new(0.0, height, 0.0);
 			slot
 		};
 
@@ -885,20 +873,20 @@ mod tests {
 		step(&mut world, sixtieth, 30, &transforms);
 
 		// A light box takes the heavy one's place, and its slot, resting on the box below as the heavy one did.
-		let rest = world.bodies[bottom_slot].position.y() + 0.997;
+		let rest = world.bodies.all()[bottom_slot].position.y() + 0.997;
 		let top_slot = place(&mut world, top, dynamic(one_meter_box()), rest);
 		step(&mut world, sixtieth, 1, &transforms);
 
 		// Started from the heavy box's contact, the two light boxes would be thrown apart.
-		assert!(world.bodies[bottom_slot].linear_velocity.length() <= 0.05);
-		assert!(world.bodies[top_slot].linear_velocity.length() <= 0.05);
+		assert!(world.bodies.all()[bottom_slot].linear_velocity.length() <= 0.05);
+		assert!(world.bodies.all()[top_slot].linear_velocity.length() <= 0.05);
 	}
 
 	#[test]
 	fn overlapping_bodies_that_are_parting_are_left_to_part() {
 		let mut world = make_world();
 		world.gravity = Vector::zero();
-		world.bodies = [
+		*world.bodies.get_mut() = [
 			make_dynamic_sphere_body(math::Point::origin(), Vector::new(-1.0, 0.0, 0.0), 1.0),
 			make_dynamic_sphere_body(math::Point::new(1.5, 0.0, 0.0), Vector::new(1.0, 0.0, 0.0), 1.0),
 		]
@@ -908,7 +896,10 @@ mod tests {
 		step(&mut world, MediaTime::from_seconds_f32(1.0 / 60.0), 1, &DefaultChannel::new());
 
 		// The contact pushes the spheres apart a little faster and never pulls them back together.
-		let (first, second) = (world.bodies.get_slot(0).unwrap(), world.bodies.get_slot(1).unwrap());
+		let (first, second) = (
+			world.bodies.all().get_slot(0).unwrap(),
+			world.bodies.all().get_slot(1).unwrap(),
+		);
 		assert!(second.linear_velocity.x() - first.linear_velocity.x() >= 2.0);
 	}
 
@@ -920,7 +911,7 @@ mod tests {
 		let world = stepped(std::iter::once(ground).chain(boxes).collect(), 5.0);
 
 		for layer in 0..6 {
-			let position = world.bodies.get_slot(layer + 1).unwrap().position;
+			let position = world.bodies.all().get_slot(layer + 1).unwrap().position;
 			assert!(
 				(position.y() - (1.5 + layer as f32)).abs() <= 0.05,
 				"layer {layer} rests at {}",
@@ -942,7 +933,7 @@ mod tests {
 
 		// Friction of a quarter of the box's weight under gravity of 16 slows it by 4 units per second squared, which
 		// stops it from 5 units per second after 3.125 units.
-		let body = world.bodies.get_slot(1).unwrap();
+		let body = world.bodies.all().get_slot(1).unwrap();
 		assert!(body.linear_velocity.length() <= 0.01);
 		assert!(
 			(body.position.x() - 3.125).abs() <= 0.15,
@@ -982,7 +973,7 @@ mod tests {
 		let world = stepped(std::iter::once(ground).chain(hulls).collect(), 5.0);
 
 		for layer in 0..4 {
-			let body = world.bodies.get_slot(layer + 1).unwrap();
+			let body = world.bodies.all().get_slot(layer + 1).unwrap();
 			assert!(
 				(body.position.y() - (1.5 + layer as f32)).abs() <= 0.05,
 				"layer {layer} rests at {}",
@@ -1012,7 +1003,7 @@ mod tests {
 			let world = stepped(vec![ground, falling], 3.0);
 
 			// The hull's origin is at its flat underside, which comes to rest on top of the static body.
-			let body = world.bodies.get_slot(1).unwrap();
+			let body = world.bodies.all().get_slot(1).unwrap();
 			assert!(
 				(body.position.y() - top).abs() <= 0.05,
 				"on {shape} the hull rests at {}",
@@ -1049,7 +1040,7 @@ mod tests {
 		tilted.orientation = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, 0.6)).unwrap();
 		let world = stepped(vec![ground, tilted], 3.0);
 
-		let body = world.bodies.get_slot(1).unwrap();
+		let body = world.bodies.all().get_slot(1).unwrap();
 		assert!(uprightness(body) >= 0.9999, "the box lies {} from level", uprightness(body));
 		assert!(
 			(body.position.y() - 1.5).abs() <= 0.01,
@@ -1067,7 +1058,7 @@ mod tests {
 		let world = stepped(std::iter::once(ground).chain(boxes).collect(), 5.0);
 
 		for layer in 0..4 {
-			let body = world.bodies.get_slot(layer + 1).unwrap();
+			let body = world.bodies.all().get_slot(layer + 1).unwrap();
 			assert!(
 				(body.position.y() - (1.5 + layer as f32)).abs() <= 0.05,
 				"layer {layer} rests at {}",
@@ -1095,7 +1086,7 @@ mod tests {
 		let world = stepped(vec![ground, sliding], 3.0);
 
 		// Friction stops it after about 3.125 units, as it does a box that cannot rotate.
-		let body = world.bodies.get_slot(1).unwrap();
+		let body = world.bodies.all().get_slot(1).unwrap();
 		assert!(
 			(body.position.x() - 3.125).abs() <= 0.15,
 			"the box stopped at {}",
@@ -1114,7 +1105,7 @@ mod tests {
 			let mut ball = make_dynamic_sphere_body(math::Point::new(-1.5, 2.6, 0.0), Vector::new(6.0, 0.0, 0.0), 0.3);
 			ball.inv_mass = 0.2;
 			let world = stepped(vec![make_ground_body(), character, ball], 0.5);
-			let character = world.bodies.get_slot(1).unwrap();
+			let character = world.bodies.all().get_slot(1).unwrap();
 			// How nearly the capsule's own length still points straight up: one when it does.
 			let standing = character
 				.orientation
@@ -1139,7 +1130,7 @@ mod tests {
 		sphere.friction = 0.5;
 		let world = stepped(vec![ground, sphere], 1.0);
 
-		let sphere = world.bodies.get_slot(1).unwrap();
+		let sphere = world.bodies.all().get_slot(1).unwrap();
 		assert!(
 			sphere.position.x() < -0.3 && sphere.linear_velocity.x() < -0.5,
 			"the sphere is at {:?}",
@@ -1162,7 +1153,7 @@ mod tests {
 		tilted.orientation = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.3, 0.0, 0.5)).unwrap();
 		let world = stepped(vec![ground, tilted], 3.0);
 
-		let body = world.bodies.get_slot(1).unwrap();
+		let body = world.bodies.all().get_slot(1).unwrap();
 		assert!(uprightness(body) >= 0.9999, "the hull lies {} from level", uprightness(body));
 		assert!(
 			(body.position.y() - 1.5).abs() <= 0.01,

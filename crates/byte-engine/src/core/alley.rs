@@ -1,6 +1,8 @@
 /// The `Alley` struct provides reusable parallel execution across a fixed number of owned lanes.
 pub struct Alley {
 	threadpool: LanePool,
+	/// Tells this alley's lanes from those of any other, for storage that is split between lanes.
+	id: AlleyId,
 }
 
 /// The `AlleyFunction` trait defines value-producing work that every lane runs during an [`Alley`] dispatch.
@@ -210,6 +212,9 @@ pub struct ConcreteLane<'dispatch> {
 	next_section: usize,
 	/// The slot that the next collective section with values keeps them in.
 	next_slot: usize,
+	/// Keeps a shared reference to a lane on the lane's own thread. Storage that is split between lanes, such as
+	/// [`LaneOwned`], takes one as proof that the lane itself is asking.
+	on_its_thread: PhantomData<Cell<()>>,
 }
 
 impl<'dispatch> ConcreteLane<'dispatch> {
@@ -220,7 +225,15 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 			next_limited_parallelism_section: 0,
 			next_section: 0,
 			next_slot: 0,
+			on_its_thread: PhantomData,
 		}
+	}
+
+	/// Returns what tells the alley that runs this lane from any other.
+	///
+	/// [`LaneOwned`] and [`LaneRanges`] compare it with the alley they were lent to.
+	pub fn alley(&self) -> AlleyId {
+		self.state.alley
 	}
 
 	/// Runs `f` on the first lane to reach this single-runner section.
@@ -311,13 +324,35 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	{
 		let section = self.next_section::<R>();
 		let lane = &*self;
-		section.each(|| {
+		section.each(0, || {
 			// SAFETY: This closure runs once this lane entered the section as `each`. Every earlier section has
 			// ended, and a lane that enters this one as a broadcast fails before it runs anything, so no lane holds
 			// exclusive access. The section ends for all lanes only after every closure returned, so no shared
 			// reference reaches a later exclusive section.
 			let value = unsafe { &**resource.value.get() };
 			f(value, lane)
+		})
+	}
+
+	/// Runs `f` on every lane like [`Self::each_ref`], as a stage that every lane says works on the same `key`, such
+	/// as one batch of a list of batches.
+	///
+	/// `f` receives a [`Stage`], which proves to storage that every lane is in this stage with this key. Storage
+	/// that is only safe to write while all lanes work on the same batch asks for one, such as
+	/// [`LaneRanges::batch`]. A lane that passes another key than the others fails the dispatch before it runs `f`.
+	#[allow(unsafe_code, reason = "Every lane shares the phased resource for one collective section.")]
+	pub fn each_ref_keyed<T, R, F>(&mut self, resource: &LanePhased<'_, T>, key: u32, f: F) -> LaneValues<'dispatch, R>
+	where
+		R: Copy + Send + Sync + 'static,
+		F: FnOnce(&T, &Stage<'_, 'dispatch>) -> R,
+	{
+		let section = self.next_section::<R>();
+		let stage = Stage { lane: &*self, key };
+		section.each(key, || {
+			// SAFETY: As in `each_ref`: this closure runs once this lane entered the section as `each`, every
+			// earlier section has ended, and no lane holds exclusive access until this one ended for every lane.
+			let value = unsafe { &**resource.value.get() };
+			f(value, &stage)
 		})
 	}
 
@@ -359,7 +394,7 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		self.next_section::<T>().each(f)
+		self.next_section::<T>().each(0, f)
 	}
 
 	/// Runs `f` on each lane's balanced partition and returns all lane results.
@@ -405,6 +440,27 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 			slot,
 			slot_holder,
 		}
+	}
+}
+
+/// The `Stage` struct proves that a lane is in a stage that every lane of its dispatch runs with the same key.
+///
+/// [`ConcreteLane::each_ref_keyed`] makes one for the work it runs. It cannot be kept past that work, so whatever
+/// borrows it ends with the stage.
+pub struct Stage<'lane, 'dispatch> {
+	lane: &'lane ConcreteLane<'dispatch>,
+	key: u32,
+}
+
+impl<'lane, 'dispatch> Stage<'lane, 'dispatch> {
+	/// Returns the lane that runs the stage.
+	pub fn lane(&self) -> &'lane ConcreteLane<'dispatch> {
+		self.lane
+	}
+
+	/// Returns the key every lane runs the stage with.
+	pub fn key(&self) -> u32 {
+		self.key
 	}
 }
 
@@ -481,6 +537,8 @@ const COLLECTIVE_VALUE_SIZE: usize = 64;
 const COLLECTIVE_VALUE_ALIGNMENT: usize = 64;
 
 struct DispatchState {
+	/// The alley that runs the dispatch.
+	alley: AlleyId,
 	lane_count: usize,
 	limited_parallelism: [AtomicUsize; LIMITED_PARALLELISM_SECTION_COUNT],
 	gate: SectionGate,
@@ -492,8 +550,9 @@ struct DispatchState {
 }
 
 impl DispatchState {
-	fn new(lane_count: usize) -> Self {
+	fn new(alley: AlleyId, lane_count: usize) -> Self {
 		Self {
+			alley,
 			lane_count,
 			limited_parallelism: std::array::from_fn(|_| AtomicUsize::new(0)),
 			gate: SectionGate::default(),
@@ -514,7 +573,7 @@ impl DispatchState {
 #[repr(align(64))]
 struct SectionGate {
 	/// The section that lanes entered last and what they run there, as [`Self::enter`] packs them.
-	entered: AtomicUsize,
+	entered: AtomicU64,
 	/// How many lanes are done with the `each` section that is running.
 	done: AtomicUsize,
 	/// How many sections have ended, or [`Self::POISONED`] once a lane failed in one.
@@ -524,23 +583,31 @@ struct SectionGate {
 impl SectionGate {
 	const POISONED: usize = usize::MAX;
 
+	/// The bits of an entry below the section: the key, whether the section keeps values, and whether it is a
+	/// broadcast.
+	const SECTION_SHIFT: u32 = u32::BITS + 2;
+
 	/// Enters `section` as a lane that runs a broadcast or an `each` there, and returns whether it is the first lane
 	/// to enter.
 	///
-	/// `valued` tells whether the section keeps values in a [`CollectiveSlot`]. A lane that enters to run something
-	/// else than the lanes before it fails the section for every lane.
+	/// `valued` tells whether the section keeps values in a [`CollectiveSlot`], and `key` is what the lane says the
+	/// section works on. A lane that enters to run something else than the lanes before it, or with another key,
+	/// fails the section for every lane, before it runs anything there.
 	///
 	/// The lanes ahead may have left a broadcast section behind and entered a later one. A lane that then enters the
 	/// earlier one cannot compare itself with them here, so [`Section::broadcast`] does it once the section ended.
-	fn enter(&self, section: usize, broadcast: bool, valued: bool) -> bool {
-		let entry = (section + 1) << 2 | usize::from(valued) << 1 | usize::from(broadcast);
+	fn enter(&self, section: usize, broadcast: bool, valued: bool, key: u32) -> bool {
+		let entry =
+			(section as u64 + 1) << Self::SECTION_SHIFT | u64::from(key) << 2 | u64::from(valued) << 1 | u64::from(broadcast);
 		// A later section packs to a larger number, so the first lane to enter a section is the one that raises it.
 		let before = self.entered.fetch_max(entry, Ordering::Relaxed);
-		if before >> 2 <= section {
+		// One more than the section that lanes had entered.
+		let entered = (before >> Self::SECTION_SHIFT) as usize;
+		if entered <= section {
 			return true;
 		}
 		// Lanes only leave a section behind without this lane when it is a broadcast.
-		let left_behind = before >> 2 > section + 1 && broadcast;
+		let left_behind = entered > section + 1 && broadcast;
 		if before != entry && !left_behind {
 			self.fail_mismatch(section);
 		}
@@ -573,7 +640,7 @@ impl SectionGate {
 	fn fail_mismatch(&self, section: usize) -> ! {
 		self.poison();
 		panic!(
-			"Collective operation mismatch at section {section}. The most likely cause is that lanes took different branches, so they did not all run the same operation, with or without a value, in the same order."
+			"Collective operation mismatch at section {section}. The most likely cause is that lanes took different branches, so they did not all run the same operation, with or without a value and with the same key, in the same order."
 		)
 	}
 
@@ -625,7 +692,7 @@ impl<'dispatch> Section<'dispatch> {
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		if self.gate.enter(self.index, true, self.slot.is_some()) {
+		if self.gate.enter(self.index, true, self.slot.is_some(), 0) {
 			let value = self.compute(f);
 			if let (Some(slot), Some(holder)) = (self.slot, self.slot_holder) {
 				// SAFETY: Only the first lane to enter writes lane slot zero, which `ConcreteLane::next_section`
@@ -652,9 +719,10 @@ impl<'dispatch> Section<'dispatch> {
 		unsafe { self.values(1) }.read_lane(0)
 	}
 
-	/// Runs `f` on every lane, and returns the values in lane order once every lane finished.
+	/// Runs `f` on every lane, and returns the values in lane order once every lane finished. Every lane has to pass
+	/// the same `key`, or the section fails before any lane with another key runs `f`.
 	#[allow(unsafe_code, reason = "Each lane writes its value to its own part of the section's slot.")]
-	fn each<T, F>(self, f: F) -> LaneValues<'dispatch, T>
+	fn each<T, F>(self, key: u32, f: F) -> LaneValues<'dispatch, T>
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
@@ -666,7 +734,7 @@ impl<'dispatch> Section<'dispatch> {
 				self.index, self.lane_count
 			);
 		}
-		self.gate.enter(self.index, false, self.slot.is_some());
+		self.gate.enter(self.index, false, self.slot.is_some(), key);
 
 		let value = self.compute(f);
 		if let Some(slot) = self.slot {
@@ -809,6 +877,7 @@ impl Alley {
 	pub fn new() -> Self {
 		Self {
 			threadpool: LanePool::new(),
+			id: AlleyId::next(),
 		}
 	}
 
@@ -818,6 +887,7 @@ impl Alley {
 	pub fn with_parallelism(count: usize) -> Self {
 		Self {
 			threadpool: LanePool::with_parallelism(count),
+			id: AlleyId::next(),
 		}
 	}
 
@@ -826,6 +896,14 @@ impl Alley {
 	/// Use it to size per-lane storage before a dispatch indexes it by [`Lane::idx`].
 	pub fn parallelism(&self) -> usize {
 		self.threadpool.parallelism()
+	}
+
+	/// Returns what tells this alley's lanes from those of any other.
+	///
+	/// Pass it to [`LaneOwned::lend`] or [`LaneRanges::lend`] before a dispatch, so that this alley's lanes can write
+	/// their own parts of that storage.
+	pub fn id(&self) -> AlleyId {
+		self.id
 	}
 
 	/// Runs worker work alongside work confined to the calling thread, then returns both results.
@@ -851,7 +929,7 @@ impl Alley {
 	where
 		R: Send,
 	{
-		let state = DispatchState::new(self.threadpool.parallelism());
+		let state = DispatchState::new(self.id, self.threadpool.parallelism());
 		let state = &state;
 		self.threadpool
 			.try_dispatch_all(move |lane_idx| f(&mut ConcreteLane::new(lane_idx, state)))
@@ -865,7 +943,7 @@ impl Alley {
 	where
 		R: Send,
 	{
-		let state = DispatchState::new(lane_count);
+		let state = DispatchState::new(self.id, lane_count);
 		let state = &state;
 		if lane_count == 1 {
 			// One lane has no other lane to meet, so waking a worker for it would only add the time that takes.
@@ -892,7 +970,7 @@ impl Alley {
 		R: Send,
 	{
 		let lane_count = self.threadpool.parallelism();
-		let state = DispatchState::new(lane_count);
+		let state = DispatchState::new(self.id, lane_count);
 		let state = &state;
 		let jobs = (0..lane_count).map(|lane_idx| {
 			let f = f.clone();
@@ -971,7 +1049,7 @@ impl Alley {
 		let resources = resources.bind(parallelism, &mut resource_count, lane_resources_private::BindToken);
 		// Lanes without resources have no work in this dispatch. Keep them asleep.
 		let active_lanes = resource_count.min(parallelism);
-		let state = DispatchState::new(active_lanes);
+		let state = DispatchState::new(self.id, active_lanes);
 		let resources = &resources;
 		let state = &state;
 		let jobs = (0..active_lanes).map(|index| {
@@ -993,7 +1071,7 @@ impl Alley {
 		F: for<'dispatch, 'values> Fn(&mut SharedLane<'dispatch, 'values, T>) + Clone + Send,
 	{
 		let lane_count = self.threadpool.parallelism();
-		let state = DispatchState::new(lane_count);
+		let state = DispatchState::new(self.id, lane_count);
 		let state = &state;
 		let value_count = values.len();
 		let mut remaining = Some(values);
@@ -1042,7 +1120,7 @@ impl Alley {
 
 		let minimum_chunk_len = items.len() / job_count;
 		let larger_chunk_count = items.len() % job_count;
-		let state = DispatchState::new(job_count);
+		let state = DispatchState::new(self.id, job_count);
 		let state = &state;
 		let mut remaining = Some(items);
 		let mut lane_idx = 0;
@@ -1721,15 +1799,22 @@ mod tests {
 	}
 }
 
+mod batches;
+mod split;
+
 use std::{
 	any::TypeId,
-	cell::UnsafeCell,
+	cell::{Cell, UnsafeCell},
 	hint::spin_loop,
+	marker::PhantomData,
 	mem::{MaybeUninit, align_of, size_of},
 	ops::{Deref, DerefMut, Range},
 	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-	sync::atomic::{AtomicUsize, Ordering},
+	sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 	thread::yield_now,
 };
+
+pub use batches::{BatchOwned, Claim, PairBatches};
+pub use split::{AlleyId, LaneCells, LaneOwned, LaneRanges, Owned, RangeOwned, SplitByRange};
 
 use crate::core::threadpool::LanePool;

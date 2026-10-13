@@ -110,7 +110,7 @@ pub fn shapes_contact<Space>(
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
-	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, scratch)
+	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, scratch)
 }
 
 /// Returns the contact between shape A and shape B when they overlap, where each shape is every point within its
@@ -124,6 +124,11 @@ pub fn shapes_contact<Space>(
 /// are given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so
 /// for two bodies they have to place each shape where its body is. A radius of zero leaves a shape as its core.
 ///
+/// `extent` is a bound on how far apart a point of one core and a point of the other can be along any one
+/// coordinate axis, which the boxes around the two shapes give. It may be several times too large, and must not be
+/// too small. Pass `None` when there is none at hand: the cores are then asked for six more of their furthest
+/// points when they overlap.
+///
 /// `scratch` is working storage. Pass the same one each time to find contact after contact without allocating.
 ///
 /// Returns `None` when the shapes are apart, or when their cores overlap but have no volume between them, as two
@@ -133,6 +138,7 @@ pub fn rounded_shapes_contact<Space>(
 	radius_a: f32,
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	radius_b: f32,
+	extent: Option<f32>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
 	// GJK settles most pairs, the ones that are apart, with a few points of the difference between the cores.
@@ -143,7 +149,7 @@ pub fn rounded_shapes_contact<Space>(
 	let (normal, depth, on_a, on_b) = if search.holds_origin {
 		// The cores overlap. The difference's surface is explored to find how far inside it the origin is, starting
 		// from the points that GJK ended with. The shapes are deeper in each other than their cores by their radii.
-		let cores = epa::penetration(support, &search.simplex[..search.count], scratch)?;
+		let cores = epa::penetration(support, &search.simplex[..search.count], extent, scratch)?;
 		(cores.normal(), cores.depth() + reach, cores.point_on_a(), cores.point_on_b())
 	} else {
 		// The cores are apart, and the shapes overlap when that is by less than their radii. Their surfaces are
@@ -578,7 +584,7 @@ mod tests {
 		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		radius_b: f32,
 	) -> Option<Intersection<LocalSpace>> {
-		super::rounded_shapes_contact(support_a, radius_a, support_b, radius_b, &mut ContactScratch::default())
+		super::rounded_shapes_contact(support_a, radius_a, support_b, radius_b, None, &mut ContactScratch::default())
 	}
 
 	/// Returns a box hull with the given half sizes around `middle`.
@@ -1554,5 +1560,37 @@ mod tests {
 			contacts += usize::from(with_used.is_some());
 		}
 		assert!(contacts > 50, "{contacts} of 300 have a contact");
+	}
+
+	#[test]
+	fn a_contact_is_on_the_surface_when_another_plane_is_as_near() {
+		// The tip of a diamond at (1, 0, 0) is 0.25 inside two sides of a box at once: the one it came in through,
+		// which faces -x, and the one that faces -z. Only the first way out is that short. Past the second, the
+		// diamond widens.
+		let tips = [
+			[1.0, 0.0, 0.0],
+			[-1.0, 0.0, 0.0],
+			[0.0, 1.0, 0.0],
+			[0.0, -1.0, 0.0],
+			[0.0, 0.0, 1.0],
+			[0.0, 0.0, -1.0],
+		]
+		.map(Point::<LocalSpace>::from_array);
+		let diamond = build_convex_hull(&tips).expect("the tips enclose a volume");
+		let cube = box_hull([0.5, 0.5, 0.5], [1.25, -0.25, 0.25]);
+		let (support_a, support_b) = (|along| diamond.support_point(along), |along| cube.support_point(along));
+
+		// With the cores asked for their extent, and with a bound on it given.
+		for extent in [None, Some(4.0), Some(100.0)] {
+			let contact = super::rounded_shapes_contact(support_a, 0.0, support_b, 0.0, extent, &mut ContactScratch::default())
+				.expect("the tip is inside the box");
+
+			assert!(
+				(contact.normal().into_vector() - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5,
+				"with {extent:?}: {contact:?}"
+			);
+			assert!((contact.depth() - 0.25).abs() <= 1e-5);
+			assert_contact(&contact, support_a, support_b, 1e-5);
+		}
 	}
 }

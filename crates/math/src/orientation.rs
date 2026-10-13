@@ -1,6 +1,6 @@
 use std::fmt;
 
-use maths_rs::Quatf;
+use maths_rs::{Quatf, Vec3f};
 
 use crate::geometry::scaled_normalize;
 use crate::serialization::serialize_as_array;
@@ -194,6 +194,22 @@ impl Orientation {
 	pub fn rotate_vector<Space>(self, vector: Vector<Space>) -> Vector<Space> {
 		Vector::from_maths(self.value * vector.into_maths())
 	}
+
+	/// Returns where this orientation turns the x, y, and z axes to.
+	///
+	/// A vector with coordinates along the three results is that vector turned, so this serves code that turns many
+	/// vectors by one orientation: three products each, where [`Self::rotate_vector`] works through the quaternion
+	/// every time.
+	pub fn axes<Space>(self) -> [UnitVector<Space>; 3] {
+		let Quatf { x, y, z, w } = self.value;
+		// The columns of the rotation matrix of a unit quaternion, which are unit length.
+		[
+			[1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)],
+			[2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w)],
+			[2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y)],
+		]
+		.map(|[x, y, z]| UnitVector::unchecked(Vec3f::new(x, y, z)))
+	}
 }
 
 impl Default for Orientation {
@@ -278,6 +294,29 @@ mod tests {
 			vector,
 			"antipodes must give the shorter arc"
 		);
+	}
+
+	#[test]
+	fn the_axes_of_an_orientation_are_the_coordinate_axes_turned_by_it() {
+		for rotation in [
+			[0.0, 0.0, 0.0],
+			[0.3, 0.0, 0.0],
+			[0.0, -1.2, 0.0],
+			[0.4, 2.5, -1.7],
+			[3.0, 0.1, 0.2],
+		] {
+			let orientation = Orientation::try_from_rotation_vector(Vector::<WorldSpace>::from_array(rotation)).unwrap();
+
+			let axes = orientation.axes::<WorldSpace>();
+
+			for (axis, unit) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].into_iter().enumerate() {
+				let turned = orientation.rotate_vector(Vector::<WorldSpace>::from_array(unit));
+				assert!(
+					(axes[axis].into_vector() - turned).length() <= 1e-6,
+					"axis {axis} of {rotation:?}"
+				);
+			}
+		}
 	}
 }
 

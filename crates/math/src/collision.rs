@@ -525,6 +525,89 @@ fn closest_point_on_segment_to_aabb<Space>(start: Point<Space>, end: Point<Space
 /// of a side, or where the two edges that cross are closest. Boxes that rest on each other touch over a whole patch,
 /// of which these are one pair of points.
 pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Option<Intersection<Space>> {
+	obb_overlap(a, b).map(|overlap| overlap.contact(a, b))
+}
+
+/// The `ObbOverlap` struct holds the direction two oriented boxes overlap least along and how much, for code that
+/// builds its own contact points from that, as the patch two boxes touch over is built.
+///
+/// Get one from [`obb_overlap`]. [`Self::contact`] returns the contact [`obb_vs_obb`] would.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObbOverlap<Space = WorldSpace> {
+	normal: UnitVector<Space>,
+	depth: f32,
+	separation: ObbSeparation,
+}
+
+impl<Space> ObbOverlap<Space> {
+	/// Returns the unit normal from the first box toward the second.
+	pub fn normal(&self) -> UnitVector<Space> {
+		self.normal
+	}
+
+	/// Returns how far the boxes overlap along the normal.
+	pub fn depth(&self) -> f32 {
+		self.depth
+	}
+
+	/// Returns what the boxes touch with: a side of one of them, or an edge of each.
+	pub fn separation(&self) -> ObbSeparation {
+		self.separation
+	}
+
+	/// Returns the contact between `a` and `b`, which have to be the boxes this overlap was found for.
+	pub fn contact(&self, a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Intersection<Space> {
+		let (normal, depth) = (self.normal, self.depth);
+		match self.separation {
+			ObbSeparation::SideOfA(_) => {
+				let point_on_b = b.furthest_middle(-normal.into_vector());
+				Intersection {
+					normal,
+					depth,
+					point_on_a: point_on_b + normal * depth,
+					point_on_b,
+				}
+			}
+			ObbSeparation::SideOfB(_) => {
+				let point_on_a = a.furthest_middle(normal.into_vector());
+				Intersection {
+					normal,
+					depth,
+					point_on_a,
+					point_on_b: point_on_a - normal * depth,
+				}
+			}
+			ObbSeparation::Edges(i, j) => {
+				let (a_axis, b_axis) = (a.axes()[i].into_vector(), b.axes()[j].into_vector());
+				// The two edges that cross: on each box, the edge along that axis that is furthest toward the other
+				// box. Leaving the axis out of the direction gives the middle of that edge.
+				let across = |axis: Vector<Space>, toward: Vector<Space>| toward - axis * axis.dot(toward);
+				let a_middle = a.furthest_middle(across(a_axis, normal.into_vector()));
+				let b_middle = b.furthest_middle(across(b_axis, -normal.into_vector()));
+				// Where the lines through the two edges pass closest, as distances along each from its middle, kept
+				// within the edge.
+				let apart = b_middle - a_middle;
+				let (along_a, along_b) = (apart.dot(a_axis), apart.dot(b_axis));
+				let cosine = a_axis.dot(b_axis);
+				let (a_half, b_half) = (a.half_extents()[i], b.half_extents()[j]);
+				let on_a = ((along_a - cosine * along_b) / length_squared_of(cosine)).clamp(-a_half, a_half);
+				let on_b = ((cosine * along_a - along_b) / length_squared_of(cosine)).clamp(-b_half, b_half);
+				Intersection {
+					normal,
+					depth,
+					point_on_a: a_middle + a_axis * on_a,
+					point_on_b: b_middle + b_axis * on_b,
+				}
+			}
+		}
+	}
+}
+
+/// Returns the direction two oriented boxes overlap least along and how much, or `None` when they are apart.
+///
+/// This is all of [`obb_vs_obb`] but its contact points. Use it to find the whole patch that two boxes touch over,
+/// which starts from the side that faces the other box.
+pub fn obb_overlap<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Option<ObbOverlap<Space>> {
 	let (a_axes, b_axes) = (a.axes().map(UnitVector::into_vector), b.axes().map(UnitVector::into_vector));
 	let (a_half, b_half) = (a.half_extents(), b.half_extents());
 	let between = b.center() - a.center();
@@ -539,11 +622,13 @@ pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Opti
 
 	// The direction with the least overlap is the shortest way out. Each is kept with how far the second box's
 	// center is along it, whose sign tells which way along it leads from the first box to the second.
-	let mut side: Option<(f32, f32, Separation)> = None;
-	let mut crossing: Option<(f32, f32, Separation)> = None;
-	let shallowest = |best: &mut Option<(f32, f32, Separation)>, depth: f32, along: f32, separation: Separation| {
-		if best.is_none_or(|(least, ..)| depth < least) {
-			*best = Some((depth, along, separation));
+	// A direction only replaces an earlier one when it overlaps less by more than rounding. Boxes that rest side on
+	// side overlap as little along the direction either side faces, and the earlier one is kept from step to step.
+	let clearly_under = |least: f32| least - 1e-5 * (1.0 + least);
+	let mut side: Option<(f32, f32, ObbSeparation)> = None;
+	let mut shallowest_side = |depth: f32, along: f32, separation: ObbSeparation| {
+		if side.is_none_or(|(least, ..)| depth < clearly_under(least)) {
+			side = Some((depth, along, separation));
 		}
 	};
 
@@ -553,7 +638,7 @@ pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Opti
 		if depth < 0.0 {
 			return None;
 		}
-		shallowest(&mut side, depth, offset[i], Separation::SideOfA(i));
+		shallowest_side(depth, offset[i], ObbSeparation::SideOfA(i));
 	}
 	for j in 0..3 {
 		let along: f32 = (0..3).map(|i| offset[i] * turn[i][j]).sum();
@@ -562,16 +647,24 @@ pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Opti
 		if depth < 0.0 {
 			return None;
 		}
-		shallowest(&mut side, depth, along, Separation::SideOfB(j));
+		shallowest_side(depth, along, ObbSeparation::SideOfB(j));
 	}
+	let side = side?;
+
+	// The cross product of two edges is square to both, and as long as the sine of the angle between them, which
+	// the overlap along it has to be divided by. The directions are compared before that division, by their squares,
+	// so that only one that turns out to be the least pays for a square root. A direction between two edges has to
+	// overlap clearly less than the sides do to count at all: where sides face each other, one often overlaps as
+	// little as the sides' own direction, give or take rounding, and the sides' direction is kept then, so that boxes
+	// that rest on each other do not get a normal that flickers between the two.
+	let mut least = side.0 - 1e-4 * (1.0 + side.0);
+	let mut crossing: Option<(f32, f32, ObbSeparation)> = None;
 	for i in 0..3 {
 		let (i1, i2) = ((i + 1) % 3, (i + 2) % 3);
 		for j in 0..3 {
 			let (j1, j2) = ((j + 1) % 3, (j + 2) % 3);
-			// The cross product of the two edges is square to both, and as long as the sine of the angle between
-			// them. Edges that run the same way have no direction square to both that the sides do not already
-			// cover.
-			let length_squared = 1.0 - turn[i][j] * turn[i][j];
+			// Edges that run the same way have no direction square to both that the sides do not already cover.
+			let length_squared = length_squared_of(turn[i][j]);
 			if length_squared < 1e-6 {
 				continue;
 			}
@@ -580,71 +673,37 @@ pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Opti
 				+ a_half[i2] * spread[i1][j]
 				+ b_half[j1] * spread[i][j2]
 				+ b_half[j2] * spread[i][j1];
-			let depth = (reach - along.abs()) / length_squared.sqrt();
-			if depth < 0.0 {
+			let overlap = reach - along.abs();
+			if overlap < 0.0 {
 				return None;
 			}
-			shallowest(&mut crossing, depth, along, Separation::Edges(i, j));
+			if least > 0.0 && overlap * overlap < least * least * length_squared {
+				let depth = overlap / length_squared.sqrt();
+				crossing = Some((depth, along, ObbSeparation::Edges(i, j)));
+				least = clearly_under(depth);
+			}
 		}
 	}
 
-	// Where sides face each other, a direction between two edges often overlaps as little as the sides' own, give or
-	// take rounding. The sides' direction is kept then, so that boxes that rest on each other do not get a normal
-	// that flickers between the two.
-	let (depth, along, separation) = match (side?, crossing) {
-		(side, Some(crossing)) if crossing.0 < side.0 - 1e-4 * (1.0 + side.0) => crossing,
-		(side, _) => side,
-	};
+	let (depth, along, separation) = crossing.unwrap_or(side);
 	let sign = signed_axis(along);
-
-	Some(match separation {
-		Separation::SideOfA(i) => {
-			let normal = a.axes()[i] * sign;
-			let point_on_b = b.furthest_middle(-normal);
-			Intersection {
-				normal: UnitVector::unchecked(normal.into_maths()),
-				depth,
-				point_on_a: point_on_b + normal * depth,
-				point_on_b,
-			}
-		}
-		Separation::SideOfB(j) => {
-			let normal = b.axes()[j] * sign;
-			let point_on_a = a.furthest_middle(normal);
-			Intersection {
-				normal: UnitVector::unchecked(normal.into_maths()),
-				depth,
-				point_on_a,
-				point_on_b: point_on_a - normal * depth,
-			}
-		}
-		Separation::Edges(i, j) => {
-			let normal = (a_axes[i].cross(b_axes[j]) * sign).normalized().ok()?;
-			// The two edges that cross: on each box, the edge along that axis that is furthest toward the other box.
-			// Leaving the axis out of the direction gives the middle of that edge.
-			let across =
-				|axes: [Vector<Space>; 3], axis: usize, toward: Vector<Space>| toward - axes[axis] * axes[axis].dot(toward);
-			let a_middle = a.furthest_middle(across(a_axes, i, normal.into_vector()));
-			let b_middle = b.furthest_middle(across(b_axes, j, -normal.into_vector()));
-			// Where the lines through the two edges pass closest, as distances along each from its middle, kept
-			// within the edge.
-			let apart = b_middle - a_middle;
-			let (along_a, along_b) = (apart.dot(a_axes[i]), apart.dot(b_axes[j]));
-			let on_a = ((along_a - turn[i][j] * along_b) / length_squared_of(turn[i][j])).clamp(-a_half[i], a_half[i]);
-			let on_b = ((turn[i][j] * along_a - along_b) / length_squared_of(turn[i][j])).clamp(-b_half[j], b_half[j]);
-			Intersection {
-				normal,
-				depth,
-				point_on_a: a_middle + a_axes[i] * on_a,
-				point_on_b: b_middle + b_axes[j] * on_b,
-			}
-		}
+	let normal = match separation {
+		// A box's axis is of unit length either way around.
+		ObbSeparation::SideOfA(i) => UnitVector::unchecked((a.axes()[i] * sign).into_maths()),
+		ObbSeparation::SideOfB(j) => UnitVector::unchecked((b.axes()[j] * sign).into_maths()),
+		ObbSeparation::Edges(i, j) => (a_axes[i].cross(b_axes[j]) * sign).normalized().ok()?,
+	};
+	Some(ObbOverlap {
+		normal,
+		depth,
+		separation,
 	})
 }
 
-/// Which direction two oriented boxes have the least overlap along.
-#[derive(Clone, Copy)]
-enum Separation {
+/// The `ObbSeparation` enum names the direction two oriented boxes overlap least along, which says what they touch
+/// with: a side of one box, or an edge of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObbSeparation {
 	/// The direction that a pair of the first box's sides faces, by the index of its axis.
 	SideOfA(usize),
 	/// The direction that a pair of the second box's sides faces, by the index of its axis.

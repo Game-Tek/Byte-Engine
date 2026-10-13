@@ -14,6 +14,10 @@ use super::{
 /// How near the surface of the Minkowski difference the solid has to get, in units, to count as having reached it.
 const SURFACE_REACH: f32 = 0.0001;
 
+/// How nearly two faces of the solid have to look the same way to count as lying in one plane, as the cosine of the
+/// angle between the directions they look in.
+const SAME_PLANE: f32 = 0.9999;
+
 /// How many points the solid is grown by at most. Shapes with flat sides need a handful, and so do round shapes that
 /// overlap a little. Round shapes that are deep in each other have a surface that is about as near the origin all
 /// around, which takes many flat faces to follow: of balls up to two units across, the deepest took 170. A pair that
@@ -81,10 +85,15 @@ impl HullFace for SurfaceFace {
 /// found before, such as the ones GJK ended with. The solid starts out around those, so the nearer they are to the
 /// origin's way out, the less there is left to find.
 ///
+/// `extent` is a bound on how far apart a point of one shape and a point of the other can be along any one
+/// coordinate axis, when the caller has one. Without it the shapes are asked, which takes six more of their furthest
+/// points.
+///
 /// Returns `None` when the difference has no volume, because the origin then has no shortest way out of it.
 pub(super) fn penetration<Space>(
 	support: impl Fn(Vector<Space>) -> MinkowskiPoint<Space>,
 	known: &[MinkowskiPoint<Space>],
+	extent: Option<f32>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
 	let ContactScratch { points, faces, rim } = scratch;
@@ -93,21 +102,17 @@ pub(super) fn penetration<Space>(
 
 	// The solid is a convex hull, grown like any other: its points are snapped to a grid of whole coordinates, so
 	// that which faces a new point replaces is decided without rounding and the solid's surface stays closed. The grid
-	// has to cover every point that `support` can return, so it is sized by the furthest of them along each axis.
-	let along_axes = [
-		[1.0, 0.0, 0.0],
-		[-1.0, 0.0, 0.0],
-		[0.0, 1.0, 0.0],
-		[0.0, -1.0, 0.0],
-		[0.0, 0.0, 1.0],
-		[0.0, 0.0, -1.0],
-	]
-	.map(|axis| support(Vector::from_array(axis)));
-	let reach = along_axes
-		.iter()
-		.chain(known)
+	// has to cover every point that `support` can return. Without a bound from the caller, it is sized by the
+	// furthest of them along each axis, which are then points to start the solid from as well.
+	let along_axes = match extent {
+		Some(_) => None,
+		None => Some(AXES.map(|axis| support(Vector::from_array(axis)))),
+	};
+	let start = along_axes.iter().flatten().chain(known);
+	let reach = start
+		.clone()
 		.flat_map(|point| point.difference().to_array())
-		.fold(0.0, |reach: f32, coordinate| reach.max(coordinate.abs()));
+		.fold(extent.unwrap_or(0.0), |reach: f32, coordinate| reach.max(coordinate.abs()));
 	if reach <= 0.0 || !reach.is_finite() {
 		return None;
 	}
@@ -122,18 +127,26 @@ pub(super) fn penetration<Space>(
 			.map(|coordinate| (f64::from(coordinate) / step).round().clamp(-limit, limit) as i32),
 		point,
 	};
-	points.extend(along_axes.iter().chain(known).map(|&point| sample(point)));
+	points.extend(start.map(|&point| sample(point)));
 	// Snapping moves a point by up to a step, so nearer than two steps cannot be told from on the surface.
 	let tolerance = (f64::from(SURFACE_REACH) / step).max(2.0);
 
-	// The solid starts as a tetrahedron on four of the points so far. When those are all in one line or one plane,
-	// more are asked for in the directions that lead out of it. A difference with volume has points there.
-	let (a, b) = [(0, 1), (2, 3), (4, 5)]
-		.into_iter()
-		.max_by_key(|&(a, b)| distance_squared(points[a].position, points[b].position))?;
-	if points[a].position == points[b].position {
-		return None;
+	// The solid starts as a tetrahedron on four of the points so far. When those are all in one place, on one line,
+	// or in one plane, more are asked for in the directions that lead out of it. A difference with volume has points
+	// there.
+	if points.is_empty() {
+		points.push(sample(support(Vector::from_array(AXES[0]))));
 	}
+	let a = 0;
+	let first = points[a].position;
+	let away = |point: GridPoint| distance_squared(first, point);
+	let b = match furthest(points, away) {
+		Some(b) => b,
+		None => {
+			points.extend(AXES.map(|axis| sample(support(Vector::from_array(axis)))));
+			furthest(points, away)?
+		}
+	};
 
 	let (start, along) = (points[a].position, offset(points[a].position, points[b].position));
 	let off_line = |point: GridPoint| {
@@ -194,10 +207,12 @@ pub(super) fn penetration<Space>(
 	//
 	// The origin can start outside the solid, when the points so far were not around it. The faces that it is outside
 	// of are the highest above it, so they are the ones replaced until the solid holds it.
+	let mut reached = None;
 	for _ in 0..GROWTH_LIMIT {
 		let nearest = faces.iter().max_by(|left, right| left.height.total_cmp(&right.height))?.face;
 		let found = sample(support(Vector::from_array(nearest.outward())));
 		if nearest.height(found.position) <= tolerance {
+			reached = Some(nearest);
 			break;
 		}
 
@@ -210,14 +225,24 @@ pub(super) fn penetration<Space>(
 			|_| {},
 		);
 	}
+	// A solid that was cut off before it reached the difference's surface answers with its nearest face so far.
+	let reached = match reached {
+		Some(reached) => reached,
+		None => faces.iter().max_by(|left, right| left.height.total_cmp(&right.height))?.face,
+	};
 
-	// A flat side of the difference can be covered by several faces, whose planes are all as near the origin. The
-	// nearest point of the surface is on the one that the origin is straight below, which is the one with the point
-	// nearest the origin.
-	let highest = faces.iter().map(|face| face.height).fold(f64::NEG_INFINITY, f64::max);
+	// A flat side of the difference can be covered by several faces of the solid, in one plane. The nearest point of
+	// the surface is on the one that the origin is straight below, which is the one with the point nearest the origin.
+	// Only faces in the plane of the one that reached the surface are known to be on it. A face in another plane that
+	// is as near the origin may still have the difference reach beyond it.
+	let (out, height) = (reached.outward(), reached.height([0; 3]));
 	let (face, corners, nearest) = faces
 		.iter()
-		.filter(|face| face.height >= highest - tolerance)
+		.filter(|face| {
+			let facing = face.face.outward();
+			let same_way = out[0] * facing[0] + out[1] * facing[1] + out[2] * facing[2];
+			same_way >= SAME_PLANE && (face.height - height).abs() <= tolerance
+		})
 		.map(|face| {
 			let corners = face.face.corners.map(|corner| points[corner as usize].point);
 			let nearest = nearest_on_triangle(corners[0].difference(), corners[1].difference(), corners[2].difference());
@@ -242,6 +267,16 @@ pub(super) fn penetration<Space>(
 		on_shape(MinkowskiPoint::point_on_b),
 	))
 }
+
+/// The directions along each coordinate axis, both ways.
+const AXES: [[f32; 3]; 6] = [
+	[1.0, 0.0, 0.0],
+	[-1.0, 0.0, 0.0],
+	[0.0, 1.0, 0.0],
+	[0.0, -1.0, 0.0],
+	[0.0, 0.0, 1.0],
+	[0.0, 0.0, -1.0],
+];
 
 /// Returns the point that `measure` rates highest, when it rates any above zero.
 fn furthest<Space>(points: &[Sample<Space>], measure: impl Fn(GridPoint) -> i128) -> Option<usize> {

@@ -5,7 +5,7 @@
 //! one of them, often at a corner. A body that is pushed at one point turns about it, so a body that rests on a flat
 //! side and is held up at one point rocks on it. Held up at the corners of the patch it rests on, it lies still.
 
-use math::{Point, UnitVector, Vector};
+use math::{OrientedBox, Point, UnitVector, Vector};
 use smallvec::SmallVec;
 
 /// The part of a shape that touches another: the corners of its core that reach furthest along the contact's normal,
@@ -60,21 +60,10 @@ pub(crate) fn patch_corners<Space>(
 	let Some(&origin) = feature_a.first() else {
 		return held;
 	};
-	let normal: Vector<Space> = normal.into();
-
-	// Two directions square to the normal and to each other. The first comes from the axis that the normal leans on
-	// least.
-	let parts = normal.to_array().map(f32::abs);
-	let least = (0..3)
-		.min_by(|&left: &usize, &right: &usize| parts[left].total_cmp(&parts[right]))
-		.unwrap_or(0);
-	let mut axis = [0.0; 3];
-	axis[least] = 1.0;
-	let Ok(across) = normal.cross(Vector::from_array(axis)).normalized() else {
+	let Some((across, along)) = frame_across(normal) else {
 		return held;
 	};
-	let across: Vector<Space> = across.into();
-	let along = normal.cross(across);
+	let normal: Vector<Space> = normal.into();
 	let framed = |feature: &[Point<Space>]| -> SmallVec<[Framed; 8]> {
 		let mut corners: SmallVec<[Framed; 8]> = feature
 			.iter()
@@ -86,8 +75,8 @@ pub(crate) fn patch_corners<Space>(
 		// The corners of a flat side are put in sequence around it, which is by their angle around its middle.
 		if corners.len() > 2 {
 			let middle = middle_of(&corners);
-			let angle = |corner: &Framed| (corner[1] - middle[1]).atan2(corner[0] - middle[0]);
-			corners.sort_unstable_by(|left, right| angle(left).total_cmp(&angle(right)));
+			let turn = |corner: &Framed| turn_around(corner[0] - middle[0], corner[1] - middle[1]);
+			corners.sort_unstable_by(|left, right| turn(left).total_cmp(&turn(right)));
 		}
 		corners
 	};
@@ -109,19 +98,190 @@ pub(crate) fn patch_corners<Space>(
 		}
 	}
 
-	// How far the shapes are in each other at a position: from shape A's surface down to shape B's.
-	let surfaces = |corner: [f32; 2]| (height_at(&a, corner) + radius_a, height_at(&b, corner) - radius_b);
-	let overlap = |corner: [f32; 2]| {
-		let (top, bottom) = surfaces(corner);
-		top - bottom
-	};
+	// Each corner of the patch with the height of shape A's surface there and of shape B's, which are how far the
+	// shapes are in each other at it. Both surfaces are worked out once, and every corner once.
+	let (top, bottom) = (Surface::of(&a), Surface::of(&b));
+	let patch: SmallVec<[([f32; 2], f32, f32); 8]> = patch
+		.into_iter()
+		.map(|corner| (corner, top.height_at(corner) + radius_a, bottom.height_at(corner) - radius_b))
+		.collect();
 
-	// Four corners hold a patch as well as all of them do, when they are far apart. The deepest comes first, and each
-	// one after it is the corner furthest from those already chosen.
-	let mut chosen: SmallVec<[[f32; 2]; 4]> = SmallVec::new();
+	let chosen = spread_four(&patch);
+	let numbers = quarter_numbers(chosen.iter().map(|(corner, ..)| *corner));
+	held.extend(chosen.into_iter().zip(numbers).map(|((corner, top, bottom), number)| {
+		let placed = |height: f32| origin + across * corner[0] + along * corner[1] + normal * height;
+		PatchCorner {
+			on_a: placed(top),
+			on_b: placed(bottom),
+			depth: top - bottom,
+			number,
+		}
+	}));
+	held
+}
+
+/// Returns up to four corners of the patch where a side of one box touches another box, when the direction the boxes
+/// overlap least along is one that a side faces, as [`math::collision::obb_vs_obb_separation`] reports.
+///
+/// `reference` is the box with that side, `axis` the index of its axis along the direction, and `outward` the
+/// direction the side faces, toward the other box, `incident`. `reference_is_a` tells which of the two is shape A of
+/// the contact, whose normal points from shape A toward shape B.
+///
+/// This is what [`patch_corners`] finds for two boxes, worked out from what is known about a box: the side of the
+/// other box that faces the reference side most is cut down to the part over the reference side, which is a
+/// rectangle along two of the reference box's own axes. Corners further than [`FEATURE_SLACK`] from reaching the
+/// reference side are left out, so a box that stands on an edge or a corner is held at that edge or corner only.
+pub(crate) fn box_side_patch<Space>(
+	reference: &OrientedBox<Space>,
+	axis: usize,
+	outward: UnitVector<Space>,
+	incident: &OrientedBox<Space>,
+	reference_is_a: bool,
+) -> SmallVec<[PatchCorner<Space>; 4]> {
+	let outward_vector: Vector<Space> = outward.into();
+	let (side_axes, side_half) = (
+		[reference.axes()[(axis + 1) % 3], reference.axes()[(axis + 2) % 3]],
+		[
+			reference.half_extents()[(axis + 1) % 3],
+			reference.half_extents()[(axis + 2) % 3],
+		],
+	);
+	let side_height = reference.half_extents()[axis];
+
+	// The side of the other box that faces the reference side most squarely, and its four corners in sequence
+	// around it.
+	let (incident_axes, incident_half) = (incident.axes(), incident.half_extents());
+	let leans: [f32; 3] = std::array::from_fn(|index| incident_axes[index].dot(outward_vector));
+	let facing = (0..3)
+		.max_by(|&left: &usize, &right: &usize| leans[left].abs().total_cmp(&leans[right].abs()))
+		.unwrap_or(0);
+	let (first, second) = ((facing + 1) % 3, (facing + 2) % 3);
+	let middle = incident.center() - incident_axes[facing] * incident_half[facing].copysign(leans[facing]);
+	let corners = [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]].map(|[along_first, along_second]: [f32; 2]| {
+		let corner = middle
+			+ incident_axes[first] * (incident_half[first] * along_first)
+			+ incident_axes[second] * (incident_half[second] * along_second);
+		// Where the corner is over the reference side, along the side's two axes, and how far it is into the
+		// reference box through that side.
+		let offset = corner - reference.center();
+		[
+			side_axes[0].dot(offset),
+			side_axes[1].dot(offset),
+			side_height - outward.dot(offset),
+		]
+	});
+
+	// Cut the side down to the part over the reference side, one edge of the rectangle at a time. A corner made by a
+	// cut is as deep as the place it is at on the edge that was cut. Four cuts of a side with four corners leave at
+	// most eight, so the corners go back and forth between two fixed rows.
+	let mut rows = [[[0.0f32; 3]; 8]; 2];
+	rows[0][..4].copy_from_slice(&corners);
+	let (mut count, mut row) = (4, 0);
+	for (coordinate, toward) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)] {
+		let limit = side_half[coordinate];
+		// A corner within the slack of an edge counts as inside it, which keeps a side that lies right on the edge.
+		let slack = -1e-4 * limit.max(1e-3);
+		let [first_row, second_row] = &mut rows;
+		let (from, to) = if row == 0 {
+			(&*first_row, second_row)
+		} else {
+			(&*second_row, first_row)
+		};
+		let mut kept = 0;
+		for index in 0..count {
+			let (current, next) = (from[index], from[if index + 1 == count { 0 } else { index + 1 }]);
+			let (current_inside, next_inside) = (limit - toward * current[coordinate], limit - toward * next[coordinate]);
+			if current_inside >= slack && kept < 8 {
+				to[kept] = current;
+				kept += 1;
+			}
+			if (current_inside >= slack) != (next_inside >= slack) && kept < 8 {
+				let share = current_inside / (current_inside - next_inside);
+				to[kept] = std::array::from_fn(|part| current[part] + (next[part] - current[part]) * share);
+				kept += 1;
+			}
+		}
+		(count, row) = (kept, 1 - row);
+	}
+
+	// Each corner that is near enough to count, as a place on the reference side with the two heights there: the
+	// side's own, and the corner's.
+	let mut patch = [([0.0f32; 2], 0.0f32, 0.0f32); 8];
+	let mut near = 0;
+	for &[across, along, depth] in &rows[row][..count] {
+		if depth >= -FEATURE_SLACK {
+			patch[near] = ([across, along], side_height, side_height - depth);
+			near += 1;
+		}
+	}
+	let chosen = spread_four(&patch[..near]);
+
+	// The corners are numbered in the frame that the contact's normal gives, as those of every other patch are, so
+	// that a corner keeps its number when the side that faces the other box changes from one box's to the other's.
+	// Only which side of the patch's middle a corner is on counts, so the frame's directions can be of any length.
+	let normal: Vector<Space> = if reference_is_a { outward_vector } else { -outward_vector };
+	let (across, along) = unscaled_frame_across(normal);
+	let placed = |[across, along]: [f32; 2], height: f32| {
+		reference.center() + side_axes[0] * across + side_axes[1] * along + outward * height
+	};
+	let numbers = quarter_numbers(chosen.iter().map(|&(corner, top, _)| {
+		let offset = placed(corner, top) - reference.center();
+		[across.dot(offset), along.dot(offset)]
+	}));
+
+	chosen
+		.into_iter()
+		.zip(numbers)
+		.map(|((corner, top, bottom), number)| {
+			let (on_reference, on_incident) = (placed(corner, top), placed(corner, bottom));
+			let (on_a, on_b) = if reference_is_a {
+				(on_reference, on_incident)
+			} else {
+				(on_incident, on_reference)
+			};
+			PatchCorner {
+				on_a,
+				on_b,
+				depth: top - bottom,
+				number,
+			}
+		})
+		.collect()
+}
+
+/// Returns two directions of length one that are square to `normal` and to each other, which with it make the frame
+/// that a patch is laid out in.
+fn frame_across<Space>(normal: UnitVector<Space>) -> Option<(Vector<Space>, Vector<Space>)> {
+	let normal: Vector<Space> = normal.into();
+	let across: Vector<Space> = unscaled_frame_across(normal).0.normalized().ok()?.into();
+	Some((across, normal.cross(across)))
+}
+
+/// Returns two directions that are square to `normal` and to each other, of whatever length they come out at. The
+/// first comes from the axis that the normal leans on least, so it is never close to no length.
+fn unscaled_frame_across<Space>(normal: Vector<Space>) -> (Vector<Space>, Vector<Space>) {
+	let parts = normal.to_array().map(f32::abs);
+	let least = if parts[0] <= parts[1] && parts[0] <= parts[2] {
+		0
+	} else if parts[1] <= parts[2] {
+		1
+	} else {
+		2
+	};
+	let mut axis = [0.0; 3];
+	axis[least] = 1.0;
+	let across = normal.cross(Vector::from_array(axis));
+	(across, normal.cross(across))
+}
+
+/// Returns up to four corners of a patch, each given as its place and the heights of the two surfaces there. Four
+/// corners hold a patch as well as all of them do, when they are far apart. The deepest comes first, and each one
+/// after it is the corner furthest from those already chosen.
+fn spread_four(patch: &[([f32; 2], f32, f32)]) -> SmallVec<[([f32; 2], f32, f32); 4]> {
+	let mut chosen: SmallVec<[([f32; 2], f32, f32); 4]> = SmallVec::new();
 	if let Some(&deepest) = patch
 		.iter()
-		.max_by(|&&left, &&right| overlap(left).total_cmp(&overlap(right)))
+		.max_by(|left, right| (left.1 - left.2).total_cmp(&(right.1 - right.2)))
 	{
 		chosen.push(deepest);
 	}
@@ -129,29 +289,38 @@ pub(crate) fn patch_corners<Space>(
 		let apart = |corner: [f32; 2]| {
 			chosen
 				.iter()
-				.map(|held| (corner[0] - held[0]).powi(2) + (corner[1] - held[1]).powi(2))
+				.map(|(held, ..)| (corner[0] - held[0]).powi(2) + (corner[1] - held[1]).powi(2))
 				.fold(f32::INFINITY, f32::min)
 		};
-		let Some(&furthest) = patch.iter().max_by(|&&left, &&right| apart(left).total_cmp(&apart(right))) else {
+		let Some((furthest, distance)) = patch
+			.iter()
+			.map(|&held| (held, apart(held.0)))
+			.max_by(|left, right| left.1.total_cmp(&right.1))
+		else {
 			break;
 		};
 		// Cutting a side can leave corners on top of each other, and a corner is only held once.
-		if apart(furthest) <= f32::EPSILON {
+		if distance <= f32::EPSILON {
 			break;
 		}
 		chosen.push(furthest);
 	}
+	chosen
+}
 
-	// A corner is numbered by the quarter of the patch it is in, seen from the patch's middle, which stays the same
-	// from step to step while the bodies lie still. The sequence the corners were chosen in does not, because which
-	// corner is deepest changes with the slightest tilt. Two corners in one quarter take the numbers left over.
-	let count = chosen.len().max(1) as f32;
-	let middle = chosen.iter().fold([0.0; 2], |sum, corner| {
+/// Returns a number from zero to three for each of up to four corners of a patch, given as their places across the
+/// contact's normal.
+///
+/// A corner is numbered by the quarter of the patch it is in, seen from the patch's middle, which stays the same from
+/// step to step while the bodies lie still. The sequence the corners were chosen in does not, because which corner is
+/// deepest changes with the slightest tilt. Two corners in one quarter take the numbers left over.
+fn quarter_numbers(corners: impl Iterator<Item = [f32; 2]> + Clone) -> SmallVec<[u8; 4]> {
+	let count = corners.clone().count().max(1) as f32;
+	let middle = corners.clone().fold([0.0; 2], |sum, corner| {
 		[sum[0] + corner[0] / count, sum[1] + corner[1] / count]
 	});
 	let mut taken = [false; 4];
-	let mut numbers: SmallVec<[Option<u8>; 4]> = chosen
-		.iter()
+	let mut numbers: SmallVec<[Option<u8>; 4]> = corners
 		.map(|corner| {
 			let quarter = usize::from(corner[0] >= middle[0]) | usize::from(corner[1] >= middle[1]) << 1;
 			(!std::mem::replace(&mut taken[quarter], true)).then_some(quarter as u8)
@@ -164,18 +333,19 @@ pub(crate) fn patch_corners<Space>(
 			*number = Some(free as u8);
 		}
 	}
+	numbers.into_iter().map(|number| number.unwrap_or(0)).collect()
+}
 
-	held.extend(chosen.into_iter().zip(numbers).map(|(corner, number)| {
-		let (top, bottom) = surfaces(corner);
-		let placed = |height: f32| origin + across * corner[0] + along * corner[1] + normal * height;
-		PatchCorner {
-			on_a: placed(top),
-			on_b: placed(bottom),
-			depth: top - bottom,
-			number: number.unwrap_or(0),
-		}
-	}));
-	held
+/// Returns a number that grows with the angle of the direction (`x`, `y`) as it turns once around, from just past
+/// the negative x-axis all the way back to it. It sorts directions by angle without working any angle out.
+fn turn_around(x: f32, y: f32) -> f32 {
+	let reach = x.abs() + y.abs();
+	if reach == 0.0 {
+		return 0.0;
+	}
+	// From 0 along the positive x-axis to 2 along the negative one, by way of the positive y-axis, and the same
+	// negated by way of the negative y-axis.
+	(1.0 - x / reach).copysign(y)
 }
 
 /// Returns the middle of `corners`.
@@ -298,41 +468,66 @@ fn clipped_segment(segment: [Framed; 2], clip: &[Framed]) -> Option<[[f32; 2]; 2
 	})
 }
 
-/// Returns the height of `feature`'s surface at a position across the normal: the height of a corner, the height
-/// along an edge at the point nearest the position, or the height of a flat side's plane there.
-fn height_at(feature: &[Framed], position: [f32; 2]) -> f32 {
-	match feature {
-		[] => 0.0,
-		[corner] => corner[2],
-		[from, to] => {
-			let along = [to[0] - from[0], to[1] - from[1]];
-			let length_squared = along[0] * along[0] + along[1] * along[1];
-			if length_squared == 0.0 {
-				return from[2];
+/// The `Surface` struct answers how high a feature's surface is at any position across the normal, from what is
+/// worked out about the feature once.
+enum Surface {
+	/// A corner, which is as high wherever it is asked about.
+	Corner(f32),
+	/// An edge, which is as high as its point nearest the position.
+	Edge([Framed; 2]),
+	/// A flat side, which is as high as its plane: the height at its middle, and how much that changes for each unit
+	/// across the normal.
+	Side { middle: Framed, slope: [f32; 2] },
+}
+
+impl Surface {
+	fn of(feature: &[Framed]) -> Self {
+		match feature {
+			[] => Self::Corner(0.0),
+			[corner] => Self::Corner(corner[2]),
+			[from, to] => Self::Edge([*from, *to]),
+			corners => {
+				// The plane's normal is the sum of the cross products of each pair of corners in a row, seen from the
+				// middle, which is sound for any flat side, however many corners it has.
+				let middle = middle_of(corners);
+				let mut normal = [0.0; 3];
+				for index in 0..corners.len() {
+					let (from, to) = (corners[index], corners[(index + 1) % corners.len()]);
+					let (u, v) = (
+						[from[0] - middle[0], from[1] - middle[1], from[2] - middle[2]],
+						[to[0] - middle[0], to[1] - middle[1], to[2] - middle[2]],
+					);
+					normal[0] += u[1] * v[2] - u[2] * v[1];
+					normal[1] += u[2] * v[0] - u[0] * v[2];
+					normal[2] += u[0] * v[1] - u[1] * v[0];
+				}
+				// A side that is seen edge on has no height to speak of at one position, and counts as level.
+				let edge_on = normal[2].abs() <= f32::EPSILON * (normal[0].abs() + normal[1].abs());
+				let slope = if edge_on {
+					[0.0; 2]
+				} else {
+					[-normal[0] / normal[2], -normal[1] / normal[2]]
+				};
+				Self::Side { middle, slope }
 			}
-			let share = ((position[0] - from[0]) * along[0] + (position[1] - from[1]) * along[1]) / length_squared;
-			from[2] + (to[2] - from[2]) * share.clamp(0.0, 1.0)
 		}
-		corners => {
-			// The plane's normal is the sum of the cross products of each pair of corners in a row, seen from the
-			// middle, which is sound for any flat side, however many corners it has.
-			let middle = middle_of(corners);
-			let mut normal = [0.0; 3];
-			for index in 0..corners.len() {
-				let (from, to) = (corners[index], corners[(index + 1) % corners.len()]);
-				let (u, v) = (
-					[from[0] - middle[0], from[1] - middle[1], from[2] - middle[2]],
-					[to[0] - middle[0], to[1] - middle[1], to[2] - middle[2]],
-				);
-				normal[0] += u[1] * v[2] - u[2] * v[1];
-				normal[1] += u[2] * v[0] - u[0] * v[2];
-				normal[2] += u[0] * v[1] - u[1] * v[0];
+	}
+
+	fn height_at(&self, position: [f32; 2]) -> f32 {
+		match self {
+			Self::Corner(height) => *height,
+			Self::Edge([from, to]) => {
+				let along = [to[0] - from[0], to[1] - from[1]];
+				let length_squared = along[0] * along[0] + along[1] * along[1];
+				if length_squared == 0.0 {
+					return from[2];
+				}
+				let share = ((position[0] - from[0]) * along[0] + (position[1] - from[1]) * along[1]) / length_squared;
+				from[2] + (to[2] - from[2]) * share.clamp(0.0, 1.0)
 			}
-			// A side that is seen edge on has no height to speak of at one position.
-			if normal[2].abs() <= f32::EPSILON * (normal[0].abs() + normal[1].abs()) {
-				return middle[2];
+			Self::Side { middle, slope } => {
+				middle[2] + slope[0] * (position[0] - middle[0]) + slope[1] * (position[1] - middle[1])
 			}
-			middle[2] - (normal[0] * (position[0] - middle[0]) + normal[1] * (position[1] - middle[1])) / normal[2]
 		}
 	}
 }
@@ -552,5 +747,60 @@ mod tests {
 
 		assert_eq!(one_way.iter().map(|corner| corner.0).collect::<Vec<_>>(), [0, 1, 2, 3]);
 		assert_eq!(one_way, other_way);
+	}
+
+	/// Returns a box around `center`, turned by `turn` radians about the z-axis.
+	fn turned_box(center: [f32; 3], half_extents: [f32; 3], turn: f32) -> OrientedBox<LocalSpace> {
+		let orientation = math::Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, turn)).unwrap();
+		OrientedBox::new(Point::from_array(center), half_extents, orientation)
+	}
+
+	#[test]
+	fn a_box_on_the_side_of_another_is_held_at_the_corners_of_what_they_share() {
+		// A floor whose top is at height 1, and a box that is 0.01 into it and hangs over its rim at x = 4.
+		let floor = turned_box([0.0, 0.0, 0.0], [4.0, 1.0, 4.0], 0.0);
+		let resting = turned_box([3.5, 1.49, 2.0], [1.0, 0.5, 0.5], 0.0);
+
+		let corners = box_side_patch(&floor, 1, up(), &resting, true);
+
+		assert_on_a(
+			&corners,
+			&[[2.5, 1.0, 1.5], [4.0, 1.0, 1.5], [4.0, 1.0, 2.5], [2.5, 1.0, 2.5]],
+		);
+		let mut numbers: Vec<u8> = corners.iter().map(|corner| corner.number).collect();
+		numbers.sort_unstable();
+		assert_eq!(numbers, [0, 1, 2, 3]);
+		for corner in &corners {
+			assert!((corner.depth - 0.01).abs() <= 1e-5);
+			assert!((corner.on_a - corner.on_b - Vector::new(0.0, 0.01, 0.0)).length() <= 1e-5);
+		}
+
+		// With the box as shape A, the side is shape B's, and the points swap.
+		let swapped = box_side_patch(&floor, 1, up(), &resting, false);
+		assert!(
+			swapped
+				.iter()
+				.all(|corner| (corner.on_b.y() - 1.0).abs() <= 1e-5 && (corner.on_a.y() - 0.99).abs() <= 1e-5)
+		);
+	}
+
+	#[test]
+	fn a_box_that_stands_on_an_edge_is_held_at_that_edge() {
+		// Turned an eighth of a turn about z, the box's lowest edge runs along z, 0.01 into the floor's top. The
+		// side that faces the floor most rises steeply from it, so its two other corners are far from touching.
+		let floor = turned_box([0.0, 0.0, 0.0], [4.0, 1.0, 4.0], 0.0);
+		let reach = std::f32::consts::FRAC_1_SQRT_2;
+		let standing = turned_box([1.0, 1.0 + reach - 0.01, 0.0], [0.5, 0.5, 0.5], std::f32::consts::FRAC_PI_4);
+
+		let corners = box_side_patch(&floor, 1, up(), &standing, true);
+
+		assert_on_a(&corners, &[[1.0, 1.0, -0.5], [1.0, 1.0, 0.5]]);
+		assert!(corners.iter().all(|corner| (corner.depth - 0.01).abs() <= 1e-5));
+
+		// A box that only leans a little is held at all four corners, the far ones by the gap they still have.
+		let leaning = turned_box([1.0, 1.495, 0.0], [0.5, 0.5, 0.5], 0.01);
+		let corners = box_side_patch(&floor, 1, up(), &leaning, true);
+		assert_eq!(corners.len(), 4);
+		assert!(corners.iter().any(|corner| corner.depth > 0.0) && corners.iter().any(|corner| corner.depth < 0.0));
 	}
 }

@@ -2,8 +2,8 @@
 //!
 //! Every benchmark drops a block of bodies on a floor, lets them pile up, and then times steps of the pile. Scenes
 //! differ in the number of bodies and in their shapes, because boxes, spheres, and capsules take different paths
-//! through contact detection. Boxes and capsules that rotate take another one again, which costs much more for each
-//! pair, so their scenes are smaller.
+//! through contact detection. Boxes that rotate take another one again, and convex hulls yet another, which cost
+//! much more for each pair, so their scenes are smaller.
 //!
 //! Each sample times 30 steps, so the item rate is steps per second and a sample's time divided by 30 is one step.
 //! Compare the fastest samples of two or three runs: the system sometimes runs a whole row on its slower cores,
@@ -23,7 +23,7 @@ use byte_engine::{
 		message_bus::{MessageBus, MessageBusConfig},
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
-	physics::{Body, BodyTypes, DynabitWorld, LocalSpace, Shapes},
+	physics::{Body, BodyTypes, ConvexHull, DynabitWorld, LocalSpace, Shapes, build_convex_hull},
 	time::MediaTime,
 };
 use divan::{Bencher, counter::ItemsCount};
@@ -68,6 +68,8 @@ struct Spheres;
 struct Capsules;
 /// Every body is a box that rotates.
 struct TurningBoxes;
+/// Every body is a six-sided prism that rotates, which collides as a convex hull.
+struct TurningHulls;
 
 impl Mix for Boxes {
 	fn shape(_: usize) -> Shapes {
@@ -100,6 +102,27 @@ impl Mix for Capsules {
 impl Mix for TurningBoxes {
 	fn shape(index: usize) -> Shapes {
 		Boxes::shape(index)
+	}
+
+	fn rotates(_: usize) -> bool {
+		true
+	}
+}
+
+impl Mix for TurningHulls {
+	fn shape(_: usize) -> Shapes {
+		// Every body shares one hull, as bodies that collide as the same mesh would.
+		static PRISM: std::sync::OnceLock<std::sync::Arc<ConvexHull>> = std::sync::OnceLock::new();
+		let prism = PRISM.get_or_init(|| {
+			let corners: Vec<Point<LocalSpace>> = (0..6)
+				.flat_map(|side| {
+					let turn = side as f32 / 6.0 * std::f32::consts::TAU;
+					[-0.5, 0.5].map(|height| Point::new(0.5 * turn.cos(), height, 0.5 * turn.sin()))
+				})
+				.collect();
+			std::sync::Arc::new(build_convex_hull(&corners).expect("the corners of a prism enclose a volume"))
+		});
+		Shapes::convex_hull(prism.clone())
 	}
 
 	fn rotates(_: usize) -> bool {
@@ -193,7 +216,7 @@ fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
 }
 
 /// Measures a step of a pile of bodies that rotate on the calling thread.
-#[divan::bench(types = [TurningBoxes], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
+#[divan::bench(types = [TurningBoxes, TurningHulls], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
 fn serial_turning<M: Mix>(bencher: Bencher, bodies: usize) {
 	time_serial::<M>(bencher, bodies);
 }
@@ -205,7 +228,7 @@ fn alley<M: Mix>(bencher: Bencher, bodies: usize) {
 }
 
 /// Measures a step of a pile of bodies that rotate on an alley.
-#[divan::bench(types = [TurningBoxes], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
+#[divan::bench(types = [TurningBoxes, TurningHulls], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
 fn alley_turning<M: Mix>(bencher: Bencher, bodies: usize) {
 	time_alley::<M>(bencher, bodies);
 }

@@ -1,10 +1,11 @@
 use math::{
-	AABB, Capsule, Orientation, OrientedBox, Point, Scale, Sphere, Vector,
+	AABB, Capsule, Orientation, OrientedBox, Point, Scale, Sphere, UnitVector, Vector,
 	collision::{
-		Intersection, aabb_vs_aabb, capsule_vs_aabb, capsule_vs_capsule, capsule_vs_sphere, obb_vs_obb, sphere_vs_aabb,
-		sphere_vs_sphere, sphere_vs_sphere_dynamic,
+		Intersection, ObbSeparation, aabb_vs_aabb, capsule_vs_aabb, capsule_vs_capsule, capsule_vs_sphere, obb_overlap,
+		sphere_vs_aabb, sphere_vs_sphere, sphere_vs_sphere_dynamic,
 	},
 };
+use smallvec::SmallVec;
 
 use crate::{
 	core::factory::Handle,
@@ -12,7 +13,7 @@ use crate::{
 		LocalSpace,
 		body::BodyTypes,
 		collider::{Shapes, capsule_reach, sphere_moment},
-		contact_patch::{FEATURE_SLACK, Feature, patch_corners},
+		contact_patch::{FEATURE_SLACK, Feature, PatchCorner, box_side_patch, patch_corners},
 		dynabit::contact::Contact,
 		epa::ContactScratch,
 		gjk::rounded_shapes_contact,
@@ -177,19 +178,17 @@ impl PhysicsBody {
 			Shapes::ConvexHull(hull) => (hull.bounds().center(), hull.bounds().half_extents(), 0.0),
 		};
 
-		// A turned box reaches along each world axis as far as its three half sizes do together, each turned.
-		let turned = |local: Vector<LocalSpace>| self.orientation.rotate_vector(Vector::from_maths(local.into_maths()));
-		let reach = [
-			Vector::new(half_sizes.x(), 0.0, 0.0),
-			Vector::new(0.0, half_sizes.y(), 0.0),
-			Vector::new(0.0, 0.0, half_sizes.z()),
-		]
-		.into_iter()
-		.fold(Vector::new(radius, radius, radius), |reach, side| {
-			let side = turned(side);
-			reach + Vector::new(side.x().abs(), side.y().abs(), side.z().abs())
-		});
-		AABB::from_center_and_half_extents(self.position + turned(middle - Point::origin()), reach)
+		// A turned box reaches along each world axis as far as its three half sizes do together, each along its own
+		// turned axis.
+		let axes: [UnitVector; 3] = self.orientation.axes();
+		let (half_sizes, middle) = (half_sizes.to_array(), middle.to_array());
+		let (mut reach, mut center) = (Vector::new(radius, radius, radius), self.position);
+		for axis in 0..3 {
+			let side = axes[axis] * half_sizes[axis];
+			reach += Vector::new(side.x().abs(), side.y().abs(), side.z().abs());
+			center += axes[axis] * middle[axis];
+		}
+		AABB::from_center_and_half_extents(center, reach)
 	}
 
 	/// Returns whether the body travels far enough in the next `dt` seconds that [`intersect`] tests it along its
@@ -331,45 +330,77 @@ fn convex_contacts(
 	contacts: &mut Vec<Contact>,
 	scratch: &mut ContactScratch,
 ) {
+	// A body that cannot be turned is held as well at one point as at several. One that can be would rock on a single
+	// point of the stretch or the patch that it touches the other over, so it is held at the patch's corners.
+	let held_at_corners = a.is_turned_by_contacts() || b.is_turned_by_contacts();
+	if let (Shapes::Cube { size: a_size }, Shapes::Cube { size: b_size }) = (&a.collision_shape, &b.collision_shape) {
+		// Boxes that are further apart than their corners reach from their middles cannot touch, however they are
+		// turned, which is told without working out how they are turned.
+		let reach = a_size.length() + b_size.length();
+		if (b.position - a.position).length_squared() > reach * reach {
+			return;
+		}
+		let (placed_a, placed_b) = (Placement::of(a), Placement::of(b));
+		let (box_a, box_b) = (placed_a.oriented_box(*a_size), placed_b.oriented_box(*b_size));
+		let Some(overlap) = obb_overlap(&box_a, &box_b) else {
+			return;
+		};
+		// Boxes touch over a patch when a side of one faces the other. Edges that cross touch at one point.
+		let corners = match overlap.separation() {
+			_ if !held_at_corners => SmallVec::new(),
+			ObbSeparation::SideOfA(axis) => box_side_patch(&box_a, axis, overlap.normal(), &box_b, true),
+			ObbSeparation::SideOfB(axis) => box_side_patch(&box_b, axis, -overlap.normal(), &box_a, false),
+			ObbSeparation::Edges(..) => SmallVec::new(),
+		};
+		if corners.is_empty() {
+			contacts.push(Contact::from_static(i, j, overlap.contact(&box_a, &box_b)));
+		}
+		return hold(contacts, (i, j), overlap.normal(), corners);
+	}
+
 	let (placed_a, placed_b) = (Placement::of(a), Placement::of(b));
 	let (radius_a, radius_b) = (core_radius(&a.collision_shape), core_radius(&b.collision_shape));
-	let deepest = match (&a.collision_shape, &b.collision_shape) {
-		(Shapes::Cube { size: a_size }, Shapes::Cube { size: b_size }) => {
-			obb_vs_obb(&placed_a.oriented_box(*a_size), &placed_b.oriented_box(*b_size))
-		}
-		_ => rounded_shapes_contact(
-			|direction| placed_a.core_support(direction),
-			radius_a,
-			|direction| placed_b.core_support(direction),
-			radius_b,
-			scratch,
-		),
-	};
-	let Some(deepest) = deepest else {
+	let Some(deepest) = rounded_shapes_contact(
+		|direction| placed_a.core_support(direction),
+		radius_a,
+		|direction| placed_b.core_support(direction),
+		radius_b,
+		Some(placed_a.extent_with(&placed_b)),
+		scratch,
+	) else {
 		return;
 	};
 
-	// The two points found are one pair that is as deep in each other as the shapes are. Where one of the shapes touches
-	// with a single corner, that corner is the pair, and so it is where contacts turn neither body, because a body
-	// that cannot be turned is held as well at one point as at several. Otherwise the shapes touch along a stretch
-	// or over a patch, and a body held at one point of it would rock on that point, so it is held at the patch's
-	// corners.
-	if a.is_turned_by_contacts() || b.is_turned_by_contacts() {
+	// GJK's two points are one pair that is as deep in each other as the shapes are. Where one of the shapes touches
+	// with a single corner, that corner is the pair.
+	let mut corners = SmallVec::new();
+	if held_at_corners {
 		let reach = deepest.depth() + FEATURE_SLACK;
 		let feature_a = placed_a.core_feature(deepest.normal().into(), reach);
 		let feature_b = placed_b.core_feature(-deepest.normal().into_vector(), reach);
 		if feature_a.len() > 1 && feature_b.len() > 1 {
-			let corners = patch_corners(&feature_a, radius_a, &feature_b, radius_b, deepest.normal());
-			if !corners.is_empty() {
-				contacts.extend(corners.into_iter().map(|held| Contact {
-					corner: held.number,
-					..Contact::from_static(i, j, Intersection::new(deepest.normal(), held.depth, held.on_a, held.on_b))
-				}));
-				return;
-			}
+			corners = patch_corners(&feature_a, radius_a, &feature_b, radius_b, deepest.normal());
 		}
 	}
-	contacts.push(Contact::from_static(i, j, deepest));
+	let normal = deepest.normal();
+	if corners.is_empty() {
+		contacts.push(Contact::from_static(i, j, deepest));
+	}
+	hold(contacts, (i, j), normal, corners);
+}
+
+/// Adds to `contacts` one contact between the bodies in slots `i` and `j` for each corner of the patch they touch
+/// over, along `normal`.
+fn hold(
+	contacts: &mut Vec<Contact>,
+	(i, j): (usize, usize),
+	normal: UnitVector,
+	corners: SmallVec<[PatchCorner<math::WorldSpace>; 4]>,
+) {
+	contacts.extend(corners.into_iter().map(|held| Contact {
+		corner: held.number,
+		..Contact::from_static(i, j, Intersection::new(normal, held.depth, held.on_a, held.on_b))
+	}));
 }
 
 /// The `Placement` struct answers questions about the core of a body's shape in world space: the shape itself for a
@@ -377,42 +408,59 @@ fn convex_contacts(
 /// is how far the shape reaches beyond its core.
 struct Placement<'a> {
 	body: &'a PhysicsBody,
-	/// For a shape that is turned the way its body is: the turn from world space into the shape's own frame, and the
-	/// turn back.
-	turn: Option<(Orientation, Orientation)>,
+	/// For a shape that is turned the way its body is: where the shape's own x, y, and z axes point in world space.
+	/// Going between the two frames with these takes a few products, where turning by the body's orientation would
+	/// work through its quaternion for every point asked about.
+	axes: Option<[UnitVector; 3]>,
 }
 
 impl<'a> Placement<'a> {
 	fn of(body: &'a PhysicsBody) -> Self {
 		Self {
 			body,
-			turn: body.turns_shape().then(|| (body.orientation.inverse(), body.orientation)),
+			axes: body.turns_shape().then(|| body.orientation.axes()),
 		}
 	}
 
 	/// Returns the body's box, for a collider that is a [`Shapes::Cube`] with these half sizes.
 	fn oriented_box(&self, half_sizes: Vector<LocalSpace>) -> OrientedBox {
-		let orientation = self.turn.map_or(Orientation::identity(), |(_, out_of_shape)| out_of_shape);
-		OrientedBox::new(self.body.position, half_sizes.to_array(), orientation)
+		let axes = self
+			.axes
+			.unwrap_or([UnitVector::x_axis(), UnitVector::y_axis(), UnitVector::z_axis()]);
+		OrientedBox::from_axes(self.body.position, half_sizes.to_array(), axes)
+	}
+
+	/// Returns a bound on how far apart a point of this body's shape and a point of `other`'s can be along any one
+	/// coordinate axis: no further than the bodies are apart, added to how far each shape reaches from its body
+	/// however it is turned.
+	fn extent_with(&self, other: &Self) -> f32 {
+		let reach = |shape: &Shapes| {
+			let bounds = shape.bounds();
+			(bounds.center() - Point::origin()).length() + bounds.half_extents().length()
+		};
+		let apart = (other.body.position - self.body.position).to_array();
+		apart.iter().fold(0.0, |most: f32, part| most.max(part.abs()))
+			+ reach(&self.body.collision_shape)
+			+ reach(&other.body.collision_shape)
 	}
 
 	/// Returns a world-space direction in the shape's own frame.
 	fn to_shape(&self, direction: Vector) -> Vector<LocalSpace> {
-		let direction = self
-			.turn
-			.map_or(direction, |(into_shape, _)| into_shape.rotate_vector(direction));
-		// Crossing from world simulation to authored local geometry requires an explicit raw boundary conversion.
-		Vector::from_maths(direction.into_maths())
+		match self.axes {
+			Some([x, y, z]) => Vector::new(x.dot(direction), y.dot(direction), z.dot(direction)),
+			// Crossing from world simulation to authored local geometry requires an explicit raw boundary conversion.
+			None => Vector::from_maths(direction.into_maths()),
+		}
 	}
 
 	/// Returns the world-space position of a point of the shape.
 	fn to_world(&self, local: Point<LocalSpace>) -> Point {
-		// Crossing from authored local geometry to world simulation requires an explicit raw boundary conversion.
-		let offset = Vector::from_maths(local.into_maths());
 		self.body.position
-			+ self
-				.turn
-				.map_or(offset, |(_, out_of_shape)| out_of_shape.rotate_vector(offset))
+			+ match self.axes {
+				Some([x, y, z]) => x * local.x() + y * local.y() + z * local.z(),
+				// Crossing from authored local geometry to world simulation requires an explicit raw boundary conversion.
+				None => Vector::from_maths(local.into_maths()),
+			}
 	}
 
 	/// Returns the point of the core that is furthest along `direction`.
@@ -441,32 +489,45 @@ impl<'a> Placement<'a> {
 		let direction = self.to_shape(direction);
 		let along = |corner: Point<LocalSpace>| direction.dot(corner - Point::origin());
 		let mut feature = Feature::new();
-		let mut keep = |corners: &mut dyn Iterator<Item = Point<LocalSpace>>, furthest: f32| {
-			feature.extend(
-				corners
-					.filter(|&corner| along(corner) >= furthest - reach)
-					.map(|corner| self.to_world(corner)),
-			);
-		};
 		match &self.body.collision_shape {
-			Shapes::Sphere { .. } => keep(&mut std::iter::once(Point::origin()), 0.0),
+			Shapes::Sphere { .. } => feature.push(self.to_world(Point::origin())),
 			Shapes::Cube { size } => {
+				// A corner is short of the furthest one by what each axis on which it is on the far side adds up to.
 				let half = size.to_array().map(f32::abs);
-				let furthest = half[0] * direction.x().abs() + half[1] * direction.y().abs() + half[2] * direction.z().abs();
-				let mut corners = (0..8).map(|corner| {
-					let side = |axis: usize| if corner >> axis & 1 == 0 { -half[axis] } else { half[axis] };
-					Point::new(side(0), side(1), side(2))
-				});
-				keep(&mut corners, furthest);
+				let lead = [direction.x(), direction.y(), direction.z()];
+				for corner in 0..8 {
+					let mut short = 0.0;
+					let mut place = [0.0; 3];
+					for axis in 0..3 {
+						let near = (corner >> axis & 1 == 1) == (lead[axis] >= 0.0);
+						place[axis] = if corner >> axis & 1 == 1 { half[axis] } else { -half[axis] };
+						if !near {
+							short += 2.0 * half[axis] * lead[axis].abs();
+						}
+					}
+					if short <= reach {
+						feature.push(self.to_world(Point::from_array(place)));
+					}
+				}
 			}
 			Shapes::Capsule { radius, height, center } => {
-				let reach = Vector::new(0.0, capsule_reach(*radius, *height), 0.0);
-				let ends = [*center - reach, *center + reach];
-				keep(&mut ends.into_iter(), along(ends[0]).max(along(ends[1])));
+				let reach_along = Vector::new(0.0, capsule_reach(*radius, *height), 0.0);
+				let ends = [*center - reach_along, *center + reach_along];
+				let furthest = along(ends[0]).max(along(ends[1]));
+				feature.extend(
+					ends.into_iter()
+						.filter(|&end| along(end) >= furthest - reach)
+						.map(|end| self.to_world(end)),
+				);
 			}
 			Shapes::ConvexHull(hull) => {
 				let furthest = along(hull.support_point(direction));
-				keep(&mut hull.vertices().iter().copied(), furthest);
+				feature.extend(
+					hull.vertices()
+						.iter()
+						.filter(|&&corner| along(corner) >= furthest - reach)
+						.map(|&corner| self.to_world(corner)),
+				);
 			}
 		}
 		feature
@@ -504,6 +565,8 @@ fn world_capsule(position: Point, radius: f32, height: f32, center: Point<LocalS
 
 #[cfg(test)]
 mod tests {
+	use math::collision::obb_vs_obb;
+
 	use super::*;
 	use crate::physics::Shapes;
 
@@ -1014,6 +1077,7 @@ mod tests {
 				0.0,
 				|direction| placed_b.core_support(direction),
 				0.0,
+				Some(placed_a.extent_with(&placed_b)),
 				&mut ContactScratch::default(),
 			);
 

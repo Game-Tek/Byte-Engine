@@ -322,10 +322,10 @@ pub(super) type GridPoint = [i32; 3];
 pub(super) struct Face {
 	/// The points at the triangle's corners, counterclockwise when seen from outside the hull.
 	pub(super) corners: [u32; 3],
+	/// The first corner's position.
+	origin: GridPoint,
 	/// The exact cross product of two of the triangle's sides, which points out of the hull.
 	normal: [i64; 3],
-	/// How far along `normal` the triangle's plane is from the grid's origin, in units of the normal's length.
-	plane: i128,
 	/// The length of `normal`.
 	length: f64,
 }
@@ -340,8 +340,8 @@ impl Face {
 		);
 		Self {
 			corners,
+			origin: a,
 			normal,
-			plane: dot(normal, a.map(i64::from)),
 			length: length(normal),
 		}
 	}
@@ -349,12 +349,18 @@ impl Face {
 	/// Returns a number that is positive when `point` is outside the face's plane, negative when it is inside, and
 	/// zero when it is on it. It is exact, so it gives every face in one plane the same answer.
 	pub(super) fn side(&self, point: GridPoint) -> i128 {
-		dot(self.normal, point.map(i64::from)) - self.plane
+		dot(self.normal, offset(self.origin, point))
 	}
 
 	/// Returns how many grid steps `point` is outside the face's plane.
+	///
+	/// This is rounded, to a tiny part of a step, where [`Self::side`] is exact. It is for telling how far a point
+	/// is from a face, and never for telling which side it is on.
+	// Worked out in floating point from the start. Converting the exact 128-bit result of `side` takes a call to a
+	// routine that is slow enough to have been 6% of a physics step of hull piles on an Apple M4.
 	pub(super) fn height(&self, point: GridPoint) -> f64 {
-		self.side(point) as f64 / self.length
+		let offset = offset(self.origin, point);
+		(0..3).map(|axis| self.normal[axis] as f64 * offset[axis] as f64).sum::<f64>() / self.length
 	}
 
 	/// Returns the direction that the face looks in, out of the hull, with a length of one.
@@ -522,8 +528,9 @@ pub(super) fn dot(left: [i64; 3], right: [i64; 3]) -> i128 {
 	(0..3).map(|axis| i128::from(left[axis]) * i128::from(right[axis])).sum()
 }
 
+// In floating point from the start, for the reason given at `Face::height`.
 fn length(vector: [i64; 3]) -> f64 {
-	(dot(vector, vector) as f64).sqrt()
+	vector.iter().map(|&part| part as f64 * part as f64).sum::<f64>().sqrt()
 }
 
 pub(super) fn distance_squared(from: GridPoint, to: GridPoint) -> i128 {

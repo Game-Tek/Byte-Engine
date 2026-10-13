@@ -16,13 +16,15 @@ impl<Space> OrientedBox<Space> {
 	/// Creates a box around `center` whose sides are `half_extents` from it along each of the box's own axes, which
 	/// are the coordinate axes turned by `orientation`.
 	pub fn new(center: Point<Space>, half_extents: [f32; 3], orientation: Orientation) -> Self {
-		let turned = |axis: UnitVector<Space>| {
-			// Turning a direction keeps its length.
-			UnitVector::unchecked(orientation.rotate_vector(axis.into_vector()).into_maths())
-		};
+		Self::from_axes(center, half_extents, orientation.axes())
+	}
+
+	/// Creates a box around `center` whose sides are `half_extents` from it along each of `axes`, which have to be
+	/// square to each other, as those [`Orientation::axes`] returns are.
+	pub fn from_axes(center: Point<Space>, half_extents: [f32; 3], axes: [UnitVector<Space>; 3]) -> Self {
 		Self {
 			center,
-			axes: [UnitVector::x_axis(), UnitVector::y_axis(), UnitVector::z_axis()].map(turned),
+			axes,
 			half_extents: half_extents.map(f32::abs),
 		}
 	}

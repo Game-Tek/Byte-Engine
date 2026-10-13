@@ -2,7 +2,8 @@
 //!
 //! Every benchmark drops a block of bodies on a floor, lets them pile up, and then times steps of the pile. Scenes
 //! differ in the number of bodies and in their shapes, because boxes, spheres, and capsules take different paths
-//! through contact detection.
+//! through contact detection. Boxes and capsules that rotate take another one again, which costs much more for each
+//! pair, so their scenes are smaller.
 //!
 //! Each sample times 30 steps, so the item rate is steps per second and a sample's time divided by 30 is one step.
 //! Compare the fastest samples of two or three runs: the system sometimes runs a whole row on its slower cores,
@@ -49,6 +50,12 @@ fn main() {
 trait Mix {
 	/// Returns the shape of the body at `index`, which fits in a one-meter cube.
 	fn shape(index: usize) -> Shapes;
+
+	/// Returns whether the body at `index` rotates. Spheres do, which lets them roll. Boxes and capsules that do not
+	/// are tested along the axes, whatever happens to them.
+	fn rotates(index: usize) -> bool {
+		matches!(Self::shape(index), Shapes::Sphere { .. })
+	}
 }
 
 /// Every body is a box.
@@ -59,6 +66,8 @@ struct Mixed;
 struct Spheres;
 /// Every body is a capsule.
 struct Capsules;
+/// Every body is a box that rotates.
+struct TurningBoxes;
 
 impl Mix for Boxes {
 	fn shape(_: usize) -> Shapes {
@@ -85,6 +94,16 @@ impl Mix for Spheres {
 impl Mix for Capsules {
 	fn shape(_: usize) -> Shapes {
 		Shapes::capsule(0.25, 1.0, Point::origin())
+	}
+}
+
+impl Mix for TurningBoxes {
+	fn shape(index: usize) -> Shapes {
+		Boxes::shape(index)
+	}
+
+	fn rotates(_: usize) -> bool {
+		true
 	}
 }
 
@@ -145,7 +164,10 @@ impl Scene {
 				row as f32 * SPACING - reach + nudge(16),
 			);
 			let handle = handles.create(());
-			body_factory.derive(handle, Body::new(BodyTypes::Dynamic, M::shape(index)));
+			body_factory.derive(
+				handle,
+				Body::new(BodyTypes::Dynamic, M::shape(index)).with_rotation(M::rotates(index)),
+			);
 			authored.send(TransformationUpdate::new(handle, Transform::from_position(position)));
 		}
 
@@ -167,6 +189,28 @@ impl Scene {
 /// Measures a step of a pile on the calling thread.
 #[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
 fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
+	time_serial::<M>(bencher, bodies);
+}
+
+/// Measures a step of a pile of bodies that rotate on the calling thread.
+#[divan::bench(types = [TurningBoxes], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
+fn serial_turning<M: Mix>(bencher: Bencher, bodies: usize) {
+	time_serial::<M>(bencher, bodies);
+}
+
+/// Measures a step of a pile on an alley with one lane for each hardware thread, as an application runs it.
+#[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
+fn alley<M: Mix>(bencher: Bencher, bodies: usize) {
+	time_alley::<M>(bencher, bodies);
+}
+
+/// Measures a step of a pile of bodies that rotate on an alley.
+#[divan::bench(types = [TurningBoxes], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
+fn alley_turning<M: Mix>(bencher: Bencher, bodies: usize) {
+	time_alley::<M>(bencher, bodies);
+}
+
+fn time_serial<M: Mix>(bencher: Bencher, bodies: usize) {
 	let step = |scene: &mut Scene, time: Time| scene.world.update(time, &mut scene.authored, &scene.published);
 
 	bencher
@@ -178,9 +222,7 @@ fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
 		});
 }
 
-/// Measures a step of a pile on an alley with one lane for each hardware thread, as an application runs it.
-#[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
-fn alley<M: Mix>(bencher: Bencher, bodies: usize) {
+fn time_alley<M: Mix>(bencher: Bencher, bodies: usize) {
 	let lanes = std::cell::RefCell::new(Alley::new());
 	let step = |scene: &mut Scene, time: Time| {
 		scene

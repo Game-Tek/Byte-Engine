@@ -1,6 +1,6 @@
 use maths_rs::Vec3f;
 
-use crate::{AABB, Capsule, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
+use crate::{AABB, Capsule, OrientedBox, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
 
 /// The `Intersection` struct records a static contact using a normal that points from shape A toward shape B.
 pub struct Intersection<Space = WorldSpace> {
@@ -43,6 +43,20 @@ impl<Space> PartialEq for Intersection<Space> {
 }
 
 impl<Space> Intersection<Space> {
+	/// Creates a contact from the unit `normal` from shape A toward shape B, the overlap `depth`, and the contact
+	/// point on each shape.
+	///
+	/// The point on shape A is where it reaches furthest into shape B, and the other way around, so the two are
+	/// `depth` apart along `normal`.
+	pub fn new(normal: UnitVector<Space>, depth: f32, point_on_a: Point<Space>, point_on_b: Point<Space>) -> Self {
+		Self {
+			normal,
+			depth,
+			point_on_a,
+			point_on_b,
+		}
+	}
+
 	/// Returns the unit normal from shape A toward shape B.
 	pub fn normal(&self) -> UnitVector<Space> {
 		self.normal
@@ -196,6 +210,10 @@ pub fn sphere_vs_sphere<Space>(sphere_a: &Sphere<Space>, sphere_b: &Sphere<Space
 }
 
 /// Returns the contact between two overlapping axis-aligned boxes.
+// Always inlined because physics tests every pair of boxes with it, from a function that tests every other pair of
+// shapes too and is large enough that the compiler would leave this as a call. With that call, physics steps of box
+// piles were 3% to 4% slower on an Apple M4.
+#[inline(always)]
 pub fn aabb_vs_aabb<Space>(a: &AABB<Space>, b: &AABB<Space>) -> Option<Intersection<Space>> {
 	let (a_min, a_max) = (a.min().to_array(), a.max().to_array());
 	let (b_min, b_max) = (b.min().to_array(), b.max().to_array());
@@ -497,6 +515,147 @@ fn closest_point_on_segment_to_aabb<Space>(start: Point<Space>, end: Point<Space
 		}
 	}
 	end
+}
+
+/// Returns the contact between two boxes that are turned any way and overlap or touch.
+///
+/// The normal is the direction in which the boxes have the shortest way out of each other, which is either a
+/// direction that a side of one of them faces, or one square to an edge of each, when two edges cross. The contact
+/// points are in the middle of the part of each box that is deepest in the other: a corner, the middle of an edge or
+/// of a side, or where the two edges that cross are closest. Boxes that rest on each other touch over a whole patch,
+/// of which these are one pair of points.
+pub fn obb_vs_obb<Space>(a: &OrientedBox<Space>, b: &OrientedBox<Space>) -> Option<Intersection<Space>> {
+	let (a_axes, b_axes) = (a.axes().map(UnitVector::into_vector), b.axes().map(UnitVector::into_vector));
+	let (a_half, b_half) = (a.half_extents(), b.half_extents());
+	let between = b.center() - a.center();
+
+	// Two boxes are apart exactly when some direction has a gap between how far they reach along it, and only
+	// fifteen directions have to be tried: the three that the sides of each box face, and the nine that are square
+	// to one edge of each. Everything is worked out in the first box's own frame, where its axes are the coordinate
+	// axes: `turn` holds the second box's axes there, and `offset` the way to its center.
+	let turn: [[f32; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| a_axes[i].dot(b_axes[j])));
+	let spread = turn.map(|row| row.map(f32::abs));
+	let offset: [f32; 3] = std::array::from_fn(|i| between.dot(a_axes[i]));
+
+	// The direction with the least overlap is the shortest way out. Each is kept with how far the second box's
+	// center is along it, whose sign tells which way along it leads from the first box to the second.
+	let mut side: Option<(f32, f32, Separation)> = None;
+	let mut crossing: Option<(f32, f32, Separation)> = None;
+	let shallowest = |best: &mut Option<(f32, f32, Separation)>, depth: f32, along: f32, separation: Separation| {
+		if best.is_none_or(|(least, ..)| depth < least) {
+			*best = Some((depth, along, separation));
+		}
+	};
+
+	for i in 0..3 {
+		let reach = a_half[i] + (0..3).map(|j| b_half[j] * spread[i][j]).sum::<f32>();
+		let depth = reach - offset[i].abs();
+		if depth < 0.0 {
+			return None;
+		}
+		shallowest(&mut side, depth, offset[i], Separation::SideOfA(i));
+	}
+	for j in 0..3 {
+		let along: f32 = (0..3).map(|i| offset[i] * turn[i][j]).sum();
+		let reach = (0..3).map(|i| a_half[i] * spread[i][j]).sum::<f32>() + b_half[j];
+		let depth = reach - along.abs();
+		if depth < 0.0 {
+			return None;
+		}
+		shallowest(&mut side, depth, along, Separation::SideOfB(j));
+	}
+	for i in 0..3 {
+		let (i1, i2) = ((i + 1) % 3, (i + 2) % 3);
+		for j in 0..3 {
+			let (j1, j2) = ((j + 1) % 3, (j + 2) % 3);
+			// The cross product of the two edges is square to both, and as long as the sine of the angle between
+			// them. Edges that run the same way have no direction square to both that the sides do not already
+			// cover.
+			let length_squared = 1.0 - turn[i][j] * turn[i][j];
+			if length_squared < 1e-6 {
+				continue;
+			}
+			let along = offset[i2] * turn[i1][j] - offset[i1] * turn[i2][j];
+			let reach = a_half[i1] * spread[i2][j]
+				+ a_half[i2] * spread[i1][j]
+				+ b_half[j1] * spread[i][j2]
+				+ b_half[j2] * spread[i][j1];
+			let depth = (reach - along.abs()) / length_squared.sqrt();
+			if depth < 0.0 {
+				return None;
+			}
+			shallowest(&mut crossing, depth, along, Separation::Edges(i, j));
+		}
+	}
+
+	// Where sides face each other, a direction between two edges often overlaps as little as the sides' own, give or
+	// take rounding. The sides' direction is kept then, so that boxes that rest on each other do not get a normal
+	// that flickers between the two.
+	let (depth, along, separation) = match (side?, crossing) {
+		(side, Some(crossing)) if crossing.0 < side.0 - 1e-4 * (1.0 + side.0) => crossing,
+		(side, _) => side,
+	};
+	let sign = signed_axis(along);
+
+	Some(match separation {
+		Separation::SideOfA(i) => {
+			let normal = a.axes()[i] * sign;
+			let point_on_b = b.furthest_middle(-normal);
+			Intersection {
+				normal: UnitVector::unchecked(normal.into_maths()),
+				depth,
+				point_on_a: point_on_b + normal * depth,
+				point_on_b,
+			}
+		}
+		Separation::SideOfB(j) => {
+			let normal = b.axes()[j] * sign;
+			let point_on_a = a.furthest_middle(normal);
+			Intersection {
+				normal: UnitVector::unchecked(normal.into_maths()),
+				depth,
+				point_on_a,
+				point_on_b: point_on_a - normal * depth,
+			}
+		}
+		Separation::Edges(i, j) => {
+			let normal = (a_axes[i].cross(b_axes[j]) * sign).normalized().ok()?;
+			// The two edges that cross: on each box, the edge along that axis that is furthest toward the other box.
+			// Leaving the axis out of the direction gives the middle of that edge.
+			let across =
+				|axes: [Vector<Space>; 3], axis: usize, toward: Vector<Space>| toward - axes[axis] * axes[axis].dot(toward);
+			let a_middle = a.furthest_middle(across(a_axes, i, normal.into_vector()));
+			let b_middle = b.furthest_middle(across(b_axes, j, -normal.into_vector()));
+			// Where the lines through the two edges pass closest, as distances along each from its middle, kept
+			// within the edge.
+			let apart = b_middle - a_middle;
+			let (along_a, along_b) = (apart.dot(a_axes[i]), apart.dot(b_axes[j]));
+			let on_a = ((along_a - turn[i][j] * along_b) / length_squared_of(turn[i][j])).clamp(-a_half[i], a_half[i]);
+			let on_b = ((turn[i][j] * along_a - along_b) / length_squared_of(turn[i][j])).clamp(-b_half[j], b_half[j]);
+			Intersection {
+				normal,
+				depth,
+				point_on_a: a_middle + a_axes[i] * on_a,
+				point_on_b: b_middle + b_axes[j] * on_b,
+			}
+		}
+	})
+}
+
+/// Which direction two oriented boxes have the least overlap along.
+#[derive(Clone, Copy)]
+enum Separation {
+	/// The direction that a pair of the first box's sides faces, by the index of its axis.
+	SideOfA(usize),
+	/// The direction that a pair of the second box's sides faces, by the index of its axis.
+	SideOfB(usize),
+	/// The direction square to an edge of each box, by the indices of the axes the edges run along.
+	Edges(usize, usize),
+}
+
+/// Returns the squared length of the cross product of two unit directions, from the cosine of the angle between them.
+fn length_squared_of(cosine: f32) -> f32 {
+	1.0 - cosine * cosine
 }
 
 /// Returns the entry and exit distances where `ray` intersects `sphere`.
@@ -941,5 +1100,121 @@ mod tests {
 		assert_eq!(hit.contact().depth(), 2.0);
 		assert_eq!(hit.contact().point_on_a(), Point::new(-1.0, 0.0, 0.0));
 		assert_eq!(hit.contact().point_on_b(), Point::new(1.0, 0.0, 0.0));
+	}
+
+	/// Returns a turn of `angle` radians about the axis `axis`.
+	fn turned_about(axis: [f32; 3], angle: f32) -> crate::Orientation {
+		let [x, y, z] = axis.map(|part| part * angle);
+		crate::Orientation::try_from_rotation_vector(Vector::<WorldSpace>::new(x, y, z)).unwrap()
+	}
+
+	fn oriented(center: [f32; 3], half_extents: [f32; 3], orientation: crate::Orientation) -> OrientedBox<WorldSpace> {
+		OrientedBox::new(Point::from_array(center), half_extents, orientation)
+	}
+
+	#[test]
+	fn boxes_along_the_axes_get_the_contact_of_their_bounds() {
+		let level = crate::Orientation::identity();
+		let (a, b) = (
+			oriented([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], level),
+			oriented([1.75, 0.5, -0.25], [1.0, 1.0, 1.0], level),
+		);
+		let expected = aabb_vs_aabb(
+			&AABB::new(Point::new(-1.0, -1.0, -1.0), Point::new(1.0, 1.0, 1.0)),
+			&AABB::new(Point::new(0.75, -0.5, -1.25), Point::new(2.75, 1.5, 0.75)),
+		)
+		.unwrap();
+
+		let contact = obb_vs_obb(&a, &b).expect("the boxes overlap");
+
+		assert!((contact.normal().into_vector() - expected.normal().into_vector()).length() <= 1e-6);
+		assert_float_eq_with_epsilon!(contact.depth(), expected.depth(), 1e-6);
+		// The points are on the sides that face each other, as far apart as the boxes are deep in each other.
+		assert_float_eq_with_epsilon!(contact.point_on_a().x(), 1.0, 1e-6);
+		assert_float_eq_with_epsilon!(contact.point_on_b().x(), 0.75, 1e-6);
+		assert!(obb_vs_obb(&a, &oriented([2.1, 0.5, -0.25], [1.0, 1.0, 1.0], level)).is_none());
+
+		// The other way around, the same contact is seen from the other side.
+		let swapped = obb_vs_obb(&b, &a).expect("the boxes overlap");
+		assert!((swapped.normal().into_vector() - -contact.normal().into_vector()).length() <= 1e-6);
+		assert_float_eq_with_epsilon!(swapped.depth(), contact.depth(), 1e-6);
+	}
+
+	#[test]
+	fn a_turned_box_touches_a_side_with_its_edge() {
+		// A cube turned an eighth of a turn about z stands on an edge, the square root of two below its middle, which
+		// is 0.1 into the top of a floor.
+		let floor = oriented([0.0, -0.5, 0.0], [4.0, 0.5, 4.0], crate::Orientation::identity());
+		let cube = oriented(
+			[1.0, std::f32::consts::SQRT_2 - 0.1, 0.5],
+			[1.0, 1.0, 1.0],
+			turned_about([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_4),
+		);
+
+		let contact = obb_vs_obb(&floor, &cube).expect("the edge is in the floor");
+
+		assert!((contact.normal().into_vector() - Vector::new(0.0, 1.0, 0.0)).length() <= 1e-5);
+		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 1e-5);
+		// The middle of the edge, and the point of the floor's top above it.
+		assert!((contact.point_on_b() - Point::new(1.0, -0.1, 0.5)).length() <= 1e-5);
+		assert!((contact.point_on_a() - Point::new(1.0, 0.0, 0.5)).length() <= 1e-5);
+
+		let lifted = oriented(
+			[1.0, std::f32::consts::SQRT_2 + 0.1, 0.5],
+			[1.0, 1.0, 1.0],
+			turned_about([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_4),
+		);
+		assert!(obb_vs_obb(&floor, &lifted).is_none());
+	}
+
+	#[test]
+	fn boxes_whose_edges_cross_touch_where_the_edges_are_closest() {
+		// Two cubes turned an eighth of a turn, one about z and one about x, so that the first has an edge along z on
+		// top and the second an edge along x underneath. The edges cross, 0.2 into each other.
+		let reach = std::f32::consts::SQRT_2;
+		let lower = oriented(
+			[0.0, 0.0, 0.0],
+			[1.0, 1.0, 1.0],
+			turned_about([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_4),
+		);
+		let upper = oriented(
+			[0.25, 2.0 * reach - 0.2, -0.5],
+			[1.0, 1.0, 1.0],
+			turned_about([1.0, 0.0, 0.0], std::f32::consts::FRAC_PI_4),
+		);
+
+		let contact = obb_vs_obb(&lower, &upper).expect("the edges are in each other");
+
+		assert!((contact.normal().into_vector() - Vector::new(0.0, 1.0, 0.0)).length() <= 1e-5);
+		assert_float_eq_with_epsilon!(contact.depth(), 0.2, 1e-5);
+		// The lower cube's edge runs along z at x = 0, and the upper one's along x at z = -0.5.
+		assert!((contact.point_on_a() - Point::new(0.0, reach, -0.5)).length() <= 1e-5);
+		assert!((contact.point_on_b() - Point::new(0.0, reach - 0.2, -0.5)).length() <= 1e-5);
+
+		// No side of either cube faces a direction with as little overlap.
+		let apart = oriented(
+			[0.25, 2.0 * reach + 0.1, -0.5],
+			[1.0, 1.0, 1.0],
+			turned_about([1.0, 0.0, 0.0], std::f32::consts::FRAC_PI_4),
+		);
+		assert!(obb_vs_obb(&lower, &apart).is_none());
+	}
+
+	#[test]
+	fn a_box_inside_another_gets_the_shortest_way_out() {
+		// The small box is turned and 0.25 from the large one's side at x = 2 at its nearest corner.
+		let large = oriented([0.0, 0.0, 0.0], [2.0, 3.0, 4.0], crate::Orientation::identity());
+		let small = oriented(
+			[1.5, 0.5, -1.0],
+			[0.25, 0.25, 0.25],
+			turned_about([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_4),
+		);
+
+		let contact = obb_vs_obb(&large, &small).expect("one box is inside the other");
+
+		// It leaves through that side once all of it has passed: its far edge is the square root of an eighth
+		// behind its middle.
+		assert!((contact.normal().into_vector() - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5);
+		assert_float_eq_with_epsilon!(contact.depth(), 0.5 + 0.125f32.sqrt(), 1e-5);
 	}
 }

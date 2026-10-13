@@ -15,22 +15,28 @@ pub struct Body {
 	center_of_mass: Point<LocalSpace>,
 	elasticity: f32,
 	friction: f32,
+	rotates: bool,
 }
 
 impl Body {
 	/// Creates a body payload with default material and motion properties.
 	///
-	/// The center of mass starts in the middle of `shape`: the `center` of a [`Shapes::Capsule`], and the collider
-	/// origin for the other shapes. Replace it with [`Self::with_center_of_mass`].
+	/// The center of mass starts in the middle of `shape`: the `center` of a [`Shapes::Capsule`], the
+	/// [`crate::physics::ConvexHull::center_of_mass`] of a [`Shapes::ConvexHull`], and the collider origin for the
+	/// other shapes. Replace it with [`Self::with_center_of_mass`].
 	pub fn new(body_type: BodyTypes, shape: Shapes) -> Self {
 		Self {
 			body_type,
 			velocity: Vector::zero(),
 			mass: 1.0,
-			center_of_mass: shape.bounds().center(),
+			center_of_mass: match &shape {
+				Shapes::ConvexHull(hull) => hull.center_of_mass(),
+				_ => shape.bounds().center(),
+			},
 			shape,
 			elasticity: 0.1,
 			friction: 0.5,
+			rotates: true,
 		}
 	}
 
@@ -57,6 +63,16 @@ impl Body {
 	/// Returns this payload with replacement collision friction.
 	pub fn with_friction(self, friction: f32) -> Self {
 		Self { friction, ..self }
+	}
+
+	/// Returns this payload with the body rotating or not.
+	///
+	/// A body that rotates is turned by its contacts, and its shape collides turned the way the body is. A body that
+	/// does not is only ever moved by its contacts, and its shape collides as it was made whatever the body's
+	/// orientation is. Turn rotation off for a character, so that its capsule stays upright when it is pushed and
+	/// while an animation turns its transform.
+	pub fn with_rotation(self, rotates: bool) -> Self {
+		Self { rotates, ..self }
 	}
 
 	/// Returns how this body responds to simulation.
@@ -92,6 +108,11 @@ impl Body {
 	/// Returns the collision friction.
 	pub fn friction(&self) -> f32 {
 		self.friction
+	}
+
+	/// Returns whether contacts turn the body and its shape follows its orientation.
+	pub fn rotates(&self) -> bool {
+		self.rotates
 	}
 
 	/// Takes the collider geometry without cloning its owned data.

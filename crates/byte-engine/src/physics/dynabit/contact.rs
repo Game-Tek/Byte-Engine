@@ -10,6 +10,10 @@ pub struct Contact {
 	/// How far into the step the bodies touch, in seconds. Zero for bodies that touch where they are. For bodies
 	/// that touch later, the contact holds them to the speed that brings them together as the step ends.
 	pub(crate) toi: f32,
+	/// Which of the contacts between its two bodies this is, counted from zero. Bodies that touch over a patch have
+	/// one at each of up to four corners of it, and the solver starts each from what the one with its number
+	/// needed in the last step.
+	pub(crate) corner: u8,
 }
 
 impl Contact {
@@ -27,6 +31,7 @@ impl Contact {
 			normal: intersection.normal(),
 			depth: intersection.depth(),
 			toi: 0.0,
+			corner: 0,
 		}
 	}
 

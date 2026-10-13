@@ -493,6 +493,8 @@ const MAX_SHIFT: f32 = 0.05;
 pub(crate) struct WideContact {
 	/// The slots of the two bodies of each contact.
 	bodies: [[usize; WIDTH]; 2],
+	/// Which of the contacts between its two bodies each contact is.
+	corners: [u8; WIDTH],
 	/// The lanes that hold a contact, one bit per lane.
 	in_use: u64,
 	/// The lanes whose body takes new velocities, one bit per lane, for each of the two bodies.
@@ -521,12 +523,12 @@ pub(crate) struct WideContact {
 }
 
 impl WideContact {
-	/// Returns the two bodies of each contact with the impulse that holds them apart, for [`prepare`] to start
-	/// from in the next step.
-	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], f32)> + '_ {
+	/// Returns the two bodies of each contact, and which of their contacts it is, with the impulse that holds them
+	/// apart, for [`prepare`] to start from in the next step.
+	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], u8, f32)> + '_ {
 		(0..WIDTH).filter(|lane| (self.in_use >> lane) & 1 == 1).map(|lane| {
 			let push = f32::from_bits(self.applied[0][lane].load(Ordering::Relaxed));
-			([self.bodies[0][lane], self.bodies[1][lane]], push)
+			([self.bodies[0][lane], self.bodies[1][lane]], self.corners[lane], push)
 		})
 	}
 }
@@ -553,7 +555,7 @@ unsafe fn prepare(
 	contacts: &Contacts,
 	group: &[u32],
 	dt: f32,
-	last_push: impl Fn([usize; 2]) -> f32,
+	last_push: impl Fn([usize; 2], u8) -> f32,
 ) -> WideContact {
 	debug_assert!(
 		!group.is_empty() && group.len() <= WIDTH,
@@ -610,16 +612,23 @@ unsafe fn prepare(
 	let time = f32x4::from_array(contacts.map(|contact| contact.toi));
 	let touching = time.simd_le(zero);
 	let bounces = touching & closing_speed.simd_gt(f32x4::splat(BOUNCE_SPEED));
-	let allowance = touching.select(zero, closing_speed.simd_max(zero) * time / f32x4::splat(dt));
-	let overlapping = touching & movable;
 	let depth = f32x4::from_array(contacts.map(|contact| contact.depth));
+	// A contact with a negative depth is between bodies that are that far short of touching there, as they can be at
+	// a corner of the patch they touch over. They may close that gap in this step, and no more.
+	let gap = (zero - depth).simd_max(zero);
+	let allowance = touching.select(
+		gap.simd_gt(zero).select(gap / f32x4::splat(dt), zero),
+		closing_speed.simd_max(zero) * time / f32x4::splat(dt),
+	);
+	let overlapping = touching & movable;
 	let overlap =
 		((depth - f32x4::splat(OVERLAP_SLACK)).simd_max(zero) * f32x4::splat(OVERLAP_SHARE)).simd_min(f32x4::splat(MAX_SHIFT));
 
 	let bodies = sides.map(|sides| sides.map(|side| side.object));
+	let corners = contacts.map(|contact| contact.corner);
 	let pushes = f32x4::from_array(std::array::from_fn(|lane| {
 		if lane < group.len() {
-			last_push([bodies[0][lane], bodies[1][lane]])
+			last_push([bodies[0][lane], bodies[1][lane]], corners[lane])
 		} else {
 			0.0
 		}
@@ -627,6 +636,7 @@ unsafe fn prepare(
 	let pushes = solvable[0].select(pushes.simd_max(zero), zero);
 	let contact = WideContact {
 		bodies,
+		corners,
 		in_use: in_use.to_bitmask(),
 		movable: [
 			(in_use & a.inverse_mass.simd_ne(zero)).to_bitmask(),
@@ -755,7 +765,7 @@ pub(crate) struct ContactSolver {
 	rest: Vec<WideContact>,
 	/// The velocities of the bodies while the step's contacts are solved.
 	velocities: Velocities,
-	/// The impulse that held each pair of bodies apart in the last step, by [`pair_key`]. Resting bodies need about
+	/// The impulse that held each pair of bodies apart at each of their contacts in the last step, by [`pair_key`]. Resting bodies need about
 	/// the same impulse again, so the next step's solve starts from it.
 	pushes: HashMap<u64, f32>,
 	/// The slots whose body was replaced since the last step. Their pairs' impulses belonged to other bodies.
@@ -781,7 +791,7 @@ impl ContactSolver {
 			self.replaced.sort_unstable();
 			let replaced = |slot: u64| self.replaced.binary_search(&(slot as usize)).is_ok();
 			self.pushes
-				.retain(|pair, _| !replaced(pair >> 32) && !replaced(pair & u64::from(u32::MAX)));
+				.retain(|pair, _| pair_slots(*pair).into_iter().all(|slot| !replaced(slot)));
 			self.replaced.clear();
 		}
 		self.active = contacts.len() != 0;
@@ -894,7 +904,7 @@ impl ContactSolver {
 		dt: f32,
 		group: &[u32],
 	) -> WideContact {
-		let last_push = |pair| self.pushes.get(&pair_key(pair)).copied().unwrap_or(0.0);
+		let last_push = |pair, corner| self.pushes.get(&pair_key(pair, corner)).copied().unwrap_or(0.0);
 		// SAFETY: Preparing and solving a group only reaches the motion of its bodies, and only writes that of its
 		// movable ones. The caller keeps every other thread from the groups that have one of those.
 		unsafe { prepare(bodies, &self.velocities, contacts, group, dt, last_push) }
@@ -937,16 +947,31 @@ impl ContactSolver {
 		if self.active {
 			self.velocities.store(bodies);
 			let pushes = &mut self.pushes;
-			let mut remember = |group: &WideContact| pushes.extend(group.pushes().map(|(pair, push)| (pair_key(pair), push)));
+			let mut remember = |group: &WideContact| {
+				pushes.extend(group.pushes().map(|(pair, corner, push)| (pair_key(pair, corner), push)));
+			};
 			shared.for_each(&mut remember);
 			self.rest.iter().for_each(&mut remember);
 		}
 	}
 }
 
-/// Returns one value for a pair of body slots, the same whichever body a contact lists first.
-fn pair_key([first, second]: [usize; 2]) -> u64 {
-	(first.min(second) as u64) << 32 | first.max(second) as u64
+/// The bits of a [`pair_key`] that hold one body slot, which leaves two bits for the contact's number.
+const SLOT_BITS: u32 = 31;
+
+/// Returns one value for one of the contacts between a pair of body slots, the same whichever body the contact
+/// lists first. `corner` is which of the pair's contacts it is.
+fn pair_key([first, second]: [usize; 2], corner: u8) -> u64 {
+	debug_assert!(
+		first.max(second) >> SLOT_BITS == 0 && corner < 4,
+		"Contact key is out of range. The most likely cause is a pair with more than four contacts."
+	);
+	(first.min(second) as u64) << (SLOT_BITS + 2) | (first.max(second) as u64) << 2 | u64::from(corner)
+}
+
+/// Returns the two body slots of a [`pair_key`].
+fn pair_slots(key: u64) -> [u64; 2] {
+	[key >> (SLOT_BITS + 2), (key >> 2) & ((1 << SLOT_BITS) - 1)]
 }
 
 #[cfg(test)]
@@ -1035,5 +1060,20 @@ mod tests {
 		assert_eq!(batches.len(), 1);
 		assert_eq!(batches.batch(0), [0]);
 		assert!(batches.leftover().is_empty());
+	}
+	#[test]
+	fn every_contact_of_a_pair_has_a_key_of_its_own() {
+		let keys: Vec<u64> = (0..4).map(|corner| pair_key([7, 3], corner)).collect();
+
+		for (corner, key) in keys.iter().enumerate() {
+			assert_eq!(keys.iter().filter(|other| *other == key).count(), 1);
+			// The same whichever body is listed first, and its slots can be read back.
+			assert_eq!(*key, pair_key([3, 7], corner as u8));
+			assert_eq!(pair_slots(*key), [3, 7]);
+		}
+		assert_ne!(pair_key([7, 3], 0), pair_key([7, 4], 0));
+
+		let last = (1 << SLOT_BITS) - 1;
+		assert_eq!(pair_slots(pair_key([last, last - 1], 3)), [last as u64 - 1, last as u64]);
 	}
 }

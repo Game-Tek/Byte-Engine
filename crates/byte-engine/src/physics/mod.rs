@@ -9,8 +9,14 @@
 pub mod body;
 #[doc(hidden)]
 pub mod collider;
+mod contact_patch;
+#[doc(hidden)]
+pub mod convex_hull;
 #[doc(hidden)]
 pub mod dynabit;
+mod epa;
+#[doc(hidden)]
+pub mod gjk;
 #[doc(hidden)]
 pub mod intersection;
 
@@ -20,8 +26,13 @@ pub struct LocalSpace;
 
 pub use body::{Body, BodyTypes};
 pub use collider::Shapes;
+pub use convex_hull::{ConvexHull, build_convex_hull};
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;
 pub use dynabit::contact::{Contact, Side};
 pub use dynabit::step_lanes::{StepLanes, StepLanesError};
+pub use epa::ContactScratch;
+pub use gjk::{
+	MinkowskiPoint, minkowski_support, rounded_shapes_contact, shapes_closest_points, shapes_contact, shapes_overlap,
+};
 pub use intersection::SweepBounds;

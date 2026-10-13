@@ -1,20 +1,22 @@
+use std::sync::Arc;
+
 use math::{AABB, Point, Vector};
 use maths_rs::Vec3f;
 
-use crate::physics::LocalSpace;
+use crate::physics::{ConvexHull, LocalSpace};
 
 /// The `Shapes` enum selects the local-space geometry used for collision detection.
 #[derive(Debug, Clone)]
 pub enum Shapes {
 	/// A spherical collider centered on the local origin.
 	Sphere { radius: f32 },
-	/// An axis-aligned box represented by local half-extents.
+	/// A box represented by local half-extents along the local axes.
 	Cube { size: Vector<LocalSpace> },
-	/// An upright capsule: a cylinder along the local y-axis with a half sphere on each end, which suits a standing
+	/// A capsule: a cylinder along the local y-axis with a half sphere on each end, which suits a standing
 	/// character.
 	///
-	/// Like a box, a capsule does not follow the body's orientation, so a character can face any way and stay
-	/// upright, and contacts never tip it over.
+	/// On a body that does not rotate, a capsule stays upright whatever the body's orientation, so a character can
+	/// face any way, and contacts never tip it over. See [`crate::physics::Body::with_rotation`].
 	Capsule {
 		/// The radius of the cylinder and of both caps.
 		radius: f32,
@@ -24,6 +26,9 @@ pub enum Shapes {
 		/// The middle of the capsule, relative to the collider origin.
 		center: Point<LocalSpace>,
 	},
+	/// A convex solid around the points of a mesh, for a body that should collide as its mesh does without the
+	/// mesh's detail.
+	ConvexHull(Arc<ConvexHull>),
 }
 
 impl Shapes {
@@ -45,11 +50,24 @@ impl Shapes {
 		Self::Capsule { radius, height, center }
 	}
 
+	/// Creates a collider from a hull that [`crate::physics::build_convex_hull`] built from a mesh's vertices, then
+	/// give the shape to [`crate::physics::Body::new`].
+	///
+	/// Bodies that collide as the same mesh can share one hull: build it once, keep it in an [`Arc`], and pass each
+	/// body a clone of that.
+	pub fn convex_hull(hull: impl Into<Arc<ConvexHull>>) -> Self {
+		Self::ConvexHull(hull.into())
+	}
+
 	/// Returns the unit-mass moments of inertia about the collider's local axes.
 	///
-	/// Every supported shape is symmetric about the local axes through its middle, so these moments are the diagonal
-	/// of its local inertia tensor and every other entry is zero. Bodies invert the tensor by taking reciprocals of
-	/// these values.
+	/// A sphere, a box, and a capsule are symmetric about the local axes through their middle, so these moments are
+	/// the diagonal of their local inertia tensor and every other entry is zero. Bodies invert the tensor by taking
+	/// reciprocals of these values. A hull can be off balance about those axes. Its products of inertia, which
+	/// [`ConvexHull::inertia_tensor`] has, are left out here.
+	// Marked for inlining because the contact solver asks for it in a loop that a call slows down. See
+	// `PhysicsBody::inverse_moments`.
+	#[inline]
 	pub fn principal_inertia(&self) -> Vec3f {
 		let half_extents = match self {
 			Self::Sphere { radius } => {
@@ -58,6 +76,10 @@ impl Shapes {
 			}
 			Self::Cube { size } => *size,
 			Self::Capsule { radius, height, .. } => return capsule_principal_inertia(*radius, *height),
+			Self::ConvexHull(hull) => {
+				let tensor = hull.inertia_tensor();
+				return Vec3f::new(tensor[0][0], tensor[1][1], tensor[2][2]);
+			}
 		};
 		let x = 2.0 * half_extents.x().abs();
 		let y = 2.0 * half_extents.y().abs();
@@ -73,6 +95,7 @@ impl Shapes {
 			Self::Sphere { radius } => (Point::origin(), Vector::new(*radius, *radius, *radius)),
 			Self::Cube { size } => (Point::origin(), *size),
 			Self::Capsule { radius, height, center } => (*center, Vector::new(*radius, (height * 0.5).max(*radius), *radius)),
+			Self::ConvexHull(hull) => (hull.bounds().center(), hull.bounds().half_extents()),
 		};
 		AABB::from_center_and_half_extents(center, half_extents)
 	}
@@ -90,6 +113,7 @@ pub(crate) fn capsule_reach(radius: f32, height: f32) -> f32 {
 }
 
 /// Returns the unit-mass moments of inertia of a solid capsule about the local axes through its middle.
+#[inline]
 fn capsule_principal_inertia(radius: f32, height: f32) -> Vec3f {
 	// A solid capsule is a cylinder between two half spheres. Each has the share of the mass that it has of the
 	// volume, which is as `1.5 * length` to `2 * radius`.

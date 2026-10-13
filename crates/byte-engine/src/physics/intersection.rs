@@ -2,10 +2,16 @@
 
 use std::{
 	ops::Range,
-	simd::{cmp::SimdPartialOrd as _, f32x4},
+	simd::{
+		cmp::{SimdOrd as _, SimdPartialOrd as _},
+		f32x4,
+		num::SimdFloat as _,
+		u32x4,
+	},
 };
 
 use math::AABB;
+use utils::sync::RwLock;
 
 /// The number of bounds one sweep step tests at once.
 const WIDTH: usize = 4;
@@ -36,7 +42,8 @@ const GRID_BOXES: usize = 4096;
 /// testing every pair.
 ///
 /// Call [`Self::rebuild`] with the step's bounds, then [`Self::overlaps`] to read the overlapping pairs. To spread
-/// the scan over lanes, give each lane its own range of `0..`[`Self::count`].
+/// the scan over lanes, give each lane its own range of `0..`[`Self::count`]. To spread the rebuild over lanes too,
+/// call [`Self::stage`] instead and give each lane one part to [`Self::fill`].
 #[derive(Default)]
 pub struct SweepBounds {
 	/// Every box, sorted along the sweep axis.
@@ -47,13 +54,12 @@ pub struct SweepBounds {
 	wide: Vec<u32>,
 	/// The grid over the two axes that are not swept.
 	grid: Grid,
-	/// Where each cell's boxes start in `cells`, followed by where the last cell's end.
-	cell_starts: Vec<u32>,
-	/// The boxes of every cell, cell after cell, in sweep order within a cell. A box is listed in every cell it
-	/// reaches into, and the boxes of a cell are followed by `WIDTH` entries that overlap nothing.
-	cells: BoundsArrays,
-	/// The number of boxes placed in each cell so far, kept between rebuilds so filling the cells does not allocate.
-	cell_fills: Vec<u32>,
+	/// The boxes of the grid's cells, split into parts that each hold a run of neighboring cells, so that lanes can
+	/// each fill one. Every part has its own lock, which only its lane takes to fill it.
+	parts: Vec<RwLock<CellPart>>,
+	/// One past the last cell of each part that the last [`Self::stage`] laid out. A part starts where the one
+	/// before it ends, and no part is laid out while the boxes are not split into cells.
+	part_ends: Vec<usize>,
 	/// The boxes as they were received, kept between rebuilds so staging them does not allocate.
 	staged: Vec<StagedBounds>,
 	/// The order the last rebuild sorted `staged` into. Boxes move little between steps, so the next rebuild
@@ -76,15 +82,20 @@ struct BoundsArrays {
 }
 
 impl BoundsArrays {
-	/// Replaces the boxes with `count` entries that overlap nothing, ready to be written with [`Self::set`].
-	fn reset(&mut self, count: usize) {
-		self.ids.clear();
+	/// Makes room for `count` entries. The ones that were there keep what they held, so every entry has to be
+	/// written again, with [`Self::set`] or [`Self::set_empty`].
+	fn resize(&mut self, count: usize) {
 		self.ids.resize(count, 0);
 		for corner in self.min.iter_mut().chain(&mut self.max) {
-			// A comparison with NaN is never true, so an entry left unwritten overlaps nothing, not even an
-			// unbounded box.
-			corner.clear();
 			corner.resize(count, f32::NAN);
+		}
+	}
+
+	/// Makes entry `index` overlap nothing.
+	fn set_empty(&mut self, index: usize) {
+		for corner in self.min.iter_mut().chain(&mut self.max) {
+			// A comparison with NaN is never true, so the entry overlaps nothing, not even an unbounded box.
+			corner[index] = f32::NAN;
 		}
 	}
 
@@ -103,6 +114,93 @@ impl BoundsArrays {
 			[0, 1, 2].map(|axis| self.min[axis][index]),
 			[0, 1, 2].map(|axis| self.max[axis][index]),
 		)
+	}
+}
+
+/// The `CellPart` struct holds the boxes of a run of neighboring grid cells, so that the cells of a grid can be
+/// filled as several parts at the same time.
+#[derive(Default)]
+struct CellPart {
+	/// The cells the part holds.
+	cells: Range<usize>,
+	/// Where each cell's boxes start in `boxes`, followed by where the last cell's end.
+	starts: Vec<u32>,
+	/// The boxes of every cell, cell after cell, in sweep order within a cell. A box is listed in every cell it
+	/// reaches into, and the boxes of a cell are followed by `WIDTH` entries that overlap nothing.
+	boxes: BoundsArrays,
+	/// The number of boxes placed in each cell so far, kept between rebuilds so filling the cells does not allocate.
+	fills: Vec<u32>,
+	/// The sorted indices of the boxes that may reach into the part's cells, kept between rebuilds like `fills`.
+	members: Vec<u32>,
+}
+
+impl CellPart {
+	/// Replaces the part's boxes with the ones `bounds` has in `cells`.
+	fn fill(&mut self, bounds: &SweepBounds, cells: Range<usize>) {
+		if cells.len() == bounds.grid.count() {
+			// A part that holds every cell holds every box of the grid, so there are no members to pick.
+			let every_box = (0..bounds.boxes()).filter(|index| !bounds.is_wide[*index]);
+			self.list(bounds, cells, every_box);
+		} else {
+			let mut members = std::mem::take(&mut self.members);
+			bounds.cell_members(&cells, &mut members);
+			self.list(bounds, cells, members.iter().map(|index| *index as usize));
+			self.members = members;
+		}
+	}
+
+	/// Replaces the part's boxes with the ones that `members`, sorted indices in sweep order, have in `cells`.
+	///
+	/// It counts the boxes of each cell, gives each cell its stretch of entries, then writes the boxes in sweep
+	/// order, which leaves every cell sorted like the whole.
+	fn list(&mut self, bounds: &SweepBounds, cells: Range<usize>, members: impl Iterator<Item = usize> + Clone) {
+		/// Calls `entry` with each of `cells` that a member reaches into, counted from the first of them, and the
+		/// member's sorted index.
+		fn for_each_entry(
+			bounds: &SweepBounds,
+			cells: &Range<usize>,
+			members: impl Iterator<Item = usize>,
+			mut entry: impl FnMut(usize, usize),
+		) {
+			for index in members {
+				let (min, max) = bounds.sorted.get(index);
+				for cell in bounds.grid.cells(min, max).filter(|cell| cells.contains(cell)) {
+					entry(cell - cells.start, index);
+				}
+			}
+		}
+
+		self.fills.clear();
+		self.fills.resize(cells.len(), 0);
+		let fills = &mut self.fills;
+		for_each_entry(bounds, &cells, members.clone(), |cell, _| fills[cell] += 1);
+
+		self.starts.clear();
+		let mut start = 0;
+		for fill in &mut self.fills {
+			self.starts.push(start);
+			// A cell with boxes ends in entries that overlap nothing, so a scan can read whole groups past its end.
+			let entries = if *fill == 0 { 0 } else { *fill + WIDTH as u32 };
+			*fill = start;
+			start += entries;
+		}
+		self.starts.push(start);
+
+		self.boxes.resize(start as usize);
+		let (fills, boxes) = (&mut self.fills, &mut self.boxes);
+		for_each_entry(bounds, &cells, members, |cell, index| {
+			let fill = &mut fills[cell];
+			let (min, max) = bounds.sorted.get(index);
+			boxes.set(*fill as usize, bounds.sorted.ids[index], min, max);
+			*fill += 1;
+		});
+		// Every fill now points past its cell's last box, at the entries that have to overlap nothing.
+		for (fill, end) in self.fills.iter().zip(&self.starts[1..]) {
+			for entry in *fill..*end {
+				self.boxes.set_empty(entry as usize);
+			}
+		}
+		self.cells = cells;
 	}
 }
 
@@ -183,10 +281,16 @@ impl SweepBounds {
 	/// A box that reaches into several cells has a position in each, so this is not the number of boxes.
 	pub fn count(&self) -> usize {
 		if self.in_cells() {
-			self.wide.len() + self.cells.ids.len()
+			let entries = |part: &RwLock<CellPart>| part.read().boxes.ids.len();
+			self.wide.len() + self.laid_out_parts().iter().map(entries).sum::<usize>()
 		} else {
 			self.boxes()
 		}
+	}
+
+	/// Returns the parts the last [`Self::stage`] laid out.
+	fn laid_out_parts(&self) -> &[RwLock<CellPart>] {
+		&self.parts[..self.part_ends.len()]
 	}
 
 	/// Returns the number of boxes.
@@ -206,6 +310,21 @@ impl SweepBounds {
 	/// the last rebuild again, in the same order, the sort starts from the order they had then, which is quick
 	/// when they have moved little.
 	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
+		if self.stage(bounds, 1) {
+			self.fill(0);
+		}
+	}
+
+	/// Replaces the stored boxes like [`Self::rebuild`], but leaves the grid's cells to be filled as `parts` parts.
+	///
+	/// Returns whether the boxes are split into cells. If they are, call [`Self::fill`] with every part from `0` up
+	/// to `parts` before reading [`Self::count`] or [`Self::overlaps`]; each call can come from another lane. The
+	/// pairs come out in the same sequence whatever the number of parts.
+	pub fn stage(&mut self, bounds: impl Iterator<Item = (usize, AABB)>, parts: usize) -> bool {
+		debug_assert!(
+			parts != 0,
+			"Broad-phase part count is zero. The most likely cause is staging the bounds for a step that runs on no lane."
+		);
 		// Staging over the last rebuild's boxes shows whether these are the same boxes.
 		let mut count = 0;
 		let mut same_boxes = true;
@@ -270,16 +389,31 @@ impl SweepBounds {
 			max.clear();
 			max.extend(self.order.iter().map(|key| staged(key).max[axis]).chain(padding));
 		}
+		self.part_ends.clear();
 		if self.in_cells() {
-			self.fill_cells(count);
+			self.lay_out_cells(count, parts);
 		}
+		self.in_cells()
 	}
 
-	/// Lays a grid over the two axes that are not swept and lists the `count` sorted boxes in its cells.
+	/// Lists in part `part` the boxes of the cells that [`Self::stage`] gave it.
+	///
+	/// This only reads what [`Self::stage`] left and writes the one part, so every part can be filled from another
+	/// lane at the same time. A part that was not laid out is left as it is.
+	pub fn fill(&self, part: usize) {
+		let Some(end) = self.part_ends.get(part).copied() else {
+			return;
+		};
+		let start = part.checked_sub(1).map_or(0, |previous| self.part_ends[previous]);
+		self.parts[part].write().fill(self, start..end);
+	}
+
+	/// Lays a grid over the two axes that are not swept, and splits its cells into `parts` runs that hold about as
+	/// many of the `count` sorted boxes each.
 	///
 	/// Cells are a few typical boxes wide, so a box shares its cells with few others. Boxes much wider than a
 	/// cell stay out of the grid.
-	fn fill_cells(&mut self, count: usize) {
+	fn lay_out_cells(&mut self, count: usize, parts: usize) {
 		let extent = |index: usize, axis: usize| self.sorted.max[axis + 1][index] - self.sorted.min[axis + 1][index];
 		// A cell edge that is not a positive length, as when the boxes are flat along an axis, means one cell
 		// along that axis that no box is too wide for.
@@ -335,37 +469,70 @@ impl SweepBounds {
 			cells,
 		};
 
-		// Count the boxes of each cell, give each cell its stretch of entries, then write the boxes in sweep order,
-		// which leaves every cell sorted like the whole.
+		if self.parts.len() < parts {
+			self.parts.resize_with(parts, Default::default);
+		}
+		if parts > 1 {
+			self.split_cells(count, parts);
+		}
+		self.part_ends.push(self.grid.count());
+	}
+
+	/// Chooses where each part but the last ends, so that the `parts` parts hold about as many of the `count`
+	/// sorted boxes each, wherever the boxes crowd.
+	fn split_cells(&mut self, count: usize, parts: usize) {
+		/// Enough boxes to place the ends within a few percent of an even split, and few enough to sort on every
+		/// rebuild.
+		const SAMPLES: usize = 1024;
+		// Each part ends at the cell where the next share of the boxes starts, judged from the cells that an evenly
+		// spaced sample of the boxes start in.
+		let samples = count.min(SAMPLES);
+		let mut sample = [0u32; SAMPLES];
 		let grid = self.grid;
-		self.cell_fills.clear();
-		self.cell_fills.resize(grid.count(), 0);
-		for index in 0..count {
-			if !self.is_wide[index] {
-				let (min, max) = self.sorted.get(index);
-				for cell in grid.cells(min, max) {
-					self.cell_fills[cell] += 1;
-				}
-			}
+		for (slot, cell) in sample.iter_mut().enumerate().take(samples) {
+			let (min, _) = self.sorted.get(slot * count / samples);
+			*cell = grid.cell(grid.coordinate(0, min[1]), grid.coordinate(1, min[2])) as u32;
 		}
-		self.cell_starts.clear();
-		let mut start = 0;
-		for fill in &mut self.cell_fills {
-			self.cell_starts.push(start);
-			// A cell with boxes ends in entries that overlap nothing, so a scan can read whole groups past its end.
-			let entries = if *fill == 0 { 0 } else { *fill + WIDTH as u32 };
-			*fill = start;
-			start += entries;
+		let sample = &mut sample[..samples];
+		sample.sort_unstable();
+		self.part_ends
+			.extend((1..parts).map(|part| sample[part * samples / parts] as usize));
+	}
+
+	/// Replaces `members` with the sorted indices of the grid's boxes that may reach into `cells`, in sweep order.
+	///
+	/// Every box that reaches into one of `cells` is a member. A box that reaches around them, into cells before
+	/// and after, is one too.
+	fn cell_members(&self, cells: &Range<usize>, members: &mut Vec<u32>) {
+		members.clear();
+		if cells.is_empty() {
+			return;
 		}
-		self.cell_starts.push(start);
-		self.cells.reset(start as usize);
-		for index in 0..count {
-			if !self.is_wide[index] {
-				let (min, max) = self.sorted.get(index);
-				for cell in grid.cells(min, max) {
-					self.cells
-						.set(self.cell_fills[cell] as usize, self.sorted.ids[index], min, max);
-					self.cell_fills[cell] += 1;
+		let (grid, count) = (self.grid, self.boxes());
+		// The same arithmetic as `Grid::coordinate` and `Grid::cell`, four boxes at a time, so that a box has the
+		// cells here that it is listed in.
+		let coordinate = |axis: usize, positions: &[f32]| {
+			let offset = f32x4::from_slice(positions) - f32x4::splat(grid.origin[axis]);
+			(offset * f32x4::splat(grid.cells_per_unit[axis]))
+				.cast::<u32>()
+				.simd_min(u32x4::splat(grid.cells[axis] - 1))
+		};
+		let cell = |corner: &[Vec<f32>; 3], group: Range<usize>| {
+			coordinate(1, &corner[2][group.clone()]) * u32x4::splat(grid.cells[0]) + coordinate(0, &corner[1][group])
+		};
+		let (start, end) = (u32x4::splat(cells.start as u32), u32x4::splat(cells.end as u32));
+		for group in (0..count).step_by(WIDTH) {
+			// The sorted boxes end in entries that are not boxes, so the last group can be read whole. A box's
+			// cells lie between the cell of its smallest corner and the cell of its largest.
+			let group_range = group..group + WIDTH;
+			let reaches =
+				cell(&self.sorted.max, group_range.clone()).simd_ge(start) & cell(&self.sorted.min, group_range).simd_lt(end);
+			let mut lanes = reaches.to_bitmask();
+			while lanes != 0 {
+				let index = group + lanes.trailing_zeros() as usize;
+				lanes &= lanes - 1;
+				if index < count && !self.is_wide[index] {
+					members.push(index as u32);
 				}
 			}
 		}
@@ -380,28 +547,38 @@ impl SweepBounds {
 			// Every box is a neighbor of every other one, as if they shared one cell.
 			return self.scan_cell(&self.sorted, None, range, self.boxes(), &mut found);
 		}
-		// The wide boxes take the first positions, and the cells' entries follow.
+		// The wide boxes take the first positions, and the entries of each part in turn follow.
 		let wide = self.wide.len();
 		for position in range.start.min(wide)..range.end.min(wide) {
 			self.scan_wide(self.wide[position] as usize, &mut found);
 		}
-		let entries = range.start.saturating_sub(wide)..range.end.saturating_sub(wide);
-		if entries.is_empty() {
-			return;
+		let mut first = wide;
+		for part in self.laid_out_parts() {
+			let part = part.read();
+			let entries = part.boxes.ids.len();
+			let range = range.start.saturating_sub(first).min(entries)..range.end.saturating_sub(first).min(entries);
+			if !range.is_empty() {
+				self.scan_part(&part, range, &mut found);
+			}
+			first += entries;
 		}
-		let first_cell = self
-			.cell_starts
+	}
+
+	/// Calls `found` with the pairs each box in `entries` of `part` forms with the boxes after it in its cell.
+	fn scan_part(&self, part: &CellPart, entries: Range<usize>, found: &mut impl FnMut([usize; 2])) {
+		let first_cell = part
+			.starts
 			.partition_point(|start| *start as usize <= entries.start)
 			.saturating_sub(1);
-		for cell in first_cell..self.cell_starts.len().saturating_sub(1) {
-			let (start, end) = (self.cell_starts[cell] as usize, self.cell_starts[cell + 1] as usize);
+		for cell in first_cell..part.starts.len().saturating_sub(1) {
+			let (start, end) = (part.starts[cell] as usize, part.starts[cell + 1] as usize);
 			if start >= entries.end {
 				break;
 			}
 			if start < end {
 				let boxes_end = end - WIDTH;
 				let range = entries.start.max(start)..entries.end.min(boxes_end);
-				self.scan_cell(&self.cells, Some(cell), range, boxes_end, &mut found);
+				self.scan_cell(&part.boxes, Some(part.cells.start + cell), range, boxes_end, found);
 			}
 		}
 	}
@@ -720,6 +897,40 @@ mod tests {
 		}
 
 		assert_eq!(split, whole);
+	}
+
+	#[test]
+	fn cells_filled_as_several_parts_report_the_same_sequence_as_one_part() {
+		let boxes = spread_boxes();
+		let mut whole = SweepBounds::default();
+		whole.rebuild(boxes.iter().copied().enumerate());
+		let mut expected = Vec::new();
+		whole.overlaps(0..whole.count(), |pair| expected.push(pair));
+
+		for parts in [2, 3, 7] {
+			let mut sweep = SweepBounds::default();
+			assert!(sweep.stage(boxes.iter().copied().enumerate(), parts));
+			// Parts are filled in any order, as lanes would.
+			for part in (0..parts).rev() {
+				sweep.fill(part);
+			}
+			let mut pairs = Vec::new();
+			let count = sweep.count();
+			for range in [0..count / 2, count / 2..count] {
+				sweep.overlaps(range, |pair| pairs.push(pair));
+			}
+
+			assert_eq!(count, whole.count());
+			assert_eq!(pairs, expected, "with {parts} parts");
+		}
+	}
+
+	#[test]
+	fn few_boxes_have_no_cells_to_fill() {
+		let mut sweep = SweepBounds::default();
+
+		assert!(!sweep.stage(scattered_boxes(67).into_iter().enumerate(), 4));
+		assert_eq!(sweep.count(), 67);
 	}
 
 	#[test]

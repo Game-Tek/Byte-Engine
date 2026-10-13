@@ -340,6 +340,32 @@ fn closest_point_on_segment<Space>(start: Point<Space>, end: Point<Space>, point
 /// Parallel segments are equally close along a stretch. The points are then in the middle of it.
 fn closest_points_between_segments<Space>(a: [Point<Space>; 2], b: [Point<Space>; 2]) -> (Point<Space>, Point<Space>) {
 	let (a_along, b_along) = (a[1] - a[0], b[1] - b[0]);
+	let axis = parallel_axis(a_along.to_array());
+	if let (Some(axis), true) = (axis, axis == parallel_axis(b_along.to_array())) {
+		// Both segments run along one axis, as those of upright capsules do, so only their coordinates on that axis
+		// decide where they are closest: where they are side by side, or else at their facing ends.
+		let reach = |segment: [Point<Space>; 2]| {
+			let (first, second) = (segment[0].to_array()[axis], segment[1].to_array()[axis]);
+			(first.min(second), first.max(second))
+		};
+		let ((a_low, a_high), (b_low, b_high)) = (reach(a), reach(b));
+		let (low, high) = (a_low.max(b_low), a_high.min(b_high));
+		let (on_a, on_b) = if low <= high {
+			let middle = (low + high) * 0.5;
+			(middle, middle)
+		} else if a_low > b_high {
+			(a_low, b_high)
+		} else {
+			(a_high, b_low)
+		};
+		let place = |point: Point<Space>, coordinate: f32| {
+			let mut point = point.to_array();
+			point[axis] = coordinate;
+			Point::from_array(point)
+		};
+		return (place(a[0], on_a), place(b[0], on_b));
+	}
+
 	let (a_length, b_length) = (a_along.length_squared(), b_along.length_squared());
 	let between = a[0] - b[0];
 	let (a_offset, b_offset) = (a_along.dot(between), b_along.dot(between));
@@ -365,6 +391,11 @@ fn closest_points_between_segments<Space>(a: [Point<Space>; 2], b: [Point<Space>
 	(closest_point_on_segment(a[0], a[1], on_b), on_b)
 }
 
+/// Returns the axis that a segment with direction `along` runs along, when it has length and runs along one.
+fn parallel_axis(along: [f32; 3]) -> Option<usize> {
+	(0..3).find(|axis| along[*axis] != 0.0 && (0..3).all(|other| other == *axis || along[other] == 0.0))
+}
+
 /// Returns the point of the segment from `start` to `end` that is closest to `aabb`.
 ///
 /// A segment that runs beside a face, or through the box, has a stretch of points that are all as close as each
@@ -374,6 +405,41 @@ fn closest_point_on_segment_to_aabb<Space>(start: Point<Space>, end: Point<Space
 	let (origin, along) = (start.to_array(), (end - start).to_array());
 	let (min, max) = (aabb.min().to_array(), aabb.max().to_array());
 	let at = |time: f32| start + (end - start) * time;
+	// How deep a point is inside the box is its distance to the nearest face plane, below zero outside.
+	let depth = |time: f32| {
+		(0..3)
+			.map(|axis| {
+				let position = origin[axis] + along[axis] * time;
+				(position - min[axis]).min(max[axis] - position)
+			})
+			.fold(f32::INFINITY, f32::min)
+	};
+	// Returns the deepest of the two ends and the middle of a stretch, and the middle when none is deeper.
+	let deepest = |from: f32, to: f32| {
+		let mut deepest = (from + to) * 0.5;
+		for time in [from, to] {
+			if depth(time) > depth(deepest) {
+				deepest = time;
+			}
+		}
+		deepest
+	};
+
+	if let Some(axis) = parallel_axis(along) {
+		// The segment runs along one axis, as that of an upright capsule does, so its distance to the box only
+		// changes with its coordinate on that axis. It stays the same between the two faces across the axis, and
+		// past them the nearer end is closest.
+		let crossings = [min[axis], max[axis]].map(|face| (face - origin[axis]) / along[axis]);
+		let (enters, leaves) = (crossings[0].min(crossings[1]), crossings[0].max(crossings[1]));
+		let (from, to) = (enters.max(0.0), leaves.min(1.0));
+		return if from <= to {
+			at(deepest(from, to))
+		} else if leaves < 0.0 {
+			start
+		} else {
+			end
+		};
+	}
 
 	// The times, from zero at `start` to one at `end`, at which the segment crosses the plane of a box face. Between
 	// two neighboring times the segment stays on one side of every face.
@@ -421,22 +487,7 @@ fn closest_point_on_segment_to_aabb<Space>(start: Point<Space>, end: Point<Space
 
 		if rate == 0.0 {
 			// The distance stays the same over the whole stretch: the segment runs beside a face or inside the box.
-			// How deep a point is inside the box is its distance to the nearest face plane, below zero outside.
-			let depth = |time: f32| {
-				(0..3)
-					.map(|axis| {
-						let position = origin[axis] + along[axis] * time;
-						(position - min[axis]).min(max[axis] - position)
-					})
-					.fold(f32::INFINITY, f32::min)
-			};
-			let mut deepest = middle;
-			for time in [from, to] {
-				if depth(time) > depth(deepest) {
-					deepest = time;
-				}
-			}
-			return at(deepest);
+			return at(deepest(from, to));
 		}
 
 		let closest = -offset / rate;
@@ -536,7 +587,7 @@ fn axis_normal<Space>(axis: usize, sign: f32) -> UnitVector<Space> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{Point, UnitVector, WorldSpace, assert_float_eq_with_epsilon, assert_geometry_near};
+	use crate::{Point, UnitVector, WorldSpace, assert_float_eq, assert_float_eq_with_epsilon, assert_geometry_near};
 
 	#[test]
 	fn ray_aabb_intersection_handles_axis_aligned_diagonal_and_parallel_rays() {
@@ -800,6 +851,49 @@ mod tests {
 
 		// The middle of the part inside is 0.1 from both the top and the bottom of the slab.
 		assert_float_eq_with_epsilon!(contact.depth(), 0.6, 0.000001);
+	}
+
+	#[test]
+	fn a_barely_tilted_capsule_touches_like_an_upright_one() {
+		// An upright capsule's segment runs along one axis, which has closed forms. A tilt too small to matter takes
+		// the general search instead, and both have to agree. The tilt is along the wall below, so it brings neither
+		// end closer to it.
+		let tilted = |capsule: &Capsule<WorldSpace>| {
+			Capsule::new(capsule.start(), capsule.end() + Vector::new(0.0, 0.0, 1e-4), capsule.radius())
+		};
+		let agree = |upright: Intersection<WorldSpace>, tilted: Intersection<WorldSpace>| {
+			assert_float_eq!(upright.depth(), tilted.depth());
+			assert_geometry_near!(upright.normal(), tilted.normal());
+			assert_geometry_near!(upright.point_on_a(), tilted.point_on_a());
+			assert_geometry_near!(upright.point_on_b(), tilted.point_on_b());
+		};
+
+		let standing = standing_capsule();
+		let sunk = Capsule::new(Point::new(0.0, -0.3, 0.0), Point::new(0.0, 0.7, 0.0), 0.5);
+		let floor = AABB::new(Point::new(-5.0, -4.0, -5.0), Point::new(5.0, 0.1, 5.0));
+		let wall = AABB::new(Point::new(0.4, 1.0, -5.0), Point::new(1.0, 5.0, 5.0));
+		let ceiling = AABB::new(Point::new(-5.0, 1.9, -5.0), Point::new(5.0, 4.0, 5.0));
+		for (capsule, aabb) in [
+			(&standing, &floor),
+			(&standing, &wall),
+			(&standing, &ceiling),
+			(&sunk, &floor),
+		] {
+			agree(
+				capsule_vs_aabb(capsule, aabb).unwrap(),
+				capsule_vs_aabb(&tilted(capsule), aabb).unwrap(),
+			);
+		}
+
+		let beside = Capsule::new(Point::new(0.8, 1.0, 0.0), Point::new(0.8, 2.0, 0.0), 0.5);
+		let above = Capsule::new(Point::new(0.3, 2.4, 0.0), Point::new(0.3, 3.4, 0.0), 0.5);
+		let below = Capsule::new(Point::new(0.3, -1.4, 0.0), Point::new(0.3, -0.4, 0.0), 0.5);
+		for other in [&beside, &above, &below] {
+			agree(
+				capsule_vs_capsule(&standing, other).unwrap(),
+				capsule_vs_capsule(&tilted(&standing), other).unwrap(),
+			);
+		}
 	}
 
 	#[test]

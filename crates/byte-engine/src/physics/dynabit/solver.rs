@@ -199,6 +199,144 @@ fn transform(rows: &[WideVector; 3], vector: WideVector) -> WideVector {
 	}
 }
 
+/// The `BodyState` struct holds what a step's contacts need to know about one body, so that they read it from one
+/// cache line and work none of it out again. A body in a pile is in four or five contacts, and each reads it.
+///
+/// The first three lanes of each vector are a vector's coordinates. [`BodyStates`] keeps one for every body. The
+/// body's angular velocity before contacts change it would make this longer than a cache line, so it is kept in the
+/// body's [`BodyMotion`], which has room for it.
+#[derive(Clone, Copy, Default)]
+#[repr(align(64))]
+struct BodyState {
+	/// The center of mass in world space, followed by the inverse mass.
+	center: f32x4,
+	/// The diagonal of the inverse inertia tensor in world space, followed by the body's elasticity.
+	moments: f32x4,
+	/// The entries of that tensor off its diagonal, which is symmetric: the one for x and y, for x and z, and for y
+	/// and z. They are followed by the body's friction.
+	products: f32x4,
+	/// The linear velocity the body has before any contact changes it.
+	linear_velocity: f32x4,
+}
+
+impl BodyState {
+	/// Works out the state of `body` where it is now.
+	fn of(body: &PhysicsBody) -> Self {
+		let inverse_moments = body.inverse_moments();
+		let offset = body.center_of_mass.to_array();
+		// A body that turns as easily about every axis, or not at all, does so however it is turned, and a center of
+		// mass at the body's own position stays there. That is every ball, and every body that does not rotate, so
+		// most bodies of most scenes need none of the work below.
+		let even = inverse_moments[0] == inverse_moments[1] && inverse_moments[1] == inverse_moments[2];
+		let (offset, moments, products) = if even && offset == [0.0; 3] {
+			(offset, inverse_moments, [0.0; 3])
+		} else {
+			// The rotation matrix of the body's orientation, by rows.
+			let [x, y, z, w] = body.orientation.to_array();
+			let rotation = [
+				[
+					1.0 - 2.0 * y * y - 2.0 * z * z,
+					2.0 * x * y - 2.0 * z * w,
+					2.0 * x * z + 2.0 * y * w,
+				],
+				[
+					2.0 * x * y + 2.0 * z * w,
+					1.0 - 2.0 * x * x - 2.0 * z * z,
+					2.0 * y * z - 2.0 * x * w,
+				],
+				[
+					2.0 * x * z - 2.0 * y * w,
+					2.0 * y * z + 2.0 * x * w,
+					1.0 - 2.0 * x * x - 2.0 * y * y,
+				],
+			];
+			// Every supported shape has a diagonal local inertia tensor, so its inverse is the reciprocal of each
+			// moment. Rotating that diagonal into world space is `rotation * diagonal * transpose(rotation)`, of
+			// which this is one entry.
+			let entry = |row: usize, column: usize| {
+				(0..3)
+					.map(|axis| rotation[row][axis] * inverse_moments[axis] * rotation[column][axis])
+					.sum::<f32>()
+			};
+			(
+				rotation.map(|row| row[0] * offset[0] + row[1] * offset[1] + row[2] * offset[2]),
+				[entry(0, 0), entry(1, 1), entry(2, 2)],
+				[entry(0, 1), entry(0, 2), entry(1, 2)],
+			)
+		};
+
+		let position = body.position.to_array();
+		let with = |[x, y, z]: [f32; 3], last: f32| f32x4::from_array([x, y, z, last]);
+		Self {
+			center: with(
+				[position[0] + offset[0], position[1] + offset[1], position[2] + offset[2]],
+				body.inv_mass,
+			),
+			moments: with(moments, body.elasticity),
+			products: with(products, body.friction),
+			linear_velocity: with(body.linear_velocity.to_array(), 0.0),
+		}
+	}
+}
+
+/// The `BodyStates` struct keeps a [`BodyState`] for every body of a step, indexed by body slot, so that preparing
+/// a contact reads two short records and not the bodies themselves.
+///
+/// Lanes fill it side by side, each its own slots, through a shared reference. Size it with [`Self::resize`], fill
+/// it with [`Self::write`], and read it with [`Self::read`].
+#[derive(Default)]
+struct BodyStates {
+	bodies: Vec<StateCell>,
+}
+
+/// The `StateCell` struct lets lanes write the states of different bodies through one shared reference.
+#[derive(Default)]
+struct StateCell(UnsafeCell<BodyState>);
+
+// SAFETY: A `StateCell` is only reached through `BodyStates`. Its methods that take `&mut self` have exclusive
+// access, and the others are `unsafe` functions whose callers keep any two threads from reaching the state of one
+// body while either writes it.
+#[allow(unsafe_code, reason = "Lanes write the states of different bodies.")]
+unsafe impl Sync for StateCell {}
+
+impl BodyStates {
+	/// Makes room for the state of every body slot below `slots`.
+	fn resize(&mut self, slots: usize) {
+		self.bodies.resize_with(slots, Default::default);
+	}
+
+	/// Returns the state of the body in `slot`.
+	///
+	/// # Safety
+	///
+	/// No other thread may write the state of the body in `slot` during the call.
+	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's state.")]
+	#[inline]
+	unsafe fn read(&self, slot: usize) -> BodyState {
+		// SAFETY: The caller keeps every other thread from writing this body's state, so nothing changes it while
+		// it is copied out.
+		unsafe { *self.bodies[slot].0.get() }
+	}
+
+	/// Replaces the state of the body in `slot`.
+	///
+	/// # Safety
+	///
+	/// No other thread may read or write the state of the body in `slot` during the call.
+	#[allow(unsafe_code, reason = "The caller keeps other threads away from this body's state.")]
+	#[inline]
+	unsafe fn write(&self, slot: usize, state: BodyState) {
+		// SAFETY: The caller keeps every other thread from reading or writing this body's state, so this is the
+		// only access to it.
+		unsafe { *self.bodies[slot].0.get() = state }
+	}
+
+	/// Returns whether contacts can move the body in `slot`.
+	fn is_movable(&mut self, slot: usize) -> bool {
+		self.bodies[slot].0.get_mut().center.to_array()[3] != 0.0
+	}
+}
+
 /// The `WideSide` struct holds the state [`prepare`] reads from one body of each contact in a group.
 struct WideSide {
 	/// The center of mass in world space.
@@ -215,68 +353,37 @@ struct WideSide {
 }
 
 impl WideSide {
-	/// Reads the bodies `sides` name, and derives each one's world-space center of mass and inverse inertia.
+	/// Reads the states of the bodies `sides` name, and from `velocities` how they spin before contacts change it.
+	///
+	/// # Safety
+	///
+	/// No other thread may write the state, in `states`, or the motion, in `velocities`, of any of those bodies
+	/// during the call.
+	#[allow(
+		unsafe_code,
+		reason = "The caller keeps other threads from writing these bodies' states and motions."
+	)]
 	#[inline]
-	fn gather(bodies: &StableVec<PhysicsBody>, sides: [&Side; WIDTH]) -> Self {
-		let bodies = sides.map(|side| {
-			bodies.get_slot(side.object).expect(
-				"Contact body is missing. The most likely cause is a body removed between contact detection and resolution.",
-			)
-		});
-		let scalar = |read: fn(&PhysicsBody) -> f32| f32x4::from_array(bodies.map(read));
-		let vector = |read: fn(&PhysicsBody) -> [f32; 3]| WideVector::from_lanes(bodies.map(read));
-		let position = vector(|body| body.position.to_array());
-		let inverse_mass = scalar(|body| body.inv_mass);
-
-		// The rotation matrix of each orientation, by rows.
-		// Each component is read on its own: mapping over the components to build the four vectors was not inlined.
-		let (x, y) = (
-			scalar(|body| body.orientation.to_array()[0]),
-			scalar(|body| body.orientation.to_array()[1]),
-		);
-		let (z, w) = (
-			scalar(|body| body.orientation.to_array()[2]),
-			scalar(|body| body.orientation.to_array()[3]),
-		);
-		let (one, two) = (f32x4::splat(1.0), f32x4::splat(2.0));
-		let rotation = [
-			WideVector {
-				x: one - two * y * y - two * z * z,
-				y: two * x * y - two * z * w,
-				z: two * x * z + two * y * w,
-			},
-			WideVector {
-				x: two * x * y + two * z * w,
-				y: one - two * x * x - two * z * z,
-				z: two * y * z - two * x * w,
-			},
-			WideVector {
-				x: two * x * z - two * y * w,
-				y: two * y * z + two * x * w,
-				z: one - two * x * x - two * y * y,
-			},
-		];
-
-		// Every supported shape has a diagonal local inertia tensor, so its inverse is the reciprocal of each moment.
-		// Rotating that diagonal into world space is `rotation * diagonal * transpose(rotation)`.
-		let inverse_moments = vector(PhysicsBody::inverse_moments);
-		let inverse_inertia = rotation.map(|row| {
-			let scaled = WideVector {
-				x: row.x * inverse_moments.x,
-				y: row.y * inverse_moments.y,
-				z: row.z * inverse_moments.z,
-			};
-			transform(&rotation, scaled)
-		});
-
+	unsafe fn gather(states: &BodyStates, velocities: &Velocities, sides: [&Side; WIDTH]) -> Self {
+		// SAFETY: The caller keeps every other thread from writing the states of these bodies.
+		let bodies = sides.map(|side| unsafe { states.read(side.object) });
+		let [x, y, z, inverse_mass] = columns(bodies.map(|body| body.center));
+		let [xx, yy, zz, elasticity] = columns(bodies.map(|body| body.moments));
+		let [xy, xz, yz, friction] = columns(bodies.map(|body| body.products));
+		// SAFETY: The caller keeps every other thread from writing the motions of these bodies.
+		let spins = sides.map(|side| unsafe { velocities.spin_before(side.object) });
 		Self {
-			center: position + transform(&rotation, vector(|body| body.center_of_mass.to_array())),
-			linear_velocity: vector(|body| body.linear_velocity.to_array()),
-			angular_velocity: vector(|body| body.angular_velocity.to_array()),
+			center: WideVector { x, y, z },
+			linear_velocity: coordinates(bodies.map(|body| body.linear_velocity)),
+			angular_velocity: coordinates(spins),
 			inverse_mass,
-			inverse_inertia,
-			elasticity: scalar(|body| body.elasticity),
-			friction: scalar(|body| body.friction),
+			inverse_inertia: [
+				WideVector { x: xx, y: xy, z: xz },
+				WideVector { x: xy, y: yy, z: yz },
+				WideVector { x: xz, y: yz, z: zz },
+			],
+			elasticity,
+			friction,
 			point: WideVector::from_lanes(sides.map(|side| side.point.to_array())),
 		}
 	}
@@ -292,7 +399,8 @@ impl WideSide {
 /// Each body's values are three whole vectors, which a group of contacts loads and stores as such. Reading them one
 /// number at a time took a quarter of a step of a large pile.
 ///
-/// Fill it with [`Self::load`], pass it to [`solve`], and write the result back with [`Self::store`].
+/// Size it with [`Self::resize`], give every body its velocities with [`Self::start`], pass it to [`solve`], and
+/// write the result back with [`Self::store`].
 #[derive(Default)]
 struct Velocities {
 	/// Each body's motion, indexed by body slot.
@@ -300,10 +408,12 @@ struct Velocities {
 }
 
 /// The `BodyMotion` struct holds one body's linear velocity, angular velocity, and shift, in that order, each in the
-/// first three lanes of a vector. It fills one cache line, so reading a body never waits for two.
+/// first three lanes of a vector. They are followed by the angular velocity the body had before the step's contacts
+/// changed it, which [`prepare`] reads with the rest and nothing changes. It fills one cache line, so reading a body
+/// never waits for two.
 #[derive(Default)]
 #[repr(align(64))]
-struct BodyMotion(UnsafeCell<[f32x4; 3]>);
+struct BodyMotion(UnsafeCell<[f32x4; 4]>);
 
 // SAFETY: A `BodyMotion` is only reached through `Velocities`. Its methods that take `&mut self` have exclusive
 // access, and the others are `unsafe` functions whose callers keep any two threads from reaching the motion of one
@@ -320,18 +430,27 @@ struct WideMotion {
 	shift: WideVector,
 }
 
+/// Returns four bodies' vectors as one vector for each of their four lanes, with a lane for each body.
+#[inline]
+fn columns(bodies: [f32x4; WIDTH]) -> [f32x4; 4] {
+	// The first of each pair holds the first lane of two bodies and then their second, and the other one their
+	// third and then their fourth.
+	let (low_first, low_second) = bodies[0].interleave(bodies[1]);
+	let (high_first, high_second) = bodies[2].interleave(bodies[3]);
+	[
+		simd_swizzle!(low_first, high_first, [0, 1, 4, 5]),
+		simd_swizzle!(low_first, high_first, [2, 3, 6, 7]),
+		simd_swizzle!(low_second, high_second, [0, 1, 4, 5]),
+		simd_swizzle!(low_second, high_second, [2, 3, 6, 7]),
+	]
+}
+
 /// Returns the first three lanes of four bodies' vectors as one vector for each coordinate, with a lane for each
 /// body.
 #[inline]
 fn coordinates(bodies: [f32x4; WIDTH]) -> WideVector {
-	// `xy` holds the x of two bodies and then their y, and `z` starts with their z.
-	let (low_xy, low_z) = bodies[0].interleave(bodies[1]);
-	let (high_xy, high_z) = bodies[2].interleave(bodies[3]);
-	WideVector {
-		x: simd_swizzle!(low_xy, high_xy, [0, 1, 4, 5]),
-		y: simd_swizzle!(low_xy, high_xy, [2, 3, 6, 7]),
-		z: simd_swizzle!(low_z, high_z, [0, 1, 4, 5]),
-	}
+	let [x, y, z, _] = columns(bodies);
+	WideVector { x, y, z }
 }
 
 /// Returns one vector for each body from one vector for each coordinate, the reverse of [`coordinates`]. The fourth
@@ -347,17 +466,9 @@ fn per_body(coordinates: WideVector) -> [f32x4; WIDTH] {
 }
 
 impl Velocities {
-	/// Takes the velocities of every body in `bodies`, with no shift.
-	fn load(&mut self, bodies: &StableVec<PhysicsBody>) {
-		self.bodies.resize_with(bodies.slots_len(), Default::default);
-		let whole = |[x, y, z]: [f32; 3]| f32x4::from_array([x, y, z, 0.0]);
-		for (slot, body) in bodies.indexed_iter() {
-			*self.bodies[slot].0.get_mut() = [
-				whole(body.linear_velocity.to_array()),
-				whole(body.angular_velocity.to_array()),
-				f32x4::splat(0.0),
-			];
-		}
+	/// Makes room for the motion of every body slot below `slots`.
+	fn resize(&mut self, slots: usize) {
+		self.bodies.resize_with(slots, Default::default);
 	}
 
 	/// Gives every body its solved velocities, and shifts it out of overlap.
@@ -367,7 +478,7 @@ impl Velocities {
 			if body.inv_mass == 0.0 {
 				continue;
 			}
-			let [linear, angular, shift] = self.bodies[slot].0.get_mut().map(|vector| {
+			let [linear, angular, shift, _] = self.bodies[slot].0.get_mut().map(|vector| {
 				let [x, y, z, _] = vector.to_array();
 				Vector::new(x, y, z)
 			});
@@ -394,7 +505,34 @@ impl Velocities {
 	unsafe fn read(&self, slot: usize) -> [f32x4; 3] {
 		// SAFETY: The caller keeps every other thread from writing this body's motion, so nothing changes it while
 		// it is copied out.
-		unsafe { *self.bodies[slot].0.get() }
+		let [linear, angular, shift, _] = unsafe { *self.bodies[slot].0.get() };
+		[linear, angular, shift]
+	}
+
+	/// Returns the angular velocity that the body in `slot` had before the step's contacts changed it.
+	///
+	/// # Safety
+	///
+	/// No other thread may write the motion of the body in `slot` during the call.
+	#[allow(unsafe_code, reason = "The caller keeps other threads from writing this body's motion.")]
+	#[inline]
+	unsafe fn spin_before(&self, slot: usize) -> f32x4 {
+		// SAFETY: The caller keeps every other thread from writing this body's motion, so nothing changes it while
+		// it is copied out.
+		unsafe { (*self.bodies[slot].0.get())[3] }
+	}
+
+	/// Starts the body in `slot` off at these velocities, with no shift.
+	///
+	/// # Safety
+	///
+	/// No other thread may read or write the motion of the body in `slot` during the call.
+	#[allow(unsafe_code, reason = "The caller keeps other threads away from this body's motion.")]
+	#[inline]
+	unsafe fn start(&self, slot: usize, linear: f32x4, angular: f32x4) {
+		// SAFETY: The caller keeps every other thread from reading or writing this body's motion, so this is the
+		// only access to it.
+		unsafe { *self.bodies[slot].0.get() = [linear, angular, f32x4::splat(0.0), angular] }
 	}
 
 	/// Replaces the linear velocity, angular velocity, and shift of the body in `slot`.
@@ -406,8 +544,8 @@ impl Velocities {
 	#[inline]
 	unsafe fn write(&self, slot: usize, motion: [f32x4; 3]) {
 		// SAFETY: The caller keeps every other thread from reading or writing this body's motion, so this is the
-		// only access to it.
-		unsafe { *self.bodies[slot].0.get() = motion }
+		// only access to it. The angular velocity from before the contacts stays as it is.
+		unsafe { (&mut *self.bodies[slot].0.get())[..3].copy_from_slice(&motion) }
 	}
 
 	/// Reads the motion of the two bodies of each contact of `contact`.
@@ -533,7 +671,7 @@ impl WideContact {
 	}
 }
 
-/// Works out what [`solve`] needs for the contacts `group` names in `contacts`, from the bodies' current state.
+/// Works out what [`solve`] needs for the contacts `group` names in `contacts`, from the `states` of their bodies.
 ///
 /// `group` holds at most [`WIDTH`] contacts, and no movable body may be in two of them. `dt` is the length of the
 /// step in seconds. `last_push` returns the
@@ -543,14 +681,14 @@ impl WideContact {
 ///
 /// # Safety
 ///
-/// During the call no other thread may write the motion, in `velocities`, of any body of the group's contacts, or
-/// read that of a movable one.
+/// During the call no other thread may write the state, in `states`, or the motion, in `velocities`, of any body of
+/// the group's contacts, or read the motion of a movable one.
 #[allow(
 	unsafe_code,
-	reason = "The caller keeps other threads away from the motion of the group's bodies."
+	reason = "The caller keeps other threads away from the state and motion of the group's bodies."
 )]
 unsafe fn prepare(
-	bodies: &StableVec<PhysicsBody>,
+	states: &BodyStates,
 	velocities: &Velocities,
 	contacts: &Contacts,
 	group: &[u32],
@@ -565,7 +703,8 @@ unsafe fn prepare(
 	let contacts: [&Contact; WIDTH] = std::array::from_fn(|lane| contacts.get(group[lane.min(group.len() - 1)] as usize));
 	let in_use = mask32x4::from_array(std::array::from_fn(|lane| lane < group.len()));
 	let sides = [contacts.map(|contact| &contact.a), contacts.map(|contact| &contact.b)];
-	let [a, b] = sides.map(|sides| WideSide::gather(bodies, sides));
+	// SAFETY: The caller keeps every other thread from writing the states and the motions of the group's bodies.
+	let [a, b] = sides.map(|sides| unsafe { WideSide::gather(states, velocities, sides) });
 	let (zero, one) = (f32x4::splat(0.0), f32x4::splat(1.0));
 
 	// The normal must point from A toward B.
@@ -752,9 +891,10 @@ fn push(contact: &WideContact, motions: &mut [WideMotion; 2], direction: usize, 
 
 /// The `ContactSolver` struct takes a physics step's contacts from detection to the bodies' new velocities.
 ///
-/// Call [`Self::begin`] with the step's contacts. Then get every batch ready, in order: either all of them with
-/// [`Self::prepare_rest`], or the first ones with [`Self::prepare_batch`], whose groups lanes can share, and the
-/// others with [`Self::prepare_rest`]. Pass over the groups [`ITERATIONS`] times with [`Self::solve`], batch after
+/// Give it the bodies as they are before contacts change them, either with [`Self::take_all_bodies`] or, shared
+/// between lanes, with [`Self::reserve`] and [`Self::take_bodies`]. Call [`Self::begin`] with the step's contacts.
+/// Then get every batch ready, in order: either all of them with [`Self::prepare_rest`], or the first ones with
+/// [`Self::prepare_batch`], whose groups lanes can share, and the others with [`Self::prepare_rest`]. Pass over the groups [`ITERATIONS`] times with [`Self::solve`], batch after
 /// batch in the same order, and call [`Self::finish`].
 #[derive(Default)]
 pub(crate) struct ContactSolver {
@@ -763,6 +903,8 @@ pub(crate) struct ContactSolver {
 	/// What [`Self::prepare_rest`] worked out, in groups: the groups of each of its batches in turn, then one group
 	/// for each contact that fit in no batch. They share bodies, so one lane passes over them in order.
 	rest: Vec<WideContact>,
+	/// What the step's contacts need to know about each body, as it is before they change it.
+	states: BodyStates,
 	/// The velocities of the bodies while the step's contacts are solved.
 	velocities: Velocities,
 	/// The impulse that held each pair of bodies apart at each of their contacts in the last step, by [`pair_key`]. Resting bodies need about
@@ -781,11 +923,60 @@ impl ContactSolver {
 		self.replaced.push(slot);
 	}
 
-	/// Sorts a step's `contacts` into batches and takes the bodies' velocities, ready for the batches to be prepared.
+	/// Makes room for what the solver keeps of every body slot below `slots`, ready for [`Self::take_bodies`].
+	pub(crate) fn reserve(&mut self, slots: usize) {
+		self.states.resize(slots);
+		self.velocities.resize(slots);
+	}
+
+	/// Takes what the step's contacts need of the bodies in `slots` of `bodies`: where each one is, how easily it
+	/// moves and turns, and its velocities. Call it once the bodies are as the step's contacts should find them,
+	/// for every slot that [`Self::reserve`] made room for.
+	///
+	/// Each body is worked out on its own, so lanes can each take some of the slots at the same time.
+	///
+	/// # Safety
+	///
+	/// While this runs, no other thread may take a body in one of `slots`, or prepare or solve any contact.
+	#[allow(
+		unsafe_code,
+		reason = "The caller keeps other threads away from what is kept of the bodies in these slots."
+	)]
+	pub(crate) unsafe fn take_bodies(&self, bodies: &StableVec<PhysicsBody>, slots: Range<usize>) {
+		for slot in slots {
+			let Some(body) = bodies.get_slot(slot) else {
+				continue;
+			};
+			let state = BodyState::of(body);
+			let [x, y, z] = body.angular_velocity.to_array();
+			// SAFETY: The caller keeps every other thread away from the state and the motion of the bodies in these
+			// slots.
+			unsafe {
+				self.states.write(slot, state);
+				// Every body starts the step's contacts at its own velocities.
+				self.velocities
+					.start(slot, state.linear_velocity, f32x4::from_array([x, y, z, 0.0]));
+			}
+		}
+	}
+
+	/// Takes what the step's contacts need of every body in `bodies`, as [`Self::take_bodies`] does for some.
+	#[allow(
+		unsafe_code,
+		reason = "Exclusive access to the solver keeps other threads from what it keeps of the bodies."
+	)]
+	pub(crate) fn take_all_bodies(&mut self, bodies: &StableVec<PhysicsBody>) {
+		self.reserve(bodies.slots_len());
+		// SAFETY: This call has the only reference to the solver, so no other thread reaches what it keeps.
+		unsafe { self.take_bodies(bodies, 0..bodies.slots_len()) };
+	}
+
+	/// Sorts a step's `contacts` into batches, ready for the batches to be prepared. The bodies of the contacts
+	/// have to be taken first, with [`Self::take_bodies`].
 	///
 	/// The contacts of a step are solved together, so no order among them is more correct than another. Batching
 	/// picks one that lets a batch's contacts be solved at the same time.
-	pub(crate) fn begin(&mut self, bodies: &StableVec<PhysicsBody>, contacts: &Contacts) {
+	pub(crate) fn begin(&mut self, contacts: &Contacts) {
 		self.rest.clear();
 		if !self.replaced.is_empty() {
 			self.replaced.sort_unstable();
@@ -801,15 +992,15 @@ impl ContactSolver {
 			return;
 		}
 		// A body without mass is never changed by a contact, so any number of a batch's contacts can touch it.
-		let movable = |slot: usize| bodies.get_slot(slot).is_some_and(|body| body.inv_mass != 0.0).then_some(slot);
+		let states = &mut self.states;
+		let slots = states.bodies.len();
+		let mut movable = |slot: usize| states.is_movable(slot).then_some(slot);
 		self.batches.rebuild(
-			bodies.slots_len(),
+			slots,
 			contacts
 				.iter()
 				.map(|contact| [movable(contact.a.object), movable(contact.b.object)]),
 		);
-		// Preparing a group starts its bodies off with the last step's impulses, so the velocities come first.
-		self.velocities.load(bodies);
 	}
 
 	/// Returns the number of batches the step's contacts were sorted into. Batches fill from the first one, so the
@@ -850,7 +1041,6 @@ impl ContactSolver {
 	)]
 	pub(crate) unsafe fn prepare_batch(
 		&self,
-		bodies: &StableVec<PhysicsBody>,
 		contacts: &Contacts,
 		dt: f32,
 		batch: usize,
@@ -862,7 +1052,7 @@ impl ContactSolver {
 		for group in groups {
 			let group = &batch[group * WIDTH..((group + 1) * WIDTH).min(batch.len())];
 			// SAFETY: The caller keeps every other thread from the groups that share a movable body with this one.
-			prepared.push(unsafe { self.prepare_group(bodies, contacts, dt, group) });
+			prepared.push(unsafe { self.prepare_group(contacts, dt, group) });
 		}
 	}
 
@@ -872,17 +1062,17 @@ impl ContactSolver {
 		unsafe_code,
 		reason = "Exclusive access to the solver keeps other threads from every group."
 	)]
-	pub(crate) fn prepare_rest(&mut self, bodies: &StableVec<PhysicsBody>, contacts: &Contacts, dt: f32, first_batch: usize) {
+	pub(crate) fn prepare_rest(&mut self, contacts: &Contacts, dt: f32, first_batch: usize) {
 		let mut rest = std::mem::take(&mut self.rest);
 		for batch in first_batch..self.batches.len() {
 			let groups = 0..self.batch_groups(batch);
 			// SAFETY: This call has the only reference to the solver, so no other thread prepares or solves a group.
-			unsafe { self.prepare_batch(bodies, contacts, dt, batch, groups, &mut rest) };
+			unsafe { self.prepare_batch(contacts, dt, batch, groups, &mut rest) };
 		}
 		// Contacts that fit in no batch share bodies, so each one is a group of its own and they are solved in turn.
 		for contact in self.batches.leftover() {
 			// SAFETY: This call has the only reference to the solver, so no other thread prepares or solves a group.
-			rest.push(unsafe { self.prepare_group(bodies, contacts, dt, std::slice::from_ref(contact)) });
+			rest.push(unsafe { self.prepare_group(contacts, dt, std::slice::from_ref(contact)) });
 		}
 		self.rest = rest;
 	}
@@ -897,17 +1087,12 @@ impl ContactSolver {
 		unsafe_code,
 		reason = "The caller keeps other threads from groups that share a movable body with this one."
 	)]
-	unsafe fn prepare_group(
-		&self,
-		bodies: &StableVec<PhysicsBody>,
-		contacts: &Contacts,
-		dt: f32,
-		group: &[u32],
-	) -> WideContact {
+	unsafe fn prepare_group(&self, contacts: &Contacts, dt: f32, group: &[u32]) -> WideContact {
 		let last_push = |pair, corner| self.pushes.get(&pair_key(pair, corner)).copied().unwrap_or(0.0);
-		// SAFETY: Preparing and solving a group only reaches the motion of its bodies, and only writes that of its
-		// movable ones. The caller keeps every other thread from the groups that have one of those.
-		unsafe { prepare(bodies, &self.velocities, contacts, group, dt, last_push) }
+		// SAFETY: Preparing and solving a group only reads the states of its bodies, which nothing writes once the
+		// bodies are taken. It only reaches the motion of its bodies, and only writes that of its movable ones. The
+		// caller keeps every other thread from the groups that have one of those.
+		unsafe { prepare(&self.states, &self.velocities, contacts, group, dt, last_push) }
 	}
 
 	/// Passes once over `groups`, which [`Self::prepare_batch`] prepared. The groups of one batch can be passed

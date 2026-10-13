@@ -27,7 +27,7 @@ pub enum Shapes {
 		center: Point<LocalSpace>,
 	},
 	/// A convex solid around the points of a mesh, for a body that should collide as its mesh does without the
-	/// mesh's detail.
+	/// mesh's detail. Its corners and edges are rounded by the hull's [`ConvexHull::margin`].
 	ConvexHull(Arc<ConvexHull>),
 }
 
@@ -55,6 +55,9 @@ impl Shapes {
 	///
 	/// Bodies that collide as the same mesh can share one hull: build it once, keep it in an [`Arc`], and pass each
 	/// body a clone of that.
+	///
+	/// The body collides as the hull with its corners and edges rounded by the hull's [`ConvexHull::margin`], which
+	/// is two hundredths of a unit or less. Its flat sides are where the hull's are.
 	pub fn convex_hull(hull: impl Into<Arc<ConvexHull>>) -> Self {
 		Self::ConvexHull(hull.into())
 	}

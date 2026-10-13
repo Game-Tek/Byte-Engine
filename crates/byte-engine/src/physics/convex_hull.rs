@@ -1,5 +1,13 @@
 //! Convex hulls of point clouds, such as the vertices of a mesh that should collide as one simple solid.
 
+use std::simd::{
+	Select as _,
+	cmp::{SimdPartialEq as _, SimdPartialOrd as _},
+	f32x4,
+	num::{SimdFloat as _, SimdUint as _},
+	u32x4,
+};
+
 use math::{AABB, Point, Vector, is_finite};
 
 use crate::physics::LocalSpace;
@@ -7,21 +15,36 @@ use crate::physics::LocalSpace;
 /// The `ConvexHull` struct describes the smallest convex solid around a set of local points, so that a detailed mesh
 /// can be treated as one simple shape.
 ///
-/// Build one from a mesh's vertex positions with [`build_convex_hull`].
+/// Build one from a mesh's vertex positions with [`build_convex_hull`], and give it to a body with
+/// [`crate::physics::Shapes::convex_hull`]. A body collides as the hull with its corners and edges rounded by the
+/// hull's [`ConvexHull::margin`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConvexHull {
-	vertices: Vec<Point<LocalSpace>>,
+	corners: Corners,
 	triangles: Vec<[u32; 3]>,
 	bounds: AABB<LocalSpace>,
 	center_of_mass: Point<LocalSpace>,
 	inertia_tensor: [[f32; 3]; 3],
+	/// The corners of the hull with every side moved in by `margin`.
+	core: Corners,
+	margin: f32,
 }
+
+/// How far a hull's corners and edges are rounded for collision, in meters, unless the hull is too small for that.
+///
+/// Bodies at rest are a few millimeters into each other, and gravity brings them a few more closer in a step. With
+/// this much margin on each hull, the cores of two resting hulls stay apart.
+const MARGIN: f32 = 0.02;
+
+/// The largest share of the distance from a hull's center of mass to its nearest side that its margin may be, so
+/// that a small or a thin hull keeps most of its shape.
+const MARGIN_SHARE: f64 = 0.25;
 
 impl ConvexHull {
 	/// Returns the corners of the hull. Each is one of the points the hull was built from, and none lies inside the
 	/// hull or within a face or an edge of it.
 	pub fn vertices(&self) -> &[Point<LocalSpace>] {
-		&self.vertices
+		&self.corners.points
 	}
 
 	/// Returns the triangles that cover the hull's surface, as indices into [`ConvexHull::vertices`].
@@ -42,15 +65,32 @@ impl ConvexHull {
 	///
 	/// Pass this to [`crate::physics::minkowski_support`] to compare the hull with another shape.
 	pub fn support_point(&self, direction: Vector<LocalSpace>) -> Point<LocalSpace> {
-		let reach = |vertex: Point<LocalSpace>| direction.dot(vertex - Point::origin());
-		let mut furthest = (self.vertices[0], reach(self.vertices[0]));
-		for &vertex in &self.vertices[1..] {
-			let reach = reach(vertex);
-			if reach > furthest.1 {
-				furthest = (vertex, reach);
-			}
-		}
-		furthest.0
+		self.corners.furthest(direction)
+	}
+
+	/// Returns how far the hull's corners and edges are rounded when a body collides as the hull, in the hull's units.
+	/// Flat sides are where they are in the hull.
+	///
+	/// A body collides as every point within this distance of the hull's core, which is the hull with each side moved
+	/// in by as much. While the cores of two shapes are apart, where the shapes touch follows from the cores' closest
+	/// points, which takes a fraction of the work that finding how deep two overlapping solids are in each other
+	/// does. Bodies at rest are in each other by less than the margin, so resting contacts are the quick ones.
+	///
+	/// The margin is two hundredths of a unit, or less for a hull that is small or thin: at most a quarter of the
+	/// distance from the center of mass to the nearest side.
+	pub fn margin(&self) -> f32 {
+		self.margin
+	}
+
+	/// Returns the corner of the hull's core that is furthest along `direction`. The hull as a body collides with
+	/// is every point within [`ConvexHull::margin`] of the core.
+	pub(crate) fn core_support(&self, direction: Vector<LocalSpace>) -> Point<LocalSpace> {
+		self.core.furthest(direction)
+	}
+
+	/// Returns the corners of the hull's core, which [`ConvexHull::core_support`] picks from.
+	pub(crate) fn core_vertices(&self) -> &[Point<LocalSpace>] {
+		&self.core.points
 	}
 
 	/// Returns the center of mass of the hull as a solid of even density.
@@ -71,6 +111,57 @@ impl ConvexHull {
 	#[inline]
 	pub fn inertia_tensor(&self) -> [[f32; 3]; 3] {
 		self.inertia_tensor
+	}
+}
+
+/// The `Corners` struct keeps the corners of a convex solid twice: as points, and by coordinate in vectors of four,
+/// so that the corner furthest along a direction is found four corners at a time. Finding that corner is most of
+/// what testing a hull against another shape takes.
+#[derive(Debug, Clone, PartialEq)]
+struct Corners {
+	points: Vec<Point<LocalSpace>>,
+	/// The x, the y, and the z of four corners at a time, in the sequence of `points`. The last four are filled up
+	/// with copies of the last corner.
+	fours: Vec<[f32x4; 3]>,
+}
+
+impl Corners {
+	/// Keeps `points`, of which there has to be at least one.
+	fn new(points: Vec<Point<LocalSpace>>) -> Self {
+		let fours = points
+			.chunks(4)
+			.map(|four| {
+				let corners: [[f32; 3]; 4] = std::array::from_fn(|lane| four[lane.min(four.len() - 1)].to_array());
+				[0, 1, 2].map(|axis| f32x4::from_array(corners.map(|corner| corner[axis])))
+			})
+			.collect();
+		Self { points, fours }
+	}
+
+	/// Returns the corner that is furthest along `direction`. Of corners that are equally far along, the first is
+	/// returned.
+	fn furthest(&self, direction: Vector<LocalSpace>) -> Point<LocalSpace> {
+		let [x, y, z] = direction.to_array().map(f32x4::splat);
+		// Each lane looks at every fourth corner. It keeps how far along the furthest of them is and which corner
+		// that is, and of corners that are equally far along, the first.
+		let mut reach = f32x4::splat(f32::NEG_INFINITY);
+		let mut found = u32x4::splat(0);
+		let mut corners = u32x4::from_array([0, 1, 2, 3]);
+		for four in &self.fours {
+			let along = four[0] * x + four[1] * y + four[2] * z;
+			let further = along.simd_gt(reach);
+			reach = further.select(along, reach);
+			found = further.select(corners, found);
+			corners += u32x4::splat(4);
+		}
+
+		// The furthest of the four lanes' corners, and of equally far ones the first in the sequence of corners.
+		// This is worked out without a branch: which lane wins changes from one direction to the next, and a wrong
+		// guess at it costs more than the whole search.
+		let furthest = reach.simd_eq(f32x4::splat(reach.reduce_max()));
+		let first = furthest.select(found, u32x4::splat(u32::MAX)).reduce_min() as usize;
+		// A copy that fills up the last four stands for the last corner.
+		self.points[first.min(self.points.len() - 1)]
 	}
 }
 
@@ -143,6 +234,34 @@ fn mass_distribution(vertices: &[Point<LocalSpace>], triangles: &[[u32; 3]]) -> 
 /// The time this takes grows with the number of points times the number of the hull's corners, so it suits collision
 /// shapes better than detailed meshes with thousands of corners.
 pub fn build_convex_hull(points: &[Point<LocalSpace>]) -> Option<ConvexHull> {
+	let (vertices, triangles) = surface(points)?;
+
+	let (mut min, mut max) = (vertices[0].to_array(), vertices[0].to_array());
+	for vertex in &vertices[1..] {
+		let vertex = vertex.to_array();
+		for axis in 0..3 {
+			min[axis] = min[axis].min(vertex[axis]);
+			max[axis] = max[axis].max(vertex[axis]);
+		}
+	}
+	let (center_of_mass, inertia_tensor) = mass_distribution(&vertices, &triangles);
+	// A hull that has no core collides as it is.
+	let (core, margin) = core(&vertices, &triangles, center_of_mass).unwrap_or_else(|| (vertices.clone(), 0.0));
+	Some(ConvexHull {
+		bounds: AABB::new(Point::from_array(min), Point::from_array(max)),
+		corners: Corners::new(vertices),
+		triangles,
+		center_of_mass,
+		inertia_tensor,
+		core: Corners::new(core),
+		margin,
+	})
+}
+
+/// Returns the corners of the convex hull of `points`, and the triangles that cover its surface as indices into
+/// those corners, as [`ConvexHull::vertices`] and [`ConvexHull::triangles`] describe them. Returns `None` for the
+/// points that [`build_convex_hull`] has no hull for.
+fn surface(points: &[Point<LocalSpace>]) -> Option<(Vec<Point<LocalSpace>>, Vec<[u32; 3]>)> {
 	if points.len() < 4 {
 		return None;
 	}
@@ -216,23 +335,117 @@ pub fn build_convex_hull(points: &[Point<LocalSpace>]) -> Option<ConvexHull> {
 			})
 		})
 		.collect::<Vec<_>>();
+	Some((vertices, triangles))
+}
 
-	let (mut min, mut max) = (vertices[0].to_array(), vertices[0].to_array());
-	for vertex in &vertices[1..] {
-		let vertex = vertex.to_array();
-		for axis in 0..3 {
-			min[axis] = min[axis].min(vertex[axis]);
-			max[axis] = max[axis].max(vertex[axis]);
+/// How far short of one the dot product of the directions that two triangles of a hull face may be for the
+/// triangles to count as parts of one flat side. Rounding turns the triangles of one side by far less than this.
+const SAME_SIDE: f64 = 1e-6;
+
+/// Returns the corners of a hull's core, and the margin the core is for: the solid that is left when every side of
+/// the hull is moved in by the margin. Every point within the margin of the core is in the hull, and the two differ
+/// only near the hull's corners and edges, which are round on the core's side.
+///
+/// `vertices` and `triangles` are the hull's surface and `center` is a point inside it, from which the margin is
+/// worked out: [`MARGIN`], or less for a hull whose nearest side is close to the center.
+///
+/// Moving the sides in can do more than move the corners. A corner where more than three sides meet may come apart
+/// into several, and a small side may vanish. So the core is not worked out corner by corner. Each side, as seen
+/// from the center, is a point in the direction it faces, nearer the further away the side is. The hull of those
+/// points has one face for each corner of the solid that the sides enclose, with the sides that meet there at its
+/// corners.
+///
+/// Returns `None` when the hull has no room for a core.
+fn core(
+	vertices: &[Point<LocalSpace>],
+	triangles: &[[u32; 3]],
+	center: Point<LocalSpace>,
+) -> Option<(Vec<Point<LocalSpace>>, f32)> {
+	let center = center.to_array().map(f64::from);
+	let from_center = |point: Point<LocalSpace>| {
+		let point = point.to_array();
+		[0, 1, 2].map(|axis| f64::from(point[axis]) - center[axis])
+	};
+	let subtract = |left: [f64; 3], right: [f64; 3]| [0, 1, 2].map(|axis| left[axis] - right[axis]);
+	let cross = |left: [f64; 3], right: [f64; 3]| {
+		[
+			left[1] * right[2] - left[2] * right[1],
+			left[2] * right[0] - left[0] * right[2],
+			left[0] * right[1] - left[1] * right[0],
+		]
+	};
+	let dot = |left: [f64; 3], right: [f64; 3]| left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+
+	// The hull's flat sides, each as the direction it faces and how far from the center it is. The triangles of one
+	// side face the same way to within rounding, and the nearest of them stands for the side.
+	let mut sides: Vec<([f64; 3], f64)> = Vec::new();
+	let mut size: f64 = 0.0;
+	for triangle in triangles {
+		let [a, b, c] = triangle.map(|vertex| from_center(vertices[vertex as usize]));
+		let outward = cross(subtract(b, a), subtract(c, a));
+		let length = dot(outward, outward).sqrt();
+		let outward = outward.map(|part| part / length);
+		let distance = dot(outward, a);
+		size = size.max(dot(a, a).sqrt());
+		match sides.iter_mut().find(|(other, _)| dot(*other, outward) > 1.0 - SAME_SIDE) {
+			Some((_, nearest)) => *nearest = nearest.min(distance),
+			None => sides.push((outward, distance)),
 		}
 	}
-	let (center_of_mass, inertia_tensor) = mass_distribution(&vertices, &triangles);
-	Some(ConvexHull {
-		bounds: AABB::new(Point::from_array(min), Point::from_array(max)),
-		vertices,
-		triangles,
-		center_of_mass,
-		inertia_tensor,
-	})
+	let nearest = sides.iter().map(|(_, distance)| *distance).fold(f64::INFINITY, f64::min);
+	let margin = f64::from(MARGIN).min(nearest * MARGIN_SHARE);
+	if margin <= 0.0 || !margin.is_finite() {
+		return None;
+	}
+
+	// One point for each side once it is moved in. A side that the others then leave no part of ends up inside the
+	// hull of these points, and takes no part in the core.
+	let moved: Vec<Point<LocalSpace>> = sides
+		.iter()
+		.map(|(outward, distance)| {
+			let [x, y, z] = outward.map(|part| (part / (distance - margin)) as f32);
+			Point::new(x, y, z)
+		})
+		.collect();
+	let (moved, faces) = surface(&moved)?;
+
+	// Rounding may leave a corner this far outside a side, or two corners that are one this far apart.
+	let (outside, same) = (1e-5 * size, 1e-6 * size);
+	let mut corners: Vec<[f64; 3]> = Vec::new();
+	for face in &faces {
+		// The corner where the three sides at the corners of this face meet is the point whose dot product with
+		// each of their three points is one.
+		let [a, b, c] = face.map(|side| moved[side as usize].to_array().map(f64::from));
+		let level = cross(subtract(b, a), subtract(c, a));
+		let scale = dot(level, a);
+		if scale <= 0.0 || scale.is_nan() {
+			continue;
+		}
+		let corner = level.map(|part| part / scale);
+		// Three sides that nearly face the same way meet far from where the core is. Such a face comes from sides
+		// that rounding left a sliver between, and the core's real corner there comes from a face next to it.
+		let inside = sides
+			.iter()
+			.all(|(outward, distance)| dot(*outward, corner) <= distance - margin + outside);
+		let known = corners.iter().any(|&other| {
+			let apart = subtract(other, corner);
+			dot(apart, apart) < same * same
+		});
+		if inside && !known && corner.iter().all(|part| part.is_finite()) {
+			corners.push(corner);
+		}
+	}
+	if corners.len() < 4 {
+		return None;
+	}
+	let core = corners
+		.into_iter()
+		.map(|corner| {
+			let [x, y, z] = [0, 1, 2].map(|axis| (center[axis] + corner[axis]) as f32);
+			Point::new(x, y, z)
+		})
+		.collect();
+	Some((core, margin as f32))
 }
 
 /// The `HullFace` trait lets [`add_corner`] grow a hull whose faces keep more than a [`Face`], so that what is kept
@@ -908,6 +1121,168 @@ mod tests {
 		assert_eq!(hull.support_point(Vector::new(-0.1, 5.0, -0.2)), Point::new(-1.0, 1.0, -1.0));
 		// Every corner is as far along no direction as any other, and one of them is still returned.
 		assert!(hull.vertices().contains(&hull.support_point(Vector::zero())));
+	}
+
+	/// Returns `count` directions spread evenly over a sphere, followed by the six along the axes.
+	fn directions(count: usize) -> Vec<Vector<LocalSpace>> {
+		let spiral = (0..count).map(|index| {
+			let height = 1.0 - 2.0 * (index as f32 + 0.5) / count as f32;
+			let (sin, cos) = (index as f32 * 2.399_963).sin_cos();
+			let width = (1.0 - height * height).sqrt();
+			Vector::new(width * cos, height, width * sin)
+		});
+		let axes = [-1.0, 1.0].into_iter().flat_map(|sign| {
+			[
+				Vector::new(sign, 0.0, 0.0),
+				Vector::new(0.0, sign, 0.0),
+				Vector::new(0.0, 0.0, sign),
+			]
+		});
+		spiral.chain(axes).collect()
+	}
+
+	/// Returns the points of a few solids with flat sides: a cube, a diamond with four sides at each tip, a prism,
+	/// and a pyramid whose four slanted sides lean differently.
+	fn solids() -> Vec<(&'static str, Vec<Point<LocalSpace>>)> {
+		let diamond = [
+			[1.0, 0.0, 0.0],
+			[-1.0, 0.0, 0.0],
+			[0.0, 1.0, 0.0],
+			[0.0, -1.0, 0.0],
+			[0.0, 0.0, 1.0],
+			[0.0, 0.0, -1.0],
+		];
+		let prism: Vec<[f64; 3]> = (0..6)
+			.flat_map(|side| {
+				let turn = f64::from(side) / 6.0 * std::f64::consts::TAU;
+				[-0.5, 0.5].map(|height| [0.5 * turn.cos(), height, 0.5 * turn.sin()])
+			})
+			.collect();
+		let pyramid = [
+			[-1.0, 0.0, -1.0],
+			[1.0, 0.0, -1.0],
+			[1.0, 0.0, 1.0],
+			[-1.0, 0.0, 1.0],
+			[0.3, 1.5, -0.2],
+		];
+		vec![
+			("cube", local(&lattice(2, false))),
+			("diamond", local(&diamond)),
+			("prism", local(&prism)),
+			("pyramid", local(&pyramid)),
+		]
+	}
+
+	/// Returns how far along `direction` `point` is.
+	fn along(direction: Vector<LocalSpace>, point: Point<LocalSpace>) -> f32 {
+		let (direction, point) = (direction.to_array(), point.to_array());
+		direction[0] * point[0] + direction[1] * point[1] + direction[2] * point[2]
+	}
+
+	#[test]
+	fn the_support_point_is_the_first_of_the_corners_that_are_furthest_along() {
+		// The solids have four, five, six, eight, twelve, and many corners, so their corners fill whole groups of
+		// four and leave some over. Along an axis, several corners of most of them are equally far.
+		let mut clouds = solids();
+		clouds.push((
+			"tetrahedron",
+			local(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+		));
+		clouds.push(("cloud", local(&scattered(200))));
+
+		for (name, points) in clouds {
+			let hull = build_convex_hull(&points).expect("the points enclose a volume");
+			for direction in directions(96) {
+				let mut furthest = hull.vertices()[0];
+				for &vertex in hull.vertices() {
+					if along(direction, vertex) > along(direction, furthest) {
+						furthest = vertex;
+					}
+				}
+
+				assert_eq!(hull.support_point(direction), furthest, "{name} along {direction:?}");
+			}
+		}
+	}
+
+	#[test]
+	fn a_hull_has_a_margin_that_a_small_hull_has_less_of() {
+		let cube = |half: f64| {
+			let corners: Vec<[f64; 3]> = lattice(2, false)
+				.into_iter()
+				.map(|corner| corner.map(|part| part * half))
+				.collect();
+			build_convex_hull(&local(&corners)).expect("a cube encloses a volume")
+		};
+
+		assert_eq!(cube(1.0).margin(), 0.02);
+		assert_eq!(cube(100.0).margin(), 0.02);
+		// A quarter of the way from the middle to a side.
+		assert!((cube(0.04).margin() - 0.01).abs() <= 1e-6);
+		assert!((cube(0.001).margin() - 0.00025).abs() <= 1e-7);
+	}
+
+	#[test]
+	fn the_core_has_every_side_of_the_hull_moved_in_by_the_margin() {
+		for (name, points) in solids() {
+			let hull = build_convex_hull(&points).expect("the points enclose a volume");
+			let margin = hull.margin();
+			assert!(margin > 0.0, "{name}");
+
+			for triangle in hull.triangles() {
+				let [a, b, c] = triangle.map(|vertex| coordinates(hull.vertices()[vertex as usize]));
+				let outward = cross(subtract(b, a), subtract(c, a));
+				let length = dot(outward, outward).sqrt();
+				let [x, y, z] = outward.map(|part| (part / length) as f32);
+				let outward = Vector::new(x, y, z);
+
+				let side = along(outward, hull.support_point(outward));
+				let core = along(outward, hull.core_support(outward));
+				assert!(
+					(core + margin - side).abs() <= 1e-5,
+					"{name}: {core} + {margin} is not {side}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn every_point_within_the_margin_of_the_core_is_in_the_hull() {
+		let mut clouds = solids();
+		clouds.push(("cloud", local(&scattered(60))));
+		clouds.push((
+			"ball",
+			local(
+				&lattice(5, true)
+					.into_iter()
+					.map(|[x, y, z]| {
+						let length = (x * x + y * y + z * z).sqrt();
+						[x / length, y / length, z / length]
+					})
+					.collect::<Vec<_>>(),
+			),
+		));
+
+		for (name, points) in clouds {
+			let hull = build_convex_hull(&points).expect("the points enclose a volume");
+			let margin = hull.margin();
+			assert!(margin > 0.0 && hull.core_vertices().len() >= 4, "{name}");
+
+			// The core made thicker by the margin reaches no further than the hull in any direction. It falls short
+			// of the hull only toward a corner or an edge, by a few margins where those are pointed.
+			for direction in directions(200) {
+				let reach = along(direction, hull.support_point(direction));
+				let rounded = along(direction, hull.core_support(direction)) + margin;
+				assert!(
+					rounded <= reach + 1e-5,
+					"{name} along {direction:?}: {rounded} is past {reach}"
+				);
+				assert!(
+					rounded >= reach - 10.0 * margin,
+					"{name} along {direction:?}: {rounded} is far short of {reach}"
+				);
+			}
+		}
 	}
 
 	#[test]

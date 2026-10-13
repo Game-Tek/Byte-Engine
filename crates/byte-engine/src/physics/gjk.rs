@@ -88,7 +88,12 @@ pub fn shapes_overlap<Space>(
 	support_a: impl Fn(Vector<Space>) -> Point<Space>,
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 ) -> bool {
-	close_in(|direction| minkowski_support(&support_a, &support_b, direction), 0.0).holds_origin
+	close_in(
+		|direction| minkowski_support(&support_a, &support_b, direction),
+		0.0,
+		any_direction(),
+	)
+	.holds_origin
 }
 
 /// Returns the contact between shape A and shape B when they overlap, for any two convex shapes.
@@ -110,7 +115,7 @@ pub fn shapes_contact<Space>(
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
-	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, scratch)
+	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, None, scratch)
 }
 
 /// Returns the contact between shape A and shape B when they overlap, where each shape is every point within its
@@ -123,6 +128,11 @@ pub fn shapes_contact<Space>(
 /// `support_a` and `support_b` each return the point of their core shape that is furthest along the direction they
 /// are given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so
 /// for two bodies they have to place each shape where its body is. A radius of zero leaves a shape as its core.
+///
+/// `toward_b` is a direction that leads from shape A toward shape B, such as from the middle of one to the middle
+/// of the other. The search starts along it, and when the shapes are apart along it, which most shapes that are
+/// apart are, that is all the search takes. Any direction leads to the same contact. Pass `None` when there is
+/// none at hand.
 ///
 /// `extent` is a bound on how far apart a point of one core and a point of the other can be along any one
 /// coordinate axis, which the boxes around the two shapes give. It may be several times too large, and must not be
@@ -138,13 +148,14 @@ pub fn rounded_shapes_contact<Space>(
 	radius_a: f32,
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	radius_b: f32,
+	toward_b: Option<Vector<Space>>,
 	extent: Option<f32>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
 	// GJK settles most pairs, the ones that are apart, with a few points of the difference between the cores.
 	let support = |direction| minkowski_support(&support_a, &support_b, direction);
 	let reach = radius_a + radius_b;
-	let search = close_in(support, reach);
+	let search = close_in(support, reach, toward_b.unwrap_or_else(any_direction));
 
 	let (normal, depth, on_a, on_b) = if search.holds_origin {
 		// The cores overlap. The difference's surface is explored to find how far inside it the origin is, starting
@@ -186,6 +197,7 @@ pub fn shapes_closest_points<Space>(
 	let search = close_in(
 		|direction| minkowski_support(&support_a, &support_b, direction),
 		f32::INFINITY,
+		any_direction(),
 	);
 	(!search.holds_origin).then(|| search.points())
 }
@@ -238,11 +250,33 @@ const STEP_LIMIT: usize = 64;
 /// The search also ends as soon as the shapes are known to be more than `reach` apart, which is sooner than the
 /// nearest point is known. The simplex is then further than `reach` from the origin too. Pass zero to only learn
 /// whether the shapes overlap, and infinity to always get the nearest point.
-fn close_in<Space>(support: impl Fn(Vector<Space>) -> MinkowskiPoint<Space>, reach: f32) -> Search<Space> {
+///
+/// `first` is the direction the search starts along. Any direction will do. One that leads from the first shape
+/// toward the second starts the simplex where the difference is nearest the origin, and for most shapes that are
+/// apart already shows that they are.
+fn close_in<Space>(
+	support: impl Fn(Vector<Space>) -> MinkowskiPoint<Space>,
+	reach: f32,
+	first: Vector<Space>,
+) -> Search<Space> {
 	// Any point of the difference can start the simplex.
-	let mut simplex = [support(Vector::new(1.0, 1.0, 1.0)); 4];
+	let start = support(first);
+	let mut simplex = [start; 4];
 	let mut count = 1;
 	let mut nearest = nearest_on_simplex(&simplex[..count]);
+	// The difference reaches no further along the first direction than its first point. When that is short of the
+	// origin by more than `reach`, the shapes are that far apart, as in the search below. A first point that counts
+	// as the origin is left to the search, which ends on it.
+	let along = first.dot(start.difference);
+	let at_origin = nearest.distance_squared < ORIGIN_REACH * ORIGIN_REACH;
+	if !at_origin && along < 0.0 && along * along > reach * reach * first.length_squared() {
+		return Search {
+			simplex,
+			count,
+			nearest,
+			holds_origin: false,
+		};
+	}
 
 	for _ in 0..STEP_LIMIT {
 		if nearest.distance_squared < ORIGIN_REACH * ORIGIN_REACH {
@@ -307,6 +341,11 @@ fn keep_weighted<Space>(simplex: &mut [MinkowskiPoint<Space>; 4], weights: &mut 
 		}
 	}
 	kept
+}
+
+/// Returns a direction to start a search along when nothing is known about where the shapes are.
+fn any_direction<Space>() -> Vector<Space> {
+	Vector::new(1.0, 1.0, 1.0)
 }
 
 /// How near each other two points of a Minkowski difference have to be to count as the same point.
@@ -584,7 +623,15 @@ mod tests {
 		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		radius_b: f32,
 	) -> Option<Intersection<LocalSpace>> {
-		super::rounded_shapes_contact(support_a, radius_a, support_b, radius_b, None, &mut ContactScratch::default())
+		super::rounded_shapes_contact(
+			support_a,
+			radius_a,
+			support_b,
+			radius_b,
+			None,
+			None,
+			&mut ContactScratch::default(),
+		)
 	}
 
 	/// Returns a box hull with the given half sizes around `middle`.
@@ -1563,6 +1610,46 @@ mod tests {
 	}
 
 	#[test]
+	fn a_contact_is_the_same_whichever_direction_the_search_starts_along() {
+		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+		let support_a = |along| a.support_point(along);
+		let starts = [
+			None,
+			// Toward the other shape, away from it, across, and nowhere.
+			Some(Vector::new(1.0, 0.0, 0.0)),
+			Some(Vector::new(-3.0, 0.0, 0.0)),
+			Some(Vector::new(0.0, 0.0, 2.0)),
+			Some(Vector::new(0.4, -0.7, 0.2)),
+			Some(Vector::zero()),
+		];
+
+		// Each is a box at this place along x, each shape made thicker by a tenth, and how deep they then are in
+		// each other: with their cores overlapping, with only the thicker shapes overlapping, and apart.
+		for (place, depth) in [(1.5, Some(0.7)), (2.1, Some(0.1)), (2.5, None)] {
+			let b = box_hull([1.0, 1.0, 1.0], [place, 0.3, -0.2]);
+			let support_b = |along| b.support_point(along);
+
+			for start in starts {
+				let contact =
+					super::rounded_shapes_contact(support_a, 0.1, support_b, 0.1, start, None, &mut ContactScratch::default());
+
+				assert_eq!(contact.is_some(), depth.is_some(), "at {place} from {start:?}");
+				if let (Some(contact), Some(depth)) = (contact, depth) {
+					let normal: Vector<LocalSpace> = contact.normal().into();
+					assert!(
+						(normal - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5,
+						"at {place} from {start:?}"
+					);
+					assert!(
+						(contact.depth() - depth).abs() <= 1e-5,
+						"at {place} from {start:?}: {contact:?}"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
 	fn a_contact_is_on_the_surface_when_another_plane_is_as_near() {
 		// The tip of a diamond at (1, 0, 0) is 0.25 inside two sides of a box at once: the one it came in through,
 		// which faces -x, and the one that faces -z. Only the first way out is that short. Past the second, the
@@ -1582,8 +1669,9 @@ mod tests {
 
 		// With the cores asked for their extent, and with a bound on it given.
 		for extent in [None, Some(4.0), Some(100.0)] {
-			let contact = super::rounded_shapes_contact(support_a, 0.0, support_b, 0.0, extent, &mut ContactScratch::default())
-				.expect("the tip is inside the box");
+			let contact =
+				super::rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, extent, &mut ContactScratch::default())
+					.expect("the tip is inside the box");
 
 			assert!(
 				(contact.normal().into_vector() - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5,

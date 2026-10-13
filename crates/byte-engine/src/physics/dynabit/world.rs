@@ -140,10 +140,11 @@ impl World {
 	/// other lanes stay asleep. A step they give one lane runs on the calling thread, like [`Self::update`],
 	/// because lanes would cost more than they save. Every running lane runs the same step. One lane applies
 	/// gravity and sorts the bodies' bounds while the others wait, every lane then lists its part of the bounds in
-	/// grid cells and finds the contacts in its share of them, and one lane batches them. The lanes then prepare the contacts and pass over them several
-	/// times, sharing the larger batches, before every lane moves its share of the bodies and one lane publishes
-	/// their transforms. Contacts are prepared and solved in the order [`Self::update`] does it in, so both produce
-	/// the same simulation with any number of lanes.
+	/// grid cells, gives the solver its share of the bodies, and finds the contacts in its share of the bounds, and
+	/// one lane batches them. The lanes then prepare the contacts and pass over them several times, sharing the
+	/// larger batches, before every lane moves its share of the bodies and one lane publishes their transforms.
+	/// Contacts are prepared and solved in the order [`Self::update`] does it in, so both produce the same
+	/// simulation with any number of lanes.
 	pub fn update_with_alley(
 		&mut self,
 		time: Time,
@@ -166,12 +167,16 @@ impl World {
 		let executed = alley.execute_phased(self, lanes, |lane, world| {
 			let in_cells = lane.broadcast_mut(world, |world| {
 				world.update_velocities(step);
+				world.solver.reserve(world.bodies.slots_len());
 				world.stage_bodies(step, lanes)
 			});
 			if in_cells {
 				let _ = lane.each_ref(world, |world, lane| world.bounds.fill(lane.idx()));
 			}
-			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, step));
+			let _ = lane.each_ref(world, |world, lane| {
+				world.take_share_bodies(lane);
+				world.detect_share_contacts(lane, step)
+			});
 			let (shared_batches, rest) = lane.broadcast_mut(world, |world| world.batch_share_contacts());
 			for batch in 0..shared_batches {
 				let _ = lane.each_ref(world, |world, lane| world.prepare_share(batch, lane, step));
@@ -229,6 +234,15 @@ impl World {
 			.stage(bounds.map(|(index, body)| (index, body.swept_bounds(seconds))), parts)
 	}
 
+	/// Gives the solver what the step's contacts need of the bodies in one lane's share of the body slots.
+	#[allow(unsafe_code, reason = "Lanes take different shares of the body slots.")]
+	fn take_share_bodies(&self, lane: &ConcreteLane<'_>) {
+		let share = lane.share_range(self.bodies.slots_len());
+		// SAFETY: This runs in a stage where every lane takes its own share of the slots, which do not overlap, and
+		// no contact is prepared or solved.
+		unsafe { self.solver.take_bodies(&self.bodies, share) };
+	}
+
 	/// Finds the contacts in one lane's share of the swept bounds and keeps them in that lane's storage.
 	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, dt: MediaTime) {
 		let storage = &self.shares[lane.idx()];
@@ -260,7 +274,7 @@ impl World {
 			std::mem::swap(self.contacts.part_mut(lane), &mut share.get_mut().contacts);
 		}
 		self.contacts.seal();
-		self.solver.begin(&self.bodies, &self.contacts);
+		self.solver.begin(&self.contacts);
 		// Batches fill from the first one, so the large ones lead.
 		let shared = (0..self.solver.batches().min(MAX_SHARED_BATCHES))
 			.take_while(|batch| self.solver.batch_contacts(*batch) >= SHARED_BATCH_CONTACTS)
@@ -282,10 +296,7 @@ impl World {
 		let seconds = dt.as_seconds_f32();
 		// SAFETY: This runs in a stage where every lane prepares its own share of the groups of this one batch, and
 		// nothing else touches the solver. Shares do not overlap, and the groups of a batch share no movable body.
-		unsafe {
-			self.solver
-				.prepare_batch(&self.bodies, &self.contacts, seconds, batch, share, &mut groups)
-		};
+		unsafe { self.solver.prepare_batch(&self.contacts, seconds, batch, share, &mut groups) };
 		let mut storage = storage.lock();
 		storage.batch_ends.push(groups.len());
 		storage.groups = groups;
@@ -293,8 +304,7 @@ impl World {
 
 	/// Prepares the contacts that follow the first `shared_batches` batches, which one lane then passes over in turn.
 	fn prepare_rest(&mut self, shared_batches: usize, dt: MediaTime) {
-		self.solver
-			.prepare_rest(&self.bodies, &self.contacts, dt.as_seconds_f32(), shared_batches);
+		self.solver.prepare_rest(&self.contacts, dt.as_seconds_f32(), shared_batches);
 	}
 
 	/// Passes once over the groups one lane prepared of a batch.
@@ -360,8 +370,12 @@ impl World {
 			&mut self.scratch,
 		);
 		self.contacts.seal();
-		self.solver.begin(&self.bodies, &self.contacts);
-		self.solver.prepare_rest(&self.bodies, &self.contacts, seconds, 0);
+		// Without contacts the solver has nothing to do with the bodies.
+		if self.contacts.len() != 0 {
+			self.solver.take_all_bodies(&self.bodies);
+		}
+		self.solver.begin(&self.contacts);
+		self.solver.prepare_rest(&self.contacts, seconds, 0);
 		for _ in 0..solver::ITERATIONS {
 			self.solver.solve_rest();
 		}

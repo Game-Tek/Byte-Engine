@@ -859,13 +859,18 @@ impl Alley {
 
 	/// Executes `f` once on each of the first `lane_count` lanes and returns after they finish.
 	///
-	/// The other lanes stay asleep and take no part in the dispatch's collectives.
+	/// The other lanes stay asleep and take no part in the dispatch's collectives. One lane alone runs on the
+	/// calling thread.
 	fn execute_lanes<R>(&mut self, lane_count: usize, f: impl AlleyFunction<R>) -> std::thread::Result<Vec<R>>
 	where
 		R: Send,
 	{
 		let state = DispatchState::new(lane_count);
 		let state = &state;
+		if lane_count == 1 {
+			// One lane has no other lane to meet, so waking a worker for it would only add the time that takes.
+			return catch_unwind(AssertUnwindSafe(|| vec![f(&mut ConcreteLane::new(0, state))]));
+		}
 		let jobs = (0..lane_count).map(|lane_idx| {
 			let f = f.clone();
 			move || f(&mut ConcreteLane::new(lane_idx, state))
@@ -926,8 +931,8 @@ impl Alley {
 	/// Pass [`Self::parallelism`] to run every lane. Pass fewer when the work is too small to pay for all of them:
 	/// every stage ends only once each running lane has reached it, so lanes with little to do slow a small job
 	/// down. The lanes left out stay asleep, [`ConcreteLane::share`] splits work among the running lanes only, and
-	/// the result holds one value for each of them. A count above [`Self::parallelism`] runs every lane, and a
-	/// count of zero runs none, so `f` is never called.
+	/// the result holds one value for each of them. A count above [`Self::parallelism`] runs every lane, a count of
+	/// one runs `f` on the calling thread, and a count of zero runs none, so `f` is never called.
 	pub fn execute_phased<T, R, F>(&mut self, resource: &mut T, lanes: usize, f: F) -> std::thread::Result<Vec<R>>
 	where
 		T: Send + Sync,
@@ -1639,6 +1644,27 @@ mod tests {
 		});
 
 		assert!(result.is_err());
+		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
+	}
+
+	#[test]
+	fn a_phased_dispatch_of_one_lane_runs_on_the_calling_thread() {
+		let mut alley = Alley::with_parallelism(4);
+		let caller = std::thread::current().id();
+		let mut value = 0usize;
+
+		let threads = unwrap_dispatch(alley.execute_phased(&mut value, 1, |lane, value| {
+			lane.broadcast_mut(value, |value| *value += 1);
+			let _ = lane.each_ref(value, |value, _| assert_eq!(*value, 1));
+			std::thread::current().id()
+		}));
+
+		assert_eq!(threads, [caller]);
+		assert_eq!(value, 1);
+
+		// A panic on the calling thread is returned like one on a lane, and the alley stays usable.
+		let panicked = alley.execute_phased(&mut value, 1, |_, _| panic!("expected lane panic"));
+		assert!(panicked.is_err());
 		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
 	}
 

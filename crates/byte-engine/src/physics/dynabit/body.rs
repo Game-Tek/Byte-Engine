@@ -105,15 +105,6 @@ impl PhysicsBody {
 
 	/// Advances the body by `dt` using its current linear and angular velocities.
 	pub fn update(&mut self, dt: MediaTime) {
-		let motion = self.advanced(dt);
-		self.apply(motion);
-	}
-
-	/// Returns where the body is, and how it spins, after moving for `dt` at its current velocities.
-	///
-	/// This reads the body without changing it, so lanes can advance bodies side by side. Write the result back
-	/// with [`Self::apply`].
-	pub(crate) fn advanced(&self, dt: MediaTime) -> Motion {
 		let seconds = dt.as_seconds_f32();
 		let travel = self.linear_velocity * seconds;
 		let position = self.position + travel;
@@ -137,18 +128,9 @@ impl PhysicsBody {
 		// A spin that is not finite turns the body by nothing.
 		let delta_orientation =
 			Orientation::try_from_rotation_vector(angular_velocity * seconds).unwrap_or_else(|_| Orientation::identity());
-		Motion {
-			position: center_of_mass + delta_orientation.rotate_vector(center_offset),
-			orientation: delta_orientation.compose(self.orientation),
-			angular_velocity,
-		}
-	}
-
-	/// Moves the body to where [`Self::advanced`] found it to be.
-	pub(crate) fn apply(&mut self, motion: Motion) {
-		self.position = motion.position;
-		self.orientation = motion.orientation;
-		self.angular_velocity = motion.angular_velocity;
+		self.position = center_of_mass + delta_orientation.rotate_vector(center_offset);
+		self.orientation = delta_orientation.compose(self.orientation);
+		self.angular_velocity = angular_velocity;
 	}
 
 	/// Returns the current world-space axis-aligned bounds.
@@ -231,14 +213,6 @@ impl PhysicsBody {
 		let max = maths_rs::max(current.max().into_maths(), (current.max() + travel).into_maths());
 		AABB::new(Point::from_maths(min) - margin, Point::from_maths(max) + margin)
 	}
-}
-
-/// The `Motion` struct holds the state a body has after moving for a while, between working it out and writing it
-/// to the body.
-pub(crate) struct Motion {
-	position: Point,
-	orientation: Orientation,
-	angular_velocity: Vector,
 }
 
 /// Adds the contacts between two world-space bodies to `contacts`: none when they are apart, one where they touch

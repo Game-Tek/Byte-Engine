@@ -11,7 +11,7 @@ use std::{
 };
 
 use math::AABB;
-use utils::sync::RwLock;
+use utils::sync::{Mutex, RwLock};
 
 /// The number of bounds one sweep step tests at once.
 const WIDTH: usize = 4;
@@ -43,7 +43,8 @@ const GRID_BOXES: usize = 4096;
 ///
 /// Call [`Self::rebuild`] with the step's bounds, then [`Self::overlaps`] to read the overlapping pairs. To spread
 /// the scan over lanes, give each lane its own range of `0..`[`Self::count`]. To spread the rebuild over lanes too,
-/// call [`Self::stage`] instead and give each lane one part to [`Self::fill`].
+/// call [`Self::stage`] instead, give each lane one part to [`Self::repair`], call [`Self::lay_out`], and give each
+/// lane one part to [`Self::fill`].
 #[derive(Default)]
 pub struct SweepBounds {
 	/// Every box, sorted along the sweep axis.
@@ -65,6 +66,11 @@ pub struct SweepBounds {
 	/// The order the last rebuild sorted `staged` into. Boxes move little between steps, so the next rebuild
 	/// usually only has to repair it.
 	order: Vec<SweepKey>,
+	/// The runs that [`Self::stage`] split `order` into, for lanes to each repair one. Every run has its own lock,
+	/// which only its lane takes to repair it.
+	runs: Vec<Mutex<OrderRun>>,
+	/// How many of `runs` the last [`Self::stage`] left to be repaired. None when the order has to be sorted anew.
+	staged_runs: usize,
 	/// The axis the last rebuild sorted along.
 	axis: usize,
 }
@@ -115,6 +121,14 @@ impl BoundsArrays {
 			[0, 1, 2].map(|axis| self.max[axis][index]),
 		)
 	}
+}
+
+/// The `OrderRun` struct holds one run of the sweep order while a lane repairs it.
+#[derive(Default)]
+struct OrderRun {
+	keys: Vec<SweepKey>,
+	/// Whether the last repair left `keys` in order.
+	repaired: bool,
 }
 
 /// The `CellPart` struct holds the boxes of a run of neighboring grid cells, so that the cells of a grid can be
@@ -310,17 +324,19 @@ impl SweepBounds {
 	/// the last rebuild again, in the same order, the sort starts from the order they had then, which is quick
 	/// when they have moved little.
 	pub fn rebuild(&mut self, bounds: impl Iterator<Item = (usize, AABB)>) {
-		if self.stage(bounds, 1) {
+		self.stage(bounds, 1);
+		self.repair(0);
+		if self.lay_out(1) {
 			self.fill(0);
 		}
 	}
 
-	/// Replaces the stored boxes like [`Self::rebuild`], but leaves the grid's cells to be filled as `parts` parts.
+	/// Replaces the stored boxes like [`Self::rebuild`], but leaves their order to be repaired, and then the grid's
+	/// cells to be filled, as `parts` parts each.
 	///
-	/// Returns whether the boxes are split into cells. If they are, call [`Self::fill`] with every part from `0` up
-	/// to `parts` before reading [`Self::count`] or [`Self::overlaps`]; each call can come from another lane. The
-	/// pairs come out in the same sequence whatever the number of parts.
-	pub fn stage(&mut self, bounds: impl Iterator<Item = (usize, AABB)>, parts: usize) -> bool {
+	/// Call [`Self::repair`] with every part from `0` up to `parts`, where each call can come from another lane, and
+	/// then [`Self::lay_out`]. The pairs come out in the same sequence whatever the number of parts.
+	pub fn stage(&mut self, bounds: impl Iterator<Item = (usize, AABB)>, parts: usize) {
 		debug_assert!(
 			parts != 0,
 			"Broad-phase part count is zero. The most likely cause is staging the bounds for a step that runs on no lane."
@@ -354,15 +370,23 @@ impl SweepBounds {
 		self.staged.truncate(count);
 
 		let sweep_axis = least_crowded_axis(&self.staged);
-		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
-
 		// The last order only helps for the same boxes along the same axis.
 		let repairable = same_boxes && sweep_axis == self.axis;
+		self.axis = sweep_axis;
 		if repairable {
-			for key in &mut self.order {
-				key.start = self.staged[key.staged as usize].min[sweep_axis];
+			// Boxes move little between steps, so most keys that are out of place belong a few places away, inside
+			// their own run. Each run goes to a lane.
+			if self.runs.len() < parts {
+				self.runs.resize_with(parts, Default::default);
 			}
+			for (part, run) in self.runs[..parts].iter_mut().enumerate() {
+				let keys = &mut run.get_mut().keys;
+				keys.clear();
+				keys.extend_from_slice(&self.order[part * count / parts..(part + 1) * count / parts]);
+			}
+			self.staged_runs = parts;
 		} else {
+			// The order holds the boxes as they came, for [`Self::lay_out`] to sort.
 			self.order.clear();
 			self.order
 				.extend(self.staged.iter().enumerate().map(|(index, staged)| SweepKey {
@@ -370,11 +394,48 @@ impl SweepBounds {
 					id: staged.id,
 					staged: index as u32,
 				}));
+			self.staged_runs = 0;
 		}
-		if !(repairable && repair(&mut self.order)) {
+	}
+
+	/// Brings run `part` of the last order up to date with the boxes that [`Self::stage`] received, and sorts it.
+	///
+	/// This only reads what [`Self::stage`] left and writes the one run, so every run can be repaired from another
+	/// lane at the same time. A run that was not staged is left as it is.
+	pub fn repair(&self, part: usize) {
+		let Some(run) = self.runs[..self.staged_runs].get(part) else {
+			return;
+		};
+		let mut run = run.lock();
+		for key in &mut run.keys {
+			key.start = self.staged[key.staged as usize].min[self.axis];
+		}
+		run.repaired = repair(&mut run.keys);
+	}
+
+	/// Sorts the boxes that [`Self::stage`] received along the sweep axis, from the runs that [`Self::repair`]
+	/// repaired when there are any, and lays the grid's cells out as `parts` parts.
+	///
+	/// Returns whether the boxes are split into cells. If they are, call [`Self::fill`] with every part from `0` up
+	/// to `parts` before reading [`Self::count`] or [`Self::overlaps`]; each call can come from another lane.
+	pub fn lay_out(&mut self, parts: usize) -> bool {
+		let mut repaired = self.staged_runs != 0;
+		if repaired {
+			self.order.clear();
+			for run in &mut self.runs[..self.staged_runs] {
+				let run = run.get_mut();
+				repaired &= run.repaired;
+				self.order.extend_from_slice(&run.keys);
+			}
+			self.staged_runs = 0;
+		}
+		// Every run is in order, so repairing the whole order only moves the keys that belong in another run.
+		if !(repaired && repair(&mut self.order)) {
 			self.order.sort_unstable_by(SweepKey::cmp);
 		}
-		self.axis = sweep_axis;
+		let count = self.order.len();
+		let sweep_axis = self.axis;
+		let axes = [sweep_axis, (sweep_axis + 1) % 3, (sweep_axis + 2) % 3];
 
 		self.sorted.ids.clear();
 		self.sorted.ids.extend(self.order.iter().map(|key| key.id));
@@ -396,9 +457,9 @@ impl SweepBounds {
 		self.in_cells()
 	}
 
-	/// Lists in part `part` the boxes of the cells that [`Self::stage`] gave it.
+	/// Lists in part `part` the boxes of the cells that [`Self::lay_out`] gave it.
 	///
-	/// This only reads what [`Self::stage`] left and writes the one part, so every part can be filled from another
+	/// This only reads what [`Self::lay_out`] left and writes the one part, so every part can be filled from another
 	/// lane at the same time. A part that was not laid out is left as it is.
 	pub fn fill(&self, part: usize) {
 		let Some(end) = self.part_ends.get(part).copied() else {
@@ -902,17 +963,31 @@ mod tests {
 	#[test]
 	fn cells_filled_as_several_parts_report_the_same_sequence_as_one_part() {
 		let boxes = spread_boxes();
+		// Every other box moves along each axis, so neighbors trade places in the order.
+		let step = Vector::new(0.4, 0.4, 0.4);
+		let moved: Vec<AABB> = (boxes.iter().enumerate())
+			.map(|(index, bounds)| {
+				if index % 2 == 0 {
+					AABB::new(bounds.min() + step, bounds.max() + step)
+				} else {
+					*bounds
+				}
+			})
+			.collect();
 		let mut whole = SweepBounds::default();
-		whole.rebuild(boxes.iter().copied().enumerate());
+		whole.rebuild(moved.iter().copied().enumerate());
 		let mut expected = Vec::new();
 		whole.overlaps(0..whole.count(), |pair| expected.push(pair));
 
 		for parts in [2, 3, 7] {
 			let mut sweep = SweepBounds::default();
-			assert!(sweep.stage(boxes.iter().copied().enumerate(), parts));
-			// Parts are filled in any order, as lanes would.
-			for part in (0..parts).rev() {
-				sweep.fill(part);
+			// The second time, the boxes have moved and the order of the first time is repaired as parts.
+			for boxes in [&boxes, &moved] {
+				sweep.stage(boxes.iter().copied().enumerate(), parts);
+				// Parts are repaired and filled in any order, as lanes would.
+				(0..parts).rev().for_each(|part| sweep.repair(part));
+				assert!(sweep.lay_out(parts));
+				(0..parts).rev().for_each(|part| sweep.fill(part));
 			}
 			let mut pairs = Vec::new();
 			let count = sweep.count();
@@ -929,7 +1004,9 @@ mod tests {
 	fn few_boxes_have_no_cells_to_fill() {
 		let mut sweep = SweepBounds::default();
 
-		assert!(!sweep.stage(scattered_boxes(67).into_iter().enumerate(), 4));
+		sweep.stage(scattered_boxes(67).into_iter().enumerate(), 4);
+		(0..4).for_each(|part| sweep.repair(part));
+		assert!(!sweep.lay_out(4));
 		assert_eq!(sweep.count(), 67);
 	}
 

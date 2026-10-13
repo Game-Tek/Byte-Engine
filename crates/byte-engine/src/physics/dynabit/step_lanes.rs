@@ -22,11 +22,11 @@ const WIDE_STEP_BODIES: usize = 4000;
 
 /// The most lanes a step runs on by default.
 ///
-/// One lane at a time sorts the bounds, batches the contacts, and publishes transforms, which bounds what more lanes
-/// can save.
+/// One lane at a time gathers and lays out the bounds, batches the contacts, and publishes transforms, which bounds
+/// what more lanes can save.
 const WIDEST_STEP_LANES: usize = 4;
 
-/// The `StepLanes` struct tells [`World::update_with_alley`](super::World::update_with_alley) how many lanes to
+/// The `StepLanes` struct tells [`World::update`](super::World::update) how many lanes to
 /// run a step on, from the number of bodies in the step.
 ///
 /// The default, [`Self::for_machine`], suits the machine the process runs on. Replace it with

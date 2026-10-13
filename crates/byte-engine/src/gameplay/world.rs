@@ -89,27 +89,16 @@ impl DefaultWorld {
 		self.messages.factory()
 	}
 
-	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>) {
-		self.cascade_posted_deletions();
-		self.physics_system.update(time, transforms_rx, &self.transforms);
-	}
-
-	/// Advances the world like [`Self::update`], running the physics step as one execution of `alley`.
+	/// Advances the world, running the physics step as one execution of `alley`.
 	///
-	/// The step runs on as many of `alley`'s lanes as its size pays for; see
-	/// [`dynabit::World::update_with_alley`]. No other dispatch of `alley` may be running.
-	pub fn update_with_alley(
-		&mut self,
-		time: Time,
-		transforms_rx: &mut impl Listener<TransformationUpdate>,
-		alley: &mut Alley,
-	) {
+	/// The step runs on as many of `alley`'s lanes as its size pays for; see [`dynabit::World::update`]. No other
+	/// dispatch of `alley` may be running.
+	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>, alley: &mut Alley) {
 		self.cascade_posted_deletions();
-		self.physics_system
-			.update_with_alley(time, transforms_rx, &self.transforms, alley);
+		self.physics_system.update(time, transforms_rx, &self.transforms, alley);
 	}
 
-	/// Replaces how many lanes [`Self::update_with_alley`] runs a physics step on.
+	/// Replaces how many lanes [`Self::update`] runs a physics step on.
 	///
 	/// The world starts with [`StepLanes::for_machine`]. Use this when measurements on a machine show that other
 	/// lane counts step faster there.
@@ -260,6 +249,7 @@ mod tests {
 		world.update(
 			Time::new(crate::time::MediaTime::ZERO, crate::time::MediaTime::ZERO),
 			&mut transforms,
+			&mut Alley::with_parallelism(1),
 		);
 	}
 

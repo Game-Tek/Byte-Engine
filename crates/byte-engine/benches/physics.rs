@@ -10,7 +10,7 @@
 //! which more than doubles that row's times. The largest scenes are the ones to compare two builds by: on an Apple
 //! M4 their times repeat to within about 1%, where a scene of 1,000 bodies varied by up to 4%.
 //!
-//! A run takes about six minutes on an Apple M4. Add `-- --sample-count 4` to halve that.
+//! A run takes about two minutes on an Apple M4. Add `-- --sample-count 4` to halve that.
 
 use byte_engine::{
 	application::Time,
@@ -209,18 +209,6 @@ impl Scene {
 	}
 }
 
-/// Measures a step of a pile on the calling thread.
-#[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
-fn serial<M: Mix>(bencher: Bencher, bodies: usize) {
-	time_serial::<M>(bencher, bodies);
-}
-
-/// Measures a step of a pile of bodies that rotate on the calling thread.
-#[divan::bench(types = [TurningBoxes, TurningHulls], args = [1_000, 4_000], sample_count = 8, sample_size = 1)]
-fn serial_turning<M: Mix>(bencher: Bencher, bodies: usize) {
-	time_serial::<M>(bencher, bodies);
-}
-
 /// Measures a step of a pile on an alley with one lane for each hardware thread, as an application runs it.
 #[divan::bench(types = [Boxes, Mixed, Spheres, Capsules], args = [4_000, 16_000, 64_000], sample_count = 8, sample_size = 1)]
 fn alley<M: Mix>(bencher: Bencher, bodies: usize) {
@@ -233,24 +221,12 @@ fn alley_turning<M: Mix>(bencher: Bencher, bodies: usize) {
 	time_alley::<M>(bencher, bodies);
 }
 
-fn time_serial<M: Mix>(bencher: Bencher, bodies: usize) {
-	let step = |scene: &mut Scene, time: Time| scene.world.update(time, &mut scene.authored, &scene.published);
-
-	bencher
-		.counter(ItemsCount::new(TIMED_STEPS))
-		.with_inputs(|| Scene::settled::<M>(bodies, step))
-		.bench_local_values(|mut scene| {
-			scene.run(TIMED_STEPS, step);
-			scene
-		});
-}
-
 fn time_alley<M: Mix>(bencher: Bencher, bodies: usize) {
 	let lanes = std::cell::RefCell::new(Alley::new());
 	let step = |scene: &mut Scene, time: Time| {
 		scene
 			.world
-			.update_with_alley(time, &mut scene.authored, &scene.published, &mut lanes.borrow_mut());
+			.update(time, &mut scene.authored, &scene.published, &mut lanes.borrow_mut());
 	};
 
 	bencher

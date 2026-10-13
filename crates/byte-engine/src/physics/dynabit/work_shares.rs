@@ -72,7 +72,7 @@ mod tests {
 		let shares = WorkShares::default();
 
 		assert_eq!(ranges(&shares, 4, 10), [0..2, 2..5, 5..7, 7..10]);
-		assert_eq!(ranges(&shares, 1, 10), [0..10]);
+		assert_eq!(shares.range(0, 1, 10), 0..10);
 		assert_eq!(ranges(&shares, 3, 0), [0..0, 0..0, 0..0]);
 	}
 

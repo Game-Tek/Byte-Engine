@@ -1,4 +1,8 @@
-use std::alloc::{Allocator, Global};
+use std::{
+	alloc::{Allocator, Global},
+	cell::UnsafeCell,
+	ops::Range,
+};
 
 /// The `StableVecHandle` struct provides generation-aware access to a live [`StableVec`] slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,12 +29,50 @@ impl StableVecHandle {
 	}
 }
 
-#[derive(Debug, Clone)]
 struct Entry<T> {
-	value: Option<T>,
+	/// The slot's value. It is in a cell so that [`StableVec::slots_mut_unchecked`] can hand out the values of
+	/// different slots to different threads.
+	value: UnsafeCell<Option<T>>,
 	generation: u32,
 	next_free: Option<usize>,
 }
+
+impl<T> Entry<T> {
+	fn value(&self) -> Option<&T> {
+		// SAFETY: Only `StableVec::slots_mut_unchecked` changes a value through a shared reference, and its caller
+		// keeps the slot from being read until that borrow ends.
+		unsafe { &*self.value.get() }.as_ref()
+	}
+
+	fn value_mut(&mut self) -> &mut Option<T> {
+		self.value.get_mut()
+	}
+}
+
+impl<T: Clone> Clone for Entry<T> {
+	fn clone(&self) -> Self {
+		Self {
+			value: UnsafeCell::new(self.value().cloned()),
+			generation: self.generation,
+			next_free: self.next_free,
+		}
+	}
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Entry<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Entry")
+			.field("value", &self.value())
+			.field("generation", &self.generation)
+			.field("next_free", &self.next_free)
+			.finish()
+	}
+}
+
+// SAFETY: A shared `StableVec` only hands out shared references to its values, except through
+// `slots_mut_unchecked`, whose caller keeps threads to different slots. That one can move a value's use to another
+// thread, so the values have to be `Send` too.
+unsafe impl<T: Send + Sync, A: Allocator + Sync> Sync for StableVec<T, A> {}
 
 /// The `StableVec` struct provides vector-like storage whose handles reject stale slot reuse.
 #[derive(Clone)]
@@ -104,7 +146,7 @@ impl<T, A: Allocator> StableVec<T, A> {
 			let entry = &mut self.entries[index];
 			self.first_free = entry.next_free;
 			entry.next_free = None;
-			entry.value = Some(value);
+			*entry.value_mut() = Some(value);
 			self.len += 1;
 
 			return StableVecHandle::new(index, entry.generation);
@@ -112,7 +154,7 @@ impl<T, A: Allocator> StableVec<T, A> {
 
 		let index = self.entries.len();
 		self.entries.push(Entry {
-			value: Some(value),
+			value: UnsafeCell::new(Some(value)),
 			generation: 0,
 			next_free: None,
 		});
@@ -124,15 +166,15 @@ impl<T, A: Allocator> StableVec<T, A> {
 	/// Replaces the value for a live handle and returns the previous value.
 	pub fn insert(&mut self, handle: StableVecHandle, value: T) -> Option<T> {
 		let entry = self.valid_entry_mut(handle)?;
-		entry.value.replace(value)
+		entry.value_mut().replace(value)
 	}
 
 	pub fn get(&self, handle: StableVecHandle) -> Option<&T> {
-		self.valid_entry(handle).and_then(|entry| entry.value.as_ref())
+		self.valid_entry(handle).and_then(Entry::value)
 	}
 
 	pub fn get_mut(&mut self, handle: StableVecHandle) -> Option<&mut T> {
-		self.valid_entry_mut(handle).and_then(|entry| entry.value.as_mut())
+		self.valid_entry_mut(handle).and_then(|entry| entry.value_mut().as_mut())
 	}
 
 	pub fn contains_handle(&self, handle: StableVecHandle) -> bool {
@@ -141,12 +183,12 @@ impl<T, A: Allocator> StableVec<T, A> {
 
 	/// Returns a live value by raw slot for algorithms that use temporary slot IDs.
 	pub fn get_slot(&self, index: usize) -> Option<&T> {
-		self.entries.get(index).and_then(|entry| entry.value.as_ref())
+		self.entries.get(index).and_then(Entry::value)
 	}
 
 	/// Returns a mutable live value by raw slot for algorithms that use temporary slot IDs.
 	pub fn get_slot_mut(&mut self, index: usize) -> Option<&mut T> {
-		self.entries.get_mut(index).and_then(|entry| entry.value.as_mut())
+		self.entries.get_mut(index).and_then(|entry| entry.value_mut().as_mut())
 	}
 
 	/// Removes a value addressed by a live handle without shifting any remaining slots.
@@ -154,7 +196,7 @@ impl<T, A: Allocator> StableVec<T, A> {
 		let index = handle.index();
 		let first_free = self.first_free;
 		let entry = self.valid_entry_mut(handle)?;
-		let value = entry.value.take()?;
+		let value = entry.value_mut().take()?;
 
 		entry.generation = entry.generation.wrapping_add(1);
 		entry.next_free = first_free;
@@ -166,7 +208,7 @@ impl<T, A: Allocator> StableVec<T, A> {
 
 	/// Removes the last occupied value without shifting any remaining slots.
 	pub fn pop(&mut self) -> Option<T> {
-		let (index, entry) = self.entries.iter().enumerate().rfind(|(_, entry)| entry.value.is_some())?;
+		let (index, entry) = self.entries.iter().enumerate().rfind(|(_, entry)| entry.value().is_some())?;
 		let handle = StableVecHandle::new(index, entry.generation);
 		self.remove(handle)
 	}
@@ -178,42 +220,60 @@ impl<T, A: Allocator> StableVec<T, A> {
 	}
 
 	pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
-		self.entries.iter().filter_map(|entry| entry.value.as_ref())
+		self.entries.iter().filter_map(Entry::value)
 	}
 
 	pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
-		self.entries.iter_mut().filter_map(|entry| entry.value.as_mut())
+		self.entries.iter_mut().filter_map(|entry| entry.value_mut().as_mut())
 	}
 
 	pub fn indexed_iter(&self) -> impl DoubleEndedIterator<Item = (usize, &T)> {
 		self.entries
 			.iter()
 			.enumerate()
-			.filter_map(|(index, entry)| entry.value.as_ref().map(|value| (index, value)))
+			.filter_map(|(index, entry)| entry.value().map(|value| (index, value)))
 	}
 
 	pub fn indexed_iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut T)> {
 		self.entries
 			.iter_mut()
 			.enumerate()
-			.filter_map(|(index, entry)| entry.value.as_mut().map(|value| (index, value)))
+			.filter_map(|(index, entry)| entry.value_mut().as_mut().map(|value| (index, value)))
+	}
+
+	/// Returns the live values in `slots` with their slots, for one thread to change while other threads change the
+	/// values of other slots. Slots past the last one are left out.
+	///
+	/// Use it to split work over every value between threads that share the vector, giving each a range of
+	/// `0..`[`Self::slots_len`].
+	///
+	/// # Safety
+	///
+	/// Until the last use of the values this returns, nothing else may reach the values in `slots`: not another call
+	/// with a range that overlaps, and not any other method, on any thread.
+	pub unsafe fn slots_mut_unchecked(&self, slots: Range<usize>) -> impl Iterator<Item = (usize, &mut T)> {
+		let slots = slots.start.min(self.entries.len())..slots.end.min(self.entries.len());
+		self.entries[slots.clone()].iter().zip(slots).filter_map(|(entry, slot)| {
+			// SAFETY: The caller keeps everything else from this slot's value, so this is the only reference to it.
+			unsafe { &mut *entry.value.get() }.as_mut().map(|value| (slot, value))
+		})
 	}
 
 	pub fn handled_iter(&self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &T)> {
 		self.entries.iter().enumerate().filter_map(|(index, entry)| {
 			entry
-				.value
-				.as_ref()
+				.value()
 				.map(|value| (StableVecHandle::new(index, entry.generation), value))
 		})
 	}
 
 	pub fn handled_iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &mut T)> {
 		self.entries.iter_mut().enumerate().filter_map(|(index, entry)| {
+			let generation = entry.generation;
 			entry
-				.value
+				.value_mut()
 				.as_mut()
-				.map(|value| (StableVecHandle::new(index, entry.generation), value))
+				.map(|value| (StableVecHandle::new(index, generation), value))
 		})
 	}
 
@@ -290,6 +350,29 @@ mod tests {
 		assert_eq!(values.get(second), None);
 		assert_eq!(values.get(reused), Some(&"replacement"));
 		assert_eq!(values.get(third), Some(&"third"));
+	}
+
+	#[test]
+	fn threads_change_the_values_of_their_own_slots() {
+		let mut values: StableVec<usize> = (0..100).collect();
+		let removed = values.handled_iter().nth(40).map(|(handle, _)| handle).unwrap();
+		values.remove(removed);
+
+		std::thread::scope(|scope| {
+			for slots in [0..30, 30..75, 75..200] {
+				let values = &values;
+				scope.spawn(move || {
+					// SAFETY: The ranges do not overlap, and nothing else uses the vector while the threads run.
+					for (slot, value) in unsafe { values.slots_mut_unchecked(slots) } {
+						assert_eq!(*value, slot);
+						*value += 1_000;
+					}
+				});
+			}
+		});
+
+		let expected = (0..100).filter(|slot| *slot != 40).map(|slot| (slot, slot + 1_000));
+		assert!(values.indexed_iter().map(|(slot, value)| (slot, *value)).eq(expected));
 	}
 
 	#[test]

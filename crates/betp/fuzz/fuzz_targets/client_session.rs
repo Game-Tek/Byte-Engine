@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use betp::{
 	client::{Errors, Session},
-	packets::{ChallengePacket, DisconnectPacket, Packets},
+	packets::{ChallengePacket, DisconnectPacket, KeepAlivePacket, Packets},
 };
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
 use support::{Operation, RETRY_QUIESCENCE_UPDATES, make_batch, make_data_packet, observe_session_output, other_connection_id};
@@ -54,7 +54,12 @@ fn make_session(state: &StartingState, client_salt: u64, server_salt: u64, curre
 		return (session, Some(connection_id));
 	}
 
-	assert!(session.update(&[], current_time).is_ok());
+	// The server's first keepalive confirms the connection.
+	assert!(
+		session
+			.update(&[KeepAlivePacket::new(connection_id).into()], current_time)
+			.is_ok()
+	);
 	assert!(session.is_connected());
 	if matches!(state, StartingState::Disconnecting) {
 		session.disconnect();

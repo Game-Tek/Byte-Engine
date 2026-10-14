@@ -68,7 +68,8 @@ impl std::fmt::Debug for EncodedDatagram {
 pub enum DatagramOutcome {
 	/// A payload passed framing, endpoint, session, and receive-window validation.
 	Accepted([u8; 1024]),
-	/// A handshake established a session with this connection identifier.
+	/// The server accepted a client's handshake and established a session with this connection identifier. A
+	/// client learns of its own connection through [`ClientDatagramPipeline::is_connected`] instead.
 	Connected {
 		/// The established connection identifier.
 		id: u64,
@@ -189,7 +190,10 @@ impl ClientDatagramPipeline {
 				Ok(DatagramOutcome::Handled)
 			}
 			packet @ (Packets::Data(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => {
-				process_session_packet(packet, self.connection_id(), &mut self.receive_window, outbound, |packets| {
+				// The first packet the server sends on this connection is what confirms it, so it must reach the
+				// session before `is_connected` turns true.
+				let connection_id = self.connection_id.filter(|_| !self.session.has_ended());
+				process_session_packet(packet, connection_id, &mut self.receive_window, outbound, |packets| {
 					self.session
 						.update(packets, current_time)
 						.map_err(DatagramDrop::ClientSession)
@@ -200,23 +204,24 @@ impl ClientDatagramPipeline {
 	}
 
 	/// Advances handshake, retry, keepalive, and timeout work when no datagram was received.
+	///
+	/// Returns [`DatagramOutcome::Disconnected`] once the server goes quiet for [`betp::TIMEOUT`], or never confirms
+	/// the connection within it. Check [`Self::is_connected`] to learn when the server has confirmed it.
 	pub fn advance(
 		&mut self,
 		current_time: Instant,
 		outbound: &mut Vec<EncodedDatagram>,
 	) -> Result<DatagramOutcome, PipelineError> {
 		outbound.clear();
-		let was_connected = self.session.is_connected();
+		let had_ended = self.session.has_ended();
 		let packets = match self.session.update(&[], current_time) {
 			Ok(packets) => packets,
 			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ClientSession(error))),
 		};
 		encode_packets(packets, outbound)?;
 
-		match (was_connected, self.session.is_connected(), self.connection_id) {
-			(false, true, Some(id)) => Ok(DatagramOutcome::Connected { id }),
-			// The server went quiet for longer than the session timeout.
-			(true, false, Some(id)) => Ok(DatagramOutcome::Disconnected { id }),
+		match self.connection_id {
+			Some(id) if !had_ended && self.session.has_ended() => Ok(DatagramOutcome::Disconnected { id }),
 			_ => Ok(DatagramOutcome::Handled),
 		}
 	}
@@ -450,10 +455,13 @@ mod tests {
 			server.process_datagram(client_output[0].as_bytes(), now, &mut server_output),
 			Ok(DatagramOutcome::Connected { id: CONNECTION_ID })
 		);
+		// The server's first keepalive confirms the connection to the client.
+		server.advance(now, &mut server_output).unwrap();
 		assert_eq!(
-			client.advance(now, &mut client_output),
-			Ok(DatagramOutcome::Connected { id: CONNECTION_ID })
+			client.process_datagram(server_output[0].as_bytes(), now, &mut client_output),
+			Ok(DatagramOutcome::Handled)
 		);
+		assert!(client.is_connected());
 
 		(client, server)
 	}

@@ -32,10 +32,13 @@ fn connected_pair(now: Instant) -> (ClientDatagramPipeline, ServerDatagramPipeli
 		server.process_datagram(client_output[0].as_bytes(), now, &mut server_output),
 		Ok(DatagramOutcome::Connected { id: CONNECTION_ID })
 	);
+	// The server's first keepalive confirms the connection to the client.
+	server.advance(now, &mut server_output).unwrap();
 	assert_eq!(
-		client.advance(now, &mut client_output),
-		Ok(DatagramOutcome::Connected { id: CONNECTION_ID })
+		client.process_datagram(server_output[0].as_bytes(), now, &mut client_output),
+		Ok(DatagramOutcome::Handled)
 	);
+	assert!(client.is_connected());
 
 	assert_canonical(&client_output);
 	assert_canonical(&server_output);

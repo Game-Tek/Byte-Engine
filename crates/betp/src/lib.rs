@@ -104,18 +104,20 @@ pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_mi
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Appends a keepalive when a connected session has nothing to send and has sent nothing for
-/// [`KEEPALIVE_INTERVAL`], so its peer keeps hearing from it. Records when the session last sent anything.
+/// [`KEEPALIVE_INTERVAL`], or nothing at all yet, so its peer keeps hearing from it. Records when the session last
+/// sent anything.
 pub(crate) fn with_keep_alive(
 	mut packets: Vec<Packets>,
 	connection_id: u64,
-	last_sent: &mut std::time::Instant,
+	last_sent: &mut Option<std::time::Instant>,
 	current_time: std::time::Instant,
 ) -> Vec<Packets> {
-	if packets.is_empty() && current_time.duration_since(*last_sent) >= KEEPALIVE_INTERVAL {
+	let due = last_sent.is_none_or(|last_sent| current_time.duration_since(last_sent) >= KEEPALIVE_INTERVAL);
+	if packets.is_empty() && due {
 		packets.push(KeepAlivePacket::new(connection_id).into());
 	}
 	if !packets.is_empty() {
-		*last_sent = current_time;
+		*last_sent = Some(current_time);
 	}
 	packets
 }

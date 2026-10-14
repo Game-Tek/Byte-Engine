@@ -26,12 +26,16 @@ impl Session {
 
 	/// Accepts a connection after its challenge response has been validated by
 	/// the server transport.
+	///
+	/// The next [`Self::update`] sends a keepalive unless a payload goes out first. Either one tells the client
+	/// that the server accepted it.
 	pub fn accept(&mut self, connection_id: u64, current_time: std::time::Instant) {
 		self.state = State::Connected {
 			id: connection_id,
 			packet_buffer: PacketBuffer::new(),
 			last_seen: current_time,
-			last_sent: current_time,
+			// Nothing sent yet makes a keepalive due at once, which confirms the connection to the client.
+			last_sent: None,
 		};
 	}
 
@@ -70,7 +74,7 @@ impl Session {
 					id,
 					packet_buffer: PacketBuffer::new(),
 					last_seen: current_time,
-					last_sent: current_time,
+					last_sent: None,
 				};
 
 				Ok(Vec::new())
@@ -196,7 +200,7 @@ pub enum State {
 		/// The last time a packet was received from the client.
 		last_seen: std::time::Instant,
 		/// The last time the session sent a packet, which decides when a keepalive is due.
-		last_sent: std::time::Instant,
+		last_sent: Option<std::time::Instant>,
 	},
 	/// The session is ending the connection.
 	Disconnecting {
@@ -250,7 +254,10 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, now);
 
-		assert_eq!(session.update(&[DisconnectPacket::new(8).into()], now), Ok(Vec::new()));
+		assert_eq!(
+			session.update(&[DisconnectPacket::new(8).into()], now),
+			Ok(vec![KeepAlivePacket::new(7).into()])
+		);
 		assert!(session.is_connected());
 		assert_eq!(session.update(&[DisconnectPacket::new(7).into()], now), Ok(Vec::new()));
 		assert!(!session.is_connected());
@@ -325,17 +332,27 @@ mod tests {
 	}
 
 	#[test]
-	fn an_idle_connection_sends_a_keepalive_once_per_interval() {
+	fn an_accepted_connection_is_confirmed_at_once_then_kept_alive_once_per_interval() {
 		let start = std::time::Instant::now();
 		let mut session = Session::new();
 		session.accept(7, start);
 
+		assert_eq!(session.update(&[], start), Ok(vec![KeepAlivePacket::new(7).into()]));
 		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Ok(Vec::new()));
 		assert_eq!(
 			session.update(&[], start + KEEPALIVE_INTERVAL),
 			Ok(vec![KeepAlivePacket::new(7).into()])
 		);
-		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL * 3 / 2), Ok(Vec::new()));
+	}
+
+	#[test]
+	fn a_payload_queued_at_acceptance_confirms_the_connection_without_a_keepalive() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+		session.send(false, [1; 1024]);
+
+		assert!(matches!(session.update(&[], start).unwrap()[..], [Packets::Data(_)]));
 	}
 
 	#[test]

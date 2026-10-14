@@ -109,9 +109,9 @@ impl DeterministicLink {
 	}
 }
 
-/// Establishes an isolated pair entirely through the production raw-datagram boundary.
-fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> Pair {
-	let connection_id = client_salt ^ server_salt;
+/// Runs a handshake through the production raw-datagram boundary up to the client's challenge response, which it
+/// returns undelivered.
+fn challenged_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> (Pair, EncodedDatagram) {
 	let mut pair = Pair {
 		client: ClientDatagramPipeline::new(client_salt),
 		server: ServerDatagramPipeline::new(server_salt),
@@ -127,15 +127,30 @@ fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> 
 		.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output)
 		.unwrap();
 
+	(pair, client_output[0].clone())
+}
+
+/// Establishes an isolated pair entirely through the production raw-datagram boundary.
+fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> Pair {
+	let (mut pair, response) = challenged_pair(client_salt, server_salt, current_time);
+	let mut client_output = Vec::new();
+	let mut server_output = Vec::new();
+
 	assert_eq!(
 		pair.server
-			.process_datagram(client_output[0].as_bytes(), current_time, &mut server_output),
-		Ok(DatagramOutcome::Connected { id: connection_id })
+			.process_datagram(response.as_bytes(), current_time, &mut server_output),
+		Ok(DatagramOutcome::Connected {
+			id: client_salt ^ server_salt,
+		})
 	);
+	// The server's first keepalive confirms the connection to the client.
+	pair.server.advance(current_time, &mut server_output).unwrap();
 	assert_eq!(
-		pair.client.advance(current_time, &mut client_output),
-		Ok(DatagramOutcome::Connected { id: connection_id })
+		pair.client
+			.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output),
+		Ok(DatagramOutcome::Handled)
 	);
+	assert!(pair.client.is_connected());
 
 	pair
 }
@@ -237,4 +252,58 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 	);
 	assert!(pair_a.server.is_connected());
 	assert!(!pair_b.server.is_connected());
+}
+
+#[test]
+fn a_lost_challenge_response_is_resent_and_a_confirming_payload_is_delivered_once() {
+	let start = Instant::now();
+	// The challenge response the handshake produces never reaches the server.
+	let (mut pair, _) = challenged_pair(0x1010, 0x2020, start);
+	let mut client_output = Vec::new();
+	let mut server_output = Vec::new();
+
+	pair.client
+		.advance(start + Duration::from_millis(1), &mut client_output)
+		.unwrap();
+	assert!(!pair.client.is_connected());
+	assert_eq!(
+		pair.server
+			.process_datagram(client_output[0].as_bytes(), start, &mut server_output),
+		Ok(DatagramOutcome::Connected { id: 0x1010 ^ 0x2020 })
+	);
+
+	pair.server.send(false, [9; 1024]);
+	pair.server
+		.advance(start + Duration::from_millis(2), &mut server_output)
+		.unwrap();
+	assert_eq!(server_output.len(), 1);
+
+	assert_eq!(
+		pair.client
+			.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
+		Ok(DatagramOutcome::Accepted([9; 1024]))
+	);
+	assert!(pair.client.is_connected());
+	assert_eq!(
+		pair.client
+			.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
+		Ok(DatagramOutcome::Handled)
+	);
+}
+
+#[test]
+fn a_client_the_server_never_confirms_reports_the_attempt_ended_after_the_timeout() {
+	let start = Instant::now();
+	let (mut pair, _) = challenged_pair(0x1010, 0x2020, start);
+	let mut client_output = Vec::new();
+
+	assert_eq!(
+		pair.client.advance(start + Duration::from_secs(6), &mut client_output),
+		Ok(DatagramOutcome::Disconnected { id: 0x1010 ^ 0x2020 })
+	);
+	assert!(!pair.client.is_connected());
+	assert_eq!(
+		pair.client.advance(start + Duration::from_secs(7), &mut client_output),
+		Ok(DatagramOutcome::Handled)
+	);
 }

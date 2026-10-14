@@ -42,7 +42,7 @@ impl Session {
 
 							let id = connection_id;
 
-							self.state = State::Connecting { id };
+							self.state = State::Connecting { id, since: current_time };
 
 							return Ok(vec![ChallengeResponsePacket::new(id).into()]);
 						} else {
@@ -53,17 +53,30 @@ impl Session {
 
 				Ok(vec![ConnectionRequestPacket::new(salt).into()])
 			}
-			State::Connecting { id } => {
+			State::Connecting { id, since } => {
 				let id = *id;
 
-				self.state = State::Connected {
-					id,
-					packet_buffer: PacketBuffer::new(),
-					last_seen: current_time,
-					last_sent: current_time,
-				};
+				// The server only sends on this connection once it has accepted a challenge response. Until then any
+				// response may have been lost, so keep sending it.
+				if packets.iter().any(|packet| packet.connection_id() == Some(id)) {
+					self.state = State::Connected {
+						id,
+						packet_buffer: PacketBuffer::new(),
+						last_seen: current_time,
+						// The last challenge response counts as recent traffic, so no keepalive is due yet.
+						last_sent: Some(current_time),
+					};
+					// The confirming packets may carry data or acknowledgements, so handle them as a connected session.
+					return self.update(packets, current_time);
+				}
 
-				Ok(Vec::new())
+				if current_time.duration_since(*since) > TIMEOUT {
+					// The server may have accepted without any confirmation arriving, so tell it the attempt ended.
+					self.state = State::Disconnecting { id };
+					return Ok(Vec::new());
+				}
+
+				Ok(vec![ChallengeResponsePacket::new(id).into()])
 			}
 			State::Connected {
 				id,
@@ -149,6 +162,13 @@ impl Session {
 	pub fn is_connected(&self) -> bool {
 		matches!(self.state, State::Connected { .. })
 	}
+
+	/// Returns whether the connection or the attempt to make it has ended, by either side or by a timeout.
+	///
+	/// Reconnect with a new session.
+	pub fn has_ended(&self) -> bool {
+		matches!(self.state, State::Disconnecting { .. })
+	}
 }
 
 impl Default for Session {
@@ -172,6 +192,8 @@ pub enum State {
 	Connecting {
 		/// The connection ID generated from the challenge response.
 		id: u64,
+		/// When the challenge arrived, which bounds how long the client waits for confirmation.
+		since: Instant,
 	},
 	/// The client can send and receive data packets.
 	Connected {
@@ -182,7 +204,7 @@ pub enum State {
 		/// The last time a packet was received from the server.
 		last_seen: Instant,
 		/// The last time the session sent a packet, which decides when a keepalive is due.
-		last_sent: Instant,
+		last_sent: Option<Instant>,
 	},
 	/// The client is ending the connection.
 	Disconnecting {
@@ -201,15 +223,24 @@ mod tests {
 		packets::{ChallengePacket, KeepAlivePacket},
 	};
 
-	fn connected_session(connection_id: u64, start: Instant) -> Session {
+	/// Returns a session that answered the server's challenge for `connection_id` and awaits confirmation.
+	fn challenged_session(connection_id: u64, start: Instant) -> Session {
 		let client_salt = 5;
-		let server_salt = client_salt ^ connection_id;
 		let mut session = Session::new();
 		session.connect(client_salt);
 		session
-			.update(&[ChallengePacket::new(client_salt, server_salt).into()], start)
+			.update(
+				&[ChallengePacket::new(client_salt, client_salt ^ connection_id).into()],
+				start,
+			)
 			.unwrap();
-		session.update(&[], start).unwrap();
+		session
+	}
+
+	fn connected_session(connection_id: u64, start: Instant) -> Session {
+		let mut session = challenged_session(connection_id, start);
+		session.update(&[KeepAlivePacket::new(connection_id).into()], start).unwrap();
+		assert!(session.is_connected());
 		session
 	}
 
@@ -227,10 +258,12 @@ mod tests {
 		let res = session.update(&[ChallengePacket::new(0, 0).into()], start);
 
 		assert_eq!(res, Ok(vec![ChallengeResponsePacket::new(0).into()]));
+		assert!(!session.is_connected());
 
-		let res = session.update(&[], start);
+		let res = session.update(&[KeepAlivePacket::new(0).into()], start);
 
 		assert_eq!(res, Ok(vec![]));
+		assert!(session.is_connected());
 	}
 
 	#[test]
@@ -333,6 +366,55 @@ mod tests {
 		session.update(&[], start + Duration::from_secs(6)).unwrap();
 
 		assert!(session.is_connected());
+	}
+
+	#[test]
+	fn the_challenge_response_is_resent_until_the_server_confirms_the_connection() {
+		let start = Instant::now();
+		let mut session = challenged_session(7, start);
+
+		// Another connection's traffic does not confirm this one.
+		assert_eq!(
+			session.update(&[KeepAlivePacket::new(8).into()], start),
+			Ok(vec![ChallengeResponsePacket::new(7).into()])
+		);
+		assert_eq!(session.update(&[], start), Ok(vec![ChallengeResponsePacket::new(7).into()]));
+		assert!(!session.is_connected());
+
+		session.update(&[KeepAlivePacket::new(7).into()], start).unwrap();
+
+		assert!(session.is_connected());
+	}
+
+	#[test]
+	fn confirming_data_also_acknowledges_the_clients_sends() {
+		let start = Instant::now();
+		let mut session = challenged_session(7, start);
+		let confirmation = Packets::Data(DataPacket::new(7, ConnectionStatus::new(0, 0, 0), [1; 1024]));
+		session.update(&[confirmation], start).unwrap();
+		session.send(true, [2; 1024]);
+		session.update(&[], start).unwrap();
+
+		let acknowledgement = Packets::Data(DataPacket::new(7, ConnectionStatus::new(1, 0, 1), [3; 1024]));
+
+		assert_eq!(session.update(&[acknowledgement], start), Ok(Vec::new()));
+	}
+
+	#[test]
+	fn an_unconfirmed_connection_ends_after_the_timeout() {
+		let start = Instant::now();
+		let mut session = challenged_session(7, start);
+
+		session.update(&[], start + TIMEOUT).unwrap();
+		assert!(!session.has_ended());
+		session.update(&[], start + TIMEOUT + Duration::from_nanos(1)).unwrap();
+
+		assert!(session.has_ended());
+		assert!(!session.is_connected());
+		assert_eq!(
+			session.update(&[], start + TIMEOUT * 2),
+			Ok(vec![DisconnectPacket::new(7).into()])
+		);
 	}
 }
 

@@ -477,12 +477,14 @@ struct Share {
 #[cfg(test)]
 mod tests {
 
+	use std::f32::consts::FRAC_PI_2;
+
 	use math::Orientation;
 
 	use super::*;
 	use crate::{
 		core::{channel::DefaultChannel, factory::Factory},
-		physics::{collider::Shapes, dynabit::contact::Contact},
+		physics::{LocalSpace, collider::Shapes, dynabit::contact::Contact},
 	};
 
 	fn test_handle() -> Handle {
@@ -1303,7 +1305,12 @@ mod tests {
 		/// Creates a rod of `length` meters between the origins of two bodies, and returns its handle. The world
 		/// takes it up in its next step.
 		fn rod(&self, first: Handle, second: Handle, length: f32) -> Handle {
-			self.constraints.create(Constraint::distance(first, second, length))
+			self.join(Constraint::distance(first, second, length))
+		}
+
+		/// Creates `constraint` and returns its handle. The world takes it up in its next step.
+		fn join(&self, constraint: Constraint) -> Handle {
+			self.constraints.create(constraint)
 		}
 
 		/// Deletes what was created with `handle`.
@@ -1563,5 +1570,489 @@ mod tests {
 		// The bob is let down to the new length, a share of the way with every step, and hangs there.
 		assert!((scene.body(bob).position.y() + 1.5).abs() <= 0.01);
 		assert!(scene.body(bob).linear_velocity.length() <= 0.05);
+	}
+
+	/// Returns a dynamic bar that contacts and constraints turn, 0.7 meters long along its own x axis, with its middle
+	/// at `position`.
+	fn make_bar(position: math::Point) -> PhysicsBody {
+		let mut body = make_rotating_box_body(position);
+		body.collision_shape = Shapes::Cube {
+			size: Vector::new(0.35, 0.05, 0.05),
+		};
+		body
+	}
+
+	/// The point of a bar, half a meter from its middle, that the hinges of these tests go through.
+	fn bar_end(side: f32) -> math::Point<LocalSpace> {
+		math::Point::new(0.5 * side, 0.0, 0.0)
+	}
+
+	/// Returns how far, in radians, `body` is turned about the z axis from how it was made. Only for a body that
+	/// is turned about that axis alone.
+	fn turn_about_z(body: &PhysicsBody) -> f32 {
+		body.orientation.to_rotation_vector::<math::WorldSpace>().z()
+	}
+
+	#[test]
+	fn a_hinge_lets_its_body_turn_about_its_pin_only() {
+		let mut scene = Constrained::on(1);
+		let pivot = math::Point::new(0.0, 5.0, 0.0);
+		let post = scene.add(make_fixed_point(pivot));
+		let mut bar = make_bar(pivot + Vector::new(0.5, 0.0, 0.0));
+		// A knock that sends a free bar off to the side, spinning about its length and tumbling.
+		bar.linear_velocity = Vector::new(0.0, 0.0, 3.0);
+		bar.angular_velocity = Vector::new(2.0, 2.0, 0.0);
+		let bar = scene.add(bar);
+		scene.join(
+			Constraint::hinge(post, bar, math::UnitVector::z_axis(), None).with_anchors(math::Point::origin(), bar_end(-1.0)),
+		);
+
+		let mut lowest = f32::MAX;
+		for step in 0..180 {
+			scene.run(1);
+			let bar = scene.body(bar);
+			let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
+			// A bar that swings this fast leaves the hinge behind by what a step's share of the way back does not
+			// take up.
+			assert!(off <= 0.05, "the bar's end is {off} from the hinge in step {step}");
+			let pin = bar.orientation.rotate_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, 1.0));
+			assert!(pin.z() >= 0.999, "the bar's pin leans {} in step {step}", pin.z());
+			lowest = lowest.min(bar.position.y());
+		}
+		// Gravity swings the bar down about the pin, as nothing stops it.
+		assert!(lowest <= pivot.y() - 0.45, "the bar only came down to {lowest}");
+	}
+
+	#[test]
+	fn a_hinge_stops_at_either_end_of_its_limit() {
+		// Gravity turns a bar that sticks out to the side of its hinge down. That is back about a pin that points
+		// one way, and on about a pin that points the other way.
+		for (toward, stop) in [(1.0, -0.5), (-1.0, 0.5)] {
+			let mut scene = Constrained::on(1);
+			let pivot = math::Point::new(0.0, 5.0, 0.0);
+			let post = scene.add(make_fixed_point(pivot));
+			let bar = scene.add(make_bar(pivot + Vector::new(0.5, 0.0, 0.0)));
+			let axis = Vector::<LocalSpace>::new(0.0, 0.0, toward).normalized().unwrap();
+			let limit = math::Radians::new(-0.5)..=math::Radians::new(0.5);
+			scene.join(Constraint::hinge(post, bar, axis, Some(limit)).with_anchors(math::Point::origin(), bar_end(-1.0)));
+
+			scene.run(240);
+
+			let bar = scene.body(bar);
+			let angle = turn_about_z(bar) * toward;
+			assert!((angle - stop).abs() <= 0.03, "the bar rests at {angle}, not {stop}");
+			assert!(bar.angular_velocity.length() <= 0.05);
+			assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+		}
+	}
+
+	#[test]
+	fn a_hinge_keeps_its_bodies_turned_as_they_were_when_it_first_held_them() {
+		let mut scene = Constrained::on(1);
+		let pivot = math::Point::new(0.0, 5.0, 0.0);
+		let post = scene.add(make_fixed_point(pivot));
+		// The bar starts turned about another direction than the pin's, and the hinge may not turn at all.
+		let turned = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.8, 0.0)).unwrap();
+		let mut bar = make_bar(pivot + turned.rotate_vector(Vector::new(0.5, 0.0, 0.0)));
+		bar.orientation = turned;
+		let bar = scene.add(bar);
+		let locked = math::Radians::new(0.0)..=math::Radians::new(0.0);
+		scene.join(
+			Constraint::hinge(post, bar, math::UnitVector::z_axis(), Some(locked))
+				.with_anchors(math::Point::origin(), bar_end(-1.0)),
+		);
+
+		scene.run(240);
+
+		let bar = scene.body(bar);
+		// Two orientations are a turn of twice the angle whose cosine this is apart.
+		let alike = bar.orientation.dot(turned).abs();
+		assert!(alike >= 0.9998, "the bar turned to {alike} of how it started");
+		assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+	}
+
+	#[test]
+	fn a_limb_of_hinged_bars_bends_no_further_than_the_limits_of_its_hinges() {
+		let mut scene = Constrained::on(1);
+		let pivot = math::Point::new(0.0, 5.0, 0.0);
+		let post = scene.add(make_fixed_point(pivot));
+		// Three bars in a row that stick out to the side, each hinged to the one before it.
+		let limit = || math::Radians::new(-0.3)..=math::Radians::new(0.3);
+		let mut bars = Vec::new();
+		let (mut before, mut end) = (post, math::Point::origin());
+		for bar in 0..3 {
+			let handle = scene.add(make_bar(pivot + Vector::new(0.5 + bar as f32, 0.0, 0.0)));
+			scene.join(
+				Constraint::hinge(before, handle, math::UnitVector::z_axis(), Some(limit())).with_anchors(end, bar_end(-1.0)),
+			);
+			bars.push(handle);
+			(before, end) = (handle, bar_end(1.0));
+		}
+
+		scene.run(300);
+
+		// Gravity bends every hinge down as far as it goes, so each bar hangs that much lower than the one before.
+		let (mut before, mut joint) = (0.0, pivot);
+		for (bar, &handle) in bars.iter().enumerate() {
+			let body = scene.body(handle);
+			let bend = turn_about_z(body) - before;
+			assert!((bend + 0.3).abs() <= 0.04, "hinge {bar} is bent {bend}");
+			let off = (body.to_world(bar_end(-1.0)) - joint).length();
+			assert!(off <= 0.03, "hinge {bar} is {off} apart");
+			assert!(
+				body.linear_velocity.length() <= 0.05,
+				"bar {bar} moves at {}",
+				body.linear_velocity.length()
+			);
+			(before, joint) = (turn_about_z(body), body.to_world(bar_end(1.0)));
+		}
+	}
+
+	#[test]
+	fn a_limb_of_hinged_bars_that_falls_on_the_ground_comes_to_rest_in_one_piece() {
+		let mut scene = Constrained::on(1);
+		let mut ground = make_ground_body();
+		ground.friction = 0.5;
+		scene.add(ground);
+		// Three bars in a row, each hinged to the one before it, that fall leaning, so that one end lands first and
+		// the ground folds the limb against its hinges.
+		let lean = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, 0.9)).unwrap();
+		let foot = math::Point::new(-1.0, 1.6, 0.0);
+		let limit = || math::Radians::new(-0.5)..=math::Radians::new(0.5);
+		let mut bars: Vec<Handle> = Vec::new();
+		for bar in 0..3 {
+			let mut body = make_bar(foot + lean.rotate_vector(Vector::new(0.5 + bar as f32, 0.0, 0.0)));
+			body.orientation = lean;
+			let handle = scene.add(body);
+			if let Some(&before) = bars.last() {
+				scene.join(
+					Constraint::hinge(before, handle, math::UnitVector::z_axis(), Some(limit()))
+						.with_anchors(bar_end(1.0), bar_end(-1.0)),
+				);
+			}
+			bars.push(handle);
+		}
+
+		scene.run(360);
+
+		for (bar, pair) in bars.windows(2).enumerate() {
+			let (before, after) = (scene.body(pair[0]), scene.body(pair[1]));
+			let off = (after.to_world(bar_end(-1.0)) - before.to_world(bar_end(1.0))).length();
+			assert!(off <= 0.03, "hinge {bar} is {off} apart");
+			let bend = turn_about_z(after) - turn_about_z(before);
+			assert!(bend.abs() <= 0.53, "hinge {bar} is bent {bend}");
+		}
+		for (bar, &handle) in bars.iter().enumerate() {
+			let body = scene.body(handle);
+			// The ground's top is a meter up, and a bar that lies on it has its middle 5 cm above that.
+			assert!(
+				(body.position.y() - 1.05).abs() <= 0.02,
+				"bar {bar} rests at {}",
+				body.position.y()
+			);
+			assert!(
+				body.linear_velocity.length() <= 0.05,
+				"bar {bar} moves at {}",
+				body.linear_velocity.length()
+			);
+		}
+	}
+
+	/// Returns a world with a bar that a joint holds by one end to a point that nothing moves, with the bar's handle
+	/// and that point. The bar starts turned by `turned`, and with the `linear` and `angular` velocities. `joint`
+	/// returns the joint between the point and the bar, in that sequence, about an axis along the bar's length.
+	fn make_jointed_bar(
+		turned: Orientation,
+		linear: Vector,
+		angular: Vector,
+		joint: impl FnOnce(Handle, Handle, math::UnitVector<LocalSpace>) -> Constraint,
+	) -> (Constrained, Handle, math::Point) {
+		let mut scene = Constrained::on(1);
+		let pivot = math::Point::new(0.0, 5.0, 0.0);
+		let post = scene.add(make_fixed_point(pivot));
+		let length = turned.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
+		let mut bar = make_bar(pivot + length * 0.5);
+		(bar.orientation, bar.linear_velocity, bar.angular_velocity) = (turned, linear, angular);
+		let bar = scene.add(bar);
+		// The point is not turned, so its directions are the world's.
+		let axis = Vector::<LocalSpace>::from_array(length.to_array()).normalized().unwrap();
+		scene.join(joint(post, bar, axis).with_anchors(math::Point::origin(), bar_end(-1.0)));
+		(scene, bar, pivot)
+	}
+
+	/// Returns how far, in radians, a bar has turned about its length since it was turned by `turned`.
+	fn twist(bar: &PhysicsBody, turned: Orientation) -> f32 {
+		// The turn since then is one about the bar's length then, followed by one that leans it over. A unit
+		// quaternion holds the first of them as its part along that length and its scalar part.
+		let length = turned.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
+		let [x, y, z, w] = bar.orientation.compose(turned.inverse()).to_array();
+		2.0 * (Vector::new(x, y, z).dot(length) * w.signum()).atan2(w.abs())
+	}
+
+	/// Returns how a bar is turned that hangs down from the end that these tests hold it by.
+	fn hanging() -> Orientation {
+		Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, -FRAC_PI_2)).unwrap()
+	}
+
+	/// Returns how far, in radians, the length of a bar leans away from where it pointed when the bar was turned
+	/// by `turned`.
+	fn lean(bar: &PhysicsBody, turned: Orientation) -> f32 {
+		let length = |turned: Orientation| turned.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
+		length(bar.orientation).dot(length(turned)).clamp(-1.0, 1.0).acos()
+	}
+
+	#[test]
+	fn a_constant_velocity_joint_lets_its_body_lean_any_way_but_not_twist() {
+		// A bar that hangs down, and a knock that swings it out and spins it about its length.
+		let hanging = hanging();
+		let (knock, spin) = (Vector::new(1.5, 0.0, 1.5), Vector::new(0.0, 6.0, 0.0));
+		let joint = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, None);
+		let (mut scene, bar, pivot) = make_jointed_bar(hanging, knock, spin, joint);
+
+		let mut furthest = [0.0f32; 2];
+		for step in 0..180 {
+			scene.run(1);
+			let bar = scene.body(bar);
+			let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
+			assert!(off <= 0.05, "the bar's end is {off} from the joint in step {step}");
+			let twist = twist(bar, hanging);
+			assert!(twist.abs() <= 0.03, "the bar is twisted {twist} in step {step}");
+			furthest = [
+				furthest[0].max(bar.position.x().abs()),
+				furthest[1].max(bar.position.z().abs()),
+			];
+		}
+		// The knock swings the bar out both ways, as nothing stops either.
+		assert!(
+			furthest[0] >= 0.15 && furthest[1] >= 0.15,
+			"the bar only swung {furthest:?} out"
+		);
+	}
+
+	#[test]
+	fn a_constant_velocity_joint_stops_its_body_at_its_limit() {
+		let level = Orientation::identity();
+		let joint = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, Some(math::Radians::new(0.5)));
+		let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
+
+		scene.run(240);
+
+		// Gravity leans a bar that sticks out to the side down as far as the joint lets it, where it rests.
+		let bar = scene.body(bar);
+		assert!(
+			(lean(bar, level) - 0.5).abs() <= 0.03,
+			"the bar rests leaning {}",
+			lean(bar, level)
+		);
+		assert!(bar.position.y() < pivot.y() && bar.position.z().abs() <= 0.01);
+		assert!(bar.angular_velocity.length() <= 0.05);
+		assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+	}
+
+	#[test]
+	fn a_constant_velocity_joint_stops_its_body_as_far_to_every_side() {
+		// A knock that swings a bar that sticks out to the side further aside while gravity swings it down, so that
+		// it comes to the limit somewhere between the two and is carried on around it.
+		let level = Orientation::identity();
+		let joint = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, Some(math::Radians::new(0.5)));
+		let (mut scene, bar, _) = make_jointed_bar(level, Vector::new(0.0, 0.0, 3.0), Vector::zero(), joint);
+
+		let (mut furthest, mut furthest_aside) = (0.0f32, 0.0f32);
+		for step in 0..300 {
+			scene.run(1);
+			let bar = scene.body(bar);
+			// A bar that is carried around the limit this fast is past it by what a step's share of the way back
+			// does not take up.
+			assert!(lean(bar, level) <= 0.55, "the bar leans {} in step {step}", lean(bar, level));
+			furthest = furthest.max(lean(bar, level));
+			furthest_aside = furthest_aside.max(bar.position.z().abs());
+		}
+		assert!(furthest >= 0.47, "the bar only leaned {furthest}");
+		// Half a meter out along a bar that leans as far as it may straight to the side is 24 cm aside.
+		assert!(furthest_aside >= 0.15, "the bar only went {furthest_aside} aside");
+	}
+
+	#[test]
+	fn a_ball_joint_lets_its_body_turn_every_way() {
+		// A bar that hangs down, and a knock that swings it out and spins it about its length.
+		let hanging = hanging();
+		let (knock, spin) = (Vector::new(1.5, 0.0, 1.5), Vector::new(0.0, 6.0, 0.0));
+		let joint = |post, bar, axis| Constraint::ball(post, bar, axis, None, None);
+		let (mut scene, bar, pivot) = make_jointed_bar(hanging, knock, spin, joint);
+
+		let mut furthest = [0.0f32; 2];
+		for step in 0..180 {
+			scene.run(1);
+			let bar = scene.body(bar);
+			let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
+			assert!(off <= 0.05, "the bar's end is {off} from the joint in step {step}");
+			furthest = [
+				furthest[0].max(bar.position.x().abs()),
+				furthest[1].max(bar.position.z().abs()),
+			];
+		}
+		// The knock swings the bar out both ways and it goes on spinning, as nothing stops any of it.
+		assert!(
+			furthest[0] >= 0.15 && furthest[1] >= 0.15,
+			"the bar only swung {furthest:?} out"
+		);
+		let bar = scene.body(bar);
+		let length = bar.orientation.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
+		let spin = bar.angular_velocity.dot(length).abs();
+		assert!(spin >= 5.0, "the bar only spins at {spin}");
+	}
+
+	#[test]
+	fn a_ball_joint_stops_its_body_at_its_limits() {
+		// A bar that sticks out to the side and spins about its length, one way and the other. Gravity leans it
+		// down as far as the joint lets it, and the spin turns it as far as the joint lets it that way.
+		for (spin, stop) in [(6.0, 0.6), (-6.0, -0.4)] {
+			let level = Orientation::identity();
+			let joint = |post, bar, axis| {
+				let twist = math::Radians::new(-0.4)..=math::Radians::new(0.6);
+				Constraint::ball(post, bar, axis, Some(math::Radians::new(0.5)), Some(twist))
+			};
+			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::new(spin, 0.0, 0.0), joint);
+
+			// Nothing holds the bar at the end of the limit that the spin takes it to, so that is only as far as it
+			// gets.
+			let mut furthest = 0.0f32;
+			for _ in 0..240 {
+				scene.run(1);
+				let twist = twist(scene.body(bar), level);
+				furthest = if twist.abs() > furthest.abs() { twist } else { furthest };
+			}
+			assert!(
+				(furthest - stop).abs() <= 0.03,
+				"the bar turned as far as {furthest}, not {stop}"
+			);
+
+			let bar = scene.body(bar);
+			assert!(
+				(lean(bar, level) - 0.5).abs() <= 0.03,
+				"the bar rests leaning {}",
+				lean(bar, level)
+			);
+			assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+		}
+	}
+
+	/// Returns a dynamic box of `mass` kilograms that contacts and constraints turn, with its middle at `position`
+	/// and sides twice as long as `half`.
+	fn make_part(position: math::Point, half: [f32; 3], mass: f32) -> PhysicsBody {
+		let mut body = make_rotating_box_body(position);
+		body.collision_shape = Shapes::Cube {
+			size: Vector::from_array(half),
+		};
+		body.inv_mass = 1.0 / mass;
+		body
+	}
+
+	#[test]
+	fn a_ragdoll_that_falls_over_comes_to_rest_on_the_ground_in_one_piece() {
+		let mut scene = Constrained::on(1);
+		let mut ground = make_ground_body();
+		ground.friction = 0.5;
+		scene.add(ground);
+
+		// A figure that stands on the ground with its arms out to the sides, 1.9 meters tall. Its parts leave gaps
+		// at the joints, wide enough that two jointed parts do not touch however far the joint lets them turn.
+		let feet = 1.02;
+		let place = |x: f32, y: f32| math::Point::new(x, feet + y, 0.0);
+		let radians = math::Radians::new;
+		let (x, y) = (
+			Vector::<LocalSpace>::new(1.0, 0.0, 0.0),
+			Vector::<LocalSpace>::new(0.0, 1.0, 0.0),
+		);
+		let axis = |along: Vector<LocalSpace>| along.normalized().unwrap();
+
+		let mut torso = make_part(place(0.0, 1.3), [0.2, 0.3, 0.1], 10.0);
+		// A push that topples the figure forward and to the side.
+		torso.linear_velocity = Vector::new(0.5, 0.0, 1.5);
+		let torso = scene.add(torso);
+		let mut parts = vec![torso];
+		// Each joint, as the two parts it joins and where it is.
+		let mut joints: Vec<(Handle, Handle, math::Point)> = Vec::new();
+		let mut join = |scene: &mut Constrained, at: math::Point, joint: Constraint| {
+			let [first, second] = joint.bodies();
+			let anchor = |handle| {
+				math::Point::<LocalSpace>::origin() + Vector::from_array((at - scene.body(handle).position).to_array())
+			};
+			scene.join(joint.with_anchors(anchor(first), anchor(second)));
+			joints.push((first, second, at));
+		};
+
+		let head = scene.add(make_part(place(0.0, 1.8), [0.1, 0.1, 0.1], 4.0));
+		parts.push(head);
+		let neck = Constraint::ball(torso, head, axis(y), Some(radians(0.4)), Some(radians(-0.5)..=radians(0.5)));
+		join(&mut scene, place(0.0, 1.65), neck);
+
+		for side in [-1.0, 1.0] {
+			let upper_arm = scene.add(make_part(place(side * 0.5, 1.5), [0.15, 0.05, 0.05], 2.0));
+			let forearm = scene.add(make_part(place(side * 0.9, 1.5), [0.15, 0.05, 0.05], 2.0));
+			let thigh = scene.add(make_part(place(side * 0.1, 0.7), [0.05, 0.2, 0.05], 2.0));
+			let shin = scene.add(make_part(place(side * 0.1, 0.2), [0.05, 0.2, 0.05], 2.0));
+			parts.extend([upper_arm, forearm, thigh, shin]);
+
+			let bend = || Some(radians(0.0)..=radians(1.4));
+			let shoulder = Constraint::ball(
+				torso,
+				upper_arm,
+				axis(x * side),
+				Some(radians(1.2)),
+				Some(radians(-0.6)..=radians(0.6)),
+			);
+			join(&mut scene, place(side * 0.275, 1.5), shoulder);
+			join(
+				&mut scene,
+				place(side * 0.7, 1.5),
+				Constraint::hinge(upper_arm, forearm, axis(y), bend()),
+			);
+			let hip = Constraint::constant_velocity(torso, thigh, axis(-y), Some(radians(1.0)));
+			join(&mut scene, place(side * 0.1, 0.95), hip);
+			join(
+				&mut scene,
+				place(side * 0.1, 0.45),
+				Constraint::hinge(thigh, shin, axis(x), bend()),
+			);
+		}
+
+		// Where each joint is from the middle of each of its two parts, which have not turned yet.
+		let reaches: Vec<[Vector; 2]> = (joints.iter())
+			.map(|&(first, second, at)| [first, second].map(|handle| at - scene.body(handle).position))
+			.collect();
+		// Returns how far apart the two parts of the joint that is furthest apart have it.
+		let furthest_apart = |scene: &Constrained| {
+			let apart = joints.iter().zip(&reaches).map(|(&(first, second, _), reaches)| {
+				let [first, second] = [(first, reaches[0]), (second, reaches[1])].map(|(handle, reach)| {
+					let body = scene.body(handle);
+					body.position + body.orientation.rotate_vector(reach)
+				});
+				(second - first).length()
+			});
+			apart.fold(0.0, f32::max)
+		};
+
+		let mut furthest_ever = 0.0f32;
+		for _ in 0..480 {
+			scene.run(1);
+			furthest_ever = furthest_ever.max(furthest_apart(&scene));
+		}
+
+		// The knees give the most, when the legs take the weight of the figure, which is eleven times theirs.
+		assert!(furthest_ever <= 0.1, "a joint came {furthest_ever} apart");
+		assert!(
+			furthest_apart(&scene) <= 0.03,
+			"a joint rests {} apart",
+			furthest_apart(&scene)
+		);
+		for (part, &handle) in parts.iter().enumerate() {
+			let body = scene.body(handle);
+			// The ground's top is a meter up, and the thinnest part lies with its middle 5 cm above that.
+			let height = body.position.y();
+			assert!((1.03..=1.25).contains(&height), "part {part} rests at {height}");
+			let speed = body.linear_velocity.length();
+			assert!(speed <= 0.05, "part {part} moves at {speed}");
+		}
 	}
 }

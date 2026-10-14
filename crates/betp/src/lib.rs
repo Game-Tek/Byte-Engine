@@ -18,8 +18,9 @@
 //! 4. The client and server exchange data.
 //! 5. Either endpoint can end the connection.
 //!
-//! BETP uses sequence numbers to order packets and detect missing packets.
-//! Acknowledgments identify the packets that arrived.
+//! Reliable payloads travel as numbered messages, which the receiver delivers
+//! once and in order, and which the sender resends until acknowledged.
+//! Unreliable payloads are sent once and delivered as they arrive.
 //!
 //! Start with [`client::Client`] or [`server::Server`]. Queue work through that
 //! trait, then call its `update` method from the application's regular tick.
@@ -31,16 +32,11 @@
 pub mod client;
 pub mod server;
 
-mod local;
-mod remote;
-
-mod packet_buffer;
+mod stream;
 
 pub mod packets;
 
 pub use client::Client;
-pub use local::Local;
-pub use remote::Remote;
 pub use server::Server;
 
 /// An error that prevents BETP packet decoding.
@@ -87,12 +83,6 @@ impl std::fmt::Display for PacketReadError {
 
 impl std::error::Error for PacketReadError {}
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// The `PacketInfo` struct records whether a tracked packet was acknowledged.
-pub struct PacketInfo {
-	pub acked: bool,
-}
-
 /// Returns whether `s1` follows `s2` in the wrapping sequence-number space.
 pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 	((s1 > s2) && (s1 - s2 <= 32768u16)) || ((s1 < s2) && (s2 - s1 > 32768u16))
@@ -102,31 +92,39 @@ pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// How long a connected session waits to hear from its peer before it ends the connection.
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Appends a keepalive when a connected session has nothing to send and has sent nothing for
-/// [`KEEPALIVE_INTERVAL`], or nothing at all yet, so its peer keeps hearing from it. Records when the session last
-/// sent anything.
-pub(crate) fn with_keep_alive(
-	mut packets: Vec<Packets>,
-	connection_id: u64,
-	last_sent: &mut Option<std::time::Instant>,
-	current_time: std::time::Instant,
-) -> Vec<Packets> {
-	let due = last_sent.is_none_or(|last_sent| current_time.duration_since(last_sent) >= KEEPALIVE_INTERVAL);
-	if packets.is_empty() && due {
-		packets.push(KeepAlivePacket::new(connection_id).into());
-	}
-	if !packets.is_empty() {
-		*last_sent = Some(current_time);
-	}
-	packets
-}
+/// How long a session waits for a reliable message's acknowledgement before it sends the message again.
+pub const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// How many reliable messages a session may have unacknowledged at once. Later messages wait their turn.
+///
+/// It matches the 32 messages a [`packets::Acknowledgement`] covers, so every message in flight can be acknowledged.
+pub const WINDOW: usize = 32;
 
 const PACKET_HEADER_SIZE: usize = 5;
-const CONNECTION_STATUS_SIZE: usize = 8;
+const ACKNOWLEDGEMENT_SIZE: usize = 6;
 const CONNECTION_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8;
 const CHALLENGE_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 16;
-const DATA_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8 + CONNECTION_STATUS_SIZE + 1024;
+const KEEP_ALIVE_PACKET_SIZE: usize = CONNECTION_PACKET_SIZE + ACKNOWLEDGEMENT_SIZE;
+const DATA_PACKET_SIZE: usize = KEEP_ALIVE_PACKET_SIZE + PAYLOAD_SIZE;
+const MESSAGE_PACKET_SIZE: usize = DATA_PACKET_SIZE + 2;
+
+impl Packets {
+	/// Returns the packet's exact length on the wire.
+	pub fn wire_size(&self) -> usize {
+		wire_size(self.packet_type())
+	}
+}
+
+/// Returns the exact wire length of a packet of type `packet_type`, which every packet of that type has.
+fn wire_size(packet_type: PacketType) -> usize {
+	match packet_type {
+		PacketType::Default => PACKET_HEADER_SIZE,
+		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect => CONNECTION_PACKET_SIZE,
+		PacketType::Challenge => CHALLENGE_PACKET_SIZE,
+		PacketType::KeepAlive => KEEP_ALIVE_PACKET_SIZE,
+		PacketType::Data => DATA_PACKET_SIZE,
+		PacketType::Message => MESSAGE_PACKET_SIZE,
+	}
+}
 
 fn write_bytes(buffer: &mut [u8], offset: &mut usize, bytes: &[u8]) -> Option<()> {
 	let end = offset.checked_add(bytes.len())?;
@@ -144,25 +142,14 @@ pub(crate) fn write_packet_header(buffer: &mut [u8], packet_header: PacketHeader
 	Some(())
 }
 
-pub(crate) fn write_connection_status(buffer: &mut [u8], connection_status: ConnectionStatus) -> Option<()> {
-	let mut offset = 0;
-	write_bytes(buffer, &mut offset, &connection_status.sequence.to_le_bytes())?;
-	write_bytes(buffer, &mut offset, &connection_status.ack.to_le_bytes())?;
-	write_bytes(buffer, &mut offset, &connection_status.ack_bitfield.to_le_bytes())?;
-
-	Some(())
+fn write_acknowledgement(buffer: &mut [u8], offset: &mut usize, acknowledgement: Acknowledgement) -> Option<()> {
+	write_bytes(buffer, offset, &acknowledgement.ack.to_le_bytes())?;
+	write_bytes(buffer, offset, &acknowledgement.ack_bitfield.to_le_bytes())
 }
 
 pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
-	let payload_size = match &packet {
-		Packets::ConnectionRequest(_) | Packets::ChallengeResponse(_) | Packets::Disconnect(_) | Packets::KeepAlive(_) => 8,
-		Packets::Challenge(_) => 16,
-		Packets::Data(packet) => 8 + CONNECTION_STATUS_SIZE + packet.data.len(),
-	};
-	let required_size = PACKET_HEADER_SIZE.checked_add(payload_size)?;
-
 	// Validate capacity first so a failed serialization never leaves a partial packet in the caller's buffer.
-	if buffer.len() < required_size {
+	if buffer.len() < packet.wire_size() {
 		return None;
 	}
 
@@ -181,16 +168,22 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
 		}
 		Packets::Data(packet) => {
-			write_bytes(buffer, &mut offset, &packet.connection_id.to_le_bytes())?;
-			write_connection_status(&mut buffer[offset..], packet.connection_status)?;
-			offset += CONNECTION_STATUS_SIZE;
-			write_bytes(buffer, &mut offset, &packet.data)?;
+			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
+			write_acknowledgement(buffer, &mut offset, packet.get_acknowledgement())?;
+			write_bytes(buffer, &mut offset, packet.get_data())?;
+		}
+		Packets::Message(packet) => {
+			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
+			write_bytes(buffer, &mut offset, &packet.get_sequence().to_le_bytes())?;
+			write_acknowledgement(buffer, &mut offset, packet.get_acknowledgement())?;
+			write_bytes(buffer, &mut offset, packet.get_data())?;
 		}
 		Packets::Disconnect(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
 		}
 		Packets::KeepAlive(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
+			write_acknowledgement(buffer, &mut offset, packet.get_acknowledgement())?;
 		}
 	}
 
@@ -222,6 +215,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, PacketReadError
 		4 => PacketType::Data,
 		5 => PacketType::Disconnect,
 		6 => PacketType::KeepAlive,
+		7 => PacketType::Message,
 		_ => return Err(PacketReadError::UnknownPacketType),
 	};
 
@@ -236,20 +230,22 @@ fn read_field<const N: usize>(buffer: &[u8], offset: &mut usize) -> Option<[u8; 
 	Some(field)
 }
 
+fn read_acknowledgement(buffer: &[u8], offset: &mut usize) -> Option<Acknowledgement> {
+	let ack = u16::from_le_bytes(read_field(buffer, offset)?);
+	let ack_bitfield = u32::from_le_bytes(read_field(buffer, offset)?);
+	Some(Acknowledgement::new(ack, ack_bitfield))
+}
+
 /// Decodes one complete BETP datagram into its typed packet representation.
 ///
 /// BETP packets use exact, type-specific wire lengths. Truncated packets and
 /// packets with trailing bytes are rejected before any body field is read.
 pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 	let header = read_packet_header(buffer)?;
-	let expected = match header.r#type {
-		PacketType::Default => return Err(PacketReadError::ReservedPacketType),
-		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect | PacketType::KeepAlive => {
-			CONNECTION_PACKET_SIZE
-		}
-		PacketType::Challenge => CHALLENGE_PACKET_SIZE,
-		PacketType::Data => DATA_PACKET_SIZE,
-	};
+	if header.r#type == PacketType::Default {
+		return Err(PacketReadError::ReservedPacketType);
+	}
+	let expected = wire_size(header.r#type);
 
 	if buffer.len() != expected {
 		return Err(PacketReadError::InvalidPacketLength {
@@ -281,16 +277,16 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 		}
 		PacketType::Data => {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
-			let sequence = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
-			let ack = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
-			let ack_bitfield = u32::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let acknowledgement = read_acknowledgement(buffer, &mut offset).ok_or_else(invalid_length)?;
 			let data = read_field(buffer, &mut offset).ok_or_else(invalid_length)?;
-
-			Ok(Packets::Data(DataPacket::new(
-				connection_id,
-				ConnectionStatus::new(sequence, ack, ack_bitfield),
-				data,
-			)))
+			Ok(DataPacket::new(connection_id, acknowledgement, data).into())
+		}
+		PacketType::Message => {
+			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let sequence = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let acknowledgement = read_acknowledgement(buffer, &mut offset).ok_or_else(invalid_length)?;
+			let data = read_field(buffer, &mut offset).ok_or_else(invalid_length)?;
+			Ok(MessagePacket::new(connection_id, sequence, acknowledgement, data).into())
 		}
 		PacketType::Disconnect => {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
@@ -298,7 +294,8 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 		}
 		PacketType::KeepAlive => {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
-			Ok(KeepAlivePacket::new(connection_id).into())
+			let acknowledgement = read_acknowledgement(buffer, &mut offset).ok_or_else(invalid_length)?;
+			Ok(KeepAlivePacket::new(connection_id, acknowledgement).into())
 		}
 	}
 }
@@ -306,23 +303,24 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 use std::io::Read as _;
 
 use crate::packets::{
-	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
-	KeepAlivePacket, Packet, PacketHeader, PacketType, Packets,
+	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
+	KeepAlivePacket, MessagePacket, PAYLOAD_SIZE, Packet, PacketHeader, PacketType, Packets,
 };
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, DATA_PACKET_SIZE, PACKET_HEADER_SIZE, PacketReadError, read_packet,
-		sequence_greater_than, write_packet, write_packet_header,
+		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, DATA_PACKET_SIZE, KEEP_ALIVE_PACKET_SIZE, MESSAGE_PACKET_SIZE,
+		PACKET_HEADER_SIZE, PacketReadError, read_packet, sequence_greater_than, write_packet, write_packet_header,
 	};
 	use crate::packets::{
-		ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
-		KeepAlivePacket, PacketHeader, PacketType, Packets,
+		Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
+		KeepAlivePacket, MessagePacket, PacketHeader, PacketType, Packets,
 	};
 
 	fn assert_packet_round_trip(packet: Packets, expected: Packets, packet_size: usize) {
-		let mut bytes = [0u8; DATA_PACKET_SIZE];
+		let mut bytes = [0u8; MESSAGE_PACKET_SIZE];
+		assert_eq!(packet.wire_size(), packet_size);
 		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
 
 		assert_eq!(read_packet(&bytes[..packet_size]), Ok(expected));
@@ -332,7 +330,9 @@ mod tests {
 	fn every_packet_variant_round_trips_through_the_canonical_wire_format() {
 		assert_eq!(CONNECTION_PACKET_SIZE, 13);
 		assert_eq!(CHALLENGE_PACKET_SIZE, 21);
-		assert_eq!(DATA_PACKET_SIZE, 1045);
+		assert_eq!(KEEP_ALIVE_PACKET_SIZE, 19);
+		assert_eq!(DATA_PACKET_SIZE, 1043);
+		assert_eq!(MESSAGE_PACKET_SIZE, 1045);
 
 		assert_packet_round_trip(
 			ConnectionRequestPacket::new(0x0102_0304_0506_0708).into(),
@@ -350,26 +350,31 @@ mod tests {
 			CONNECTION_PACKET_SIZE,
 		);
 
-		let status = ConnectionStatus::new(0x4142, 0x4344, 0x4546_4748);
+		let acknowledgement = Acknowledgement::new(0x4344, 0x4546_4748);
 		assert_packet_round_trip(
-			Packets::Data(DataPacket::new(0x5152_5354_5556_5758, status, [0xA5; 1024])),
-			Packets::Data(DataPacket::new(0x5152_5354_5556_5758, status, [0xA5; 1024])),
+			DataPacket::new(0x5152_5354_5556_5758, acknowledgement, [0xA5; 1024]).into(),
+			DataPacket::new(0x5152_5354_5556_5758, acknowledgement, [0xA5; 1024]).into(),
 			DATA_PACKET_SIZE,
 		);
 		assert_packet_round_trip(
+			MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, [0x5A; 1024]).into(),
+			MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, [0x5A; 1024]).into(),
+			MESSAGE_PACKET_SIZE,
+		);
+		assert_packet_round_trip(
 			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
 			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
 			CONNECTION_PACKET_SIZE,
 		);
 		assert_packet_round_trip(
-			KeepAlivePacket::new(0x7172_7374_7576_7778).into(),
-			KeepAlivePacket::new(0x7172_7374_7576_7778).into(),
-			CONNECTION_PACKET_SIZE,
+			KeepAlivePacket::new(0x7172_7374_7576_7778, acknowledgement).into(),
+			KeepAlivePacket::new(0x7172_7374_7576_7778, acknowledgement).into(),
+			KEEP_ALIVE_PACKET_SIZE,
 		);
 	}
 
 	fn assert_noncanonical_lengths_are_rejected(packet: Packets, packet_size: usize) {
-		let mut bytes = [0u8; DATA_PACKET_SIZE + 1];
+		let mut bytes = [0u8; MESSAGE_PACKET_SIZE + 1];
 		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
 
 		assert_eq!(
@@ -393,12 +398,14 @@ mod tests {
 		assert_noncanonical_lengths_are_rejected(ConnectionRequestPacket::new(1).into(), CONNECTION_PACKET_SIZE);
 		assert_noncanonical_lengths_are_rejected(ChallengePacket::new(2, 3).into(), CHALLENGE_PACKET_SIZE);
 		assert_noncanonical_lengths_are_rejected(ChallengeResponsePacket::new(4).into(), CONNECTION_PACKET_SIZE);
+		let acknowledgement = Acknowledgement::new(7, 8);
+		assert_noncanonical_lengths_are_rejected(DataPacket::new(5, acknowledgement, [9; 1024]).into(), DATA_PACKET_SIZE);
 		assert_noncanonical_lengths_are_rejected(
-			Packets::Data(DataPacket::new(5, ConnectionStatus::new(6, 7, 8), [9; 1024])),
-			DATA_PACKET_SIZE,
+			MessagePacket::new(5, 6, acknowledgement, [9; 1024]).into(),
+			MESSAGE_PACKET_SIZE,
 		);
 		assert_noncanonical_lengths_are_rejected(DisconnectPacket::new(10).into(), CONNECTION_PACKET_SIZE);
-		assert_noncanonical_lengths_are_rejected(KeepAlivePacket::new(11).into(), CONNECTION_PACKET_SIZE);
+		assert_noncanonical_lengths_are_rejected(KeepAlivePacket::new(11, acknowledgement).into(), KEEP_ALIVE_PACKET_SIZE);
 	}
 
 	#[test]
@@ -430,14 +437,26 @@ mod tests {
 		assert_eq!(&response[..5], b"BETP\x03");
 		assert_eq!(&response[5..], &33u64.to_le_bytes());
 
-		let status = ConnectionStatus::new(0x1122, 0x3344, 0x55667788);
-		let mut data = [0u8; 5 + 8 + 8 + 1024];
-		write_packet(&mut data, Packets::Data(DataPacket::new(44, status, [0xAB; 1024]))).unwrap();
+		let acknowledgement = Acknowledgement::new(0x3344, 0x55667788);
+		let mut data = [0u8; 5 + 8 + 6 + 1024];
+		write_packet(&mut data, DataPacket::new(44, acknowledgement, [0xAB; 1024]).into()).unwrap();
 
 		assert_eq!(&data[..5], b"BETP\x04");
 		assert_eq!(&data[5..13], &44u64.to_le_bytes());
-		assert_eq!(&data[13..21], &[0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
-		assert!(data[21..].iter().all(|byte| *byte == 0xAB));
+		assert_eq!(&data[13..19], &[0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
+		assert!(data[19..].iter().all(|byte| *byte == 0xAB));
+
+		let mut message = [0u8; 5 + 8 + 2 + 6 + 1024];
+		write_packet(
+			&mut message,
+			MessagePacket::new(44, 0x1122, acknowledgement, [0xBA; 1024]).into(),
+		)
+		.unwrap();
+
+		assert_eq!(&message[..5], b"BETP\x07");
+		assert_eq!(&message[5..13], &44u64.to_le_bytes());
+		assert_eq!(&message[13..21], &[0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
+		assert!(message[21..].iter().all(|byte| *byte == 0xBA));
 
 		let mut disconnect = [0u8; 13];
 		write_packet(&mut disconnect, Packets::from(DisconnectPacket::new(55))).unwrap();
@@ -445,11 +464,12 @@ mod tests {
 		assert_eq!(&disconnect[..5], b"BETP\x05");
 		assert_eq!(&disconnect[5..], &55u64.to_le_bytes());
 
-		let mut keep_alive = [0u8; 13];
-		write_packet(&mut keep_alive, Packets::from(KeepAlivePacket::new(66))).unwrap();
+		let mut keep_alive = [0u8; 19];
+		write_packet(&mut keep_alive, KeepAlivePacket::new(66, acknowledgement).into()).unwrap();
 
 		assert_eq!(&keep_alive[..5], b"BETP\x06");
-		assert_eq!(&keep_alive[5..], &66u64.to_le_bytes());
+		assert_eq!(&keep_alive[5..13], &66u64.to_le_bytes());
+		assert_eq!(&keep_alive[13..], &[0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
 	}
 
 	#[test]

@@ -16,7 +16,6 @@ pub struct ChannelClient {
 	session: Session,
 	incoming: Receiver<Packets>,
 	outgoing: Sender<Packets>,
-	received: Vec<[u8; 1024]>,
 }
 
 impl ChannelClient {
@@ -25,7 +24,6 @@ impl ChannelClient {
 			session: Session::new(),
 			incoming,
 			outgoing,
-			received: Vec::new(),
 		}
 	}
 
@@ -50,12 +48,6 @@ impl ChannelClient {
 			packets.push(packet);
 		}
 
-		for packet in &packets {
-			if let Packets::Data(packet) = packet {
-				self.received.push(packet.data);
-			}
-		}
-
 		for packet in self.session.update(&packets, current_time)? {
 			self.outgoing.send(packet).map_err(|_| Errors::IoError)?;
 		}
@@ -64,7 +56,7 @@ impl ChannelClient {
 
 	/// Removes and returns every application payload received since the last drain.
 	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
-		self.received.drain(..)
+		self.session.drain_received()
 	}
 
 	pub fn disconnect(&mut self) {

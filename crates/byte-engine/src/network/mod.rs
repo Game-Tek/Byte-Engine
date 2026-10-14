@@ -37,7 +37,7 @@ pub mod channel {
 			client.update(Instant::now()).expect("expected test value");
 			server.update(Instant::now()).expect("expected test value");
 
-			assert_eq!(server.drain_received().next().map(|e| e.data), Some([7; 1024]));
+			assert_eq!(server.drain_received().next().map(|(_, data)| data), Some([7; 1024]));
 
 			server.send(true, [9; 1024]);
 			server.update(Instant::now()).expect("expected test value");

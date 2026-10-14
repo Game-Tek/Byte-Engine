@@ -20,12 +20,14 @@ pub enum PacketType {
 	Challenge,
 	/// A client's response to a server challenge.
 	ChallengeResponse,
-	/// Application data sent by either endpoint.
+	/// An unreliable application payload sent by either endpoint.
 	Data,
 	/// A request from either endpoint to end the connection.
 	Disconnect,
 	/// A sign of life from an endpoint that had nothing else to send.
 	KeepAlive,
+	/// A reliable application payload sent by either endpoint.
+	Message,
 }
 
 #[repr(C)]
@@ -172,46 +174,50 @@ impl From<ChallengeResponsePacket> for Packets {
 	}
 }
 
-#[repr(C)]
+/// The size, in bytes, of the application payload in [`DataPacket`] and [`MessagePacket`].
+pub const PAYLOAD_SIZE: usize = 1024;
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
-/// The `ConnectionStatus` struct carries packet ordering and acknowledgment state.
-pub struct ConnectionStatus {
-	/// The packet's wrapping sequence number.
-	pub sequence: u16,
-	/// The newest sequence number acknowledged by the sender.
+/// The `Acknowledgement` struct tells a peer which of its reliable messages arrived, so it stops resending them.
+///
+/// Every packet sent on an established connection carries one.
+pub struct Acknowledgement {
+	/// The newest message sequence received.
 	pub ack: u16,
-	/// Acknowledgments relative to [`ConnectionStatus::ack`].
+	/// Bit `i` is set when message `ack - i` arrived. Bit 0 is `ack` itself, so a zero bitfield acknowledges nothing.
 	pub ack_bitfield: u32,
 }
 
-impl ConnectionStatus {
-	pub fn new(sequence: u16, ack: u16, ack_bitfield: u32) -> Self {
-		Self {
-			sequence,
-			ack,
-			ack_bitfield,
-		}
+impl Acknowledgement {
+	pub fn new(ack: u16, ack_bitfield: u32) -> Self {
+		Self { ack, ack_bitfield }
+	}
+
+	/// Returns the sequences of every message this acknowledges.
+	pub fn sequences(&self) -> impl Iterator<Item = u16> + '_ {
+		(0..u32::BITS)
+			.filter(|bit| (self.ack_bitfield >> bit) & 1 == 1)
+			.map(|bit| self.ack.wrapping_sub(bit as u16))
 	}
 }
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// The `DataPacket` struct carries application data and connection status between endpoints.
-///
-/// A session can send the packet once or retry it until the peer acknowledges it.
-pub struct DataPacket<const S: usize> {
-	pub header: PacketHeader,
-	pub connection_id: u64,
-	pub connection_status: ConnectionStatus,
-	pub data: [u8; S],
+/// The `DataPacket` struct carries an unreliable payload, which the session sends once and the peer delivers as it
+/// arrives.
+pub struct DataPacket {
+	header: PacketHeader,
+	connection_id: u64,
+	acknowledgement: Acknowledgement,
+	data: [u8; PAYLOAD_SIZE],
 }
 
-impl<const S: usize> DataPacket<S> {
-	pub fn new(connection_id: u64, connection_status: ConnectionStatus, data: [u8; S]) -> Self {
+impl DataPacket {
+	pub fn new(connection_id: u64, acknowledgement: Acknowledgement, data: [u8; PAYLOAD_SIZE]) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::Data),
 			connection_id,
-			connection_status,
+			acknowledgement,
 			data,
 		}
 	}
@@ -220,12 +226,16 @@ impl<const S: usize> DataPacket<S> {
 		self.connection_id
 	}
 
-	pub fn get_connection_status(&self) -> ConnectionStatus {
-		self.connection_status
+	pub fn get_acknowledgement(&self) -> Acknowledgement {
+		self.acknowledgement
+	}
+
+	pub fn get_data(&self) -> &[u8; PAYLOAD_SIZE] {
+		&self.data
 	}
 }
 
-impl<const S: usize> Packet for DataPacket<S> {
+impl Packet for DataPacket {
 	fn packet_type(&self) -> PacketType {
 		self.header.r#type
 	}
@@ -235,14 +245,67 @@ impl<const S: usize> Packet for DataPacket<S> {
 	}
 }
 
-impl<const S: usize> Default for DataPacket<S> {
-	fn default() -> Self {
+impl From<DataPacket> for Packets {
+	fn from(val: DataPacket) -> Self {
+		Packets::Data(val)
+	}
+}
+
+#[repr(C)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+/// The `MessagePacket` struct carries a reliable payload, which the session resends until the peer acknowledges it.
+///
+/// Only messages take sequence numbers, so the receiver knows that a gap is a message still to come and delivers
+/// messages in sequence order.
+pub struct MessagePacket {
+	header: PacketHeader,
+	connection_id: u64,
+	sequence: u16,
+	acknowledgement: Acknowledgement,
+	data: [u8; PAYLOAD_SIZE],
+}
+
+impl MessagePacket {
+	pub fn new(connection_id: u64, sequence: u16, acknowledgement: Acknowledgement, data: [u8; PAYLOAD_SIZE]) -> Self {
 		Self {
-			header: PacketHeader::default(),
-			connection_id: 0,
-			connection_status: ConnectionStatus::default(),
-			data: [0; S],
+			header: PacketHeader::new(PacketType::Message),
+			connection_id,
+			sequence,
+			acknowledgement,
+			data,
 		}
+	}
+
+	pub fn get_connection_id(&self) -> u64 {
+		self.connection_id
+	}
+
+	pub fn get_sequence(&self) -> u16 {
+		self.sequence
+	}
+
+	pub fn get_acknowledgement(&self) -> Acknowledgement {
+		self.acknowledgement
+	}
+
+	pub fn get_data(&self) -> &[u8; PAYLOAD_SIZE] {
+		&self.data
+	}
+}
+
+impl Packet for MessagePacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
+	}
+}
+
+impl From<MessagePacket> for Packets {
+	fn from(val: MessagePacket) -> Self {
+		Packets::Message(val)
 	}
 }
 
@@ -287,23 +350,29 @@ impl From<DisconnectPacket> for Packets {
 #[derive(PartialEq, Eq, Debug)]
 /// The `KeepAlivePacket` struct keeps a quiet connection from timing out.
 ///
-/// A connected session sends one when it has sent nothing else for [`crate::KEEPALIVE_INTERVAL`]. It carries no
-/// application data, so applications never see it.
+/// A connected session sends one when it has sent nothing else for [`crate::KEEPALIVE_INTERVAL`], or when it owes
+/// its peer an acknowledgement. It carries no application data, so applications never see it.
 pub struct KeepAlivePacket {
 	header: PacketHeader,
 	connection_id: u64,
+	acknowledgement: Acknowledgement,
 }
 
 impl KeepAlivePacket {
-	pub fn new(connection_id: u64) -> Self {
+	pub fn new(connection_id: u64, acknowledgement: Acknowledgement) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::KeepAlive),
 			connection_id,
+			acknowledgement,
 		}
 	}
 
 	pub fn get_connection_id(&self) -> u64 {
 		self.connection_id
+	}
+
+	pub fn get_acknowledgement(&self) -> Acknowledgement {
+		self.acknowledgement
 	}
 }
 
@@ -332,9 +401,10 @@ pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),
 	Challenge(ChallengePacket),
 	ChallengeResponse(ChallengeResponsePacket),
-	Data(DataPacket<1024>),
+	Data(DataPacket),
 	Disconnect(DisconnectPacket),
 	KeepAlive(KeepAlivePacket),
+	Message(MessagePacket),
 }
 
 impl Packets {
@@ -346,6 +416,7 @@ impl Packets {
 			Packets::Data(packet) => Some(packet.get_connection_id()),
 			Packets::Disconnect(packet) => Some(packet.get_connection_id()),
 			Packets::KeepAlive(packet) => Some(packet.get_connection_id()),
+			Packets::Message(packet) => Some(packet.get_connection_id()),
 			Packets::ConnectionRequest(_) | Packets::Challenge(_) | Packets::ChallengeResponse(_) => None,
 		}
 	}
@@ -360,6 +431,7 @@ impl Packet for Packets {
 			Packets::Data(packet) => packet.packet_type(),
 			Packets::Disconnect(packet) => packet.packet_type(),
 			Packets::KeepAlive(packet) => packet.packet_type(),
+			Packets::Message(packet) => packet.packet_type(),
 		}
 	}
 
@@ -371,6 +443,7 @@ impl Packet for Packets {
 			Packets::Data(packet) => packet.header(),
 			Packets::Disconnect(packet) => packet.header(),
 			Packets::KeepAlive(packet) => packet.header(),
+			Packets::Message(packet) => packet.header(),
 		}
 	}
 }

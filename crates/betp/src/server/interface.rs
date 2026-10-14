@@ -23,8 +23,8 @@ pub struct Settings {
 pub trait Server {
 	/// Updates connection state and returns events for the application to handle.
 	///
-	/// This method disconnects timed-out clients and gathers unacknowledged packets
-	/// for retry. Each gathered packet consumes one retry attempt.
+	/// This method disconnects timed-out clients and resends reliable messages
+	/// that have gone unacknowledged for [`crate::RETRY_INTERVAL`].
 	///
 	/// Call this method periodically with the current time.
 	fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Events>, ConnectionResults>;

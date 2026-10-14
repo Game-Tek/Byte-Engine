@@ -27,9 +27,10 @@ fn main() -> io::Result<()> {
 	write_seed("connection-request.betp", &canonical_packet(1, HEADER_SIZE + 8))?;
 	write_seed("challenge.betp", &canonical_packet(2, HEADER_SIZE + 16))?;
 	write_seed("challenge-response.betp", &canonical_packet(3, HEADER_SIZE + 8))?;
-	write_seed("data.betp", &canonical_packet(4, HEADER_SIZE + 8 + 8 + 1024))?;
+	write_seed("data.betp", &canonical_packet(4, HEADER_SIZE + 8 + 6 + 1024))?;
 	write_seed("disconnect.betp", &canonical_packet(5, HEADER_SIZE + 8))?;
-	write_seed("keep-alive.betp", &canonical_packet(6, HEADER_SIZE + 8))?;
+	write_seed("keep-alive.betp", &canonical_packet(6, HEADER_SIZE + 8 + 6))?;
+	write_seed("message.betp", &canonical_packet(7, HEADER_SIZE + 8 + 2 + 6 + 1024))?;
 
 	Ok(())
 }

@@ -37,8 +37,8 @@ fn main() {
 	client_a.update(Instant::now()).unwrap();
 	client_b.update(Instant::now()).unwrap();
 	server.update(Instant::now()).unwrap();
-	for packet in server.drain_received() {
-		if packet.data[0] == Commands::Spawn as u8 {
+	for (_, data) in server.drain_received() {
+		if data[0] == Commands::Spawn as u8 {
 			println!("Requested spawn");
 		}
 	}

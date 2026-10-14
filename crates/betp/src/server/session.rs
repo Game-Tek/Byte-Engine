@@ -1,26 +1,18 @@
 /// The `Session` struct preserves the protocol state for one server-side connection.
-#[derive(Debug, Clone, Copy)]
+///
+/// The server transport runs the handshake, then calls [`Self::accept`] and [`Self::update`] once per tick.
+#[derive(Debug)]
 pub struct Session {
-	local: Local,
-	remote: Remote,
 	state: State,
+	stream: Stream,
 }
 
 impl Session {
-	/// Creates an idle session in the [`State::Initial`] state.
-	///
-	/// Call [`Session::connect`] to start a connection.
+	/// Creates a session with no connection. Call [`Self::accept`] once the client answers its challenge.
 	pub fn new() -> Self {
 		Self {
-			local: Local::new(),
-			remote: Remote::new(),
 			state: State::Initial,
-		}
-	}
-
-	pub fn connect(&mut self, salt: u64) {
-		if let State::Initial = self.state {
-			self.state = State::InitiatingConnection { salt }
+			stream: Stream::new(),
 		}
 	}
 
@@ -29,82 +21,35 @@ impl Session {
 	///
 	/// The next [`Self::update`] sends a keepalive unless a payload goes out first. Either one tells the client
 	/// that the server accepted it.
-	pub fn accept(&mut self, connection_id: u64, current_time: std::time::Instant) {
+	pub fn accept(&mut self, connection_id: u64, current_time: Instant) {
 		self.state = State::Connected {
 			id: connection_id,
-			packet_buffer: PacketBuffer::new(),
 			last_seen: current_time,
-			// Nothing sent yet makes a keepalive due at once, which confirms the connection to the client.
-			last_sent: None,
 		};
+		self.stream = Stream::new();
 	}
 
-	pub fn update(
-		&mut self,
-		packets: &[Packets],
-		current_time: std::time::Instant,
-	) -> Result<Vec<Packets>, PacketHandlingResults> {
+	/// Handles the packets received since the last call and returns the packets to send now.
+	///
+	/// Call it on every application tick, with or without packets, so the session can resend unacknowledged
+	/// messages, send keepalives, and end a connection whose client has gone quiet for [`crate::TIMEOUT`]. Read the
+	/// payloads it delivered with [`Self::drain_received`].
+	pub fn update(&mut self, packets: &[Packets], current_time: Instant) -> Result<Vec<Packets>, PacketHandlingResults> {
 		match &mut self.state {
 			State::Initial => Ok(Vec::new()),
-			State::InitiatingConnection { salt } => {
-				let salt = *salt;
-
-				for packet in packets {
-					if let Packets::Challenge(challenge_packet) = packet {
-						if salt == challenge_packet.get_client_salt() {
-							let connection_id = challenge_packet.get_client_salt() ^ challenge_packet.get_server_salt();
-
-							let id = connection_id;
-
-							self.state = State::Connecting { id };
-
-							return Ok(vec![ChallengeResponsePacket::new(id).into()]);
-						} else {
-							return Err(PacketHandlingResults::UnhandleablePacket);
-						}
-					}
-				}
-
-				Ok(vec![ConnectionRequestPacket::new(salt).into()])
-			}
-			State::Connecting { id } => {
-				let id = *id;
-
-				self.state = State::Connected {
-					id,
-					packet_buffer: PacketBuffer::new(),
-					last_seen: current_time,
-					last_sent: None,
-				};
-
-				Ok(Vec::new())
-			}
-			State::Connected {
-				id,
-				packet_buffer,
-				last_seen,
-				last_sent,
-			} => {
+			State::Connected { id, last_seen } => {
 				let id = *id;
 				for packet in packets {
-					// Only packets for this session may mutate receive ordering, acknowledgement state, or liveness.
+					// Only packets for this session may mutate delivery, acknowledgement state, or liveness.
 					if packet.connection_id() != Some(id) {
 						continue;
 					}
-
-					match packet {
-						Packets::Data(data_packet) => {
-							let status = data_packet.get_connection_status();
-							self.remote.acknowledge_packet(status.sequence);
-							self.local.acknowledge_packets(status.ack, status.ack_bitfield);
-							packet_buffer.acknowledge_packets(status.ack, status.ack_bitfield);
-						}
-						Packets::Disconnect(_) => {
-							self.state = State::Disconnecting { id };
-							return Ok(Vec::new());
-						}
-						_ => {}
+					if let Packets::Disconnect(_) = packet {
+						self.state = State::Disconnecting { id };
+						return Ok(Vec::new());
 					}
+
+					self.stream.receive(packet);
 					*last_seen = current_time;
 				}
 
@@ -113,12 +58,7 @@ impl Session {
 					return Ok(Vec::new());
 				}
 
-				let packets = packet_buffer
-					.gather_unsent_packets_for_retry()
-					.into_iter()
-					.map(Packets::Data)
-					.collect();
-				Ok(with_keep_alive(packets, id, last_sent, current_time))
+				Ok(self.stream.flush(id, current_time))
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
@@ -128,23 +68,17 @@ impl Session {
 		}
 	}
 
-	/// Queues a data packet for transmission.
+	/// Queues a payload for the client.
 	///
-	/// Reliable packets remain queued for retry. The session discards packets that
-	/// are queued before it reaches [`State::Connected`].
-	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
-		match &mut self.state {
-			State::Connected { id, packet_buffer, .. } => {
-				let sequence_number = self.local.get_sequence_number();
-				let ack = self.remote.get_ack();
-				let ack_bitfield = self.remote.get_ack_bitfield();
-				let packet = DataPacket::new(*id, ConnectionStatus::new(sequence_number, ack, ack_bitfield), data);
-				packet_buffer.add(packet, *id, reliable);
-			}
-			_ => {
-				println!("Discarding packet as connection is not yet established")
-			}
-		}
+	/// Reliable payloads are resent until the client acknowledges them and arrive in the order they were queued.
+	/// Unreliable payloads are sent once.
+	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+		self.stream.send(reliable, data);
+	}
+
+	/// Removes and returns the payloads the client sent, reliable ones in order.
+	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+		self.stream.drain_received()
 	}
 
 	/// Starts a voluntary disconnect from the client.
@@ -174,33 +108,17 @@ impl Default for Session {
 	}
 }
 
-// Keep the packet buffer inline: this state is copied as protocol state, and boxing it would add an allocation to every connection.
-#[allow(clippy::large_enum_variant)]
 /// The `State` enum identifies the current phase of a server-side session.
 #[derive(Debug, Clone, Copy)]
 pub enum State {
-	/// The session is idle and has not started a connection.
+	/// The session has no connection yet.
 	Initial,
-	/// The session is waiting for a challenge.
-	InitiatingConnection {
-		/// The client salt used to identify the connection attempt.
-		salt: u64,
-	},
-	/// The session is waiting for connection confirmation.
-	Connecting {
-		/// The connection ID assigned to this session.
-		id: u64,
-	},
-	/// The session can send and receive data packets.
+	/// The session can send and receive payloads.
 	Connected {
 		/// The established connection ID.
 		id: u64,
-		/// The packet buffer that manages sent and acknowledged packets.
-		packet_buffer: PacketBuffer<16, 1024>,
 		/// The last time a packet was received from the client.
-		last_seen: std::time::Instant,
-		/// The last time the session sent a packet, which decides when a keepalive is due.
-		last_sent: Option<std::time::Instant>,
+		last_seen: Instant,
 	},
 	/// The session is ending the connection.
 	Disconnecting {
@@ -211,52 +129,66 @@ pub enum State {
 
 #[cfg(test)]
 mod tests {
+	use std::time::Duration;
+
 	use super::*;
 	use crate::{
 		KEEPALIVE_INTERVAL,
-		packets::{ChallengePacket, DisconnectPacket, KeepAlivePacket},
+		packets::{Acknowledgement, ChallengePacket, DataPacket, KeepAlivePacket, MessagePacket},
 	};
 
-	#[test]
-	fn test_establish_connection() {
-		let mut session = Session::new();
+	fn keep_alive(connection_id: u64) -> Packets {
+		KeepAlivePacket::new(connection_id, Acknowledgement::default()).into()
+	}
 
-		session.connect(0);
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[ChallengePacket::new(0, 0).into()], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ChallengeResponsePacket::new(0).into()]));
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![]));
+	fn data(connection_id: u64) -> Packets {
+		DataPacket::new(connection_id, Acknowledgement::default(), [0; PAYLOAD_SIZE]).into()
 	}
 
 	#[test]
-	fn initiating_connection_uses_xor_when_salts_have_overlapping_bits() {
-		let now = std::time::Instant::now();
+	fn an_accepted_connection_is_confirmed_at_once_then_kept_alive_once_per_interval() {
+		let start = Instant::now();
 		let mut session = Session::new();
-		session.connect(7);
+		session.accept(7, start);
 
-		assert_eq!(
-			session.update(&[ChallengePacket::new(7, 3).into()], now),
-			Ok(vec![ChallengeResponsePacket::new(4).into()])
-		);
+		assert_eq!(session.update(&[], start), Ok(vec![keep_alive(7)]));
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Ok(Vec::new()));
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL), Ok(vec![keep_alive(7)]));
+	}
+
+	#[test]
+	fn a_payload_queued_at_acceptance_confirms_the_connection_without_a_keepalive() {
+		let start = Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+		session.send(false, [1; PAYLOAD_SIZE]);
+
+		assert!(matches!(session.update(&[], start).unwrap()[..], [Packets::Data(_)]));
+	}
+
+	#[test]
+	fn a_clients_message_is_delivered_and_acknowledged() {
+		let start = Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+		session.update(&[], start).unwrap();
+		let message = MessagePacket::new(7, 0, Acknowledgement::default(), [3; PAYLOAD_SIZE]).into();
+
+		let sent = session.update(&[message], start).unwrap();
+
+		assert_eq!(session.drain_received().collect::<Vec<_>>(), [[3; PAYLOAD_SIZE]]);
+		assert_eq!(sent, [KeepAlivePacket::new(7, Acknowledgement::new(0, 1)).into()]);
 	}
 
 	#[test]
 	fn wrong_disconnect_is_ignored_and_matching_disconnect_transitions() {
-		let now = std::time::Instant::now();
+		let now = Instant::now();
 		let mut session = Session::new();
 		session.accept(7, now);
 
 		assert_eq!(
 			session.update(&[DisconnectPacket::new(8).into()], now),
-			Ok(vec![KeepAlivePacket::new(7).into()])
+			Ok(vec![keep_alive(7)])
 		);
 		assert!(session.is_connected());
 		assert_eq!(session.update(&[DisconnectPacket::new(7).into()], now), Ok(Vec::new()));
@@ -266,122 +198,55 @@ mod tests {
 
 	#[test]
 	fn timeout_boundary_disconnects_only_after_the_configured_duration() {
-		let start = std::time::Instant::now();
+		let start = Instant::now();
 		let mut session = Session::new();
 		session.accept(7, start);
 
-		session.update(&[], start + std::time::Duration::from_secs(5)).unwrap();
+		session.update(&[], start + TIMEOUT).unwrap();
 		assert!(session.is_connected());
-		assert_eq!(
-			session.update(
-				&[],
-				start + std::time::Duration::from_secs(5) + std::time::Duration::from_nanos(1),
-			),
-			Ok(Vec::new())
-		);
+		assert_eq!(session.update(&[], start + TIMEOUT + Duration::from_nanos(1)), Ok(Vec::new()));
 		assert!(!session.is_connected());
 	}
 
 	#[test]
 	fn unauthenticated_packets_do_not_refresh_connection_timeout() {
-		let start = std::time::Instant::now();
+		let start = Instant::now();
 		let mut session = Session::new();
 		session.accept(7, start);
 
-		let wrong_data = Packets::Data(DataPacket::new(8, ConnectionStatus::new(u16::MAX, 0, 0), [0; 1024]));
-		let wrong_disconnect = DisconnectPacket::new(8).into();
-		let wrong_keep_alive = KeepAlivePacket::new(8).into();
-		let irrelevant_challenge = ChallengePacket::new(1, 2).into();
-		session
-			.update(
-				&[wrong_data, wrong_disconnect, wrong_keep_alive, irrelevant_challenge],
-				start + std::time::Duration::from_secs(4),
-			)
-			.unwrap();
-
-		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
+		let packets = [
+			data(8),
+			DisconnectPacket::new(8).into(),
+			keep_alive(8),
+			ChallengePacket::new(1, 2).into(),
+		];
+		session.update(&packets, start + Duration::from_secs(4)).unwrap();
+		session.update(&[], start + Duration::from_secs(6)).unwrap();
 
 		assert!(!session.is_connected());
+		assert_eq!(session.drain_received().count(), 0);
 	}
 
 	#[test]
-	fn matching_data_refreshes_connection_timeout() {
-		let start = std::time::Instant::now();
-		let mut session = Session::new();
-		session.accept(7, start);
+	fn matching_data_and_keepalives_refresh_connection_timeout() {
+		let start = Instant::now();
+		for packet in [data(7), keep_alive(7)] {
+			let mut session = Session::new();
+			session.accept(7, start);
 
-		let data = Packets::Data(DataPacket::new(7, ConnectionStatus::new(u16::MAX, 0, 0), [0; 1024]));
-		session.update(&[data], start + std::time::Duration::from_secs(4)).unwrap();
-		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
+			session.update(&[packet], start + Duration::from_secs(4)).unwrap();
+			session.update(&[], start + Duration::from_secs(6)).unwrap();
 
-		assert!(session.is_connected());
-	}
-
-	#[test]
-	fn matching_keepalive_refreshes_connection_timeout() {
-		let start = std::time::Instant::now();
-		let mut session = Session::new();
-		session.accept(7, start);
-
-		session
-			.update(&[KeepAlivePacket::new(7).into()], start + std::time::Duration::from_secs(4))
-			.unwrap();
-		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
-
-		assert!(session.is_connected());
-	}
-
-	#[test]
-	fn an_accepted_connection_is_confirmed_at_once_then_kept_alive_once_per_interval() {
-		let start = std::time::Instant::now();
-		let mut session = Session::new();
-		session.accept(7, start);
-
-		assert_eq!(session.update(&[], start), Ok(vec![KeepAlivePacket::new(7).into()]));
-		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Ok(Vec::new()));
-		assert_eq!(
-			session.update(&[], start + KEEPALIVE_INTERVAL),
-			Ok(vec![KeepAlivePacket::new(7).into()])
-		);
-	}
-
-	#[test]
-	fn a_payload_queued_at_acceptance_confirms_the_connection_without_a_keepalive() {
-		let start = std::time::Instant::now();
-		let mut session = Session::new();
-		session.accept(7, start);
-		session.send(false, [1; 1024]);
-
-		assert!(matches!(session.update(&[], start).unwrap()[..], [Packets::Data(_)]));
-	}
-
-	#[test]
-	fn receive_sequence_cannot_acknowledge_an_unrelated_local_send() {
-		let start = std::time::Instant::now();
-		let mut session = Session::new();
-		session.accept(7, start);
-		session.send(true, [1; 1024]);
-		let first_send = session.update(&[], start).unwrap();
-
-		assert_eq!(first_send.len(), 1);
-
-		let unrelated_receive = Packets::Data(DataPacket::new(7, ConnectionStatus::new(0, 400, 0), [2; 1024]));
-		let retry = session.update(&[unrelated_receive], start).unwrap();
-
-		assert_eq!(retry.len(), 1);
-
-		let explicit_ack = Packets::Data(DataPacket::new(7, ConnectionStatus::new(1, 0, 1), [3; 1024]));
-
-		assert!(session.update(&[explicit_ack], start).unwrap().is_empty());
+			assert!(session.is_connected());
+		}
 	}
 }
 
+use std::time::Instant;
+
 use crate::{
 	TIMEOUT,
-	local::Local,
-	packet_buffer::PacketBuffer,
-	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
-	remote::Remote,
+	packets::{DisconnectPacket, PAYLOAD_SIZE, Packets},
 	server::PacketHandlingResults,
-	with_keep_alive,
+	stream::Stream,
 };

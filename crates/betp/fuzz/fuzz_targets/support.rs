@@ -1,10 +1,11 @@
 use betp::packets::{
-	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
-	KeepAlivePacket, Packets,
+	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
+	KeepAlivePacket, MessagePacket, Packets,
 };
 use libfuzzer_sys::arbitrary::Arbitrary;
 
-pub const MAX_SESSION_OUTPUT_PACKETS: usize = 16;
+/// Every message the window allows in flight, plus one unreliable payload for each bounded operation.
+pub const MAX_SESSION_OUTPUT_PACKETS: usize = betp::WINDOW + 64;
 pub const RETRY_QUIESCENCE_UPDATES: usize = 9;
 
 /// A packet source that combines malformed wire input with valid packets containing arbitrary attacker-controlled fields.
@@ -23,6 +24,12 @@ pub enum PacketInput {
 	},
 	Data {
 		connection_id: u64,
+		ack: u16,
+		ack_bitfield: u32,
+		fill: u8,
+	},
+	Message {
+		connection_id: u64,
 		sequence: u16,
 		ack: u16,
 		ack_bitfield: u32,
@@ -33,6 +40,8 @@ pub enum PacketInput {
 	},
 	KeepAlive {
 		connection_id: u64,
+		ack: u16,
+		ack_bitfield: u32,
 	},
 }
 
@@ -49,17 +58,23 @@ impl PacketInput {
 			Self::ChallengeResponse { connection_id } => Some(ChallengeResponsePacket::new(*connection_id).into()),
 			Self::Data {
 				connection_id,
+				ack,
+				ack_bitfield,
+				fill,
+			} => Some(DataPacket::new(*connection_id, Acknowledgement::new(*ack, *ack_bitfield), [*fill; 1024]).into()),
+			Self::Message {
+				connection_id,
 				sequence,
 				ack,
 				ack_bitfield,
 				fill,
-			} => Some(Packets::Data(DataPacket::new(
-				*connection_id,
-				ConnectionStatus::new(*sequence, *ack, *ack_bitfield),
-				[*fill; 1024],
-			))),
+			} => Some(make_message(*connection_id, *sequence, *ack, *ack_bitfield, *fill)),
 			Self::Disconnect { connection_id } => Some(DisconnectPacket::new(*connection_id).into()),
-			Self::KeepAlive { connection_id } => Some(KeepAlivePacket::new(*connection_id).into()),
+			Self::KeepAlive {
+				connection_id,
+				ack,
+				ack_bitfield,
+			} => Some(KeepAlivePacket::new(*connection_id, Acknowledgement::new(*ack, *ack_bitfield)).into()),
 		}
 	}
 }
@@ -103,13 +118,9 @@ pub fn make_batch(inputs: &[PacketInput], limit: usize) -> Vec<Packets> {
 	inputs.iter().take(limit).filter_map(PacketInput::to_packet).collect()
 }
 
-/// Builds a data packet whose identity is chosen relative to the session by the caller.
-pub fn make_data_packet(connection_id: u64, sequence: u16, ack: u16, ack_bitfield: u32, fill: u8) -> Packets {
-	Packets::Data(DataPacket::new(
-		connection_id,
-		ConnectionStatus::new(sequence, ack, ack_bitfield),
-		[fill; 1024],
-	))
+/// Builds a reliable message whose identity is chosen relative to the session by the caller.
+pub fn make_message(connection_id: u64, sequence: u16, ack: u16, ack_bitfield: u32, fill: u8) -> Packets {
+	MessagePacket::new(connection_id, sequence, Acknowledgement::new(ack, ack_bitfield), [fill; 1024]).into()
 }
 
 /// Derives an identity that is guaranteed not to equal the active session identity.
@@ -128,6 +139,7 @@ pub fn observe_session_output(packets: &[Packets], connection_id: &mut Option<u6
 				None => *connection_id = Some(packet.get_connection_id()),
 			},
 			Packets::Data(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
+			Packets::Message(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
 			Packets::Disconnect(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
 			Packets::KeepAlive(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
 			Packets::ConnectionRequest(_) | Packets::Challenge(_) => {}

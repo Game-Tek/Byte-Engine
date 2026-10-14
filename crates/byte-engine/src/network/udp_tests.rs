@@ -171,3 +171,18 @@ fn a_client_ends_its_session_when_the_server_goes_quiet() {
 	assert!(!client.is_connected());
 	assert_eq!(client.connection_id(), None);
 }
+
+#[test]
+fn a_burst_of_reliable_payloads_larger_than_the_window_arrives_complete_and_in_order() {
+	let (mut server, address) = loopback_server();
+	let mut client = connected(&mut server, address);
+	let count = betp::WINDOW * 3 + 5;
+
+	for index in 0..count {
+		client.send(true, [index as u8; 1024]);
+	}
+	exchange(&mut server, &mut [&mut client]);
+
+	let received = server.drain_received().map(|(_, data)| data[0]).collect::<Vec<_>>();
+	assert_eq!(received, (0..count).map(|index| index as u8).collect::<Vec<_>>());
+}

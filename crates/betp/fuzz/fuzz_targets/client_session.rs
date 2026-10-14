@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use betp::{
 	client::{Errors, Session},
-	packets::{ChallengePacket, DisconnectPacket, KeepAlivePacket, Packets},
+	packets::{Acknowledgement, ChallengePacket, DisconnectPacket, KeepAlivePacket, Packets},
 };
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
-use support::{Operation, RETRY_QUIESCENCE_UPDATES, make_batch, make_data_packet, observe_session_output, other_connection_id};
+use support::{Operation, RETRY_QUIESCENCE_UPDATES, make_batch, make_message, observe_session_output, other_connection_id};
 
 const MAX_OPERATIONS: usize = 64;
 const MAX_BATCH_SIZE: usize = 8;
@@ -57,7 +57,10 @@ fn make_session(state: &StartingState, client_salt: u64, server_salt: u64, curre
 	// The server's first keepalive confirms the connection.
 	assert!(
 		session
-			.update(&[KeepAlivePacket::new(connection_id).into()], current_time)
+			.update(
+				&[KeepAlivePacket::new(connection_id, Acknowledgement::default()).into()],
+				current_time
+			)
 			.is_ok()
 	);
 	assert!(session.is_connected());
@@ -160,7 +163,7 @@ fuzz_target!(|input: Input| {
 				fill,
 			} => {
 				let was_connected = session.is_connected();
-				let packet = make_data_packet(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
+				let packet = make_message(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
 				let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
 					assert!(result.is_some_and(|result| result.is_ok()));
@@ -175,21 +178,21 @@ fuzz_target!(|input: Input| {
 			} => {
 				if session.is_connected() && updates_left >= 2 {
 					let id = connection_id.expect("connected client must have a negotiated identity");
-					let invalid = make_data_packet(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
+					let invalid = make_message(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
 					// Valid traffic immediately after rejected traffic proves the error stays peer-local and recoverable.
-					let valid = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
+					let valid = make_message(id, *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {
 					let id = other_connection_id(connection_id.unwrap_or_default());
-					let packet = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
+					let packet = make_message(id, *sequence, *ack, *ack_bitfield, *fill);
 					let _ = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				}
 			}
@@ -202,8 +205,8 @@ fuzz_target!(|input: Input| {
 				let was_connected = session.is_connected();
 				let id = connection_id.unwrap_or_default();
 				let packets = [
-					make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill),
-					make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill),
+					make_message(id, *sequence, *ack, *ack_bitfield, *fill),
+					make_message(id, *sequence, *ack, *ack_bitfield, *fill),
 				];
 				let result = update_session(&mut session, &packets, current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
@@ -241,7 +244,7 @@ fuzz_target!(|input: Input| {
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
-					let valid = make_data_packet(id, 0, 0, 0, 0);
+					let valid = make_message(id, 0, 0, 0, 0);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(result.is_some_and(|result| result.is_ok()));

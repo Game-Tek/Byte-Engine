@@ -160,12 +160,11 @@ impl Server {
 			.map_err(std::io::Error::other)?;
 		send_datagrams(&self.socket, address, &self.outbound);
 
+		if let Some(id) = peer.pipeline.connection_id() {
+			self.received.extend(peer.pipeline.drain_received().map(|data| (id, data)));
+		}
+
 		match outcome {
-			DatagramOutcome::Accepted(data) => {
-				if let Some(id) = peer.pipeline.connection_id() {
-					self.received.push((id, data));
-				}
-			}
 			DatagramOutcome::Connected { id } => self.events.push(Events::ClientConnected { id }),
 			DatagramOutcome::Disconnected { id } => self.events.push(Events::ClientDisconnected { id }),
 			DatagramOutcome::Handled => {}
@@ -185,7 +184,8 @@ impl Server {
 		self.events.drain(..)
 	}
 
-	/// Removes every payload received since the last drain, each with the connection id of its sender.
+	/// Removes every payload received since the last drain, each with the connection id of its sender. Each client's
+	/// reliable payloads come in the order that client sent them.
 	pub fn drain_received(&mut self) -> impl Iterator<Item = (u64, [u8; 1024])> + '_ {
 		self.received.drain(..)
 	}

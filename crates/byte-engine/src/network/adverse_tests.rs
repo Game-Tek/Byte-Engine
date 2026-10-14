@@ -158,6 +158,7 @@ fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> 
 #[test]
 fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_duplicate_delivery() {
 	let start = Instant::now();
+	let at = |milliseconds| start + Duration::from_millis(milliseconds);
 	let mut pair = connected_pair(0x1010, 0x2020, start);
 	let mut link = DeterministicLink::new();
 	let mut scratch = Vec::new();
@@ -172,7 +173,8 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 	link.schedule(Destination::Server, scratch[0].clone(), DeliveryPlan::Drop);
 
 	// The retry is duplicated with inverted delays so the later scheduled copy arrives first.
-	pair.client.advance(start + Duration::from_millis(1), &mut scratch).unwrap();
+	pair.client.advance(start + betp::RETRY_INTERVAL, &mut scratch).unwrap();
+	assert_eq!(scratch.len(), 1);
 	link.schedule(
 		Destination::Server,
 		scratch[0].clone(),
@@ -181,37 +183,25 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 			second_delay_steps: 1,
 		},
 	);
-	link.advance(&mut pair, start + Duration::from_millis(2), &mut scratch, &mut outcomes);
-	link.advance(&mut pair, start + Duration::from_millis(3), &mut scratch, &mut outcomes);
+	link.advance(&mut pair, at(101), &mut scratch, &mut outcomes);
+	link.advance(&mut pair, at(102), &mut scratch, &mut outcomes);
 
 	assert_eq!(link.dropped, 1);
-	assert_eq!(
-		outcomes
-			.iter()
-			.filter(|(_, outcome)| matches!(outcome, DatagramOutcome::Accepted(payload) if payload == &request))
-			.count(),
-		1
-	);
-	assert!(outcomes.iter().any(|(_, outcome)| *outcome == DatagramOutcome::Handled));
+	assert_eq!(pair.server.drain_received().collect::<Vec<_>>(), [request]);
 
 	// The server's one-shot response carries the acknowledgement that retires the client's reliable send.
 	pair.server.send(false, response);
-	pair.server.advance(start + Duration::from_millis(4), &mut scratch).unwrap();
+	pair.server.advance(at(103), &mut scratch).unwrap();
 	link.schedule(Destination::Client, scratch[0].clone(), DeliveryPlan::Once { delay_steps: 2 });
-	link.advance(&mut pair, start + Duration::from_millis(5), &mut scratch, &mut outcomes);
-	link.advance(&mut pair, start + Duration::from_millis(6), &mut scratch, &mut outcomes);
+	link.advance(&mut pair, at(104), &mut scratch, &mut outcomes);
+	link.advance(&mut pair, at(105), &mut scratch, &mut outcomes);
 
-	assert_eq!(
-		outcomes
-			.iter()
-			.filter(|(_, outcome)| matches!(outcome, DatagramOutcome::Accepted(payload) if payload == &response))
-			.count(),
-		1
-	);
-	pair.client.advance(start + Duration::from_millis(7), &mut scratch).unwrap();
+	assert_eq!(pair.client.drain_received().collect::<Vec<_>>(), [response]);
+	pair.client.advance(at(100) + betp::RETRY_INTERVAL, &mut scratch).unwrap();
 
 	assert!(scratch.is_empty(), "the peer acknowledgement must retire the reliable send");
 	assert!(link.queue.is_empty());
+	assert!(outcomes.iter().all(|(_, outcome)| *outcome == DatagramOutcome::Handled));
 }
 
 #[test]
@@ -238,8 +228,10 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 		pair_a
 			.server
 			.process_datagram(from_a.as_bytes(), start + Duration::from_secs(4), &mut scratch,),
-		Ok(DatagramOutcome::Accepted([0xA1; 1024]))
+		Ok(DatagramOutcome::Handled)
 	);
+	assert_eq!(pair_a.server.drain_received().collect::<Vec<_>>(), [[0xA1; 1024]]);
+	assert_eq!(pair_b.server.drain_received().count(), 0);
 	assert_eq!(
 		pair_b.server.advance(start + Duration::from_secs(6), &mut scratch),
 		Ok(DatagramOutcome::Disconnected {
@@ -255,7 +247,7 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 }
 
 #[test]
-fn a_lost_challenge_response_is_resent_and_a_confirming_payload_is_delivered_once() {
+fn a_lost_challenge_response_is_resent_and_a_confirming_message_is_delivered_once() {
 	let start = Instant::now();
 	// The challenge response the handshake produces never reaches the server.
 	let (mut pair, _) = challenged_pair(0x1010, 0x2020, start);
@@ -272,23 +264,21 @@ fn a_lost_challenge_response_is_resent_and_a_confirming_payload_is_delivered_onc
 		Ok(DatagramOutcome::Connected { id: 0x1010 ^ 0x2020 })
 	);
 
-	pair.server.send(false, [9; 1024]);
+	pair.server.send(true, [9; 1024]);
 	pair.server
 		.advance(start + Duration::from_millis(2), &mut server_output)
 		.unwrap();
 	assert_eq!(server_output.len(), 1);
 
-	assert_eq!(
-		pair.client
-			.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
-		Ok(DatagramOutcome::Accepted([9; 1024]))
-	);
+	for _ in 0..2 {
+		assert_eq!(
+			pair.client
+				.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
+			Ok(DatagramOutcome::Handled)
+		);
+	}
 	assert!(pair.client.is_connected());
-	assert_eq!(
-		pair.client
-			.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
-		Ok(DatagramOutcome::Handled)
-	);
+	assert_eq!(pair.client.drain_received().collect::<Vec<_>>(), [[9; 1024]]);
 }
 
 #[test]

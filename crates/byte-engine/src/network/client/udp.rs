@@ -57,7 +57,6 @@ pub struct Client {
 	socket: UdpSocket,
 	pipeline: ClientDatagramPipeline,
 	outbound: Vec<EncodedDatagram>,
-	received: Vec<[u8; 1024]>,
 	/// Set once the server ends the session or times out, after which the client performs no more I/O.
 	ended: bool,
 }
@@ -82,7 +81,6 @@ impl Client {
 			socket,
 			pipeline: ClientDatagramPipeline::new(random_salt()),
 			outbound: Vec::new(),
-			received: Vec::new(),
 			ended: false,
 		})
 	}
@@ -114,7 +112,6 @@ impl Client {
 			self.send_outbound();
 
 			match outcome {
-				DatagramOutcome::Accepted(data) => self.received.push(data),
 				DatagramOutcome::Disconnected { .. } => {
 					self.ended = true;
 					return Ok(());
@@ -147,16 +144,15 @@ impl Client {
 
 	/// Queues a payload for the server. The next [`Self::update`] sends it.
 	///
-	/// Payloads queued before [`Self::is_connected`] turns `true` are discarded.
+	/// Reliable payloads arrive once and in the order they were queued. Payloads queued before [`Self::is_connected`]
+	/// turns `true` go out once it does.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
-		if self.is_connected() {
-			self.pipeline.send(reliable, data);
-		}
+		self.pipeline.send(reliable, data);
 	}
 
-	/// Removes and returns every payload received since the last drain.
+	/// Removes and returns every payload received since the last drain, reliable ones in the order they were sent.
 	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
-		self.received.drain(..)
+		self.pipeline.drain_received()
 	}
 
 	fn send_outbound(&self) {

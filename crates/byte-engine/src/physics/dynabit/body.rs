@@ -98,7 +98,13 @@ impl PhysicsBody {
 
 	/// Returns the center of mass in world coordinates.
 	pub fn world_space_center_of_mass(&self) -> Point {
-		let local_offset = self.center_of_mass - Point::origin();
+		self.to_world(self.center_of_mass)
+	}
+
+	/// Returns where a point of the body is in world coordinates. `local` is relative to the body's origin, and
+	/// turned as the body is.
+	pub fn to_world(&self, local: Point<LocalSpace>) -> Point {
+		let local_offset = local - Point::origin();
 		// Rotating a local offset into the world frame crosses a spatial math boundary.
 		self.position + Vector::from_maths(self.orientation.into_maths() * local_offset.into_maths())
 	}

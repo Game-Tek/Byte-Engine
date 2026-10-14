@@ -52,7 +52,11 @@ impl DefaultWorld {
 		let poses = messages.channel();
 		let audio_graph_factory = AudioGraphFactory::in_scope(&messages);
 
-		let physics_system = dynabit::World::new(body_factory.listener(), deletes.listener());
+		let physics_system = dynabit::World::new(
+			body_factory.listener(),
+			messages.factory::<Constraint>().listener(),
+			deletes.listener(),
+		);
 		let scenes = messages.factory::<Scene>().listener();
 		let scene_nodes = messages.factory::<SceneNode>().listener();
 		let posted_deletes = deletes.listener();
@@ -228,7 +232,7 @@ use crate::{
 		scene::{Scene, SceneGraph, SceneNode},
 		transform::TransformationUpdate,
 	},
-	physics::{StepLanes, dynabit},
+	physics::{Constraint, StepLanes, dynabit},
 	rendering::{Camera, UpdatePose},
 };
 

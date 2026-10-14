@@ -17,7 +17,7 @@ use std::{
 	sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-use math::Vector;
+use math::{Point, Vector};
 
 use crate::{
 	core::alley::{AlleyId, BatchOwned, Claim, ConcreteLane, LaneCells, LaneRanges, PairBatches, RangeOwned, Stage},
@@ -121,7 +121,7 @@ fn transform(rows: &[WideVector; 3], vector: WideVector) -> WideVector {
 /// body's [`BodyMotion`], which has room for it.
 #[derive(Clone, Copy, Default)]
 #[repr(align(64))]
-struct BodyState {
+pub(super) struct BodyState {
 	/// The center of mass in world space, followed by the inverse mass.
 	center: f32x4,
 	/// The diagonal of the inverse inertia tensor in world space, followed by the body's elasticity.
@@ -191,6 +191,26 @@ impl BodyState {
 			linear_velocity: with(body.linear_velocity.to_array(), 0.0),
 		}
 	}
+
+	/// Returns the center of mass in world space.
+	pub(super) fn center(&self) -> Point {
+		let [x, y, z, _] = self.center.to_array();
+		Point::new(x, y, z)
+	}
+
+	/// Returns the inverse mass, which is zero for a body that nothing moves.
+	pub(super) fn inverse_mass(&self) -> f32 {
+		self.center[3]
+	}
+
+	/// Returns how an impulse changes the body's spin. `moment` is the impulse's moment about the center of mass:
+	/// the cross product of where it acts, from that center, with the impulse.
+	pub(super) fn turn(&self, moment: Vector) -> Vector {
+		let [xx, yy, zz, _] = self.moments.to_array();
+		let [xy, xz, yz, _] = self.products.to_array();
+		let [x, y, z] = moment.to_array();
+		Vector::new(xx * x + xy * y + xz * z, xy * x + yy * y + yz * z, xz * x + yz * y + zz * z)
+	}
 }
 
 /// The `WideSide` struct holds the state [`prepare`] reads from one body of each contact in a group.
@@ -249,12 +269,29 @@ impl WideSide {
 /// number at a time took a quarter of a step of a large pile.
 #[derive(Clone, Copy, Default)]
 #[repr(align(64))]
-struct BodyMotion([f32x4; 4]);
+pub(super) struct BodyMotion([f32x4; 4]);
 
 impl BodyMotion {
 	/// Returns the motion of a body that starts the step's contacts at these velocities, with no shift.
 	fn starting(linear: f32x4, angular: f32x4) -> Self {
 		Self([linear, angular, f32x4::splat(0.0), angular])
+	}
+
+	/// Returns the linear velocity, the angular velocity, and the shift, in that order.
+	pub(super) fn parts(&self) -> [Vector; 3] {
+		[self.0[0], self.0[1], self.0[2]].map(|vector| {
+			let [x, y, z, _] = vector.to_array();
+			Vector::new(x, y, z)
+		})
+	}
+
+	/// Adds `changes` to the linear velocity, the angular velocity, and the shift, in that order.
+	pub(super) fn add(&mut self, changes: [Vector; 3]) {
+		// The angular velocity from before the step, which follows them, has no change and stays as it is.
+		for (part, change) in self.0.iter_mut().zip(changes) {
+			let [x, y, z] = change.to_array();
+			*part += f32x4::from_array([x, y, z, 0.0]);
+		}
 	}
 
 	/// Gives `body` these velocities, and shifts it out of overlap.
@@ -263,10 +300,7 @@ impl BodyMotion {
 		if body.inv_mass == 0.0 {
 			return;
 		}
-		let [linear, angular, shift] = [self.0[0], self.0[1], self.0[2]].map(|vector| {
-			let [x, y, z, _] = vector.to_array();
-			Vector::new(x, y, z)
-		});
+		let [linear, angular, shift] = self.parts();
 		body.position += shift;
 		body.linear_velocity = linear;
 		// A contact far from the center of mass can spin a body faster than the simulation can follow, so the spin
@@ -367,10 +401,12 @@ const OVERLAP_SHARE: f32 = 0.2;
 /// The overlap, in meters, that contacts leave alone, so that resting bodies stay in contact from step to step.
 const OVERLAP_SLACK: f32 = 0.005;
 
-/// The farthest, in meters, that one contact shifts its bodies apart in one step.
+/// The farthest, in meters, that one contact shifts its bodies apart in one step, or that one constraint shifts its
+/// bodies to where it holds them.
 ///
-/// Bodies that start deep inside each other then drift apart instead of jumping.
-const MAX_SHIFT: f32 = 0.05;
+/// Bodies that start deep inside each other, or far from where their constraint holds them, then drift there instead
+/// of jumping.
+pub(super) const MAX_SHIFT: f32 = 0.05;
 
 /// The `WideContact` struct holds what [`solve`] needs to know about up to [`WIDTH`] contacts, worked out once so
 /// that every pass only reads and writes velocities.
@@ -756,7 +792,7 @@ pub(crate) struct ContactSolver {
 	pushes: LastPushes,
 	/// The slots whose body was replaced since the last step. Their pairs' impulses belonged to other bodies.
 	replaced: Vec<usize>,
-	/// Whether the step has contacts.
+	/// Whether the step has contacts or constraints, which change the bodies' motions.
 	active: bool,
 }
 
@@ -836,11 +872,12 @@ impl ContactSolver {
 	}
 
 	/// Sorts a step's `contacts` into batches, ready for `lanes` lanes to prepare them. Call it once every lane has
-	/// taken its bodies, with [`Self::take_bodies`].
+	/// taken its bodies, with [`Self::take_bodies`]. `constrained` is whether the step also changes the motions of
+	/// bodies through [`Self::pair_mut`], as constraints do.
 	///
 	/// The contacts of a step are solved together, so no order among them is more correct than another. Batching
 	/// picks one that lets a batch's contacts be solved at the same time.
-	pub(crate) fn begin(&mut self, contacts: &Contacts, lanes: usize) {
+	pub(crate) fn begin(&mut self, contacts: &Contacts, lanes: usize, constrained: bool) {
 		self.rest.clear();
 		// The impulses kept in the last step are the ones this step starts from.
 		self.pushes.turn(contacts.len());
@@ -851,7 +888,7 @@ impl ContactSolver {
 				.retain(|pair| pair_slots(pair).into_iter().all(|slot| !replaced(slot)));
 			self.replaced.clear();
 		}
-		self.active = contacts.len() != 0;
+		self.active = contacts.len() != 0 || constrained;
 		// The contacts come with the bodies each one changes, so this reads neither the contacts nor the bodies.
 		self.batches.rebuild(self.states.get_mut().len(), contacts.bodies());
 		// From here until the passes end, every lane reads what was taken of every body, and only reaches the motions
@@ -926,6 +963,24 @@ impl ContactSolver {
 		for group in &self.rest {
 			solve(group, &mut motions);
 		}
+	}
+
+	/// Returns what was taken of the body in `slot` before the step's contacts changed it. Call it after
+	/// [`Self::begin`].
+	pub(super) fn state(&self, slot: usize) -> BodyState {
+		self.states.all()[slot]
+	}
+
+	/// Returns the motions of the two bodies in `slots`, to change them between the passes over the contacts, in a
+	/// stage that one lane runs. Tell [`Self::begin`] about it, so that the bodies are given what is changed.
+	///
+	/// # Panics
+	///
+	/// Panics if both slots are the same one, or one is not a body slot.
+	pub(super) fn pair_mut(&mut self, slots: [usize; 2]) -> [&mut BodyMotion; 2] {
+		self.motions.get_mut().get_disjoint_mut(slots).expect(
+			"Body slots do not name two bodies. The most likely cause is a constraint between a body and itself, or one made ready before a body was removed.",
+		)
 	}
 
 	/// Lets every lane read the motions the passes left, which [`Self::solved`] does. Call it once the passes are

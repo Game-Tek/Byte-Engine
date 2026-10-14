@@ -15,8 +15,10 @@ use crate::{
 	gameplay::transform::{Transform, TransformationUpdate},
 	physics::{
 		body::{Body, BodyTypes},
+		constraint::Constraint,
 		dynabit::{
 			body::{PhysicsBody, intersect},
+			constraint::Constraints,
 			contact::{ContactPart, Contacts},
 			solver::{self, ContactSolver, WideContact},
 			step_lanes::StepLanes,
@@ -41,8 +43,12 @@ pub struct World {
 	bodies: LaneRanges<StableVec<PhysicsBody>>,
 	gravity: Vector,
 	body_listener: DefaultListener<CreateMessage<Body>>,
-	body_delete_listener: DefaultListener<DeleteMessage>,
+	constraint_listener: DefaultListener<CreateMessage<Constraint>>,
+	/// Deletions of any entity. The world removes the body and the constraint that were created with the handle.
+	delete_listener: DefaultListener<DeleteMessage>,
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
+	/// What pairs of bodies are held to, such as a distance between them.
+	constraints: Constraints,
 	/// The bounds every body sweeps through during the current step, which contact detection scans for overlaps.
 	bounds: SweepBounds,
 	/// What each lane produced from its share of a stage, until one lane collects it.
@@ -58,17 +64,24 @@ pub struct World {
 }
 
 impl World {
-	/// Creates a Dynabit world connected to body creation and deletion channels.
+	/// Creates a Dynabit world that listens for the bodies and constraints that are created, and for the handles
+	/// that are deleted.
+	///
+	/// Next, create [`Body`] and [`Constraint`] values through the factories the listeners come from, and call
+	/// [`Self::update`] every step.
 	pub fn new(
 		body_listener: DefaultListener<CreateMessage<Body>>,
-		body_delete_listener: DefaultListener<DeleteMessage>,
+		constraint_listener: DefaultListener<CreateMessage<Constraint>>,
+		delete_listener: DefaultListener<DeleteMessage>,
 	) -> Self {
 		Self {
 			bodies: LaneRanges::new(StableVec::new()),
 			gravity: Vector::new(0.0, -16.0, 0.0),
 			body_listener,
-			body_delete_listener,
+			constraint_listener,
+			delete_listener,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
+			constraints: Constraints::default(),
 			bounds: SweepBounds::default(),
 			shares: LaneOwned::default(),
 			step_lanes: StepLanes::for_machine(),
@@ -118,9 +131,12 @@ impl World {
 	/// 2. One lane gathers the bounds while the others wait, every lane repairs its part of their order, one lane
 	///    splits the order into the parts that every lane then merges, one lane lays out grid cells over the bounds,
 	///    and every lane lists its part of the bounds in those cells.
-	/// 3. Every lane finds the contacts in its share of the bounds, and one lane batches them.
+	/// 3. Every lane finds the contacts in its share of the bounds, and one lane batches them. That lane also gets
+	///    the constraints ready.
 	/// 4. The lanes prepare the contacts and pass over them several times, sharing every batch that is large
-	///    enough, one batch to a stage. One lane takes the small ones.
+	///    enough, one batch to a stage. One lane takes the small ones. Before each pass, one lane solves the
+	///    constraints in turn, so that the contacts have the last word on where bodies may be. After the last pass
+	///    it keeps what the constraints start the next step from.
 	/// 5. Every lane keeps the impulses of its contacts for the next step, gives its share of the bodies their new
 	///    velocities, moves them, and publishes their transforms.
 	///
@@ -148,6 +164,8 @@ impl World {
 		self.bodies.split(lanes);
 		self.bounds.lend(alley.id());
 		self.solver.reserve(slots, alley.id(), lanes);
+		// A world without constraints, as most are, has no stage for them.
+		let constrained = !self.constraints.is_empty();
 		let executed = alley.execute_phased(self, lanes, |lane, world| {
 			let _ = lane.each_ref(world, |world, lane| world.start_share(lane, step));
 			lane.broadcast_mut(world, |world| world.stage_shares(lanes));
@@ -160,7 +178,11 @@ impl World {
 				lane.broadcast_mut(world, |world| world.bounds.share_cells());
 			}
 			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, lanes, step));
-			let (shared_batches, rest) = lane.broadcast_mut(world, |world| world.batch_share_contacts(lanes));
+			let (shared_batches, rest) = lane.broadcast_mut(world, |world| {
+				let batches = world.batch_share_contacts(lanes);
+				world.pre_solve_constraints();
+				batches
+			});
 			// Every lane works on one batch at a time, which the stage's key says.
 			for batch in 0..shared_batches {
 				let _ = lane.each_ref_keyed(world, batch, |world, stage| world.prepare_share(stage, step));
@@ -169,6 +191,9 @@ impl World {
 				lane.broadcast_mut(world, |world| world.prepare_rest(shared_batches, step));
 			}
 			for _ in 0..solver::ITERATIONS {
+				if constrained {
+					lane.broadcast_mut(world, |world| world.constraints.solve(&mut world.solver));
+				}
 				for batch in 0..shared_batches {
 					let _ = lane.each_ref_keyed(world, batch, |world, stage| world.solve_share(stage));
 				}
@@ -176,7 +201,10 @@ impl World {
 					lane.broadcast_mut(world, |world| world.solver.solve_rest());
 				}
 			}
-			lane.broadcast_mut(world, |world| world.solver.end_passes());
+			lane.broadcast_mut(world, |world| {
+				world.solver.end_passes();
+				world.constraints.post_solve();
+			});
 			let _ = lane.each_ref(world, |world, lane| world.finish_share(lane, step, transforms_tx));
 		});
 		// Between steps the bodies are read as a whole.
@@ -186,12 +214,17 @@ impl World {
 		}
 	}
 
-	/// Registers created bodies and applies authored transforms to the bodies they target.
+	/// Registers created bodies and constraints, and applies authored transforms to the bodies they target.
 	fn adopt_updates(&mut self, transforms_rx: &mut impl Listener<TransformationUpdate>) {
 		while let Some(message) = self.body_listener.read() {
 			let handle = message.handle();
 			let body = message.into_data();
 			self.create_body(handle, body);
+		}
+		// Like bodies, creation messages are upserts, so one handle always owns at most one constraint.
+		while let Some(message) = self.constraint_listener.read() {
+			let handle = message.handle();
+			self.constraints.insert(handle, message.into_data());
 		}
 		while let Some(message) = transforms_rx.read() {
 			if let Some(index) = self.handles_to_bodies.get(&message.handle()).copied() {
@@ -268,7 +301,7 @@ impl World {
 		let taken = self.shares.iter_mut().map(|share| std::mem::take(&mut share.detection));
 		self.detection.record(taken);
 		self.contacts.seal();
-		self.solver.begin(&self.contacts, lanes);
+		self.solver.begin(&self.contacts, lanes, !self.constraints.is_empty());
 		self.bodies.split(lanes);
 		// Batches fill from the first one, so the large ones lead.
 		let shared = (0..self.solver.batches())
@@ -285,6 +318,17 @@ impl World {
 			.prepare_batch(&self.contacts, dt.as_seconds_f32(), stage, &mut share.groups);
 		let end = share.groups.len();
 		share.batch_ends.push(end);
+	}
+
+	/// Gets the constraints ready for the step, once [`Self::batch_share_contacts`] has begun the solver's.
+	fn pre_solve_constraints(&mut self) {
+		// Constraints name their bodies by handle, so they hold whichever body has the handle in this step.
+		let (bodies, slots) = (&*self.bodies.get_mut(), &self.handles_to_bodies);
+		let body = |handle| {
+			let index = *slots.get(&handle)?;
+			Some((index.index(), bodies.get(index)?))
+		};
+		self.constraints.pre_solve(body, &mut self.solver);
 	}
 
 	/// Prepares the contacts that follow the first `shared_batches` batches, which one lane then passes over in turn.
@@ -367,10 +411,12 @@ impl World {
 		self.handles_to_bodies.insert(handle, index);
 	}
 
-	/// Removes body state for every pending deletion message.
+	/// Removes the body and the constraint that were created with the handle of every pending deletion message.
 	pub fn process_pending_deletions(&mut self) {
-		while let Some(message) = self.body_delete_listener.read() {
-			self.remove_body(message.into_handle());
+		while let Some(message) = self.delete_listener.read() {
+			let handle = message.into_handle();
+			self.remove_body(handle);
+			self.constraints.remove(handle);
 		}
 	}
 
@@ -447,7 +493,11 @@ mod tests {
 	fn make_world() -> World {
 		let body_factory = Factory::<Body>::new();
 		let delete_channel = DefaultChannel::new();
-		World::new(body_factory.listener(), delete_channel.listener())
+		World::new(
+			body_factory.listener(),
+			Factory::<Constraint>::new().listener(),
+			delete_channel.listener(),
+		)
 	}
 
 	fn make_ground_body() -> PhysicsBody {
@@ -1209,5 +1259,276 @@ mod tests {
 			body.position.y()
 		);
 		assert!(body.linear_velocity.length() <= 0.02 && body.angular_velocity.length() <= 0.02);
+	}
+
+	/// The `Constrained` struct holds a world with what its test creates and deletes constraints through, as an
+	/// application would.
+	struct Constrained {
+		world: World,
+		constraints: Factory<Constraint>,
+		deletes: DefaultChannel<DeleteMessage>,
+		/// What the world's steps run on.
+		alley: Alley,
+		/// Nothing authors transforms for the bodies of a test, or reads the ones a step publishes.
+		authored: DefaultListener<TransformationUpdate>,
+		published: DefaultChannel<TransformationUpdate>,
+	}
+
+	impl Constrained {
+		/// Returns a world without bodies, whose steps run on `lanes` lanes, whatever the machine running the test
+		/// would choose.
+		fn on(lanes: usize) -> Self {
+			let constraints = Factory::<Constraint>::new();
+			let deletes = DefaultChannel::new();
+			let mut world = World::new(Factory::<Body>::new().listener(), constraints.listener(), deletes.listener());
+			world.set_step_lanes(StepLanes::new([(0, lanes)]));
+			Self {
+				world,
+				constraints,
+				deletes,
+				alley: Alley::with_parallelism(lanes),
+				authored: DefaultChannel::new().listener(),
+				published: DefaultChannel::new(),
+			}
+		}
+
+		/// Adds `body` to the world and returns the handle that constraints name it by.
+		fn add(&mut self, body: PhysicsBody) -> Handle {
+			let handle = body.handle;
+			let index = self.world.bodies.get_mut().push(body);
+			self.world.handles_to_bodies.insert(handle, index);
+			handle
+		}
+
+		/// Creates a rod of `length` meters between the origins of two bodies, and returns its handle. The world
+		/// takes it up in its next step.
+		fn rod(&self, first: Handle, second: Handle, length: f32) -> Handle {
+			self.constraints.create(Constraint::distance(first, second, length))
+		}
+
+		/// Deletes what was created with `handle`.
+		fn delete(&mut self, handle: Handle) {
+			self.deletes.send(DeleteMessage::new(handle));
+			self.world.process_pending_deletions();
+		}
+
+		/// Advances the world by `steps` sixtieths of a second.
+		fn run(&mut self, steps: usize) {
+			let dt = MediaTime::from_seconds_f32(1.0 / 60.0);
+			for _ in 0..steps {
+				self.world
+					.update(Time::new(dt, dt), &mut self.authored, &self.published, &mut self.alley);
+			}
+		}
+
+		/// Returns the body that was added with `handle`.
+		fn body(&self, handle: Handle) -> &PhysicsBody {
+			&self.world.bodies.all()[self.world.handles_to_bodies[&handle]]
+		}
+	}
+
+	/// Returns a small body at `position` that nothing moves, for constraints to hang other bodies from.
+	fn make_fixed_point(position: math::Point) -> PhysicsBody {
+		let mut body = make_ground_body();
+		body.collision_shape = Shapes::Sphere { radius: 0.05 };
+		body.position = position;
+		body
+	}
+
+	/// Returns a dynamic ball at `position` that is small enough to touch nothing in these tests.
+	fn make_bob(position: math::Point) -> PhysicsBody {
+		make_dynamic_sphere_body(position, Vector::zero(), 0.1)
+	}
+
+	#[test]
+	fn a_constraint_holds_its_bodies_from_when_both_exist_until_it_is_deleted() {
+		let mut scene = Constrained::on(1);
+		let (point, bob) = (
+			make_fixed_point(math::Point::origin()),
+			make_bob(math::Point::new(0.0, -1.0, 0.0)),
+		);
+		// The constraint is created before its bodies, and does nothing until they are there.
+		let rod = scene.rod(point.handle, bob.handle, 1.0);
+		scene.run(1);
+		let (point, bob) = (scene.add(point), scene.add(bob));
+
+		scene.run(60);
+		let hanging = scene.body(bob);
+		assert!((hanging.position - math::Point::new(0.0, -1.0, 0.0)).length() <= 0.01);
+		assert!(hanging.linear_velocity.length() <= 0.01);
+		assert_eq!(scene.body(point).position, math::Point::origin());
+
+		scene.delete(rod);
+		scene.run(30);
+		// Half a second of free fall.
+		assert!(scene.body(bob).position.y() < -2.5);
+	}
+
+	#[test]
+	fn a_pendulum_swings_at_the_length_of_its_constraint() {
+		let mut scene = Constrained::on(1);
+		let point = scene.add(make_fixed_point(math::Point::origin()));
+		let bob = scene.add(make_bob(math::Point::new(2.0, 0.0, 0.0)));
+		scene.rod(point, bob, 2.0);
+
+		let (mut furthest_off, mut lowest, mut fastest) = (0.0f32, 0.0f32, 0.0f32);
+		for _ in 0..120 {
+			scene.run(1);
+			let bob = scene.body(bob);
+			furthest_off = furthest_off.max(((bob.position - math::Point::origin()).length() - 2.0).abs());
+			lowest = lowest.min(bob.position.y());
+			fastest = fastest.max(bob.linear_velocity.length());
+		}
+
+		assert!(furthest_off <= 0.02, "the bob was {furthest_off} off the length");
+		// It falls two meters to the lowest point of its swing, which it passes at the speed that fall gives it.
+		assert!((lowest + 2.0).abs() <= 0.02, "the bob got down to {lowest}");
+		assert!((fastest - 8.0).abs() <= 0.4, "the bob got as fast as {fastest}");
+	}
+
+	#[test]
+	fn a_constraint_between_two_free_bodies_shares_their_momentum_along_it() {
+		let mut scene = Constrained::on(1);
+		scene.world.gravity = Vector::zero();
+		// The light body leaves the heavy one, which is twice its mass, and the rod between them pulls it along.
+		let mut light = make_bob(math::Point::origin());
+		light.linear_velocity = Vector::new(-3.0, 1.0, 0.0);
+		let mut heavy = make_bob(math::Point::new(1.0, 0.0, 0.0));
+		heavy.inv_mass = 0.5;
+		heavy.linear_velocity = Vector::new(0.0, 1.0, 0.0);
+		let (light, heavy) = (scene.add(light), scene.add(heavy));
+		scene.rod(light, heavy, 1.0);
+
+		scene.run(60);
+
+		let (light, heavy) = (scene.body(light), scene.body(heavy));
+		for body in [light, heavy] {
+			assert!((body.linear_velocity - Vector::new(-1.0, 1.0, 0.0)).length() <= 1e-3);
+		}
+		assert!(((heavy.position - light.position).length() - 1.0).abs() <= 1e-3);
+	}
+
+	#[test]
+	fn a_box_hung_by_a_corner_turns_about_it() {
+		let mut scene = Constrained::on(1);
+		let (above, corner) = (math::Point::new(0.5, 1.5, 0.5), math::Point::new(0.5, 0.5, 0.5));
+		// The rod goes straight up from the corner, so the box's weight, which is off to the side of it, turns the box.
+		let point = scene.add(make_fixed_point(above));
+		let hung = scene.add(make_rotating_box_body(math::Point::origin()));
+		scene
+			.constraints
+			.create(Constraint::distance(point, hung, 1.0).with_anchors(math::Point::origin(), corner));
+
+		let (mut furthest_off, mut least_upright) = (0.0f32, 1.0f32);
+		for _ in 0..120 {
+			scene.run(1);
+			let hung = scene.body(hung);
+			furthest_off = furthest_off.max(((hung.to_world(corner) - above).length() - 1.0).abs());
+			least_upright = least_upright.min(uprightness(hung));
+		}
+
+		assert!(furthest_off <= 0.02, "the corner was {furthest_off} off the length");
+		assert!(least_upright < 0.9, "the box stayed {least_upright} upright");
+	}
+
+	#[test]
+	fn a_chain_of_constraints_hangs_from_its_first_link() {
+		const LINKS: usize = 6;
+		let mut scene = Constrained::on(1);
+		let mut last = scene.add(make_fixed_point(math::Point::origin()));
+		for link in 1..=LINKS {
+			let above = last;
+			last = scene.add(make_bob(math::Point::new(0.0, link as f32 * -0.5, 0.0)));
+			scene.rod(above, last, 0.5);
+		}
+
+		scene.run(120);
+
+		let last = scene.body(last);
+		assert!((last.position - math::Point::new(0.0, LINKS as f32 * -0.5, 0.0)).length() <= 0.02);
+		assert!(last.linear_velocity.length() <= 0.02);
+	}
+
+	#[test]
+	fn a_constraint_does_not_push_its_body_into_what_the_body_rests_on() {
+		let mut scene = Constrained::on(1);
+		// The ground's top is one unit up. The ball rests on it, with the few millimeters of overlap a resting body
+		// keeps, half a meter under a point that a rod twice as long holds it from. So the rod pushes it straight at
+		// the ground.
+		scene.add(make_ground_body());
+		let point = scene.add(make_fixed_point(math::Point::new(0.0, 1.6, 0.0)));
+		let ball = scene.add(make_bob(math::Point::new(0.0, 1.095, 0.0)));
+		scene.rod(point, ball, 1.0);
+
+		let mut deepest = 0.0f32;
+		for _ in 0..60 {
+			scene.run(1);
+			deepest = deepest.max(1.1 - scene.body(ball).position.y());
+		}
+
+		assert!(deepest <= 0.01, "the ball sank {deepest} into the ground");
+	}
+
+	#[test]
+	fn a_constraint_holds_its_bodies_the_same_on_any_number_of_lanes() {
+		// A pendulum swings over a crowd that has enough contacts for lanes to share batches of them.
+		let swung = |lanes: usize| {
+			let mut scene = Constrained::on(lanes);
+			for body in crowded_bodies() {
+				scene.add(body);
+			}
+			let point = scene.add(make_fixed_point(math::Point::new(0.0, 6.0, 0.0)));
+			let bob = scene.add(make_bob(math::Point::new(2.0, 6.0, 0.0)));
+			scene.rod(point, bob, 2.0);
+			scene.run(30);
+			scene.body(bob).position
+		};
+		let on_one = swung(1);
+
+		let rod = on_one - math::Point::new(0.0, 6.0, 0.0);
+		assert!(
+			(rod.length() - 2.0).abs() <= 0.02 && rod.y() < -1.0,
+			"the bob is at {on_one:?}"
+		);
+		assert_eq!(swung(4), on_one);
+	}
+
+	#[test]
+	fn deleting_a_constraint_lets_only_its_own_bodies_go() {
+		let mut scene = Constrained::on(1);
+		// Three bobs, each a meter under a point of its own.
+		let hung: [(Handle, Handle); 3] = std::array::from_fn(|place| {
+			let x = place as f32 * 2.0;
+			let point = scene.add(make_fixed_point(math::Point::new(x, 0.0, 0.0)));
+			let bob = scene.add(make_bob(math::Point::new(x, -1.0, 0.0)));
+			(scene.rod(point, bob, 1.0), bob)
+		});
+		let hangs = |scene: &Constrained, bob: Handle| (scene.body(bob).position.y() + 1.0).abs() <= 0.01;
+		// The world takes up what was created when it steps.
+		scene.run(1);
+
+		scene.delete(hung[0].0);
+		scene.run(30);
+		assert!(!hangs(&scene, hung[0].1) && hangs(&scene, hung[1].1) && hangs(&scene, hung[2].1));
+
+		scene.delete(hung[2].0);
+		scene.run(30);
+		assert!(hangs(&scene, hung[1].1) && !hangs(&scene, hung[2].1));
+	}
+
+	#[test]
+	fn a_constraint_created_again_with_its_handle_replaces_the_one_before() {
+		let mut scene = Constrained::on(1);
+		let point = scene.add(make_fixed_point(math::Point::origin()));
+		let bob = scene.add(make_bob(math::Point::new(0.0, -1.0, 0.0)));
+		let rod = scene.rod(point, bob, 1.0);
+		scene.run(10);
+
+		scene.constraints.derive(rod, Constraint::distance(point, bob, 1.5));
+		scene.run(60);
+
+		// The bob is let down to the new length, and hangs there.
+		assert!((scene.body(bob).position.y() + 1.5).abs() <= 0.01);
+		assert!(scene.body(bob).linear_velocity.length() <= 0.05);
 	}
 }

@@ -3,12 +3,15 @@
 //! Create [`Body`] payloads for entities that participate in simulation. Collider
 //! geometry uses [`LocalSpace`], while simulated positions, velocities, and contacts
 //! remain in the engine world space. Publish a transform under the same entity handle
-//! to place the body in the world.
+//! to place the body in the world. Create a [`Constraint`] to hold two bodies to each
+//! other.
 
 #[doc(hidden)]
 pub mod body;
 #[doc(hidden)]
 pub mod collider;
+#[doc(hidden)]
+pub mod constraint;
 mod contact_patch;
 #[doc(hidden)]
 pub mod convex_hull;
@@ -26,6 +29,7 @@ pub struct LocalSpace;
 
 pub use body::{Body, BodyTypes};
 pub use collider::Shapes;
+pub use constraint::Constraint;
 pub use convex_hull::{ConvexHull, build_convex_hull};
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;

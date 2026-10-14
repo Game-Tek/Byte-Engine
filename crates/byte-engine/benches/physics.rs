@@ -25,7 +25,7 @@ use byte_engine::{
 		message_bus::{MessageBus, MessageBusConfig},
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
-	physics::{Body, BodyTypes, ConvexHull, DynabitWorld, LocalSpace, Shapes, build_convex_hull},
+	physics::{Body, BodyTypes, Constraint, ConvexHull, DynabitWorld, LocalSpace, Shapes, build_convex_hull},
 	time::MediaTime,
 };
 use divan::{Bencher, counter::ItemsCount};
@@ -106,7 +106,11 @@ impl Scene {
 		// A scope of its own keeps what the world publishes apart from what it reads, which is the same message type.
 		let published: DefaultChannel<TransformationUpdate> = messages.new_scope("simulation").channel();
 		let mut scene = Self {
-			world: DynabitWorld::new(body_factory.listener(), deletes.listener()),
+			world: DynabitWorld::new(
+				body_factory.listener(),
+				authoring.factory::<Constraint>().listener(),
+				deletes.listener(),
+			),
 			authored: authored.listener(),
 			published_reader: published.listener(),
 			published,

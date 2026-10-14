@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Builds without the `headed` feature keep `gameplay::DefaultWorld` and authoring audio graphs, so a server can run the same gameplay code as the windowed game, with the sprites and sounds it posts going unheard. The world leaves out only cameras and poses there, and the `audio` module only `DefaultAudioSystem`, which plays graphs through the audio hardware. A headless build also compiles again: it used to fail on the nightly features only the UI uses.
 - BETP payloads are as long as the data they carry, up to 1024 bytes (`betp::packets::MAX_PAYLOAD_SIZE`), instead of always 1024. A `Data` packet is 19 bytes plus its payload and a `Message` 21 plus its payload, so an isometric arena move order, a 10-byte payload, goes out in 31 bytes instead of 1045, and an isometric arena snapshot of three characters in 58 instead of 1043.
   - Sessions, the `network::datagram` pipelines, and `network::Client`, `Server`, `ChannelClient`, and `ChannelServer` send and deliver `betp::packets::Payload`, re-exported as `network::Payload`: a fixed-capacity buffer that holds up to 1024 bytes without allocating. Build one with `Payload::new`, which returns `PayloadTooLarge` for more, and read it as a byte slice.
   - `PacketReadError::InvalidPacketLength` reports the range of lengths a packet type allows, as `min` and `max`, which are equal for every type but `Data` and `Message`. `betp::MAX_PACKET_SIZE` names the longest packet, 1045 bytes.

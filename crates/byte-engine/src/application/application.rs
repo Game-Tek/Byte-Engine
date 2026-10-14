@@ -16,6 +16,8 @@ use crate::metrics::{Metrics, MetricsLayer};
 pub struct BaseApplication {
 	name: String,
 	parameters: Vec<Parameter>,
+	/// Per-frame scratch memory, which only rendering and UI frames use.
+	#[cfg(feature = "headed")]
 	pub(crate) frame_allocator: bumpalo::Bump,
 	metrics: Arc<Metrics>,
 }
@@ -63,6 +65,7 @@ impl BaseApplication {
 		let application = BaseApplication {
 			name: String::from(name),
 			parameters,
+			#[cfg(feature = "headed")]
 			frame_allocator: bumpalo::Bump::with_capacity(1024 * 1024 * 32), // TODO: take this from parameters
 			metrics,
 		};
@@ -112,6 +115,7 @@ impl BaseApplication {
 	}
 
 	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
+	#[cfg(feature = "headed")]
 	pub(crate) fn parameters(&self) -> &[Parameter] {
 		&self.parameters
 	}

@@ -47,6 +47,8 @@ impl ConfigurationValue {
 	}
 
 	/// Reads a Boolean, or the text `true` or `false` that startup parameters arrive as.
+	// Only render settings read typed values today, and they exist only in headed builds.
+	#[cfg(feature = "headed")]
 	pub(crate) fn to_bool(&self) -> Option<bool> {
 		match self {
 			Self::Bool(value) => Some(*value),
@@ -56,6 +58,7 @@ impl ConfigurationValue {
 	}
 
 	/// Reads a finite number, or the text of one that startup parameters arrive as.
+	#[cfg(feature = "headed")]
 	pub(crate) fn to_f64(&self) -> Option<f64> {
 		match self {
 			Self::Integer(value) => Some(*value as f64),
@@ -66,6 +69,7 @@ impl ConfigurationValue {
 	}
 
 	/// Reads a whole number that fits 32 unsigned bits, or the text of one that startup parameters arrive as.
+	#[cfg(feature = "headed")]
 	pub(crate) fn to_u32(&self) -> Option<u32> {
 		match self {
 			Self::Integer(value) => (*value).try_into().ok(),

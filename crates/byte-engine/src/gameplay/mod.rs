@@ -17,7 +17,6 @@ pub mod pathfinding;
 pub mod scene;
 #[doc(hidden)]
 pub mod transform;
-#[cfg(feature = "headed")]
 #[doc(hidden)]
 pub mod world;
 
@@ -25,5 +24,4 @@ pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use name::Name;
 pub use scene::{Scene, SceneNode};
 pub use transform::{Transform, TransformationUpdate};
-#[cfg(feature = "headed")]
 pub use world::DefaultWorld;

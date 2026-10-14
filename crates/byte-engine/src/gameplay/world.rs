@@ -3,13 +3,15 @@
 //! Create objects through the factories exposed by [`DefaultWorld`] so
 //! downstream systems receive creation and deletion messages. The graphics
 //! application updates this world and attaches its listeners to render
-//! pipelines.
+//! pipelines. Without the `headed` feature the world keeps every route but
+//! cameras and poses, so servers run the same gameplay code with nothing listening.
 
 /// The `DefaultWorld` struct owns the standard entity routes and coordinates transform, physics, and deletion updates.
 pub struct DefaultWorld {
 	messages: MessageScope,
 	transforms: DefaultChannel<TransformationUpdate>,
 	deletes: DefaultChannel<DeleteMessage>,
+	#[cfg(feature = "headed")]
 	poses: DefaultChannel<UpdatePose>,
 	audio_graph_factory: AudioGraphFactory,
 
@@ -49,6 +51,7 @@ impl DefaultWorld {
 		let body_factory = messages.factory();
 		let transforms = messages.channel();
 		let deletes = messages.channel();
+		#[cfg(feature = "headed")]
 		let poses = messages.channel();
 		let audio_graph_factory = AudioGraphFactory::in_scope(&messages);
 
@@ -65,6 +68,7 @@ impl DefaultWorld {
 			messages,
 			transforms,
 			deletes,
+			#[cfg(feature = "headed")]
 			poses,
 			audio_graph_factory,
 
@@ -162,6 +166,7 @@ impl DefaultWorld {
 		}
 	}
 
+	#[cfg(feature = "headed")]
 	pub fn poses_channel(&self) -> &DefaultChannel<UpdatePose> {
 		&self.poses
 	}
@@ -184,6 +189,7 @@ impl Publisher<TransformationUpdate> for DefaultWorld {
 	}
 }
 
+#[cfg(feature = "headed")]
 impl Publisher<CreateMessage<Camera>> for DefaultWorld {
 	fn publish(&self, message: CreateMessage<Camera>) {
 		let handle = message.handle();
@@ -195,6 +201,7 @@ impl TargetedMessagePublisher<Transform> for DefaultWorld {
 	type Message = TransformationUpdate;
 }
 
+#[cfg(feature = "headed")]
 impl TargetedMessagePublisher<Camera> for DefaultWorld {
 	type Message = CreateMessage<Camera>;
 }
@@ -214,6 +221,8 @@ impl Creator<&mut AudioGraph> for DefaultWorld {
 	}
 }
 
+#[cfg(feature = "headed")]
+use crate::rendering::{Camera, UpdatePose};
 use crate::{
 	application::Time,
 	audio::graph::{AudioGraph, AudioGraphFactory},
@@ -233,7 +242,6 @@ use crate::{
 		transform::TransformationUpdate,
 	},
 	physics::{Constraint, StepLanes, dynabit},
-	rendering::{Camera, UpdatePose},
 };
 
 #[cfg(test)]

@@ -27,6 +27,8 @@ use crate::core::factory::Handle;
 
 mod axis;
 mod collector;
+// Gamepads are read through the window system, which only headed builds have.
+#[cfg(feature = "headed")]
 pub(crate) mod gamepad;
 mod gesture;
 mod queue;

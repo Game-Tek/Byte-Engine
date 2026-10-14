@@ -20,7 +20,8 @@
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, trait_alias, unsize)]
 #![feature(clone_from_ref)]
-#![feature(context_ext, local_waker)]
+// Only the UI layout runtime polls with a custom context, and the UI exists only in headed builds.
+#![cfg_attr(feature = "headed", feature(context_ext, local_waker))]
 #![feature(portable_simd)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(incomplete_features)]
@@ -129,7 +130,6 @@ pub mod utils {
 
 pub mod animation;
 pub mod application;
-#[cfg(feature = "headed")]
 pub mod audio;
 pub mod configuration;
 pub mod core;

@@ -1,12 +1,22 @@
 //! The minimal process configuration shared by higher-level runtimes.
 //!
 //! Compose [`BaseApplication`] into a new top-level runtime to reuse parameter
-//! precedence, logging setup, and frame-local allocation. `GraphicsApplication`
-//! is the main headed example of that composition.
+//! precedence, logging setup, the application message bus, and lifecycle
+//! events, where Ctrl-C posts [`Events::Close`]. `GraphicsApplication` is the
+//! main headed example of that composition; a headless server can run its own
+//! loop until [`BaseApplication::next_event`] returns `Close`.
 
 use std::sync::Arc;
 
-use crate::metrics::{Metrics, MetricsLayer};
+use crate::{
+	application::Events,
+	core::{
+		channel::{Channel, DefaultChannel},
+		listener::{DefaultListener, Listener},
+		message_bus::{MessageBus, MessageBusConfig, MessageScope},
+	},
+	metrics::{Metrics, MetricsLayer},
+};
 
 /// The [`BaseApplication`] struct provides shared process configuration and
 /// frame-local storage for application implementations.
@@ -20,6 +30,12 @@ pub struct BaseApplication {
 	#[cfg(feature = "headed")]
 	pub(crate) frame_allocator: bumpalo::Bump,
 	metrics: Arc<Metrics>,
+	message_bus: MessageBus,
+	/// The application scope of `message_bus`.
+	messages: MessageScope,
+	events: DefaultChannel<Events>,
+	/// The loop owner's subscription to `events`, opened with the channel so no close request goes unheard.
+	event_listener: DefaultListener<Events>,
 }
 
 impl BaseApplication {
@@ -62,12 +78,25 @@ impl BaseApplication {
 		let trace = parameters.iter().any(|parameter| parameter.name == "trace");
 		install_subscriber(Arc::clone(&metrics), trace);
 
+		let message_bus = MessageBus::new(message_bus_config(&parameters)).unwrap_or_else(|error| panic!("{error}"));
+		// Observation, which the inspector reads, has to start before the first route below is registered.
+		message_bus.observe().unwrap_or_else(|error| panic!("{error}"));
+		let messages = message_bus.new_scope("application");
+		let events = messages.channel();
+		// Subscribe before Ctrl-C can post, so a close request that comes early is not lost.
+		let event_listener = events.listener();
+		install_close_handler(&events);
+
 		let application = BaseApplication {
 			name: String::from(name),
 			parameters,
 			#[cfg(feature = "headed")]
 			frame_allocator: bumpalo::Bump::with_capacity(1024 * 1024 * 32), // TODO: take this from parameters
 			metrics,
+			message_bus,
+			messages,
+			events,
+			event_listener,
 		};
 
 		if let Some(e) = application.get_parameter("log.level") {
@@ -114,6 +143,31 @@ impl BaseApplication {
 		&self.metrics
 	}
 
+	/// Returns the application message scope, where application-wide routes such as window events live.
+	///
+	/// Next, call [`MessageScope::channel`] or [`MessageScope::factory`] to add an application-defined route.
+	pub fn messages(&self) -> &MessageScope {
+		&self.messages
+	}
+
+	/// Returns the shared fixed-storage message bus for diagnostics and new scopes.
+	///
+	/// Next, call [`MessageBus::new_scope`] to isolate routes owned by another subsystem, such as a world.
+	pub fn message_bus(&self) -> &MessageBus {
+		&self.message_bus
+	}
+
+	/// Returns the channel of application lifecycle events. Ctrl-C and tools post [`Events::Close`] here, and
+	/// worker threads subscribe to it to learn when to stop.
+	pub fn events(&self) -> &DefaultChannel<Events> {
+		&self.events
+	}
+
+	/// Reads the next lifecycle event for the runtime that owns the loop, which stops on [`Events::Close`].
+	pub fn next_event(&mut self) -> Option<Events> {
+		self.event_listener.read()
+	}
+
 	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
 	#[cfg(feature = "headed")]
 	pub(crate) fn parameters(&self) -> &[Parameter] {
@@ -124,6 +178,29 @@ impl BaseApplication {
 impl Parameters for BaseApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.parameters.get_parameter(name)
+	}
+}
+
+/// Sizes the application's message storage from the `messages.capacity` parameter.
+fn message_bus_config(parameters: &[Parameter]) -> MessageBusConfig {
+	let capacity = parameters
+		.get_parameter("messages.capacity")
+		.map_or(MessageBusConfig::default().capacity, |parameter| {
+			parameter.parse::<usize>().unwrap_or_else(|error| panic!("{error}"))
+		});
+	MessageBusConfig::new(capacity)
+}
+
+/// Makes Ctrl-C post [`Events::Close`] on `events`, so the runtime closes as if a window or tool asked it to.
+///
+/// A process has one interrupt handler. When another library, or an earlier application in the same process,
+/// installed it first, Ctrl-C keeps doing what that handler does, and the engine says so.
+fn install_close_handler(events: &DefaultChannel<Events>) {
+	let events = events.clone();
+	if let Err(error) = ctrlc::set_handler(move || events.send(Events::Close)) {
+		log::warn!(
+			"Ctrl-C will not close the application. The most likely cause is that another library or application in this process already installed the interrupt handler: {error}"
+		);
 	}
 }
 

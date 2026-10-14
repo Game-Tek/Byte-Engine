@@ -42,7 +42,7 @@ pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication) {
 	let (loader, tasks) = application.take_loading_work();
 	application
 		.threads
-		.push(Thread::new(application.application_events.0.listener(), move |mut events| {
+		.push(Thread::new(application.application.events().listener(), move |mut events| {
 			let runtime = build_single_threaded_async_runtime();
 
 			// Compio separates task execution from I/O polling. Enter the runtime so
@@ -225,7 +225,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 
 	application
 		.threads
-		.push(Thread::new(application.application_events.0.listener(), {
+		.push(Thread::new(application.application.events().listener(), {
 			let mut generators_listener = application.generator_factory.listener();
 
 			move |mut receiver| {

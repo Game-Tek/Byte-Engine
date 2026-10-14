@@ -52,8 +52,6 @@
 /// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
 	application: BaseApplication,
-	message_bus: MessageBus,
-	messages: MessageScope,
 	window_events: DefaultChannel<ghi::window::Event>,
 
 	tick_count: u64,
@@ -90,7 +88,6 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
-	application_events: (DefaultChannel<Events>, DefaultListener<Events>),
 	/// Keeps the HTTP inspector transport listening while the application lives.
 	_http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
@@ -159,7 +156,6 @@ enum LoaderState {
 struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
-	application_events: (DefaultChannel<Events>, DefaultListener<Events>),
 	cameras_listener: DefaultListener<CreateMessage<Camera>>,
 	physics_transforms_listener: DefaultListener<TransformationUpdate>,
 	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
@@ -184,8 +180,9 @@ impl GraphicsApplication {
 		let start_time = std::time::Instant::now();
 
 		let application = BaseApplication::new(name, parameters);
-		let (message_bus, messages, world_messages) = create_message_bus(&application);
-		message_bus.observe().unwrap_or_else(|error| panic!("{error}"));
+		let messages = application.messages().clone();
+		let world_messages = application.message_bus().new_scope("world");
+		let application_events = application.events().clone();
 
 		let resources_path = resolve_application_path(application.get_parameter("resources.path"), "resources");
 
@@ -226,29 +223,13 @@ impl GraphicsApplication {
 						let mut input = input::InputCollector::new();
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
-						// Register the application listener before control handlers can publish a
-						// close request. Worker listeners join this future-only route during setup.
-						let application_events: (DefaultChannel<Events>, DefaultListener<Events>) = {
-							let channel = messages.channel();
-							let listener = channel.listener();
-							(channel, listener)
-						};
-
-						ctrlc::set_handler({
-							let events = application_events.0.clone();
-							move || {
-								events.send(Events::Close);
-							}
-						})
-						.unwrap();
-
 						let cameras_listener = world_messages.factory::<Camera>().listener();
 						let physics_transforms_listener = transforms.listener();
 						let renderer_transforms_listener = transforms.listener();
 
 						// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
 						let mut inspector = DefaultInspector::new(
-							application_events.0.clone(),
+							application_events.clone(),
 							configuration.clone(),
 							world_messages.clone(),
 							Arc::clone(&metrics),
@@ -278,7 +259,6 @@ impl GraphicsApplication {
 						*services = Some(Services {
 							input,
 							actions,
-							application_events,
 							cameras_listener,
 							physics_transforms_listener,
 							renderer_transforms_listener,
@@ -314,7 +294,7 @@ impl GraphicsApplication {
 		let mut threads = SmallVec::new();
 		for server in pipeline_compilation_servers {
 			let resources = resource_manager.clone();
-			threads.push(Thread::new(services.application_events.0.listener(), move |mut events| {
+			threads.push(Thread::new(application.events().listener(), move |mut events| {
 				let runtime = defaults::build_single_threaded_async_runtime();
 
 				runtime.enter(|| {
@@ -347,11 +327,8 @@ impl GraphicsApplication {
 
 		GraphicsApplication {
 			application,
-			message_bus,
-			messages,
 			window_events: services.window_events,
 
-			application_events: services.application_events,
 			_http_inspector: services.http_inspector,
 			screenshot_broker: services.screenshot_broker,
 			configuration,
@@ -793,7 +770,7 @@ impl GraphicsApplication {
 	fn tick_span<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> (Option<R>, TickClock) {
 		let _span = debug_span!("GraphicsApplication::tick").entered();
 
-		self.message_bus.begin_tick();
+		self.application.message_bus().begin_tick();
 		debug_span!("GraphicsApplication::reset_frame_allocator").in_scope(|| self.application.frame_allocator.reset());
 		let wait = self.event_wait();
 		let waited = wait != ghi::window::Wait::Immediate;
@@ -801,7 +778,7 @@ impl GraphicsApplication {
 		if waited {
 			self.waker.end_wait();
 		}
-		close |= matches!(self.application_events.1.read(), Some(Events::Close));
+		close |= matches!(self.application.next_event(), Some(Events::Close));
 
 		// Existing windows pace simulation on the display; newly published windows are adopted after the
 		// callback so their scene can request resources before native window setup begins.
@@ -872,8 +849,8 @@ impl GraphicsApplication {
 			return;
 		}
 
-		while self.application_events.1.read().is_some() {}
-		self.application_events.0.send(Events::Close);
+		while self.application.next_event().is_some() {}
+		self.application.events().send(Events::Close);
 		self.threads.drain(..).for_each(|thread| {
 			let _ = thread.join();
 		});
@@ -1017,7 +994,7 @@ impl GraphicsApplication {
 	/// input in your application callback. Events are published in arrival order,
 	/// and each window event carries the [`ghi::window::WindowId`] it targets.
 	pub fn messages(&self) -> &MessageScope {
-		&self.messages
+		self.application.messages()
 	}
 
 	/// Returns the shared fixed-storage message bus for diagnostics and new scopes.
@@ -1025,7 +1002,7 @@ impl GraphicsApplication {
 	/// Next, call [`MessageBus::topics`] to inspect registered routes or
 	/// [`MessageBus::new_scope`] to isolate routes owned by another subsystem.
 	pub fn message_bus(&self) -> &MessageBus {
-		&self.message_bus
+		self.application.message_bus()
 	}
 
 	/// Returns the default world updated by the graphics application loop.
@@ -1080,31 +1057,6 @@ pub(crate) fn queue_startup_parameters(parameters: &[Parameter], configuration: 
 			configuration.update(parameter.name(), parameter.value());
 		}
 	}
-}
-
-/// Allocates the application bus and its initial isolated namespaces.
-fn create_message_bus(application: &BaseApplication) -> (MessageBus, MessageScope, MessageScope) {
-	let message_bus = MessageBus::new(message_bus_config(application)).unwrap_or_else(|error| panic!("{error}"));
-	let application_messages = message_bus.new_scope("application");
-	let world_messages = message_bus.new_scope("world");
-	(message_bus, application_messages, world_messages)
-}
-
-/// Resolves the message pool size from application startup parameters.
-fn message_bus_config(application: &BaseApplication) -> MessageBusConfig {
-	MessageBusConfig::new(message_bus_limit(
-		application,
-		"messages.capacity",
-		MessageBusConfig::default().capacity,
-	))
-}
-
-/// Parses one unsigned message-storage limit while preserving the configured default.
-fn message_bus_limit(application: &BaseApplication, name: &str, default: usize) -> usize {
-	application
-		.get_parameter(name)
-		.map(|parameter| parameter.parse::<usize>().unwrap_or_else(|error| panic!("{error}")))
-		.unwrap_or(default)
 }
 
 /// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
@@ -1311,7 +1263,7 @@ use crate::{
 		factory::{CreateMessage, Creator, Factory},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
-		message_bus::{MessageBus, MessageBusConfig, MessageScope},
+		message_bus::{MessageBus, MessageScope},
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	input::Action,

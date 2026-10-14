@@ -33,7 +33,7 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: De
 
 	application
 		.threads
-		.push(Thread::new(application.application_events.0.listener(), move |mut events| {
+		.push(Thread::new(application.application.events().listener(), move |mut events| {
 			const ARTNET_PORT: u16 = 6454;
 
 			let socket = UdpSocket::bind((bind_address, ARTNET_PORT)).unwrap();

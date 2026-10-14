@@ -6,7 +6,10 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use betp::{packets::DisconnectPacket, server::Events};
+use betp::{
+	packets::{DisconnectPacket, Payload},
+	server::Events,
+};
 
 use crate::network::{
 	datagram::{DatagramOutcome, EncodedDatagram, MAX_BETP_DATAGRAM_SIZE, ServerDatagramPipeline},
@@ -57,7 +60,7 @@ pub struct Server {
 	socket: UdpSocket,
 	peers: Vec<Peer>,
 	events: Vec<Events>,
-	received: Vec<(u64, [u8; 1024])>,
+	received: Vec<(u64, Payload)>,
 	outbound: Vec<EncodedDatagram>,
 }
 
@@ -186,7 +189,7 @@ impl Server {
 
 	/// Removes every payload received since the last drain, each with the connection id of its sender. Each client's
 	/// reliable payloads come in the order that client sent them.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = (u64, [u8; 1024])> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = (u64, Payload)> + '_ {
 		self.received.drain(..)
 	}
 
@@ -196,14 +199,14 @@ impl Server {
 	}
 
 	/// Queues a payload for every connected client. The next [`Self::update`] sends it.
-	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		for peer in self.peers.iter_mut().filter(|peer| peer.pipeline.is_connected()) {
 			peer.pipeline.send(reliable, data);
 		}
 	}
 
 	/// Queues a payload for one connected client. Payloads for an unknown connection are discarded.
-	pub fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: [u8; 1024]) {
+	pub fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: Payload) {
 		if let Some(peer) = self
 			.peers
 			.iter_mut()

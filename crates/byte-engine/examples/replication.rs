@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use byte_engine::{
 	core::factory::Factory,
-	network::{Replicable, channel::ChannelServer as Server},
+	network::{Payload, Replicable, channel::ChannelServer as Server},
 	space::Positionable,
 };
 use math::Point;
@@ -31,9 +31,7 @@ fn main() {
 	update();
 	update();
 
-	let mut data = [0_u8; 1024];
-	data[0] = Commands::Spawn as u8;
-	server.send(true, data);
+	server.send(true, Payload::new(&[Commands::Spawn as u8]).unwrap());
 	client_a.update(Instant::now()).unwrap();
 	client_b.update(Instant::now()).unwrap();
 	server.update(Instant::now()).unwrap();

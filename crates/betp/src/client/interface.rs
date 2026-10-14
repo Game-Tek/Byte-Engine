@@ -14,7 +14,7 @@ pub trait Client {
 	/// Queues a data packet for the next call to [`Client::update`].
 	///
 	/// Next, call [`Client::update`] to perform the network I/O.
-	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), Errors>;
+	fn send(&mut self, reliable: bool, data: crate::packets::Payload) -> Result<(), Errors>;
 
 	/// Queues a voluntary disconnect for the next call to [`Client::update`].
 	///

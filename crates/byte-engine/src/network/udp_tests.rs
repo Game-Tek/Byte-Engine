@@ -7,7 +7,7 @@ use std::{
 
 use betp::server::Events;
 
-use super::{Client, Server};
+use super::{Client, Server, payload};
 
 /// Runs enough client and server updates for loopback datagrams to finish a handshake or a payload round trip.
 fn exchange(server: &mut Server, clients: &mut [&mut Client]) {
@@ -47,14 +47,14 @@ fn a_client_connects_and_exchanges_each_payload_once_in_both_directions() {
 		matches!(server.drain_events().collect::<Vec<_>>()[..], [Events::ClientConnected { id: connected }] if connected == id)
 	);
 
-	client.send(true, [7; 1024]);
-	server.send_to_client(id, true, [9; 1024]);
+	client.send(true, payload(7));
+	server.send_to_client(id, true, payload(9));
 	exchange(&mut server, &mut [&mut client]);
 	// More updates retry any unacknowledged reliable send, which must not deliver it again.
 	exchange(&mut server, &mut [&mut client]);
 
-	assert_eq!(server.drain_received().collect::<Vec<_>>(), [(id, [7; 1024])]);
-	assert_eq!(client.drain_received().collect::<Vec<_>>(), [[9; 1024]]);
+	assert_eq!(server.drain_received().collect::<Vec<_>>(), [(id, payload(7))]);
+	assert_eq!(client.drain_received().collect::<Vec<_>>(), [payload(9)]);
 }
 
 #[test]
@@ -67,16 +67,16 @@ fn two_clients_share_one_server_socket_without_crossing_sessions() {
 	assert_ne!(id_a, id_b);
 	assert_eq!(server.connected_clients(), 2);
 
-	client_a.send(false, [1; 1024]);
-	client_b.send(false, [2; 1024]);
-	server.send(false, [3; 1024]);
+	client_a.send(false, payload(1));
+	client_b.send(false, payload(2));
+	server.send(false, payload(3));
 	exchange(&mut server, &mut [&mut client_a, &mut client_b]);
 
 	let mut received = server.drain_received().collect::<Vec<_>>();
 	received.sort_by_key(|(_, data)| data[0]);
-	assert_eq!(received, [(id_a, [1; 1024]), (id_b, [2; 1024])]);
-	assert_eq!(client_a.drain_received().collect::<Vec<_>>(), [[3; 1024]]);
-	assert_eq!(client_b.drain_received().collect::<Vec<_>>(), [[3; 1024]]);
+	assert_eq!(received, [(id_a, payload(1)), (id_b, payload(2))]);
+	assert_eq!(client_a.drain_received().collect::<Vec<_>>(), [payload(3)]);
+	assert_eq!(client_b.drain_received().collect::<Vec<_>>(), [payload(3)]);
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn a_burst_of_reliable_payloads_larger_than_the_window_arrives_complete_and_in_o
 	let count = betp::WINDOW * 3 + 5;
 
 	for index in 0..count {
-		client.send(true, [index as u8; 1024]);
+		client.send(true, payload(index as u8));
 	}
 	exchange(&mut server, &mut [&mut client]);
 

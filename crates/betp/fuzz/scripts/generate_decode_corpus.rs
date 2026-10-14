@@ -31,6 +31,8 @@ fn main() -> io::Result<()> {
 	write_seed("disconnect.betp", &canonical_packet(5, HEADER_SIZE + 8))?;
 	write_seed("keep-alive.betp", &canonical_packet(6, HEADER_SIZE + 8 + 6))?;
 	write_seed("message.betp", &canonical_packet(7, HEADER_SIZE + 8 + 2 + 6 + 1024))?;
+	write_seed("data-short.betp", &canonical_packet(4, HEADER_SIZE + 8 + 6 + 3))?;
+	write_seed("message-empty.betp", &canonical_packet(7, HEADER_SIZE + 8 + 2 + 6))?;
 
 	Ok(())
 }

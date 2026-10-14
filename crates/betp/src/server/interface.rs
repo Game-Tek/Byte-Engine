@@ -33,13 +33,13 @@ pub trait Server {
 	///
 	/// Continue calling [`Self::update`] so reliable packets can be acknowledged
 	/// or retried.
-	fn send(&mut self, reliable: bool, data: [u8; 1024]);
+	fn send(&mut self, reliable: bool, data: crate::packets::Payload);
 
 	/// Sends a message to one client.
 	///
 	/// Continue calling [`Self::update`] so reliable packets can be acknowledged
 	/// or retried.
-	fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: [u8; 1024]);
+	fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: crate::packets::Payload);
 
 	/// Disconnects all clients and stops the server connection.
 	fn disconnect(&mut self);

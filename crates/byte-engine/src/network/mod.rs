@@ -15,7 +15,7 @@ pub mod channel {
 	mod tests {
 		use std::time::Instant;
 
-		use crate::network::server::ChannelServer;
+		use crate::network::{payload, server::ChannelServer};
 
 		#[test]
 		fn connects_and_delivers_payload_in_both_directions() {
@@ -33,17 +33,17 @@ pub mod channel {
 			assert!(client.is_connected());
 			assert!(server.is_connected());
 
-			client.send(true, [7; 1024]).expect("expected test value");
+			client.send(true, payload(7)).expect("expected test value");
 			client.update(Instant::now()).expect("expected test value");
 			server.update(Instant::now()).expect("expected test value");
 
-			assert_eq!(server.drain_received().next().map(|(_, data)| data), Some([7; 1024]));
+			assert_eq!(server.drain_received().next().map(|(_, data)| data), Some(payload(7)));
 
-			server.send(true, [9; 1024]);
+			server.send(true, payload(9));
 			server.update(Instant::now()).expect("expected test value");
 			client.update(Instant::now()).expect("expected test value");
 
-			assert_eq!(client.drain_received().next(), Some([9; 1024]));
+			assert_eq!(client.drain_received().next(), Some(payload(9)));
 		}
 
 		#[test]
@@ -78,12 +78,20 @@ pub mod replicable;
 #[doc(hidden)]
 pub mod server;
 
+/// Application data for one send, up to [`betp::packets::MAX_PAYLOAD_SIZE`] bytes.
+pub use betp::packets::{MAX_PAYLOAD_SIZE, Payload, PayloadTooLarge};
+/// The connection events [`Server::drain_events`] reports.
+pub use betp::server::Events as ServerEvents;
 pub use client::{Client, ClientCreateError};
 pub use replicable::Importance;
 pub use replicable::Replicable;
 pub use server::{Server, ServerCreateError};
-/// The connection events [`Server::drain_events`] reports.
-pub use betp::server::Events as ServerEvents;
+
+/// A one-byte payload of `fill`, for tests.
+#[cfg(test)]
+fn payload(fill: u8) -> Payload {
+	Payload::new(&[fill]).expect("one byte fits a payload")
+}
 
 #[cfg(test)]
 mod udp_tests;

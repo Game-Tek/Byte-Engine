@@ -72,12 +72,12 @@ impl Session {
 	///
 	/// Reliable payloads are resent until the client acknowledges them and arrive in the order they were queued.
 	/// Unreliable payloads are sent once.
-	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		self.stream.send(reliable, data);
 	}
 
 	/// Removes and returns the payloads the client sent, reliable ones in order.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.stream.drain_received()
 	}
 
@@ -142,7 +142,7 @@ mod tests {
 	}
 
 	fn data(connection_id: u64) -> Packets {
-		DataPacket::new(connection_id, Acknowledgement::default(), [0; PAYLOAD_SIZE]).into()
+		DataPacket::new(connection_id, Acknowledgement::default(), Payload::filled(0)).into()
 	}
 
 	#[test]
@@ -161,7 +161,7 @@ mod tests {
 		let start = Instant::now();
 		let mut session = Session::new();
 		session.accept(7, start);
-		session.send(false, [1; PAYLOAD_SIZE]);
+		session.send(false, Payload::filled(1));
 
 		assert!(matches!(session.update(&[], start).unwrap()[..], [Packets::Data(_)]));
 	}
@@ -172,11 +172,11 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, start);
 		session.update(&[], start).unwrap();
-		let message = MessagePacket::new(7, 0, Acknowledgement::default(), [3; PAYLOAD_SIZE]).into();
+		let message = MessagePacket::new(7, 0, Acknowledgement::default(), Payload::filled(3)).into();
 
 		let sent = session.update(&[message], start).unwrap();
 
-		assert_eq!(session.drain_received().collect::<Vec<_>>(), [[3; PAYLOAD_SIZE]]);
+		assert_eq!(session.drain_received().collect::<Vec<_>>(), [Payload::filled(3)]);
 		assert_eq!(sent, [KeepAlivePacket::new(7, Acknowledgement::new(0, 1)).into()]);
 	}
 
@@ -246,7 +246,7 @@ use std::time::Instant;
 
 use crate::{
 	TIMEOUT,
-	packets::{DisconnectPacket, PAYLOAD_SIZE, Packets},
+	packets::{DisconnectPacket, Packets, Payload},
 	server::PacketHandlingResults,
 	stream::Stream,
 };

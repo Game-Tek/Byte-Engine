@@ -9,12 +9,12 @@ use std::time::Instant;
 use betp::{
 	PacketReadError,
 	client::{Errors as ClientSessionError, Session as ClientSession},
-	packets::{ChallengePacket, PAYLOAD_SIZE, Packets},
+	packets::{ChallengePacket, Packets, Payload},
 	server::{PacketHandlingResults as ServerSessionError, Session as ServerSession},
 };
 
 /// The largest canonical BETP wire packet, including its header.
-pub const MAX_BETP_DATAGRAM_SIZE: usize = 1045;
+pub const MAX_BETP_DATAGRAM_SIZE: usize = betp::MAX_PACKET_SIZE;
 
 /// The `EncodedDatagram` struct provides transport adapters with one canonical
 /// BETP packet and its exact wire length.
@@ -223,12 +223,12 @@ impl ClientDatagramPipeline {
 	}
 
 	/// Queues one application payload for reliable or unreliable delivery.
-	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		self.session.send(reliable, data);
 	}
 
 	/// Removes and returns the payloads delivered so far, reliable ones in the order they were sent.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.session.drain_received()
 	}
 }
@@ -329,12 +329,12 @@ impl ServerDatagramPipeline {
 	}
 
 	/// Queues one application payload for reliable or unreliable delivery.
-	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		self.session.send(reliable, data);
 	}
 
 	/// Removes and returns the payloads delivered so far, reliable ones in the order they were sent.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.session.drain_received()
 	}
 }
@@ -403,6 +403,7 @@ mod tests {
 	use betp::packets::{Acknowledgement, DataPacket, MessagePacket};
 
 	use super::*;
+	use crate::network::payload;
 
 	const CLIENT_SALT: u64 = 0x1122_3344_5566_7788;
 	const SERVER_SALT: u64 = 0x8877_6655_4433_2211;
@@ -470,11 +471,25 @@ mod tests {
 	}
 
 	fn data(connection_id: u64, fill: u8) -> EncodedDatagram {
-		wire(DataPacket::new(connection_id, Acknowledgement::default(), [fill; PAYLOAD_SIZE]).into())
+		wire(DataPacket::new(connection_id, Acknowledgement::default(), payload(fill)).into())
 	}
 
 	fn message(sequence: u16, fill: u8) -> EncodedDatagram {
-		wire(MessagePacket::new(CONNECTION_ID, sequence, Acknowledgement::default(), [fill; PAYLOAD_SIZE]).into())
+		wire(MessagePacket::new(CONNECTION_ID, sequence, Acknowledgement::default(), payload(fill)).into())
+	}
+
+	#[test]
+	fn payload_datagrams_are_as_long_as_their_payload() {
+		let short = Payload::new(&[1, 2, 3]).unwrap();
+
+		assert_eq!(
+			wire(DataPacket::new(CONNECTION_ID, Acknowledgement::default(), short).into()).len(),
+			19 + 3
+		);
+		assert_eq!(
+			wire(MessagePacket::new(CONNECTION_ID, 0, Acknowledgement::default(), short).into()).len(),
+			21 + 3
+		);
 	}
 
 	#[test]
@@ -521,8 +536,8 @@ mod tests {
 			server.process_datagram(matching.as_bytes(), now, &mut outbound),
 			Ok(DatagramOutcome::Handled)
 		);
-		assert_eq!(client.drain_received().collect::<Vec<_>>(), [[2; PAYLOAD_SIZE]]);
-		assert_eq!(server.drain_received().collect::<Vec<_>>(), [[2; PAYLOAD_SIZE]]);
+		assert_eq!(client.drain_received().collect::<Vec<_>>(), [payload(2)]);
+		assert_eq!(server.drain_received().collect::<Vec<_>>(), [payload(2)]);
 	}
 
 	#[test]
@@ -537,7 +552,7 @@ mod tests {
 		}
 
 		for received in [client.drain_received().collect::<Vec<_>>(), server.drain_received().collect()] {
-			assert_eq!(received, [[0; PAYLOAD_SIZE], [1; PAYLOAD_SIZE]]);
+			assert_eq!(received, [payload(0), payload(1)]);
 		}
 	}
 

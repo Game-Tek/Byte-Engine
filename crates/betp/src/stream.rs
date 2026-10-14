@@ -4,7 +4,7 @@ use std::{collections::VecDeque, time::Instant};
 
 use crate::{
 	KEEPALIVE_INTERVAL, RETRY_INTERVAL, WINDOW,
-	packets::{Acknowledgement, DataPacket, KeepAlivePacket, MessagePacket, PAYLOAD_SIZE, Packets},
+	packets::{Acknowledgement, DataPacket, KeepAlivePacket, MessagePacket, Packets, Payload},
 	sequence_greater_than,
 };
 
@@ -16,15 +16,15 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct Stream {
 	/// Reliable messages waiting for room in the window.
-	queued: VecDeque<[u8; PAYLOAD_SIZE]>,
+	queued: VecDeque<Payload>,
 	/// Unacknowledged reliable messages, each at `sequence % WINDOW`.
 	in_flight: [Option<InFlight>; WINDOW],
 	/// The sequence the next admitted message takes.
 	next_sequence: u16,
 	/// Unreliable payloads for the next flush.
-	unreliable: Vec<[u8; PAYLOAD_SIZE]>,
+	unreliable: Vec<Payload>,
 	/// Reliable messages that arrived ahead of a missing one, each at `sequence % WINDOW`.
-	held: [Option<[u8; PAYLOAD_SIZE]>; WINDOW],
+	held: [Option<Payload>; WINDOW],
 	/// The sequence of the next reliable message to deliver.
 	next_expected: u16,
 	/// What the next packet acknowledges: the newest message received and which of the ones before it arrived.
@@ -32,7 +32,7 @@ pub(crate) struct Stream {
 	/// Set when a message arrived, so the next flush acknowledges it even when nothing else is due.
 	acknowledgement_due: bool,
 	/// Payloads ready for the application, in delivery order.
-	received: Vec<[u8; PAYLOAD_SIZE]>,
+	received: Vec<Payload>,
 	/// When the stream last sent anything, which decides when a keepalive is due.
 	last_sent: Option<Instant>,
 }
@@ -40,7 +40,7 @@ pub(crate) struct Stream {
 #[derive(Debug, Clone, Copy)]
 struct InFlight {
 	sequence: u16,
-	data: [u8; PAYLOAD_SIZE],
+	data: Payload,
 	last_sent: Option<Instant>,
 }
 
@@ -61,7 +61,7 @@ impl Stream {
 	}
 
 	/// Queues a payload for the next [`Self::flush`].
-	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		if reliable {
 			self.queued.push_back(data);
 		} else {
@@ -86,7 +86,7 @@ impl Stream {
 	}
 
 	/// Removes and returns the payloads delivered so far.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.received.drain(..)
 	}
 
@@ -147,7 +147,7 @@ impl Stream {
 	}
 
 	/// Holds a reliable message until every earlier one has arrived, then delivers the run of messages it completes.
-	fn hold(&mut self, sequence: u16, data: [u8; PAYLOAD_SIZE]) {
+	fn hold(&mut self, sequence: u16, data: Payload) {
 		// Even a duplicate needs acknowledging: the peer resent it because the last acknowledgement was lost.
 		self.acknowledgement_due = true;
 
@@ -207,7 +207,7 @@ mod tests {
 		let start = Instant::now();
 		let (mut sender, mut receiver) = (Stream::new(), Stream::new());
 		for fill in 0..3 {
-			sender.send(true, [fill; PAYLOAD_SIZE]);
+			sender.send(true, Payload::filled(fill));
 		}
 
 		let first = sender.flush(ID, start);
@@ -224,7 +224,7 @@ mod tests {
 
 		assert_eq!(
 			receiver.drain_received().collect::<Vec<_>>(),
-			[[0; PAYLOAD_SIZE], [1; PAYLOAD_SIZE], [2; PAYLOAD_SIZE]]
+			[Payload::filled(0), Payload::filled(1), Payload::filled(2)]
 		);
 	}
 
@@ -232,7 +232,7 @@ mod tests {
 	fn a_message_is_resent_each_retry_interval_until_acknowledged_and_delivered_once() {
 		let start = Instant::now();
 		let (mut sender, mut receiver) = (Stream::new(), Stream::new());
-		sender.send(true, [1; PAYLOAD_SIZE]);
+		sender.send(true, Payload::filled(1));
 
 		let first = sender.flush(ID, start);
 		receiver.receive(&first[0]);
@@ -253,7 +253,7 @@ mod tests {
 		let start = Instant::now();
 		let (mut sender, mut receiver) = (Stream::new(), Stream::new());
 		for _ in 0..=WINDOW {
-			sender.send(true, [0; PAYLOAD_SIZE]);
+			sender.send(true, Payload::filled(0));
 		}
 
 		let first = sender.flush(ID, start);
@@ -289,8 +289,8 @@ mod tests {
 	fn unreliable_payloads_are_sent_once_and_delivered_as_they_arrive() {
 		let start = Instant::now();
 		let (mut sender, mut receiver) = (Stream::new(), Stream::new());
-		sender.send(false, [1; PAYLOAD_SIZE]);
-		sender.send(false, [2; PAYLOAD_SIZE]);
+		sender.send(false, Payload::filled(1));
+		sender.send(false, Payload::filled(2));
 
 		let packets = sender.flush(ID, start);
 		receiver.receive(&packets[1]);
@@ -298,7 +298,7 @@ mod tests {
 
 		assert_eq!(
 			receiver.drain_received().collect::<Vec<_>>(),
-			[[2; PAYLOAD_SIZE], [1; PAYLOAD_SIZE]]
+			[Payload::filled(2), Payload::filled(1)]
 		);
 		assert_eq!(sender.flush(ID, start + RETRY_INTERVAL), []);
 	}
@@ -310,7 +310,7 @@ mod tests {
 		assert!(matches!(receiver.flush(ID, start)[..], [Packets::KeepAlive(_)]));
 		assert_eq!(receiver.flush(ID, start + KEEPALIVE_INTERVAL / 2), []);
 
-		sender.send(true, [1; PAYLOAD_SIZE]);
+		sender.send(true, Payload::filled(1));
 		deliver(&mut sender, &mut receiver, start);
 		let acknowledgement = receiver.flush(ID, start + Duration::from_millis(1));
 

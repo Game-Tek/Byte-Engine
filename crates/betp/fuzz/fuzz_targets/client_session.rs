@@ -9,7 +9,9 @@ use betp::{
 	packets::{Acknowledgement, ChallengePacket, DisconnectPacket, KeepAlivePacket, Packets},
 };
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
-use support::{Operation, RETRY_QUIESCENCE_UPDATES, make_batch, make_message, observe_session_output, other_connection_id};
+use support::{
+	Operation, RETRY_QUIESCENCE_UPDATES, fuzz_payload, make_batch, make_message, observe_session_output, other_connection_id,
+};
 
 const MAX_OPERATIONS: usize = 64;
 const MAX_BATCH_SIZE: usize = 8;
@@ -134,7 +136,7 @@ fuzz_target!(|input: Input| {
 			}
 			Operation::Send { reliable, fill } => {
 				if session.is_connected() {
-					session.send(*reliable, [*fill; 1024]);
+					session.send(*reliable, fuzz_payload(*fill));
 
 					assert!(session.is_connected());
 				}

@@ -1,6 +1,6 @@
 use betp::packets::{
 	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
-	KeepAlivePacket, MessagePacket, Packets,
+	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, Packets, Payload,
 };
 use libfuzzer_sys::arbitrary::Arbitrary;
 
@@ -61,7 +61,7 @@ impl PacketInput {
 				ack,
 				ack_bitfield,
 				fill,
-			} => Some(DataPacket::new(*connection_id, Acknowledgement::new(*ack, *ack_bitfield), [*fill; 1024]).into()),
+			} => Some(DataPacket::new(*connection_id, Acknowledgement::new(*ack, *ack_bitfield), fuzz_payload(*fill)).into()),
 			Self::Message {
 				connection_id,
 				sequence,
@@ -120,7 +120,20 @@ pub fn make_batch(inputs: &[PacketInput], limit: usize) -> Vec<Packets> {
 
 /// Builds a reliable message whose identity is chosen relative to the session by the caller.
 pub fn make_message(connection_id: u64, sequence: u16, ack: u16, ack_bitfield: u32, fill: u8) -> Packets {
-	MessagePacket::new(connection_id, sequence, Acknowledgement::new(ack, ack_bitfield), [fill; 1024]).into()
+	MessagePacket::new(
+		connection_id,
+		sequence,
+		Acknowledgement::new(ack, ack_bitfield),
+		fuzz_payload(fill),
+	)
+	.into()
+}
+
+/// Builds a payload of `fill` bytes whose length also follows `fill`, so fuzzing covers empty, short, and nearly
+/// full payloads without changing the operation format the seed corpus encodes.
+pub fn fuzz_payload(fill: u8) -> Payload {
+	let bytes = [fill; MAX_PAYLOAD_SIZE];
+	Payload::new(&bytes[..usize::from(fill) * 4]).expect("at most 1020 bytes fit a payload")
 }
 
 /// Derives an identity that is guaranteed not to equal the active session identity.

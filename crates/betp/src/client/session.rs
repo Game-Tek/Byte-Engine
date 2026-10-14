@@ -109,12 +109,12 @@ impl Session {
 	///
 	/// Reliable payloads are resent until the server acknowledges them and arrive in the order they were queued.
 	/// Unreliable payloads are sent once. Payloads queued before the connection is established go out once it is.
-	pub fn send(&mut self, reliable: bool, data: [u8; PAYLOAD_SIZE]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		self.stream.send(reliable, data);
 	}
 
 	/// Removes and returns the payloads the server sent, reliable ones in order.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; PAYLOAD_SIZE]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.stream.drain_received()
 	}
 
@@ -263,15 +263,15 @@ mod tests {
 	fn a_confirming_message_is_delivered_and_payloads_queued_while_connecting_go_out() {
 		let start = Instant::now();
 		let mut session = challenged_session(7, start);
-		session.send(true, [2; PAYLOAD_SIZE]);
-		let confirmation = MessagePacket::new(7, 0, Acknowledgement::default(), [1; PAYLOAD_SIZE]).into();
+		session.send(true, Payload::filled(2));
+		let confirmation = MessagePacket::new(7, 0, Acknowledgement::default(), Payload::filled(1)).into();
 
 		let sent = session.update(&[confirmation], start).unwrap();
 
 		assert!(
 			matches!(&sent[..], [Packets::Message(message)] if message.get_acknowledgement() == Acknowledgement::new(0, 1))
 		);
-		assert_eq!(session.drain_received().collect::<Vec<_>>(), [[1; PAYLOAD_SIZE]]);
+		assert_eq!(session.drain_received().collect::<Vec<_>>(), [Payload::filled(1)]);
 	}
 
 	#[test]
@@ -332,7 +332,7 @@ mod tests {
 		let start = Instant::now();
 		let mut session = connected_session(7, start);
 		let heard = start + Duration::from_secs(4);
-		let data = DataPacket::new(8, Acknowledgement::default(), [0; PAYLOAD_SIZE]).into();
+		let data = DataPacket::new(8, Acknowledgement::default(), Payload::filled(0)).into();
 
 		assert_eq!(session.update(&[data], heard), Err(Errors::BadConnectionId));
 		assert_eq!(session.update(&[keep_alive(8)], heard), Err(Errors::BadConnectionId));
@@ -348,6 +348,6 @@ use std::time::Instant;
 use crate::{
 	TIMEOUT,
 	client::Errors,
-	packets::{ChallengeResponsePacket, ConnectionRequestPacket, DisconnectPacket, PAYLOAD_SIZE, Packets},
+	packets::{ChallengeResponsePacket, ConnectionRequestPacket, DisconnectPacket, Packets, Payload},
 	stream::Stream,
 };

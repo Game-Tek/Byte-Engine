@@ -7,7 +7,7 @@ use std::{
 
 use betp::{
 	client::{Errors, Session},
-	packets::Packets,
+	packets::{Packets, Payload},
 };
 
 /// The `ChannelClient` struct provides an engine client endpoint backed by an
@@ -36,7 +36,7 @@ impl ChannelClient {
 		self.session.is_connected()
 	}
 
-	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), Errors> {
+	pub fn send(&mut self, reliable: bool, data: Payload) -> Result<(), Errors> {
 		self.session.send(reliable, data);
 		Ok(())
 	}
@@ -55,7 +55,7 @@ impl ChannelClient {
 	}
 
 	/// Removes and returns every application payload received since the last drain.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.session.drain_received()
 	}
 

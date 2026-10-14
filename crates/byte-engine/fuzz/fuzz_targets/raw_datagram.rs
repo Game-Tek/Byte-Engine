@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use betp::packets::{Acknowledgement, DataPacket, MessagePacket, Packets};
+use betp::packets::{Acknowledgement, DataPacket, MAX_PAYLOAD_SIZE, MessagePacket, Packets, Payload};
 use byte_engine::network::datagram::{
 	ClientDatagramPipeline, DatagramOutcome, EncodedDatagram, MAX_BETP_DATAGRAM_SIZE, ServerDatagramPipeline,
 };
@@ -60,9 +60,8 @@ fn candidate_datagram(data: &[u8]) -> Option<EncodedDatagram> {
 		.map(u16::from_le_bytes)
 		.unwrap_or_default()
 		% 64;
-	let mut payload = [0; 1024];
-	let copied = body.len().min(payload.len());
-	payload[..copied].copy_from_slice(&body[..copied]);
+	// The rest of the input becomes the payload, so its length varies like real traffic.
+	let payload = Payload::new(&body[..body.len().min(MAX_PAYLOAD_SIZE)]).ok()?;
 
 	EncodedDatagram::encode(
 		MessagePacket::new(connection_id, sequence, Acknowledgement::new(sequence, u32::MAX), payload).into(),
@@ -84,7 +83,7 @@ fn assert_canonical(datagrams: &[EncodedDatagram]) {
 }
 
 /// Checks that an application payload can only originate from a matching-session payload packet.
-fn assert_delivery_is_authenticated(candidate: &[u8], delivered: &[[u8; 1024]]) {
+fn assert_delivery_is_authenticated(candidate: &[u8], delivered: &[Payload]) {
 	let Some(payload) = delivered.first() else {
 		return;
 	};
@@ -135,8 +134,8 @@ fuzz_target!(|data: &[u8]| {
 	assert_eq!(fresh_server.drain_received().count(), 0);
 
 	let (mut client, mut server) = connected_pair(now);
-	client.send(false, [0xC1; 1024]);
-	server.send(false, [0x5E; 1024]);
+	client.send(false, Payload::new(&[0xC1]).unwrap());
+	server.send(false, Payload::new(&[0x5E]).unwrap());
 
 	client
 		.process_datagram(candidate, now, &mut outbound)
@@ -153,17 +152,18 @@ fuzz_target!(|data: &[u8]| {
 	assert_duplicate_message_is_suppressed(&mut client, &mut server, candidate, now, &mut outbound);
 
 	// Any still-connected endpoint must deliver later valid traffic after arbitrary peer input.
-	let recovery = EncodedDatagram::encode(DataPacket::new(CONNECTION_ID, Acknowledgement::default(), [0xA5; 1024]).into())
+	let recovery_payload = Payload::new(&[0xA5; 16]).unwrap();
+	let recovery = EncodedDatagram::encode(DataPacket::new(CONNECTION_ID, Acknowledgement::default(), recovery_payload).into())
 		.expect("typed recovery data must encode");
 
 	if client.is_connected() {
 		client.process_datagram(recovery.as_bytes(), now, &mut outbound).unwrap();
 		assert_canonical(&outbound);
-		assert_eq!(client.drain_received().collect::<Vec<_>>(), [[0xA5; 1024]]);
+		assert_eq!(client.drain_received().collect::<Vec<_>>(), [recovery_payload]);
 	}
 	if server.is_connected() {
 		server.process_datagram(recovery.as_bytes(), now, &mut outbound).unwrap();
 		assert_canonical(&outbound);
-		assert_eq!(server.drain_received().collect::<Vec<_>>(), [[0xA5; 1024]]);
+		assert_eq!(server.drain_received().collect::<Vec<_>>(), [recovery_payload]);
 	}
 });

@@ -4,7 +4,7 @@
 /// isolated in-process channels for each client.
 pub struct ChannelServer {
 	clients: Vec<ChannelConnection>,
-	received: Vec<(u64, [u8; 1024])>,
+	received: Vec<(u64, Payload)>,
 }
 
 /// Each channel client needs independent handshake and BETP sequence state.
@@ -105,7 +105,7 @@ impl ChannelServer {
 	}
 
 	/// Enqueues a payload for every connected client.
-	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		for client in &mut self.clients {
 			if let Some(session) = &mut client.session {
 				session.send(reliable, data);
@@ -114,7 +114,7 @@ impl ChannelServer {
 	}
 
 	/// Removes and returns every application payload received since the last drain, with its sender's connection id.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = (u64, [u8; 1024])> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = (u64, Payload)> + '_ {
 		self.received.drain(..)
 	}
 
@@ -139,7 +139,7 @@ use std::{
 };
 
 use betp::{
-	packets::{ChallengePacket, Packets},
+	packets::{ChallengePacket, Packets, Payload},
 	server::{ConnectionResults, Events, Session},
 };
 

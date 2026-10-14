@@ -50,8 +50,9 @@ pub enum PacketReadError {
 	UnknownPacketType,
 	/// The reserved default packet type cannot appear as a complete wire packet.
 	ReservedPacketType,
-	/// The packet length does not match the fixed wire size for its packet type.
-	InvalidPacketLength { expected: usize, actual: usize },
+	/// The packet length is outside the wire sizes its packet type allows. Only payload packets have a range;
+	/// every other type has one exact size, so `min` equals `max`.
+	InvalidPacketLength { min: usize, max: usize, actual: usize },
 }
 
 impl std::fmt::Display for PacketReadError {
@@ -73,9 +74,13 @@ impl std::fmt::Display for PacketReadError {
 				formatter,
 				"Packet type is reserved. The most likely cause is that the default packet type was sent as a complete BETP packet."
 			),
-			Self::InvalidPacketLength { expected, actual } => write!(
+			Self::InvalidPacketLength { min, max, actual } if min == max => write!(
 				formatter,
-				"Packet length is invalid: expected {expected} bytes but received {actual}. The most likely cause is that the packet body is truncated or contains trailing bytes."
+				"Packet length is invalid: expected {min} bytes but received {actual}. The most likely cause is that the packet body is truncated or contains trailing bytes."
+			),
+			Self::InvalidPacketLength { min, max, actual } => write!(
+				formatter,
+				"Packet length is invalid: expected {min} to {max} bytes but received {actual}. The most likely cause is that the packet is truncated or its payload exceeds the limit."
 			),
 		}
 	}
@@ -104,25 +109,34 @@ const ACKNOWLEDGEMENT_SIZE: usize = 6;
 const CONNECTION_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8;
 const CHALLENGE_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 16;
 const KEEP_ALIVE_PACKET_SIZE: usize = CONNECTION_PACKET_SIZE + ACKNOWLEDGEMENT_SIZE;
-const DATA_PACKET_SIZE: usize = KEEP_ALIVE_PACKET_SIZE + PAYLOAD_SIZE;
-const MESSAGE_PACKET_SIZE: usize = DATA_PACKET_SIZE + 2;
+/// The length of a data packet before its payload.
+const DATA_HEADER_SIZE: usize = KEEP_ALIVE_PACKET_SIZE;
+/// The length of a message packet before its payload, which adds the sequence to a data packet's.
+const MESSAGE_HEADER_SIZE: usize = DATA_HEADER_SIZE + 2;
+/// The largest packet BETP sends: a message with a full payload.
+pub const MAX_PACKET_SIZE: usize = MESSAGE_HEADER_SIZE + MAX_PAYLOAD_SIZE;
 
 impl Packets {
-	/// Returns the packet's exact length on the wire.
+	/// Returns the packet's exact length on the wire, which for a payload packet depends on its payload.
 	pub fn wire_size(&self) -> usize {
-		wire_size(self.packet_type())
+		match self {
+			Packets::Data(packet) => DATA_HEADER_SIZE + packet.get_data().len(),
+			Packets::Message(packet) => MESSAGE_HEADER_SIZE + packet.get_data().len(),
+			_ => wire_sizes(self.packet_type()).0,
+		}
 	}
 }
 
-/// Returns the exact wire length of a packet of type `packet_type`, which every packet of that type has.
-fn wire_size(packet_type: PacketType) -> usize {
+/// Returns the shortest and longest wire lengths a packet of type `packet_type` may have.
+fn wire_sizes(packet_type: PacketType) -> (usize, usize) {
+	let exact = |size| (size, size);
 	match packet_type {
-		PacketType::Default => PACKET_HEADER_SIZE,
-		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect => CONNECTION_PACKET_SIZE,
-		PacketType::Challenge => CHALLENGE_PACKET_SIZE,
-		PacketType::KeepAlive => KEEP_ALIVE_PACKET_SIZE,
-		PacketType::Data => DATA_PACKET_SIZE,
-		PacketType::Message => MESSAGE_PACKET_SIZE,
+		PacketType::Default => exact(PACKET_HEADER_SIZE),
+		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect => exact(CONNECTION_PACKET_SIZE),
+		PacketType::Challenge => exact(CHALLENGE_PACKET_SIZE),
+		PacketType::KeepAlive => exact(KEEP_ALIVE_PACKET_SIZE),
+		PacketType::Data => (DATA_HEADER_SIZE, DATA_HEADER_SIZE + MAX_PAYLOAD_SIZE),
+		PacketType::Message => (MESSAGE_HEADER_SIZE, MAX_PACKET_SIZE),
 	}
 }
 
@@ -170,13 +184,13 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 		Packets::Data(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
 			write_acknowledgement(buffer, &mut offset, packet.get_acknowledgement())?;
-			write_bytes(buffer, &mut offset, packet.get_data())?;
+			write_bytes(buffer, &mut offset, packet.get_data().as_bytes())?;
 		}
 		Packets::Message(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
 			write_bytes(buffer, &mut offset, &packet.get_sequence().to_le_bytes())?;
 			write_acknowledgement(buffer, &mut offset, packet.get_acknowledgement())?;
-			write_bytes(buffer, &mut offset, packet.get_data())?;
+			write_bytes(buffer, &mut offset, packet.get_data().as_bytes())?;
 		}
 		Packets::Disconnect(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
@@ -230,6 +244,11 @@ fn read_field<const N: usize>(buffer: &[u8], offset: &mut usize) -> Option<[u8; 
 	Some(field)
 }
 
+/// Reads the payload that fills the rest of a payload packet.
+fn read_payload(buffer: &[u8], offset: usize) -> Option<Payload> {
+	Payload::new(buffer.get(offset..)?).ok()
+}
+
 fn read_acknowledgement(buffer: &[u8], offset: &mut usize) -> Option<Acknowledgement> {
 	let ack = u16::from_le_bytes(read_field(buffer, offset)?);
 	let ack_bitfield = u32::from_le_bytes(read_field(buffer, offset)?);
@@ -238,26 +257,24 @@ fn read_acknowledgement(buffer: &[u8], offset: &mut usize) -> Option<Acknowledge
 
 /// Decodes one complete BETP datagram into its typed packet representation.
 ///
-/// BETP packets use exact, type-specific wire lengths. Truncated packets and
-/// packets with trailing bytes are rejected before any body field is read.
+/// Each BETP packet type has an exact wire length, except payload packets, whose payload fills the rest of the
+/// datagram up to [`packets::MAX_PAYLOAD_SIZE`]. Packets outside their type's lengths are rejected before any body
+/// field is read.
 pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 	let header = read_packet_header(buffer)?;
 	if header.r#type == PacketType::Default {
 		return Err(PacketReadError::ReservedPacketType);
 	}
-	let expected = wire_size(header.r#type);
-
-	if buffer.len() != expected {
-		return Err(PacketReadError::InvalidPacketLength {
-			expected,
-			actual: buffer.len(),
-		});
-	}
-
+	let (min, max) = wire_sizes(header.r#type);
 	let invalid_length = || PacketReadError::InvalidPacketLength {
-		expected,
+		min,
+		max,
 		actual: buffer.len(),
 	};
+
+	if !(min..=max).contains(&buffer.len()) {
+		return Err(invalid_length());
+	}
 	let mut offset = PACKET_HEADER_SIZE;
 
 	match header.r#type {
@@ -278,14 +295,14 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 		PacketType::Data => {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
 			let acknowledgement = read_acknowledgement(buffer, &mut offset).ok_or_else(invalid_length)?;
-			let data = read_field(buffer, &mut offset).ok_or_else(invalid_length)?;
+			let data = read_payload(buffer, offset).ok_or_else(invalid_length)?;
 			Ok(DataPacket::new(connection_id, acknowledgement, data).into())
 		}
 		PacketType::Message => {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
 			let sequence = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
 			let acknowledgement = read_acknowledgement(buffer, &mut offset).ok_or_else(invalid_length)?;
-			let data = read_field(buffer, &mut offset).ok_or_else(invalid_length)?;
+			let data = read_payload(buffer, offset).ok_or_else(invalid_length)?;
 			Ok(MessagePacket::new(connection_id, sequence, acknowledgement, data).into())
 		}
 		PacketType::Disconnect => {
@@ -304,22 +321,23 @@ use std::io::Read as _;
 
 use crate::packets::{
 	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
-	KeepAlivePacket, MessagePacket, PAYLOAD_SIZE, Packet, PacketHeader, PacketType, Packets,
+	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, Packet, PacketHeader, PacketType, Packets, Payload,
 };
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, DATA_PACKET_SIZE, KEEP_ALIVE_PACKET_SIZE, MESSAGE_PACKET_SIZE,
-		PACKET_HEADER_SIZE, PacketReadError, read_packet, sequence_greater_than, write_packet, write_packet_header,
+		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, DATA_HEADER_SIZE, KEEP_ALIVE_PACKET_SIZE, MAX_PACKET_SIZE,
+		MESSAGE_HEADER_SIZE, PACKET_HEADER_SIZE, PacketReadError, read_packet, sequence_greater_than, write_packet,
+		write_packet_header,
 	};
 	use crate::packets::{
 		Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
-		KeepAlivePacket, MessagePacket, PacketHeader, PacketType, Packets,
+		KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, PacketHeader, PacketType, Packets, Payload,
 	};
 
 	fn assert_packet_round_trip(packet: Packets, expected: Packets, packet_size: usize) {
-		let mut bytes = [0u8; MESSAGE_PACKET_SIZE];
+		let mut bytes = [0u8; MAX_PACKET_SIZE];
 		assert_eq!(packet.wire_size(), packet_size);
 		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
 
@@ -331,8 +349,9 @@ mod tests {
 		assert_eq!(CONNECTION_PACKET_SIZE, 13);
 		assert_eq!(CHALLENGE_PACKET_SIZE, 21);
 		assert_eq!(KEEP_ALIVE_PACKET_SIZE, 19);
-		assert_eq!(DATA_PACKET_SIZE, 1043);
-		assert_eq!(MESSAGE_PACKET_SIZE, 1045);
+		assert_eq!(DATA_HEADER_SIZE, 19);
+		assert_eq!(MESSAGE_HEADER_SIZE, 21);
+		assert_eq!(MAX_PACKET_SIZE, 1045);
 
 		assert_packet_round_trip(
 			ConnectionRequestPacket::new(0x0102_0304_0506_0708).into(),
@@ -350,17 +369,20 @@ mod tests {
 			CONNECTION_PACKET_SIZE,
 		);
 
+		// Payload packets are as long as their payload, from empty to full.
 		let acknowledgement = Acknowledgement::new(0x4344, 0x4546_4748);
-		assert_packet_round_trip(
-			DataPacket::new(0x5152_5354_5556_5758, acknowledgement, [0xA5; 1024]).into(),
-			DataPacket::new(0x5152_5354_5556_5758, acknowledgement, [0xA5; 1024]).into(),
-			DATA_PACKET_SIZE,
-		);
-		assert_packet_round_trip(
-			MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, [0x5A; 1024]).into(),
-			MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, [0x5A; 1024]).into(),
-			MESSAGE_PACKET_SIZE,
-		);
+		for payload in [Payload::default(), Payload::new(&[1, 2, 3]).unwrap(), Payload::filled(0xA5)] {
+			assert_packet_round_trip(
+				DataPacket::new(0x5152_5354_5556_5758, acknowledgement, payload).into(),
+				DataPacket::new(0x5152_5354_5556_5758, acknowledgement, payload).into(),
+				DATA_HEADER_SIZE + payload.len(),
+			);
+			assert_packet_round_trip(
+				MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, payload).into(),
+				MessagePacket::new(0x5152_5354_5556_5758, 0x4142, acknowledgement, payload).into(),
+				MESSAGE_HEADER_SIZE + payload.len(),
+			);
+		}
 		assert_packet_round_trip(
 			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
 			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
@@ -373,39 +395,68 @@ mod tests {
 		);
 	}
 
-	fn assert_noncanonical_lengths_are_rejected(packet: Packets, packet_size: usize) {
-		let mut bytes = [0u8; MESSAGE_PACKET_SIZE + 1];
-		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
+	/// Checks that `packet` decodes only when its length lies within `min..=max`, with its header intact.
+	fn assert_lengths_outside_the_range_are_rejected(packet: Packets, min: usize, max: usize) {
+		let mut bytes = [0u8; MAX_PACKET_SIZE + 1];
+		write_packet(&mut bytes[..min], packet).expect("the shortest packet of the type must serialize");
 
-		assert_eq!(
-			read_packet(&bytes[..packet_size - 1]),
-			Err(PacketReadError::InvalidPacketLength {
-				expected: packet_size,
-				actual: packet_size - 1,
-			})
+		for actual in [min - 1, max + 1] {
+			assert_eq!(
+				read_packet(&bytes[..actual]),
+				Err(PacketReadError::InvalidPacketLength { min, max, actual })
+			);
+		}
+	}
+
+	#[test]
+	fn packet_bodies_require_a_length_their_type_allows() {
+		assert_lengths_outside_the_range_are_rejected(
+			ConnectionRequestPacket::new(1).into(),
+			CONNECTION_PACKET_SIZE,
+			CONNECTION_PACKET_SIZE,
 		);
-		assert_eq!(
-			read_packet(&bytes[..packet_size + 1]),
-			Err(PacketReadError::InvalidPacketLength {
-				expected: packet_size,
-				actual: packet_size + 1,
-			})
+		assert_lengths_outside_the_range_are_rejected(
+			ChallengePacket::new(2, 3).into(),
+			CHALLENGE_PACKET_SIZE,
+			CHALLENGE_PACKET_SIZE,
+		);
+		assert_lengths_outside_the_range_are_rejected(
+			ChallengeResponsePacket::new(4).into(),
+			CONNECTION_PACKET_SIZE,
+			CONNECTION_PACKET_SIZE,
+		);
+		let acknowledgement = Acknowledgement::new(7, 8);
+		assert_lengths_outside_the_range_are_rejected(
+			DataPacket::new(5, acknowledgement, Payload::default()).into(),
+			DATA_HEADER_SIZE,
+			DATA_HEADER_SIZE + MAX_PAYLOAD_SIZE,
+		);
+		assert_lengths_outside_the_range_are_rejected(
+			MessagePacket::new(5, 6, acknowledgement, Payload::default()).into(),
+			MESSAGE_HEADER_SIZE,
+			MAX_PACKET_SIZE,
+		);
+		assert_lengths_outside_the_range_are_rejected(
+			DisconnectPacket::new(10).into(),
+			CONNECTION_PACKET_SIZE,
+			CONNECTION_PACKET_SIZE,
+		);
+		assert_lengths_outside_the_range_are_rejected(
+			KeepAlivePacket::new(11, acknowledgement).into(),
+			KEEP_ALIVE_PACKET_SIZE,
+			KEEP_ALIVE_PACKET_SIZE,
 		);
 	}
 
 	#[test]
-	fn packet_bodies_require_the_exact_length_for_their_type() {
-		assert_noncanonical_lengths_are_rejected(ConnectionRequestPacket::new(1).into(), CONNECTION_PACKET_SIZE);
-		assert_noncanonical_lengths_are_rejected(ChallengePacket::new(2, 3).into(), CHALLENGE_PACKET_SIZE);
-		assert_noncanonical_lengths_are_rejected(ChallengeResponsePacket::new(4).into(), CONNECTION_PACKET_SIZE);
-		let acknowledgement = Acknowledgement::new(7, 8);
-		assert_noncanonical_lengths_are_rejected(DataPacket::new(5, acknowledgement, [9; 1024]).into(), DATA_PACKET_SIZE);
-		assert_noncanonical_lengths_are_rejected(
-			MessagePacket::new(5, 6, acknowledgement, [9; 1024]).into(),
-			MESSAGE_PACKET_SIZE,
+	fn a_payload_larger_than_a_packet_holds_is_refused() {
+		assert!(Payload::new(&[0; MAX_PAYLOAD_SIZE]).is_ok());
+		assert_eq!(
+			Payload::new(&[0; MAX_PAYLOAD_SIZE + 1]).map(|payload| payload.len()),
+			Err(crate::packets::PayloadTooLarge {
+				size: MAX_PAYLOAD_SIZE + 1
+			})
 		);
-		assert_noncanonical_lengths_are_rejected(DisconnectPacket::new(10).into(), CONNECTION_PACKET_SIZE);
-		assert_noncanonical_lengths_are_rejected(KeepAlivePacket::new(11, acknowledgement).into(), KEEP_ALIVE_PACKET_SIZE);
 	}
 
 	#[test]
@@ -438,25 +489,22 @@ mod tests {
 		assert_eq!(&response[5..], &33u64.to_le_bytes());
 
 		let acknowledgement = Acknowledgement::new(0x3344, 0x55667788);
-		let mut data = [0u8; 5 + 8 + 6 + 1024];
-		write_packet(&mut data, DataPacket::new(44, acknowledgement, [0xAB; 1024]).into()).unwrap();
+		let payload = Payload::new(&[0xAB, 0xCD, 0xEF]).unwrap();
+		let mut data = [0u8; 5 + 8 + 6 + 3];
+		write_packet(&mut data, DataPacket::new(44, acknowledgement, payload).into()).unwrap();
 
 		assert_eq!(&data[..5], b"BETP\x04");
 		assert_eq!(&data[5..13], &44u64.to_le_bytes());
 		assert_eq!(&data[13..19], &[0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
-		assert!(data[19..].iter().all(|byte| *byte == 0xAB));
+		assert_eq!(&data[19..], &[0xAB, 0xCD, 0xEF]);
 
-		let mut message = [0u8; 5 + 8 + 2 + 6 + 1024];
-		write_packet(
-			&mut message,
-			MessagePacket::new(44, 0x1122, acknowledgement, [0xBA; 1024]).into(),
-		)
-		.unwrap();
+		let mut message = [0u8; 5 + 8 + 2 + 6 + 3];
+		write_packet(&mut message, MessagePacket::new(44, 0x1122, acknowledgement, payload).into()).unwrap();
 
 		assert_eq!(&message[..5], b"BETP\x07");
 		assert_eq!(&message[5..13], &44u64.to_le_bytes());
 		assert_eq!(&message[13..21], &[0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
-		assert!(message[21..].iter().all(|byte| *byte == 0xBA));
+		assert_eq!(&message[21..], &[0xAB, 0xCD, 0xEF]);
 
 		let mut disconnect = [0u8; 13];
 		write_packet(&mut disconnect, Packets::from(DisconnectPacket::new(55))).unwrap();

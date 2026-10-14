@@ -6,7 +6,7 @@ use std::{
 	time::Instant,
 };
 
-use betp::packets::DisconnectPacket;
+use betp::packets::{DisconnectPacket, Payload};
 
 use crate::network::{
 	datagram::{ClientDatagramPipeline, DatagramOutcome, EncodedDatagram, MAX_BETP_DATAGRAM_SIZE},
@@ -146,12 +146,12 @@ impl Client {
 	///
 	/// Reliable payloads arrive once and in the order they were queued. Payloads queued before [`Self::is_connected`]
 	/// turns `true` go out once it does.
-	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
+	pub fn send(&mut self, reliable: bool, data: Payload) {
 		self.pipeline.send(reliable, data);
 	}
 
 	/// Removes and returns every payload received since the last drain, reliable ones in the order they were sent.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = Payload> + '_ {
 		self.pipeline.drain_received()
 	}
 

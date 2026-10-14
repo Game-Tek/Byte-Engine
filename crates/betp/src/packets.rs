@@ -174,8 +174,101 @@ impl From<ChallengeResponsePacket> for Packets {
 	}
 }
 
-/// The size, in bytes, of the application payload in [`DataPacket`] and [`MessagePacket`].
-pub const PAYLOAD_SIZE: usize = 1024;
+/// The most bytes of application data one [`DataPacket`] or [`MessagePacket`] carries.
+pub const MAX_PAYLOAD_SIZE: usize = 1024;
+
+/// The `Payload` struct carries up to [`MAX_PAYLOAD_SIZE`] bytes of application data without allocating, so packets
+/// and the messages a session keeps for retry stay a fixed size while the wire carries only the bytes in use.
+///
+/// Build one with [`Self::new`] and hand it to a session's `send`; read received ones through [`Self::as_bytes`].
+#[derive(Clone, Copy)]
+pub struct Payload {
+	bytes: [u8; MAX_PAYLOAD_SIZE],
+	len: u16,
+}
+
+impl Payload {
+	/// Copies `bytes` into a payload, or fails when they exceed [`MAX_PAYLOAD_SIZE`].
+	pub fn new(bytes: &[u8]) -> Result<Self, PayloadTooLarge> {
+		let mut payload = Self::default();
+		payload
+			.bytes
+			.get_mut(..bytes.len())
+			.ok_or(PayloadTooLarge { size: bytes.len() })?
+			.copy_from_slice(bytes);
+		payload.len = bytes.len() as u16;
+		Ok(payload)
+	}
+
+	/// Returns the payload's bytes.
+	pub fn as_bytes(&self) -> &[u8] {
+		&self.bytes[..usize::from(self.len)]
+	}
+}
+
+#[cfg(test)]
+impl Payload {
+	/// A full-size payload of `fill` bytes, for tests.
+	pub(crate) fn filled(fill: u8) -> Self {
+		Self {
+			bytes: [fill; MAX_PAYLOAD_SIZE],
+			len: MAX_PAYLOAD_SIZE as u16,
+		}
+	}
+}
+
+impl Default for Payload {
+	fn default() -> Self {
+		Self {
+			bytes: [0; MAX_PAYLOAD_SIZE],
+			len: 0,
+		}
+	}
+}
+
+impl std::ops::Deref for Payload {
+	type Target = [u8];
+
+	fn deref(&self) -> &[u8] {
+		self.as_bytes()
+	}
+}
+
+impl PartialEq for Payload {
+	fn eq(&self, other: &Self) -> bool {
+		self.as_bytes() == other.as_bytes()
+	}
+}
+
+impl Eq for Payload {}
+
+impl std::fmt::Debug for Payload {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter
+			.debug_struct("Payload")
+			.field("len", &self.len)
+			.finish_non_exhaustive()
+	}
+}
+
+/// The `PayloadTooLarge` struct reports application data that does not fit one packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadTooLarge {
+	/// The size of the rejected data, in bytes.
+	pub size: usize,
+}
+
+impl std::fmt::Display for PayloadTooLarge {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(
+			formatter,
+			"Payload of {} bytes does not fit one packet. The most likely cause is application data larger than the {MAX_PAYLOAD_SIZE}-byte limit; split it across several payloads.",
+			self.size
+		)
+	}
+}
+
+impl std::error::Error for PayloadTooLarge {}
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 /// The `Acknowledgement` struct tells a peer which of its reliable messages arrived, so it stops resending them.
@@ -209,11 +302,11 @@ pub struct DataPacket {
 	header: PacketHeader,
 	connection_id: u64,
 	acknowledgement: Acknowledgement,
-	data: [u8; PAYLOAD_SIZE],
+	data: Payload,
 }
 
 impl DataPacket {
-	pub fn new(connection_id: u64, acknowledgement: Acknowledgement, data: [u8; PAYLOAD_SIZE]) -> Self {
+	pub fn new(connection_id: u64, acknowledgement: Acknowledgement, data: Payload) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::Data),
 			connection_id,
@@ -230,7 +323,7 @@ impl DataPacket {
 		self.acknowledgement
 	}
 
-	pub fn get_data(&self) -> &[u8; PAYLOAD_SIZE] {
+	pub fn get_data(&self) -> &Payload {
 		&self.data
 	}
 }
@@ -262,11 +355,11 @@ pub struct MessagePacket {
 	connection_id: u64,
 	sequence: u16,
 	acknowledgement: Acknowledgement,
-	data: [u8; PAYLOAD_SIZE],
+	data: Payload,
 }
 
 impl MessagePacket {
-	pub fn new(connection_id: u64, sequence: u16, acknowledgement: Acknowledgement, data: [u8; PAYLOAD_SIZE]) -> Self {
+	pub fn new(connection_id: u64, sequence: u16, acknowledgement: Acknowledgement, data: Payload) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::Message),
 			connection_id,
@@ -288,7 +381,7 @@ impl MessagePacket {
 		self.acknowledgement
 	}
 
-	pub fn get_data(&self) -> &[u8; PAYLOAD_SIZE] {
+	pub fn get_data(&self) -> &Payload {
 		&self.data
 	}
 }

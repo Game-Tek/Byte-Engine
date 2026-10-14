@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use super::datagram::{ClientDatagramPipeline, DatagramDrop, DatagramOutcome, EncodedDatagram, ServerDatagramPipeline};
+use super::{
+	datagram::{ClientDatagramPipeline, DatagramDrop, DatagramOutcome, EncodedDatagram, ServerDatagramPipeline},
+	payload,
+};
 
 /// The `Pair` struct keeps one isolated client/server route together during deterministic network simulation.
 struct Pair {
@@ -163,8 +166,8 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 	let mut link = DeterministicLink::new();
 	let mut scratch = Vec::new();
 	let mut outcomes = Vec::new();
-	let request = [0x31; 1024];
-	let response = [0x42; 1024];
+	let request = payload(0x31);
+	let response = payload(0x42);
 
 	pair.client.send(true, request);
 	pair.client.advance(start, &mut scratch).unwrap();
@@ -214,7 +217,7 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 	let mut datagrams = Vec::new();
 	let mut scratch = Vec::new();
 
-	pair_a.client.send(false, [0xA1; 1024]);
+	pair_a.client.send(false, payload(0xA1));
 	pair_a.client.advance(start + Duration::from_secs(4), &mut datagrams).unwrap();
 	let from_a = datagrams[0].clone();
 
@@ -230,7 +233,7 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 			.process_datagram(from_a.as_bytes(), start + Duration::from_secs(4), &mut scratch,),
 		Ok(DatagramOutcome::Handled)
 	);
-	assert_eq!(pair_a.server.drain_received().collect::<Vec<_>>(), [[0xA1; 1024]]);
+	assert_eq!(pair_a.server.drain_received().collect::<Vec<_>>(), [payload(0xA1)]);
 	assert_eq!(pair_b.server.drain_received().count(), 0);
 	assert_eq!(
 		pair_b.server.advance(start + Duration::from_secs(6), &mut scratch),
@@ -264,7 +267,7 @@ fn a_lost_challenge_response_is_resent_and_a_confirming_message_is_delivered_onc
 		Ok(DatagramOutcome::Connected { id: 0x1010 ^ 0x2020 })
 	);
 
-	pair.server.send(true, [9; 1024]);
+	pair.server.send(true, payload(9));
 	pair.server
 		.advance(start + Duration::from_millis(2), &mut server_output)
 		.unwrap();
@@ -278,7 +281,7 @@ fn a_lost_challenge_response_is_resent_and_a_confirming_message_is_delivered_onc
 		);
 	}
 	assert!(pair.client.is_connected());
-	assert_eq!(pair.client.drain_received().collect::<Vec<_>>(), [[9; 1024]]);
+	assert_eq!(pair.client.drain_received().collect::<Vec<_>>(), [payload(9)]);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use betp::packets::{
-	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets,
+	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
+	KeepAlivePacket, Packets,
 };
 use libfuzzer_sys::arbitrary::Arbitrary;
 
@@ -30,6 +31,9 @@ pub enum PacketInput {
 	Disconnect {
 		connection_id: u64,
 	},
+	KeepAlive {
+		connection_id: u64,
+	},
 }
 
 impl PacketInput {
@@ -55,6 +59,7 @@ impl PacketInput {
 				[*fill; 1024],
 			))),
 			Self::Disconnect { connection_id } => Some(DisconnectPacket::new(*connection_id).into()),
+			Self::KeepAlive { connection_id } => Some(KeepAlivePacket::new(*connection_id).into()),
 		}
 	}
 }
@@ -124,6 +129,7 @@ pub fn observe_session_output(packets: &[Packets], connection_id: &mut Option<u6
 			},
 			Packets::Data(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
 			Packets::Disconnect(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
+			Packets::KeepAlive(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
 			Packets::ConnectionRequest(_) | Packets::Challenge(_) => {}
 		}
 	}

@@ -1,6 +1,17 @@
 //! UDP transport for a BETP client.
 
-use betp::{client::Session, write_packet};
+use std::{
+	io::ErrorKind,
+	net::{SocketAddr, UdpSocket},
+	time::Instant,
+};
+
+use betp::packets::DisconnectPacket;
+
+use crate::network::{
+	datagram::{ClientDatagramPipeline, DatagramOutcome, EncodedDatagram, MAX_BETP_DATAGRAM_SIZE},
+	is_transient, random_salt,
+};
 
 /// The `ClientCreateError` enum separates failures that callers can report during UDP setup.
 #[derive(Debug)]
@@ -37,85 +48,141 @@ impl std::error::Error for ClientCreateError {
 	}
 }
 
-/// The `Client` struct connects one BETP client session to a UDP server endpoint.
+/// The `Client` struct lets an application join a BETP server over UDP.
+///
+/// Create it with [`Self::connect`], then call [`Self::update`] once per application tick. Once
+/// [`Self::is_connected`] is `true`, queue payloads with [`Self::send`] and read the server's with
+/// [`Self::drain_received`]. Dropping the client tells the server that the session ended.
 pub struct Client {
-	session: Session,
-	socket: std::net::UdpSocket,
+	socket: UdpSocket,
+	pipeline: ClientDatagramPipeline,
+	outbound: Vec<EncodedDatagram>,
+	received: Vec<[u8; 1024]>,
+	/// Set once the server ends the session or times out, after which the client performs no more I/O.
+	ended: bool,
 }
 
 impl Client {
-	/// Creates a client for the specified server address.
+	/// Binds an ephemeral local socket and starts the handshake with `server_address`.
 	///
-	/// Call `connect` before exchanging application data.
-	pub fn new(server_address: std::net::SocketAddr) -> Result<Self, ClientCreateError> {
-		let local_address = local_bind_address(server_address);
-		let socket = std::net::UdpSocket::bind(local_address).map_err(ClientCreateError::Bind)?;
+	/// Next, call [`Self::update`] on every application tick to finish the handshake.
+	pub fn connect(server_address: SocketAddr) -> Result<Self, ClientCreateError> {
+		let socket = UdpSocket::bind(local_bind_address(server_address)).map_err(ClientCreateError::Bind)?;
 		Self::from_socket(socket, server_address)
 	}
 
-	/// Configures a caller-bound socket for nonblocking datagrams to one server peer.
-	pub fn from_socket(socket: std::net::UdpSocket, server_address: std::net::SocketAddr) -> Result<Self, ClientCreateError> {
+	/// Starts the handshake with `server_address` over a caller-bound socket.
+	///
+	/// Next, call [`Self::update`] on every application tick to finish the handshake.
+	pub fn from_socket(socket: UdpSocket, server_address: SocketAddr) -> Result<Self, ClientCreateError> {
 		socket.connect(server_address).map_err(ClientCreateError::Connect)?;
 		socket.set_nonblocking(true).map_err(ClientCreateError::Configure)?;
 
-		let session = Session::new();
+		Ok(Self {
+			socket,
+			pipeline: ClientDatagramPipeline::new(random_salt()),
+			outbound: Vec::new(),
+			received: Vec::new(),
+			ended: false,
+		})
+	}
 
-		Ok(Self { socket, session })
+	/// Reads every pending datagram from the server, then sends handshake, payload, retry, and keepalive datagrams.
+	///
+	/// The session ends when the server disconnects or sends nothing for [`betp::TIMEOUT`].
+	///
+	/// Returns an error only when the socket itself fails. A server that is not listening yet is not an error: the
+	/// client keeps asking until it answers.
+	pub fn update(&mut self, current_time: Instant) -> std::io::Result<()> {
+		if self.ended {
+			return Ok(());
+		}
+
+		// One spare byte lets the pipeline reject an oversized datagram instead of reading a truncated one.
+		let mut buffer = [0u8; MAX_BETP_DATAGRAM_SIZE + 1];
+		loop {
+			let length = match self.socket.recv(&mut buffer) {
+				Ok(length) => length,
+				Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+				Err(error) if is_transient(&error) => continue,
+				Err(error) => return Err(error),
+			};
+			let outcome = self
+				.pipeline
+				.process_datagram(&buffer[..length], current_time, &mut self.outbound)
+				.map_err(std::io::Error::other)?;
+			self.send_outbound();
+
+			match outcome {
+				DatagramOutcome::Accepted(data) => self.received.push(data),
+				DatagramOutcome::Disconnected { .. } => {
+					self.ended = true;
+					return Ok(());
+				}
+				DatagramOutcome::Dropped(reason) => log::debug!("Dropped a datagram from the server: {reason:?}"),
+				DatagramOutcome::Connected { .. } | DatagramOutcome::Handled => {}
+			}
+		}
+
+		let outcome = self
+			.pipeline
+			.advance(current_time, &mut self.outbound)
+			.map_err(std::io::Error::other)?;
+		self.send_outbound();
+		// The server went quiet for longer than the timeout.
+		self.ended = matches!(outcome, DatagramOutcome::Disconnected { .. });
+
+		Ok(())
+	}
+
+	/// Returns whether the handshake finished and the server has not ended the session.
+	pub fn is_connected(&self) -> bool {
+		!self.ended && self.pipeline.is_connected()
+	}
+
+	/// Returns the id the server knows this client by, once connected.
+	pub fn connection_id(&self) -> Option<u64> {
+		self.pipeline.connection_id().filter(|_| !self.ended)
+	}
+
+	/// Queues a payload for the server. The next [`Self::update`] sends it.
+	///
+	/// Payloads queued before [`Self::is_connected`] turns `true` are discarded.
+	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
+		if self.is_connected() {
+			self.pipeline.send(reliable, data);
+		}
+	}
+
+	/// Removes and returns every payload received since the last drain.
+	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
+		self.received.drain(..)
+	}
+
+	fn send_outbound(&self) {
+		for datagram in &self.outbound {
+			// UDP may lose any datagram anyway, and BETP retries the reliable ones.
+			let _ = self.socket.send(datagram.as_bytes());
+		}
+	}
+}
+
+impl Drop for Client {
+	/// Tells the server that the session ended, so it frees the slot without waiting for a timeout.
+	fn drop(&mut self) {
+		if let Some(id) = self.connection_id()
+			&& let Ok(datagram) = EncodedDatagram::encode(DisconnectPacket::new(id).into())
+		{
+			let _ = self.socket.send(datagram.as_bytes());
+		}
 	}
 }
 
 /// Selects an ephemeral wildcard address in the same address family as the server.
-fn local_bind_address(server_address: std::net::SocketAddr) -> std::net::SocketAddr {
+fn local_bind_address(server_address: SocketAddr) -> SocketAddr {
 	match server_address {
-		std::net::SocketAddr::V4(_) => std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0),
-		std::net::SocketAddr::V6(_) => std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
-	}
-}
-
-impl betp::Client for Client {
-	fn connect(&mut self, current_time: std::time::Instant) {
-		let salt = current_time.elapsed().as_nanos() as u64;
-
-		self.session.connect(salt);
-	}
-
-	fn update(&mut self) -> Result<(), betp::client::Errors> {
-		let socket = &mut self.socket;
-
-		let mut buffer = [0u8; 1024];
-
-		socket.recv(&mut buffer).map_err(|_| betp::client::Errors::IoError)?;
-
-		let session = &mut self.session;
-
-		let packets = [];
-
-		let packets_to_send = session.update(&packets)?;
-
-		for packet in packets_to_send {
-			let mut buffer = [0u8; 1024];
-
-			write_packet(&mut buffer, packet);
-
-			// Send failures are not reported yet, so a failed send drops the packet.
-			let _ = socket.send(&buffer);
-		}
-
-		Ok(())
-	}
-
-	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), betp::client::Errors> {
-		let sesion = &mut self.session;
-
-		sesion.send(reliable, data);
-
-		Ok(())
-	}
-
-	fn disconnect(&mut self) -> Result<(), betp::client::Errors> {
-		self.session.disconnect();
-
-		Ok(())
+		SocketAddr::V4(_) => SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0),
+		SocketAddr::V6(_) => SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
 	}
 }
 

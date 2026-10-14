@@ -44,7 +44,7 @@ impl ChannelClient {
 	}
 
 	/// Advances the protocol without blocking on the channel.
-	pub fn update(&mut self) -> Result<(), Errors> {
+	pub fn update(&mut self, current_time: Instant) -> Result<(), Errors> {
 		let mut packets = Vec::new();
 		while let Ok(packet) = self.incoming.try_recv() {
 			packets.push(packet);
@@ -56,7 +56,7 @@ impl ChannelClient {
 			}
 		}
 
-		for packet in self.session.update(&packets)? {
+		for packet in self.session.update(&packets, current_time)? {
 			self.outgoing.send(packet).map_err(|_| Errors::IoError)?;
 		}
 		Ok(())

@@ -2,6 +2,8 @@
 
 mod support;
 
+use std::time::{Duration, Instant};
+
 use betp::{
 	client::{Errors, Session},
 	packets::{ChallengePacket, DisconnectPacket, Packets},
@@ -33,7 +35,7 @@ struct Input {
 }
 
 /// Builds a real session in the selected state without duplicating any client transition logic in the harness.
-fn make_session(state: &StartingState, client_salt: u64, server_salt: u64) -> (Session, Option<u64>) {
+fn make_session(state: &StartingState, client_salt: u64, server_salt: u64, current_time: Instant) -> (Session, Option<u64>) {
 	let mut session = Session::new();
 	if matches!(state, StartingState::Initial) {
 		return (session, None);
@@ -47,12 +49,12 @@ fn make_session(state: &StartingState, client_salt: u64, server_salt: u64) -> (S
 	let connection_id = client_salt ^ server_salt;
 	let challenge = ChallengePacket::new(client_salt, server_salt).into();
 
-	assert!(session.update(&[challenge]).is_ok());
+	assert!(session.update(&[challenge], current_time).is_ok());
 	if matches!(state, StartingState::Connecting) {
 		return (session, Some(connection_id));
 	}
 
-	assert!(session.update(&[]).is_ok());
+	assert!(session.update(&[], current_time).is_ok());
 	assert!(session.is_connected());
 	if matches!(state, StartingState::Disconnecting) {
 		session.disconnect();
@@ -65,6 +67,7 @@ fn make_session(state: &StartingState, client_salt: u64, server_salt: u64) -> (S
 fn update_session(
 	session: &mut Session,
 	packets: &[Packets],
+	current_time: Instant,
 	connection_id: &mut Option<u64>,
 	updates_left: &mut usize,
 ) -> Option<Result<Vec<Packets>, Errors>> {
@@ -73,7 +76,7 @@ fn update_session(
 	}
 
 	*updates_left -= 1;
-	let result = session.update(packets);
+	let result = session.update(packets, current_time);
 	if let Ok(output) = &result {
 		observe_session_output(output, connection_id);
 	}
@@ -81,13 +84,15 @@ fn update_session(
 }
 
 /// Proves buffered retries stop producing work within the protocol's bounded attempt budget.
-fn assert_retry_quiescence(session: &mut Session, connection_id: &mut Option<u64>) {
+fn assert_retry_quiescence(session: &mut Session, current_time: Instant, connection_id: &mut Option<u64>) {
 	if !session.is_connected() {
 		return;
 	}
 
 	for _ in 0..RETRY_QUIESCENCE_UPDATES {
-		let output = session.update(&[]).expect("connected client retry drain must remain usable");
+		let output = session
+			.update(&[], current_time)
+			.expect("connected client retry drain must remain usable");
 		observe_session_output(&output, connection_id);
 		if output.is_empty() {
 			return;
@@ -98,7 +103,8 @@ fn assert_retry_quiescence(session: &mut Session, connection_id: &mut Option<u64
 }
 
 fuzz_target!(|input: Input| {
-	let (mut session, mut connection_id) = make_session(&input.state, input.client_salt, input.server_salt);
+	let mut current_time = Instant::now();
+	let (mut session, mut connection_id) = make_session(&input.state, input.client_salt, input.server_salt, current_time);
 	// Reserve the final update calls for the retry-quiescence oracle so every generated scenario remains globally bounded.
 	let mut updates_left = MAX_UPDATES - RETRY_QUIESCENCE_UPDATES;
 
@@ -106,11 +112,17 @@ fuzz_target!(|input: Input| {
 		match operation {
 			Operation::Packet(input) => {
 				let packet = input.to_packet();
-				let _ = update_session(&mut session, packet.as_slice(), &mut connection_id, &mut updates_left);
+				let _ = update_session(
+					&mut session,
+					packet.as_slice(),
+					current_time,
+					&mut connection_id,
+					&mut updates_left,
+				);
 			}
 			Operation::Batch(inputs) => {
 				let packets = make_batch(inputs, MAX_BATCH_SIZE);
-				let _ = update_session(&mut session, &packets, &mut connection_id, &mut updates_left);
+				let _ = update_session(&mut session, &packets, current_time, &mut connection_id, &mut updates_left);
 			}
 			Operation::Send { reliable, fill } => {
 				if session.is_connected() {
@@ -121,13 +133,13 @@ fuzz_target!(|input: Input| {
 			}
 			Operation::Tick(count) => {
 				for _ in 0..usize::from(*count).min(updates_left) {
-					let _ = update_session(&mut session, &[], &mut connection_id, &mut updates_left);
+					current_time += Duration::from_millis(1);
+					let _ = update_session(&mut session, &[], current_time, &mut connection_id, &mut updates_left);
 				}
 			}
 			Operation::AdvanceMilliseconds(milliseconds) => {
-				// Client sessions have no wall-clock input, but consuming the payload keeps the shared operation format stable.
-				let _ = milliseconds;
-				let _ = update_session(&mut session, &[], &mut connection_id, &mut updates_left);
+				current_time += Duration::from_millis(u64::from(*milliseconds));
+				let _ = update_session(&mut session, &[], current_time, &mut connection_id, &mut updates_left);
 			}
 			Operation::Disconnect => {
 				let was_connected = session.is_connected();
@@ -144,7 +156,7 @@ fuzz_target!(|input: Input| {
 			} => {
 				let was_connected = session.is_connected();
 				let packet = make_data_packet(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
-				let result = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+				let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
@@ -159,21 +171,21 @@ fuzz_target!(|input: Input| {
 				if session.is_connected() && updates_left >= 2 {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let invalid = make_data_packet(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
-					let result = update_session(&mut session, &[invalid], &mut connection_id, &mut updates_left);
+					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
 					// Valid traffic immediately after rejected traffic proves the error stays peer-local and recoverable.
 					let valid = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
-					let result = update_session(&mut session, &[valid], &mut connection_id, &mut updates_left);
+					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {
 					let id = other_connection_id(connection_id.unwrap_or_default());
 					let packet = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
-					let _ = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+					let _ = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				}
 			}
 			Operation::DuplicateCurrentData {
@@ -188,7 +200,7 @@ fuzz_target!(|input: Input| {
 					make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill),
 					make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill),
 				];
-				let result = update_session(&mut session, &packets, &mut connection_id, &mut updates_left);
+				let result = update_session(&mut session, &packets, current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
@@ -198,13 +210,13 @@ fuzz_target!(|input: Input| {
 				if session.is_connected() && updates_left > 0 {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let packet = DisconnectPacket::new(id).into();
-					let result = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+					let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(matches!(result, Some(Ok(output)) if output.is_empty()));
 					assert!(!session.is_connected());
 
 					if updates_left > 0 {
-						let result = update_session(&mut session, &[], &mut connection_id, &mut updates_left);
+						let result = update_session(&mut session, &[], current_time, &mut connection_id, &mut updates_left);
 
 						assert!(
 							matches!(result, Some(Ok(output)) if matches!(output.as_slice(), [Packets::Disconnect(packet)] if packet.get_connection_id() == id))
@@ -212,31 +224,31 @@ fuzz_target!(|input: Input| {
 					}
 				} else {
 					let packet = DisconnectPacket::new(connection_id.unwrap_or_default()).into();
-					let _ = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+					let _ = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				}
 			}
 			Operation::OtherDisconnect => {
 				if session.is_connected() && updates_left >= 2 {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let invalid = DisconnectPacket::new(other_connection_id(id)).into();
-					let result = update_session(&mut session, &[invalid], &mut connection_id, &mut updates_left);
+					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
 					let valid = make_data_packet(id, 0, 0, 0, 0);
-					let result = update_session(&mut session, &[valid], &mut connection_id, &mut updates_left);
+					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {
 					let id = other_connection_id(connection_id.unwrap_or_default());
 					let packet = DisconnectPacket::new(id).into();
-					let _ = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+					let _ = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				}
 			}
 		}
 	}
 
-	assert_retry_quiescence(&mut session, &mut connection_id);
+	assert_retry_quiescence(&mut session, current_time, &mut connection_id);
 });

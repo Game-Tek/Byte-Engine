@@ -4,7 +4,6 @@ pub struct Session {
 	local: Local,
 	remote: Remote,
 	state: State,
-	timeout: std::time::Duration,
 }
 
 impl Session {
@@ -16,7 +15,6 @@ impl Session {
 			local: Local::new(),
 			remote: Remote::new(),
 			state: State::Initial,
-			timeout: std::time::Duration::from_secs(5),
 		}
 	}
 
@@ -33,6 +31,7 @@ impl Session {
 			id: connection_id,
 			packet_buffer: PacketBuffer::new(),
 			last_seen: current_time,
+			last_sent: current_time,
 		};
 	}
 
@@ -71,6 +70,7 @@ impl Session {
 					id,
 					packet_buffer: PacketBuffer::new(),
 					last_seen: current_time,
+					last_sent: current_time,
 				};
 
 				Ok(Vec::new())
@@ -79,43 +79,42 @@ impl Session {
 				id,
 				packet_buffer,
 				last_seen,
+				last_sent,
 			} => {
 				let id = *id;
-				let mut received_authenticated_data = false;
-
 				for packet in packets {
+					// Only packets for this session may mutate receive ordering, acknowledgement state, or liveness.
+					if packet.connection_id() != Some(id) {
+						continue;
+					}
+
 					match packet {
-						Packets::Data(data_packet) if id == data_packet.get_connection_id() => {
+						Packets::Data(data_packet) => {
 							let status = data_packet.get_connection_status();
-							// Only packets for this session may mutate receive ordering, acknowledgement state, or liveness.
 							self.remote.acknowledge_packet(status.sequence);
 							self.local.acknowledge_packets(status.ack, status.ack_bitfield);
 							packet_buffer.acknowledge_packets(status.ack, status.ack_bitfield);
-							received_authenticated_data = true;
 						}
-						Packets::Disconnect(disconnect_packet) if id == disconnect_packet.get_connection_id() => {
-							*last_seen = current_time;
+						Packets::Disconnect(_) => {
 							self.state = State::Disconnecting { id };
 							return Ok(Vec::new());
 						}
 						_ => {}
 					}
-				}
-
-				if received_authenticated_data {
 					*last_seen = current_time;
 				}
 
-				if current_time.duration_since(*last_seen) > self.timeout {
+				if current_time.duration_since(*last_seen) > TIMEOUT {
 					self.state = State::Disconnecting { id };
 					return Ok(Vec::new());
 				}
 
-				Ok(packet_buffer
+				let packets = packet_buffer
 					.gather_unsent_packets_for_retry()
 					.into_iter()
 					.map(Packets::Data)
-					.collect())
+					.collect();
+				Ok(with_keep_alive(packets, id, last_sent, current_time))
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
@@ -196,6 +195,8 @@ pub enum State {
 		packet_buffer: PacketBuffer<16, 1024>,
 		/// The last time a packet was received from the client.
 		last_seen: std::time::Instant,
+		/// The last time the session sent a packet, which decides when a keepalive is due.
+		last_sent: std::time::Instant,
 	},
 	/// The session is ending the connection.
 	Disconnecting {
@@ -207,7 +208,10 @@ pub enum State {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::packets::{ChallengePacket, DisconnectPacket};
+	use crate::{
+		KEEPALIVE_INTERVAL,
+		packets::{ChallengePacket, DisconnectPacket, KeepAlivePacket},
+	};
 
 	#[test]
 	fn test_establish_connection() {
@@ -259,7 +263,7 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, start);
 
-		assert_eq!(session.update(&[], start + std::time::Duration::from_secs(5)), Ok(Vec::new()));
+		session.update(&[], start + std::time::Duration::from_secs(5)).unwrap();
 		assert!(session.is_connected());
 		assert_eq!(
 			session.update(
@@ -279,10 +283,11 @@ mod tests {
 
 		let wrong_data = Packets::Data(DataPacket::new(8, ConnectionStatus::new(u16::MAX, 0, 0), [0; 1024]));
 		let wrong_disconnect = DisconnectPacket::new(8).into();
+		let wrong_keep_alive = KeepAlivePacket::new(8).into();
 		let irrelevant_challenge = ChallengePacket::new(1, 2).into();
 		session
 			.update(
-				&[wrong_data, wrong_disconnect, irrelevant_challenge],
+				&[wrong_data, wrong_disconnect, wrong_keep_alive, irrelevant_challenge],
 				start + std::time::Duration::from_secs(4),
 			)
 			.unwrap();
@@ -303,6 +308,34 @@ mod tests {
 		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
 
 		assert!(session.is_connected());
+	}
+
+	#[test]
+	fn matching_keepalive_refreshes_connection_timeout() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+
+		session
+			.update(&[KeepAlivePacket::new(7).into()], start + std::time::Duration::from_secs(4))
+			.unwrap();
+		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
+
+		assert!(session.is_connected());
+	}
+
+	#[test]
+	fn an_idle_connection_sends_a_keepalive_once_per_interval() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Ok(Vec::new()));
+		assert_eq!(
+			session.update(&[], start + KEEPALIVE_INTERVAL),
+			Ok(vec![KeepAlivePacket::new(7).into()])
+		);
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL * 3 / 2), Ok(Vec::new()));
 	}
 
 	#[test]
@@ -327,9 +360,11 @@ mod tests {
 }
 
 use crate::{
+	TIMEOUT,
 	local::Local,
 	packet_buffer::PacketBuffer,
 	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
 	remote::Remote,
 	server::PacketHandlingResults,
+	with_keep_alive,
 };

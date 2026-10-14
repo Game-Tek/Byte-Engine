@@ -24,6 +24,8 @@ pub enum PacketType {
 	Data,
 	/// A request from either endpoint to end the connection.
 	Disconnect,
+	/// A sign of life from an endpoint that had nothing else to send.
+	KeepAlive,
 }
 
 #[repr(C)]
@@ -283,6 +285,46 @@ impl From<DisconnectPacket> for Packets {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
+/// The `KeepAlivePacket` struct keeps a quiet connection from timing out.
+///
+/// A connected session sends one when it has sent nothing else for [`crate::KEEPALIVE_INTERVAL`]. It carries no
+/// application data, so applications never see it.
+pub struct KeepAlivePacket {
+	header: PacketHeader,
+	connection_id: u64,
+}
+
+impl KeepAlivePacket {
+	pub fn new(connection_id: u64) -> Self {
+		Self {
+			header: PacketHeader::new(PacketType::KeepAlive),
+			connection_id,
+		}
+	}
+
+	pub fn get_connection_id(&self) -> u64 {
+		self.connection_id
+	}
+}
+
+impl Packet for KeepAlivePacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
+	}
+}
+
+impl From<KeepAlivePacket> for Packets {
+	fn from(val: KeepAlivePacket) -> Self {
+		Packets::KeepAlive(val)
+	}
+}
+
+#[repr(C)]
+#[derive(PartialEq, Eq, Debug)]
 // Keep data packets inline so packet construction and retry paths do not allocate per packet.
 #[allow(clippy::large_enum_variant)]
 /// A typed BETP packet.
@@ -292,6 +334,21 @@ pub enum Packets {
 	ChallengeResponse(ChallengeResponsePacket),
 	Data(DataPacket<1024>),
 	Disconnect(DisconnectPacket),
+	KeepAlive(KeepAlivePacket),
+}
+
+impl Packets {
+	/// Returns the connection a session packet belongs to, so a session can reject another connection's traffic.
+	///
+	/// Handshake packets return `None`: they run before the connection exists and carry salts instead.
+	pub fn connection_id(&self) -> Option<u64> {
+		match self {
+			Packets::Data(packet) => Some(packet.get_connection_id()),
+			Packets::Disconnect(packet) => Some(packet.get_connection_id()),
+			Packets::KeepAlive(packet) => Some(packet.get_connection_id()),
+			Packets::ConnectionRequest(_) | Packets::Challenge(_) | Packets::ChallengeResponse(_) => None,
+		}
+	}
 }
 
 impl Packet for Packets {
@@ -302,6 +359,7 @@ impl Packet for Packets {
 			Packets::ChallengeResponse(packet) => packet.packet_type(),
 			Packets::Data(packet) => packet.packet_type(),
 			Packets::Disconnect(packet) => packet.packet_type(),
+			Packets::KeepAlive(packet) => packet.packet_type(),
 		}
 	}
 
@@ -312,6 +370,7 @@ impl Packet for Packets {
 			Packets::ChallengeResponse(packet) => packet.header(),
 			Packets::Data(packet) => packet.header(),
 			Packets::Disconnect(packet) => packet.header(),
+			Packets::KeepAlive(packet) => packet.header(),
 		}
 	}
 }

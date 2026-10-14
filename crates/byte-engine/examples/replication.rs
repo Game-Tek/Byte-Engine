@@ -17,8 +17,8 @@ fn main() {
 	client_a.connect(Instant::now());
 	client_b.connect(Instant::now());
 	let mut update = || {
-		client_a.update().unwrap();
-		client_b.update().unwrap();
+		client_a.update(Instant::now()).unwrap();
+		client_b.update(Instant::now()).unwrap();
 		server.update(Instant::now()).unwrap();
 	};
 
@@ -34,8 +34,8 @@ fn main() {
 	let mut data = [0_u8; 1024];
 	data[0] = Commands::Spawn as u8;
 	server.send(true, data);
-	client_a.update().unwrap();
-	client_b.update().unwrap();
+	client_a.update(Instant::now()).unwrap();
+	client_b.update(Instant::now()).unwrap();
 	server.update(Instant::now()).unwrap();
 	for packet in server.drain_received() {
 		if packet.data[0] == Commands::Spawn as u8 {

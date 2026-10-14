@@ -29,6 +29,7 @@ fn main() -> io::Result<()> {
 	write_seed("challenge-response.betp", &canonical_packet(3, HEADER_SIZE + 8))?;
 	write_seed("data.betp", &canonical_packet(4, HEADER_SIZE + 8 + 8 + 1024))?;
 	write_seed("disconnect.betp", &canonical_packet(5, HEADER_SIZE + 8))?;
+	write_seed("keep-alive.betp", &canonical_packet(6, HEADER_SIZE + 8))?;
 
 	Ok(())
 }

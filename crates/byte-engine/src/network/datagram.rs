@@ -164,7 +164,7 @@ impl ClientDatagramPipeline {
 	pub fn process_datagram(
 		&mut self,
 		datagram: &[u8],
-		_current_time: Instant,
+		current_time: Instant,
 		outbound: &mut Vec<EncodedDatagram>,
 	) -> Result<DatagramOutcome, PipelineError> {
 		outbound.clear();
@@ -178,7 +178,7 @@ impl ClientDatagramPipeline {
 				let id = challenge.get_client_salt() ^ challenge.get_server_salt();
 				let packets = self
 					.session
-					.update(std::slice::from_ref(&Packets::Challenge(challenge)))
+					.update(std::slice::from_ref(&Packets::Challenge(challenge)), current_time)
 					.map_err(DatagramDrop::ClientSession);
 				let packets = match packets {
 					Ok(packets) => packets,
@@ -188,83 +188,42 @@ impl ClientDatagramPipeline {
 				encode_packets(packets, outbound)?;
 				Ok(DatagramOutcome::Handled)
 			}
-			Packets::Data(data) => self.process_data(data, outbound),
-			Packets::Disconnect(disconnect) => {
-				let Some(id) = self.connection_id() else {
-					return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
-				};
-				if disconnect.get_connection_id() != id {
-					return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
-				}
-
-				let packets = self
-					.session
-					.update(std::slice::from_ref(&Packets::Disconnect(disconnect)))
-					.map_err(DatagramDrop::ClientSession);
-				let packets = match packets {
-					Ok(packets) => packets,
-					Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
-				};
-				encode_packets(packets, outbound)?;
-				Ok(DatagramOutcome::Disconnected { id })
+			packet @ (Packets::Data(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => {
+				process_session_packet(packet, self.connection_id(), &mut self.receive_window, outbound, |packets| {
+					self.session
+						.update(packets, current_time)
+						.map_err(DatagramDrop::ClientSession)
+				})
 			}
 			_ => Ok(DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket)),
 		}
 	}
 
-	/// Advances handshake and retry work when no datagram was received.
+	/// Advances handshake, retry, keepalive, and timeout work when no datagram was received.
 	pub fn advance(
 		&mut self,
-		_current_time: Instant,
+		current_time: Instant,
 		outbound: &mut Vec<EncodedDatagram>,
 	) -> Result<DatagramOutcome, PipelineError> {
 		outbound.clear();
 		let was_connected = self.session.is_connected();
-		let packets = match self.session.update(&[]) {
+		let packets = match self.session.update(&[], current_time) {
 			Ok(packets) => packets,
 			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ClientSession(error))),
 		};
 		encode_packets(packets, outbound)?;
 
-		if !was_connected
-			&& self.session.is_connected()
-			&& let Some(id) = self.connection_id
-		{
-			return Ok(DatagramOutcome::Connected { id });
+		match (was_connected, self.session.is_connected(), self.connection_id) {
+			(false, true, Some(id)) => Ok(DatagramOutcome::Connected { id }),
+			// The server went quiet for longer than the session timeout.
+			(true, false, Some(id)) => Ok(DatagramOutcome::Disconnected { id }),
+			_ => Ok(DatagramOutcome::Handled),
 		}
-
-		Ok(DatagramOutcome::Handled)
 	}
 
 	/// Queues one application payload for reliable or unreliable delivery.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		self.session.send(reliable, data);
-	}
-
-	/// Validates a data packet against endpoint and receive-window state while
-	/// still forwarding its acknowledgement fields to the BETP session.
-	fn process_data(
-		&mut self,
-		data: betp::packets::DataPacket<1024>,
-		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
-		let Some(id) = self.connection_id() else {
-			return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
-		};
-		if data.get_connection_id() != id {
-			return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
-		}
-
-		let payload = data.data;
-		let sequence = data.get_connection_status().sequence;
-		let receive_result = self.receive_window.acknowledge_packet(sequence);
-		let packets = match self.session.update(std::slice::from_ref(&Packets::Data(data))) {
-			Ok(packets) => packets,
-			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ClientSession(error))),
-		};
-		encode_packets(packets, outbound)?;
-
-		classify_delivery(receive_result, payload)
 	}
 }
 
@@ -331,26 +290,17 @@ impl ServerDatagramPipeline {
 				self.pending_connection_id = None;
 				Ok(DatagramOutcome::Connected { id })
 			}
-			Packets::Data(data) => self.process_data(data, current_time, outbound),
-			Packets::Disconnect(disconnect) => {
-				let Some(id) = self.session.connection_id() else {
-					return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
-				};
-				if disconnect.get_connection_id() != id {
-					return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
-				}
-
-				let packets = self
-					.session
-					.update(std::slice::from_ref(&Packets::Disconnect(disconnect)), current_time)
-					.map_err(DatagramDrop::ServerSession);
-				let packets = match packets {
-					Ok(packets) => packets,
-					Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
-				};
-				encode_packets(packets, outbound)?;
-				Ok(DatagramOutcome::Disconnected { id })
-			}
+			packet @ (Packets::Data(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => process_session_packet(
+				packet,
+				self.session.connection_id(),
+				&mut self.receive_window,
+				outbound,
+				|packets| {
+					self.session
+						.update(packets, current_time)
+						.map_err(DatagramDrop::ServerSession)
+				},
+			),
 			_ => Ok(DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket)),
 		}
 	}
@@ -381,33 +331,6 @@ impl ServerDatagramPipeline {
 	/// Queues one application payload for reliable or unreliable delivery.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		self.session.send(reliable, data);
-	}
-
-	/// Validates a data packet against endpoint and receive-window state while
-	/// still forwarding its acknowledgement fields to the BETP session.
-	fn process_data(
-		&mut self,
-		data: betp::packets::DataPacket<1024>,
-		current_time: Instant,
-		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
-		let Some(id) = self.session.connection_id() else {
-			return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
-		};
-		if data.get_connection_id() != id {
-			return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
-		}
-
-		let payload = data.data;
-		let sequence = data.get_connection_status().sequence;
-		let receive_result = self.receive_window.acknowledge_packet(sequence);
-		let packets = match self.session.update(std::slice::from_ref(&Packets::Data(data)), current_time) {
-			Ok(packets) => packets,
-			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ServerSession(error))),
-		};
-		encode_packets(packets, outbound)?;
-
-		classify_delivery(receive_result, payload)
 	}
 }
 
@@ -441,18 +364,50 @@ fn encode_packets(packets: Vec<Packets>, outbound: &mut Vec<EncodedDatagram>) ->
 	Ok(())
 }
 
-/// Maps receive-window state to the only application-visible payload outcome.
-fn classify_delivery(receive_result: bool, payload: [u8; 1024]) -> Result<DatagramOutcome, PipelineError> {
-	if receive_result {
-		Ok(DatagramOutcome::Accepted(payload))
-	} else {
-		Ok(DatagramOutcome::Handled)
+/// Accepts a data, keepalive, or disconnect packet only for the established connection, lets the session handle
+/// it through `update`, and reports what the application sees: a payload the receive window has not delivered yet,
+/// or the end of the session.
+fn process_session_packet(
+	packet: Packets,
+	connection_id: Option<u64>,
+	receive_window: &mut Remote,
+	outbound: &mut Vec<EncodedDatagram>,
+	update: impl FnOnce(&[Packets]) -> Result<Vec<Packets>, DatagramDrop>,
+) -> Result<DatagramOutcome, PipelineError> {
+	let Some(id) = connection_id else {
+		return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
+	};
+	if packet.connection_id() != Some(id) {
+		return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
 	}
+
+	// Duplicates and stale data still reach the session, which needs their acknowledgement fields, but are not
+	// delivered again.
+	let payload = match &packet {
+		Packets::Data(data) => receive_window
+			.acknowledge_packet(data.get_connection_status().sequence)
+			.then_some(data.data),
+		_ => None,
+	};
+	let disconnect = matches!(packet, Packets::Disconnect(_));
+	let packets = match update(std::slice::from_ref(&packet)) {
+		Ok(packets) => packets,
+		Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
+	};
+	encode_packets(packets, outbound)?;
+
+	Ok(match payload {
+		Some(payload) => DatagramOutcome::Accepted(payload),
+		None if disconnect => DatagramOutcome::Disconnected { id },
+		None => DatagramOutcome::Handled,
+	})
 }
 
 fn packet_wire_size(packet: &Packets) -> usize {
 	match packet {
-		Packets::ConnectionRequest(_) | Packets::ChallengeResponse(_) | Packets::Disconnect(_) => CONNECTION_DATAGRAM_SIZE,
+		Packets::ConnectionRequest(_) | Packets::ChallengeResponse(_) | Packets::Disconnect(_) | Packets::KeepAlive(_) => {
+			CONNECTION_DATAGRAM_SIZE
+		}
 		Packets::Challenge(_) => CHALLENGE_DATAGRAM_SIZE,
 		Packets::Data(_) => MAX_BETP_DATAGRAM_SIZE,
 	}

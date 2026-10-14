@@ -98,6 +98,28 @@ pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 	((s1 > s2) && (s1 - s2 <= 32768u16)) || ((s1 < s2) && (s2 - s1 > 32768u16))
 }
 
+/// How long a connected session may send nothing before it sends a [`packets::KeepAlivePacket`].
+pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long a connected session waits to hear from its peer before it ends the connection.
+pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Appends a keepalive when a connected session has nothing to send and has sent nothing for
+/// [`KEEPALIVE_INTERVAL`], so its peer keeps hearing from it. Records when the session last sent anything.
+pub(crate) fn with_keep_alive(
+	mut packets: Vec<Packets>,
+	connection_id: u64,
+	last_sent: &mut std::time::Instant,
+	current_time: std::time::Instant,
+) -> Vec<Packets> {
+	if packets.is_empty() && current_time.duration_since(*last_sent) >= KEEPALIVE_INTERVAL {
+		packets.push(KeepAlivePacket::new(connection_id).into());
+	}
+	if !packets.is_empty() {
+		*last_sent = current_time;
+	}
+	packets
+}
+
 const PACKET_HEADER_SIZE: usize = 5;
 const CONNECTION_STATUS_SIZE: usize = 8;
 const CONNECTION_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8;
@@ -131,7 +153,7 @@ pub(crate) fn write_connection_status(buffer: &mut [u8], connection_status: Conn
 
 pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 	let payload_size = match &packet {
-		Packets::ConnectionRequest(_) | Packets::ChallengeResponse(_) | Packets::Disconnect(_) => 8,
+		Packets::ConnectionRequest(_) | Packets::ChallengeResponse(_) | Packets::Disconnect(_) | Packets::KeepAlive(_) => 8,
 		Packets::Challenge(_) => 16,
 		Packets::Data(packet) => 8 + CONNECTION_STATUS_SIZE + packet.data.len(),
 	};
@@ -165,6 +187,9 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 		Packets::Disconnect(packet) => {
 			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
 		}
+		Packets::KeepAlive(packet) => {
+			write_bytes(buffer, &mut offset, &packet.get_connection_id().to_le_bytes())?;
+		}
 	}
 
 	Some(())
@@ -194,6 +219,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, PacketReadError
 		3 => PacketType::ChallengeResponse,
 		4 => PacketType::Data,
 		5 => PacketType::Disconnect,
+		6 => PacketType::KeepAlive,
 		_ => return Err(PacketReadError::UnknownPacketType),
 	};
 
@@ -216,7 +242,9 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 	let header = read_packet_header(buffer)?;
 	let expected = match header.r#type {
 		PacketType::Default => return Err(PacketReadError::ReservedPacketType),
-		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect => CONNECTION_PACKET_SIZE,
+		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect | PacketType::KeepAlive => {
+			CONNECTION_PACKET_SIZE
+		}
 		PacketType::Challenge => CHALLENGE_PACKET_SIZE,
 		PacketType::Data => DATA_PACKET_SIZE,
 	};
@@ -266,14 +294,18 @@ pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
 			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
 			Ok(DisconnectPacket::new(connection_id).into())
 		}
+		PacketType::KeepAlive => {
+			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			Ok(KeepAlivePacket::new(connection_id).into())
+		}
 	}
 }
 
 use std::io::Read as _;
 
 use crate::packets::{
-	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packet,
-	PacketHeader, PacketType, Packets,
+	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
+	KeepAlivePacket, Packet, PacketHeader, PacketType, Packets,
 };
 
 #[cfg(test)]
@@ -284,7 +316,7 @@ mod tests {
 	};
 	use crate::packets::{
 		ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
-		PacketHeader, PacketType, Packets,
+		KeepAlivePacket, PacketHeader, PacketType, Packets,
 	};
 
 	fn assert_packet_round_trip(packet: Packets, expected: Packets, packet_size: usize) {
@@ -327,6 +359,11 @@ mod tests {
 			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
 			CONNECTION_PACKET_SIZE,
 		);
+		assert_packet_round_trip(
+			KeepAlivePacket::new(0x7172_7374_7576_7778).into(),
+			KeepAlivePacket::new(0x7172_7374_7576_7778).into(),
+			CONNECTION_PACKET_SIZE,
+		);
 	}
 
 	fn assert_noncanonical_lengths_are_rejected(packet: Packets, packet_size: usize) {
@@ -359,6 +396,7 @@ mod tests {
 			DATA_PACKET_SIZE,
 		);
 		assert_noncanonical_lengths_are_rejected(DisconnectPacket::new(10).into(), CONNECTION_PACKET_SIZE);
+		assert_noncanonical_lengths_are_rejected(KeepAlivePacket::new(11).into(), CONNECTION_PACKET_SIZE);
 	}
 
 	#[test]
@@ -404,6 +442,12 @@ mod tests {
 
 		assert_eq!(&disconnect[..5], b"BETP\x05");
 		assert_eq!(&disconnect[5..], &55u64.to_le_bytes());
+
+		let mut keep_alive = [0u8; 13];
+		write_packet(&mut keep_alive, Packets::from(KeepAlivePacket::new(66))).unwrap();
+
+		assert_eq!(&keep_alive[..5], b"BETP\x06");
+		assert_eq!(&keep_alive[5..], &66u64.to_le_bytes());
 	}
 
 	#[test]

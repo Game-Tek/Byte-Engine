@@ -82,6 +82,8 @@ pub use client::{Client, ClientCreateError};
 pub use replicable::Importance;
 pub use replicable::Replicable;
 pub use server::{Server, ServerCreateError};
+/// The connection events [`Server::drain_events`] reports.
+pub use betp::server::Events as ServerEvents;
 
 #[cfg(test)]
 mod udp_tests;

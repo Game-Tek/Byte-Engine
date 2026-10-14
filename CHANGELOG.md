@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The `inspector.port` parameter moves the HTTP inspector off its default port, 6680, so two applications can run on one machine. Before, the second one to start panicked. `inspector::http::HttpInspectorServer::new` takes the port, and `inspector::http::DEFAULT_PORT` names the default.
+- `network::ServerEvents` names the connection events `network::Server::drain_events` reports, so applications can match on them without depending on `betp`.
 - BETP delivers reliable payloads once and in the order they were sent, and never gives up on them while the connection lasts. Reliable payloads travel as `Message` packets, which alone take sequence numbers, so a receiver knows that a gap is a message still to come. It holds up to 32 messages (`betp::WINDOW`) that arrive early and delivers each run once the gap fills. The sender keeps up to 32 messages unacknowledged and queues the rest, and resends each one every 100 ms (`betp::RETRY_INTERVAL`) until it is acknowledged. Unreliable payloads travel as `Data` packets, are sent once, and are delivered as they arrive.
   - Before this, reliable and unreliable packets shared one sequence and were delivered in arrival order, and a reliable packet was resent on every update until its eight attempts ran out, or dropped when 16 packets were already queued. A short burst of loss could lose a reliable payload for good, and two could arrive in the wrong order.
   - Every packet on an established connection, keepalives included, carries the acknowledgement of the messages received. A session that receives a message acknowledges it in its next update, with a keepalive when it has nothing else to send.

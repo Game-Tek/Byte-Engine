@@ -23,6 +23,7 @@
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
+/// - `inspector.port`: Serves the HTTP inspector on this loopback port. Give each application running on one machine its own port. The default is `6680`.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
@@ -196,6 +197,12 @@ impl GraphicsApplication {
 		if let Some(step_lanes) = application.get_parameter("physics-step-lanes") {
 			world.set_physics_step_lanes(step_lanes.parse().unwrap_or_else(|error| panic!("{error}")));
 		}
+		// Two applications on one machine cannot share a port, and a typo should not silently fall back to the default.
+		let inspector_port = application
+			.get_parameter("inspector.port")
+			.map_or(crate::inspector::http::DEFAULT_PORT, |port| {
+				port.parse().unwrap_or_else(|error| panic!("{error}"))
+			});
 		let transforms = world.transforms_channel().clone();
 		let mut storage = None;
 		let mut services = None;
@@ -260,7 +267,7 @@ impl GraphicsApplication {
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
 						let waker = LoopWaker::default();
-						let http_inspector = HttpInspectorServer::new(inspector, waker.clone());
+						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), inspector_port);
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();

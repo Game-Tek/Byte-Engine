@@ -70,22 +70,25 @@ pub struct HttpInspectorServer {
 	_server: ListeningServer,
 }
 
+/// The loopback port the inspector serves on unless the `inspector.port` parameter names another.
+pub const DEFAULT_PORT: u16 = 6680;
+
 impl HttpInspectorServer {
-	/// Starts the HTTP inspector transport on the loopback interface at port 6680.
+	/// Starts the HTTP inspector transport on the loopback interface at `port`, usually [`DEFAULT_PORT`].
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
-	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker) -> Self {
+	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker, port: u16) -> Self {
 		Self::spawn(
 			inspector,
 			waker,
 			[
-				SocketAddr::from((Ipv4Addr::LOCALHOST, 6680)),
-				SocketAddr::from((Ipv6Addr::LOCALHOST, 6680)),
+				SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+				SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
 			],
 		)
 		.unwrap_or_else(|error| {
 			panic!(
-				"HTTP inspector could not start. The most likely cause is that port 6680 is already in use or unavailable: {error}"
+				"HTTP inspector could not start. The most likely cause is that port {port} is already in use, for example by another running application; give one of them a different `inspector.port`: {error}"
 			)
 		})
 	}

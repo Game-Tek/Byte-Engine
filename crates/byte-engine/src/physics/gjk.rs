@@ -115,7 +115,7 @@ pub fn shapes_contact<Space>(
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
-	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, None, scratch)
+	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, None, 0.0, scratch)
 }
 
 /// Returns the contact between shape A and shape B when they overlap, where each shape is every point within its
@@ -139,10 +139,15 @@ pub fn shapes_contact<Space>(
 /// too small. Pass `None` when there is none at hand: the cores are then asked for six more of their furthest
 /// points when they overlap.
 ///
+/// `within` is how far apart the shapes may be and still get a contact. Such a contact has a negative depth, which
+/// is the gap between the shapes, a normal that leads from shape A to shape B across the gap, and the points of the
+/// two shapes that are nearest each other. Pass zero to get contacts only for shapes that touch. Pass infinity to
+/// learn how far apart any two shapes are and in which direction, as moving a fast body up to another one needs.
+///
 /// `scratch` is working storage. Pass the same one each time to find contact after contact without allocating.
 ///
-/// Returns `None` when the shapes are apart, or when their cores overlap but have no volume between them, as two
-/// points at one place have not, because nothing then says which way is out.
+/// Returns `None` when the shapes are more than `within` apart, or when their cores overlap but have no volume
+/// between them, as two points at one place have not, because nothing then says which way is out.
 pub fn rounded_shapes_contact<Space>(
 	support_a: impl Fn(Vector<Space>) -> Point<Space>,
 	radius_a: f32,
@@ -150,12 +155,15 @@ pub fn rounded_shapes_contact<Space>(
 	radius_b: f32,
 	toward_b: Option<Vector<Space>>,
 	extent: Option<f32>,
+	within: f32,
 	scratch: &mut ContactScratch<Space>,
 ) -> Option<Intersection<Space>> {
 	// GJK settles most pairs, the ones that are apart, with a few points of the difference between the cores.
 	let support = |direction| minkowski_support(&support_a, &support_b, direction);
 	let reach = radius_a + radius_b;
-	let search = close_in(support, reach, toward_b.unwrap_or_else(any_direction));
+	// Cores that are further apart than this belong to shapes that are more than `within` apart.
+	let furthest = reach + within;
+	let search = close_in(support, furthest, toward_b.unwrap_or_else(any_direction));
 
 	let (normal, depth, on_a, on_b) = if search.holds_origin {
 		// The cores overlap. The difference's surface is explored to find how far inside it the origin is, starting
@@ -165,7 +173,7 @@ pub fn rounded_shapes_contact<Space>(
 	} else {
 		// The cores are apart, and the shapes overlap when that is by less than their radii. Their surfaces are
 		// nearest each other along the line between the cores' closest points.
-		if search.nearest.distance_squared > reach * reach {
+		if search.nearest.distance_squared > furthest * furthest {
 			return None;
 		}
 		let (on_a, on_b) = search.points();
@@ -630,6 +638,7 @@ mod tests {
 			radius_b,
 			None,
 			None,
+			0.0,
 			&mut ContactScratch::default(),
 		)
 	}
@@ -1630,8 +1639,16 @@ mod tests {
 			let support_b = |along| b.support_point(along);
 
 			for start in starts {
-				let contact =
-					super::rounded_shapes_contact(support_a, 0.1, support_b, 0.1, start, None, &mut ContactScratch::default());
+				let contact = super::rounded_shapes_contact(
+					support_a,
+					0.1,
+					support_b,
+					0.1,
+					start,
+					None,
+					0.0,
+					&mut ContactScratch::default(),
+				);
 
 				assert_eq!(contact.is_some(), depth.is_some(), "at {place} from {start:?}");
 				if let (Some(contact), Some(depth)) = (contact, depth) {
@@ -1646,6 +1663,43 @@ mod tests {
 					);
 				}
 			}
+		}
+	}
+
+	#[test]
+	fn shapes_that_are_apart_get_a_contact_with_their_gap_when_it_is_within_reach() {
+		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+		// The boxes face each other across half a unit, and each is made thicker by a tenth, which leaves a gap of
+		// three tenths.
+		let b = box_hull([1.0, 1.0, 1.0], [2.5, 0.3, -0.2]);
+		let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
+		let contact = |within: f32| {
+			super::rounded_shapes_contact(
+				support_a,
+				0.1,
+				support_b,
+				0.1,
+				None,
+				None,
+				within,
+				&mut ContactScratch::default(),
+			)
+		};
+
+		assert!(contact(0.0).is_none());
+		assert!(contact(0.2).is_none());
+		for within in [0.4, f32::INFINITY] {
+			let contact = contact(within).expect("the gap is within reach");
+			let normal: Vector<LocalSpace> = contact.normal().into();
+
+			assert!((normal - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5, "within {within}");
+			assert!((contact.depth() + 0.3).abs() <= 1e-5, "within {within}: {contact:?}");
+			// The points are on the sides that face each other, straight across the gap.
+			assert!((contact.point_on_a().x() - 1.1).abs() <= 1e-5, "within {within}: {contact:?}");
+			assert!(
+				(contact.point_on_b() - contact.point_on_a() - normal * 0.3).length() <= 1e-5,
+				"within {within}: {contact:?}"
+			);
 		}
 	}
 
@@ -1669,9 +1723,17 @@ mod tests {
 
 		// With the cores asked for their extent, and with a bound on it given.
 		for extent in [None, Some(4.0), Some(100.0)] {
-			let contact =
-				super::rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, extent, &mut ContactScratch::default())
-					.expect("the tip is inside the box");
+			let contact = super::rounded_shapes_contact(
+				support_a,
+				0.0,
+				support_b,
+				0.0,
+				None,
+				extent,
+				0.0,
+				&mut ContactScratch::default(),
+			)
+			.expect("the tip is inside the box");
 
 			assert!(
 				(contact.normal().into_vector() - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-5,

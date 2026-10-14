@@ -849,6 +849,54 @@ mod tests {
 	}
 
 	#[test]
+	fn fast_bodies_stop_at_a_thin_wall_that_they_would_pass_through() {
+		// A wall a tenth of a meter thick, with the side the bodies come at where x is zero.
+		let wall = || {
+			let mut wall = make_ground_body();
+			wall.collision_shape = Shapes::Cube {
+				size: Vector::new(0.05, 4.0, 4.0),
+			};
+			wall.position = math::Point::new(0.05, 0.0, 0.0);
+			wall
+		};
+		// Each step carries a body 1.67 meters, which is more than the body and the wall are thick together.
+		let (start, velocity) = (math::Point::new(-3.0, 0.0, 0.0), Vector::new(100.0, 0.0, 0.0));
+		let mut turning_box = make_dynamic_box_body(start, velocity);
+		turning_box.rotates = true;
+		let bodies = [
+			("sphere", make_dynamic_sphere_body(start, velocity, 0.5)),
+			("box", make_dynamic_box_body(start, velocity)),
+			("box that contacts turn", turning_box),
+			("capsule", make_dynamic_character_body(start, velocity)),
+		];
+
+		for (name, body) in bodies {
+			// Every one of the bodies reaches half a meter, or the capsule's radius, toward the wall.
+			let reach = match body.collision_shape {
+				Shapes::Capsule { radius, .. } => radius,
+				_ => 0.5,
+			};
+			let mut world = make_world();
+			world.gravity = Vector::zero();
+			*world.bodies.get_mut() = [wall(), body].into_iter().collect();
+			step(
+				&mut world,
+				MediaTime::from_seconds_f32(1.0 / 60.0),
+				10,
+				&DefaultChannel::new(),
+			);
+
+			let body = world.bodies.all().get_slot(1).expect("the fast body");
+			assert!((body.position.x() + reach).abs() <= 0.01, "{name} is at {:?}", body.position);
+			assert!(
+				body.linear_velocity.length() <= 0.01,
+				"{name} moves at {:?}",
+				body.linear_velocity
+			);
+		}
+	}
+
+	#[test]
 	fn a_body_that_takes_over_a_slot_does_not_inherit_its_contacts() {
 		let mut world = make_world();
 		let transforms = DefaultChannel::new();

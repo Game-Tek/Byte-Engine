@@ -103,9 +103,9 @@ impl PhysicsBody {
 		self.position + Vector::from_maths(self.orientation.into_maths() * local_offset.into_maths())
 	}
 
-	/// Advances the body by `dt` using its current linear and angular velocities.
-	pub fn update(&mut self, dt: MediaTime) {
-		let seconds = dt.as_seconds_f32();
+	/// Returns where the body is, how it is turned, and how it spins once it has moved for `seconds` at its current
+	/// linear and angular velocities, in that sequence. [`Self::update`] moves the body there.
+	pub(crate) fn moved(&self, seconds: f32) -> (Point, Orientation, Vector) {
 		let travel = self.linear_velocity * seconds;
 		let position = self.position + travel;
 		let center_of_mass = self.world_space_center_of_mass() + travel;
@@ -128,9 +128,16 @@ impl PhysicsBody {
 		// A spin that is not finite turns the body by nothing.
 		let delta_orientation =
 			Orientation::try_from_rotation_vector(angular_velocity * seconds).unwrap_or_else(|_| Orientation::identity());
-		self.position = center_of_mass + delta_orientation.rotate_vector(center_offset);
-		self.orientation = delta_orientation.compose(self.orientation);
-		self.angular_velocity = angular_velocity;
+		(
+			center_of_mass + delta_orientation.rotate_vector(center_offset),
+			delta_orientation.compose(self.orientation),
+			angular_velocity,
+		)
+	}
+
+	/// Advances the body by `dt` using its current linear and angular velocities.
+	pub fn update(&mut self, dt: MediaTime) {
+		(self.position, self.orientation, self.angular_velocity) = self.moved(dt.as_seconds_f32());
 	}
 
 	/// Returns the current world-space axis-aligned bounds.
@@ -173,30 +180,55 @@ impl PhysicsBody {
 		AABB::from_center_and_half_extents(center, reach)
 	}
 
-	/// Returns whether the body travels far enough in the next `dt` seconds that [`intersect`] tests it along its
-	/// path instead of where it is now.
+	/// Returns the square of how far from the body's center of mass a point that the body's spin moves can be.
 	///
-	/// Only a sphere is tested along its path, and only once a step carries it farther than half its radius. A
-	/// slower sphere cannot pass through another body between two steps: whatever it reaches, it still overlaps
-	/// when the step ends. Testing it in place lets its contacts be found and resolved together with the others.
-	pub fn outruns_its_shape(&self, dt: f32) -> bool {
-		match self.collision_shape {
-			Shapes::Sphere { radius } => {
-				let reach = radius * 0.5;
-				self.linear_velocity.length_squared() * dt * dt > reach * reach
-			}
-			Shapes::Cube { .. } | Shapes::Capsule { .. } | Shapes::ConvexHull(_) => false,
+	/// A shape that is turned the way its body is turns about the center of mass, so this is how far the furthest
+	/// corner of the box around the shape is from there. Any other shape keeps facing the way it was made, and only
+	/// goes around the center of mass with the body's position, so this is how far the position is from there.
+	fn swing_squared(&self) -> f32 {
+		let center_of_mass = self.center_of_mass.to_array();
+		if !self.turns_shape() {
+			return center_of_mass.iter().map(|offset| offset * offset).sum();
 		}
+		let bounds = self.collision_shape.bounds();
+		let (center, half_sizes) = (bounds.center().to_array(), bounds.half_extents().to_array());
+		(0..3)
+			.map(|axis| {
+				let furthest = (center[axis] - center_of_mass[axis]).abs() + half_sizes[axis];
+				furthest * furthest
+			})
+			.sum()
+	}
+
+	/// Returns the most that the body's spin adds to how fast a point of its shape moves along `direction`, however
+	/// the body is turned. Without a direction, returns the most that it adds along any.
+	fn spin_speed(&self, direction: Option<UnitVector>) -> f32 {
+		// A point moves along a direction as fast as its offset from the center of mass reaches along the direction
+		// crossed with the spin, which is no longer than the spin, and no offset is longer than the swing.
+		let across = direction.map_or(self.angular_velocity, |direction| direction.cross(self.angular_velocity));
+		(self.swing_squared() * across.length_squared()).sqrt()
+	}
+
+	/// Returns whether the body moves far enough in the next `dt` seconds that [`intersect`] also tests it along its
+	/// path, where every body is tested where it is now.
+	///
+	/// A body is tested along its path once a step carries a point of it further than half of what its shape
+	/// reaches where it is thinnest, by its linear velocity and its spin together. A slower body cannot pass through
+	/// another one between two steps: whatever it reaches, it still overlaps when the step ends. Testing it in place
+	/// lets its contacts be found with exact bounds.
+	pub fn outruns_its_shape(&self, dt: f32) -> bool {
+		let travel = (self.linear_velocity.length() + self.spin_speed(None)) * dt;
+		travel > self.collision_shape.thinnest_reach() * 0.5
 	}
 
 	/// Returns world-space bounds around everywhere [`intersect`] can find this body in contact during the next
 	/// `dt` seconds.
 	///
 	/// A body that [`Self::outruns_its_shape`] is tested along its path, so its bounds cover the path at its
-	/// current linear velocity, slightly enlarged so bodies that are about to touch still count as overlapping.
-	/// Any other body is only tested where it is now, so its bounds are exact and no pair is tested that cannot be
-	/// in contact. Pass the bounds to [`crate::physics::SweepBounds::rebuild`] to find the bodies this one may
-	/// collide with.
+	/// current linear velocity and spin, slightly enlarged so bodies that are about to touch still count as
+	/// overlapping. Any other body is only tested where it is now, so its bounds are exact and no pair is tested
+	/// that cannot be in contact. Pass the bounds to [`crate::physics::SweepBounds::rebuild`] to find the bodies
+	/// this one may collide with.
 	pub fn swept_bounds(&self, dt: f32) -> AABB {
 		debug_assert!(
 			dt.is_finite() && dt >= 0.0,
@@ -207,16 +239,30 @@ impl PhysicsBody {
 			return current;
 		}
 		const MARGIN: f32 = 0.01;
-		let margin = Vector::new(MARGIN, MARGIN, MARGIN);
+		// Spinning moves no point of the shape further than this from where the body's travel alone takes it.
+		let spun = self.spin_speed(None) * dt;
+		let reach = Vector::new(MARGIN + spun, MARGIN + spun, MARGIN + spun);
 		let travel = self.linear_velocity * dt;
 		let min = maths_rs::min(current.min().into_maths(), (current.min() + travel).into_maths());
 		let max = maths_rs::max(current.max().into_maths(), (current.max() + travel).into_maths());
-		AABB::new(Point::from_maths(min) - margin, Point::from_maths(max) + margin)
+		AABB::new(Point::from_maths(min) - reach, Point::from_maths(max) + reach)
 	}
 }
 
+/// How near each other two bodies that are tested along their paths have to come to count as touching, in meters.
+/// GJK tells how far apart two shapes are to about a tenth of this.
+const TOUCH_GAP: f32 = 0.001;
+
+/// How many times at most two bodies are moved toward each other to find when they meet. Each time takes one GJK
+/// search. Bodies that only move straight meet after one or two, and bodies that spin after a few more.
+const ADVANCES: usize = 10;
+
 /// Adds the contacts between two world-space bodies to `contacts`: none when they are apart, one where they touch
 /// at a point, and up to four where they touch along a stretch or over a flat side and contacts turn one of them.
+///
+/// Bodies that are apart now but meet within the next `dt` seconds also get contacts when one of them
+/// [`PhysicsBody::outruns_its_shape`], so that it does not pass through the other between two steps. Such a contact
+/// tells how far into the step the bodies meet.
 ///
 /// `scratch` is working storage for the pairs that go through GJK. Pass the same one for every pair that one thread
 /// tests, so that testing them does not allocate.
@@ -227,9 +273,95 @@ pub fn intersect(
 	contacts: &mut Vec<Contact>,
 	scratch: &mut ContactScratch,
 ) {
-	match own_contact((a, i), (b, j), dt) {
+	let before = contacts.len();
+	match own_contact((a, i), (b, j)) {
 		Some(contact) => contacts.extend(contact),
 		None => convex_contacts((a, i), (b, j), contacts, scratch),
+	}
+	if contacts.len() == before && (a.outruns_its_shape(dt) || b.outruns_its_shape(dt)) {
+		meeting_contacts((a, i), (b, j), dt, contacts, scratch);
+	}
+}
+
+/// Adds to `contacts` the contacts between two bodies that are apart now and meet within the next `dt` seconds, as
+/// they move at their current velocities. A contact is between the points of the bodies that meet, placed where
+/// they are on the bodies now, and has the time they meet at.
+///
+/// Two spheres meet at a time that follows from their velocities. Every other pair is moved together by conservative
+/// advancement: GJK tells how far apart the shapes are and along which direction, the bodies' velocities bound how
+/// fast they can close that gap, and so the bodies can be moved on for the time that takes at least without passing
+/// through each other. That repeats from where it leaves them until they touch or the step ends.
+// Few pairs get here, and every pair goes through `intersect`. When this was made part of `intersect`, steps of a
+// small pile in which no body is fast took 2% to 3% longer on an Apple M4.
+#[inline(never)]
+fn meeting_contacts(
+	(a, i): (&PhysicsBody, usize),
+	(b, j): (&PhysicsBody, usize),
+	dt: f32,
+	contacts: &mut Vec<Contact>,
+	scratch: &mut ContactScratch,
+) {
+	if let (Shapes::Sphere { radius: a_radius }, Shapes::Sphere { radius: b_radius }) = (&a.collision_shape, &b.collision_shape)
+	{
+		let (a_sphere, b_sphere) = (Sphere::new(a.position, *a_radius), Sphere::new(b.position, *b_radius));
+		let impact = sphere_vs_sphere_dynamic(&a_sphere, &b_sphere, a.linear_velocity, b.linear_velocity, dt);
+		contacts.extend(impact.map(|impact| {
+			let mut contact = Contact::from_dynamic(i, j, impact);
+			// The points are where the spheres will touch. Contacts are solved from where the bodies are now, so the
+			// points move back to where they are on the spheres now.
+			contact.a.point = contact.a.point - a.linear_velocity * contact.toi;
+			contact.b.point = contact.b.point - b.linear_velocity * contact.toi;
+			contact
+		}));
+		return;
+	}
+
+	let held_at_corners = a.is_turned_by_contacts() || b.is_turned_by_contacts();
+	// However the bodies are turned, and along whatever direction, no point of one approaches a point of the other
+	// faster than this.
+	let top_speed = (a.linear_velocity - b.linear_velocity).length() + a.spin_speed(None) + b.spin_speed(None);
+	let (mut placed_a, mut placed_b) = (Placement::of(a), Placement::of(b));
+	let mut time = 0.0;
+	for advance in 0..=ADVANCES {
+		// Shapes that are further apart than the bodies can come in what is left of the step do not meet in it,
+		// which GJK tells sooner than how far apart they are. Shapes whose cores share a place without any volume
+		// between them have no direction to meet along.
+		let Some(nearest) = placed_a.contact_with(&placed_b, top_speed * (dt - time), scratch) else {
+			return;
+		};
+		let gap = -nearest.depth();
+		// Bodies that are still apart after the last advance may meet in what is left of the step. Their contact lets
+		// them come as near as they are known to get, which may hold them a little short of each other until the
+		// next step, and never lets them pass.
+		if gap <= TOUCH_GAP || advance == ADVANCES {
+			let first = contacts.len();
+			hold_at_features(contacts, (i, j), (&placed_a, &placed_b), nearest, held_at_corners);
+			// Contacts are solved from where the bodies are now, so each point moves back with its body.
+			let (now_a, now_b) = (Placement::of(a), Placement::of(b));
+			for contact in &mut contacts[first..] {
+				contact.toi = time;
+				contact.a.point = now_a.to_world(placed_a.to_shape_point(contact.a.point));
+				contact.b.point = now_b.to_world(placed_b.to_shape_point(contact.b.point));
+			}
+			return;
+		}
+
+		// The gap closes no faster than the bodies approach along it, added to the most their spins can move a point
+		// of each that way. The direction stays as it is while the bodies turn, so this holds for as long as it
+		// takes to close the gap.
+		let toward_b = nearest.normal();
+		let closing_speed =
+			toward_b.dot(a.linear_velocity - b.linear_velocity) + a.spin_speed(Some(toward_b)) + b.spin_speed(Some(toward_b));
+		// Bodies that do not approach along the gap get no nearer, and neither do bodies with a velocity that is not
+		// a number.
+		if closing_speed.is_nan() || closing_speed <= 0.0 {
+			return;
+		}
+		time += gap / closing_speed;
+		if time.is_nan() || time > dt {
+			return;
+		}
+		(placed_a, placed_b) = (Placement::after(a, time), Placement::after(b, time));
 	}
 }
 
@@ -238,23 +370,10 @@ pub fn intersect(
 /// way its body is.
 // This hands its contact back, where it could add it to the list of contacts that its caller fills. Adding it in
 // here made steps of every kind of pile 2% to 3% slower on an Apple M4.
-fn own_contact((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), dt: f32) -> Option<Option<Contact>> {
+fn own_contact((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize)) -> Option<Option<Contact>> {
 	let touching = match (&a.collision_shape, &b.collision_shape) {
 		(Shapes::Sphere { radius: a_radius }, Shapes::Sphere { radius: b_radius }) => {
-			let (a_sphere, b_sphere) = (Sphere::new(a.position, *a_radius), Sphere::new(b.position, *b_radius));
-			if a.outruns_its_shape(dt) || b.outruns_its_shape(dt) {
-				// A fast sphere could pass through the other one between two steps, so find where their paths meet.
-				let impact = sphere_vs_sphere_dynamic(&a_sphere, &b_sphere, a.linear_velocity, b.linear_velocity, dt);
-				return Some(impact.map(|impact| {
-					let mut contact = Contact::from_dynamic(i, j, impact);
-					// The points are where the spheres will touch. Contacts are solved from where the bodies are now,
-					// so the points move back to where they are on the spheres now.
-					contact.a.point = contact.a.point - a.linear_velocity * contact.toi;
-					contact.b.point = contact.b.point - b.linear_velocity * contact.toi;
-					contact
-				}));
-			}
-			sphere_vs_sphere(&a_sphere, &b_sphere)
+			sphere_vs_sphere(&Sphere::new(a.position, *a_radius), &Sphere::new(b.position, *b_radius))
 		}
 		(Shapes::ConvexHull(_), _) | (_, Shapes::ConvexHull(_)) => return None,
 		_ if a.turns_shape() || b.turns_shape() => return None,
@@ -333,33 +452,37 @@ fn convex_contacts(
 	}
 
 	let (placed_a, placed_b) = (Placement::of(a), Placement::of(b));
-	let (radius_a, radius_b) = (core_radius(&a.collision_shape), core_radius(&b.collision_shape));
-	let Some(deepest) = rounded_shapes_contact(
-		|direction| placed_a.core_support(direction),
-		radius_a,
-		|direction| placed_b.core_support(direction),
-		radius_b,
-		Some(b.position - a.position),
-		Some(placed_a.extent_with(&placed_b)),
-		scratch,
-	) else {
-		return;
-	};
+	if let Some(deepest) = placed_a.contact_with(&placed_b, 0.0, scratch) {
+		hold_at_features(contacts, (i, j), (&placed_a, &placed_b), deepest, held_at_corners);
+	}
+}
 
+/// Adds to `contacts` the contacts between the bodies in slots `i` and `j`, whose shapes as they are `placed` touch
+/// at `nearest`, which [`Placement::contact_with`] found: one for each corner of the patch they touch over when
+/// they are `held_at_corners` and touch over one, and otherwise the one that `nearest` is.
+#[inline]
+fn hold_at_features(
+	contacts: &mut Vec<Contact>,
+	(i, j): (usize, usize),
+	(placed_a, placed_b): (&Placement, &Placement),
+	nearest: Intersection,
+	held_at_corners: bool,
+) {
 	// GJK's two points are one pair that is as deep in each other as the shapes are. Where one of the shapes touches
 	// with a single corner, that corner is the pair.
 	let mut corners = SmallVec::new();
 	if held_at_corners {
-		let reach = deepest.depth() + FEATURE_SLACK;
-		let feature_a = placed_a.core_feature(deepest.normal().into(), reach);
-		let feature_b = placed_b.core_feature(-deepest.normal().into_vector(), reach);
+		let reach = nearest.depth() + FEATURE_SLACK;
+		let feature_a = placed_a.core_feature(nearest.normal().into(), reach);
+		let feature_b = placed_b.core_feature(-nearest.normal().into_vector(), reach);
 		if feature_a.len() > 1 && feature_b.len() > 1 {
-			corners = patch_corners(&feature_a, radius_a, &feature_b, radius_b, deepest.normal());
+			let (radius_a, radius_b) = (core_radius(placed_a.shape), core_radius(placed_b.shape));
+			corners = patch_corners(&feature_a, radius_a, &feature_b, radius_b, nearest.normal());
 		}
 	}
-	let normal = deepest.normal();
+	let normal = nearest.normal();
 	if corners.is_empty() {
-		contacts.push(Contact::from_static(i, j, deepest));
+		contacts.push(Contact::from_static(i, j, nearest));
 	}
 	hold(contacts, (i, j), normal, corners);
 }
@@ -381,8 +504,12 @@ fn hold(
 /// The `Placement` struct answers questions about the core of a body's shape in world space: the shape itself for a
 /// box and a hull, the center of a sphere, and the segment between the centers of a capsule's caps. [`core_radius`]
 /// is how far the shape reaches beyond its core.
+///
+/// Place a body's shape where the body is with [`Self::of`], or where it will be with [`Self::after`].
 struct Placement<'a> {
-	body: &'a PhysicsBody,
+	shape: &'a Shapes,
+	/// Where the body is, which the shape is placed at.
+	position: Point,
 	/// For a shape that is turned the way its body is: where the shape's own x, y, and z axes point in world space.
 	/// Going between the two frames with these takes a few products, where turning by the body's orientation would
 	/// work through its quaternion for every point asked about.
@@ -390,11 +517,40 @@ struct Placement<'a> {
 }
 
 impl<'a> Placement<'a> {
+	/// Places the shape of `body` where the body is now.
 	fn of(body: &'a PhysicsBody) -> Self {
 		Self {
-			body,
+			shape: &body.collision_shape,
+			position: body.position,
 			axes: body.turns_shape().then(|| body.orientation.axes()),
 		}
+	}
+
+	/// Places the shape of `body` where the body is once it has moved for `seconds` at its current velocities.
+	fn after(body: &'a PhysicsBody, seconds: f32) -> Self {
+		let (position, orientation, _) = body.moved(seconds);
+		Self {
+			shape: &body.collision_shape,
+			position,
+			axes: body.turns_shape().then(|| orientation.axes()),
+		}
+	}
+
+	/// Returns where this shape touches the shape `other` places, with this one as the first shape of the
+	/// intersection. Shapes that are apart by no more than `within` get an intersection with a negative depth, as
+	/// [`rounded_shapes_contact`] describes. Pass the result to [`hold_at_features`].
+	#[inline]
+	fn contact_with(&self, other: &Self, within: f32, scratch: &mut ContactScratch) -> Option<Intersection> {
+		rounded_shapes_contact(
+			|direction| self.core_support(direction),
+			core_radius(self.shape),
+			|direction| other.core_support(direction),
+			core_radius(other.shape),
+			Some(other.position - self.position),
+			Some(self.extent_with(other)),
+			within,
+			scratch,
+		)
 	}
 
 	/// Returns the body's box, for a collider that is a [`Shapes::Cube`] with these half sizes.
@@ -402,7 +558,7 @@ impl<'a> Placement<'a> {
 		let axes = self
 			.axes
 			.unwrap_or([UnitVector::x_axis(), UnitVector::y_axis(), UnitVector::z_axis()]);
-		OrientedBox::from_axes(self.body.position, half_sizes.to_array(), axes)
+		OrientedBox::from_axes(self.position, half_sizes.to_array(), axes)
 	}
 
 	/// Returns a bound on how far apart a point of this body's shape and a point of `other`'s can be along any one
@@ -413,10 +569,8 @@ impl<'a> Placement<'a> {
 			let bounds = shape.bounds();
 			(bounds.center() - Point::origin()).length() + bounds.half_extents().length()
 		};
-		let apart = (other.body.position - self.body.position).to_array();
-		apart.iter().fold(0.0, |most: f32, part| most.max(part.abs()))
-			+ reach(&self.body.collision_shape)
-			+ reach(&other.body.collision_shape)
+		let apart = (other.position - self.position).to_array();
+		apart.iter().fold(0.0, |most: f32, part| most.max(part.abs())) + reach(self.shape) + reach(other.shape)
 	}
 
 	/// Returns a world-space direction in the shape's own frame.
@@ -428,9 +582,14 @@ impl<'a> Placement<'a> {
 		}
 	}
 
+	/// Returns where a world-space point is in the shape's own frame, which [`Self::to_world`] undoes.
+	fn to_shape_point(&self, world: Point) -> Point<LocalSpace> {
+		Point::origin() + self.to_shape(world - self.position)
+	}
+
 	/// Returns the world-space position of a point of the shape.
 	fn to_world(&self, local: Point<LocalSpace>) -> Point {
-		self.body.position
+		self.position
 			+ match self.axes {
 				Some([x, y, z]) => x * local.x() + y * local.y() + z * local.z(),
 				// Crossing from authored local geometry to world simulation requires an explicit raw boundary conversion.
@@ -441,7 +600,7 @@ impl<'a> Placement<'a> {
 	/// Returns the point of the core that is furthest along `direction`.
 	fn core_support(&self, direction: Vector) -> Point {
 		let direction = self.to_shape(direction);
-		self.to_world(match &self.body.collision_shape {
+		self.to_world(match self.shape {
 			Shapes::Sphere { .. } => Point::origin(),
 			Shapes::Cube { size } => {
 				let corner = |half_extent: f32, along: f32| half_extent.abs().copysign(along);
@@ -464,7 +623,7 @@ impl<'a> Placement<'a> {
 		let direction = self.to_shape(direction);
 		let along = |corner: Point<LocalSpace>| direction.dot(corner - Point::origin());
 		let mut feature = Feature::new();
-		match &self.body.collision_shape {
+		match self.shape {
 			Shapes::Sphere { .. } => feature.push(self.to_world(Point::origin())),
 			Shapes::Cube { size } => {
 				// A corner is short of the furthest one by what each axis on which it is on the far side adds up to.
@@ -546,10 +705,16 @@ mod tests {
 	use super::*;
 	use crate::physics::Shapes;
 
-	/// Returns the contact between two bodies that touch at one place, or none when they are apart.
-	fn touch(a: (&PhysicsBody, usize), b: (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
+	/// Returns the contacts between two bodies over a step of `dt` seconds.
+	fn touches(a: (&PhysicsBody, usize), b: (&PhysicsBody, usize), dt: f32) -> Vec<Contact> {
 		let mut contacts = Vec::new();
 		intersect(a, b, dt, &mut contacts, &mut ContactScratch::default());
+		contacts
+	}
+
+	/// Returns the contact between two bodies that touch at one place, or none when they are apart.
+	fn touch(a: (&PhysicsBody, usize), b: (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
+		let mut contacts = touches(a, b, dt);
 		assert!(contacts.len() <= 1, "the bodies touch at {} places", contacts.len());
 		contacts.pop()
 	}
@@ -631,16 +796,185 @@ mod tests {
 	}
 
 	#[test]
-	fn swept_bounds_of_a_box_are_its_bounds() {
+	fn swept_bounds_of_a_slow_box_are_its_bounds() {
 		let mut body = body();
 		body.collision_shape = Shapes::cube(Vector::new(0.5, 1.0, 1.5));
 		body.position = Point::new(2.0, 0.0, 0.0);
-		body.linear_velocity = Vector::new(10.0, 10.0, 10.0);
+		// The box is half a unit thick where it is thinnest and moves less than half of that in the step.
+		body.linear_velocity = Vector::new(0.2, 0.0, 0.0);
 
 		let swept = body.swept_bounds(1.0);
 
 		assert_eq!(swept.min(), body.bounds().min());
 		assert_eq!(swept.max(), body.bounds().max());
+	}
+
+	#[test]
+	fn swept_bounds_of_a_fast_box_hold_it_all_along_its_path_as_it_turns() {
+		let fast_box = || {
+			let mut body = body();
+			body.collision_shape = Shapes::cube(Vector::new(0.5, 1.0, 1.5));
+			body.rotates = true;
+			body.position = Point::new(2.0, 0.0, 0.0);
+			body.linear_velocity = Vector::new(10.0, -4.0, 0.0);
+			body.angular_velocity = Vector::new(0.0, 0.0, 3.0);
+			body
+		};
+		let swept = fast_box().swept_bounds(1.0);
+
+		for tenth in 0..=10 {
+			let mut on_the_way = fast_box();
+			(on_the_way.position, on_the_way.orientation, _) = fast_box().moved(tenth as f32 * 0.1);
+			let bounds = on_the_way.bounds();
+
+			for axis in 0..3 {
+				assert!(
+					swept.min().to_array()[axis] <= bounds.min().to_array()[axis],
+					"after {tenth} tenths"
+				);
+				assert!(
+					swept.max().to_array()[axis] >= bounds.max().to_array()[axis],
+					"after {tenth} tenths"
+				);
+			}
+		}
+	}
+
+	/// Returns a wall that nothing moves, a tenth of a unit thick, whose side that faces down the x-axis is at
+	/// `face`.
+	fn thin_wall(face: f32) -> PhysicsBody {
+		let mut wall = body();
+		wall.body_type = BodyTypes::Static;
+		wall.collision_shape = Shapes::cube(Vector::new(0.05, 4.0, 4.0));
+		wall.position = Point::new(face + 0.05, 0.0, 0.0);
+		wall.angular_velocity = Vector::zero();
+		wall.inv_mass = 0.0;
+		wall
+	}
+
+	#[test]
+	fn fast_bodies_touch_a_thin_wall_where_their_paths_meet_it() {
+		let mut sphere = body();
+		sphere.collision_shape = Shapes::sphere(0.5);
+		let mut cube = body();
+		cube.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+		let mut capsule = body();
+		capsule.collision_shape = Shapes::capsule(0.5, 2.0, Point::origin());
+		let mut hull = body();
+		hull.collision_shape = diamond();
+		// Each body reaches this far toward the wall.
+		let reaches = [0.5, 0.5, 0.5, 1.0 - diamond_tip_rounding()];
+		let wall = thin_wall(5.0);
+
+		for (mut fast, reach) in [sphere, cube, capsule, hull].into_iter().zip(reaches) {
+			// The step would carry the body ten units, to the far side of the wall.
+			fast.linear_velocity = Vector::new(20.0, 0.0, 0.0);
+			let shape = fast.collision_shape.clone();
+
+			let contact = touch((&fast, 0), (&wall, 1), 0.5).expect("the path reaches the wall");
+
+			assert!((contact.toi - (5.0 - reach) / 20.0).abs() <= 1e-4, "{shape:?}: {contact:?}");
+			assert!(
+				(contact.normal.into_vector() - Vector::new(1.0, 0.0, 0.0)).length() <= 1e-4,
+				"{shape:?}: {contact:?}"
+			);
+			// The contact points are where the facing points of the bodies are now.
+			assert!((contact.a.point.x() - reach).abs() <= 2e-3, "{shape:?}: {contact:?}");
+			assert!((contact.b.point.x() - 5.0).abs() <= 2e-3, "{shape:?}: {contact:?}");
+			// The bodies are a hair short of touching at most.
+			assert!(contact.depth.abs() <= 2e-3, "{shape:?}: {contact:?}");
+
+			// The same contact is seen from the wall's side.
+			let backward = touch((&wall, 0), (&fast, 1), 0.5).expect("the path reaches the wall");
+			assert!((backward.toi - contact.toi).abs() <= 1e-4, "{shape:?}: {backward:?}");
+			assert!((backward.a.point.x() - 5.0).abs() <= 2e-3, "{shape:?}: {backward:?}");
+			assert!((backward.b.point.x() - reach).abs() <= 2e-3, "{shape:?}: {backward:?}");
+		}
+	}
+
+	#[test]
+	fn fast_bodies_that_do_not_reach_each_other_in_the_step_do_not_touch() {
+		let fast_box = |velocity: Vector| {
+			let mut cube = body();
+			cube.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+			cube.linear_velocity = velocity;
+			cube
+		};
+		let wall = thin_wall(5.0);
+
+		// The wall is 4.5 units from the box: further than the box gets, behind it, and beside its path.
+		assert!(touches((&fast_box(Vector::new(20.0, 0.0, 0.0)), 0), (&wall, 1), 0.2).is_empty());
+		assert!(touches((&fast_box(Vector::new(-20.0, 0.0, 0.0)), 0), (&wall, 1), 0.5).is_empty());
+		assert!(touches((&fast_box(Vector::new(0.0, 20.0, 0.0)), 0), (&wall, 1), 0.5).is_empty());
+		// A box that passes the edge of the wall, which reaches four units up, misses it.
+		let mut above = fast_box(Vector::new(20.0, 0.0, 0.0));
+		above.position = Point::new(0.0, 4.6, 0.0);
+		assert!(touches((&above, 0), (&wall, 1), 0.5).is_empty());
+	}
+
+	#[test]
+	fn a_fast_box_that_contacts_turn_meets_a_wall_at_the_corners_of_its_side() {
+		let mut cube = body();
+		cube.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+		cube.rotates = true;
+		cube.angular_velocity = Vector::zero();
+		cube.linear_velocity = Vector::new(20.0, 0.0, 0.0);
+
+		let contacts = touches((&cube, 0), (&thin_wall(5.0), 1), 0.5);
+
+		// Held at one point of its side, the box would turn about it as it is stopped.
+		assert_eq!(contacts.len(), 4);
+		let mut corners: Vec<_> = contacts.iter().map(|contact| contact.corner).collect();
+		corners.sort_unstable();
+		assert_eq!(corners, [0, 1, 2, 3]);
+		for contact in &contacts {
+			assert!((contact.toi - 0.225).abs() <= 1e-4, "{contact:?}");
+			let on_box = contact.a.point.to_array();
+			assert!((on_box[0] - 0.5).abs() <= 2e-3, "{contact:?}");
+			assert!(
+				(on_box[1].abs() - 0.5).abs() <= 1e-3 && (on_box[2].abs() - 0.5).abs() <= 1e-3,
+				"{contact:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_fast_spinning_bar_meets_a_wall_when_its_end_swings_into_it() {
+		// A bar along the x-axis that spins about the z-axis, so that its end at x = 1 swings up.
+		let mut bar = body();
+		bar.collision_shape = Shapes::cube(Vector::new(1.0, 0.05, 0.05));
+		bar.rotates = true;
+		bar.angular_velocity = Vector::new(0.0, 0.0, 20.0);
+		// A wall whose underside is half a unit above the bar's middle.
+		let mut wall = thin_wall(0.0);
+		wall.collision_shape = Shapes::cube(Vector::new(4.0, 0.5, 4.0));
+		wall.position = Point::new(0.0, 1.0, 0.0);
+
+		let contacts = touches((&bar, 0), (&wall, 1), 0.1);
+
+		// The upper corner of the bar's end is 1 along the bar and 0.05 across it, so once the bar has turned by an
+		// angle it is at a height of sin(angle) + 0.05 cos(angle), which is 0.5 at an angle of 0.47292.
+		let meets = 0.47292 / 20.0;
+		assert!(!contacts.is_empty());
+		for contact in &contacts {
+			assert!(contact.toi <= meets + 1e-5 && contact.toi >= meets - 2e-4, "{contact:?}");
+			assert!(
+				(contact.normal.into_vector() - Vector::new(0.0, 1.0, 0.0)).length() <= 1e-3,
+				"{contact:?}"
+			);
+			// The point on the bar is on the upper edge of its end, where that edge is now.
+			let on_bar = contact.a.point.to_array();
+			assert!(
+				(on_bar[0] - 1.0).abs() <= 2e-3 && (on_bar[1] - 0.05).abs() <= 2e-3,
+				"{contact:?}"
+			);
+			assert!(on_bar[2].abs() <= 0.05 + 1e-3, "{contact:?}");
+		}
+
+		// A bar that spins a hundredth as fast moves less than it is thick in the step, so it is tested where it is.
+		bar.angular_velocity = Vector::new(0.0, 0.0, 0.2);
+		assert!(!bar.outruns_its_shape(0.1));
+		assert!(touches((&bar, 0), (&wall, 1), 0.1).is_empty());
 	}
 
 	#[test]
@@ -835,13 +1169,6 @@ mod tests {
 		assert_eq!(hull.bounds().max(), Point::new(3.0, 2.0, 1.0));
 		assert_eq!(hull.swept_bounds(1.0).min(), hull.bounds().min());
 	}
-	/// Returns the contacts between two bodies.
-	fn touches(a: (&PhysicsBody, usize), b: (&PhysicsBody, usize)) -> Vec<Contact> {
-		let mut contacts = Vec::new();
-		intersect(a, b, 1.0 / 60.0, &mut contacts, &mut ContactScratch::default());
-		contacts
-	}
-
 	/// Returns a turn of `angle` radians about the z-axis.
 	fn about_z(angle: f32) -> Orientation {
 		Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, angle)).unwrap()
@@ -938,7 +1265,7 @@ mod tests {
 		cube.rotates = true;
 		cube.position = Point::new(1.0, 0.495, -2.0);
 
-		let contacts = touches((&cube, 0), (&floor, 1));
+		let contacts = touches((&cube, 0), (&floor, 1), 1.0 / 60.0);
 
 		// One at each corner of the underside, each 0.005 into the floor, and each with its own number.
 		assert_eq!(contacts.len(), 4);
@@ -957,13 +1284,13 @@ mod tests {
 
 		// A box that does not rotate cannot rock, so one contact holds it.
 		cube.rotates = false;
-		assert_eq!(touches((&cube, 0), (&floor, 1)).len(), 1);
+		assert_eq!(touches((&cube, 0), (&floor, 1), 1.0 / 60.0).len(), 1);
 
 		// Standing on an edge, the box that rotates is held at the two ends of that edge.
 		cube.rotates = true;
 		cube.orientation = about_z(std::f32::consts::FRAC_PI_4);
 		cube.position = Point::new(0.0, std::f32::consts::FRAC_1_SQRT_2 - 0.01, 0.0);
-		let contacts = touches((&cube, 0), (&floor, 1));
+		let contacts = touches((&cube, 0), (&floor, 1), 1.0 / 60.0);
 		assert_eq!(contacts.len(), 2, "{contacts:?}");
 		for z in [-0.5, 0.5] {
 			assert!(
@@ -986,7 +1313,7 @@ mod tests {
 		capsule.rotates = true;
 		capsule.position = Point::new(0.0, 0.29, 1.0);
 
-		let contacts = touches((&capsule, 0), (&floor, 1));
+		let contacts = touches((&capsule, 0), (&floor, 1), 1.0 / 60.0);
 
 		assert_eq!(contacts.len(), 2, "{contacts:?}");
 		for x in [-0.6, 0.6] {
@@ -1026,7 +1353,7 @@ mod tests {
 		hull.rotates = true;
 		hull.position = Point::new(0.0, 0.49, 0.0);
 
-		let contacts = touches((&hull, 0), (&floor, 1));
+		let contacts = touches((&hull, 0), (&floor, 1), 1.0 / 60.0);
 
 		// The side is as deep in the floor as the cube's is, and it is held where its rounded edges begin.
 		assert_eq!(contacts.len(), 4, "{contacts:?}");
@@ -1056,7 +1383,7 @@ mod tests {
 		hull.rotates = true;
 		hull.position = Point::new(0.0, std::f32::consts::FRAC_1_SQRT_2 - 0.01, 0.0);
 
-		let contacts = touches((&hull, 0), (&floor, 1));
+		let contacts = touches((&hull, 0), (&floor, 1), 1.0 / 60.0);
 
 		// The edge is rounded. The two sides that meet at it each move in by the margin, which moves the edge in by
 		// the square root of one and a half times as much, and the rounding reaches the margin back out from there.
@@ -1117,6 +1444,7 @@ mod tests {
 				0.0,
 				None,
 				Some(placed_a.extent_with(&placed_b)),
+				0.0,
 				&mut ContactScratch::default(),
 			);
 

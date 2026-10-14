@@ -501,12 +501,10 @@ fn prepare(
 	let bounces = touching & closing_speed.simd_gt(f32x4::splat(BOUNCE_SPEED));
 	let depth = f32x4::from_array(contacts.map(|contact| contact.depth));
 	// A contact with a negative depth is between bodies that are that far short of touching there, as they can be at
-	// a corner of the patch they touch over. They may close that gap in this step, and no more.
+	// a corner of the patch they touch over, or when they were moved up to each other along their paths. They may
+	// close that gap in this step, after what they close until the time of the contact, and no more.
 	let gap = (zero - depth).simd_max(zero);
-	let allowance = touching.select(
-		gap.simd_gt(zero).select(gap / f32x4::splat(dt), zero),
-		closing_speed.simd_max(zero) * time / f32x4::splat(dt),
-	);
+	let allowance = (closing_speed.simd_max(zero) * time + gap) / f32x4::splat(dt);
 	let overlapping = touching & movable;
 	let overlap =
 		((depth - f32x4::splat(OVERLAP_SLACK)).simd_max(zero) * f32x4::splat(OVERLAP_SHARE)).simd_min(f32x4::splat(MAX_SHIFT));

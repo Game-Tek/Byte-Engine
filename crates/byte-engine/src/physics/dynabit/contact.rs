@@ -8,6 +8,8 @@ pub struct Contact {
 	pub(crate) a: Side,
 	pub(crate) b: Side,
 	pub(crate) normal: UnitVector,
+	/// How far the bodies are in each other at the time of the contact. Negative for bodies that are that far
+	/// short of touching then.
 	pub(crate) depth: f32,
 	/// How far into the step the bodies touch, in seconds. Zero for bodies that touch where they are. For bodies
 	/// that touch later, the contact holds them to the speed that brings them together as the step ends.

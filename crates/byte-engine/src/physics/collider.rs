@@ -102,6 +102,20 @@ impl Shapes {
 		};
 		AABB::from_center_and_half_extents(center, half_extents)
 	}
+
+	/// Returns how far the shape reaches from its middle where it is thinnest: the radius of a sphere and of a
+	/// capsule, and the smallest half size of a box and of the box around a hull.
+	///
+	/// A body that moves further than this in a step can end the step on the far side of a thin body without ever
+	/// overlapping it. [`crate::physics::PhysicsBody::outruns_its_shape`] compares a step's travel with it.
+	pub(crate) fn thinnest_reach(&self) -> f32 {
+		let half_sizes = match self {
+			Self::Sphere { radius } | Self::Capsule { radius, .. } => return *radius,
+			Self::Cube { size } => *size,
+			Self::ConvexHull(hull) => hull.bounds().half_extents(),
+		};
+		half_sizes.to_array().into_iter().map(f32::abs).fold(f32::INFINITY, f32::min)
+	}
 }
 
 /// Returns the unit-mass moment of inertia of a solid sphere about any axis through its middle.

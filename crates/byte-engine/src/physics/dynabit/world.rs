@@ -2055,4 +2055,56 @@ mod tests {
 			assert!(speed <= 0.05, "part {part} moves at {speed}");
 		}
 	}
+
+	#[test]
+	fn a_joint_with_resistance_gives_way_until_the_resistance_holds_it() {
+		// Gravity of 16 leans a bar of a kilogram that sticks out to the side down, with 8 newton meters at first.
+		// A resistance that grows with the angle has taken up what the bar gains by leaning where five times the
+		// angle squared, for a resistance of ten newton meters a radian, is 8 times the sine of the angle. The bar
+		// stays there, as the resistance is more than gravity's pull by then. A stiffer joint stops sooner.
+		for (stiffness, stop) in [(10.0, 1.21), (40.0, 0.39)] {
+			let level = Orientation::identity();
+			let joint = |post, bar, axis| {
+				Constraint::ball(post, bar, axis, None, None).with_resistance(move |turned| stiffness * turned.value())
+			};
+			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
+
+			scene.run(240);
+
+			let bar = scene.body(bar);
+			assert!(
+				(lean(bar, level) - stop).abs() <= 0.05,
+				"the bar rests leaning {}",
+				lean(bar, level)
+			);
+			assert!(bar.angular_velocity.length() <= 0.05);
+			assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+		}
+	}
+
+	#[test]
+	fn a_joint_with_resistance_lets_its_body_turn_back() {
+		// A bar that hangs down and is knocked into a swing, with and without a joint that resists.
+		let furthest_and_last = |resistance: f32| {
+			let hanging = hanging();
+			let joint = |post, bar, axis| {
+				Constraint::ball(post, bar, axis, None, None).with_resistance(move |turned| resistance * turned.value())
+			};
+			let (mut scene, bar, _) = make_jointed_bar(hanging, Vector::new(2.0, 0.0, 0.0), Vector::zero(), joint);
+			let mut furthest = 0.0f32;
+			for _ in 0..600 {
+				scene.run(1);
+				furthest = furthest.max(lean(scene.body(bar), hanging));
+			}
+			(furthest, lean(scene.body(bar), hanging))
+		};
+
+		let (free, _) = furthest_and_last(0.0);
+		let (furthest, last) = furthest_and_last(5.0);
+
+		// The resistance stops the bar short of where it swings to freely, and does not hold it there: gravity
+		// brings the bar back, to swing less far every time.
+		assert!(furthest <= free - 0.1, "the bar swung out {furthest}, and {free} freely");
+		assert!(last <= 0.05, "the bar ends leaning {last}");
+	}
 }

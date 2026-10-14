@@ -17,7 +17,7 @@ use crate::{
 	core::factory::Handle,
 	physics::{
 		LocalSpace,
-		constraint::{Constraint, Kind},
+		constraint::{Constraint, Kind, Resist},
 		dynabit::{
 			body::PhysicsBody,
 			solver::{BodyMotion, BodyState, ContactSolver},
@@ -25,10 +25,10 @@ use crate::{
 	},
 };
 
-/// The most rows one constraint has, which a hinge with a limit does: three that pin its anchors together, two that
-/// keep its bodies turned about its pin only, and one that stops them at the limit. Other joints have other rows
-/// after the three that pin them.
-const ROWS: usize = 6;
+/// The most rows one constraint has, which a hinge with a limit and resistance does: three that pin its anchors
+/// together, two that keep its bodies turned about its pin only, one that stops them at the limit, and one that
+/// holds them back. Other joints have other rows after the three that pin them.
+const ROWS: usize = 7;
 
 /// The range of impulses of a row that both pulls and pushes, as far as it takes.
 const BOTH_WAYS: [f32; 2] = [f32::NEG_INFINITY, f32::INFINITY];
@@ -162,10 +162,8 @@ impl Constraints {
 
 			let first_row = self.rows.len();
 			let turned = [first.orientation, second.orientation];
-			let mut pins = |axis| {
-				let rest = *held.rest.get_or_insert_with(|| turned[0].inverse().compose(turned[1]));
-				Pins::new(turned, rest, axis)
-			};
+			let mut rest = || *held.rest.get_or_insert_with(|| turned[0].inverse().compose(turned[1]));
+			let mut pins = |axis| Pins::new(turned, rest(), axis);
 			// Every joint pins its anchors together with rows 0 to 2. What it allows of how its bodies turn is told
 			// by its other rows.
 			match held.constraint.kind() {
@@ -187,6 +185,9 @@ impl Constraints {
 					let lean = lean.and_then(|limit| joined.lean_stop(4, &pins, limit));
 					self.rows.extend(joined.pin().chain(twist).chain(lean));
 				}
+			}
+			if let Some(resistance) = held.constraint.resistance() {
+				self.rows.extend(joined.resisted(6, turned, rest(), resistance));
 			}
 			for row in &mut self.rows[first_row..] {
 				// A row that only pulls or only pushes may have changed which since it left the impulse.
@@ -319,6 +320,30 @@ impl Joined {
 		}
 		let past = sine.atan2(first_pin.dot(second_pin)) - limit.value();
 		self.about(number, leans_about / sine, self.stop(past, past <= 0.0), [0.0, f32::INFINITY])
+	}
+
+	/// Returns the row that holds the second body back from turning further away from how it was turned to the
+	/// first when the constraint first held them. `resistance` returns the torque that does, in newton meters, at
+	/// the angle the body is turned by. None for bodies that are turned as they were then.
+	///
+	/// `turned` is how the two bodies are turned, and `rest` how the second was as the first saw it then.
+	fn resisted(&self, number: usize, turned: [Orientation; 2], rest: Orientation, resistance: &Resist) -> Option<Row> {
+		// However the second body has turned since, one turn about one line takes it there. The angle of that turn
+		// grows as fast as the bodies turn relative to each other about that line.
+		let turn = turned[0].inverse().compose(turned[1]).compose(rest.inverse());
+		let turn = turn.to_rotation_vector::<LocalSpace>();
+		let angle = turn.length();
+		if angle <= f32::EPSILON {
+			return None;
+		}
+		// The most impulse the torque gives in this step. A row that may pull no harder slows the turn by what
+		// that does, and stops a turn that takes less. It never turns the bodies back, as it pulls one way only.
+		let most = resistance(Radians::new(angle)) * self.dt;
+		// A torque that is not a number, or that would push the body on, holds nothing back.
+		if most.is_nan() || most <= 0.0 {
+			return None;
+		}
+		self.about(number, to_world(turned[0], turn / angle), 0.0, [0.0, most])
 	}
 
 	/// Returns the row that limits how the anchors move relative to each other along `direction`, a unit vector.

@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, ops::RangeInclusive};
+use std::{f32::consts::PI, fmt, ops::RangeInclusive, sync::Arc};
 
 use math::{Point, Radians, UnitVector};
 
@@ -7,10 +7,13 @@ use crate::{core::factory::Handle, physics::LocalSpace};
 /// The `Constraint` struct describes a limit on how two physics bodies may move relative to each other, such as a rod
 /// between them or a joint that connects them.
 ///
-/// Make one with [`Self::distance`], [`Self::hinge`], [`Self::constant_velocity`] or [`Self::ball`] and send it through a constraint factory, as a
-/// [`crate::physics::Body`] is sent through a body factory. The physics world holds the two bodies to it in every
-/// step that both are in the world, so the constraint and its bodies can be created in any order. Delete the handle
-/// it was created with to let the bodies go.
+/// Make one with [`Self::distance`], [`Self::hinge`], [`Self::constant_velocity`] or [`Self::ball`] and send it
+/// through a constraint factory, as a [`crate::physics::Body`] is sent through a body factory. The physics world
+/// holds the two bodies to it in every step that both are in the world, so the constraint and its bodies can be
+/// created in any order. Delete the handle it was created with to let the bodies go.
+///
+/// A joint stops dead at its limits. Add [`Self::with_resistance`] for one that gives way gradually instead, as the
+/// joints of a body do.
 ///
 /// Bodies that a constraint holds still collide with each other. Shape and place them so that they do not touch in
 /// any pose the constraint allows.
@@ -19,6 +22,22 @@ pub struct Constraint {
 	bodies: [Handle; 2],
 	anchors: [Point<LocalSpace>; 2],
 	kind: Kind,
+	resistance: Option<Resistance>,
+}
+
+/// The `Resistance` struct holds the function that tells how hard a [`Constraint`] holds its second body back at an
+/// angle from its first pose. See [`Constraint::with_resistance`].
+#[derive(Clone)]
+struct Resistance(Arc<Resist>);
+
+/// A function that returns the torque, in newton meters, that holds a body back when it is turned by an angle.
+pub(crate) type Resist = dyn Fn(Radians) -> f32 + Send + Sync;
+
+impl fmt::Debug for Resistance {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// A function has nothing to show but that it is there.
+		formatter.write_str("Resistance(..)")
+	}
 }
 
 /// The `Kind` enum tells what a [`Constraint`] holds its two bodies to.
@@ -143,6 +162,27 @@ impl Constraint {
 			bodies: [first, second],
 			anchors: [Point::origin(); 2],
 			kind,
+			resistance: None,
+		}
+	}
+
+	/// Returns this constraint with a resistance to its second body turning away from how it is turned to the first
+	/// in the first step that the world has both. Use it for a joint that gets harder to turn the further it is
+	/// turned, as a shoulder does, where a limit lets it turn freely and then stops it dead.
+	///
+	/// `resistance` returns the torque, in newton meters, that holds the second body back when it is turned by an
+	/// angle from that first pose. The angle counts every way of turning together, leaning and twisting alike, and
+	/// is no more than a half turn. Return more for larger angles and the joint gives way gradually: it turns until
+	/// the torque matches what turns it, and has taken up the speed it came with. Return nothing at no angle, so
+	/// that the joint is free around its first pose.
+	///
+	/// The torque only brakes: it slows a body that turns further away, as far as stopping it, but does not turn it
+	/// back, and leaves alone a body that turns back. The world calls `resistance` once in every step, so keep it
+	/// short. The limits of a joint still stop it where they are set.
+	pub fn with_resistance(self, resistance: impl Fn(Radians) -> f32 + Send + Sync + 'static) -> Self {
+		Self {
+			resistance: Some(Resistance(Arc::new(resistance))),
+			..self
 		}
 	}
 
@@ -168,6 +208,11 @@ impl Constraint {
 	/// Returns what the constraint holds its two bodies to.
 	pub fn kind(&self) -> Kind {
 		self.kind
+	}
+
+	/// Returns the function that [`Self::with_resistance`] gave the constraint, if any.
+	pub(crate) fn resistance(&self) -> Option<&Resist> {
+		self.resistance.as_ref().map(|resistance| &*resistance.0)
 	}
 }
 

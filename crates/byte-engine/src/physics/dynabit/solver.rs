@@ -285,10 +285,10 @@ impl BodyMotion {
 		})
 	}
 
-	/// Adds `changes` to the linear velocity, the angular velocity, and the shift, in that order.
-	pub(super) fn add(&mut self, changes: [Vector; 3]) {
-		// The angular velocity from before the step, which follows them, has no change and stays as it is.
-		for (part, change) in self.0.iter_mut().zip(changes) {
+	/// Adds `linear` to the linear velocity and `angular` to the angular velocity.
+	pub(super) fn push(&mut self, linear: Vector, angular: Vector) {
+		// The shift, and the angular velocity from before the step, stay as they are.
+		for (part, change) in self.0.iter_mut().zip([linear, angular]) {
 			let [x, y, z] = change.to_array();
 			*part += f32x4::from_array([x, y, z, 0.0]);
 		}
@@ -401,12 +401,10 @@ const OVERLAP_SHARE: f32 = 0.2;
 /// The overlap, in meters, that contacts leave alone, so that resting bodies stay in contact from step to step.
 const OVERLAP_SLACK: f32 = 0.005;
 
-/// The farthest, in meters, that one contact shifts its bodies apart in one step, or that one constraint shifts its
-/// bodies to where it holds them.
+/// The farthest, in meters, that one contact shifts its bodies apart in one step.
 ///
-/// Bodies that start deep inside each other, or far from where their constraint holds them, then drift there instead
-/// of jumping.
-pub(super) const MAX_SHIFT: f32 = 0.05;
+/// Bodies that start deep inside each other then drift apart instead of jumping.
+const MAX_SHIFT: f32 = 0.05;
 
 /// The `WideContact` struct holds what [`solve`] needs to know about up to [`WIDTH`] contacts, worked out once so
 /// that every pass only reads and writes velocities.

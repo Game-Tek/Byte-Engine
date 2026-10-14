@@ -180,7 +180,7 @@ impl World {
 			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, lanes, step));
 			let (shared_batches, rest) = lane.broadcast_mut(world, |world| {
 				let batches = world.batch_share_contacts(lanes);
-				world.pre_solve_constraints();
+				world.pre_solve_constraints(step);
 				batches
 			});
 			// Every lane works on one batch at a time, which the stage's key says.
@@ -321,14 +321,14 @@ impl World {
 	}
 
 	/// Gets the constraints ready for the step, once [`Self::batch_share_contacts`] has begun the solver's.
-	fn pre_solve_constraints(&mut self) {
+	fn pre_solve_constraints(&mut self, dt: MediaTime) {
 		// Constraints name their bodies by handle, so they hold whichever body has the handle in this step.
 		let (bodies, slots) = (&*self.bodies.get_mut(), &self.handles_to_bodies);
 		let body = |handle| {
 			let index = *slots.get(&handle)?;
 			Some((index.index(), bodies.get(index)?))
 		};
-		self.constraints.pre_solve(body, &mut self.solver);
+		self.constraints.pre_solve(body, &mut self.solver, dt.as_seconds_f32());
 	}
 
 	/// Prepares the contacts that follow the first `shared_batches` batches, which one lane then passes over in turn.
@@ -1380,9 +1380,10 @@ mod tests {
 			fastest = fastest.max(bob.linear_velocity.length());
 		}
 
-		assert!(furthest_off <= 0.02, "the bob was {furthest_off} off the length");
+		// A rod that swings this fast is left a few centimeters off its length by every step, and takes up a share.
+		assert!(furthest_off <= 0.08, "the bob was {furthest_off} off the length");
 		// It falls two meters to the lowest point of its swing, which it passes at the speed that fall gives it.
-		assert!((lowest + 2.0).abs() <= 0.02, "the bob got down to {lowest}");
+		assert!((lowest + 2.0).abs() <= 0.08, "the bob got down to {lowest}");
 		assert!((fastest - 8.0).abs() <= 0.4, "the bob got as fast as {fastest}");
 	}
 
@@ -1427,7 +1428,7 @@ mod tests {
 			least_upright = least_upright.min(uprightness(hung));
 		}
 
-		assert!(furthest_off <= 0.02, "the corner was {furthest_off} off the length");
+		assert!(furthest_off <= 0.06, "the corner was {furthest_off} off the length");
 		assert!(least_upright < 0.9, "the box stayed {least_upright} upright");
 	}
 
@@ -1447,6 +1448,38 @@ mod tests {
 		let last = scene.body(last);
 		assert!((last.position - math::Point::new(0.0, LINKS as f32 * -0.5, 0.0)).length() <= 0.02);
 		assert!(last.linear_velocity.length() <= 0.02);
+	}
+
+	#[test]
+	fn a_chain_carries_a_body_much_heavier_than_its_links() {
+		const LINKS: usize = 12;
+		let mut scene = Constrained::on(1);
+		let mut bodies = vec![scene.add(make_fixed_point(math::Point::origin()))];
+		for link in 1..=LINKS {
+			let mut bob = make_bob(math::Point::new(0.0, link as f32 * -0.25, 0.0));
+			if link == LINKS {
+				bob.inv_mass = 0.1;
+			}
+			bodies.push(scene.add(bob));
+			scene.rod(bodies[link - 1], bodies[link], 0.25);
+		}
+
+		// Each link is pulled by all of the weight under it, which it only feels once the links under it have. So the
+		// links stretch by tens of centimeters together unless they are solved several times over, each step
+		// starting from the impulses of the one before.
+		let mut furthest_off = 0.0f32;
+		for _ in 0..180 {
+			scene.run(1);
+			let lengths = bodies
+				.windows(2)
+				.map(|link| (scene.body(link[1]).position - scene.body(link[0]).position).length());
+			furthest_off = furthest_off.max(lengths.map(|length| (length - 0.25).abs()).sum());
+		}
+
+		assert!(
+			furthest_off <= 0.09,
+			"the links were {furthest_off} off their lengths together"
+		);
 	}
 
 	#[test]
@@ -1487,7 +1520,7 @@ mod tests {
 
 		let rod = on_one - math::Point::new(0.0, 6.0, 0.0);
 		assert!(
-			(rod.length() - 2.0).abs() <= 0.02 && rod.y() < -1.0,
+			(rod.length() - 2.0).abs() <= 0.08 && rod.y() < -1.0,
 			"the bob is at {on_one:?}"
 		);
 		assert_eq!(swung(4), on_one);
@@ -1525,9 +1558,9 @@ mod tests {
 		scene.run(10);
 
 		scene.constraints.derive(rod, Constraint::distance(point, bob, 1.5));
-		scene.run(60);
+		scene.run(180);
 
-		// The bob is let down to the new length, and hangs there.
+		// The bob is let down to the new length, a share of the way with every step, and hangs there.
 		assert!((scene.body(bob).position.y() + 1.5).abs() <= 0.01);
 		assert!(scene.body(bob).linear_velocity.length() <= 0.05);
 	}

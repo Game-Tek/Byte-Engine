@@ -8,6 +8,9 @@
 //! steps: it runs on the calling thread. The one of 65,536 bodies shows what a step costs as a world grows, on as
 //! many lanes as the machine's default gives it.
 //!
+//! The bodies of both piles are kept awake, so that every step simulates all of them. A world lets bodies that have
+//! come to rest sleep, and a step of a pile that sleeps takes no time, which would leave nothing to measure.
+//!
 //! Each sample times 30 steps, so the item rate is steps per second and a sample's time divided by 30 is one step.
 //! Compare the fastest samples of two or three runs: the system sometimes runs a whole row on its slower cores,
 //! which more than doubles that row's times.
@@ -116,6 +119,8 @@ impl Scene {
 			published,
 			elapsed: MediaTime::ZERO,
 		};
+		// Every step is to simulate the whole pile, also the parts of it that have come to rest.
+		scene.world.set_sleeping(false);
 
 		let floor = handles.create(());
 		body_factory.derive(

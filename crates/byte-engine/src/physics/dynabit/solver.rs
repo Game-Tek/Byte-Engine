@@ -135,6 +135,9 @@ pub(super) struct BodyState {
 
 impl BodyState {
 	/// Works out the state of `body` where it is now.
+	// Every lane works this out for each of its bodies in every step. Since a body that wakes during a step is taken
+	// again, the compiler leaves it out of line unless told, which made steps of a small pile slower.
+	#[inline(always)]
 	fn of(body: &PhysicsBody) -> Self {
 		let inverse_moments = body.inverse_moments();
 		let offset = body.center_of_mass.to_array();
@@ -369,7 +372,9 @@ fn gather(motions: [[&BodyMotion; WIDTH]; 2]) -> [WideMotion; 2] {
 }
 
 /// Writes `motions` to the bodies of the group of `claim` that contacts can move.
-#[inline]
+// Every pass over a group of contacts ends with this, and as a call it made steps of a small pile slower. The
+// compiler does not always make it part of the passes by itself.
+#[inline(always)]
 fn scatter(bodies: &mut BatchOwned<'_, BodyMotion>, claim: &Claim<WIDTH>, motions: [WideMotion; 2]) {
 	let motions = motions.map(|motion| [per_body(motion.linear), per_body(motion.angular), per_body(motion.shift)]);
 	bodies.write(claim, |side, place, body| {
@@ -443,11 +448,11 @@ pub(crate) struct WideContact {
 }
 
 impl WideContact {
-	/// Returns the two bodies of each contact, and which of their contacts it is, with the impulse that holds them
-	/// apart, for [`prepare`] to start from in the next step.
-	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], u8, f32)> + '_ {
+	/// Returns the two bodies of each contact, and which of their contacts it is, with the impulses that hold them:
+	/// the one that holds them apart and then the two of friction, for [`prepare`] to start from in the next step.
+	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], u8, [f32; 3])> + '_ {
 		(0..WIDTH).filter(|lane| (self.in_use >> lane) & 1 == 1).map(|lane| {
-			let push = f32::from_bits(self.applied[0][lane].load(Ordering::Relaxed));
+			let push = [0, 1, 2].map(|direction| f32::from_bits(self.applied[direction][lane].load(Ordering::Relaxed)));
 			(
 				[self.bodies.entry(0, lane), self.bodies.entry(1, lane)],
 				self.corners[lane],
@@ -460,9 +465,15 @@ impl WideContact {
 /// Works out what [`solve`] needs for the contacts `group` names in `contacts`, from the `states` of their bodies.
 ///
 /// `group` holds at most [`WIDTH`] contacts, and `bodies` is the batches' claim on the motions of their bodies, in
-/// `motions`. `dt` is the length of the step in seconds. `last_push` returns the impulse that held two bodies apart
-/// in the last step, or zero: resting bodies need about the same again, so it is applied to `motions` right away and
-/// [`solve`] only has to adjust it. Pass the result to [`solve`] once per pass.
+/// `motions`. `dt` is the length of the step in seconds. `last_push` returns the impulses that held two bodies in
+/// the last step, or zeros: the one that held them apart, and the two of friction. Resting bodies need about the
+/// same again, so they are applied to `motions` right away and [`solve`] only has to adjust them. Pass the result
+/// to [`solve`] once per pass.
+///
+/// Friction starts from the last step as the push does because a pile leans on it: a body that lies on a slope
+/// of other bodies is only held by friction. Started from nothing, the passes of one step do not work friction
+/// out through a deep pile, and a thousand boxes that had been dropped ten layers deep kept creeping by
+/// centimeters a second for more than half a minute.
 fn prepare(
 	states: &[BodyState],
 	motions: &mut BatchOwned<'_, BodyMotion>,
@@ -470,7 +481,7 @@ fn prepare(
 	bodies: Claim<WIDTH>,
 	group: &[u32],
 	dt: f32,
-	last_push: impl Fn([usize; 2], u8) -> f32,
+	last_push: impl Fn([usize; 2], u8) -> [f32; 3],
 ) -> WideContact {
 	debug_assert!(
 		!group.is_empty() && group.len() <= WIDTH,
@@ -503,6 +514,8 @@ fn prepare(
 	};
 	let across = normal.cross(axis);
 	let across = across * (one / across.dot(across).sqrt());
+	// Every contact names the body in the lower slot first, so a pair's directions point the same way from step to
+	// step, and so do the impulses along them that the next step starts from.
 	let directions = [normal, across, normal.cross(across)];
 
 	let inverse_mass_sum = a.inverse_mass + b.inverse_mass;
@@ -544,14 +557,22 @@ fn prepare(
 		((depth - f32x4::splat(OVERLAP_SLACK)).simd_max(zero) * f32x4::splat(OVERLAP_SHARE)).simd_min(f32x4::splat(MAX_SHIFT));
 
 	let corners = contacts.map(|contact| contact.corner);
-	let pushes = f32x4::from_array(std::array::from_fn(|lane| {
+	let last: [[f32; 3]; WIDTH] = std::array::from_fn(|lane| {
 		if lane < group.len() {
 			last_push([sides[0][lane].object, sides[1][lane].object], corners[lane])
 		} else {
-			0.0
+			[0.0; 3]
 		}
-	}));
+	});
+	let pushes = f32x4::from_array(last.map(|last| last[0]));
 	let pushes = solvable[0].select(pushes.simd_max(zero), zero);
+	// Friction starts from what it held the bodies with in the last step, as far as the push it starts with allows.
+	let friction = a.friction * b.friction;
+	let held = [1, 2].map(|direction| solvable[direction].select(f32x4::from_array(last.map(|last| last[direction])), zero));
+	let limit = friction * pushes;
+	let length = (held[0] * held[0] + held[1] * held[1]).sqrt();
+	let scale = length.simd_gt(limit).select(limit / length, one);
+	let held = held.map(|held| held * scale);
 	let contact = WideContact {
 		bodies,
 		corners,
@@ -561,7 +582,7 @@ fn prepare(
 		turns,
 		inverse_mass: [a.inverse_mass, b.inverse_mass],
 		masses,
-		friction: a.friction * b.friction,
+		friction,
 		parting: bounces.select(a.elasticity * b.elasticity * closing_speed, zero) - allowance,
 		overlap: overlapping.select(overlap, zero),
 		shares: [
@@ -570,14 +591,16 @@ fn prepare(
 		],
 		applied: [
 			pushes.to_array().map(|push| AtomicU32::new(push.to_bits())),
-			Default::default(),
-			Default::default(),
+			held[0].to_array().map(|push| AtomicU32::new(push.to_bits())),
+			held[1].to_array().map(|push| AtomicU32::new(push.to_bits())),
 			Default::default(),
 		],
 	};
 
-	// The push that held the bodies apart in the last step is where the passes start from.
-	push(&contact, &mut started, 0, pushes);
+	// What held the bodies in the last step is where the passes start from.
+	for (direction, impulse) in [pushes, held[0], held[1]].into_iter().enumerate() {
+		push(&contact, &mut started, direction, impulse);
+	}
 	scatter(motions, &contact.bodies, started);
 	contact
 }
@@ -650,9 +673,9 @@ fn push(contact: &WideContact, motions: &mut [WideMotion; 2], direction: usize, 
 	motions[1].angular = motions[1].angular + contact.turns[1][direction] * impulse;
 }
 
-/// The `LastPushes` struct keeps the impulse that held each pair of bodies apart at each of their contacts in the
-/// last step, by [`pair_key`]. Resting bodies need about the same impulse again, so the next step's solve starts
-/// from it.
+/// The `LastPushes` struct keeps the impulses that held each pair of bodies at each of their contacts in the last
+/// step, by [`pair_key`]: the one that held them apart, and the two of friction. Resting bodies need about the
+/// same impulses again, so the next step's solve starts from them.
 ///
 /// Every step replaces all of them, which took a tenth of a step of a large pile when one lane did it. This is a
 /// table that any number of lanes can add to at the same time: a lane claims a slot by stamping it with the step.
@@ -668,14 +691,14 @@ struct LastPushes {
 	read: u32,
 }
 
-/// The `PushSlot` struct holds one impulse of [`LastPushes`] next to its key, so that finding an impulse reads one
-/// cache line.
+/// The `PushSlot` struct holds the impulses of one contact in [`LastPushes`] next to their key, so that finding
+/// them reads one cache line.
 #[derive(Default)]
 struct PushSlot {
 	key: AtomicU64,
-	/// The impulse, as the bits of an `f32`.
-	push: AtomicU32,
-	/// The step whose impulse the slot holds. A slot with another stamp than the one asked for is empty.
+	/// The impulse that holds the bodies apart and the two of friction, each as the bits of an `f32`.
+	push: [AtomicU32; 3],
+	/// The step whose impulses the slot holds. A slot with another stamp than the one asked for is empty.
 	stamp: AtomicU32,
 }
 
@@ -691,23 +714,23 @@ impl LastPushes {
 		(0..slots).map(move |step| &self.slots[(first + step) & (slots - 1)])
 	}
 
-	/// Returns the impulse the last step kept for `key`, or zero.
+	/// Returns the impulses the last step kept for `key`, or zeros.
 	#[inline]
-	fn get(&self, key: u64) -> f32 {
+	fn get(&self, key: u64) -> [f32; 3] {
 		for slot in self.slots(key) {
 			if slot.stamp.load(Ordering::Relaxed) != self.read {
 				break;
 			}
 			if slot.key.load(Ordering::Relaxed) == key {
-				return f32::from_bits(slot.push.load(Ordering::Relaxed));
+				return slot.push.each_ref().map(|push| f32::from_bits(push.load(Ordering::Relaxed)));
 			}
 		}
-		0.0
+		[0.0; 3]
 	}
 
-	/// Keeps `push` as this step's impulse for `key`, which no other call may be given in this step. Lanes can each
+	/// Keeps `push` as this step's impulses for `key`, which no other call may be given in this step. Lanes can each
 	/// insert impulses at the same time, as long as nothing calls [`Self::get`] meanwhile.
-	fn insert(&self, key: u64, push: f32) {
+	fn insert(&self, key: u64, push: [f32; 3]) {
 		let stamp = self.read + 1;
 		for slot in self.slots(key) {
 			// The lane that changes a slot's stamp to this step's has the slot. A slot that already has it is taken.
@@ -718,7 +741,10 @@ impl LastPushes {
 			};
 			if found != stamp && claim(found).is_ok() {
 				slot.key.store(key, Ordering::Relaxed);
-				return slot.push.store(push.to_bits(), Ordering::Relaxed);
+				for (slot, push) in slot.push.iter().zip(push) {
+					slot.store(push.to_bits(), Ordering::Relaxed);
+				}
+				return;
 			}
 		}
 		debug_assert!(
@@ -747,7 +773,10 @@ impl LastPushes {
 		self.read -= 1;
 		for mut slot in kept {
 			if *slot.stamp.get_mut() == self.read + 1 {
-				self.insert(*slot.key.get_mut(), f32::from_bits(*slot.push.get_mut()));
+				self.insert(
+					*slot.key.get_mut(),
+					slot.push.each_mut().map(|push| f32::from_bits(*push.get_mut())),
+				);
 			}
 		}
 		self.read += 1;
@@ -758,7 +787,7 @@ impl LastPushes {
 	fn retain(&mut self, keep: impl Fn(u64) -> bool) {
 		for slot in &mut self.slots {
 			if *slot.stamp.get_mut() == self.read && !keep(*slot.key.get_mut()) {
-				*slot.push.get_mut() = 0.0f32.to_bits();
+				slot.push = Default::default();
 			}
 		}
 	}
@@ -786,7 +815,7 @@ pub(crate) struct ContactSolver {
 	/// The velocities of the bodies while the step's contacts are solved, by body slot. Lanes start them off like
 	/// `states`.
 	motions: LaneRanges<LaneCells<BodyMotion>>,
-	/// The impulse that held each pair of bodies apart at each of their contacts in the last step.
+	/// The impulses that held each pair of bodies at each of their contacts in the last step.
 	pushes: LastPushes,
 	/// The slots whose body was replaced since the last step. Their pairs' impulses belonged to other bodies.
 	replaced: Vec<usize>,
@@ -811,13 +840,23 @@ impl TakenBodies<'_> {
 	///
 	/// Panics if `slot` is outside the lane's range of the body slots.
 	pub(crate) fn take(&mut self, slot: usize, body: &PhysicsBody) {
-		let state = BodyState::of(body);
-		let [x, y, z] = body.angular_velocity.to_array();
 		let place = slot - self.first;
-		self.states[place] = state;
-		// Every body starts the step's contacts at its own velocities.
-		self.motions[place] = BodyMotion::starting(state.linear_velocity, f32x4::from_array([x, y, z, 0.0]));
+		(self.states[place], self.motions[place]) = taken(body);
 	}
+}
+
+/// Returns what a step's contacts need of `body` as it is now, and the motion it starts them with.
+// Every lane calls this for each of its bodies in every step. With a second caller for the bodies that wake, the
+// compiler left it out of line, which made steps of a small pile slower.
+#[inline(always)]
+fn taken(body: &PhysicsBody) -> (BodyState, BodyMotion) {
+	let state = BodyState::of(body);
+	let [x, y, z] = body.angular_velocity.to_array();
+	// Every body starts the step's contacts at its own velocities.
+	(
+		state,
+		BodyMotion::starting(state.linear_velocity, f32x4::from_array([x, y, z, 0.0])),
+	)
 }
 
 /// The `SolvedBodies` struct holds the velocities that the passes over a step's contacts left every body with.
@@ -867,6 +906,31 @@ impl ContactSolver {
 			states,
 			motions: self.motions.own(lane),
 		}
+	}
+
+	/// Takes `body`, the one in `slot`, again, as [`TakenBodies::take`] took it. Call it before [`Self::begin`], in
+	/// a stage that one lane runs, for a body that changed after the lanes took theirs, as one that was asleep does
+	/// when it wakes.
+	pub(crate) fn retake(&mut self, slot: usize, body: &PhysicsBody) {
+		(self.states.get_mut()[slot], self.motions.get_mut()[slot]) = taken(body);
+	}
+
+	/// Takes `body`, the one in `slot`, as one that contacts do not move, which a sleeping body is to the bodies
+	/// that are awake. Call it between steps, when the body falls asleep. Steps keep what it takes until the body
+	/// wakes and is taken again.
+	pub(crate) fn fix(&mut self, slot: usize, body: &PhysicsBody) {
+		let state = BodyState::of(body);
+		// Elasticity and friction stay, after the moments and their products, since they shape the contacts of the
+		// bodies that touch this one.
+		let keep_last = |vector: f32x4| vector * f32x4::from_array([0.0, 0.0, 0.0, 1.0]);
+		let fixed = BodyState {
+			center: state.center * f32x4::from_array([1.0, 1.0, 1.0, 0.0]),
+			moments: keep_last(state.moments),
+			products: keep_last(state.products),
+			linear_velocity: f32x4::splat(0.0),
+		};
+		let still = f32x4::splat(0.0);
+		(self.states.get_mut()[slot], self.motions.get_mut()[slot]) = (fixed, BodyMotion::starting(still, still));
 	}
 
 	/// Sorts a step's `contacts` into batches, ready for `lanes` lanes to prepare them. Call it once every lane has
@@ -1019,7 +1083,7 @@ const SLOT_BITS: u32 = 31;
 
 /// Returns one value for one of the contacts between a pair of body slots, the same whichever body the contact
 /// lists first. `corner` is which of the pair's contacts it is.
-fn pair_key([first, second]: [usize; 2], corner: u8) -> u64 {
+pub(crate) fn pair_key([first, second]: [usize; 2], corner: u8) -> u64 {
 	debug_assert!(
 		first.max(second) >> SLOT_BITS == 0 && corner < 4,
 		"Contact key is out of range. The most likely cause is a pair with more than four contacts."
@@ -1041,12 +1105,12 @@ mod tests {
 		let mut pushes = LastPushes::default();
 		let keys = (0..100usize).map(|body| pair_key([body, body + 1], (body % 4) as u8));
 		let holds = |pushes: &LastPushes, kept: &dyn Fn(usize) -> f32| {
-			(keys.clone().enumerate()).all(|(index, key)| pushes.get(key) == kept(index))
+			(keys.clone().enumerate()).all(|(index, key)| pushes.get(key) == [kept(index); 3])
 		};
 
 		pushes.turn(100);
 		for (index, key) in keys.clone().enumerate() {
-			pushes.insert(key, index as f32);
+			pushes.insert(key, [index as f32; 3]);
 		}
 		// The step that keeps an impulse does not read it.
 		assert!(holds(&pushes, &|_| 0.0));
@@ -1055,13 +1119,13 @@ mod tests {
 		pushes.turn(10_000);
 		assert!(holds(&pushes, &|index| index as f32));
 		// A pair without an impulse starts from none.
-		assert_eq!(pushes.get(pair_key([3, 500], 0)), 0.0);
+		assert_eq!(pushes.get(pair_key([3, 500], 0)), [0.0; 3]);
 
 		pushes.retain(|key| pair_slots(key)[0] >= 50);
 		assert!(holds(&pushes, &|index| if index < 50 { 0.0 } else { index as f32 }));
 
 		// A step keeps only the impulses of its own contacts.
-		pushes.insert(pair_key([7, 8], 3), 5.0);
+		pushes.insert(pair_key([7, 8], 3), [5.0; 3]);
 		pushes.turn(1);
 		assert!(holds(&pushes, &|index| if index == 7 { 5.0 } else { 0.0 }));
 	}
@@ -1075,14 +1139,14 @@ mod tests {
 				let pushes = &pushes;
 				scope.spawn(move || {
 					for body in (thread..4_000).step_by(4) {
-						pushes.insert(pair_key([body, body + 7], 1), body as f32);
+						pushes.insert(pair_key([body, body + 7], 1), [body as f32; 3]);
 					}
 				});
 			}
 		});
 		pushes.turn(0);
 
-		assert!((0..4_000usize).all(|body| pushes.get(pair_key([body, body + 7], 1)) == body as f32));
+		assert!((0..4_000usize).all(|body| pushes.get(pair_key([body, body + 7], 1)) == [body as f32; 3]));
 	}
 
 	#[test]

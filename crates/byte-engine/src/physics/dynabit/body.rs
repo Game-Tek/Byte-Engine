@@ -40,9 +40,74 @@ pub struct PhysicsBody {
 	/// [`crate::physics::Body::with_rotation`].
 	pub(crate) rotates: bool,
 	pub(crate) handle: Handle,
+	/// Whether the world simulates the body or lets it sleep.
+	pub(crate) rest: Rest,
+}
+
+/// The `Rest` enum tells whether a physics world simulates a body or lets it sleep, so that a step costs nothing
+/// for the bodies that lie still.
+///
+/// [`crate::physics::dynabit::sleep::Sleep`] puts bodies to sleep and wakes them. A step reads this to leave a
+/// sleeping body out, and tells it here when a body moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rest {
+	/// The body is simulated.
+	Awake {
+		/// Whether the body has left where it was when the world last began to watch its bodies for rest, or the
+		/// watch did not see where it was. A body only goes to sleep after a whole watch that it stayed there for.
+		strayed: bool,
+		/// Whether the body woke, or was created, during the current watch, which it then stays awake through.
+		woke: bool,
+		/// The first round of the current step's search for contacts that the body is awake for: zero when it
+		/// began the step awake, and the round after the one that found what woke it otherwise.
+		since: u32,
+		/// Whether the body began the current step moving, so that it wakes the sleeping bodies it comes near. A
+		/// body that woke during the step does not.
+		stirs: bool,
+	},
+	/// The body lies still and no step moves it, until something wakes it. To the bodies that are awake, it is as
+	/// fixed as one without mass. Bodies that a constraint holds together sleep and wake as one island.
+	Asleep {
+		/// The slot of the next body of the island, which leads around the island and back to this body.
+		next: u32,
+	},
+}
+
+impl Default for Rest {
+	/// Returns the state a new body starts in: awake, and with a whole watch ahead of it before it may sleep.
+	fn default() -> Self {
+		Self::Awake {
+			strayed: true,
+			woke: true,
+			since: 0,
+			stirs: false,
+		}
+	}
 }
 
 impl PhysicsBody {
+	/// The [`Self::active_since`] of a body that a step does not move.
+	pub(crate) const NEVER_ACTIVE: u32 = u32::MAX;
+
+	/// Returns whether the body sleeps.
+	pub(crate) fn is_asleep(&self) -> bool {
+		matches!(self.rest, Rest::Asleep { .. })
+	}
+
+	/// Returns the first round of the current step's search for contacts in which the body can move: zero for one
+	/// that began the step awake. Returns [`Self::NEVER_ACTIVE`] for a body that the step does not move, because
+	/// it sleeps or has no mass.
+	///
+	/// A contact changes nothing unless one of its bodies is active, so a pair of bodies is only tested in the
+	/// round that the first of them is active in.
+	#[inline]
+	pub(crate) fn active_since(&self) -> u32 {
+		match self.rest {
+			Rest::Awake { since, .. } if self.inv_mass != 0.0 => since,
+			_ => Self::NEVER_ACTIVE,
+		}
+	}
+
 	/// Applies a world-space linear impulse.
 	pub fn apply_linear_impulse(&mut self, impulse: Vector) {
 		if self.inv_mass != 0.0 {
@@ -147,6 +212,10 @@ impl PhysicsBody {
 	}
 
 	/// Returns the current world-space axis-aligned bounds.
+	// Every lane works this out for each of its bodies in every step. The world also asks it of bodies that sleep
+	// or have no mass when something disturbs them, and with those calls the compiler left it out of line, which
+	// made steps of a small pile slower.
+	#[inline(always)]
 	pub fn bounds(&self) -> AABB {
 		if self.turns_shape() {
 			return self.turned_bounds();
@@ -196,11 +265,17 @@ impl PhysicsBody {
 		if !self.turns_shape() {
 			return center_of_mass.iter().map(|offset| offset * offset).sum();
 		}
+		self.reach_squared(center_of_mass)
+	}
+
+	/// Returns the square of how far the furthest corner of the box around the body's shape is from `pivot`, a
+	/// point in the body's own space. However the body is turned about `pivot`, no point of its shape is further.
+	pub(crate) fn reach_squared(&self, pivot: [f32; 3]) -> f32 {
 		let bounds = self.collision_shape.bounds();
 		let (center, half_sizes) = (bounds.center().to_array(), bounds.half_extents().to_array());
 		(0..3)
 			.map(|axis| {
-				let furthest = (center[axis] - center_of_mass[axis]).abs() + half_sizes[axis];
+				let furthest = (center[axis] - pivot[axis]).abs() + half_sizes[axis];
 				furthest * furthest
 			})
 			.sum()
@@ -223,8 +298,13 @@ impl PhysicsBody {
 	/// another one between two steps: whatever it reaches, it still overlaps when the step ends. Testing it in place
 	/// lets its contacts be found with exact bounds.
 	pub fn outruns_its_shape(&self, dt: f32) -> bool {
-		let travel = (self.linear_velocity.length() + self.spin_speed(None)) * dt;
-		travel > self.collision_shape.thinnest_reach() * 0.5
+		self.speed() * dt > self.collision_shape.thinnest_reach() * 0.5
+	}
+
+	/// Returns the most that any point of the body's shape moves in a second, by its linear velocity and its spin
+	/// together.
+	pub(crate) fn speed(&self) -> f32 {
+		self.linear_velocity.length() + self.spin_speed(None)
 	}
 
 	/// Returns world-space bounds around everywhere [`intersect`] can find this body in contact during the next
@@ -272,6 +352,10 @@ const ADVANCES: usize = 10;
 ///
 /// `scratch` is working storage for the pairs that go through GJK. Pass the same one for every pair that one thread
 /// tests, so that testing them does not allocate.
+// The search for contacts calls this for every pair of bodies whose bounds overlap and that it does not leave out.
+// Made part of that search, it kept the rest of the search out of line, as a call for every pair of overlapping
+// bounds, and steps of a small pile took longer.
+#[inline(never)]
 pub fn intersect(
 	(a, i): (&PhysicsBody, usize),
 	(b, j): (&PhysicsBody, usize),
@@ -369,6 +453,22 @@ fn meeting_contacts(
 		}
 		(placed_a, placed_b) = (Placement::after(a, time), Placement::after(b, time));
 	}
+}
+
+/// Returns the square of the sine of half the angle between two orientations, which is about the square of half
+/// that angle when it is small.
+pub(crate) fn half_turn_squared(from: Orientation, to: Orientation) -> f32 {
+	// Two orientations an angle apart have the cosine of half of it as their product, with either sign.
+	let alike = from.dot(to);
+	(1.0 - alike * alike).max(0.0)
+}
+
+/// Returns whether [`intersect`] finds the contacts of two bodies where they are with a search over their shapes,
+/// as it does for a pair with a hull or with a shape that is turned the way its body is. The shapes of any other
+/// pair have a test of their own for each other, which costs less.
+pub(crate) fn takes_search(a: &PhysicsBody, b: &PhysicsBody) -> bool {
+	let hull = |body: &PhysicsBody| matches!(body.collision_shape, Shapes::ConvexHull(_));
+	hull(a) || hull(b) || a.turns_shape() || b.turns_shape()
 }
 
 /// Returns the contact between two bodies whose shapes have a test of their own for each other, which may find
@@ -740,6 +840,7 @@ mod tests {
 			friction: 1.0,
 			rotates: false,
 			handle: crate::core::factory::Factory::<()>::new().create(()),
+			rest: Rest::default(),
 		}
 	}
 

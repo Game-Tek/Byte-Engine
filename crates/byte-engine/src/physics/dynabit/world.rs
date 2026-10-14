@@ -17,9 +17,11 @@ use crate::{
 		body::{Body, BodyTypes},
 		constraint::Constraint,
 		dynabit::{
-			body::{PhysicsBody, intersect},
+			body::{PhysicsBody, Rest, intersect, takes_search},
 			constraint::Constraints,
-			contact::{ContactPart, Contacts},
+			contact::{Contact, ContactPart, Contacts, Mobility},
+			recycle::{self, Manifold, ManifoldPart},
+			sleep::{Sleep, WAKE_SPEED},
 			solver::{self, ContactSolver, WideContact},
 			step_lanes::StepLanes,
 			work_shares::WorkShares,
@@ -36,6 +38,13 @@ use crate::{
 /// more than a very small batch takes to solve on one lane. On an Apple M4, piles of 1,000 to 16,000 mixed boxes and
 /// spheres stepped fastest with batches shared from about this size, and up to a third slower with none shared.
 const SHARED_BATCH_CONTACTS: usize = 32;
+
+/// How far apart, in meters, the bounds of a sleeping body may be from a body that moves for the sleeping body to
+/// wake, or from where a body was moved from or to, created, or removed.
+///
+/// Bodies that lie on each other can be a little apart. A body that falls away from under a sleeping body is
+/// still this near when it has fallen for two steps, which is when it is fast enough to wake it.
+const WAKE_REACH: f32 = 0.05;
 
 /// The `World` struct owns Dynabit simulation state and synchronizes it with entity handles.
 pub struct World {
@@ -61,6 +70,26 @@ pub struct World {
 	contacts: Contacts,
 	/// Solves the step's contacts.
 	solver: ContactSolver,
+	/// Which bodies sleep, and how long the others have been at rest.
+	sleep: Sleep,
+	/// Whether bodies that have come to rest go to sleep.
+	sleeps: bool,
+	/// The bounds of every body without mass before and after its author moved it, and of those that were added or
+	/// removed, since the last step. Bodies that sleep near them wake as the next step begins.
+	disturbed: Vec<AABB>,
+	/// The slots of sleeping bodies that are about to be woken. Empty between uses, and kept so that waking does
+	/// not allocate.
+	roused: Vec<u32>,
+	/// The slots of the bodies that were created since the last step, in order, while their transforms are adopted.
+	/// Kept so that it does not allocate.
+	created: Vec<u32>,
+	/// The manifolds that the last step made or recycled, by the lane that kept them. Every lane reads them while it
+	/// searches for contacts.
+	manifolds: Vec<ManifoldPart>,
+	/// The slots of every pair of bodies that a constraint holds, the lower slot first, in order, from the start of a
+	/// step until the next one. The pairs' contacts are not recycled, because the constraint can press the bodies
+	/// into each other however little they move, and the pairs make islands of the bodies that sleep together.
+	held: Vec<[usize; 2]>,
 }
 
 impl World {
@@ -88,6 +117,13 @@ impl World {
 			detection: WorkShares::default(),
 			contacts: Contacts::default(),
 			solver: ContactSolver::default(),
+			sleep: Sleep::default(),
+			sleeps: true,
+			disturbed: Vec::new(),
+			roused: Vec::new(),
+			created: Vec::new(),
+			manifolds: Vec::new(),
+			held: Vec::new(),
 		}
 	}
 
@@ -97,6 +133,37 @@ impl World {
 	/// Use this when measurements on a machine show that other lane counts step faster there.
 	pub fn set_step_lanes(&mut self, step_lanes: StepLanes) {
 		self.step_lanes = step_lanes;
+	}
+
+	/// Replaces whether bodies that have come to rest go to sleep, which they do to start with. With `false`, every
+	/// sleeping body wakes and every step simulates every body.
+	///
+	/// A step does nothing for a sleeping body: it does not move it and publishes no transform for it. A world
+	/// whose bodies all sleep takes no time to step.
+	///
+	/// A body sleeps once it has stayed where it is for half a second, whatever the bodies that touch it do. A body
+	/// counts as staying while it moves less than two and a half centimeters and turns less than a twentieth of a
+	/// radian in that time, so a body that moves slower than that stops. Bodies that a [`Constraint`] holds
+	/// together sleep as one island, once all of them have stayed.
+	///
+	/// To the bodies that are awake, a sleeping body is as fixed as one without mass: they lie on it and lean on it
+	/// without moving it. It wakes in the step in which a body comes within five centimeters of it that moves faster
+	/// than half a meter a second, or that has moved more than a body at rest may since the current half second
+	/// began. So it is knocked away by a body that hits it, and falls once what it lies on moves away. A body that
+	/// pushes into it slower than that is stopped by it, as by a wall.
+	///
+	/// A sleeping body also wakes when it is pushed with [`Self::apply_impulse`], given a transform that moves it,
+	/// or taken hold of or let go by a constraint, and when a body near it is given a transform that moves it,
+	/// created, or removed.
+	///
+	/// Keep bodies awake to measure what a step costs, or to compare a simulation step by step with another.
+	pub fn set_sleeping(&mut self, sleeps: bool) {
+		self.sleeps = sleeps;
+		if !sleeps {
+			for slot in 0..self.bodies.get_mut().slots_len() {
+				self.wake(slot);
+			}
+		}
 	}
 
 	/// Applies a world-space linear impulse to the simulated body identified by `handle`.
@@ -112,12 +179,53 @@ impl World {
 		let Some(index) = self.handles_to_bodies.get(&handle).copied() else {
 			return false;
 		};
+		// A push moves a sleeping body, which wakes what it comes near as it moves.
+		self.wake(index.index());
 		let Some(body) = self.bodies.get_mut().get_mut(index) else {
 			return false;
 		};
 
 		body.apply_linear_impulse(impulse);
 		true
+	}
+
+	/// Wakes the body in `slot` and the island it sleeps with, between two steps.
+	fn wake(&mut self, slot: usize) {
+		self.sleep.wake(self.bodies.get_mut(), slot, 0, |_, _| ());
+	}
+
+	/// Wakes the bodies of the constraints that hold the body that was created with `handle`. Call it when that
+	/// body appears, or is one without mass that moves or goes away, which the bodies it is held to sleep through
+	/// otherwise.
+	fn wake_held_to(&mut self, handle: Handle) {
+		for bodies in self.constraints.bodies().filter(|bodies| bodies.contains(&handle)) {
+			for index in bodies.iter().filter_map(|body| self.handles_to_bodies.get(body)) {
+				self.sleep.wake(self.bodies.get_mut(), index.index(), 0, |_, _| ());
+			}
+		}
+	}
+
+	/// Wakes the bodies that sleep near where a body was moved from or to, appeared, or went away since the last
+	/// step. They may lie on it, or be in its way.
+	fn wake_disturbed(&mut self) {
+		if self.sleep.asleep() != 0 && !self.disturbed.is_empty() {
+			let near = |bounds: AABB| {
+				let (low, high) = (bounds.min().to_array(), bounds.max().to_array());
+				self.disturbed.iter().any(|disturbed| {
+					let (min, max) = (disturbed.min().to_array(), disturbed.max().to_array());
+					(0..3).all(|axis| low[axis] <= max[axis] + WAKE_REACH && min[axis] <= high[axis] + WAKE_REACH)
+				})
+			};
+			let bodies = self.bodies.get_mut();
+			let asleep = bodies
+				.indexed_iter()
+				.filter(|(_, body)| body.is_asleep() && near(body.bounds()));
+			self.roused.extend(asleep.map(|(slot, _)| slot as u32));
+			for slot in self.roused.drain(..) {
+				self.sleep.wake(bodies, slot as usize, 0, |_, _| ());
+			}
+		}
+		self.disturbed.clear();
 	}
 
 	/// Processes entity updates, advances physics as one execution of `alley`, and publishes resulting transforms.
@@ -132,13 +240,19 @@ impl World {
 	///    splits the order into the parts that every lane then merges, one lane lays out grid cells over the bounds,
 	///    and every lane lists its part of the bounds in those cells.
 	/// 3. Every lane finds the contacts in its share of the bounds, and one lane batches them. That lane also gets
-	///    the constraints ready.
+	///    the constraints ready. Where a body that moves comes near a sleeping one, that lane first wakes the
+	///    sleeping body's island, and every lane finds the contacts of the bodies that woke, in a second round. A
+	///    pair whose contacts take a search over its shapes gets the contacts it had in the last step instead, moved
+	///    with its bodies, for as long as they hardly move relative to each other.
 	/// 4. The lanes prepare the contacts and pass over them several times, sharing every batch that is large
 	///    enough, one batch to a stage. One lane takes the small ones. Before each pass, one lane solves the
 	///    constraints in turn, so that the contacts have the last word on where bodies may be. After the last pass
 	///    it keeps what the constraints start the next step from.
 	/// 5. Every lane keeps the impulses of its contacts for the next step, gives its share of the bodies their new
 	///    velocities, moves them, and publishes their transforms.
+	///
+	/// A step leaves out the bodies that sleep, and a step of a world in which no body with mass is awake does
+	/// nothing. After a step, the bodies that have come to rest go to sleep. See [`Self::set_sleeping`].
 	///
 	/// Contacts are prepared and solved in the same order whatever the number of lanes, so the simulation does not
 	/// depend on it. The order transforms are published in does: each lane publishes the bodies of its share in slot
@@ -152,9 +266,15 @@ impl World {
 	) {
 		// Listeners belong to the calling thread, so messages are adopted before the lanes start.
 		self.adopt_updates(transforms_rx);
+		self.wake_disturbed();
 
 		let step = time.delta();
 		let bodies = self.bodies.get_mut();
+		// Nothing moves in a world whose bodies all sleep or have no mass. The search ends at the first body that
+		// is awake, so it only takes long when it saves the step.
+		if !bodies.iter().any(|body| body.active_since() == 0) {
+			return;
+		}
 		let (count, slots) = (bodies.len(), bodies.slots_len());
 		let lanes = self.step_lanes.lanes(count).min(alley.parallelism());
 		// What lanes write side by side is lent to this alley's lanes, each lane its own part.
@@ -177,12 +297,25 @@ impl World {
 				let _ = lane.each_ref(world, |world, lane| world.bounds.fill(lane));
 				lane.broadcast_mut(world, |world| world.bounds.share_cells());
 			}
-			let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, lanes, step));
-			let (shared_batches, rest) = lane.broadcast_mut(world, |world| {
-				let batches = world.batch_share_contacts(lanes);
-				world.pre_solve_constraints(step);
-				batches
-			});
+			// The second round finds the contacts of the bodies that the first one woke. Those did not begin the step
+			// moving, so they wake no others.
+			let mut round = 0;
+			let (shared_batches, rest) = loop {
+				let _ = lane.each_ref(world, |world, lane| world.detect_share_contacts(lane, lanes, step, round));
+				let batches = lane.broadcast_mut(world, |world| {
+					let woke = world.gather_share_contacts(lanes, round, step);
+					if woke && round == 0 {
+						return None;
+					}
+					let batches = world.batch_contacts(lanes, (round as usize + 1) * lanes);
+					world.pre_solve_constraints(step);
+					Some(batches)
+				});
+				match batches {
+					Some(batches) => break batches,
+					None => round += 1,
+				}
+			};
 			// Every lane works on one batch at a time, which the stage's key says.
 			for batch in 0..shared_batches {
 				let _ = lane.each_ref_keyed(world, batch, |world, stage| world.prepare_share(stage, step));
@@ -212,27 +345,100 @@ impl World {
 		if let Err(panic) = executed {
 			std::panic::resume_unwind(panic);
 		}
+		// The manifolds each lane kept are the ones the next step recycles, and their storage is the next to fill.
+		self.manifolds
+			.resize_with(self.shares.iter_mut().count(), ManifoldPart::default);
+		for (lane, (share, last)) in self.shares.iter_mut().zip(&mut self.manifolds).enumerate() {
+			if lane < lanes {
+				std::mem::swap(&mut share.manifolds, last);
+			} else {
+				// A lane that did not run kept nothing in this step.
+				last.clear();
+			}
+			share.manifolds.clear();
+		}
+		if self.sleep.watch(step.as_seconds_f32()) {
+			self.settle();
+		}
+	}
+
+	/// Ends a watch for bodies at rest: puts the bodies to sleep that stayed where they were through it, with the
+	/// islands they make, and begins the next watch.
+	fn settle(&mut self) {
+		// The step that ends the watch listed the pairs that constraints hold.
+		let solver = &mut self.solver;
+		self.sleep
+			.settle(self.bodies.get_mut(), self.sleeps, self.held.iter().copied(), |slot, body| {
+				solver.fix(slot, body)
+			});
 	}
 
 	/// Registers created bodies and constraints, and applies authored transforms to the bodies they target.
 	fn adopt_updates(&mut self, transforms_rx: &mut impl Listener<TransformationUpdate>) {
+		self.created.clear();
 		while let Some(message) = self.body_listener.read() {
 			let handle = message.handle();
 			let body = message.into_data();
 			self.create_body(handle, body);
 		}
+		self.created.sort_unstable();
 		// Like bodies, creation messages are upserts, so one handle always owns at most one constraint.
 		while let Some(message) = self.constraint_listener.read() {
 			let handle = message.handle();
-			self.constraints.insert(handle, message.into_data());
+			let constraint = message.into_data();
+			// The constraint pulls on its bodies from now on, and the one it replaces no longer holds its own.
+			let held = constraint.bodies();
+			let replaced = self.constraints.insert(handle, constraint);
+			self.wake_bodies(held);
+			if let Some(replaced) = replaced {
+				self.wake_bodies(replaced.bodies());
+			}
 		}
 		while let Some(message) = transforms_rx.read() {
-			if let Some(index) = self.handles_to_bodies.get(&message.handle()).copied() {
-				let body = &mut self.bodies.get_mut()[index];
-				body.position = message.transform().get_position();
-				body.orientation = message.transform().get_orientation();
-				body.scale = message.transform().scale();
+			let handle = message.handle();
+			let Some(index) = self.handles_to_bodies.get(&handle).copied() else {
+				continue;
+			};
+			let body = &mut self.bodies.get_mut()[index];
+			let transform = message.transform();
+			let placed = (transform.get_position(), transform.get_orientation(), transform.scale());
+			// A transform that says where the body already is moves nothing, so it wakes nothing.
+			if placed == (body.position, body.orientation, body.scale) {
+				continue;
 			}
+			// Only a body that sleeps cares where others are moved.
+			let before = (self.sleep.asleep() != 0).then(|| body.bounds());
+			(body.position, body.orientation, body.scale) = placed;
+			let Some(before) = before else {
+				continue;
+			};
+			// What lay on the body where it was has to fall, and what is in its way where it is now has to move. A
+			// body that was only just created was nowhere before.
+			let after = body.bounds();
+			let created = self.created.binary_search(&(index.index() as u32)).is_ok();
+			self.disturb(handle, (!created).then_some(before).into_iter().chain([after]));
+			self.wake(index.index());
+		}
+	}
+
+	/// Wakes the bodies that were created with `handles`, with the islands they sleep with.
+	fn wake_bodies(&mut self, handles: [Handle; 2]) {
+		for index in handles
+			.map(|handle| self.handles_to_bodies.get(&handle).copied())
+			.into_iter()
+			.flatten()
+		{
+			self.wake(index.index());
+		}
+	}
+
+	/// Notes that the body that was created with `handle` appeared in, moved between, or went away from `bounds`,
+	/// so that the next step begins by waking the bodies that sleep near them. Wakes the bodies that a constraint
+	/// holds to that body right away.
+	fn disturb(&mut self, handle: Handle, bounds: impl IntoIterator<Item = AABB>) {
+		if self.sleep.asleep() != 0 {
+			self.disturbed.extend(bounds);
+			self.wake_held_to(handle);
 		}
 	}
 
@@ -242,7 +448,26 @@ impl World {
 		let mut share = self.shares.own(lane);
 		let mut taken = self.solver.take_bodies(lane);
 		let seconds = dt.as_seconds_f32();
+		// Only a body that sleeps cares whether the bodies near it move.
+		let sleepers = self.sleep.asleep() != 0;
 		for (slot, body) in self.bodies.own(lane).items() {
+			let Rest::Awake { strayed, .. } = body.rest else {
+				// A sleeping body stays as it is, and the solver keeps it as it was when it fell asleep. Its bounds,
+				// out to where a body that moves wakes it, are how bodies that are awake find it.
+				let (bounds, reach) = (body.bounds(), Vector::new(WAKE_REACH, WAKE_REACH, WAKE_REACH));
+				share
+					.bounds
+					.push((slot, AABB::new(bounds.min() - reach, bounds.max() + reach)));
+				continue;
+			};
+			if sleepers {
+				// How fast the body moves before gravity pulls it, which a body at rest only meets with what it lies
+				// on, tells whether it wakes the sleeping bodies near it.
+				let moving = strayed || body.speed() > WAKE_SPEED;
+				if let Rest::Awake { stirs, .. } = &mut body.rest {
+					*stirs = moving;
+				}
+			}
 			if body.body_type == BodyTypes::Dynamic {
 				body.apply_linear_impulse(self.gravity * body.mass() * seconds);
 			}
@@ -260,43 +485,89 @@ impl World {
 		let bounds = self.shares.iter_mut().flat_map(|share| share.bounds.drain(..));
 		self.bounds.stage(bounds, parts);
 		self.bodies.join();
+		self.held.clear();
+		let slot = |handle| Some(self.handles_to_bodies.get(&handle)?.index());
+		let held = self.constraints.bodies().filter_map(|[first, second]| {
+			let (first, second) = (slot(first)?, slot(second)?);
+			Some([first.min(second), first.max(second)])
+		});
+		self.held.extend(held);
+		self.held.sort_unstable();
 	}
 
-	/// Finds the contacts in the share of the swept bounds that one of `lanes` lanes has, and keeps them in that
-	/// lane's storage.
+	/// Finds the contacts that `round` of the step's search is for in the share of the swept bounds that one of
+	/// `lanes` lanes has, and keeps them in that lane's storage, with the sleeping bodies that the search wakes.
 	///
 	/// Bodies in a dense part of a pile, or with shapes that cost more to test, take longer than others. The shares
 	/// are sized by how long each took in the last step, so that no lane keeps the others waiting. The contacts come
 	/// out in the same order whatever the shares are.
-	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, lanes: usize, dt: MediaTime) {
+	fn detect_share_contacts(&self, lane: &ConcreteLane<'_>, lanes: usize, dt: MediaTime, round: u32) {
 		let mut share = self.shares.own(lane);
 		let share = &mut *share;
-		// The part holds what an earlier step found.
+		// The part holds what an earlier step or round found.
 		share.contacts.clear();
 		let range = self.detection.range(lane.idx(), lanes, self.bounds.count());
 		let positions = range.len();
 		let started = Instant::now();
+		let recycled = Recycled {
+			manifolds: &self.manifolds,
+			lane: lane.idx(),
+			held: &self.held,
+		};
 		detect_contacts(
 			&self.bounds,
 			self.bodies.all(),
 			range,
 			dt.as_seconds_f32(),
-			&mut share.contacts,
-			&mut share.scratch,
+			round,
+			recycled,
+			share,
 		);
-		share.detection = (positions, started.elapsed().as_nanos() as u64);
+		// A later round only tests the bodies that woke, which says little about how long a share takes.
+		if round == 0 {
+			share.detection = (positions, started.elapsed().as_nanos() as u64);
+		}
 	}
 
-	/// Gathers the contacts found in every share and sorts them into batches. Returns how many batches lanes should
-	/// share, and whether any contacts are left for one lane to prepare and solve. From here on, each of `lanes`
-	/// lanes has its own bodies again.
-	fn batch_share_contacts(&mut self, lanes: usize) -> (u32, bool) {
+	/// Gathers the contacts that `round` of the step's search found in every share, and wakes the islands of the
+	/// sleeping bodies that the search found a body that moves near. Returns whether any woke, which have contacts
+	/// for the next round to find.
+	///
+	/// A body that wakes starts the step as the bodies that were awake did: gravity pulls it, the solver takes it as
+	/// it is then, and the contacts that were found with it change it.
+	fn gather_share_contacts(&mut self, lanes: usize, round: u32, dt: MediaTime) -> bool {
 		// Shares are consecutive ranges of the swept bounds, so taking them in lane order keeps the order one scan
-		// finds. Each share gets the storage its contacts had in an earlier step.
+		// finds, round after round. Each share gets the storage its contacts had in an earlier step.
+		let first_part = round as usize * lanes;
 		for (lane, share) in self.shares.iter_mut().take(lanes).enumerate() {
-			std::mem::swap(self.contacts.part_mut(lane), &mut share.contacts);
+			std::mem::swap(self.contacts.part_mut(first_part + lane), &mut share.contacts);
+			self.roused.append(&mut share.roused);
 		}
-		self.contacts.clear_from(lanes);
+		let woke = !self.roused.is_empty();
+		let (bodies, pull) = (self.bodies.get_mut(), self.gravity * dt.as_seconds_f32());
+		for slot in self.roused.drain(..) {
+			self.sleep.wake(bodies, slot as usize, round + 1, |slot, body| {
+				body.apply_linear_impulse(pull * body.mass());
+				self.solver.retake(slot, body);
+			});
+		}
+		if woke {
+			let bodies = &*bodies;
+			let awake = |slot| {
+				bodies
+					.get_slot(slot)
+					.is_some_and(|body| body.active_since() != PhysicsBody::NEVER_ACTIVE)
+			};
+			self.contacts.release((round as usize + 1) * lanes, awake);
+		}
+		woke
+	}
+
+	/// Sorts the contacts that were gathered into the first `parts` parts into batches. Returns how many batches
+	/// lanes should share, and whether any contacts are left for one lane to prepare and solve. From here on, each
+	/// of `lanes` lanes has its own bodies again.
+	fn batch_contacts(&mut self, lanes: usize, parts: usize) -> (u32, bool) {
+		self.contacts.clear_from(parts);
 		// A lane that did not run this step leaves nothing, which changes no share.
 		let taken = self.shares.iter_mut().map(|share| std::mem::take(&mut share.detection));
 		self.detection.record(taken);
@@ -320,7 +591,7 @@ impl World {
 		share.batch_ends.push(end);
 	}
 
-	/// Gets the constraints ready for the step, once [`Self::batch_share_contacts`] has begun the solver's.
+	/// Gets the constraints ready for the step, once [`Self::batch_contacts`] has begun the solver's.
 	fn pre_solve_constraints(&mut self, dt: MediaTime) {
 		// Constraints name their bodies by handle, so they hold whichever body has the handle in this step.
 		let (bodies, slots) = (&*self.bodies.get_mut(), &self.handles_to_bodies);
@@ -362,11 +633,21 @@ impl World {
 
 		let solved = self.solver.solved();
 		for (slot, body) in self.bodies.own(lane).items() {
+			// Nothing moved a sleeping body, and what the solver has of it is from before it fell asleep.
+			let Rest::Awake { strayed, .. } = body.rest else {
+				continue;
+			};
 			solved.give(slot, body);
 			if body.body_type == BodyTypes::Dynamic {
 				body.update(dt);
 				let transform = Transform::new(body.position, body.scale, body.orientation);
 				share.transforms.push(TransformationUpdate::new(body.handle, transform));
+				// While bodies may not sleep, none is watched.
+				let moved = strayed || !self.sleeps || self.sleep.strays(slot, body);
+				if let Rest::Awake { strayed, since, .. } = &mut body.rest {
+					// The next step finds the body awake from its first round on.
+					(*strayed, *since) = (moved, 0);
+				}
 			}
 		}
 		// One run for the whole share, so that lanes do not contend for a place in the channel with every body.
@@ -405,10 +686,17 @@ impl World {
 			friction,
 			rotates,
 			handle,
+			rest: Rest::default(),
 		});
 		// The slot may have held another body, whose contacts the solver still remembers.
 		self.solver.forget(index.index());
 		self.handles_to_bodies.insert(handle, index);
+		self.created.push(index.index() as u32);
+		// A constraint that waited for the body acts from now on. The transform that places the body wakes what
+		// sleeps where it is.
+		if self.sleep.asleep() != 0 {
+			self.wake_held_to(handle);
+		}
 	}
 
 	/// Removes the body and the constraint that were created with the handle of every pending deletion message.
@@ -416,41 +704,137 @@ impl World {
 		while let Some(message) = self.delete_listener.read() {
 			let handle = message.into_handle();
 			self.remove_body(handle);
-			self.constraints.remove(handle);
+			// The bodies that the constraint held are free to move.
+			if let Some(removed) = self.constraints.remove(handle) {
+				self.wake_bodies(removed.bodies());
+			}
 		}
 	}
 
 	/// Removes and returns the physics body for `handle`.
+	///
+	/// The bodies that slept with it wake, and so do those that sleep near it, which may lie on it.
 	pub fn remove_body(&mut self, handle: Handle) -> Option<PhysicsBody> {
-		self.handles_to_bodies
-			.remove(&handle)
-			.and_then(|index| self.bodies.get_mut().remove(index))
+		let index = *self.handles_to_bodies.get(&handle)?;
+		if let Some(bounds) = self.bodies.get_mut().get(index).map(PhysicsBody::bounds) {
+			self.disturb(handle, [bounds]);
+			self.wake(index.index());
+		}
+		self.handles_to_bodies.remove(&handle);
+		self.bodies.get_mut().remove(index)
 	}
 }
 
-/// Adds to `found` the contacts between each body in `range` of the swept `bounds` and the bodies after it.
+/// Adds to `found` the contacts that `round` of a step's search is for, between each body in `range` of the swept
+/// `bounds` and the bodies after it. Adds to `roused` the slot of every sleeping body whose bounds reach a body that
+/// stirs, as [`Rest::Awake`] tells, which may be there more than once.
+///
+/// A contact changes nothing unless one of its bodies is awake and has mass. The first round, zero, tests the pairs
+/// with such a body. Each later round tests the pairs that only have one since the round before it woke bodies, so
+/// every pair is tested once.
 ///
 /// Ranges that cover every scan position find each contact once, in the same order whatever the ranges are.
-/// `scratch` is working storage that only this call may use while it runs.
+///
+/// A pair whose contacts take a search over its shapes gets the contacts that `recycled` keeps for it instead, when
+/// they are close enough. `share` keeps the manifold of every such pair for the next step.
 fn detect_contacts(
 	bounds: &SweepBounds,
 	bodies: &StableVec<PhysicsBody>,
 	range: Range<usize>,
 	dt: f32,
-	found: &mut ContactPart,
-	scratch: &mut ContactScratch,
+	round: u32,
+	recycled: Recycled<'_>,
+	share: &mut Share,
 ) {
+	let Share {
+		contacts: found,
+		roused,
+		scratch,
+		manifolds: kept,
+		..
+	} = share;
 	bounds.overlaps(range, |[first, second]| {
+		// The body in the lower slot comes first, so that a pair's contacts are the same from step to step whichever
+		// way the scan finds it.
+		let [first, second] = if first < second { [first, second] } else { [second, first] };
 		let (Some(a), Some(b)) = (bodies.get_slot(first), bodies.get_slot(second)) else {
 			return;
 		};
-		// Two bodies without mass cannot exchange an impulse, so their contact would change nothing.
-		if a.inv_mass + b.inv_mass != 0.0 {
-			// A body without mass is never changed by a contact.
-			let bodies = || [(a, first), (b, second)].map(|(body, slot)| (slot, body.inv_mass != 0.0));
-			found.find(|contacts| intersect((a, first), (b, second), dt, contacts, scratch), bodies);
+		if a.active_since().min(b.active_since()) != round {
+			return;
+		}
+		// A body without mass is never changed by a contact, and a sleeping one only if it wakes.
+		let mobility = |body: &PhysicsBody| match body.rest {
+			Rest::Asleep { .. } => Mobility::Asleep,
+			Rest::Awake { .. } if body.inv_mass != 0.0 => Mobility::Movable,
+			Rest::Awake { .. } => Mobility::Fixed,
+		};
+		let mobilities = || [(first, mobility(a)), (second, mobility(b))];
+		let find = |contacts: &mut Vec<Contact>| {
+			if takes_search(a, b) && !recycle::outpaces(a, b, dt) {
+				recycled.contacts((a, first), (b, second), dt, contacts, (kept, scratch));
+			} else {
+				intersect((a, first), (b, second), dt, contacts, scratch);
+			}
+		};
+		found.find(find, mobilities);
+		// A body that moves may be about to push into a sleeping body, or to leave it without what it lies on, so it
+		// wakes it whether they touch yet or not.
+		for (sleeper, slot, other) in [(a, first, b), (b, second, a)] {
+			if sleeper.is_asleep() && matches!(other.rest, Rest::Awake { stirs: true, .. }) {
+				roused.push(slot as u32);
+			}
 		}
 	});
+}
+
+/// The `Recycled` struct gives a search for contacts the manifolds of the last step that it may recycle.
+#[derive(Clone, Copy)]
+struct Recycled<'a> {
+	manifolds: &'a [ManifoldPart],
+	/// The lane that searches.
+	lane: usize,
+	/// The slots of the pairs that a constraint holds, the lower first, in order. Their contacts are found again in
+	/// every step.
+	held: &'a [[usize; 2]],
+}
+
+impl Recycled<'_> {
+	/// Adds the contacts between `a`, in slot `i`, and `b`, in slot `j`, whose contacts take a search, to
+	/// `contacts`: the ones of the last step's manifold of the pair, moved with the bodies, when they are close
+	/// enough, and otherwise the ones a search finds. Keeps the pair's manifold in `kept` for the next step.
+	// Made part of the search for contacts, where most pairs do not take this way, this made that search's steps
+	// of every pile slower.
+	#[inline(never)]
+	fn contacts(
+		&self,
+		(a, i): (&PhysicsBody, usize),
+		(b, j): (&PhysicsBody, usize),
+		dt: f32,
+		contacts: &mut Vec<Contact>,
+		(kept, scratch): (&mut ManifoldPart, &mut ContactScratch),
+	) {
+		let manifold = self.manifold([i, j]);
+		if let Some(manifold) = manifold.filter(|manifold| manifold.recycle((a, i), (b, j), contacts)) {
+			return kept.keep([i, j], *manifold);
+		}
+		let before = contacts.len();
+		intersect((a, i), (b, j), dt, contacts, scratch);
+		// Bodies that only meet later in the step have contacts that change with how fast they move, so only
+		// contacts where the bodies are now are kept. Bodies that move far enough in a step not to touch again where
+		// they are move too far for them to be recycled.
+		if contacts.get(before).is_some_and(|contact| contact.toi == 0.0) {
+			kept.keep([i, j], Manifold::of(a, b, &contacts[before..]));
+		}
+	}
+
+	/// Returns the manifold of the last step that the pair of bodies in `slots`, the lower first, may recycle.
+	fn manifold(&self, slots: [usize; 2]) -> Option<&Manifold> {
+		if self.held.binary_search(&slots).is_ok() {
+			return None;
+		}
+		recycle::find(self.manifolds, self.lane, slots)
+	}
 }
 
 /// The `Share` struct holds what one lane produces from its share of a stage until one lane collects it.
@@ -460,8 +844,13 @@ fn detect_contacts(
 struct Share {
 	/// The contacts found in a share of the swept bounds.
 	contacts: ContactPart,
+	/// The slots of the sleeping bodies that those contacts touch.
+	roused: Vec<u32>,
 	/// Working storage for finding those contacts.
 	scratch: ContactScratch,
+	/// The manifolds of the pairs whose contacts the lane found with a search or recycled in this step, for the next
+	/// step to recycle.
+	manifolds: ManifoldPart,
 	/// How many scan positions of the swept bounds that share had, and how long it took, in nanoseconds.
 	detection: (usize, u64),
 	/// The bounds that the bodies in a share of the body slots sweep through during the step, with the slot of each.
@@ -519,6 +908,7 @@ mod tests {
 			friction: 0.0,
 			rotates: false,
 			handle: test_handle(),
+			rest: Rest::default(),
 		}
 	}
 
@@ -537,6 +927,7 @@ mod tests {
 			friction: 0.0,
 			rotates: true,
 			handle: test_handle(),
+			rest: Rest::default(),
 		}
 	}
 
@@ -547,16 +938,22 @@ mod tests {
 			bounds.map(|(slot, body)| (slot, body.swept_bounds(dt))),
 			&mut Alley::with_parallelism(1),
 		);
-		let mut found = ContactPart::default();
+		let mut share = Share::default();
+		let recycled = Recycled {
+			manifolds: &[],
+			lane: 0,
+			held: &[],
+		};
 		detect_contacts(
 			&world.bounds,
 			world.bodies.all(),
 			0..world.bounds.count(),
 			dt,
-			&mut found,
-			&mut ContactScratch::default(),
+			0,
+			recycled,
+			&mut share,
 		);
-		found.into_contacts()
+		share.contacts.into_contacts()
 	}
 
 	/// Advances `world` by `dt` `times` times on one lane, publishing to `transforms`.
@@ -2106,5 +2503,495 @@ mod tests {
 		// brings the bar back, to swing less far every time.
 		assert!(furthest <= free - 0.1, "the bar swung out {furthest}, and {free} freely");
 		assert!(last <= 0.05, "the bar ends leaning {last}");
+	}
+
+	/// The `Resting` struct holds a world on level ground that its test fills and disturbs as an application would,
+	/// through the world's factories and channels, and tells what the world's steps publish.
+	struct Resting {
+		world: World,
+		bodies: Factory<Body>,
+		constraints: Factory<Constraint>,
+		deletes: DefaultChannel<DeleteMessage>,
+		authoring: DefaultChannel<TransformationUpdate>,
+		authored: DefaultListener<TransformationUpdate>,
+		published: DefaultChannel<TransformationUpdate>,
+		reader: DefaultListener<TransformationUpdate>,
+		alley: Alley,
+		/// The ground, whose top is at height zero.
+		ground: Handle,
+	}
+
+	impl Resting {
+		/// Returns a world with ground, whose steps run on `lanes` lanes.
+		fn on(lanes: usize) -> Self {
+			let bodies = Factory::<Body>::new();
+			let constraints = Factory::<Constraint>::new();
+			let deletes = DefaultChannel::new();
+			let authoring = DefaultChannel::new();
+			let published = DefaultChannel::new();
+			let mut world = World::new(bodies.listener(), constraints.listener(), deletes.listener());
+			world.set_step_lanes(StepLanes::new([(0, lanes)]));
+			let mut scene = Self {
+				world,
+				authored: authoring.listener(),
+				reader: published.listener(),
+				bodies,
+				constraints,
+				deletes,
+				authoring,
+				published,
+				alley: Alley::with_parallelism(lanes),
+				ground: test_handle(),
+			};
+			let ground = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(30.0, 1.0, 30.0)));
+			scene.ground = scene.spawn(ground, math::Point::new(0.0, -1.0, 0.0));
+			scene
+		}
+
+		/// Creates `body` at `position` and returns its handle. The world takes it up in its next step.
+		fn spawn(&self, body: Body, position: math::Point) -> Handle {
+			let handle = test_handle();
+			self.bodies.derive(handle, body);
+			self.place(handle, position);
+			handle
+		}
+
+		/// Creates a one-meter box of one kilogram with its middle at `position`.
+		fn spawn_box(&self, position: math::Point) -> Handle {
+			self.spawn(
+				Body::new(BodyTypes::Dynamic, Shapes::cube(Vector::new(0.5, 0.5, 0.5))),
+				position,
+			)
+		}
+
+		/// Moves the body that was created with `handle` to `position`, as its author.
+		fn place(&self, handle: Handle, position: math::Point) {
+			self.authoring
+				.send(TransformationUpdate::new(handle, Transform::from_position(position)));
+		}
+
+		/// Deletes what was created with `handle`.
+		fn delete(&mut self, handle: Handle) {
+			self.deletes.send(DeleteMessage::new(handle));
+			self.world.process_pending_deletions();
+		}
+
+		/// Advances the world by `steps` sixtieths of a second. Returns the handles of the bodies that the last of
+		/// those steps published, which are the bodies that it moved.
+		fn run(&mut self, steps: usize) -> Vec<Handle> {
+			let dt = MediaTime::from_seconds_f32(1.0 / 60.0);
+			let mut moved = Vec::new();
+			for _ in 0..steps {
+				self.world
+					.update(Time::new(dt, dt), &mut self.authored, &self.published, &mut self.alley);
+				moved.clear();
+				while let Some(update) = self.reader.read() {
+					moved.push(update.handle());
+				}
+			}
+			moved
+		}
+
+		/// Advances the world until a step moves no body, which is when every body that can come to rest sleeps.
+		/// Fails the test when that takes longer than `seconds`.
+		fn run_to_rest(&mut self, seconds: usize) {
+			let rested = (0..seconds * 60).any(|_| self.run(1).is_empty());
+			assert!(rested, "the bodies are still simulated after {seconds} seconds");
+		}
+
+		/// Returns the body that was created with `handle`.
+		fn body(&self, handle: Handle) -> &PhysicsBody {
+			&self.world.bodies.all()[self.world.handles_to_bodies[&handle]]
+		}
+
+		/// Returns how high the origin of the body that was created with `handle` is.
+		fn height(&self, handle: Handle) -> f32 {
+			self.body(handle).position.y()
+		}
+	}
+
+	#[test]
+	fn a_body_that_has_come_to_rest_sleeps_where_it_lies() {
+		let mut scene = Resting::on(1);
+		let dropped = scene.spawn_box(math::Point::new(0.0, 3.0, 0.0));
+
+		// While it falls and settles, every step moves the box.
+		assert_eq!(scene.run(30), [dropped]);
+		scene.run_to_rest(4);
+
+		let at_rest = scene.body(dropped).position;
+		assert!((at_rest.y() - 0.5).abs() <= 0.01, "the box rests at {}", at_rest.y());
+		assert_eq!(scene.body(dropped).linear_velocity.length(), 0.0);
+		// Nothing moves it from then on, and gravity does not pull it into the ground.
+		assert!(scene.run(600).is_empty());
+		assert_eq!(scene.body(dropped).position, at_rest);
+	}
+
+	#[test]
+	fn a_body_that_keeps_moving_stays_awake() {
+		let mut scene = Resting::on(1);
+		// A ball that rolls slowly, which nothing stops on level ground.
+		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5)).with_velocity(Vector::new(0.3, 0.0, 0.0));
+		let ball = scene.spawn(ball, math::Point::new(-10.0, 0.5, 0.0));
+
+		for second in 1..=10 {
+			assert_eq!(scene.run(60), [ball], "after {second} seconds");
+		}
+		assert!(scene.body(ball).position.x() >= -8.0);
+	}
+
+	#[test]
+	fn a_body_that_swings_stays_awake_however_slow_it_is_where_it_turns() {
+		let mut scene = Resting::on(1);
+		let post = scene.spawn(
+			Body::new(BodyTypes::Static, Shapes::sphere(0.05)),
+			math::Point::new(0.0, 6.0, 0.0),
+		);
+		let bob = scene.spawn(
+			Body::new(BodyTypes::Dynamic, Shapes::sphere(0.1)),
+			math::Point::new(1.0, 6.0, 0.0),
+		);
+		scene.constraints.create(Constraint::distance(post, bob, 1.0));
+
+		// The bob stands still for a moment at each end of every swing.
+		for second in 1..=20 {
+			assert_eq!(scene.run(60), [bob], "after {second} seconds");
+		}
+	}
+
+	#[test]
+	fn a_body_that_lands_on_a_sleeping_body_pushes_it_no_further_than_one_that_is_awake() {
+		// Returns how low a box on the ground is pushed by a box that lands on it at eight meters a second.
+		let lowest = |sleeps: bool| {
+			let mut scene = Resting::on(1);
+			scene.world.set_sleeping(sleeps);
+			let lower = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+			scene.run(240);
+			assert_eq!(scene.run(1).is_empty(), sleeps);
+
+			let upper = scene.spawn_box(math::Point::new(0.0, 3.0, 0.0));
+			let mut lowest = f32::MAX;
+			for _ in 0..120 {
+				scene.run(1);
+				lowest = lowest.min(scene.height(lower));
+			}
+			assert!(
+				(scene.height(upper) - 1.5).abs() <= 0.02,
+				"the upper box is at {}",
+				scene.height(upper)
+			);
+			lowest
+		};
+
+		// The sleeping box wakes in the step that the other one reaches it in, with the ground under it, so it
+		// gives way as little as a box that never slept. Left without the ground for that step, it would sink
+		// several centimeters.
+		let (awake, asleep) = (lowest(false), lowest(true));
+		assert!(awake >= 0.5 - 0.02, "the box that was awake was pushed down to {awake}");
+		assert!(
+			asleep >= awake - 0.002,
+			"the sleeping box was pushed down to {asleep}, the other to {awake}"
+		);
+	}
+
+	#[test]
+	fn a_body_that_hits_a_sleeping_body_knocks_it_away() {
+		let mut scene = Resting::on(1);
+		let target = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+		scene.run_to_rest(4);
+
+		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5)).with_velocity(Vector::new(10.0, 0.0, 0.0));
+		scene.spawn(ball, math::Point::new(-4.0, 0.5, 0.0));
+		scene.run(60);
+
+		// The box takes up the ball's momentum, as it would had it been awake.
+		assert!(
+			scene.body(target).position.x() >= 1.0,
+			"the box is at {}",
+			scene.body(target).position.x()
+		);
+	}
+
+	#[test]
+	fn pushing_a_sleeping_body_wakes_what_lies_on_it() {
+		let mut scene = Resting::on(1);
+		let stack = [0.5, 1.5, 2.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
+		scene.run_to_rest(6);
+
+		// The lowest box is knocked out from under the others.
+		assert!(scene.world.apply_impulse(stack[0], Vector::new(30.0, 0.0, 0.0)));
+		scene.run(90);
+
+		assert!(scene.body(stack[0]).position.x() >= 2.0);
+		assert!(
+			scene.height(stack[2]) <= 2.0,
+			"the top box is still at {}",
+			scene.height(stack[2])
+		);
+	}
+
+	#[test]
+	fn deleting_a_sleeping_body_lets_what_lies_on_it_fall() {
+		let mut scene = Resting::on(1);
+		let stack = [0.5, 1.5, 2.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
+		scene.run_to_rest(6);
+
+		scene.delete(stack[0]);
+		scene.run(120);
+
+		assert!((scene.height(stack[1]) - 0.5).abs() <= 0.02 && (scene.height(stack[2]) - 1.5).abs() <= 0.03);
+	}
+
+	#[test]
+	fn sleeping_bodies_fall_when_what_they_lie_on_is_moved_or_deleted() {
+		// A shelf without mass, with a box asleep on it, two meters above the ground.
+		let shelved = || {
+			let mut scene = Resting::on(1);
+			let shelf = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(1.0, 0.1, 1.0)));
+			let shelf = scene.spawn(shelf, math::Point::new(0.0, 1.9, 0.0));
+			let lying = scene.spawn_box(math::Point::new(0.0, 2.5, 0.0));
+			scene.run_to_rest(4);
+			assert!((scene.height(lying) - 2.5).abs() <= 0.01);
+			(scene, shelf, lying)
+		};
+
+		let (mut scene, shelf, lying) = shelved();
+		scene.delete(shelf);
+		scene.run(120);
+		assert!(
+			(scene.height(lying) - 0.5).abs() <= 0.02,
+			"the box is at {}",
+			scene.height(lying)
+		);
+
+		let (mut scene, shelf, lying) = shelved();
+		scene.place(shelf, math::Point::new(5.0, 1.9, 0.0));
+		scene.run(120);
+		assert!(
+			(scene.height(lying) - 0.5).abs() <= 0.02,
+			"the box is at {}",
+			scene.height(lying)
+		);
+	}
+
+	#[test]
+	fn a_body_without_mass_that_is_moved_into_a_sleeping_body_pushes_it_away() {
+		let mut scene = Resting::on(1);
+		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+		scene.run_to_rest(4);
+
+		// A wall is put where it reaches a little into the box from the side.
+		let wall = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(0.5, 2.0, 2.0)));
+		scene.spawn(wall, math::Point::new(-0.9, 2.0, 0.0));
+		scene.run(120);
+
+		assert!(
+			scene.body(lying).position.x() >= 0.09,
+			"the box is at {}",
+			scene.body(lying).position.x()
+		);
+	}
+
+	#[test]
+	fn a_sleeping_body_that_its_author_moves_falls_from_where_it_is_put() {
+		let mut scene = Resting::on(1);
+		let stack = [0.5, 1.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
+		scene.run_to_rest(6);
+
+		scene.place(stack[0], math::Point::new(4.0, 3.0, 0.0));
+		scene.run(120);
+
+		// The box that was moved lands where it was put, and the one that lay on it lands where it was.
+		assert!((scene.height(stack[0]) - 0.5).abs() <= 0.02 && (scene.body(stack[0]).position.x() - 4.0).abs() <= 0.02);
+		assert!(
+			(scene.height(stack[1]) - 0.5).abs() <= 0.02,
+			"the upper box is at {}",
+			scene.height(stack[1])
+		);
+	}
+
+	#[test]
+	fn a_transform_that_moves_nothing_wakes_nothing() {
+		let mut scene = Resting::on(1);
+		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+		scene.run_to_rest(4);
+
+		// An author that repeats where a body is, as one that writes every transform every tick does.
+		let (body, ground) = (scene.body(lying), scene.ground);
+		let at_rest = Transform::new(body.position, body.scale, body.orientation);
+		for _ in 0..10 {
+			scene.authoring.send(TransformationUpdate::new(lying, at_rest.clone()));
+			scene.place(ground, math::Point::new(0.0, -1.0, 0.0));
+			assert!(scene.run(1).is_empty());
+		}
+	}
+
+	#[test]
+	fn constraints_wake_the_sleeping_bodies_that_they_take_hold_of_or_let_go() {
+		let mut scene = Resting::on(1);
+		let post = scene.spawn(
+			Body::new(BodyTypes::Static, Shapes::sphere(0.05)),
+			math::Point::new(0.0, 6.0, 0.0),
+		);
+		let bob = scene.spawn(
+			Body::new(BodyTypes::Dynamic, Shapes::sphere(0.1)),
+			math::Point::new(0.0, 5.0, 0.0),
+		);
+		let rod = scene.constraints.create(Constraint::distance(post, bob, 1.0));
+		let lying = scene.spawn_box(math::Point::new(3.0, 0.5, 0.0));
+		// The bob hangs straight down from the start, so it and the box both come to rest.
+		scene.run_to_rest(4);
+		assert!((scene.height(bob) - 5.0).abs() <= 0.01);
+
+		// A rod that is shorter than the box is far lifts the box off the ground.
+		let lift = scene.constraints.create(Constraint::distance(post, lying, 5.0));
+		scene.run(120);
+		assert!(scene.height(lying) >= 0.7, "the box is at {}", scene.height(lying));
+
+		// Without their rods, both fall.
+		scene.delete(lift);
+		scene.delete(rod);
+		scene.run(180);
+		assert!(scene.height(bob) <= 0.2 && scene.height(lying) <= 0.6);
+	}
+
+	#[test]
+	fn a_body_does_not_sleep_while_a_body_that_touches_it_moves() {
+		let mut scene = Resting::on(1);
+		// A long plank that lies on the ground, with a ball that rolls along the top of it.
+		let plank = Body::new(BodyTypes::Dynamic, Shapes::cube(Vector::new(6.0, 0.25, 1.0))).with_mass(50.0);
+		let plank = scene.spawn(plank, math::Point::new(0.0, 0.25, 0.0));
+		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.25)).with_velocity(Vector::new(2.0, 0.0, 0.0));
+		let ball = scene.spawn(ball, math::Point::new(-5.5, 0.75, 0.0));
+
+		// The plank hardly moves under the ball, but it is simulated for as long as the ball is on it.
+		for _ in 0..4 {
+			let moved = scene.run(60);
+			assert!(moved.contains(&plank) && moved.contains(&ball));
+		}
+		assert!((scene.body(plank).position.x()).abs() <= 0.5);
+
+		// Once the ball has rolled off its end, the plank sleeps, though the ball rolls on.
+		scene.run(300);
+		assert!(scene.body(ball).position.x() >= 7.0);
+		assert_eq!(scene.run(1), [ball]);
+	}
+
+	#[test]
+	fn bodies_that_a_moving_body_has_left_sleep_while_it_moves_on_the_others() {
+		let mut scene = Resting::on(1);
+		// A row of boxes that touch side by side, with a ball that rolls along their tops.
+		let row: Vec<Handle> = (0..12)
+			.map(|column| scene.spawn_box(math::Point::new(column as f32 - 5.5, 0.5, 0.0)))
+			.collect();
+		scene.run_to_rest(4);
+		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.25)).with_velocity(Vector::new(2.0, 0.0, 0.0));
+		let ball = scene.spawn(ball, math::Point::new(-5.5, 1.25, 0.0));
+
+		// Once friction makes the ball roll, it is slower than it starts. After three seconds it is over the middle
+		// of the row, and the first boxes, which it left more than a second ago, sleep.
+		let moved = scene.run(180);
+		assert!(
+			moved.contains(&ball),
+			"the ball is at rest at {}",
+			scene.body(ball).position.x()
+		);
+		assert!(
+			(-2.5..=2.5).contains(&scene.body(ball).position.x()),
+			"the ball is at {}",
+			scene.body(ball).position.x()
+		);
+		assert!(
+			row[..3].iter().all(|lying| !moved.contains(lying)),
+			"the boxes the ball left are simulated"
+		);
+	}
+
+	#[test]
+	fn a_world_that_keeps_its_bodies_awake_simulates_them_all() {
+		let mut scene = Resting::on(1);
+		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+		scene.run_to_rest(4);
+
+		scene.world.set_sleeping(false);
+		for _ in 0..3 {
+			assert_eq!(scene.run(60), [lying]);
+		}
+		assert!((scene.height(lying) - 0.5).abs() <= 0.01);
+
+		scene.world.set_sleeping(true);
+		scene.run_to_rest(2);
+	}
+
+	/// Returns where every body of a pile is once the pile has gone to sleep and a ball has been shot into it, in
+	/// a world whose steps run on `lanes` lanes.
+	fn woken_pile(lanes: usize) -> Vec<math::Point> {
+		let mut scene = Resting::on(lanes);
+		// Enough boxes side by side for the lanes to share their contacts with the ground, with a second layer on
+		// some of them.
+		let mut boxes = Vec::new();
+		for index in 0..CROWD_SIDE * CROWD_SIDE {
+			let (column, row) = ((index % CROWD_SIDE) as f32, (index / CROWD_SIDE) as f32);
+			let position = math::Point::new(column * 1.02 - 8.0, 0.5, row * 1.02 - 8.0);
+			boxes.push(scene.spawn_box(position));
+			if index % 5 == 0 {
+				boxes.push(scene.spawn_box(position + Vector::new(0.0, 1.0, 0.0)));
+			}
+		}
+		scene.run_to_rest(10);
+
+		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5))
+			.with_mass(20.0)
+			.with_velocity(Vector::new(15.0, 0.0, 4.0));
+		boxes.push(scene.spawn(ball, math::Point::new(-12.0, 0.5, -3.0)));
+		scene.run(90);
+		boxes.iter().map(|handle| scene.body(*handle).position).collect()
+	}
+
+	#[test]
+	fn sleeping_bodies_wake_the_same_on_any_number_of_lanes() {
+		let on_one = woken_pile(1);
+		// The ball went through the pile, and what it hit moved.
+		assert!(
+			on_one
+				.iter()
+				.filter(|position| position.y() > 0.6 || position.y() < 0.4)
+				.count() >= 10
+		);
+
+		for lanes in [2, 4] {
+			assert_eq!(woken_pile(lanes), on_one, "on {lanes} lanes");
+		}
+	}
+
+	#[test]
+	fn boxes_stacked_on_a_slope_that_friction_holds_them_on_stay_where_they_are() {
+		// Ground that is tilted by half of what the boxes slide on it and on each other from.
+		let tilt = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, -0.125)).unwrap();
+		let mut ground = make_ground_body();
+		ground.friction = 0.5;
+		ground.orientation = tilt;
+		ground.rotates = true;
+		let up = tilt.rotate_vector(Vector::<math::WorldSpace>::new(0.0, 1.0, 0.0));
+		let boxes = (0..2).map(|layer| {
+			let mut body = make_rotating_box_body(math::Point::origin() + up * (1.5 + layer as f32));
+			body.orientation = tilt;
+			body
+		});
+		let mut world = make_world();
+		// Boxes that sleep would stay where they are whatever friction did.
+		world.set_sleeping(false);
+		*world.bodies.get_mut() = std::iter::once(ground).chain(boxes).collect();
+		let dt = MediaTime::from_seconds_f32(1.0 / 60.0);
+		step(&mut world, dt, 120, &DefaultChannel::new());
+		let settled: Vec<math::Point> = world.bodies.all().iter().map(|body| body.position).collect();
+		step(&mut world, dt, 600, &DefaultChannel::new());
+
+		// The upper box is only held by friction that the lower one passes on to the ground. Friction that started
+		// every step from nothing let both slide more than ten centimeters in these ten seconds.
+		for (layer, (body, settled)) in world.bodies.all().iter().zip(settled).enumerate().skip(1) {
+			let slid = (body.position - settled).length();
+			assert!(slid <= 0.01, "box {layer} slid {slid} in ten seconds");
+		}
 	}
 }

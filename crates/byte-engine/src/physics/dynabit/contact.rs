@@ -56,6 +56,18 @@ pub struct Side {
 	pub(crate) point: Point,
 }
 
+/// The `Mobility` enum tells contact batching whether the contacts of a step can change a body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mobility {
+	/// Contacts change the body.
+	Movable,
+	/// Nothing changes the body, such as a static one.
+	Fixed,
+	/// The body sleeps, and contacts only change it if it wakes before they are batched. See
+	/// [`Contacts::release`].
+	Asleep,
+}
+
 /// The `ContactPart` struct holds the contacts one lane found in its share of a scan, with what batching them needs
 /// to know about each, so that the lane works that out while it has the bodies at hand.
 ///
@@ -64,25 +76,32 @@ pub struct Side {
 pub(crate) struct ContactPart {
 	contacts: Vec<Contact>,
 	/// For each contact, the slots of its two bodies, with [`PairBatches::FIXED`] added to the slot of a body that
-	/// contacts never change, such as a static one.
+	/// contacts do not change, such as a static or a sleeping one.
 	bodies: Vec<[u32; 2]>,
+	/// The indices in this part of the contacts with a sleeping body.
+	asleep: Vec<u32>,
 }
 
 impl ContactPart {
 	/// Adds the contacts `find` finds between two bodies. When it finds any, `bodies` is asked for the slot of each
 	/// body, and whether contacts can change it.
 	#[inline]
-	pub(crate) fn find(&mut self, find: impl FnOnce(&mut Vec<Contact>), bodies: impl FnOnce() -> [(usize, bool); 2]) {
+	pub(crate) fn find(&mut self, find: impl FnOnce(&mut Vec<Contact>), bodies: impl FnOnce() -> [(usize, Mobility); 2]) {
 		let before = self.contacts.len();
 		find(&mut self.contacts);
 		// Most pairs that are tested turn out to be apart.
 		if self.contacts.len() != before {
-			let bodies = bodies().map(|(slot, movable)| {
+			let bodies = bodies();
+			if bodies.iter().any(|(_, mobility)| *mobility == Mobility::Asleep) {
+				self.asleep.extend(before as u32..self.contacts.len() as u32);
+			}
+			let bodies = bodies.map(|(slot, mobility)| {
 				debug_assert!(
 					slot < PairBatches::FIXED as usize,
 					"Body slot is too large. The most likely cause is a body index above the 31-bit slot range."
 				);
-				slot as u32 | if movable { 0 } else { PairBatches::FIXED }
+				let fixed = mobility != Mobility::Movable;
+				slot as u32 | if fixed { PairBatches::FIXED } else { 0 }
 			});
 			for _ in before..self.contacts.len() {
 				self.bodies.push(bodies);
@@ -94,6 +113,7 @@ impl ContactPart {
 	pub(crate) fn clear(&mut self) {
 		self.contacts.clear();
 		self.bodies.clear();
+		self.asleep.clear();
 	}
 
 	/// Returns the contacts in the order they were found.
@@ -154,6 +174,21 @@ impl Contacts {
 		self.parts.iter().map(|part| part.bodies.as_slice())
 	}
 
+	/// Lets the contacts in the first `parts` parts change the bodies that slept when they were found and that
+	/// `awake` now says are awake. Call it for the bodies that wake before the contacts are batched.
+	pub(crate) fn release(&mut self, parts: usize, awake: impl Fn(usize) -> bool) {
+		for part in self.parts.iter_mut().take(parts) {
+			for index in &part.asleep {
+				for slot in &mut part.bodies[*index as usize] {
+					// A contact with a sleeping body is between it and one that is awake, which is not fixed.
+					if *slot & PairBatches::FIXED != 0 && awake((*slot & !PairBatches::FIXED) as usize) {
+						*slot &= !PairBatches::FIXED;
+					}
+				}
+			}
+		}
+	}
+
 	/// Empties the parts from `part` on, which no lane filled in this step.
 	pub(crate) fn clear_from(&mut self, part: usize) {
 		for part in self.parts.iter_mut().skip(part) {
@@ -182,18 +217,22 @@ mod tests {
 		let mut contacts = Contacts::default();
 		// The part between the two others found nothing, as a lane with no overlapping bounds would.
 		// The floor in slot 6 is a body that contacts never change.
-		contacts
-			.part_mut(2)
-			.find(|found| found.push(contact(4, 5)), || [(4, true), (5, true)]);
-		contacts
-			.part_mut(2)
-			.find(|found| found.push(contact(6, 7)), || [(6, false), (7, true)]);
+		contacts.part_mut(2).find(
+			|found| found.push(contact(4, 5)),
+			|| [(4, Mobility::Movable), (5, Mobility::Movable)],
+		);
+		contacts.part_mut(2).find(
+			|found| found.push(contact(6, 7)),
+			|| [(6, Mobility::Fixed), (7, Mobility::Movable)],
+		);
 		// Bodies that touch at two places have two contacts, and bodies that are apart have none.
 		contacts.part_mut(0).find(
 			|found| found.extend([contact(0, 1), contact(2, 3)]),
-			|| [(0, true), (1, true)],
+			|| [(0, Mobility::Movable), (1, Mobility::Movable)],
 		);
-		contacts.part_mut(0).find(|_| (), || [(8, true), (9, true)]);
+		contacts
+			.part_mut(0)
+			.find(|_| (), || [(8, Mobility::Movable), (9, Mobility::Movable)]);
 		contacts.seal();
 
 		assert_eq!(contacts.len(), 4);
@@ -217,5 +256,24 @@ mod tests {
 		contacts.clear_from(1);
 		contacts.seal();
 		assert_eq!(contacts.len(), 2);
+	}
+
+	#[test]
+	fn contacts_change_a_sleeping_body_once_it_is_released() {
+		let mut contacts = Contacts::default();
+		contacts.part_mut(0).find(
+			|found| found.push(contact(0, 1)),
+			|| [(0, Mobility::Movable), (1, Mobility::Asleep)],
+		);
+		contacts.part_mut(1).find(
+			|found| found.push(contact(2, 3)),
+			|| [(2, Mobility::Asleep), (3, Mobility::Movable)],
+		);
+		let bodies = |contacts: &Contacts| contacts.bodies().flatten().copied().collect::<Vec<_>>();
+		assert_eq!(bodies(&contacts), [[0, 1 | PairBatches::FIXED], [2 | PairBatches::FIXED, 3]]);
+
+		// Only the body that woke is released, and only in the parts that were found.
+		contacts.release(2, |slot| slot == 1);
+		assert_eq!(bodies(&contacts), [[0, 1], [2 | PairBatches::FIXED, 3]]);
 	}
 }

@@ -97,8 +97,9 @@ impl Constraints {
 		self.held.is_empty()
 	}
 
-	/// Keeps `constraint` under `handle`, in place of the constraint that handle had before, if any.
-	pub(crate) fn insert(&mut self, handle: Handle, constraint: Constraint) {
+	/// Keeps `constraint` under `handle`, in place of the constraint that handle had before, if any, which it
+	/// returns.
+	pub(crate) fn insert(&mut self, handle: Handle, constraint: Constraint) -> Option<Constraint> {
 		let held = Held {
 			handle,
 			constraint,
@@ -106,24 +107,29 @@ impl Constraints {
 			kept: [0.0; ROWS],
 		};
 		match self.places.entry(handle) {
-			Entry::Occupied(place) => self.held[*place.get()] = held,
+			Entry::Occupied(place) => Some(std::mem::replace(&mut self.held[*place.get()], held).constraint),
 			Entry::Vacant(place) => {
 				place.insert(self.held.len());
 				self.held.push(held);
+				None
 			}
 		}
 	}
 
-	/// Forgets the constraint that was kept under `handle`, if any.
-	pub(crate) fn remove(&mut self, handle: Handle) {
-		let Some(place) = self.places.remove(&handle) else {
-			return;
-		};
-		self.held.swap_remove(place);
+	/// Forgets the constraint that was kept under `handle`, if any, and returns it.
+	pub(crate) fn remove(&mut self, handle: Handle) -> Option<Constraint> {
+		let place = self.places.remove(&handle)?;
+		let removed = self.held.swap_remove(place);
 		// The last constraint took the place of the removed one.
 		if let Some(moved) = self.held.get(place) {
 			self.places.insert(moved.handle, place);
 		}
+		Some(removed.constraint)
+	}
+
+	/// Returns the handles of the two bodies of every constraint.
+	pub(crate) fn bodies(&self) -> impl Iterator<Item = [Handle; 2]> + '_ {
+		self.held.iter().map(|held| held.constraint.bodies())
 	}
 
 	/// Gets every constraint ready for the step: works out the rows that solving it needs, and starts its two bodies
@@ -148,6 +154,12 @@ impl Constraints {
 			};
 			// A body keeps to itself whatever it is held to.
 			if first_slot == second_slot {
+				continue;
+			}
+			// Bodies that a constraint holds sleep together, and it holds them as it did when they fell asleep. It
+			// starts from that again once they wake.
+			if first.is_asleep() || second.is_asleep() {
+				held.kept = kept;
 				continue;
 			}
 			let slots = [first_slot, second_slot];

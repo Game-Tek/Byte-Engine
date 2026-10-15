@@ -105,7 +105,7 @@ struct StateTransition {
 	destination: AnimationStateId,
 	/// The critically damped inertialization duration. [`MediaTime::ZERO`] switches immediately.
 	duration: MediaTime,
-	// Only `.anytime` edges can interrupt an active transition clip.
+	// Only `.anytime` routes cut short a playing one-shot clip or a blend in progress.
 	can_interrupt_transition: bool,
 }
 
@@ -207,6 +207,21 @@ impl AnimationGraph {
 		}
 
 		source_finished.then_some((completion, source_state.completion_blend))
+	}
+
+	/// Selects an `.anytime` route that cuts short a blend into `destination` toward the requested state.
+	///
+	/// A one-shot destination is left to the routes [`Self::select_transition`] finds once it plays on its own.
+	fn select_interruption(
+		&self,
+		destination: AnimationStateId,
+		requested: AnimationStateId,
+	) -> Option<(AnimationStateId, MediaTime)> {
+		let state = self.state(destination);
+		if destination == requested || state.completion.is_some() {
+			return None;
+		}
+		state.select_route(requested, true)
 	}
 }
 
@@ -330,11 +345,26 @@ impl<'builder> AnimationGraphState<'builder> {
 }
 
 impl<'builder> AnimationGraphTransitionBuilder<'builder> {
-	/// Adds a direct route without playing an intermediate clip.
+	/// Adds a direct route without playing an intermediate clip, taken only once the source has settled.
 	///
 	/// `inertialization` smooths the switch with critically damped inertialization for that duration.
-	/// Pass [`MediaTime::ZERO`] to switch immediately.
+	/// Pass [`MediaTime::ZERO`] to switch immediately. Use [`Self::anytime`] for a route that may also cut short a
+	/// blend into the source or a one-shot clip that leads to it.
 	pub fn when(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
+		self.add(inertialization, false)
+	}
+
+	/// Adds a direct route that is also taken while the source is still being blended in, or while a one-shot clip
+	/// that leads to the source plays, cutting either short from the pose on screen.
+	///
+	/// `inertialization` works as in [`Self::when`]. Responsive locomotion uses these routes so a change of input
+	/// never waits for a blend or a start clip to finish.
+	pub fn anytime(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
+		self.add(inertialization, true)
+	}
+
+	/// Adds the direct route with the selected interruption policy.
+	fn add(self, inertialization: MediaTime, can_interrupt_transition: bool) -> AnimationGraphState<'builder> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
 		builder.transitions.push((
@@ -343,7 +373,7 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 				target: self.target.id,
 				destination: self.target.id,
 				duration: inertialization,
-				can_interrupt_transition: false,
+				can_interrupt_transition,
 			},
 		));
 		self.target

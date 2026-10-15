@@ -317,6 +317,7 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					duration: None,
 				}),
 				positions: BlendPositions::default(),
+				last_delta: MediaTime::ZERO,
 				pose: PlayerPose::new(skeleton, self.root_motion)?,
 			});
 		}
@@ -333,6 +334,8 @@ struct ReadyAnimationGraphPlayer<'graph> {
 	pending: Option<PendingPlayerTransition>,
 	/// Where blends entered without a requested position start.
 	positions: BlendPositions,
+	/// The latest frame's duration, which a redirected blend measures the on-screen pose's velocity over.
+	last_delta: MediaTime,
 	pose: PlayerPose,
 }
 
@@ -359,6 +362,8 @@ struct PlayerPose {
 	clip_previous: Vec<LocalTransform>,
 	clip_current: Vec<LocalTransform>,
 	local_pose: Vec<LocalTransform>,
+	/// The pose shown the frame before `local_pose`, which a redirected blend takes its starting velocity from.
+	local_previous: Vec<LocalTransform>,
 	global_pose: Vec<Matrix>,
 	inertializer: PoseInertializer,
 }
@@ -391,9 +396,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			self.pending = self.selected_transition(active, requested.state);
 			self.start_pending(pool);
 		}
+		self.redirect_blend(requested.state, pool);
 		self.apply_blend_position(requested);
 
 		// Resolve every clip before sampling. Sampling leases each clip only while it reads it.
+		self.pose.begin_frame();
 		let mut leftover = None;
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
@@ -405,6 +412,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 					leftover = active.leftover_after(delta);
 					self.pose.advance_active(active, delta, pool)
 				} else {
+					self.pose.hold_frame();
 					RootMotionDelta::IDENTITY
 				}
 			}
@@ -422,6 +430,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 					}
 					root_motion
 				} else {
+					self.pose.hold_frame();
 					RootMotionDelta::IDENTITY
 				}
 			}
@@ -434,12 +443,49 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			None => root_motion,
 		};
 
+		self.last_delta = delta;
 		AnimationGraphPose {
 			skeleton: &self.pose.target,
 			local_pose: &self.pose.local_pose,
 			global_pose: &self.pose.global_pose,
 			root_motion,
 		}
+	}
+
+	/// Redirects a blend in progress toward the requested state along an `.anytime` route.
+	///
+	/// The new blend starts from the pose on screen, with its velocity, so nothing pops. The interrupted blend's
+	/// destination keeps playing as the new source, which carries root motion while the new destination fades in.
+	fn redirect_blend(&mut self, requested: AnimationStateId, pool: &mut AnimationPool) {
+		let Playback::Transitioning(transition) = &self.playback else {
+			return;
+		};
+		// The on-screen velocity needs one blended frame and a non-zero frame time.
+		if !transition.begun || self.last_delta == MediaTime::ZERO {
+			return;
+		}
+		let Some((target, duration)) = self.graph.select_interruption(transition.destination.state, requested) else {
+			return;
+		};
+		if !motion_ready(&self.graph.state(target).motion, pool) {
+			return;
+		}
+		let destination = self.start_motion(target, pool);
+		let Playback::Transitioning(transition) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
+			unreachable!("only a blend in progress can be redirected");
+		};
+		self.pose.sample(&destination, destination.phase, pool, Sampled::Destination);
+		self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
+		self.pose.begin_from_display(self.last_delta, duration);
+		self.playback = Playback::Transitioning(ActiveTransition {
+			source: transition.destination,
+			destination,
+			duration,
+			elapsed: MediaTime::ZERO,
+			begun: true,
+		});
+		self.pending = None;
+		prefetch_neighbors(self.graph, target, pool);
 	}
 
 	/// Moves the requested blend state, wherever it plays, to the requested blend position.
@@ -598,6 +644,7 @@ impl PlayerPose {
 			blend_poses: std::array::from_fn(|_| rest_pose.clone()),
 			clip_previous: rest_pose.clone(),
 			clip_current: rest_pose.clone(),
+			local_previous: rest_pose.clone(),
 			local_pose: rest_pose,
 			global_pose,
 			inertializer: PoseInertializer::new(node_count),
@@ -776,6 +823,30 @@ impl PlayerPose {
 		self.remove_root_motion_from_visual_pose();
 		self.write_global_pose();
 		root_motion
+	}
+
+	/// Keeps the pose shown last frame as the previous one before this frame writes a new pose.
+	fn begin_frame(&mut self) {
+		std::mem::swap(&mut self.local_pose, &mut self.local_previous);
+	}
+
+	/// Shows last frame's pose again when no clip is ready to sample.
+	fn hold_frame(&mut self) {
+		self.local_pose.copy_from_slice(&self.local_previous);
+	}
+
+	/// Starts inertializing from the pose on screen, moving over `interval`, toward the sampled destination.
+	fn begin_from_display(&mut self, interval: MediaTime, duration: MediaTime) {
+		self.inertializer
+			.begin(
+				&self.local_previous,
+				&self.local_pose,
+				&self.destination_previous,
+				&self.destination_current,
+				interval,
+				duration,
+			)
+			.expect("player pose buffers must match the canonical skeleton");
 	}
 
 	/// Restores the canonical pose while no clip is ready.
@@ -1459,6 +1530,88 @@ mod tests {
 		// The landing walks right like the walk did, rather than standing at the centre where the directions cancel.
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
 		math::assert_float_eq!(root_motion.translation.z(), 0.0);
+	}
+
+	#[test]
+	fn anytime_direct_routes_cut_short_one_shot_clips_and_when_routes_wait() {
+		for interruptible in [true, false] {
+			let mut pool = pool_with(vec![
+				("idle.animation", test_animation("idle", 0.0)),
+				("start.animation", test_animation("start", 1.0)),
+				("walk.animation", test_animation("walk", 2.0)),
+			]);
+			let builder = AnimationGraph::builder();
+			let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+			let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+			let start = idle
+				.to(walk)
+				.with(AnimationClip::once("start.animation"))
+				.anytime(MediaTime::ZERO);
+			let stop = walk.to(idle);
+			if interruptible {
+				stop.anytime(MediaTime::ZERO);
+			} else {
+				stop.when(MediaTime::ZERO);
+			}
+			let graph = builder.build(idle).expect("graph should build");
+			let mut player = pool.create_player(&graph, None);
+
+			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+			ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+			ready(player.advance(MediaTime::from_millis(100), walk.id(), &mut pool));
+			assert_eq!(player.state(), Some(start.id()));
+			ready(player.advance(MediaTime::from_millis(100), idle.id(), &mut pool));
+
+			let expected = if interruptible { idle.id() } else { start.id() };
+			assert_eq!(player.state(), Some(expected), "interruptible: {interruptible}");
+		}
+	}
+
+	#[test]
+	fn anytime_routes_redirect_a_blend_in_progress_from_the_pose_on_screen() {
+		for interruptible in [true, false] {
+			let mut pool = pool_with(vec![
+				("idle.animation", test_animation("idle", 0.0)),
+				("walk.animation", test_animation("walk", 2.0)),
+				("run.animation", test_animation("run", 4.0)),
+			]);
+			let builder = AnimationGraph::builder();
+			let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+			let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+			let run = builder.state("run").with(AnimationClip::looping("run.animation"));
+			idle.to(walk).anytime(MediaTime::from_seconds(1));
+			let onward = walk.to(run);
+			if interruptible {
+				onward.anytime(MediaTime::from_seconds(1));
+			} else {
+				onward.when(MediaTime::from_seconds(1));
+			}
+			let graph = builder.build(idle).expect("graph should build");
+			let mut player = pool.create_player(&graph, None);
+			let frame = MediaTime::from_millis(16);
+
+			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+			let mut shown = 0.0;
+			for _ in 0..10 {
+				shown = ready(player.advance(frame, walk.id(), &mut pool)).local_pose[0]
+					.translation
+					.x();
+			}
+			let redirected = ready(player.advance(frame, run.id(), &mut pool)).local_pose[0]
+				.translation
+				.x();
+
+			if interruptible {
+				assert_eq!(player.state(), Some(run.id()));
+				// The pose keeps moving from where it was shown, at most a few frames' travel of the fastest clip.
+				assert!(
+					(redirected - shown).abs() < 4.0 * frame.as_seconds_f32() * 3.0,
+					"the pose jumped from {shown} to {redirected}"
+				);
+			} else {
+				assert_eq!(player.state(), Some(walk.id()));
+			}
+		}
 	}
 
 	#[test]

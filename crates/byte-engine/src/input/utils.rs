@@ -39,25 +39,14 @@ pub fn register_mouse_device_class<A: Allocator + Clone>(registry: &mut InputCol
 ///
 /// # Triggers
 ///
-/// The class exposes Boolean triggers for `W`, `S`, `A`, `D`, `Space`, the four
-/// arrow keys, `Escape`, and `Backspace`. The `Character` trigger emits typed
-/// text as a `char`, one impulse per character.
+/// The class exposes a Boolean trigger for every key in [`KEYBOARD_KEYS`]: letters (`A`), digits (`Num0`), numpad
+/// keys (`NumPad0`, `NumPadAdd`), modifiers (`LeftShift`, `RightControl`, `LeftAlt`), arrows (`Up`), function keys
+/// (`F1`), and named keys such as `Space`, `Escape`, and `Backspace`. Bind them as `Keyboard.<name>`. The
+/// `Character` trigger emits typed text as a `char`, one impulse per character.
 pub fn register_keyboard_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let keyboard_device_class_handle = registry.register_device_class("Keyboard");
 
-	for name in [
-		"W",
-		"S",
-		"A",
-		"D",
-		"Space",
-		"Up",
-		"Down",
-		"Left",
-		"Right",
-		"Escape",
-		"Backspace",
-	] {
+	for name in KEYBOARD_KEYS {
 		registry.register_trigger(&keyboard_device_class_handle, name, TriggerDescription::<bool>::default());
 	}
 
@@ -69,6 +58,102 @@ pub fn register_keyboard_device_class<A: Allocator + Clone>(registry: &mut Input
 
 	keyboard_device_class_handle
 }
+
+/// Names every key the standard keyboard device class exposes as a Boolean trigger.
+///
+/// Window input drives each of these; bind one in an action as `Keyboard.<name>`.
+pub const KEYBOARD_KEYS: &[&str] = &[
+	"A",
+	"B",
+	"C",
+	"D",
+	"E",
+	"F",
+	"G",
+	"H",
+	"I",
+	"J",
+	"K",
+	"L",
+	"M",
+	"N",
+	"O",
+	"P",
+	"Q",
+	"R",
+	"S",
+	"T",
+	"U",
+	"V",
+	"W",
+	"X",
+	"Y",
+	"Z",
+	"Num0",
+	"Num1",
+	"Num2",
+	"Num3",
+	"Num4",
+	"Num5",
+	"Num6",
+	"Num7",
+	"Num8",
+	"Num9",
+	"NumPad0",
+	"NumPad1",
+	"NumPad2",
+	"NumPad3",
+	"NumPad4",
+	"NumPad5",
+	"NumPad6",
+	"NumPad7",
+	"NumPad8",
+	"NumPad9",
+	"NumPadAdd",
+	"NumPadSubtract",
+	"NumPadMultiply",
+	"NumPadDivide",
+	"NumPadDecimal",
+	"NumPadEnter",
+	"Backspace",
+	"Tab",
+	"Enter",
+	"LeftShift",
+	"RightShift",
+	"LeftControl",
+	"RightControl",
+	"LeftAlt",
+	"RightAlt",
+	"Menu",
+	"Space",
+	"Insert",
+	"Delete",
+	"Home",
+	"End",
+	"PageUp",
+	"PageDown",
+	"Up",
+	"Down",
+	"Left",
+	"Right",
+	"Escape",
+	"F1",
+	"F2",
+	"F3",
+	"F4",
+	"F5",
+	"F6",
+	"F7",
+	"F8",
+	"F9",
+	"F10",
+	"F11",
+	"F12",
+	"NumLock",
+	"ScrollLock",
+	"CapsLock",
+	"PrintScreen",
+];
 
 /// Registers the standard Byte Engine gamepad device class.
 ///

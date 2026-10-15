@@ -159,6 +159,8 @@ pub(crate) fn import_fbx_animation(
 		name: non_empty_name(&stack.element.name),
 		skeleton,
 		duration: finite_f32(baked.playback_duration, "animation duration")?,
+		// Frame numbers in authoring tools count at the scene's frame rate.
+		frame_rate: Some(finite_f32(scene.settings.frames_per_second, "animation frame rate")?).filter(|rate| *rate > 0.0),
 		tracks,
 	})
 }

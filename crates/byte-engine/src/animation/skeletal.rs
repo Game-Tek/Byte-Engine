@@ -313,6 +313,7 @@ mod tests {
 			name: None,
 			skeleton: Reference::in_memory("comparison-skeleton", skeleton),
 			duration: 1.0,
+			frame_rate: None,
 			tracks: vec![NodeTrack {
 				node: 1,
 				translation: Some(TranslationCurve::Linear {

@@ -314,6 +314,22 @@ impl From<AnimationStateId> for AnimationRequest {
 	}
 }
 
+/// The `ClipPoint` struct names an authored moment in one of a state's clips, which routes wait for or start at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ClipPoint {
+	/// The clip's index in its state's [`StateMotion::clips`].
+	pub(super) clip: usize,
+	pub(super) time: ClipTime,
+}
+
+/// The `ClipTime` enum places a [`ClipPoint`] by frame number, counted from the clip's first frame at its authored
+/// frame rate, or by seconds for clips without one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ClipTime {
+	Frame(u32),
+	Seconds(f32),
+}
+
 /// The `BlendPositions` struct remembers the last position a player was given for each kind of blend.
 ///
 /// A blend state the player enters without a requested position, like a landing a jump hands over to, starts where

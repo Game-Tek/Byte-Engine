@@ -167,6 +167,7 @@ fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Pack
 		name: Some(name.into()),
 		skeleton: Reference::in_memory(format!("benchmark-{name}.skeleton"), benchmark_skeleton(node_count)),
 		duration: CLIP_DURATION_SECONDS,
+		frame_rate: None,
 		tracks,
 	})
 }

@@ -10,6 +10,8 @@ use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
+/// The header word that holds the clip's frame rate, or zero when it has none.
+const FRAME_RATE_WORD: usize = 7;
 /// The header word that holds the offset of the three-component value table, used by translation and scale curves.
 const VECTOR3_VALUES_WORD: usize = 5;
 /// The header word that holds the offset of the four-component value table, used by rotation curves.
@@ -35,7 +37,7 @@ impl PackedAnimationData {
 	/// Consumes a loaded resource and combines all curve descriptors, times, and values into one allocation.
 	pub(crate) fn from_resource(animation: Animation) -> Self {
 		Self {
-			data: pack_data(animation.duration, animation.tracks),
+			data: pack_data(animation.duration, animation.frame_rate, animation.tracks),
 			skeleton: animation.skeleton,
 		}
 	}
@@ -58,6 +60,12 @@ impl<'a> PackedAnimation<'a> {
 	/// Returns the clip duration encoded in the packed buffer header.
 	pub fn duration(self) -> f32 {
 		f32::from_bits(self.words[0])
+	}
+
+	/// Returns the frames per second the clip was authored at, if its source recorded one.
+	pub fn frame_rate(self) -> Option<f32> {
+		let rate = f32::from_bits(self.words[FRAME_RATE_WORD]);
+		(rate > 0.0).then_some(rate)
 	}
 
 	/// Samples the clip into a complete source-skeleton local pose while reusing caller storage.
@@ -151,7 +159,7 @@ struct PackedCurve {
 }
 
 /// Builds transient typed arrays, then writes the retained representation into one word-aligned allocation.
-fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
+fn pack_data(duration: f32, frame_rate: Option<f32>, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	let mut descriptors = Vec::new();
 	let mut packed_tracks = Vec::with_capacity(tracks.len());
 	let mut times = Vec::new();
@@ -189,7 +197,7 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 		times_offset as u32,
 		vector3_offset as u32,
 		quaternion_offset as u32,
-		0,
+		frame_rate.unwrap_or(0.0).to_bits(),
 	]);
 	words.extend(packed_tracks.into_iter().flatten());
 	words.extend(descriptors.into_iter().flatten());
@@ -280,6 +288,7 @@ mod tests {
 			name: None,
 			skeleton: Reference::in_memory("duplicate-source.skeleton", source),
 			duration: 1.0,
+			frame_rate: None,
 			tracks: vec![NodeTrack {
 				node: 0,
 				translation: Some(TranslationCurve::Step {

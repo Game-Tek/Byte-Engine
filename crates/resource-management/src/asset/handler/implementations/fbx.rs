@@ -258,6 +258,8 @@ mod tests {
 		assert_eq!(indexed.name, named.name);
 		assert_eq!(default.name, named.name);
 		assert!((named.duration - 1.0).abs() < f32::EPSILON);
+		// The fixture's scene time mode is 30 frames per second.
+		assert_eq!(named.frame_rate, Some(30.0));
 
 		let translation_track = named
 			.tracks

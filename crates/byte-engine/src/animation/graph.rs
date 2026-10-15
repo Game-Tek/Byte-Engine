@@ -107,6 +107,26 @@ struct StateTransition {
 	duration: MediaTime,
 	// Only `.anytime` routes cut short a playing one-shot clip or a blend in progress.
 	can_interrupt_transition: bool,
+	/// Moments of the source's playback the route waits for before it starts; empty starts it at once.
+	wait: Box<[ClipPoint]>,
+	/// Where in its clips the target starts; `None` starts it at its beginning.
+	entry: Option<ClipPoint>,
+}
+
+/// The `SelectedRoute` struct is a route the player takes: where to, how long to blend, when, and where to start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SelectedRoute<'graph> {
+	target: AnimationStateId,
+	duration: MediaTime,
+	wait: &'graph [ClipPoint],
+	entry: Option<ClipPoint>,
+}
+
+impl SelectedRoute<'_> {
+	#[cfg(test)]
+	fn pair(self) -> (AnimationStateId, MediaTime) {
+		(self.target, self.duration)
+	}
 }
 
 struct AnimationGraphStateData {
@@ -116,6 +136,8 @@ struct AnimationGraphStateData {
 	completion: Option<AnimationStateId>,
 	/// How long a finished one-shot inertializes into its completion state; zero cuts straight to it.
 	completion_blend: MediaTime,
+	/// Where in its clips the completion state starts after the one-shot.
+	completion_entry: Option<ClipPoint>,
 	transitions: Vec<StateTransition>,
 }
 
@@ -123,11 +145,16 @@ impl AnimationGraphStateData {
 	/// Selects the first authored route whose persistent destination was requested.
 	///
 	/// When `interrupting` an active transition clip, only `.anytime` routes qualify.
-	fn select_route(&self, requested: AnimationStateId, interrupting: bool) -> Option<(AnimationStateId, MediaTime)> {
+	fn select_route(&self, requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
 		self.transitions
 			.iter()
 			.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
-			.map(|transition| (transition.target, transition.duration))
+			.map(|transition| SelectedRoute {
+				target: transition.target,
+				duration: transition.duration,
+				wait: &transition.wait,
+				entry: transition.entry,
+			})
 	}
 }
 
@@ -157,6 +184,7 @@ impl AnimationGraph {
 				states: Vec::new(),
 				transitions: Vec::new(),
 				invalid_blends: Vec::new(),
+				invalid_points: Vec::new(),
 			})),
 		}
 	}
@@ -187,7 +215,7 @@ impl AnimationGraph {
 		source: AnimationStateId,
 		requested: AnimationStateId,
 		source_finished: bool,
-	) -> Option<(AnimationStateId, MediaTime)> {
+	) -> Option<SelectedRoute<'_>> {
 		let source_state = self.state(source);
 		let Some(completion) = source_state.completion else {
 			return if source == requested {
@@ -203,10 +231,16 @@ impl AnimationGraph {
 		if requested != completion
 			&& let Some(transition) = self.state(completion).select_route(requested, true)
 		{
-			return Some(transition);
+			// Its wait points name moments of the completion state, which is not playing yet.
+			return Some(SelectedRoute { wait: &[], ..transition });
 		}
 
-		source_finished.then_some((completion, source_state.completion_blend))
+		source_finished.then_some(SelectedRoute {
+			target: completion,
+			duration: source_state.completion_blend,
+			wait: &[],
+			entry: source_state.completion_entry,
+		})
 	}
 
 	/// Selects an `.anytime` route that cuts short a blend into `destination` toward the requested state.
@@ -216,7 +250,7 @@ impl AnimationGraph {
 		&self,
 		destination: AnimationStateId,
 		requested: AnimationStateId,
-	) -> Option<(AnimationStateId, MediaTime)> {
+	) -> Option<SelectedRoute<'_>> {
 		let state = self.state(destination);
 		if destination == requested || state.completion.is_some() {
 			return None;
@@ -239,6 +273,32 @@ struct AnimationGraphBuilderData {
 	transitions: Vec<(AnimationStateId, StateTransition)>,
 	/// Blend states whose samples were rejected, reported by [`AnimationGraphBuilder::build`].
 	invalid_blends: Vec<(usize, BlendSpaceError)>,
+	/// Route points that named a clip their state does not play, reported by [`AnimationGraphBuilder::build`].
+	invalid_points: Vec<AnimationGraphBuildError>,
+}
+
+impl AnimationGraphBuilderData {
+	/// Resolves a moment of `state`'s clip named `clip`, or of its only clip when `clip` is `None`, recording an error
+	/// for [`AnimationGraphBuilder::build`] when the state has no such clip.
+	fn clip_point(&mut self, state: AnimationStateId, clip: Option<&str>, time: ClipTime) -> Option<ClipPoint> {
+		let clips = self.states[state.index].motion.clips();
+		let index = match clip {
+			Some(clip) => clips.iter().position(|candidate| candidate.resource_id() == clip),
+			None if clips.len() == 1 => Some(0),
+			None => {
+				self.invalid_points
+					.push(AnimationGraphBuildError::RoutePointNeedsClip { state: state.index });
+				return None;
+			}
+		};
+		if index.is_none() {
+			self.invalid_points.push(AnimationGraphBuildError::RoutePointClipMissing {
+				state: state.index,
+				clip: clip.unwrap_or_default().to_string(),
+			});
+		}
+		index.map(|clip| ClipPoint { clip, time })
+	}
 }
 
 impl AnimationGraphBuilderData {
@@ -256,6 +316,7 @@ impl AnimationGraphBuilderData {
 			motion,
 			completion,
 			completion_blend,
+			completion_entry: None,
 			transitions: Vec::new(),
 		});
 		AnimationStateId {
@@ -283,6 +344,8 @@ pub struct AnimationGraphState<'builder> {
 pub struct AnimationGraphTransitionBuilder<'builder> {
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
+	wait: Vec<ClipPoint>,
+	entry: Option<ClipPoint>,
 }
 
 /// The `AnimationGraphTransitionConditionBuilder` struct holds unfinished one-shot route authoring so callers can choose its interruption policy.
@@ -291,6 +354,8 @@ pub struct AnimationGraphTransitionConditionBuilder<'builder> {
 	target: AnimationGraphState<'builder>,
 	clip: AnimationClip,
 	completion_blend: MediaTime,
+	wait: Vec<ClipPoint>,
+	entry: Option<ClipPoint>,
 }
 
 impl<'builder> AnimationGraphStateBuilder<'builder> {
@@ -340,11 +405,59 @@ impl<'builder> AnimationGraphState<'builder> {
 			std::ptr::eq(self.data, target.data),
 			"animation graph states must use the same builder"
 		);
-		AnimationGraphTransitionBuilder { source: self, target }
+		AnimationGraphTransitionBuilder {
+			source: self,
+			target,
+			wait: Vec::new(),
+			entry: None,
+		}
+	}
+
+	/// Resolves a moment of this state's clip `clip`, or of its only clip, for a route point.
+	fn point(self, clip: Option<&str>, time: ClipTime) -> Option<ClipPoint> {
+		let mut builder = self.data.borrow_mut();
+		let builder = builder.as_mut().expect("the animation graph has already been built");
+		builder.clip_point(self.id, clip, time)
 	}
 }
 
 impl<'builder> AnimationGraphTransitionBuilder<'builder> {
+	/// Waits for the source's playback to reach `frame` of its clip before taking the route. Use it to start a clip
+	/// at the point of a loop it fits, like a jump off the right foot.
+	///
+	/// Frames count from the clip's first frame at its authored frame rate. The source must play one clip; for a blend,
+	/// use [`Self::at_frames`]. A route that plays a one-shot through [`Self::with`] waits before playing it. Requesting
+	/// another state while the route waits cancels it.
+	pub fn at_frame(mut self, frame: u32) -> Self {
+		self.wait.extend(self.source.point(None, ClipTime::Frame(frame)));
+		self
+	}
+
+	/// Waits for the source's playback to reach any of `frames` of its clip `clip`, the resource ID of one of the
+	/// source's clips. For a blend, its clips share one phase, so the frames of one clip place the moments for all.
+	pub fn at_frames(mut self, clip: &str, frames: impl IntoIterator<Item = u32>) -> Self {
+		for frame in frames {
+			self.wait.extend(self.source.point(Some(clip), ClipTime::Frame(frame)));
+		}
+		self
+	}
+
+	/// Waits for the source's playback to reach `time` into its clip, for clips without an authored frame rate. The
+	/// source must play one clip.
+	pub fn at_time(mut self, time: MediaTime) -> Self {
+		self.wait
+			.extend(self.source.point(None, ClipTime::Seconds(time.as_seconds_f32())));
+		self
+	}
+
+	/// Starts the target at `frame` of its clip `clip` instead of at its beginning. Use it to pick up a loop at the
+	/// point that fits the pose the route leaves from. On a route that plays a one-shot through [`Self::with`], the
+	/// target starts there once the one-shot hands over, like landing into a walk mid-stride.
+	pub fn entering_at_frame(mut self, clip: &str, frame: u32) -> Self {
+		self.entry = self.target.point(Some(clip), ClipTime::Frame(frame));
+		self
+	}
+
 	/// Adds a direct route without playing an intermediate clip, taken only once the source has settled.
 	///
 	/// `inertialization` smooths the switch with critically damped inertialization for that duration.
@@ -374,6 +487,8 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 				destination: self.target.id,
 				duration: inertialization,
 				can_interrupt_transition,
+				wait: self.wait.into(),
+				entry: self.entry,
 			},
 		));
 		self.target
@@ -386,6 +501,8 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 			target: self.target,
 			clip,
 			completion_blend: MediaTime::ZERO,
+			wait: self.wait,
+			entry: self.entry,
 		}
 	}
 }
@@ -429,6 +546,7 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 			Some(self.target.id),
 			self.completion_blend,
 		);
+		builder.states[id.index].completion_entry = self.entry;
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
@@ -436,6 +554,8 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 				destination: self.target.id,
 				duration: inertialization,
 				can_interrupt_transition,
+				wait: self.wait.into(),
+				entry: None,
 			},
 		));
 		AnimationGraphState {
@@ -488,6 +608,9 @@ impl AnimationGraphBuilder {
 		let initial = initial.id;
 		if let Some(&(state, error)) = data.invalid_blends.first() {
 			return Err(AnimationGraphBuildError::InvalidBlend { state, error });
+		}
+		if let Some(error) = data.invalid_points.first() {
+			return Err(error.clone());
 		}
 		if initial.index >= data.states.len() {
 			return Err(AnimationGraphBuildError::InitialStateOutOfRange {
@@ -624,6 +747,18 @@ pub enum AnimationGraphBuildError {
 		/// The index of the blend state.
 		state: usize,
 	},
+	/// A route point names a clip that its state does not play.
+	RoutePointClipMissing {
+		/// The index of the state the point was looked up in: the route's source for a wait, its target for an entry.
+		state: usize,
+		/// The clip resource ID the point named.
+		clip: String,
+	},
+	/// A route point does not say which clip it counts frames of, but its state plays several.
+	RoutePointNeedsClip {
+		/// The index of the blend state.
+		state: usize,
+	},
 }
 
 impl fmt::Display for AnimationGraphBuildError {
@@ -673,6 +808,14 @@ impl fmt::Display for AnimationGraphBuildError {
 				formatter,
 				"Animation blend state cannot weigh its clips ({error:?}). The most likely cause is state {state} placing two clips at the same position, or a planar blend whose clips do not form a ring and needs explicit triangles."
 			),
+			Self::RoutePointClipMissing { state, clip } => write!(
+				formatter,
+				"Animation route point names a clip its state does not play. The most likely cause is state {state} not having '{clip}' among its clips."
+			),
+			Self::RoutePointNeedsClip { state } => write!(
+				formatter,
+				"Animation route point does not say which clip it counts frames of. The most likely cause is calling `at_frame` or `at_time` on a route from blend state {state}; use `at_frames` with one of its clips."
+			),
 			Self::MixedBlendPlayback { state } => write!(
 				formatter,
 				"Animation blend state mixes looping and one-shot clips. The most likely cause is state {state} using `AnimationClip::once` for some samples and `AnimationClip::looping` for others."
@@ -690,7 +833,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroUsize, sync::Ar
 
 use math::{Matrix, Vector};
 pub use motion::{AnimationBlend, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId};
-use motion::{BlendPositions, BlendValue, StateMotion};
+use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, StateMotion};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{
@@ -766,7 +909,7 @@ mod tests {
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, false),
+			graph.select_transition(start_walk.id, idle.id, false).map(SelectedRoute::pair),
 			Some((stop_walk.id, MediaTime::ZERO)),
 			"a matching any-time transition must interrupt an active transition clip"
 		);
@@ -776,12 +919,12 @@ mod tests {
 			"the active any-time transition must not restart itself"
 		);
 		assert_eq!(
-			graph.select_transition(start_walk.id, walk.id, true),
+			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
 			Some((walk.id, MediaTime::ZERO)),
 			"an uninterrupted transition state must fall through to its completion"
 		);
 		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, true),
+			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
 			Some((stop_walk.id, MediaTime::ZERO)),
 			"a matching any-time transition must take priority over completion"
 		);
@@ -819,6 +962,33 @@ mod tests {
 	}
 
 	#[test]
+	fn route_points_must_name_a_clip_of_their_state() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		idle.to(walk).at_frames("walk.animation", [3]).anytime(MediaTime::ZERO);
+
+		assert!(matches!(
+			builder.build(idle),
+			Err(AnimationGraphBuildError::RoutePointClipMissing { state: 0, clip }) if clip == "walk.animation"
+		));
+
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let blend = builder.state("move").linear(
+			AnimationBlend::new()
+				.sample(0.0, AnimationClip::looping("walk.animation"))
+				.sample(1.0, AnimationClip::looping("run.animation")),
+		);
+		blend.to(idle).at_frame(3).anytime(MediaTime::ZERO);
+
+		assert!(matches!(
+			builder.build(idle),
+			Err(AnimationGraphBuildError::RoutePointNeedsClip { state: 1 })
+		));
+	}
+
+	#[test]
 	fn transition_states_prioritize_authored_exits_over_completion() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
@@ -831,12 +1001,12 @@ mod tests {
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, true),
+			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
 			Some((idle.id, MediaTime::ZERO)),
 			"an authored exit must take priority over transition-state completion"
 		);
 		assert_eq!(
-			graph.select_transition(start_walk.id, walk.id, true),
+			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
 			Some((walk.id, MediaTime::ZERO)),
 			"a transition state without a matching exit must complete normally"
 		);

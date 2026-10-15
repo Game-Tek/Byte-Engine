@@ -583,6 +583,8 @@ pub(crate) fn import_gltf_animation(
 		name: animation.name().map(ToString::to_string),
 		skeleton,
 		duration,
+		// glTF stores key times in seconds without a frame rate.
+		frame_rate: None,
 		tracks,
 	})
 }

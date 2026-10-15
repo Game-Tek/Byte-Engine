@@ -200,6 +200,9 @@ pub struct Animation {
 	pub name: Option<String>,
 	pub skeleton: Reference<Skeleton>,
 	pub duration: f32,
+	/// The frames per second the clip was authored at, so code can address its moments by frame number. `None` when
+	/// the source format does not record one, like glTF.
+	pub frame_rate: Option<f32>,
 	pub tracks: Vec<NodeTrack>,
 }
 
@@ -259,6 +262,8 @@ pub struct AnimationModel {
 	pub name: Option<String>,
 	pub skeleton: ReferenceModel<SkeletonModel>,
 	pub duration: f32,
+	/// The frames per second the clip was authored at, as [`Animation::frame_rate`].
+	pub frame_rate: Option<f32>,
 	pub tracks: Vec<NodeTrack>,
 }
 
@@ -273,10 +278,14 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 		crate::r#async::future(async move {
 			let skeleton = self.skeleton.solve(storage_backend).await?;
 			validate_animation(self.duration, &self.tracks, skeleton.resource().nodes.len())?;
+			if self.frame_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0) {
+				invalid_animation("the frame rate is not a finite positive number")?;
+			}
 			Ok(Animation {
 				name: self.name,
 				skeleton,
 				duration: self.duration,
+				frame_rate: self.frame_rate,
 				tracks: self.tracks,
 			})
 		})
@@ -382,6 +391,7 @@ mod tests {
 			name: Some("walk".into()),
 			skeleton: skeleton_reference(storage, 2).await,
 			duration: 1.0,
+			frame_rate: Some(30.0),
 			tracks: vec![NodeTrack {
 				node: 1,
 				translation: Some(TranslationCurve::Linear {

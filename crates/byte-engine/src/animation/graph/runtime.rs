@@ -442,17 +442,22 @@ mod tests {
 		}
 	}
 
+	/// The frame rate test clips are authored at: a frame every 0.1 s.
+	pub(super) const TEST_FRAME_RATE: f32 = 10.0;
+
 	/// Packs a one-node clip that moves its root along x. The [`player`] tests share it and its packed size.
 	pub(super) fn test_animation(name: &str, end_translation: f32) -> PackedAnimationData {
 		test_motion(name, [end_translation, 0.0, 0.0], 1.0)
 	}
 
-	/// Packs a one-node clip that moves its root from the origin to `end` over `duration` seconds.
+	/// Packs a one-node clip that moves its root from the origin to `end` over `duration` seconds, authored at
+	/// [`TEST_FRAME_RATE`] frames per second.
 	pub(super) fn test_motion(name: &str, end: [f32; 3], duration: f32) -> PackedAnimationData {
 		PackedAnimationData::from_resource(Animation {
 			name: Some(name.into()),
 			skeleton: Reference::in_memory("test.skeleton", test_skeleton()),
 			duration,
+			frame_rate: Some(TEST_FRAME_RATE),
 			tracks: vec![NodeTrack {
 				node: 0,
 				translation: Some(TranslationCurve::Linear {

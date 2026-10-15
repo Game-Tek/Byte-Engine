@@ -29,7 +29,8 @@ struct RuntimeMotion {
 }
 
 impl RuntimeMotion {
-	/// Resolves a state's resident clips against the canonical skeleton and weighs them at `value`.
+	/// Resolves a state's resident clips against the canonical skeleton and weighs them at `value`, which
+	/// [`BlendPositions::recall`] gives for a blend.
 	fn new(state: AnimationStateId, motion: &StateMotion, value: BlendValue, pool: &AnimationPool, target: &Skeleton) -> Self {
 		let samples = motion
 			.clips()
@@ -46,7 +47,6 @@ impl RuntimeMotion {
 			})
 			.collect();
 		let mut weights = vec![0.0; motion.clips().len()].into_boxed_slice();
-		motion.write_weights(motion.origin(), &mut weights);
 		motion.write_weights(value, &mut weights);
 		Self {
 			state,
@@ -316,6 +316,7 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					target: self.graph.initial_state(),
 					duration: None,
 				}),
+				positions: BlendPositions::default(),
 				pose: PlayerPose::new(skeleton, self.root_motion)?,
 			});
 		}
@@ -330,6 +331,8 @@ struct ReadyAnimationGraphPlayer<'graph> {
 	graph: &'graph AnimationGraph,
 	playback: Playback,
 	pending: Option<PendingPlayerTransition>,
+	/// Where blends entered without a requested position start.
+	positions: BlendPositions,
 	pose: PlayerPose,
 }
 
@@ -378,14 +381,15 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 	/// apply [`AnimationGraphPose::root_motion`] to the owning object and submit
 	/// [`AnimationGraphPose::global_pose`] to the rendering system.
 	fn advance(&mut self, delta: MediaTime, requested: AnimationRequest, pool: &mut AnimationPool) -> AnimationGraphPose<'_> {
+		self.positions.remember(requested.value);
 		self.refresh_pending_transition(requested.state);
-		self.start_pending(requested, pool);
+		self.start_pending(pool);
 
 		if let Playback::Playing(active) = &self.playback
 			&& self.pending.is_none()
 		{
 			self.pending = self.selected_transition(active, requested.state);
-			self.start_pending(requested, pool);
+			self.start_pending(pool);
 		}
 		self.apply_blend_position(requested);
 
@@ -457,14 +461,10 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		}
 	}
 
-	/// Starts the motion of `target`, at the requested blend position when `target` is the requested state.
-	fn start_motion(&self, target: AnimationStateId, requested: AnimationRequest, pool: &AnimationPool) -> RuntimeMotion {
-		let value = if target == requested.state {
-			requested.value
-		} else {
-			BlendValue::Unset
-		};
-		RuntimeMotion::new(target, &self.graph.state(target).motion, value, pool, &self.pose.target)
+	/// Starts the motion of `target`, a blend at the last position requested for its kind.
+	fn start_motion(&self, target: AnimationStateId, pool: &AnimationPool) -> RuntimeMotion {
+		let motion = &self.graph.state(target).motion;
+		RuntimeMotion::new(target, motion, self.positions.recall(motion), pool, &self.pose.target)
 	}
 
 	/// Enters a finished one-shot's completion state within the same frame and plays `leftover` of it.
@@ -490,7 +490,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		if !motion_ready(&self.graph.state(target).motion, pool) {
 			return RootMotionDelta::IDENTITY;
 		}
-		let mut destination = self.start_motion(target, requested, pool);
+		let mut destination = self.start_motion(target, pool);
 
 		let root_motion = if blend == MediaTime::ZERO {
 			// Start from the motion's first frame so root motion covers only the leftover time.
@@ -517,7 +517,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 	}
 
 	/// Starts a selected state once all of its clips are resident, preserving playback while they load.
-	fn start_pending(&mut self, requested: AnimationRequest, pool: &mut AnimationPool) {
+	fn start_pending(&mut self, pool: &mut AnimationPool) {
 		let Some(pending) = self.pending.as_ref() else {
 			return;
 		};
@@ -525,7 +525,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			return;
 		}
 		let target = pending.target;
-		let destination = self.start_motion(target, requested, pool);
+		let destination = self.start_motion(target, pool);
 
 		self.playback = if let Some(duration) = pending.duration {
 			let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
@@ -1422,6 +1422,43 @@ mod tests {
 		let root_motion = ready(player.advance(MediaTime::from_millis(500), walk.id(), &mut pool)).root_motion;
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
 		math::assert_float_eq!(root_motion.translation.z(), 0.25);
+	}
+
+	#[test]
+	fn blends_entered_on_their_own_continue_at_the_last_requested_position() {
+		let mut pool = pool_with(vec![
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
+			("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			("left.animation", test_motion("left", [-1.0, 0.0, 0.0], 1.0)),
+			("jump.animation", test_motion("jump", [0.0, 0.0, 0.0], 0.5)),
+		]);
+		let builder = AnimationGraph::builder();
+		let directions = |name: &str| {
+			builder.state(name).planar(
+				AnimationBlend::new()
+					.sample([0.0, 1.0], AnimationClip::looping("forward.animation"))
+					.sample([1.0, 0.0], AnimationClip::looping("right.animation"))
+					.sample([0.0, -1.0], AnimationClip::looping("backward.animation"))
+					.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
+			)
+		};
+		let walk = directions("walk");
+		let landed = directions("landed");
+		walk.to(landed)
+			.with(AnimationClip::once("jump.animation"))
+			.when(MediaTime::ZERO);
+		let graph = builder.build(walk).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+
+		ready(player.advance(MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(MediaTime::ZERO, landed.id(), &mut pool));
+		// The jump clip ends after 0.5 s and hands the rest of the frame to the landing, which nobody gave a position.
+		let root_motion = ready(player.advance(MediaTime::from_millis(750), landed.id(), &mut pool)).root_motion;
+
+		// The landing walks right like the walk did, rather than standing at the centre where the directions cancel.
+		math::assert_float_eq!(root_motion.translation.x(), 0.25);
+		math::assert_float_eq!(root_motion.translation.z(), 0.0);
 	}
 
 	#[test]

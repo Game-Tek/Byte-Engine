@@ -34,15 +34,6 @@ impl StateMotion {
 		self.clips()[0].playback()
 	}
 
-	/// Returns the blend position a state plays before any request names one.
-	pub(super) fn origin(&self) -> BlendValue {
-		match self {
-			Self::Clip(_) => BlendValue::Unset,
-			Self::Linear { .. } => BlendValue::Linear(0.0),
-			Self::Planar { .. } => BlendValue::Planar([0.0, 0.0]),
-		}
-	}
-
 	/// Writes each clip's weight for the blend position `value`.
 	///
 	/// A value of the wrong kind or a non-finite one leaves `weights` unchanged, so the state keeps its last mix.
@@ -255,7 +246,8 @@ impl From<PlanarStateId> for AnimationRequest {
 /// blend.
 ///
 /// Make one from any state ID, or with [`LinearStateId::at`] and [`PlanarStateId::at`] for blend states, then pass
-/// it to [`AnimationGraphPlayer::advance`]. A blend state requested without a position keeps its last one.
+/// it to [`AnimationGraphPlayer::advance`]. A blend state requested without a position keeps its last one, and a
+/// blend state the player enters on its own starts at the last position requested for a blend of its kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationRequest {
 	pub(super) state: AnimationStateId,
@@ -274,6 +266,37 @@ impl From<AnimationStateId> for AnimationRequest {
 		Self {
 			state,
 			value: BlendValue::Unset,
+		}
+	}
+}
+
+/// The `BlendPositions` struct remembers the last position a player was given for each kind of blend.
+///
+/// A blend state the player enters without a requested position, like a landing a jump hands over to, starts where
+/// the last blend of its kind left off rather than at the centre of its samples, where opposite directions can
+/// cancel out. All linear blends share one position, and all planar blends another.
+#[derive(Clone, Copy, Default)]
+pub(super) struct BlendPositions {
+	linear: Option<f32>,
+	planar: Option<[f32; 2]>,
+}
+
+impl BlendPositions {
+	/// Keeps a requested position for later blends of its kind. Non-finite positions are ignored.
+	pub(super) fn remember(&mut self, value: BlendValue) {
+		match value {
+			BlendValue::Linear(value) if value.is_finite() => self.linear = Some(value),
+			BlendValue::Planar(value) if value.iter().all(|component| component.is_finite()) => self.planar = Some(value),
+			_ => {}
+		}
+	}
+
+	/// Returns where `motion` starts: the last position of its kind, or the origin before the player was given one.
+	pub(super) fn recall(&self, motion: &StateMotion) -> BlendValue {
+		match motion {
+			StateMotion::Clip(_) => BlendValue::Unset,
+			StateMotion::Linear { .. } => BlendValue::Linear(self.linear.unwrap_or(0.0)),
+			StateMotion::Planar { .. } => BlendValue::Planar(self.planar.unwrap_or([0.0, 0.0])),
 		}
 	}
 }

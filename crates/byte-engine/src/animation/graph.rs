@@ -660,7 +660,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroUsize, sync::Ar
 
 use math::{Matrix, Vector};
 pub use motion::{AnimationBlend, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId};
-use motion::{BlendValue, StateMotion};
+use motion::{BlendPositions, BlendValue, StateMotion};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{

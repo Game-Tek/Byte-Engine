@@ -109,6 +109,8 @@ struct AnimationGraphStateData {
 	clip: AnimationClip,
 	/// Set only for one-shot transition states: the state entered after the clip finishes.
 	completion: Option<AnimationStateId>,
+	/// How long a finished one-shot inertializes into its completion state; zero cuts straight to it.
+	completion_blend: MediaTime,
 	transitions: Vec<StateTransition>,
 }
 
@@ -198,7 +200,7 @@ impl AnimationGraph {
 			return Some(transition);
 		}
 
-		source_finished.then_some((completion, MediaTime::ZERO))
+		source_finished.then_some((completion, source_state.completion_blend))
 	}
 }
 
@@ -224,11 +226,13 @@ impl AnimationGraphBuilderData {
 		name: String,
 		clip: AnimationClip,
 		completion: Option<AnimationStateId>,
+		completion_blend: MediaTime,
 	) -> AnimationStateId {
 		self.states.push(AnimationGraphStateData {
 			name,
 			clip,
 			completion,
+			completion_blend,
 			transitions: Vec::new(),
 		});
 		AnimationStateId {
@@ -263,6 +267,7 @@ pub struct AnimationGraphTransitionConditionBuilder<'builder> {
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
 	clip: AnimationClip,
+	completion_blend: MediaTime,
 }
 
 impl<'builder> AnimationGraphStateBuilder<'builder> {
@@ -270,7 +275,7 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 	pub fn with(self, clip: AnimationClip) -> AnimationGraphState<'builder> {
 		let mut builder = self.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let id = builder.push_state(self.graph, self.name, clip, None);
+		let id = builder.push_state(self.graph, self.name, clip, None, MediaTime::ZERO);
 		AnimationGraphState { data: self.data, id }
 	}
 }
@@ -317,11 +322,19 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 			source: self.source,
 			target: self.target,
 			clip,
+			completion_blend: MediaTime::ZERO,
 		}
 	}
 }
 
 impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
+	/// Inertializes from the one-shot clip's last pose into the target state over `inertialization` once the clip
+	/// ends, which hides small pose mismatches between the two clips. Without it the target starts immediately.
+	pub fn exit(mut self, inertialization: MediaTime) -> Self {
+		self.completion_blend = inertialization;
+		self
+	}
+
 	/// Adds a one-shot route that must complete before reconciling another request.
 	///
 	/// `inertialization` works as in [`AnimationGraphTransitionBuilder::when`].
@@ -346,7 +359,13 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 			builder.states[self.target.id.index].name,
 			builder.states.len(),
 		);
-		let id = builder.push_state(self.source.id.graph, name, self.clip, Some(self.target.id));
+		let id = builder.push_state(
+			self.source.id.graph,
+			name,
+			self.clip,
+			Some(self.target.id),
+			self.completion_blend,
+		);
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
@@ -379,7 +398,7 @@ impl AnimationGraphBuilder {
 	fn transition_state(&self, name: impl Into<String>, clip: AnimationClip, completion: AnimationStateId) -> AnimationStateId {
 		let mut data = self.data.borrow_mut();
 		let data = data.as_mut().expect("the animation graph has already been built");
-		data.push_state(self.graph, name.into(), clip, Some(completion))
+		data.push_state(self.graph, name.into(), clip, Some(completion), MediaTime::ZERO)
 	}
 
 	/// Validates the graph and selects the initial state.

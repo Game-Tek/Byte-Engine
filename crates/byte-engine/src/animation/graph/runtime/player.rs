@@ -27,6 +27,16 @@ impl RuntimeClip {
 		self.playback == AnimationPlayback::Once && self.time_seconds >= self.duration
 	}
 
+	/// Returns the part of `delta` a one-shot clip leaves unused once it reaches its end, or `None` while it keeps playing.
+	fn leftover_after(&self, delta: MediaTime) -> Option<MediaTime> {
+		if self.playback != AnimationPlayback::Once || self.duration <= 0.0 {
+			return None;
+		}
+		let remaining = f64::from(self.duration - self.time_seconds);
+		let delta = f64::from(delta.as_seconds_f32());
+		(delta >= remaining).then(|| MediaTime::from_seconds_f64((delta - remaining).max(0.0)))
+	}
+
 	/// Moves playback forward by `delta` and returns how many times a looping clip wrapped.
 	fn advance(&mut self, delta: MediaTime) -> usize {
 		let duration = self.duration;
@@ -303,6 +313,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 
 		// Resolve every clip before borrowing arena regions. Leases pin those regions
 		// until pose evaluation and root-motion sampling finish.
+		let mut leftover = None;
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
 				self.pose.write_rest_pose();
@@ -313,6 +324,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 					let resident = pool
 						.acquire(&active.resource_id)
 						.expect("ready active lease must remain resident");
+					leftover = active.leftover_after(delta);
 					self.pose.advance_active(active, delta, &resident)
 				} else {
 					RootMotionDelta::IDENTITY
@@ -345,12 +357,73 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			}
 		};
 
+		// A one-shot that ends this frame hands the rest of the frame to its completion state, so the clip's last
+		// pose is never shown twice.
+		let root_motion = match leftover {
+			Some(leftover) => root_motion.then(self.enter_completion(delta, leftover, requested, pool)),
+			None => root_motion,
+		};
+
 		AnimationGraphPose {
 			skeleton: &self.pose.target,
 			local_pose: &self.pose.local_pose,
 			global_pose: &self.pose.global_pose,
 			root_motion,
 		}
+	}
+
+	/// Enters a finished one-shot's completion state within the same frame and plays `leftover` of it.
+	///
+	/// A zero-length route cuts to the new clip; otherwise the frame begins inertializing from the one-shot's last
+	/// pose. A clip still loading, or a zero-time frame that gives no velocities, starts on the next advance instead.
+	fn enter_completion(
+		&mut self,
+		delta: MediaTime,
+		leftover: MediaTime,
+		requested: AnimationStateId,
+		pool: &mut AnimationPool,
+	) -> RootMotionDelta {
+		let Playback::Playing(active) = &self.playback else {
+			return RootMotionDelta::IDENTITY;
+		};
+		let Some((target, blend)) = self.graph.select_transition(active.state, requested, true) else {
+			return RootMotionDelta::IDENTITY;
+		};
+		if blend != MediaTime::ZERO && delta == MediaTime::ZERO {
+			return RootMotionDelta::IDENTITY;
+		}
+		let clip = &self.graph.state(target).clip;
+		if pool.request(clip.resource_id()) != AnimationPoolRequest::Ready {
+			return RootMotionDelta::IDENTITY;
+		}
+		let resident = pool
+			.acquire(clip.resource_id())
+			.expect("ready completion lease must remain resident");
+		let mut destination = RuntimeClip::new(target, clip, &resident, &self.pose.target);
+
+		let root_motion = if blend == MediaTime::ZERO {
+			// Start from the clip's first frame so root motion covers only the leftover time.
+			sample_target_pose(&destination, &resident, &mut self.pose.active_current);
+			self.pose.advance_active(&mut destination, leftover, &resident)
+		} else {
+			self.pose
+				.begin_completion_blend(&mut destination, delta, leftover, blend, &resident)
+		};
+		drop(resident);
+
+		self.playback = match std::mem::replace(&mut self.playback, Playback::AwaitingInitial) {
+			Playback::Playing(source) if blend != MediaTime::ZERO => Playback::Transitioning(ActiveTransition {
+				source,
+				destination,
+				duration: blend,
+				elapsed: leftover.min(blend),
+				begun: true,
+			}),
+			_ => Playback::Playing(destination),
+		};
+		self.pending = None;
+		prefetch_neighbors(self.graph, target, pool);
+		root_motion
 	}
 
 	/// Starts a selected clip once its data is resident, preserving playback while it loads.
@@ -540,7 +613,66 @@ impl PlayerPose {
 			self.active_previous.copy_from_slice(&self.destination_current);
 			self.active_current.copy_from_slice(&self.destination_current);
 		}
-		source_root_motion.blend(destination_root_motion, transition_factor)
+		// A finished one-shot holds its last pose and no longer moves, so the destination carries all root motion.
+		if transition.source.is_finished() {
+			destination_root_motion
+		} else {
+			source_root_motion.blend(destination_root_motion, transition_factor)
+		}
+	}
+
+	/// Starts inertializing from a finished one-shot into `destination`, which then plays `leftover` of this frame.
+	///
+	/// The one-shot's last two samples and two destination samples from its first frame on give both sides their velocity.
+	fn begin_completion_blend(
+		&mut self,
+		destination: &mut RuntimeClip,
+		delta: MediaTime,
+		leftover: MediaTime,
+		blend: MediaTime,
+		resident: &ResidentAnimationLease<'_>,
+	) -> RootMotionDelta {
+		// The one-shot only moved until its end, so its last step spans the frame minus the leftover. Sampling the
+		// destination over the same span keeps both velocities comparable.
+		let interval = if delta > leftover { delta - leftover } else { delta };
+		// Sample the destination forward from its first frame: looping clips need not be continuous across their wrap
+		// in local space (the root travels), so a sample before the start would invent a huge velocity.
+		let earlier = (leftover.as_seconds_f32() - interval.as_seconds_f32()).max(0.0);
+		resident
+			.packed
+			.sample_target_local_pose(&destination.pose_map, earlier, &mut self.destination_previous);
+		// The first frame anchors this frame's root motion; the visual pose is rewritten below.
+		sample_target_pose(destination, resident, &mut self.local_pose);
+		let wrapped_loops = destination.advance(leftover);
+		sample_target_pose(destination, resident, &mut self.destination_current);
+		let root_motion = root_delta(
+			self.root_motion,
+			destination,
+			&self.local_pose,
+			&self.destination_current,
+			wrapped_loops,
+			resident,
+			&self.target,
+			&mut self.loop_start,
+			&mut self.loop_end,
+		);
+
+		self.inertializer
+			.begin(
+				&self.active_previous,
+				&self.active_current,
+				&self.destination_previous,
+				&self.destination_current,
+				interval,
+				blend,
+			)
+			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer
+			.apply(&self.destination_current, leftover, &mut self.local_pose)
+			.expect("player pose buffers must match the canonical skeleton");
+		self.remove_root_motion_from_visual_pose();
+		self.write_global_pose();
+		root_motion
 	}
 
 	/// Restores the canonical pose while no clip is ready.
@@ -894,14 +1026,107 @@ mod tests {
 		assert_eq!(player.state(), Some(start_walk.id()));
 		player
 			.advance(MediaTime::from_seconds(1), idle.id(), &mut pool)
-			.expect("finishes transition-state clip");
-
-		assert_eq!(player.state(), Some(start_walk.id()));
-		player
-			.advance(MediaTime::ZERO, idle.id(), &mut pool)
-			.expect("enters completion state despite the request changing");
+			.expect("finishes transition-state clip and enters its completion state despite the request changing");
 
 		assert_eq!(player.state(), Some(walk.id()));
+	}
+
+	#[test]
+	fn player_enters_completion_states_in_the_frame_a_one_shot_ends() {
+		let idle_animation = test_animation("idle", 0.0);
+		let start_animation = test_animation("start", 1.0);
+		let walk_animation = test_animation("walk", 2.0);
+		let byte_budget = packed_test_animation_bytes("idle", 0.0)
+			+ packed_test_animation_bytes("start", 1.0)
+			+ packed_test_animation_bytes("walk", 2.0);
+		let mut pool = AnimationPool::detached(byte_budget);
+		pool.admit("idle.animation".into(), idle_animation);
+		pool.admit("start.animation".into(), start_animation);
+		pool.admit("walk.animation".into(), walk_animation);
+
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+		assert_eq!(player.state(), Some(start_walk.id()));
+		ready(player.advance(MediaTime::from_millis(750), walk.id(), &mut pool));
+
+		// The last 250 ms of the start clip move 0.25, and the 250 ms left over play the walk loop for another 0.5.
+		let crossing = ready(player.advance(MediaTime::from_millis(500), walk.id(), &mut pool));
+		math::assert_float_eq!(crossing.root_motion.translation.x(), 0.75);
+		assert_eq!(player.state(), Some(walk.id()));
+
+		// Playback continues from the carried-over walk time instead of repeating the start clip's last pose.
+		let next = ready(player.advance(MediaTime::from_millis(250), walk.id(), &mut pool));
+		math::assert_float_eq!(next.root_motion.translation.x(), 0.5);
+	}
+
+	#[test]
+	fn player_inertializes_one_shot_exits_and_keeps_their_root_motion() {
+		let byte_budget = packed_test_animation_bytes("idle", 0.0)
+			+ packed_test_animation_bytes("start", 1.0)
+			+ packed_test_animation_bytes("walk", 2.0);
+		let mut pool = AnimationPool::detached(byte_budget);
+		pool.admit("idle.animation".into(), test_animation("idle", 0.0));
+		pool.admit("start.animation".into(), test_animation("start", 1.0));
+		pool.admit("walk.animation".into(), test_animation("walk", 2.0));
+
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		idle.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.exit(MediaTime::from_millis(500))
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+
+		let mut visual = pool.create_player(&graph, None);
+		let mut moving = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+		for player in [&mut visual, &mut moving] {
+			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+			ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+			ready(player.advance(MediaTime::from_millis(750), walk.id(), &mut pool));
+		}
+
+		// The start clip ends at x = 1 and the walk loop's leftover 250 ms sit at x = 0.5; the blend keeps the pose
+		// between them instead of cutting to the walk loop.
+		let crossing = ready(visual.advance(MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
+			.translation
+			.x();
+		assert!(
+			crossing > 0.5 && crossing < 1.0,
+			"blended pose should sit between both clips, got {crossing}"
+		);
+		assert_eq!(visual.state(), Some(walk.id()));
+		let settled = ready(visual.advance(MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
+			.translation
+			.x();
+		math::assert_float_eq!(settled, 1.5);
+
+		// Root motion stays continuous: the start clip's last 250 ms plus the walk loop's leftover 250 ms, then the
+		// walk loop alone while the pose still blends.
+		math::assert_float_eq!(
+			ready(moving.advance(MediaTime::from_millis(500), walk.id(), &mut pool))
+				.root_motion
+				.translation
+				.x(),
+			0.75
+		);
+		math::assert_float_eq!(
+			ready(moving.advance(MediaTime::from_millis(100), walk.id(), &mut pool))
+				.root_motion
+				.translation
+				.x(),
+			0.2
+		);
 	}
 
 	#[test]

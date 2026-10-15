@@ -444,15 +444,20 @@ mod tests {
 
 	/// Packs a one-node clip that moves its root along x. The [`player`] tests share it and its packed size.
 	pub(super) fn test_animation(name: &str, end_translation: f32) -> PackedAnimationData {
+		test_motion(name, [end_translation, 0.0, 0.0], 1.0)
+	}
+
+	/// Packs a one-node clip that moves its root from the origin to `end` over `duration` seconds.
+	pub(super) fn test_motion(name: &str, end: [f32; 3], duration: f32) -> PackedAnimationData {
 		PackedAnimationData::from_resource(Animation {
 			name: Some(name.into()),
 			skeleton: Reference::in_memory("test.skeleton", test_skeleton()),
-			duration: 1.0,
+			duration,
 			tracks: vec![NodeTrack {
 				node: 0,
 				translation: Some(TranslationCurve::Linear {
-					times: vec![0.0, 1.0],
-					values: vec![math::Vector::zero(), math::Vector::new(end_translation, 0.0, 0.0)],
+					times: vec![0.0, duration],
+					values: vec![math::Vector::zero(), math::Vector::new(end[0], end[1], end[2])],
 				}),
 				rotation: None,
 				scale: None,

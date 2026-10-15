@@ -5,7 +5,11 @@
 //! synchronously from retained pose buffers while [`AnimationPool`] loads clip
 //! resources on an application-owned async worker. Client code selects one
 //! durable [`AnimationStateId`] with normal Rust control flow, then the player
-//! reconciles its current playback toward that requested state. Connect state
+//! reconciles its current playback toward that requested state. A state plays
+//! one clip, or blends several placed on a line or a plane: build those with
+//! [`AnimationGraphStateBuilder::linear`] and
+//! [`AnimationGraphStateBuilder::planar`], and request them with a position
+//! through [`LinearStateId::at`] and [`PlanarStateId::at`]. Connect state
 //! handles with [`AnimationGraphState::to`], then use
 //! [`AnimationGraphTransitionConditionBuilder::when`] or
 //! [`AnimationGraphTransitionConditionBuilder::anytime`] to choose whether a
@@ -23,7 +27,8 @@
 //!    skeleton becomes the canonical target for every graph clip. As the player
 //!    enters each state, it also requests clips in directly reachable states.
 //! 4. Each application tick, call [`AnimationPool::update`] once, select an
-//!    authored [`AnimationStateId`], call [`AnimationGraphPlayer::advance`],
+//!    authored [`AnimationStateId`] (or an [`AnimationRequest`] that places a
+//!    blend state), call [`AnimationGraphPlayer::advance`],
 //!    apply its root motion to the owning object, and send
 //!    [`AnimationGraphPose::global_pose`] to rendering.
 //!
@@ -106,7 +111,7 @@ struct StateTransition {
 
 struct AnimationGraphStateData {
 	name: String,
-	clip: AnimationClip,
+	motion: StateMotion,
 	/// Set only for one-shot transition states: the state entered after the clip finishes.
 	completion: Option<AnimationStateId>,
 	/// How long a finished one-shot inertializes into its completion state; zero cuts straight to it.
@@ -151,6 +156,7 @@ impl AnimationGraph {
 			data: RefCell::new(Some(AnimationGraphBuilderData {
 				states: Vec::new(),
 				transitions: Vec::new(),
+				invalid_blends: Vec::new(),
 			})),
 		}
 	}
@@ -216,6 +222,8 @@ struct AnimationGraphBuilderData {
 	states: Vec<AnimationGraphStateData>,
 	/// Routes beside their source state, which [`AnimationGraphBuilder::build`] validates before attaching them.
 	transitions: Vec<(AnimationStateId, StateTransition)>,
+	/// Blend states whose samples were rejected, reported by [`AnimationGraphBuilder::build`].
+	invalid_blends: Vec<(usize, BlendSpaceError)>,
 }
 
 impl AnimationGraphBuilderData {
@@ -224,13 +232,13 @@ impl AnimationGraphBuilderData {
 		&mut self,
 		graph: u64,
 		name: String,
-		clip: AnimationClip,
+		motion: StateMotion,
 		completion: Option<AnimationStateId>,
 		completion_blend: MediaTime,
 	) -> AnimationStateId {
 		self.states.push(AnimationGraphStateData {
 			name,
-			clip,
+			motion,
 			completion,
 			completion_blend,
 			transitions: Vec::new(),
@@ -275,7 +283,31 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 	pub fn with(self, clip: AnimationClip) -> AnimationGraphState<'builder> {
 		let mut builder = self.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let id = builder.push_state(self.graph, self.name, clip, None, MediaTime::ZERO);
+		let id = builder.push_state(self.graph, self.name, StateMotion::Clip(clip), None, MediaTime::ZERO);
+		AnimationGraphState { data: self.data, id }
+	}
+
+	/// Plays a blend of clips placed on a line. Request it with a position through [`LinearStateId::at`].
+	pub fn linear(self, blend: AnimationBlend<f32>) -> LinearGraphState<'builder> {
+		LinearGraphState(self.with_blend(blend.into_motion()))
+	}
+
+	/// Plays a blend of clips placed on a plane, like locomotion directions. Request it with a position through
+	/// [`PlanarStateId::at`].
+	pub fn planar(self, blend: AnimationBlend<[f32; 2]>) -> PlanarGraphState<'builder> {
+		PlanarGraphState(self.with_blend(blend.into_motion()))
+	}
+
+	/// Adds a blend state, recording a rejected blend for [`AnimationGraphBuilder::build`] to report.
+	fn with_blend(self, motion: Result<StateMotion, BlendSpaceError>) -> AnimationGraphState<'builder> {
+		let mut builder = self.data.borrow_mut();
+		let builder = builder.as_mut().expect("the animation graph has already been built");
+		let motion = motion.unwrap_or_else(|error| {
+			builder.invalid_blends.push((builder.states.len(), error));
+			// A placeholder keeps state IDs stable until the build fails.
+			StateMotion::Clip(AnimationClip::looping("invalid-blend"))
+		});
+		let id = builder.push_state(self.graph, self.name, motion, None, MediaTime::ZERO);
 		AnimationGraphState { data: self.data, id }
 	}
 }
@@ -286,8 +318,9 @@ impl<'builder> AnimationGraphState<'builder> {
 		self.id
 	}
 
-	/// Starts an authored route that reconciles toward `target`.
-	pub fn to(self, target: Self) -> AnimationGraphTransitionBuilder<'builder> {
+	/// Starts an authored route that reconciles toward `target`, which may be any kind of state.
+	pub fn to(self, target: impl Into<Self>) -> AnimationGraphTransitionBuilder<'builder> {
+		let target = target.into();
 		assert!(
 			std::ptr::eq(self.data, target.data),
 			"animation graph states must use the same builder"
@@ -362,7 +395,7 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 		let id = builder.push_state(
 			self.source.id.graph,
 			name,
-			self.clip,
+			StateMotion::Clip(self.clip),
 			Some(self.target.id),
 			self.completion_blend,
 		);
@@ -398,11 +431,21 @@ impl AnimationGraphBuilder {
 	fn transition_state(&self, name: impl Into<String>, clip: AnimationClip, completion: AnimationStateId) -> AnimationStateId {
 		let mut data = self.data.borrow_mut();
 		let data = data.as_mut().expect("the animation graph has already been built");
-		data.push_state(self.graph, name.into(), clip, Some(completion), MediaTime::ZERO)
+		data.push_state(
+			self.graph,
+			name.into(),
+			StateMotion::Clip(clip),
+			Some(completion),
+			MediaTime::ZERO,
+		)
 	}
 
 	/// Validates the graph and selects the initial state.
-	pub fn build(&self, initial: AnimationGraphState<'_>) -> Result<AnimationGraph, AnimationGraphBuildError> {
+	pub fn build<'builder>(
+		&'builder self,
+		initial: impl Into<AnimationGraphState<'builder>>,
+	) -> Result<AnimationGraph, AnimationGraphBuildError> {
+		let initial = initial.into();
 		assert!(
 			std::ptr::eq(&self.data, initial.data),
 			"the initial animation state must use this builder"
@@ -413,6 +456,9 @@ impl AnimationGraphBuilder {
 			.take()
 			.expect("the animation graph has already been built");
 		let initial = initial.id;
+		if let Some(&(state, error)) = data.invalid_blends.first() {
+			return Err(AnimationGraphBuildError::InvalidBlend { state, error });
+		}
 		if initial.index >= data.states.len() {
 			return Err(AnimationGraphBuildError::InitialStateOutOfRange {
 				state: initial.index,
@@ -424,8 +470,16 @@ impl AnimationGraphBuilder {
 			if state.name.trim().is_empty() {
 				return Err(AnimationGraphBuildError::EmptyStateName { state: state_index });
 			}
-			if state.clip.resource_id().trim().is_empty() {
+			if state.motion.clips().iter().any(|clip| clip.resource_id().trim().is_empty()) {
 				return Err(AnimationGraphBuildError::EmptyResourceId { state: state_index });
+			}
+			if state
+				.motion
+				.clips()
+				.iter()
+				.any(|clip| clip.playback() != state.motion.playback())
+			{
+				return Err(AnimationGraphBuildError::MixedBlendPlayback { state: state_index });
 			}
 			if data.states[..state_index].iter().any(|other| other.name == state.name) {
 				return Err(AnimationGraphBuildError::DuplicateStateName {
@@ -433,7 +487,7 @@ impl AnimationGraphBuilder {
 				});
 			}
 			if let Some(completion) = state.completion {
-				if state.clip.playback() != AnimationPlayback::Once {
+				if state.motion.playback() != AnimationPlayback::Once {
 					return Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: state_index });
 				}
 				if completion.graph != self.graph || completion.index >= data.states.len() {
@@ -528,6 +582,18 @@ pub enum AnimationGraphBuildError {
 	},
 	/// A transition cannot be built with a duration before [`MediaTime::ZERO`].
 	NegativeTransitionDuration,
+	/// A blend state cannot weigh its clips because their positions are invalid.
+	InvalidBlend {
+		/// The index of the blend state.
+		state: usize,
+		/// Why the positions were rejected.
+		error: BlendSpaceError,
+	},
+	/// A blend state cannot keep its clips in step because some loop and others play once.
+	MixedBlendPlayback {
+		/// The index of the blend state.
+		state: usize,
+	},
 }
 
 impl fmt::Display for AnimationGraphBuildError {
@@ -573,17 +639,28 @@ impl fmt::Display for AnimationGraphBuildError {
 				formatter,
 				"Animation transition duration is negative. The most likely cause is using a timeline offset instead of a non-negative duration."
 			),
+			Self::InvalidBlend { state, error } => write!(
+				formatter,
+				"Animation blend state cannot weigh its clips ({error:?}). The most likely cause is state {state} placing two clips at the same position, or a planar blend whose clips do not form a ring and needs explicit triangles."
+			),
+			Self::MixedBlendPlayback { state } => write!(
+				formatter,
+				"Animation blend state mixes looping and one-shot clips. The most likely cause is state {state} using `AnimationClip::once` for some samples and `AnimationClip::looping` for others."
+			),
 		}
 	}
 }
 
 impl std::error::Error for AnimationGraphBuildError {}
 
+mod motion;
 mod runtime;
 
 use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc};
 
 use math::{Matrix, Vector};
+pub use motion::{AnimationBlend, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId};
+use motion::{BlendValue, StateMotion};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{
@@ -600,6 +677,7 @@ pub use runtime::{
 };
 
 use super::{
+	blend::{BlendSpaceError, blend_local_poses},
 	inertialization::PoseInertializer,
 	packed::{PackedAnimation, PackedAnimationData},
 	root_motion::RootMotionDelta,

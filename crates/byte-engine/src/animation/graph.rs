@@ -166,6 +166,8 @@ impl AnimationGraphStateData {
 pub struct AnimationGraph {
 	id: u64,
 	states: Vec<AnimationGraphStateData>,
+	/// Targets every state can route to after its own routes, with how long each blends in.
+	any_state_routes: Box<[(AnimationStateId, MediaTime)]>,
 	initial: AnimationStateId,
 }
 
@@ -183,6 +185,7 @@ impl AnimationGraph {
 			data: RefCell::new(Some(AnimationGraphBuilderData {
 				states: Vec::new(),
 				transitions: Vec::new(),
+				any_state_routes: Vec::new(),
 				invalid_blends: Vec::new(),
 				invalid_points: Vec::new(),
 			})),
@@ -221,18 +224,23 @@ impl AnimationGraph {
 			return if source == requested {
 				None
 			} else {
-				source_state.select_route(requested, false)
+				source_state
+					.select_route(requested, false)
+					.or_else(|| self.select_any_state_route(requested))
 			};
 		};
 
 		if let Some(transition) = source_state.select_route(requested, false) {
 			return Some(transition);
 		}
-		if requested != completion
-			&& let Some(transition) = self.state(completion).select_route(requested, true)
-		{
-			// Its wait points name moments of the completion state, which is not playing yet.
-			return Some(SelectedRoute { wait: &[], ..transition });
+		if requested != completion {
+			if let Some(transition) = self.state(completion).select_route(requested, true) {
+				// Its wait points name moments of the completion state, which is not playing yet.
+				return Some(SelectedRoute { wait: &[], ..transition });
+			}
+			if let Some(transition) = self.select_any_state_route(requested) {
+				return Some(transition);
+			}
 		}
 
 		source_finished.then_some(SelectedRoute {
@@ -255,7 +263,23 @@ impl AnimationGraph {
 		if destination == requested || state.completion.is_some() {
 			return None;
 		}
-		state.select_route(requested, true)
+		state
+			.select_route(requested, true)
+			.or_else(|| self.select_any_state_route(requested))
+	}
+
+	/// Selects a route every state can take toward the requested state, added with
+	/// [`AnimationGraphBuilder::any_state_to`].
+	fn select_any_state_route(&self, requested: AnimationStateId) -> Option<SelectedRoute<'_>> {
+		self.any_state_routes
+			.iter()
+			.find(|&&(target, _)| target == requested)
+			.map(|&(target, duration)| SelectedRoute {
+				target,
+				duration,
+				wait: &[],
+				entry: None,
+			})
 	}
 }
 
@@ -271,6 +295,8 @@ struct AnimationGraphBuilderData {
 	states: Vec<AnimationGraphStateData>,
 	/// Routes beside their source state, which [`AnimationGraphBuilder::build`] validates before attaching them.
 	transitions: Vec<(AnimationStateId, StateTransition)>,
+	/// Targets every state can route to, added with [`AnimationGraphBuilder::any_state_to`].
+	any_state_routes: Vec<(AnimationStateId, MediaTime)>,
 	/// Blend states whose samples were rejected, reported by [`AnimationGraphBuilder::build`].
 	invalid_blends: Vec<(usize, BlendSpaceError)>,
 	/// Route points that named a clip their state does not play, reported by [`AnimationGraphBuilder::build`].
@@ -575,6 +601,22 @@ impl AnimationGraphBuilder {
 		}
 	}
 
+	/// Adds a route from every state to `target`, taken when the playing state has no route of its own to it. Use it for
+	/// a state any moment can lead to, like a death, instead of a route from each state.
+	///
+	/// Like an [`AnimationGraphTransitionBuilder::anytime`] route, it cuts short a one-shot clip or a blend in
+	/// progress, inertializing over `inertialization` from the pose on screen.
+	pub fn any_state_to<'builder>(&'builder self, target: impl Into<AnimationGraphState<'builder>>, inertialization: MediaTime) {
+		let target = target.into();
+		assert!(
+			std::ptr::eq(&self.data, target.data),
+			"the target animation state must use this builder"
+		);
+		let mut data = self.data.borrow_mut();
+		let data = data.as_mut().expect("the animation graph has already been built");
+		data.any_state_routes.push((target.id, inertialization));
+	}
+
 	/// Adds an internal one-shot state that falls through to `completion` after it finishes.
 	/// Tests use it to author states that [`Self::build`] must reject.
 	#[cfg(test)]
@@ -671,10 +713,14 @@ impl AnimationGraphBuilder {
 			}
 			data.states[source.index].transitions.push(transition);
 		}
+		if data.any_state_routes.iter().any(|&(_, duration)| duration < MediaTime::ZERO) {
+			return Err(AnimationGraphBuildError::NegativeTransitionDuration);
+		}
 
 		Ok(AnimationGraph {
 			id: self.graph,
 			states: data.states,
+			any_state_routes: data.any_state_routes.into(),
 			initial,
 		})
 	}
@@ -959,6 +1005,35 @@ mod tests {
 				state_count: 2,
 			})
 		));
+	}
+
+	#[test]
+	fn any_state_routes_lead_from_every_state_after_its_own_routes() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let dead = builder.state("dead").with(AnimationClip::once("death.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.anytime(MediaTime::ZERO);
+		walk.to(dead).when(MediaTime::from_millis(100));
+		builder.any_state_to(dead, MediaTime::from_millis(300));
+		let graph = builder.build(idle).expect("graph should build");
+		let route = |source: AnimationStateId, finished| graph.select_transition(source, dead.id(), finished).map(SelectedRoute::pair);
+
+		assert_eq!(route(idle.id(), false), Some((dead.id(), MediaTime::from_millis(300))));
+		assert_eq!(
+			route(start_walk.id(), false),
+			Some((dead.id(), MediaTime::from_millis(300))),
+			"an any-state route cuts short a one-shot clip"
+		);
+		assert_eq!(
+			route(walk.id(), false),
+			Some((dead.id(), MediaTime::from_millis(100))),
+			"a state's own route comes first"
+		);
+		assert_eq!(route(dead.id(), false), None, "the target does not route to itself");
 	}
 
 	#[test]

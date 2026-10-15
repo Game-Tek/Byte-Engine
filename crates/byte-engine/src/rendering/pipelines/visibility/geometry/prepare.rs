@@ -31,7 +31,7 @@ const F32_UV_STRIDE: usize = 8;
 const F16_UV_STRIDE: usize = 4;
 /// Upload arena alignment that satisfies every backend's buffer-copy requirement.
 const STAGING_ALIGNMENT: usize = 256;
-/// Material used by generated meshes.
+/// Material used by generated meshes that do not name their own.
 pub(crate) const GENERATED_MESH_MATERIAL: &str = "white_solid.bema";
 
 /// The `PreparedMesh` struct retains a mesh's converted geometry in its staging lease until the loader copied it.
@@ -135,7 +135,7 @@ impl PreparedMesh {
 			staging,
 			streams,
 			primitives: vec![PreparedPrimitive {
-				material_id: GENERATED_MESH_MATERIAL.to_string(),
+				material_id: generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string(),
 				primitive: MeshPrimitive {
 					lods: MeshLods::single(meshlets.len() as u32),
 					bounding_sphere: enclosing_sphere(&meshlets),

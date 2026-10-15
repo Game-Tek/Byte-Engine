@@ -11,19 +11,35 @@ use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSou
 #[derive(Clone)]
 pub struct BoxMeshGenerator {
 	size: Vec3f,
+	material: Option<&'static str>,
+	meter_uvs: bool,
 }
 
 impl BoxMeshGenerator {
 	/// Creates a box mesh generator with a default half extent of one on each axis.
 	pub fn new() -> Self {
-		Self {
-			size: Vec3f::new(1.0, 1.0, 1.0),
-		}
+		Self::from_size(Vec3f::new(1.0, 1.0, 1.0))
 	}
 
 	/// Creates a box mesh generator from unbranded mesh-space half extents.
 	pub fn from_size(size: Vec3f) -> Self {
-		Self { size }
+		Self {
+			size,
+			material: None,
+			meter_uvs: false,
+		}
+	}
+
+	/// Draws the box with the material resource `material` instead of the default generated-mesh material.
+	pub fn with_material(mut self, material: &'static str) -> Self {
+		self.material = Some(material);
+		self
+	}
+
+	/// Measures each face's UVs in mesh-space units instead of spanning 0..1, so a repeating texture tiles once per unit.
+	pub fn with_meter_uvs(mut self) -> Self {
+		self.meter_uvs = true;
+		self
 	}
 }
 
@@ -103,9 +119,24 @@ impl MeshGenerator for BoxMeshGenerator {
 	}
 
 	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
+		let (width, height, depth) = if self.meter_uvs {
+			(self.size.x * 2.0, self.size.y * 2.0, self.size.z * 2.0)
+		} else {
+			(1.0, 1.0, 1.0)
+		};
+		// Each face's U and V extents, in the face order `positions` uses: +Z, -Z, -Y, +Y, +X, -X.
+		let faces = [
+			(width, height),
+			(width, height),
+			(width, depth),
+			(width, depth),
+			(depth, height),
+			(depth, height),
+		];
 		Cow::Owned(
-			(0..6)
-				.flat_map(|_| [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+			faces
+				.into_iter()
+				.flat_map(|(u, v)| [(0.0, 0.0), (u, 0.0), (u, v), (0.0, v)])
 				.collect(),
 		)
 	}
@@ -117,11 +148,17 @@ impl MeshGenerator for BoxMeshGenerator {
 		])
 	}
 
+	fn material(&self) -> Option<&str> {
+		self.material
+	}
+
 	fn hash(&self) -> u64 {
 		let mut hasher = std::hash::DefaultHasher::new();
 		self.size.x.to_bits().hash(&mut hasher);
 		self.size.y.to_bits().hash(&mut hasher);
 		self.size.z.to_bits().hash(&mut hasher);
+		self.material.hash(&mut hasher);
+		self.meter_uvs.hash(&mut hasher);
 		hasher.finish()
 	}
 

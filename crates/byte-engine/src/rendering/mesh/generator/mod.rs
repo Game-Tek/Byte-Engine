@@ -37,6 +37,13 @@ pub trait MeshGenerator: Send + Sync {
 		None
 	}
 
+	/// Returns the material resource the mesh is drawn with, or `None` for the pipeline's default generated-mesh material.
+	///
+	/// Include it in [`Self::hash`], since meshes that share a hash share their prepared geometry and material.
+	fn material(&self) -> Option<&str> {
+		None
+	}
+
 	/// Returns a hash that uniquely identifies the mesh. If the consumer of this generator already has a mesh whose id matches this it can safely reuse the existing mesh.
 	fn hash(&self) -> u64;
 

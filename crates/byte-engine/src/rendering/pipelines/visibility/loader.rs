@@ -497,7 +497,9 @@ impl VisibilityLoader {
 				PreparedMesh::resource(resource, staging).await
 			}
 			MeshSource::Generated(generator) => {
-				lane.request(VisibilityLoadRequest::Material(GENERATED_MESH_MATERIAL.to_string()));
+				lane.request(VisibilityLoadRequest::Material(
+					generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string(),
+				));
 				PreparedMesh::generated(generator.as_ref(), staging).await
 			}
 		}

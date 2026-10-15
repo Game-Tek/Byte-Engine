@@ -6,6 +6,7 @@ use super::*;
 const MAX_ACTIVE_SAMPLES: usize = 3;
 
 /// The `RuntimeSample` struct keeps what playing one clip of a state needs once the clip is resident.
+#[derive(Clone)]
 struct RuntimeSample {
 	resource_id: Box<str>,
 	pose_map: SkeletonPoseMap,
@@ -16,6 +17,7 @@ struct RuntimeSample {
 ///
 /// A clip state is a motion with one sample. A blend state weighs its samples by the requested blend position, and
 /// plays for their durations weighed the same way, so a mix of a short and a long cycle lasts in between.
+#[derive(Clone)]
 struct RuntimeMotion {
 	state: AnimationStateId,
 	samples: Box<[RuntimeSample]>,
@@ -397,7 +399,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			self.start_pending(pool);
 		}
 		self.redirect_blend(requested.state, pool);
-		self.apply_blend_position(requested);
+		self.apply_blend_position(requested, pool);
 
 		// Resolve every clip before sampling. Sampling leases each clip only while it reads it.
 		self.pose.begin_frame();
@@ -456,6 +458,9 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 	///
 	/// The new blend starts from the pose on screen, with its velocity, so nothing pops. The interrupted blend's
 	/// destination keeps playing as the new source, which carries root motion while the new destination fades in.
+	// Rare: kept out of line so it does not weigh on the every-frame path.
+	#[cold]
+	#[inline(never)]
 	fn redirect_blend(&mut self, requested: AnimationStateId, pool: &mut AnimationPool) {
 		let Playback::Transitioning(transition) = &self.playback else {
 			return;
@@ -474,37 +479,90 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		let Playback::Transitioning(transition) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 			unreachable!("only a blend in progress can be redirected");
 		};
-		self.pose.sample(&destination, destination.phase, pool, Sampled::Destination);
-		self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
-		self.pose.begin_from_display(self.last_delta, duration);
-		self.playback = Playback::Transitioning(ActiveTransition {
-			source: transition.destination,
-			destination,
-			duration,
-			elapsed: MediaTime::ZERO,
-			begun: true,
-		});
+		// The interrupted blend's destination becomes the source, so its latest sample becomes the source's, which
+		// its root motion measures from; otherwise the next frame would measure from the old source's pose.
+		self.pose.active_current.copy_from_slice(&self.pose.destination_current);
+		self.blend_from_display(transition.destination, destination, duration, pool);
 		self.pending = None;
 		prefetch_neighbors(self.graph, target, pool);
 	}
 
 	/// Moves the requested blend state, wherever it plays, to the requested blend position.
-	fn apply_blend_position(&mut self, requested: AnimationRequest) {
+	///
+	/// A request that asks to be [inertialized](AnimationRequest::inertialized) blends a playing blend state to its
+	/// new position from the pose on screen instead.
+	fn apply_blend_position(&mut self, requested: AnimationRequest, pool: &AnimationPool) {
 		// Clip states and blends requested without a position keep their weights.
 		if requested.value == BlendValue::Unset {
 			return;
 		}
-		let motion = &self.graph.state(requested.state).motion;
-		let playing = match &mut self.playback {
-			Playback::AwaitingInitial => [None, None],
-			Playback::Playing(active) => [Some(active), None],
-			Playback::Transitioning(transition) => [Some(&mut transition.source), Some(&mut transition.destination)],
-		};
-		for runtime in playing.into_iter().flatten() {
-			if runtime.state == requested.state {
-				motion.write_weights(requested.value, &mut runtime.weights);
-			}
+		if requested.inertialization > MediaTime::ZERO && self.blend_to_position(requested, requested.inertialization, pool) {
+			return;
 		}
+		let motion = &self.graph.state(requested.state).motion;
+		// A blend in progress moves its destination, or its source when only that one is the requested state.
+		let runtime = match &mut self.playback {
+			Playback::AwaitingInitial => None,
+			Playback::Playing(active) => Some(active),
+			Playback::Transitioning(transition) if transition.destination.state == requested.state => {
+				Some(&mut transition.destination)
+			}
+			Playback::Transitioning(transition) => Some(&mut transition.source),
+		};
+		if let Some(runtime) = runtime.filter(|runtime| runtime.state == requested.state) {
+			motion.write_weights(requested.value, &mut runtime.weights);
+		}
+	}
+
+	/// Turns the playing blend state into a blend from itself at its current weights to itself at the requested
+	/// position, starting from the pose on screen so the pose does not pop. Returns whether it started one.
+	// Rare: kept out of line so it does not weigh on the every-frame path.
+	#[cold]
+	#[inline(never)]
+	fn blend_to_position(&mut self, requested: AnimationRequest, duration: MediaTime, pool: &AnimationPool) -> bool {
+		let Playback::Playing(active) = &self.playback else {
+			return false;
+		};
+		// The on-screen velocity needs a non-zero frame time.
+		if active.state != requested.state || self.last_delta == MediaTime::ZERO {
+			return false;
+		}
+		let mut destination = active.clone();
+		self.graph
+			.state(requested.state)
+			.motion
+			.write_weights(requested.value, &mut destination.weights);
+		let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
+			unreachable!("the playing motion was checked above");
+		};
+		// The playing motion's latest sample is already the active pose, which the source's root motion measures from.
+		self.blend_from_display(source, destination, duration, pool);
+		true
+	}
+
+	/// Blends from `source` to `destination` over `duration`, starting from the pose on screen and its velocity.
+	///
+	/// The active pose must hold `source`'s latest sample.
+	// Rare: kept out of line so it does not weigh on the every-frame path.
+	#[cold]
+	#[inline(never)]
+	fn blend_from_display(
+		&mut self,
+		source: RuntimeMotion,
+		destination: RuntimeMotion,
+		duration: MediaTime,
+		pool: &AnimationPool,
+	) {
+		self.pose.sample(&destination, destination.phase, pool, Sampled::Destination);
+		self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
+		self.pose.begin_from_display(self.last_delta, duration);
+		self.playback = Playback::Transitioning(ActiveTransition {
+			source,
+			destination,
+			duration,
+			elapsed: MediaTime::ZERO,
+			begun: true,
+		});
 	}
 
 	/// Starts the motion of `target`, a blend at the last position requested for its kind.
@@ -1611,6 +1669,120 @@ mod tests {
 			} else {
 				assert_eq!(player.state(), Some(walk.id()));
 			}
+		}
+	}
+
+	#[test]
+	fn redirected_blends_keep_root_motion_continuous() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+			("run.animation", test_animation("run", 4.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
+		idle.to(walk).anytime(MediaTime::from_seconds(1));
+		walk.to(run).anytime(MediaTime::from_seconds(1));
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+		let frame = MediaTime::from_millis(16);
+		// No clip travels further than the run in one frame, so neither may the blend.
+		let fastest = 4.0 * frame.as_seconds_f32() + 1.0e-4;
+
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		let requests = std::iter::repeat_n(walk.id(), 10).chain(std::iter::repeat_n(run.id(), 5));
+		for requested in requests {
+			let travel = ready(player.advance(frame, requested, &mut pool)).root_motion.translation.x();
+			assert!(travel.abs() <= fastest, "root motion jumped {travel} in one frame");
+		}
+		assert_eq!(player.state(), Some(run.id()));
+	}
+
+	#[test]
+	fn rings_with_a_centre_sample_cross_the_middle_without_side_clips() {
+		// The side clips also rise, so any share they get shows up in the pose's height.
+		let mut pool = pool_with(vec![
+			("still.animation", test_motion("still", [0.0, 0.0, 0.0], 1.0)),
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 1.0, 0.0], 1.0)),
+			("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			("left.animation", test_motion("left", [-1.0, 1.0, 0.0], 1.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let walk = builder.state("walk").planar(
+			AnimationBlend::new()
+				.sample([0.0, 1.0], AnimationClip::looping("forward.animation"))
+				.sample([1.0, 0.0], AnimationClip::looping("right.animation"))
+				.sample([0.0, 0.0], AnimationClip::looping("still.animation"))
+				.sample([0.0, -1.0], AnimationClip::looping("backward.animation"))
+				.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
+		);
+		let graph = builder.build(walk).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+
+		ready(player.advance(MediaTime::ZERO, walk.id().at([0.0, -0.5]), &mut pool));
+		let pose = ready(player.advance(MediaTime::from_millis(500), walk.id().at([0.0, -0.5]), &mut pool));
+
+		// Halfway back mixes the backward clip and the centre evenly, and no side clip.
+		math::assert_float_eq!(pose.local_pose[0].translation.y(), 0.0);
+		math::assert_float_eq!(pose.local_pose[0].translation.z(), -0.25);
+	}
+
+	#[test]
+	fn inertialized_requests_blend_a_position_jump_and_plain_ones_switch_at_once() {
+		for inertialized in [true, false] {
+			let mut pool = pool_with(vec![
+				("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+				("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			]);
+			let builder = AnimationGraph::builder();
+			let walk = builder.state("walk").linear(
+				AnimationBlend::new()
+					.sample(-1.0, AnimationClip::looping("backward.animation"))
+					.sample(1.0, AnimationClip::looping("forward.animation")),
+			);
+			let graph = builder.build(walk).expect("graph should build");
+			let mut player = pool.create_player(&graph, None);
+			let frame = MediaTime::from_millis(16);
+
+			ready(player.advance(MediaTime::ZERO, walk.id().at(1.0), &mut pool));
+			let mut shown = 0.0;
+			for _ in 0..20 {
+				shown = ready(player.advance(frame, walk.id().at(1.0), &mut pool)).local_pose[0]
+					.translation
+					.z();
+			}
+			let turnaround = if inertialized {
+				walk.id().at(-1.0).inertialized(MediaTime::from_millis(200))
+			} else {
+				walk.id().at(-1.0)
+			};
+			let jumped = ready(player.advance(frame, turnaround, &mut pool)).local_pose[0]
+				.translation
+				.z();
+
+			// Twenty frames into the forward clip sit at z = +0.32 and the backward clip at -0.34, a 0.66 jump. The
+			// inertialized blend starts moving toward it, front-loaded, but covers well under half of it in a frame.
+			if inertialized {
+				assert!((jumped - shown).abs() < 0.2, "the pose jumped from {shown} to {jumped}");
+			} else {
+				assert!(jumped < -0.3, "a plain request should switch at once, got {jumped}");
+			}
+			let mut settled = 0.0;
+			for _ in 0..15 {
+				settled = ready(player.advance(frame, walk.id().at(-1.0), &mut pool)).local_pose[0]
+					.translation
+					.z();
+			}
+			// Once the blend is over, the pose is the backward clip's alone, which runs to -1 over the cycle.
+			let expected = -(36.0 * frame.as_seconds_f32());
+			assert!(
+				(settled - expected).abs() < 1.0e-3,
+				"settled at {settled}, expected {expected}"
+			);
+			assert_eq!(player.state(), Some(walk.id().into()));
 		}
 	}
 

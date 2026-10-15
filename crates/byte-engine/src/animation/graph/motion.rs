@@ -98,8 +98,10 @@ impl AnimationBlend<f32> {
 impl AnimationBlend<[f32; 2]> {
 	/// Triangulates the plane explicitly, with triangles of sample indices in the order the samples were added.
 	///
-	/// Without it, the samples must form a ring, like the directions of a locomotion blend, and are fanned into
-	/// triangles around it. Use explicit triangles when a sample sits inside the ring.
+	/// Without it, the samples must form a ring, like the directions of a locomotion blend, optionally with one
+	/// sample at its centre, and are fanned into triangles. Give a direction ring a centre sample, like standing
+	/// still: without one, positions crossing the middle mix in clips from one side of the ring only. Use explicit
+	/// triangles for any other layout.
 	pub fn triangles(mut self, triangles: impl Into<Vec<[usize; 3]>>) -> Self {
 		self.triangles = Some(triangles.into());
 		self
@@ -117,21 +119,47 @@ impl AnimationBlend<[f32; 2]> {
 	}
 }
 
-/// Fans a ring of positions into triangles that share its first position in angular order around the centroid.
+/// Fans a ring of positions into triangles, around a position at the ring's centre when there is one.
 ///
-/// The fan covers the ring's convex outline. Positions that are not on a convex ring produce degenerate or
-/// overlapping triangles, which [`BlendSpace2D::new`] reports.
+/// With a centre position, every triangle joins it to two neighbours on the ring, so crossing the middle mixes only
+/// the clips on the line crossed. Without one, the triangles share the ring's first position in angular order, which
+/// still covers the ring's convex outline. Positions that are not on a convex ring produce degenerate or overlapping
+/// triangles, which [`BlendSpace2D::new`] reports.
 fn fan_triangles(positions: &[[f32; 2]]) -> Vec<[usize; 3]> {
-	let count = positions.len() as f32;
-	let centre = positions.iter().fold([0.0, 0.0], |sum, position| {
-		[sum[0] + position[0] / count, sum[1] + position[1] / count]
-	});
-	let mut order: Vec<usize> = (0..positions.len()).collect();
+	let distance = |position: [f32; 2], point: [f32; 2]| (position[0] - point[0]).hypot(position[1] - point[1]);
+	let centroid = |skip: Option<usize>| {
+		let (sum, count) = (0..positions.len())
+			.filter(|&index| Some(index) != skip)
+			.fold(([0.0, 0.0], 0.0), |(sum, count), index| {
+				([sum[0] + positions[index][0], sum[1] + positions[index][1]], count + 1.0)
+			});
+		[sum[0] / count, sum[1] / count]
+	};
+	// The position nearest the centroid is the centre when it sits at the centroid of the other positions, the ring,
+	// to within a small fraction of the ring's size.
+	let all = centroid(None);
+	let nearest = (0..positions.len())
+		.min_by(|&left, &right| distance(positions[left], all).total_cmp(&distance(positions[right], all)))
+		.expect("a blend has samples");
+	let ring_centre = centroid(Some(nearest));
+	let size = positions
+		.iter()
+		.map(|&position| distance(position, ring_centre))
+		.fold(0.0, f32::max);
+	let centre = (distance(positions[nearest], ring_centre) <= size * 1.0e-3).then_some(nearest);
+
+	let pivot = centre.map_or(all, |index| positions[index]);
+	let mut order: Vec<usize> = (0..positions.len()).filter(|&index| Some(index) != centre).collect();
 	order.sort_by(|&left, &right| {
-		let angle = |index: usize| (positions[index][1] - centre[1]).atan2(positions[index][0] - centre[0]);
+		let angle = |index: usize| (positions[index][1] - pivot[1]).atan2(positions[index][0] - pivot[0]);
 		angle(left).total_cmp(&angle(right))
 	});
-	order.windows(2).skip(1).map(|pair| [order[0], pair[0], pair[1]]).collect()
+	match centre {
+		Some(centre) => (0..order.len())
+			.map(|index| [centre, order[index], order[(index + 1) % order.len()]])
+			.collect(),
+		None => order.windows(2).skip(1).map(|pair| [order[0], pair[0], pair[1]]).collect(),
+	}
 }
 
 /// The `LinearGraphState` struct is a blend state whose clips sit on a line, as returned by
@@ -200,6 +228,7 @@ impl LinearStateId {
 		AnimationRequest {
 			state: self.0,
 			value: BlendValue::Linear(value),
+			inertialization: MediaTime::ZERO,
 		}
 	}
 }
@@ -226,6 +255,7 @@ impl PlanarStateId {
 		AnimationRequest {
 			state: self.0,
 			value: BlendValue::Planar(value),
+			inertialization: MediaTime::ZERO,
 		}
 	}
 }
@@ -252,12 +282,25 @@ impl From<PlanarStateId> for AnimationRequest {
 pub struct AnimationRequest {
 	pub(super) state: AnimationStateId,
 	pub(super) value: BlendValue,
+	/// How long to blend toward this request's position from the pose on screen; zero changes the weights at once.
+	pub(super) inertialization: MediaTime,
 }
 
 impl AnimationRequest {
 	/// Returns the requested state.
 	pub const fn state(&self) -> AnimationStateId {
 		self.state
+	}
+
+	/// Blends a playing blend state to this request's position from the pose on screen over `duration`, instead of
+	/// changing its clips' weights at once.
+	///
+	/// Ask for it on the frame the position jumps, like a turnaround on a direction ring, where moving the weights in
+	/// one frame would pop the pose. Requests without it change the weights at once, which suits positions that move
+	/// a little each frame.
+	pub const fn inertialized(mut self, duration: MediaTime) -> Self {
+		self.inertialization = duration;
+		self
 	}
 }
 
@@ -266,6 +309,7 @@ impl From<AnimationStateId> for AnimationRequest {
 		Self {
 			state,
 			value: BlendValue::Unset,
+			inertialization: MediaTime::ZERO,
 		}
 	}
 }

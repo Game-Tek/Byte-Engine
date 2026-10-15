@@ -68,6 +68,18 @@ impl Context {
 	}
 }
 
+impl Context {
+	/// Queues the upload of a new dynamic-buffer copy's zeroed staging bytes.
+	///
+	/// A frame uploads a copy only when it writes it, so without this a copy no frame wrote yet would expose
+	/// uninitialized device memory to the GPU.
+	fn queue_initial_upload(&mut self, handle: BufferHandle) {
+		if self.buffers.resource(handle).staging.is_some() {
+			self.pending_buffer_syncs.insert(handle);
+		}
+	}
+}
+
 impl crate::context::Context for Context {
 	type Queue<'a>
 		= crate::vulkan::queue::Queue<'a>
@@ -81,6 +93,19 @@ impl crate::context::Context for Context {
 
 	fn supports_bc_texture_compression(&self) -> bool {
 		true
+	}
+
+	fn load_pipeline_cache(&self, data: Vec<u8>) {
+		if let Some(pipeline_binaries) = &self.device.pipeline_binaries {
+			pipeline_binaries.load(data);
+		}
+	}
+
+	fn pipeline_cache_data<R>(&self, read: impl FnOnce(crate::pipelines::CacheData<'_>) -> R) -> R {
+		match &self.device.pipeline_binaries {
+			Some(pipeline_binaries) => pipeline_binaries.data(read),
+			None => read(crate::pipelines::CacheData { loaded: &[], added: &[] }),
+		}
 	}
 
 	fn counter_duration(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<std::time::Duration> {
@@ -498,7 +523,7 @@ impl crate::context::Context for Context {
 		})
 	}
 
-	/// Grows every frame copy of a dynamic buffer, its staging, and its persistent source to `size`.
+	/// Grows every frame copy of a dynamic buffer and its staging to `size`.
 	///
 	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
 	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
@@ -515,44 +540,24 @@ impl crate::context::Context for Context {
 		let name = self.get_object_debug_name(master_handle.into());
 		let name = name.as_deref();
 
-		// Copies for later sequences may not exist yet; their pending build tasks copy the master's new size.
-		let mut frame_copies = SmallVec::<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>::new();
-		for sequence_index in 0..self.frames as usize {
-			let handle = self
-				.buffers
-				.nth_handle(master_handle, sequence_index)
-				.expect("Missing Vulkan dynamic buffer. The most likely cause is that the handle came from another context.");
-			if !frame_copies.contains(&handle) {
-				frame_copies.push(handle);
-			}
-		}
-
-		let mut persistent_source = None;
+		let frame_copies = self
+			.buffers
+			.chain(master_handle)
+			.collect::<SmallVec<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>>();
 		for handle in frame_copies {
 			let current = *self.buffers.resource(handle);
-			let mut replacement = self.build_buffer_internal(name, current.uses, size, current.access);
-			if let Some(source_handle) = current.source {
-				persistent_source = Some((source_handle, current.access));
-				replacement.source = Some(source_handle);
-			}
+			let replacement = self.build_buffer_internal(name, current.uses, size, current.access);
 
 			if let Some(staging_handle) = current.staging {
 				self.retire_buffer_storage(staging_handle);
 			}
 			self.retire_buffer_storage(handle);
 			*self.buffers.resource_mut(handle) = replacement;
+			self.queue_initial_upload(handle);
 
 			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
 			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
 			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
-		}
-
-		// Pending build tasks captured the shared source handle, so it is replaced in place rather than reallocated.
-		if let Some((source_handle, device_accesses)) = persistent_source {
-			let uses = self.buffers.resource(source_handle).uses;
-			let replacement = self.build_host_staging_buffer(name, size, uses, device_accesses);
-			self.retire_buffer_storage(source_handle);
-			*self.buffers.resource_mut(source_handle) = replacement;
 		}
 
 		for sequence_index in 0..self.frames {
@@ -595,7 +600,7 @@ impl crate::context::ContextCreate for Context {
 		_resource_uses: crate::Uses,
 		resource_device_accesses: crate::DeviceAccesses,
 	) -> graphics_hardware_interface::AllocationHandle {
-		self.create_allocation_internal(size, None, resource_device_accesses).0
+		self.create_allocation_internal(size, None, resource_device_accesses, None).0
 	}
 
 	fn add_mesh_from_vertices_and_indices(
@@ -633,36 +638,21 @@ impl crate::context::ContextCreate for Context {
 	/// Creates a shader.
 	fn create_shader(
 		&mut self,
-		name: Option<&str>,
+		// A shader is no native object anymore, so there is nothing to name.
+		_name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
-			return Err(());
-		};
-		if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
-			return Err(());
-		}
-		// SAFETY: shader was checked to be aligned to 4 bytes.
-		let code = unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) };
-
-		let shader_module = unsafe {
-			self.device
-				.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(code), None)
-				.unwrap()
-		};
-
-		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
-		self.shaders.push(Shader {
-			shader: shader_module,
-			stage: stage.into(),
+		let shader = Shader::new(
+			shader_source_type,
+			stage,
 			// This backend still derives its native layouts from flat slots.
-			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets),
-		});
-		self.set_name(shader_module, name);
-
-		Ok(handle)
+			crate::shader::flatten_used_resources(descriptor_sets),
+			self.device.pipeline_binaries.as_deref(),
+		)?;
+		self.shaders.push(shader);
+		Ok(graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64 - 1))
 	}
 
 	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
@@ -687,8 +677,13 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let (pipeline, layout) =
-			build_raster_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		let (pipeline, layout) = build_raster_pipeline(
+			&self.device,
+			&self.device.descriptor_heap_properties,
+			self.device.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		);
 		self.add_pipeline(pipeline, layout, HashMap::default())
 	}
 
@@ -696,7 +691,13 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_compute_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		let pipeline = build_compute_pipeline(
+			&self.device,
+			&self.device.descriptor_heap_properties,
+			self.device.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		);
 		self.add_pipeline(pipeline.pipeline, pipeline.layout, HashMap::default())
 	}
 
@@ -711,29 +712,6 @@ impl crate::context::ContextCreate for Context {
 			builder.push_constant_ranges,
 			&self.device.descriptor_heap_properties,
 		);
-		let stage_mappings = shaders
-			.iter()
-			.map(|stage| {
-				let shader = &self.shaders[stage.handle.0 as usize];
-				crate::vulkan::build_shader_mappings(&pipeline_layout, &shader.shader_resource_descriptors)
-			})
-			.collect::<Vec<_>>();
-		let mut mapping_infos = stage_mappings
-			.iter()
-			.map(|mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings))
-			.collect::<Vec<_>>();
-		let stages = shaders
-			.iter()
-			.zip(mapping_infos.iter_mut())
-			.map(|(stage, mapping_info)| {
-				vk::PipelineShaderStageCreateInfo::default()
-					.push(mapping_info)
-					.stage(stage.stage.into())
-					.module(self.shaders[stage.handle.0 as usize].shader)
-					.name(c"main")
-			})
-			.collect::<Vec<_>>();
-
 		let groups = shaders
 			.iter()
 			.enumerate()
@@ -758,33 +736,41 @@ impl crate::context::ContextCreate for Context {
 					_ => return None,
 				})
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 
-		let mut descriptor_heap_flags =
-			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
-		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-			.push(&mut descriptor_heap_flags)
-			.layout(vk::PipelineLayout::null())
-			.stages(&stages)
-			.groups(&groups)
-			.max_pipeline_ray_recursion_depth(1);
-
-		let (pipeline, handle_buffer) = unsafe {
-			let pipeline = self
-				.ray_tracing_pipeline
-				.create_ray_tracing_pipelines(
-					vk::DeferredOperationKHR::null(),
-					vk::PipelineCache::null(),
-					&[create_info],
-					None,
-				)
-				.expect("No ray tracing pipeline")[0];
-			let handle_buffer = self
-				.ray_tracing_pipeline
+		let pipeline = pipelines::with_shader_stages(&self.shaders, shaders, &pipeline_layout, |stages, identified_stages| {
+			let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
+				.layout(vk::PipelineLayout::null())
+				.groups(&groups)
+				.max_pipeline_ray_recursion_depth(1);
+			let compiled = stages.map(|stages| create_info.stages(stages));
+			let identified = identified_stages.map(|stages| create_info.stages(stages));
+			crate::vulkan::pipeline_binaries::create_pipeline(
+				self.device.pipeline_binaries.as_deref(),
+				compiled.as_ref(),
+				identified.as_ref(),
+				|create_info| {
+					unsafe {
+						self.ray_tracing_pipeline.create_ray_tracing_pipelines(
+							vk::DeferredOperationKHR::null(),
+							vk::PipelineCache::null(),
+							std::slice::from_ref(create_info),
+							None,
+						)
+					}
+					.map(|pipelines| pipelines[0])
+					.map_err(|(_, result)| result)
+				},
+			)
+		})
+		.expect(
+			"Vulkan ray tracing pipeline creation failed. The most likely cause is an invalid shader resource mapping or shader group.",
+		);
+		let handle_buffer = unsafe {
+			self.ray_tracing_pipeline
 				.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len())
-				.expect("Could not get ray tracing shader group handles");
-			(pipeline, handle_buffer)
-		};
+		}
+		.expect("Could not get ray tracing shader group handles");
 
 		let shader_handles = shaders
 			.iter()
@@ -880,7 +866,6 @@ impl crate::context::ContextCreate for Context {
 		self.buffers
 			.add(Buffer {
 				staging: None,
-				source: None,
 				buffer: buffer.resource,
 				size: buffer.size,
 				device_address,
@@ -888,6 +873,7 @@ impl crate::context::ContextCreate for Context {
 				allocation: Some(allocation),
 				uses: crate::Uses::empty(),
 				access,
+				imported: false,
 			})
 			.0
 	}
@@ -986,48 +972,31 @@ impl crate::context::ContextCreate for Context {
 
 	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
-		let buffer_handle =
-			self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
-			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
-			std::marker::PhantomData,
-		);
 
-		let source = if crate::vulkan::buffer::PERSISTENT_WRITE
-			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)
-			&& !Self::uses_only_host_access(builder.device_accesses)
-		{
-			// The master buffer's existing staging buffer becomes the shared, persistent CPU-writable source buffer,
-			// and a new per-frame staging buffer takes its place for frame 0.
-			let source_handle = self
-				.buffers
-				.resource(buffer_handle)
-				.staging
-				.expect("CpuWrite dynamic buffer must have a staging buffer");
-			let frame0_staging = self.create_staging_buffer(builder.name, size);
-			let buffer = self.buffers.resource_mut(buffer_handle);
-			buffer.staging = Some(frame0_staging);
-			buffer.source = Some(source_handle);
-
-			// Track this dynamic buffer for automatic per-frame memcpy.
-			self.persistent_write_dynamic_buffers.push(handle.into());
-			Some(source_handle)
-		} else {
-			None
-		};
-
-		for i in 1..self.frames {
-			assert!(i < 2, "This does not support more than one deferred buffer!");
-			self.tasks.push(Task::new(
-				Tasks::BuildBuffer(BuildBuffer {
-					previous: buffer_handle,
-					master: handle.into(),
-					source,
-				}),
-				Some(i),
-			));
+		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another
+		// frame in flight, which the CPU could rewrite while that frame still reads it.
+		let root = self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
+		self.queue_initial_upload(root);
+		let mut previous = root;
+		for _ in 1..self.frames {
+			previous = self.create_buffer_internal(
+				Some(previous),
+				builder.name,
+				builder.resource_uses,
+				size,
+				builder.device_accesses,
+			);
+			self.queue_initial_upload(previous);
 		}
 
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(root.0),
+			std::marker::PhantomData,
+		);
+		self.set_object_debug_name(
+			builder.name,
+			graphics_hardware_interface::BaseBufferHandle::from(handle).into(),
+		);
 		handle
 	}
 

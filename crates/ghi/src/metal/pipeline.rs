@@ -539,7 +539,7 @@ impl crate::device::Device for Factory {
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (library, entry_point, threadgroup_size) = match source {
-			crate::shader::Sources::SPIRV(_) => {
+			crate::shader::Sources::SPIRV(_) | crate::shader::Sources::KeyedSPIRV { .. } => {
 				eprintln!(
 					"Metal shader creation failed for {:?} shader {:?}. The most likely cause is that SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
 					stage,

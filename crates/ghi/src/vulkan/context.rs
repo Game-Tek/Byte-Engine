@@ -6,10 +6,10 @@ use utils::hash::HashSet;
 use utils::{Extent, hash::HashMap};
 
 use super::{
-	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
-	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
-	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
-	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
+	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DedicatedResource,
+	DescriptorHeapArena, DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image,
+	MAX_FRAMES_IN_FLIGHT, MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
+	PipelineLayoutKey, PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
 	TopLevelAccelerationStructureHandle, TransitionState,
 	utils::{into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, uses_to_vk_usage_flags},
 };
@@ -19,8 +19,7 @@ use crate::{
 	image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
-		Tasks,
+		BufferCopy, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks,
 	},
 	window,
 };
@@ -44,9 +43,6 @@ pub struct Context {
 	pub(super) frames: u8,
 
 	pub(super) queues: Vec<StoredQueue>,
-	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. Vulkan requires external synchronization for
-	/// submissions, and several GHI queues can map to one Vulkan queue, so each gets one lock.
-	pub(super) vk_queues: Vec<std::sync::Mutex<ash::vk::Queue>>,
 	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<Sampler>,
@@ -82,10 +78,9 @@ pub struct Context {
 	/// Tracks pending image host to device, or device to host synchronization operations.
 	pub(super) pending_image_syncs: HashSet<(ImageHandle, Option<crate::image::Region>)>,
 
-	/// Tracks all dynamic buffer master handles that use the persistent write mode.
-	/// These buffers have their source buffer memcpy'd into the per-frame staging
-	/// buffer every frame before GPU copies are issued.
-	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
+	/// The buffers [`Context::share_buffer`] handed to other contexts, which may write them between this context's
+	/// frames. Sharing takes `&self`, so the list is interior-mutable.
+	pub(super) shared_buffers: std::cell::RefCell<Vec<BufferHandle>>,
 
 	/// Stores the debug names for resources.
 	/// Used when inspecting resources from a rendering debugger such as RenderDoc.
@@ -125,6 +120,7 @@ mod descriptors;
 mod drop;
 mod pipelines;
 pub(crate) use pipelines::{build_compute_pipeline, build_raster_pipeline};
+pub(crate) use resources::unbacked_image;
 mod resources;
 mod runtime;
 mod traits;

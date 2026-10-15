@@ -13,6 +13,7 @@ impl Device {
 		Ok(Self {
 			device: inner.device.clone(),
 			descriptor_heap_properties: inner.descriptor_heap_properties,
+			pipeline_binaries: inner.pipeline_binaries.clone(),
 			inner: Some(inner),
 			shaders: Vec::new(),
 		})
@@ -21,11 +22,13 @@ impl Device {
 	pub(crate) fn detached_with_resources(
 		device: ash::Device,
 		descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+		pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
 	) -> Self {
 		Self {
 			inner: None,
 			device,
 			descriptor_heap_properties,
+			pipeline_binaries,
 			shaders: Vec::with_capacity(64),
 		}
 	}
@@ -73,59 +76,110 @@ impl InnerDevice {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
-		let queue_family_indices = queues
+		// Graphics and compute families also transfer, whether or not they report the flag.
+		let family_supports = |family: u32, required: vk::QueueFlags| {
+			let flags = queue_family_properties[family as usize].queue_flags;
+			let implied = flag_if(
+				flags.intersects(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE),
+				vk::QueueFlags::TRANSFER,
+			);
+			(flags | implied).contains(required)
+		};
+
+		let mut queue_family_indices = Vec::<u32>::with_capacity(queues.len());
+		for (selection, _) in queues.iter() {
+			use crate::types::WorkloadTypes;
+
+			let workloads = selection.r#type;
+			if workloads.is_empty() {
+				return Err(
+					"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
+				);
+			}
+			if workloads.intersects(WorkloadTypes::VIDEO) {
+				return Err(
+					"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
+				);
+			}
+			if workloads.intersects(WorkloadTypes::IO) {
+				return Err(
+					"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
+				);
+			}
+
+			let compute_workloads = WorkloadTypes::COMPUTE | WorkloadTypes::RAY_TRACING;
+			let required_queue_flags = flag_if(workloads.intersects(WorkloadTypes::RASTER), vk::QueueFlags::GRAPHICS)
+				| flag_if(workloads.intersects(compute_workloads), vk::QueueFlags::COMPUTE)
+				| flag_if(workloads.intersects(WorkloadTypes::TRANSFER), vk::QueueFlags::TRANSFER);
+
+			// Resources are exclusive to one queue family and never change owner, and a transfer-only family rejects
+			// the shader stages that barriers on rendered resources name. A selection therefore reuses a family an
+			// earlier selection picked whenever that family can run it, so resources can move between the contexts
+			// that submit on those queues.
+			let family = queue_family_indices
+				.iter()
+				.copied()
+				.find(|&family| family_supports(family, required_queue_flags))
+				.or_else(|| {
+					(0..queue_family_properties.len() as u32)
+						.filter(|&family| family_supports(family, required_queue_flags))
+						.min_by_key(|&family| queue_family_properties[family as usize].queue_flags.as_raw().count_ones())
+				})
+				.ok_or(
+					"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
+				)?;
+			queue_family_indices.push(family);
+		}
+
+		// Each selection gets a Vulkan queue of its own while its family has queues left, so the timelines that submit
+		// on them do not serialize on one queue lock. Selections beyond the family's queue count share its queues.
+		let mut vk_queue_keys = Vec::<(u32, u32)>::with_capacity(queues.len());
+		let stored_queues = queue_family_indices
 			.iter()
-			.map(|(selection, _)| {
-				use crate::types::WorkloadTypes;
-
-				let workloads = selection.r#type;
-				if workloads.is_empty() {
-					return Err(
-						"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
-					);
-				}
-				if workloads.intersects(WorkloadTypes::VIDEO) {
-					return Err(
-						"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
-					);
-				}
-				if workloads.intersects(WorkloadTypes::IO) {
-					return Err(
-						"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
-					);
-				}
-
-				let compute_workloads = WorkloadTypes::COMPUTE | WorkloadTypes::RAY_TRACING;
-				let required_queue_flags = flag_if(workloads.intersects(WorkloadTypes::RASTER), vk::QueueFlags::GRAPHICS)
-					| flag_if(workloads.intersects(compute_workloads), vk::QueueFlags::COMPUTE)
-					| flag_if(workloads.intersects(WorkloadTypes::TRANSFER), vk::QueueFlags::TRANSFER);
-
-				queue_family_properties
+			.enumerate()
+			.map(|(index, &queue_family_index)| {
+				let earlier = queue_family_indices[..index]
 					.iter()
-					.enumerate()
-					.filter(|(_, info)| info.queue_flags.contains(required_queue_flags))
-					.min_by_key(|(_, info)| info.queue_flags.as_raw().count_ones())
-					.map(|(index, _)| index as u32)
-					.ok_or(
-						"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
-					)
+					.filter(|&&family| family == queue_family_index)
+					.count() as u32;
+				let key = (
+					queue_family_index,
+					earlier % queue_family_properties[queue_family_index as usize].queue_count,
+				);
+				let vk_queue_index = vk_queue_keys.iter().position(|&existing| existing == key).unwrap_or_else(|| {
+					vk_queue_keys.push(key);
+					vk_queue_keys.len() - 1
+				});
+				StoredQueue {
+					vk_queue_index,
+					queue_family_index,
+				}
 			})
-			.collect::<Result<Vec<_>, _>>()?;
+			.collect::<Vec<_>>();
 
-		// Requests that resolve to the same family share one Vulkan queue, created in order of first use.
 		let mut queue_families = Vec::new();
-		for &queue_family_index in &queue_family_indices {
+		for &(queue_family_index, _) in &vk_queue_keys {
 			if !queue_families.contains(&queue_family_index) {
 				queue_families.push(queue_family_index);
 			}
 		}
 
+		// A family creates as many queues as it has distinct keys, since its queue indices are assigned from zero.
+		let queue_priorities = [1.0f32; 16];
 		let queue_create_infos = queue_families
 			.iter()
 			.map(|&queue_family_index| {
+				let queue_count = vk_queue_keys
+					.iter()
+					.filter(|(family, _)| *family == queue_family_index)
+					.count();
+				assert!(
+					queue_count <= queue_priorities.len(),
+					"Too many Vulkan queues were requested from one family. The most likely cause is more than 16 queue selections."
+				);
 				vk::DeviceQueueCreateInfo::default()
 					.queue_family_index(queue_family_index)
-					.queue_priorities(&[1.0])
+					.queue_priorities(&queue_priorities[..queue_count])
 			})
 			.collect::<Vec<_>>();
 
@@ -152,37 +206,54 @@ impl InnerDevice {
 		}
 		let mut enabled_features = features.chain(&settings);
 
+		// The pipeline cache is an optimization, so a driver without it still creates the device.
+		let pipeline_binary_properties = settings
+			.pipeline_cache
+			.then(|| pipeline_binary_properties(vk_instance, physical_device, &available_device_extensions))
+			.flatten();
+		if pipeline_binary_properties.is_some() {
+			device_extension_names.push(ash::khr::pipeline_binary::NAME.as_ptr());
+		}
+		// Identifiers let the cache find a pipeline without its shaders' code, so they only matter with a cache.
+		let shader_identifiers = pipeline_binary_properties.is_some()
+			&& supports_shader_module_identifiers(vk_instance, physical_device, &available_device_extensions);
+		if shader_identifiers {
+			device_extension_names.push(ash::ext::shader_module_identifier::NAME.as_ptr());
+		}
+		let mut shader_identifier_features =
+			vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default().shader_module_identifier(true);
+		let mut pipeline_binary_features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default().pipeline_binaries(true);
+		// The application persists the binaries, so a driver cache of the same data would only repeat the work. Not
+		// every driver lets its cache be turned off.
+		let mut internal_cache_control = vk::DevicePipelineBinaryInternalCacheControlKHR::default().disable_internal_cache(
+			pipeline_binary_properties.is_some_and(|properties| properties.pipeline_binary_internal_cache_control == vk::TRUE),
+		);
+
 		// SAFETY: The chain links only live structures of `features`, and its last structure is writable.
-		let device_create_info = unsafe { vk::DeviceCreateInfo::default().extend(&mut enabled_features) }
+		let mut device_create_info = unsafe { vk::DeviceCreateInfo::default().extend(&mut enabled_features) }
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names);
+		if pipeline_binary_properties.is_some() {
+			device_create_info = device_create_info
+				.push(&mut pipeline_binary_features)
+				.push(&mut internal_cache_control);
+		}
+		if shader_identifiers {
+			device_create_info = device_create_info.push(&mut shader_identifier_features);
+		}
 
 		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
 			.map_err(|result| crate::vulkan::instance::creation_error(result, "Failed to create a device"))?;
 
-		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
-		// The context wraps each distinct queue in one mutex (see `Context::vk_queues`). This mutex is a temporary external
-		// synchronization fix; prefer internally synchronized Vulkan queues when available.
-		let vk_queues = queue_families
+		// Several GHI queues can resolve to one Vulkan queue, and every context of the device submits on these queues,
+		// so each distinct queue has one lock that the device and all its contexts share.
+		let vk_queues = vk_queue_keys
 			.iter()
-			.map(|&family| unsafe { device.get_device_queue(family, 0) })
-			.collect::<Vec<_>>();
-		let queues = queues
-			.iter_mut()
-			.zip(queue_family_indices)
-			.enumerate()
-			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
-				let vk_queue_index = queue_families
-					.iter()
-					.position(|&family| family == queue_family_index)
-					.unwrap();
-				StoredQueue {
-					vk_queue_index,
-					queue_family_index,
-				}
-			})
-			.collect();
+			.map(|&(family, index)| std::sync::Mutex::new(unsafe { device.get_device_queue(family, index) }))
+			.collect::<std::sync::Arc<[_]>>();
+		for ((_, queue_handle), index) in queues.iter_mut().zip(0u64..) {
+			**queue_handle = Some(graphics_hardware_interface::QueueHandle(index));
+		}
 
 		let supports_formatless_storage_write =
 			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
@@ -209,12 +280,15 @@ impl InnerDevice {
 			mesh_shading: ash::ext::mesh_shader::Device::load(vk_instance, &device),
 			descriptor_heap: ash::ext::descriptor_heap::Device::load(vk_instance, &device),
 			descriptor_heap_properties,
+			pipeline_binaries: pipeline_binary_properties
+				.and_then(|_| PipelineBinaries::new(vk_instance, &device, shader_identifiers))
+				.map(std::sync::Arc::new),
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
 			timestamp_period,
 			timestamp_valid_bits,
-			queues,
+			queues: stored_queues,
 			settings,
 			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
 			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
@@ -314,6 +388,49 @@ fn available_device_extensions(
 	unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.map_err(
 		|_| "Failed to enumerate Vulkan device extensions. The most likely cause is that the GPU driver ran out of host memory.",
 	)
+}
+
+/// Returns the device's `VK_KHR_pipeline_binary` properties, or `None` when it should not have an application-owned
+/// pipeline cache.
+///
+/// A driver that asks applications to use its internal cache counts as unsupported, because capturing binaries there
+/// would duplicate the cache the driver insists on keeping.
+fn pipeline_binary_properties(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> Option<vk::PhysicalDevicePipelineBinaryPropertiesKHR<'static>> {
+	if !has_extension(available_extensions, ash::khr::pipeline_binary::NAME) {
+		return None;
+	}
+
+	let mut features = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+
+	let mut properties = vk::PhysicalDevicePipelineBinaryPropertiesKHR::default();
+	let mut device_properties = vk::PhysicalDeviceProperties2::default().push(&mut properties);
+	unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut device_properties) };
+
+	(features.pipeline_binaries == vk::TRUE && properties.pipeline_binary_prefers_internal_cache == vk::FALSE)
+		.then_some(properties)
+}
+
+/// Returns whether the device can name a shader's SPIR-V with an identifier, through
+/// `VK_EXT_shader_module_identifier`.
+fn supports_shader_module_identifiers(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+	available_extensions: &[vk::ExtensionProperties],
+) -> bool {
+	if !has_extension(available_extensions, ash::ext::shader_module_identifier::NAME) {
+		return false;
+	}
+
+	let mut features = vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default();
+	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
+	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
+	features.shader_module_identifier == vk::TRUE
 }
 
 fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {

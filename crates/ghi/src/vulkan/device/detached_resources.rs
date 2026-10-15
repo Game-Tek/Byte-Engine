@@ -5,8 +5,6 @@ impl crate::device::Device for Device {
 	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
-	type Image = FactoryImage;
-	type Sampler = FactorySampler;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&std::alloc::Global
@@ -28,24 +26,14 @@ impl crate::device::Device for Device {
 		stage: crate::ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<crate::ShaderHandle, ()> {
-		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
-			return Err(());
-		};
-		let code = if spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
-			Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr().cast::<u32>(), spirv.len() / 4) })
-		} else {
-			Cow::Owned(spirv.as_chunks().0.iter().copied().map(u32::from_ne_bytes).collect())
-		};
-
-		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&code);
-		let shader = unsafe { self.device.create_shader_module(&shader_module_create_info, None) }.map_err(|_| ())?;
-		self.shaders.push(crate::vulkan::Shader {
-			shader,
-			stage: stage.into(),
+		let shader = crate::vulkan::Shader::new(
+			shader_source_type,
+			stage,
 			// This backend still derives its native layouts from flat slots.
-			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets),
-		});
-
+			crate::shader::flatten_used_resources(descriptor_sets),
+			self.pipeline_binaries.as_deref(),
+		)?;
+		self.shaders.push(shader);
 		Ok(crate::ShaderHandle(self.shaders.len() as u64 - 1))
 	}
 
@@ -53,6 +41,7 @@ impl crate::device::Device for Device {
 		let (pipeline, layout) = crate::vulkan::context::build_raster_pipeline(
 			&self.device,
 			&self.descriptor_heap_properties,
+			self.pipeline_binaries.as_deref(),
 			&self.shaders,
 			builder,
 		);
@@ -60,40 +49,38 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		crate::vulkan::context::build_compute_pipeline(&self.device, &self.descriptor_heap_properties, &self.shaders, builder)
-	}
-
-	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
-		FactoryImage {
-			name: crate::debug_name(builder.name),
-			extent: builder.extent,
-			format: builder.format,
-			resource_uses: builder.resource_uses,
-			device_accesses: builder.device_accesses,
-			use_case: builder.use_case,
-			mip_levels: builder.mip_levels,
-			array_layers: builder.array_layers,
-			cube_compatible: builder.cube_compatible,
-			cube_array_compatible: builder.cube_array_compatible,
-		}
-	}
-
-	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
-		FactorySampler {
-			filtering_mode: builder.filtering_mode,
-			reduction_mode: builder.reduction_mode,
-			mip_map_mode: builder.mip_map_mode,
-			addressing_mode: builder.addressing_mode,
-			anisotropy: builder.anisotropy,
-			min_lod: builder.min_lod,
-			max_lod: builder.max_lod,
-		}
+		crate::vulkan::context::build_compute_pipeline(
+			&self.device,
+			&self.descriptor_heap_properties,
+			self.pipeline_binaries.as_deref(),
+			&self.shaders,
+			builder,
+		)
 	}
 }
 
+/// Returns whether a resource should get its own allocation: the driver either requires it or runs faster with it.
+fn wants_dedicated_allocation(requirements: &vk::MemoryDedicatedRequirements) -> bool {
+	requirements.prefers_dedicated_allocation != vk::FALSE || requirements.requires_dedicated_allocation != vk::FALSE
+}
+
 impl InnerDevice {
+	/// Waits until every queue of the device is idle.
+	///
+	/// Vulkan forbids submitting on any queue during the wait, so this holds the lock of every queue, in index order.
+	/// Submission paths hold one queue lock at a time, so the order cannot deadlock.
 	pub(crate) fn wait(&self) {
-		unsafe { self.device.device_wait_idle() }.unwrap();
+		let _queues = self
+			.vk_queues
+			.iter()
+			.map(|queue| {
+				queue.lock().expect(
+					"Failed to lock a Vulkan queue for a device wait. The most likely cause is that another thread panicked while holding the queue lock.",
+				)
+			})
+			.collect::<smallvec::SmallVec<[_; 4]>>();
+		unsafe { self.device.device_wait_idle() }
+			.expect("Failed to wait for the Vulkan device. The most likely cause is that the device was lost.");
 	}
 
 	/// Creates a Vulkan buffer and reports the memory requirements needed to bind it.
@@ -112,14 +99,35 @@ impl InnerDevice {
 
 		self.set_name(buffer, name);
 
-		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+		let (memory_requirements, dedicated) = self.buffer_memory_requirements(buffer);
 
 		MemoryBackedResourceCreationResult {
 			resource: buffer,
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
+			dedicated,
 		}
+	}
+
+	/// Reports a buffer's memory requirements and whether the driver prefers or requires a dedicated allocation for it.
+	pub(crate) fn buffer_memory_requirements(&self, buffer: vk::Buffer) -> (vk::MemoryRequirements, bool) {
+		let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+		let mut memory_requirements = vk::MemoryRequirements2::default().push(&mut dedicated_requirements);
+		let info = vk::BufferMemoryRequirementsInfo2::default().buffer(buffer);
+		unsafe { self.device.get_buffer_memory_requirements2(&info, &mut memory_requirements) };
+		let memory_requirements = memory_requirements.memory_requirements;
+		(memory_requirements, wants_dedicated_allocation(&dedicated_requirements))
+	}
+
+	/// Reports an image's memory requirements and whether the driver prefers or requires a dedicated allocation for it.
+	pub(crate) fn image_memory_requirements(&self, image: vk::Image) -> (vk::MemoryRequirements, bool) {
+		let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+		let mut memory_requirements = vk::MemoryRequirements2::default().push(&mut dedicated_requirements);
+		let info = vk::ImageMemoryRequirementsInfo2::default().image(image);
+		unsafe { self.device.get_image_memory_requirements2(&info, &mut memory_requirements) };
+		let memory_requirements = memory_requirements.memory_requirements;
+		(memory_requirements, wants_dedicated_allocation(&dedicated_requirements))
 	}
 
 	/// Creates a Vulkan image and reports the memory requirements needed to bind it.
@@ -158,7 +166,7 @@ impl InnerDevice {
 			.initial_layout(vk::ImageLayout::UNDEFINED);
 
 		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
-		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
+		let (memory_requirements, dedicated) = self.image_memory_requirements(image);
 		self.set_name(image, name);
 
 		MemoryBackedResourceCreationResult {
@@ -166,6 +174,7 @@ impl InnerDevice {
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
+			dedicated,
 		}
 	}
 

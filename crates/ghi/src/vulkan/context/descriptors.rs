@@ -26,7 +26,12 @@ impl Context {
 		);
 		// Prefers device-local host-visible memory and falls back to plain host memory when the device has none.
 		let device_accesses = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
-		let (allocation, _) = self.create_allocation_internal(creation.size, creation.memory_flags.into(), device_accesses);
+		let (allocation, _) = self.create_allocation_internal(
+			creation.size,
+			creation.memory_flags.into(),
+			device_accesses,
+			creation.dedicated_resource(),
+		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
 		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
 		let base_offset = aligned_address - device_address;
@@ -52,7 +57,8 @@ impl Context {
 		}
 	}
 
-	/// Allocates the long-lived resource and sampler heaps once for the context.
+	/// Allocates the long-lived resource and sampler heaps of the context. [`Self::materialize_descriptor_sets`] calls
+	/// it once, on first use.
 	pub(crate) fn create_descriptor_heaps(&mut self) -> DescriptorHeaps {
 		const RESOURCE_HEAP_TARGET_SIZE: u64 = 64 * 1024 * 1024;
 		const SAMPLER_HEAP_TARGET_SIZE: u64 = 1024 * 1024;
@@ -459,6 +465,10 @@ impl Context {
 		let resource_alignment = properties
 			.buffer_descriptor_alignment
 			.max(properties.image_descriptor_alignment);
+		// The heaps are created by the first materialization, so a context that binds no descriptors reserves none.
+		if self.descriptor_heaps.is_none() {
+			self.descriptor_heaps = Some(self.create_descriptor_heaps());
+		}
 		let heaps = self.descriptor_heaps.as_mut().unwrap();
 		let resource_heap_offset = if layout.resource_heap_size > 0 {
 			heaps.resource.allocate(layout.resource_heap_size, resource_alignment)

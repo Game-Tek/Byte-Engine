@@ -5,6 +5,24 @@ pub mod compute;
 pub mod raster;
 pub mod ray_tracing;
 
+/// The `CacheData` struct lends the bytes of a device's pipeline cache to the code that persists them, split so that
+/// saving writes only what is new.
+///
+/// The whole cache is `loaded` followed by `added`. Get one from
+/// [`Context::pipeline_cache_data`](crate::context::Context::pipeline_cache_data). To save, append `added` to the
+/// file `loaded` was read from. When `loaded` is empty, write `added` over that file instead, because the device
+/// kept nothing of it: there was none, it came from another GPU or driver version, or it was cut short. When `added`
+/// is empty, the file is already up to date. A file is always a whole cache that
+/// [`Context::load_pipeline_cache`](crate::context::Context::load_pipeline_cache) accepts, and one whose last write
+/// was interrupted loads up to the interruption.
+#[derive(Clone, Copy)]
+pub struct CacheData<'a> {
+	/// The bytes given to `load_pipeline_cache`, unchanged, or empty when the device kept none of them.
+	pub loaded: &'a [u8],
+	/// The pipelines compiled since, and the cache's header when nothing was loaded.
+	pub added: &'a [u8],
+}
+
 #[derive(Clone, Hash)]
 pub struct VertexElement<'a> {
 	pub(crate) name: &'a str,
@@ -23,6 +41,8 @@ pub struct ShaderParameter<'a> {
 	pub(crate) handle: &'a ShaderHandle,
 	pub(crate) stage: ShaderTypes,
 	pub(crate) specialization_map: &'a [SpecializationMapEntry],
+	/// The shader's code, lent for this pipeline's creation. See [`Self::with_code`].
+	pub(crate) code: Option<&'a [u8]>,
 }
 
 impl<'a> ShaderParameter<'a> {
@@ -31,7 +51,19 @@ impl<'a> ShaderParameter<'a> {
 			handle,
 			stage,
 			specialization_map: &[],
+			code: None,
 		}
+	}
+
+	/// Lends the shader's code for the creation of this pipeline.
+	///
+	/// A shader created from [`crate::shader::Sources::KeyedSPIRV`] keeps no code, so every pipeline that uses it
+	/// needs this. Pass the same bytes the shader was created from. They are read only when the pipeline has to be
+	/// compiled, so lending a mapped file costs nothing for a pipeline that comes from the pipeline cache. Shaders
+	/// that keep their code ignore it.
+	pub fn with_code(mut self, code: &'a [u8]) -> Self {
+		self.code = Some(code);
+		self
 	}
 
 	pub fn with_specialization_map(mut self, specialization_map: &'a [SpecializationMapEntry]) -> Self {

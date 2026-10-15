@@ -31,6 +31,8 @@ impl GraphicsDevice {
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `render.debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `render.debug`.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
+	/// - `render.pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
+	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
 	pub fn new(parameters: &dyn Parameters) -> Self {
 		let flag = |name: &str, default: bool| {
 			parameters
@@ -46,7 +48,8 @@ impl GraphicsDevice {
 			.debug_labels(flag("render.debug.labels", validation))
 			.debug_log_function(log_graphics_error)
 			.geometry_shader(false)
-			.mesh_shading(flag("render.ghi.features.mesh-shading", true));
+			.mesh_shading(flag("render.ghi.features.mesh-shading", true))
+			.pipeline_cache(parameters.get_parameter("render.pipeline-cache.path").is_some());
 
 		let mut instance = match ghi::implementation::Instance::new(features) {
 			Ok(instance) => instance,

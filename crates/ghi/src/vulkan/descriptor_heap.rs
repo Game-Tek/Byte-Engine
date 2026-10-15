@@ -76,13 +76,18 @@ fn resource_representations_match(left: ShaderResourceDescriptor, right: ShaderR
 }
 
 /// Canonicalizes one shader stage so declaration order cannot change pipeline mappings.
-fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> Vec<ShaderResourceDescriptor> {
-	let mut sorted = resources.to_vec();
-	sorted.sort_by_key(|descriptor| descriptor.slot());
+///
+/// The result is sorted by slot, with declarations of one slot merged. It is built in place in one stack list,
+/// because every pipeline creation canonicalizes each of its stages.
+fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> smallvec::SmallVec<[ShaderResourceDescriptor; 16]> {
+	let mut canonical = smallvec::SmallVec::<[ShaderResourceDescriptor; 16]>::from_slice(resources);
+	canonical.sort_by_key(|descriptor| descriptor.slot());
 
-	let mut canonical = Vec::<ShaderResourceDescriptor>::with_capacity(sorted.len());
-	for descriptor in sorted {
-		match canonical.last_mut() {
+	// The first `kept` entries are canonical. Each later entry merges into the last of them or becomes the next.
+	let mut kept = 0usize;
+	for index in 0..canonical.len() {
+		let descriptor = canonical[index];
+		match kept.checked_sub(1).map(|last| &mut canonical[last]) {
 			Some(previous) if previous.slot() == descriptor.slot() => {
 				assert!(
 					resource_representations_match(*previous, descriptor),
@@ -95,10 +100,12 @@ fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> Vec<S
 					previous.is_none_or(|previous| !resource_ranges_overlap(*previous, descriptor)),
 					"Overlapping Vulkan shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
 				);
-				canonical.push(descriptor);
+				canonical[kept] = descriptor;
+				kept += 1;
 			}
 		}
 	}
+	canonical.truncate(kept);
 
 	canonical
 }
@@ -259,7 +266,7 @@ fn spirv_resource_mask(descriptor: ShaderResourceDescriptor) -> vk::SpirvResourc
 pub(crate) fn build_shader_mappings(
 	layout: &PipelineLayout,
 	shader_resources: &[ShaderResourceDescriptor],
-) -> Vec<vk::DescriptorSetAndBindingMappingEXT<'static>> {
+) -> smallvec::SmallVec<[vk::DescriptorSetAndBindingMappingEXT<'static>; 16]> {
 	canonicalize_stage_resources(shader_resources)
 		.into_iter()
 		.map(|descriptor| {

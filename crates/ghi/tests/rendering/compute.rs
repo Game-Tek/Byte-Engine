@@ -5,7 +5,14 @@ use super::*;
 
 /// Two dispatches in one unordered group each write their own row of an image, and the readback after the group
 /// sees both rows.
-pub(super) fn unordered_dispatches_write_their_own_rows(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+///
+/// With a `shader_key`, a SPIR-V shader is created from a keyed source and lends its code to the pipeline. Without
+/// one, the backend is handed the SPIR-V to keep.
+pub(super) fn unordered_dispatches_write_their_own_rows(
+	device: &mut impl ghi::context::Context,
+	queue_handle: QueueHandle,
+	shader_key: Option<u64>,
+) {
 	let shader = ghi::shader::compile(
 		"GHI unordered dispatch test compute shader",
 		ShaderSource::PlatformNative {
@@ -59,17 +66,23 @@ pub(super) fn unordered_dispatches_write_their_own_rows(device: &mut impl ghi::c
 		ghi::AccessPolicies::WRITE,
 	);
 	let layout = ghi::DescriptorSetLayout::new("Unordered Dispatch Target", [image_resource]);
+	let (source, lent_code) = match (&shader, shader_key) {
+		(CompiledShaderSource::SPIRV(code), Some(key)) => (ghi::shader::Sources::KeyedSPIRV { key, code }, Some(code)),
+		(CompiledShaderSource::SPIRV(code), None) => (ghi::shader::Sources::SPIRV(code.clone().into()), None),
+		_ => (shader.as_source(), None),
+	};
 	let compute_shader = device
 		.create_shader(
 			None,
-			shader.as_source(),
+			source,
 			ShaderTypes::Compute,
 			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		)
 		.expect("Failed to create the unordered dispatch test compute shader");
+	let parameter = ShaderParameter::new(&compute_shader, ShaderTypes::Compute);
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[PushConstantRange::new(0, 4)],
-		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
+		lent_code.map_or(parameter, |code| parameter.with_code(code)),
 	));
 	let extent = Extent::rectangle(4, 2);
 	let image = device.build_image(

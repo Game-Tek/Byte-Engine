@@ -8,7 +8,7 @@ fn transfer_usage(source: bool, destination: bool) -> vk::BufferUsageFlags {
 }
 
 /// Describes an owned image without native storage or views.
-fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: Extent, access: DeviceAccesses) -> Image {
+pub(crate) fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: Extent, access: DeviceAccesses) -> Image {
 	Image {
 		next: None,
 		size: 0,
@@ -92,13 +92,14 @@ impl Context {
 			}
 			error
 		};
-		let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+		let (requirements, dedicated) = self.buffer_memory_requirements(buffer);
 		let memory = self
 			.allocate_memory_from_candidates(
 				requirements.size,
 				requirements.memory_type_bits,
 				DeviceAccesses::CpuRead,
 				false,
+				dedicated.then_some(DedicatedResource::Buffer(buffer)),
 			)
 			.ok_or_else(|| fail(None, AllocationFailed))?;
 		unsafe { device.bind_buffer_memory(buffer, memory, 0) }.map_err(|_| fail(Some(memory), AllocationFailed))?;
@@ -149,6 +150,9 @@ impl Context {
 
 	/// Allocates from the best memory type for `device_accesses`, moving to the next candidate when a heap is full.
 	///
+	/// Pass `dedicated` to make the allocation dedicated to one resource. `size` must then be the size the resource's
+	/// memory requirements report, and the resource must be bound at offset 0.
+	///
 	/// Returns `None` when no memory type is compatible or every compatible type failed to allocate.
 	pub(crate) fn allocate_memory_from_candidates(
 		&self,
@@ -156,6 +160,7 @@ impl Context {
 		memory_type_bits: u32,
 		device_accesses: DeviceAccesses,
 		device_address: bool,
+		dedicated: Option<DedicatedResource>,
 	) -> Option<vk::DeviceMemory> {
 		crate::vulkan::utils::memory_type_candidates(&self.memory_properties, memory_type_bits, device_accesses)
 			.into_iter()
@@ -168,22 +173,36 @@ impl Context {
 				if device_address {
 					memory_allocate_info = memory_allocate_info.push(&mut memory_allocate_flags_info);
 				}
+				// Naming the only resource the memory backs lets the driver tailor the allocation to it.
+				let mut memory_dedicated_allocate_info = match dedicated {
+					Some(DedicatedResource::Buffer(buffer)) => vk::MemoryDedicatedAllocateInfo::default().buffer(buffer),
+					Some(DedicatedResource::Image(image)) => vk::MemoryDedicatedAllocateInfo::default().image(image),
+					None => vk::MemoryDedicatedAllocateInfo::default(),
+				};
+				if dedicated.is_some() {
+					memory_allocate_info = memory_allocate_info.push(&mut memory_dedicated_allocate_info);
+				}
 
 				unsafe { self.device.allocate_memory(&memory_allocate_info, None) }.ok()
 			})
 	}
 
 	/// Allocates memory from the device.
+	///
+	/// Pass [`MemoryBackedResourceCreationResult::dedicated_resource`] as `dedicated` when the allocation backs exactly
+	/// that resource, and `None` when it is shared or not tied to a resource yet. A dedicated allocation must use the
+	/// resource's reported size and be bound at offset 0.
 	pub(crate) fn create_allocation_internal(
 		&mut self,
 		size: usize,
 		memory_bits: Option<u32>,
 		device_accesses: DeviceAccesses,
+		dedicated: Option<DedicatedResource>,
 	) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
 		// Allocations not tied to a resource yet may use any memory type.
 		let memory_type_bits = memory_bits.unwrap_or(u32::MAX);
 		let memory = self
-			.allocate_memory_from_candidates(size as u64, memory_type_bits, device_accesses, true)
+			.allocate_memory_from_candidates(size as u64, memory_type_bits, device_accesses, true, dedicated)
 			.expect(
 				"Failed to allocate Vulkan memory. The most likely cause is that every memory heap compatible with the resource is exhausted or the device allocation count limit was reached.",
 			);
@@ -204,11 +223,6 @@ impl Context {
 		(allocation_handle, mapped_memory)
 	}
 
-	pub(crate) fn uses_only_host_access(device_accesses: DeviceAccesses) -> bool {
-		device_accesses.intersects(DeviceAccesses::HostOnly) && !device_accesses.intersects(DeviceAccesses::DeviceOnly)
-	}
-
-	/// Creates a Vulkan buffer, allocates memory for it, binds the memory, and returns the tracked buffer object.
 	/// Creates a Vulkan buffer bound to its own new allocation and returns it with that allocation, its device address and
 	/// its mapping.
 	pub(crate) fn create_dedicated_buffer(
@@ -224,7 +238,12 @@ impl Context {
 		*mut u8,
 	) {
 		let buffer = self.create_vulkan_buffer(name, size, usage);
-		let (allocation_handle, _) = self.create_allocation_internal(buffer.size, buffer.memory_flags.into(), device_accesses);
+		let (allocation_handle, _) = self.create_allocation_internal(
+			buffer.size,
+			buffer.memory_flags.into(),
+			device_accesses,
+			buffer.dedicated_resource(),
+		);
 		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer, allocation_handle, 0);
 		(buffer, allocation_handle, address, pointer)
 	}
@@ -247,7 +266,6 @@ impl Context {
 
 		Buffer {
 			staging: None,
-			source: None,
 			buffer: buffer_creation_result.resource,
 			size,
 			device_address,
@@ -255,34 +273,15 @@ impl Context {
 			allocation: Some(allocation_handle),
 			uses: resource_uses,
 			access: buffer_accesses,
+			imported: false,
 		}
 	}
 
-	/// Builds the host-visible buffer that carries CPU reads and writes for a GPU buffer with `device_accesses`.
-	pub(super) fn build_host_staging_buffer(
-		&mut self,
-		name: Option<&str>,
-		size: usize,
-		resource_uses: crate::Uses,
-		device_accesses: DeviceAccesses,
-	) -> Buffer {
-		let cpu_read = device_accesses.contains(DeviceAccesses::CpuRead);
-		let cpu_write = device_accesses.contains(DeviceAccesses::CpuWrite);
-		let usage = transfer_usage(cpu_write, cpu_read) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-		let mut buffer_accesses = DeviceAccesses::empty();
-		buffer_accesses.set(DeviceAccesses::DeviceToHost, cpu_read);
-		buffer_accesses.set(DeviceAccesses::HostToDevice, cpu_write);
-
-		// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
-		let allocation_accesses = device_accesses & DeviceAccesses::HostOnly;
-		self.create_bound_buffer(name, size, usage, allocation_accesses, buffer_accesses, resource_uses)
-	}
-
-	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
+	/// Builds a buffer object with the given name, resource uses, size, and device accesses.
 	///
-	/// Buffers that request only host access are created as a single mapped Vulkan buffer. Buffers that include GPU
-	/// access and CPU access keep a separate host-visible staging buffer so transfers can synchronize CPU writes with
-	/// GPU-visible storage.
+	/// A buffer the CPU reads, or one without GPU access, is a single mapped Vulkan buffer: the GPU writes a
+	/// CPU-readable buffer in place, so a staging copy would never receive those writes. A buffer the CPU only writes
+	/// for the GPU to read lives in device memory and keeps a mapped staging buffer, which a transfer copies into it.
 	pub(crate) fn build_buffer_internal(
 		&mut self,
 		name: Option<&str>,
@@ -293,7 +292,6 @@ impl Context {
 		if size == 0 {
 			return Buffer {
 				staging: None,
-				source: None,
 				buffer: vk::Buffer::null(),
 				size: 0,
 				device_address: 0,
@@ -301,31 +299,37 @@ impl Context {
 				allocation: None,
 				uses: resource_uses,
 				access: device_accesses,
+				imported: false,
 			};
 		}
 
-		let cpu_read = device_accesses.contains(DeviceAccesses::CpuRead);
-		let cpu_write = device_accesses.contains(DeviceAccesses::CpuWrite);
+		let staged = device_accesses.contains(DeviceAccesses::CpuWrite)
+			&& !device_accesses.contains(DeviceAccesses::CpuRead)
+			&& device_accesses.intersects(DeviceAccesses::DeviceOnly);
 		// All buffers are guaranteed to be accessible by device address.
-		let mut usage = uses_to_vk_usage_flags(resource_uses)
-			| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-			| transfer_usage(cpu_read, cpu_write);
+		let mut usage =
+			uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | transfer_usage(false, staged);
 		// Acceleration structure build input usage causes validation errors when ray tracing is disabled.
 		if !self.settings.ray_tracing {
 			usage &= !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 		}
 
-		if Self::uses_only_host_access(device_accesses) {
+		if !staged {
 			return self.create_bound_buffer(name, size, usage, device_accesses, device_accesses, resource_uses);
 		}
 
 		let allocation_accesses = device_accesses - DeviceAccesses::HostOnly;
 		let mut buffer = self.create_bound_buffer(name, size, usage, allocation_accesses, device_accesses, resource_uses);
-
-		if device_accesses.intersects(DeviceAccesses::HostOnly) {
-			let staging_buffer = self.build_host_staging_buffer(name, size, resource_uses, device_accesses);
-			buffer.staging = Some(self.buffers.add(staging_buffer).1);
-		}
+		// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
+		let staging_buffer = self.create_bound_buffer(
+			name,
+			size,
+			transfer_usage(true, false) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			DeviceAccesses::CpuWrite,
+			DeviceAccesses::HostToDevice,
+			resource_uses,
+		);
+		buffer.staging = Some(self.buffers.add(staging_buffer).1);
 
 		buffer
 	}
@@ -347,15 +351,6 @@ impl Context {
 		}
 
 		handle
-	}
-
-	/// Creates a CPU-visible staging buffer (TRANSFER_SRC) for use as a per-frame
-	/// staging buffer in the persistent write mode. Returns its handle.
-	pub(crate) fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
-		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-		let device_access = DeviceAccesses::HostToDevice;
-		let buffer = self.create_bound_buffer(name, size, vk_usage_flags, device_access, device_access, crate::Uses::empty());
-		self.buffers.add(buffer).1
 	}
 
 	/// Creates the native image, memory, staging buffer, and views that `builder` describes, linked to `next`.
@@ -420,6 +415,7 @@ impl Context {
 			} else {
 				device_accesses
 			},
+			texture_creation_result.dedicated_resource(),
 		);
 		unsafe {
 			self.device
@@ -435,6 +431,7 @@ impl Context {
 				buffer_creation_result.size,
 				buffer_creation_result.memory_flags.into(),
 				device_accesses & DeviceAccesses::HostOnly,
+				buffer_creation_result.dedicated_resource(),
 			);
 			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -580,8 +577,14 @@ impl Context {
 			.heaps
 			.iter()
 			.map(|layout| {
-				self.create_allocation_internal(layout.size as usize, Some(1 << layout.category), DeviceAccesses::DeviceOnly)
-					.0
+				// A heap backs several members, so it is never dedicated to one of them.
+				self.create_allocation_internal(
+					layout.size as usize,
+					Some(1 << layout.category),
+					DeviceAccesses::DeviceOnly,
+					None,
+				)
+				.0
 			})
 			.collect::<SmallVec<[_; 2]>>();
 

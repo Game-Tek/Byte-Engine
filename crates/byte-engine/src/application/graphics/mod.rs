@@ -34,6 +34,7 @@
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
+/// - `render.pipeline-cache.path`: Keeps compiled pipelines in this file, so later runs create their pipelines without compiling shaders. The file is read at startup, and the pipelines compiled since are appended to it when the application closes; a run that compiles none does not touch it. Use one file per GPU when applications that run on different GPUs at the same time would otherwise share it. Data from another GPU or driver version is ignored. Relative paths use the current working directory. The default is none, which leaves pipeline caching to the GPU driver.
 /// - `messages.capacity`: Sets the bytes of message storage shared by every typed route, in whole chunks of [`crate::core::message_bus::CHUNK_BYTES`]. A publisher waits when every chunk is held by unread messages. The default is `67108864`, which is 64 MiB.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
 /// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The startup value also decides whether GTAO is built in: set it to `false` in `config.json` and BELD bakes shaders without GTAO code and skips its pipelines, and GTAO cannot be turned on at runtime. See [`crate::rendering::pipelines::visibility::VisibilityFeatures`]. The default is `true`.
@@ -106,7 +107,7 @@ pub struct GraphicsApplication {
 	input: input::InputCollector,
 	/// The sink for actions declared through the world. It captures nothing.
 	actions: input::InputSink,
-	gamepad_system: Option<input::gamepad::GamepadSystem>,
+	gamepad_system: input::gamepad::GamepadSystem,
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
@@ -344,8 +345,7 @@ impl GraphicsApplication {
 
 			input: services.input,
 			actions: services.actions,
-			// HID initialization stays deferred until the first presented frame.
-			gamepad_system: None,
+			gamepad_system: input::gamepad::GamepadSystem::new(),
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
@@ -511,16 +511,18 @@ impl GraphicsApplication {
 			};
 			self.waker.set_platform_waker(move || platform_waker.wake());
 			self.platform_waker_set = true;
+			// Connecting controllers report nothing through windows, so the event queue also wakes on device changes.
+			if let Some(monitor) = self.gamepad_system.monitor()
+				&& let Err(error) = self.renderer.wake_on_hid_changes(monitor)
+			{
+				log::warn!("{error}");
+			}
 		}
 
 		let woken = self.waker.begin_wait();
 		let now = std::time::Instant::now();
-		// Gamepads report nothing through the window system, so connected ones are polled once per frame.
-		let poll_at = self
-			.gamepad_system
-			.as_ref()
-			.filter(|gamepads| gamepads.has_devices())
-			.map(|_| now + self.skipped_frame_pace);
+		// Gamepads report nothing through the window system, so they are polled once per frame when they need it.
+		let poll_at = self.gamepad_system.needs_polling().then(|| now + self.skipped_frame_pace);
 		let wait = idle_wait(woken, self.requested_tick.take(), poll_at, now);
 		if wait == ghi::window::Wait::Immediate {
 			self.waker.end_wait();
@@ -528,45 +530,10 @@ impl GraphicsApplication {
 		wait
 	}
 
-	/// Polls newly connected gamepads and records their trigger values into the collector.
+	/// Adopts newly connected gamepads and records their trigger values into the collector.
 	fn process_gamepad_events(&mut self) {
 		let _span = debug_span!("GraphicsApplication::process_gamepad_events").entered();
-		if self.tick_count > 0 && self.gamepad_system.is_none() {
-			self.gamepad_system = input::gamepad::GamepadSystem::new()
-				.map_err(|error| log::warn!("{}", error))
-				.ok();
-		}
-		let Some(gamepad_system) = self.gamepad_system.as_mut().filter(|_| self.tick_count > 0) else {
-			return;
-		};
-		let (new_devices, events) = gamepad_system.poll();
-		if let Some(device_class) = self.gamepad_device_class_handle {
-			for (path, kind, negate_stick_y, device) in new_devices {
-				// Keep physical HID identity distinct so player and device routing is preserved.
-				let device_handle = self.input.create_device(&device_class);
-				gamepad_system.add_device(path, kind, negate_stick_y, device, device_handle);
-			}
-		} else if !new_devices.is_empty() {
-			log::warn!(
-				"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
-				crate::online_docs_url("reference/input")
-			);
-		}
-		for event in events {
-			log::debug!(
-				target: "byte_engine::input::events",
-				"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
-				event.device_handle(),
-				event.trigger(),
-				event.value()
-			);
-			self.input.record(
-				input::SeatHandle::stub(),
-				event.device_handle(),
-				event.trigger(),
-				event.value(),
-			);
-		}
+		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
 
 	/// Adopts newly created windows and cameras before renderer preparation.

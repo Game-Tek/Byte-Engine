@@ -399,6 +399,14 @@ impl GraphicsApplication {
 		&self.application.frame_allocator
 	}
 
+	/// Returns how far the frame about to be drawn lies between the two most recent simulation steps, from 0 to 1.
+	///
+	/// Renderers show step state blended by this amount, so frame code that places anything over the scene, such
+	/// as UI that follows an entity, blends the same way to keep pace with what they draw.
+	pub fn simulation_alpha(&self) -> f32 {
+		self.simulation_alpha
+	}
+
 	/// Returns the configuration exchange used to inspect startup update results.
 	pub fn configuration(&self) -> &Configuration {
 		&self.configuration

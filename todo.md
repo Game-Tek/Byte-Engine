@@ -150,7 +150,6 @@
 - Add targeted GHI backend tests or fakes for device, context, resource, and command lifecycle behavior.
 - Add focused window tests, including macOS keyboard consumption, cursor visibility, and confinement.
 - Test that glTF and FBX URI resolution stays inside the asset root, including absolute paths and `..` segments.
-- Run CI once with the default `headed` and `network` features together. The workflow enables only one of those features per job, and the default nextest filter excludes the native GHI rendering binary.
 - Extend BETP and raw-datagram fuzzing past canonical packets. The current targets do not cover the UDP adapters, a lost challenge response, or two clients on one socket.
 - Add UI tests for sampled colors, remaining layout behavior, primitive styles, and non-box bounds.
 

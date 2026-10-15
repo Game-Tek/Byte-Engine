@@ -111,6 +111,11 @@ jobs:
     - name: Build and test
       # The default Nextest profile excludes the native GHI rendering binary.
       run: cargo nextest run --workspace --cargo-profile ${{ matrix.profile }} --no-default-features --features ${{ matrix.feature }}
+    - name: Build and test the engine without the headed runtime
+      # beld enables the engine's default features, so every workspace build includes `headed`. Selecting the engine
+      # alone is the only build that leaves it out, as a dedicated server does.
+      if: matrix.feature == 'network'
+      run: cargo nextest run -p byte-engine --cargo-profile ${{ matrix.profile }} --no-default-features --features network
     - name: Run documentation tests
       if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
       run: cargo test --doc --workspace --no-default-features --features headed
@@ -123,6 +128,9 @@ jobs:
     - name: Run Clippy
       if: matrix.profile == 'dev'
       run: cargo clippy --workspace --all-targets --no-default-features --features ${{ matrix.feature }}
+    - name: Run Clippy on the engine without the headed runtime
+      if: matrix.profile == 'dev' && matrix.feature == 'network'
+      run: cargo clippy -p byte-engine --all-targets --no-default-features --features network
 
   dependencies:
     runs-on: blacksmith-2vcpu-ubuntu-2404

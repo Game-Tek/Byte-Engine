@@ -72,6 +72,35 @@ path = "benches/ui_render.rs"
 harness = false
 required-features = ["ui-render-bench"]
 
+# These examples open windows or play audio, so they need the headed runtime. `replication` runs headless.
+[[example]]
+name = "animation_graph"
+required-features = ["headed"]
+
+[[example]]
+name = "cube"
+required-features = ["headed"]
+
+[[example]]
+name = "none"
+required-features = ["headed"]
+
+[[example]]
+name = "sandbox"
+required-features = ["headed"]
+
+[[example]]
+name = "sound"
+required-features = ["headed"]
+
+[[example]]
+name = "triangle"
+required-features = ["headed"]
+
+[[example]]
+name = "window"
+required-features = ["headed"]
+
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }

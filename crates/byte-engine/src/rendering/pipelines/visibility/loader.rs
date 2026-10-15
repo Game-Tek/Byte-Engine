@@ -200,8 +200,13 @@ fn assign_slot(slots: &mut HashMap<String, u32>, id: &str, limit: usize, kind: &
 }
 
 /// Builds the default sampler used by visibility material textures.
+///
+/// Anisotropic filtering keeps surfaces seen at grazing angles, like floors, sharp instead of blurring them to the mip
+/// their steepest direction needs.
 fn material_sampler() -> ghi::sampler::Builder {
-	ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Repeat)
+	ghi::sampler::Builder::new()
+		.addressing_mode(ghi::SamplerAddressingModes::Repeat)
+		.anisotropy(16.0)
 }
 
 /// Returns whether an image can safely provide the normalized Type C IES intensity-map contract.

@@ -2,11 +2,20 @@
 ///
 /// Palette and low-bit-depth images are expanded to whole channels while decoding.
 #[derive(Default)]
-pub struct PNGAssetHandler;
+pub struct PNGAssetHandler {
+	mip_generator: Option<Arc<MipGenerator>>,
+}
 
 impl PNGAssetHandler {
 	pub fn new() -> PNGAssetHandler {
-		PNGAssetHandler
+		PNGAssetHandler::default()
+	}
+
+	/// Selects the generator that produces the mip chain of every PNG this handler bakes.
+	///
+	/// Without one, images keep only their top level and alias wherever they are minified.
+	pub fn set_mip_generator(&mut self, generator: Arc<MipGenerator>) {
+		self.mip_generator = Some(generator);
 	}
 }
 
@@ -39,7 +48,7 @@ impl AssetHandler for PNGAssetHandler {
 		let gamma = png_gamma(reader.info(), semantic);
 		let (channels, encoding) = png_source_layout(info.color_type, info.bit_depth)?;
 		let source = ImageSource::new(extent, channels, encoding, &buffer);
-		let (asset, data) = process_image_in(url, semantic, gamma, source, allocator, None)
+		let (asset, data) = process_image_in(url, semantic, gamma, source, allocator, self.mip_generator.as_deref())
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
@@ -197,6 +206,8 @@ mod tests {
 	}
 }
 
+use std::sync::Arc;
+
 use utils::Extent;
 
 use super::{
@@ -208,5 +219,6 @@ use crate::{
 		ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name, png_declared_gamma,
 		process_image_in,
 	},
+	resources::mips::MipGenerator,
 	types::Gamma,
 };

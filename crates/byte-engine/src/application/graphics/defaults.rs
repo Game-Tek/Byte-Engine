@@ -145,11 +145,13 @@ pub fn register_default_asset_handlers(
 
 	let mut gltf_asset_handler = GLTFAssetHandler::new();
 	gltf_asset_handler.set_shader_generator(generator);
-	gltf_asset_handler.set_material_mip_generator(material_mips);
+	gltf_asset_handler.set_material_mip_generator(material_mips.clone());
 	asset_manager.add_asset_handler(gltf_asset_handler);
 
 	// PNG and EXR both handle `Image` sources and the asset manager picks the first match, so PNG must come first.
-	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	let mut png_asset_handler = PNGAssetHandler::new();
+	png_asset_handler.set_mip_generator(material_mips);
+	asset_manager.add_asset_handler(png_asset_handler);
 	asset_manager.add_asset_handler(IESAssetHandler::new());
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);

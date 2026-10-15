@@ -90,6 +90,9 @@ impl RuntimeMotion {
 			ClipTime::Seconds(seconds) => seconds,
 			ClipTime::Frame(frame) => frame as f32 / sample.frame_rate.or_else(|| warn_no_frame_rate(sample))?,
 		};
+		if seconds > sample.duration {
+			warn_past_clip_end(sample, seconds);
+		}
 		Some(if sample.duration > 0.0 {
 			(seconds / sample.duration).clamp(0.0, 1.0)
 		} else {
@@ -161,6 +164,27 @@ fn warn_no_frame_rate(sample: &RuntimeSample) -> Option<f32> {
 		sample.resource_id
 	);
 	None
+}
+
+/// Returns the transform that moves to `current` as `earlier` moves to `later`, so a velocity measured from it to
+/// `current` is the one measured between the other two.
+fn shifted_sample(earlier: LocalTransform, later: LocalTransform, current: &LocalTransform) -> LocalTransform {
+	LocalTransform {
+		translation: current.translation - (later.translation - earlier.translation),
+		rotation: earlier.rotation.compose(later.rotation.inverse()).compose(current.rotation),
+		scale: current.scale - (later.scale - earlier.scale),
+	}
+}
+
+/// Reports a route point past the end of its clip, which the point then clamps to.
+#[cold]
+#[inline(never)]
+fn warn_past_clip_end(sample: &RuntimeSample, seconds: f32) {
+	log::warn!(
+		"Animation route point lies past the end of its clip. The most likely cause is a frame counted beyond '{}', which lasts {:.3} s, not {seconds:.3} s.",
+		sample.resource_id,
+		sample.duration
+	);
 }
 
 /// Requests every clip a state plays and returns whether all of them are resident.
@@ -275,6 +299,9 @@ pub struct AnimationGraphPose<'a> {
 	pub global_pose: &'a [Matrix],
 	/// This frame's root translation and rotation delta.
 	pub root_motion: RootMotionDelta,
+	/// The state playing after this advance, as [`AnimationGraphPlayer::state`] reports it. Use it to react to a route
+	/// taken this frame, like taking over a turn clip's rotation, while still holding the pose.
+	pub state: Option<AnimationStateId>,
 }
 
 /// The `AnimationGraphPlayer` struct retains local playback while the pool resolves all graph data asynchronously.
@@ -535,6 +562,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 
 		self.last_delta = delta;
 		AnimationGraphPose {
+			state: self.state(),
 			skeleton: &self.pose.target,
 			local_pose: &self.pose.local_pose,
 			global_pose: &self.pose.global_pose,
@@ -955,14 +983,18 @@ impl PlayerPose {
 		// The one-shot only moved until its end, so its last step spans the frame minus the leftover. Sampling the
 		// destination over the same span keeps both velocities comparable.
 		let interval = if delta > leftover { delta - leftover } else { delta };
-		// Sample the destination forward from its first frame: looping clips need not be continuous across their wrap
-		// in local space (the root travels), so a sample before the start would invent a huge velocity.
+		// Measure the destination's velocity over a span ending where it plays to this frame, kept within one cycle:
+		// looping clips need not be continuous across their wrap in local space (the root travels), so a span across it
+		// would invent a huge velocity. The span then moves onto the pose the destination reaches, which the blend
+		// starts from.
 		let start = destination.phase;
 		let duration = destination.duration();
-		let earlier = if duration > 0.0 {
-			(start + (leftover.as_seconds_f32() - interval.as_seconds_f32()) / duration).max(0.0)
+		let (earlier, later) = if duration > 0.0 {
+			let span = (interval.as_seconds_f32() / duration).min(1.0);
+			let later = (start + leftover.as_seconds_f32() / duration).clamp(span, 1.0);
+			(later - span, later)
 		} else {
-			start
+			(start, start)
 		};
 		sample_motion(
 			destination,
@@ -971,8 +1003,18 @@ impl PlayerPose {
 			&mut self.blend_poses,
 			&mut self.destination_previous,
 		);
+		// The loop-end buffer only serves root motion, which is measured below, so it holds the span's end until then.
+		sample_motion(destination, later, pool, &mut self.blend_poses, &mut self.loop_end);
 		let wrapped_loops = destination.advance(leftover);
 		self.sample(destination, destination.phase, pool, Sampled::Destination);
+		for ((previous, later), current) in self
+			.destination_previous
+			.iter_mut()
+			.zip(&self.loop_end)
+			.zip(&self.destination_current)
+		{
+			*previous = shifted_sample(*previous, *later, current);
+		}
 		self.inertializer
 			.begin(
 				&self.active_previous,
@@ -1578,6 +1620,42 @@ mod tests {
 		let landed = ready(player.advance(MediaTime::from_millis(1100), idle.id(), &mut pool)).local_pose[0];
 		assert_eq!(player.state(), Some(idle.id()));
 		math::assert_float_eq!(landed.translation.x(), 0.3);
+	}
+
+	#[test]
+	fn hand_over_blends_across_a_loop_wrap_without_a_lurch() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("stop.animation", test_animation("stop", 1.0)),
+			("walk.animation", test_animation("walk", 4.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		idle.to(walk)
+			.entering_at_frame("walk.animation", 10)
+			.with(AnimationClip::once("stop.animation"))
+			.exit(MediaTime::from_millis(1000))
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+		let before = ready(player.advance(MediaTime::from_millis(900), walk.id(), &mut pool)).local_pose[0];
+		math::assert_float_eq!(before.translation.x(), 0.9);
+
+		// The stop clip ends 100 ms in, and the walk, entered at its last frame, plays the 20 ms left over across its
+		// wrap, where its root jumps back from 4 to 0. The blend hides that jump, and its velocity, measured inside one
+		// cycle, moves the pose no faster than the walk does.
+		let after = ready(player.advance(MediaTime::from_millis(120), walk.id(), &mut pool)).local_pose[0];
+		assert_eq!(player.state(), Some(walk.id()));
+		assert!(
+			(after.translation.x() - before.translation.x()).abs() < 0.12 * 4.0,
+			"the hand-over moved the root from {} to {}",
+			before.translation.x(),
+			after.translation.x()
+		);
 	}
 
 	#[test]

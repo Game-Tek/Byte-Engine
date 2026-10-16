@@ -1,0 +1,192 @@
+---
+title: Rendering
+description: Look up the objects a scene is made of, the camera, the pipeline and pass model with every pass and its settings, the visibility pipeline's limits and material contract, and the render targets a frame produces.
+icon: Computer
+---
+
+The renderer draws each window from a scene pipeline followed by post-scene
+passes. This page specifies the objects an application creates, the camera,
+how pipelines and passes compose, every pass the engine ships with, and the
+contract of the visibility pipeline. The design notes behind it are under
+[Rendering](/docs/develop/rendering) in Contribute, and the lights are in the
+[lighting reference](/docs/reference/lighting).
+
+## Objects
+
+| Object | Role |
+| --- | --- |
+| Window | A named render surface with an extent and optional decorations, with one camera attached. Each window becomes one sink, numbered in creation order. |
+| Camera | View settings created on the world with a transform, which the renderer follows. |
+| Sink | The per-frame destination the renderer builds from a window's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
+| View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |
+| Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
+| Environment | A baked environment map, optionally scaled to deliver a given illuminance. Without one, the visibility pipeline uses an opaque black fallback. |
+| Fog, lights, particle emitters | Specified with their own pages: [Light a scene](/docs/use/lighting), [lighting](/docs/reference/lighting), [particles](/docs/reference/particles). The newest fog wins. |
+| Debug mesh | A retained wireframe sphere, box, capsule, or segment with a color, tested against scene depth or drawn over it. |
+
+Scene color is linear HDR in the packed `RGBu11u11u10` format. Tone-mapping
+passes write 16-bit float display color. The window's swapchain is `BGRAsRGB`.
+
+## Camera
+
+| Field | Default | Rule |
+| --- | --- | --- |
+| Field of view | 45° | Vertical, in degrees, above 0 and below 180. |
+| Exposure | 0 stops | The exposure scale is 2 to the power of the stops, within ±64. |
+| Near and far planes | 0.1 and 100 | Fixed. |
+| Projection | Perspective | Sinks always use a perspective view. |
+| Aspect ratio, aperture, focus distance | | Stored but not read; the aspect ratio comes from the window's extent. |
+
+The camera's position and orientation come from its transform. Up is +Y,
+unless the view direction is within 1 percent of vertical, when +Z is used.
+
+## Pipelines and passes
+
+| Concept | Role |
+| --- | --- |
+| Scene pipeline | Owns scene state and per-sink resources and records one command per sink per frame. Several can be registered; the default setup registers the visibility pipeline and particles. |
+| Render pass | Sink-local post-processing that reads `main` and usually replaces it. Registered for every sink. |
+| Scene background | A pass the scene pipeline records after opaque and before transparent surfaces, such as the sky. A later registration replaces an earlier one. |
+| Pass state | Enabled or bypassed, shared by name across sinks, set in code or by the `render.pass.<name>` parameter. A bypassed pass that replaced `main` has `main` forwarded in its place. |
+
+| Rule | Value |
+| --- | --- |
+| Registration | Post-scene passes and the scene background are registered before the first window. |
+| Order per sink | Every scene pipeline in registration order, then every post-scene pass in registration order, then a copy to the swapchain only when no post-scene pass exists. |
+| Terminal pass | The last post-scene pass must create the main render target, which is the swapchain. |
+| Targets | A pass declares named, sink-scoped targets: full-size, scaled by a divisor, persistent, or history targets whose previous frame can be read. Reading a target that nothing creates fails at setup. |
+| Clears | A node that records nothing has its first-use targets cleared; one that records has them discarded. |
+| Frame-wide work | Detail levels, shadow views, and exposure follow the first sink. |
+| Swapchain | FIFO presentation with 2 frames in flight. |
+
+### Passes
+
+| Pass | Name | Writes | Place it |
+| --- | --- | --- | --- |
+| Simple scene pipeline | `PipelineManager` | `main`, `depth` | As the scene pipeline, for prototyping. |
+| Visibility scene pipeline | `VisibilityPipelineManager` | `main`, `depth`, primitive and instance IDs | Before the deferred tasks thread starts. |
+| Particles | `ParticleManager` | `main` | After the scene pipeline, before the deferred tasks thread starts. |
+| Atmosphere sky | `atmosphere sky` | The scene color where depth is 0 | As the scene background. Black when bypassed or without a directional light. |
+| Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
+| Motion blur | `motion-blur` | `Motion Blur` | After scene light and fog, before lens flare, bloom, and tone mapping. |
+| Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
+| Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
+| Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
+| AgX, ACES, and sRGB display | `agx`, `aces`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
+| Color grading | `lut`, `aces-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects, before tone mapping. |
+| UI | `ui` | `UI` | Before the renders every sink must see are published. |
+| Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
+
+A pass's `scene.<name>` or `pass.<name>` metric and its `render.pass.<name>`
+parameter use the name in this table. The default setup installs the visibility
+pipeline, particles, and a 1920 by 1080 window, and no post-scene pass, so the
+scene reaches the swapchain through the copy.
+
+### Pass settings
+
+| Pass | Settings and defaults |
+| --- | --- |
+| Bloom | Threshold 1, soft knee 0.5, intensity 0.08, maximum brightness 64, radius 1, 5 levels of 1 to 6. |
+| Motion blur | Shutter 8,333 µs, maximum blur radius 32 pixels, 8 taps of 1 to 32. It blurs camera turns and zooms only, by the shutter's share of the frame interval. |
+| Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
+| Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
+| Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
+| Antialiasing, tone mapping, UI, debug meshes | No settings. |
+
+Rendering on demand, set by the `render-on-demand` parameter, renders a frame
+only when a window, camera, or pass state changed, a pass asked for one, or a
+screenshot is pending. Scene changes don't count, so an application that moves
+cameras or objects requests a redraw itself.
+
+## The visibility pipeline
+
+| Limit | Value |
+| --- | --- |
+| Geometry capacity | Set by the `render.geometry.*` parameters; a mesh that doesn't fit is rejected at upload. |
+| Meshlet | 64 vertices and 126 triangles |
+| Meshlets per primitive instance | 4,096 |
+| Instances drawn per frame | 1,024 |
+| Materials, bindless textures | 1,024 each |
+| Texture slots per material | 16 |
+| Lights | 1,024; the rest are left out with one warning |
+| Skinned vertices per frame | 262,144 |
+| Shadowed lights | 4 directional with 4 cascades each, 16 cone, 16 point |
+| Light clusters | 16 by 8 by 24 |
+
+A renderable is drawn only once its mesh, every material, and every texture
+are resident.
+
+| Detail level rule | Value |
+| --- | --- |
+| Allowed error | One pixel times `render.lod.bias`, converted to world units from the first sink's projection. |
+| Instance error | The level's error per distance times the straight-line distance from the camera to the nearest point of the bounding sphere, plus its constant error, divided by the largest model axis. Turning the camera never switches levels. |
+| Choice | The coarsest level whose error is within the allowed error; the finest otherwise. An instance around the camera, with zero scale, or without a finite error draws full detail. |
+| Shadows | Draw the same level as the camera. |
+
+| Directional shadow rule | Value |
+| --- | --- |
+| Cascades | Four, splitting the range from the camera to `render.directional-shadows.distance` by the split blend between logarithmic and even. |
+| Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
+| Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
+| Beyond the last cascade | No sun shadow. |
+
+Local shadow maps and the shadow budget are specified under
+[lighting](/docs/reference/lighting#shadow-maps).
+
+### Materials
+
+The pipeline accepts a material whose render model is `Visibility` with the
+`MaterialEvaluation` pass, which is what every `.bema` file bakes to, and whose
+first shader is its evaluation shader.
+
+| Rule | Value |
+| --- | --- |
+| Alpha mode | Opaque, masked with a cutoff, or blended. Blended materials draw in the transparent phase. |
+| Double-sided | Draws without back-face culling. |
+| Variables | Scalars and vectors become specialization constants, so programs that differ only in textures share one pipeline and one dispatch. Texture variables take slots in declaration order, up to 16. |
+| Layout layers | Every material builds on the scene records, scene, visibility buffer, and material evaluation layers. |
+
+A material's evaluation shader writes these properties; unwritten ones keep
+their defaults:
+
+| Property | Type | Default |
+| --- | --- | --- |
+| `albedo` | Four half floats; the fourth is alpha in the transparent phase | 1, 0, 0, 1 |
+| `normal` | Three half floats in tangent space | 0, 0, 1, meaning no normal map |
+| `metalness` | Half float | 0 |
+| `roughness` | Half float | 0.5 |
+| `occlusion` | Half float, multiplying indirect diffuse light | 1 |
+| `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
+
+`sample_material` samples a texture variable at the vertex UV with the
+derivatives the pipeline computed, and `sample_normal` samples a normal map.
+Writing a normal, sampling one, or reading the tangent, bitangent, or UV makes
+the pipeline build the tangent frame for that material.
+
+### Stages and targets
+
+Each sink records these stages in order, and each reports a `stage.<name>`
+metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
+`light-clusters`, `visibility-early`, `occlusion-pyramid`, `visibility-late`,
+`material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
+`material-evaluation`, `background`, and `transparent`.
+
+| Target | Content |
+| --- | --- |
+| `Lit`, aliased `main` | Scene color, full size. |
+| `Depth`, aliased `depth` | Reversed depth, full size. |
+| `primitive index`, `instance_id` | 32-bit IDs per pixel. |
+| `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
+| `SSGI Raw`, `SSGI Normals`, `SSGI History`, `Diffuse Radiance History` | Half-size indirect lighting and its history. |
+| `Radiance History` | The previous frame's radiance, for reflections. |
+
+These names, with a pass's outputs, select a screenshot through the inspector;
+history targets can also be read from the previous frame.
+
+## Rust API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering)
+- [`rendering::camera`](/docs/api/latest/byte_engine/rendering/camera)
+- [`rendering::sink`](/docs/api/latest/byte_engine/rendering/sink)
+- [`rendering::view`](/docs/api/latest/byte_engine/rendering/view)
+- [`application::graphics`](/docs/api/latest/byte_engine/application/graphics)

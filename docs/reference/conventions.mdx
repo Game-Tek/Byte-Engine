@@ -1,0 +1,86 @@
+---
+title: Coordinates and units
+description: Look up the engine's axes and handedness, the camera and clip-space conventions, the units of measure, the rotation and matrix representations, and the color spaces.
+icon: Computer
+---
+
+Every system in Byte Engine shares one set of spatial and unit conventions.
+This page specifies them.
+
+## Axes
+
+| Convention | Value |
+| --- | --- |
+| Up | +Y |
+| Forward | +Z. A direction-only orientation rotates +Z to the direction without roll. |
+| Right | +X |
+| Handedness | Left-handed: the cross product of +X and +Y is +Z. |
+| World space | The default space of points, vectors, and directions. A game can brand its own spaces. |
+
+Local axes that systems define follow the same convention: a particle cone
+fires along local +Z, an IES profile emits along local +Z with +X as its C0
+plane, and a capsule's axis is local Y.
+
+## Camera and clip space
+
+| Convention | Value |
+| --- | --- |
+| Field of view | Vertical, in degrees, 45 by default. The horizontal field is the vertical times the aspect ratio. |
+| Aspect ratio | Width over height. |
+| Clip space | x and y from −1 to 1. |
+| Depth | Reversed: the near plane maps to 1 and the far plane to 0, and 0 means no surface. |
+| Front faces | Have a negative signed area in clip space, for any view direction. |
+| View basis | Right, up, and the view direction; a vertical view direction uses +Z as its reference up. |
+| Directional shadows | Reach 100 m by default, or the far plane when closer. |
+
+## Units
+
+| Quantity | Unit |
+| --- | --- |
+| Distance | Meters. One world unit is one meter. |
+| Time | Ticks of 1/28,224,000 s; see [Time and ticks](/docs/reference/time). |
+| Angles | Degrees for the field of view; radians everywhere else. |
+| Mass | Kilograms. |
+| Color temperature | Kelvin, from 1,000 to 40,000. |
+| Illuminance | Lux, for directional lights. |
+| Luminous intensity | Candela, for point and cone lights; lumens for flux; nits for luminance. See [Lighting](/docs/reference/lighting). |
+| Exposure | Stops. |
+| Gravity | 16 m/s² downward in physics. |
+
+## Rotations
+
+| Convention | Value |
+| --- | --- |
+| Representation | A unit quaternion, normalized and finite by construction. |
+| Component order | x, y, z, w, in every array and serialized form. |
+| Composition | Composing A with B applies B first, then A. The inverse is the conjugate. |
+| From an axis and angle | The angle is in radians. |
+| From a direction | The shortest rotation taking +Z to the direction, with no roll; the opposite direction rotates half a turn about +X. |
+| Interpolation | Along the shorter arc. |
+| Euler angles | None. There is no yaw, pitch, or roll API, and no decomposition of a matrix into an orientation. |
+
+## Matrices
+
+| Convention | Value |
+| --- | --- |
+| Storage | Row-major 4 by 4. |
+| Vectors | Column vectors: a transform applies as the matrix times the vector. |
+| Model matrix | Translation times rotation times scale. |
+| View matrix | The basis rows times a translation by the negated eye position. |
+| View projection | Projection times view. |
+| Affine matrix | Four columns of three: the linear basis and the translation, with the bottom row implied. Shaders take the model matrix in this form and skinning poses are stored in it. |
+
+## Color
+
+| Convention | Value |
+| --- | --- |
+| Scene color | Scene-linear sRGB with Rec. 709 primaries. Light colors are given in it or converted to it from a temperature. |
+| Exposure | Applied as scene light is written, so real-world intensities fit the half-precision scene target. |
+| Display | The display pass encodes scene-linear color to sRGB; tone-mapping and LUT passes produce display color instead when installed. |
+| Textures | Gamma follows the texture's role: albedo is sRGB, normal, roughness, and other data textures are linear, and PNG metadata overrides the default. Photometric profile images must be linear. |
+
+## Rust API
+
+- [`space` module](/docs/api/latest/byte_engine/space)
+- [`rendering::camera`](/docs/api/latest/byte_engine/rendering/camera)
+- [`rendering::view`](/docs/api/latest/byte_engine/rendering/view)

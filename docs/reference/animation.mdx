@@ -1,0 +1,235 @@
+---
+title: Animation
+description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph, the clip pool, and flipbooks.
+icon: Sparkles
+---
+
+Animation turns clips baked from glTF, GLB, and FBX files into poses that the
+renderer skins with. This page specifies the data model, how a clip is sampled
+and blended, what the animation graph guarantees, and the limits of the clip
+pool. To author the source files, follow
+[Author assets](/docs/use/resources/author); the importer rules are in the
+[asset formats reference](/docs/reference/assets#skeletal-models).
+
+## Skeletons and clips
+
+A skeleton is a list of nodes in parent-before-child order. Each node has an
+optional name, an optional parent index, and a rest local transform. A local
+transform is a translation in the parent's space, a rotation, and a scale; the
+identity transform has zero translation, identity rotation, and unit scale.
+
+A clip holds:
+
+| Field | Value |
+| --- | --- |
+| `name` | Optional. |
+| `skeleton` | The skeleton the clip was authored for. |
+| `duration` | Seconds. Finite and zero or more. |
+| `frame_rate` | Optional. Frames per second when the source format records one; glTF records none. Finite and positive when present. |
+| `tracks` | One track per animated node, in strictly ascending node order. A track has at least one of a translation curve, a rotation curve, and a scale curve. |
+
+A curve is one of three kinds: step, linear, or cubic spline with in and out
+tangents. A rotation curve's tangents are quaternion derivatives. Every curve
+has the same number of times and values, at least one key, times in `[0,
+duration]` that strictly increase, and finite values; a cubic curve has one
+tangent pair per key.
+
+## Sampling
+
+Sampling a clip at a time in seconds produces a local pose for every node of
+the skeleton:
+
+| Rule | Behavior |
+| --- | --- |
+| Missing curve | The node keeps its rest local value for that channel. |
+| Before the first key | The first key's value. |
+| After the last key | The last key's value. |
+| Step curve | The value of the last key at or before the time. |
+| Linear curve | Translation and scale interpolate linearly. Rotation uses normalized linear interpolation along the shorter arc. |
+| Cubic curve | Hermite interpolation with tangents scaled by the span between the two keys. A span of zero length yields the lower key. |
+| Looping | Not part of sampling. The animation graph loops by phase. |
+
+A global pose is the list of matrices for every node, where a node's global
+matrix is its parent's global matrix times its local matrix, and a local matrix
+applies scale, then rotation, then translation.
+
+A pose map remaps a clip onto another skeleton by node name. Target nodes with
+no source keep the target's rest pose. Mapped target nodes start from the source
+rest pose. When several source nodes map to one target, the last one wins.
+
+## Blending
+
+| Operation | Rule |
+| --- | --- |
+| Two poses | The factor clamps to `[0, 1]`. Translation and scale interpolate linearly; rotation uses normalized linear interpolation. |
+| Several poses | Weights must be finite and zero or more, and at least one must be positive. They normalize by their sum. Rotations flip to the hemisphere of the first positively weighted pose before mixing. |
+| 1D blend space | At least one position, finite and strictly ascending. A value interpolates linearly between its two neighbors and clamps to the end samples outside the range. |
+| 2D blend space | At least three positions and one non-degenerate triangle. A value takes the barycentric weights of the first triangle that contains it; outside every triangle, the closest point on any triangle edge or vertex. Weights clamp to `[0, 1]` and renormalize. |
+
+## Inertialization
+
+An inertializer carries the pose that was on screen into a new destination
+without a visible discontinuity. It starts from a source pose and its previous
+frame, a destination pose and its previous frame, the sample delta between those
+frames, and a duration.
+
+| Rule | Behavior |
+| --- | --- |
+| Sample delta | Finite and positive. |
+| Duration | Finite and zero or more. A zero duration applies the destination at once. |
+| At the start | The output equals the source pose. |
+| At the end | The output equals the destination exactly, with zero velocity and acceleration. |
+| Offset | Settles along a quintic curve that leaves the source without acceleration. |
+| Velocity difference | Decays so that one thousandth remains at the end of the duration. |
+| Rotation | Offsets are rotation vectors composed onto the destination rotation. |
+
+## Root motion
+
+Root motion is the movement of one named node, taken out of the visual pose so
+that the owning object moves instead. A root motion delta is a translation and
+a rotation; deltas compose by adding translations and composing rotations, and
+blend by linear and normalized linear interpolation. Scale is never part of
+root motion.
+
+| Setting | Value |
+| --- | --- |
+| Node | By name. The name must exist exactly once in the skeleton. |
+| Translation | Any subset of the X, Y, and Z axes, or none. |
+| Rotation | None or full. |
+
+The delta is measured between the node's previous and current sampled poses,
+with the unselected channels replaced by the node's rest values, in object
+space. When a looping clip wraps, the delta covers the remainder to the clip's
+end, any whole loops, and the start to the current time. In a blend, each
+positively weighted clip contributes its own delta, mixed as a weighted mean. In
+a transition, the source and destination deltas blend by the transition factor.
+The visual pose keeps the rest values on the extracted channels.
+
+## Animation graph
+
+A graph is a state machine built in code and played by one player per instance.
+
+### States
+
+| State | Holds | Playback |
+| --- | --- | --- |
+| Clip | One clip, looping or played once. | |
+| Linear blend | Clips at scalar positions, as a 1D blend space. | A request picks the position. |
+| Planar blend | Clips at 2D positions, as a 2D blend space with explicit or fan triangulation. | A request picks the position. |
+
+Every clip in a blend shares one playback mode. A blend's duration is the
+weighted sum of its clips' durations, so all its clips share one phase. The
+last requested linear position and the last requested planar position are
+remembered across all blends of that kind; a blend entered without a position
+starts there, and at the origin before any request.
+
+### Routes
+
+A route leads from a source state to a target state.
+
+| Route | Behavior |
+| --- | --- |
+| Direct, taken when the source settles | Waits until the source has reached its wait point, or its end for a clip played once, then inertializes into the target over the route's duration. A zero duration switches at once. |
+| Direct, taken anytime | Also cuts short a blend into the source or a one-shot leading to it. |
+| Through a one-shot clip | Plays a clip once between source and target, then inertializes into the target over the exit duration. The one-shot either must complete or may be interrupted. |
+| From any state | A route every state can take, considered after the state's own routes. |
+
+A wait point is a frame on the source clip, several frames on one clip of a
+blend, or a time. Frames count at the clip's authored frame rate; a clip
+without a frame rate never reaches a frame point. A route can also enter the
+target at a given frame instead of its start.
+
+Routes resolve in this order. A persistent state ignores a request for itself,
+then takes the first of its own routes to the requested state, then any-state
+routes. A one-shot takes its own routes first; while it plays, a request other
+than its completion may take the completion state's anytime routes or any-state
+routes; once it finishes, it takes its completion route. A blend in progress
+can only be redirected along anytime and any-state routes, and never toward a
+one-shot.
+
+### Building a graph
+
+Building validates the graph and reports the first problem:
+
+| Error | Cause |
+| --- | --- |
+| `InitialStateOutOfRange`, `TransitionSourceOutOfRange`, `TransitionTargetOutOfRange`, `TransitionStateCompletionOutOfRange` | A state index names no state. |
+| `EmptyStateName`, `DuplicateStateName` | A state has no name, or two share one. |
+| `EmptyResourceId` | A clip has no resource ID. |
+| `TransitionStateMustPlayOnce` | A one-shot transition clip loops. |
+| `NegativeTransitionDuration` | A route or exit duration is negative. |
+| `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or its clips mix looping and once. |
+| `RoutePointClipMissing`, `RoutePointNeedsClip` | A wait point names a clip the source lacks, or a blend's wait point names no clip. |
+
+### Playing a graph
+
+A player advances by a time delta and a requested state each tick, and returns
+nothing until its initial state's first clip is resident. That clip's skeleton
+becomes the canonical skeleton for every clip the player samples.
+
+| Rule | Behavior |
+| --- | --- |
+| Phase | Advances by the delta divided by the clip's duration. A looping clip wraps; a clip played once stops at its end. A clip of zero duration stays at its start. |
+| Clips sampled per tick | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip. Only positive weights are sampled. |
+| Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
+| Hand-over at a wait point or a one-shot's end | The time left in the tick plays on the next state in the same tick. |
+| Redirect | A blend in progress can be redirected along an anytime route once it has rendered a frame, from the pose and velocity on screen. |
+| Position change on a blend | An inertialized request blends the state from its current weights to the new ones, from the pose on screen. |
+| Prefetch | Entering a state requests the clips of every state its routes can reach. |
+| Clip not resident | The player holds the previous tick's pose. |
+
+The result of a tick holds the skeleton, the local pose, the global pose as
+matrices, the root motion delta, and the current state.
+
+| Error | Cause |
+| --- | --- |
+| `RootMotionNodeNotFound`, `DuplicateRootMotionNodeName` | The root motion node name is absent or ambiguous. |
+| `StateFromDifferentGraph` | The requested state belongs to another graph. |
+| `NegativeDelta` | The time delta is negative. |
+
+### Clip pool
+
+A pool keeps packed clips in one arena sized by a byte budget that the
+application chooses, and loads clips on a worker.
+
+| Request result | Meaning |
+| --- | --- |
+| `Ready` | The clip is resident. |
+| `Loading` | The load is queued or in flight. |
+| `WaitingForCapacity` | The load queue holds 64 requests, or no room could be made. Request again later. |
+| `Failed` | The load failed or the clip is larger than the whole budget. |
+
+When a clip doesn't fit, the pool evicts the least recently used clips that no
+player is sampling. A clip a player samples is pinned and never evicted. Up to
+64 loaded clips can wait for room; further ones are dropped. The pool reports
+`LoadFailed`, `Oversized`, and `Evicted` events, keeping the latest 64.
+
+## Flipbooks
+
+A flipbook selects one image of a sequence by elapsed time. It needs at least
+one image and a positive frame rate. The frame index is the floor of the
+elapsed time times the frame rate, wrapped to the image count, so playback
+loops and a negative time wraps backward. Selection is stateless: the caller
+owns the clock, and skipped updates don't slow playback. The file format is in
+the [asset formats reference](/docs/reference/assets#flipbooks).
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Clip loads in flight, pool events kept, clips waiting for room | 64 each |
+| Clips sampled per tick per motion | 3 |
+| Remembered blend positions | One linear and one planar |
+| Blend space samples | At least 1 for 1D, at least 3 for 2D |
+| Skeleton nodes, clips, states | No fixed limit; node indices are 32-bit |
+| Engine time resolution | 28,224,000 ticks per second |
+
+## Rust API
+
+- [`animation` module](/docs/api/latest/byte_engine/animation)
+- [`animation::skeletal`](/docs/api/latest/byte_engine/animation/skeletal)
+- [`animation::blend`](/docs/api/latest/byte_engine/animation/blend)
+- [`animation::inertialization`](/docs/api/latest/byte_engine/animation/inertialization)
+- [`animation::root_motion`](/docs/api/latest/byte_engine/animation/root_motion)
+- [`animation::graph`](/docs/api/latest/byte_engine/animation/graph)
+- [`animation::packed`](/docs/api/latest/byte_engine/animation/packed)

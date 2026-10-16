@@ -1,0 +1,82 @@
+---
+title: BELD command line
+description: Look up every BELD command, flag, default, exit code, and output format, and the file extensions its handlers bake.
+icon: TerminalSquare
+---
+
+BELD bakes source assets into a resource store and inspects the result. This
+page specifies its command line. To use it, follow
+[Use BELD](/docs/use/resources/beld); the store it writes is specified in the
+[resource store](/docs/reference/resource-store) reference.
+
+## Global options
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `-s`, `--source <path>` | `assets` | The source asset directory. |
+| `-d`, `--destination <path>` | `resources` | The resource store directory. |
+| `--color auto`, `always`, or `never` | `auto` | Terminal color. |
+| `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
+| `-V`, `--version`; `-h`, `--help` | | |
+
+BELD reads the `RUST_LOG` environment variable for its log filter.
+
+## Commands
+
+| Command | Arguments and flags | Effect |
+| --- | --- | --- |
+| `bake [ids...]` | `--force`; `--config <path>`, default `config.json` in the working directory; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. |
+| `list` | | Prints one resource ID per line, read-only. |
+| `inspect <id or uid>` | `--format human` or `json` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
+| `query <class> [property=value...]` | `--limit <n>`, `--cursor <hex>`, `--format human` or `json` | Lists resources of a class matching every predicate, read-only, with a cursor when more remain. |
+| `delete <ids...>` | | Removes each resource. |
+| `clear`, `wipe` | | Removes every resource and payload, keeping the store's mode. |
+
+A bake discovers every supported file below the source directory, follows
+symbolic links with cycle detection, skips sidecars and unknown files, and
+leaves out the pipelines and shaders of render features the configuration
+turns off. Explicit IDs always bake. Up to 16 assets bake at once, and each
+is skipped when its stored resource is current with every source file it was
+baked from.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 1 | The configuration couldn't be read, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, or at least one delete failed. |
+| 2 | Invalid arguments. |
+
+## Output formats
+
+| Output | Shape |
+| --- | --- |
+| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `properties`, `streams`, and `resource`, the model as JSON. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
+| `inspect`, human | `key: value` lines, nested objects indented by two spaces, arrays as dashed items. |
+| `query`, JSON | An object with `resources`, each with `id`, `uid`, `class`, and `properties`, and `cursor`, null on the last page. |
+| `query`, human | Each ID on its own line with its properties indented, then the cursor when more pages exist. |
+
+A cursor is the hexadecimal encoding of the page token. Models with a JSON
+form are animation, audio, image, LUT, material, mesh, primitive, shader,
+skeleton, and variant; flipbooks, pipelines, and particle systems print an
+unsupported marker.
+
+## Handlers
+
+| Extension | Resource |
+| --- | --- |
+| `bema` | Material or variant |
+| `fbx` | Mesh, skeleton, animation, materials, images |
+| `gltf`, `glb` | Mesh, skeleton, animation, materials, images |
+| `png` | Image |
+| `exr` | Image, linear, half-precision |
+| `ies` | Image, a photometric profile |
+| `environment.bead` | Image with image-based lighting maps |
+| `pipeline` | Pipeline |
+| `flipbook` | Flipbook |
+| `particles` | Particle system and its pipelines and shaders |
+| `lut`, `cube` | LUT |
+| `wav`, `ogg` | Audio |
+| `besl`, with a `.besl.bead` sidecar | Shader |
+
+Extensions match regardless of case for FBX, EXR, IES, and environment maps.

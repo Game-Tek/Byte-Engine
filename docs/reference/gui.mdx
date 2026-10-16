@@ -1,31 +1,349 @@
 ---
 title: UI
-description: Look up how depth orders UI elements, the per-frame limits of the UI renderer, and what text rendering guarantees.
+description: Look up the UI element kinds and their properties, sizing and flow rules, styles and transforms, events, focus, hit testing, drag, timers, animation drivers, retained identity, and the renderer's limits.
 icon: PanelTop
 ---
 
 The UI module is a retained primitive layer with an asynchronous interaction
-model. This page defines its depth order, the limits of its renderer, and the
-guarantees of its text rendering. To build an interface, follow
+model. This page specifies the elements, how they're sized, placed, styled, and
+drawn, which events they receive, and the rules that keep their identity
+across frames. To build an interface, follow
 [Build a user interface](/docs/use/gui).
+
+## Units and coordinates
+
+| Quantity | Unit |
+| --- | --- |
+| Layout space | The size passed to each evaluation, in logical pixels, with the origin at the top left and y pointing down. |
+| Pointer input | Normalized window coordinates from −1 to 1 with y pointing up, converted to layout units. Positions outside the viewport stay outside. |
+| Scroll deltas, drag offsets, drag positions | Layout units. |
+| Angles | Radians, clockwise on screen, with zero pointing right. |
+| Pixels | The viewport size divided by the layout size, per axis. Radii scale by the smaller factor. |
+
+## Elements
+
+Every element kind accepts these properties:
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Style | One layer, an array of layers, or a style | One white fill layer | Replaces all layers. A single layer can also be pushed on top. |
+| Transform | A transform | Identity | |
+| Opacity | Number | 1 | Clamped to `[0, 1]`; a non-finite value counts as 1. Multiplies through ancestors. |
+
+A declaration's setup runs only when it creates the element. An element that
+already exists keeps its properties until an edit changes them.
+
+### Container
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Width, height | Sizing | Full | |
+| Corner radius | Layout units | 0 | Clamped to half the shorter side. |
+| Corner exponent | Number | 2 | Superellipse exponent, clamped to `[1, 8]`; non-finite or below 1 counts as 2. |
+| Sector | Optional sector | None | Described after this table. |
+| Depth | Relative or absolute integer | Relative 1 | |
+| Position | Flow, or absolute x and y | Flow | An absolute position is an offset from the parent's top left and doesn't advance the flow cursor. |
+| Clip | Boolean | True | |
+| Hit testable | Boolean | True | Children keep their own policy. |
+| Flow | A flow function | Grid | See [Flows](#flows). |
+
+A sector turns the container into an annular sector centered in it, with the
+outer radius at half the shorter side:
+
+| Field | Value |
+| --- | --- |
+| Start | Angle in radians. |
+| Sweep | Angle in radians. A full turn or more is a ring. |
+| Inner | Hole radius as a fraction of the outer radius, from 0 for a pie slice to 1. |
+| Inset | Layout units pulled inward from both straight edges. |
+
+Painting and hits follow the sector. A clipping sector still masks descendants
+to its rectangle and corner radius.
+
+### Text and text field
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Content | Text | The declared content | Rewritten in place. |
+| Font size | Number | 16 | Measurement uses at least 1. |
+| Editable | Boolean | False for text, true for a text field | Fixed by the declaration. An editable text is always hit testable and receives backward deletes while focused. |
+
+Text has no width or height; its size comes from its content and font size.
+A newline starts a new line. With a font, the width is the widest line's summed
+glyph advances times the font size, and the height is the larger of ascent
+minus descent and the font size, plus the line height for each further line.
+Without a font, each character counts 0.6 times the font size wide and each
+line 1.2 times the font size tall. The text color is the first layer's plain
+color, else white; gradient and sample layers don't apply to text. Text with
+no content, zero alpha, or zero size isn't drawn. The drawn font size follows
+the smaller inherited scale factor.
+
+### Image
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Width, height | Sizing | The pixel size | |
+| Pixels | RGBA bytes with a width and height | The declared pixels | The byte count must be width times height times 4. |
+
+Images are never hit testable, and only opacity applies to them; style layers
+are ignored.
+
+### Curve
+
+A curve starts at full size with no segments.
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Width, height | Sizing | Full | |
+| Segments | Lines, quadratics, and cubics | None | Points in layout units from the element's origin. An outline sets the size too. |
+| Hit width | Optional layout units | None | Kept only when finite and positive, before the inherited scale. |
+
+Only stroke layers draw a curve. Strokes extend outward and scale with the
+smaller inherited scale factor; points scale with both. Editing segments
+repaints without replaying layout.
+
+### Path
+
+A path starts at full size with no contours. Every run of joined segments is
+one contour, and contours are always closed.
+
+| Property | Type | Default | Notes |
+| --- | --- | --- | --- |
+| Width, height | Sizing | Full | |
+| Segments | As for a curve | None | |
+| View box | Optional width and height | None | With a view box, points are path units mapped onto the box; without, layout units. |
+| Fill rule | Non-zero or even-odd | Non-zero | Even-odd is exact for contours that don't cross. |
+
+Paths are never hit testable. Fill layers paint; the first fill with a backdrop
+blur blurs the backdrop under the outline instead; stroke layers and inset
+shadows aren't drawn; outer shadows are.
+
+## Sizing
+
+| Rule | Value |
+| --- | --- |
+| Relative | A numerator over a denominator of the available space. Full is 1 over 1 and the default. |
+| Absolute | A number of layout units, whatever the available space. |
+| Available space | The parent's resolved size for a flow child; the evaluation size for the root and for an absolute-depth container. |
+| Fit to content | None. A container's size never depends on its children. |
+| Minimum and maximum | None. |
+| Transforms | Never change a measured size or a flow placement. |
+
+## Flows
+
+A flow function places each child from a cursor that starts at the parent's
+own position, and returns the child's offset and the next cursor.
+
+| Flow | Child offset | Next cursor |
+| --- | --- | --- |
+| Row | The cursor | Moved right by the child's width |
+| Column | The cursor | Moved down by the child's height |
+| Grid, the default | The cursor | Moved right by the width and down by the height |
+| Row with a gap | The cursor | Moved right by the width plus the gap |
+| Column with a gap | The cursor | Moved down by the height plus the gap |
+| Centered row | Centered vertically in the parent | Moved right by the width |
+| Centered column | Centered horizontally in the parent | Moved down by the height |
+| Center | Centered both ways | Unchanged, so every child is centered |
+
+Flow-placed children are clamped to non-negative coordinates; absolutely
+positioned children aren't. An absolute-depth container is placed after the
+ordinary children without advancing the cursor, and is measured against the
+evaluation size. A custom flow replays placement on every edit other than a
+transform; the built-in flows reuse unchanged placement.
 
 ## Depth
 
 Depth decides what paints over what, and what a pointer hits first. It's local
-to each container. `Depth::relative(n)` orders a child among its siblings: a
+to each container. A relative depth orders a child among its siblings: a
 container paints first, then its children from the lowest depth to the highest,
-and children at the same depth in the order they were declared. A child that isn't
-a container counts as `Depth::relative(1)`.
+and children at the same depth in the order they were declared. A child that
+isn't a container counts as relative depth 1.
 
 A container and everything inside it paint as one block. No depth set inside a
 component can put one of its elements over or under another component, so a
 widget can use whatever depths it likes for its own overlays.
 
-`Depth::absolute(n)` is for layers that must cover the rest of the UI, such as a
+An absolute depth is for layers that must cover the rest of the UI, such as a
 modal or a toast. The container leaves its parent and paints above all ordinary
-content, wherever it's declared. Absolute layers stack from the lowest `n` to
-the highest and in tree order among equals. A layer declared inside another one
-paints over it, so a dialog opened from a modal covers that modal.
+content, wherever it's declared. Absolute layers stack from the lowest value
+to the highest and in tree order among equals. A layer declared inside another
+one paints over it, so a dialog opened from a modal covers that modal. An
+absolute layer starts from an unbounded clip and no mask, but keeps the
+inherited transform scale.
+
+## Clipping and masks
+
+| Rule | Value |
+| --- | --- |
+| Clip | A clipping container clips its descendants to its rectangle inset by its widest stroke, intersected with the inherited clip. Clip off makes descendants inherit the ancestor's clip and mask. |
+| Fully clipped element | Dropped from rendering and from hit testing. |
+| Mask | Made when a layer has a feather, or when the corner radius exceeds the border. It carries the inset geometry, the feather, the radius minus the border, and the corner exponent. Otherwise the parent's mask is inherited. |
+| Rotation | Clips and masks are unrotated; the rotation applies at draw time. |
+| Feather | Widths per edge in layout units. Negative or non-finite widths count as 0. |
+| Backdrop blur | A radius clamped to `[0, 64]`; the standard deviation is 1.69 times the square root of the radius. Only the first fill layer with a positive radius blurs, it doesn't paint, and it draws after the element's other layers. |
+
+## Style layers
+
+A style is an ordered list of layers that paint in order; a drop shadow goes
+before the fill it sits under. A style with no layers is invisible.
+
+| Layer field | Value | Default |
+| --- | --- | --- |
+| Color | A plain color, a two-stop linear gradient, or a sample name | White |
+| Kind | Fill, stroke with a width, or shadow | Fill |
+| Feather | Edge widths | None |
+| Backdrop blur radius | Number | 0 |
+
+A stroke with a non-finite or non-positive width is skipped. Containers stroke
+inward and curves stroke outward. A gradient runs between two points in the
+element's own units; pixels before the first point take the start color and
+pixels past the second take the end color. A sample color paints white.
+
+| Shadow field | Value |
+| --- | --- |
+| Offset | Layout units. Non-finite counts as 0. |
+| Sigma | Gaussian standard deviation, half a CSS blur radius. Negative or non-finite counts as 0. |
+| Spread | Layout units; negative shrinks. |
+| Inset | Darkens inside around a hole instead of outside. |
+
+Shadows never change layout or hit testing. An outer shadow reaches the larger
+offset component plus the spread plus three sigma.
+
+## Transforms
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| Translation | 0, 0 | Layout units, applied after scaling. |
+| Scale | 1, 1 | Around the origin. Non-finite counts as 1 and negative as 0. |
+| Rotation | 0 | Radians clockwise. Visual only: bounds, clips, and hits keep the unrotated placement. |
+| Origin | 0.5, 0.5 | A fraction of the laid-out size; values outside `[0, 1]` are allowed. |
+
+A child's transform composes with its ancestors' from its untransformed
+placement. The inherited scale is the product of the ancestors' scales, and
+curve points, stroke widths, glyph sizes, and unboxed paths follow it, through
+absolute-depth layers too. A transform edit moves the subtree in place without
+replaying layout.
+
+## Events
+
+| Event | Fires | Delivered to | Carries |
+| --- | --- | --- | --- |
+| Actuated | Once per press recorded since the last evaluation | The frontmost hit-testable surface under the cursor, no bubbling | |
+| Scrolled | Once per scroll recorded since the last evaluation | The surface under the cursor, then each ancestor | The scroll delta |
+| Grabbed | When a press finds a surface and no source is held | The pressed surface, at once | |
+| Dragged | At the start of an evaluation, when the capture is active and the pointer moved | The held source | The offset from the press point |
+| Dropped | At the start of the evaluation after a release that produced a drop | The surface under the release point, excluding the source, then each ancestor | The released source |
+| Drag ended | After a release, after a click without activation, or on cancel | The source | The drop target, if any |
+| Pointer entered | When the surface under the pointer changes, skipping a held source | The new surface, then each ancestor that didn't already contain the pointer | |
+| Pointer exited | Before the entries of the same evaluation | The previous surface, then each ancestor that no longer contains the pointer | |
+
+Key events carry a key, either escape or backspace, and fire only on a press.
+Text edit events carry one inserted or one deleted character; a deletion is
+queued only when the focused element is a text field with content.
+
+An input is kept only when a task is waiting for exactly that target and event;
+otherwise it's discarded. Delivered inputs queue in the task's inbox and are
+taken oldest first, one per wait. A wait stays registered only while its task
+keeps polling it. Removing an element drops its waits and queued inputs.
+
+Within one evaluation: a changed size cancels any drag; the pointer syncs;
+drag and drop events route; the frame counter advances and due timers and
+frame waits wake; ready tasks run; layout runs; hover, click, and scroll
+events route; the focused element's keys and text edits route; ready tasks run
+again.
+
+## Focus
+
+Requesting focus puts an element on top of the focus stack; releasing removes
+it. The focused element is the top entry among the elements the last layout
+placed, so focus falls back when an element disappears. Keys and text edits go
+only to the focused element and are dropped when nothing has focus. Any element
+kind can hold focus.
+
+## Hit testing
+
+| Rule | Value |
+| --- | --- |
+| Hit-testable elements | Containers unless turned off, editable text always, curves with a hit width. Never images or paths. |
+| Opacity | Doesn't affect hits, even at 0. |
+| Bounds | Half-open: the left and top edges hit, the right and bottom don't. |
+| Sector | The point must also fall inside the sector. |
+| Curve | The point must be within half the scaled hit width of the flattened curve, which can reach beyond the declared size. |
+| Frontmost | The highest depth rank, then the later layout index. A held drag source can be excluded. |
+| Outside the indexed area | No hit. |
+| Geometry | The transformed rectangle intersected with the effective clip, from the last evaluated frame, without running layout. |
+
+## Drag
+
+One capture at a time; a press while one is held is refused. The gesture
+activates once the pointer has moved 6 layout units from the press point, and
+stays active if it returns. A release first moves to the release position, so
+a release alone can activate, then yields a drop only when activated; a plain
+click clears the capture. Cancel clears the pressed state, press count, queued
+scrolls, drops, key states, key presses, and text edits, and tells the source
+the drag ended. A changed evaluation size cancels first.
+
+## Frames and timers
+
+| Wait | Resolves |
+| --- | --- |
+| Render | On the first frame that begins after it was first polled. |
+| Duration | Once the deadline set at creation has passed, checked when polled. |
+
+The frame counter advances once per evaluation. The engine's next tick is now
+while any task waits for a frame or is woken, else the earliest timer deadline,
+else never. Reads of geometry, pointer, drag, and application state complete on
+the first poll.
+
+## Animation drivers
+
+A driver yields a value from 0 to 1 that an animation applies each frame, with
+the wall-clock step capped at one thirtieth of a second, and a final value when
+it completes. A duration of 0 completes at once.
+
+| Driver | Parameters | Curve | Completes |
+| --- | --- | --- | --- |
+| Ease in | Duration | Quadratic | At the duration |
+| Ease out | Duration | Inverse quadratic | At the duration |
+| Ease out cubic, quartic | Duration | Inverse cubic, quartic | At the duration |
+| Emphasized out | Duration | Inverse quintic | At the duration |
+| Ease in and out | Duration | Quadratic halves | At the duration |
+| Back out | Duration, overshoot | Overshoots past the target, then settles | At the duration |
+| Spring | From, to | Mass 1, stiffness 380, damping 16, from rest | Within 0.001 of the target with velocity below 0.001 |
+| Smoothing | From, to, retention | Keeps the given share of the distance after each second, by default 0.01; never overshoots | Within 0.001 of the target |
+
+## Watches
+
+A watch holds a value that components can subscribe to. Each update advances
+its version and wakes every subscriber. A subscriber resolves once the version
+has moved past the one it last read, and writes between polls coalesce into one
+wake.
+
+## Identity
+
+| Rule | Value |
+| --- | --- |
+| Key | A hash of a name, or of a name and a list index. A formatted name and the same owned string hash alike; a name with an index differs from the plain name. |
+| ID | A hash of the parent path and the key, with no tree lookup, so the same key under the same parent always names the same element. |
+| Root | Path 0, which no slot can have. The root scope is never removed. |
+| Duplicate key in one frame | Logged and ignored. |
+| Unknown parent | Logged and ignored. |
+| Redeclared element | Keeps its element and properties; setup doesn't run. |
+| Component | Runs as a task under the declaring context's path, belongs to the enclosing mount, and ends when that mount or the element it was declared under is removed. |
+| Mount | Starts a scope on first poll and removes it when the component returns or the future is dropped. |
+| Scope removal | Follows declaration paths, never the current visual parent. |
+| Reparent and adopt | Move an element as the last child, keeping its ID, path, and properties. Refused for unknown IDs, self, or a cycle. |
+| Edit | Compares every value before and after, so an edit that writes the values already present changes nothing. A kind mismatch is logged and skipped. |
+| Write order | Declarations, edits, removals, reparents, and focus requests apply on first poll in await order, and the next layout and later components in the same evaluation see them. |
+
+## Render output
+
+A render's revision identifies its content and stays the same while the tree,
+its layout, and the viewport are unchanged. Its damage lists at most 8 layout
+rectangles that differ from a base revision, collapsed to their union past
+that, or reports that everything changed after the first render or a viewport
+resize. Damage covers element bounds plus outward stroke or shadow reach,
+intersected with the clip, and the rotated bounds of turned elements.
 
 ## Renderer limits
 

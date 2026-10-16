@@ -1,0 +1,145 @@
+---
+title: Transport protocol
+description: Look up the BETP packet formats, the reliable and unreliable delivery rules, the connection handshake and timeouts, and the limits of the UDP and in-process transports.
+icon: Cable
+---
+
+The Byte Engine Transport Protocol (BETP) carries application payloads between
+a client and an authoritative server over UDP. The protocol performs no I/O of
+its own: the engine's `network` module supplies a UDP transport and an
+in-process channel transport for deterministic tests. This page specifies the
+wire format, the delivery rules, the connection lifecycle, and the transports'
+limits.
+
+## Packets
+
+Every packet starts with a 5-byte header: the ASCII bytes `BETP`, then one
+type byte. Every multi-byte field is little-endian. There is no version field.
+
+| Type | Packet | Size in bytes | Fields after the header, in order |
+| --- | --- | --- | --- |
+| 0 | Reserved | | Never valid. |
+| 1 | Connection request | 13 | Client salt (8). |
+| 2 | Challenge | 21 | Client salt (8), server salt (8). |
+| 3 | Challenge response | 13 | Connection ID (8). |
+| 4 | Data | 19 to 1,045 | Connection ID (8), acknowledgement (2 + 4), unreliable payload. |
+| 5 | Disconnect | 13 | Connection ID (8). |
+| 6 | Keep-alive | 19 | Connection ID (8), acknowledgement (2 + 4). |
+| 7 | Message | 21 to 1,045 | Connection ID (8), sequence (2), acknowledgement (2 + 4), reliable payload. |
+
+A payload holds up to 1,024 bytes and fills the rest of the datagram. The
+protocol doesn't fragment: an application splits larger data across payloads.
+A datagram is at most 1,045 bytes, and the engine rejects a longer one before
+decoding it.
+
+An acknowledgement is the newest sequence received, as a 16-bit number, and a
+32-bit field whose bit `i` is set when sequence `ack - i` arrived; bit 0 stands
+for the newest sequence itself, so a zero field acknowledges nothing. Every
+packet on an established connection carries one.
+
+The connection ID is the client salt XOR the server salt, computed by both
+sides. Salts aren't a security boundary.
+
+Decoding rejects a packet whose header is short, whose protocol bytes differ,
+whose type byte is unknown or reserved, or whose length is outside its type's
+range.
+
+## Delivery
+
+Each direction of a connection has one stream with two delivery classes:
+
+| Class | Packet | Sequence | Resent | Delivered |
+| --- | --- | --- | --- | --- |
+| Reliable | Message | 16-bit, per direction, from 0 | Every 100 ms until acknowledged, without limit | Once, in sequence order |
+| Unreliable | Data | None | Never | As it arrives, possibly reordered |
+
+| Rule | Value |
+| --- | --- |
+| Window | 32 reliable messages unacknowledged at once. Later messages wait their turn. |
+| Out-of-order arrival | A reliable message ahead of a gap is held until the gap fills. |
+| Dropped on arrival | A reliable message already delivered, or 32 or more ahead of the next expected one. It's still acknowledged. |
+| Packets per payload | One. Payloads are never combined into one packet. |
+| Keep-alive | Sent after 250 ms without sending anything, or when an acknowledgement is due and nothing else is. It also stands in for a standalone acknowledgement. |
+
+## Connection lifecycle
+
+| Step | Sender | Packet | Effect |
+| --- | --- | --- | --- |
+| 1 | Client | Connection request with its salt | Resent on every update until a challenge arrives. |
+| 2 | Server | Challenge with both salts | The server computes the connection ID. |
+| 3 | Client | Challenge response with the connection ID | The client computes the same ID. A challenge with a foreign client salt is an error. |
+| 4 | Server | Any packet carrying the connection ID, usually a keep-alive | Accepts the connection. A response with a wrong ID is dropped. |
+| 5 | Client | | Any packet carrying the ID confirms the connection; that packet's payload and acknowledgements aren't lost. |
+
+Client states: initial, initiating connection, connecting, connected,
+disconnecting. Server states: initial, connected, disconnecting. A session that
+reaches disconnecting is finished; reconnect with a new session.
+
+| Timeout | Value |
+| --- | --- |
+| Connecting without confirmation | More than 5 s ends the attempt. |
+| Connected without a packet carrying the connection ID | More than 5 s ends the connection. Keep-alives count. |
+| Disconnect packet | Ends the connection at once. |
+
+A connected client treats a packet with another connection ID as an error and
+stops processing that batch. A connected server ignores such packets. Payloads
+queued before the connection exists are sent once it's established.
+
+## Transports
+
+| UDP transport | Value |
+| --- | --- |
+| Client socket | Bound to the wildcard address and an ephemeral port of the server's address family, connected to the server, nonblocking. |
+| Server socket | Bound to the address given, nonblocking. Port 0 picks a free port. |
+| Peers | At most 64, counting handshakes in progress. Datagrams from further addresses are ignored. |
+| New peer | Its first datagram must be a connection request. |
+| Handshake timeout | A peer that hasn't connected 5 s after its first datagram is dropped. |
+| Timed-out or disconnected peer | Sent a best-effort disconnect and reported as a client disconnected event. |
+| Sends | Best effort. A failed send isn't an error; reliable messages are resent. |
+| Socket errors | Connection refused, connection reset, and interrupted are skipped. Any other receive error is returned from the update. |
+| Dropping a client or server | Sends a disconnect to each connected peer. |
+
+The server tags each received payload with the sender's connection ID and sends
+to all connected peers or to one by ID. Dropped datagrams are logged at debug
+level and never returned as errors: too large, undecodable, unexpected for the
+session's state, before the session exists, or carrying a mismatched ID.
+
+The in-process channel transport connects a server to clients it creates, in
+the same process, without encoding. It reports only connected events, has no
+peer limit, and never disconnects a client.
+
+| Error | Cause |
+| --- | --- |
+| `ClientCreateError` | Binding, connecting, or configuring the client socket failed. |
+| `ServerCreateError` | Binding or configuring the server socket failed. |
+| `PayloadTooLarge` | A payload longer than 1,024 bytes. |
+| `BadSalt`, `BadConnectionId` | A client received a challenge with a foreign salt, or a packet for another connection. |
+
+## Constants
+
+| Constant | Value |
+| --- | --- |
+| Payload | 1,024 bytes |
+| Datagram | 1,045 bytes |
+| Window | 32 messages |
+| Retry interval | 100 ms |
+| Keep-alive interval | 250 ms |
+| Session timeout | 5 s |
+| Peers per UDP server | 64 |
+| Handshake timeout | 5 s |
+
+## What the protocol doesn't define
+
+BETP has no version negotiation, no channels beyond the two delivery classes,
+no fragmentation, and no timestamps, tick numbers, or clock synchronization on
+the wire. The engine declares a `Replicable` contract with an `Importance` of
+essential or optional, but no transport reads it: every send takes an explicit
+reliable flag and a payload. The only identity shared across peers is the
+connection ID; entity identity, ownership, and authority are the application's
+to define.
+
+## Rust API
+
+- [`network` module](/docs/api/latest/byte_engine/network)
+- [`network::datagram`](/docs/api/latest/byte_engine/network/datagram)
+- [`network::channel`](/docs/api/latest/byte_engine/network/channel)

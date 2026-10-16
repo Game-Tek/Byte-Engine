@@ -75,19 +75,27 @@ visible edge. A brighter light, or a brighter camera exposure, reaches farther. 
 A scene can hold up to 1,024 lights. If it holds more, the renderer logs a warning and leaves out the lights past
 that limit.
 
-## Shadow map pools
+## Shadow maps
 
 A point light casts shadows through one cube map and a cone light through one
 perspective shadow map. A cone with an outer half angle of 90° or more remains
 a valid light but can't use one perspective shadow map.
 
-The visibility pipeline keeps four cone maps and four point-light cube maps per
-sink by default. Set `render.cone-shadow-map-pool.capacity` or
-`render.point-shadow-map-pool.capacity` at application startup to change either
-limit. Visible lights are ranked by their projected sink coverage: each sink's
-most important light gets a slot first, then each sink's next-ranked light in
-sink order, until the pool is full. Other visible local lights stay lit but do
-not cast shadows.
+Every shadow-casting light draws from one memory budget,
+`render.shadow-maps.budget-mb`, 128 MiB by default:
+
+| Light | Shadow map | Cost |
+| --- | --- | --- |
+| The first directional light | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
+| A cone light | One map of 1,024 texels per side, 16-bit depth | 2 MiB |
+| A point light | A cube map of six faces of 1,024 texels per side, 16-bit depth | 12 MiB |
+
+The first directional light is placed first, then cone and point lights in
+order of the screen area they cover, then any other directional lights. A
+light that doesn't fit stays lit without shadows, with one warning in the log.
+At most 4 directional, 16 cone, and 16 point lights hold shadow maps at once.
+A local light's shadow reaches from 0.1 m to where its exposure-weighted peak
+illuminance falls below 0.125 lux.
 
 ## Sky and calibration
 

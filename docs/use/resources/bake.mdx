@@ -75,7 +75,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   'character.fbx#animations/Walk'
 ```
 
-The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads.
+The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Their layout is specified in the [resource store reference](/docs/reference/resource-store).
 
 Use packed storage when you want all binary payloads in one `resources.pack` file:
 

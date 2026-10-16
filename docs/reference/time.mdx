@@ -1,0 +1,75 @@
+---
+title: Time and ticks
+description: Look up the engine's time unit, the tick's clock and order, the two simulation loops and the fixed-step rules, and how a run ends.
+icon: Settings
+---
+
+The engine measures time in integer ticks of a fixed timebase, and a headed
+application advances in ticks that pull input, run the simulation, and render.
+This page specifies the unit, the clock, the order within a tick, and the two
+loops.
+
+## Time unit
+
+| Rule | Value |
+| --- | --- |
+| Timebase | 28,224,000 ticks per second, which divides every conventional frame rate and the 44.1, 48, 96, and 192 kHz sample rates exactly. |
+| Representation | A signed 64-bit tick count. |
+| From seconds, microseconds, or a duration | Rounded to the nearest tick. |
+| From milliseconds | Exact, or an error. |
+| From frames or samples | Exact when the rate divides the timebase, otherwise none. |
+| Arithmetic | Addition, subtraction, scaling, and division are checked; overflow and division by zero are errors. |
+
+## Tick time
+
+Each tick carries the elapsed time since the application started and the
+delta since the previous tick, or the fixed step in the stepped loop.
+
+| Rule | Behavior |
+| --- | --- |
+| Display cadence | When the swapchain reports a newer presented time, the delta is the display interval, so deltas follow the display rather than CPU noise. |
+| Otherwise | The delta is the wall time since the last tick. After an idle wait it's capped at one skipped-frame pace, while elapsed time still advances by the full wait. |
+| Stale present | A presented time older than one frame before the previous tick is ignored. |
+| Skipped-frame pace | The larger of the frame-rate cap and the display refresh, 16,667 µs by default, slept when nothing presents. |
+
+## Tick order
+
+| Order | Phase |
+| --- | --- |
+| 1 | The message bus begins the tick and the frame allocator resets. |
+| 2 | Window events are processed, raw input is recorded, and the loop waits in the window system only when rendering on demand and idle. |
+| 3 | A close event ends the run. |
+| 4 | Swapchain images are acquired when rendering is active; otherwise the loop sleeps the skipped-frame pace. |
+| 5 | The frame clock samples the tick's time. |
+| 6 | Gamepads are polled and the input sink resolves actions. |
+| 7 | The application's callback runs, or the fixed steps and the frame callback. The renderer steps after each simulation step. |
+| 8 | The renderer updates, adopts new windows and cameras, and renders when active. |
+| 9 | The tick's metrics are recorded. |
+
+## Loops
+
+| Loop | Rule |
+| --- | --- |
+| Tied to frames | The simulation advances once per tick by the frame delta. With a simulation rate set, every tick asserts the rate matches the presentation cadence within 1 percent. |
+| Stepped | The simulation runs zero or more fixed steps of the simulation rate, 60 per second by default, then the frame callback runs with the display-derived time. |
+
+| Stepped loop | Value |
+| --- | --- |
+| Steps per frame | At most 8. Any further debt is dropped, so simulated time is lost rather than stretching later frames. |
+| Remainder | Carries to the next frame. |
+| Blend factor | The pending time over the step, so a frame shows the world one step behind, blended between the previous and latest steps. The same factor is available to application code. |
+| Wake-up | The next step's deadline wakes an idle on-demand loop. |
+
+## Ending a run
+
+| Parameter | Behavior |
+| --- | --- |
+| `kill-after` | Closes the application after that many ticks and never waits while idle. Debug builds only. |
+| `metrics-out` | Writes the metrics once when the application closes. |
+
+Both are [startup parameters](/docs/reference/parameters).
+
+## Rust API
+
+- [`time` module](/docs/api/latest/byte_engine/time)
+- [`application::graphics`](/docs/api/latest/byte_engine/application/graphics)

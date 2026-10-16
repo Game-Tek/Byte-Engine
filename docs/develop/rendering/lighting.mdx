@@ -37,21 +37,22 @@ reaches as far as its exposed illuminance stays above 1/1024 lux, so reach
 grows with the light's intensity and the camera exposure. The light list holds
 1,024 lights. The renderer logs a warning and leaves out the rest.
 
-## Shadow maps are pooled
+## Shadow maps share a budget
 
 Each selected point light renders six 90-degree views into a cube map with six
-1024 by 1024 depth faces. Each selected cone light renders one perspective view.
-The visibility pipeline keeps a pool of four cone maps and four point-light cube
-maps per sink by default, sized by `render.cone-shadow-map-pool.capacity` and
-`render.point-shadow-map-pool.capacity`.
+1024 by 1024 16-bit depth faces, and each selected cone light renders one
+perspective view into a 1024 by 1024 map. Every shadow map comes out of one
+budget, `render.shadow-maps.budget-mb`, 128 MiB by default: the sun's four
+cascades cost 32 MiB at 2,048 texels per side, a cone map 2 MiB, and a point
+cube map 12 MiB.
 
-For each pool, the renderer ranks visible lights by their projected sink
-coverage. It first reserves a slot for each sink's most important light when
-capacity allows, then continues through each sink's next-ranked light in sink
-order. The sinks reached before a partial final round fills the pool receive
-the remaining slots. Other visible local lights stay lit but don't cast
-shadows. After an IES profile reaches the GPU, its dimmed calibrated peak
-candela feeds the same ranking and the automatic shadow coverage.
+Selection runs with the first sink each frame. The first directional light is
+placed first, then cone and point lights ranked by their projected sink pixel
+coverage, then the remaining directional lights. A light that doesn't fit stays
+lit without shadows and warns once. The layout is kept across frames while it
+still fits, so lights don't flicker between shadowed and unshadowed as the
+ranking shifts. After an IES profile reaches the GPU, its dimmed calibrated
+peak candela feeds the same ranking and the automatic shadow coverage.
 
 ## Rust API
 

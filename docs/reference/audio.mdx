@@ -1,0 +1,119 @@
+---
+title: Audio
+description: Look up the output format, the sample formats Byte Engine accepts, the audio graph functions and their limits, playback timing, and the sample pool.
+icon: Sparkles
+---
+
+Audio mixes procedural generators and audio graphs into the platform device.
+This page specifies what the device receives, which sample files bake, what an
+audio graph can express, and the capacities of the audio worker and the sample
+pool.
+
+## Output
+
+| Property | Value |
+| --- | --- |
+| Device request | 48 kHz, one channel, 16-bit. The device may answer with a 16-bit or 32-bit float stream, mono or stereo; a stereo stream receives the mono mix on both channels. |
+| Mixing | Every source adds into one 32-bit float mono buffer per device period, then the buffer converts to the stream format. |
+| No device | When the device can't open, the engine logs a warning and plays nothing. Headless builds compile and validate graphs but never play them. |
+| Underruns | Counted by the device and reported in the log. |
+
+## Sources
+
+A generator is a procedural source that renders samples on request at the
+output sample rate and reports when it's done. Generators add into the mix and
+end when they report done.
+
+An audio graph is a baked sample with processing around it. An application
+publishes a graph on the world; the graph compiles on the publishing thread
+and plays once its sample is resident. Deleting the graph's handle stops it.
+Publishing a new graph on an existing handle replaces the old one.
+
+The audio worker holds at most 64 graphs that are playing or loading; a graph
+past that limit is dropped and reported in the log.
+
+## Sample formats
+
+Baking accepts these files as `Audio` resources:
+
+| Source | Accepted | Stored |
+| --- | --- | --- |
+| WAV | RIFF PCM, or extensible with a PCM subformat; 1 or 2 channels; 8, 16, 24, or 32 bits per sample; any positive sample rate. | The interleaved little-endian PCM as authored. |
+| OGG Vorbis | 1 or 2 channels; the stream's sample rate. | 16-bit PCM. |
+
+A file with another channel count, a zero sample rate, no frames, or a payload
+that isn't a whole number of frames fails to bake.
+
+At play time, a stereo sample mixes down to mono as an equal average while it
+decodes, and plays at the device rate with exact rational resampling and linear
+interpolation. A looping sample interpolates across the wrap; a sample played
+once holds its last frame, then finishes.
+
+## Audio graph functions
+
+A graph is a tree of functions that ends in one output. Each function below is
+a node; a function that takes a graph takes it as its input.
+
+| Function | Parameter | Effect |
+| --- | --- | --- |
+| `sample` | A non-empty `Audio` resource ID | Plays the sample once. |
+| `round_robin` | One or more graphs | Each time the graph is published, plays the next input in order. A single input is used directly. |
+| `random` | One or more graphs | Each time the graph is published, plays one input, never the same input twice in a row. |
+| `loop` | A graph | Plays the input until the handle is deleted. |
+| `gain` | A finite factor of zero or more | Multiplies the signal. A gain of zero mutes the graph; a gain of one is removed. |
+| `varispeed` | A finite rate in `[0.25, 4.0]` | Changes speed and pitch together. A rate of one is removed. |
+| `pitch_shift` | A finite ratio in `[0.5, 2.0]` | Changes pitch and keeps the duration. A ratio of one is removed. |
+| `custom` | A function of the block time and the sample block | Runs on the audio worker for every block. It must not allocate, block, lock, or perform I/O. |
+
+A graph is valid when it has at least one node and at most 64 after the
+removals above, its output and every input belong to the graph, every node
+reaches the output, it has no cycle, every selector has an input, and no
+selectable path holds more than one `varispeed` or more than one `pitch_shift`.
+An invalid graph is rejected when it's published.
+
+Each publication plays exactly one sample, the one the selectors chose, with the
+processors between it and the output in order. Adjacent gains combine into one.
+A selector's position advances only when the publication succeeds, and a
+nested selector advances only on the path that was chosen.
+
+## Playback timing
+
+Every graph playback has its own timeline that starts at zero when the graph
+begins to render and counts rendered samples at the output rate, including the
+tail that processors drain after the sample ends. A custom function receives
+the index of the first sample of its block and the output sample rate. A graph
+is finished when its sample has ended and the drain tail has played out; a
+muted looping graph never finishes on its own.
+
+| Pitch shift | Value |
+| --- | --- |
+| Window | 1,024 samples, Hann |
+| Hop | 128 samples |
+| Added tail | 1,024 samples, about 21 ms at 48 kHz |
+
+## Sample pool
+
+Decoded samples live in one arena sized by a byte budget.
+
+| Property | Value |
+| --- | --- |
+| Default budget | 64 MiB |
+| Slots | 64 |
+| Eviction | Least recently used samples that no graph holds. |
+| Sample larger than the budget | The graph fails to load. |
+| No room | The load waits and retries when a sample is released. |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Nodes in a graph | 64 |
+| Graphs playing or loading | 64 |
+| Decoded sample channels | 1 or 2, mixed to 1 |
+| Master gain | None. Set gain per graph. |
+
+## Rust API
+
+- [`audio` module](/docs/api/latest/byte_engine/audio)
+- [`audio::graph`](/docs/api/latest/byte_engine/audio/graph)
+- [`audio::graph::fns`](/docs/api/latest/byte_engine/audio/graph/fns)

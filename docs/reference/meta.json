@@ -2,6 +2,6 @@
 	"title": "Reference",
 	"description": "Specifications of each Byte Engine language, format, and model, with no code.",
 	"pagesIndex": "index",
-	"pages": ["index", "---Systems---", "input", "lighting", "gui", "resource-management", "---Formats---", "assets", "bema", "particles", "materialx", "---Shaders---", "besl"],
+	"pages": ["index", "---Engine---", "conventions", "parameters", "world", "time", "ghi", "inspector", "---Systems---", "rendering", "input", "lighting", "gui", "physics", "animation", "audio", "networking", "---Resources---", "resource-management", "resource-store", "assets", "bema", "particles", "materialx", "beld", "---Shaders---", "besl"],
 	"root": true
 }

@@ -16,13 +16,37 @@ system's design and the rules a change must keep, use
 
 Choose a reference:
 
+Engine:
+
+- [Coordinates and units](/docs/reference/conventions): axes, handedness, clip space, units, rotations, matrices, and color spaces.
+- [Startup parameters](/docs/reference/parameters): every parameter the engine reads and how it's set.
+- [World and messages](/docs/reference/world): scopes, channels, factories, handles, transforms, scenes, and deletion.
+- [Time and ticks](/docs/reference/time): the time unit, the tick order, and the simulation loops.
+- [Graphics hardware interface](/docs/reference/ghi): the GHI's objects, resources, enumerations, and backend support.
+- [Inspector and metrics](/docs/reference/inspector): what the metrics measure, the inspector's messages, and screenshot selection.
+
+Systems:
+
+- [Rendering](/docs/reference/rendering): scene objects, the camera, pipelines and passes, and the visibility pipeline's contract.
 - [Input](/docs/reference/input): the device, trigger, seat, and action model.
 - [Lighting](/docs/reference/lighting): light shapes, physical units, reach, and limits.
-- [UI](/docs/reference/gui): depth order, renderer limits, and text guarantees.
+- [UI](/docs/reference/gui): elements, sizing, flows, styles, events, hit testing, identity, and renderer limits.
+- [Physics](/docs/reference/physics): bodies, shapes, constraints, contacts, sleep, queries, and stepping.
+- [Animation](/docs/reference/animation): skeletons, clips, sampling, blending, inertialization, root motion, and the animation graph.
+- [Audio](/docs/reference/audio): output, sample formats, graph functions, timing, and the sample pool.
+- [Transport protocol](/docs/reference/networking): BETP packets, delivery rules, the handshake, and the transports.
+
+Resources and formats:
+
 - [Resource management](/docs/reference/resource-management): assets, resources, and their lifecycle.
-- [Asset formats](/docs/reference/assets): the source formats Byte Engine bakes and their settings.
+- [Resource store](/docs/reference/resource-store): the files, encodings, metadata, queries, and resource classes of a store.
+- [Asset formats](/docs/reference/assets): the source formats Byte Engine bakes, their sidecars, and their settings.
 - [.bema files](/docs/reference/bema): material and variant declarations.
 - [.particles files](/docs/reference/particles): particle system fields, modules, and shapes.
 - [MaterialX support](/docs/reference/materialx): the shading models and elements Byte Engine reads.
+- [BELD command line](/docs/reference/beld): every command, flag, exit code, and output format.
+
+Shaders:
+
 - [BESL](/docs/reference/besl): the Byte Engine Shader Language.
 - [Rust API](/docs/api/latest): the generated API reference.

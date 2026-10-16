@@ -168,7 +168,9 @@ against the steady state.
 
 ## Backend contract
 
-A GHI backend supports the loading timeline when it provides every one of these:
+The GHI's objects, resources, and per-backend support are specified in the
+[graphics hardware interface reference](/docs/reference/ghi). A backend
+supports the loading timeline when it provides every one of these:
 
 - Several contexts from one device, each of which can move to another thread.
   Contexts that submit to the same native queue share one lock.

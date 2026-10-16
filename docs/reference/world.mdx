@@ -1,0 +1,123 @@
+---
+title: World and messages
+description: Look up the scope, channel, listener, factory, and handle model, its ordering and retention guarantees, the routes the world scope opens, and the transform, name, scene, and deletion contracts.
+icon: MessagesSquare
+---
+
+Byte Engine systems communicate through messages on a shared bus. An
+application's world is a message scope on which it creates entities and the
+systems that follow them. This page specifies that model. The design reasons
+are in the [actor pattern](/docs/develop/core/actor-pattern) note.
+
+## Scopes
+
+A message bus owns one pool of storage and a set of routes. A scope is a flat
+namespace over that pool: a route is keyed by the scope and the message type,
+and scopes have no parent or child relationship. A bus names each scope and
+gives it an ID that's never reused.
+
+| Scope | Purpose |
+| --- | --- |
+| `application` | Window events, the window factory, and the audio generator factory. |
+| `world` | Entities and the systems that follow them. |
+| Standalone | A scope with its own private bus and no ticks, for servers and tests. |
+
+## Channels and listeners
+
+A channel publishes messages of one type; the scope's channel for a type
+registers its route on first use. A listener reads them in order.
+
+| Rule | Behavior |
+| --- | --- |
+| Fan-out | Every listener sees every message published after it joined. |
+| Replay | On a ticking bus, a new listener starts at the current tick's first message, so it also sees messages sent earlier in the same tick. On a tickless bus, it sees only later messages. |
+| Order | First in, first out within a route. Routes aren't ordered against each other. |
+| Visibility | A message is readable once its publisher commits it; a reader never skips a slot that another thread is still writing. |
+| Many at once | A publisher can reserve a run of slots; other publishers may interleave between runs but not within one. |
+| Filtered | A filtered listener skips messages that fail its predicate. |
+| Unsubscribe | Dropping a listener releases what it held. A system that stops reading must drop its listener, or its storage is never returned. |
+| Blocking | Nothing is dropped or overwritten. When the pool is full, a publisher waits for storage, and after one second logs the route and the slowest listener. |
+
+## Factories and handles
+
+A factory creates entities of one type and publishes a creation message with
+a stable handle.
+
+| Rule | Behavior |
+| --- | --- |
+| Handle | A 32-bit ID, never reused within a process. |
+| Create | Allocates a handle and publishes the value under it. Creating with several representations publishes each under the same handle. |
+| Derive | Publishes a value under an existing handle: another representation, or a replacement that systems treat as an upsert. |
+| Creation message | Carries the handle and the value. |
+| Deletion message | Carries the handle and ends its lifecycle. After it, create a new value instead of deriving from the deleted handle. |
+| Entity handle | Separate from a factory handle: a shared, reference-counted object compared by identity, used for long-lived services. |
+
+## Retention
+
+| Rule | Value |
+| --- | --- |
+| Storage | 64 MiB by default, set by `messages.capacity`, in chunks of 64 KiB. |
+| Message size | A message must fit one chunk with its stamp. |
+| Routes | At most 65,535 per bus. |
+| Tick | Each tick begins by sweeping messages every listener has read and returning chunks nobody reads. |
+| Observer | A passive observer records publication ranges and a catalog of every factory-created handle with its types, for the inspector. It holds at most 2,048 distinct types. |
+
+## The world scope
+
+At startup the runtime opens these routes on the world:
+
+| Route | Opened by |
+| --- | --- |
+| Action events and action declarations | The input sink |
+| Camera creations | The renderer |
+| Transformation updates | The renderer's listener, and the inspector's watch |
+| Deletions and action triggers | The inspector, for posting |
+
+A system subscribes by taking its listeners when it's constructed, so it sees
+only messages from then on plus the current tick's. Create a system before the
+entities it follows. Physics takes the transform route, the body, constraint,
+and ray query factories, and the deletion route; the scene graph takes the
+scene factories and deletions; rendering managers and passes take transforms
+and deletions. A headless build keeps every route except poses, so servers run
+the same gameplay code with nothing listening.
+
+## Transforms
+
+A transform is a world location, scale, and orientation.
+
+| Rule | Value |
+| --- | --- |
+| Fields | Position, scale, orientation. The identity is the default. |
+| Serialized form | `position` and `scale` as three numbers, `orientation` as four in x, y, z, w order. Unknown fields, non-finite components, and invalid quaternions are rejected. |
+| Matrix | Translation times rotation times scale: scale applies first. |
+| Interpolation | Position and scale interpolate linearly, orientation along the shorter arc. |
+| Update | A transformation update is a creation message carrying a transform under the entity's handle, on the world's transform route. Creation and replacement travel on that one route. |
+| Hierarchy | None. A transform is always a world transform. |
+| Poses | A pose update carries an entity's global matrices on the world's pose route, in headed builds only. |
+
+## Names
+
+A name is a non-empty string attached to an entity when it's created. The
+inspector filters entities by exact name. Names aren't unique.
+
+## Scenes
+
+A scene groups entities for deletion only. A scene node attaches an entity
+under a scene or another member for the entity's lifetime, and membership
+never affects transforms. The scene graph keeps the tree.
+
+## Deletion
+
+| Step | Behavior |
+| --- | --- |
+| Delete | Publishes a deletion message for the handle, once, and forgets the handle in the observer. |
+| Cascade | Once per step, before systems retire deleted entities, the scene graph links new scene nodes and, for every posted deletion, publishes a deletion for each nested member, children before parents. The root isn't published again; an unknown root publishes nothing. |
+| Physics | Flushing deletions removes the bodies and constraints of every deletion since the last flush. |
+| Rendering | Managers drop their mirrored state. |
+
+## Rust API
+
+- [`core` module](/docs/api/latest/byte_engine/core)
+- [`core::message_bus`](/docs/api/latest/byte_engine/core/message_bus)
+- [`core::message_observer`](/docs/api/latest/byte_engine/core/message_observer)
+- [`gameplay` module](/docs/api/latest/byte_engine/gameplay)

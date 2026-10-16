@@ -1,0 +1,145 @@
+---
+title: Startup parameters
+description: Look up where startup parameters come from, how config.json, BE_ variables, and --name=value arguments set them, and every parameter the engine reads with its type, default, and effect.
+icon: Settings
+---
+
+An application starts with a list of named text parameters. This page
+specifies where they come from, how names and values are parsed, and every
+parameter the engine reads. The same project file feeds BELD, which reads the
+render feature flags from it; see
+[Bake application resources](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
+
+## Sources
+
+Four sources are read in this order, and a later source replaces an earlier
+value with the same name:
+
+| Order | Source | Rule |
+| --- | --- | --- |
+| 1 | The parameters the application passes in code | Used as given. |
+| 2 | The project's `config.json` | Found under the Cargo package directory in a debug build, otherwise beside the executable, never in the working directory. Nested objects flatten into dotted names, so a nested `render`, `gtao`, `enabled` and a single `render.gtao.enabled` key set the same parameter. Strings pass through; booleans and numbers become their text. Arrays, null, and a top-level value that isn't an object are errors, and a file that exists but can't be read or parsed stops startup. A missing file sets nothing. |
+| 3 | Environment variables starting with `BE_` | The name drops `BE_`, replaces `__` with `.`, replaces `_` with `-`, and lowercases, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. The value is used as is. A name containing a literal underscore can't be set this way. |
+| 4 | Process arguments starting with `--` | The text after the dashes splits on `=`: the name is the first part and the value is the second part only, so `--a=b=c` sets `a` to `b`. Without `=` the value is empty. Every such argument becomes a parameter, and unknown names are accepted. |
+
+The final list is logged at the info level, values included. Lookup is an
+exact, case-sensitive match on the full name.
+
+## Values
+
+A value is text that the reader converts:
+
+| Reader | Accepts |
+| --- | --- |
+| Boolean | `true`, `TRUE`, or `1` for true; `false`, `FALSE`, or `0` for false. A lenient reader counts any other text as false. A strict reader stops startup. |
+| Number | The type's own syntax. Unless the table says the value is ignored, an unparsable value stops startup with an error that names the parameter. |
+| Runtime setting | Delivered as a configuration event. A boolean accepts only `true` or `false`. A value that fails to parse is reported as not set through the inspector and doesn't stop startup. The same names can be changed later through the inspector. |
+
+## Application
+
+| Name | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `log.level` | `trace`, `debug`, `info`, `warn`, `error`, or `off`; other text means `off` | Not set, so the logger's own level applies, which `RUST_LOG` sets | Caps the log level that prints. |
+| `trace` | Presence only; the value is ignored | Absent | Prints every tracing span and event at debug level or above to standard output. |
+| `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
+| `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
+| `assets-path` | Path | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. |
+| `max-frame-rate` | Positive frames per second; invalid is ignored | None, uncapped | The minimum interval between presented frames. |
+| `simulation-rate` | Positive steps per second; invalid is ignored | None; the stepped loop uses 60 | The fixed simulation step. See [Time and ticks](/docs/reference/time). |
+| `render-on-demand` | Lenient boolean | `false` | Renders only when something changed and waits in the window system while idle. |
+| `kill-after` | Tick count | None | Closes the application after that many ticks, without waiting while idle. Debug builds only; a release build ignores it. |
+| `metrics-out` | Path | None | Writes the metrics when the application closes: every retained tick as NDJSON when the extension is `ndjson`, otherwise the summary as JSON. |
+| `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. A port in use stops startup. |
+| `physics.step-lanes` | `bodies:lanes` pairs separated by commas, each lane count at least 1 | 2 lanes from 512 bodies and up to 4 from 4,000, never more than the fastest cores' threads | How many lanes a physics step runs on, by body count. `0:1` keeps every step on the calling thread. See [Physics](/docs/reference/physics). |
+| `artnet.bind-address` | IPv4 address; invalid keeps the default | `0.0.0.0` | The Art-Net worker's bind address, with the `dmx` feature. |
+| `artnet.poll-target` | IPv4 address; invalid keeps the default | `255.255.255.255` | Where Art-Net polls and output go. |
+
+## Graphics device
+
+Booleans here are lenient.
+
+| Name | Default | Effect |
+| --- | --- | --- |
+| `render.debug` | `true` in debug builds | Graphics API validation. When the instance can't be created with validation, the engine logs a warning and retries with every debug option off. |
+| `render.debug.dump` | `false` | API call dump. |
+| `render.debug.extended` | `false` | GPU-assisted validation. |
+| `render.debug.labels` | The value of `render.debug` | Object labels and command debug groups. |
+| `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
+| `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
+
+## Renderer and loader
+
+| Name | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `render.startup.defer-sink-setup` | Lenient boolean | `false` | Presents the first window frame before building the sink render pipelines. |
+| `render.swapchain.images` | Positive count; invalid or 0 is ignored | The backend's choice | The swapchain image count each window requests. |
+| `render.pipeline-compilation.threads` | Count; invalid is ignored | Half the available parallelism, clamped to 1 through 4 | Pipeline compilation threads. |
+| `render.loading.batch-window` | Milliseconds, finite and zero or more; invalid is ignored | 4 | How long an upload batch collects requests. See the [loading timeline](/docs/develop/rendering/loading). |
+
+## Render features
+
+These are strict booleans, read at startup and by BELD from `config.json`.
+They decide what the bake builds into the shaders and what the runtime
+creates; a feature left out of the bake stays off whatever a runtime setting
+asks.
+
+| Name | Default | Effect |
+| --- | --- | --- |
+| `render.gtao.enabled` | `true` | Ground-truth ambient occlusion in material shaders, its pipelines, and its pass. |
+| `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines. |
+| `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
+
+## Visibility pipeline
+
+Every value here is validated, and a bad one stops startup.
+
+| Name | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `render.shadow-maps.budget-mb` | Positive MiB | 128 | Shadow-map memory shared by every shadow-casting light. |
+| `render.geometry.vertex-capacity` | Positive count | 262,144 | Scene-wide vertices. |
+| `render.geometry.vertex-index-capacity` | Positive count | 524,288 | Meshlet-local vertex indices. |
+| `render.geometry.triangle-capacity` | Positive count | 524,288 | Triangles. |
+| `render.geometry.meshlet-capacity` | 1 through 16,777,216 | 8,192 | Meshlets. |
+| `render.geometry.skinning-vertex-capacity` | Positive count | 262,144 | Bind-pose vertices for GPU skinning. |
+| `render.directional-shadows.distance` | Positive meters | 100 | How far directional shadow cascades reach. |
+| `render.directional-shadows.split-blend` | 0 through 1 | 0.8 | The share of logarithmic versus even cascade splits. |
+| `render.directional-shadows.fitting` | `receivers` or `frustum` | `receivers` | What each cascade covers. |
+| `render.directional-shadows.resolution` | A positive multiple of 16 | 2,048 | Cascade texels per side. |
+
+## Runtime settings
+
+These arrive as runtime settings, so a bad value is reported rather than
+fatal, and the inspector can change them while the application runs.
+
+| Name | Accepts | Default | Effect |
+| --- | --- | --- | --- |
+| `render.pass.<name>` | `enabled` or `bypassed` | `enabled` | Switches a render pass between its prepare and bypass paths. An update for a pass not installed yet waits for it. |
+| `render.gtao.radius` | Finite number, zero or more | 1 | The ambient occlusion search radius in world units. |
+| `render.gtao.samples-per-ray` | 1 through 32 | 4 | Samples along each ray. |
+| `render.gtao.radial-rays` | An even number from 2 through 32 | 6 | Ray directions. |
+| `render.contact-shadows.distance` | Finite number, zero or more | 0.15 | The reach of each contact-shadow ray in world units. |
+| `render.lod.bias` | Finite number, zero or more | 1 | Scales the on-screen error allowed when selecting a detail level. |
+| `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
+| `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
+
+The `enabled` names of the three render features double as runtime settings
+with the same meaning. Pass names a default setup can install are `bloom`,
+`motion-blur`, `smaa`, `lens-flare`, `exponential-height-fog`, `atmosphere sky`
+(with a space), `ui`, and `debug-meshes`; a pass exists only when its setup
+function ran.
+
+## Other process inputs
+
+| Input | Effect |
+| --- | --- |
+| `RUST_LOG` | The logger's filter, which `log.level` then caps. |
+| `CARGO_MANIFEST_DIR` | In a debug build, the application directory that `config.json`, `resources`, and `assets` resolve against. |
+| `BYTE_ENGINE_D3D12_SDK_PATH` | Overrides the Direct3D 12 Agility SDK path on Windows. |
+
+There are no `audio.*` parameters; set gain in each audio graph.
+
+## Rust API
+
+- [`application` module](/docs/api/latest/byte_engine/application)
+- [`application::application`](/docs/api/latest/byte_engine/application/application)
+- [`application::graphics`](/docs/api/latest/byte_engine/application/graphics)

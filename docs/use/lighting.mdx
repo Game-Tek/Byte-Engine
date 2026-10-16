@@ -245,12 +245,12 @@ exposure-weighted illumination falls below 0.125 lux. This range controls shadow
 doesn't limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far`, or
 `with_shadow_range` on `PointLight` when your scene needs explicit coverage.
 
-The visibility pipeline shadows up to four cone lights and four point lights
-per sink by default. Set `render.cone-shadow-map-pool.capacity` or
-`render.point-shadow-map-pool.capacity` at application startup to change either
-limit. Other visible local lights stay lit but don't cast shadows. The
-[lighting reference](/docs/reference/lighting#shadow-map-pools) explains how
-the renderer picks the lights that get a shadow map.
+Every shadow-casting light shares one memory budget, 128 MiB by default. Set
+`render.shadow-maps.budget-mb` at application startup to change it. The sun
+takes its share first, then local lights in order of how much of the screen
+they cover, and the lights that don't fit stay lit without shadows. The
+[lighting reference](/docs/reference/lighting#shadow-maps) gives the costs and
+the order.
 
 ## Set camera exposure
 

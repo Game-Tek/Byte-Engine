@@ -1,0 +1,88 @@
+---
+title: Inspector and metrics
+description: Look up what the engine's metrics measure and how they're named and serialized, the messages the inspector accepts, how a screenshot is selected and encoded, and the inspector's limits.
+icon: Settings
+---
+
+Every headed application serves an HTTP inspector on loopback while it runs.
+Its routes, parameters, and status codes are specified by the
+[HTTP API](/docs/api/inspector/summarizeMetrics) in the API section; this page
+specifies what the data means. To read metrics while measuring a change,
+follow [Measure performance](/docs/develop#measure-performance).
+
+## Metrics
+
+| Rule | Value |
+| --- | --- |
+| Retained ticks | The latest 1,024. |
+| Distinct metrics | 128. Further metrics warn once and go unreported. |
+| Tick | Zero-based, counted after each tick. |
+| Frame | Zero-based, counted when a frame starts; a tick that didn't render has none. The same number names the frame in a screenshot's response. |
+| Presented | Whether any window held an acquired swapchain image in that frame. |
+| Time and delta | Wall-clock milliseconds since the application started, at the tick's end, and the frame delta the clock advanced by. |
+| Time to first frame | The time of the first presented tick. |
+| CPU metric | The sum of every span with that name, on every thread, during the tick. |
+| GPU metric | A GPU counter's duration in the frame the tick submitted, filled in once the frame completes and dropped if its tick has left the ring. |
+| Unit | Milliseconds. |
+
+| Name | Measures |
+| --- | --- |
+| `frame` | Every command of a frame on the GPU. |
+| `scene.<pipeline>` | One scene pipeline's commands on one sink. |
+| `pass.<name>` | One post-scene pass's own commands, without bypass copies, clears, or discards. |
+| `stage.<name>` | A GPU counter a pass declares, nested in its node, such as the visibility pipeline's stages. |
+| `@<sink>` suffix | The sink index when it isn't the first, as in `pass.bloom@2`. |
+| CPU spans | The application's tick and its phases, the renderer's preparation and recording phases, and audio rendering. |
+
+A tick's row lists only what that tick measured: the tick, the frame or null,
+the time, the delta, the presented flag, and a CPU and a GPU map from name to
+milliseconds. A summary over a range of ticks holds the tick count, the first
+and last tick, the presented tick count, the time to first frame, delta
+statistics, and, per metric, its kind, count, mean, minimum, maximum, and the
+50th, 95th, and 99th percentiles by nearest rank. The `metrics-out` parameter
+writes the summary as JSON, or every retained row as NDJSON when the path ends
+in `.ndjson`.
+
+## Entities and messages
+
+The entity query lists every factory-created handle with its types and the
+name and position the inspector has observed since it started. It filters by
+exact type or name.
+
+| Message | Payload | Effect |
+| --- | --- | --- |
+| `TransformationUpdate` | A complete transform: `position` and `scale` as three numbers, `orientation` as four. | Moves the entity. |
+| `Delete`, `Destroy` | Null. | Deletes and retires the entity. |
+| `TriggerAction` | An input value tagged by its kind, such as a float. | Publishes an action event as if from a device. The target is the action's handle, found by name in the entity query. |
+
+The message type catalog describes each payload's shape with a small
+vocabulary: null, boolean, string, integer, number, array, tuple, object,
+optional, map, result, enum, any, recursive, and unknown.
+
+## Configuration
+
+The configuration route lists every runtime setting update with its parameter,
+the requested value, and its state: pending until the pass it targets is
+installed, set with the value in effect, or not set with the reason.
+
+## Screenshots
+
+| Selection | Captures |
+| --- | --- |
+| A sink alone | The swapchain after every pass. |
+| A target | That target after every scene pipeline and before the post-scene passes. The name must be one a scene node writes or a history target. |
+| A target from the previous frame | The previous frame's copy of a history target. |
+| A pass and a target | The target right after that pass; the name must be one the pass wrote. |
+
+| Rule | Value |
+| --- | --- |
+| Formats | PNG with HDR clamped, from 8-bit, 16-bit, half-float, and the packed scene formats; EXR, lossless; raw bytes with their row pitch. |
+| Captures per request | 1 to 16. |
+| Queue | 8 pending requests; further ones are refused. |
+| Timeout | 5 s. |
+| Rendering on demand | A request wakes the loop so a frame renders. |
+| Response headers | The frame, sink, format, width, height, and, for raw captures, the bytes per row. |
+
+## Rust API
+
+- [`inspector` module](/docs/api/latest/byte_engine/inspector)

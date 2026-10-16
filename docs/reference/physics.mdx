@@ -1,0 +1,174 @@
+---
+title: Physics
+description: Look up the body kinds and properties, the collider shapes, constraints, the contact and sleep rules, ray queries, how a step runs, and the units and limits of the simulation.
+icon: Boxes
+---
+
+Physics simulates rigid bodies that an application creates on the world scope
+and places with transforms. Dynabit is the built-in implementation. This page
+specifies the bodies, shapes, constraints, and queries it accepts, the
+observable rules of contact and sleep, and how a step runs. The message model
+it builds on is in [World and messages](/docs/reference/world).
+
+## Bodies
+
+| Kind | Behavior |
+| --- | --- |
+| Static | Ignores forces and collision resolution. Never moves and publishes no transform. |
+| Kinematic | Takes the same path as static today: no mass, no gravity, never moved by the solver. |
+| Dynamic | Responds to forces and collisions. Its mass must be finite and positive. |
+
+| Property | Default | Unit | Notes |
+| --- | --- | --- | --- |
+| Shape | Required | Meters, collider space | See [Shapes](#shapes). |
+| Velocity | Zero | m/s, world space | The initial linear velocity. |
+| Mass | 1 | kg | Used by dynamic bodies only. |
+| Center of mass | The capsule's center, the hull's center of mass, or the origin for a sphere or box | Collider space | Spin is about it. |
+| Elasticity | 0.1 | | A pair's restitution is the product of both elasticities. |
+| Friction | 0.5 | | A pair's friction is the product of both frictions. |
+| Rotates | True | | When off, the body never turns and its shape collides upright, for characters. |
+| Angular velocity | Zero | rad/s | Not settable at creation. |
+| Inertia | From the shape's principal inertia scaled by mass | | A hull uses the diagonal of its inertia tensor. |
+| Damping | None | | |
+
+A transform's scale is carried and republished with the body but never applied
+to its collision shape.
+
+## Shapes
+
+| Shape | Parameters |
+| --- | --- |
+| Sphere | Radius, centered on the local origin. |
+| Box | Half extents on each axis. |
+| Capsule | Radius, height from the bottom of the lower cap to the top of the upper cap, and center. The axis is local Y. A height below twice the radius is a sphere. |
+| Convex hull | A hull built from a point cloud, shareable between bodies. Corners and edges are rounded by a margin of 0.02 m, capped at a quarter of the distance from the center of mass to the nearest side. |
+
+Building a hull needs at least four finite points that aren't coplanar,
+collinear, or coincident. Coordinates snap to a grid of 2^26 steps.
+
+## Placing and removing bodies
+
+| Rule | Behavior |
+| --- | --- |
+| Create | Publish the body through the world scope's factory. Publishing again under the same handle replaces the body and forgets its kept impulses. |
+| Place | Send a transformation update for the handle. Until one arrives, the body sits at the origin with identity orientation. |
+| Results | Each step publishes a transformation update for every awake dynamic body on the same route. |
+| Authored move | An update equal to the current pose moves nothing. A different one re-places the body, wakes it, and wakes sleepers near the old and new bounds. |
+| Impulse | A world-space linear impulse wakes the body. An unknown handle is ignored. |
+| Delete | Delete the handle. The next flush removes the body and any constraint created under that handle, and wakes its island and neighbors. |
+
+Create the physics system before the bodies it simulates, step it after
+everything that posts transforms for the step, and flush deletions where
+readers are done, for example at the start of the next step.
+
+## Constraints
+
+A constraint joins two bodies. Its anchors default to both origins, and angles
+count counterclockwise for someone the axis points at.
+
+| Kind | Parameters | Rule |
+| --- | --- | --- |
+| Distance | A length in meters, finite and zero or more | A rod along its line. A zero length doesn't pin. |
+| Hinge | An axis in the first body's frame and an optional limit within plus or minus pi | Turns about the axis only. The limit counts from the pose of the first step both bodies exist. |
+| Constant velocity | An axis and an optional lean limit from 0 to pi | Leans any way, never twists about the axis. |
+| Ball | An axis, an optional lean limit, and an optional twist range | Set a lean when setting a twist. |
+
+| Rule | Behavior |
+| --- | --- |
+| Resistance | An optional function of the angle returning a braking torque in newton-meters, evaluated once per step. |
+| Lifecycle | Create in any order relative to the bodies; delete the handle to release; publishing again under a handle replaces. |
+| Activity | Acts only in steps where both bodies exist. A constraint naming one body twice is ignored. |
+| Rest pose | Captured in the first step both bodies are present and awake. |
+| Collisions | Held bodies still collide with each other. |
+| Sleep | Bodies joined by constraints, transitively, sleep and wake as one island. |
+| Correction | 5 percent of the positional error per step, with a slack of 5 mm for anchors and 5 mrad for turns. |
+
+## Contacts
+
+| Rule | Value |
+| --- | --- |
+| Contacts per pair | Up to four, at the corners of the touching patch when bodies meet along an edge or face. Corners within 0.02 m count. |
+| Normal | Points from the body created earlier toward the later one. |
+| Continuous collision | A body that moves more than half its thinnest reach in one step gets swept bounds and time-of-impact contacts, so it can't pass through a thin wall. |
+| Restitution | The product of both elasticities, applied only when the closing speed exceeds 1 m/s. |
+| Friction | The product of both frictions, limited by the normal push. |
+| Overlap | Resolved by a position shift of 20 percent of the depth beyond 5 mm, at most 5 cm per step, split by inverse mass, with no velocity change. |
+| Angular speed | Capped at 30 rad/s by contacts. |
+| Order | Constraints are solved before each contact pass, so contacts have the last word. |
+| Warm starting | Each contact's impulses carry into the next step. A body that takes over a slot doesn't inherit them. |
+| Recycling | A searched pair reuses its contacts while neither body moved more than 0.02 m relative to the other or turned more than 0.05 rad. |
+
+## Sleep
+
+Sleep is per body, not per pile.
+
+| Rule | Value |
+| --- | --- |
+| Rest time | A body sleeps after staying put for 0.5 s. |
+| Staying put | Within 0.025 m and 0.05 rad of where the watch found it. Nothing sleeps in the air. |
+| Wake by a neighbor | A body moving faster than 0.5 m/s, or that strayed, wakes sleepers within 0.05 m of its bounds. |
+| Other wakes | An impulse, an authored transform that moves it or a neighbor, a body created or removed nearby, a constraint taking hold or letting go, or turning sleep off. |
+| Asleep | Velocities are zeroed and the solver treats the body as fixed. |
+| Awake | A new or woken body stays awake for at least one full rest time. |
+| Islands | Constrained bodies sleep and wake together. |
+| Massless bodies | Never sleep and never move. |
+
+## Ray queries
+
+A ray query names a ray and a maximum distance, or a segment. It's created on
+the world scope and answered after the next step, in creation order, against
+the bodies where that step left them, sleeping bodies included. The answer is
+a response naming the query and the first hit, if any, with the body, the
+distance, the world-space point, and the outward normal.
+
+| Rule | Value |
+| --- | --- |
+| Start inside a body | Hits at distance 0 with the normal pointing back along the ray. |
+| Shape | Cast against the shape as contacts place it, after a bounds prefilter. |
+| Precision | The distance can fall short by about 0.0001. |
+| Other queries | There is no shape cast, overlap, or sweep query. |
+
+## Stepping
+
+| Rule | Value |
+| --- | --- |
+| Step length | The tick's delta. There are no internal substeps. The stepped application loop runs fixed steps of the simulation rate, 60 per second by default, at most 8 per frame; see [Time and ticks](/docs/reference/time). |
+| Gravity | 16 m/s² downward along -Y, applied as an impulse at the start of the step. Not configurable. |
+| Integration | Velocities are solved first, then positions and orientations advance at the new velocities. |
+| Lanes | `physics.step-lanes` sets lanes per body count; the lanes used never exceed the alley's parallelism. |
+| Empty step | A step with no awake massive body returns at once. |
+
+A step adopts new bodies, constraints, and authored transforms and wakes
+disturbed sleepers; applies gravity and computes swept bounds; finds contacts;
+solves constraints and contacts in four passes; moves dynamic bodies and
+publishes their transforms; advances the sleep watch; and finally answers ray
+queries.
+
+Contacts are found and solved in the same order whatever the lane count, so
+the resulting poses don't depend on it. The order in which transforms are
+published does.
+
+## Units and conventions
+
+| Quantity | Unit |
+| --- | --- |
+| Length, time, mass | Meters, seconds, kilograms |
+| Angles | Radians |
+| Torque, impulse | Newton-meters, newton-seconds |
+| Up | +Y |
+| Collider space | Shapes, anchors, and axes |
+| World space | Positions, velocities, contacts, ray hits |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Contacts per body pair | 4 |
+| Hull input | At least 4 points |
+| Lanes by default | At most 4 |
+| Constraint rows | At most 7 per constraint |
+| Bodies | No fixed limit below 2^31 slots |
+
+## Rust API
+
+- [`physics` module](/docs/api/latest/byte_engine/physics)

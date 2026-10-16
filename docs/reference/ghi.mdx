@@ -1,0 +1,141 @@
+---
+title: Graphics hardware interface
+description: Look up the GHI's objects and their lifecycle rules, its resource kinds and enumerations, the plain-data layout rules, what each backend supports today, and its limits.
+icon: Computer
+---
+
+The graphics hardware interface (GHI) is the crate through which the renderer
+talks to Vulkan on Linux, Metal on macOS, and Direct3D 12 on Windows. This
+page specifies its objects, resources, and enumerations, the layout of the
+data it shares with shaders, and the state of each backend. How the loader
+and renderer share a device is in the
+[loading timeline](/docs/develop/rendering/loading) design note.
+
+## Objects
+
+| Object | Role | Rules |
+| --- | --- | --- |
+| Instance | Enumerates devices and creates one with the queues requested. | Features requested on the instance and the device merge. |
+| Device | Owns the GPU and its allocator, and creates contexts. | A context, then the device, then the instance are dropped in that order. |
+| Context | Owns the GPU resources created through it. | May move between threads but belongs to one thread at a time. Contexts that submit to the same native queue share one lock. |
+| Queue | Submits frames and standalone command buffers. | Selected by workload: raster, ray tracing, compute, transfer, video, or I/O. |
+| Frame | A per-frame view of a queue's context. | At most 3 frames in flight. A frame key carries the frame index and the sequence index, the frame index modulo the frames in flight. |
+| Command buffer recording | Records passes, copies, clears, blits, and transfers, then executes with a synchronizer. | Counters are started once per frame and measure whole passes. Unordered groups don't nest. |
+| Synchronizer | One native primitive per frame sequence. | Waited, polled without blocking, or signaled by an execution. |
+| Swapchain | Bound to a window with a presentation mode and an image count. | Acquiring an image may block until the previous submission of that sequence allows reuse, and returns nothing when no image is available. |
+| Window and input | A per-process application object creates windows and polls events. | Every window is dropped before the application. |
+
+A pipeline binds descriptor sets by their layout, in any order; a set for a
+layout the pipeline doesn't declare is ignored, and a draw or dispatch with a
+declared layout unbound fails. Push constants are written at an offset within
+the pipeline's declared ranges.
+
+## Resources
+
+| Resource | Rule |
+| --- | --- |
+| Static buffer | Zero-initialized, not resizable, one copy that every frame in flight reads; write only ranges no submitted frame reads. |
+| Dynamic buffer | One copy per frame in flight, each keeping what its last frame wrote; resizable. |
+| Image | Starts without valid contents. A dynamic image has one copy per frame; a grouped image may share memory with images whose lifetimes don't overlap. Region uploads cover uncompressed single-layer 2D color images at mip 0. |
+| Cube images | Six layers, or a multiple of six for an array. |
+| Sampler | Linear filtering, weighted-average reduction, linear mips, clamp addressing, no anisotropy, and a zero LOD range by default. Devices limit sampler counts. |
+| Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |
+| Descriptor set layout | At most 64 resources with distinct slots. Equal layouts have equal identities and are interchangeable. |
+| Raster pipeline | Clockwise front faces, back-face culling, solid fill, and depth writes by default. |
+| Acceleration structure | Mesh geometry with 16-bit or 32-bit indices, or axis-aligned boxes. |
+| Counter | At most 512 per frame. Its duration is that of the most recently completed frame. |
+| Texture readback | The base mip of one layer of a color image with the transfer-source use, in a format other than RGB8, RGB16, or depth. The handle is consumed by the read. |
+
+## Enumerations
+
+| Enumeration | Values |
+| --- | --- |
+| Layouts | Undefined, render target, transfer, present, read, general, shader binding table, indirect |
+| Uses | Vertex, index, uniform, storage, indirect, image, render target, depth stencil, acceleration structure, transfer source, transfer destination, shader binding table, acceleration structure build scratch, acceleration structure build, clear, input attachment |
+| Device accesses | CPU read, CPU write, GPU read, GPU write, and the combinations device only, host only, host to device, and device to host |
+| Data types | Float through float4, u8, u16, u32, int through int4, uint through uint4 |
+| Shader types | Vertex, fragment, compute, task, mesh, ray generation, closest hit, any hit, intersection, miss, callable |
+| Filtering, reduction, addressing | Closest or linear; weighted average, minimum, or maximum; repeat, mirror, clamp, or border |
+| Presentation modes | Immediate, FIFO, mailbox |
+| Clear values | None, a color, four integers, or a depth |
+| Load and store operations | Load, clear, or discard; store or discard |
+
+Formats cover one to four channels at 8, 16, and 32 bits in float, unsigned
+normalized, signed normalized, and sRGB encodings, plus the packed
+`RGBu11u10`, the swapchain's `BGRAu8` and `BGRAsRGB`, `Depth16`, `Depth32`,
+`U32`, and the block-compressed `BC5`, `BC5SNORM`, `BC7`, and `BC7SRGB`.
+Metal maps three-channel formats to their four-channel equivalents and some
+8-bit and 32-bit formats to the nearest native format. Texture copies align
+rows to 256 bytes.
+
+## Plain data
+
+The `pod` module holds the CPU types shaders read and write, each mirroring a
+BESL type. A vector is its components packed back to back and aligned to one
+component, so a three-float vector is 12 bytes and a four-float vector is 16
+without padding. A matrix is its column vectors back to back, so a four-by-four
+matrix is 64 bytes and a four-by-three matrix 48. A shader boolean is 32 bits.
+Converting the engine's matrix transposes it into columns on Metal, because
+Metal reads columns where the other backends read rows.
+
+## Resource I/O
+
+A context can create a resource I/O queue that loads files straight into
+buffers and image regions.
+
+| Backend | Sources | Destinations | Compression |
+| --- | --- | --- | --- |
+| Metal | Files | Buffers, image regions | zlib, LZFSE, LZ4, LZMA, LZ bitmap |
+| Direct3D 12 | Files | Buffers, image regions | GDeflate |
+| Vulkan | None; creating a queue fails | | |
+
+Both supported backends can cancel a request. A request can be pending,
+complete, cancelled, or failed.
+
+## Backends
+
+| Requirement | Metal | Vulkan | Direct3D 12 |
+| --- | --- | --- | --- |
+| Platform | macOS 26 and Metal 4, with no older fallback | Vulkan 1.4 with the descriptor heap, swapchain maintenance, and shader atomic float extensions, and compute subgroups of 1 to 128 lanes | Feature level 12.2, Shader Model 6.9, enhanced barriers, root signature 1.2, native 16-bit operations, 64-bit atomics, the Agility SDK 1.619.5, DXC 1.9.2607, and DirectStorage |
+| Frames in flight by default | 3 | 2 | 2 |
+| Swapchain images | 2 or 3 | Up to 8 | 2 to 8 |
+| Presented time | Reported | Not reported | Not reported |
+| Workloads on one queue | Raster, compute, and transfer always; ray tracing when the device supports it | Graphics, compute, and transfer families | Every workload on a direct queue |
+
+| Feature request | Metal | Vulkan | Direct3D 12 |
+| --- | --- | --- | --- |
+| Validation, GPU validation, API dump | Not used | Validation layers, GPU-assisted validation, API dump layer | Debug layer and GPU-based validation; no dump |
+| Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Labels on uploads |
+| Ray tracing | Queue creation checks device support | Requires the ray tracing extensions | Guaranteed by the feature level |
+| Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
+| Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
+| Sparse resources | No effect on any backend | | |
+
+| Gap | Backend |
+| --- | --- |
+| Frame capture, shader binding tables, pipeline statistics counters | Metal |
+| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets | Vulkan |
+| The loader-context contract, so Linux builds fail until it lands | Vulkan |
+| The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views | Direct3D 12 |
+| Destroying images, buffers, and shaders | All |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Frames in flight | 3 |
+| Resources per descriptor set layout | 64 |
+| Counters per frame | 512 |
+| Texture copy row pitch alignment | 256 bytes |
+| Push constants | Within the pipeline's declared ranges, at offsets and sizes that are multiples of 4 on Vulkan and Direct3D 12 |
+| Metal argument table buffer slots | 31; vertex buffers below slot 15 |
+| Direct3D 12 constant buffer view | 64 KiB, 256-byte aligned |
+
+## Errors
+
+| Error | Cause |
+| --- | --- |
+| Instance, device, and context creation | A message naming what failed. |
+| Shader creation | GLSL compilation failed, or SPIR-V wasn't aligned to four bytes. |
+| Texture transfer | Unsupported source, format, subresource, layout, or handle; a missing transfer-source use; an allocation or mapping failure. |
+| Resource I/O | An empty batch; unsupported compression; an invalid path, handle, range, state, or layout; queue creation, file open, or execution failure; cancellation. |

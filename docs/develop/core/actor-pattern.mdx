@@ -5,7 +5,9 @@ icon: MessagesSquare
 ---
 
 Use actor-style boundaries to keep Byte Engine systems independent while they
-share events and state changes.
+share events and state changes. The scope, channel, factory, and handle model
+these boundaries are built from is specified in
+[World and messages](/docs/reference/world).
 
 Each system owns its state, receives messages that describe changes, and
 publishes messages for other systems. An object doesn't need its own scheduler to take

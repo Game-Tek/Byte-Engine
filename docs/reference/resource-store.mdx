@@ -1,0 +1,152 @@
+---
+title: Resource store
+description: Look up the files of a resources directory, the storage modes and payload encodings, the metadata and queryable properties every resource carries, the version marker, and every resource class.
+icon: Storage
+---
+
+A resources directory is the store that BELD writes and an application reads.
+This page specifies its files, how payloads are encoded, what every resource
+records, how queries work, and the model each resource class stores. The
+lifecycle is in the [resource management](/docs/reference/resource-management)
+reference; the source formats are in the [asset formats](/docs/reference/assets)
+reference.
+
+## Files
+
+| File | Content |
+| --- | --- |
+| `resources.db` | The database of every resource's metadata, the class and property indexes, the packed payload offsets, the store configuration, and, in debug builds, bake traces. |
+| One file per resource, named `<uid>-<hash>-<encoding>` | The payload in files mode: the resource's UID as 32 hexadecimal characters, the payload hash as 16, and the encoding name. No extension. |
+| `resources.pack` | Every payload, in packed mode. |
+| `.resource-management-version` | The signature of the engine that wrote the store. |
+| `.resource-write-*.tmp`, `.resource-write-*.compressed` | Staging files while a payload is written; renamed into place on commit. |
+
+Replacing a resource in files mode keeps the old payload file, so a reader that
+saw the old metadata can still open it. Deleting a resource removes the file.
+
+## Storage modes
+
+| Mode | Payloads |
+| --- | --- |
+| Files, the default | One file per resource. |
+| Packed | Ranges inside `resources.pack`, each recorded in the database. |
+
+The mode is written when the store is created, and opening the store with a
+different mode fails. Clearing the store removes its resources and payloads
+but keeps the mode. Packed mode can't hold GPU-loaded encodings.
+
+## Payload encodings
+
+| Encoding | Name | Content |
+| --- | --- | --- |
+| Raw | `raw` | The bytes as authored. |
+| CPU LZ4 | `cpu-lz4` | One LZ4 block that expands to the decoded size. |
+| Metal I/O LZ4 | `metal-io-lz4` | A Metal I/O container that only the GPU loads, for textures on macOS in files mode. |
+
+A resource stored in one piece is compressed when every rule holds:
+
+| Rule | Value |
+| --- | --- |
+| Policy | Compression isn't disabled for the resource. |
+| Size | The payload is 1 KiB or more. |
+| Probe | Payloads of 128 KiB or more are probed first: four 16 KiB windows spread across the payload must save more than 6.25 percent, or the payload stays raw without compressing the rest. |
+| Result | The compressed payload is kept only when it saves more than 12.5 percent. |
+
+A resource written through a transaction, in partial writes, stays raw. When
+the store's image compression is on, a plain image resource, one without
+image-based lighting data, skips CPU compression and is stored as Metal I/O
+LZ4 instead. Reading such a resource through a CPU target fails. In files
+mode, a payload file whose length differs from the recorded stored size is
+treated as corrupt and isn't read.
+
+## Identity
+
+| Value | Rule |
+| --- | --- |
+| ID | The public resource ID, a path relative to the assets directory with an optional fragment. |
+| UID | The MD5 of the ID, as 32 lowercase hexadecimal characters. Listing a store yields IDs in UID order. |
+| Hash | A rapidhash of the decoded bytes, so re-encoding a payload doesn't change the resource's identity. |
+
+## Metadata
+
+Every resource records:
+
+| Field | Content |
+| --- | --- |
+| `id`, `class` | The public ID and the class name. |
+| `hash`, `size`, `stored_size`, `encoding` | The payload's identity, decoded size, stored size, and encoding. |
+| `asset_dependencies` | The source files the resource was baked from, each with its ID without a fragment and its version: the file's size and modification time for local files, or a content hash for content-backed sources, or a record that an optional file was absent. |
+| `resource` | The class's typed model. |
+| `streams` | Optional named byte ranges inside the decoded payload. |
+| `queryable_properties` | String properties the query index covers. |
+| `baked_at` | Nanoseconds since the Unix epoch. |
+
+## Queries
+
+| Rule | Value |
+| --- | --- |
+| Properties | Every resource exposes `name`, equal to its ID. A variant also exposes `render-model`, its parent material's render model name, and `render-pass`. |
+| Query | A class, zero or more property-equals-value predicates, a limit, and an optional cursor. |
+| Matching | The class and every predicate must match exactly, case-sensitively. |
+| Index | The first predicate drives an index scan; later predicates filter the results. Without a predicate the class index is scanned. |
+| Paging | A page holds up to the limit. When more remain, the page carries a cursor for the next one; a limit of zero returns an empty page. An invalid cursor is an error. |
+
+## Version marker
+
+The marker holds a signature derived from the engine's resource-management
+source. A writable open with a different or missing marker beside an existing
+database deletes the whole directory, recreates it, and writes the marker.
+Debug builds open the store writable, so a stale store resets itself; release
+builds open read-only and fail on a mismatch. BELD's read-only commands report
+the mismatch without touching the directory.
+
+A packed store logs a fragmentation warning once when the pack is 64 MiB or
+more with at least 32 free ranges, a quarter or more of it free, and no single
+free range holding half of the free space.
+
+## Resource classes
+
+| Class | Model | Payload | Streams | Dependencies |
+| --- | --- | --- | --- | --- |
+| `Audio` | Bit depth of 8, 16, 24, or 32; channel count; sample rate; frame count. | Interleaved little-endian PCM. | None | None |
+| `Image` | Format, gamma, extent, mip count, optional image-based lighting maps, optional photometry. | Texels. | `mip[N]` per level; `ibl.diffuse_irradiance.mip[0]` and `ibl.prefiltered_specular.mip[0..8)` for environment maps. | None |
+| `Lut` | One- or three-dimensional, size, domain minimum and maximum. | Little-endian float RGB triplets, `size` or `size³` of them. | None | None |
+| `Pipeline` | Name and kind. | None | None | Its shaders, by ID. |
+| `ParticleSystem` | Capacity, longest life, rate, burst, simulate and draw pipeline IDs. | None | None | Its pipelines and shaders. |
+| `Shader` | ID, stage, interface, and artifact kind. | The compiled artifact. | None | None |
+| `Flipbook` | Frames per second and images. | None | None | Its images. |
+| `Material` | Double-sidedness, alpha mode, coverage, shaders, render model, parameters. | None | None | Its shaders and parameter images. |
+| `Variant` | Parent material, variable values, alpha mode. | None | None | Its material. |
+| `Mesh` | Optional skeleton, skin bindings, vertex components, streams, material variants by reference, primitives. | Packed vertex, index, and meshlet data. | Listed after this table. | Its skeleton; materials are listed but not loaded with the mesh. |
+| `Skeleton` | Nodes with optional names, parents, and rest transforms. | None | None | None |
+| `Animation` | Optional name, skeleton, duration, optional frame rate, per-node curves. | None; curves live in the metadata. | None | Its skeleton. |
+
+Image formats: `BC5`, `BC5SNORM`, `RG8`, `RG16`, `R16F`, `RGB8`, `RGBA8`,
+`BC7`, `RGB16`, `RGBA16`, `BC7SRGB`, `RGBA16F`, and `RGBA8SRGB`, with linear
+or sRGB gamma. An environment map is an image with image-based lighting maps;
+there is no separate class.
+
+Shader stages: vertex, fragment, compute, task, mesh, ray generation, closest
+hit, any hit, intersection, miss, and callable. Artifacts: SPIR-V, HLSL, MSL,
+Metal library, and DXIL.
+
+Mesh streams, by name: `Vertex.Position`, `Vertex.Normal`, `Vertex.Tangent`,
+`Vertex.BiTangent`, `Vertex.UV`, `Vertex.Color`, `Vertex.Joints`,
+`Vertex.Weights`, `VertexIndices`, `TriangleIndices`, `MeshletIndices`, and
+`Meshlets`. Positions, normals, and bitangents are three floats; UVs two;
+tangents, colors, and weights four floats; joints four 16-bit integers. A
+meshlet holds at most 64 vertices and 124 triangles.
+
+| Mesh rule | Value |
+| --- | --- |
+| Primitive | A material index, an optional transform node, an optional skin, its streams, a bounding box, a vertex count, and 1 to 8 detail levels. |
+| Detail levels | The first level's error is 0, errors never decrease, and the levels' meshlet counts sum to the meshlet stream's count. |
+| Skins | Need a skeleton, hold at most 65,536 entries, and name nodes inside it. A skinned primitive carries joints and weights for every vertex. |
+
+Container fragments name the resources a model file produces: `#skeleton`,
+`#animation`, `#animations/<index or name>`, `#images/<index>` for glTF and
+`#images/<texture id>` for FBX, and `#materials/<name>` for generated variants.
+
+## Rust API
+
+- [`rendering::resource_loading`](/docs/api/latest/byte_engine/rendering/resource_loading)

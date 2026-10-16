@@ -55,13 +55,13 @@ impl ResourceUpdateBroadcaster {
 	}
 }
 
-const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/resource-management/baking-app-resources";
+const BAKING_APP_RESOURCES_DOCS_PATH: &str = "use/resources/bake";
 
 /// The `RequestError` enum reports why [`ResourceManager::request`] could not produce a resource.
 ///
 /// Every variant carries the requested ID. Match on it to decide how to recover, or
 /// format it with [`Display`](std::fmt::Display) to show the cause and the fix.
-/// See [baking app resources](/docs/develop/resource-management/baking-app-resources) for the recovery workflow.
+/// See [Bake application resources](/docs/use/resources/bake) for the recovery workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestError {
 	/// The resource is not in storage and no asset manager can bake it.
@@ -204,7 +204,7 @@ impl std::error::Error for RequestError {
 /// File-system paths are relative to the assets directory.
 /// After construction, optionally install an asset manager in debug builds,
 /// then obtain typed resources through [`Self::request`].
-/// See [debug asset loading](/docs/develop/resource-management/debug-loading)
+/// See [debug asset loading](/docs/use/resources/debug-loading)
 /// and [resource loading](/docs/develop/resource-management/resources)
 /// for the development and release workflows.
 pub struct ResourceManager {

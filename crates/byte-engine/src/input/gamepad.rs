@@ -156,7 +156,7 @@ impl GamepadSystem {
 					self.devices.retain(|device| device.device_handle.is_some());
 					warn!(
 						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
-						crate::online_docs_url("reference/input")
+						crate::online_docs_url("use/input")
 					);
 				}
 			}

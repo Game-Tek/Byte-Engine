@@ -1,6 +1,6 @@
 {
 	"title": "API",
-	"description": "Byte Engine HTTP and Rust API documentation.",
+	"description": "Generated Rust and HTTP API reference.",
 	"pages": ["inspector", "...latest"],
 	"root": true
 }

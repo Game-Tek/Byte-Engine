@@ -661,7 +661,7 @@ impl VisibilityLoader {
 
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
 	async fn load_environment(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
-		let docs = crate::online_docs_url("develop/resource-management/assets#environment-maps");
+		let docs = crate::online_docs_url("reference/assets#environment-maps");
 		let mut reference: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
 			LoadError(format!(
 				"Visibility could not load environment {id}. {error}\nEnvironment maps must come from a `.environment.bead` asset. See {docs}."

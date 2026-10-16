@@ -1,27 +1,43 @@
 ---
-title: Develop with Byte
-description: Set up Byte Engine and develop your first application.
+title: Use Byte Engine
+description: Make your application do something with Byte Engine, one task per page.
 icon: Gamepad2
 full: true
 ---
 
-Set up your development environment, install Byte Engine, and create your first
-application.
+This section is for application developers. Each page is one task you do from
+your application, from setting up a project to bundling a release. It shows the
+goal, the steps, the code you write, and the Rust API it uses.
+
+It doesn't explain how the engine works inside or why it was designed that way.
+To change the engine, use [Contribute](/docs/develop). To look up exactly what a
+language, format, or model accepts, use [Reference](/docs/reference).
 
 ---
 
 <Cards>
-	<Card title='🛠️ Setup' href="/docs/use/setup">
+	<Card title='🛠️ Setup' href="/docs/use/setup">
 		Install the required tools and add Byte Engine to your application.
 	</Card>
-	<Card title='🎮 Your first Byte' href="/docs/use/sample-project">
+	<Card title='🎮 Your first Byte' href="/docs/use/sample-project">
 		Build your first Byte Engine application step by step.
 	</Card>
-	<Card title='📦 Build and bundle' href="/docs/use/build">
+	<Card title='📦 Prepare resources' href="/docs/use/resources">
+		Bake your assets into the resources a release build loads.
+	</Card>
+	<Card title='🚀 Build and bundle' href="/docs/use/build">
 		Create a release and package its resources for your operating system.
 	</Card>
+	<Card title='🕹️ Respond to input' href="/docs/use/input">
+		Turn keys, buttons, and sticks into the actions your application understands.
+	</Card>
+	<Card title='💡 Light a scene' href="/docs/use/lighting">
+		Create lights in physical units and match the exposure, environment, and fog.
+	</Card>
+	<Card title='🪟 Build a user interface' href="/docs/use/gui">
+		Build retained, asynchronous interfaces in the render loop.
+	</Card>
+	<Card title='✨ Add particles' href="/docs/use/particles">
+		Place GPU particle systems such as sparks, embers, or smoke.
+	</Card>
 </Cards>
-
----
-
-To work on the engine itself, use the [engine development guide](/docs/develop/).

@@ -1,0 +1,59 @@
+---
+title: UI
+description: Look up how depth orders UI elements, the per-frame limits of the UI renderer, and what text rendering guarantees.
+icon: PanelTop
+---
+
+The UI module is a retained primitive layer with an asynchronous interaction
+model. This page defines its depth order, the limits of its renderer, and the
+guarantees of its text rendering. To build an interface, follow
+[Build a user interface](/docs/use/gui).
+
+## Depth
+
+Depth decides what paints over what, and what a pointer hits first. It is local
+to each container. `Depth::relative(n)` orders a child among its siblings: a
+container paints first, then its children from the lowest depth to the highest,
+and children at the same depth in the order they were declared. A child that is
+not a container counts as `Depth::relative(1)`.
+
+A container and everything inside it paint as one block. No depth set inside a
+component can put one of its elements over or under another component, so a
+widget can use whatever depths it likes for its own overlays.
+
+`Depth::absolute(n)` is for layers that must cover the rest of the UI, such as a
+modal or a toast. The container leaves its parent and paints above all ordinary
+content, wherever it is declared. Absolute layers stack from the lowest `n` to
+the highest and in tree order among equals. A layer declared inside another one
+paints over it, so a dialog opened from a modal covers that modal.
+
+## Renderer limits
+
+| Limit | Per frame | Past the limit |
+| --- | --- | --- |
+| Distinct clip and feather-mask combinations | 4,096 | The rest of the frame is skipped and reported once in the log. |
+| Distinct images shown at once | 31 | Further images are skipped and reported once in the log. An image the UI stops showing frees its slot. |
+| Primitives | 131,072. A rectangle layer, glyph, image, or backdrop blur is one primitive; a curve is a few per segment. | The rest of the frame is skipped and reported once in the log. |
+| Distinct glyphs | A few thousand | Further glyphs are skipped and reported once in the log. |
+
+## Text
+
+Text is drawn from glyph outlines, and measurement and placement use the same
+size-independent advances, so layout and drawing never disagree. Text has these
+guarantees:
+
+- Text is sharp at every size. A zoom, a resize, or an animated font size
+  rasterizes nothing.
+- Idle text costs no CPU work. Moving or restyling a label regenerates its
+  primitives only.
+- Horizontal positions stay fractional, so letter spacing is exact. Baselines
+  snap to whole pixels, so horizontal strokes stay crisp.
+- Clipping and feather masks apply to text exactly as they do to rectangles.
+- Fonts with cubic outlines are supported, to within 1/4096 of an em.
+
+## Rust API
+
+- [`ui` module](/docs/api/latest/byte_engine/ui)
+- [`Engine`](/docs/api/latest/byte_engine/ui)
+- [`UiRenderPass`](/docs/api/latest/byte_engine/ui)
+- [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#setup_ui_render_pass)

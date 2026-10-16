@@ -13,7 +13,7 @@ impl AssetHandler for PipelineAssetHandler {
 			context.error(format_args!(
 				"Pipeline asset '{}' could not be loaded. The most likely cause is that the application's assets/byte-engine link does not expose the engine asset directory. See {}.",
 				id.as_ref(),
-				crate::online_docs_url("develop/resource-management/baking-app-resources")
+				crate::online_docs_url("use/resources/bake")
 			));
 		})?;
 

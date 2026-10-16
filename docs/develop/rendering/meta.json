@@ -3,7 +3,7 @@
 	"icon": "Computer",
 	"pages": [
 		"loading",
-		"particles",
+		"lighting",
 		"shader-variants"
 	]
 }

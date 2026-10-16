@@ -112,7 +112,7 @@ fn parse_environment_source(manifest: &[u8]) -> Result<String, &'static str> {
 	Ok(source)
 }
 
-const ENVIRONMENT_MAP_DOCS_PATH: &str = "develop/resource-management/assets#environment-maps";
+const ENVIRONMENT_MAP_DOCS_PATH: &str = "reference/assets#environment-maps";
 
 #[cfg(test)]
 mod tests {

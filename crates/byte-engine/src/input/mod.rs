@@ -19,8 +19,8 @@
 //! [`Value`] is the erased value passed through the runtime; typed action
 //! declarations use [`action::InputValue`] to constrain supported value types.
 //!
-//! See [Input](/docs/reference/input)
-//! for the device, trigger, action, and event workflow.
+//! See [Respond to input](/docs/use/input) for the action and sink workflow,
+//! and [Input](/docs/reference/input) for the device, trigger, and action model.
 
 use super::utils::RGBA;
 use crate::core::factory::Handle;

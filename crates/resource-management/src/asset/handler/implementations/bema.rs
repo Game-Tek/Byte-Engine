@@ -576,7 +576,7 @@ async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -
 	}
 }
 
-const BEMA_DOCS_PATH: &str = "develop/resource-management/bema";
+const BEMA_DOCS_PATH: &str = "reference/bema";
 
 #[cfg(test)]
 pub mod tests {

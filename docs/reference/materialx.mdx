@@ -1,0 +1,56 @@
+---
+title: MaterialX support
+description: Look up the MaterialX version, shading models, and elements Byte Engine reads, and where a shaded surface differs from the document.
+icon: Cable
+---
+
+Byte Engine reads
+[MaterialX](https://materialx.org) version 1.39. A document arrives as a
+directed acyclic graph of nodes: every reference is resolved to an edge, every
+node is matched to its declaration, and connected ports are checked to agree on
+their type.
+
+To read a document from Rust, lower a material to a shader, or fix a document
+that fails to load, follow
+[MaterialX documents](/docs/develop/resource-management/materialx).
+
+## Shading models
+
+Four shading models reach the renderer's BRDF directly: `standard_surface`,
+`open_pbr_surface`, `UsdPreviewSurface` and `gltf_pbr`. Two more are read as
+special cases: Disney's `disney_principled`, and `surface_unlit`, whose emission
+carries everything it shows. A model you define yourself works too, as long as
+its node graph produces one of those.
+
+Behind the shading model, the network may use the standard library's value,
+channel, geometric, texture, math, adjustment and compositing nodes, and any
+node graph the document defines.
+
+Byte Engine reports anything else rather than approximating it. In particular, a surface built out of individual scattering closures, such as a
+`<surface>` node fed by `dielectric_bsdf` and `oren_nayar_diffuse_bsdf`, does
+not map onto the renderer's fixed BRDF. Rebuild it on one of the models above,
+or bake the network into textures with the MaterialX tools.
+
+## Differences from the document
+
+Three things behave differently from the document:
+
+- Object-space and model-space geometric properties read their world-space
+  value.
+- Images sample with the mesh's own texture coordinates. An `<image>` whose
+  `texcoord` is driven by anything else, such as a `place2d` or a `tiledimage`,
+  is reported instead of being sampled at the wrong place.
+- Shading models take a world-space normal, which is projected exactly onto
+  the stage's tangent frame.
+
+Coat, sheen, transmission and subsurface inputs are read but not shaded.
+
+## Elements that are read
+
+Everything that shapes the graph: nodes, nodegraphs both functional and
+compound, node declarations and their inheritance, implementations, custom
+types, geometric property declarations, units, and material variants.
+
+Elements that assign materials to geometry, `<look>` and its companions, and
+elements that only describe how a graph is drawn in an editor are recognised and
+skipped, because neither changes the graph.

@@ -90,7 +90,7 @@ for (const data of pageData) {
 await writeFile(resolve(staging, 'index.mdx'), apiLandingPage(crateNames));
 await writeJson(resolve(staging, 'meta.json'), {
 	title: 'Latest',
-	description: 'API reference for the latest Byte Engine revision.',
+	description: 'Generated API reference for the latest Byte Engine revision.',
 	pages: ['!index', ...crateNames],
 });
 
@@ -110,8 +110,18 @@ function apiLandingPage(crateNames) {
 	return [
 		'---',
 		'title: Latest Rust API',
-		'description: Browse the API reference for the latest Byte Engine revision.',
+		'description: Browse the generated API reference for the latest Byte Engine revision.',
 		'---',
+		'',
+		'Every page in this section is generated from the engine source and describes',
+		'one item: what it does, and what you usually call next.',
+		'`scripts/generate-api-docs.sh` renders the Rust pages from rustdoc comments,',
+		'and the site renders the inspector HTTP pages from its OpenAPI schema. To',
+		'change a page, change the doc comment or the schema. Nothing here is edited',
+		'by hand.',
+		'',
+		'For tasks, design notes, and definitions, use [Use](/docs/use),',
+		'[Contribute](/docs/develop), and [Reference](/docs/reference) instead.',
 		'',
 		'Choose a crate:',
 		'',

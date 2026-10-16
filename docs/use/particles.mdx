@@ -1,0 +1,71 @@
+---
+title: Add particles
+description: Place GPU particle systems such as sparks, embers, or smoke in the world.
+icon: Sparkles
+---
+
+Use a `.particles` file to describe an effect such as sparks, embers, or smoke, and a `ParticleEmitter` to place it
+in the world. Particles live and move entirely on the GPU, and a system costs nothing on frames without live particles.
+
+## Set up particles
+
+The default graphics setup installs particles. With a custom setup, call `setup_particles` after the scene pipeline
+and before `launch_deferred_tasks_thread`:
+
+```rust
+setup_pbr_visibility_shading_render_pipeline(&mut app);
+setup_particles(&mut app);
+```
+
+## Place an emitter
+
+Create a `ParticleEmitter` that names a `.particles` asset, together with a `Transform`:
+
+```rust
+app.world()
+	.create(ParticleEmitter::new("byte-engine/particles/sparks.particles"))
+	.with(Transform::from_position(Point::new(0.0, 1.0, 0.0)));
+```
+
+The transform moves, turns, and scales the system's spawn modules, so a cone fires along the transform's local +Z
+axis. Set `rate` or `burst` on the emitter to override the system's `spawn` values; a burst spawns each time you
+publish the emitter. To change an emitter, publish a new value on the same handle with `Factory::derive`. To stop it,
+delete the handle. Particles already in flight finish their lives.
+
+## Write a .particles file
+
+A system lists data modules. Baking turns them into one simulation kernel and one draw pipeline, so a system runs no
+code for modules it doesn't list. For editor completion, point `"$schema"` at the engine's
+`schemas/particles.schema.json`, relative to your file.
+
+```json
+{
+	"capacity": 65536,
+	"lifetime": [0.4, 1.2],
+	"spawn": { "rate": 200 },
+	"initialize": [{ "type": "cone", "angle": 0.5, "speed": [2.0, 6.0] }],
+	"update": [
+		{ "type": "acceleration", "value": [0.0, -9.81, 0.0] },
+		{ "type": "drag", "coefficient": 0.5 }
+	],
+	"render": {
+		"shape": { "type": "streak", "width": 0.008, "stretch": 0.02 },
+		"color": [
+			{ "age": 0.0, "radiance": [50000.0, 40000.0, 30000.0] },
+			{ "age": 1.0, "radiance": [0.0, 0.0, 0.0] }
+		]
+	}
+}
+```
+
+Every field, module, and shape is defined in the
+[.particles reference](/docs/reference/particles), together with what baking the
+file produces.
+
+Particles add their light to the scene, so they don't need sorting and never hide each other. They hide behind scene
+geometry.
+
+## Rust API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering)
+- [`application::graphics` module](/docs/api/latest/byte_engine/application/graphics)

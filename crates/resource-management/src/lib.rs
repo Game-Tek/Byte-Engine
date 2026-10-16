@@ -1,6 +1,6 @@
 //! Load, cache, and bake engine resources from local or remote storage.
 //!
-//! Start with the [resource management guide](/docs/develop/resource-management)
+//! Start with the [resource management reference](/docs/reference/resource-management)
 //! to choose between development-time asset baking and runtime resource loading.
 
 #![feature(stmt_expr_attributes)]

@@ -1,0 +1,368 @@
+---
+title: Light a scene
+description: Create directional, point, and cone lights in physical units, then set the exposure, environment, and fog to match.
+icon: Sun
+---
+
+Use physical light units when you want lighting that responds predictably to
+distance and material properties.
+
+Byte Engine has three light shapes: `DirectionalLight` for the sun and other
+distant sources, `PointLight` for bulbs and other omnidirectional sources, and
+`ConeLight` for spotlights. Point and cone lights can also use a baked IES
+profile when you need a measured angular intensity distribution. The units each
+shape takes, how Byte Engine converts them, and the limits on light reach and
+count are in the [lighting reference](/docs/reference/lighting).
+
+One world-space distance unit is one meter. Keep your scene at that scale so inverse-square
+attenuation and distance-based conversions remain meaningful.
+
+## Create a light
+
+Choose a color, choose an intensity, and create the light. Then create it on the application's world scope,
+`GraphicsApplication::world`, so the active rendering pipeline can use it.
+
+```rust
+use byte_engine::{
+    core::{Creator as _, message_bus::MessageScope},
+    math::Vector3,
+    rendering::{DirectionalLight, LightColor, PhotometricIntensity},
+};
+
+let world = MessageScope::standalone("world");
+let sunlight = DirectionalLight::new(
+    Vector3::new(0.2, -1.0, 0.3),
+    LightColor::TemperatureKelvin(5_778.0),
+    PhotometricIntensity::Illuminance {
+        lux: 100_000.0,
+        measurement_distance_m: 1.0,
+    },
+)?;
+
+world.create(sunlight);
+# Ok::<(), byte_engine::rendering::PhotometricError>(())
+```
+
+Light constructors return `PhotometricError` when a color, magnitude, distance, or area is zero,
+negative, or not finite. A Kelvin value must be from 1,000 K through 40,000 K.
+
+## Choose a color
+
+Use `LightColor::TemperatureKelvin` for a blackbody-style illuminant such as daylight, a tungsten
+lamp, or a warm practical light. Byte Engine converts the temperature through CIE chromaticity to
+linear sRGB.
+
+Use `LightColor::LinearSrgb` for an authored color:
+
+```rust
+let color = LightColor::LinearSrgb(Vector3::new(1.0, 0.15, 0.02));
+```
+
+The RGB values describe chromaticity, not brightness. Byte Engine normalizes the color to unit
+photopic luminance. Set brightness with `PhotometricIntensity`; increasing the RGB values alone
+does not make the light brighter. RGB components must be nonnegative and the color must have
+nonzero luminance.
+
+## Choose an intensity
+
+You can use every `PhotometricIntensity` variant with every light shape. Include the reference
+distance or area carried by the variant so Byte Engine can make a deterministic conversion.
+
+### Lux
+
+Lux measures illuminance arriving at a surface. It is the most direct choice for a directional
+light. For a point or cone light, `measurement_distance_m` says where the requested illuminance
+must be reached.
+
+```rust
+let intensity = PhotometricIntensity::Illuminance {
+    lux: 500.0,
+    measurement_distance_m: 2.0,
+};
+```
+
+For local lights, Byte Engine converts lux to candela with `I = E × d²`. A light that produces
+500 lux at 2 meters therefore has an intensity of 2,000 candela. The measurement distance is
+validated but does not change an already directional illuminance field.
+
+### Candela
+
+Candela measures luminous intensity in one direction. It maps directly to point and cone lights.
+For a directional light, `reference_distance_m` defines the plane where the equivalent
+illuminance is measured.
+
+```rust
+let intensity = PhotometricIntensity::LuminousIntensity {
+    candela: 1_200.0,
+    reference_distance_m: 1.0,
+};
+```
+
+A directional light converts this value with `E = I / d²`. Local lights keep the candela value;
+their reference distance is validated but does not change it.
+
+### Lumens
+
+Lumens measure total luminous flux. A point light distributes its lumens uniformly over `4π`
+steradians, so Byte Engine uses `I = Φ / 4π`.
+
+A cone light distributes its lumens through its inner-to-outer soft cone. Byte Engine uses the
+same linear angular falloff on the CPU and GPU:
+
+```text
+cone factor = clamp((cosine − cos(outer)) / (cos(inner) − cos(outer)), 0, 1)
+```
+
+Its effective solid angle is:
+
+```text
+Ω = π × (2 − cos(inner half-angle) − cos(outer half-angle))
+I = Φ / Ω
+```
+
+For a directional light, supply the beam area at the reference plane and Byte Engine uses
+`E = Φ / A`.
+
+```rust
+let intensity = PhotometricIntensity::LuminousFlux {
+    lumens: 1_600.0,
+    directional_beam_area_m2: 4.0,
+};
+```
+
+`directional_beam_area_m2` is required and validated for every light. Point and cone lights do not
+use it because their emission shape already defines how the flux is distributed.
+
+### Nits
+
+Nits, or candela per square meter, measure luminance. Use this option when you know the luminance
+and projected area of the emitting surface.
+
+```rust
+let intensity = PhotometricIntensity::Luminance {
+    nits: 300.0,
+    projected_area_m2: 0.02,
+    reference_distance_m: 2.0,
+};
+```
+
+Point and cone lights use the uniform-emitter approximation `I = L × A`. Directional lights use
+`E = L × A / d²`. Analytic lights do not retain the physical emitter shape after this conversion.
+
+## Create point and cone lights
+
+The following point light emits 800 lumens uniformly:
+
+```rust
+use byte_engine::rendering::{LightColor, PhotometricIntensity, PointLight};
+
+let bulb = PointLight::new(
+    Vector3::new(0.0, 2.4, 0.0),
+    LightColor::TemperatureKelvin(2_700.0),
+    PhotometricIntensity::LuminousFlux {
+        lumens: 800.0,
+        directional_beam_area_m2: 1.0,
+    },
+)?;
+```
+
+The following cone light emits 1,600 lumens through a soft 20° to 30° half-angle range:
+
+```rust
+use byte_engine::rendering::{ConeLight, LightColor, PhotometricIntensity};
+
+let spotlight = ConeLight::new(
+    Vector3::new(0.0, 3.0, 0.0),
+    Vector3::new(0.0, -1.0, 0.0),
+    LightColor::TemperatureKelvin(3_200.0),
+    PhotometricIntensity::LuminousFlux {
+        lumens: 1_600.0,
+        directional_beam_area_m2: 1.0,
+    },
+    20.0_f32.to_radians(),
+    30.0_f32.to_radians(),
+)?;
+```
+
+Cone angles are half angles measured from the light direction. The renderer
+automatically uses a 0.1 m near plane and a neutral exposure scale of 1. It
+extends the far plane until peak exposure-weighted illumination falls below
+0.125 lux. These values control only the cone shadow view; they don't limit
+lighting attenuation. Override either endpoint with `with_shadow_near` or
+`with_shadow_far`, or override both with `with_shadow_range`.
+A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
+shadow map.
+
+## Use an IES profile
+
+Use an IES profile when you have a fixture's measured `.ies` file and want its real angular intensity
+pattern. Bake the source into your resource database, then pass its resource ID to `PointLight::new_ies`
+or `ConeLight::new_ies`.
+
+The IES file supplies the peak candela and the relative intensity in every direction. `LightColor`
+only tints that measured light; do not pass a separate `PhotometricIntensity` value. Set `dimmer` to a
+linear fraction from `0.0` for off through `1.0` for the profile's measured output. For example, `0.01`
+runs the measured fixture at 1% output. The renderer applies the same dimmed intensity to shading,
+automatic shadow coverage, and shadow priority.
+
+The renderer uses a dimmed unit-luminance fallback while the profile uploads asynchronously. If the
+resource is missing or is not a usable baked IES image, the visibility pipeline logs an error and the
+fallback remains active.
+
+Use an `Orientation` to place the profile:
+
+- Local `+Z` is the emission axis.
+- Local `+X` is the IES C0 plane.
+- Local `+Y` is the IES C90 plane.
+
+Keep the orientation when you animate a fixture, because its C0 plane defines the rotation of an
+asymmetric profile. Use `orientation_from_direction` only when a canonical zero-roll frame is enough.
+
+```rust
+use byte_engine::{
+    math::{Orientation, Point},
+    rendering::{LightColor, PointLight},
+};
+
+let office_fixture = PointLight::new_ies(
+    Point::new(0.0, 2.4, 0.0),
+    Orientation::identity(),
+    LightColor::Kelvin(4_000.0),
+    0.5,
+    "lights/office.ies",
+)?;
+```
+
+For a cone fixture, use `ConeLight::new_ies` with the same position, orientation, color, dimmer, and
+resource ID, followed by its inner and outer half angles. After the profile reaches the GPU, its dimmed
+calibrated peak candela also controls automatic shadow coverage and local-shadow priority.
+
+## Control local-light shadows
+
+Point lights use a cube shadow map, so each selected point light renders six 90-degree shadow
+views. The renderer uses a 0.1 m near plane and extends the automatic far plane until the peak
+exposure-weighted illumination falls below 0.125 lux. This range controls shadow coverage only; it
+does not limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far`, or
+`with_shadow_range` on `PointLight` when your scene needs explicit coverage.
+
+The visibility pipeline shadows up to four cone lights and four point lights
+per sink by default. Set `render.cone-shadow-map-pool.capacity` or
+`render.point-shadow-map-pool.capacity` at application startup to change either
+limit. Other visible local lights stay lit but don't cast shadows. The
+[lighting reference](/docs/reference/lighting#shadow-map-pools) explains how
+the renderer picks the lights that get a shadow map.
+
+## Set camera exposure
+
+Real-world light values are far brighter than a display can show, so pair them with a matching
+camera exposure. Exposure is measured in stops, and each stop halves or doubles the light that the
+camera shows. To use a photographic exposure value, convert it with `-(EV100 + log2(1.2))`:
+
+```rust
+use byte_engine::rendering::Camera;
+
+// A sunny day at EV100 15, the sunny-16 rule.
+let camera = Camera::new().with_exposure(-(15.0 + 1.2_f32.log2()));
+```
+
+Typical EV100 values are 15 for a sunny day, 12 to 13 for an overcast one, and 5 to 7 for a lit
+room at night. An exposure of `0.0` shows scene values unchanged.
+
+The PBR visibility pipeline and the atmosphere sky apply the exposure as they write scene light,
+so a 100,000 lux sun on a glossy surface stays within the range of the scene image, whose
+floating-point channels reach about 65,000.
+Later passes, such as bloom and tone mapping, receive exposed light. Scenes drawn with other
+pipelines ignore exposure. The camera's `aperture` field doesn't change it.
+
+## Calibrate the environment map
+
+Environment maps store light in arbitrary units. Give the environment the illuminance it should
+deliver to an upward-facing surface, so it lights the scene in the same units as your lights:
+
+```rust
+use byte_engine::rendering::Environment;
+
+// Clear-sky light on the ground, next to a 100,000 lux sun.
+let environment = Environment::new("sky.environment.bead").with_illuminance(15_000.0);
+```
+
+A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one about 1,000 to
+10,000. Without `with_illuminance`, the map's own values are used unchanged.
+
+## Add height fog
+
+Height fog fills the scene with mist that is thickest near the ground and thins out with altitude,
+like rain mist, an overcast day, or haze in a valley. Install the fog pass after the scene pipeline
+and particles, and before anti-aliasing, lens flare, bloom, and tone mapping, so bright light glows
+through the mist. Then create a fog in a tick after the one that creates the window:
+
+```rust
+use byte_engine::rendering::{ExponentialHeightFog, FogLayer};
+
+byte_engine::application::graphics::setup_exponential_height_fog_render_pass(&mut app);
+
+// Later, once the window exists: rain mist that hides about 40 % of a surface 10 m away.
+app.world().factory::<ExponentialHeightFog>().create(
+	ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
+		.with_ambient_illuminance(15_000.0),
+);
+```
+
+A `FogLayer` sets how much fog there is at each height. Its density is the fraction of light it
+blocks per meter at its base height. Light rain mist is about `0.01` to `0.06`, and thick fog is
+`0.1` or more. The height falloff sets how quickly it thins: the density halves every
+`ln(2) / falloff` meters above the base height.
+
+To add mist that pools near the ground, such as spray from rain splashes, stack a second, dense
+layer with a steep falloff. Its fog adds to the first layer's:
+
+```rust
+ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
+	// Spray that halves every 0.23 m, so it stays below the knees.
+	.with_second_layer(FogLayer::new(0.3).with_height_falloff(3.0))
+	.with_ambient_illuminance(15_000.0)
+```
+
+A layer covers the whole scene at its height. To keep mist in one area, such as the courtyard where
+rain splashes, confine the layer to a world-space box:
+
+```rust
+use byte_engine::math::{AABB, Point};
+
+let courtyard = AABB::new(Point::new(-7.5, -1.0, -1.0), Point::new(7.0, 2.5, 2.0));
+let splash_mist = FogLayer::new(0.3).with_height_falloff(3.0).with_bounds(courtyard);
+```
+
+The fog stops sharply at the box's faces, so line them up with walls, pillars, or the ground where
+geometry hides them. Put the top where the layer has already thinned out.
+
+Two light sources light the fog, in the same units as the rest of the scene:
+
+- The sky, given in lux with `with_ambient_illuminance`. Use the same value as the environment's
+  `with_illuminance`, so fully fogged views match the brightness of an even overcast sky.
+- The newest directional light, scattered mostly forward by water droplets. Looking toward the sun,
+  the fog glows; `with_anisotropy` sets how tight that glow is.
+
+Fog also covers the sky: the horizon disappears into it, while the sky straight up stays mostly
+clear. Use `with_max_opacity` to keep a trace of distant surfaces visible through the thickest fog.
+
+<Callout type="info" title="Height fog limits">
+	The fog doesn't cast or receive shadows, so it glows evenly in shaded areas too. Transparent
+	surfaces and particles take the fog of the opaque surface behind them.
+</Callout>
+
+## Rust API
+
+- [`DirectionalLight`](/docs/api/latest/byte_engine/rendering)
+- [`PointLight`](/docs/api/latest/byte_engine/rendering)
+- [`ConeLight`](/docs/api/latest/byte_engine/rendering)
+- [`IesProfile`](/docs/api/latest/byte_engine/rendering)
+- [`Camera`](/docs/api/latest/byte_engine/rendering)
+- [`Environment`](/docs/api/latest/byte_engine/rendering)
+- [`ExponentialHeightFog`](/docs/api/latest/byte_engine/rendering)
+- [`FogLayer`](/docs/api/latest/byte_engine/rendering)
+- [`LightColor`](/docs/api/latest/byte_engine/rendering)
+- [`PhotometricIntensity`](/docs/api/latest/byte_engine/rendering)
+
+After you create a light, create it on the world scope with
+[`Creator::create`](/docs/api/latest/byte_engine/core).

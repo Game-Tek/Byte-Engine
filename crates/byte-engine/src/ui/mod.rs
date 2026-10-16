@@ -10,7 +10,7 @@
 //! [`layout::engine::Engine::press`] and validate the released [`DragDrop`]
 //! against an application-owned drop target.
 //!
-//! See the [GUI guide](/docs/develop/gui)
+//! See [Build a user interface](/docs/use/gui)
 //! for component, layout, event, focus, and rendering guidance.
 
 #[doc(hidden)]

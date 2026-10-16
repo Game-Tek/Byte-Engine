@@ -11,7 +11,7 @@ pub struct Environment {
 impl Environment {
 	/// Creates an environment backed by the named `.environment.bead` resource.
 	///
-	/// See the [environment-map asset guide](/docs/develop/resource-management/assets#environment-maps)
+	/// See the [environment-map format](/docs/reference/assets#environment-maps)
 	/// before selecting the resource through the world factory.
 	pub fn new(resource_id: impl Into<String>) -> Self {
 		Self {

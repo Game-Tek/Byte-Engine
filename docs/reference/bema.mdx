@@ -1,0 +1,54 @@
+---
+title: .bema files
+description: Look up the fields of a .bema material or variant file, the values they accept, and the resources that baking one produces.
+icon: SwatchBook
+---
+
+A `.bema` file declares a material or a material variant in JSON5. A material
+describes shader stages, a render domain, and named parameters. A variant names
+a parent material and supplies a value for each of its parameters. `.bema` is a
+declaration format, not runtime data: at runtime, applications use the
+processed `Material`, `Variant`, `Shader`, and `Image` resources. To write one,
+follow [Author assets](/docs/use/resources/author#declare-a-material).
+
+## Material files
+
+A root material is a file without `parent`. The handler reads these fields and
+ignores any other, such as `type`:
+
+| Field | Value |
+| --- | --- |
+| `domain` | Required. The render domain, such as `World`. It is recorded in the material and not read by shader compilation. |
+| `shaders` | Required. An object that maps each shader stage name, such as `Fragment`, to the asset ID of its BESL source. |
+| `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, and `value`. |
+
+## Variant files
+
+| Field | Value |
+| --- | --- |
+| `parent` | Required. The asset ID of the material this variant specializes. |
+| `variables` | Required. One object with `name` and `value` for every parameter of the parent material. A parent parameter without a value fails the bake. Each value resolves with the parent parameter's `data_type`. |
+| `transparency` | `"Blend"` or `true` selects blended transparency. Any other value, or no field, selects opaque. |
+
+## Values
+
+`data_type` selects how `value` resolves:
+
+| `data_type` | `value` |
+| --- | --- |
+| `vec4f` | A named color: `Red`, `Green`, `Blue`, `Purple`, `White`, or `Black`. Any other name resolves to the magenta placeholder `(1, 0, 1, 1)`. |
+| `vec3f` | A named color, as for `vec4f`, without the alpha component. |
+| `float` | Accepted, but the value is not read: the parameter resolves to `0.0`. |
+| `Texture2D` | The asset ID of an image, which bakes as a dependency and is stored as a reference. |
+
+Any other `data_type` fails the bake.
+
+## What baking produces
+
+- A `Material` resource for a root material file, referring to its generated
+  shaders and resolved parameters.
+- A `Variant` resource for a variant file, referring to its parent material and
+  resolved values.
+- A `Shader` resource for each referenced shader source, compiled for the
+  active render pipeline.
+- A dependent `Image` resource for each image a `Texture2D` parameter names.

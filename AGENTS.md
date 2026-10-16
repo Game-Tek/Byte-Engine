@@ -1,5 +1,19 @@
 # Documentation
 
+Every page in `docs` belongs to exactly one section. Choose the section by who reads the page and what they are asking, never by the system the page covers. The charter is `docs/develop/documentation.mdx` (the "Write documentation" page); keep this table and that page in agreement.
+
+| Section | Directory | The reader asks | A page is | Never |
+| --- | --- | --- | --- | --- |
+| Introduction | `docs/*.mdx` | What is this, and where do I start? | A short orientation that sends the reader into a section | A task, a design note, or a definition |
+| Use | `docs/use` | How do I make my application do this? | One task: the goal first, the steps, the code the reader writes, Rust API links at the end | Engine internals, design rationale, anything about the repository |
+| Contribute | `docs/develop` | How do I work on the engine, and what must my change keep true? | A workflow page (build, test, bench, measure, publish, document) or a design note for one system: how it is built, why, the rules a change must keep, the tests that guard them | How to use a feature from an application; the complete definition of a format or language |
+| Reference | `docs/reference` | What exactly is this, and what does it accept? | A specification of one thing: a language, format, model, unit, or limit, as definitions, tables, and grammar; what is accepted and what results | Code: no Rust, no file examples, no API calls, no account of how the engine does it inside; also no numbered steps, tutorials, or the reasons behind a design. A code block may show only the syntax of the language the page specifies (BESL) |
+| API | `docs/api` | What does this item do? | Generated from rustdoc comments and `docs-site/openapi/inspector.json`; Git ignores `docs/api/latest` | Hand-written edits; change the doc comment or the schema instead |
+
+Decide in this order and stop at the first yes: does the page tell someone how to change the engine or what a change must preserve (Contribute); does it tell someone how to do something from their application (Use); does it define something to look up (Reference); is it about one Rust item or endpoint (a doc comment or the OpenAPI schema). A page that answers two of these is two pages: keep the steps in Use or Contribute, move the definitions to Reference, and link them. Reference pages are specifications: when one needs an example, write the example in a Use page and link it; when one needs to explain a mechanism, write that in a Contribute design note and link it.
+
+Give every page `title`, `description`, and `icon` front matter. The description is one sentence that answers the section's question for that page; the site shows it in navigation and serves it to agents through `llms.txt`.
+
 Use ISO 24495-1 plain-language principles for in-code comments and API documentation. Make the content relevant, findable, understandable, and usable for its intended developer.
 
 Use Microsoft Writing Style Guide principles for user guides and documentation pages. Address the reader directly, lead with the reader's goal, use everyday words, keep the tone helpful, and make the next action clear.

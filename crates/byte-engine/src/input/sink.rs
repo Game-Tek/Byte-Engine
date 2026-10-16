@@ -57,7 +57,7 @@ impl Capture {
 /// [`Self::pull`] once per tick before lower-priority sinks pull. Use
 /// [`Self::cancel_action`], [`Self::cancel_seat`], or [`Self::cancel_device`]
 /// when the consumer loses focus while holding a control.
-/// See [Input](/docs/reference/input) for the layered input workflow.
+/// See [Respond to input](/docs/use/input) for the layered input workflow.
 pub struct InputSink<A: Allocator + Clone = Global> {
 	handle: SinkHandle,
 	actions: Vec<SinkAction<A>, A>,

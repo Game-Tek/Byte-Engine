@@ -1,11 +1,14 @@
 ---
 title: Compilation and reflection
-description: Understand BESL linking, generated extensions, optimization, reflection, backends, and VM execution.
+description: Understand how BESL is linked, extended from Rust, optimized, reflected, and executed before you change the compiler.
 icon: Binary
 ---
 
-Byte Engine turns authored BESL into a linked semantic graph before it generates
-platform shader source or executes the program in the VM.
+Read this page before you change the BESL parser, linker, optimizer,
+reflection, a backend generator, or the VM. Byte Engine turns authored BESL
+into a linked semantic graph before it generates platform shader source or
+executes the program in the VM. The language itself is specified in the
+[BESL reference](/docs/reference/besl).
 
 ## Follow the compilation path
 
@@ -130,5 +133,5 @@ invocation coordinates, subgroup size, and task or mesh output limits.
 - [`optimization` module](https://docs.rs/byte-engine-besl/latest/besl/optimization/)
 - [`vm` module](https://docs.rs/byte-engine-besl/latest/besl/vm/)
 
-Return to the [BESL language reference](/docs/reference/besl) for the normal
-authoring path.
+The [BESL reference](/docs/reference/besl) specifies the language that this
+path compiles.

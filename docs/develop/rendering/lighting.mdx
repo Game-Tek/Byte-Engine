@@ -1,0 +1,57 @@
+---
+title: Lighting pipeline
+description: Understand how authored light units reach the GPU, how lights are culled, and how shadow maps are pooled before you change them.
+icon: Sun
+---
+
+Read this page before you change light submission, light culling, the lighting
+terms of material evaluation, or the local shadow-map pools. The units and
+limits an application sees are specified in the
+[lighting reference](/docs/reference/lighting).
+
+## Units are resolved on the CPU
+
+Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for
+directional lights and RGB candela for point and cone lights. Local lights use
+inverse-square attenuation, and the PBR material evaluation applies diffuse
+`albedo / π` and specular BRDF terms.
+
+For a local light, the incident RGB quantity at a surface is
+`candela / distance²`, multiplied by the cone factor when applicable. For a
+directional light, the incident RGB quantity is its lux value directly. Shadows
+and material BRDF terms then reduce or redistribute that incident light; they
+do not change the authored unit conversion.
+
+The PBR visibility pipeline and the atmosphere sky apply the camera exposure as
+they write scene light, so later passes such as bloom and tone mapping receive
+exposed light. Scenes drawn with other pipelines ignore exposure.
+
+## Lights are culled per cluster
+
+Every frame, the renderer splits each camera's view into a grid of clusters on
+the GPU and records which lights reach each cluster, so each pixel is shaded
+only with the lights that can reach it and a scene with many small lights costs
+about as much as the few lights near each surface. A point or cone light
+reaches as far as its exposed illuminance stays above 1/1024 lux, so reach
+grows with the light's intensity and the camera exposure. The light list holds
+1,024 lights; the renderer logs a warning and leaves out the rest.
+
+## Shadow maps are pooled
+
+Each selected point light renders six 90-degree views into a cube map with six
+1024 by 1024 depth faces. Each selected cone light renders one perspective view.
+The visibility pipeline keeps a pool of four cone maps and four point-light cube
+maps per sink by default, sized by `render.cone-shadow-map-pool.capacity` and
+`render.point-shadow-map-pool.capacity`.
+
+For each pool, the renderer ranks visible lights by their projected sink
+coverage. It first reserves a slot for each sink's most important light when
+capacity allows, then continues through each sink's next-ranked light in sink
+order. The sinks reached before a partial final round fills the pool receive
+the remaining slots. Other visible local lights stay lit but do not cast
+shadows. After an IES profile reaches the GPU, its dimmed calibrated peak
+candela feeds the same ranking and the automatic shadow coverage.
+
+## Rust API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering)

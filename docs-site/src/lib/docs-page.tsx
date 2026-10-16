@@ -221,21 +221,22 @@ const sections = new Map([
 		'Introduction',
 		{
 			url: '/docs',
-			description: 'Start using Byte Engine.',
+			description: 'What Byte Engine is, what you need, and where to start.',
 		},
 	],
 	[
 		'Use',
 		{
 			url: '/docs/use',
-			description: 'Use Byte Engine to develop.',
+			description: 'Make your application do something, one task per page.',
 		},
 	],
 	[
 		'Contribute',
 		{
 			url: '/docs/develop',
-			description: 'Become a Byte Engine developer.',
+			description:
+				'Change the engine: how to work on it, and what each system expects a change to keep.',
 		},
 	],
 	[
@@ -243,14 +244,14 @@ const sections = new Map([
 		{
 			url: '/docs/reference',
 			description:
-				"Understand the concepts and design principles behind Byte Engine's systems.",
+				'Specifications of each language, format, and model, with no code.',
 		},
 	],
 	[
 		'API',
 		{
 			url: '/docs/api/latest',
-			description: 'Byte Engine HTTP and Rust API documentation.',
+			description: 'Generated Rust and HTTP API reference.',
 		},
 	],
 ]);

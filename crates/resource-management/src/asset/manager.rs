@@ -763,7 +763,7 @@ fn source_ids_from_path(root: &std::path::Path, path: &std::path::Path) -> Optio
 	Some((id, sidecar_source))
 }
 
-const ASSETS_DOCS_PATH: &str = "develop/resource-management/assets";
+const ASSETS_DOCS_PATH: &str = "reference/assets";
 
 #[cfg(test)]
 pub mod tests {

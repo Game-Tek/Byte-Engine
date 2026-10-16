@@ -1,0 +1,165 @@
+---
+title: Asset formats
+description: Look up the source formats Byte Engine bakes, how asset IDs and fragments name them, and the fields of each hand-written format.
+icon: Boxes
+---
+
+An asset is a source file that Byte Engine bakes into one or more resources.
+This page lists the formats the standard setup accepts, how their IDs and
+fragments are written, and the fields of the formats you write by hand. To
+write those files, follow [Author assets](/docs/use/resources/author). To add a
+format or change a handler, read
+[Asset processing](/docs/develop/resource-management/assets).
+
+## Asset IDs
+
+Asset IDs are written as resource-style paths.
+The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
+For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
+
+## Source formats
+
+The standard graphics setup bakes these formats:
+
+- PNG and EXR images
+- `.environment.bead` environment maps
+- glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
+- FBX meshes, skeletons, and skeletal animation clips
+- `.bema` materials and variants
+- `.pipeline` GPU pipeline descriptions
+- `.flipbook` image sequences with a playback rate
+- `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
+- LUT assets
+- WAV and OGG audio
+- standalone `.besl` shaders with `.besl.bead` stage metadata
+
+## JSON5
+
+Byte Engine expects JSON5 wherever an asset format or sidecar uses JSON. Write
+comments and trailing commas in `.bead`, `.bema`, and JSON glTF asset files.
+JSON5 also supports unquoted object keys, single-quoted strings, and other
+authoring conveniences.
+
+Use ordinary JSON when you need compatibility with a tool that does not support
+JSON5. Otherwise, use comments to explain non-obvious asset settings and keep
+trailing commas so later edits produce smaller diffs. Read the
+[JSON5 specification](https://spec.json5.org/) for the complete syntax.
+
+## Flipbooks
+
+A `.flipbook` file is a JSON5 object with these fields:
+
+| Field | Value |
+| --- | --- |
+| `frames_per_second` | The playback rate. |
+| `images` | The image asset IDs, in playback order. |
+
+Baking a flipbook bakes its images and produces a `Flipbook` resource whose
+images are in playback order.
+
+## Detail levels
+
+Mesh processing simplifies every rigid primitive into coarser detail levels,
+each with about half the triangles of the one before, until a level stops
+getting smaller, fits in about two meshlets, or reaches the level limit. Every
+level uses the primitive's own vertices. Each level records an error: the
+estimated largest distance, in model units, between it and full detail. The
+renderer draws the coarsest level whose error covers at most a pixel. Skinned
+primitives keep full detail only.
+
+A model's BEAD file tunes its levels with a `lods` object:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` keeps full detail only. |
+| `max_levels` | `8` | Levels per primitive, counting full detail, from 1 to 8. |
+| `max_error` | `0.25` | The largest error of a level, as a fraction of the primitive's largest extent. |
+| `lock_borders` | `false` | `true` keeps open borders in place. |
+
+Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
+
+## Environment maps
+
+A standalone `.environment.bead` file generates image-based lighting from a
+high-precision source image. It is a JSON5 object with these fields:
+
+| Field | Value |
+| --- | --- |
+| `$schema` | Optional. `byte-engine/schemas/environment.bead.schema.json`, for editor completion. |
+| `source` | The ID of the source image, relative to the application's `assets/` directory. The image doesn't need to be a supported standalone image asset. |
+
+Use a full-sphere, 2:1 latitude-longitude image with at least 16-bit integer or
+floating-point precision. The environment decoder accepts EXR, Radiance HDR,
+16-bit PNG, high-precision TIFF and PNM, and farbfeld sources. It rejects 8-bit
+images so quantization doesn't become baked lighting or reflections. The
+decoder converts supported nonlinear source metadata to linear light before it
+generates the lighting maps. Author TIFF and PNM sources in linear light because
+their decoders don't expose reliable transfer metadata. Untagged PNG and
+farbfeld sources are interpreted as sRGB.
+
+Baking the environment asset retains the source image and adds a diffuse
+irradiance cubemap and eight roughness-prefiltered specular levels. The
+visibility renderer loads the complete set when the asset is selected as the
+world environment.
+
+## Skeletal models
+
+glTF, GLB, and FBX use one import-neutral skeletal representation.
+A `Skeleton` stores transform nodes in parent-before-child order and preserves each node's rest-local translation, rotation, and scale.
+An `Animation` stores sparse translation, rotation, and scale curves against those dense node indices and references the skeleton it was authored for.
+Missing curves deliberately fall back to the skeleton's rest pose, which gives
+CPU animation sampling and blending a stable pose.
+
+A mesh with skins or node animation references the same skeleton, and each primitive retains its dense transform-node index.
+This lets an animation graph apply rigid node motion without reconstructing
+source-file node ownership.
+Skinned meshes additionally store one skin binding per imported mesh instance.
+Each binding maps the palette-local indices in the `Vertex.Joints` stream to skeleton nodes and pairs them with adjusted inverse-bind matrices.
+The adjusted matrices account for the bind-pose transform already flattened into imported vertices, so a CPU-generated global pose can write a GPU palette as `global_joint * adjusted_inverse_bind` without reopening the source file.
+Rigid primitives have no skin binding, and mixed rigid/skinned source files retain primitive-local joint and weight stream offsets.
+FBX vertices without authored cluster weights use a mesh-node fallback palette entry, so they continue following animated mesh ancestors instead of freezing in bind space.
+
+Container fragments address the generated subresources consistently:
+
+- `character.glb#skeleton` or `character.fbx#skeleton` selects the transform hierarchy.
+- `character.glb#animation` or `character.fbx#animation` selects the first clip.
+- `character.glb#animations/0` selects a clip by zero-based index.
+- `character.glb#animations/Walk` selects a clip by exact name.
+
+Without a fragment, FBX and glTF containers use a content-only default that is identical in debug baking and BELD:
+
+- A container with any mesh bakes as `Mesh`.
+- A container without meshes and with exactly one animation bakes as `Animation` and stores its dependency as `#skeleton`.
+- Containers with neither an uncontested mesh nor a single animation require an explicit fragment.
+
+A sibling BEAD manifest can override the first two choices with `"default_resource": "mesh"` or
+`"default_resource": "animation"`. An animation override still requires exactly one clip. Skeleton resources never
+become the unfragmented default and must always be requested through `#skeleton`.
+
+The importers normalize weights to a fixed four-influence vertex format.
+FBX matrix-linear and rigid skins are supported; files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
+glTF morph-weight channels are not part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
+Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
+The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
+
+<Callout type="info" title="CPU animation graph not available">
+	Byte Engine doesn't include a general-purpose CPU animation graph yet. The
+	visibility renderer accepts complete global poses and uploads their derived
+	skin palettes, so your application must provide clip sampling.
+</Callout>
+
+## FBX
+
+An FBX asset ID that defaults to a mesh bakes every polygon-mesh instance into one `Mesh` resource.
+The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
+Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
+
+FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
+Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
+FBX material texture maps are not imported yet.
+
+FBX animation stacks are baked through the format's pivot, layer, and rotation-order rules before becoming engine curves:
+
+- `character.fbx#animation` selects the first animation stack.
+- `character.fbx#animations/0` selects a stack by zero-based index.
+- `character.fbx#animations/Walk` selects a stack by exact name.

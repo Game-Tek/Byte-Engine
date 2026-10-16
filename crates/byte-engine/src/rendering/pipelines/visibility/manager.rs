@@ -417,7 +417,7 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	if enabled && !built_in {
 		log::warn!(
-			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
+			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/use/resources/bake#leave-render-features-out-of-the-bake"
 		);
 	}
 	enabled && built_in
@@ -849,7 +849,7 @@ impl VisibilityPipelineManager {
 			{
 				warn!(
 					"Visibility IES profile is invalid: {id}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See {}",
-					crate::online_docs_url("reference/lighting#use-an-ies-profile")
+					crate::online_docs_url("use/lighting#use-an-ies-profile")
 				);
 			}
 			_ => {}

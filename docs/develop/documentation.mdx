@@ -1,0 +1,137 @@
+---
+title: Write documentation
+description: Put each page in the section its reader expects, and write it in that section's shape.
+icon: BookOpen
+---
+
+Use this page when you add, move, or rewrite a documentation page. It defines
+what each section is for, so a reader who opens a section finds only the kind
+of page they came for.
+
+The documentation has five sections. Each serves one reader with one kind of
+question, and every page in a section has the same shape. A page belongs to
+exactly one section.
+
+## Introduction
+
+The pages at the root of `docs`: [Welcome](/docs),
+[Requirements](/docs/requirements), and [Get started](/docs/get-started).
+
+- **Reader:** Someone who just found Byte Engine.
+- **Question:** What is this, what do I need, and where do I go next?
+- **A page is:** A short orientation that ends by sending the reader into a
+  section.
+- **Never:** A task, a design note, or a definition. Link to it instead.
+
+## Use
+
+`docs/use`, shown as [Use](/docs/use).
+
+- **Reader:** An application developer who depends on the `byte-engine` crate.
+- **Question:** How do I make my application do this?
+- **A page is:** One task. State the goal in the first sentence, give the steps
+  in order, show the code the reader writes, and end with links to the Rust API
+  items the task uses.
+- **Never:** How the engine does it inside, why it was designed that way, or
+  anything about the engine repository. A reader of this section doesn't open
+  the engine's source.
+
+## Contribute
+
+`docs/develop`, shown as [Contribute](/docs/develop).
+
+- **Reader:** Someone changing the engine repository.
+- **Question:** How do I work on the engine, and what must my change keep true?
+- **A page is:** A workflow page (build, test, benchmark, measure, publish,
+  document) or a design note for one system. A design note tells the reader to
+  read it before changing the system, explains how the system is put together
+  and why, states the rules a change must keep, and names the tests that guard
+  them.
+- **Never:** How to use a feature from an application, which is a Use page, or
+  the complete definition of a format or language, which is a Reference page.
+
+## Reference
+
+`docs/reference`, shown as [Reference](/docs/reference).
+
+- **Reader:** Anyone, application developer or contributor, who needs to look
+  something up.
+- **Question:** What exactly is this, and what does it accept?
+- **A page is:** A specification: a complete and neutral description of one
+  thing, such as a language, a file format, a model, or a set of units or
+  limits, written as definitions, tables, and grammar. It states what is
+  accepted and what results. Link to the Use and Contribute pages that put the
+  thing to work.
+- **Never:** Code. No Rust, no file examples, no API calls, and no account of
+  how the engine does something inside. An example belongs in a Use page and a
+  mechanism in a Contribute design note; link to them. The one thing a code
+  block may show is the syntax of the language the page specifies, as the BESL
+  reference does. Also never numbered steps, a tutorial, or the reasons behind
+  a design.
+
+## API
+
+`docs/api`, shown as [API](/docs/api/latest). `scripts/generate-api-docs.sh`
+renders the Rust pages from rustdoc, and the site renders the inspector's HTTP
+pages from `docs-site/openapi/inspector.json`.
+
+- **Reader:** Anyone at one function, type, module, or endpoint.
+- **Question:** What does this item do, and what do I call next?
+- **A page is:** Generated. Nothing under `docs/api/latest` is written by hand,
+  and Git ignores that directory.
+- **Never:** An edit. To change a Rust page, change the doc comment in the
+  source. To change an HTTP page, change the OpenAPI schema.
+
+## Choose the section for a page
+
+Decide by the reader and their question, not by the system the page describes.
+One system usually has pages in several sections. Resource management has a
+Reference page for its terms and lifecycle, Use pages for baking and bundling an
+application's assets, and Contribute pages for asset handlers and storage
+backends.
+
+Ask these questions in order, and stop at the first yes:
+
+1. Does the page tell someone how to change the engine, or what a change must
+   preserve? Put it in Contribute.
+2. Does it tell someone how to do something from their application? Put it in
+   Use.
+3. Does it define something a reader will look up? Put it in Reference.
+4. Is it about one Rust item or one endpoint? Write it in the doc comment or the
+   OpenAPI schema. The API section picks it up.
+
+If a page answers two of these questions, split it. Keep the steps in Use or
+Contribute, move the tables and definitions to Reference, and link the pages to
+each other. A Reference page that needs an example to be clear is a sign that
+a Use page is missing: write the example there and link it.
+
+## Write the page
+
+Use the [Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/)
+for every page in `docs`. Address the reader as *you*, lead with their goal, use
+everyday words, keep sentences short, and make the next action clear. Keep the
+names that developers see in the engine and its tools.
+
+Give every page `title`, `description`, and `icon` front matter. Write the
+description as one sentence that answers the section's question for this page.
+The site shows it in navigation and serves it to agents through `llms.txt`.
+
+Use [ISO 24495-1 plain-language principles](https://www.iso.org/standard/78907.html)
+for Rust doc comments. Keep useful links between types, traits, functions,
+methods, and modules even when a strict plain-language rewrite would remove
+them. Developers use these links to navigate the API. When an API participates
+in a larger workflow, add a short next-step hint with a link to the item a
+developer normally uses next. Add these hints to modules, types, constructors,
+and transition methods. Skip trivial fields and accessors.
+
+## Check the result
+
+Build the site from `docs-site` and check every link:
+
+```bash
+bun run build
+```
+
+The build regenerates the API section first, so it needs the pinned nightly
+toolchain. To check only the hand-written pages against an API section you
+generated earlier, run `bun run build:site` and then `bun run check:links`.

@@ -4,8 +4,10 @@ description: Build, test, and document changes to Byte Engine.
 icon: Hammer
 ---
 
-Use this section when you work on the engine repository. For application
-development, start with [Develop with Byte](/docs/use).
+This section is for contributors: people who change the engine repository. Its
+pages tell you how to build, test, measure, and document a change, and, for each
+system, how it is put together and what a change must keep true. To build an
+application with the engine instead, use [Use Byte Engine](/docs/use).
 
 ## Test your changes
 
@@ -139,16 +141,8 @@ extension.
 
 ## Write documentation
 
-Use [ISO 24495-1 plain-language principles](https://www.iso.org/standard/78907.html)
-for Rust comments and API documentation. Keep useful links between types, traits,
-functions, methods, and modules even when a strict plain-language rewrite would
-remove them. Developers use these links to navigate the API.
-
-When an API participates in a larger workflow, include a short next-step hint
-with a link to the type, method, or trait that a developer normally uses next.
-Add these hints to modules, types, constructors, and transition methods where
-they clarify the path through the engine. Skip trivial fields and accessors.
-
-Use the [Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/)
-for pages in `docs`. Address the reader directly, lead with their goal, use
-familiar words, and make the next action clear.
+Every page in `docs` belongs to one section, chosen by who reads it and what
+they ask. Before you add, move, or rewrite a page, read
+[Write documentation](/docs/develop/documentation) for the section charter, the
+page shape each section expects, and the style guides for pages and doc
+comments.

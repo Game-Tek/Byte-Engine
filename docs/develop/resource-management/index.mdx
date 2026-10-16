@@ -1,20 +1,20 @@
 ---
 title: Resource-management implementation
-description: Work with Byte Engine asset processing, storage, and resource loading.
+description: Change how Byte Engine bakes assets and stores and loads resources.
 icon: Database
 ---
 
-Use this section when you need to work with the current resource-management
-implementation. For the stable domain boundary and terminology, start with the
-[resource-management reference](/docs/reference/resource-management).
+Use this section when you change how Byte Engine bakes assets or stores and
+loads resources. For the stable domain boundary and terminology, start with the
+[resource-management reference](/docs/reference/resource-management). To bake
+and ship an application's resources, follow
+[Prepare resources](/docs/use/resources).
 
-Choose a task:
+Choose a system:
 
-- [Implement or debug asset processing](/docs/develop/resource-management/assets)
-- [Work with resource storage and loading](/docs/develop/resource-management/resources)
-- [.bema material files](/docs/develop/resource-management/bema)
-- [BELD tool](/docs/develop/resource-management/beld)
-- [Install BELD](/docs/develop/resource-management/install-beld)
-- [Bake application resources](/docs/develop/resource-management/baking-app-resources)
-- [Build and bundle an application](/docs/use/build)
-- [Debug loading](/docs/develop/resource-management/debug-loading)
+- [Asset processing](/docs/develop/resource-management/assets): asset handlers,
+  bake tracing, and what processing produces.
+- [Resource storage and loading](/docs/develop/resource-management/resources):
+  storage contracts, the ReDB backend, payload encoding, and readers.
+- [MaterialX documents](/docs/develop/resource-management/materialx): read a
+  document, lower a material to BESL, and fix one that fails to load.

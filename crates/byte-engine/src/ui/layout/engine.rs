@@ -6,7 +6,7 @@
 /// Create an engine with [`Self::new`] or [`Self::with_context`], mount the root
 /// component with [`Self::mount`], then call [`Self::evaluate`] and
 /// [`Self::render`] for each frame.
-/// See the [GUI guide](/docs/develop/gui)
+/// See [Build a user interface](/docs/use/gui)
 /// for component, event, focus, and render-pass integration.
 pub struct Engine<C = ()> {
 	cursor_position: UiPoint,

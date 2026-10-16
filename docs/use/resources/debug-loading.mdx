@@ -46,15 +46,6 @@ During a debug request, Byte Engine re-bakes only the resource whose recorded ve
 The payload hash remains separate.
 It identifies the baked resource data and does not decide whether a source asset is stale.
 
-## Allocation shape
-
-The bake path accepts an allocator for generation-time buffers.
-BELD uses one arena per asset task.
-Several handlers keep decode and processing work inside the same task because allocator-backed source bytes cannot safely cross arbitrary thread boundaries.
-
-This allocation pattern keeps asset processing practical without making temporary
-decode and import data long-lived.
-
 ## Inspect bake messages
 
 In a debug build, call `ResourceManager::resource_trace` after an asset bake.

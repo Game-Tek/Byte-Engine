@@ -126,7 +126,7 @@ Getting the latest unreleased changes requires pulling Byte-Engine from Git and 
 | `crates/math` | Shared math aliases and helpers. |
 | `crates/utils` | Shared allocation, async, sync, collection, and geometry utilities. |
 | `crates/beld` | Installable asset baking and resource inspection CLI. |
-| `docs` | Documentation source for setup, usage, reference, and engine design notes. |
+| `docs` | Documentation source: Introduction, Use (application tasks), Contribute (engine workflow and design notes), Reference (definitions), and the generated API section. |
 | `docs-site` | Documentation site project. |
 
 Where required, crates use the `byte-engine-*` namespace so crates.io can resolve
@@ -212,31 +212,35 @@ Before you make a large change, read the design documentation for the affected s
   boundaries, factories, handles, and listeners.
 - [Input](https://byte-engine.0x44491229.dev/docs/reference/input): device triggers,
   seats, actions, value mappings, and tick policies.
-- [Rendering](https://byte-engine.0x44491229.dev/docs/develop/core/rendering): render orchestrators,
+- [Rendering](https://byte-engine.0x44491229.dev/docs/develop/rendering): render orchestrators,
   render systems, render domains, and render models.
-- [GUI](https://byte-engine.0x44491229.dev/docs/develop/gui): retained async component primitives
-  and UI render flow.
+- [UI](https://byte-engine.0x44491229.dev/docs/develop/gui): retention, invalidation, and the
+  draw path of the UI renderer.
 - [Resource management](https://byte-engine.0x44491229.dev/docs/develop/resource-management): asset
-  baking, resource storage, runtime reads, and `beld`.
+  processing and resource storage.
 
 ## 🧰 Run development checks
 
 ### Contributing documentation
 
-Use [ISO 24495-1 plain-language principles](https://www.iso.org/standard/78907.html)
-for Rust comments and API documentation. Write for the intended developer, state
-the purpose early, use direct language, and organize information so developers
-can find and apply it quickly. Keep useful intra-code links to related types,
-traits, functions, methods, modules, and concepts, even when a strict
-plain-language rewrite would remove them. These links are part of the API's
-navigation. For APIs that participate in a workflow, tell developers which
-linked API they normally use next.
+Every page in [`docs`](docs) belongs to one of five sections, chosen by who
+reads it and what they ask:
 
-Use the [Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/)
-for user guides and pages in [`docs`](docs). Address the reader as **you**, lead
-with the reader's goal, prefer everyday words, keep sentences concise, and make
-the next action clear. Preserve technical terms when they are the names that
-developers see in the engine or its tools.
+| Section | The reader asks |
+| --- | --- |
+| Introduction | What is this, and where do I start? |
+| Use | How do I make my application do this? |
+| Contribute | How do I work on the engine, and what must my change keep true? |
+| Reference | What exactly is this, and what does it accept? A specification, with no code. |
+| API | What does this item do? Generated from doc comments and the inspector's OpenAPI schema. |
+
+Read [Write documentation](https://byte-engine.0x44491229.dev/docs/develop/documentation)
+before you add or move a page. It defines the shape of a page in each section
+and the style: the
+[Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/) for
+pages and [ISO 24495-1 plain language](https://www.iso.org/standard/78907.html)
+for Rust doc comments. [`AGENTS.md`](AGENTS.md) repeats these rules for coding
+agents.
 
 Common checks from the workspace root:
 

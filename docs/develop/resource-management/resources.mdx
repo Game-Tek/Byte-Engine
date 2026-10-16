@@ -89,7 +89,7 @@ Use one ReDB backend instance for a resource directory while it can be updated.
 Drop read-only ReDB backends and their mapped resource backings before reopening
 the directory for writing.
 
-Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/develop/resource-management/baking-app-resources) when you see this warning.
+Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/use/resources/bake) when you see this warning.
 
 The ReDB implementation converts resource URLs into stable resource IDs for
 storage lookup. It maintains class and property indexes so BELD and editor tools

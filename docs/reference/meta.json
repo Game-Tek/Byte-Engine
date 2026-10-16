@@ -1,6 +1,7 @@
 {
 	"title": "Reference",
-	"description": "Understand the concepts and design principles behind Byte Engine's systems.",
+	"description": "Specifications of each Byte Engine language, format, and model, with no code.",
 	"pagesIndex": "index",
+	"pages": ["index", "---Systems---", "input", "lighting", "gui", "resource-management", "---Formats---", "assets", "bema", "particles", "materialx", "---Shaders---", "besl"],
 	"root": true
 }

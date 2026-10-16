@@ -29,7 +29,7 @@ cargo install cargo-bundle
 
 ### 2. Bake your application resources
 
-[Install BELD](/docs/develop/resource-management/install-beld), then run
+[Install BELD](/docs/use/resources/install-beld), then run
 it from the application directory:
 
 ```bash
@@ -47,7 +47,7 @@ beld --destination "$PWD/resources" list
 A release build doesn't compile a missing shader on demand.
 
 If your project has a `config.json`, BELD reads it from the application
-directory to decide which [render features to bake](/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake).
+directory to decide which [render features to bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
 
 Keep `resources/` outside Cargo's `target/` directory. It is an application
 input to packaging. Cargo owns `target/` and might remove it when you run
@@ -187,7 +187,7 @@ directory contains the required DLLs.
 
 ### 1. Bake your application resources
 
-[Install BELD](/docs/develop/resource-management/install-beld), then bake the
+[Install BELD](/docs/use/resources/install-beld), then bake the
 resources for the Windows target from your application directory:
 
 ```powershell

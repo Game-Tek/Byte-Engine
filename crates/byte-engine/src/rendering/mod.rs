@@ -9,7 +9,7 @@
 //! Use [`pipelines::simple`] for debugging or prototypes. The
 //! [`pipelines::visibility`] pipeline is the primary material and lighting path.
 //!
-//! Follow the [physically based lighting reference](/docs/reference/lighting)
+//! Follow [Light a scene](/docs/use/lighting)
 //! to create and submit scene lights with lux, candela, lumens, or nits.
 
 use ::utils::Extent;

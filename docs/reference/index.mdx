@@ -1,16 +1,28 @@
 ---
 title: Reference
-description: Understand the concepts and design principles behind Byte Engine's systems.
+description: Specifications of each Byte Engine language, format, and model, with no code.
 icon: Book
 ---
 
-Use this section to understand the concepts and design principles behind Byte
-Engine's systems.
+This section is for looking things up. Each page is a specification: a
+complete and neutral description of one thing, such as a language, a file
+format, a model, or a set of units or limits. It states what is accepted and
+what results, whether you build an application or change the engine.
+
+Pages here contain no code and don't describe how the engine does its work
+inside. For examples and tasks in your application, use [Use](/docs/use). For a
+system's design and the rules a change must keep, use
+[Contribute](/docs/develop).
 
 Choose a reference:
 
-- [Rust API](/docs/api/latest)
-- [Input](/docs/reference/input)
-- [Resource management](/docs/reference/resource-management)
-- [Physically based lighting](/docs/reference/lighting)
-- [BESL - Byte Engine Shader Language](/docs/reference/besl)
+- [Input](/docs/reference/input): the device, trigger, seat, and action model.
+- [Lighting](/docs/reference/lighting): light shapes, physical units, reach, and limits.
+- [UI](/docs/reference/gui): depth order, renderer limits, and text guarantees.
+- [Resource management](/docs/reference/resource-management): assets, resources, and their lifecycle.
+- [Asset formats](/docs/reference/assets): the source formats Byte Engine bakes and their settings.
+- [.bema files](/docs/reference/bema): material and variant declarations.
+- [.particles files](/docs/reference/particles): particle system fields, modules, and shapes.
+- [MaterialX support](/docs/reference/materialx): the shading models and elements Byte Engine reads.
+- [BESL](/docs/reference/besl): the Byte Engine Shader Language.
+- [Rust API](/docs/api/latest): the generated API reference.

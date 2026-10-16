@@ -1,5 +1,6 @@
 {
-	"title": "Develop for Byte Engine",
-	"description": "Become a Byte Engine developer",
+	"title": "Contribute",
+	"description": "Change the engine: how to work on it, and what each system expects a change to keep.",
+	"pages": ["index", "documentation", "core", "rendering", "resource-management", "besl", "gui"],
 	"root": true
 }

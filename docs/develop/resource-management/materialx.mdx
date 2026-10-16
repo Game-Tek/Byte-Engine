@@ -1,13 +1,15 @@
 ---
 title: MaterialX documents
 description: Read MaterialX shading graphs into Byte Engine and fix documents that fail to load.
-icon: Network
+icon: Cable
 ---
 
 Use this page when you load a `.mtlx` file, split material libraries across
 files, or diagnose a document that Byte Engine refuses. Read the
 [asset processing](/docs/develop/resource-management/assets) page first if you
-are adding a new source format rather than working with MaterialX.
+are adding a new source format rather than working with MaterialX. The
+shading models and elements Byte Engine reads are listed in the
+[MaterialX reference](/docs/reference/materialx).
 
 Byte Engine reads
 [MaterialX](https://materialx.org) version 1.39. A document arrives as a
@@ -136,41 +138,6 @@ that carries a whole library of unused networks costs nothing.
 Call `materialx::besl::lower_material` instead when a document holds several
 materials and you want to pick one out of `Dag::materials`.
 
-### Which materials Byte Engine shades
-
-Four shading models reach the renderer's BRDF directly: `standard_surface`,
-`open_pbr_surface`, `UsdPreviewSurface` and `gltf_pbr`. Two more are read as
-special cases: Disney's `disney_principled`, and `surface_unlit`, whose emission
-carries everything it shows. A model you define yourself works too, as long as
-its node graph produces one of those.
-
-Behind the shading model, the network may use the standard library's value,
-channel, geometric, texture, math, adjustment and compositing nodes, and any
-node graph the document defines.
-
-Byte Engine reports anything else rather than approximating it, because a
-material that renders wrong is harder to notice than one that fails to bake. In
-particular, a surface built out of individual scattering closures, such as a
-`<surface>` node fed by `dielectric_bsdf` and `oren_nayar_diffuse_bsdf`, does
-not map onto the renderer's fixed BRDF. Rebuild it on one of the models above,
-or bake the network into textures with the MaterialX tools.
-
-### Where the shaded surface differs from the document
-
-Three things behave differently, because the material stage carries less than a
-full renderer does:
-
-- Object-space and model-space geometric properties read their world-space
-  value. The stage reconstructs the shaded point in world space alone.
-- Images sample with the mesh's own texture coordinates. An `<image>` whose
-  `texcoord` is driven by anything else, such as a `place2d` or a `tiledimage`,
-  is reported instead of being sampled at the wrong place.
-- Shading models take a world-space normal, which is projected onto the stage's
-  tangent frame. The projection is exact, because the frame is orthonormal.
-
-Coat, sheen, transmission and subsurface inputs are read but not shaded, because
-the renderer's BRDF has no parameter for them.
-
 ## Fix a document that fails to load
 
 ### Unknown nodedef, unknown nodegraph, or unknown outputs
@@ -204,15 +171,5 @@ that caused it, so report it next to the document name and fix the markup.
 
 The material reached something the renderer does not evaluate. The error names
 the node and its category. See
-[which materials Byte Engine shades](#which-materials-byte-engine-shades) for
+[the shading models Byte Engine supports](/docs/reference/materialx#shading-models) for
 what to rebuild it on.
-
-## What Byte Engine reads
-
-Everything that shapes the graph: nodes, nodegraphs both functional and
-compound, node declarations and their inheritance, implementations, custom
-types, geometric property declarations, units, and material variants.
-
-Elements that assign materials to geometry, `<look>` and its companions, and
-elements that only describe how a graph is drawn in an editor are recognised and
-skipped, because neither changes the graph.

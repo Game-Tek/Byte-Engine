@@ -23,9 +23,6 @@ use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
-/// Configuration namespace of the runtime SSGI controls.
-pub const SSGI_CONFIGURATION_PREFIX: &str = "render.ssgi.";
-
 /// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
 pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
 

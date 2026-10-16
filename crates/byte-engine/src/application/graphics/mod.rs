@@ -185,16 +185,15 @@ impl GraphicsApplication {
 		let application_events = application.events().clone();
 
 		let resources_path = resolve_application_path(application.get_parameter("resources.path"), "resources");
+		// Parameters go to the setup lanes as a slice, which can be shared, where the application cannot.
+		let parameters = application.parameters();
+		let render_parameters = parameters.scope(RENDER_PARAMETERS);
 
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
 		let mut alley = crate::core::alley::Alley::new();
-		// Two applications on one machine cannot share a port, and a typo should not silently fall back to the default.
-		let inspector_port = application
-			.get_parameter("inspector.port")
-			.map_or(crate::inspector::http::DEFAULT_PORT, |port| {
-				port.parse().unwrap_or_else(|error| panic!("{error}"))
-			});
+		// The renderer's port takes render-pass states; it subscribes before the startup parameters are queued below.
+		let render_pass_configuration = configuration.register(RENDER_PASS_CONFIGURATION);
 		let transforms = world_messages.channel::<TransformationUpdate>();
 		let mut storage = None;
 		let mut services = None;
@@ -242,7 +241,7 @@ impl GraphicsApplication {
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
 						let waker = LoopWaker::default();
-						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), inspector_port);
+						let http_inspector = HttpInspectorServer::new(inspector, waker.clone(), parameters.scope("inspector"));
 
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
@@ -266,11 +265,11 @@ impl GraphicsApplication {
 					});
 				},
 				|| {
-					let graphics_device = rendering::GraphicsDevice::new(&application);
+					let graphics_device = rendering::GraphicsDevice::new(render_parameters);
 					let (renderer, servers) = rendering::renderer::Renderer::new(
 						&graphics_device,
-						&application,
-						&configuration,
+						render_parameters,
+						render_pass_configuration,
 						Arc::clone(&metrics),
 					);
 					(graphics_device, renderer, servers)
@@ -308,7 +307,7 @@ impl GraphicsApplication {
 		let render_on_demand = application
 			.get_parameter("render-on-demand")
 			.is_some_and(|parameter| parameter.as_bool_simple());
-		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_PARAMETER_PREFIX);
+		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_CONFIGURATION);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
@@ -885,7 +884,10 @@ impl GraphicsApplication {
 	/// Returns the loader and the renderer together, for setup that shares render buffers with the loader.
 	pub(crate) fn loader_and_renderer_mut(&mut self) -> (&mut rendering::loading::Loader, &mut Renderer) {
 		if let LoaderState::Unused = self.loader {
-			self.loader = LoaderState::Pending(rendering::loading::Loader::new(&self.graphics_device, &self.application));
+			self.loader = LoaderState::Pending(rendering::loading::Loader::new(
+				&self.graphics_device,
+				self.application.parameters().scope("render.loading"),
+			));
 		}
 		let LoaderState::Pending(loader) = &mut self.loader else {
 			panic!(
@@ -945,6 +947,16 @@ impl GraphicsApplication {
 		self.application.message_bus()
 	}
 
+	/// Registers a system's runtime configuration under `prefix` and queues the startup parameters under it.
+	///
+	/// The port subscribes before the parameters are queued, so it reports every one of them. The system reads
+	/// each parameter by its name inside `prefix`.
+	pub(crate) fn configure(&self, prefix: &str) -> crate::configuration::ConfigurationPort {
+		let port = self.configuration.register(prefix);
+		queue_startup_parameters(self.application.parameters(), &self.configuration, prefix);
+		port
+	}
+
 	/// Returns the resolved startup parameters.
 	///
 	/// Next, hand a system its subtree with [`Parameters::scope`], such as
@@ -999,6 +1011,9 @@ impl Parameters for GraphicsApplication {
 /// Converts the resolved startup parameters under `prefix` into asynchronous configuration events.
 ///
 /// Register the port that handles `prefix` first; it then reports each parameter as set or not set.
+/// The configuration prefix of render-pass states, each named by its pass, such as `render.pass.bloom`.
+const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
+
 pub(crate) fn queue_startup_parameters(parameters: &[Parameter], configuration: &Configuration, prefix: &str) {
 	for parameter in parameters {
 		if parameter.name().starts_with(prefix) {
@@ -1149,17 +1164,17 @@ mod tests {
 	#[test]
 	fn startup_parameters_queue_only_configuration_under_the_prefix() {
 		let configuration = Configuration::new();
-		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let port = configuration.register(RENDER_PASS_CONFIGURATION);
 		let parameters = [
 			Parameter::new("render.pass.bloom", "bypassed"),
 			Parameter::new("audio.master.gain", "0.5"),
 		];
 
-		queue_startup_parameters(&parameters, &configuration, RENDER_PASS_PARAMETER_PREFIX);
+		queue_startup_parameters(&parameters, &configuration, RENDER_PASS_CONFIGURATION);
 
 		let update = port.read().expect("render-pass startup configuration");
 
-		assert_eq!(update.parameter(), "render.pass.bloom");
+		assert_eq!(update.parameter(), "bloom");
 		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::from("bypassed"));
 		assert!(port.read().is_none());
 		assert_eq!(configuration.events().len(), 1);
@@ -1223,12 +1238,7 @@ use crate::{
 	rendering::{
 		pipelines::{
 			simple::SimplePipelineManager,
-			visibility::{
-				DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER,
-				DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
-				GEOMETRY_CAPACITY_PARAMETER_PREFIX, SHADOW_MAP_BUDGET_PARAMETER, VisibilityPipelineManager,
-				VisibilityPipelineSettings,
-			},
+			visibility::{RENDER_PARAMETERS, VisibilityPipelineManager, VisibilityPipelineSettings},
 		},
 		render_passes::{
 			bloom::{BloomPass, BloomPassSettings},
@@ -1237,7 +1247,6 @@ use crate::{
 			sky::AtmosphereSkyRenderPass,
 			smaa::SmaaPass,
 		},
-		renderer::RENDER_PASS_PARAMETER_PREFIX,
 	},
 	time::MediaTime,
 	ui::{

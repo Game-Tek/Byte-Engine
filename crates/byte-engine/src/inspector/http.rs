@@ -10,6 +10,7 @@ use oxhttp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::application::parameters::Parameters;
 use crate::{
 	application::LoopWaker,
 	core::{EntityHandle, factory::Handle},
@@ -74,10 +75,18 @@ pub struct HttpInspectorServer {
 pub const DEFAULT_PORT: u16 = 6680;
 
 impl HttpInspectorServer {
-	/// Starts the HTTP inspector transport on the loopback interface at `port`, usually [`DEFAULT_PORT`].
+	/// Starts the HTTP inspector transport on the loopback interface.
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
-	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker, port: u16) -> Self {
+	///
+	/// # Parameters
+	/// Read from `parameters`, the `inspector` subtree of the application's:
+	/// - `port`: The port to serve on, so two applications can run on one machine. Defaults to [`DEFAULT_PORT`]; a
+	///   value that is not a port stops startup.
+	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker, parameters: impl Parameters) -> Self {
+		let port = parameters
+			.get_parameter("port")
+			.map_or(DEFAULT_PORT, |port| port.parse().unwrap_or_else(|error| panic!("{error}")));
 		Self::spawn(
 			inspector,
 			waker,

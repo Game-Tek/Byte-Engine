@@ -155,7 +155,8 @@ impl ConfigurationUpdate {
 		self.id
 	}
 
-	/// Returns the parameter name routed to this system.
+	/// Returns the parameter name inside the prefix the receiving port registered, so a system reads its
+	/// parameters by their own names wherever its caller placed them.
 	pub fn parameter(&self) -> &str {
 		&self.parameter
 	}
@@ -204,7 +205,8 @@ impl Configuration {
 		}
 	}
 
-	/// Registers the system that owns parameters beginning with `prefix`.
+	/// Registers the system that owns parameters beginning with `prefix`, which the caller chooses: the port
+	/// delivers each parameter by the rest of its name.
 	///
 	/// Next, keep the returned port with that system and call
 	/// [`ConfigurationPort::read`] when the system is ready to queue updates.
@@ -228,17 +230,17 @@ impl Configuration {
 	pub fn update(&self, parameter: impl Into<String>, value: impl Into<ConfigurationValue>) -> ConfigurationEventId {
 		let parameter = parameter.into();
 		let value = value.into();
-		let (id, sender) = {
+		let (id, route) = {
 			let mut state = self.state.lock();
 			let id = ConfigurationEventId(state.next_event_id);
 			state.next_event_id += 1;
 
-			let sender = state
+			let route = state
 				.routes
 				.iter()
 				.filter(|route| parameter.starts_with(&route.prefix))
 				.max_by_key(|route| route.prefix.len())
-				.map(|route| route.sender.clone());
+				.map(|route| (route.sender.clone(), route.prefix.len()));
 
 			state.events.push_back(ConfigurationEvent {
 				id,
@@ -247,12 +249,15 @@ impl Configuration {
 				state: ConfigurationUpdateState::Pending,
 			});
 
-			(id, sender)
+			(id, route)
 		};
 
-		let update = ConfigurationUpdate { id, parameter, value };
-		match sender {
-			Some(sender) => match sender.try_send(update) {
+		match route {
+			Some((sender, prefix_len)) => match sender.try_send(ConfigurationUpdate {
+				id,
+				parameter: parameter[prefix_len..].to_string(),
+				value,
+			}) {
 				Ok(()) => {}
 				Err(TrySendError::Full(_)) => self.finish_not_set(
 					id,
@@ -311,24 +316,18 @@ impl ConfigurationPort {
 
 	/// Applies every queued update to `settings` and reports each result.
 	///
-	/// `with_parameter` takes the parameter name without `prefix` and returns the updated settings with the
-	/// effective value, or the reason the value was not set. An update outside `prefix` is reported with
-	/// `namespace_error`. Systems with runtime controls call this once per frame before they use their settings.
+	/// `with_parameter` takes the parameter name inside the port's prefix and returns the updated settings with
+	/// the effective value, or the reason the value was not set. Systems with runtime controls call this once per
+	/// frame before they use their settings.
 	// Only render settings read typed values today, and they exist only in headed builds.
 	#[cfg(feature = "headed")]
 	pub(crate) fn drain<S: Copy>(
 		&self,
-		prefix: &str,
-		namespace_error: &'static str,
 		settings: &mut S,
 		with_parameter: impl Fn(S, &str, &ConfigurationValue) -> Result<(S, ConfigurationValue), String>,
 	) {
 		while let Some(update) = self.read() {
-			let Some(parameter) = update.parameter().strip_prefix(prefix) else {
-				self.not_set(update.id(), namespace_error);
-				continue;
-			};
-			match with_parameter(*settings, parameter, update.value()) {
+			match with_parameter(*settings, update.parameter(), update.value()) {
 				Ok((updated, effective_value)) => {
 					*settings = updated;
 					self.set(update.id(), effective_value);
@@ -369,7 +368,7 @@ mod tests {
 		let update = port.read().expect("render configuration update");
 
 		assert_eq!(update.id(), id);
-		assert_eq!(update.parameter(), "render.pass.bloom");
+		assert_eq!(update.parameter(), "bloom");
 		assert_eq!(update.value(), &ConfigurationValue::from("bypassed"));
 
 		port.set(id, ConfigurationValue::from("bypassed"));

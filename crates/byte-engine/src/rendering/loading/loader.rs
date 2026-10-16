@@ -56,9 +56,9 @@ impl Loader {
 	/// Creates the loader context on `device`'s copy queue and the staging memory lanes share.
 	///
 	/// # Parameters
-	/// - `render.loading.batch-window`: Milliseconds a batch collects uploads before the loader submits it.
-	///   Defaults to 4.
-	pub fn new(device: &GraphicsDevice, parameters: &dyn Parameters) -> Self {
+	/// Read from `parameters`, the `render.loading` subtree of the application's:
+	/// - `batch-window`: Milliseconds a batch collects uploads before the loader submits it. Defaults to 4.
+	pub fn new(device: &GraphicsDevice, parameters: impl Parameters) -> Self {
 		let mut context = device.create_context();
 		let (staging_buffer, staging, staging_worker) =
 			UploadStagingArena::create(&mut context, STAGING_BYTE_COUNT, "Loader Staging Buffer");
@@ -69,7 +69,7 @@ impl Loader {
 			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Loader I/O"))
 			.ok();
 		let batch_window = parameters
-			.get_parameter("render.loading.batch-window")
+			.get_parameter("batch-window")
 			.and_then(|parameter| parameter.parse::<f64>().ok())
 			.filter(|milliseconds| milliseconds.is_finite() && *milliseconds >= 0.0)
 			.map_or(DEFAULT_BATCH_WINDOW, |milliseconds| {

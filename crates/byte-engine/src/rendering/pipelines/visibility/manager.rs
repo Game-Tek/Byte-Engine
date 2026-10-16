@@ -25,11 +25,10 @@ use super::layout::{
 	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
-use super::lod::{LOD_CONFIGURATION_PREFIX, LodSettings, LodView};
+use super::lod::{LodSettings, LodView};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
-	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
+	ContactShadowSettings, GtaoSettings, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
 	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkState, VisibilityScene};
@@ -43,6 +42,7 @@ use super::skinning::{
 	DualQuaternion, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass,
 	append_dual_quaternion_palette,
 };
+use crate::application::parameters::Parameters;
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
@@ -58,22 +58,22 @@ use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, UpdatePose, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
-/// The startup parameter that sets the shadow-map memory every light shares, in mebibytes. See
-/// [`VisibilityPipelineSettings::with_shadow_map_budget_mib`].
-pub const SHADOW_MAP_BUDGET_PARAMETER: &str = "render.shadow-maps.budget-mb";
-/// The prefix of the startup parameters that set each scene-wide geometry buffer's element count, such as
-/// `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
-pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "render.geometry.";
-/// The startup parameters that set how far directional shadows reach, in meters, and the share of their cascade
-/// splits that is logarithmic. See [`CascadeSplits`].
-pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "render.directional-shadows.distance";
-pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "render.directional-shadows.split-blend";
-/// The startup parameter that sets what directional shadow cascades cover: `receivers` or `frustum`. See
-/// [`CascadeFitting`].
-pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "render.directional-shadows.fitting";
-/// The startup parameter that sets the directional cascades' resolution in texels per side. See
-/// [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
-pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "render.directional-shadows.resolution";
+/// The startup parameter, inside the `render` subtree, that sets the shadow-map memory every light shares, in
+/// mebibytes. See [`VisibilityPipelineSettings::with_shadow_map_budget_mib`].
+pub const SHADOW_MAP_BUDGET_PARAMETER: &str = "shadow-maps.budget-mb";
+/// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
+/// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
+pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
+/// The startup parameters, inside the `render` subtree, that set how far directional shadows reach, in meters, and
+/// the share of their cascade splits that is logarithmic. See [`CascadeSplits`].
+pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "directional-shadows.distance";
+pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "directional-shadows.split-blend";
+/// The startup parameter, inside the `render` subtree, that sets what directional shadow cascades cover:
+/// `receivers` or `frustum`. See [`CascadeFitting`].
+pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitting";
+/// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
+/// side. See [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
+pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
@@ -101,6 +101,61 @@ impl Default for VisibilityPipelineSettings {
 }
 
 impl VisibilityPipelineSettings {
+	/// Reads the settings from the `render` subtree of the startup parameters, such as
+	/// `app.parameters().scope("render")`, panicking on any value it cannot use.
+	///
+	/// Every setting rejects a value it cannot parse instead of silently keeping its default. The features read
+	/// here are the ones BELD baked from the same parameters, so the runtime creates exactly the passes the shaders
+	/// expect.
+	pub fn from_parameters(parameters: impl Parameters) -> Self {
+		fn parse<T: std::str::FromStr>(parameters: &impl Parameters, name: &str) -> Option<T>
+		where
+			T::Err: std::fmt::Display,
+		{
+			parameters
+				.get_parameter(name)
+				.map(|parameter| parameter.parse().unwrap_or_else(|error| panic!("{error}")))
+		}
+		let mut settings = Self::default();
+		if let Some(mebibytes) = parse(&parameters, SHADOW_MAP_BUDGET_PARAMETER) {
+			settings = settings
+				.with_shadow_map_budget_mib(mebibytes)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.
+		let mut geometry_capacity = settings.geometry_capacity();
+		for (stream, capacity) in [
+			("vertex", &mut geometry_capacity.vertices),
+			("vertex-index", &mut geometry_capacity.vertex_indices),
+			("triangle", &mut geometry_capacity.triangles),
+			("meshlet", &mut geometry_capacity.meshlets),
+			("skinning-vertex", &mut geometry_capacity.skinning_vertices),
+		] {
+			if let Some(value) = parse(&parameters, &format!("{GEOMETRY_CAPACITY_PARAMETER_PREFIX}{stream}-capacity")) {
+				*capacity = value;
+			}
+		}
+		settings = settings
+			.with_geometry_capacity(geometry_capacity)
+			.unwrap_or_else(|reason| panic!("{reason}"));
+		// Directional shadow coverage: each parameter overrides one part of the default splits.
+		let default_splits = settings.cascade_splits();
+		let shadow_distance = parse(&parameters, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
+		let split_blend =
+			parse(&parameters, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
+		settings = settings
+			.with_cascade_splits(CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")));
+		if let Some(fitting) = parse(&parameters, DIRECTIONAL_SHADOW_FITTING_PARAMETER) {
+			settings = settings.with_cascade_fitting(fitting);
+		}
+		if let Some(resolution) = parse(&parameters, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER) {
+			settings = settings
+				.with_directional_shadow_map_resolution(resolution)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		settings.with_features(VisibilityFeatures::from_parameters(parameters))
+	}
+
 	/// Sets how many vertices, triangles, and meshlets the scene-wide geometry buffers hold.
 	///
 	/// Meshes that would overflow a buffer are rejected at upload, so size this for the largest resident scene.
@@ -966,30 +1021,14 @@ impl VisibilityPipelineManager {
 	/// Applies queued GTAO, SSGI, contact-shadow, and detail level controls before any sink records this frame's
 	/// commands.
 	fn apply_runtime_settings(&mut self) {
-		self.lod_configuration.drain(
-			LOD_CONFIGURATION_PREFIX,
-			"Detail level parameter was not set. The most likely cause is that the parameter is outside the `render.lod.` namespace.",
-			&mut self.lod_settings,
-			LodSettings::with_parameter,
-		);
-		self.gtao_configuration.drain(
-			GTAO_CONFIGURATION_PREFIX,
-			"GTAO parameter was not set. The most likely cause is that the parameter is outside the `render.gtao.` namespace.",
-			&mut self.gtao_settings,
-			GtaoSettings::with_parameter,
-		);
-		self.ssgi_configuration.drain(
-			SSGI_CONFIGURATION_PREFIX,
-			"SSGI parameter was not set. The most likely cause is that the parameter is outside the `render.ssgi.` namespace.",
-			&mut self.ssgi_settings,
-			SsgiSettings::with_parameter,
-		);
-		self.contact_shadow_configuration.drain(
-			CONTACT_SHADOWS_CONFIGURATION_PREFIX,
-			"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
-			&mut self.contact_shadow_settings,
-			ContactShadowSettings::with_parameter,
-		);
+		self.lod_configuration
+			.drain(&mut self.lod_settings, LodSettings::with_parameter);
+		self.gtao_configuration
+			.drain(&mut self.gtao_settings, GtaoSettings::with_parameter);
+		self.ssgi_configuration
+			.drain(&mut self.ssgi_settings, SsgiSettings::with_parameter);
+		self.contact_shadow_configuration
+			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
 		let features = self.settings.features;
 		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
@@ -1225,7 +1264,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
 			format!(
-				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} MiB set by `{SHADOW_MAP_BUDGET_PARAMETER}` holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
+				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} MiB set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
 				self.settings.shadow_map_budget_mib, shadows.unshadowed_count,
 			)
 		});

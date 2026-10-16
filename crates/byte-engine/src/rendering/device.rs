@@ -26,30 +26,31 @@ impl GraphicsDevice {
 	/// Creates the device, its graphics queue, and its copy queue from application parameters.
 	///
 	/// # Parameters
-	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
-	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
-	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
-	/// - `render.debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `render.debug`.
-	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
-	/// - `render.pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
+	/// Read from `parameters`, the `render` subtree of the application's:
+	/// - `debug`: Enables validation layers for debugging. Defaults to true on debug builds.
+	/// - `debug.dump`: Enables API dump for debugging. Defaults to false.
+	/// - `debug.extended`: Enables extended validation for debugging. Defaults to false.
+	/// - `debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `debug`.
+	/// - `ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
+	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
-	pub fn new(parameters: &dyn Parameters) -> Self {
+	pub fn new(parameters: impl Parameters) -> Self {
 		let flag = |name: &str, default: bool| {
 			parameters
 				.get_parameter(name)
 				.map_or(default, |parameter| parameter.as_bool_simple())
 		};
-		let validation = flag("render.debug", cfg!(debug_assertions));
+		let validation = flag("debug", cfg!(debug_assertions));
 
 		let mut features = ghi::device::Features::new()
 			.validation(validation)
-			.api_dump(flag("render.debug.dump", false))
-			.gpu_validation(flag("render.debug.extended", false))
-			.debug_labels(flag("render.debug.labels", validation))
+			.api_dump(flag("debug.dump", false))
+			.gpu_validation(flag("debug.extended", false))
+			.debug_labels(flag("debug.labels", validation))
 			.debug_log_function(log_graphics_error)
 			.geometry_shader(false)
-			.mesh_shading(flag("render.ghi.features.mesh-shading", true))
-			.pipeline_cache(parameters.get_parameter("render.pipeline-cache.path").is_some());
+			.mesh_shading(flag("ghi.features.mesh-shading", true))
+			.pipeline_cache(parameters.get_parameter("pipeline-cache.path").is_some());
 
 		let mut instance = match ghi::implementation::Instance::new(features) {
 			Ok(instance) => instance,

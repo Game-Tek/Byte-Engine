@@ -169,14 +169,17 @@ impl Renderer {
 	/// compilation servers that compile its pipelines. Run each server with [`PipelineManagerServer::run`] on a thread
 	/// that owns it.
 	///
+	/// `render_pass_configuration` is the port render-pass states arrive on, each named by its pass.
+	///
 	/// # Parameters
-	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
+	/// Read from `parameters`, the `render` subtree of the application's:
+	/// - `startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
-	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
+	/// - `pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
-	/// - `render.swapchain.images`: Sets how many swapchain images each window requests. Backends clamp it to what
+	/// - `swapchain.images`: Sets how many swapchain images each window requests. Backends clamp it to what
 	///   they support (Metal takes 2 or 3). Defaults to the backend's choice for the presentation mode.
-	/// - `render.pipeline-cache.path`: Keeps compiled pipelines in this file, so later runs create them without
+	/// - `pipeline-cache.path`: Keeps compiled pipelines in this file, so later runs create them without
 	///   compiling shaders. The file is read here, before any pipeline is created. When the renderer drops, the
 	///   pipelines compiled since are appended to it, and a run that compiled none does not touch it. Create `device` with the same parameters, because the device decides whether it keeps a cache.
 	///   Defaults to none, which leaves pipeline caching to the GPU driver.
@@ -188,16 +191,16 @@ impl Renderer {
 	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
 	pub fn new(
 		device: &crate::rendering::GraphicsDevice,
-		parameters: &dyn Parameters,
-		configuration: &Configuration,
+		parameters: impl Parameters,
+		render_pass_configuration: ConfigurationPort,
 		metrics: Arc<Metrics>,
 	) -> (Self, Vec<PipelineManagerServer>) {
 		let defer_first_frame_sink_setup = parameters
-			.get_parameter("render.startup.defer-sink-setup")
+			.get_parameter("startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
 			.unwrap_or(false);
 		let swapchain_images = parameters
-			.get_parameter("render.swapchain.images")
+			.get_parameter("swapchain.images")
 			.and_then(|parameter| parameter.parse::<u8>().ok())
 			.filter(|count| *count > 0);
 
@@ -205,7 +208,7 @@ impl Renderer {
 		context.set_frames_in_flight(2);
 
 		let pipeline_cache_path = parameters
-			.get_parameter("render.pipeline-cache.path")
+			.get_parameter("pipeline-cache.path")
 			.map(|parameter| std::path::PathBuf::from(parameter.value()));
 		// The compilation servers below share the device's cache, so it is loaded before they can create pipelines.
 		if let Some(path) = &pipeline_cache_path {
@@ -221,7 +224,7 @@ impl Renderer {
 			}
 		}
 		let pipeline_compilation_server_count = parameters
-			.get_parameter("render.pipeline-compilation.threads")
+			.get_parameter("pipeline-compilation.threads")
 			.and_then(|parameter| parameter.parse::<usize>().ok())
 			.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| (count.get() / 2).clamp(1, 4)));
 		let (pipeline_compilation_client, pipeline_compilation_manager, pipeline_compilation_servers) =
@@ -258,7 +261,7 @@ impl Renderer {
 			scene_backgrounds: SmallVec::new(),
 			scene_presentation_copies: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
-			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
+			configuration: render_pass_configuration,
 			pending_configuration: VecDeque::new(),
 			render_pass_states: RenderPassStates::default(),
 
@@ -1187,14 +1190,12 @@ use tracing::debug_span;
 use utils::{Box, Extent};
 
 use super::{
-	configuration::{
-		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration, set_render_pass_state,
-	},
+	configuration::{PendingRenderPassConfiguration, apply_render_pass_configuration, set_render_pass_state},
 	targets::{FirstUse, RenderNode, RenderTargets},
 };
 use crate::{
 	application::parameters::Parameters,
-	configuration::{Configuration, ConfigurationPort},
+	configuration::ConfigurationPort,
 	core::{EntityHandle, factory::Handle, listener::Listener},
 	gameplay::transform::TransformationUpdate,
 	metrics::{MetricId, MetricKind, Metrics},

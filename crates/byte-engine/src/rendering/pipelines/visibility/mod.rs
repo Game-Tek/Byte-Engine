@@ -36,11 +36,9 @@ pub use features::{GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, VisibilityFeatures
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;
-pub use lod::LOD_CONFIGURATION_PREFIX;
 pub use manager::{
 	DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
 	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, SHADOW_MAP_BUDGET_PARAMETER,
 	VisibilityPipelineManager, VisibilityPipelineSettings,
 };
-pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX};
 pub use shader_generator::VisibilityShaderGenerator;

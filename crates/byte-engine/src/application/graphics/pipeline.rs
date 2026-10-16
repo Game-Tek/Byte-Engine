@@ -93,28 +93,17 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory) to select the HDR image used for ambient and
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
-	use crate::rendering::pipelines::visibility::{
-		CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, LOD_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX,
-	};
-
-	let visibility_pipeline_settings = visibility_pipeline_settings(application);
-	// Each port subscribes before its startup parameters are queued, so it reports every one of them.
+	let visibility_pipeline_settings = VisibilityPipelineSettings::from_parameters(
+		application
+			.parameters()
+			.scope(rendering::pipelines::visibility::RENDER_PARAMETERS),
+	);
 	let [
 		gtao_configuration,
 		ssgi_configuration,
 		contact_shadow_configuration,
 		lod_configuration,
-	] = [
-		GTAO_CONFIGURATION_PREFIX,
-		SSGI_CONFIGURATION_PREFIX,
-		CONTACT_SHADOWS_CONFIGURATION_PREFIX,
-		LOD_CONFIGURATION_PREFIX,
-	]
-	.map(|prefix| {
-		let port = application.configuration.register(prefix);
-		super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
-		port
-	});
+	] = ["render.gtao.", "render.ssgi.", "render.contact-shadows.", "render.lod."].map(|prefix| application.configure(prefix));
 
 	let application_resource_manager = application.resource_manager.clone();
 	let (loader, renderer) = application.loader_and_renderer_mut();
@@ -177,63 +166,6 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 	lanes: impl IntoIterator<Item = F> + Send + 'static,
 ) {
 	application.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane).detach()));
-}
-
-/// Resolves the visibility pipeline's startup parameters, panicking on any value it cannot use.
-fn visibility_pipeline_settings(application: &GraphicsApplication) -> VisibilityPipelineSettings {
-	// Every setting below rejects a value it cannot parse instead of silently keeping its default.
-	fn parse<T: std::str::FromStr>(application: &GraphicsApplication, name: &str) -> Option<T>
-	where
-		T::Err: std::fmt::Display,
-	{
-		application
-			.get_parameter(name)
-			.map(|parameter| parameter.parse().unwrap_or_else(|error| panic!("{error}")))
-	}
-	let mut settings = VisibilityPipelineSettings::default();
-	if let Some(mebibytes) = parse(application, SHADOW_MAP_BUDGET_PARAMETER) {
-		settings = settings
-			.with_shadow_map_budget_mib(mebibytes)
-			.unwrap_or_else(|reason| panic!("{reason}"));
-	}
-	// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.
-	let mut geometry_capacity = settings.geometry_capacity();
-	for (stream, capacity) in [
-		("vertex", &mut geometry_capacity.vertices),
-		("vertex-index", &mut geometry_capacity.vertex_indices),
-		("triangle", &mut geometry_capacity.triangles),
-		("meshlet", &mut geometry_capacity.meshlets),
-		("skinning-vertex", &mut geometry_capacity.skinning_vertices),
-	] {
-		if let Some(value) = parse(application, &format!("{GEOMETRY_CAPACITY_PARAMETER_PREFIX}{stream}-capacity")) {
-			*capacity = value;
-		}
-	}
-	settings = settings
-		.with_geometry_capacity(geometry_capacity)
-		.unwrap_or_else(|reason| panic!("{reason}"));
-	// Directional shadow coverage: each parameter overrides one part of the default splits.
-	let default_splits = settings.cascade_splits();
-	let shadow_distance = parse(application, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
-	let split_blend =
-		parse(application, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
-	settings = settings.with_cascade_splits(
-		crate::rendering::csm::CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")),
-	);
-	if let Some(fitting) = parse(application, DIRECTIONAL_SHADOW_FITTING_PARAMETER) {
-		settings = settings.with_cascade_fitting(fitting);
-	}
-	if let Some(resolution) = parse(application, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER) {
-		settings = settings
-			.with_directional_shadow_map_resolution(resolution)
-			.unwrap_or_else(|reason| panic!("{reason}"));
-	}
-	// The same parameters chose what BELD baked, so the runtime creates exactly the passes the shaders expect.
-	settings.with_features(rendering::pipelines::visibility::VisibilityFeatures::from_parameters(
-		application
-			.parameters()
-			.scope(rendering::pipelines::visibility::RENDER_PARAMETERS),
-	))
 }
 
 /// Installs the retained UI render pass fed by UI render messages from `ui`.
@@ -496,16 +428,9 @@ pub fn setup_motion_blur_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::motion_blur::MotionBlurPassSettings,
 ) {
-	use rendering::render_passes::motion_blur::{MOTION_BLUR_CONFIGURATION_PREFIX, MotionBlurControls, MotionBlurPass};
+	use rendering::render_passes::motion_blur::{MotionBlurControls, MotionBlurPass};
 
-	// The port subscribes before its startup parameters are queued, so it reports every one of them.
-	let port = application.configuration.register(MOTION_BLUR_CONFIGURATION_PREFIX);
-	super::queue_startup_parameters(
-		application.application.parameters(),
-		&application.configuration,
-		MOTION_BLUR_CONFIGURATION_PREFIX,
-	);
-	let controls = MotionBlurControls::new(settings, port);
+	let controls = MotionBlurControls::new(settings, application.configure("render.motion-blur."));
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {

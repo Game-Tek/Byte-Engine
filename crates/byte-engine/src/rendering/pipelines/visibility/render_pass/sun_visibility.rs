@@ -26,9 +26,6 @@ use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
-/// The configuration namespace for contact-shadow runtime controls.
-pub const CONTACT_SHADOWS_CONFIGURATION_PREFIX: &str = "render.contact-shadows.";
-
 /// The `ContactShadowSettings` struct defines the runtime controls for the contact-shadow trace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ContactShadowSettings {

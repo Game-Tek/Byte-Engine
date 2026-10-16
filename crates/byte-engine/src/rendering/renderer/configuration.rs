@@ -5,8 +5,6 @@ use crate::{
 	rendering::render_pass::{RenderPassState, RenderPassStates},
 };
 
-pub(crate) const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
-
 /// Sets the state every pass instance named `name` shares, including instances created later.
 ///
 /// Returns how many existing instances share the state.
@@ -68,13 +66,7 @@ impl PendingRenderPassConfiguration {
 	/// Validates a generic configuration message once before retaining it for renderer application.
 	fn from_update(update: ConfigurationUpdate) -> Result<Self, (ConfigurationEventId, String)> {
 		let event = update.id();
-		let Some(render_pass_name) = update.parameter().strip_prefix(RENDER_PASS_PARAMETER_PREFIX) else {
-			return Err((
-				event,
-				"Render pass state was not set. The most likely cause is that the parameter is outside the `render.pass.` namespace."
-					.to_string(),
-			));
-		};
+		let render_pass_name = update.parameter();
 		if render_pass_name.is_empty() {
 			return Err((
 				event,

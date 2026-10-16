@@ -28,8 +28,9 @@ use crate::{
 /// output.
 #[cfg(feature = "dmx")]
 pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: DefaultListener<RGBA>) {
-	let bind_address = parse_artnet_ipv4_parameter(application.get_parameter("artnet.bind-address"), Ipv4Addr::UNSPECIFIED);
-	let poll_target = parse_artnet_ipv4_parameter(application.get_parameter("artnet.poll-target"), Ipv4Addr::BROADCAST);
+	let parameters = application.parameters().scope("artnet");
+	let bind_address = parse_artnet_ipv4_parameter(parameters.get_parameter("bind-address"), Ipv4Addr::UNSPECIFIED);
+	let poll_target = parse_artnet_ipv4_parameter(parameters.get_parameter("poll-target"), Ipv4Addr::BROADCAST);
 
 	application
 		.threads

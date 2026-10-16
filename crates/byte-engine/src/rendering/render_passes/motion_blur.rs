@@ -25,8 +25,6 @@ use crate::{
 };
 
 /// Configuration namespace of the runtime motion blur controls; see [`MotionBlurPassSettings::with_parameter`].
-pub const MOTION_BLUR_CONFIGURATION_PREFIX: &str = "render.motion-blur.";
-
 /// The most taps one pixel gathers; the blur shader loops to this many.
 const MAX_TAPS: u32 = 32;
 
@@ -58,8 +56,8 @@ impl Default for MotionBlurPassSettings {
 }
 
 impl MotionBlurPassSettings {
-	/// Applies one runtime parameter of [`MOTION_BLUR_CONFIGURATION_PREFIX`], returning the updated settings and
-	/// the effective value, or leaves them unchanged. `taps` takes a whole number from `1` to `32`.
+	/// Applies one runtime parameter, named inside the controls' configuration port, returning the updated
+	/// settings and the effective value, or leaves them unchanged. `taps` takes a whole number from `1` to `32`.
 	pub(crate) fn with_parameter(
 		self,
 		parameter: &str,
@@ -83,8 +81,8 @@ impl MotionBlurPassSettings {
 /// The `MotionBlurControls` struct shares one set of settings between every sink's [`MotionBlurPass`], so a
 /// runtime parameter changes the blur of every window at once.
 ///
-/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for [`MOTION_BLUR_CONFIGURATION_PREFIX`]
-/// and hand the same `Rc` to each pass.
+/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives
+/// motion blur, and hand the same `Rc` to each pass.
 pub struct MotionBlurControls {
 	settings: Cell<MotionBlurPassSettings>,
 	configuration: ConfigurationPort,
@@ -102,12 +100,8 @@ impl MotionBlurControls {
 	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
 	pub fn settings(&self) -> MotionBlurPassSettings {
 		let mut settings = self.settings.get();
-		self.configuration.drain(
-			MOTION_BLUR_CONFIGURATION_PREFIX,
-			"Motion blur parameter was not set. The most likely cause is that the parameter is outside the `render.motion-blur.` namespace.",
-			&mut settings,
-			MotionBlurPassSettings::with_parameter,
-		);
+		self.configuration
+			.drain(&mut settings, MotionBlurPassSettings::with_parameter);
 		self.settings.set(settings);
 		settings
 	}
@@ -416,7 +410,7 @@ mod tests {
 		use crate::configuration::{Configuration, ConfigurationUpdateState};
 
 		let configuration = Configuration::new();
-		let port = configuration.register(MOTION_BLUR_CONFIGURATION_PREFIX);
+		let port = configuration.register("render.motion-blur.");
 		let controls = MotionBlurControls::new(MotionBlurPassSettings::default(), port);
 		let set = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(12));
 		let rejected = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(64));

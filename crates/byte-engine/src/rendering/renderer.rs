@@ -7,7 +7,6 @@ pub(crate) use core::RendererScreenshotError;
 #[cfg(test)]
 use std::collections::VecDeque;
 
-pub(crate) use configuration::RENDER_PASS_PARAMETER_PREFIX;
 #[cfg(test)]
 use configuration::{apply_render_pass_configuration, set_render_pass_state};
 pub(crate) use targets::RenderNode;
@@ -80,7 +79,7 @@ mod tests {
 	#[test]
 	fn render_configuration_sets_existing_and_future_pass_instances() {
 		let configuration = Configuration::new();
-		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let port = configuration.register("render.pass.");
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
 		let mut states = RenderPassStates::default();
@@ -104,7 +103,7 @@ mod tests {
 	#[test]
 	fn render_configuration_stays_pending_until_the_pass_exists() {
 		let configuration = Configuration::new();
-		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let port = configuration.register("render.pass.");
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
 		let mut states = RenderPassStates::default();

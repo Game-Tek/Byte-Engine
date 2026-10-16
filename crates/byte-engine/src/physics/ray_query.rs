@@ -5,8 +5,8 @@ use crate::core::factory::Handle;
 /// The `RayQuery` struct asks the physics world which body a ray or a segment meets first, for gameplay that needs
 /// to know what lies along a line, such as the ground under a character or what a shot hits.
 ///
-/// Create it through the world's factory for `RayQuery`, as [`crate::gameplay::DefaultWorld`] does with
-/// [`crate::core::factory::Creator::create`], and keep the handle that returns. The physics world answers every
+/// Create it on the world scope with [`crate::core::factory::Creator::create`], and keep the handle that
+/// returns. The physics world answers every
 /// query once, after its next step, by creating a [`RayQueryResponse`] that carries the query's handle. Read the
 /// responses from a listener of the world's factory for `RayQueryResponse`, created before the query.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -133,7 +133,6 @@ use self::depth_pyramid::DepthPyramidPass;
 // Only the layout tests compare the record with the stride its layout layer reflects.
 #[cfg(test)]
 pub(crate) use self::depth_pyramid::ScreenViewData;
-pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 pub(super) use self::gtao::GTAO_PIPELINES;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
@@ -145,12 +144,10 @@ use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork, SunCascades};
-pub use self::ssgi::SSGI_CONFIGURATION_PREFIX;
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
-pub use self::sun_visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
 use self::visibility::{VisibilityPass, VisibilityPhase};

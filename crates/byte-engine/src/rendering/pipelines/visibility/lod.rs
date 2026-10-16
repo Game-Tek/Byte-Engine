@@ -5,9 +5,6 @@
 //! render entity, and [`LodView`] picks one per instance from the main camera. Shadow views draw the same level, which
 //! keeps a caster and its lit surface in agreement.
 
-/// Configuration namespace of the runtime detail level controls.
-pub const LOD_CONFIGURATION_PREFIX: &str = "render.lod.";
-
 /// Error, in pixels, a level may show on screen at the default bias before a finer one is drawn.
 const LOD_PIXEL_ERROR: f32 = 1.0;
 

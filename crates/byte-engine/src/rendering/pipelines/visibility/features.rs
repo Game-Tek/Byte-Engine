@@ -10,21 +10,17 @@ use besl::parser::Node;
 
 use crate::application::parameters::Parameters;
 
-/// The startup parameter that builds GTAO into the project. Its runtime value also turns the pass on and off.
-pub const GTAO_ENABLED_PARAMETER: &str = "render.gtao.enabled";
-/// The startup parameter that builds SSGI into the project. Its runtime value also turns the pass on and off.
-pub const SSGI_ENABLED_PARAMETER: &str = "render.ssgi.enabled";
-/// The startup parameter that builds contact shadows into the project. Its runtime value also turns them on and off.
-pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "render.contact-shadows.enabled";
-/// The subtree of the parameters the features are read from.
+/// The subtree of the parameters the features, and the rest of rendering, are read from.
 pub const RENDER_PARAMETERS: &str = "render";
-
-/// Returns a feature parameter's name inside the `render` subtree.
-fn in_render(parameter: &'static str) -> &'static str {
-	parameter
-		.strip_prefix("render.")
-		.expect("Feature parameters live in the render subtree.")
-}
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds GTAO into the project. Its runtime value also
+/// turns the pass on and off.
+pub const GTAO_ENABLED_PARAMETER: &str = "gtao.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds SSGI into the project. Its runtime value also
+/// turns the pass on and off.
+pub const SSGI_ENABLED_PARAMETER: &str = "ssgi.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
+/// value also turns them on and off.
+pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
 ///
@@ -62,12 +58,11 @@ impl VisibilityFeatures {
 	///
 	/// Panics when a feature parameter is neither `true` nor `false`.
 	pub fn from_parameters(parameters: impl Parameters) -> Self {
-		let built_in = |name: &'static str| {
-			let name = in_render(name);
+		let built_in = |name: &str| {
 			parameters.get_parameter(name).is_none_or(|parameter| {
 				parameter.as_bool().unwrap_or_else(|| {
 					panic!(
-						"Parameter `{name}` is invalid. The most likely cause is that `{}` is neither `true` nor `false`.",
+						"Parameter `{RENDER_PARAMETERS}.{name}` is invalid. The most likely cause is that `{}` is neither `true` nor `false`.",
 						parameter.value()
 					)
 				})
@@ -129,7 +124,7 @@ mod tests {
 			(CONTACT_SHADOWS_ENABLED_PARAMETER, "contact-shadows"),
 		];
 		for (parameter, pipeline) in cases {
-			let features = VisibilityFeatures::from_parameters([Parameter::new(parameter, "false")].as_slice().scope("render"));
+			let features = VisibilityFeatures::from_parameters(&[Parameter::new(parameter, "false")][..]);
 
 			for extension in ["pipeline", "besl"] {
 				assert!(

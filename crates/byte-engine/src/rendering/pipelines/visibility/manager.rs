@@ -17,7 +17,9 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
-use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, SSGI_ENABLED_PARAMETER, VisibilityFeatures};
+use super::features::{
+	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SSGI_ENABLED_PARAMETER, VisibilityFeatures,
+};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
@@ -415,7 +417,7 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	if enabled && !built_in {
 		log::warn!(
-			"`{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
+			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources#leave-render-features-out-of-the-bake"
 		);
 	}
 	enabled && built_in

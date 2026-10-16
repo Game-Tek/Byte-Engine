@@ -365,36 +365,6 @@ fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	enabled && built_in
 }
 
-/// Applies queued runtime settings under `prefix`.
-///
-/// Each update is answered: parameters outside `prefix` with `namespace_error`, others with the effective value or
-/// the reason `with_parameter` rejected them.
-fn drain_settings<S: Copy>(
-	port: &crate::configuration::ConfigurationPort,
-	prefix: &str,
-	namespace_error: &'static str,
-	settings: &mut S,
-	with_parameter: impl Fn(
-		S,
-		&str,
-		&crate::configuration::ConfigurationValue,
-	) -> Result<(S, crate::configuration::ConfigurationValue), String>,
-) {
-	while let Some(update) = port.read() {
-		let Some(parameter) = update.parameter().strip_prefix(prefix) else {
-			port.not_set(update.id(), namespace_error);
-			continue;
-		};
-		match with_parameter(*settings, parameter, update.value()) {
-			Ok((updated, effective_value)) => {
-				*settings = updated;
-				port.set(update.id(), effective_value);
-			}
-			Err(reason) => port.not_set(update.id(), reason),
-		}
-	}
-}
-
 /// The `TransformSamples` struct keeps the two most recent transforms of one renderable and which step the latest
 /// arrived in.
 struct TransformSamples {
@@ -995,29 +965,25 @@ impl VisibilityPipelineManager {
 	/// Applies queued GTAO, SSGI, contact-shadow, and detail level controls before any sink records this frame's
 	/// commands.
 	fn apply_runtime_settings(&mut self) {
-		drain_settings(
-			&self.lod_configuration,
+		self.lod_configuration.drain(
 			LOD_CONFIGURATION_PREFIX,
 			"Detail level parameter was not set. The most likely cause is that the parameter is outside the `render.lod.` namespace.",
 			&mut self.lod_settings,
 			LodSettings::with_parameter,
 		);
-		drain_settings(
-			&self.gtao_configuration,
+		self.gtao_configuration.drain(
 			GTAO_CONFIGURATION_PREFIX,
 			"GTAO parameter was not set. The most likely cause is that the parameter is outside the `render.gtao.` namespace.",
 			&mut self.gtao_settings,
 			GtaoSettings::with_parameter,
 		);
-		drain_settings(
-			&self.ssgi_configuration,
+		self.ssgi_configuration.drain(
 			SSGI_CONFIGURATION_PREFIX,
 			"SSGI parameter was not set. The most likely cause is that the parameter is outside the `render.ssgi.` namespace.",
 			&mut self.ssgi_settings,
 			SsgiSettings::with_parameter,
 		);
-		drain_settings(
-			&self.contact_shadow_configuration,
+		self.contact_shadow_configuration.drain(
 			CONTACT_SHADOWS_CONFIGURATION_PREFIX,
 			"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
 			&mut self.contact_shadow_settings,

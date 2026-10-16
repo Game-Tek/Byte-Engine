@@ -194,15 +194,7 @@ fn pixel_to_camera_offset(view: View, extent: Extent) -> math::Matrix {
 	// Without the view's translation, the inverse lands relative to the camera instead of the world origin.
 	let mut rotation = view.view();
 	rotation.set_column(3, Vec4f::new(0.0, 0.0, 0.0, 1.0));
-	let (width, height) = (extent.width() as f32, extent.height() as f32);
-	// Takes pixel centers to normalized device coordinates, whose y points up.
-	let pixel_to_ndc = math::Matrix::from((
-		Vec4f::new(2.0 / width, 0.0, 0.0, 1.0 / width - 1.0),
-		Vec4f::new(0.0, -2.0 / height, 0.0, 1.0 - 1.0 / height),
-		Vec4f::new(0.0, 0.0, 1.0, 0.0),
-		Vec4f::new(0.0, 0.0, 0.0, 1.0),
-	));
-	inverse(view.projection() * rotation) * pixel_to_ndc
+	inverse(view.projection() * rotation) * super::pixel_to_ndc(extent)
 }
 
 impl RenderPass for ExponentialHeightFogRenderPass {

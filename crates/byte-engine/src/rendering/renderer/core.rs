@@ -680,7 +680,8 @@ impl Renderer {
 	/// The renderer skips every window that has no usable swapchain image, such as a zero-sized one, and every
 	/// window that cannot be seen and no screenshot captures. It returns the frame that
 	/// every screenshot readback comes from, and one readback result per request
-	/// in request order.
+	/// in request order. `frame_interval` is the time since the previous frame; every sink carries it to the
+	/// passes that simulate exposure over time.
 	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
 	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it, or
 	// on the drawable wait at submission where the backend defers it.
@@ -692,6 +693,7 @@ impl Renderer {
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
 		alpha: f32,
 		time: crate::time::MediaTime,
+		frame_interval: crate::time::MediaTime,
 	) -> (u64, Vec<Result<ghi::TextureReadback, RendererScreenshotError>>) {
 		let _span = debug_span!(
 			"Renderer::prepare",
@@ -784,7 +786,11 @@ impl Renderer {
 						};
 
 						let view = make_perspective_view_from_camera(camera, transform, extent);
-						sinks.push(Sink::new(view, extent, *sink_id).with_exposure_scale(camera.exposure_scale()));
+						sinks.push(
+							Sink::new(view, extent, *sink_id)
+								.with_exposure_scale(camera.exposure_scale())
+								.with_frame_interval(frame_interval),
+						);
 					}
 				}
 

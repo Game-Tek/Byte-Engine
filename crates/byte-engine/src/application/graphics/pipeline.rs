@@ -481,6 +481,35 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs camera motion blur for every current and future render sink.
+///
+/// The pass smears `main` along the camera's turn and zoom since the previous frame, for the fraction of the frame
+/// `settings.shutter` stays open. Camera translation and moving objects do not blur. Call it after the passes that
+/// write scene light and [`setup_exponential_height_fog_render_pass`], and before
+/// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping, so light glows over the blurred
+/// image. Later passes consume its remapped `main` output. Use `render.pass.motion-blur` to enable or bypass it at
+/// runtime, and `render.motion-blur.taps` to change the most taps per pixel; both also take a startup parameter.
+pub fn setup_motion_blur_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::motion_blur::MotionBlurPassSettings,
+) {
+	use rendering::render_passes::motion_blur::{MOTION_BLUR_CONFIGURATION_PREFIX, MotionBlurControls, MotionBlurPass};
+
+	// The port subscribes before its startup parameters are queued, so it reports every one of them.
+	let port = application.configuration.register(MOTION_BLUR_CONFIGURATION_PREFIX);
+	super::queue_startup_parameters(
+		application.application.parameters(),
+		&application.configuration,
+		MOTION_BLUR_CONFIGURATION_PREFIX,
+	);
+	let controls = MotionBlurControls::new(settings, port);
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(MotionBlurPass::new(render_pass_builder, controls.clone()))
+		});
+}
+
 /// Installs a screen-space lens flare pass for every current and future render sink.
 ///
 /// The pass casts tinted ghosts and a halo from scene-linear light above `settings.threshold`

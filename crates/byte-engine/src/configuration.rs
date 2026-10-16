@@ -308,6 +308,35 @@ impl ConfigurationPort {
 	pub fn not_set(&self, id: ConfigurationEventId, reason: impl Into<String>) {
 		finish_event(&self.state, id, ConfigurationUpdateState::NotSet { reason: reason.into() });
 	}
+
+	/// Applies every queued update to `settings` and reports each result.
+	///
+	/// `with_parameter` takes the parameter name without `prefix` and returns the updated settings with the
+	/// effective value, or the reason the value was not set. An update outside `prefix` is reported with
+	/// `namespace_error`. Systems with runtime controls call this once per frame before they use their settings.
+	// Only render settings read typed values today, and they exist only in headed builds.
+	#[cfg(feature = "headed")]
+	pub(crate) fn drain<S: Copy>(
+		&self,
+		prefix: &str,
+		namespace_error: &'static str,
+		settings: &mut S,
+		with_parameter: impl Fn(S, &str, &ConfigurationValue) -> Result<(S, ConfigurationValue), String>,
+	) {
+		while let Some(update) = self.read() {
+			let Some(parameter) = update.parameter().strip_prefix(prefix) else {
+				self.not_set(update.id(), namespace_error);
+				continue;
+			};
+			match with_parameter(*settings, parameter, update.value()) {
+				Ok((updated, effective_value)) => {
+					*settings = updated;
+					self.set(update.id(), effective_value);
+				}
+				Err(reason) => self.not_set(update.id(), reason),
+			}
+		}
+	}
 }
 
 /// Completes a pending event once so late or duplicate reports cannot rewrite debugging history.

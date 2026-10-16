@@ -1,0 +1,78 @@
+// Blurs the HDR scene along the camera's own motion, as a camera whose shutter stays open for part of the frame
+// would. Each pixel's velocity comes from where the previous camera saw the same view direction: the parameters map
+// a pixel to the previous frame's pixel coordinates through the two cameras' rotations and projections alone, so the
+// blur follows turns and zoom and ignores depth. Translation and moving objects need per-surface velocities, which
+// this pass does not have yet.
+//
+// The blur averages taps spread evenly along the velocity through the pixel, half before it and half after, so the
+// image stays centered where it is: one tap per pixel of blur, up to the configured count, so a short blur costs
+// few taps. One random offset per pixel, from interleaved gradient noise, shifts every tap by a fraction of a step,
+// which turns banding between the taps into fine noise.
+//
+// Everything that is the same for every pixel is folded into the parameters on the CPU: the shutter's share of the
+// motion and the clip-to-pixel scale live in the matrix, and the texel size, the tap step, and the noise's frame
+// offset arrive ready to use.
+
+MotionBlurParameters: struct {
+	// Maps a pixel's integer coordinate to where the previous camera saw its view direction, in pixels of this
+	// image before the division by w, scaled by the shutter's fraction of the frame. Its z row is zero.
+	pixel_to_previous_pixel: mat4f,
+	// x, y: one texel in UV; z: the shutter's fraction of the frame; w: the longest blur, in pixels.
+	texel: vec4f,
+	// The noise offset of this frame.
+	noise_offset: f32,
+	// The most taps one pixel gathers.
+	taps: u32,
+}
+
+scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+parameters: descriptor<{ type: MotionBlurParameters, binding: 2, access: read, memory: constant }>;
+
+HALF_FLOAT_MAX: const f32 = 65504.0;
+// Below this blur length, in pixels, the shutter adds nothing the sampler can show, so the pixel passes through.
+MIN_BLUR_LENGTH: const f32 = 0.5;
+// A previous w at or below this is behind the previous camera, where the view direction has no screen position.
+MIN_PREVIOUS_W: const f32 = 0.000001;
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(result, pixel);
+	// Fetched before the velocity arithmetic, which the load then overlaps; the pass-through and the alpha use it.
+	let scene: vec4f = fetch(scene_texture, pixel);
+	let coordinate: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+	let center: vec2f = coordinate + vec2f(0.5, 0.5);
+
+	// The blur's share of the motion from where the previous camera saw this view direction to here. Behind the
+	// previous camera the direction has no screen position, so its w is held above zero and the pixel is left sharp.
+	let previous: vec4f = parameters.pixel_to_previous_pixel * vec4f(coordinate.x, coordinate.y, 1.0, 1.0);
+	let velocity: vec2f = center * parameters.texel.z - vec2f(previous.x, previous.y) * (1.0 / max(previous.w, MIN_PREVIOUS_W));
+	let squared_length: f32 = dot(velocity, velocity);
+	if (previous.w <= MIN_PREVIOUS_W || squared_length < MIN_BLUR_LENGTH * MIN_BLUR_LENGTH) {
+		write(result, pixel, scene);
+		return;
+	}
+
+	// The blur, no longer than the radius, in UV, and one tap per pixel of it up to the configured count.
+	let inverse_length: f32 = inversesqrt(squared_length);
+	let length: f32 = min(squared_length * inverse_length, parameters.texel.w);
+	let texel_size: vec2f = vec2f(parameters.texel.x, parameters.texel.y);
+	let blur: vec2f = velocity * (length * inverse_length) * texel_size;
+	let taps: u32 = min(parameters.taps, u32(length) + 1);
+	let step_size: f32 = 1.0 / f32(taps);
+	let step: vec2f = blur * step_size;
+	// Interleaved gradient noise, with this frame's offset already added on the CPU.
+	let noisy: vec2f = coordinate + vec2f(parameters.noise_offset, parameters.noise_offset);
+	let jitter: f32 = fract(52.9829189 * fract(0.06711056 * noisy.x + 0.00583715 * noisy.y));
+	// The first tap lies jitter / taps − 0.5 of the blur from the pixel and the rest follow a step apart.
+	let uv: vec2f = center * texel_size + blur * (jitter * step_size - 0.5);
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < taps; index = index + 1) {
+		let tap: vec4f = texture_lod(scene_texture, uv);
+		uv = uv + step;
+		// A tap at the half-float limit would overflow the sum to infinity.
+		sum = sum + vec3f(min(tap.x, HALF_FLOAT_MAX), min(tap.y, HALF_FLOAT_MAX), min(tap.z, HALF_FLOAT_MAX));
+	}
+	let blurred: vec3f = sum * step_size;
+	write(result, pixel, vec4f(blurred.x, blurred.y, blurred.z, scene.w));
+}

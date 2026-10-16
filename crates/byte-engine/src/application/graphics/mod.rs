@@ -551,7 +551,11 @@ impl GraphicsApplication {
 	///
 	/// Every capture of every request is read from this one frame. Transports encode the readbacks on their own
 	/// threads, so encoding never delays the next frame.
-	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) -> u64 {
+	fn render_frame(
+		&mut self,
+		requests: Vec<crate::inspector::screenshot::ScreenshotRequest>,
+		time: crate::application::Time,
+	) -> u64 {
 		let _span = debug_span!("GraphicsApplication::render_frame").entered();
 		let captures = requests
 			.iter()
@@ -562,7 +566,8 @@ impl GraphicsApplication {
 			&self.application.frame_allocator,
 			&captures,
 			self.simulation_alpha,
-			time,
+			time.elapsed(),
+			time.delta(),
 		);
 		// Results follow the flattened capture order, so each request takes the next run of its own length.
 		let mut results = results.into_iter();
@@ -787,7 +792,7 @@ impl GraphicsApplication {
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
 		self.rendering_active = changed || !self.render_on_demand;
 		let frame = (self.rendering_active || self.renderer.presents_this_frame())
-			.then(|| self.render_frame(screenshot_requests, time.elapsed()));
+			.then(|| self.render_frame(screenshot_requests, time));
 		// Rendering may acquire more than the tick's start did, such as a hidden window a screenshot captures.
 		let presented = frame.is_some_and(|frame| self.renderer.frame_acquired(frame));
 
@@ -1111,8 +1116,8 @@ pub use pipeline::{
 	setup_aces_color_grading_render_pass, setup_aces_tonemap_render_pass, setup_agx_tonemap_render_pass,
 	setup_atmosphere_sky_render_pass, setup_bloom_render_pass, setup_debug_mesh_render_pass,
 	setup_dwg_color_grading_render_pass, setup_exponential_height_fog_render_pass, setup_lens_flare_render_pass,
-	setup_lut_render_pass, setup_particles, setup_pbr_visibility_shading_render_pipeline, setup_simple_render_pipeline,
-	setup_smaa_render_pass, setup_srgb_display_render_pass, setup_ui_render_pass,
+	setup_lut_render_pass, setup_motion_blur_render_pass, setup_particles, setup_pbr_visibility_shading_render_pipeline,
+	setup_simple_render_pipeline, setup_smaa_render_pass, setup_srgb_display_render_pass, setup_ui_render_pass,
 };
 
 use crate::application::LoopWaker;

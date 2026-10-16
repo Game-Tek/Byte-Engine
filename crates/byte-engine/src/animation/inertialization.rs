@@ -113,15 +113,15 @@ impl PoseInertializer {
 			return Ok(());
 		}
 
-		let (rate, elapsed) = (DECAY_TO_ONE_THOUSANDTH / self.duration_seconds, self.elapsed_seconds);
+		let (duration, elapsed) = (self.duration_seconds, self.elapsed_seconds);
 		for ((destination, state), output) in destination.iter().zip(&self.nodes).zip(output) {
-			let translation_offset = decay(state.translation_offset, state.translation_velocity, rate, elapsed);
-			let scale_offset = decay(state.scale_offset, state.scale_velocity, rate, elapsed);
-			let rotation_offset = decay(state.rotation_offset, state.rotation_velocity, rate, elapsed);
+			let translation_offset = settle(state.translation_offset, state.translation_velocity, duration, elapsed);
+			let scale_offset = settle(state.scale_offset, state.scale_velocity, duration, elapsed);
+			let rotation_offset = settle(state.rotation_offset, state.rotation_velocity, duration, elapsed);
 			*output = LocalTransform {
 				translation: destination.translation + translation_offset,
 				rotation: Orientation::try_from_rotation_vector(rotation_offset)
-					.expect("decayed rotation offsets stay finite")
+					.expect("settling rotation offsets stay finite")
 					.compose(destination.rotation),
 				scale: destination.scale + scale_offset,
 			};
@@ -149,9 +149,9 @@ impl PoseInertializer {
 	}
 }
 
-/// The `InertializedTransform` struct holds one node's decaying offsets from its destination pose.
+/// The `InertializedTransform` struct holds one node's settling offsets from its destination pose.
 ///
-/// Rotation offsets and velocities are rotation vectors, which decay linearly unlike quaternions.
+/// Rotation offsets and velocities are rotation vectors, which settle linearly unlike quaternions.
 #[derive(Clone, Copy, Debug)]
 struct InertializedTransform {
 	translation_offset: Vector<ParentSpace>,
@@ -219,14 +219,23 @@ impl std::fmt::Display for InertializationError {
 
 impl std::error::Error for InertializationError {}
 
-/// Evaluates an exact critically damped offset with the supplied initial velocity.
-fn decay<T: Copy + Add<Output = T> + Mul<f32, Output = T>>(offset: T, velocity: T, rate: f32, time: f32) -> T {
+/// Evaluates an offset settling to the destination with the supplied initial velocity.
+///
+/// The offset follows a quintic, `1 - 10t^3 + 15t^4 - 6t^5` of the transition, that
+/// leaves the source pose without acceleration and reaches the destination with no
+/// velocity or acceleration, so a pose mismatch blends away without a first-frame jolt.
+/// The velocity decays like a critically damped spring, `v t e^(-rt)`: easing a
+/// difference in speed out without acceleration instead swings bones far past the destination.
+fn settle<T: Copy + Add<Output = T> + Mul<f32, Output = T>>(offset: T, velocity: T, duration: f32, time: f32) -> T {
 	debug_assert!(
-		rate.is_finite() && rate >= 0.0 && time.is_finite() && time >= 0.0,
-		"Inertial decay inputs are invalid. The most likely cause is bypassing transition time validation."
+		duration.is_finite() && duration > 0.0 && time.is_finite() && time >= 0.0,
+		"Inertial settling inputs are invalid. The most likely cause is bypassing transition time validation."
 	);
-	let decay = (-rate * time).exp();
-	(offset + (velocity + offset * rate) * time) * decay
+	let progress = (time / duration).min(1.0);
+	let remaining = 1.0 - progress;
+	let offset_share = remaining * remaining * remaining * (1.0 + progress * (3.0 + 6.0 * progress));
+	let rate = DECAY_TO_ONE_THOUSANDTH / duration;
+	offset * offset_share + velocity * (time * (-rate * time).exp())
 }
 
 fn velocity<T: Sub<Output = T> + Div<f32, Output = T>>(previous: T, current: T, delta: f32) -> T {
@@ -251,7 +260,7 @@ mod tests {
 
 	use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
 
-	use super::PoseInertializer;
+	use super::{PoseInertializer, settle};
 	use crate::MediaTime;
 
 	fn transform(position: f32, angle: f32) -> LocalTransform {
@@ -294,6 +303,98 @@ mod tests {
 
 		assert_eq!(output, destination);
 		assert!(!inertializer.is_active());
+	}
+
+	const DURATION: f32 = 0.25;
+
+	/// Plays a point that moves at `velocity` into a still destination at the origin, 50 frames a second, and returns the largest change in its step.
+	fn peak_second_difference(offset: f32, velocity: f32, curve: impl Fn(f32, f32, f32) -> f32) -> f32 {
+		const FRAME: f32 = 0.02;
+		let mut positions = vec![offset - velocity * FRAME];
+		positions.extend((0..20).map(|frame| curve(offset, velocity, frame as f32 * FRAME)));
+		positions
+			.windows(3)
+			.map(|window| (window[2] - 2.0 * window[1] + window[0]).abs())
+			.fold(0.0, f32::max)
+	}
+
+	/// The critically damped spring settling replaced, decaying offsets to a thousandth by the transition's end.
+	fn spring(offset: f32, velocity: f32, elapsed: f32) -> f32 {
+		let rate = 6.907_755_4 / DURATION;
+		(offset + (velocity + offset * rate) * elapsed) * (-rate * elapsed).exp()
+	}
+
+	fn settled(offset: f32, velocity: f32, elapsed: f32) -> f32 {
+		settle(offset, velocity, DURATION, elapsed)
+	}
+
+	#[test]
+	fn settling_leaves_the_source_motion_without_a_jolt_and_ends_at_rest() {
+		const STEP: f32 = 1.0e-3;
+		let at = |velocity: f32, elapsed: f32| settled(0.1, velocity, elapsed);
+
+		assert_eq!(at(0.0, 0.0), 0.1);
+		assert!(((at(0.5, STEP) - at(0.5, 0.0)) / STEP - 0.5).abs() < 0.02);
+		let pose_acceleration = (at(0.0, 2.0 * STEP) - 2.0 * at(0.0, STEP) + at(0.0, 0.0)) / (STEP * STEP);
+		// A spring starts this offset accelerating at 76 m/s^2; what is left here is the step times the jerk.
+		assert!(
+			pose_acceleration.abs() < 1.0,
+			"a pose offset starts accelerating at {pose_acceleration}"
+		);
+
+		assert_eq!(at(0.0, DURATION), 0.0);
+		let end_velocity = (at(0.0, DURATION) - at(0.0, DURATION - STEP)) / STEP;
+		assert!(end_velocity.abs() < 1.0e-3, "a pose offset ends moving at {end_velocity}");
+		assert!(at(0.5, DURATION).abs() < 1.0e-3 * 0.5 * DURATION);
+	}
+
+	#[test]
+	fn settling_jolts_bones_less_than_a_critically_damped_spring() {
+		let pose = peak_second_difference(0.3, 0.0, settled);
+		let sprung_pose = peak_second_difference(0.3, 0.0, spring);
+		assert!(pose < 0.5 * sprung_pose, "pose offset: {pose} vs spring {sprung_pose}");
+
+		// A bone moving away from a nearby destination, like a swinging foot meeting a planted one.
+		let moving = peak_second_difference(0.05, 3.0, settled);
+		let sprung_moving = peak_second_difference(0.05, 3.0, spring);
+		assert!(moving <= sprung_moving, "moving offset: {moving} vs spring {sprung_moving}");
+	}
+
+	#[test]
+	fn rotation_offsets_settle_without_passing_the_destination() {
+		let frame = MediaTime::from_millis(10);
+		let source_previous = [transform(0.0, 0.34)];
+		let source = [transform(0.0, 0.3)];
+		let destination = [transform(0.0, 0.0)];
+		let mut output = [LocalTransform::identity()];
+		let mut inertializer = PoseInertializer::new(1);
+		inertializer
+			.begin(
+				&source_previous,
+				&source,
+				&destination,
+				&destination,
+				frame,
+				MediaTime::from_millis(250),
+			)
+			.expect("expected test value");
+
+		let mut angles = Vec::new();
+		while inertializer.is_active() {
+			inertializer
+				.apply(&destination, frame, &mut output)
+				.expect("expected test value");
+			angles.push(output[0].rotation.to_rotation_vector::<ParentSpace>().y());
+		}
+
+		// Only the velocity's spring tail, which outlasts the offset, may cross, by under a tenth of a degree.
+		assert!(angles.iter().all(|angle| *angle >= -2.0e-3), "{angles:?}");
+		assert!(
+			angles[0] < 0.28,
+			"the first frame keeps the source's 4 rad/s turn: {}",
+			angles[0]
+		);
+		assert_eq!(output, destination);
 	}
 
 	#[test]

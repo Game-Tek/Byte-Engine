@@ -7,6 +7,7 @@
 
 use std::num::NonZeroUsize;
 
+use byte_engine::application::parameters::Parameters as _;
 use byte_engine::{
 	MediaTime,
 	animation::graph::{
@@ -80,7 +81,7 @@ fn main() {
 	{
 		use byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator;
 
-		let generator = VisibilityShaderGenerator::new(&app);
+		let generator = VisibilityShaderGenerator::new(app.parameters().scope("render"));
 		setup_default_resource_and_asset_management(&mut app, generator);
 	}
 	setup_default_input(&mut app);

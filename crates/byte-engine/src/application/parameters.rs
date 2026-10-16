@@ -1,9 +1,58 @@
+use smallvec::SmallVec;
+
 use crate::application::Parameter;
 
 /// The `Parameters` trait gives application components access to named configuration values.
+///
+/// Hand a system the subtree it owns with [`Self::scope`], so it reads its settings by their own names and the
+/// caller decides where they live in the whole tree.
 pub trait Parameters {
 	/// Returns the parameter with the specified full name, if it exists.
 	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
+
+	/// Returns the parameters under `prefix`, looked up by the rest of their names.
+	///
+	/// `app.parameters().scope("physics").get_parameter("step-lanes")` reads `physics.step-lanes`. Scopes nest,
+	/// so a system can hand a part of its subtree on. Call it on a reference, which is what a slice or an
+	/// application gives; a scope is `Copy`.
+	fn scope<'a>(self, prefix: &'a str) -> ScopedParameters<'a, Self>
+	where
+		Self: Sized,
+	{
+		ScopedParameters {
+			parameters: self,
+			prefix,
+		}
+	}
+}
+
+/// A reference reads the parameters it points to, so a scope or a borrowed slice can be passed by value.
+impl<P: Parameters + ?Sized> Parameters for &P {
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		(**self).get_parameter(name)
+	}
+}
+
+/// The `ScopedParameters` struct lets a system read the subtree of parameters its caller routed to it by their
+/// own names.
+///
+/// Create it with [`Parameters::scope`]. It is `Copy` when made from a reference, so pass it by value.
+#[derive(Clone, Copy)]
+pub struct ScopedParameters<'a, P> {
+	parameters: P,
+	prefix: &'a str,
+}
+
+impl<P: Parameters> Parameters for ScopedParameters<'_, P> {
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		// A full name fits the inline buffer, so a lookup allocates nothing.
+		let mut full_name: SmallVec<[u8; 96]> = SmallVec::with_capacity(self.prefix.len() + 1 + name.len());
+		full_name.extend_from_slice(self.prefix.as_bytes());
+		full_name.push(b'.');
+		full_name.extend_from_slice(name.as_bytes());
+		let full_name = std::str::from_utf8(&full_name).expect("Two strings joined by a dot are UTF-8.");
+		self.parameters.get_parameter(full_name)
+	}
 }
 
 /// The `ParameterError` struct reports a startup parameter whose value could not be parsed for its setting.

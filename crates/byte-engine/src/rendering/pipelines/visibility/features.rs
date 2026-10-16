@@ -16,6 +16,15 @@ pub const GTAO_ENABLED_PARAMETER: &str = "render.gtao.enabled";
 pub const SSGI_ENABLED_PARAMETER: &str = "render.ssgi.enabled";
 /// The startup parameter that builds contact shadows into the project. Its runtime value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "render.contact-shadows.enabled";
+/// The subtree of the parameters the features are read from.
+pub const RENDER_PARAMETERS: &str = "render";
+
+/// Returns a feature parameter's name inside the `render` subtree.
+fn in_render(parameter: &'static str) -> &'static str {
+	parameter
+		.strip_prefix("render.")
+		.expect("Feature parameters live in the render subtree.")
+}
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
 ///
@@ -46,13 +55,15 @@ impl Default for VisibilityFeatures {
 }
 
 impl VisibilityFeatures {
-	/// Reads the feature set from startup parameters, keeping every feature whose parameter is absent.
+	/// Reads the feature set from the `render` subtree of the startup parameters, such as
+	/// `app.parameters().scope("render")`, keeping every feature whose parameter is absent.
 	///
 	/// # Panics
 	///
 	/// Panics when a feature parameter is neither `true` nor `false`.
-	pub fn from_parameters(parameters: &(impl Parameters + ?Sized)) -> Self {
-		let built_in = |name: &str| {
+	pub fn from_parameters(parameters: impl Parameters) -> Self {
+		let built_in = |name: &'static str| {
+			let name = in_render(name);
 			parameters.get_parameter(name).is_none_or(|parameter| {
 				parameter.as_bool().unwrap_or_else(|| {
 					panic!(
@@ -118,7 +129,7 @@ mod tests {
 			(CONTACT_SHADOWS_ENABLED_PARAMETER, "contact-shadows"),
 		];
 		for (parameter, pipeline) in cases {
-			let features = VisibilityFeatures::from_parameters(&[Parameter::new(parameter, "false")][..]);
+			let features = VisibilityFeatures::from_parameters([Parameter::new(parameter, "false")].as_slice().scope("render"));
 
 			for extension in ["pipeline", "besl"] {
 				assert!(
@@ -153,7 +164,7 @@ mod tests {
 
 	#[test]
 	fn missing_parameters_keep_every_feature() {
-		let features = VisibilityFeatures::from_parameters(&[][..]);
+		let features = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
 
 		assert_eq!(features, VisibilityFeatures::default());
 		assert!(!features.excludes("byte-engine/rendering/visibility/gtao.pipeline"));

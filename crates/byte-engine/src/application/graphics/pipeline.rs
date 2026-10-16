@@ -230,7 +230,9 @@ fn visibility_pipeline_settings(application: &GraphicsApplication) -> Visibility
 	}
 	// The same parameters chose what BELD baked, so the runtime creates exactly the passes the shaders expect.
 	settings.with_features(rendering::pipelines::visibility::VisibilityFeatures::from_parameters(
-		application,
+		application
+			.parameters()
+			.scope(rendering::pipelines::visibility::RENDER_PARAMETERS),
 	))
 }
 

@@ -32,7 +32,7 @@ mod skinning;
 #[cfg(test)]
 mod tests;
 
-pub use features::{GTAO_ENABLED_PARAMETER, VisibilityFeatures};
+pub use features::{GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, VisibilityFeatures};
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;

@@ -44,7 +44,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				log::error!("Failed to read the project configuration. {error}");
 				1
 			})?;
-			let features = VisibilityFeatures::from_parameters(&configuration[..]);
+			let features = VisibilityFeatures::from_parameters(configuration.as_slice().scope("render"));
 			beld::bake(
 				cli.source,
 				cli.destination,
@@ -242,7 +242,7 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 use std::num::NonZeroUsize;
 
 use beld::OutputFormat;
-use byte_engine::application::parameters::read_configuration_file;
+use byte_engine::application::parameters::{Parameters as _, read_configuration_file};
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use clap::{
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,

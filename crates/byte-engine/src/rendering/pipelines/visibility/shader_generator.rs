@@ -69,11 +69,11 @@ pub struct VisibilityShaderGenerator {
 }
 
 impl VisibilityShaderGenerator {
-	/// Creates a generator for a project set up from `parameters`, such as the application's, which select the
-	/// features it builds in; see [`VisibilityFeatures::from_parameters`].
+	/// Creates a generator for a project whose `render` parameters, such as `app.parameters().scope("render")`,
+	/// select the features it builds in; see [`VisibilityFeatures::from_parameters`].
 	///
 	/// Next, pass it to [`crate::application::graphics::register_default_asset_handlers`].
-	pub fn new(parameters: &(impl Parameters + ?Sized)) -> Self {
+	pub fn new(parameters: impl Parameters) -> Self {
 		Self::with_features(VisibilityFeatures::from_parameters(parameters))
 	}
 

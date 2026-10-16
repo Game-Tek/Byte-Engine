@@ -141,7 +141,7 @@ mod tests {
 		// steps.
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
 		let world = bus.new_scope("world");
-		let mut physics = Physics::new(&world, &[] as &[crate::application::Parameter]);
+		let mut physics = Physics::new(&world, &[][..] as &[crate::application::Parameter]);
 		let mut responses = world.factory::<RayQueryResponse>().listener();
 		let mut alley = Alley::with_parallelism(1);
 		let step = crate::time::MediaTime::from_seconds_f32(1.0 / 60.0);

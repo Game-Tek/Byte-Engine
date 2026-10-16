@@ -27,7 +27,6 @@
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
-/// - `physics-step-lanes`: Sets how many of the alley's lanes a physics step runs on, as `bodies:lanes` pairs such as `512:2,4000:4`: steps of at least 512 bodies run on two lanes and steps of at least 4,000 on four. Smaller steps, and steps given one lane, run on the calling thread, so `0:1` keeps every step there. The default suits the machine: it never uses more lanes than the processor's fastest cores have hardware threads; see [`StepLanes::for_machine`](crate::physics::StepLanes::for_machine). Set it per machine with the `BE_PHYSICS_STEP_LANES` environment variable when measurements there show better counts.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
@@ -944,6 +943,14 @@ impl GraphicsApplication {
 	/// [`MessageBus::new_scope`] to isolate routes owned by another subsystem.
 	pub fn message_bus(&self) -> &MessageBus {
 		self.application.message_bus()
+	}
+
+	/// Returns the resolved startup parameters.
+	///
+	/// Next, hand a system its subtree with [`Parameters::scope`], such as
+	/// `app.parameters().scope("physics")` for [`Physics::new`](crate::physics::Physics::new).
+	pub fn parameters(&self) -> &[Parameter] {
+		self.application.parameters()
 	}
 
 	/// Returns the world scope, where application code creates entities and the systems that follow them.

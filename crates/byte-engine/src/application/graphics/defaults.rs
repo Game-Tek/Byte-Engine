@@ -14,7 +14,7 @@
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
-		let generator = VisibilityShaderGenerator::new(&*application);
+		let generator = VisibilityShaderGenerator::new(application.parameters().scope(RENDER_PARAMETERS));
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -114,7 +114,7 @@ pub fn setup_default_resource_and_asset_management(
 
 		let (material_mips, ibl) = default_offline_generators();
 
-		let features = VisibilityFeatures::from_parameters(&*application);
+		let features = VisibilityFeatures::from_parameters(application.parameters().scope(RENDER_PARAMETERS));
 		register_default_asset_handlers(&mut asset_manager, generator, features, material_mips, ibl);
 
 		application.resource_manager.set_asset_manager(asset_manager);
@@ -334,9 +334,9 @@ use utils::Extent;
 
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
-use crate::rendering::pipelines::visibility::VisibilityFeatures;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::VisibilityShaderGenerator;
+use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures};
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},

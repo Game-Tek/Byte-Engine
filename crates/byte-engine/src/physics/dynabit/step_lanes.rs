@@ -31,7 +31,7 @@ const WIDEST_STEP_LANES: usize = 4;
 ///
 /// The default, [`Self::for_machine`], suits the machine the process runs on. Replace it with
 /// [`World::set_step_lanes`](super::World::set_step_lanes) when measurements on a machine show better counts.
-/// [`Physics::new`](crate::physics::Physics::new) reads a replacement from its `physics-step-lanes` parameter,
+/// [`Physics::new`](crate::physics::Physics::new) reads a replacement from its `step-lanes` parameter,
 /// which this type parses.
 ///
 /// The text form lists `bodies:lanes` pairs separated by commas, such as `512:2,4000:4`: steps of at least 512

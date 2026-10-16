@@ -22,8 +22,13 @@ use crate::{
 /// [`dynabit::World`] it steps for settings such as [`dynabit::World::set_sleeping`].
 ///
 /// # Configuration
-/// - `physics-step-lanes`: Replaces how many lanes a step runs on, as `bodies:lanes` pairs such as `512:2,4000:4`;
-///   see [`StepLanes`](crate::physics::StepLanes). The default suits the machine the process runs on.
+/// Read from the parameters the caller routes to it, usually `app.parameters().scope("physics")`:
+/// - `step-lanes`: Replaces how many lanes a step runs on, as `bodies:lanes` pairs such as `512:2,4000:4`: steps
+///   of at least 512 bodies run on two lanes and steps of at least 4,000 on four. Smaller steps, and steps given
+///   one lane, run on the calling thread, so `0:1` keeps every step there. The default suits the machine: it never
+///   uses more lanes than the processor's fastest cores have hardware threads; see
+///   [`StepLanes::for_machine`](crate::physics::StepLanes::for_machine). Set it per machine, such as with the
+///   `BE_PHYSICS__STEP_LANES` environment variable, when measurements there show better counts.
 pub struct Physics {
 	world: dynabit::World,
 	transforms: DefaultChannel<TransformationUpdate>,
@@ -34,8 +39,8 @@ pub struct Physics {
 
 impl Physics {
 	/// Creates a simulation of the bodies, constraints, and ray queries published in `scope` from now on, set up
-	/// from `parameters`, such as the application's.
-	pub fn new(scope: &MessageScope, parameters: &(impl Parameters + ?Sized)) -> Self {
+	/// from `parameters`, the physics subtree of the application's.
+	pub fn new(scope: &MessageScope, parameters: impl Parameters) -> Self {
 		let transforms = scope.transforms_channel();
 		let authored = transforms.listener();
 		let mut world = dynabit::World::new(
@@ -46,7 +51,7 @@ impl Physics {
 			scope.factory(),
 		);
 		// A typo in a setting meant for this machine stops startup instead of silently leaving the defaults in place.
-		if let Some(step_lanes) = parameters.get_parameter("physics-step-lanes") {
+		if let Some(step_lanes) = parameters.get_parameter("step-lanes") {
 			world.set_step_lanes(step_lanes.parse().unwrap_or_else(|error| panic!("{error}")));
 		}
 		Self {

@@ -42,7 +42,9 @@ impl BaseApplication {
 	/// Creates the process configuration with the specified name and configuration parameters.
 	///
 	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
-	/// `--name=value` command-line arguments. See [`parameters_from_json`] for the file's format. Applications are
+	/// `--name=value` command-line arguments. In an environment variable's name, `_` stands for `-` and `__` for `.`,
+	/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. See [`parameters_from_json`] for the file's format.
+	/// Applications are
 	/// singletons: this also installs the process logger and the `tracing` subscriber that feeds span times into
 	/// [`Self::metrics`].
 	///
@@ -63,7 +65,10 @@ impl BaseApplication {
 			upsert_parameter(
 				&mut parameters,
 				Parameter::new_string(
-					key.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(),
+					key.trim_start_matches("BE_")
+						.replace("__", ".")
+						.replace('_', "-")
+						.to_lowercase(),
 					value,
 				),
 			);
@@ -169,8 +174,9 @@ impl BaseApplication {
 	}
 
 	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
-	#[cfg(feature = "headed")]
-	pub(crate) fn parameters(&self) -> &[Parameter] {
+	///
+	/// Next, hand a system its subtree with [`Parameters::scope`].
+	pub fn parameters(&self) -> &[Parameter] {
 		&self.parameters
 	}
 }

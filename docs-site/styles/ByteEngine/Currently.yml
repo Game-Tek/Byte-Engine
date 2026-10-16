@@ -1,0 +1,9 @@
+extends: existence
+message: "Drop '%s': describe what the engine does now, without dating the sentence."
+level: warning
+ignorecase: true
+tokens:
+  - currently
+  - at the moment
+  - for now
+  - at this time

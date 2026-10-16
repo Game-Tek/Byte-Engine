@@ -12,6 +12,8 @@ Every page in `docs` belongs to exactly one section. Choose the section by who r
 
 Decide in this order and stop at the first yes: does the page tell someone how to change the engine or what a change must preserve (Contribute); does it tell someone how to do something from their application (Use); does it define something to look up (Reference); is it about one Rust item or endpoint (a doc comment or the OpenAPI schema). A page that answers two of these is two pages: keep the steps in Use or Contribute, move the definitions to Reference, and link them. Reference pages are specifications: when one needs an example, write the example in a Use page and link it; when one needs to explain a mechanism, write that in a Contribute design note and link it.
 
+Run `bun run check:style` from `docs-site` after editing a page: it lints the pages with Vale against the Microsoft style package and the rules in `docs-site/styles/ByteEngine`. Fix what it reports instead of adding exceptions, unless the word is an engine term, which goes in `docs-site/styles/config/vocabularies/ByteEngine/accept.txt`.
+
 Give every page `title`, `description`, and `icon` front matter. The description is one sentence that answers the section's question for that page; the site shows it in navigation and serves it to agents through `llms.txt`.
 
 Use ISO 24495-1 plain-language principles for in-code comments and API documentation. Make the content relevant, findable, understandable, and usable for its intended developer.

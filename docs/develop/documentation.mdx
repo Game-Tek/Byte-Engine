@@ -18,7 +18,7 @@ The pages at the root of `docs`: [Welcome](/docs),
 [Requirements](/docs/requirements), and [Get started](/docs/get-started).
 
 - **Reader:** Someone who just found Byte Engine.
-- **Question:** What is this, what do I need, and where do I go next?
+- **Question:** What's this, what do I need, and where do I go next?
 - **A page is:** A short orientation that ends by sending the reader into a
   section.
 - **Never:** A task, a design note, or a definition. Link to it instead.
@@ -59,12 +59,12 @@ The pages at the root of `docs`: [Welcome](/docs),
 - **Question:** What exactly is this, and what does it accept?
 - **A page is:** A specification: a complete and neutral description of one
   thing, such as a language, a file format, a model, or a set of units or
-  limits, written as definitions, tables, and grammar. It states what is
+  limits, written as definitions, tables, and grammar. It states what's
   accepted and what results. Link to the Use and Contribute pages that put the
   thing to work.
 - **Never:** Code. No Rust, no file examples, no API calls, and no account of
   how the engine does something inside. An example belongs in a Use page and a
-  mechanism in a Contribute design note; link to them. The one thing a code
+  mechanism in a Contribute design note. Link to them. The one thing a code
   block may show is the syntax of the language the page specifies, as the BESL
   reference does. Also never numbered steps, a tutorial, or the reasons behind
   a design.
@@ -96,7 +96,7 @@ Ask these questions in order, and stop at the first yes:
    preserve? Put it in Contribute.
 2. Does it tell someone how to do something from their application? Put it in
    Use.
-3. Does it define something a reader will look up? Put it in Reference.
+3. Does it define something a reader looks up? Put it in Reference.
 4. Is it about one Rust item or one endpoint? Write it in the doc comment or the
    OpenAPI schema. The API section picks it up.
 
@@ -126,11 +126,18 @@ and transition methods. Skip trivial fields and accessors.
 
 ## Check the result
 
-Build the site from `docs-site` and check every link:
+Lint the pages, then build the site from `docs-site` and check every link:
 
 ```bash
+bun run check:style
 bun run build
 ```
+
+`check:style` runs [Vale](https://vale.sh) with the Microsoft style package and
+the engine's own rules in `docs-site/styles/ByteEngine`. Errors fail the build.
+Warnings print, so read them before you commit. Add an engine term that Vale
+flags as a misspelling or an unexplained acronym to
+`docs-site/styles/config/vocabularies/ByteEngine/accept.txt`.
 
 The build regenerates the API section first, so it needs the pinned nightly
 toolchain. To check only the hand-written pages against an API section you

@@ -4,14 +4,15 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "bun run generate:api && bun run build:site && bun run check:links",
+    "build": "bun run check:style && bun run generate:api && bun run build:site && bun run check:links",
     "build:site": "vite build",
     "check:links": "bun ../scripts/check-doc-links.mjs",
+    "check:style": "vale sync && vale --glob='!**/api/latest/**' ../docs",
     "deploy": "wrangler deploy",
+    "dev": "vite dev",
     "generate:api": "../scripts/generate-api-docs.sh",
-    "start": "bun .output/server/index.mjs",
-    "postinstall": "fumadocs-mdx"
+    "postinstall": "fumadocs-mdx",
+    "start": "bun .output/server/index.mjs"
   },
   "dependencies": {
     "@tanstack/react-router": "^1.170.17",
@@ -37,8 +38,12 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "@vvago/vale": "3.24.0",
     "tailwindcss": "^4.3.2",
     "typescript": "^6.0.3",
     "wrangler": "^4.107.0"
-  }
+  },
+  "trustedDependencies": [
+    "@vvago/vale"
+  ]
 }

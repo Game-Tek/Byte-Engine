@@ -364,6 +364,17 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 		self.runtime.as_ref().and_then(ReadyAnimationGraphPlayer::waiting_for)
 	}
 
+	/// Returns how long the playing state plays on before its route to `target` starts: zero for a route that does not
+	/// wait, and the time to the nearest of its wait points for one that does, like
+	/// [`AnimationGraphTransitionBuilder::at_frames`].
+	///
+	/// Use it to choose, among states that serve one purpose, the one whose route starts soonest, like a stop off
+	/// either foot. Returns `None` when the playing state has no route to `target`, a one-shot has played past every
+	/// wait point, the player is blending, or the initial clip has not loaded.
+	pub fn time_until_route(&self, target: AnimationStateId) -> Option<MediaTime> {
+		self.runtime.as_ref()?.time_until_route(target)
+	}
+
 	/// Initializes from the initial clip when ready, then evaluates locally toward `requested`.
 	///
 	/// `requested` is a state ID, or a blend state with its position from [`LinearStateId::at`] or
@@ -468,6 +479,19 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			.as_ref()
 			.filter(|pending| !pending.wait.is_empty())
 			.map(|pending| pending.requested)
+	}
+
+	/// Returns how long the playing motion plays on before its route to `target` starts.
+	fn time_until_route(&self, target: AnimationStateId) -> Option<MediaTime> {
+		let Playback::Playing(active) = &self.playback else {
+			return None;
+		};
+		let route = self.graph.select_transition(active.state, target, active.is_finished())?;
+		if route.wait.is_empty() {
+			Some(MediaTime::ZERO)
+		} else {
+			active.time_until(route.wait)
+		}
 	}
 
 	/// Returns the currently playing destination state.
@@ -1608,6 +1632,55 @@ mod tests {
 		math::assert_float_eq!(crossing.root_motion.translation.x(), 0.5);
 		assert_eq!(player.state(), Some(walk.id()));
 		assert_eq!(player.waiting_for(), None);
+	}
+
+	#[test]
+	fn time_until_route_reports_the_nearest_wait_point_of_each_route() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 1.0)),
+			("walk.animation", test_animation("walk", 4.0)),
+			("run.animation", test_animation("run", 4.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
+		let crouch = builder.state("crouch").with(AnimationClip::looping("idle.animation"));
+		// Frames of a 10 fps clip: 2 is 200 ms in, 5 is 500 ms in and 8 is 800 ms in.
+		idle.to(walk).at_frame(5).anytime(MediaTime::ZERO);
+		idle.to(run).at_frames("idle.animation", [2, 8]).anytime(MediaTime::ZERO);
+		idle.to(crouch).anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+		assert_eq!(
+			player.time_until_route(walk.id()),
+			None,
+			"nothing plays before the initial clip loads"
+		);
+
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(MediaTime::from_millis(300), idle.id(), &mut pool));
+		let millis = |time: Option<MediaTime>| time.map(|time| (time.as_seconds_f32() * 1000.0).round() as i64);
+		assert_eq!(millis(player.time_until_route(walk.id())), Some(200));
+		assert_eq!(
+			millis(player.time_until_route(run.id())),
+			Some(500),
+			"frame 2 has passed, so frame 8 is next"
+		);
+		assert_eq!(
+			player.time_until_route(crouch.id()),
+			Some(MediaTime::ZERO),
+			"a route that does not wait starts at once"
+		);
+		assert_eq!(
+			player.time_until_route(idle.id()),
+			None,
+			"the playing state has no route to itself"
+		);
+
+		// A looping source wraps around to the first wait point.
+		ready(player.advance(MediaTime::from_millis(600), idle.id(), &mut pool));
+		assert_eq!(millis(player.time_until_route(run.id())), Some(300));
 	}
 
 	#[test]

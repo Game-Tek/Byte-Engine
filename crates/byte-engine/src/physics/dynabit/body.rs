@@ -1,5 +1,5 @@
 use math::{
-	AABB, Capsule, Orientation, OrientedBox, Point, Scale, Sphere, UnitVector, Vector,
+	AABB, Capsule, Orientation, OrientedBox, Point, Ray, Scale, Sphere, UnitVector, Vector,
 	collision::{
 		Intersection, ObbSeparation, aabb_vs_aabb, capsule_vs_aabb, capsule_vs_capsule, capsule_vs_sphere, obb_overlap,
 		sphere_vs_aabb, sphere_vs_sphere, sphere_vs_sphere_dynamic,
@@ -16,7 +16,7 @@ use crate::{
 		contact_patch::{FEATURE_SLACK, Feature, PatchCorner, box_side_patch, patch_corners},
 		dynabit::contact::Contact,
 		epa::ContactScratch,
-		gjk::rounded_shapes_contact,
+		gjk::{rounded_shape_ray_cast, rounded_shapes_contact},
 	},
 	time::MediaTime,
 };
@@ -299,6 +299,25 @@ impl PhysicsBody {
 	/// lets its contacts be found with exact bounds.
 	pub fn outruns_its_shape(&self, dt: f32) -> bool {
 		self.speed() * dt > self.collision_shape.thinnest_reach() * 0.5
+	}
+
+	/// Returns how far along `ray` the ray first meets the body's shape where the body is now, and the shape's
+	/// outward normal there, when that is no further than `max_distance` along it.
+	///
+	/// A ray or segment query tests the bodies whose [`Self::bounds`] the ray passes through within its length, as
+	/// [`math::collision::ray_aabb_intersection`] tells, with this. The shape is placed and turned as contacts place
+	/// it, so a ray meets a capsule of a body that does not rotate upright, and a hull with its rounded corners.
+	///
+	/// A ray that starts inside the shape or on its surface meets it at a distance of zero. See
+	/// [`crate::physics::rounded_shape_ray_cast`] for the other cases.
+	pub fn ray_cast(&self, ray: &Ray, max_distance: f32) -> Option<(f32, UnitVector)> {
+		let placed = Placement::of(self);
+		rounded_shape_ray_cast(
+			|direction| placed.core_support(direction),
+			core_radius(&self.collision_shape),
+			ray,
+			max_distance,
+		)
 	}
 
 	/// Returns the most that any point of the body's shape moves in a second, by its linear velocity and its spin
@@ -1438,6 +1457,56 @@ mod tests {
 		capsule.rotates = false;
 		let contact = touch((&capsule, 0), (&floor, 1), 1.0 / 60.0).expect("the capsule stands in the floor");
 		assert!((contact.depth - 0.61).abs() <= 1e-5, "{contact:?}");
+	}
+
+	/// Asserts that `hit` is at `distance` with `normal`.
+	fn assert_hit(hit: Option<(f32, UnitVector)>, distance: f32, normal: [f32; 3]) {
+		let (found, found_normal) = hit.expect("the ray meets the body");
+		assert!((found - distance).abs() <= 1e-4, "{found} instead of {distance}");
+		let normal = Vector::new(normal[0], normal[1], normal[2])
+			.normalized()
+			.expect("a normal has a direction");
+		assert!(
+			(found_normal.into_vector() - normal.into_vector()).length() <= 1e-4,
+			"{found_normal:?} instead of {normal:?}"
+		);
+	}
+
+	#[test]
+	fn a_ray_meets_a_body_where_its_shape_is_placed_and_turned() {
+		let down = |x: f32, z: f32| Ray::new(Point::new(x, 10.0, z), -UnitVector::y_axis());
+
+		// A cube turned an eighth of a turn about z, 2 up, has a slanted side where x + y is the square root of two
+		// above its middle.
+		let mut cube = body();
+		cube.collision_shape = Shapes::cube(Vector::new(1.0, 1.0, 1.0));
+		cube.position = Point::new(0.0, 2.0, 0.0);
+		cube.orientation = about_z(std::f32::consts::FRAC_PI_4);
+		cube.rotates = true;
+		let side = 2.0 + std::f32::consts::SQRT_2 - 0.3;
+		assert_hit(cube.ray_cast(&down(0.3, 0.0), f32::INFINITY), 10.0 - side, [1.0, 1.0, 0.0]);
+		// A body that does not rotate keeps its cube along the axes.
+		cube.rotates = false;
+		assert_hit(cube.ray_cast(&down(0.3, 0.0), f32::INFINITY), 7.0, [0.0, 1.0, 0.0]);
+
+		// A character's capsule stands on its feet whatever the orientation of its body.
+		let mut character = body();
+		character.collision_shape = Shapes::capsule(0.3, 1.8, Point::new(0.0, 0.9, 0.0));
+		character.position = Point::new(0.0, 1.0, 0.0);
+		character.orientation = about_z(std::f32::consts::FRAC_PI_2);
+		let from_the_side = Ray::new(Point::new(5.0, 2.0, 0.0), -UnitVector::x_axis());
+		assert_hit(character.ray_cast(&from_the_side, f32::INFINITY), 4.7, [1.0, 0.0, 0.0]);
+		assert_hit(character.ray_cast(&down(0.0, 0.0), f32::INFINITY), 7.2, [0.0, 1.0, 0.0]);
+
+		// A hull's flat sides are where the hull's are, and its tips are rounded short of its corners.
+		let mut hull = body();
+		hull.collision_shape = diamond();
+		assert_hit(hull.ray_cast(&down(0.2, 0.2), f32::INFINITY), 9.4, [1.0, 1.0, 1.0]);
+		assert_hit(
+			hull.ray_cast(&down(0.0, 0.0), f32::INFINITY),
+			9.0 + diamond_tip_rounding(),
+			[0.0, 1.0, 0.0],
+		);
 	}
 
 	#[test]

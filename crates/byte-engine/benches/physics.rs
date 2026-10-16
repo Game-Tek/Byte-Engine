@@ -28,7 +28,7 @@ use byte_engine::{
 		message_bus::{MessageBus, MessageBusConfig},
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
-	physics::{Body, BodyTypes, Constraint, ConvexHull, DynabitWorld, LocalSpace, Shapes, build_convex_hull},
+	physics::{Body, BodyTypes, Constraint, ConvexHull, DynabitWorld, LocalSpace, RayQuery, Shapes, build_convex_hull},
 	time::MediaTime,
 };
 use divan::{Bencher, counter::ItemsCount};
@@ -113,6 +113,8 @@ impl Scene {
 				body_factory.listener(),
 				authoring.factory::<Constraint>().listener(),
 				deletes.listener(),
+				authoring.factory::<RayQuery>().listener(),
+				authoring.factory(),
 			),
 			authored: authored.listener(),
 			published_reader: published.listener(),

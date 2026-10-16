@@ -1,6 +1,6 @@
 use std::{ops::Range, time::Instant};
 
-use math::{AABB, Scale, Vector};
+use math::{AABB, Scale, Vector, collision::ray_aabb_intersection};
 use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::{
@@ -8,12 +8,13 @@ use crate::{
 	core::{
 		alley::{Alley, ConcreteLane, Lane as _, LaneOwned, LaneRanges, Stage},
 		channel::Channel,
-		factory::{CreateMessage, Handle},
+		factory::{CreateMessage, Factory, Handle},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
 	physics::{
+		RayHit, RayQuery, RayQueryResponse,
 		body::{Body, BodyTypes},
 		constraint::Constraint,
 		dynabit::{
@@ -55,6 +56,10 @@ pub struct World {
 	constraint_listener: DefaultListener<CreateMessage<Constraint>>,
 	/// Deletions of any entity. The world removes the body and the constraint that were created with the handle.
 	delete_listener: DefaultListener<DeleteMessage>,
+	/// The ray queries to answer after the next step.
+	ray_queries: DefaultListener<CreateMessage<RayQuery>>,
+	/// Where the answers to ray queries are created.
+	ray_responses: Factory<RayQueryResponse>,
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 	/// What pairs of bodies are held to, such as a distance between them.
 	constraints: Constraints,
@@ -93,8 +98,8 @@ pub struct World {
 }
 
 impl World {
-	/// Creates a Dynabit world that listens for the bodies and constraints that are created, and for the handles
-	/// that are deleted.
+	/// Creates a Dynabit world that listens for the bodies, constraints, and ray queries that are created, and for
+	/// the handles that are deleted. The world answers each ray query by creating a response in `ray_responses`.
 	///
 	/// Next, create [`Body`] and [`Constraint`] values through the factories the listeners come from, and call
 	/// [`Self::update`] every step.
@@ -102,6 +107,8 @@ impl World {
 		body_listener: DefaultListener<CreateMessage<Body>>,
 		constraint_listener: DefaultListener<CreateMessage<Constraint>>,
 		delete_listener: DefaultListener<DeleteMessage>,
+		ray_queries: DefaultListener<CreateMessage<RayQuery>>,
+		ray_responses: Factory<RayQueryResponse>,
 	) -> Self {
 		Self {
 			bodies: LaneRanges::new(StableVec::new()),
@@ -109,6 +116,8 @@ impl World {
 			body_listener,
 			constraint_listener,
 			delete_listener,
+			ray_queries,
+			ray_responses,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 			constraints: Constraints::default(),
 			bounds: SweepBounds::default(),
@@ -257,6 +266,9 @@ impl World {
 	/// Contacts are prepared and solved in the same order whatever the number of lanes, so the simulation does not
 	/// depend on it. The order transforms are published in does: each lane publishes the bodies of its share in slot
 	/// order, and the lanes' runs follow each other as they finish.
+	///
+	/// After the step, even one that does nothing, the world answers the [`RayQuery`] values created since the last
+	/// update, in the order they were created, against the bodies where the step left them.
 	pub fn update(
 		&mut self,
 		time: Time,
@@ -267,7 +279,12 @@ impl World {
 		// Listeners belong to the calling thread, so messages are adopted before the lanes start.
 		self.adopt_updates(transforms_rx);
 		self.wake_disturbed();
+		self.step(time, transforms_tx, alley);
+		self.answer_ray_queries();
+	}
 
+	/// Runs the step that [`Self::update`] describes, once the world has adopted what was created and moved.
+	fn step(&mut self, time: Time, transforms_tx: &(impl Channel<TransformationUpdate> + Sync), alley: &mut Alley) {
 		let step = time.delta();
 		let bodies = self.bodies.get_mut();
 		// Nothing moves in a world whose bodies all sleep or have no mass. The search ends at the first body that
@@ -359,6 +376,15 @@ impl World {
 		}
 		if self.sleep.watch(step.as_seconds_f32()) {
 			self.settle();
+		}
+	}
+
+	/// Answers every ray query created since the last call, against the bodies where they are now.
+	fn answer_ray_queries(&mut self) {
+		let bodies = self.bodies.get_mut();
+		while let Some(message) = self.ray_queries.read() {
+			let hit = first_hit(bodies, message.data());
+			self.ray_responses.create(RayQueryResponse::new(message.handle(), hit));
 		}
 	}
 
@@ -788,6 +814,26 @@ fn detect_contacts(
 	});
 }
 
+/// Returns where the ray of `query` first meets one of `bodies` within its length, sleeping ones included.
+///
+/// Every body is tested in turn. Each hit shortens how far the ray reaches, so the bodies whose bounds it no longer
+/// reaches are passed over without casting against their shapes.
+fn first_hit(bodies: &StableVec<PhysicsBody>, query: &RayQuery) -> Option<RayHit> {
+	let ray = query.ray();
+	let mut nearest = None;
+	let mut reach = query.max_distance();
+	for body in bodies.iter() {
+		if !ray_aabb_intersection(&ray, &body.bounds()).is_some_and(|entry| entry <= reach) {
+			continue;
+		}
+		if let Some((distance, normal)) = body.ray_cast(&ray, reach) {
+			reach = distance;
+			nearest = Some(RayHit::new(body.handle, &ray, distance, normal));
+		}
+	}
+	nearest
+}
+
 /// The `Recycled` struct gives a search for contacts the manifolds of the last step that it may recycle.
 #[derive(Clone, Copy)]
 struct Recycled<'a> {
@@ -888,6 +934,8 @@ mod tests {
 			body_factory.listener(),
 			Factory::<Constraint>::new().listener(),
 			delete_channel.listener(),
+			Factory::<RayQuery>::new().listener(),
+			Factory::new(),
 		)
 	}
 
@@ -991,6 +1039,61 @@ mod tests {
 			&mut ContactScratch::default(),
 		);
 		contacts.iter().map(|contact| contact.depth).fold(0.0, f32::max)
+	}
+
+	#[test]
+	fn ray_queries_are_answered_in_order_with_the_first_body_along_each() {
+		let (queries, responses) = (Factory::<RayQuery>::new(), Factory::<RayQueryResponse>::new());
+		let mut listener = responses.listener();
+		let mut world = World::new(
+			Factory::<Body>::new().listener(),
+			Factory::<Constraint>::new().listener(),
+			DefaultChannel::new().listener(),
+			queries.listener(),
+			responses,
+		);
+		// The ground's top is at height one. A static one-meter box hovers over it with its top at 3.5.
+		let ground = make_ground_body();
+		let mut hovering = make_ground_body();
+		hovering.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+		hovering.position = math::Point::new(2.0, 3.0, 0.0);
+		let (ground_handle, hovering_handle) = (ground.handle, hovering.handle);
+		*world.bodies.get_mut() = [ground, hovering].into_iter().collect();
+
+		let down_from = |x: f32, to: f32| {
+			RayQuery::segment(math::Point::new(x, 10.0, 0.0), math::Point::new(x, to, 0.0)).expect("the segment has a length")
+		};
+		let asked = [
+			queries.create(down_from(2.0, -10.0)),
+			queries.create(down_from(-2.0, -10.0)),
+			queries.create(down_from(-2.0, 2.0)),
+		];
+		// Nothing moves in the step, which leaves the queries for after it.
+		step(&mut world, MediaTime::from_seconds_f32(1.0 / 60.0), 1, &DefaultChannel::new());
+
+		let answers = listener.to_vec();
+		assert_eq!(answers.iter().map(|answer| answer.data().query()).collect::<Vec<_>>(), asked);
+		assert!(answers.iter().all(|answer| !asked.contains(&answer.handle())));
+		let hits = answers.iter().map(|answer| answer.data().hit()).collect::<Vec<_>>();
+		let on_box = hits[0].expect("the ray down onto the box meets it");
+		assert_eq!(on_box.body(), hovering_handle);
+		assert!((on_box.distance() - 6.5).abs() <= 1e-4, "{on_box:?}");
+		assert!(
+			(on_box.point() - math::Point::new(2.0, 3.5, 0.0)).length() <= 1e-4,
+			"{on_box:?}"
+		);
+		assert!(
+			(on_box.normal().into_vector() - Vector::new(0.0, 1.0, 0.0)).length() <= 1e-4,
+			"{on_box:?}"
+		);
+		let on_ground = hits[1].expect("the ray beside the box meets the ground");
+		assert_eq!(on_ground.body(), ground_handle);
+		assert!((on_ground.distance() - 9.0).abs() <= 1e-4, "{on_ground:?}");
+		assert_eq!(hits[2], None, "the segment ends above the ground");
+
+		// Every query is answered once.
+		step(&mut world, MediaTime::from_seconds_f32(1.0 / 60.0), 1, &DefaultChannel::new());
+		assert!(listener.read().is_none());
 	}
 
 	/// Returns a dynamic one-meter box with friction.
@@ -1679,7 +1782,13 @@ mod tests {
 		fn on(lanes: usize) -> Self {
 			let constraints = Factory::<Constraint>::new();
 			let deletes = DefaultChannel::new();
-			let mut world = World::new(Factory::<Body>::new().listener(), constraints.listener(), deletes.listener());
+			let mut world = World::new(
+				Factory::<Body>::new().listener(),
+				constraints.listener(),
+				deletes.listener(),
+				Factory::<RayQuery>::new().listener(),
+				Factory::new(),
+			);
 			world.set_step_lanes(StepLanes::new([(0, lanes)]));
 			Self {
 				world,
@@ -2529,7 +2638,13 @@ mod tests {
 			let deletes = DefaultChannel::new();
 			let authoring = DefaultChannel::new();
 			let published = DefaultChannel::new();
-			let mut world = World::new(bodies.listener(), constraints.listener(), deletes.listener());
+			let mut world = World::new(
+				bodies.listener(),
+				constraints.listener(),
+				deletes.listener(),
+				Factory::<RayQuery>::new().listener(),
+				Factory::new(),
+			);
 			world.set_step_lanes(StepLanes::new([(0, lanes)]));
 			let mut scene = Self {
 				world,

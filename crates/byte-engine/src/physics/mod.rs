@@ -4,7 +4,8 @@
 //! geometry uses [`LocalSpace`], while simulated positions, velocities, and contacts
 //! remain in the engine world space. Publish a transform under the same entity handle
 //! to place the body in the world. Create a [`Constraint`] to hold two bodies to each
-//! other.
+//! other. Create a [`RayQuery`] to learn which body a ray or a segment meets first, and
+//! read the answer from a [`RayQueryResponse`].
 
 #[doc(hidden)]
 pub mod body;
@@ -22,6 +23,7 @@ mod epa;
 pub mod gjk;
 #[doc(hidden)]
 pub mod intersection;
+mod ray_query;
 
 /// The `LocalSpace` struct brands coordinates stored relative to a collider's origin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -37,6 +39,8 @@ pub use dynabit::contact::{Contact, Side};
 pub use dynabit::step_lanes::{StepLanes, StepLanesError};
 pub use epa::ContactScratch;
 pub use gjk::{
-	MinkowskiPoint, minkowski_support, rounded_shapes_contact, shapes_closest_points, shapes_contact, shapes_overlap,
+	MinkowskiPoint, minkowski_support, rounded_shape_ray_cast, rounded_shapes_contact, shapes_closest_points, shapes_contact,
+	shapes_overlap,
 };
 pub use intersection::SweepBounds;
+pub use ray_query::{RayHit, RayQuery, RayQueryResponse};

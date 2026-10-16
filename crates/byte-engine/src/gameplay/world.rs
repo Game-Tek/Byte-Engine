@@ -59,6 +59,8 @@ impl DefaultWorld {
 			body_factory.listener(),
 			messages.factory::<Constraint>().listener(),
 			deletes.listener(),
+			messages.factory::<RayQuery>().listener(),
+			messages.factory(),
 		);
 		let scenes = messages.factory::<Scene>().listener();
 		let scene_nodes = messages.factory::<SceneNode>().listener();
@@ -241,7 +243,7 @@ use crate::{
 		scene::{Scene, SceneGraph, SceneNode},
 		transform::TransformationUpdate,
 	},
-	physics::{Constraint, StepLanes, dynabit},
+	physics::{Constraint, RayQuery, StepLanes, dynabit},
 };
 
 #[cfg(test)]
@@ -287,6 +289,42 @@ mod tests {
 		assert!(deleted.contains(&rock));
 		assert!(!deleted.contains(&scene));
 		assert!(!deleted.contains(&outsider));
+	}
+
+	#[test]
+	fn a_ray_query_made_in_one_tick_is_answered_to_its_client_in_the_next() {
+		use math::{Point, Vector};
+
+		use crate::physics::{Body, BodyTypes, RayQuery, RayQueryResponse, Shapes};
+
+		// A ticking bus, run the way the application runs it: a tick begins, application code runs, then the world
+		// updates.
+		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
+		let mut world = DefaultWorld::with_messages(bus.new_scope("world"));
+		let mut transforms = world.transforms_channel().listener();
+		let mut responses = world.factory::<RayQueryResponse>().listener();
+		let mut alley = Alley::with_parallelism(1);
+		let step = crate::time::MediaTime::from_seconds_f32(1.0 / 60.0);
+
+		bus.begin_tick();
+		// The ground's top is at height one.
+		let ground: Handle = world
+			.create(Body::new(BodyTypes::Static, Shapes::cube(Vector::new(4.0, 1.0, 4.0))))
+			.into();
+		world
+			.transforms_channel()
+			.send(TransformationUpdate::new(ground, Transform::identity()));
+		let query: Handle = world
+			.create(RayQuery::segment(Point::new(0.0, 10.0, 0.0), Point::new(0.0, -10.0, 0.0)).expect("a segment"))
+			.into();
+		world.update(Time::new(step, step), &mut transforms, &mut alley);
+		world.flush_deletions();
+
+		bus.begin_tick();
+		let response = responses.read().expect("the response arrives in the next tick");
+		assert_eq!(response.data().query(), query);
+		assert_eq!(response.data().hit().map(|hit| hit.body()), Some(ground));
+		assert!(responses.read().is_none());
 	}
 
 	#[test]

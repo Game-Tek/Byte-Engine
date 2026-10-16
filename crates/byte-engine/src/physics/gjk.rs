@@ -9,9 +9,9 @@
 //! Call [`shapes_overlap`] to test two shapes, [`shapes_contact`] to also find where and how deep they overlap, or
 //! [`shapes_closest_points`] to find how far apart they are. All three run one search, and each takes from it what
 //! it needs. [`rounded_shapes_contact`] is for shapes that are a simpler shape made thicker all around, as a ball
-//! and a capsule are.
+//! and a capsule are. [`rounded_shape_ray_cast`] finds where a ray meets such a shape.
 
-use math::{Point, Vector, WorldSpace, collision::Intersection};
+use math::{Point, Ray, UnitVector, Vector, WorldSpace, collision::Intersection};
 
 use super::epa::{self, ContactScratch};
 
@@ -210,6 +210,119 @@ pub fn shapes_closest_points<Space>(
 	(!search.holds_origin).then(|| search.points())
 }
 
+/// Returns how far along `ray` the ray first meets a shape that is every point within `radius` of a convex core
+/// shape, and the shape's outward normal there, when that is no further than `max_distance` along it.
+///
+/// This is how a ray or segment query tests one shape, after the boxes around shapes have ruled out the ones the
+/// ray does not come near. For a segment, start the ray at one end, point it at the other, and pass the segment's
+/// length as `max_distance`. Pass infinity for a ray without an end.
+///
+/// `support` returns the point of the core that is furthest along the direction it is given, as
+/// [`crate::physics::ConvexHull::support_point`] does for a hull. It has to answer in the ray's space. A ball is a
+/// point with a radius, and a capsule is a segment with one. A radius of zero leaves the shape as its core.
+///
+/// A ray that starts inside the shape or on its surface meets it at a distance of zero, with a normal that leads
+/// back along the ray, since it does not enter the shape anywhere.
+///
+/// The distance is short of where the ray meets the shape by about a ten-thousandth of a unit at most, so the
+/// point it gives is never inside the shape.
+///
+/// Returns `None` when the ray passes the shape or ends before it. A ray that only grazes the shape may be reported
+/// either way.
+pub fn rounded_shape_ray_cast<Space>(
+	support: impl Fn(Vector<Space>) -> Point<Space>,
+	radius: f32,
+	ray: &Ray<Space>,
+	max_distance: f32,
+) -> Option<(f32, UnitVector<Space>)> {
+	// This is the ray cast of Gino van den Bergen's "Ray Casting against General Convex Objects with Application to
+	// Continuous Collision Detection". A point moves along the ray, and GJK closes in on the core's point nearest
+	// it. The core's furthest point toward the moving point puts a plane across the way to it, and the shape is
+	// behind that plane moved out by the radius. While the moving point is beyond that plane, it can move up to it
+	// without entering the shape. The simplex is of differences between the moving point and points of the core,
+	// which are taken again whenever the point moves.
+	let direction = ray.direction();
+	let from_core = |at: Point<Space>, on_core: Point<Space>| MinkowskiPoint {
+		difference: at - on_core,
+		point_on_a: at,
+		point_on_b: on_core,
+	};
+	let mut distance = 0.0;
+	let mut at = ray.origin();
+	let mut simplex = [from_core(at, support(any_direction())); 4];
+	let mut count = 1;
+	let mut nearest = nearest_on_simplex(&simplex[..count]);
+	// The direction of the last plane the point moved up to. Where a flat side stops the ray, it is the side's
+	// normal.
+	let mut facing = None;
+
+	for _ in 0..STEP_LIMIT {
+		// The simplex is part of the core, so the core is no further from the point than the simplex is. The ray has
+		// met the shape once what is left between them is less than a ten-thousandth of a unit along the ray. A ray
+		// that slants across the shape's surface covers more than the gap before it meets it, by one over how
+		// directly it heads in, which `nearest.point` gives scaled by the gap.
+		let gap = nearest.distance_squared.sqrt();
+		let heading_in = nearest.point.dot(direction.into_vector()).abs();
+		if (gap - radius) * gap <= RAY_REACH * heading_in || count == 4 {
+			break;
+		}
+
+		// Both of these are scaled by the gap, which is the length of `nearest.point`.
+		let on_core = support(nearest.point);
+		let beyond = nearest.point.dot(at - on_core) - radius * gap;
+		let moves = beyond > 0.0;
+		if moves {
+			// The point is beyond the plane. A ray that does not lead toward the plane never reaches the shape behind
+			// it.
+			let approach = -nearest.point.dot(direction.into_vector());
+			if approach.is_nan() || approach <= 0.0 {
+				return None;
+			}
+			distance += beyond / approach;
+			if distance.is_nan() || distance > max_distance {
+				return None;
+			}
+			at = ray.point_at(distance);
+			facing = Some(nearest.point);
+			for point in &mut simplex[..count] {
+				*point = from_core(at, point.point_on_b);
+			}
+		}
+
+		let point = from_core(at, on_core);
+		let added = !has_point(&simplex[..count], &point);
+		if added {
+			simplex[count] = point;
+		}
+		let next = nearest_on_simplex(&simplex[..count + usize::from(added)]);
+		// When the point stays where it is and the simplex does not get nearer to it, GJK has found the core's point
+		// nearest it, as far as rounding lets it.
+		if !moves && (!added || next.weights[count] == 0.0) {
+			break;
+		}
+		nearest = next;
+		count = keep_weighted(&mut simplex, &mut nearest.weights);
+	}
+
+	// The search ran out of steps or rounding stopped it short of the shape, which only happens to rays that graze
+	// it. A ray whose point came within a ten-thousandth of a unit of the shape meets it there.
+	if nearest.distance_squared.sqrt() > radius + RAY_REACH {
+		return None;
+	}
+	let Some(facing) = facing else {
+		return Some((0.0, -direction));
+	};
+	// Where the shape is round, its normal leads from the core's nearest point to where the ray meets it. Where it is
+	// flat, the core is the shape and that point is where the ray meets it, so the plane that stopped the ray gives
+	// the normal.
+	let normal = if radius > 0.0 {
+		nearest.point.normalized()
+	} else {
+		facing.normalized()
+	};
+	Some((distance, normal.or_else(|_| facing.normalized()).ok()?))
+}
+
 /// The `Search` struct holds what GJK ends with, so that the test for overlap, the contact, and the closest points
 /// all come from one search.
 struct Search<Space> {
@@ -243,6 +356,9 @@ const ORIGIN_REACH: f32 = 0.0001;
 /// How much further along the way to the origin a new point has to be than the simplex is, as a share of the
 /// distances involved, for the search to go on. Less than this is rounding.
 const FURTHER_REACH: f32 = 1e-6;
+
+/// How near a ray's point has to come to a shape, along the ray, to count as meeting it.
+const RAY_REACH: f32 = 0.0001;
 
 /// How many points the search asks for at most. Shapes with flat sides need under ten, and balls needed up to 35. A
 /// search that is cut off here ends with the nearest simplex found so far.
@@ -612,6 +728,8 @@ fn shared_edge<Space>(
 
 #[cfg(test)]
 mod tests {
+	use math::AABB;
+
 	use super::*;
 	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull};
 
@@ -1742,5 +1860,213 @@ mod tests {
 			assert!((contact.depth() - 0.25).abs() <= 1e-5);
 			assert_contact(&contact, support_a, support_b, 1e-5);
 		}
+	}
+
+	/// Returns a ray from `origin` toward `toward`, which need not have a length of one.
+	fn ray(origin: [f32; 3], toward: [f32; 3]) -> Ray<LocalSpace> {
+		let toward = Vector::new(toward[0], toward[1], toward[2]);
+		Ray::new(
+			Point::from_array(origin),
+			toward.normalized().expect("the ray has a direction"),
+		)
+	}
+
+	/// Returns the furthest corner of the box from `min` to `max` along a direction.
+	fn aligned_box(min: [f32; 3], max: [f32; 3]) -> impl Fn(Vector<LocalSpace>) -> Point<LocalSpace> + Copy {
+		move |direction| {
+			let along = direction.to_array();
+			Point::from_array([0, 1, 2].map(|axis| if along[axis] >= 0.0 { max[axis] } else { min[axis] }))
+		}
+	}
+
+	/// Asserts that `hit` is at `distance` with `normal`.
+	fn assert_hit(hit: Option<(f32, UnitVector<LocalSpace>)>, distance: f32, normal: [f32; 3]) {
+		let (found, found_normal) = hit.expect("the ray meets the shape");
+		assert!((found - distance).abs() <= 1e-4, "{found} instead of {distance}");
+		let normal = Vector::new(normal[0], normal[1], normal[2])
+			.normalized()
+			.expect("a normal has a direction");
+		assert!(
+			(found_normal.into_vector() - normal.into_vector()).length() <= 1e-4,
+			"{found_normal:?} instead of {normal:?}"
+		);
+	}
+
+	#[test]
+	fn a_ray_meets_a_box_at_the_side_it_enters() {
+		let cube = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+		let cast = |ray: Ray<LocalSpace>| rounded_shape_ray_cast(|along| cube.support_point(along), 0.0, &ray, f32::INFINITY);
+
+		assert_hit(cast(ray([5.0, 0.3, -0.2], [-1.0, 0.0, 0.0])), 4.0, [1.0, 0.0, 0.0]);
+		assert_hit(cast(ray([0.4, -3.0, 0.9], [0.0, 1.0, 0.0])), 2.0, [0.0, -1.0, 0.0]);
+		// Slanted down onto the top, where it is 3 units lower and half a unit further along z.
+		assert_hit(cast(ray([0.0, 3.0, 0.0], [0.0, -2.0, 0.5])), 4.25f32.sqrt(), [0.0, 1.0, 0.0]);
+
+		// A cube turned an eighth of a turn about z has a slanted side where x + y is the square root of two.
+		let turned = turned_cube([0.0, 0.0, 0.0]);
+		let hit = rounded_shape_ray_cast(
+			|along| turned.support_point(along),
+			0.0,
+			&ray([5.0, 0.5, 0.0], [-1.0, 0.0, 0.0]),
+			f32::INFINITY,
+		);
+		assert_hit(hit, 5.0 - (std::f32::consts::SQRT_2 - 0.5), [1.0, 1.0, 0.0]);
+	}
+
+	#[test]
+	fn a_ray_meets_a_capsule_on_its_side_and_on_its_caps() {
+		// An upright capsule whose segment reaches 0.6 up and down from the origin, 0.3 thick.
+		let segment = |along: Vector<LocalSpace>| Point::new(0.0, 0.6f32.copysign(along.y()), 0.0);
+		let cast = |ray: Ray<LocalSpace>| rounded_shape_ray_cast(segment, 0.3, &ray, f32::INFINITY);
+
+		assert_hit(cast(ray([5.0, 0.2, 0.0], [-1.0, 0.0, 0.0])), 4.7, [1.0, 0.0, 0.0]);
+		assert_hit(cast(ray([0.0, 5.0, 0.0], [0.0, -1.0, 0.0])), 4.1, [0.0, 1.0, 0.0]);
+		// Down onto the upper cap, a tenth of a unit off its middle.
+		let height = 0.08f32.sqrt();
+		assert_hit(cast(ray([0.1, 5.0, 0.0], [0.0, -1.0, 0.0])), 4.4 - height, [0.1, height, 0.0]);
+	}
+
+	#[test]
+	fn a_ray_that_passes_leads_away_from_or_ends_short_of_a_shape_misses_it() {
+		let cube = aligned_box([-1.0; 3], [1.0; 3]);
+		let ball = |_| Point::<LocalSpace>::origin();
+
+		for (support, radius) in [(&cube as &dyn Fn(_) -> _, 0.0), (&ball, 1.0)] {
+			let cast = |ray: Ray<LocalSpace>, max_distance| rounded_shape_ray_cast(support, radius, &ray, max_distance);
+			assert!(cast(ray([5.0, 1.01, 0.0], [-1.0, 0.0, 0.0]), f32::INFINITY).is_none());
+			assert!(cast(ray([5.0, 0.0, 0.0], [1.0, 0.0, 0.0]), f32::INFINITY).is_none());
+			assert!(cast(ray([5.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), 3.9).is_none());
+			assert_hit(cast(ray([5.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), 4.0), 4.0, [1.0, 0.0, 0.0]);
+		}
+	}
+
+	#[test]
+	fn a_ray_that_starts_in_or_on_a_shape_meets_it_at_once() {
+		let cube = aligned_box([-1.0; 3], [1.0; 3]);
+		let ball = |_| Point::<LocalSpace>::origin();
+
+		for (support, radius) in [(&cube as &dyn Fn(_) -> _, 0.0), (&ball, 1.0)] {
+			let cast = |ray: Ray<LocalSpace>| rounded_shape_ray_cast(support, radius, &ray, 0.5);
+			assert_hit(cast(ray([0.5, 0.0, 0.0], [1.0, 0.0, 0.0])), 0.0, [-1.0, 0.0, 0.0]);
+			assert_hit(cast(ray([0.0, 0.0, 0.0], [0.0, 1.0, 1.0])), 0.0, [0.0, -1.0, -1.0]);
+			// On the surface, leading out.
+			assert_hit(cast(ray([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])), 0.0, [-1.0, 0.0, 0.0]);
+		}
+	}
+
+	#[test]
+	fn scattered_rays_and_segments_meet_boxes_where_they_enter_their_slabs() {
+		let mut next = scattered();
+		let mut hits = 0;
+		for _ in 0..2000 {
+			let (middle, half_sizes) = (next().to_array(), next().to_array().map(|size| size.abs() + 0.1));
+			let grown = |by: f32| {
+				AABB::new(
+					Point::from_array(middle) - Vector::from_array(half_sizes.map(|size| size + by)),
+					Point::from_array(middle) + Vector::from_array(half_sizes.map(|size| size + by)),
+				)
+			};
+			let (min, max) = (grown(0.0).min().to_array(), grown(0.0).max().to_array());
+			// Each ray leads toward somewhere near the box, so that many meet it.
+			let origin = Point::from_array(middle) + next() * 4.0;
+			let Ok(direction) = (Point::from_array(middle) + next() * 1.5 - origin).normalized() else {
+				continue;
+			};
+			let ray = Ray::new(origin, direction);
+			let length = next().x().abs() * 6.0;
+
+			// The reference: where the ray enters the box, and whether a ray of that length gets there. Rays that
+			// only graze the box, or end at it, may be reported either way.
+			let entry = |box_: &AABB<LocalSpace>, length: f32| {
+				math::collision::ray_aabb_intersection(&ray, box_).filter(|entry| *entry <= length)
+			};
+			if entry(&grown(-1e-3), length - 1e-3).is_some() != entry(&grown(1e-3), length + 1e-3).is_some() {
+				continue;
+			}
+			let expected = entry(&grown(0.0), length);
+
+			let hit = rounded_shape_ray_cast(aligned_box(min, max), 0.0, &ray, length);
+			assert_eq!(
+				hit.is_some(),
+				expected.is_some(),
+				"{ray:?} of {length} and a box from {min:?} to {max:?}"
+			);
+			let (Some((distance, normal)), Some(expected)) = (hit, expected) else {
+				continue;
+			};
+			hits += 1;
+			// The ray stops within a ten-thousandth of a unit of where it enters the box.
+			assert!((distance - expected).abs() <= 1e-4, "{distance} instead of {expected}");
+			if distance == 0.0 {
+				continue;
+			}
+			// The normal faces the ray, and the box is behind the plane through where the ray meets it. That plane is
+			// the side the ray meets, or one of those at an edge or a corner.
+			assert!(normal.dot(direction.into_vector()) < 0.0, "{normal:?} along {direction:?}");
+			let at = ray.point_at(distance);
+			let ahead = normal.dot(aligned_box(min, max)(normal.into_vector()) - at);
+			assert!(ahead.abs() <= 1e-4, "{normal:?} at {at:?} has the box {ahead} ahead");
+		}
+		assert!(hits > 200, "{hits} of 2000 meet their box");
+	}
+
+	#[test]
+	fn scattered_rays_meet_balls_where_their_lines_cross_the_ball() {
+		let mut next = scattered();
+		let mut hits = 0;
+		for _ in 0..2000 {
+			let (center, radius) = (Point::<LocalSpace>::origin() + next(), next().x().abs() + 0.05);
+			// Each ray leads toward somewhere near the ball, so that many meet it.
+			let origin = center + next() * 4.0;
+			let Ok(direction) = (center + next() * 1.5 * radius - origin).normalized() else {
+				continue;
+			};
+			let ray = Ray::new(origin, direction);
+
+			// Rays that only graze the ball may be reported either way.
+			let offset = center - ray.origin();
+			let across = (offset - direction * direction.dot(offset)).length();
+			if (across - radius).abs() <= 1e-3 {
+				continue;
+			}
+			// The reference, worked out in double precision: where the ray's line enters and leaves the ball.
+			let (offset, along) = ((center - ray.origin()).to_array(), direction.into_vector().to_array());
+			let offset = offset.map(f64::from);
+			let projection: f64 = (0..3).map(|axis| offset[axis] * f64::from(along[axis])).sum();
+			let across_squared = offset.iter().map(|part| part * part).sum::<f64>() - projection * projection;
+			let half_chord_squared = f64::from(radius) * f64::from(radius) - across_squared;
+			let expected = (half_chord_squared >= 0.0)
+				.then(|| (projection - half_chord_squared.sqrt(), projection + half_chord_squared.sqrt()))
+				.filter(|(_, exit)| *exit >= 0.0)
+				.map(|(entry, _)| entry.max(0.0) as f32);
+
+			let hit = rounded_shape_ray_cast(|_| center, radius, &ray, f32::INFINITY);
+			assert_eq!(
+				hit.is_some(),
+				expected.is_some(),
+				"{ray:?} and a ball of {radius} at {center:?}"
+			);
+			let (Some((distance, normal)), Some(expected)) = (hit, expected) else {
+				continue;
+			};
+			hits += 1;
+			// The ray stops about a ten-thousandth of a unit short of where it enters the ball at most, and never
+			// inside it. How short is judged from how directly the ray heads in from where it is, which is a little
+			// more directly than where it enters.
+			assert!((distance - expected).abs() <= 2e-4, "{distance} instead of {expected}");
+			let gap = (ray.point_at(distance) - center).length() - radius;
+			assert!(gap <= 1e-4 + 1e-5 && (distance == 0.0 || gap >= -1e-5), "{gap} from the ball");
+			if distance > 0.0 {
+				let outward = (ray.point_at(distance) - center)
+					.normalized()
+					.expect("the ray stops outside the center");
+				let outward = outward.into_vector();
+				assert!(
+					(normal.into_vector() - outward).length() <= 1e-3,
+					"{normal:?} instead of {outward:?}"
+				);
+			}
+		}
+		assert!(hits > 300, "{hits} of 2000 meet their ball");
 	}
 }

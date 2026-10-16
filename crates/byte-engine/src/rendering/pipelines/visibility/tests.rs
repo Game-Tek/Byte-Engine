@@ -2651,8 +2651,8 @@ fn sun_visibility_without_contact_shadows_reaches_no_trace() {
 	let context = resource_management::asset::JsonObject::new();
 	let reaches_trace = |features| {
 		let source = besl::parse(asset_source!("sun-visibility.besl")).expect("sun visibility should parse");
-		let root =
-			besl::lex(CommonShaderGenerator::new(features).transform(source, &context)).expect("sun visibility should link");
+		let root = besl::lex(CommonShaderGenerator::with_features(features).transform(source, &context))
+			.expect("sun visibility should link");
 		let main = root.get_main().expect("sun visibility should contain main");
 		resource_management::shader::besl::graph::dependency_order(&main)
 			.iter()

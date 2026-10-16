@@ -1,5 +1,6 @@
 //! Physics contracts and the built-in Dynabit simulation.
 //!
+//! Create a [`Physics`] system on the world scope and step it from the application loop.
 //! Create [`Body`] payloads for entities that participate in simulation. Collider
 //! geometry uses [`LocalSpace`], while simulated positions, velocities, and contacts
 //! remain in the engine world space. Publish a transform under the same entity handle
@@ -24,6 +25,7 @@ pub mod gjk;
 #[doc(hidden)]
 pub mod intersection;
 mod ray_query;
+mod system;
 
 /// The `LocalSpace` struct brands coordinates stored relative to a collider's origin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -44,3 +46,4 @@ pub use gjk::{
 };
 pub use intersection::SweepBounds;
 pub use ray_query::{RayHit, RayQuery, RayQueryResponse};
+pub use system::Physics;

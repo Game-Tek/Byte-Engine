@@ -1,7 +1,7 @@
 //! Light entities consumed by scene rendering pipelines.
 //!
 //! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values through
-//! [`crate::core::factory::Creator::create`] on [`crate::gameplay::world::DefaultWorld`]. The associated
+//! [`crate::core::factory::Creator::create`] on the world scope ([`crate::core::message_bus::MessageScope`]). The associated
 //! [`crate::gameplay::Transform`] controls each light's position and orientation. For measured IES
 //! profiles, the transform also controls the emission axis and C0 plane. Use [`ConeLight::new_ies`]
 //! or [`PointLight::new_ies`] to attach the profile. The renderer erases concrete

@@ -1,7 +1,7 @@
 //! Inline-authored audio processing graphs.
 //!
 //! Build a graph with the functions in [`fns`], then publish it through
-//! [`crate::gameplay::world::DefaultWorld::audio_graph_factory`]. The
+//! [`crate::audio::graph::AudioGraphFactory`]. The
 //! default audio worker validates and compiles each graph before its sample
 //! resources cross to the audio thread.
 

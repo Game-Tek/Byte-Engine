@@ -2,7 +2,7 @@
 //!
 //! Convert concrete values into [`EntityHandle`] when several systems need
 //! stable access to the same object. Trait-object handles are used by
-//! the headed default world for physics bodies and renderable meshes.
+//! headed applications for physics bodies and renderable meshes.
 
 pub mod handle;
 

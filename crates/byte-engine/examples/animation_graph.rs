@@ -20,7 +20,7 @@ use byte_engine::{
 		},
 	},
 	core::{Creator as _, channel::Channel as _},
-	gameplay::{Transform, TransformationUpdate},
+	gameplay::{Transform, TransformationUpdate, World as _},
 	rendering::{Camera, RenderableMesh, UpdatePose, window::Window},
 };
 use math::{Orientation, Point, Scale, Vector};
@@ -78,10 +78,10 @@ fn main() {
 	// is the one to use when an app also owns animation-loading workers.
 	#[cfg(debug_assertions)]
 	{
-		use byte_engine::rendering::pipelines::visibility::{VisibilityFeatures, VisibilityShaderGenerator};
+		use byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator;
 
-		let features = VisibilityFeatures::from_parameters(&app);
-		setup_default_resource_and_asset_management(&mut app, VisibilityShaderGenerator::new(features));
+		let generator = VisibilityShaderGenerator::new(&app);
+		setup_default_resource_and_asset_management(&mut app, generator);
 	}
 	setup_default_input(&mut app);
 	setup_default_audio(&mut app);

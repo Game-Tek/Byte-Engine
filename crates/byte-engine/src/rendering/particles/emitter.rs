@@ -3,7 +3,7 @@ use crate::inspector::Inspectable;
 /// The `ParticleEmitter` struct places a source of one particle system in the world, such as a grinder throwing
 /// sparks or a chimney trailing smoke.
 ///
-/// Create one through [`crate::gameplay::world::DefaultWorld::create`] together with a
+/// Create one through [`crate::core::factory::Creator::create`] together with a
 /// [`crate::gameplay::Transform`]. The transform moves, turns, and scales the system's spawn modules, so a cone
 /// fires along the transform's local `+Z` axis. Publish a new value with [`crate::core::factory::Factory::derive`]
 /// on the same handle to change it, and delete the handle to stop it; particles already in flight finish their

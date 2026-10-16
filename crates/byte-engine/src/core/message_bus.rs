@@ -44,7 +44,7 @@ use utils::{
 
 use crate::core::{
 	channel::DefaultChannel,
-	factory::Factory,
+	factory::{Creator, Factory, Handle},
 	message_observer::{MessageObservationError, MessageObserver, ObservedType},
 };
 
@@ -390,6 +390,19 @@ impl MessageScope {
 		&self.name
 	}
 
+	/// Creates a scope on a private bus without ticks, so its listeners are future-only.
+	///
+	/// Use it where no application owns a bus, such as servers and tests. Applications use
+	/// [`MessageBus::new_scope`] so the scope's routes appear in their unified diagnostics.
+	pub fn standalone(name: impl Into<Arc<str>>) -> Self {
+		let bus = MessageBus::new(MessageBusConfig {
+			ticks: false,
+			..MessageBusConfig::default()
+		})
+		.unwrap_or_else(|error| panic!("{error}"));
+		bus.new_scope(name)
+	}
+
 	/// Looks up or registers the typed route for `M` in this scope.
 	pub(crate) fn topic<M>(&self) -> Result<Arc<Topic<M>>, MessageRouteError>
 	where
@@ -447,6 +460,18 @@ impl MessageScope {
 		});
 		registry.insert(key, topic.clone());
 		Ok(topic)
+	}
+}
+
+/// A scope creates entities through its canonical factories, so `scope.create(a).with(b)` publishes every
+/// representation of one entity under one handle. A system that must observe the creation takes its listener
+/// through [`MessageScope::factory`] first.
+impl<T> Creator<T> for MessageScope
+where
+	T: Clone + Send + Sync + 'static,
+{
+	fn publish(&self, handle: Handle, value: T) {
+		self.factory::<T>().derive(handle, value);
 	}
 }
 

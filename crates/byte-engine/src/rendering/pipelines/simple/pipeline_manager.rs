@@ -97,7 +97,7 @@ impl PipelineManager {
 	/// [`crate::rendering::Renderer::add_pipeline_manager`].
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		world: &DefaultWorld,
+		world: &MessageScope,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		loader: SimpleLoaderClient,
 		resource_store: &SharedSimpleResourceStore,
@@ -316,10 +316,11 @@ use crate::{
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener as _},
 		message::DeleteMessage,
+		message_bus::MessageScope,
 	},
 	gameplay::{
+		World as _,
 		transform::{Transform, TransformationUpdate},
-		world::DefaultWorld,
 	},
 	rendering::{
 		RenderableMesh, Sink,

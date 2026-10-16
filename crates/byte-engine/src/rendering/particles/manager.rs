@@ -15,8 +15,9 @@ use super::shader_data::{MAX_EMITTERS, ParticleFrameData, ParticlePushConstants,
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
+use crate::core::message_bus::MessageScope;
+use crate::gameplay::World as _;
 use crate::gameplay::transform::TransformationUpdate;
-use crate::gameplay::world::DefaultWorld;
 use crate::rendering::loading::{Event, LoaderClient};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
@@ -121,7 +122,7 @@ impl ParticleManager {
 	/// Requests the shared prepare pipeline and subscribes to the world's emitters. Next, register the manager with
 	/// [`crate::rendering::Renderer::add_pipeline_manager`].
 	pub(crate) fn new(
-		world: &DefaultWorld,
+		world: &MessageScope,
 		pipeline_manager: PipelineManagerClient,
 		systems_loader: LoaderClient<ParticleSystemLoader>,
 	) -> Self {

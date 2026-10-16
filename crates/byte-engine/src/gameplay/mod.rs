@@ -1,10 +1,11 @@
 //! World-level gameplay objects and transform coordination.
 //!
-//! Headed applications use the default world to create renderables, lights,
-//! cameras, and physics bodies through shared factories so rendering and physics
-//! receive the same lifecycle messages. [`transform::Transform`] and [`Anchor`]
-//! provide the shared spatial model for gameplay objects. [`Scene`] and
-//! [`SceneNode`] group entities so a level can be destroyed as a unit.
+//! Applications create renderables, lights, cameras, and physics bodies through
+//! the factories of their world scope, so rendering and physics receive the same
+//! lifecycle messages; [`World`] names the routes those systems share.
+//! [`transform::Transform`] and [`Anchor`] provide the shared spatial model for
+//! gameplay objects. [`Scene`] and [`SceneNode`] group entities so a level can be
+//! destroyed as a unit, which [`SceneGraph`] carries out.
 
 #[doc(hidden)]
 pub mod anchor;
@@ -22,6 +23,6 @@ pub mod world;
 
 pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use name::Name;
-pub use scene::{Scene, SceneNode};
+pub use scene::{Scene, SceneGraph, SceneNode};
 pub use transform::{Transform, TransformationUpdate};
-pub use world::DefaultWorld;
+pub use world::World;

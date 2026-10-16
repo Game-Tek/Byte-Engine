@@ -4,7 +4,7 @@
 //! through [`crate::application::graphics::setup_default_audio`]. Implement
 //! [`generator::Generator`] for procedural or streamed audio and publish it through
 //! [`crate::application::graphics::GraphicsApplication::generator_factory`].
-//! Build an [`graph::AudioGraph`] and publish it through the default world's
+//! Build an [`graph::AudioGraph`] and publish it through the world scope's
 //! audio graph factory when playback starts from a baked PCM resource.
 
 // The graph runtime and the sample loader serve the audio system, which only headed builds have. Headless builds still

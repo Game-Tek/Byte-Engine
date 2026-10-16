@@ -328,7 +328,7 @@ mod tests {
 	use crate::{
 		configuration::Configuration,
 		core::{Creator as _, channel::Channel as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},
-		gameplay::{DefaultWorld, Name, Transform, TransformationUpdate},
+		gameplay::{Name, Transform, TransformationUpdate, World as _},
 		metrics::Metrics,
 	};
 
@@ -337,7 +337,7 @@ mod tests {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("inspected-entity-test-world");
-		let world = DefaultWorld::with_messages(messages.clone());
+		let world = messages.clone();
 		let inspector = DefaultInspector::new(
 			DefaultChannel::new(),
 			Configuration::new(),

@@ -4,7 +4,7 @@ pub use resource_management::resource::storage_backend::Query;
 
 /// The `Resource` enum asks scene pipelines to start loading resources before any entity uses them.
 ///
-/// Create it through [`crate::gameplay::world::DefaultWorld`]'s creation factory,
+/// Create it through the world scope's creation factory ([`crate::core::message_bus::MessageScope::factory`]),
 /// for example `world.create(Resource::new("meshes/Box.gltf"))`. Each installed
 /// scene pipeline reads the stored class of every named resource and starts the
 /// matching load during the renderer's next `update`, so later entities that use

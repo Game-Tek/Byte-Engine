@@ -1,18 +1,25 @@
 //! Audio graph authoring and publication.
 
 use super::*;
-use crate::core::message_bus::MessageScope;
+use crate::core::{factory::Creator, message_bus::MessageScope};
+
+/// A world scope publishes authored graphs through its audio graph factory, so `scope.create(&mut graph)` plays
+/// one the way it creates any other entity.
+impl Creator<&mut AudioGraph> for MessageScope {
+	fn publish(&self, handle: Handle, graph: &mut AudioGraph) {
+		AudioGraphFactory::in_scope(self).derive(handle, graph);
+	}
+}
 
 /// The `AudioGraph` struct describes resource-backed sources and the nodes that
 /// select and process one source for the default audio output.
 ///
 /// Build it with [`fns::sample`], [`fns::round_robin`], [`fns::random`], `loop`,
 /// [`fns::gain`], [`fns::varispeed`], [`fns::pitch_shift`], and
-/// [`fns::custom`]. Next, submit the same mutable graph again through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`] to advance
-/// its selector nodes. Stop its current playback through
-/// [`crate::gameplay::world::DefaultWorld::delete`].
-#[must_use = "Audio graphs do not play until they are published through the world's audio graph factory"]
+/// [`fns::custom`]. Publish it with [`Creator::create`] on the world scope, or through an
+/// [`AudioGraphFactory`] on it. Next, submit the same mutable graph again to advance its
+/// selector nodes. Stop its current playback through [`crate::gameplay::World::delete`].
+#[must_use = "Audio graphs do not play until they are published on the world scope"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioGraph {
 	pub(super) nodes: SmallVec<[SmallBox<AudioNode, S4>; INLINE_AUDIO_NODE_CAPACITY]>,
@@ -213,7 +220,7 @@ impl AudioGraphFactory {
 	/// Creates a standalone empty graph factory.
 	///
 	/// Use this constructor for isolated tests. Applications normally use
-	/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`] instead.
+	/// [`Self::in_scope`] on their world scope instead.
 	pub fn new() -> Self {
 		Self {
 			compiled_graphs: Factory::new(),
@@ -225,7 +232,7 @@ impl AudioGraphFactory {
 	/// Use this during application setup so audio graph creation participates in
 	/// unified message diagnostics. Next, install the audio worker's listener
 	/// before calling [`Self::create`].
-	pub(crate) fn in_scope(scope: &MessageScope) -> Self {
+	pub fn in_scope(scope: &MessageScope) -> Self {
 		Self {
 			compiled_graphs: scope.factory(),
 		}
@@ -237,7 +244,7 @@ impl AudioGraphFactory {
 	/// submit it again to play its next selection.
 	///
 	/// Pass the returned handle to
-	/// [`crate::gameplay::world::DefaultWorld::delete`] to stop the graph.
+	/// [`crate::gameplay::World::delete`] to stop the graph.
 	pub fn create(&self, graph: &mut AudioGraph) -> Handle {
 		let handle = Handle::new();
 		self.derive(handle, graph);

@@ -46,9 +46,10 @@ use super::skinning::{
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
+use crate::core::message_bus::MessageScope;
 use crate::gameplay::Transform;
+use crate::gameplay::World as _;
 use crate::gameplay::transform::TransformationUpdate;
-use crate::gameplay::world::DefaultWorld;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
 use crate::rendering::pipeline_manager::PipelineManager;
@@ -507,7 +508,7 @@ impl VisibilityPipelineManager {
 	/// deletions here, so it sees every message published after setup.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		world: &DefaultWorld,
+		world: &MessageScope,
 		geometry: GeometryHandles,
 		loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,

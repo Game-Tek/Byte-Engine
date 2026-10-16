@@ -23,6 +23,7 @@ use super::layout::{
 	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, TRANSPARENT_SPECIALIZATION_ID,
 	material_variable_specialization_id,
 };
+use crate::application::parameters::Parameters;
 use crate::rendering::common_shader_generator::common_shader_scope;
 use crate::rendering::set_layout::layer;
 
@@ -68,10 +69,17 @@ pub struct VisibilityShaderGenerator {
 }
 
 impl VisibilityShaderGenerator {
-	/// Creates a generator that declares read and write access to every material dispatch buffer.
+	/// Creates a generator for a project set up from `parameters`, such as the application's, which select the
+	/// features it builds in; see [`VisibilityFeatures::from_parameters`].
 	///
 	/// Next, pass it to [`crate::application::graphics::register_default_asset_handlers`].
-	pub fn new(features: VisibilityFeatures) -> Self {
+	pub fn new(parameters: &(impl Parameters + ?Sized)) -> Self {
+		Self::with_features(VisibilityFeatures::from_parameters(parameters))
+	}
+
+	/// Creates a generator for a project that builds in `features`. It declares read and write access to every
+	/// material dispatch buffer.
+	pub fn with_features(features: VisibilityFeatures) -> Self {
 		Self {
 			common: common_shader_scope(),
 			scope: visibility_shader_scope(),

@@ -315,7 +315,7 @@ platform never delivers cannot keep a control captured.
 through its world. That sink pulls before your tick callback and captures
 nothing, which is all a single-consumer application needs. It is what
 `setup_default_input` and the standard `tick_with` loop install. Read its
-events from `app.world().messages().channel::<ActionEvent>()`.
+events from `app.world().channel::<ActionEvent>()`.
 
 Choose one of the two paths per application. The application's sink pulls its
 whole collector before your callback runs, so a sink placed beside it cannot

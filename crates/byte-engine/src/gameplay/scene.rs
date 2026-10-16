@@ -2,14 +2,22 @@
 //!
 //! Create a scene root with [`Scene`], then attach entities to it, or to any
 //! other scene member, by chaining [`SceneNode::under`] while spawning them.
-//! [`DefaultWorld::delete`](crate::gameplay::DefaultWorld::delete) publishes the
-//! deleted handle immediately. The next
-//! [`DefaultWorld::update`](crate::gameplay::DefaultWorld::update) publishes every
-//! nested element, children before their parents.
+//! [`World::delete`](crate::gameplay::World::delete) publishes the deleted handle
+//! immediately. The next [`SceneGraph::cascade`] publishes every nested element,
+//! children before their parents.
 
 use std::collections::HashMap;
 
-use crate::core::factory::Handle;
+use crate::{
+	core::{
+		channel::DefaultChannel,
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
+		message_bus::MessageScope,
+	},
+	gameplay::world::publish_deletion,
+};
 
 /// The `Scene` struct gives a level or other group of entities an identity that its members attach to.
 ///
@@ -49,20 +57,70 @@ struct Links {
 	next_sibling: Option<Handle>,
 }
 
-/// The `SceneGraph` struct tracks which entities belong under which scene so a teardown can find every nested element.
+/// The `SceneGraph` struct tracks which entities belong under which scene so deleting a scene deletes every nested element.
 ///
-/// It only tracks membership. [`DefaultWorld`](crate::gameplay::DefaultWorld)
-/// feeds it [`SceneNode`] creations and publishes the deletions it reports.
-#[derive(Debug, Default)]
-pub(crate) struct SceneGraph {
-	nodes: HashMap<Handle, Links>,
+/// Create it with [`Self::new`] on the world scope, before the scenes it must track, and call
+/// [`Self::cascade`] once per step where the loop wants nested deletions published: before the systems that
+/// retire deleted entities, such as physics, read their deletions.
+pub struct SceneGraph {
+	tree: Tree,
+	deletes: DefaultChannel<DeleteMessage>,
+	scenes: DefaultListener<CreateMessage<Scene>>,
+	scene_nodes: DefaultListener<CreateMessage<SceneNode>>,
+	/// Deletions posted to the channel, such as inspector messages, which still need their scene subtree cascaded.
+	posted_deletes: DefaultListener<DeleteMessage>,
 }
 
 impl SceneGraph {
-	/// Records `scene` so members can attach under it.
+	/// Creates a graph that follows the scenes, members, and deletions published in `scope` from now on.
+	pub fn new(scope: &MessageScope) -> Self {
+		let deletes = scope.channel();
+		Self {
+			tree: Tree::default(),
+			scenes: scope.factory::<Scene>().listener(),
+			scene_nodes: scope.factory::<SceneNode>().listener(),
+			posted_deletes: deletes.listener(),
+			deletes,
+		}
+	}
+
+	/// Publishes the scene members nested under every deletion received since the last call.
 	///
-	/// Registration survives until the scene is deleted.
-	pub(crate) fn register(&mut self, scene: Handle) {
+	/// Members are published children before their parents. The deleted handle already has its message, and a
+	/// member published here is not expanded again when that message is read. Scene members created since the
+	/// last call are linked first, so a member created in the same step as its scene's deletion is included.
+	pub fn cascade(&mut self) {
+		self.track_scene_nodes();
+		let deletes = &self.deletes;
+		while let Some(deletion) = self.posted_deletes.read() {
+			self.tree
+				.remove_subtree(deletion.into_handle(), |member| publish_deletion(deletes, member));
+		}
+	}
+
+	/// Links scene members created since the last call into the graph.
+	///
+	/// Scenes are registered first, so a member created in the same batch can attach under its scene.
+	fn track_scene_nodes(&mut self) {
+		while let Some(creation) = self.scenes.read() {
+			self.tree.register(creation.handle());
+		}
+		while let Some(creation) = self.scene_nodes.read() {
+			self.tree.attach(creation.handle(), creation.data().parent());
+		}
+	}
+}
+
+/// The `Tree` struct keeps scene membership so a deletion can find every nested member, apart from how members
+/// arrive and deletions leave.
+#[derive(Debug, Default)]
+struct Tree {
+	nodes: HashMap<Handle, Links>,
+}
+
+impl Tree {
+	/// Records `scene` so members can attach under it.
+	fn register(&mut self, scene: Handle) {
 		self.nodes.entry(scene).or_default();
 	}
 
@@ -70,7 +128,7 @@ impl SceneGraph {
 	///
 	/// `parent` is a registered scene or a member already linked under one. A missing parent is a
 	/// handle whose scene was deleted.
-	pub(crate) fn attach(&mut self, child: Handle, parent: Handle) {
+	fn attach(&mut self, child: Handle, parent: Handle) {
 		debug_assert!(
 			self.nodes.contains_key(&parent),
 			"Scene parent {} is not alive. The most likely cause is a stale scene handle.",
@@ -91,7 +149,7 @@ impl SceneGraph {
 	/// Removes `root` and reports every nested member, children before their parents.
 	///
 	/// `root` itself is not reported. An unknown root reports nothing.
-	pub(crate) fn remove_subtree(&mut self, root: Handle, mut removed: impl FnMut(Handle)) {
+	fn remove_subtree(&mut self, root: Handle, mut removed: impl FnMut(Handle)) {
 		let Some(links) = self.nodes.remove(&root) else {
 			return;
 		};

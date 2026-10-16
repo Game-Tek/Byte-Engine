@@ -20,17 +20,17 @@ attenuation and distance-based conversions remain meaningful.
 
 ## Create a light
 
-Choose a color, choose an intensity, and create the light. Then submit it through
-`DefaultWorld::light_factory_mut` so the active rendering pipeline can use it.
+Choose a color, choose an intensity, and create the light. Then create it on the application's world scope,
+`GraphicsApplication::world`, so the active rendering pipeline can use it.
 
 ```rust
 use byte_engine::{
-    gameplay::world::DefaultWorld,
+    core::{Creator as _, message_bus::MessageScope},
     math::Vector3,
     rendering::{DirectionalLight, LightColor, PhotometricIntensity},
 };
 
-let mut world = DefaultWorld::new();
+let world = MessageScope::standalone("world");
 let sunlight = DirectionalLight::new(
     Vector3::new(0.2, -1.0, 0.3),
     LightColor::TemperatureKelvin(5_778.0),
@@ -40,7 +40,7 @@ let sunlight = DirectionalLight::new(
     },
 )?;
 
-world.light_factory_mut().create(sunlight.into());
+world.create(sunlight);
 # Ok::<(), byte_engine::rendering::PhotometricError>(())
 ```
 
@@ -404,5 +404,5 @@ clear. Use `with_max_opacity` to keep a trace of distant surfaces visible throug
 - [`LightColor`](/docs/api/latest/byte_engine/rendering)
 - [`PhotometricIntensity`](/docs/api/latest/byte_engine/rendering)
 
-After you create a light, submit it through
-[`DefaultWorld::light_factory_mut`](/docs/api/latest/byte_engine/gameplay).
+After you create a light, create it on the world scope with
+[`Creator::create`](/docs/api/latest/byte_engine/core).

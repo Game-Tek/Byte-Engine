@@ -22,7 +22,7 @@ use crate::core::factory::Handle;
 /// [`crate::application::graphics::GraphicsApplication::generator_factory`] so
 /// the worker can mix it into the hardware stream, or publish an
 /// [`super::graph::AudioGraph`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
+/// [`crate::audio::graph::AudioGraphFactory`].
 pub struct DefaultAudioSystem {
 	device: Device,
 	sources: Vec<Source>,

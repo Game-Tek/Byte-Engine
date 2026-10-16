@@ -27,7 +27,7 @@ where
 
 	byte_engine::application::graphics::register_default_asset_handlers(
 		&mut asset_manager,
-		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new(features),
+		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::with_features(features),
 		features,
 		material_mips,
 		ibl,

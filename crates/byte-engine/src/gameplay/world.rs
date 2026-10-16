@@ -1,275 +1,113 @@
-//! Standard world composition shared by gameplay, physics, and rendering.
+//! The world routes shared by gameplay, physics, and rendering.
 //!
-//! Create objects through the factories exposed by [`DefaultWorld`] so
-//! downstream systems receive creation and deletion messages. The graphics
-//! application updates this world and attaches its listeners to render
-//! pipelines. Without the `headed` feature the world keeps every route but
-//! cameras and poses, so servers run the same gameplay code with nothing listening.
+//! The world is a [`MessageScope`]: entities are created through its factories with
+//! [`Creator::create`](crate::core::factory::Creator::create), so every system that listens to the scope
+//! receives the same lifecycle messages. The [`World`] trait names the routes those systems share: transforms,
+//! deletions, and poses. Systems such as [`SceneGraph`](crate::gameplay::SceneGraph) and
+//! [`Physics`](crate::physics::Physics) are created on the scope and stepped by the loop that owns them, in
+//! the order that loop chooses. Without the `headed` feature the scope keeps every route but poses, so servers
+//! run the same gameplay code with nothing listening.
 
-/// The `DefaultWorld` struct owns the standard entity routes and coordinates transform, physics, and deletion updates.
-pub struct DefaultWorld {
-	messages: MessageScope,
-	transforms: DefaultChannel<TransformationUpdate>,
-	deletes: DefaultChannel<DeleteMessage>,
-	#[cfg(feature = "headed")]
-	poses: DefaultChannel<UpdatePose>,
-	audio_graph_factory: AudioGraphFactory,
-
-	physics_system: dynabit::World,
-
-	scene_graph: SceneGraph,
-	scenes: DefaultListener<CreateMessage<Scene>>,
-	scene_nodes: DefaultListener<CreateMessage<SceneNode>>,
-	/// Deletions posted straight to the channel, such as inspector messages, which still need their scene subtree cascaded.
-	posted_deletes: DefaultListener<DeleteMessage>,
-}
-
-impl Default for DefaultWorld {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl DefaultWorld {
-	/// Creates a standalone world with its own message pool and no ticks, so its listeners are future-only.
-	///
-	/// Applications should use [`Self::with_messages`] so world routes appear in
-	/// the application's unified diagnostics.
-	pub fn new() -> Self {
-		let bus = MessageBus::new(MessageBusConfig {
-			ticks: false,
-			..MessageBusConfig::default()
-		})
-		.unwrap_or_else(|error| panic!("{error}"));
-		Self::with_messages(bus.new_scope("default-world"))
-	}
-
-	/// Creates a world whose typed routes use the supplied message scope.
-	///
-	/// Next, install system listeners before creating entities they must mirror.
-	pub fn with_messages(messages: MessageScope) -> Self {
-		let body_factory = messages.factory();
-		let transforms = messages.channel();
-		let deletes = messages.channel();
-		#[cfg(feature = "headed")]
-		let poses = messages.channel();
-		let audio_graph_factory = AudioGraphFactory::in_scope(&messages);
-
-		let physics_system = dynabit::World::new(
-			body_factory.listener(),
-			messages.factory::<Constraint>().listener(),
-			deletes.listener(),
-			messages.factory::<RayQuery>().listener(),
-			messages.factory(),
-		);
-		let scenes = messages.factory::<Scene>().listener();
-		let scene_nodes = messages.factory::<SceneNode>().listener();
-		let posted_deletes = deletes.listener();
-
-		Self {
-			messages,
-			transforms,
-			deletes,
-			#[cfg(feature = "headed")]
-			poses,
-			audio_graph_factory,
-
-			physics_system,
-
-			scene_graph: SceneGraph::default(),
-			scenes,
-			scene_nodes,
-			posted_deletes,
-		}
-	}
-
-	/// Returns the world namespace used for lazy application-defined message types.
-	pub fn messages(&self) -> &MessageScope {
-		&self.messages
-	}
-
-	/// Acquires the world's canonical creation factory for `T`.
-	///
-	/// The type is registered only on first use. Create its listener before
-	/// calling [`Creator::create`] when a system must observe every creation.
-	pub fn factory<T>(&self) -> Factory<T>
-	where
-		T: Clone + Send + Sync + 'static,
-	{
-		self.messages.factory()
-	}
-
-	/// Advances the world, running the physics step as one execution of `alley`.
-	///
-	/// The step runs on as many of `alley`'s lanes as its size pays for; see [`dynabit::World::update`]. No other
-	/// dispatch of `alley` may be running.
-	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>, alley: &mut Alley) {
-		self.cascade_posted_deletions();
-		self.physics_system.update(time, transforms_rx, &self.transforms, alley);
-	}
-
-	/// Replaces how many lanes [`Self::update`] runs a physics step on.
-	///
-	/// The world starts with [`StepLanes::for_machine`]. Use this when measurements on a machine show that other
-	/// lane counts step faster there.
-	pub fn set_physics_step_lanes(&mut self, step_lanes: StepLanes) {
-		self.physics_system.set_step_lanes(step_lanes);
-	}
-
-	pub fn flush_deletions(&mut self) {
-		self.physics_system.process_pending_deletions();
-	}
-
-	pub fn transforms_channel(&self) -> &DefaultChannel<TransformationUpdate> {
-		&self.transforms
-	}
+/// The `World` trait names the entity routes of a world scope so systems agree on where transforms and deletions travel.
+///
+/// Implemented for [`MessageScope`]. Import it to reach the routes from an application's
+/// [`world`](crate::application::graphics::GraphicsApplication::world) scope.
+pub trait World {
+	/// Returns the route authored and simulated transforms travel on.
+	fn transforms_channel(&self) -> DefaultChannel<TransformationUpdate>;
 
 	/// Creates a listener for terminal entity deletions, starting at the current tick's first one.
 	///
-	/// Next, keep the listener with the consuming system and remove matching
-	/// state when it receives a [`DeleteMessage`]. Publish deletions through
-	/// [`Self::delete`] so inspection diagnostics retire the same handle.
-	#[track_caller]
-	pub fn deletions_listener(&self) -> DefaultListener<DeleteMessage> {
-		self.deletes.listener()
-	}
+	/// Next, keep the listener with the consuming system and remove matching state when it receives a
+	/// [`DeleteMessage`]. Publish deletions through [`Self::delete`] so inspection diagnostics retire the same
+	/// handle.
+	fn deletions_listener(&self) -> DefaultListener<DeleteMessage>;
 
 	/// Publishes a deletion for `handle`.
 	///
-	/// The next [`Self::update`] also deletes every scene member nested under it, children before
-	/// their parents. `handle` is published here and is not published again. Consumers created
-	/// through [`Self::deletions_listener`] receive every handle and can retire their state.
-	pub fn delete(&self, handle: Handle) {
-		publish_deletion(&self.deletes, handle);
+	/// A [`SceneGraph::cascade`](crate::gameplay::SceneGraph::cascade) also deletes every scene member nested
+	/// under it, children before their parents. `handle` is published here and is not published again.
+	/// Consumers created through [`Self::deletions_listener`] receive every handle and can retire their state.
+	fn delete(&self, handle: Handle);
+
+	/// Returns the route skeletal poses travel on.
+	#[cfg(feature = "headed")]
+	fn poses_channel(&self) -> DefaultChannel<UpdatePose>;
+}
+
+impl World for MessageScope {
+	fn transforms_channel(&self) -> DefaultChannel<TransformationUpdate> {
+		self.channel()
 	}
 
-	/// Links scene members created since the last call into the scene graph.
-	///
-	/// Scenes are registered first, so a member created in the same batch can attach under its scene.
-	fn track_scene_nodes(&mut self) {
-		while let Some(creation) = self.scenes.read() {
-			self.scene_graph.register(creation.handle());
-		}
-		while let Some(creation) = self.scene_nodes.read() {
-			self.scene_graph.attach(creation.handle(), creation.data().parent());
-		}
+	#[track_caller]
+	fn deletions_listener(&self) -> DefaultListener<DeleteMessage> {
+		self.channel::<DeleteMessage>().listener()
 	}
 
-	/// Publishes scene members nested under deletions received since the last update.
-	///
-	/// Members are published children before their parents. The deleted handle already has its message,
-	/// and a member published here is not expanded again when that message is read.
-	fn cascade_posted_deletions(&mut self) {
-		self.track_scene_nodes();
-		let deletes = &self.deletes;
-		while let Some(deletion) = self.posted_deletes.read() {
-			self.scene_graph
-				.remove_subtree(deletion.into_handle(), |member| publish_deletion(deletes, member));
-		}
+	fn delete(&self, handle: Handle) {
+		publish_deletion(&self.channel(), handle);
 	}
 
 	#[cfg(feature = "headed")]
-	pub fn poses_channel(&self) -> &DefaultChannel<UpdatePose> {
-		&self.poses
-	}
-
-	/// Returns the factory used to spawn resource-backed audio graphs.
-	pub fn audio_graph_factory(&self) -> &AudioGraphFactory {
-		&self.audio_graph_factory
+	fn poses_channel(&self) -> DefaultChannel<UpdatePose> {
+		self.channel()
 	}
 }
 
+/// A scope publishes authored transforms on its transform route, so `scope.set(transform).on(handle)` places an
+/// entity.
+impl Publisher<TransformationUpdate> for MessageScope {
+	fn publish(&self, message: TransformationUpdate) {
+		self.transforms_channel().send(message);
+	}
+}
+
+impl TargetedMessagePublisher<Transform> for MessageScope {
+	type Message = TransformationUpdate;
+}
+
 /// Sends one deletion and removes the handle from inspection diagnostics.
-fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: Handle) {
+pub(crate) fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: Handle) {
 	deletes.send(DeleteMessage::new(handle));
 	deletes.forget_entity(handle);
 }
 
-impl Publisher<TransformationUpdate> for DefaultWorld {
-	fn publish(&self, message: TransformationUpdate) {
-		self.transforms.send(message);
-	}
-}
-
 #[cfg(feature = "headed")]
-impl Publisher<CreateMessage<Camera>> for DefaultWorld {
-	fn publish(&self, message: CreateMessage<Camera>) {
-		let handle = message.handle();
-		self.factory().derive(handle, message.into_data());
-	}
-}
-
-impl TargetedMessagePublisher<Transform> for DefaultWorld {
-	type Message = TransformationUpdate;
-}
-
-#[cfg(feature = "headed")]
-impl TargetedMessagePublisher<Camera> for DefaultWorld {
-	type Message = CreateMessage<Camera>;
-}
-
-impl<T> Creator<T> for DefaultWorld
-where
-	T: Clone + Send + Sync + 'static,
-{
-	fn publish(&self, handle: Handle, value: T) {
-		self.factory::<T>().derive(handle, value);
-	}
-}
-
-impl Creator<&mut AudioGraph> for DefaultWorld {
-	fn publish(&self, handle: Handle, graph: &mut AudioGraph) {
-		self.audio_graph_factory.derive(handle, graph);
-	}
-}
-
-#[cfg(feature = "headed")]
-use crate::rendering::{Camera, UpdatePose};
+use crate::rendering::UpdatePose;
 use crate::{
-	application::Time,
-	audio::graph::{AudioGraph, AudioGraphFactory},
 	core::{
-		alley::Alley,
 		channel::{Channel, DefaultChannel},
-		factory::{CreateMessage, Creator, Factory, Handle},
-		listener::{DefaultListener, Listener},
+		factory::Handle,
+		listener::DefaultListener,
 		message::DeleteMessage,
-		message_bus::{MessageBus, MessageBusConfig, MessageScope},
+		message_bus::MessageScope,
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},
-	gameplay::{
-		Transform,
-		scene::{Scene, SceneGraph, SceneNode},
-		transform::TransformationUpdate,
-	},
-	physics::{Constraint, RayQuery, StepLanes, dynabit},
+	gameplay::{Transform, transform::TransformationUpdate},
 };
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::core::listener::Listener;
-	use crate::gameplay::{Name, Scene, SceneNode};
+	use crate::core::{
+		alley::Alley,
+		factory::Creator as _,
+		listener::Listener,
+		message_bus::{MessageBus, MessageBusConfig},
+	};
+	use crate::gameplay::{Name, Scene, SceneGraph, SceneNode};
 
 	/// Reads every pending deletion handle in publication order.
 	fn deleted(deletions: &mut DefaultListener<DeleteMessage>) -> Vec<Handle> {
 		std::iter::from_fn(|| deletions.read().map(DeleteMessage::into_handle)).collect()
 	}
 
-	/// Runs the update that cascades deletions posted since the last call.
-	fn cascade(world: &mut DefaultWorld) {
-		let mut transforms = world.transforms_channel().listener();
-		world.update(
-			Time::new(crate::time::MediaTime::ZERO, crate::time::MediaTime::ZERO),
-			&mut transforms,
-			&mut Alley::with_parallelism(1),
-		);
-	}
-
 	#[test]
-	fn deleting_a_scene_publishes_it_and_update_cascades_members_children_first() {
-		let mut world = DefaultWorld::new();
+	fn deleting_a_scene_publishes_it_and_the_cascade_publishes_members_children_first() {
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
 		let mut deletions = world.deletions_listener();
 
 		let scene: Handle = world.create(Scene).into();
@@ -281,7 +119,7 @@ mod tests {
 		world.delete(scene);
 		assert_eq!(deleted(&mut deletions), [scene]);
 
-		cascade(&mut world);
+		scenes.cascade();
 		let deleted = deleted(&mut deletions);
 		assert_eq!(deleted.len(), 3);
 		let position = |handle| deleted.iter().position(|&h| h == handle).expect("member deleted");
@@ -295,13 +133,15 @@ mod tests {
 	fn a_ray_query_made_in_one_tick_is_answered_to_its_client_in_the_next() {
 		use math::{Point, Vector};
 
-		use crate::physics::{Body, BodyTypes, RayQuery, RayQueryResponse, Shapes};
+		use crate::application::Time;
+		use crate::gameplay::Transform;
+		use crate::physics::{Body, BodyTypes, Physics, RayQuery, RayQueryResponse, Shapes};
 
-		// A ticking bus, run the way the application runs it: a tick begins, application code runs, then the world
-		// updates.
+		// A ticking bus, run the way the application runs it: a tick begins, application code runs, then physics
+		// steps.
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
-		let mut world = DefaultWorld::with_messages(bus.new_scope("world"));
-		let mut transforms = world.transforms_channel().listener();
+		let world = bus.new_scope("world");
+		let mut physics = Physics::new(&world, &[] as &[crate::application::Parameter]);
 		let mut responses = world.factory::<RayQueryResponse>().listener();
 		let mut alley = Alley::with_parallelism(1);
 		let step = crate::time::MediaTime::from_seconds_f32(1.0 / 60.0);
@@ -317,8 +157,8 @@ mod tests {
 		let query: Handle = world
 			.create(RayQuery::segment(Point::new(0.0, 10.0, 0.0), Point::new(0.0, -10.0, 0.0)).expect("a segment"))
 			.into();
-		world.update(Time::new(step, step), &mut transforms, &mut alley);
-		world.flush_deletions();
+		physics.step(Time::new(step, step), &mut alley);
+		physics.flush_deletions();
 
 		bus.begin_tick();
 		let response = responses.read().expect("the response arrives in the next tick");
@@ -329,7 +169,8 @@ mod tests {
 
 	#[test]
 	fn deleting_a_member_detaches_it_from_its_scene() {
-		let mut world = DefaultWorld::new();
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
 		let mut deletions = world.deletions_listener();
 
 		let scene: Handle = world.create(Scene).into();
@@ -337,23 +178,24 @@ mod tests {
 		let second: Handle = world.create(Name::new("second")).with(SceneNode::under(scene)).into();
 
 		world.delete(first);
-		cascade(&mut world);
+		scenes.cascade();
 		assert_eq!(deleted(&mut deletions), [first]);
 
 		world.delete(scene);
-		cascade(&mut world);
+		scenes.cascade();
 		assert_eq!(deleted(&mut deletions), [scene, second]);
 	}
 
 	#[test]
-	fn deletions_posted_to_the_channel_cascade_on_update() {
-		let mut world = DefaultWorld::new();
+	fn deletions_posted_to_the_channel_cascade() {
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
 		let mut deletions = world.deletions_listener();
 		let scene: Handle = world.create(Scene).into();
 		let member: Handle = world.create(Name::new("member")).with(SceneNode::under(scene)).into();
 
-		world.deletes.send(DeleteMessage::new(scene));
-		cascade(&mut world);
+		world.channel::<DeleteMessage>().send(DeleteMessage::new(scene));
+		scenes.cascade();
 
 		assert_eq!(deleted(&mut deletions), [scene, member]);
 	}
@@ -362,12 +204,13 @@ mod tests {
 	#[cfg(debug_assertions)]
 	#[should_panic(expected = "stale scene handle")]
 	fn attaching_under_a_deleted_member_panics() {
-		let mut world = DefaultWorld::new();
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
 		let scene: Handle = world.create(Scene).into();
 		let member: Handle = world.create(Name::new("member")).with(SceneNode::under(scene)).into();
 		world.delete(member);
-		cascade(&mut world);
+		scenes.cascade();
 		world.create(Name::new("late")).with(SceneNode::under(member));
-		cascade(&mut world);
+		scenes.cascade();
 	}
 }

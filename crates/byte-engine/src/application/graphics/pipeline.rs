@@ -1,6 +1,7 @@
 //! Graphics pipeline and render-pass setup.
 
 use super::*;
+use crate::gameplay::World as _;
 use crate::rendering::DirectionalLight;
 
 /// Installs the retained wireframe debug scene after the render passes registered before this call.
@@ -12,7 +13,7 @@ use crate::rendering::DirectionalLight;
 /// pipeline's `depth` image without modifying it. Register this pass before
 /// creating the first window. Next, call [`Factory::create`] once for each
 /// [`rendering::DebugMesh`], [`Factory::derive`] to replace it, and
-/// [`DefaultWorld::delete`] to remove it.
+/// [`World::delete`](crate::gameplay::World::delete) to remove it.
 pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Factory<rendering::DebugMesh> {
 	let factory = application.world().factory::<rendering::DebugMesh>();
 	// Register future-only lifecycle listeners before returning the producer factory.
@@ -89,7 +90,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// application's [`Loader`](rendering::loading::Loader).
 ///
 /// Next, create an [`Environment`] through
-/// [`DefaultWorld::factory`] to select the HDR image used for ambient and
+/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory) to select the HDR image used for ambient and
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	use crate::rendering::pipelines::visibility::{
@@ -157,7 +158,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 /// emitter. A system costs nothing on frames without live particles.
 ///
 /// Next, create a [`rendering::ParticleEmitter`] naming a `.particles` asset, with a [`crate::gameplay::Transform`],
-/// through [`DefaultWorld::create`].
+/// through [`Creator::create`](crate::core::factory::Creator::create) on the world scope.
 pub fn setup_particles(application: &mut GraphicsApplication) {
 	let resources = application.resource_manager_handle();
 	let (loader, renderer) = application.loader_and_renderer_mut();
@@ -603,13 +604,13 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 /// fog. Use `render.pass.exponential-height-fog` to enable or bypass it at runtime.
 ///
 /// The pass draws nothing until a fog exists. Next, create an [`rendering::ExponentialHeightFog`] through
-/// [`DefaultWorld::factory`]. Like the atmosphere sky, each window's fog subscribes to fogs and lights when the
+/// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory). Like the atmosphere sky, each window's fog subscribes to fogs and lights when the
 /// renderer adopts the window, so create them in a tick after the one that creates the window.
 pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplication) {
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let fog_factory = application.world().factory::<rendering::ExponentialHeightFog>();
 	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().transforms_channel().clone();
+	let transform_channel = application.world().transforms_channel();
 
 	application
 		.renderer
@@ -636,7 +637,7 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().transforms_channel().clone();
+	let transform_channel = application.world().transforms_channel();
 	let renderer = &mut application.renderer;
 
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {

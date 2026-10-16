@@ -92,7 +92,7 @@ impl FogLayer {
 ///
 /// Use it for weather such as rain mist, an overcast day, or valley haze. Install the fog pass with
 /// [`crate::application::graphics::setup_exponential_height_fog_render_pass`], then create one fog through
-/// [`crate::gameplay::world::DefaultWorld::factory`]. The newest fog wins, and publishing a fog again on the same
+/// [`crate::core::message_bus::MessageScope::factory`]. The newest fog wins, and publishing a fog again on the same
 /// handle with [`crate::core::factory::Factory::derive`] changes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExponentialHeightFog {

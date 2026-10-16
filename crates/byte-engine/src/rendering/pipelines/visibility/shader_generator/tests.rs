@@ -23,7 +23,7 @@ fn material_generator() -> VisibilityShaderGenerator {
 
 /// Builds the baking generator for a project that selected `features`.
 fn material_generator_with(features: VisibilityFeatures) -> VisibilityShaderGenerator {
-	VisibilityShaderGenerator::new(features)
+	VisibilityShaderGenerator::with_features(features)
 }
 
 /// Parses `source` as a `main`, adds `nodes`, such as helper functions and bindings, and compiles the result for the
@@ -227,7 +227,7 @@ fn vec4f_variable_becomes_specialization() {
 	};
 	let shader_node = besl::parse("main: fn () -> void { out_color = albedo; }").expect("test shader");
 
-	let shader = VisibilityShaderGenerator::new(VisibilityFeatures::default()).transform(shader_node, &material);
+	let shader = VisibilityShaderGenerator::with_features(VisibilityFeatures::default()).transform(shader_node, &material);
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");

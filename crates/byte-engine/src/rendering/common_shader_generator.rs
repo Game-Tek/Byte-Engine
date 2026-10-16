@@ -1,5 +1,6 @@
 use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 
+use crate::application::parameters::Parameters;
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
@@ -553,10 +554,16 @@ pub struct CommonShaderGenerator {
 }
 
 impl CommonShaderGenerator {
-	/// Creates the generator for a project that builds in `features`.
+	/// Creates the generator for a project set up from `parameters`, such as the application's, which select
+	/// the features it builds in; see [`VisibilityFeatures::from_parameters`].
 	///
 	/// Next, pass it to the standalone BESL handler's `set_shader_generator`.
-	pub fn new(features: VisibilityFeatures) -> Self {
+	pub fn new(parameters: &(impl Parameters + ?Sized)) -> Self {
+		Self::with_features(VisibilityFeatures::from_parameters(parameters))
+	}
+
+	/// Creates the generator for a project that builds in `features`.
+	pub fn with_features(features: VisibilityFeatures) -> Self {
 		Self {
 			scope: common_shader_scope(),
 			features,

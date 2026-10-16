@@ -9,12 +9,12 @@
 /// rendering pipeline, and window.
 ///
 /// After setup, create application actions and select scene lighting through
-/// [`crate::gameplay::world::DefaultWorld`], then run the application with
+/// [`GraphicsApplication::world`], then run the application with
 /// [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
-		let generator = VisibilityShaderGenerator::new(VisibilityFeatures::from_parameters(&*application));
+		let generator = VisibilityShaderGenerator::new(&*application);
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -163,7 +163,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new(features));
+	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::with_features(features));
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 
@@ -212,9 +212,9 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
 /// worker, or create an [`crate::audio::graph::AudioGraph`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
+/// [`crate::audio::graph::AudioGraphFactory`].
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
-	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
+	let mut audio_graphs_listener = AudioGraphFactory::in_scope(&application.world).listener();
 
 	let mut deletions_listener = application.world.deletions_listener();
 
@@ -340,11 +340,13 @@ use crate::rendering::pipelines::visibility::VisibilityShaderGenerator;
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},
+	audio::graph::AudioGraphFactory,
 	audio::{
 		audio_system::DefaultAudioSystem,
 		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
 	},
 	core::listener::Listener as _,
+	gameplay::World as _,
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
 };

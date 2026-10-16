@@ -18,8 +18,8 @@
 /// [`setup_default_window`], [`setup_default_input`], and the render-pass setup
 /// functions independently when an application needs explicit composition.
 /// After setup, call [`Self::do_loop`] to run the application, or
-/// [`Self::tick_with`] when application code must run during each tick. Use
-/// [`Self::tick_with_lanes`] when part of that code should run on every lane of the application's alley.
+/// [`Self::tick_with`] when application code must run during each tick. Call
+/// [`Self::run_lanes`] from it when part of that code should run on every lane of the application's alley.
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
@@ -98,9 +98,10 @@ pub struct GraphicsApplication {
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
-	world: DefaultWorld,
+	/// The scope entities are created in. Systems that follow them, such as physics, are created on it by the
+	/// application code that steps them.
+	world: MessageScope,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
-	physics_transforms_listener: DefaultListener<TransformationUpdate>,
 	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 
 	/// Every window and gamepad event ends up here before the world's actions pull it.
@@ -119,7 +120,7 @@ pub struct GraphicsApplication {
 
 	threads: SmallVec<[Thread; 64]>,
 	/// Persistent lanes shared by initialization and application frame work. `None` while an alley execution's
-	/// caller borrows the whole application; see [`Self::execute_lanes`].
+	/// caller borrows the whole application; see [`Self::run_lanes`].
 	alley: Option<crate::core::alley::Alley>,
 
 	/// Where the metrics summary or rows are written when the application closes, until written.
@@ -158,7 +159,6 @@ struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
 	cameras_listener: DefaultListener<CreateMessage<Camera>>,
-	physics_transforms_listener: DefaultListener<TransformationUpdate>,
 	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 	http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
@@ -190,18 +190,13 @@ impl GraphicsApplication {
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
 		let mut alley = crate::core::alley::Alley::new();
-		let mut world = DefaultWorld::with_messages(world_messages.clone());
-		// A typo in a setting meant for this machine stops startup instead of silently leaving the defaults in place.
-		if let Some(step_lanes) = application.get_parameter("physics-step-lanes") {
-			world.set_physics_step_lanes(step_lanes.parse().unwrap_or_else(|error| panic!("{error}")));
-		}
 		// Two applications on one machine cannot share a port, and a typo should not silently fall back to the default.
 		let inspector_port = application
 			.get_parameter("inspector.port")
 			.map_or(crate::inspector::http::DEFAULT_PORT, |port| {
 				port.parse().unwrap_or_else(|error| panic!("{error}"))
 			});
-		let transforms = world.transforms_channel().clone();
+		let transforms = world_messages.channel::<TransformationUpdate>();
 		let mut storage = None;
 		let mut services = None;
 		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
@@ -225,10 +220,9 @@ impl GraphicsApplication {
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
 						let cameras_listener = world_messages.factory::<Camera>().listener();
-						let physics_transforms_listener = transforms.listener();
 						let renderer_transforms_listener = transforms.listener();
 
-						// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
+						// Register reflected posts after the renderer's future-only transform listener exists.
 						let mut inspector = DefaultInspector::new(
 							application_events.clone(),
 							configuration.clone(),
@@ -261,7 +255,6 @@ impl GraphicsApplication {
 							input,
 							actions,
 							cameras_listener,
-							physics_transforms_listener,
 							renderer_transforms_listener,
 							http_inspector,
 							screenshot_broker,
@@ -338,9 +331,8 @@ impl GraphicsApplication {
 
 			generator_factory: services.generator_factory,
 
-			world,
+			world: world_messages,
 			cameras_listener: services.cameras_listener,
-			physics_transforms_listener: services.physics_transforms_listener,
 			renderer_transforms_listener: services.renderer_transforms_listener,
 
 			input: services.input,
@@ -582,25 +574,6 @@ impl GraphicsApplication {
 		frame
 	}
 
-	/// Drops the transforms physics published since the last time simulation read them.
-	///
-	/// Physics results return on the shared transform route, so they must be discarded before the route is used to
-	/// collect the commands of a new step; otherwise a body's own output arrives back as an authored transform.
-	fn drain_physics_transforms(&mut self) {
-		while self.physics_transforms_listener.read().is_some() {}
-	}
-
-	/// Advances physics by `time` on the application's alley, then marks the step's end for the renderer.
-	fn update_world(&mut self, time: Time) {
-		let _span = debug_span!("GraphicsApplication::update_world").entered();
-		// Every tick callback has returned by now, so no execution of theirs still holds the lanes.
-		let alley = self.alley.as_mut().expect(
-			"Alley is not available. The most likely cause is that the world was updated during an alley execution, which holds the lanes.",
-		);
-		self.world.update(time, &mut self.physics_transforms_listener, alley);
-		self.renderer.step();
-	}
-
 	/// Panics when a configured fixed simulation rate cannot be met by simulating once per presented frame.
 	///
 	/// [`Self::tick_with`] ties the two rates together, so a `simulation-rate` that disagrees with the rate frames
@@ -633,9 +606,9 @@ impl GraphicsApplication {
 			let _span = debug_span!("GraphicsApplication::simulation_step").entered();
 			self.simulation_elapsed += step;
 			let time = Time::new(self.simulation_elapsed, step);
-			self.drain_physics_transforms();
 			simulate(self, time);
-			self.update_world(time);
+			// The step's state is complete once the callback has stepped its systems.
+			self.renderer.step();
 		}
 		// Frames show the world one step behind, moving from the previous step's state to the latest one's as
 		// the pending time fills the step.
@@ -652,59 +625,49 @@ impl GraphicsApplication {
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		self.assert_tied_simulation_rate();
 		self.tick_internal(|application, time| {
-			application.drain_physics_transforms();
 			let result = debug_span!("GraphicsApplication::user_tick").in_scope(|| f(application, time));
-			application.update_world(time);
+			// The step's state is complete once the callback has stepped its systems.
+			application.renderer.step();
 			application.simulation_alpha = 1.0;
 			result
 		})
 	}
 
-	/// Runs one graphics tick like [`Self::tick_with`], with `lanes` running once on every lane of the
-	/// application's alley alongside `f`.
+	/// Runs `lanes` once on every lane of the application's alley, from a tick callback, and returns when every
+	/// lane has finished.
 	///
 	/// `lanes` receives each lane's [`ConcreteLane`](crate::core::alley::ConcreteLane), the context for lane
 	/// indices, single-runner sections, and collectives such as
-	/// [`ConcreteLane::each_shared`](crate::core::alley::ConcreteLane::each_shared).
+	/// [`ConcreteLane::each_shared`](crate::core::alley::ConcreteLane::each_shared). What the lanes publish,
+	/// such as created bodies and their transforms, is complete when this returns, so a system stepped after it,
+	/// such as [`Physics::step`](crate::physics::Physics::step), sees it whole instead of racing it. A lane panic
+	/// resumes here.
 	///
-	/// `lanes` and `f` form one alley execution. It starts where `f` would run alone, and every lane finishes
-	/// before the world updates. So what lanes publish, such as created bodies and their transforms, reaches this
-	/// tick's simulation whole instead of racing it. A lane panic resumes here.
-	///
-	/// `f` holds the application for the execution, so `lanes` cannot borrow it. Take the handles lanes publish
-	/// through beforehand, such as [`DefaultWorld::factory`], and share other state through `Sync` values both
-	/// closures borrow.
-	pub fn tick_with_lanes<R, L, F>(&mut self, lanes: L, f: F) -> Option<R>
-	where
-		L: crate::core::alley::AlleyFunction<()>,
-		F: FnOnce(&mut Self, Time) -> R,
-	{
-		self.tick_with(|application, time| application.execute_lanes(lanes, |application| f(application, time)))
-	}
-
-	/// Runs one alley execution: `lanes` once on every lane while `caller` holds the application on this thread.
-	///
-	/// Returns after `caller` and every lane have finished. A panic on either side resumes here.
-	fn execute_lanes<R, L>(&mut self, lanes: L, caller: impl FnOnce(&mut Self) -> R) -> R
+	/// The lanes cannot borrow the application; take the handles they publish through beforehand, such as
+	/// [`MessageScope::factory`], and share other state through `Sync` values. Executions cannot nest: calling
+	/// this from a lane, or while [`Self::alley_mut`] is borrowed, panics.
+	pub fn run_lanes<L>(&mut self, lanes: L)
 	where
 		L: crate::core::alley::AlleyFunction<()>,
 	{
-		// The caller borrows the whole application, so the lanes leave it for as long as the execution runs.
+		// The lanes leave the application for as long as the execution runs, so a caller cannot borrow it from
+		// a lane.
 		let mut alley = self.alley.take().expect(
-			"Alley is already executing. The most likely cause is that a tick with lanes was started from the callback of another one.",
+			"Alley is already executing. The most likely cause is that run_lanes was called from a lane of another execution.",
 		);
-		let executed = alley.execute_with_caller(lanes, || caller(self));
+		let executed = alley.execute_with_caller(lanes, || ());
 		// Return the lanes before a panic resumes, so the application drops with them in place.
 		self.alley = Some(alley);
-		executed.unwrap_or_else(|panic| std::panic::resume_unwind(panic)).1
+		executed.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 	}
 
 	/// Runs one graphics tick whose simulation advances in fixed steps, independent of the frame rate.
 	///
 	/// `simulate` runs zero or more times before the frame, each time with a [`Time`] whose delta is the fixed
-	/// step from `simulation-rate` and whose elapsed value counts the steps run so far. The world, and so physics,
-	/// advances with it. `frame` then runs once with the frame's own display-derived [`Time`], for the work that
-	/// belongs to what is about to be drawn: the UI, cameras, and animation.
+	/// step from `simulation-rate` and whose elapsed value counts the steps run so far. Step the systems that
+	/// simulate, such as [`Physics::step`](crate::physics::Physics::step), from it. `frame` then runs once with
+	/// the frame's own display-derived [`Time`], for the work that belongs to what is about to be drawn: the UI,
+	/// cameras, and animation.
 	///
 	/// A frame that owes more steps than the loop runs in one tick drops the outstanding time instead of running
 	/// it later. Renderers consume the state left by the last step, so a simulation rate below the frame rate
@@ -721,7 +684,7 @@ impl GraphicsApplication {
 		})
 	}
 
-	/// Runs the tick every entry point shares, calling `run` where application and world updates belong, then
+	/// Runs the tick every entry point shares, calling `run` where application updates belong, then
 	/// closes the tick's metrics row once the tick's own span has ended so its time lands in this row.
 	fn tick_internal<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> Option<R> {
 		let (result, clock) = self.tick_span(run);
@@ -795,8 +758,6 @@ impl GraphicsApplication {
 			.then(|| self.render_frame(screenshot_requests, time));
 		// Rendering may acquire more than the tick's start did, such as a hidden window a screenshot captures.
 		let presented = frame.is_some_and(|frame| self.renderer.frame_acquired(frame));
-
-		debug_span!("GraphicsApplication::flush_world_deletions").in_scope(|| self.world.flush_deletions());
 
 		let clock = TickClock {
 			tick: self.tick_count,
@@ -880,11 +841,11 @@ impl GraphicsApplication {
 	/// [`crate::core::alley::Alley::execute_with_mut`] for resources with stable lane ownership.
 	/// Every dispatch finishes before returning to the application's next phase.
 	///
-	/// Panics when called from the callback of [`Self::tick_with_lanes`]: that callback runs inside an execution of
-	/// these lanes, which cannot nest.
+	/// Systems that step on the lanes, such as [`Physics::step`](crate::physics::Physics::step), take them from
+	/// here.
 	pub fn alley_mut(&mut self) -> &mut crate::core::alley::Alley {
 		self.alley.as_mut().expect(
-			"Alley is not available. The most likely cause is that alley_mut was called from the callback of tick_with_lanes, whose execution holds the lanes.",
+			"Alley is not available. The most likely cause is that alley_mut was called from a lane of a run_lanes execution, which holds the lanes.",
 		)
 	}
 
@@ -985,14 +946,14 @@ impl GraphicsApplication {
 		self.application.message_bus()
 	}
 
-	/// Returns the default world updated by the graphics application loop.
-	pub fn world(&self) -> &DefaultWorld {
+	/// Returns the world scope, where application code creates entities and the systems that follow them.
+	///
+	/// Next, create entities with [`Creator::create`] and the systems the application needs on it, such as
+	/// [`SceneGraph::new`](crate::gameplay::SceneGraph::new) and [`Physics::new`](crate::physics::Physics::new),
+	/// and step them from the tick callback in the order the application wants. The scope is `Clone`, so lanes
+	/// and systems keep their own copy.
+	pub fn world(&self) -> &MessageScope {
 		&self.world
-	}
-
-	/// Returns mutable access to the default world updated by the graphics application loop.
-	pub fn world_mut(&mut self) -> &mut DefaultWorld {
-		&mut self.world
 	}
 
 	/// Returns the audio generator factory used by default audio setup.
@@ -1245,7 +1206,7 @@ use crate::{
 		message::DeleteMessage,
 		message_bus::{MessageBus, MessageScope},
 	},
-	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
+	gameplay::transform::TransformationUpdate,
 	input::Action,
 	inspector::{
 		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,

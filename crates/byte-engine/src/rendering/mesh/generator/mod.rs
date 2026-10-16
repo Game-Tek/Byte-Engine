@@ -1,9 +1,11 @@
 pub mod r#box;
+pub mod capsule;
 pub mod sphere;
 
 use std::borrow::Cow;
 
 pub use r#box::BoxMeshGenerator;
+pub use capsule::CapsuleMeshGenerator;
 use maths_rs::{Vec3f, Vec4f};
 pub use sphere::SphereMeshGenerator;
 

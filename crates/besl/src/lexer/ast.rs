@@ -228,7 +228,6 @@ impl Node {
 		let vec4u32 = vector_type("vec4u", &u32_t, 4);
 		let vec4f16 = vector_type("vec4f16", &f16_t, 4);
 		let vec4f32 = vector_type("vec4f", &f32_t, 4);
-		// Packed vectors keep scalar alignment when they are embedded in storage records.
 		let mat4f32 = vector_type("mat4f", &vec4f32, 4);
 		let mat4x3f32 = vector_type("mat4x3f", &vec3f32, 4);
 

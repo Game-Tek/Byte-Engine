@@ -31,7 +31,7 @@ chain of revisions:
   or changed through `update_container`, `update_text`, `update_curve`, and the
   other update methods. The engine compares the element before and after each
   edit, so an edit that writes the values it already has changes nothing, and
-  re-declaring the same element path on a later frame does not count either.
+  re-declaring the same element path on a later frame doesn't count either.
 - `Engine::evaluate` reuses the retained layout while the tree revision and the
   viewport size repeat. Input routing and task polling still run every frame.
 - `Engine::render` returns a reference to the render retained by the engine.
@@ -40,7 +40,7 @@ chain of revisions:
 - `Engine::render` also reports damage: `Render::damage` returns the previous
   revision and the layout-unit rectangles whose pixels differ from it, built
   from the same per-node revisions. A consumer holding pixels for that base
-  revision redraws only inside those rectangles; anyone else redraws everything.
+  revision redraws only inside those rectangles. Anyone else redraws everything.
   A viewport change reports no base, meaning everything changed.
 - `UiRenderPass` keeps a persistent transparent UI layer. Each frame it clears
   and redraws only the damaged pixel regions (plus every visible backdrop blur,
@@ -63,7 +63,7 @@ square fill skips the corner, stroke, and mask math entirely.
 A frame is one draw per damaged region. Only a backdrop blur adds draws, because
 it reads the layer drawn below it: the primitives before it are drawn, its
 compute passes run, and its own quad starts the next draw. Damaged regions are
-cleared by the same shaders with blending disabled, in the same pass. When the
+cleared by the same shaders with blending turned off, in the same pass. When the
 damage covers the viewport, the attachment's clear does it instead.
 
 ### Curves
@@ -80,7 +80,7 @@ The piece count grows with how far the curve bends and with zoom, so a straight
 line is one piece at any length and a typical node-graph wire is six to eight.
 
 Each pixel is shaded by exactly one piece of a segment, the one whose part of the
-curve it is closest to, so translucent strokes have no seams. Path ends and
+curve it's closest to, so translucent strokes have no seams. Path ends and
 corners are round. Where two segments meet smoothly, neither draws a cap. At a
 corner, the segment that starts there rounds it, and a translucent stroke is
 blended twice where that cap overlaps the previous segment.

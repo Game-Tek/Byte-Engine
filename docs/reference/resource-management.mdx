@@ -1,6 +1,6 @@
 ---
 title: Resource management
-description: Understand how Byte Engine turns authored assets into runtime resources.
+description: What assets and resources are, and how an asset becomes the resources a runtime system reads.
 icon: Database
 ---
 
@@ -81,7 +81,7 @@ typed contract seen by consumers.
 Debug applications can process missing or stale assets on demand. This shortens
 the edit-run loop, but the first request can perform asset-processing work.
 
-Release applications use resources prepared before packaging. They do not need
+Release applications use resources prepared before packaging. They don't need
 source assets or processors at runtime, which makes the packaged content
 deterministic and keeps authoring dependencies out of the application.
 

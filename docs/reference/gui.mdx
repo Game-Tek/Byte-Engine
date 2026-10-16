@@ -11,11 +11,11 @@ guarantees of its text rendering. To build an interface, follow
 
 ## Depth
 
-Depth decides what paints over what, and what a pointer hits first. It is local
+Depth decides what paints over what, and what a pointer hits first. It's local
 to each container. `Depth::relative(n)` orders a child among its siblings: a
 container paints first, then its children from the lowest depth to the highest,
-and children at the same depth in the order they were declared. A child that is
-not a container counts as `Depth::relative(1)`.
+and children at the same depth in the order they were declared. A child that isn't
+a container counts as `Depth::relative(1)`.
 
 A container and everything inside it paint as one block. No depth set inside a
 component can put one of its elements over or under another component, so a
@@ -23,7 +23,7 @@ widget can use whatever depths it likes for its own overlays.
 
 `Depth::absolute(n)` is for layers that must cover the rest of the UI, such as a
 modal or a toast. The container leaves its parent and paints above all ordinary
-content, wherever it is declared. Absolute layers stack from the lowest `n` to
+content, wherever it's declared. Absolute layers stack from the lowest `n` to
 the highest and in tree order among equals. A layer declared inside another one
 paints over it, so a dialog opened from a modal covers that modal.
 

@@ -18,7 +18,7 @@ ignores any other, such as `type`:
 
 | Field | Value |
 | --- | --- |
-| `domain` | Required. The render domain, such as `World`. It is recorded in the material and not read by shader compilation. |
+| `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader compilation. |
 | `shaders` | Required. An object that maps each shader stage name, such as `Fragment`, to the asset ID of its BESL source. |
 | `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, and `value`. |
 
@@ -38,7 +38,7 @@ ignores any other, such as `type`:
 | --- | --- |
 | `vec4f` | A named color: `Red`, `Green`, `Blue`, `Purple`, `White`, or `Black`. Any other name resolves to the magenta placeholder `(1, 0, 1, 1)`. |
 | `vec3f` | A named color, as for `vec4f`, without the alpha component. |
-| `float` | Accepted, but the value is not read: the parameter resolves to `0.0`. |
+| `float` | Accepted, but the value isn't read: the parameter resolves to `0.0`. |
 | `Texture2D` | The asset ID of an image, which bakes as a dependency and is stored as a reference. |
 
 Any other `data_type` fails the bake.

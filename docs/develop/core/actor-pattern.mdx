@@ -12,7 +12,7 @@ publishes messages for other systems. An object doesn't need its own scheduler t
 part in this pattern. When another system needs to know about a change, send a
 small message instead of sharing direct mutable access.
 
-## What counts as an actor?
+## What counts as an actor
 
 In Byte Engine, an actor is a system that owns state and communicates across a
 channel-like boundary.
@@ -28,7 +28,7 @@ Common examples:
 Focus on the boundary, not the actor label. For each system, identify its input
 messages, output messages, and owned state.
 
-## Message sending
+## Send messages
 
 Use these core APIs:
 
@@ -52,7 +52,7 @@ rendering, physics, inspection, or gameplay systems receive it.
 
 Messages give you observable boundaries.
 When camera movement is wrong, you can inspect the input action event, the local movement integration, and the outgoing `TransformationUpdate` separately.
-When objects are not deleted, you can put the breakpoint on `DeleteMessage::new` or on the delete-channel listener rather than stepping through every world subsystem.
+When objects aren't deleted, you can put the breakpoint on `DeleteMessage::new` or on the delete-channel listener rather than stepping through every world subsystem.
 
 Small messages also make logging useful.
 An action name, handle, seat, device, and value are enough to explain most input behavior without dumping whole engine state.
@@ -71,7 +71,7 @@ The useful property is architectural: when a system is ready to move to a worker
 Factories and channels let systems mirror only what they need.
 Creating a body can notify physics.
 Deriving a renderable from the same handle can notify rendering.
-Sending a transform update can inform physics, rendering, gameplay helpers, and debugging tools without the sender knowing that list.
+Sending a transform update can tell physics, rendering, gameplay helpers, and debugging tools without the sender knowing that list.
 
 This keeps feature code narrow.
 A camera controller can publish transform updates without knowing how rendering consumes them.
@@ -101,9 +101,9 @@ Send intent and small changes:
 - Send "this action resolved to this value."
 - Send "delete this handle."
 
-Avoid messages that smuggle large ownership graphs across systems unless that is the actual domain event.
+Avoid messages that smuggle large ownership graphs across systems unless that's the actual domain event.
 
-## Choosing the right message
+## Choose the right message
 
 Use a factory when other systems must mirror a new entity. Use a typed channel
 when existing state changes. Use a deletion message when systems must release

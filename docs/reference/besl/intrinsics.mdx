@@ -1,6 +1,6 @@
 ---
 title: Intrinsics
-description: Find BESL intrinsic names, signatures, stage availability, and behavior.
+description: Every BESL intrinsic, with its signature, stage availability, and behavior.
 icon: SquareFunction
 ---
 
@@ -76,7 +76,7 @@ lists the explicit conversion overloads registered as intrinsics.
 | Name | Signature | Explanation |
 | --- | --- | --- |
 | `sample` | `sample(Texture2D, vec2f uv) -> vec4f`; `sample(Texture2DArray[LAYER], vec2f uv) -> vec4f` | Samples a 2D texture or an indexed layer of one 2D-array texture with implicit derivatives. |
-| `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit-LOD path. The two-argument overload uses the default level. |
+| `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit level-of-detail (LOD) path. The two-argument overload uses the default level. |
 | `texture_cube_array_lod` | `texture_cube_array_lod(TextureCubeArray, vec3f direction, u32 cube, f32 lod) -> vec4f` | Samples one cube and mip level from a cube array. |
 | `downsample_min` | `downsample_min(Texture2D, vec2f uv, f32 lod) -> f32` | Returns the minimum scalar value in the downsample footprint. |
 | `downsample_max` | `downsample_max(Texture2D, vec2f uv, f32 lod) -> f32`; `downsample_max(Texture2DArray, vec2f uv, u32 layer, f32 lod) -> f32` | Returns the maximum scalar value in the downsample footprint. |
@@ -98,7 +98,7 @@ lists the explicit conversion overloads registered as intrinsics.
 ### Buffer and workgroup atomics
 
 Use these calls with an `atomicu32` or `atomici32` buffer member or workgroup
-value. In the signatures below, `A` and `T` are either
+value. In these signatures, `A` and `T` are either
 `(atomicu32, u32)` or `(atomici32, i32)`.
 
 These operations guarantee one atomic access or read-modify-write. Their memory
@@ -131,7 +131,7 @@ use its returned value in the control-flow expression.
 The vertex stage adds no stage-specific intrinsic calls. Read `vertex_index`
 and `instance_index` through the `StageInput` parameter described under
 [stage input values](/docs/reference/besl/interface#stage-input-values), then
-use the shared intrinsics above as needed.
+use the shared intrinsics.
 
 ## Fragment stage
 

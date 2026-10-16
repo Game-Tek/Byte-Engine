@@ -13,7 +13,7 @@ when the application first requests it.
 In release-style workflows, resources should already be baked.
 The runtime path can then read processed resources from storage without depending on source assets or asset processors.
 
-## Request flow
+## Follow the request flow
 
 When you request a resource, Byte Engine follows this path:
 
@@ -22,20 +22,20 @@ When you request a resource, Byte Engine follows this path:
 3. If an asset manager exists, it compares the stored source versions with the current assets.
 4. If the resource is missing or stale, the asset manager bakes the source asset.
 5. The baked resource is stored, read back, and solved into a typed `Reference<T>`.
-6. The caller loads payload bytes when it is ready.
+6. The caller loads payload bytes when it's ready.
 
 Solving is recursive.
 A material can resolve shaders and parameter resources.
 A mesh can resolve material variants.
-The caller receives a resource tree that is already connected through typed references.
+The caller receives a resource tree that's already connected through typed references.
 
-## Cache invalidation
+## Understand cache invalidation
 
 The ReDB storage backend writes a `.resource-management-version` marker in the resources directory.
 That marker is derived from the resource-management code hash.
-When the signature changes, the backend deletes stale resources so old processed data does not silently survive processor changes.
+When the signature changes, the backend deletes stale resources so old processed data doesn't silently survive processor changes.
 Release applications open a matching store without writing to it.
-If the marker does not match, the application clears the store before it reads resources.
+If the marker doesn't match, the application clears the store before it reads resources.
 Rebuild the directory with the matching BELD build before packaging.
 
 Each baked resource also records the source versions used to produce it.
@@ -44,7 +44,7 @@ It covers the source asset, its optional `.bead` file, directly loaded files suc
 During a debug request, Byte Engine re-bakes only the resource whose recorded versions changed.
 
 The payload hash remains separate.
-It identifies the baked resource data and does not decide whether a source asset is stale.
+It identifies the baked resource data and doesn't decide whether a source asset is stale.
 
 ## Inspect bake messages
 
@@ -53,14 +53,14 @@ The returned trace keeps information, warning, and error items under the request
 It also keeps handler errors from failed bakes, even though resource storage has no successful resource to return.
 
 Trace items stay in memory and are replaced the next time the same ID is baked.
-They do not enter the resource database or a release application.
+They don't enter the resource database or a release application.
 
 ## Choose between lazy loading and BELD
 
 Lazy processing is convenient, but it can hide work in the first frame that touches an asset.
 Use BELD when startup time, deterministic packaging, or editor feedback matters.
 
-If a resource does not load in a debug build, check these items in order:
+If a resource doesn't load in a debug build, check these items in order:
 
 - the source asset path and extension
 - whether the correct asset handler is installed

@@ -40,7 +40,7 @@ comments and trailing commas in `.bead`, `.bema`, and JSON glTF asset files.
 JSON5 also supports unquoted object keys, single-quoted strings, and other
 authoring conveniences.
 
-Use ordinary JSON when you need compatibility with a tool that does not support
+Use ordinary JSON when you need compatibility with a tool that doesn't support
 JSON5. Otherwise, use comments to explain non-obvious asset settings and keep
 trailing commas so later edits produce smaller diffs. Read the
 [JSON5 specification](https://spec.json5.org/) for the complete syntax.
@@ -81,7 +81,7 @@ Every key is optional. Set `lock_borders` to `true` when a model's primitives me
 ## Environment maps
 
 A standalone `.environment.bead` file generates image-based lighting from a
-high-precision source image. It is a JSON5 object with these fields:
+high-precision source image. It's a JSON5 object with these fields:
 
 | Field | Value |
 | --- | --- |
@@ -126,7 +126,7 @@ Container fragments address the generated subresources consistently:
 - `character.glb#animations/0` selects a clip by zero-based index.
 - `character.glb#animations/Walk` selects a clip by exact name.
 
-Without a fragment, FBX and glTF containers use a content-only default that is identical in debug baking and BELD:
+Without a fragment, FBX and glTF containers use a content-only default that's identical in debug baking and BELD:
 
 - A container with any mesh bakes as `Mesh`.
 - A container without meshes and with exactly one animation bakes as `Animation` and stores its dependency as `#skeleton`.
@@ -137,8 +137,8 @@ A sibling BEAD manifest can override the first two choices with `"default_resour
 become the unfragmented default and must always be requested through `#skeleton`.
 
 The importers normalize weights to a fixed four-influence vertex format.
-FBX matrix-linear and rigid skins are supported; files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
-glTF morph-weight channels are not part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
+FBX matrix-linear and rigid skins are supported. Files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
+glTF morph-weight channels aren't part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
 Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
 The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
 
@@ -156,7 +156,7 @@ Meshes without authored UVs receive a zero-filled UV stream because the visibili
 
 FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
 Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
-FBX material texture maps are not imported yet.
+FBX material texture maps aren't imported yet.
 
 FBX animation stacks are baked through the format's pivot, layer, and rotation-order rules before becoming engine curves:
 

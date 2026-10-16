@@ -119,14 +119,15 @@ let program = materialx::besl::lower(&dag)?;
 ```
 
 `program.root` is a root scope holding one `main` function that writes the
-material properties the renderer's BRDF reads: `albedo`, `metalness`,
+material properties the renderer's bidirectional reflectance distribution
+function (BRDF) reads: `albedo`, `metalness`,
 `roughness`, `emission`, `occlusion` and `normal`. Hand it to the shader
 pipeline's program generator, which adds the stage interface and the bindings
 around it.
 
 `program.textures` lists the images in slot order. Declare one `Texture2D`
-material variable per entry, named `material_texture_0`, `material_texture_1`
-and so on, so the program's sampling calls resolve. Each entry keeps the file
+material variable per entry, named `material_texture_0`, `material_texture_1`,
+and onward through the last slot, so the program's sampling calls resolve. Each entry keeps the file
 exactly as the document wrote it, next to the prefix and colour space the
 document declared, because resolving a reference against the document's location
 is your asset pipeline's decision.
@@ -143,7 +144,7 @@ materials and you want to pick one out of `Dag::materials`.
 ### Unknown nodedef, unknown nodegraph, or unknown outputs
 
 A declaration the document needs is missing. Resolve the document's
-`<xi:include>` references and merge them in, as shown above.
+`<xi:include>` references and merge them in, as shown earlier.
 
 ### Unsupported MaterialX version
 
@@ -163,13 +164,13 @@ the cycle in the order it walked them. Break the loop in the authoring tool.
 
 ### Malformed value
 
-A value does not match the type its element declares, such as a `color3` written
+A value doesn't match the type its element declares, such as a `color3` written
 with two components. Every parse error carries the line and column of the markup
 that caused it, so report it next to the document name and fix the markup.
 
 ### Unsupported shading model, or unsupported MaterialX node
 
-The material reached something the renderer does not evaluate. The error names
+The material reached something the renderer doesn't evaluate. The error names
 the node and its category. See
 [the shading models Byte Engine supports](/docs/reference/materialx#shading-models) for
 what to rebuild it on.

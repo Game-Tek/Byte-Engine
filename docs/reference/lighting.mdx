@@ -16,7 +16,7 @@ Byte Engine provides three analytic light shapes. Point and cone lights can also
 
 | Light | Best intensity unit | Typical use |
 | --- | --- | --- |
-| `DirectionalLight` | Illuminance in [lux](https://en.wikipedia.org/wiki/Lux) | Sunlight or another source that is effectively infinitely far away |
+| `DirectionalLight` | Illuminance in [lux](https://en.wikipedia.org/wiki/Lux) | Sunlight or another source that's effectively infinitely far away |
 | `PointLight` | Luminous intensity in [candela](https://en.wikipedia.org/wiki/Candela) or total flux in [lumens](https://en.wikipedia.org/wiki/Lumen_(unit)) | Bare bulbs and other omnidirectional sources |
 | `ConeLight` | Luminous intensity in [candela](https://en.wikipedia.org/wiki/Candela) or total flux in [lumens](https://en.wikipedia.org/wiki/Lumen_(unit)) | Spotlights, flashlights, and focused fixtures |
 
@@ -79,7 +79,7 @@ that limit.
 
 A point light casts shadows through one cube map and a cone light through one
 perspective shadow map. A cone with an outer half angle of 90° or more remains
-a valid light but cannot use one perspective shadow map.
+a valid light but can't use one perspective shadow map.
 
 The visibility pipeline keeps four cone maps and four point-light cube maps per
 sink by default. Set `render.cone-shadow-map-pool.capacity` or

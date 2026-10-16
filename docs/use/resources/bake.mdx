@@ -26,7 +26,7 @@ ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
 
 The logical symlink path is retained in resource IDs, so `assets/byte-engine/rendering/sky.besl` becomes `byte-engine/rendering/sky.besl`. BELD follows linked files and directories and detects directory cycles. Broken or inaccessible links fail the bake instead of silently producing an incomplete release resource set.
 
-The engine crate package includes its `assets/` directory. For a registry dependency, vendor the resolved crate source and point the same application symlink at that vendored `assets/` directory; this keeps the link target stable instead of depending on Cargo's registry cache layout:
+The engine crate package includes its `assets/` directory. For a registry dependency, vendor the resolved crate source and point the same application symlink at that vendored `assets/` directory. This keeps the link target stable instead of depending on Cargo's registry cache layout:
 
 ```bash
 cargo vendor --locked vendor
@@ -47,7 +47,7 @@ materialize the link as a plain text file. The current automated symlink
 coverage runs on Unix hosts.
 
 Run BELD from your application directory. Pass absolute source and destination
-directories; asset IDs remain relative to `assets/`.
+directories. Asset IDs remain relative to `assets/`.
 
 ```bash
 cd my-app
@@ -56,7 +56,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" \
   bake
 ```
 
-With no IDs, BELD recursively discovers all supported source assets, including linked engine shaders, standalone `.environment.bead` assets, images, meshes, materials, and audio. Unknown files and BEAD sidecars are skipped; `.environment.bead` files are standalone assets rather than sidecars. A standalone `.besl` file is discovered only when its adjacent `.besl.bead` exists; this keeps material-internal BESL sources out of the standalone shader pass. Explicitly requesting a `.besl` file without its sidecar fails the bake.
+With no IDs, BELD recursively discovers all supported source assets, including linked engine shaders, standalone `.environment.bead` assets, images, meshes, materials, and audio. Unknown files and BEAD sidecars are skipped, and `.environment.bead` files count as standalone assets rather than sidecars. A standalone `.besl` file is discovered only when its adjacent `.besl.bead` exists. This keeps material-internal BESL sources out of the standalone shader pass. Explicitly requesting a `.besl` file without its sidecar fails the bake.
 
 BELD gives concurrent bake work a soft memory budget equal to half of the system memory available when the command starts. Override the budget in MiB when a CI runner or shared workstation needs more headroom:
 
@@ -88,13 +88,14 @@ The default `files` mode writes one extensionless payload file per resource. Its
 
 In packed mode, rebuilding or deleting a resource returns its old range to a coalescing free-space allocator after active mapped readers release it. BELD reuses the smallest suitable range and grows `resources.pack` only when none fits. If BELD warns that the pack is fragmented, delete the destination resource directory and run the bake again to produce a compact pack.
 
-Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
+Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform isn't portable.
 
 ## Leave render features out of the bake
 
 Use your project's `config.json` to leave optional render features out of
-both the baked shaders and the running application. You can leave out GTAO,
-SSGI, and contact shadows. Put the file in the
+both the baked shaders and the running application. You can leave out
+ground-truth ambient occlusion (GTAO), screen-space global illumination
+(SSGI), and contact shadows. Put the file in the
 application directory, next to `assets/` and `resources/`:
 
 ```json
@@ -145,7 +146,7 @@ beld --destination "$PWD/resources" list
 beld --destination "$PWD/resources" inspect scene.glb
 ```
 
-Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor or a feature in `config.json`, run `beld bake --force` instead, because those changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
+Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor or a feature in `config.json`, run `beld bake --force` instead, because those changes don't change source file versions. Baking requested IDs updates their generated output but doesn't remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
 ## Use resources in development and release
 

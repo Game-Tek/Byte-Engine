@@ -28,7 +28,7 @@ app.world()
 ```
 
 The transform moves, turns, and scales the system's spawn modules, so a cone fires along the transform's local +Z
-axis. Set `rate` or `burst` on the emitter to override the system's `spawn` values; a burst spawns each time you
+axis. Set `rate` or `burst` on the emitter to override the system's `spawn` values. A burst spawns each time you
 publish the emitter. To change an emitter, publish a new value on the same handle with `Factory::derive`. To stop it,
 delete the handle. Particles already in flight finish their lives.
 

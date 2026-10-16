@@ -6,7 +6,7 @@ icon: Hammer
 
 This section is for contributors: people who change the engine repository. Its
 pages tell you how to build, test, measure, and document a change, and, for each
-system, how it is put together and what a change must keep true. To build an
+system, how it's put together and what a change must keep true. To build an
 application with the engine instead, use [Use Byte Engine](/docs/use).
 
 ## Test your changes
@@ -18,14 +18,15 @@ cargo install cargo-nextest --version 0.9.140 --locked
 cargo nextest run --workspace
 ```
 
-Nextest does not run Rust documentation tests. If you add or change an example
+Nextest doesn't run Rust documentation tests. If you add or change an example
 in API documentation, run it separately:
 
 ```bash
 cargo test --doc --workspace
 ```
 
-The default Nextest profile skips the GHI rendering integration tests because
+The default Nextest profile skips the graphics hardware interface (GHI)
+rendering integration tests because
 they need a local GPU. Run them explicitly when you change GHI rendering,
 resource lifetime, or backend command behavior:
 

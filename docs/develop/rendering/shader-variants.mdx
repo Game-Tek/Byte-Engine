@@ -18,7 +18,7 @@ such as a push constant, keeps both sides of its branch in the pipeline.
 For example, opaque material evaluation used to carry the transparent phase's
 shadow-map filtering behind a push-constant flag. Moving that flag into a
 specialization constant halved the opaque pipeline, from 8,664 to 4,320
-instructions. Afterwards, new transparent-only code no longer costs opaque
+instructions. Afterward, new transparent-only code no longer costs opaque
 pixels anything.
 
 ## Choose how to gate a feature
@@ -27,7 +27,7 @@ pixels anything.
 |---|---|---|
 | Never used by the program being baked | Conditional generation | While baking, in the `ProgramGenerator` |
 | Part of the baked shader, but used only by some materials or phases | A specialization constant | When the loader requests the pipeline |
-| Switched per frame, such as whether SSGI ran | A push constant or buffer value | While recording |
+| Switched per frame, such as whether screen-space global illumination (SSGI) ran | A push constant or buffer value | While recording |
 
 Prefer the earliest gate that still has the information it needs. Use a runtime
 flag only for state that changes while the pipeline stays the same.
@@ -112,7 +112,7 @@ the HLSL with a `SPEC_CONSTANT_<id>` define for each value.
 
 ## Check the result
 
-A gate only helps if the compiler actually removed the code. Before you measure
+A gate only helps if the compiler removed the code. Before you measure
 frame time, compare the compiled statistics of the affected pipeline, such as
 instruction count, register count, and spilled bytes, before and after the
 change. Then compare GPU time for the affected stage with the change and

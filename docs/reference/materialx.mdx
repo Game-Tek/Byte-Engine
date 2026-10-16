@@ -16,7 +16,8 @@ that fails to load, follow
 
 ## Shading models
 
-Four shading models reach the renderer's BRDF directly: `standard_surface`,
+Four shading models reach the renderer's bidirectional reflectance distribution
+function (BRDF) directly: `standard_surface`,
 `open_pbr_surface`, `UsdPreviewSurface` and `gltf_pbr`. Two more are read as
 special cases: Disney's `disney_principled`, and `surface_unlit`, whose emission
 carries everything it shows. A model you define yourself works too, as long as
@@ -28,7 +29,7 @@ node graph the document defines.
 
 Byte Engine reports anything else rather than approximating it. In particular, a surface built out of individual scattering closures, such as a
 `<surface>` node fed by `dielectric_bsdf` and `oren_nayar_diffuse_bsdf`, does
-not map onto the renderer's fixed BRDF. Rebuild it on one of the models above,
+not map onto the renderer's fixed BRDF. Rebuild it on one of those models,
 or bake the network into textures with the MaterialX tools.
 
 ## Differences from the document

@@ -49,7 +49,7 @@ A release build doesn't compile a missing shader on demand.
 If your project has a `config.json`, BELD reads it from the application
 directory to decide which [render features to bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
 
-Keep `resources/` outside Cargo's `target/` directory. It is an application
+Keep `resources/` outside Cargo's `target/` directory. It's an application
 input to packaging. Cargo owns `target/` and might remove it when you run
 `cargo clean`.
 
@@ -232,11 +232,12 @@ provides the retail runtime for Shader Model 6.9 and Enhanced Barriers. The
 provides the matching retail shader compiler. Byte Engine also targets the
 stable [DirectStorage 1.3.0 package](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0).
 Don't substitute a preview Agility SDK, preview DXC, or DirectStorage runtime
-without updating the GHI contract and rerunning its native DX12 tests.
+without updating the graphics hardware interface (GHI) contract and rerunning
+its native DX12 tests.
 
 These runtimes are redistributable under Microsoft's terms, not Byte Engine's
 MIT license. Review and comply with the license files in every package before
-you distribute it. The Agility SDK provides `LICENSE.txt`; DXC provides
+you distribute it. The Agility SDK provides `LICENSE.txt`, and DXC provides
 `LICENSE-MS.txt`, `LICENSE-LLVM.txt`, and `LICENCE-MIT.txt`. In the Agility SDK,
 `LICENSE-CODE.txt` covers SDK headers and metadata; it isn't the license for the
 runtime DLLs.

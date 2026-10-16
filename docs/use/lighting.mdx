@@ -60,7 +60,7 @@ let color = LightColor::LinearSrgb(Vector3::new(1.0, 0.15, 0.02));
 
 The RGB values describe chromaticity, not brightness. Byte Engine normalizes the color to unit
 photopic luminance. Set brightness with `PhotometricIntensity`; increasing the RGB values alone
-does not make the light brighter. RGB components must be nonnegative and the color must have
+doesn't make the light brighter. RGB components must be nonnegative and the color must have
 nonzero luminance.
 
 ## Choose an intensity
@@ -70,7 +70,7 @@ distance or area carried by the variant so Byte Engine can make a deterministic 
 
 ### Lux
 
-Lux measures illuminance arriving at a surface. It is the most direct choice for a directional
+Lux measures illuminance arriving at a surface. It's the most direct choice for a directional
 light. For a point or cone light, `measurement_distance_m` says where the requested illuminance
 must be reached.
 
@@ -83,7 +83,7 @@ let intensity = PhotometricIntensity::Illuminance {
 
 For local lights, Byte Engine converts lux to candela with `I = E × d²`. A light that produces
 500 lux at 2 meters therefore has an intensity of 2,000 candela. The measurement distance is
-validated but does not change an already directional illuminance field.
+validated but doesn't change an already directional illuminance field.
 
 ### Candela
 
@@ -99,7 +99,7 @@ let intensity = PhotometricIntensity::LuminousIntensity {
 ```
 
 A directional light converts this value with `E = I / d²`. Local lights keep the candela value;
-their reference distance is validated but does not change it.
+their reference distance is validated but doesn't change it.
 
 ### Lumens
 
@@ -130,7 +130,7 @@ let intensity = PhotometricIntensity::LuminousFlux {
 };
 ```
 
-`directional_beam_area_m2` is required and validated for every light. Point and cone lights do not
+`directional_beam_area_m2` is required and validated for every light. Point and cone lights don't
 use it because their emission shape already defines how the flux is distributed.
 
 ### Nits
@@ -147,7 +147,7 @@ let intensity = PhotometricIntensity::Luminance {
 ```
 
 Point and cone lights use the uniform-emitter approximation `I = L × A`. Directional lights use
-`E = L × A / d²`. Analytic lights do not retain the physical emitter shape after this conversion.
+`E = L × A / d²`. Analytic lights don't retain the physical emitter shape after this conversion.
 
 ## Create point and cone lights
 
@@ -187,10 +187,10 @@ let spotlight = ConeLight::new(
 Cone angles are half angles measured from the light direction. The renderer
 automatically uses a 0.1 m near plane and a neutral exposure scale of 1. It
 extends the far plane until peak exposure-weighted illumination falls below
-0.125 lux. These values control only the cone shadow view; they don't limit
+0.125 lux. These values control only the cone shadow view. They don't limit
 lighting attenuation. Override either endpoint with `with_shadow_near` or
 `with_shadow_far`, or override both with `with_shadow_range`.
-A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
+A cone with an outer half angle of 90° or more remains a valid light but can't use one perspective
 shadow map.
 
 ## Use an IES profile
@@ -200,13 +200,13 @@ pattern. Bake the source into your resource database, then pass its resource ID 
 or `ConeLight::new_ies`.
 
 The IES file supplies the peak candela and the relative intensity in every direction. `LightColor`
-only tints that measured light; do not pass a separate `PhotometricIntensity` value. Set `dimmer` to a
+only tints that measured light. Don't pass a separate `PhotometricIntensity` value. Set `dimmer` to a
 linear fraction from `0.0` for off through `1.0` for the profile's measured output. For example, `0.01`
 runs the measured fixture at 1% output. The renderer applies the same dimmed intensity to shading,
 automatic shadow coverage, and shadow priority.
 
 The renderer uses a dimmed unit-luminance fallback while the profile uploads asynchronously. If the
-resource is missing or is not a usable baked IES image, the visibility pipeline logs an error and the
+resource is missing or isn't a usable baked IES image, the visibility pipeline logs an error and the
 fallback remains active.
 
 Use an `Orientation` to place the profile:
@@ -241,8 +241,8 @@ calibrated peak candela also controls automatic shadow coverage and local-shadow
 
 Point lights use a cube shadow map, so each selected point light renders six 90-degree shadow
 views. The renderer uses a 0.1 m near plane and extends the automatic far plane until the peak
-exposure-weighted illumination falls below 0.125 lux. This range controls shadow coverage only; it
-does not limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far`, or
+exposure-weighted illumination falls below 0.125 lux. This range controls shadow coverage only. It
+doesn't limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far`, or
 `with_shadow_range` on `PointLight` when your scene needs explicit coverage.
 
 The visibility pipeline shadows up to four cone lights and four point lights
@@ -268,7 +268,7 @@ let camera = Camera::new().with_exposure(-(15.0 + 1.2_f32.log2()));
 Typical EV100 values are 15 for a sunny day, 12 to 13 for an overcast one, and 5 to 7 for a lit
 room at night. An exposure of `0.0` shows scene values unchanged.
 
-The PBR visibility pipeline and the atmosphere sky apply the exposure as they write scene light,
+The physically based (PBR) visibility pipeline and the atmosphere sky apply the exposure as they write scene light,
 so a 100,000 lux sun on a glossy surface stays within the range of the scene image, whose
 floating-point channels reach about 65,000.
 Later passes, such as bloom and tone mapping, receive exposed light. Scenes drawn with other
@@ -291,9 +291,9 @@ A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one abou
 
 ## Add height fog
 
-Height fog fills the scene with mist that is thickest near the ground and thins out with altitude,
+Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,
 like rain mist, an overcast day, or haze in a valley. Install the fog pass after the scene pipeline
-and particles, and before anti-aliasing, lens flare, bloom, and tone mapping, so bright light glows
+and particles, and before antialiasing, lens flare, bloom, and tone mapping, so bright light glows
 through the mist. Then create a fog in a tick after the one that creates the window:
 
 ```rust
@@ -341,7 +341,7 @@ Two light sources light the fog, in the same units as the rest of the scene:
 - The sky, given in lux with `with_ambient_illuminance`. Use the same value as the environment's
   `with_illuminance`, so fully fogged views match the brightness of an even overcast sky.
 - The newest directional light, scattered mostly forward by water droplets. Looking toward the sun,
-  the fog glows; `with_anisotropy` sets how tight that glow is.
+  the fog glows, and `with_anisotropy` sets how tight that glow is.
 
 Fog also covers the sky: the horizon disappears into it, while the sky straight up stays mostly
 clear. Use `with_max_opacity` to keep a trace of distant surfaces visible through the thickest fog.

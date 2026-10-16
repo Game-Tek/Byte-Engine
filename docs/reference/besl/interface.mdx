@@ -1,6 +1,6 @@
 ---
 title: Interface
-description: Declare BESL stage values, descriptors, shared storage, layout layers, and stage metadata.
+description: The BESL interface, from stage values and descriptors to shared storage, layout layers, and stage metadata.
 icon: Cable
 ---
 
@@ -145,7 +145,7 @@ a push constant must also follow these rules:
 - Use `mat4f` for matrices, and `u32` instead of `bool` or `u8`.
 
 Shader baking checks these rules on every platform. If a push constant breaks
-one, the error names the member and its byte offset on each backend; reorder the
+one, the error names the member and its byte offset on each backend. Reorder the
 members or add explicit padding.
 
 ## Descriptors
@@ -218,7 +218,7 @@ operation the shader performs on the resource.
 For a buffer, set `memory` to `constant` for small, read-only values shared
 by a dispatch or draw. Use `device` for large buffers, data that varies between
 shader threads, and every writable buffer. If you omit the memory class, a buffer
-uses `device`. Image and texture descriptors cannot declare a memory class.
+uses `device`. Image and texture descriptors can't declare a memory class.
 
 Set `count` to a positive integer to declare an array of independent resources.
 
@@ -246,7 +246,7 @@ element stride.
 Stored records use the same layout on every backend. Vector members such as
 `vec2f`, `vec3f`, and `vec4f` take their component size and align to one
 component, so you can declare them in any order without padding. Push constants
-have extra rules; see [Push constants](#push-constants). Mirror a
+have extra rules. See [Push constants](#push-constants). Mirror a
 record on the CPU with the `ghi::pod` vector types, which use the same layout.
 Matrices keep their backend alignment, so place `mat4f` members on 16-byte
 offsets. If a shader writes a single `vec4` member of a buffer record, keep that
@@ -366,7 +366,7 @@ it.
 A name can be declared only once across a shader and its layers. Baking fails
 if a shader keeps its own copy of a layer declaration, if two layers declare
 the same name, or if a layer declares `main`. The error names the declaration
-and the layer; delete the copy to fix it. A shader and its layers can hold one
+and the layer. Delete the copy to fix it. A shader and its layers can hold one
 `push_constant` block between them.
 
 A shader declares the whole set of every layer it lists, so that every shader
@@ -410,7 +410,7 @@ The normal generators support these stage and output-language combinations:
 The generated language support doesn't guarantee that a device exposes the
 required shader stage or extension. Half-precision and subgroup operations also
 require their target capabilities. BESL validates subgroup intrinsics for
-compute stages only; see [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
+compute stages only. See [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
 
 Next, use [BESL intrinsics](/docs/reference/besl/intrinsics) to read and update
 the values declared by the interface.

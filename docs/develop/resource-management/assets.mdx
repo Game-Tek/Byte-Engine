@@ -23,10 +23,10 @@ handler from the asset type or extension.
 
 Handlers store the requested resource through their `BakeContext` after all generated dependencies are ready.
 The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
-Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
+Each stored resource contains typed metadata plus the binary payload that consumers later upload, stream, decode, or play.
 
 When your handler needs adjacent `.bead` settings, call `context.load_sidecar(id)` explicitly.
-`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, and glTF handlers request sidecars; other handlers read their sources independently.
+`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, and glTF handlers request sidecars. Other handlers read their sources independently.
 
 ```rust
 let (source, asset_type) = context.resolve(id).await?;
@@ -41,7 +41,7 @@ Custom source backends provide the same utility through `StorageBackend::load_si
 ## Trace asset baking
 
 Use `BakeContext::info`, `BakeContext::warn`, or `BakeContext::error` when a handler needs to explain a bake decision or problem.
-Pass `format_args!(...)` when the message includes values so release builds do not allocate a temporary string for the terminal log.
+Pass `format_args!(...)` when the message includes values so release builds don't allocate a temporary string for the terminal log.
 
 Debug builds keep these ordered items in a resource trace under the requested resource ID.
 The latest bake replaces older items for that ID.
@@ -50,7 +50,7 @@ For example, the FBX handler records one information item with the number of deg
 
 Read the trace through `AssetManager::resource_trace` or, after installing the asset manager, `ResourceManager::resource_trace`.
 Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
-The trace is an in-memory development tool: release builds do not expose it, and trace items are never stored as production resources.
+The trace is an in-memory development tool: release builds don't expose it, and trace items are never stored as production resources.
 
 ## Processing
 
@@ -58,14 +58,14 @@ Asset processing turns source data into engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
 Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
-For color textures, supported sRGB or linear PNG metadata overrides the filename default; an unsupported transfer function falls back to the inferred semantic.
+For color textures, supported sRGB or linear PNG metadata overrides the filename default. An unsupported transfer function falls back to the inferred semantic.
 EXR images keep their linear HDR values in an `RGBA16F` image and don't generate lighting maps by default.
 Material textures from glTF and FBX models get a full mip chain. Byte Engine filters the levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `fast` profile. Without a compatible GPU, the CPU filters and compresses the chain instead, at comparable quality.
-A glTF metallic-roughness texture that every material in the file reads only through its green and blue channels is stored as a two-channel `RG8` image, or `RG16` from a sixteen-bit source, holding roughness in red and metallic in green. The generated materials read those channels, so the image samples the same values it did with all four channels. An image that a material also reads through another channel, such as an occlusion-roughness-metallic texture, keeps all of its channels. This layout is part of the image fragment's contract: a hand-written material that samples `model.gltf#images/<index>` for metallic and roughness must read red and green.
+A glTF metallic-roughness texture that every material in the file reads only through its green and blue channels is stored as a two-channel `RG8` image, or `RG16` from a sixteen-bit source, holding roughness in red and metallic in green. The generated materials read those channels, so the image samples the same values it did with all four channels. An image that a material also reads through another channel, such as an occlusion-roughness-metallic texture, keeps all its channels. This layout is part of the image fragment's contract: a hand-written material that samples `model.gltf#images/<index>` for metallic and roughness must read red and green.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Mesh processing also builds detail levels. It simplifies each primitive into coarser versions, each with about half the triangles of the one before, until a level stops getting smaller, fits in about two meshlets, or reaches the level limit. Every level uses the primitive's own vertices and is stored as extra meshlets after the full-detail ones, so levels add vertex indices, triangles, and meshlets but no vertices. Each level records an error: the estimated largest distance, in model units, between it and full detail. The renderer draws the coarsest level whose error covers at most a pixel. Skinned primitives keep full detail only.
 
-When you write a mesh importer, pass a `MeshLodSettings` to `MeshProcessorSession::new`; `MeshLodSettings::default()` gives the settings above.
+When you write a mesh importer, pass a `MeshLodSettings` to `MeshProcessorSession::new`; `MeshLodSettings::default()` gives the defaults listed under [detail levels](/docs/reference/assets#detail-levels).
 Have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
 
@@ -73,7 +73,7 @@ Material and standalone shader processing compile BESL to platform-native shader
 
 The bake path accepts an allocator for generation-time buffers.
 BELD uses one arena per asset task.
-Several handlers keep decode and processing work inside the same task because allocator-backed source bytes cannot safely cross arbitrary thread boundaries.
+Several handlers keep decode and processing work inside the same task because allocator-backed source bytes can't safely cross arbitrary thread boundaries.
 
 This allocation pattern keeps asset processing practical without making temporary
 decode and import data long-lived.

@@ -13,14 +13,15 @@ limits an application sees are specified in the
 
 Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for
 directional lights and RGB candela for point and cone lights. Local lights use
-inverse-square attenuation, and the PBR material evaluation applies diffuse
-`albedo / π` and specular BRDF terms.
+inverse-square attenuation, and the physically based (PBR) material evaluation
+applies diffuse `albedo / π` and specular bidirectional reflectance distribution
+function (BRDF) terms.
 
 For a local light, the incident RGB quantity at a surface is
 `candela / distance²`, multiplied by the cone factor when applicable. For a
 directional light, the incident RGB quantity is its lux value directly. Shadows
-and material BRDF terms then reduce or redistribute that incident light; they
-do not change the authored unit conversion.
+and material BRDF terms then reduce or redistribute that incident light. They
+don't change the authored unit conversion.
 
 The PBR visibility pipeline and the atmosphere sky apply the camera exposure as
 they write scene light, so later passes such as bloom and tone mapping receive
@@ -29,12 +30,12 @@ exposed light. Scenes drawn with other pipelines ignore exposure.
 ## Lights are culled per cluster
 
 Every frame, the renderer splits each camera's view into a grid of clusters on
-the GPU and records which lights reach each cluster, so each pixel is shaded
-only with the lights that can reach it and a scene with many small lights costs
+the GPU and records which lights reach each cluster. Each pixel is then shaded
+only with the lights that can reach it, so a scene with many small lights costs
 about as much as the few lights near each surface. A point or cone light
 reaches as far as its exposed illuminance stays above 1/1024 lux, so reach
 grows with the light's intensity and the camera exposure. The light list holds
-1,024 lights; the renderer logs a warning and leaves out the rest.
+1,024 lights. The renderer logs a warning and leaves out the rest.
 
 ## Shadow maps are pooled
 
@@ -48,7 +49,7 @@ For each pool, the renderer ranks visible lights by their projected sink
 coverage. It first reserves a slot for each sink's most important light when
 capacity allows, then continues through each sink's next-ranked light in sink
 order. The sinks reached before a partial final round fills the pool receive
-the remaining slots. Other visible local lights stay lit but do not cast
+the remaining slots. Other visible local lights stay lit but don't cast
 shadows. After an IES profile reaches the GPU, its dimmed calibrated peak
 candela feeds the same ranking and the automatic shadow coverage.
 

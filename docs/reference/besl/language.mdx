@@ -1,6 +1,6 @@
 ---
 title: Language
-description: Declare BESL types, values, functions, expressions, and control flow.
+description: The BESL language, from types and values to functions, expressions, and control flow.
 icon: Braces
 ---
 
@@ -25,7 +25,7 @@ These are the built-in value types available to authored BESL:
 | Boolean | `bool` | Conditions and the literals `true` and `false`. |
 | Unsigned integers | `u8`, `u16`, `u32` | Integer data and indices. Most arithmetic intrinsics use `u32`. |
 | Signed integers | `i32` | Signed integer data and arithmetic. |
-| Floating point | `f16`, `f32` | Half- and single-precision values. |
+| Floating point | `f16`, `f32` | Half-precision and single-precision values. |
 | Atomic integers | `atomicu32`, `atomici32` | Atomic unsigned or signed storage in a buffer or workgroup value. Access it through atomic intrinsics. |
 | Unsigned vectors | `vec2u16`, `vec4u16`, `vec2u`, `vec3u`, `vec4u` | Packed unsigned values, coordinates, indices, and subgroup masks. |
 | Signed vectors | `vec2i` | Two signed integer values. |
@@ -149,7 +149,7 @@ sum: fn (values: f32[16], count: u32) -> f32 {
 
 Return values support only compact scalar arrays with two through four `f32`,
 `u16`, or `u32` elements, because HLSL can't return arrays. BESL rejects a
-function that returns a larger array; return a vector or a struct with the
+function that returns a larger array. Return a vector or a struct with the
 values the caller needs instead.
 
 ```rust
@@ -236,7 +236,7 @@ return { color, instance_index: input.instance_index };
 ```
 
 In a record value, `color` is shorthand for `color: color`. Separate fields with
-commas; a trailing comma is optional. A record returned from `main` must provide
+commas. A trailing comma is optional. A record returned from `main` must provide
 every declared field exactly once. Return it directly from the top-level entry
 body so the compiler can finalize the native stage output on every backend.
 
@@ -363,7 +363,7 @@ if (roughness < 0.25) {
 
 Variables you declare inside a branch are only visible in that branch.
 
-BESL doesn't currently have `while`.
+BESL doesn't have `while`.
 
 ### Match
 
@@ -384,7 +384,7 @@ match material_kind {
 Write each pattern as a literal such as `3`, `-1`, or `true`, join patterns with
 `|` to share an arm, or use `_` to match every other value. Put a comma after an
 arm unless its body is a block, an `if`, or a `match`. A `match` can also produce
-a value; see [Use `if` and `match` as values](#use-if-and-match-as-values).
+a value. See [Use `if` and `match` as values](#use-if-and-match-as-values).
 
 A match must cover every value. Add a `_` arm, or for a `bool`, list both
 `true` and `false`. If an arm can't run because earlier arms cover its values,

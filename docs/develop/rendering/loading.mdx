@@ -5,7 +5,8 @@ icon: Download
 ---
 
 Read this page before you change resource loading, texture or mesh uploads, a
-rendering pipeline's loader, or the GHI calls they use. It explains how the
+rendering pipeline's loader, or the graphics hardware interface (GHI) calls
+they use. It explains how the
 loader and the renderer share one GPU without waiting on each other, and which
 rules keep it that way.
 
@@ -127,7 +128,7 @@ of blocking, because the lanes share its thread.
 
 All lanes share one 32 MB staging arena that the loader owns.
 
-- Put all of an upload's bytes in one lease, and hand the lease to the loader
+- Put all an upload's bytes in one lease, and hand the lease to the loader
   before you allocate another. If lanes hold unsubmitted leases while they wait
   for more space, a full arena deadlocks.
 - Place each region relative to the start of its lease. The loader adds the
@@ -167,7 +168,7 @@ against the steady state.
 
 ## Backend contract
 
-A GHI backend supports the loading timeline when it provides all of these:
+A GHI backend supports the loading timeline when it provides every one of these:
 
 - Several contexts from one device, each of which can move to another thread.
   Contexts that submit to the same native queue share one lock.
@@ -185,8 +186,8 @@ builds fail until they do. `todo.md` lists what each backend needs.
 
 ## Run the tests that guard the design
 
-Run these tests when you change loading or the GHI calls above. They need a
-GPU, so the default Nextest profile skips them:
+Run these tests when you change loading or the GHI calls in the backend
+contract. They need a GPU, so the default Nextest profile skips them:
 
 ```bash
 cargo nextest run --ignore-default-filter -p byte-engine-ghi --test rendering

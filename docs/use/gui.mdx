@@ -10,7 +10,7 @@ Byte Engine render loop.
 An asynchronous component function receives a layout `Context`. It creates
 elements in stable keyed slots, waits for events, and can mount child components
 that return values. The runtime keeps state between evaluations, so your
-application does not rebuild each interaction from the beginning.
+application doesn't rebuild each interaction from the beginning.
 
 ```rust
 engine.mount(async |ctx| {
@@ -30,7 +30,7 @@ Pass components as async closures or async functions that take
 
 - `layout::engine::Engine` evaluates retained UI and produces render data.
 - `Context` and `ContainerContext` are the component-facing construction and event APIs.
-- `Container`, `Text`, `Image`, `Curve`, and `Path` are the current built-in primitives. Declare a text field with `text_field`: it is a `Text` that receives text edits while focused.
+- `Container`, `Text`, `Image`, `Curve`, and `Path` are the current built-in primitives. Declare a text field with `text_field`: it's a `Text` that receives text edits while focused.
 - `UiRenderPass` turns evaluated UI render data into GPU draw work.
 - `ConcreteStyle`, `ConcreteLayer`, and `Transform` hold styling and animation-oriented transforms; set opacity with the `opacity` property.
 
@@ -62,7 +62,7 @@ change, and so do components that run after yours in the same evaluation.
 Declarations and edits take a setup function that sets properties in place,
 such as `|c| c.width(240.into()).clip(false)`. The setters write into the
 element where the engine stores it, so nothing is built, copied, or sent on the
-way. Setup runs only when the declaration creates the element; an element that
+way. Setup runs only when the declaration creates the element. An element that
 already exists keeps its properties until you edit it. A plain function over
 `Properties` holds a reusable look for both declarations and edits:
 
@@ -120,7 +120,7 @@ return or the engine is dropped.
 declared under it: its descendants and the components started there. The
 context it was called on stays valid only to declare the same key again, which
 gets the same id. A mounted component awaited from outside the removed element
-keeps running until its own future ends; its elements are gone, so its updates
+keeps running until its own future ends. Its elements are gone, so its updates
 change nothing.
 
 ## Build content at runtime
@@ -129,8 +129,8 @@ change nothing.
 parent's path and its key, so the same key under the same parent always
 resolves the same retained element. A static name identifies a fixed part of a
 component. A name made from data, such as one node of a graph, is keyed by its
-content. Pass it as `format_args!`, which is hashed while it is formatted
-without allocating; an owned `String` with the same content gives the same key:
+content. Pass it as `format_args!`, which is hashed while it's formatted
+without allocating. An owned `String` with the same content gives the same key:
 
 ```rust
 let mut node = canvas.element(format_args!("node-{id}")).container(|c| node_frame(c, position)).await;
@@ -151,7 +151,7 @@ the engine logs it, ignores the second declaration, and fails a debug assertion.
 
 Keep the element contexts as the handles to that content. Re-route a wire while
 its ends move with `EvaluationContext::update_curve`, editing the path in place
-so its segment buffer is reused; changing only the segments repaints the curve
+so its segment buffer is reused. Changing only the segments repaints the curve
 without replaying layout. Remove a node or a wire with
 `EvaluationContext::remove`:
 
@@ -191,7 +191,7 @@ match phase {
 
 Capture the gesture in your UI's sink before gameplay processes the same
 input, and continue forwarding motion and release outside the source.
-`Engine::hit` answers what is under a point when a sink needs that for its own
+`Engine::hit` answers what's under a point when a sink needs that for its own
 capture decisions, such as refusing a drop over UI.
 
 The grabbed surface receives the gesture as events, so it can react on its own.
@@ -201,7 +201,7 @@ which the pointer moved, with `UiEvent::delta` set to the offset from the press
 point in layout units. When the grab ends by release or cancellation it gets
 `Events::DragEnded`, with `UiEvent::source` set to the surface the drag was
 dropped on, if any. Await all three in one loop, because an event with no
-component waiting for it is discarded, and a press and release can arrive in
+component waiting for it's discarded, and a press and release can arrive in
 the same frame:
 
 ```rust
@@ -236,7 +236,7 @@ follows the pointer. When scaling a preview, use
 `Transform::origin(UiPoint::zero())` to keep its top-left corner anchored.
 
 The surface under the release point, and then each of its ancestors, gets
-`Events::Dropped` with `UiEvent::source` set to the released source; the source
+`Events::Dropped` with `UiEvent::source` set to the released source. The source
 itself is skipped when finding that surface. The engine resolves the target at
 the start of the next `Engine::evaluate` from the previous frame's hit
 geometry, before components run, and queues the source's `DragEnded` after it,
@@ -265,7 +265,7 @@ itself under another parent with `EvaluationContext::reparent`.
 and discards queued clicks, scrolls, key presses, and text edits. Call it when
 the window loses focus or the user cancels. A changed viewport size cancels
 from `Engine::evaluate`, because layout distances and the source's place move
-with it. The UI supplies the gesture and geometry; your application decides
+with it. The UI supplies the gesture and geometry. Your application decides
 which targets accept the item and how to apply it.
 
 ## React to the pointer passing over a surface

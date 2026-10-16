@@ -121,6 +121,28 @@ impl<'a> Compiler<'a> {
 		expression: &NodeReference,
 		access: RequiredAccess,
 	) -> Result<ResourceSlot, VmError> {
+		// `images[index]` selects one element of a storage-image array at execution, like a sampled-texture array.
+		if let Some((binding, slot, count, index)) = resolve_image_array_access(expression)? {
+			accessible_binding(binding.borrow().node(), access)?;
+			// Every possible element occupies one flat host slot; only the selected resource is used at execution.
+			for element in 0..count {
+				self.claim_descriptor_layout(
+					ResourceSlot::new(slot.slot() + element as u32),
+					DescriptorLayout::Image,
+					"resource type",
+				)?;
+			}
+			let index = self.compile_value_expression(&index, &ValueType::U32)?;
+			let register = self.allocate_register();
+			self.emit(ValueInstruction::LoadResourceIndexed {
+				register,
+				slot,
+				index,
+				count,
+				value_type: ValueType::Texture2D,
+			});
+			return Ok(dynamic_resource_slot(register));
+		}
 		let Ok(binding) = extract_binding_reference(expression) else {
 			let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
 			if value_type != ValueType::Texture2D {

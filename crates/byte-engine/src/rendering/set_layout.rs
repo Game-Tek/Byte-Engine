@@ -167,6 +167,11 @@ impl SetBinder<'_> {
 	}
 
 	/// Binds one mip of a storage image.
+	/// Binds one element of an arrayed storage image, such as a debug target pool slot.
+	pub fn image_element(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, index: u32) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General).with_array_element(index)
+	}
+
 	pub fn image_mip(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)
 	}
@@ -334,7 +339,7 @@ pub fn create_sets(
 		for binding in &set.interface().bindings {
 			// A binding the pipeline does not reach may be left without a resource.
 			if let Some(resource) = resources.iter().find(|resource| resource.name() == binding.name) {
-				writes.push(resource.descriptor_write(descriptor_set, ghi::ResourceSlot::new(binding.slot)));
+				resource.descriptor_writes(descriptor_set, ghi::ResourceSlot::new(binding.slot), &mut writes);
 			}
 		}
 	}
@@ -343,12 +348,17 @@ pub fn create_sets(
 	Ok(pipeline_sets)
 }
 
+/// The most elements [`Resource::image_array`] binds, which is the most debug targets a sink's pool holds.
+pub const MAX_IMAGE_ARRAY_ELEMENTS: usize = 15;
+
 /// The `Resource` enum names one concrete resource for a BESL binding, for [`create_sets`] to bind by name.
 #[derive(Clone, Copy)]
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
 	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
+	/// The first `count` images of an arrayed storage-image binding, element by element.
+	ImageArray(&'static str, [Option<ghi::BaseImageHandle>; MAX_IMAGE_ARRAY_ELEMENTS]),
 	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
 }
 
@@ -367,6 +377,25 @@ impl Resource {
 		Self::Image(name, image.into())
 	}
 
+	/// Binds `images` to the first elements of an arrayed storage-image binding, such as the debug target pool a
+	/// shader declares as `debug_view_targets`. Elements past them stay unbound, so the shader must not index them.
+	///
+	/// # Panics
+	///
+	/// Panics with more than [`MAX_IMAGE_ARRAY_ELEMENTS`] images.
+	pub fn image_array(name: &'static str, images: &[ghi::BaseImageHandle]) -> Self {
+		assert!(
+			images.len() <= MAX_IMAGE_ARRAY_ELEMENTS,
+			"Image array binding `{name}` has {} images. The most likely cause is a debug target pool larger than the {MAX_IMAGE_ARRAY_ELEMENTS} slots a shader declares.",
+			images.len()
+		);
+		let mut elements = [None; MAX_IMAGE_ARRAY_ELEMENTS];
+		for (element, image) in elements.iter_mut().zip(images) {
+			*element = Some(*image);
+		}
+		Self::ImageArray(name, elements)
+	}
+
 	pub fn combined_image_sampler(
 		name: &'static str,
 		image: impl Into<ghi::BaseImageHandle>,
@@ -381,30 +410,56 @@ impl Resource {
 			Self::Buffer(name, ..)
 			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
+			| Self::ImageArray(name, ..)
 			| Self::CombinedImageSampler(name, ..) => name,
 		}
 	}
 
-	fn matches(&self, binding: BindingKind) -> bool {
-		matches!(
-			(binding, self),
+	/// Whether this resource can be bound to a binding of `kind` with `count` elements: an image array only to an
+	/// arrayed storage image it fits in, and a single resource only to a binding of one element.
+	fn matches(&self, kind: BindingKind, count: u32) -> bool {
+		match (kind, self) {
+			(BindingKind::StorageImage, Self::ImageArray(_, images)) => {
+				count > 1 && images.iter().flatten().count() <= count as usize
+			}
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-				| (BindingKind::StorageImage, Self::Image(..))
-				| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..))
-		)
+			| (BindingKind::StorageImage, Self::Image(..))
+			| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..)) => count == 1,
+			_ => false,
+		}
 	}
 
-	fn descriptor_write(&self, set: ghi::DescriptorSetHandle, slot: ghi::ResourceSlot) -> ghi::DescriptorWrite {
+	/// Adds the writes that bind this resource to `slot` of `set`: one per bound array element.
+	fn descriptor_writes(
+		&self,
+		set: ghi::DescriptorSetHandle,
+		slot: ghi::ResourceSlot,
+		writes: &mut SmallVec<[ghi::DescriptorWrite; 8]>,
+	) {
 		match *self {
-			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => ghi::DescriptorWrite::buffer(set, slot, buffer),
+			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => {
+				writes.push(ghi::DescriptorWrite::buffer(set, slot, buffer));
+			}
 			Self::Image(_, ghi::ImageOrSwapchain::Image(image)) => {
-				ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General)
+				writes.push(ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General));
 			}
 			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
-				ghi::DescriptorWrite::swapchain(set, slot, swapchain)
+				writes.push(ghi::DescriptorWrite::swapchain(set, slot, swapchain));
+			}
+			Self::ImageArray(_, images) => {
+				for (element, image) in images.iter().enumerate() {
+					if let Some(image) = image {
+						writes.push(
+							ghi::DescriptorWrite::image(set, slot, *image, ghi::Layouts::General)
+								.with_array_element(element as u32),
+						);
+					}
+				}
 			}
 			Self::CombinedImageSampler(_, image, sampler, layout) => {
-				ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, layout)
+				writes.push(ghi::DescriptorWrite::combined_image_sampler(
+					set, slot, image, sampler, layout,
+				));
 			}
 		}
 	}
@@ -434,7 +489,8 @@ fn declared_bindings(sets: &[SetLayout]) -> impl Iterator<Item = &Binding> {
 
 fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 	for binding in used_bindings(sets) {
-		if binding.count != 1 {
+		// Only storage images come arrayed, through [`Resource::image_array`].
+		if binding.count != 1 && binding.kind != BindingKind::StorageImage {
 			return Err(
 				"Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.",
 			);
@@ -493,7 +549,7 @@ fn validate_resources(sets: &[SetLayout], resources: &[Resource]) -> Result<(), 
 				binding.name
 			));
 		}
-		if !resource.matches(binding.kind) {
+		if !resource.matches(binding.kind, binding.count) {
 			return Err(format!(
 				"Compute resource `{}` has the wrong type. The most likely cause is that an image, sampler, or buffer was bound to an incompatible BESL binding.",
 				binding.name
@@ -524,6 +580,32 @@ mod tests {
 			read,
 			write,
 		}
+	}
+
+	/// An arrayed storage image takes an image array that fits it, and nothing else; a single binding takes no array.
+	#[test]
+	fn image_arrays_bind_only_arrayed_storage_images_they_fit() {
+		let mut device = ghi::debug::Device::new();
+		let image: ghi::BaseImageHandle = device
+			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage))
+			.into();
+		let array = Resource::image_array("pool", &[image, image]);
+		let single = Resource::image("pool", image);
+
+		assert!(array.matches(BindingKind::StorageImage, 15));
+		assert!(array.matches(BindingKind::StorageImage, 2));
+		assert!(!array.matches(BindingKind::StorageImage, 1));
+		assert!(!single.matches(BindingKind::StorageImage, 15));
+		assert!(single.matches(BindingKind::StorageImage, 1));
+		assert!(!array.matches(BindingKind::StorageBuffer, 15));
+
+		let arrayed = layouts(&[Binding {
+			count: 15,
+			..binding("pool", BindingKind::StorageImage, 2, false, true)
+		}]);
+		assert!(validate_binding_schema(&arrayed).is_ok());
+		assert!(validate_resources(&arrayed, &[array]).is_ok());
+		assert!(validate_resources(&arrayed, &[single]).is_err());
 	}
 
 	#[test]

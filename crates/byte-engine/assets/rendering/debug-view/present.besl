@@ -1,0 +1,63 @@
+// Tiles the debug views the renderer shows this frame into the sink's final output, over whatever the frame drew.
+//
+// The pool slots a view holds are the set bits of `taken`, and the views sit in the grid in slot order, so a view keeps
+// its cell while others come and go. One view fills the screen, two sit side by side, three or four take a 2x2 grid,
+// five to nine a 3x3, and so on; a cell past the last view is black. Each slot is written at full resolution, so a
+// cell averages the `side` x `side` block of slot texels that lands on each of its pixels: a box filter that keeps
+// thin lines visible where point sampling would drop them.
+
+DebugViewPresentParameters: struct {
+	// One bit per pool slot, set while a view holds it.
+	taken: u32,
+	// How many bits of `taken` are set.
+	count: u32,
+	// The grid's side: the smallest whole number whose square holds `count` views.
+	side: u32,
+	_padding: u32,
+}
+
+result: descriptor<{ type: StorageImage, binding: 0, access: write }>;
+parameters: descriptor<{ type: DebugViewPresentParameters, binding: 1, access: read, memory: constant }>;
+// An arrayed binding takes `count` flat slots, so the pool comes last.
+debug_view_targets: descriptor<{ type: StorageImage, binding: 2, access: read, count: 15 }>;
+
+// The pool slot of the `index`-th shown view, in slot order.
+nth_taken_slot: fn (taken: u32, index: u32) -> u32 {
+	let remaining: u32 = index;
+	for (let slot: u32 = 0; slot < 15; slot = slot + 1) {
+		if (((taken >> slot) & 1) != 0) {
+			if (remaining == 0) {
+				return slot;
+			}
+			remaining = remaining - 1;
+		}
+	}
+	return 0;
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(result, pixel);
+	let extent: vec2u = image_size(result);
+	let side: u32 = max(parameters.side, 1);
+	// The cell this pixel lies in, and where the pixel lies inside it.
+	let cell_extent: vec2u = vec2u(max(extent.x / side, 1), max(extent.y / side, 1));
+	let cell: vec2u = vec2u(min(pixel.x / cell_extent.x, side - 1), min(pixel.y / cell_extent.y, side - 1));
+	let index: u32 = cell.y * side + cell.x;
+	if (index >= parameters.count) {
+		write(result, pixel, vec4f(0.0, 0.0, 0.0, 1.0));
+		return;
+	}
+	let slot: u32 = nth_taken_slot(parameters.taken, index);
+	// The block of slot texels this pixel stands for, clamped to the slot, which is sink-sized.
+	let origin: vec2u = vec2u((pixel.x - cell.x * cell_extent.x) * side, (pixel.y - cell.y * cell_extent.y) * side);
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let y: u32 = 0; y < side; y = y + 1) {
+		for (let x: u32 = 0; x < side; x = x + 1) {
+			let texel: vec2u = vec2u(min(origin.x + x, extent.x - 1), min(origin.y + y, extent.y - 1));
+			sum = sum + image_load(debug_view_targets[slot], texel);
+		}
+	}
+	let color: vec4f = sum / f32(side * side);
+	write(result, pixel, vec4f(color.x, color.y, color.z, 1.0));
+}

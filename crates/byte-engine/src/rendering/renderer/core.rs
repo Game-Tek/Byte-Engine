@@ -97,6 +97,14 @@ pub struct Renderer {
 	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
 	/// The state every pass with one name shares, including scene backgrounds and passes created later.
 	render_pass_states: RenderPassStates,
+	/// Which debug views exist and which pool slot each shown one holds; see [`crate::rendering::debug_views`].
+	debug_views: DebugViewRegistry,
+	debug_view_settings: DebugViewSettings,
+	/// The port `render.debug.view.<pass>.<view>` arrives on.
+	debug_view_configuration: ConfigurationPort,
+	pending_debug_view_configuration: VecDeque<PendingDebugView>,
+	/// The pass that tiles each sink's shown debug views over its presented image, when the build has debug views.
+	debug_view_presents: SmallVec<[(SinkId, DebugViewPresentPass); 16]>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
@@ -169,12 +177,18 @@ impl Renderer {
 	/// compilation servers that compile its pipelines. Run each server with [`PipelineManagerServer::run`] on a thread
 	/// that owns it.
 	///
-	/// `render_pass_configuration` is the port render-pass states arrive on, each named by its pass.
+	/// `render_pass_configuration` is the port render-pass states arrive on, each named by its pass, and
+	/// `debug_view_configuration` the port `render.debug.view.<pass>.<view>` arrives on, with `debug_views` the catalog
+	/// the renderer publishes the declared views to for the inspector.
 	///
 	/// # Parameters
 	/// Read from `parameters`, the `render` subtree of the application's:
 	/// - `startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
+	/// - `debug.targets`: How many debug targets each sink's pool holds, from 1 to 15, which is how many debug views
+	///   can be shown at once. Defaults to 4.
+	/// - `debug-views.enabled`: Whether this build can show debug views; see
+	///   [`crate::rendering::pipelines::visibility::VisibilityFeatures`]. Defaults to on in debug builds only.
 	/// - `pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
 	/// - `swapchain.images`: Sets how many swapchain images each window requests. Backends clamp it to what
@@ -191,10 +205,13 @@ impl Renderer {
 	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
 	pub fn new(
 		device: &crate::rendering::GraphicsDevice,
-		parameters: impl Parameters,
+		parameters: impl Parameters + Copy,
 		render_pass_configuration: ConfigurationPort,
+		debug_view_configuration: ConfigurationPort,
+		debug_views: Arc<DebugViewCatalog>,
 		metrics: Arc<Metrics>,
 	) -> (Self, Vec<PipelineManagerServer>) {
+		let debug_view_settings = DebugViewSettings::from_parameters(parameters);
 		let defer_first_frame_sink_setup = parameters
 			.get_parameter("startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
@@ -264,6 +281,11 @@ impl Renderer {
 			configuration: render_pass_configuration,
 			pending_configuration: VecDeque::new(),
 			render_pass_states: RenderPassStates::default(),
+			debug_views: DebugViewRegistry::new(debug_view_settings, debug_views),
+			debug_view_settings,
+			debug_view_configuration,
+			pending_debug_view_configuration: VecDeque::new(),
+			debug_view_presents: SmallVec::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_compilation_client,
@@ -305,6 +327,14 @@ impl Renderer {
 			{
 				self.stage_counters.push((counter, metric));
 			}
+		}
+	}
+
+	/// Registers the debug views a node declared, as [`RenderPassBuilder::take_debug_views`] hands them over, under
+	/// `name`, the pass or manager name `render.debug.view.<name>.<view>` selects them by.
+	fn register_debug_views(&mut self, name: &str, views: Option<(&'static [&'static str], Arc<AtomicU32>)>) {
+		if let Some((views, cell)) = views {
+			self.debug_views.register(name, views, cell);
 		}
 	}
 
@@ -372,7 +402,7 @@ impl Renderer {
 	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, final_output: bool) -> RenderPassBuilder<'_> {
 		let scene_background_factory = match node {
 			RenderNode::Scene(_) => self.scene_background_factory.as_deref(),
-			RenderNode::Pass(_) | RenderNode::Presentation => None,
+			RenderNode::Pass(_) | RenderNode::Presentation | RenderNode::DebugView => None,
 		};
 		RenderPassBuilder::new(
 			&mut self.context,
@@ -384,6 +414,7 @@ impl Renderer {
 			scene_background_factory,
 			node,
 			final_output,
+			self.debug_view_settings,
 		)
 	}
 
@@ -399,6 +430,8 @@ impl Renderer {
 		builder.record_node();
 		let backgrounds = builder.take_scene_backgrounds();
 		let stage_counters = builder.take_gpu_counters();
+		let debug_views = builder.take_debug_views();
+		self.register_debug_views(pipeline_manager.name(), debug_views);
 		self.adopt_stage_counters(stage_counters, sink_id);
 		self.scene_backgrounds.extend(backgrounds);
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
@@ -479,6 +512,8 @@ impl Renderer {
 			let writable_targets = builder.writable_targets();
 			let main_copy = builder.take_main_copy();
 			let stage_counters = builder.take_gpu_counters();
+			let debug_views = builder.take_debug_views();
+			self.register_debug_views(render_pass.name(), debug_views);
 			self.adopt_stage_counters(stage_counters, sink_id);
 			let counter = self.create_gpu_counter("pass", render_pass.name(), sink_id);
 			self.render_passes.push(SinkPass {
@@ -500,6 +535,16 @@ impl Renderer {
 			let copy = ImageBypassPass::new(&mut builder, source, swapchain);
 			builder.record_node();
 			self.scene_presentation_copies.push((sink_id, copy));
+		}
+
+		// The debug views tile over everything, so their pass is the sink's last node.
+		if self.debug_view_settings.enabled {
+			let swapchain = self.windows[sink_id].1;
+			let mut builder = self.sink_builder(sink_id, RenderNode::DebugView, false);
+			let pool = builder.debug_view_pool(ghi::AccessPolicies::READ);
+			let present = DebugViewPresentPass::new(&mut builder, &pool, ghi::ImageOrSwapchain::Swapchain(swapchain));
+			builder.record_node();
+			self.debug_view_presents.push((sink_id, present));
 		}
 	}
 
@@ -725,6 +770,16 @@ impl Renderer {
 		}
 		// Queued render-pass configuration applies after passes exist and before they prepare frame work.
 		apply_render_pass_configuration(&self.configuration, &mut self.pending_configuration, &self.render_pass_states);
+		if apply_debug_view_configuration(
+			&self.debug_view_configuration,
+			&mut self.pending_debug_view_configuration,
+			&mut self.debug_views,
+		) {
+			self.redraw_requested = true;
+		}
+		// Slots a view holds get the sink extent this frame; the rest stay tiny.
+		let debug_slots_taken = self.debug_views.taken();
+		self.render_targets.set_debug_slots_taken(debug_slots_taken);
 
 		// Resolve names outside command recording so the hot path only compares pass IDs and transfers handles.
 		let screenshot_captures = screenshot_requests
@@ -853,6 +908,19 @@ impl Renderer {
 					})
 					.collect();
 
+				// The tiling of the shown debug views, recorded last, only while a view is shown.
+				let debug_view_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = if debug_slots_taken == 0 {
+					SmallVec::new()
+				} else {
+					self.debug_view_presents
+						.iter_mut()
+						.filter_map(|(sink_id, present)| {
+							let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
+							Some((present.prepare(frame, sink, frame_allocator, debug_slots_taken), *sink_id))
+						})
+						.collect()
+				};
+
 				let present_keys = swapchains
 					.iter()
 					.filter_map(|window_frame| match window_frame {
@@ -917,6 +985,9 @@ impl Renderer {
 
 					for (command, sink_id) in scene_presentation_commands {
 						record_node(command_buffer_recording, &first_uses, sink_id, RenderNode::Presentation, &[command], None);
+					}
+					for (command, sink_id) in debug_view_commands {
+						record_node(command_buffer_recording, &first_uses, sink_id, RenderNode::DebugView, &[command], None);
 					}
 
 					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
@@ -1176,7 +1247,10 @@ pub(crate) enum RendererScreenshotError {
 	Transfer(ghi::TextureTransferError),
 }
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+	collections::VecDeque,
+	sync::{Arc, atomic::AtomicU32},
+};
 
 use ghi::{
 	command_buffer::{CommandBufferRecording, CommonCommandBufferMode as _},
@@ -1192,6 +1266,10 @@ use utils::{Box, Extent};
 use super::{
 	configuration::{PendingRenderPassConfiguration, apply_render_pass_configuration, set_render_pass_state},
 	targets::{FirstUse, RenderNode, RenderTargets},
+};
+use crate::rendering::{
+	debug_views::{DebugViewCatalog, DebugViewRegistry, DebugViewSettings, PendingDebugView, apply_debug_view_configuration},
+	render_passes::debug_view::DebugViewPresentPass,
 };
 use crate::{
 	application::parameters::Parameters,

@@ -108,13 +108,15 @@ pub(super) struct MaterialEvaluationPass {
 impl MaterialEvaluationPass {
 	/// Prepares one material phase; the transparent phase composites over the lit target the opaque phase wrote.
 	///
-	/// Records one dispatch for each of `evaluations` that `active_evaluations` marks.
+	/// Records one dispatch for each of `evaluations` that `active_evaluations` marks. `debug_views` is what
+	/// [`crate::rendering::DebugViews::shown`] packs for the manager's views this frame.
 	pub(super) fn prepare<'a>(
 		&self,
 		evaluations: &'a [MaterialEvaluation],
 		active_evaluations: &'a ActiveEvaluationMask,
 		phase: VisibilityPhase,
 		screen_space_lighting: ScreenSpaceLighting,
+		debug_views: u32,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
@@ -142,7 +144,7 @@ impl MaterialEvaluationPass {
 					c.start_region(|label| label.write_str(&evaluation.name));
 					let c = c.bind_compute_pipeline(evaluation.pipeline);
 					c.bind_descriptor_sets(&descriptor_sets);
-					c.write_push_constant(0, [evaluation.index, u32::from(gtao), u32::from(ssgi)]);
+					c.write_push_constant(0, [evaluation.index, u32::from(gtao), u32::from(ssgi), debug_views]);
 					c.indirect_dispatch(evaluation_dispatches, evaluation.index as usize);
 					c.end_region();
 				}

@@ -268,6 +268,18 @@ fn material_evaluation_texture_variables_produce_valid_besl() {
 	besl::lex(shader).expect("generated normal-mapped program should link");
 }
 
+/// The suffix sums irradiance behind the view index the table gives the irradiance view.
+#[test]
+fn irradiance_view_is_summed_at_its_table_index() {
+	use super::ast::{MATERIAL_DEBUG_VIEWS, MATERIAL_IRRADIANCE_VIEW};
+	use super::sources::MATERIAL_EVALUATION_SUFFIX_SOURCE;
+
+	assert_eq!(MATERIAL_DEBUG_VIEWS[MATERIAL_IRRADIANCE_VIEW].0, "irradiance");
+	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains(&format!(
+		"debug_view_slot(push_constant.debug_views, {MATERIAL_IRRADIANCE_VIEW})"
+	)));
+}
+
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
 #[test]
 fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
@@ -303,11 +315,24 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 			},
 			"diffuse_radiance_map",
 		),
+		(
+			VisibilityFeatures {
+				debug_views: false,
+				..Default::default()
+			},
+			"debug_view_targets",
+		),
 	];
+	let every_feature = VisibilityFeatures {
+		gtao: true,
+		ssgi: true,
+		contact_shadows: true,
+		debug_views: true,
+	};
 
 	for (features, binding) in cases {
 		assert!(
-			reaches(VisibilityFeatures::default(), binding),
+			reaches(every_feature, binding),
 			"Material evaluation should reach `{binding}`."
 		);
 		assert!(

@@ -205,30 +205,119 @@ pub(super) fn material_evaluation_suffix_statements(
 	};
 	let mut statements = parse_besl_statements(normal_source, "material_evaluation_normal");
 	let mut suffix = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
+	suffix.extend(parse_besl_statements(
+		material_debug_view_source(),
+		"material_evaluation_debug_views",
+	));
 	visibility_features.remove_left_out_code(&mut suffix);
 	statements.extend(suffix);
 	statements
 }
 
-/// Removes every conditional block, at any depth, whose condition reads the member `name`.
-///
-/// Backends emit only what `main` reaches, so this also drops the bindings and helpers only those blocks used.
-pub(crate) fn remove_conditionals_reading(statements: &mut Vec<Node<'_>>, name: &str) {
-	statements.retain_mut(|statement| {
-		let Nodes::Conditional {
-			condition, statements, ..
-		} = statement.node_mut()
-		else {
-			return true;
-		};
-		let mut reads_name = false;
-		walk_expressions(condition, &mut |expression| {
-			reads_name |= matches!(expression, Expressions::Member { name: member } if member.as_ref() == name);
-		});
-		if !reads_name {
-			remove_conditionals_reading(statements, name);
+/// The debug views material evaluation declares, in the order the shader numbers them: each view's name, as
+/// `render.debug.view.<manager>.<name>` selects it, and the display-ready color it writes, as a BESL `vec4f`
+/// expression over the material's variables.
+pub(crate) const MATERIAL_DEBUG_VIEWS: [(&str, &str); 6] = [
+	(
+		"normals",
+		"vec4f(f32(normal.x) * 0.5 + 0.5, f32(normal.y) * 0.5 + 0.5, f32(normal.z) * 0.5 + 0.5, 1.0)",
+	),
+	("albedo", "vec4f(f32(albedo.x), f32(albedo.y), f32(albedo.z), 1.0)"),
+	("roughness", "vec4f(f32(roughness), f32(roughness), f32(roughness), 1.0)"),
+	("metalness", "vec4f(f32(metalness), f32(metalness), f32(metalness), 1.0)"),
+	("occlusion", "vec4f(f32(occlusion), f32(occlusion), f32(occlusion), 1.0)"),
+	// The irradiance reaching the surface from every light and the environment, pre-exposed like the lit map and
+	// compressed with `x / (1 + x)` so daylight stays readable. The suffix sums it at this index; see
+	// `MATERIAL_IRRADIANCE_VIEW`.
+	(
+		"irradiance",
+		"vec4f(exposed_irradiance.x / (1.0 + exposed_irradiance.x), exposed_irradiance.y / (1.0 + exposed_irradiance.y), exposed_irradiance.z / (1.0 + exposed_irradiance.z), 1.0)",
+	),
+];
+
+/// The index of the irradiance view in [`MATERIAL_DEBUG_VIEWS`], which the material evaluation suffix gates its
+/// irradiance sum on.
+pub(crate) const MATERIAL_IRRADIANCE_VIEW: usize = 5;
+
+/// The names of [`MATERIAL_DEBUG_VIEWS`], as the pipeline manager declares them.
+pub(crate) const MATERIAL_DEBUG_VIEW_NAMES: [&str; MATERIAL_DEBUG_VIEWS.len()] = {
+	let mut names = [""; MATERIAL_DEBUG_VIEWS.len()];
+	let mut index = 0;
+	while index < names.len() {
+		names[index] = MATERIAL_DEBUG_VIEWS[index].0;
+		index += 1;
+	}
+	names
+};
+
+/// The statements that write each shown debug view of [`MATERIAL_DEBUG_VIEWS`], generated once from the table so
+/// the shader's numbering cannot drift from the declared names. Every statement reads `debug_views` in its
+/// condition, so a bake without debug views drops them all.
+fn material_debug_view_source() -> &'static str {
+	static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+	SOURCE.get_or_init(|| {
+		let mut source = String::from("material_evaluation_debug_views: fn () -> void {\n");
+		for (view, (name, color)) in MATERIAL_DEBUG_VIEWS.iter().enumerate() {
+			source.push_str(&format!(
+				"\t// {name}\n\tif (debug_view_slot(push_constant.debug_views, {view}) != 0) {{\n\t\twrite(debug_view_targets[debug_view_slot(push_constant.debug_views, {view}) - 1], pixel_coordinates, {color});\n\t}}\n"
+			));
 		}
-		!reads_name
+		source.push_str("}\n");
+		source
+	})
+}
+
+/// Removes every statement, at any depth, that reads the member `name`: a conditional whose condition reads it, with
+/// its whole block, and any other statement that reads it, such as a `let` or a `write`.
+///
+/// A conditional or loop that does not read it keeps its block, minus the statements inside that do. Backends emit
+/// only what `main` reaches, so this also drops the bindings and helpers only the removed statements used.
+pub(crate) fn remove_statements_reading(statements: &mut Vec<Node<'_>>, name: &str) {
+	statements.retain_mut(|statement| {
+		let reads_name = |node: &mut Node<'_>| {
+			let mut reads_name = false;
+			walk_expressions(node, &mut |expression| {
+				reads_name |= matches!(expression, Expressions::Member { name: member } if member.as_ref() == name);
+			});
+			reads_name
+		};
+		match statement.node_mut() {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => {
+				if reads_name(condition) {
+					return false;
+				}
+				remove_statements_reading(statements, name);
+				*else_branch = match else_branch.take() {
+					Some(ElseBranch::Block(mut statements)) => {
+						remove_statements_reading(&mut statements, name);
+						Some(ElseBranch::Block(statements))
+					}
+					Some(ElseBranch::If(conditional)) => {
+						// An `else if` is one conditional: dropping it drops the whole link, as a block would be.
+						let mut link = vec![*conditional];
+						remove_statements_reading(&mut link, name);
+						link.pop().map(|conditional| ElseBranch::If(Box::new(conditional)))
+					}
+					None => None,
+				};
+				true
+			}
+			Nodes::ForLoop { statements, .. } => {
+				remove_statements_reading(statements, name);
+				true
+			}
+			Nodes::Match { arms, .. } => {
+				for arm in arms {
+					remove_statements_reading(&mut arm.statements, name);
+				}
+				true
+			}
+			_ => !reads_name(statement),
+		}
 	});
 }
 

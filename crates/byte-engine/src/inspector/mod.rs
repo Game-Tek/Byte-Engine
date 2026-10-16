@@ -179,6 +179,8 @@ pub struct DefaultInspector {
 	properties: Arc<Mutex<HashMap<Handle, InspectedProperties>>>,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
+	#[cfg(feature = "headed")]
+	debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
 	metrics: Arc<Metrics>,
 }
 
@@ -215,6 +217,8 @@ impl DefaultInspector {
 			properties,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
+			#[cfg(feature = "headed")]
+			debug_views: None,
 			metrics,
 		}
 	}
@@ -233,6 +237,18 @@ impl DefaultInspector {
 	/// Returns the latest configuration event states for protocol adapters.
 	pub fn configuration_events(&self) -> Vec<ConfigurationEvent> {
 		self.configuration.events()
+	}
+
+	/// Connects the catalog the renderer publishes its debug views to, which `GET /debug-views` serves.
+	#[cfg(feature = "headed")]
+	pub fn set_debug_views(&mut self, debug_views: Arc<crate::rendering::DebugViewCatalog>) {
+		self.debug_views = Some(debug_views);
+	}
+
+	/// Returns the declared debug views and which are shown, or an empty, disabled catalog without a renderer.
+	#[cfg(feature = "headed")]
+	pub fn debug_views(&self) -> crate::rendering::debug_views::DebugViewCatalogState {
+		self.debug_views.as_ref().map(|catalog| catalog.state()).unwrap_or_default()
 	}
 
 	/// Returns current factory-created entities filtered by an exact Rust type or attached name.

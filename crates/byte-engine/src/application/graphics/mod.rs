@@ -36,6 +36,9 @@
 /// - `render.pipeline-cache.path`: Keeps compiled pipelines in this file, so later runs create their pipelines without compiling shaders. The file is read at startup, and the pipelines compiled since are appended to it when the application closes; a run that compiles none does not touch it. Use one file per GPU when applications that run on different GPUs at the same time would otherwise share it. Data from another GPU or driver version is ignored. Relative paths use the current working directory. The default is none, which leaves pipeline caching to the GPU driver.
 /// - `messages.capacity`: Sets the bytes of message storage shared by every typed route, in whole chunks of [`crate::core::message_bus::CHUNK_BYTES`]. A publisher waits when every chunk is held by unread messages. The default is `67108864`, which is 64 MiB.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
+/// - `render.debug.view.<pass>.<view>`: Shows (`true`) or hides (`false`) one debug view of the named render pass or scene pipeline manager, such as `render.debug.view.motion-blur.velocity`. Shown views tile over the presented image, each in one of `render.debug.targets` slots; a view is refused when every slot is taken. `GET /debug-views` on the inspector lists the views. The default is hidden.
+/// - `render.debug.targets`: Sets how many debug views can be shown at once, from `1` to `15`. The default is `4`.
+/// - `render.debug-views.enabled`: Builds debug views into the project. Like `render.gtao.enabled`, the startup value decides whether their code is baked into the shaders; a build without them refuses every `render.debug.view.*`. The default is `true` in debug builds and `false` in release builds.
 /// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The startup value also decides whether GTAO is built in: set it to `false` in `config.json` and BELD bakes shaders without GTAO code and skips its pipelines, and GTAO cannot be turned on at runtime. See [`crate::rendering::pipelines::visibility::VisibilityFeatures`]. The default is `true`.
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `4`.
@@ -192,8 +195,12 @@ impl GraphicsApplication {
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
 		let mut alley = crate::core::alley::Alley::new();
-		// The renderer's port takes render-pass states; it subscribes before the startup parameters are queued below.
+		// The renderer's ports take render-pass states and debug views; they subscribe before the startup parameters
+		// are queued below.
 		let render_pass_configuration = configuration.register(RENDER_PASS_CONFIGURATION);
+		let debug_view_configuration = configuration.register(DEBUG_VIEW_CONFIGURATION);
+		let debug_views = Arc::new(rendering::DebugViewCatalog::default());
+		let renderer_debug_views = Arc::clone(&debug_views);
 		let transforms = world_messages.channel::<TransformationUpdate>();
 		let mut storage = None;
 		let mut services = None;
@@ -227,6 +234,7 @@ impl GraphicsApplication {
 							world_messages.clone(),
 							Arc::clone(&metrics),
 						);
+						inspector.set_debug_views(Arc::clone(&debug_views));
 						inspector
 							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
 							.unwrap_or_else(|error| panic!("{error}"));
@@ -270,6 +278,8 @@ impl GraphicsApplication {
 						&graphics_device,
 						render_parameters,
 						render_pass_configuration,
+						debug_view_configuration,
+						renderer_debug_views,
 						Arc::clone(&metrics),
 					);
 					(graphics_device, renderer, servers)
@@ -308,6 +318,7 @@ impl GraphicsApplication {
 			.get_parameter("render-on-demand")
 			.is_some_and(|parameter| parameter.as_bool_simple());
 		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_CONFIGURATION);
+		queue_startup_parameters(application.parameters(), &configuration, DEBUG_VIEW_CONFIGURATION);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
@@ -1013,6 +1024,8 @@ impl Parameters for GraphicsApplication {
 /// Register the port that handles `prefix` first; it then reports each parameter as set or not set.
 /// The configuration prefix of render-pass states, each named by its pass, such as `render.pass.bloom`.
 const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
+/// The configuration prefix of the debug views, named `<pass>.<view>` inside it.
+const DEBUG_VIEW_CONFIGURATION: &str = "render.debug.view.";
 
 pub(crate) fn queue_startup_parameters(parameters: &[Parameter], configuration: &Configuration, prefix: &str) {
 	for parameter in parameters {

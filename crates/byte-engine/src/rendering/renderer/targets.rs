@@ -17,6 +17,8 @@ pub(crate) enum RenderNode {
 	Pass(usize),
 	/// The copy that presents scene color when no post-scene pass writes the swapchain.
 	Presentation,
+	/// The pass that tiles the shown debug views over the presented image; see [`crate::rendering::debug_views`].
+	DebugView,
 }
 
 /// The `FirstUse` struct names a render target that a node is the first to use in a frame.
@@ -48,6 +50,8 @@ struct Target {
 	resolution_divisor: u32,
 	/// Whether the image belongs to its sink's image group and so may share memory.
 	member: bool,
+	/// The debug target pool slot this image is, if it is one. A free slot is sized `1×1`; see [`RenderTargets::debug_pool`].
+	debug_slot: Option<u32>,
 }
 
 /// The `RenderTargets` struct tracks sink-scoped render images, their names, and the graph nodes that use them.
@@ -67,6 +71,8 @@ pub struct RenderTargets {
 	///
 	/// History targets are never attachments, so no pass can clear them by accident.
 	histories: Vec<(usize, String, ghi::DynamicImageHandle, u32)>,
+	/// One bit per debug pool slot, set while a view holds it; those slots follow the sink extent, the others stay `1×1`.
+	debug_slots_taken: u32,
 }
 
 impl Default for RenderTargets {
@@ -83,6 +89,7 @@ impl RenderTargets {
 			node_accesses: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
 			histories: Vec::with_capacity(8),
+			debug_slots_taken: 0,
 		}
 	}
 
@@ -136,10 +143,55 @@ impl RenderTargets {
 			sink: sink_id,
 			resolution_divisor,
 			member,
+			debug_slot: None,
 		});
 		self.by_name.push((sink_id, name, index));
 
 		index
+	}
+
+	/// Returns a sink's debug target pool in slot order, creating its `pool_size` images on the first call.
+	///
+	/// The pool images are sink-sized, sink-color-format storage images named `Debug View <slot>`, so screenshots
+	/// capture them by name; `build_image` builds each from its builder. A slot stays `1×1` until
+	/// [`Self::set_debug_slots_taken`] marks it taken, so an idle pool costs almost nothing. Returns the image
+	/// indices too, for the caller to record as accesses.
+	pub(crate) fn debug_pool(
+		&mut self,
+		sink_id: usize,
+		pool_size: u32,
+		mut build_image: impl FnMut(ghi::image::Builder<'_>) -> ghi::BaseImageHandle,
+	) -> SmallVec<[(usize, ghi::BaseImageHandle); 15]> {
+		let existing = self
+			.targets
+			.iter()
+			.enumerate()
+			.filter(|(_, target)| target.sink == sink_id && target.debug_slot.is_some())
+			.map(|(index, target)| (index, target.image))
+			.collect::<SmallVec<[_; 15]>>();
+		if !existing.is_empty() {
+			return existing;
+		}
+		(0..pool_size)
+			.map(|slot| {
+				let name = format!("Debug View {slot}");
+				let image = build_image(
+					ghi::image::Builder::new(
+						crate::rendering::SCENE_COLOR_FORMAT,
+						ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferSource,
+					)
+					.name(&name),
+				);
+				let index = self.insert(name, sink_id, image, crate::rendering::SCENE_COLOR_FORMAT, 1, false);
+				self.targets[index].debug_slot = Some(slot);
+				(index, image)
+			})
+			.collect()
+	}
+
+	/// Marks which debug pool slots a view holds, one bit per slot, so [`Self::get_images_for_sink`] sizes them.
+	pub(crate) fn set_debug_slots_taken(&mut self, taken: u32) {
+		self.debug_slots_taken = taken;
 	}
 
 	/// Registers a per-frame history image for a sink, sized like [`Self::insert`] sizes images.
@@ -287,11 +339,19 @@ impl RenderTargets {
 		index: usize,
 		sink_extent: Extent,
 	) -> impl Iterator<Item = (ghi::BaseImageHandle, Extent)> {
+		let debug_slots_taken = self.debug_slots_taken;
 		let targets = self
 			.targets
 			.iter()
 			.filter(move |target| target.sink == index && !target.member)
-			.map(move |target| (target.image, sink_extent.scaled_down(target.resolution_divisor)));
+			.map(move |target| {
+				let extent = match target.debug_slot {
+					// A debug slot no view holds keeps the smallest image, so an idle pool costs almost nothing.
+					Some(slot) if debug_slots_taken & (1 << slot) == 0 => Extent::rectangle(1, 1),
+					_ => sink_extent.scaled_down(target.resolution_divisor),
+				};
+				(target.image, extent)
+			});
 		let histories = self
 			.histories
 			.iter()
@@ -410,6 +470,39 @@ mod tests {
 				.collect::<Vec<_>>(),
 			[(history.into(), Extent::rectangle(959, 540))]
 		);
+	}
+
+	#[test]
+	fn debug_pool_slots_follow_the_sink_extent_only_while_taken() {
+		let mut targets = RenderTargets::new();
+		let mut next = 10;
+		let mut build = |_: ghi::image::Builder<'_>| {
+			next += 1;
+			image_handle(next)
+		};
+		let pool = targets.debug_pool(0, 2, &mut build);
+		assert_eq!(pool.len(), 2);
+		// The pool is created once per sink.
+		assert_eq!(targets.debug_pool(0, 2, &mut build), pool);
+		assert_eq!(targets.get("Debug View 1", 0).map(|(image, _)| image), Some(pool[1].1));
+		let extent = Extent::rectangle(8, 4);
+
+		let extents = |targets: &RenderTargets| {
+			targets
+				.get_images_for_sink(0, extent)
+				.map(|(_, extent)| extent)
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(extents(&targets), [Extent::rectangle(1, 1), Extent::rectangle(1, 1)]);
+		targets.set_debug_slots_taken(0b10);
+		assert_eq!(extents(&targets), [Extent::rectangle(1, 1), extent]);
+		assert!(targets.holds_scene_output("Debug View 0", 0));
+	}
+
+	#[test]
+	fn the_debug_view_node_records_last() {
+		assert!(RenderNode::Presentation < RenderNode::DebugView);
+		assert!(RenderNode::Pass(usize::MAX) < RenderNode::Presentation);
 	}
 
 	#[test]

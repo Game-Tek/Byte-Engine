@@ -276,6 +276,34 @@
 				}
 			}
 		},
+		"/debug-views": {
+			"get": {
+				"operationId": "listDebugViews",
+				"summary": "List debug views",
+				"description": "Returns every debug view the render passes and scene pipelines declared, as `<pass>.<view>`, with the debug target slot each shown view holds, how many views can be shown at once, and whether this build has debug views. Show or hide a view with the `render.debug.view.<pass>.<view>` configuration parameter.",
+				"tags": ["Inspection"],
+				"responses": {
+					"200": {
+						"description": "The declared debug views and their state.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/DebugViews"
+								},
+								"example": {
+									"enabled": true,
+									"targets": 4,
+									"views": [
+										{ "name": "VisibilityPipelineManager.normals", "slot": 0 },
+										{ "name": "motion-blur.velocity", "slot": null }
+									]
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/screenshots": {
 			"get": {
 				"operationId": "captureScreenshot",
@@ -1138,6 +1166,40 @@
 				},
 				"minItems": 3,
 				"maxItems": 3
+			},
+			"DebugViews": {
+				"type": "object",
+				"required": ["enabled", "targets", "views"],
+				"properties": {
+					"enabled": {
+						"type": "boolean",
+						"description": "Whether this build can show debug views. A build without them refuses every `render.debug.view.*` parameter."
+					},
+					"targets": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many debug views can be shown at once: the size of each sink's debug target pool."
+					},
+					"views": {
+						"type": "array",
+						"description": "Every declared view, in registration order.",
+						"items": {
+							"type": "object",
+							"required": ["name", "slot"],
+							"properties": {
+								"name": {
+									"type": "string",
+									"description": "The view as `<pass>.<view>`, which `render.debug.view.` prefixes."
+								},
+								"slot": {
+									"type": ["integer", "null"],
+									"minimum": 0,
+									"description": "The debug target slot the view holds, which is also its cell in the tiled output, or `null` while it is hidden."
+								}
+							}
+						}
+					}
+				}
 			},
 			"ConfigurationEvent": {
 				"type": "object",

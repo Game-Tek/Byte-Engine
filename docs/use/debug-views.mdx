@@ -1,0 +1,73 @@
+---
+title: Show a debug view
+description: Show what a render pass computes, such as normals or motion vectors, tiled over the window while you debug.
+icon: Eye
+---
+
+Use a debug view when you want to see one of the values a render pass or scene pipeline computes, instead of the
+final image. Material evaluation shows its normals, albedo, roughness, metalness, occlusion, and the irradiance
+every light and the environment deliver; motion blur shows its velocity and blur length. A pass you write can declare its own; see
+[Debug views](/docs/develop/rendering/debug-views) in the Contribute section.
+
+Debug views exist in debug builds. A release build leaves them out unless the project's `config.json` sets
+`render.debug-views.enabled` to `true`, and then the project must be baked again.
+
+## List the views
+
+Start the application and ask the inspector which views it has:
+
+```bash
+curl http://127.0.0.1:6680/debug-views
+```
+
+Each view is named `<pass>.<view>`, where the pass is the render pass name or the scene pipeline manager's type
+name, such as `VisibilityPipelineManager.normals` or `motion-blur.velocity`. The response also says how many views
+can be shown at once, and whether the build has debug views at all.
+
+## Show a view
+
+Set the view's parameter to `true` at startup:
+
+```bash
+cargo run -- --render.debug.view.VisibilityPipelineManager.normals=true
+```
+
+Or set it while the application runs, from your application code, as you would any other `render.*` parameter.
+Set it to `false` to hide the view again:
+
+```rust
+app.configuration()
+    .update("render.debug.view.VisibilityPipelineManager.normals", "true");
+```
+
+`GET /configuration` on the inspector reports whether each request was applied, and why not when it was refused.
+
+Shown views tile over the window: one fills it, two sit side by side, up to four take a 2×2 grid, and up to nine a
+3×3 grid. Each keeps its cell while others come and go.
+
+## Show several views
+
+Every shown view takes one of a small pool of debug targets, four unless `render.debug.targets` says otherwise. When
+the pool is full, the next view is refused and `GET /configuration` reports why. Hide a view, or start the
+application with a larger pool:
+
+```bash
+cargo run -- --render.debug.targets=9 --render.debug.view.VisibilityPipelineManager.normals=true --render.debug.view.VisibilityPipelineManager.roughness=true
+```
+
+## Capture a view
+
+A debug target is a render target like any other, so a screenshot can read it directly, at full resolution and
+without the tiling. The slot a view holds is in the `/debug-views` listing:
+
+```bash
+curl "http://127.0.0.1:6680/screenshots?sink=0&target=Debug+View+0" --output normals.png
+```
+
+## Rust API
+
+- [`DebugViews`](/docs/api/latest/byte_engine/rendering/struct.DebugViews): what a pass that declares views keeps.
+- [`RenderPassBuilder::debug_views`](/docs/api/latest/byte_engine/rendering/struct.RenderPassBuilder): declares a
+  pass's views.
+- [`VisibilityFeatures`](/docs/api/latest/byte_engine/rendering/pipelines/visibility/struct.VisibilityFeatures):
+  builds debug views into a project or leaves them out.

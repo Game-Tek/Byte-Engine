@@ -14,8 +14,8 @@ use besl::parser::Node;
 use resource_management::asset::JsonObject;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 
-pub(crate) use self::ast::remove_conditionals_reading;
 use self::ast::*;
+pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading};
 use self::sources::*;
 use super::VisibilityFeatures;
 use super::layout::{
@@ -152,12 +152,14 @@ pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 			],
 		),
 		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` and
-		// `ssgi` are nonzero when those passes wrote their images this frame. The phase is the `transparent`
-		// specialization instead, so each phase's pipeline compiles only its own path.
+		// `ssgi` are nonzero when those passes wrote their images this frame. `debug_views` packs the debug views to
+		// write, as `DebugViews::shown` does. The phase is the `transparent` specialization instead, so each phase's
+		// pipeline compiles only its own path.
 		Node::push_constant(vec![
 			Node::member("evaluation_index", "u32"),
 			Node::member("gtao", "u32"),
 			Node::member("ssgi", "u32"),
+			Node::member("debug_views", "u32"),
 		]),
 	];
 

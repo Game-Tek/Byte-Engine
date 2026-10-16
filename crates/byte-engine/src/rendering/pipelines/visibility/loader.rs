@@ -602,13 +602,13 @@ impl VisibilityLoader {
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
 			))
 		})?;
-		// Material evaluation pushes three u32s: the evaluation index and the GTAO and SSGI flags.
+		// Material evaluation pushes four u32s: the evaluation index, the GTAO and SSGI flags, and the debug views.
 		let pipeline = self
 			.pipeline_manager
 			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
 				shader_id,
 				specialization,
-				vec![ghi::pipelines::PushConstantRange::new(0, 12)],
+				vec![ghi::pipelines::PushConstantRange::new(0, 16)],
 			));
 		Ok(VisibilityResident::Material(ResidentMaterial {
 			id,

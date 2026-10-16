@@ -29,6 +29,12 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return dot(v, v);
 	}
 
+	// The pool slot the `view`-th debug view of a pass writes this frame, as `DebugViews::shown` packs it: four bits
+	// per view, the slot number plus one, or 0 while the view is hidden. See the debug views design note.
+	debug_view_slot: fn (shown: u32, view: u32) -> u32 {
+		return (shown >> (4 * view)) & 15;
+	}
+
 	source_over: fn (source: vec4f, destination: vec4f) -> vec4f {
 		let inverse_alpha: f32 = 1.0 - source.w;
 		let source_rgb: vec3f = vec3f(source.x, source.y, source.z);

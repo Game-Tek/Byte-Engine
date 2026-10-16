@@ -1370,6 +1370,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
+		let debug_views = render_pass_builder.debug_views(&super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES);
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1390,6 +1391,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			&self.shadow_maps,
 			stage_counters,
 			self.settings.features,
+			debug_views,
 		);
 		context.write(
 			&self

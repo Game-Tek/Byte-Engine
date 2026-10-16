@@ -23,11 +23,15 @@ MotionBlurParameters: struct {
 	noise_offset: f32,
 	// The most taps one pixel gathers.
 	taps: u32,
+	// The debug views to write, as `DebugViews::shown` packs them: view 0 is the velocity, view 1 the blur length.
+	debug_views: u32,
 }
 
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 parameters: descriptor<{ type: MotionBlurParameters, binding: 2, access: read, memory: constant }>;
+// The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
+debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
 
 HALF_FLOAT_MAX: const f32 = 65504.0;
 // Below this blur length, in pixels, the shutter adds nothing the sampler can show, so the pixel passes through.
@@ -48,7 +52,20 @@ main: fn (input: StageInput) -> void {
 	let previous: vec4f = parameters.pixel_to_previous_pixel * vec4f(coordinate.x, coordinate.y, 1.0, 1.0);
 	let velocity: vec2f = center * parameters.texel.z - vec2f(previous.x, previous.y) * (1.0 / max(previous.w, MIN_PREVIOUS_W));
 	let squared_length: f32 = dot(velocity, velocity);
+	// The velocity view: the blur's share of the motion, in pixels over the longest blur, centered on mid gray.
+	if (debug_view_slot(parameters.debug_views, 0) != 0) {
+		let scaled_velocity: vec2f = velocity / max(parameters.texel.w, 1.0);
+		write(
+			debug_view_targets[debug_view_slot(parameters.debug_views, 0) - 1],
+			pixel,
+			vec4f(scaled_velocity.x * 0.5 + 0.5, scaled_velocity.y * 0.5 + 0.5, 0.5, 1.0)
+		);
+	}
 	if (previous.w <= MIN_PREVIOUS_W || squared_length < MIN_BLUR_LENGTH * MIN_BLUR_LENGTH) {
+		// A pixel left sharp has no blur length to show.
+		if (debug_view_slot(parameters.debug_views, 1) != 0) {
+			write(debug_view_targets[debug_view_slot(parameters.debug_views, 1) - 1], pixel, vec4f(0.0, 0.0, 0.0, 1.0));
+		}
 		write(result, pixel, scene);
 		return;
 	}
@@ -56,6 +73,15 @@ main: fn (input: StageInput) -> void {
 	// The blur, no longer than the radius, in UV, and one tap per pixel of it up to the configured count.
 	let inverse_length: f32 = inversesqrt(squared_length);
 	let length: f32 = min(squared_length * inverse_length, parameters.texel.w);
+	// The blur length view: how much of the longest blur this pixel gets, white at the full radius.
+	if (debug_view_slot(parameters.debug_views, 1) != 0) {
+		let blur_fraction: f32 = length / max(parameters.texel.w, 1.0);
+		write(
+			debug_view_targets[debug_view_slot(parameters.debug_views, 1) - 1],
+			pixel,
+			vec4f(blur_fraction, blur_fraction, blur_fraction, 1.0)
+		);
+	}
 	let texel_size: vec2f = vec2f(parameters.texel.x, parameters.texel.y);
 	let blur: vec2f = velocity * (length * inverse_length) * texel_size;
 	let taps: u32 = min(parameters.taps, u32(length) + 1);

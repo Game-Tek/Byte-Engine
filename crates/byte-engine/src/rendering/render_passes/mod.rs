@@ -6,6 +6,7 @@
 //! [`crate::application::graphics`].
 
 pub mod blit;
+pub(crate) mod debug_view;
 
 pub mod aces;
 pub mod agx;

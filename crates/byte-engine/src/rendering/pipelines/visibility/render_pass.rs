@@ -265,6 +265,8 @@ pub(crate) struct VisibilityRenderPass {
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
 	stage_counters: StageCounters,
+	/// Which material debug views to write this frame; see `MATERIAL_DEBUG_VIEWS`.
+	debug_views: crate::rendering::DebugViews,
 }
 
 impl VisibilityRenderPass {
@@ -285,6 +287,7 @@ impl VisibilityRenderPass {
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
+		debug_views: crate::rendering::DebugViews,
 	) -> Self {
 		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
 		// another, so evaluation is not an access that the next dispatch has to wait for.
@@ -362,7 +365,16 @@ impl VisibilityRenderPass {
 		let dispatch = set_layouts::MATERIAL_DISPATCH.binder(material_dispatch_descriptor_set);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
-		context.write(&[
+		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
+		let mut writes = debug_views
+			.targets()
+			.iter()
+			.enumerate()
+			.map(|(slot, image)| {
+				evaluation.image_element(crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING, *image, slot as u32)
+			})
+			.collect::<Vec<_>>();
+		writes.extend([
 			evaluation.image("lit_map", targets.lit),
 			evaluation.image("diffuse_radiance_map", targets.ssgi.diffuse_radiance_history),
 			evaluation.buffer("lighting_data", lighting_buffer),
@@ -392,6 +404,7 @@ impl VisibilityRenderPass {
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
+		context.write(&writes);
 
 		Self {
 			cascade_fit,
@@ -445,6 +458,7 @@ impl VisibilityRenderPass {
 			},
 			stage_counters,
 			pipeline_manager,
+			debug_views,
 		}
 	}
 
@@ -542,17 +556,20 @@ impl VisibilityRenderPass {
 			gtao: gtao.is_some(),
 			ssgi: ssgi.is_some(),
 		};
+		let debug_views = self.debug_views.shown();
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_evaluations,
 			&render_info.opaque_evaluation_mask,
 			VisibilityPhase::Opaque,
 			screen_space_lighting,
+			debug_views,
 		);
 		let transparent_materials = self.material_evaluation.prepare(
 			&render_info.transparent_evaluations,
 			&render_info.transparent_evaluation_mask,
 			VisibilityPhase::Transparent,
 			screen_space_lighting,
+			debug_views,
 		);
 		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this

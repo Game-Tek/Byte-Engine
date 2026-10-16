@@ -136,6 +136,8 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/messages/types") => message_types_response(inspector),
 		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
 		(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
+		#[cfg(feature = "headed")]
+		(&Method::GET, "/debug-views") => json_response(&inspector.debug_views()),
 		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
 		(&Method::GET, "/metrics/frames") => metrics_frames_response(inspector, request.uri().query()),
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
@@ -739,6 +741,18 @@ mod tests {
 		DefaultListener<Events>,
 		DefaultListener<TransformationUpdate>,
 	) {
+		test_inspector_with(configuration, None)
+	}
+
+	/// Builds the test inspector, connected to `debug_views` when one is given.
+	fn test_inspector_with(
+		configuration: Configuration,
+		debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
+	) -> (
+		EntityHandle<DefaultInspector>,
+		DefaultListener<Events>,
+		DefaultListener<TransformationUpdate>,
+	) {
 		let events = DefaultChannel::new();
 		let event_listener = events.listener();
 		let message_bus = MessageBus::default();
@@ -750,6 +764,9 @@ mod tests {
 		inspector
 			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
 			.expect("register reflected transformation update");
+		if let Some(debug_views) = debug_views {
+			inspector.set_debug_views(debug_views);
+		}
 		(EntityHandle::from(inspector), event_listener, transform_listener)
 	}
 
@@ -1334,6 +1351,17 @@ mod tests {
 		] {
 			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
 		}
+	}
+
+	#[test]
+	fn server_lists_debug_views() {
+		let catalog = Arc::new(crate::rendering::DebugViewCatalog::default());
+		let (inspector, _events, _transforms) = test_inspector_with(Configuration::new(), Some(Arc::clone(&catalog)));
+		let server = TestServer::new(inspector);
+
+		let body = server.get_json("/debug-views");
+		assert_eq!(body["enabled"], false);
+		assert_eq!(body["views"].as_array().map(Vec::len), Some(0));
 	}
 
 	#[test]

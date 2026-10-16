@@ -1,0 +1,337 @@
+---
+title: Debug views
+description: How a render pass shows its intermediate results on screen through a renderer-owned pool of debug targets, and how release bakes leave that code out.
+icon: Eye
+---
+
+Read this page before you add a debug view to a render pass or a scene pipeline, or before you change how the
+renderer shows one. A debug view is a visualization a pass can write, such as world normals, roughness, a shadow
+cascade index, or a motion vector, that the renderer shows next to or instead of the final image while someone asks
+for it. Several views can be shown at once, from one pass or from several.
+
+## Goals
+
+- **A small pool of targets, owned by the renderer.** Passes never allocate images for debug output. The renderer
+  keeps a capped pool of debug targets per sink and lends one slot to each shown view. When the pool is full, the
+  renderer refuses the next view and says so; memory never grows with the number of views that exist.
+- **A pass writes only the views that are shown.** Every other view costs the pass nothing on that frame. One pass
+  can show several of its views in the same dispatch.
+- **Selected at runtime, by name.** `render.debug.view.visibility.normals=true` through the inspector or startup
+  parameters, with no rebuild and no rebake.
+- **Gone from release bakes.** A project that leaves the feature out gets shaders without the branches, without the
+  debug bindings, and a renderer with no pool and no present step.
+- **Captured like any target.** Pool slots are named render targets, so the inspector's screenshot endpoint reads
+  them with the existing `target=` selector.
+
+## How it fits the renderer
+
+The design reuses three things the renderer already has, so it adds no new mechanism to the frame:
+
+| Existing mechanism | What it does for debug views |
+|---|---|
+| Named, sink-scoped render targets planned by node ([`RenderTargets`]) | Each pool slot is a named target, `Debug View 0` to `Debug View N-1`, written by the declaring nodes and read by one new node that presents them. |
+| Runtime parameters through a [`ConfigurationPort`] (`render.pass.<name>`, `render.motion-blur.taps`) | `render.debug.view.<pass>.<view>` shows or hides one view; each is its own event, so `GET /configuration` reports which views are on and why one was refused. |
+| Bake-time features that strip statements reading one member ([`VisibilityFeatures::remove_left_out_code`]) | A `debug-views` feature strips every statement that reads `debug_views`, and with it the descriptors only those statements use. |
+
+The frame of a sink becomes:
+
+```
+Scene(0..n)  →  Pass(0..m)  →  Presentation  →  DebugView
+```
+
+`DebugView` is a renderer-owned node after everything else, including the copy that presents scene color when no
+post-scene pass writes the swapchain. While views are shown it tiles their slots into the sink's swapchain, over
+whatever the frame drew. While none is shown it records nothing and costs nothing.
+
+The code lives in `rendering/debug_views.rs` (the handle, the registry, the catalog, and the configuration),
+`render_passes/debug_view.rs` (the tiling pass), and `assets/rendering/debug-view/present.besl`.
+
+## The Rust API
+
+### Declaring views from a pass
+
+A pass declares its views once, while it is built, through the builder it already gets its targets from:
+
+```rust
+pub struct DebugViews {
+	/// Every slot of the sink's pool, in slot order, to bind as the `debug_view_targets` array.
+	targets: SmallVec<[ghi::BaseImageHandle; MAX_DEBUG_TARGETS]>,
+	/// Packed slot numbers, four bits per view; see `shown`. Atomic, because render commands capture their pass.
+	shown: Arc<AtomicU32>,
+}
+
+impl DebugViews {
+	/// The pool, in slot order. Bind it where the shader declares `debug_view_targets`.
+	pub fn targets(&self) -> &[ghi::BaseImageHandle];
+
+	/// Which of this pass's views are shown this frame and in which slot, packed as the shader reads it: four
+	/// bits per view in declaration order, holding the slot number plus one, or `0` while the view is hidden.
+	/// Write it to the shader member named `debug_views`.
+	pub fn shown(&self) -> u32;
+
+	/// The pool slot `view` (an index into the declared list) writes this frame, or `None` while it is hidden.
+	/// For Rust-side work a view needs, such as an extra dispatch.
+	pub fn slot(&self, view: usize) -> Option<u32>;
+}
+
+impl<'a> RenderPassBuilder<'a> {
+	/// Declares the views this pass can show, at most eight, in the order the shader numbers them from `0`, and
+	/// returns the pool they write into.
+	///
+	/// Each view is selectable as `render.debug.view.<pass name>.<view name>`. The renderer records this pass as a
+	/// writer of every pool slot. When the project leaves debug views out, the result reports no view shown and the
+	/// targets are placeholders nothing reads.
+	pub fn debug_views(&mut self, views: &'static [&'static str]) -> DebugViews;
+}
+```
+
+`shown()` is one relaxed atomic read, so a pass calls it in `prepare` every frame and passes the number straight
+into its parameters buffer or push constant. The builder does not know the pass's name while the pass is built, so
+each instance gets its own cell and the renderer registers every instance's cell under [`RenderPass::name`], or
+the scene pipeline manager's name, once the pass exists; a selection writes every cell of that name, so one
+selection changes every window. Four bits per view bound the pool at 15 slots and a pass at 8 views per `u32`;
+both are far above what one screen can show.
+
+A post-scene pass:
+
+```rust
+let views = render_pass_builder.debug_views(&["velocity", "tap-count"]);
+let blur_pass = pipeline.bind(
+	"motion-blur",
+	&[
+		simple_compute::Resource::image("scene_texture", source),
+		simple_compute::Resource::image("result", output),
+		simple_compute::Resource::buffer("parameters", parameters),
+		simple_compute::Resource::image_array("debug_view_targets", views.targets()),
+	],
+);
+// in prepare:
+parameters.debug_views = self.views.shown();
+```
+
+A scene pipeline declares its views in `create_sink` the same way, because it builds its sink through the same
+[`RenderPassBuilder`]. The visibility pipeline's material evaluation declares normals, albedo, roughness,
+metalness, and occlusion from one table, `MATERIAL_DEBUG_VIEWS`, that both the declared names and the generated
+shader statements come from. Its views are selected under the manager's type name,
+`VisibilityPipelineManager`.
+
+### Selecting views
+
+The renderer owns the registry and the pool assignment:
+
+```rust
+pub(crate) struct DebugViewRegistry {
+	/// Every pass that declared views, with the cells its instances read.
+	passes: Vec<RegisteredPass>,
+	/// Which pass and view hold each pool slot, in slot order.
+	slots: SmallVec<[Option<(usize, usize)>; MAX_DEBUG_TARGETS]>,
+	/// Where the registry publishes its state for the inspector.
+	catalog: Arc<DebugViewCatalog>,
+}
+
+impl DebugViewRegistry {
+	/// Shows `view` of `pass` on every sink in the first free pool slot, or hides it and frees its slot.
+	///
+	/// `Ok(false)` when no pass of that name has registered yet, so the caller keeps the request. Refuses, with the
+	/// reason, when the pass declares no such view, when every slot is taken, or when the build has no debug views.
+	pub(crate) fn set_view(&mut self, pass: &str, view: &str, shown: bool) -> Result<bool, String>;
+
+	/// One bit per pool slot, set while a view holds it.
+	pub(crate) fn taken(&self) -> u32;
+}
+```
+
+`render.debug.view.<pass>.<view>` arrives on its own [`ConfigurationPort`], registered next to `render.pass.`.
+Its value is `true` or `false`, and the port answers `Set` with the value or `NotSet` with the reason: an unknown
+view of a known pass, no free debug target, or debug views left out of this build. A view of a pass that has not
+registered yet stays `Pending`, like a `render.pass.` state does, so a startup parameter can name a pass that a
+deferred sink creates later. Each view is its own parameter so a refused one leaves the others as they were.
+Startup parameters queue through the same port, so `render.debug.view.VisibilityPipelineManager.normals=true` on
+the command line shows the view from the first frame.
+
+The pool size is `render.debug.targets`, a startup parameter from `1` to `15`, default `4`. It is read when the
+renderer is created, so it does not change at runtime.
+
+The inspector serves one read-only route, `GET /debug-views`, from a [`DebugViewCatalog`] the renderer publishes to
+on every registration and selection: every declared view, its slot while shown, the pool size, and whether the
+build has the feature, so a tool can offer a picker without guessing names. Selecting goes through the existing
+`/configuration` route.
+
+### The pool and its memory
+
+The renderer creates the pool per sink on the first `debug_views` call for that sink, in [`RenderTargets`]:
+`render.debug.targets` images in the sink's color format ([`SCENE_COLOR_FORMAT`]), with
+`Storage | Image | TransferSource` uses, named `Debug View <slot>`. They are non-member targets, so they are sized
+on their own, not placed with the sink's image group:
+
+- A free slot is sized `1×1`. The renderer already resizes non-member targets every frame from
+  [`RenderTargets::get_images_for_sink`], so this adds a branch there and nothing else. An idle pool of four
+  costs four tiny images.
+- The frame a view takes a slot, that slot is resized to the sink extent. Views write it that frame; `DebugView`
+  presents it that frame. The slot goes back to `1×1` the frame after the view is hidden.
+
+Why not group members: a slot's lifetime would span from the first declaring node to `DebugView`, nearly the whole
+frame, so it would never share memory with anything and would cost a full sink-sized image even when idle.
+
+Descriptor sets that bind a slot follow it through resizes: the backend replaces a resized image's backing behind
+its handle and re-encodes every set that binds it, as it does for persistent and history targets.
+
+Slots hold the shown view's colors in display-ready form, `0..1`, and `DebugView` tiles them to the output without
+any transform. A view that wants scene-linear data on screen maps it itself, so a normal view writes `n * 0.5 + 0.5`
+and a depth view writes a curve, not raw reverse-Z.
+
+### Presenting
+
+`DebugView` is one compute pass, `debug-view/present.besl`, that reads the shown slots and writes the sink's
+swapchain in a grid: one view fills the screen, two sit side by side, three or four take a 2×2 grid, five to nine a
+3×3. Each cell averages the `side × side` block of slot texels that lands on each of its pixels, so a slot is
+always written at full resolution and the tiling never changes what a pass does. The slot order is the grid order,
+so a view keeps its cell while others come and go. The pass reads its parameters, the taken mask and the grid
+side, from a dynamic buffer the renderer fills each frame.
+
+## The shader side
+
+### One descriptor name and one helper
+
+Every view-writing shader declares the pool itself, under one name, as an arrayed storage image in the set it
+already has; a shared layout layer would be one more descriptor set for every pipeline that writes views:
+
+```besl
+debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
+```
+
+An arrayed binding takes `count` flat slots, so it goes past every other binding of the shader and of the layers it
+stacks on: `3..18` in motion blur, `1100..1115` in the material evaluation layer. The common shader scope declares
+the helper that unpacks a view's slot:
+
+```besl
+// The pool slot `view` (its position in the pass's declared list) writes this frame, or 0 while it is hidden;
+// the slot number is one more than the array index.
+debug_view_slot: fn (shown: u32, view: u32) -> u32 {
+	return (shown >> (4 * view)) & 15;
+}
+```
+
+Each pass adds a `debug_views: u32` member to the parameters struct or push constant it already has; the member's
+name is the contract the bake-time strip keys on. The Rust side binds the pool with
+`simple_compute::Resource::image_array("debug_view_targets", views.targets())`, or element by element through
+`SetBinder::image_element`, each element a `DescriptorWrite::image` with its array element. Only the slots the pool
+has are bound; a pass never indexes past `shown`'s slot numbers, so the rest of the array stays unwritten.
+
+The BESL VM indexes a storage-image array the way it indexes a sampled-texture array, so the VM tests of a pass
+with views keep running its shader.
+
+### Writing a view
+
+Every write is behind a conditional whose condition itself reads `debug_views`, through the helper. The view's
+number matches its position in the list the pass gave `debug_views`:
+
+```besl
+// The velocity view.
+if (debug_view_slot(parameters.debug_views, 0) != 0) {
+	write(
+		debug_view_targets[debug_view_slot(parameters.debug_views, 0) - 1],
+		pixel,
+		vec4f(scaled_velocity.x * 0.5 + 0.5, scaled_velocity.y * 0.5 + 0.5, 0.5, 1.0)
+	);
+}
+```
+
+Two shown views of one pass write in the same dispatch; nothing runs twice.
+
+The numbers are written on both sides on purpose, like specialization ids are. A test per hand-written pass asserts
+the shader numbers each view as the Rust list declares it: the pass's BESL is already `include_str!`-ed into its
+tests. Generated shaders take both from one table instead.
+
+Rules:
+
+- **Read `debug_views` in the condition, and only around writes to `debug_view_targets`.** The strip removes every
+  statement that reads the member, at any depth. A `let` that reads it goes too, and so would a conditional that
+  tests a local made from it, leaving the local undefined; so test the member itself.
+- **A sum a view needs over a loop lives in an ungated `let` and is added to inside gated branches**, as the
+  irradiance view does; a release bake keeps the dead local, which the platform compiler removes.
+- **Keep the view's arithmetic inside the branch.** The branch is a runtime flag, so its code stays in the
+  pipeline of a debug bake; see [Shader variants](/docs/develop/rendering/shader-variants) for why. Nothing
+  outside the branch should exist for the view's sake.
+- **Write the whole pixel of every shown view.** A slot is undefined where its view does not write.
+
+Generated shaders, such as material evaluation, emit the same branches from the generator's suffix, so the
+`VisibilityShaderGenerator` tests can assert a view is present in a debug bake and absent in a release one at the
+generator's seam.
+
+## Leaving it out of release
+
+Debug views are a bake-time feature alongside GTAO, SSGI, and contact shadows:
+
+- `VisibilityFeatures` gains `debug_views: bool`, read from `render.debug-views.enabled`. When the parameter is
+  absent it defaults to `cfg!(debug_assertions)`, so a plain debug build has views and a plain release build does
+  not, and a project's `config.json` can pin either.
+- A left-out feature strips every statement reading `debug_views` through the existing `remove_left_out_code`
+  path, which runs for every engine shader in the common generator. The `debug_view_targets` descriptor is then
+  unused and the backend drops it. `debug-view/present.besl` and its pipeline are excluded from the bake through
+  `excludes`.
+- The runtime reads the same features. With the feature off, `RenderPassBuilder::debug_views` creates no pool and
+  no registry entry and returns a handle whose `shown` is a shared always-zero cell; the renderer creates no
+  `DebugView` node; `render.debug.view.*` answers `NotSet` with the reason.
+
+The Rust side keeps no `#[cfg]`: what remains in a release build is one `Cell<u32>` read per pass per frame and a
+`u32` the shader never reads. A Cargo feature can hide even that later, but it would be a second switch to keep
+in step with the bake, for no measurable gain.
+
+A mismatched pair, a debug bake with a release runtime or the reverse, is harmless: the shaders either carry
+branches that never fire or the runtime selects a view that writes nothing and reports it as `Set`. The inspector's
+`/debug-views` route reports the runtime's feature state so the mismatch is visible.
+
+## What a change must keep true
+
+- A pass writes a pool slot only on frames one of its views holds it; a pass with no view shown costs no extra
+  dispatch, copy, or branch beyond the member reads.
+- A free slot is `1×1`; a taken slot is sink-sized.
+- The renderer refuses a view when no slot is free and leaves the shown ones untouched.
+- `DebugView` records nothing when no view is shown and never runs before every post-scene pass.
+- A release bake contains no conditional that reads `debug_views` and no `debug_view_targets` descriptor.
+- The Rust view list and the shader's constants agree, per pass.
+
+## Tests that guard them
+
+- `DebugViewRegistry`: showing a view takes the first free slot and packs it into that pass's cell; hiding frees
+  the slot and clears the bits; a full pool refuses with the reason and changes nothing; an unknown name refuses
+  with the known names; two views of one pass pack side by side.
+- `RenderTargets`: a slot follows the sink extent only while taken; `DebugView` sorts after every `Pass` and
+  before `Presentation`.
+- Per hand-written pass: the shader numbers each view as the Rust list declares it.
+- Generator seam: a bake with debug views reaches `debug_view_targets` from material evaluation and a bake without
+  them does not, and the program still lowers to the platform shader language. `present.besl` lexes and, in the
+  BESL VM, tiles two taken slots in slot order with black cells past the last view.
+- The BESL VM writes through an indexed storage-image array.
+- Configuration: `render.debug.view.<pass>.<view>` reports `Set` with the value and `NotSet` for an unknown view,
+  a full pool, and a build without the feature.
+
+## Alternatives considered
+
+- **One descriptor per view instead of an array, rebound on selection.** Rewrites descriptor sets while frames are
+  in flight and makes every pass carry as many bindings as it has views. The array keeps sets fixed after build.
+- **A shared layout layer for the pool.** One file would declare the name once, but a layer is a descriptor set,
+  and every pipeline that writes views would bind one more set. Declaring the pool by name in each shader costs
+  nothing at run time.
+- **Resizing slots in the tile instead of the blit.** Would make a pass's output depend on how many views are
+  shown; passes should not know about the grid.
+- **One parameter holding a list of views.** One event for several outcomes; a refused entry would have no state
+  of its own. One parameter per view fits the configuration port's `Set`/`NotSet` per event.
+- **Generated view constants instead of numbers on both sides.** Only generated shaders can receive them;
+  hand-written passes would still number by hand. One rule for both is simpler, and the per-pass test catches
+  drift.
+- **Specialization constants instead of a runtime member.** One pipeline per shown set, recompiled on each
+  selection, and a pipeline manager that would have to rebuild sets. The member reads are cheap and the strip
+  removes them from release anyway.
+- **A Cargo feature for the Rust side.** Covered above: a second switch for a `Cell` read.
+
+[`RenderTargets`]: /docs/api/latest/byte_engine/rendering/renderer/struct.RenderTargets
+[`RenderTargets::get_images_for_sink`]: /docs/api/latest/byte_engine/rendering/renderer/struct.RenderTargets
+[`ConfigurationPort`]: /docs/api/latest/byte_engine/configuration/struct.ConfigurationPort
+[`VisibilityFeatures::remove_left_out_code`]: /docs/api/latest/byte_engine/rendering/pipelines/visibility/struct.VisibilityFeatures
+[`RenderPassBuilder`]: /docs/api/latest/byte_engine/rendering/render_pass/struct.RenderPassBuilder
+[`RenderPass::name`]: /docs/api/latest/byte_engine/rendering/render_pass/trait.RenderPass
+[`RenderPassState`]: /docs/api/latest/byte_engine/rendering/render_pass/enum.RenderPassState
+[`SCENE_COLOR_FORMAT`]: /docs/api/latest/byte_engine/rendering/constant.SCENE_COLOR_FORMAT
+[`DebugViewCatalog`]: /docs/api/latest/byte_engine/rendering/struct.DebugViewCatalog

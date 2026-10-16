@@ -554,6 +554,38 @@ pub(super) fn resolve_texture_array_access(
 	Ok(Some((slot, count.get() as usize, right.clone(), value_type)))
 }
 
+/// Resolves one storage-image descriptor element, `images[index]`, using the binding's declared flat slot range.
+///
+/// Returns the binding, the array's first slot, its element count, and the index expression. The caller checks
+/// the access.
+pub(super) fn resolve_image_array_access(
+	expression: &NodeReference,
+) -> Result<Option<(NodeReference, ResourceSlot, usize, NodeReference)>, VmError> {
+	let borrowed = expression.borrow();
+	let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+		return Ok(None);
+	};
+	let Ok(binding) = extract_binding_reference(left) else {
+		return Ok(None);
+	};
+	let (slot, count) = match binding.borrow().node() {
+		Nodes::Binding {
+			slot,
+			r#type: BindingTypes::Image { .. },
+			count: Some(count),
+			..
+		} => (ResourceSlot::new(*slot), count.get()),
+		_ => return Ok(None),
+	};
+	slot.slot()
+		.checked_add(count - 1)
+		.ok_or_else(|| VmError::UnsupportedDescriptor {
+			slot,
+			message: "The descriptor array exceeds the flat resource slot range".to_string(),
+		})?;
+	Ok(Some((binding, slot, count as usize, right.clone())))
+}
+
 pub(super) fn accessor_references_output(expression: &NodeReference) -> bool {
 	let borrowed = expression.borrow();
 	match borrowed.node() {

@@ -79,3 +79,6 @@ cone_shadow_map: descriptor<{ type: Texture2DArray, binding: 1064, access: read 
 point_shadow_map: descriptor<{ type: TextureCubeArray, binding: 1065, access: read }>;
 light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1066, access: read, memory: device }>;
 light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1067, access: read, memory: constant }>;
+// The renderer's debug target pool, which the shown debug views of material evaluation write; see `debug_views.rs`.
+// An arrayed binding takes `count` flat slots, so it sits past every other binding of the stacked layers.
+debug_view_targets: descriptor<{ type: StorageImage, binding: 1100, access: write, count: 15 }>;

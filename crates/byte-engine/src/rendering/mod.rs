@@ -51,6 +51,7 @@ pub mod set_layout;
 pub mod renderer;
 
 #[doc(hidden)]
+pub mod debug_views;
 pub mod render_pass;
 #[doc(hidden)]
 pub mod render_passes;
@@ -72,6 +73,7 @@ pub mod csm;
 
 pub use camera::Camera;
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
+pub use debug_views::{DebugViewCatalog, DebugViews};
 pub use device::GraphicsDevice;
 pub use environment::Environment;
 pub use fog::{ExponentialHeightFog, FogLayer};

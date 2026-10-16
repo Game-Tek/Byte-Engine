@@ -1,6 +1,6 @@
 {
 	"title": "Use",
 	"description": "Make your application do something with Byte Engine, one task per page.",
-	"pages": ["index", "setup", "---Build---", "sample-project", "resources", "build", "---Systems---", "input", "lighting", "gui", "particles"],
+	"pages": ["index", "setup", "---Build---", "sample-project", "resources", "build", "---Systems---", "input", "lighting", "gui", "particles", "debug-views"],
 	"root": true
 }

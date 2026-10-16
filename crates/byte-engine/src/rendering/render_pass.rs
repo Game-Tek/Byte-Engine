@@ -13,13 +13,19 @@ pub mod simple_compute;
 use std::{
 	cell::{Cell, RefCell},
 	rc::Rc,
+	sync::{Arc, atomic::AtomicU32},
 };
 
 use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
 use utils::{Box, hash::HashMap};
 
-use crate::rendering::{Sink, render_passes::blit::ImageBypassPass, renderer::RenderTargets};
+use crate::rendering::{
+	Sink,
+	debug_views::{DebugViewSettings, DebugViews, MAX_VIEWS_PER_PASS},
+	render_passes::blit::ImageBypassPass,
+	renderer::RenderTargets,
+};
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording);
 
@@ -218,6 +224,10 @@ pub struct RenderPassBuilder<'a> {
 	main_copy: Option<ImageBypassPass>,
 	/// Every stage counter this node created, with the name the renderer reports it under.
 	gpu_counters: Vec<(String, ghi::CounterHandle)>,
+	/// Whether the build has debug views and how large each sink's pool is.
+	debug_view_settings: DebugViewSettings,
+	/// The views this node declared and the cell it reads its shown views from, for the renderer to register.
+	debug_views: Option<(&'static [&'static str], Arc<AtomicU32>)>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -237,6 +247,7 @@ impl<'a> RenderPassBuilder<'a> {
 		scene_background_factory: Option<&'a SceneBackgroundFactory>,
 		node: crate::rendering::renderer::RenderNode,
 		final_output: bool,
+		debug_view_settings: DebugViewSettings,
 	) -> Self {
 		RenderPassBuilder {
 			context,
@@ -254,7 +265,64 @@ impl<'a> RenderPassBuilder<'a> {
 			created_scene_backgrounds: Vec::new(),
 			main_copy: None,
 			gpu_counters: Vec::new(),
+			debug_view_settings,
+			debug_views: None,
 		}
+	}
+
+	/// Declares the debug views this pass can show, at most [`MAX_VIEWS_PER_PASS`], in the order the shader numbers
+	/// them from `0`, and returns the pool they write into.
+	///
+	/// Each view is selectable as `render.debug.view.<pass name>.<view name>`, where the pass name is
+	/// [`RenderPass::name`] or the scene pipeline manager's name. The renderer records this pass as a writer of every
+	/// pool slot. When the project leaves debug views out, the result reports no view shown and holds no targets.
+	/// Call it once per pass.
+	///
+	/// # Panics
+	///
+	/// Panics on a second call, on more than [`MAX_VIEWS_PER_PASS`] views, or on a view name with a dot.
+	pub fn debug_views(&mut self, views: &'static [&'static str]) -> DebugViews {
+		assert!(
+			self.debug_views.is_none(),
+			"Debug views were declared twice. The most likely cause is that a pass called `RenderPassBuilder::debug_views` more than once."
+		);
+		assert!(
+			views.len() <= MAX_VIEWS_PER_PASS,
+			"Too many debug views ({}). The most likely cause is a pass that declares more than {MAX_VIEWS_PER_PASS} views, which is all a `u32` packs.",
+			views.len()
+		);
+		assert!(
+			views.iter().all(|view| !view.is_empty() && !view.contains('.')),
+			"Debug view name is invalid ({views:?}). The most likely cause is an empty name or one with a dot, which separates the pass name in `render.debug.view.<pass>.<view>`."
+		);
+		let shown = Arc::new(AtomicU32::new(0));
+		self.debug_views = Some((views, shown.clone()));
+		if !self.debug_view_settings.enabled {
+			return DebugViews::disabled();
+		}
+		DebugViews::new(&self.debug_view_pool(ghi::AccessPolicies::WRITE), shown)
+	}
+
+	/// Returns the sink's debug target pool in slot order, creating it on first use, and records this node's
+	/// `access` to every slot. The renderer's pass that tiles the shown views reads it.
+	pub(crate) fn debug_view_pool(&mut self, access: ghi::AccessPolicies) -> SmallVec<[ghi::BaseImageHandle; 15]> {
+		let context = &mut *self.context;
+		let pool = self
+			.images
+			.debug_pool(self.sink_id, self.debug_view_settings.pool_size, |builder| {
+				context.build_image(builder).into()
+			});
+		pool.into_iter()
+			.map(|(index, image)| {
+				self.accesses.push((index, access));
+				image
+			})
+			.collect()
+	}
+
+	/// Hands the renderer the views this builder's pass declared, so it can register them under the pass's name.
+	pub(crate) fn take_debug_views(&mut self) -> Option<(&'static [&'static str], Arc<AtomicU32>)> {
+		self.debug_views.take()
 	}
 
 	/// Creates a GPU timing counter for one stage of this node's commands, which the inspector reports as

@@ -337,6 +337,9 @@ material_evaluation_suffix: fn () -> void {
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
 	let indirect_diffuse_radiance: vec3f = screen_space_irradiance
 		+ sample_environment_irradiance(vec3f(normal)) * (lighting_data.environment_intensity * environment_visibility);
+	// The irradiance debug view sums every light's irradiance onto the indirect one; nothing else reads the sum, so a
+	// bake without debug views drops it with the gated additions below.
+	let total_irradiance: vec3f = indirect_diffuse_radiance;
 	// The BRDF constants come after the screen-space reads above, so they are not live while those fetches wait.
 	// Preserve compact material values and normalized vectors through the BRDF.
 	// Positions, shadow projections, HDR radiance, and accumulation remain f32.
@@ -539,6 +542,10 @@ material_evaluation_suffix: fn () -> void {
 			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
 			specular = specular + vec3f(local_specular) * irradiance;
+			// View 5 of `MATERIAL_DEBUG_VIEWS`, the irradiance.
+			if (debug_view_slot(push_constant.debug_views, 5) != 0) {
+				total_irradiance = total_irradiance + irradiance;
+			}
 		}
 	}
 
@@ -605,6 +612,8 @@ material_evaluation_suffix: fn () -> void {
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
 	let lit: vec3f = (direct_and_diffuse + specular_weight * specular_radiance) * lighting_data.exposure;
+	// Only the irradiance debug view reads this; a bake without debug views leaves it dead.
+	let exposed_irradiance: vec3f = total_irradiance * lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
 	if (transparent) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));

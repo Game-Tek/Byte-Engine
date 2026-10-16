@@ -17,7 +17,8 @@ use crate::{
 	configuration::{ConfigurationPort, ConfigurationValue},
 	core::Entity,
 	rendering::{
-		Sink, View,
+		DebugViews, Sink, View,
+		debug_views::DEBUG_VIEW_TARGETS_BINDING,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
 		render_passes::blit::ImageBypassPass,
 	},
@@ -122,8 +123,13 @@ struct MotionBlurShaderData {
 	noise_offset: f32,
 	/// The most taps one pixel gathers.
 	taps: u32,
-	_padding: [u32; 2],
+	/// The debug views to write, as [`DebugViews::shown`] packs them; see [`MOTION_BLUR_DEBUG_VIEWS`].
+	debug_views: u32,
+	_padding: u32,
 }
+
+/// The debug views the pass declares, in the order `motion-blur.besl` numbers them from `0`.
+const MOTION_BLUR_DEBUG_VIEWS: [&str; 2] = ["velocity", "blur-length"];
 
 /// The `MotionBlurPass` struct creates a reusable camera motion blur stage for the HDR scene.
 ///
@@ -135,6 +141,8 @@ pub struct MotionBlurPass {
 	controls: Rc<MotionBlurControls>,
 	parameters: ghi::DynamicBufferHandle<MotionBlurShaderData>,
 	blur_pass: simple_compute::Pass,
+	/// Which debug views to write this frame.
+	debug_views: DebugViews,
 	/// Forwards `main` unchanged while there is nothing to blur from or the blur shader is still compiling.
 	main_copy: ImageBypassPass,
 	/// The view and extent of the frame drawn before this one, which the next frame's velocities start from.
@@ -163,6 +171,7 @@ impl MotionBlurPass {
 			render_pass_builder,
 			simple_compute::Descriptor::new("Motion Blur", "byte-engine/rendering/motion-blur.pipeline"),
 		);
+		let debug_views = render_pass_builder.debug_views(&MOTION_BLUR_DEBUG_VIEWS);
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -178,6 +187,7 @@ impl MotionBlurPass {
 				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
 				simple_compute::Resource::image("result", output),
 				simple_compute::Resource::buffer("parameters", parameters),
+				simple_compute::Resource::image_array(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets()),
 			],
 		);
 
@@ -185,6 +195,7 @@ impl MotionBlurPass {
 			controls,
 			parameters,
 			blur_pass,
+			debug_views,
 			main_copy,
 			previous: None,
 			frame: 0,
@@ -222,7 +233,7 @@ impl RenderPass for MotionBlurPass {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) =
-			motion_blur_shader_data(&settings, previous, sink, fraction, self.frame);
+			motion_blur_shader_data(&settings, previous, sink, fraction, self.frame, self.debug_views.shown());
 		Some(command)
 	}
 
@@ -252,13 +263,15 @@ fn shutter_fraction(shutter: MediaTime, frame_interval: MediaTime) -> f32 {
 	}
 }
 
-/// Builds one sink's blur constants for a frame that moves from `previous` to the sink's view.
+/// Builds one sink's blur constants for a frame that moves from `previous` to the sink's view, writing the debug
+/// views `debug_views` packs.
 fn motion_blur_shader_data(
 	settings: &MotionBlurPassSettings,
 	previous: View,
 	sink: &Sink,
 	fraction: f32,
 	frame: u32,
+	debug_views: u32,
 ) -> MotionBlurShaderData {
 	let extent = sink.extent();
 	let taps = settings.taps.clamp(1, MAX_TAPS);
@@ -273,7 +286,8 @@ fn motion_blur_shader_data(
 		// The noise shifts by this much per frame and repeats after 64 frames.
 		noise_offset: 5.588_238 * (frame % 64) as f32,
 		taps,
-		_padding: [0; 2],
+		debug_views,
+		_padding: 0,
 	}
 }
 
@@ -317,6 +331,21 @@ mod tests {
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
 	const MOTION_BLUR_BESL: &str = include_str!("../../../assets/rendering/motion-blur.besl");
+
+	/// The shader numbers each debug view as the Rust list declares it.
+	#[test]
+	fn debug_views_are_numbered_as_declared() {
+		for (view, _) in MOTION_BLUR_DEBUG_VIEWS.iter().enumerate() {
+			assert!(
+				MOTION_BLUR_BESL.contains(&format!("debug_view_slot(parameters.debug_views, {view})")),
+				"motion-blur.besl does not write debug view {view}"
+			);
+		}
+		assert!(!MOTION_BLUR_BESL.contains(&format!(
+			"debug_view_slot(parameters.debug_views, {})",
+			MOTION_BLUR_DEBUG_VIEWS.len()
+		)));
+	}
 	const FOV: f32 = 60.0;
 
 	/// A camera at the origin looking along `direction` with a square 60° view.
@@ -440,7 +469,7 @@ mod tests {
 		let width = texels.len() as u32;
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(MOTION_BLUR_BESL));
 		let sink = Sink::new(current, Extent::rectangle(width, 1), 0);
-		let data = motion_blur_shader_data(&MotionBlurPassSettings::default(), previous, &sink, fraction, 1);
+		let data = motion_blur_shader_data(&MotionBlurPassSettings::default(), previous, &sink, fraction, 1, 0);
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [

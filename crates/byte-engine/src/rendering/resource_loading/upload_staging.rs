@@ -14,7 +14,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 /// [`StagingLease`] with [`Self::allocate`], load or convert directly into its
 /// bytes, and hand the lease to the loader with the upload that reads it. The
 /// [`Loader`](crate::rendering::loading::Loader) drops the lease once the GPU
-/// finished the copy, and its region returns to [`UploadStagingWorker`] for
+/// finished the copy, and its region returns to `UploadStagingWorker` for
 /// coalescing and reuse.
 ///
 /// The arena owns raw access transferred from one GHI mapping, not the backing

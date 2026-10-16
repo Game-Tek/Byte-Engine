@@ -43,7 +43,7 @@ impl BaseApplication {
 	///
 	/// Parameters may be overridden by the project's `config.json`, then by `BE_*` environment variables, and then by
 	/// `--name=value` command-line arguments. In an environment variable's name, `_` stands for `-` and `__` for `.`,
-	/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. See [`parameters_from_json`] for the file's format.
+	/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. See [`parameters_from_json`](crate::application::parameters::parameters_from_json) for the file's format.
 	/// Applications are
 	/// singletons: this also installs the process logger and the `tracing` subscriber that feeds span times into
 	/// [`Self::metrics`].

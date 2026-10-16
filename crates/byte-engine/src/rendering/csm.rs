@@ -10,7 +10,7 @@ use super::view::View;
 ///
 /// Near cascades cover a short range at fine resolution and far ones a long range at coarse resolution. A logarithmic
 /// division keeps each cascade's resolution proportional to its distance but crowds the near cascades close to the
-/// camera; an even division spreads them out. Pass it to [`make_csm_views`] and [`make_cascade_split_ranges`].
+/// camera; an even division spreads them out. Pass it to [`make_csm_views`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CascadeSplits {
 	distance: f32,

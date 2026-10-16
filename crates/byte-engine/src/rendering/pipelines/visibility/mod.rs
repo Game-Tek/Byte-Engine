@@ -3,15 +3,17 @@
 //!
 //! Read the module in this order:
 //!
-//! * [`VisibilityFeatures`]: the optional features a project's `config.json` builds into its shaders.
-//! * [`manager`]: [`VisibilityPipelineManager`] owns the scene, adopts loaded resources, and prepares each frame.
-//! * [`scene`]: what the renderer retains between frames, and the per-frame instance lists it derives.
-//! * [`loader`]: the single loader object and request protocol that make every pipeline resource resident.
-//! * [`geometry`]: GPU geometry buffers and the worker-side conversion of meshes into them.
-//! * [`lod`]: which of a primitive's baked detail levels each instance draws.
-//! * [`render_pass`]: the per-sink GPU passes.
-//! * [`shader_generator`]: turns authored materials into material-evaluation compute shaders.
-//! * [`layout`] and [`shader_data`]: the binding slots, limits, and GPU records everything above shares.
+//! * `features`: [`VisibilityFeatures`], the optional features a project's `config.json` builds into its shaders.
+//! * `manager`: [`VisibilityPipelineManager`] owns the scene, adopts loaded resources, and prepares each frame.
+//! * `scene`: what the renderer retains between frames, and the per-frame instance lists it derives.
+//! * `loader`: the single loader object and request protocol that make every pipeline resource resident.
+//! * `geometry`: GPU geometry buffers, sized by [`GeometryCapacity`], and the worker-side conversion of meshes into
+//!   them.
+//! * `lod`: which of a primitive's baked detail levels each instance draws.
+//! * `render_pass`: the per-sink GPU passes.
+//! * `shader_generator`: [`VisibilityShaderGenerator`] turns authored materials into material-evaluation compute
+//!   shaders.
+//! * `layout` and `shader_data`: the binding slots, limits, and GPU records everything above shares.
 //!
 //! Application wiring lives in [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
 

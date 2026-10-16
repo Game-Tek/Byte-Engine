@@ -89,7 +89,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// [`defaults::launch_deferred_tasks_thread`] starts together with the
 /// application's [`Loader`](rendering::loading::Loader).
 ///
-/// Next, create an [`Environment`] through
+/// Next, create an [`Environment`](crate::rendering::Environment) through
 /// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory) to select the HDR image used for ambient and
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {

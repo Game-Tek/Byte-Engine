@@ -3,7 +3,7 @@
 /// The `PipelineRef` struct keeps a stable reference to a requested pipeline.
 ///
 /// The manager derives it from the resource ID passed to [`PipelineManagerClient::request_pipeline`], or from every
-/// input of a [`SpecializedComputePipelineRequest`]. Requests with equal inputs share one compiled pipeline.
+/// input of a `SpecializedComputePipelineRequest`. Requests with equal inputs share one compiled pipeline.
 ///
 /// Poll it with [`PipelineManagerClient::get`] during frame preparation. A
 /// compiled pipeline becomes visible only after the renderer publishes results

@@ -196,7 +196,7 @@ pub struct ElementSlot<'a, C: 'static = ()> {
 
 /// The `ElementContext` trait declares what fills an [`ElementSlot`]: an element, a component, or a mount.
 ///
-/// Each element declaration takes a [`Setup`] function that sets the new element's properties through [`Properties`],
+/// Each element declaration takes a [`Setup`] function that sets the new element's properties through [`Properties`](crate::ui::layout::engine::Properties),
 /// such as `|frame| frame.width(240.into()).clip(false)`, and returns a future. Await it: the engine creates the
 /// element in its tree and runs setup on it in place. Setup runs only when the declaration creates the element; an
 /// element that already exists keeps its properties. The future resolves to the element's own context, where you
@@ -215,7 +215,7 @@ pub trait ElementContext<C: 'static = ()> {
 	/// [`EvaluationContext::update_text`] once the application changed its string.
 	fn text_field(self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>>;
 
-	/// Declares a stroked curve. It starts full size with no segments; add them with [`Properties::line`] and the
+	/// Declares a stroked curve. It starts full size with no segments; add them with [`Properties::line`](crate::ui::layout::engine::Properties::line) and the
 	/// other segment setters.
 	fn curve(self, setup: impl Setup<Curve>) -> impl Future<Output = EvaluationContext<C>>;
 
@@ -233,7 +233,7 @@ pub trait ElementContext<C: 'static = ()> {
 		setup: impl Setup<Image>,
 	) -> impl Future<Output = EvaluationContext<C>>;
 
-	/// Declares a filled path. It starts full size with no contours; give it one with [`Properties::outline`] or the
+	/// Declares a filled path. It starts full size with no contours; give it one with [`Properties::outline`](crate::ui::layout::engine::Properties::outline) or the
 	/// segment setters.
 	fn path(self, setup: impl Setup<Path>) -> impl Future<Output = EvaluationContext<C>>;
 

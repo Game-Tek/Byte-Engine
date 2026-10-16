@@ -453,6 +453,12 @@ mod tests {
 	/// Packs a one-node clip that moves its root from the origin to `end` over `duration` seconds, authored at
 	/// [`TEST_FRAME_RATE`] frames per second.
 	pub(super) fn test_motion(name: &str, end: [f32; 3], duration: f32) -> PackedAnimationData {
+		test_motion_from(name, [0.0; 3], end, duration)
+	}
+
+	/// Packs a one-node clip that moves its root from `start` to `end` over `duration` seconds, authored at
+	/// [`TEST_FRAME_RATE`] frames per second.
+	pub(super) fn test_motion_from(name: &str, start: [f32; 3], end: [f32; 3], duration: f32) -> PackedAnimationData {
 		PackedAnimationData::from_resource(Animation {
 			name: Some(name.into()),
 			skeleton: Reference::in_memory("test.skeleton", test_skeleton()),
@@ -462,7 +468,10 @@ mod tests {
 				node: 0,
 				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, duration],
-					values: vec![math::Vector::zero(), math::Vector::new(end[0], end[1], end[2])],
+					values: vec![
+						math::Vector::new(start[0], start[1], start[2]),
+						math::Vector::new(end[0], end[1], end[2]),
+					],
 				}),
 				rotation: None,
 				scale: None,

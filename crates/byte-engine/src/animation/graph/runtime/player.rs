@@ -710,7 +710,9 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			return RootMotionDelta::IDENTITY;
 		};
 		let route = match &self.pending {
-			Some(pending) if !pending.wait.is_empty() => pending.duration.map(|duration| (pending.target, duration, pending.entry)),
+			Some(pending) if !pending.wait.is_empty() => {
+				pending.duration.map(|duration| (pending.target, duration, pending.entry))
+			}
 			_ => self
 				.graph
 				.select_transition(active.state, requested.state, true)
@@ -732,8 +734,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			self.pose.sample(&destination, destination.phase, pool, Sampled::Active);
 			self.pose.advance_active(&mut destination, leftover, pool)
 		} else {
-			self.pose
-				.begin_handover_blend(&mut destination, delta, leftover, blend, pool)
+			self.pose.begin_handover_blend(&mut destination, delta, leftover, blend, pool)
 		};
 
 		self.playback = match std::mem::replace(&mut self.playback, Playback::AwaitingInitial) {
@@ -922,6 +923,8 @@ impl PlayerPose {
 			self.root_delta(&transition.destination, destination_wrapped_loops, pool, Sampled::Destination);
 
 		let duration = transition.duration;
+		// How far this frame takes the blend, which starts from the poses this frame samples.
+		let mut blended = delta;
 		if duration == MediaTime::ZERO {
 			self.local_pose.copy_from_slice(&self.destination_current);
 		} else if delta == MediaTime::ZERO && !transition.begun {
@@ -941,13 +944,16 @@ impl PlayerPose {
 					)
 					.expect("player pose buffers must match the canonical skeleton");
 				transition.begun = true;
+				// The offsets are measured at the end of this frame, so the blend starts there: decaying them over
+				// this frame too would move the pose by a frame of decay in a single step.
+				blended = MediaTime::ZERO;
 			}
 			self.inertializer
-				.apply(&self.destination_current, delta, &mut self.local_pose)
+				.apply(&self.destination_current, blended, &mut self.local_pose)
 				.expect("player pose buffers must match the canonical skeleton");
 		}
 
-		transition.elapsed = (transition.elapsed + delta).min(duration);
+		transition.elapsed = (transition.elapsed + blended).min(duration);
 		let transition_factor = if duration == MediaTime::ZERO {
 			1.0
 		} else {
@@ -983,19 +989,33 @@ impl PlayerPose {
 		// The one-shot only moved until its end, so its last step spans the frame minus the leftover. Sampling the
 		// destination over the same span keeps both velocities comparable.
 		let interval = if delta > leftover { delta - leftover } else { delta };
-		// Measure the destination's velocity over a span ending where it plays to this frame, kept within one cycle:
-		// looping clips need not be continuous across their wrap in local space (the root travels), so a span across it
-		// would invent a huge velocity. The span then moves onto the pose the destination reaches, which the blend
-		// starts from.
+		// The source stopped at the hand-over moment, so the offset must compare it with the destination at that same
+		// moment, where it starts, not after it plays the leftover, or the destination's own travel would count as an
+		// offset. Spans of a clip are measured within one cycle: looping clips need not be continuous across their wrap
+		// in local space (the root travels), so a span across it would invent a huge jump. The starting pose is the one
+		// the destination reaches less its travel over the leftover, which keeps it continuous with that pose even when
+		// a loop wraps on the way, and the velocity span then moves onto it.
 		let start = destination.phase;
 		let duration = destination.duration();
-		let (earlier, later) = if duration > 0.0 {
-			let span = (interval.as_seconds_f32() / duration).min(1.0);
-			let later = (start + leftover.as_seconds_f32() / duration).clamp(span, 1.0);
-			(later - span, later)
-		} else {
-			(start, start)
+		let within_cycle = |time: MediaTime| {
+			if duration > 0.0 {
+				let span = (time.as_seconds_f32() / duration).min(1.0);
+				let later = (start + span).clamp(span, 1.0);
+				(later - span, later)
+			} else {
+				(start, start)
+			}
 		};
+		let wrapped_loops = destination.advance(leftover);
+		self.sample(destination, destination.phase, pool, Sampled::Destination);
+		// The loop buffers only serve root motion, which is measured below, so they hold spans until then.
+		let (earlier, later) = within_cycle(leftover);
+		sample_motion(destination, earlier, pool, &mut self.blend_poses, &mut self.loop_start);
+		sample_motion(destination, later, pool, &mut self.blend_poses, &mut self.loop_end);
+		for ((earlier, later), current) in self.loop_start.iter_mut().zip(&self.loop_end).zip(&self.destination_current) {
+			*earlier = shifted_sample(*earlier, *later, current);
+		}
+		let (earlier, later) = within_cycle(interval);
 		sample_motion(
 			destination,
 			earlier,
@@ -1003,31 +1023,29 @@ impl PlayerPose {
 			&mut self.blend_poses,
 			&mut self.destination_previous,
 		);
-		// The loop-end buffer only serves root motion, which is measured below, so it holds the span's end until then.
 		sample_motion(destination, later, pool, &mut self.blend_poses, &mut self.loop_end);
-		let wrapped_loops = destination.advance(leftover);
-		self.sample(destination, destination.phase, pool, Sampled::Destination);
-		for ((previous, later), current) in self
-			.destination_previous
-			.iter_mut()
-			.zip(&self.loop_end)
-			.zip(&self.destination_current)
-		{
-			*previous = shifted_sample(*previous, *later, current);
+		for ((previous, later), starting) in self.destination_previous.iter_mut().zip(&self.loop_end).zip(&self.loop_start) {
+			*previous = shifted_sample(*previous, *later, starting);
 		}
 		self.inertializer
 			.begin(
 				&self.active_previous,
 				&self.active_current,
 				&self.destination_previous,
-				&self.destination_current,
+				&self.loop_start,
 				interval,
 				blend,
 			)
 			.expect("player pose buffers must match the canonical skeleton");
 		// Root motion runs from where the destination starts, which replaces the earlier sample the inertializer no
 		// longer needs.
-		sample_motion(destination, start, pool, &mut self.blend_poses, &mut self.destination_previous);
+		sample_motion(
+			destination,
+			start,
+			pool,
+			&mut self.blend_poses,
+			&mut self.destination_previous,
+		);
 		let root_motion = self.root_delta(destination, wrapped_loops, pool, Sampled::Destination);
 
 		self.inertializer
@@ -1375,7 +1393,7 @@ mod tests {
 		},
 	};
 
-	use super::super::tests::{packed_test_animation_bytes, test_animation, test_motion};
+	use super::super::tests::{packed_test_animation_bytes, test_animation, test_motion, test_motion_from};
 	use super::*;
 	use crate::{MediaTime, animation::test_node};
 
@@ -1620,6 +1638,66 @@ mod tests {
 		let landed = ready(player.advance(MediaTime::from_millis(1100), idle.id(), &mut pool)).local_pose[0];
 		assert_eq!(player.state(), Some(idle.id()));
 		math::assert_float_eq!(landed.translation.x(), 0.3);
+	}
+
+	#[test]
+	fn one_shot_routes_start_from_the_pose_and_pace_of_their_source() {
+		// The walk moves at 3 m/s and wraps every second; the stop picks up where frame 5 of the walk is, at x = 1.5. A
+		// stop that keeps the walk's pace leaves the blend nothing to hide, so the pose must keep its pace across it. A
+		// slower stop leaves a difference in pace the blend takes up, which a 250 ms blend at 30 fps spreads over more
+		// than a frame; the waiting route used to count the stop's own travel as an offset and the plain one to decay
+		// its offset over the frame it was measured at.
+		for (stop_end, most) in [(3.0, 1e-3), (2.0, 0.06)] {
+			for waits in [true, false] {
+				let mut pool = pool_with(vec![
+					("idle.animation", test_animation("idle", 0.0)),
+					("walk.animation", test_animation("walk", 3.0)),
+					(
+						"stop.animation",
+						test_motion_from("stop", [1.5, 0.0, 0.0], [stop_end, 0.0, 0.0], 0.5),
+					),
+				]);
+				let builder = AnimationGraph::builder();
+				let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+				let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+				let route = walk.to(idle);
+				let route = if waits { route.at_frame(5) } else { route };
+				route
+					.with(AnimationClip::once("stop.animation"))
+					.exit(MediaTime::from_millis(250))
+					.anytime(MediaTime::from_millis(250));
+				let graph = builder.build(walk).expect("graph should build");
+				let mut player = pool.create_player(&graph, None);
+
+				let frame = MediaTime::from_seconds_f32(1.0 / 30.0);
+				ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+				// The waiting route is asked for early and reaches frame 5 partway through a frame; the plain one is asked
+				// for on the frame the walk reaches x = 1.5.
+				let (lead, request_at) = if waits {
+					(MediaTime::from_millis(380), 2)
+				} else {
+					(MediaTime::from_millis(500), 3)
+				};
+				ready(player.advance(lead - frame * 3, walk.id(), &mut pool));
+				let positions: Vec<f32> = (0..12)
+					.map(|index| {
+						let requested = if index >= request_at { idle.id() } else { walk.id() };
+						ready(player.advance(frame, requested, &mut pool)).local_pose[0]
+							.translation
+							.x()
+					})
+					.collect();
+				let jolt = positions
+					.windows(3)
+					.map(|window| (window[2] - 2.0 * window[1] + window[0]).abs())
+					.fold(0.0, f32::max);
+				assert!(
+					jolt < most,
+					"a {} route into a stop ending at {stop_end} changed pace by {jolt} m per frame: {positions:?}",
+					if waits { "waiting" } else { "plain" }
+				);
+			}
+		}
 	}
 
 	#[test]

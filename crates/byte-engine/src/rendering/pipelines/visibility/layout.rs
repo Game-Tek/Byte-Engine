@@ -63,8 +63,17 @@ pub(crate) const MAX_POINT_SHADOW_COUNT: usize = 16;
 /// One sun's cascades take 32 MiB of it at the default resolution, which leaves 96 MiB for local lights and other
 /// suns.
 pub(crate) const DEFAULT_SHADOW_MAP_BUDGET_MIB: u32 = 128;
-pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
-pub(crate) const POINT_SHADOW_MAP_RESOLUTION: u32 = 1024;
+/// Cone and point shadow maps come in power-of-two size classes, so a light's map changes size only when its projected
+/// size crosses a power of two. Class `c` holds maps of `MIN_LOCAL_SHADOW_MAP_RESOLUTION << c` texels per side, from
+/// 128 to 2048. Each kind keeps one image per class, which material evaluation binds as a descriptor array and indexes
+/// by the light's class. See [`super::shadow_selection::size_class_for_span`].
+pub(crate) const LOCAL_SHADOW_SIZE_CLASS_COUNT: usize = 5;
+pub(crate) const MIN_LOCAL_SHADOW_MAP_RESOLUTION: u32 = 128;
+
+/// Returns the texels per side of the cone maps and point cube faces of size class `size_class`.
+pub(crate) const fn local_shadow_map_resolution(size_class: usize) -> u32 {
+	MIN_LOCAL_SHADOW_MAP_RESOLUTION << size_class
+}
 /// Shadow maps use 16-bit depth to halve their memory. Directional cascades project orthographically, so their depth
 /// steps are even: each cascade's depth range over 65,535, a few millimeters at most, and finer than its texels.
 pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;

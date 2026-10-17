@@ -32,7 +32,7 @@ pub(super) mod tests {
 			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
 			crate::StoreOp::Store,
 		)
-		.layers(4);
+		.layers(0, 4);
 
 		AttachmentInformation::render_pass_layer_count(&[single, layered]);
 	}

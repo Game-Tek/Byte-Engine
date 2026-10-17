@@ -43,7 +43,7 @@ impl Drop for Context {
 				if !image.full_image_view.is_null() {
 					self.device.destroy_image_view(image.full_image_view, None);
 				}
-				for &vk_image_view in &image.image_views {
+				for &vk_image_view in image.image_views.iter().chain(&image.layer_suffix_views) {
 					self.device.destroy_image_view(vk_image_view, None);
 				}
 			}

@@ -355,15 +355,25 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				}
 				let layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
 				assert!(
-					layer_count <= surface.array_layers,
-					"Render-pass attachment layer count is out of bounds. The most likely cause is that layered rendering requested more layers than the target image provides. requested_layers={layer_count}, available_layers={}",
+					attachment.first_layer + layer_count <= surface.array_layers,
+					"Render-pass attachment layer range is out of bounds. The most likely cause is that layered rendering requested layers the target image does not provide. first_layer={}, requested_layers={layer_count}, available_layers={}",
+					attachment.first_layer,
 					surface.array_layers,
 				);
-				// A layer of an array image is rendered through a 2D view of that layer.
-				let view = attachment
-					.layer
-					.filter(|_| surface.array_layers > 1)
-					.map(|layer| texture_view_2d(&surface.texture, surface.format, 0, layer));
+				// A layer of an array image is rendered through a 2D view of that layer, and a layer range that does not start
+				// at the first layer through a 2D array view of that range.
+				let view = match attachment.layer {
+					Some(layer) if surface.array_layers > 1 => {
+						Some(texture_view_2d(&surface.texture, surface.format, 0, layer))
+					}
+					None if attachment.first_layer > 0 => Some(texture_view_2d_array(
+						&surface.texture,
+						surface.format,
+						attachment.first_layer,
+						layer_count,
+					)),
+					_ => None,
+				};
 				(attachment, surface, view)
 			})
 			.collect::<SmallVec<[_; 8]>>();

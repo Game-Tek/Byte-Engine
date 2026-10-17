@@ -313,12 +313,8 @@ impl Device {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn depth_stencil_view_array_range(
-		array_layers: u32,
-		layer: Option<u32>,
-		layer_count: u32,
-	) -> Option<(u32, u32)> {
-		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, layer, layer_count);
+	pub(crate) fn depth_stencil_view_array_range(array_layers: u32, first_layer: u32, layer_count: u32) -> Option<(u32, u32)> {
+		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, first_layer, layer_count);
 		if descriptor.ViewDimension != D3D12_DSV_DIMENSION_TEXTURE2DARRAY {
 			return None;
 		}

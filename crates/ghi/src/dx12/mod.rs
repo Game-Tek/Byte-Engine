@@ -1249,7 +1249,7 @@ void main() {
 			crate::LoadOp::Load,
 			crate::StoreOp::Store,
 		)
-		.layers(4)];
+		.layers(0, 4)];
 		device.begin_command_buffer(command_buffer, 0);
 		device.bind_render_targets_native(command_buffer, &layered_attachment, 0);
 
@@ -1257,10 +1257,16 @@ void main() {
 		assert_eq!(device.depth_stencil_view_count(), 1);
 		assert_eq!(device.render_target_view_allocation_count(), 1);
 		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_descriptor_count(), 8);
-		assert_eq!(Device::depth_stencil_view_array_range(4, None, 4), Some((0, 4)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, None, 3), Some((0, 3)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, Some(2), 1), Some((2, 1)));
+		// Every first layer and layer count of four layers: 4 + 3 + 2 + 1 ranges.
+		assert_eq!(device.depth_stencil_descriptor_count(), 10);
+		assert_eq!(Device::depth_stencil_view_array_range(4, 0, 4), Some((0, 4)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, 0, 3), Some((0, 3)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, 2, 1), Some((2, 1)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, 1, 2), Some((1, 2)));
+		for slot in 0..Device::attachment_descriptor_count(4) {
+			let (first_layer, layer_count) = Device::attachment_descriptor_layers(4, slot);
+			assert_eq!(Device::attachment_descriptor_slot(4, first_layer, layer_count), slot);
+		}
 	}
 
 	#[test]

@@ -7,6 +7,11 @@ CascadeViews: struct {
 	views: View[17],
 }
 
+// Four cascades for each of up to four suns.
+DrawnCascadeViews: struct {
+	views: View[16],
+}
+
 // Each cascade's size, as a step on the ladder offset by CASCADE_SIZE_STEP_OFFSET. It persists across frames.
 CascadeSizeSteps: struct {
 	steps: u32[16],
@@ -16,3 +21,6 @@ views: descriptor<{ type: CascadeViews, binding: 0, access: read_write, memory: 
 receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_write, memory: device }>;
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
 cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
+// The view each cascade was last drawn with, by fitted box. It persists across frames, and is read only for cascades
+// that hold a drawn map.
+drawn_views: descriptor<{ type: DrawnCascadeViews, binding: 1037, access: read_write, memory: device }>;

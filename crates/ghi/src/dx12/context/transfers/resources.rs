@@ -669,14 +669,15 @@ impl Device {
 		None
 	}
 
-	/// Creates an RTV description for one selected layer or a shader-selected layer prefix.
+	/// Creates an RTV description for `layer_count` layers from `first_layer`: one selected layer, or a shader-selected
+	/// layer range.
 	pub(crate) fn render_target_view_desc(
 		format: Formats,
 		array_layers: u32,
-		layer: Option<u32>,
+		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_RENDER_TARGET_VIEW_DESC {
-		Self::validate_attachment_layers(array_layers, layer, layer_count);
+		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
 		let format = Self::dxgi_format(format).expect(
 			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
 		);
@@ -691,8 +692,8 @@ impl Device {
 				D3D12_RENDER_TARGET_VIEW_DESC_0 {
 					Texture2DArray: D3D12_TEX2D_ARRAY_RTV {
 						MipSlice: 0,
-						FirstArraySlice: layer.unwrap_or(0),
-						ArraySize: layer.map_or(layer_count, |_| 1),
+						FirstArraySlice: first_layer,
+						ArraySize: layer_count,
 						PlaneSlice: 0,
 					},
 				}
@@ -707,14 +708,15 @@ impl Device {
 		}
 	}
 
-	/// Creates a DSV description for one selected layer or a shader-selected layer prefix.
+	/// Creates a DSV description for `layer_count` layers from `first_layer`: one selected layer, or a shader-selected
+	/// layer range.
 	pub(crate) fn depth_stencil_view_desc(
 		format: Formats,
 		array_layers: u32,
-		layer: Option<u32>,
+		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
-		Self::validate_attachment_layers(array_layers, layer, layer_count);
+		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
 		D3D12_DEPTH_STENCIL_VIEW_DESC {
 			Format: Self::dxgi_format(format).expect(
 				"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
@@ -729,8 +731,8 @@ impl Device {
 				D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
 					Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
 						MipSlice: 0,
-						FirstArraySlice: layer.unwrap_or(0),
-						ArraySize: layer.map_or(layer_count, |_| 1),
+						FirstArraySlice: first_layer,
+						ArraySize: layer_count,
 					},
 				}
 			} else {
@@ -741,65 +743,50 @@ impl Device {
 		}
 	}
 
-	/// Rejects attachment layers that cannot address the native image array.
-	pub(crate) fn validate_attachment_layer(array_layers: u32, layer: Option<u32>) {
+	/// Rejects attachment layer ranges that the native image array does not hold.
+	pub(crate) fn validate_attachment_layers(array_layers: u32, first_layer: u32, layer_count: u32) {
 		assert!(
-			array_layers > 0 && layer.is_none_or(|layer| layer < array_layers),
-			"Invalid DX12 attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
+			layer_count > 0 && first_layer.checked_add(layer_count).is_some_and(|end| end <= array_layers),
+			"Invalid DX12 attachment layer range. The most likely cause is that the render pass requested layers outside the image."
 		);
 	}
 
-	/// Rejects layered attachment declarations that exceed the native image view.
-	pub(crate) fn validate_attachment_layers(array_layers: u32, layer: Option<u32>, layer_count: u32) {
-		Self::validate_attachment_layer(array_layers, layer);
-
-		assert!(
-			layer_count > 0 && layer_count <= array_layers,
-			"Invalid DX12 attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
-		);
-		assert!(
-			layer.is_none() || layer_count == 1,
-			"Invalid layered DX12 attachment. The most likely cause is that the attachment selects both one layer and a layered range."
-		);
-	}
-
-	/// Returns the descriptors required for every layer prefix and every selectable layer.
+	/// Returns the descriptors required for every layer range of an image: one per first layer and layer count.
 	pub(crate) fn attachment_descriptor_count(array_layers: u32) -> u32 {
-		Self::validate_attachment_layer(array_layers, None);
-		if array_layers == 1 {
-			1
-		} else {
-			array_layers.checked_mul(2).expect(
-				"Invalid DX12 attachment layer count. The most likely cause is that the image layer count cannot fit in a descriptor heap.",
-			)
-		}
+		assert!(
+			array_layers > 0,
+			"Invalid DX12 attachment layer count. The most likely cause is an image without array layers."
+		);
+		array_layers.checked_mul(array_layers + 1).map(|count| count / 2).expect(
+			"Invalid DX12 attachment layer count. The most likely cause is that the image layer count cannot fit in a descriptor heap.",
+		)
 	}
 
-	/// Maps one attachment selection to its stable slot in the retained CPU descriptor heap.
-	pub(crate) fn attachment_descriptor_slot(array_layers: u32, layer: Option<u32>, layer_count: u32) -> u32 {
-		Self::validate_attachment_layers(array_layers, layer, layer_count);
-		if array_layers == 1 {
-			return 0;
-		}
-		match layer {
-			Some(layer) => array_layers + layer,
-			None => layer_count - 1,
-		}
+	/// Returns the first slot of the ranges that start at `first_layer`: the ranges of every earlier first layer come
+	/// before them, `array_layers - f` for first layer `f`.
+	fn attachment_descriptor_range_base(array_layers: u32, first_layer: u32) -> u32 {
+		first_layer * (2 * array_layers - first_layer + 1) / 2
 	}
 
-	/// Maps a retained CPU descriptor slot back to its layer selection.
-	pub(crate) fn attachment_descriptor_layers(array_layers: u32, slot: u32) -> (Option<u32>, u32) {
+	/// Maps one attachment's layer range to its stable slot in the retained CPU descriptor heap.
+	pub(crate) fn attachment_descriptor_slot(array_layers: u32, first_layer: u32, layer_count: u32) -> u32 {
+		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
+		Self::attachment_descriptor_range_base(array_layers, first_layer) + layer_count - 1
+	}
+
+	/// Maps a retained CPU descriptor slot back to its first layer and layer count.
+	pub(crate) fn attachment_descriptor_layers(array_layers: u32, slot: u32) -> (u32, u32) {
 		assert!(
 			slot < Self::attachment_descriptor_count(array_layers),
 			"Invalid DX12 attachment descriptor slot. The most likely cause is that attachment materialization exceeded its retained descriptor heap."
 		);
-		if array_layers == 1 {
-			(None, 1)
-		} else if slot < array_layers {
-			(None, slot + 1)
-		} else {
-			(Some(slot - array_layers), 1)
-		}
+		let first_layer = (0..array_layers)
+			.rfind(|first_layer| Self::attachment_descriptor_range_base(array_layers, *first_layer) <= slot)
+			.unwrap_or(0);
+		(
+			first_layer,
+			slot - Self::attachment_descriptor_range_base(array_layers, first_layer) + 1,
+		)
 	}
 
 	pub(crate) fn dxgi_resource_format(format: Formats, uses: Uses) -> Option<DXGI_FORMAT> {

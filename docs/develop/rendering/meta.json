@@ -4,6 +4,7 @@
 	"pages": [
 		"loading",
 		"lighting",
+		"visibility",
 		"shader-variants",
 		"debug-views"
 	]

@@ -1,0 +1,106 @@
+---
+title: Shadow maps
+description: Understand how the visibility pipeline selects, sizes, and updates shadow maps within its memory and update budgets before you change them.
+icon: Sun
+---
+
+Read this page before you change which lights get shadow maps, how large those
+maps are, or how often they're drawn. What an application can rely on is
+specified under [shadow maps](/docs/reference/rendering#shadow-maps) in the
+visibility pipeline reference.
+
+## Shadow maps share a budget
+
+Each selected point light renders six 90-degree views into a cube map of 16-bit
+depth faces, and each selected cone light renders one perspective view into a
+16-bit depth map. Every shadow map comes out of one budget,
+`render.shadow-maps.budget-mb`, 128 MiB by default: the sun's four cascades
+cost 32 MiB at 2,048 texels per side, and a cone or point light costs what its
+size class costs. The [shadow map reference](/docs/reference/rendering#shadow-maps) lists the
+classes and their costs.
+
+Selection runs with the first sink each frame. The first directional light is
+placed first, then cone and point lights ranked by their projected sink pixel
+coverage, then the remaining directional lights. A light that doesn't fit stays
+lit without shadows and warns once. The layout is kept across frames while it
+still fits, so lights don't flicker between shadowed and unshadowed as the
+ranking shifts. After an IES profile reaches the GPU, its dimmed calibrated
+peak candela feeds the same ranking and the automatic shadow coverage.
+
+## Local shadow maps come in size classes
+
+A cone or point light's map is only as large as the light looks. Selection
+projects each light's shadow range into every sink, keeps the largest diameter,
+and picks the power-of-two size class from 128 to 2,048 texels per side that
+gives about one texel per pixel. Powers of two keep a light's size from
+changing every frame, and the selection keeps each light's previous class, so a
+light shrinks only once it needs well under a smaller class. Without that
+margin, a light whose span hovers at a power of two would reallocate its map
+every frame.
+
+Each class has its own cone image and its own point image. Material evaluation
+binds them as the `cone_shadow_maps` and `point_shadow_maps` descriptor arrays
+and indexes them with the light's `shadow_size_class`. A light's `shadow_layer`
+is its layer within its class's image. Selection orders cone and point lights by
+class and then layer, so consecutive layers of a class have consecutive views.
+
+A change to the size classes must keep:
+
+- The class count and the smallest class's 128 texels, which `material-evaluation.besl`
+  and the point-shadow call in material evaluation spell out. A build guard in
+  `shader_generator.rs` fails when they drift.
+- Views in class and layer order, which the shadow pass relies on to draw a run
+  of layers in one pass.
+- The point-shadow filter's tap radius and face-edge margin scaled by the face
+  resolution, so every class filters across the same number of texels. The
+  shader generator tests check that face-coordinate and general taps agree at
+  every class.
+
+## Shadow maps update on a budget
+
+A map isn't drawn again every frame. The
+[shadow map updates](/docs/reference/rendering#shadow-map-updates) rules decide
+which maps draw, and three pieces carry them out:
+
+- **Slots.** `select_shadow_lights` takes last frame's `ShadowSlots` and keeps
+  each light at its layer while it stays in its class; a new map takes the
+  lowest free layer. Layers pack from zero only when the gaps would push the
+  images past the memory budget. A map's contents survive only while its layer
+  does, so anything that moves a light to another layer must start it over.
+- **States.** `ShadowMapStates` in `shadow_updates.rs` keeps, for every map,
+  the view it was drawn with and its age, and `schedule_updates` picks the maps
+  that fit the texel budget. The manager updates a copy each frame and keeps it
+  only once the first sink records the frame-wide work, so a frame that waits
+  on a compiling pipeline doesn't mark maps drawn that never drew.
+- **Views.** Every map that doesn't draw is sampled with the view it was drawn
+  with. The CPU writes those views for cone and point maps, and for cascades
+  under frustum fitting. Under receivers fitting the cascade fit pass does it on
+  the GPU: it fits only the cascades in the update mask, stores their fitted
+  views in its persistent `drawn_views` buffer, and copies the stored view back
+  for every other cascade. A cascade with no drawn map gets a projection that
+  puts every receiver outside it, so sun visibility falls back to a coarser
+  cascade.
+
+The shadow pass groups the frame's draws into runs of consecutive layers with
+consecutive views and draws each run in one layered render pass with
+`AttachmentInformation::layers(first_layer, layer_count)`. Only those layers
+are cleared, which is what keeps the other maps, and a task workgroup still
+culls each meshlet against up to six views of a run at once. Each backend
+starts the range at `first_layer`: Metal through a 2D array texture view of the
+range, Vulkan through a view that starts at that layer, and DX12 through a
+render-target or depth-stencil view of the range.
+
+A change to the updates must keep:
+
+- Cascades 0 and 1 of every sun drawing every frame, ahead of the budget.
+- A map's drawn view and its layer moving together: a map sampled with a view
+  other than the one it was drawn with shows shadows in the wrong place.
+- Only the drawn layers cleared in a run's render pass.
+- The cascade fit's masks and `drawn_views` in step with the CPU's states. The
+  VM test `cascades_that_do_not_draw_keep_their_drawn_view_in_the_besl_vm`
+  checks the shader's side, and the `shadow_updates` tests the scheduler and
+  states.
+
+## Rust API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering)

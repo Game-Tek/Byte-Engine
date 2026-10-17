@@ -2,18 +2,19 @@
 //!
 //! Every shadow-casting light draws its maps from one memory budget, [`ShadowBudget`]. The first directional light
 //! claims its cascades first. Cone and point lights then compete in one ranking by how many sink pixels their
-//! conservative bounds cover. Other directional lights take what remains. Next, size the shadow maps with
-//! [`retain_layout`] and render the views with [`super::render_pass::ShadowMaps::prepare`].
+//! conservative bounds cover. Other directional lights take what remains. Each cone and point light's map takes the
+//! power-of-two size class its bound's largest span over every sink needs, see [`size_class_for_span`]. Next, size the
+//! shadow maps with [`retain_layout`] and render the views with [`super::render_pass::ShadowMaps::prepare`].
 
 use ghi::Size as _;
 use maths_rs::Vec4f;
 use smallvec::SmallVec;
 
 use super::layout::{
-	CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
-	DIRECTIONAL_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_COUNT, MAX_DIRECTIONAL_SHADOW_COUNT, MAX_LIGHTS, MAX_POINT_SHADOW_COUNT,
-	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET,
-	SHADOW_CASCADE_COUNT,
+	CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT, DIRECTIONAL_SHADOW_VIEW_OFFSET,
+	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_CONE_SHADOW_COUNT, MAX_DIRECTIONAL_SHADOW_COUNT, MAX_LIGHTS, MAX_POINT_SHADOW_COUNT,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
+	local_shadow_map_resolution,
 };
 use crate::gameplay::Transform;
 use crate::rendering::lights::{ConeLight, Lights, LocalEmission, PointLight};
@@ -37,9 +38,10 @@ pub(crate) struct ShadowBudget {
 	pub(crate) bytes: u64,
 	/// One sun's cascades.
 	pub(crate) directional_bytes: u64,
-	pub(crate) cone_bytes: u64,
-	/// One point light's six cube faces.
-	pub(crate) point_bytes: u64,
+	/// One cone map of each size class.
+	pub(crate) cone_bytes: [u64; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+	/// One point light's six cube faces of each size class.
+	pub(crate) point_bytes: [u64; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 }
 
 impl ShadowBudget {
@@ -51,25 +53,55 @@ impl ShadowBudget {
 		Self {
 			bytes: u64::from(mebibytes) << 20,
 			directional_bytes: map_bytes(DIRECTIONAL_SHADOW_MAP_FORMAT, cascade_resolution) * SHADOW_CASCADE_COUNT as u64,
-			cone_bytes: map_bytes(CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION),
-			point_bytes: map_bytes(POINT_SHADOW_MAP_FORMAT, POINT_SHADOW_MAP_RESOLUTION) * POINT_SHADOW_FACE_COUNT as u64,
+			cone_bytes: std::array::from_fn(|size_class| {
+				map_bytes(CONE_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class))
+			}),
+			point_bytes: std::array::from_fn(|size_class| {
+				map_bytes(POINT_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class)) * POINT_SHADOW_FACE_COUNT as u64
+			}),
 		}
 	}
 
 	/// Returns the bytes the shadow maps of `layout` occupy.
 	pub(crate) fn cost(&self, layout: ShadowLayout) -> u64 {
+		let classes = |counts: [usize; LOCAL_SHADOW_SIZE_CLASS_COUNT], bytes: [u64; LOCAL_SHADOW_SIZE_CLASS_COUNT]| {
+			counts
+				.iter()
+				.zip(bytes)
+				.map(|(count, bytes)| *count as u64 * bytes)
+				.sum::<u64>()
+		};
 		layout.suns as u64 * self.directional_bytes
-			+ layout.cones as u64 * self.cone_bytes
-			+ layout.points as u64 * self.point_bytes
+			+ classes(layout.cones, self.cone_bytes)
+			+ classes(layout.points, self.point_bytes)
 	}
 }
 
-/// The `ShadowLayout` struct counts the lights of each kind that the shadow-map images hold maps for.
+/// The `ShadowLayout` struct counts the lights of each kind, and of each size class for cone and point lights, that the
+/// shadow-map images hold maps for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ShadowLayout {
 	pub(crate) suns: usize,
-	pub(crate) cones: usize,
-	pub(crate) points: usize,
+	pub(crate) cones: [usize; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+	pub(crate) points: [usize; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+}
+
+/// Returns the size class of a cone map or point cube face whose light spans `span` sink pixels at most, given the
+/// class it held last frame.
+///
+/// A light grows to the smallest class with at least one texel per pixel of its span at once. It shrinks only once its
+/// span falls below three quarters of a smaller class, so a span that hovers at a power of two does not resize its map
+/// every frame.
+pub(crate) fn size_class_for_span(span: f32, previous: Option<usize>) -> usize {
+	let needed = |span: f32| {
+		(0..LOCAL_SHADOW_SIZE_CLASS_COUNT)
+			.find(|&size_class| local_shadow_map_resolution(size_class) as f32 >= span)
+			.unwrap_or(LOCAL_SHADOW_SIZE_CLASS_COUNT - 1)
+	};
+	match previous {
+		Some(previous) if previous > needed(span) => needed(span * (4.0 / 3.0)).min(previous),
+		_ => needed(span),
+	}
 }
 
 /// Returns how many maps of each kind the shadow-map images keep this frame.
@@ -79,10 +111,13 @@ pub(crate) struct ShadowLayout {
 /// needs, which [`select_shadow_lights`] keeps within the budget. Memory therefore moves to another kind of light only
 /// when that kind needs it.
 pub(crate) fn retain_layout(previous: ShadowLayout, needed: ShadowLayout, budget: &ShadowBudget) -> ShadowLayout {
+	let classes = |previous: [usize; LOCAL_SHADOW_SIZE_CLASS_COUNT], needed: [usize; LOCAL_SHADOW_SIZE_CLASS_COUNT]| {
+		std::array::from_fn(|size_class| previous[size_class].max(needed[size_class]))
+	};
 	let retained = ShadowLayout {
 		suns: previous.suns.max(needed.suns),
-		cones: previous.cones.max(needed.cones),
-		points: previous.points.max(needed.points),
+		cones: classes(previous.cones, needed.cones),
+		points: classes(previous.points, needed.points),
 	};
 	if budget.cost(retained) <= budget.bytes {
 		retained
@@ -109,10 +144,62 @@ pub(crate) struct SunShadow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LightShadow {
 	None,
-	Directional { slot: u32 },
-	Cone { view_index: u32, layer: u32 },
-	Point { view_index: u32, cube_index: u32 },
+	Directional {
+		slot: u32,
+	},
+	/// `layer` is the light's layer of the cone image of its size class.
+	Cone {
+		view_index: u32,
+		size_class: u32,
+		layer: u32,
+	},
+	/// `cube_index` is the light's cube of the point image of its size class.
+	Point {
+		view_index: u32,
+		size_class: u32,
+		cube_index: u32,
+	},
 }
+
+/// The `LocalShadow` struct is one cone or point light that holds a shadow map this frame, and where that map lives.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LocalShadow<'a, L> {
+	/// The scene light index.
+	pub(crate) index: usize,
+	pub(crate) light: &'a L,
+	pub(crate) transform: &'a Transform,
+	pub(crate) size_class: usize,
+	/// The light's cone layer or point cube in the image of its size class. It stays the same while the light keeps
+	/// its map in that class, so a map that isn't drawn again keeps its contents.
+	pub(crate) layer: u32,
+	/// The most sink pixels the light's shadow range covers in any sink, which orders its map's updates.
+	pub(crate) importance: f32,
+}
+
+/// The `LocalShadowKind` enum tells a cone light's map from a point light's cube.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalShadowKind {
+	Cone,
+	Point,
+}
+
+/// The `ShadowSlot` struct is where one local light's map lived last frame. Pass last frame's slots, from
+/// [`ShadowLightSelection::slots`], to [`select_shadow_lights`], which keeps each light in its size class until its
+/// span falls well below it, and at its layer while it stays in that class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShadowSlot {
+	/// The scene light index.
+	pub(crate) index: usize,
+	pub(crate) kind: LocalShadowKind,
+	pub(crate) size_class: usize,
+	pub(crate) layer: u32,
+}
+
+/// Every local light's slot, sorted by scene light index.
+pub(crate) type ShadowSlots = SmallVec<[ShadowSlot; MAX_CONE_SHADOW_COUNT + MAX_POINT_SHADOW_COUNT]>;
+
+/// Marks a map whose layer is not assigned yet.
+const UNASSIGNED_LAYER: u32 = u32::MAX;
 
 /// The inline capacity of a frame's shadow assignments: the smallest size `SmallVec` supports that holds every sun and
 /// every local shadow.
@@ -125,10 +212,10 @@ const _: () =
 pub(crate) struct ShadowLightSelection<'a> {
 	/// Shadowed suns by sun slot.
 	pub(crate) suns: SmallVec<[SunShadow; MAX_DIRECTIONAL_SHADOW_COUNT]>,
-	/// Shadowed cones by shadow-map layer.
-	pub(crate) cones: SmallVec<[(usize, &'a ConeLight, &'a Transform); MAX_CONE_SHADOW_COUNT]>,
-	/// Shadowed points by cube index.
-	pub(crate) points: SmallVec<[(usize, &'a PointLight, &'a Transform); MAX_POINT_SHADOW_COUNT]>,
+	/// Shadowed cones in view order, ordered by size class and then layer.
+	pub(crate) cones: SmallVec<[LocalShadow<'a, ConeLight>; MAX_CONE_SHADOW_COUNT]>,
+	/// Shadowed points in view order, ordered by size class and then cube.
+	pub(crate) points: SmallVec<[LocalShadow<'a, PointLight>; MAX_POINT_SHADOW_COUNT]>,
 	/// Directional lights, and local lights some sink sees, that are lit but hold no shadow map this frame.
 	pub(crate) unshadowed_count: usize,
 	/// Every selected light's shadow, sorted by light index, so the lighting upload looks each light up once.
@@ -136,13 +223,34 @@ pub(crate) struct ShadowLightSelection<'a> {
 }
 
 impl ShadowLightSelection<'_> {
-	/// Returns how many maps of each kind this selection draws.
+	/// Returns how many maps of each kind and size class the images need for this selection: through the highest layer
+	/// each class uses.
 	pub(crate) fn layout(&self) -> ShadowLayout {
-		ShadowLayout {
+		let mut layout = ShadowLayout {
 			suns: self.suns.len(),
-			cones: self.cones.len(),
-			points: self.points.len(),
+			..ShadowLayout::default()
+		};
+		for cone in &self.cones {
+			let layers = &mut layout.cones[cone.size_class];
+			*layers = (*layers).max(cone.layer as usize + 1);
 		}
+		for point in &self.points {
+			let cubes = &mut layout.points[point.size_class];
+			*cubes = (*cubes).max(point.layer as usize + 1);
+		}
+		layout
+	}
+
+	/// Returns each shadowed local light's slot, for the next frame's [`select_shadow_lights`].
+	pub(crate) fn slots(&self) -> ShadowSlots {
+		let mut slots: ShadowSlots = self
+			.cones
+			.iter()
+			.map(|cone| slot_of(cone, LocalShadowKind::Cone))
+			.chain(self.points.iter().map(|point| slot_of(point, LocalShadowKind::Point)))
+			.collect();
+		slots.sort_unstable_by_key(|slot| slot.index);
+		slots
 	}
 
 	/// Returns the shadow assignment of the scene light at `light_index`.
@@ -152,33 +260,91 @@ impl ShadowLightSelection<'_> {
 			.map_or(LightShadow::None, |position| self.assignments[position].1)
 	}
 
-	/// Records every selected light's shadow in light order for [`Self::shadow_for`].
-	fn index_assignments(&mut self) {
-		let suns = self
+	/// Places every local light's map in its class's image, orders the lights by class and layer, and records every
+	/// selected light's shadow in light order for [`Self::shadow_for`].
+	///
+	/// A light keeps last frame's layer while it stays in the same class, and a new map takes its class's lowest free
+	/// layer. When the gaps that leaves would push the images past the memory budget, every class is packed from layer
+	/// zero instead.
+	fn index_assignments(&mut self, previous_slots: &[ShadowSlot], budget: &ShadowBudget) {
+		assign_layers(&mut self.cones, LocalShadowKind::Cone, previous_slots);
+		assign_layers(&mut self.points, LocalShadowKind::Point, previous_slots);
+		if budget.cost(self.layout()) > budget.bytes {
+			pack_layers(&mut self.cones);
+			pack_layers(&mut self.points);
+		}
+		self.cones.sort_unstable_by_key(|cone| (cone.size_class, cone.layer));
+		self.points.sort_unstable_by_key(|point| (point.size_class, point.layer));
+		let mut assignments: SmallVec<[(usize, LightShadow); SHADOW_ASSIGNMENTS_INLINE]> = self
 			.suns
 			.iter()
 			.enumerate()
-			.map(|(slot, sun)| (sun.index, LightShadow::Directional { slot: slot as u32 }));
-		let cones = self.cones.iter().enumerate().map(|(layer, (index, ..))| {
-			(
-				*index,
-				LightShadow::Cone {
-					view_index: (CONE_SHADOW_VIEW_OFFSET + layer) as u32,
-					layer: layer as u32,
-				},
-			)
-		});
-		let points = self.points.iter().enumerate().map(|(cube_index, (index, ..))| {
-			(
-				*index,
-				LightShadow::Point {
-					view_index: (POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT) as u32,
-					cube_index: cube_index as u32,
-				},
-			)
-		});
-		self.assignments = suns.chain(cones).chain(points).collect();
-		self.assignments.sort_unstable_by_key(|(index, _)| *index);
+			.map(|(slot, sun)| (sun.index, LightShadow::Directional { slot: slot as u32 }))
+			.collect();
+		for (position, cone) in self.cones.iter().enumerate() {
+			let shadow = LightShadow::Cone {
+				view_index: (CONE_SHADOW_VIEW_OFFSET + position) as u32,
+				size_class: cone.size_class as u32,
+				layer: cone.layer,
+			};
+			assignments.push((cone.index, shadow));
+		}
+		for (position, point) in self.points.iter().enumerate() {
+			let shadow = LightShadow::Point {
+				view_index: (POINT_SHADOW_VIEW_OFFSET + position * POINT_SHADOW_FACE_COUNT) as u32,
+				size_class: point.size_class as u32,
+				cube_index: point.layer,
+			};
+			assignments.push((point.index, shadow));
+		}
+		assignments.sort_unstable_by_key(|(index, _)| *index);
+		self.assignments = assignments;
+	}
+}
+
+/// Returns where a local light's map lives.
+pub(crate) fn slot_of<L>(map: &LocalShadow<'_, L>, kind: LocalShadowKind) -> ShadowSlot {
+	ShadowSlot {
+		index: map.index,
+		kind,
+		size_class: map.size_class,
+		layer: map.layer,
+	}
+}
+
+/// Gives every map of `kind` a layer in its class's image: last frame's layer when the light held a map of the same
+/// kind and class there, otherwise the class's lowest free layer.
+fn assign_layers<L>(maps: &mut [LocalShadow<'_, L>], kind: LocalShadowKind, previous_slots: &[ShadowSlot]) {
+	// One bit per layer; each kind holds at most 16 maps, so every layer fits in 32 bits.
+	const _: () = assert!(MAX_CONE_SHADOW_COUNT <= 32 && MAX_POINT_SHADOW_COUNT <= 32);
+	let mut taken = [0u32; LOCAL_SHADOW_SIZE_CLASS_COUNT];
+	for map in maps.iter_mut() {
+		map.layer = UNASSIGNED_LAYER;
+		let kept = previous_slots
+			.binary_search_by_key(&map.index, |slot| slot.index)
+			.ok()
+			.map(|position| previous_slots[position])
+			.filter(|slot| slot.kind == kind && slot.size_class == map.size_class)
+			.filter(|slot| taken[map.size_class] & (1 << slot.layer) == 0);
+		if let Some(slot) = kept {
+			taken[map.size_class] |= 1 << slot.layer;
+			map.layer = slot.layer;
+		}
+	}
+	for map in maps.iter_mut().filter(|map| map.layer == UNASSIGNED_LAYER) {
+		let layer = taken[map.size_class].trailing_ones();
+		taken[map.size_class] |= 1 << layer;
+		map.layer = layer;
+	}
+}
+
+/// Renumbers every class's maps from layer zero, keeping their order within the class.
+fn pack_layers<L>(maps: &mut [LocalShadow<'_, L>]) {
+	maps.sort_unstable_by_key(|map| (map.size_class, map.layer));
+	let mut next = [0u32; LOCAL_SHADOW_SIZE_CLASS_COUNT];
+	for map in maps {
+		map.layer = next[map.size_class];
+		next[map.size_class] += 1;
 	}
 }
 
@@ -266,6 +432,17 @@ pub(crate) fn make_point_shadow_view(
 	View::new_perspective_with_up(math::Degrees::new(90.0), 1.0, near, far, transform.position(), direction, up)
 }
 
+/// The `ShadowCoverage` struct is how much of one sink a local light's conservative bound covers, which ranks the light
+/// for a shadow map and sizes that map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ShadowCoverage {
+	/// The estimated number of sink pixels the bound covers, which ranks the light.
+	pub(crate) pixels: f32,
+	/// The texels per side the light's map needs to give the bound about one texel per sink pixel. See
+	/// [`size_class_for_span`].
+	pub(crate) span: f32,
+}
+
 /// Returns the estimated screen coverage of a cone-shadow candidate in one sink whose view has `frustum` planes.
 pub(crate) fn cone_shadow_importance(
 	light: &ConeLight,
@@ -273,7 +450,7 @@ pub(crate) fn cone_shadow_importance(
 	intensity_scale_candela: f32,
 	sink: &Sink,
 	frustum: &[math::Plane; 6],
-) -> Option<f32> {
+) -> Option<ShadowCoverage> {
 	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
 	let cosine = light.outer_angle.cos();
 	let enclosing_radius = far / (2.0 * cosine * cosine);
@@ -291,16 +468,23 @@ pub(crate) fn point_shadow_importance(
 	intensity_scale_candela: f32,
 	sink: &Sink,
 	frustum: &[math::Plane; 6],
-) -> Option<f32> {
+) -> Option<ShadowCoverage> {
 	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
-	shadow_view_importance(math::Sphere::new(transform.position(), far), sink, frustum)
+	let coverage = shadow_view_importance(math::Sphere::new(transform.position(), far), sink, frustum)?;
+	// Each cube face spans 90 degrees, so about two faces lie across the bound's diameter.
+	Some(ShadowCoverage {
+		span: coverage.span * 0.5,
+		..coverage
+	})
 }
 
-/// Returns the estimated number of sink pixels covered by a local light's conservative bound, or `None` when culled.
+/// Returns how much of a sink a local light's conservative bound covers, or `None` when culled.
 ///
-/// This projection is only a ranking proxy for assigning existing shadow views. It does not alter light
-/// culling, shadow-map dimensions, or a light's shadow projection.
-fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Plane; 6]) -> Option<f32> {
+/// The covered pixels rank the light for a shadow map. The span is the bound's projected diameter in sink pixels,
+/// including any part off screen, so a light partly in view keeps the texel density of its visible part. A bound that
+/// contains the camera covers the whole sink. This projection does not alter light culling or a light's shadow
+/// projection.
+fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Plane; 6]) -> Option<ShadowCoverage> {
 	let view = sink.view();
 	if !math::collision::sphere_in_frustum(&bounds, frustum) {
 		return None;
@@ -312,13 +496,18 @@ fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Pl
 	let center = bounds.center().into_maths();
 	let center_in_view = view.view() * Vec4f::new(center.x, center.y, center.z, 1.0);
 	let depth = center_in_view.z;
-	let pixel_count = sink.extent().width() as f32 * sink.extent().height() as f32;
+	let (width, height) = (sink.extent().width() as f32, sink.extent().height() as f32);
+	let pixel_count = width * height;
 	if !depth.is_finite() || !pixel_count.is_finite() {
 		return None;
 	}
+	let full_sink = ShadowCoverage {
+		pixels: pixel_count,
+		span: width.max(height),
+	};
 	// A bound containing the camera covers every ray in the view, so rank it as a full sink.
 	if depth <= radius {
-		return Some(pixel_count);
+		return Some(full_sink);
 	}
 	let projection = view.projection();
 	let clip_center = projection * center_in_view;
@@ -337,7 +526,7 @@ fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Pl
 		(radius * projection[0].abs(), radius * projection[5].abs())
 	};
 	if radius_x.is_infinite() || radius_y.is_infinite() {
-		return Some(pixel_count);
+		return Some(full_sink);
 	}
 	if !center_x.is_finite() || !center_y.is_finite() || !radius_x.is_finite() || !radius_y.is_finite() {
 		return None;
@@ -346,7 +535,12 @@ fn shadow_view_importance(bounds: math::Sphere, sink: &Sink, frustum: &[math::Pl
 	let covered_height = (center_y + radius_y).min(1.0) - (center_y - radius_y).max(-1.0);
 	let coverage = (covered_width * 0.5).max(0.0) * (covered_height * 0.5).max(0.0);
 	let importance = coverage * pixel_count;
-	importance.is_finite().then_some(importance)
+	// Normalized device coordinates span two units across the sink, so a radius of `r` units is `r` sink widths across.
+	let span = (radius_x * width).max(radius_y * height);
+	importance.is_finite().then_some(ShadowCoverage {
+		pixels: importance,
+		span: if span.is_finite() { span } else { full_sink.span },
+	})
 }
 
 /// A local light kind that competes for shadow-map memory.
@@ -362,6 +556,10 @@ struct Candidate<'a> {
 	index: usize,
 	light: LocalLight<'a>,
 	transform: &'a Transform,
+	/// The size class of the light's map, from its largest span over every sink that sees it.
+	size_class: usize,
+	/// The most pixels the light covers in any sink.
+	importance: f32,
 }
 
 /// The most ranks one sink keeps.
@@ -405,11 +603,16 @@ impl<'a> SinkRanking<'a> {
 /// The first directional light claims its cascades first. Cone and point lights then share one sink-fair ranking, and
 /// the other directional lights, in scene order, take the memory that remains. `intensity_scale_candela` returns the
 /// calibrated IES peak scale of the light at each index, or `1.0` for analytic lights.
+///
+/// Each cone and point light's map takes the size class its largest span over every sink needs, and costs the budget
+/// that class's bytes. `previous_slots` is last frame's [`ShadowLightSelection::slots`], which keeps a shrinking light in
+/// its class until its span falls well below it, and each light at its layer while it stays in its class.
 pub(crate) fn select_shadow_lights<'a>(
 	lights: impl Iterator<Item = (&'a Lights, &'a Transform)>,
 	sinks: &[Sink],
 	budget: &ShadowBudget,
 	intensity_scale_candela: impl Fn(usize) -> f32,
+	previous_slots: &[ShadowSlot],
 ) -> ShadowLightSelection<'a> {
 	let mut selection = ShadowLightSelection::default();
 	if sinks.is_empty() {
@@ -430,7 +633,17 @@ pub(crate) fn select_shadow_lights<'a>(
 
 	for (index, (light, transform)) in lights.take(MAX_LIGHTS).enumerate() {
 		let scale = intensity_scale_candela(index);
-		let candidate = |light| Candidate { index, light, transform };
+		let previous_size_class = previous_slots
+			.binary_search_by_key(&index, |slot| slot.index)
+			.ok()
+			.map(|position| previous_slots[position].size_class);
+		let candidate = |light, span, importance| Candidate {
+			index,
+			light,
+			transform,
+			size_class: size_class_for_span(span, previous_size_class),
+			importance,
+		};
 		let ranked = match light {
 			Lights::Direction(light) => {
 				shadow_casters += 1;
@@ -447,14 +660,14 @@ pub(crate) fn select_shadow_lights<'a>(
 				&mut rankings,
 				sinks,
 				&mut frusta,
-				candidate(LocalLight::Cone(light)),
+				|span, importance| candidate(LocalLight::Cone(light), span, importance),
 				|sink, frustum| cone_shadow_importance(light, transform, scale, sink, frustum),
 			),
 			Lights::Point(light) if has_brightness(&light.emission, scale) => rank(
 				&mut rankings,
 				sinks,
 				&mut frusta,
-				candidate(LocalLight::Point(light)),
+				|span, importance| candidate(LocalLight::Point(light), span, importance),
 				|sink, frustum| point_shadow_importance(light, transform, scale, sink, frustum),
 			),
 			_ => false,
@@ -477,29 +690,39 @@ pub(crate) fn select_shadow_lights<'a>(
 		}
 	}
 	selection.unshadowed_count = shadow_casters - selection.suns.len() - selection.cones.len() - selection.points.len();
-	selection.index_assignments();
+	selection.index_assignments(previous_slots, budget);
 	selection
 }
 
 /// Ranks one candidate for every sink that sees it, and returns whether any sink does.
 ///
-/// `frusta` caches each sink's frustum planes, extracted the first time any candidate needs them.
+/// `candidate` builds the candidate from its largest span over every sink, which sizes its map, and the most pixels it
+/// covers in any sink. `frusta` caches each
+/// sink's frustum planes, extracted the first time any candidate needs them.
 fn rank<'a>(
 	rankings: &mut [SinkRanking<'a>],
 	sinks: &[Sink],
 	frusta: &mut [Option<[math::Plane; 6]>],
-	candidate: Candidate<'a>,
-	importance: impl Fn(&Sink, &[math::Plane; 6]) -> Option<f32>,
+	candidate: impl FnOnce(f32, f32) -> Candidate<'a>,
+	importance: impl Fn(&Sink, &[math::Plane; 6]) -> Option<ShadowCoverage>,
 ) -> bool {
-	let mut visible = false;
-	for ((ranking, sink), frustum) in rankings.iter_mut().zip(sinks).zip(frusta) {
-		let frustum = frustum.get_or_insert_with(|| sink.view().get_frustum_planes());
-		if let Some(importance) = importance(sink, frustum) {
-			ranking.insert(importance, candidate);
-			visible = true;
+	// Four sinks stay inline, matching the rankings.
+	let coverages = sinks
+		.iter()
+		.zip(frusta)
+		.map(|(sink, frustum)| importance(sink, frustum.get_or_insert_with(|| sink.view().get_frustum_planes())))
+		.collect::<SmallVec<[Option<ShadowCoverage>; 4]>>();
+	let Some(span) = coverages.iter().flatten().map(|coverage| coverage.span).reduce(f32::max) else {
+		return false;
+	};
+	let importance = coverages.iter().flatten().map(|coverage| coverage.pixels).fold(0.0, f32::max);
+	let candidate = candidate(span, importance);
+	for (ranking, coverage) in rankings.iter_mut().zip(coverages) {
+		if let Some(coverage) = coverage {
+			ranking.insert(coverage.pixels, candidate);
 		}
 	}
-	visible
+	true
 }
 
 /// Assigns local shadow maps in sink-priority rounds so no sink can starve another, while `remaining` bytes last.
@@ -518,22 +741,42 @@ fn select_fair<'a>(
 			let Some((_, candidate)) = ranking.candidates.get(priority) else {
 				continue;
 			};
-			let Candidate { index, light, transform } = *candidate;
+			let Candidate {
+				index,
+				light,
+				transform,
+				size_class,
+				importance,
+			} = *candidate;
 			match light {
 				LocalLight::Cone(light) => {
 					if !holds_map(&selection.cones, index)
 						&& selection.cones.len() < MAX_CONE_SHADOW_COUNT
-						&& claim(remaining, budget.cone_bytes)
+						&& claim(remaining, budget.cone_bytes[size_class])
 					{
-						selection.cones.push((index, light, transform));
+						selection.cones.push(LocalShadow {
+							index,
+							light,
+							transform,
+							size_class,
+							layer: UNASSIGNED_LAYER,
+							importance,
+						});
 					}
 				}
 				LocalLight::Point(light) => {
 					if !holds_map(&selection.points, index)
 						&& selection.points.len() < MAX_POINT_SHADOW_COUNT
-						&& claim(remaining, budget.point_bytes)
+						&& claim(remaining, budget.point_bytes[size_class])
 					{
-						selection.points.push((index, light, transform));
+						selection.points.push(LocalShadow {
+							index,
+							light,
+							transform,
+							size_class,
+							layer: UNASSIGNED_LAYER,
+							importance,
+						});
 					}
 				}
 			}
@@ -542,8 +785,8 @@ fn select_fair<'a>(
 }
 
 /// Returns whether the scene light at `index` already holds one of `maps`.
-fn holds_map<T>(maps: &[(usize, T, &Transform)], index: usize) -> bool {
-	maps.iter().any(|(selected, ..)| *selected == index)
+fn holds_map<L>(maps: &[LocalShadow<'_, L>], index: usize) -> bool {
+	maps.iter().any(|map| map.index == index)
 }
 
 /// Takes `cost` bytes from `remaining` and returns whether they fit.
@@ -564,14 +807,26 @@ mod tests {
 	use super::*;
 	use crate::rendering::lights::{DirectionalLight, LightColor, PhotometricIntensity};
 
-	/// Prices a sun at eight units, a cone at one, and a point at six, so tests state budgets in those units.
+	/// Prices a sun at eight units, a cone at one, and a point at six in every size class, so tests state budgets in
+	/// those units.
 	fn budget(bytes: u64) -> ShadowBudget {
 		ShadowBudget {
 			bytes,
 			directional_bytes: 8,
-			cone_bytes: 1,
-			point_bytes: 6,
+			cone_bytes: [1; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+			point_bytes: [6; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 		}
+	}
+
+	/// Returns a layout of `suns` suns and `cones` cones and `points` points of the smallest size class.
+	fn smallest_class_layout(suns: usize, cones: usize, points: usize) -> ShadowLayout {
+		let mut layout = ShadowLayout {
+			suns,
+			..ShadowLayout::default()
+		};
+		layout.cones[0] = cones;
+		layout.points[0] = points;
+		layout
 	}
 
 	fn cone() -> ConeLight {
@@ -620,9 +875,13 @@ mod tests {
 	}
 
 	fn sink(position: Point) -> Sink {
+		sized_sink(position, 1)
+	}
+
+	fn sized_sink(position: Point, pixels: u32) -> Sink {
 		Sink::new(
 			View::new_perspective(math::Degrees::new(90.0), 1.0, 0.1, 100.0, position, UnitVector::z_axis()),
-			Extent::square(1),
+			Extent::square(pixels),
 			0,
 		)
 	}
@@ -633,7 +892,7 @@ mod tests {
 		sinks: &[Sink],
 		budget: ShadowBudget,
 	) -> ShadowLightSelection<'a> {
-		select_shadow_lights(lights.iter().zip(transforms), sinks, &budget, |_| 1.0)
+		select_shadow_lights(lights.iter().zip(transforms), sinks, &budget, |_| 1.0, &[])
 	}
 
 	fn sun_indices(selection: &ShadowLightSelection<'_>) -> Vec<usize> {
@@ -641,11 +900,11 @@ mod tests {
 	}
 
 	fn cone_indices(selection: &ShadowLightSelection<'_>) -> Vec<usize> {
-		selection.cones.iter().map(|(index, ..)| *index).collect()
+		selection.cones.iter().map(|cone| cone.index).collect()
 	}
 
 	fn point_indices(selection: &ShadowLightSelection<'_>) -> Vec<usize> {
-		selection.points.iter().map(|(index, ..)| *index).collect()
+		selection.points.iter().map(|point| point.index).collect()
 	}
 
 	#[test]
@@ -693,6 +952,7 @@ mod tests {
 			selection.shadow_for(4),
 			LightShadow::Cone {
 				view_index: CONE_SHADOW_VIEW_OFFSET as u32 + 1,
+				size_class: 0,
 				layer: 1
 			}
 		);
@@ -700,6 +960,7 @@ mod tests {
 			selection.shadow_for(2),
 			LightShadow::Point {
 				view_index: POINT_SHADOW_VIEW_OFFSET as u32,
+				size_class: 0,
 				cube_index: 0
 			}
 		);
@@ -768,16 +1029,9 @@ mod tests {
 
 	#[test]
 	fn retained_layout_keeps_maps_while_they_fit_and_shrinks_to_the_frame_when_not() {
-		let previous = ShadowLayout {
-			suns: 1,
-			cones: 4,
-			points: 0,
-		};
-		let fewer_cones = ShadowLayout { cones: 1, ..previous };
-		let one_point = ShadowLayout {
-			points: 1,
-			..fewer_cones
-		};
+		let previous = smallest_class_layout(1, 4, 0);
+		let fewer_cones = smallest_class_layout(1, 1, 0);
+		let one_point = smallest_class_layout(1, 1, 1);
 
 		assert_eq!(retain_layout(previous, fewer_cones, &budget(8 + 4)), previous);
 		assert_eq!(retain_layout(previous, one_point, &budget(8 + 1 + 6)), one_point);
@@ -865,7 +1119,7 @@ mod tests {
 		let sinks = [sink(Point::origin())];
 
 		let fallback = select(&lights, &transforms, &sinks, budget(6));
-		let resident = select_shadow_lights(lights.iter().zip(&transforms), &sinks, &budget(6), |_| 90.0);
+		let resident = select_shadow_lights(lights.iter().zip(&transforms), &sinks, &budget(6), |_| 90.0, &[]);
 		let (_, fallback_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let (_, resident_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 90.0);
 
@@ -873,6 +1127,140 @@ mod tests {
 		assert_eq!(fallback.unshadowed_count, 0);
 		assert_eq!(point_indices(&resident), [0]);
 		assert!((resident_far / fallback_far - 90.0_f32.sqrt()).abs() < 0.0001);
+	}
+
+	#[test]
+	fn size_classes_snap_spans_up_to_powers_of_two_within_the_class_range() {
+		assert_eq!(size_class_for_span(0.0, None), 0);
+		assert_eq!(size_class_for_span(128.0, None), 0);
+		assert_eq!(size_class_for_span(129.0, None), 1);
+		assert_eq!(size_class_for_span(1000.0, None), 3);
+		assert_eq!(size_class_for_span(100_000.0, None), LOCAL_SHADOW_SIZE_CLASS_COUNT - 1);
+	}
+
+	#[test]
+	fn size_classes_grow_at_once_and_shrink_only_well_below_a_smaller_class() {
+		// 1024 texels held: a span just under 512 still keeps them, and one under three quarters of 512 drops to 512.
+		assert_eq!(size_class_for_span(500.0, Some(3)), 3);
+		assert_eq!(size_class_for_span(383.0, Some(3)), 2);
+		// A span far below drops straight to the class it needs.
+		assert_eq!(size_class_for_span(10.0, Some(3)), 0);
+		// Growth ignores the previous class.
+		assert_eq!(size_class_for_span(1025.0, Some(1)), 4);
+	}
+
+	#[test]
+	fn a_light_takes_the_size_class_of_its_largest_span_over_every_sink_and_pays_for_it() {
+		// The cone sits two meters in front of the second sink's camera and far from the first's.
+		let lights = [Lights::Cone(cone().with_shadow_far(1.0))];
+		let transforms = [Transform::from_position(Point::new(0.0, 0.0, 30.0))];
+		let near_sink = sized_sink(Point::new(0.0, 0.0, 28.0), 1024);
+		let far_sink = sized_sink(Point::origin(), 1024);
+		let mut priced = budget(64);
+		priced.cone_bytes = [1, 2, 4, 8, 16];
+
+		let far_only = select(&lights, &transforms, &[far_sink], priced);
+		let both = select(&lights, &transforms, &[far_sink, near_sink], priced);
+
+		let far_class = far_only.cones[0].size_class;
+		let near_class = both.cones[0].size_class;
+		assert!(near_class > far_class, "{near_class} should exceed {far_class}");
+		assert_eq!(both.layout().cones[near_class], 1);
+		assert_eq!(priced.cost(both.layout()), priced.cone_bytes[near_class]);
+
+		// A budget too small for the larger class leaves the light unshadowed.
+		priced.bytes = priced.cone_bytes[near_class] - 1;
+		assert!(select(&lights, &transforms, &[near_sink], priced).cones.is_empty());
+	}
+
+	#[test]
+	fn local_shadows_are_grouped_by_size_class_with_cubes_counted_within_each_class() {
+		// Two points near the camera need a larger class than the far one, which ranks between them in scene order.
+		let lights: Vec<_> = (0..3).map(|_| Lights::Point(point().with_shadow_far(1.0))).collect();
+		let transforms = [3.0, 40.0, 3.5].map(|z| Transform::from_position(Point::new(0.0, 0.0, z)));
+
+		let selection = select(&lights, &transforms, &[sized_sink(Point::origin(), 1024)], budget(64));
+
+		let shadow = |index| match selection.shadow_for(index) {
+			LightShadow::Point {
+				view_index,
+				size_class,
+				cube_index,
+			} => (view_index - POINT_SHADOW_VIEW_OFFSET as u32, size_class, cube_index),
+			other => panic!("Expected a point shadow, got {other:?}"),
+		};
+		let (far_view, far_class, far_cube) = shadow(1);
+		let (first_near_view, near_class, first_near_cube) = shadow(0);
+		let (second_near_view, second_near_class, second_near_cube) = shadow(2);
+		let faces = POINT_SHADOW_FACE_COUNT as u32;
+		assert!(far_class < near_class && near_class == second_near_class);
+		// The smaller class's views come first, and cubes count from zero within each class.
+		assert_eq!((far_view, far_cube), (0, 0));
+		assert_eq!((first_near_view, first_near_cube), (faces, 0));
+		assert_eq!((second_near_view, second_near_cube), (2 * faces, 1));
+		assert_eq!(selection.layout().points[near_class as usize], 2);
+	}
+
+	fn cone_slot(index: usize, layer: u32) -> ShadowSlot {
+		ShadowSlot {
+			index,
+			kind: LocalShadowKind::Cone,
+			size_class: 0,
+			layer,
+		}
+	}
+
+	#[test]
+	fn lights_keep_their_layers_and_new_lights_take_the_lowest_free_layer() {
+		let lights: Vec<_> = (0..3).map(|_| Lights::Cone(cone())).collect();
+		let transforms = [0.0, 1.0, 2.0].map(light_transform);
+		let previous = [cone_slot(0, 2), cone_slot(1, 0)];
+
+		let selection = select_shadow_lights(
+			lights.iter().zip(&transforms),
+			&[sink(Point::origin())],
+			&budget(64),
+			|_| 1.0,
+			&previous,
+		);
+
+		let cone_shadow = |view, layer| LightShadow::Cone {
+			view_index: CONE_SHADOW_VIEW_OFFSET as u32 + view,
+			size_class: 0,
+			layer,
+		};
+		// Views follow the layers, so a run of layers is a run of views.
+		assert_eq!(selection.shadow_for(1), cone_shadow(0, 0));
+		assert_eq!(selection.shadow_for(2), cone_shadow(1, 1));
+		assert_eq!(selection.shadow_for(0), cone_shadow(2, 2));
+		assert_eq!(
+			selection.slots().as_slice(),
+			[cone_slot(0, 2), cone_slot(1, 0), cone_slot(2, 1)]
+		);
+	}
+
+	#[test]
+	fn layers_pack_from_zero_when_their_gaps_would_exceed_the_memory_budget() {
+		let lights = [Lights::Cone(cone())];
+		let transforms = [light_transform(0.0)];
+
+		let kept = select_shadow_lights(
+			lights.iter().zip(&transforms),
+			&[sink(Point::origin())],
+			&budget(6),
+			|_| 1.0,
+			&[cone_slot(0, 5)],
+		);
+		let packed = select_shadow_lights(
+			lights.iter().zip(&transforms),
+			&[sink(Point::origin())],
+			&budget(5),
+			|_| 1.0,
+			&[cone_slot(0, 5)],
+		);
+
+		assert_eq!(kept.cones[0].layer, 5);
+		assert_eq!(packed.cones[0].layer, 0);
 	}
 
 	#[test]

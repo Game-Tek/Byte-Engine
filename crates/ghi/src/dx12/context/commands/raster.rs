@@ -254,12 +254,12 @@ impl Device {
 		resource: &ID3D12Resource,
 		format: Formats,
 		array_layers: u32,
-		layer: Option<u32>,
+		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
 		let view = self.materialize_render_target_views(resource, format, array_layers);
 		// Mapping the selection to its slot also validates the requested layers.
-		let slot = Self::attachment_descriptor_slot(array_layers, layer, layer_count);
+		let slot = Self::attachment_descriptor_slot(array_layers, first_layer, layer_count);
 		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
 		self.retain_descriptor_heap(command_buffer_handle, &view);
 		handle
@@ -272,12 +272,12 @@ impl Device {
 		resource: &ID3D12Resource,
 		format: Formats,
 		array_layers: u32,
-		layer: Option<u32>,
+		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
 		let view = self.materialize_depth_stencil_views(resource, format, array_layers);
 		// Mapping the selection to its slot also validates the requested layers.
-		let slot = Self::attachment_descriptor_slot(array_layers, layer, layer_count);
+		let slot = Self::attachment_descriptor_slot(array_layers, first_layer, layer_count);
 		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
 		self.retain_descriptor_heap(command_buffer_handle, &view);
 		handle
@@ -305,8 +305,8 @@ impl Device {
 		let heap =
 			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, descriptor_count, "render-target view");
 		for slot in 0..descriptor_count {
-			let (layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
-			let descriptor = Self::render_target_view_desc(format, array_layers, layer, layer_count);
+			let (first_layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
+			let descriptor = Self::render_target_view_desc(format, array_layers, first_layer, layer_count);
 			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
 			unsafe {
 				self.device.CreateRenderTargetView(resource, Some(&descriptor), handle);
@@ -339,8 +339,8 @@ impl Device {
 		let heap =
 			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, descriptor_count, "depth-stencil view");
 		for slot in 0..descriptor_count {
-			let (layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
-			let descriptor = Self::depth_stencil_view_desc(format, array_layers, layer, layer_count);
+			let (first_layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
+			let descriptor = Self::depth_stencil_view_desc(format, array_layers, first_layer, layer_count);
 			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
 			unsafe {
 				self.device.CreateDepthStencilView(resource, Some(&descriptor), handle);
@@ -437,14 +437,14 @@ impl Device {
 				let Some(image) = self.images.get(image_handle.0 as usize) else {
 					continue;
 				};
-				let layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
-				Self::validate_attachment_layers(image.array_layers, attachment.layer, layer_count);
+				let (first_layer, layer_count) = attachment.layer_selection();
+				Self::validate_attachment_layers(image.array_layers, first_layer, layer_count);
 				depth_resource = Some((
 					image_handle,
 					resource,
 					image.format,
 					image.array_layers,
-					attachment.layer,
+					first_layer,
 					layer_count,
 					Self::attachment_clear(attachment),
 				));
@@ -459,14 +459,14 @@ impl Device {
 				.and_then(|image_handle| self.images.get(image_handle.0 as usize))
 				.map(|image| image.array_layers)
 				.unwrap_or(1);
-			let layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
-			Self::validate_attachment_layers(array_layers, attachment.layer, layer_count);
+			let (first_layer, layer_count) = attachment.layer_selection();
+			Self::validate_attachment_layers(array_layers, first_layer, layer_count);
 			target_resources.push(RenderTargetAttachment {
 				image_handle,
 				resource,
 				format,
 				array_layers,
-				layer: attachment.layer,
+				first_layer,
 				layer_count,
 				clear: Self::attachment_clear(attachment),
 				swapchain_backbuffer,
@@ -515,7 +515,7 @@ impl Device {
 					&target.resource,
 					target.format,
 					target.array_layers,
-					target.layer,
+					target.first_layer,
 					target.layer_count,
 				);
 				if target.swapchain_backbuffer {
@@ -560,9 +560,15 @@ impl Device {
 		post_clear_barriers.submit(&command_list);
 
 		let mut depth_handle = None;
-		if let Some((_, resource, format, array_layers, layer, layer_count, clear)) = depth_resource {
-			let handle =
-				self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer, layer_count);
+		if let Some((_, resource, format, array_layers, first_layer, layer_count, clear)) = depth_resource {
+			let handle = self.retained_depth_stencil_view(
+				command_buffer_handle,
+				&resource,
+				format,
+				array_layers,
+				first_layer,
+				layer_count,
+			);
 			if let Some(clear) = clear {
 				let depth = Self::clear_depth_value(clear);
 				unsafe {

@@ -19,6 +19,7 @@ pub(crate) fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: 
 		image: vk::Image::null(),
 		full_image_view: vk::ImageView::null(),
 		image_views: Vec::new(),
+		layer_suffix_views: Vec::new(),
 		extent,
 		access,
 		format: to_format(format),
@@ -444,7 +445,7 @@ impl Context {
 			(None, None, None)
 		};
 
-		let (full_image_view, image_views) = self.create_image_views(
+		let (full_image_view, image_views, layer_suffix_views) = self.create_image_views(
 			name,
 			image,
 			format,
@@ -463,11 +464,14 @@ impl Context {
 			image,
 			full_image_view,
 			image_views,
+			layer_suffix_views,
 			..unbacked
 		}
 	}
 
-	/// Creates the views a GHI image exposes: one per array layer, plus a whole-array view for layered images.
+	/// Creates the views a GHI image exposes: one per array layer, plus a whole-array view for layered images, plus, for
+	/// layered render targets, one view from each layer past the first to the last, which layered attachments that
+	/// start past the first layer render through.
 	///
 	/// Returns a null whole-array view for single-layer images, and no views at all for transfer-only images, since
 	/// Vulkan only allows views of images created with view-capable usage bits.
@@ -480,11 +484,13 @@ impl Context {
 		extent: Extent,
 		mip_levels: u32,
 		array_layers: Option<NonZeroU32>,
-	) -> (vk::ImageView, Vec<vk::ImageView>) {
+	) -> (vk::ImageView, Vec<vk::ImageView>, Vec<vk::ImageView>) {
 		let image_usage_flags = into_vk_image_usage_flags(uses, format);
 		if !InnerDevice::image_usage_allows_views(image_usage_flags) {
-			return (vk::ImageView::null(), Vec::new());
+			return (vk::ImageView::null(), Vec::new(), Vec::new());
 		}
+		let render_target =
+			image_usage_flags.intersects(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT);
 		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
 		let create_view = |base_layer, layer_count| {
 			self.create_vulkan_image_view(
@@ -504,8 +510,12 @@ impl Context {
 				(0..layers.get())
 					.map(|layer| create_view(layer, NonZeroU32::new(1)))
 					.collect(),
+				(1..layers.get())
+					.filter(|_| render_target)
+					.map(|first_layer| create_view(first_layer, NonZeroU32::new(layers.get() - first_layer)))
+					.collect(),
 			),
-			None => (vk::ImageView::null(), vec![create_view(0, None)]),
+			None => (vk::ImageView::null(), vec![create_view(0, None)], Vec::new()),
 		}
 	}
 
@@ -595,7 +605,7 @@ impl Context {
 					.expect("Failed to bind an image-group member to its heap. The most likely cause is an offset that breaks the member's alignment.")
 			};
 			let previous = self.images[handle.0 as usize].clone();
-			let (full_image_view, image_views) = self.create_image_views(
+			let (full_image_view, image_views, layer_suffix_views) = self.create_image_views(
 				name.as_deref(),
 				texture.resource,
 				previous.format_,
@@ -608,6 +618,7 @@ impl Context {
 				image: texture.resource,
 				full_image_view,
 				image_views,
+				layer_suffix_views,
 				extent: request.extent,
 				// The group owns the heap, so replacing the member must not free it.
 				allocation: None,
@@ -733,7 +744,12 @@ impl Context {
 
 	/// Retires every Vulkan object and allocation of a replaced image, views first so none outlives its image.
 	pub(crate) fn retire_image_storage(&mut self, image: &Image) {
-		for &image_view in image.image_views.iter().chain([&image.full_image_view]) {
+		for &image_view in image
+			.image_views
+			.iter()
+			.chain(&image.layer_suffix_views)
+			.chain([&image.full_image_view])
+		{
 			if !image_view.is_null() {
 				self.defer_destruction(Tasks::DeleteVulkanImageView { handle: image_view });
 			}

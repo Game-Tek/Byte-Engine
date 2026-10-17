@@ -463,7 +463,11 @@ material_evaluation_suffix: fn () -> void {
 						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
 						if (shadow_view_index != 0) {
 							let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
+							// Size class `c` holds cube faces of `128 << c` texels per side.
+							let shadow_size_class: u32 = lighting_data.lights[light_index].shadow_size_class;
 							occlusion_factor = f16(sample_point_shadow(
+								point_shadow_maps[shadow_size_class],
+								f32(128 << shadow_size_class),
 								shadow_view_index,
 								shadow_cube_index,
 								world_space_vertex_position,
@@ -491,8 +495,9 @@ material_evaluation_suffix: fn () -> void {
 						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
 						if (shadow_view_index != 0) {
 							let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+							let shadow_size_class: u32 = lighting_data.lights[light_index].shadow_size_class;
 							occlusion_factor = f16(sample_cone_shadow(
-								cone_shadow_map,
+								cone_shadow_maps[shadow_size_class],
 								shadow_view_index,
 								shadow_layer,
 								world_space_vertex_position,

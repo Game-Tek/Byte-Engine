@@ -215,6 +215,8 @@ pub struct AttachmentInformation {
 	pub(crate) store: StoreOp,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
+	/// The first array layer of a layered attachment, which a shader-selected render-target index of zero writes.
+	pub(crate) first_layer: u32,
 	/// The number of array layers available to shader-selected render-target indices.
 	pub(crate) layer_count: Option<std::num::NonZeroU32>,
 }
@@ -232,6 +234,7 @@ impl AttachmentInformation {
 			load,
 			store,
 			layer: None,
+			first_layer: 0,
 			layer_count: None,
 		}
 	}
@@ -268,10 +271,11 @@ impl AttachmentInformation {
 		self
 	}
 
-	/// Lets the raster shader select one of the first `layer_count` array layers.
+	/// Lets the raster shader select one of `layer_count` array layers starting at `first_layer`: a render-target index
+	/// of `n` writes layer `first_layer + n`, and a clear touches only those layers.
 	///
 	/// Every attachment in the render pass must declare the same layer count.
-	pub fn layers(mut self, layer_count: u32) -> Self {
+	pub fn layers(mut self, first_layer: u32, layer_count: u32) -> Self {
 		let layer_count = std::num::NonZeroU32::new(layer_count).expect(
 			"Layered rendering requires at least one attachment layer. The most likely cause is that an empty layer range was passed to AttachmentInformation::layers.",
 		);
@@ -280,8 +284,19 @@ impl AttachmentInformation {
 			self.layer.is_none(),
 			"Cannot enable layered rendering after selecting one attachment layer. The most likely cause is that layer and layers were both called for the same attachment."
 		);
+		self.first_layer = first_layer;
 		self.layer_count = Some(layer_count);
 		self
+	}
+
+	/// Returns the layers the attachment covers as its first layer and layer count: the selected layer, the layered
+	/// range, or the first layer.
+	pub(crate) fn layer_selection(&self) -> (u32, u32) {
+		match (self.layer, self.layer_count) {
+			(Some(layer), _) => (layer, 1),
+			(None, Some(layer_count)) => (self.first_layer, layer_count.get()),
+			(None, None) => (0, 1),
+		}
 	}
 
 	/// Returns the pass-wide layer count after checking that all attachments agree.

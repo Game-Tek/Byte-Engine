@@ -1,5 +1,6 @@
-// Shrinks each shadowed sun's directional cascades from the CPU's fit to its slice of the camera frustum down to the box
-// its receivers fill, as the linear depth pyramid pass found it. Cascade `c` of sun slot `s` is fitted box `4s + c` and
+// Shrinks each shadowed sun's directional cascades that draw this frame from the CPU's fit to its slice of the camera
+// frustum down to the box its receivers fill, as the linear depth pyramid pass found it. Every other cascade gets the view
+// it was last drawn with, so receivers sample its map as it was drawn. Cascade `c` of sun slot `s` is fitted box `4s + c` and
 // view `1 + 4s + c`. One workgroup of four threads fits each sun, one thread rewriting one cascade's view in place, and a
 // cascade without receivers keeps the CPU's fit. Each thread then resets its cascade's bounds, so the next frame's
 // pyramid pass merges into empty boxes without a clear.
@@ -36,8 +37,29 @@ main: fn (input: StageInput) -> void {
 	let cascade: u32 = input.thread_id.x;
 	if (cascade < FITTED_CASCADE_COUNT) {
 		let first: u32 = cascade * 6;
+		let view_index: u32 = cascade + 1;
+		let cascade_bit: u32 = 1 << cascade;
 		let lower_x_code: u32 = atomic_load(receiver_bounds.bounds[first]);
-		if (lower_x_code != 0) {
+		if ((receiver_fit.cascade_masks.x & cascade_bit) == 0) {
+			// A cascade that doesn't draw this frame drops its bounds, so the next frame's pass merges into empty boxes.
+			// It keeps the view it was drawn with, which receivers sample its map with, and a cascade that holds no map
+			// gets a projection that puts every receiver at x = 2, outside it.
+			for (let bound: u32 = 0; bound < 6; bound = bound + 1) {
+				atomic_store(receiver_bounds.bounds[first + bound], 0);
+			}
+			if ((receiver_fit.cascade_masks.y & cascade_bit) != 0) {
+				views.views[view_index].view = drawn_views.views[cascade].view;
+				views.views[view_index].view_projection = drawn_views.views[cascade].view_projection;
+				views.views[view_index].inverse_view = drawn_views.views[cascade].inverse_view;
+			} else {
+				views.views[view_index].view_projection = mat4f(
+					vec4f(0.0, 0.0, 0.0, 0.0),
+					vec4f(0.0, 0.0, 0.0, 0.0),
+					vec4f(0.0, 0.0, 0.0, 0.0),
+					vec4f(2.0, 0.0, 0.0, 1.0)
+				);
+			}
+		} else if (lower_x_code != 0) {
 			let lower_x: f32 = decode_lower_bound(lower_x_code);
 			let lower_y: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 1]));
 			let lower_z: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 2]));
@@ -90,7 +112,6 @@ main: fn (input: StageInput) -> void {
 				0.0 - shift.y / half_extent,
 				1.0 - (frame.w - front_shift) / depth_range
 			);
-			let view_index: u32 = cascade + 1;
 			let view_projection: mat4f = views.views[view_index].view_projection;
 			let view: mat4x3f = views.views[view_index].view;
 			let inverse_view: mat4x3f = views.views[view_index].inverse_view;
@@ -117,6 +138,12 @@ main: fn (input: StageInput) -> void {
 					+ inverse_view[1] * shift.y
 					+ inverse_view[2] * shift.z
 			);
+		}
+		// A cascade that draws keeps the view it draws with, fitted or as the CPU fitted it, for the frames it doesn't.
+		if ((receiver_fit.cascade_masks.x & cascade_bit) != 0) {
+			drawn_views.views[cascade].view = views.views[view_index].view;
+			drawn_views.views[cascade].view_projection = views.views[view_index].view_projection;
+			drawn_views.views[cascade].inverse_view = views.views[view_index].inverse_view;
 		}
 	}
 }

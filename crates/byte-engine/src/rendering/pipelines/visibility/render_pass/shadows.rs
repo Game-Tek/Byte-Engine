@@ -1,8 +1,8 @@
 //! Depth-only rendering of the directional cascades, cone layers, and point cube faces selected this frame, and the
 //! passes that fit the cascades to the surfaces the camera sees.
 //!
-//! [`ShadowMaps`] renders the maps once per frame for every sink, sizing each image to the maps the shared shadow-map
-//! budget gives it. [`CascadeFitPass`] runs per sink, because it reads that sink's depth.
+//! [`ShadowMaps`] renders the maps that update this frame once for every sink, sizing each image to the maps the shared
+//! shadow-map budget gives it. [`CascadeFitPass`] runs per sink, because it reads that sink's depth.
 
 use std::num::NonZeroU32;
 
@@ -11,12 +11,13 @@ use smallvec::SmallVec;
 use utils::Extent;
 
 use super::super::layout::{
-	CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
-	DIRECTIONAL_SHADOW_VIEW_OFFSET, MAX_DIRECTIONAL_SHADOW_COUNT, POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT,
-	POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
+	CONE_SHADOW_MAP_FORMAT, DIRECTIONAL_SHADOW_MAP_FORMAT, LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_DIRECTIONAL_SHADOW_COUNT,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT, SHADOW_CASCADE_COUNT, local_shadow_map_resolution,
 };
 use super::super::mesh_dispatch::PhaseDispatches;
+use super::super::shader_data::ShaderViewData;
 use super::super::shadow_selection::{ShadowLayout, SunShadow};
+use super::super::shadow_updates::{ShadowDraw, ShadowDraws, ShadowImage};
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::{ComputeStage, OcclusionPhase, Pipelines, StageCounters, record_compute_stages, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
@@ -48,11 +49,59 @@ pub(crate) struct ShadowWork {
 	/// Each sun's cascades as the CPU fitted them to the camera frustum, when this sink shrinks them to the surfaces its
 	/// camera sees. Empty draws them as fitted.
 	pub(crate) receiver_fit: SunCascades,
+	/// One bit per cascade, bit `4s + c` for cascade `c` of sun slot `s`, set for the cascades that hold a drawn map
+	/// after this frame's draws.
+	pub(crate) drawn_cascades: u32,
 	/// The maps each shadow image keeps this frame, which may exceed the ones drawn. See
 	/// [`super::super::shadow_selection::retain_layout`].
 	pub(crate) layout: ShadowLayout,
-	pub(crate) cone_count: usize,
-	pub(crate) point_count: usize,
+	/// The maps that draw this frame, ordered by image and then layer. See
+	/// [`super::super::shadow_updates::ShadowMapStates::update`].
+	pub(crate) draws: ShadowDraws,
+}
+
+impl ShadowWork {
+	/// Returns one bit per cascade, bit `4s + c` for cascade `c` of sun slot `s`, set for the cascades that draw this
+	/// frame. A cascade's directional layer is its bit.
+	pub(crate) fn updated_cascades(&self) -> u32 {
+		self.draws
+			.iter()
+			.filter(|draw| draw.image == ShadowImage::Directional)
+			.fold(0, |mask, draw| mask | 1 << draw.layer)
+	}
+}
+
+/// The `ShadowRun` struct is a run of maps of one image that draw in one layered render pass: consecutive layers drawn
+/// from consecutive views.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShadowRun {
+	image: ShadowImage,
+	first_layer: u32,
+	first_view: u32,
+	count: u32,
+}
+
+/// Groups `draws`, ordered by image and then layer, into runs of consecutive layers drawn from consecutive views.
+fn shadow_runs(draws: &[ShadowDraw]) -> SmallVec<[ShadowRun; 16]> {
+	let mut runs = SmallVec::<[ShadowRun; 16]>::new();
+	for draw in draws {
+		match runs.last_mut() {
+			Some(run)
+				if run.image == draw.image
+					&& run.first_layer + run.count == draw.layer
+					&& run.first_view + run.count == draw.view =>
+			{
+				run.count += 1;
+			}
+			_ => runs.push(ShadowRun {
+				image: draw.image,
+				first_layer: draw.layer,
+				first_view: draw.view,
+				count: 1,
+			}),
+		}
+	}
+	runs
 }
 
 /// The `ReceiverFitShaderData` struct carries what the receiver-bounds and cascade-fit passes need from the CPU: how to
@@ -76,6 +125,9 @@ pub(crate) struct ReceiverFitShaderData {
 	pub(crate) depth_unproject: [f32; 4],
 	/// The shadow-map resolution, edge margin in texels, caster reach in meters, and size steps per octave.
 	pub(crate) fit_constants: [f32; 4],
+	/// One bit per fitted box in x for the cascades that draw this frame, and in y for the ones that hold a drawn map.
+	/// A cascade that doesn't draw gets the view it was drawn with, or a view no receiver falls in when it holds none.
+	pub(crate) cascade_masks: [u32; 4],
 }
 
 impl Default for ReceiverFitShaderData {
@@ -85,12 +137,15 @@ impl Default for ReceiverFitShaderData {
 }
 
 /// Builds the receiver-fit constants for a camera and each sun's cascades, by sun slot, as the CPU fitted them to its
-/// frustum, for cascades of `shadow_map_resolution` texels per side.
+/// frustum, for cascades of `shadow_map_resolution` texels per side. `updated_cascades` and `drawn_cascades` mark the
+/// cascades that draw this frame and the ones that hold a drawn map, one bit per fitted box.
 pub(crate) fn receiver_fit_shader_data(
 	screen: ScreenViewData,
 	camera_view: View,
 	suns: &[[CascadeFrame; SHADOW_CASCADE_COUNT]],
 	shadow_map_resolution: u32,
+	updated_cascades: u32,
+	drawn_cascades: u32,
 ) -> ReceiverFitShaderData {
 	let camera_to_world = math::inverse(camera_view.view());
 	let mut data = ReceiverFitShaderData {
@@ -107,6 +162,7 @@ pub(crate) fn receiver_fit_shader_data(
 			0.0,
 		],
 		fit_constants: [shadow_map_resolution as f32, EDGE_TEXELS, CASTER_REACH, SIZE_STEPS_PER_OCTAVE],
+		cascade_masks: [updated_cascades, drawn_cascades, 0, 0],
 		..Default::default()
 	};
 	for (slot, cascades) in suns.iter().enumerate() {
@@ -134,7 +190,8 @@ pub(crate) fn receiver_fit_shader_data(
 /// writes, so frames in flight share the images too.
 ///
 /// Each image holds as many maps as [`ShadowWork::layout`] gives its kind, so their memory together stays within the
-/// shadow-map budget. Sun slot `s` draws into directional layers `4s` through `4s + 3`.
+/// shadow-map budget. Sun slot `s` draws into directional layers `4s` through `4s + 3`. Cone and point lights keep one
+/// image per size class, so each light's map has the size its class gives it.
 pub(crate) struct ShadowMaps {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
 	directional_pipelines: Pipelines<4>,
@@ -147,8 +204,10 @@ pub(crate) struct ShadowMaps {
 	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
 	/// The same cells' min depth, which proves receivers behind every texel of an area fully shadowed.
 	pub(crate) directional_depth_minimum_pyramid: ghi::BaseImageHandle,
-	pub(crate) cone: ghi::BaseImageHandle,
-	pub(crate) point: ghi::BaseImageHandle,
+	/// One image per size class, the smallest first.
+	pub(crate) cone: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
+	/// One image per size class, the smallest first.
+	pub(crate) point: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 }
 
 /// The fewest layers the cone image keeps: Metal requires two to create the array texture that material evaluation
@@ -203,15 +262,19 @@ impl ShadowMaps {
 			.build_image(depth_pyramid("Directional Shadow Minimum Depth Pyramid"))
 			.into();
 		// Images start at zero extent, so no map has backing memory until a visible light uses it.
-		let cone: ghi::BaseImageHandle = context
-			.build_image(
-				depth_map(CONE_SHADOW_MAP_FORMAT, "Cone Shadow Map")
-					.array_layers(NonZeroU32::new(MIN_CONE_SHADOW_LAYERS as u32)),
-			)
-			.into();
-		let point: ghi::BaseImageHandle = context
-			.build_image(depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(NonZeroU32::MIN))
-			.into();
+		let cone = std::array::from_fn(|_| {
+			context
+				.build_image(
+					depth_map(CONE_SHADOW_MAP_FORMAT, "Cone Shadow Map")
+						.array_layers(NonZeroU32::new(MIN_CONE_SHADOW_LAYERS as u32)),
+				)
+				.into()
+		});
+		let point = std::array::from_fn(|_| {
+			context
+				.build_image(depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(NonZeroU32::MIN))
+				.into()
+		});
 		let depth_pyramid_descriptor_set =
 			set_layouts::SHADOW_DEPTH_PYRAMID.create_set(context, "Directional Shadow Depth Pyramid Descriptor Set");
 		// The pyramid gathers texel quads, which no sampler filter or reduction touches.
@@ -259,8 +322,7 @@ impl ShadowMaps {
 		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
 		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
 		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len();
-		let cone_count = work.cone_count;
-		let point_count = work.point_count;
+		let runs = shadow_runs(&work.draws);
 		// One thread per 4x4 texel block: each SIMD-width workgroup reduces four by two cells, four threads per cell.
 		let depth_pyramid = ComputeStage {
 			label: "Directional Shadow Depth Pyramid",
@@ -274,8 +336,7 @@ impl ShadowMaps {
 		};
 		let (directional, cone, point) = (self.directional, self.cone, self.point);
 		let directional_extent = Extent::square(work.cascade_resolution);
-		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
-		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
+		let class_extent = |size_class| Extent::square(local_shadow_map_resolution(size_class));
 
 		// An image without maps drops its memory; one with maps holds every map the budget kept for its kind. Every image
 		// keeps the fewest layers its array view needs.
@@ -292,14 +353,23 @@ impl ShadowMaps {
 			SHADOW_CASCADE_COUNT * layout.suns,
 			SHADOW_CASCADE_COUNT,
 		);
-		resize(frame, cone, cone_extent, layout.cones, MIN_CONE_SHADOW_LAYERS);
-		resize(
-			frame,
-			point,
-			point_extent,
-			POINT_SHADOW_FACE_COUNT * layout.points,
-			POINT_SHADOW_FACE_COUNT,
-		);
+		for size_class in 0..LOCAL_SHADOW_SIZE_CLASS_COUNT {
+			let extent = class_extent(size_class);
+			resize(
+				frame,
+				cone[size_class],
+				extent,
+				layout.cones[size_class],
+				MIN_CONE_SHADOW_LAYERS,
+			);
+			resize(
+				frame,
+				point[size_class],
+				extent,
+				POINT_SHADOW_FACE_COUNT * layout.points[size_class],
+				POINT_SHADOW_FACE_COUNT,
+			);
+		}
 		for pyramid in [self.directional_depth_pyramid, self.directional_depth_minimum_pyramid] {
 			frame.resize_image(pyramid, depth_pyramid_extent(work.cascade_resolution, layout.suns));
 		}
@@ -309,16 +379,27 @@ impl ShadowMaps {
 				CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 			};
 
-			// Draws every work range into `view_count` layers: layer `n` shows packed view `view_base + n`. One task
-			// workgroup culls its meshlets against a batch of views, so each instance's data is read once per batch
-			// instead of once per view.
-			let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
-			                   name: &str,
-			                   target: ghi::BaseImageHandle,
-			                   extent: Extent,
-			                   pipelines: [ghi::PipelineHandle; 4],
-			                   view_base: usize,
-			                   view_count: usize| {
+			// Draws every work range into one run of layers: layer `first_layer + n` shows view `first_view + n`. One task
+			// workgroup culls its meshlets against a batch of views, so each instance's data is read once per batch instead
+			// of once per view. Only the run's layers are cleared, so every other map keeps what it holds.
+			let record_run = |c: &mut ghi::implementation::CommandBufferRecording, run: &ShadowRun| {
+				let (name, target, extent, pipelines) = match run.image {
+					ShadowImage::Directional => (
+						"Directional Shadow Map",
+						directional,
+						directional_extent,
+						directional_pipelines,
+					),
+					ShadowImage::Cone(size_class) => {
+						("Cone Shadow Map", cone[size_class], class_extent(size_class), local_pipelines)
+					}
+					ShadowImage::Point(size_class) => (
+						"Point Shadow Map",
+						point[size_class],
+						class_extent(size_class),
+						local_pipelines,
+					),
+				};
 				c.start_region(|label| label.write_str(name));
 				let attachments = [ghi::AttachmentInformation::new(
 					target,
@@ -326,50 +407,20 @@ impl ShadowMaps {
 					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
 					ghi::StoreOp::Store,
 				)
-				.layers(view_count as u32)];
+				.layers(run.first_layer, run.count)];
 				let c = c.start_render_pass(extent, &attachments);
 				let ranges = dispatches.opaque_layer.into_iter().zip(pipelines);
-				record_meshlet_dispatches(c, descriptor_sets, OcclusionPhase::Disabled, ranges, view_base, view_count);
+				let (first_view, count) = (run.first_view as usize, run.count as usize);
+				record_meshlet_dispatches(c, descriptor_sets, OcclusionPhase::Disabled, ranges, first_view, count);
 				c.end_render_pass();
 				c.end_region();
 			};
 
 			// Every map draws before the pyramid, so the raster passes stay back to back in one stretch of render work.
-			if cascade_count > 0 || cone_count > 0 || point_count > 0 {
+			if !runs.is_empty() {
 				c.counter(counters.shadow_maps, |c| {
-					if cascade_count > 0 {
-						// Directional view `v` draws into layer `v - 1`, so every sun's cascades draw in one pass.
-						record_maps(
-							c,
-							"Directional Shadow Map",
-							directional,
-							directional_extent,
-							directional_pipelines,
-							DIRECTIONAL_SHADOW_VIEW_OFFSET,
-							cascade_count,
-						);
-					}
-					if cone_count > 0 {
-						record_maps(
-							c,
-							"Cone Shadow Map",
-							cone,
-							cone_extent,
-							local_pipelines,
-							CONE_SHADOW_VIEW_OFFSET,
-							cone_count,
-						);
-					}
-					if point_count > 0 {
-						record_maps(
-							c,
-							"Point Shadow Map",
-							point,
-							point_extent,
-							local_pipelines,
-							POINT_SHADOW_VIEW_OFFSET,
-							point_count * POINT_SHADOW_FACE_COUNT,
-						);
+					for run in &runs {
+						record_run(c, run);
 					}
 				});
 			}
@@ -425,12 +476,16 @@ impl CascadeFitPass {
 		// The fit clamps whatever size a new buffer holds to a valid one, so it needs no initial contents.
 		let cascade_size_steps: ghi::BufferHandle<[u32; RECEIVER_FIT_CASCADES]> =
 			context.build_buffer(device_buffer("Directional Shadow Cascade Size Steps", ghi::Uses::empty()));
+		// The fit reads a cascade's drawn view only once a frame that drew it has written it.
+		let drawn_views: ghi::BufferHandle<[ShaderViewData; RECEIVER_FIT_CASCADES]> =
+			context.build_buffer(device_buffer("Directional Shadow Drawn Cascade Views", ghi::Uses::empty()));
 		let fit = set_layouts::CASCADE_FIT.binder(receiver_fit_descriptor_set);
 		context.write(&[
 			fit.buffer("views", views),
 			fit.buffer("receiver_bounds", receiver_bounds),
 			fit.buffer("receiver_fit", receiver_fit_parameters),
 			fit.buffer("cascade_size_steps", cascade_size_steps),
+			fit.buffer("drawn_views", drawn_views),
 		]);
 		Self {
 			receiver_fit_descriptor_set,
@@ -454,14 +509,17 @@ impl CascadeFitPass {
 	/// Prepares this frame's cascade fit, or `None` while a pipeline is still compiling.
 	///
 	/// The result fits the cascades of every sun in `receiver_fit`, by sun slot as the CPU fitted them to the camera
-	/// frustum, to `sink`'s opaque surfaces, and records nothing without them. Record it after the depth pyramid pass,
-	/// which finds the receiver bounds, and the shadow maps after it.
+	/// frustum, to `sink`'s opaque surfaces, and records nothing without them. Only the cascades `updated_cascades`
+	/// marks are fitted; every other one gets the view it was drawn with when `drawn_cascades` marks it, or a view no
+	/// receiver falls in otherwise. Record it after the depth pyramid pass, which finds the receiver bounds, and the
+	/// shadow maps after it.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		pipeline_manager: &PipelineManagerClient,
 		receiver_fit: &[[CascadeFrame; SHADOW_CASCADE_COUNT]],
 		cascade_resolution: u32,
+		[updated_cascades, drawn_cascades]: [u32; 2],
 		sink: &Sink,
 	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
@@ -475,6 +533,8 @@ impl CascadeFitPass {
 				sink.view(),
 				receiver_fit,
 				cascade_resolution,
+				updated_cascades,
+				drawn_cascades,
 			);
 			frame.sync_buffer(self.receiver_fit_parameters);
 		}

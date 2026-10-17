@@ -37,8 +37,11 @@ use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkS
 use super::set_layouts;
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
-	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, make_cone_shadow_view,
+	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
+};
+use super::shadow_updates::{
+	DEFAULT_SHADOW_UPDATE_TEXELS, ShadowMapStates, ShadowViews, drawn_cascade_view, undrawn_cascade_view,
 };
 use super::skinning::{
 	DualQuaternion, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass,
@@ -63,6 +66,9 @@ use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resou
 /// The startup parameter, inside the `render` subtree, that sets the shadow-map memory every light shares, in
 /// mebibytes. See [`VisibilityPipelineSettings::with_shadow_map_budget_mib`].
 pub const SHADOW_MAP_BUDGET_PARAMETER: &str = "shadow-maps.budget-mb";
+/// The startup parameter, inside the `render` subtree, that sets how many shadow-map texels each frame draws. See
+/// [`VisibilityPipelineSettings::with_shadow_update_texels`].
+pub const SHADOW_UPDATE_TEXELS_PARAMETER: &str = "shadow-maps.update-texels";
 /// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
 /// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
@@ -83,6 +89,7 @@ pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.r
 pub struct VisibilityPipelineSettings {
 	geometry_capacity: GeometryCapacity,
 	shadow_map_budget_mib: u32,
+	shadow_update_texels: u64,
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
@@ -94,6 +101,7 @@ impl Default for VisibilityPipelineSettings {
 		Self {
 			geometry_capacity: GeometryCapacity::default(),
 			shadow_map_budget_mib: DEFAULT_SHADOW_MAP_BUDGET_MIB,
+			shadow_update_texels: DEFAULT_SHADOW_UPDATE_TEXELS,
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
@@ -122,6 +130,11 @@ impl VisibilityPipelineSettings {
 		if let Some(mebibytes) = parse(&parameters, SHADOW_MAP_BUDGET_PARAMETER) {
 			settings = settings
 				.with_shadow_map_budget_mib(mebibytes)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		if let Some(texels) = parse(&parameters, SHADOW_UPDATE_TEXELS_PARAMETER) {
+			settings = settings
+				.with_shadow_update_texels(texels)
 				.unwrap_or_else(|reason| panic!("{reason}"));
 		}
 		// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.
@@ -213,7 +226,8 @@ impl VisibilityPipelineSettings {
 	/// The first directional light takes its cascades first, cone and point lights then share what remains by how much
 	/// of the screen they light, and other directional lights take what is left after them. Lights that do not fit stay
 	/// lit without shadows. One sun takes 32 MiB at the default cascade resolution, four times that per doubling of
-	/// [`Self::with_directional_shadow_map_resolution`]; a cone light takes 2 MiB and a point light 12 MiB.
+	/// [`Self::with_directional_shadow_map_resolution`]. A cone light takes 32 KiB to 8 MiB and a point light 192 KiB to
+	/// 48 MiB, by how large it looks in the largest sink that sees it.
 	///
 	/// # Errors
 	///
@@ -227,6 +241,32 @@ impl VisibilityPipelineSettings {
 		}
 		self.shadow_map_budget_mib = mebibytes;
 		Ok(self)
+	}
+
+	/// Sets how many shadow-map texels each frame draws: a cascade costs its resolution squared, and a cone map or point
+	/// cube face its size class's texels per side squared.
+	///
+	/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
+	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. The
+	/// rules are specified in the shadow map updates of the visibility pipeline reference, at
+	/// <https://byte-engine.0x44491229.dev/docs/reference/rendering#shadow-map-updates>.
+	///
+	/// # Errors
+	///
+	/// Returns an error when `texels` is zero.
+	pub fn with_shadow_update_texels(mut self, texels: u64) -> Result<Self, String> {
+		if texels == 0 {
+			return Err(
+				"Shadow update budget was not set. The most likely cause is a budget of 0 texels, which draws no shadow map."
+					.to_owned(),
+			);
+		}
+		self.shadow_update_texels = texels;
+		Ok(self)
+	}
+
+	pub fn shadow_update_texels(&self) -> u64 {
+		self.shadow_update_texels
 	}
 
 	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
@@ -538,6 +578,11 @@ pub struct VisibilityPipelineManager {
 	shadow_maps: ShadowMaps,
 	/// How many maps of each kind the shadow-map images hold, kept across frames by [`retain_layout`].
 	shadow_layout: ShadowLayout,
+	/// Where each shadowed cone and point light's map lived last frame, which keeps its size class steady while its
+	/// span hovers at a power of two, and its layer while it keeps its class.
+	shadow_slots: ShadowSlots,
+	/// What every shadow map was drawn with, so maps that don't draw this frame keep their view.
+	shadow_states: ShadowMapStates,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
 	ssgi_configuration: crate::configuration::ConfigurationPort,
@@ -652,6 +697,8 @@ impl VisibilityPipelineManager {
 			settings,
 			shadow_maps,
 			shadow_layout: ShadowLayout::default(),
+			shadow_slots: ShadowSlots::new(),
+			shadow_states: ShadowMapStates::default(),
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
 			ssgi_configuration,
@@ -1127,25 +1174,21 @@ impl VisibilityPipelineManager {
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 	}
 
-	/// Writes the camera view and every shadow view selected this frame. Returns each shadowed sun's cascades, fitted
-	/// to the camera frustum, by sun slot.
+	/// Returns each shadowed sun's cascades, fitted to the camera frustum, by sun slot, and the view every map of
+	/// `shadows` would be drawn from this frame.
 	///
 	/// `ies_scales` holds each light's IES intensity scale by light index.
-	fn write_views(
+	fn shadow_views(
 		&self,
-		frame: &mut ghi::implementation::Frame,
 		main_view: View,
 		shadows: &ShadowLightSelection<'_>,
 		ies_scales: &[(f32, Option<IesProfileTexture>)],
-	) -> SunCascades {
-		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
-		views.fill(ShaderViewData::from(main_view));
-		let cascades = shadows
+	) -> (SunCascades, ShadowViews) {
+		let cascades: SunCascades = shadows
 			.suns
 			.iter()
-			.enumerate()
-			.map(|(slot, sun)| {
-				let cascades = csm::make_cascade_frames(
+			.map(|sun| {
+				csm::make_cascade_frames(
 					main_view,
 					sun.direction,
 					SHADOW_CASCADE_COUNT,
@@ -1154,28 +1197,76 @@ impl VisibilityPipelineManager {
 				)
 				.collect::<SmallVec<[_; SHADOW_CASCADE_COUNT]>>()
 				.into_inner()
-				.expect("Cascade count does not match the shadow views. The most likely cause is that make_cascade_frames was called with another cascade count.");
-				for (cascade, frame) in cascades.iter().enumerate() {
-					let mut data = ShaderViewData::from(frame.view);
-					data.far = frame.slice_far;
-					views[sun_cascade_view(slot) + cascade] = data;
-				}
-				cascades
+				.expect("Cascade count does not match the shadow views. The most likely cause is that make_cascade_frames was called with another cascade count.")
 			})
 			.collect();
-		for (layer, (index, light, transform)) in shadows.cones.iter().enumerate() {
-			views[CONE_SHADOW_VIEW_OFFSET + layer] =
-				make_cone_shadow_view(light, transform, SHADOW_DEFAULT_EXPOSURE_SCALE, ies_scales[*index].0).into();
+		let views = ShadowViews {
+			cascades: cascades
+				.iter()
+				.map(|frames| {
+					std::array::from_fn(|cascade| ShaderViewData {
+						far: frames[cascade].slice_far,
+						..ShaderViewData::from(frames[cascade].view)
+					})
+				})
+				.collect(),
+			cones: shadows
+				.cones
+				.iter()
+				.map(|cone| {
+					let scale = ies_scales[cone.index].0;
+					make_cone_shadow_view(cone.light, cone.transform, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into()
+				})
+				.collect(),
+			points: shadows
+				.points
+				.iter()
+				.map(|point| {
+					let scale = ies_scales[point.index].0;
+					std::array::from_fn(|face| {
+						make_point_shadow_view(point.light, point.transform, face, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into()
+					})
+				})
+				.collect(),
+		};
+		(cascades, views)
+	}
+
+	/// Writes the camera view and every shadow view: the view each map was drawn from, so a map that doesn't draw this
+	/// frame is sampled as it was drawn, or this frame's view for a map that holds nothing yet.
+	///
+	/// With receivers fitting, cascades get this frame's CPU fit instead; the cascade fit pass then puts in each
+	/// cascade's drawn view, see [`super::render_pass::CascadeFitPass`]. Without it, a cascade that holds nothing gets a
+	/// view no receiver falls in.
+	fn write_views(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		main_view: View,
+		current: &ShadowViews,
+		states: &ShadowMapStates,
+	) {
+		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
+		views.fill(ShaderViewData::from(main_view));
+		let gpu_fit = self.settings.cascade_fitting == CascadeFitting::Receivers;
+		for (slot, cascades) in current.cascades.iter().enumerate() {
+			for (cascade, current) in cascades.iter().enumerate() {
+				views[sun_cascade_view(slot) + cascade] = match states.cascade_view(slot, cascade) {
+					_ if gpu_fit => *current,
+					Some(drawn) => drawn_cascade_view(drawn, current),
+					None => undrawn_cascade_view(current),
+				};
+			}
 		}
-		for (cube, (index, light, transform)) in shadows.points.iter().enumerate() {
-			let scale = ies_scales[*index].0;
-			for face in 0..POINT_SHADOW_FACE_COUNT {
-				views[POINT_SHADOW_VIEW_OFFSET + cube * POINT_SHADOW_FACE_COUNT + face] =
-					make_point_shadow_view(light, transform, face, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into();
+		for (position, current) in current.cones.iter().enumerate() {
+			views[CONE_SHADOW_VIEW_OFFSET + position] = *states.cone_view(position).unwrap_or(current);
+		}
+		for (position, faces) in current.points.iter().enumerate() {
+			for (face, current) in faces.iter().enumerate() {
+				views[POINT_SHADOW_VIEW_OFFSET + position * POINT_SHADOW_FACE_COUNT + face] =
+					*states.point_face_view(position, face).unwrap_or(current);
 			}
 		}
 		frame.sync_buffer(self.scene.views_buffer);
-		cascades
 	}
 }
 
@@ -1263,6 +1354,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			sinks,
 			&budget,
 			|index| ies_scales[index].0,
+			&self.shadow_slots,
 		);
 		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
 			format!(
@@ -1271,23 +1363,44 @@ impl PipelineManager for VisibilityPipelineManager {
 			)
 		});
 		self.shadow_layout = retain_layout(self.shadow_layout, shadows.layout(), &budget);
-		let cascades = sinks
+		self.shadow_slots = shadows.slots();
+		// Shadow views follow the first sink's camera, and each map's importance the largest sink.
+		let (cascades, shadow_views) = sinks
 			.first()
-			.map(|sink| self.write_views(frame, sink.view(), &shadows, &ies_scales))
+			.map(|sink| self.shadow_views(sink.view(), &shadows, &ies_scales))
 			.unwrap_or_default();
+		let sink_pixels = sinks
+			.iter()
+			.map(|sink| sink.extent().width() as f32 * sink.extent().height() as f32)
+			.fold(0.0, f32::max);
+		// The frame's states become the kept ones only once the frame-wide work records, below.
+		let mut shadow_states = self.shadow_states.clone();
+		let shadow_draws = shadow_states.update(
+			&shadows,
+			self.shadow_layout,
+			&shadow_views,
+			sink_pixels,
+			self.settings.directional_shadow_map_resolution,
+			self.settings.shadow_update_texels,
+		);
+		if let Some(sink) = sinks.first() {
+			self.write_views(frame, sink.view(), &shadow_views, &shadow_states);
+		}
+		// A local light casts shadows only once its map holds a drawn one.
+		let shadow_for = |index| shadow_states.shadow_for(&shadows, index);
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
-			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), &ies_scales);
+			.write_lighting(frame, shadow_for, exposure, self.environment.intensity(), &ies_scales);
 		let shadow_work = ShadowWork {
 			suns: shadows.suns.clone(),
 			cascade_resolution: self.settings.directional_shadow_map_resolution,
 			receiver_fit: (self.settings.cascade_fitting == CascadeFitting::Receivers)
 				.then_some(cascades)
 				.unwrap_or_default(),
+			drawn_cascades: shadow_states.drawn_cascades(shadows.suns.len()),
 			layout: self.shadow_layout,
-			cone_count: shadows.cones.len(),
-			point_count: shadows.points.len(),
+			draws: shadow_draws,
 		};
 
 		let frame_work = (&self.skinning_pass, &self.shadow_maps);
@@ -1296,6 +1409,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let recorded_exposure = self.recorded_exposure;
 		let recorded_ssgi = self.recorded_ssgi;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
+		let mut frame_work_recorded = false;
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -1332,9 +1446,13 @@ impl PipelineManager for VisibilityPipelineManager {
 					frame_allocator,
 				)?;
 				recorded_sinks.push(*sink);
+				frame_work_recorded |= command_index == 0;
 				Some((sink.index(), allocate_render_command(frame_allocator, command)))
 			})
 			.collect();
+		if frame_work_recorded {
+			self.shadow_states = shadow_states;
+		}
 		self.recorded_sinks = recorded_sinks;
 		self.recorded_exposure = exposure;
 		self.recorded_ssgi = self.ssgi_settings.enabled;

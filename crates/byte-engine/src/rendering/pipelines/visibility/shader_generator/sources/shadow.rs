@@ -773,8 +773,9 @@ point_shadow_receiver_plane_normal: fn (
 "#;
 
 // Snaps a cube lookup ray so depth sampling and receiver-plane correction use the same texel-center ray.
+// `shadow_map_resolution` is the cube faces' texels per side.
 pub(crate) const POINT_SHADOW_TEXEL_DIRECTION_SOURCE: &str = r#"
-point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
+point_shadow_texel_direction: fn (sample_direction: vec3f, shadow_map_resolution: f32) -> vec3f {
 	let absolute_direction: vec3f = vec3f(
 		abs(sample_direction.x),
 		abs(sample_direction.y),
@@ -808,12 +809,12 @@ point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
 		}
 	}
 
-	let texel_position: vec2f = (face_coordinate * 0.5 + vec2f(0.5, 0.5)) * 1024.0;
+	let texel_position: vec2f = (face_coordinate * 0.5 + vec2f(0.5, 0.5)) * shadow_map_resolution;
 	let texel: vec2u = vec2u(
-		u32(clamp(texel_position.x, 0.0, 1023.0)),
-		u32(clamp(texel_position.y, 0.0, 1023.0))
+		u32(clamp(texel_position.x, 0.0, shadow_map_resolution - 1.0)),
+		u32(clamp(texel_position.y, 0.0, shadow_map_resolution - 1.0))
 	);
-	let texel_center: vec2f = ((vec2f(f32(texel.x), f32(texel.y)) + vec2f(0.5, 0.5)) / 1024.0) * 2.0
+	let texel_center: vec2f = ((vec2f(f32(texel.x), f32(texel.y)) + vec2f(0.5, 0.5)) / shadow_map_resolution) * 2.0
 		- vec2f(1.0, 1.0);
 	// Face zero keeps the initial direction.
 	let snapped_direction: vec3f = vec3f(1.0, 0.0 - texel_center.y, 0.0 - texel_center.x);
@@ -831,6 +832,8 @@ point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
 
 pub(crate) const POINT_SHADOW_TAP_SOURCE: &str = r#"
 sample_point_shadow_tap: fn (
+	shadow_map: TextureCubeArray,
+	shadow_map_resolution: f32,
 	shadow_cube_index: u32,
 	center_direction: vec3f,
 	tangent: vec3f,
@@ -843,9 +846,10 @@ sample_point_shadow_tap: fn (
 	pcf_rotation: vec2f16
 ) -> f32 {
 	let tap_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)
-		* f16(1.5 * 2.0 / 1024.0);
+		* f16(1.5 * 2.0 / shadow_map_resolution);
 	let sample_direction: vec3f = point_shadow_texel_direction(
-		center_direction + tangent * f32(tap_offset.x) + bitangent * f32(tap_offset.y)
+		center_direction + tangent * f32(tap_offset.x) + bitangent * f32(tap_offset.y),
+		shadow_map_resolution
 	);
 	let receiver_vector: vec3f = point_shadow_receiver_vector(
 		sample_direction,
@@ -854,7 +858,7 @@ sample_point_shadow_tap: fn (
 	);
 	let face_distance: f32 = max(max(abs(receiver_vector.x), abs(receiver_vector.y)), abs(receiver_vector.z));
 	let receiver_depth: f32 = point_shadow_receiver_depth(receiver_vector, near, far);
-	let closest_depth: f32 = texture_cube_array_lod(point_shadow_map, sample_direction, shadow_cube_index, 0.0).x;
+	let closest_depth: f32 = texture_cube_array_lod(shadow_map, sample_direction, shadow_cube_index, 0.0).x;
 	return point_shadow_occlusion(closest_depth, receiver_depth, face_distance, near, far);
 }
 "#;
@@ -895,19 +899,21 @@ sample_point_shadow_face_tap: fn (
 	inverse_center_face_distance: f32,
 	near: f32,
 	far: f32,
+	shadow_map: TextureCubeArray,
+	shadow_map_resolution: f32,
 	shadow_cube_index: u32,
 	poisson_offset: vec2f16,
 	pcf_rotation: vec2f16
 ) -> f32 {
 	let tap_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)
-		* f16(1.5 * 2.0 / 1024.0);
+		* f16(1.5 * 2.0 / shadow_map_resolution);
 	let ray: vec3f = center_direction + tangent * f32(tap_offset.x) + bitangent * f32(tap_offset.y);
 	// The texel `point_shadow_texel_direction` snaps the ray to, and its center on the face, from -1 to 1.
-	let texel_position: vec2f = (vec2f(ray.x, ray.y) / ray.z * 0.5 + vec2f(0.5, 0.5)) * 1024.0;
+	let texel_position: vec2f = (vec2f(ray.x, ray.y) / ray.z * 0.5 + vec2f(0.5, 0.5)) * shadow_map_resolution;
 	let texel_center: vec2f = vec2f(
-		floor(clamp(texel_position.x, 0.0, 1023.0)) + 0.5,
-		floor(clamp(texel_position.y, 0.0, 1023.0)) + 0.5
-	) / 512.0 - vec2f(1.0, 1.0);
+		floor(clamp(texel_position.x, 0.0, shadow_map_resolution - 1.0)) + 0.5,
+		floor(clamp(texel_position.y, 0.0, shadow_map_resolution - 1.0)) + 0.5
+	) / (shadow_map_resolution * 0.5) - vec2f(1.0, 1.0);
 	// The ray through the texel center has a z of one, so the distance along it to the receiver plane is the face distance
 	// there. The plane test of `point_shadow_receiver_vector` uses the unit ray, which is this one divided by its length.
 	let ray_alignment: f32 = dot(receiver_plane_normal, vec3f(texel_center.x, texel_center.y, 1.0));
@@ -923,7 +929,7 @@ sample_point_shadow_face_tap: fn (
 	let in_range: bool = inverse_face_distance * near < 1.0 && inverse_face_distance * far > 1.0;
 	let receiver_depth: f32 = if (in_range) { (near * far * inverse_face_distance - near) / (far - near) + 2.0 / 65535.0 } else { 2.0 };
 	let closest_depth: f32 = texture_cube_array_lod(
-		point_shadow_map,
+		shadow_map,
 		face_normal + face_u * texel_center.x + face_v * texel_center.y,
 		shadow_cube_index,
 		0.0
@@ -951,9 +957,12 @@ point_shadow_poisson_offset: fn (tap: u32) -> vec2f16 {
 // Filters a point light's shadow with eight Poisson taps around the receiver, rotated per shadow-map texel. Taps of a
 // receiver inside its cube face run in that face's coordinates with `sample_point_shadow_face_tap`, which costs far less
 // than choosing a face for every tap. Near a face edge, where a tap can cross onto the next face, every tap chooses its
-// own face with `sample_point_shadow_tap`.
+// own face with `sample_point_shadow_tap`. `shadow_map` is the point image of the light's size class, whose cube faces
+// have `shadow_map_resolution` texels per side.
 pub(crate) const POINT_SHADOW_SOURCE: &str = r#"
 sample_point_shadow: fn (
+	shadow_map: TextureCubeArray,
+	shadow_map_resolution: f32,
 	shadow_view_index: u32,
 	shadow_cube_index: u32,
 	world_space_position: vec3f,
@@ -969,7 +978,7 @@ sample_point_shadow: fn (
 	let view: View = views.views[shadow_view_index];
 	let receiver_distance: f32 = sqrt(distance_squared);
 	let center_direction: vec3f = light_to_surface / receiver_distance;
-	let pcf_rotation: vec2f16 = compute_shadow_rotation(point_shadow_texel_direction(center_direction));
+	let pcf_rotation: vec2f16 = compute_shadow_rotation(point_shadow_texel_direction(center_direction, shadow_map_resolution));
 	let reference: vec3f = vec3f(0.0, 1.0, 0.0);
 	if (abs(center_direction.y) > 0.99) {
 		reference = vec3f(0.0, 0.0, 1.0);
@@ -991,9 +1000,11 @@ sample_point_shadow: fn (
 		dot(center_direction, face_normal)
 	);
 	let occlusion: f32 = 0.0;
-	// A tap lies at most 0.0029 from the center direction, which moves the gap between the face component and another
-	// component by at most 0.0041. A receiver whose gaps both exceed 0.005 keeps every tap on its face.
-	if (face_center.z - abs(face_center.x) > 0.005 && face_center.z - abs(face_center.y) > 0.005) {
+	// A tap lies at most 3 / resolution from the center direction, which moves the gap between the face component and
+	// another component by at most 4.25 / resolution. A receiver whose gaps both exceed 5.12 / resolution, 0.005 at 1024
+	// texels, keeps every tap on its face.
+	let face_gap: f32 = 5.12 / shadow_map_resolution;
+	if (face_center.z - abs(face_center.x) > face_gap && face_center.z - abs(face_center.y) > face_gap) {
 		let face_tangent: vec3f = vec3f(dot(tangent, face_u), dot(tangent, face_v), dot(tangent, face_normal));
 		let face_bitangent: vec3f = vec3f(dot(bitangent, face_u), dot(bitangent, face_v), dot(bitangent, face_normal));
 		let face_plane_normal: vec3f = vec3f(
@@ -1006,14 +1017,14 @@ sample_point_shadow: fn (
 		let inverse_center_face_distance: f32 = 1.0
 			/ max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
 		// The taps are written out, so their eight cube reads are in flight together.
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(0), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(1), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(2), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(3), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(4), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(5), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(6), pcf_rotation);
-		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_cube_index, point_shadow_poisson_offset(7), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(0), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(1), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(2), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(3), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(4), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(5), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(6), pcf_rotation);
+		occlusion = occlusion + sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, inverse_plane_distance, inverse_center_face_distance, view.near, view.far, shadow_map, shadow_map_resolution, shadow_cube_index, point_shadow_poisson_offset(7), pcf_rotation);
 	} else {
 		// One pass per set bit, like the light loop. The compiler cannot count these passes, so this rare path stays a
 		// compact loop. Written out, its eight taps doubled the kernel's spill and added reloads to the light loop, which made
@@ -1021,6 +1032,8 @@ sample_point_shadow: fn (
 		// too (2026-10-06).
 		for (let taps: u32 = 255; taps != 0; taps = taps & (taps - 1)) {
 			occlusion = occlusion + sample_point_shadow_tap(
+				shadow_map,
+				shadow_map_resolution,
 				shadow_cube_index,
 				center_direction,
 				tangent,

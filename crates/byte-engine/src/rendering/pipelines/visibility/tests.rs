@@ -3145,6 +3145,7 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 const RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1034);
 const RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1035);
 const CASCADE_SIZE_STEPS_SLOT: ResourceSlot = ResourceSlot::new(1036);
+const DRAWN_CASCADE_VIEWS_SLOT: ResourceSlot = ResourceSlot::new(1037);
 /// Pixels one depth pyramid workgroup covers on each side: sixteen threads of two pixels.
 const RECEIVER_BOUNDS_TILE: u32 = 32;
 const RECEIVER_FIT_EXTENT: u32 = 64;
@@ -3191,8 +3192,16 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 	let cascades = &suns[0];
 	let extent = utils::Extent::square(RECEIVER_FIT_EXTENT);
 	let screen = super::render_pass::screen_view_data(&Sink::new(camera, extent, 0), extent);
-	let shader_data =
-		super::render_pass::receiver_fit_shader_data(screen, camera, &suns, super::layout::DEFAULT_SHADOW_MAP_RESOLUTION);
+	// Every cascade draws this frame.
+	let every_cascade = (1 << (super::layout::SHADOW_CASCADE_COUNT * suns.len())) - 1;
+	let shader_data = super::render_pass::receiver_fit_shader_data(
+		screen,
+		camera,
+		&suns,
+		super::layout::DEFAULT_SHADOW_MAP_RESOLUTION,
+		every_cascade,
+		0,
+	);
 
 	let camera_to_world = math::inverse(camera.view());
 	let position = camera_to_world * maths_rs::Vec4f::new(0.0, 0.0, 0.0, 1.0);
@@ -3251,6 +3260,8 @@ fn receiver_fit_buffer(
 	] {
 		fit.write(member, Value::Vec4F(value)).expect("receiver fit constants");
 	}
+	fit.write("cascade_masks", Value::Vec4U(data.cascade_masks))
+		.expect("receiver fit cascade masks");
 	fit
 }
 
@@ -3293,13 +3304,16 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 	bounds
 }
 
-/// Runs the cascade fit on `bounds` over views holding every sun's frustum-fitted cascades after the camera, and
-/// returns the views it wrote.
+/// Runs the cascade fit on `bounds` over views holding every sun's frustum-fitted cascades after the camera, with the
+/// cascade masks of `shader_data`, and returns the views it wrote. `drawn_views` holds each cascade's last drawn view
+/// across runs.
 fn run_cascade_fit(
 	program: &ExecutableProgram,
 	scene: &ReceiverFitScene,
+	shader_data: &super::render_pass::ReceiverFitShaderData,
 	bounds: &mut besl::vm::Buffer,
 	size_steps: &mut besl::vm::Buffer,
+	drawn_views: &mut besl::vm::Buffer,
 ) -> besl::vm::Buffer {
 	let mut views = buffer(program, VIEWS_SLOT);
 	for (cascade, frame) in scene.suns.iter().flatten().enumerate() {
@@ -3316,7 +3330,7 @@ fn run_cascade_fit(
 			views.write_array_member(1 + cascade, field, value).expect("cascade view");
 		}
 	}
-	let mut fit = receiver_fit_buffer(program, RECEIVER_FIT_SLOT, &scene.shader_data);
+	let mut fit = receiver_fit_buffer(program, RECEIVER_FIT_SLOT, shader_data);
 	// One workgroup fits each sun, one lane per cascade.
 	for sun in 0..scene.suns.len() as u32 {
 		let mut descriptors = DescriptorBindings::new();
@@ -3324,6 +3338,7 @@ fn run_cascade_fit(
 		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
 		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
 		descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
+		descriptors.bind_buffer(DRAWN_CASCADE_VIEWS_SLOT, drawn_views);
 		run_workgroup_containing::<4>(program, descriptors, 4, [4 * sun, 0]);
 	}
 	views
@@ -3360,7 +3375,15 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	let mut bounds = run_receiver_bounds(&scene);
 	let program = asset!("directional-shadow-cascade-fit.besl");
 	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
-	let views = run_cascade_fit(&program, &scene, &mut bounds, &mut size_steps);
+	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
+	let views = run_cascade_fit(
+		&program,
+		&scene,
+		&scene.shader_data,
+		&mut bounds,
+		&mut size_steps,
+		&mut drawn_views,
+	);
 	let resolution = super::layout::DEFAULT_SHADOW_MAP_RESOLUTION as f32;
 
 	// The fit resets the bounds it read, so the next frame's depth pyramid pass merges into empty boxes.
@@ -3451,6 +3474,64 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	);
 }
 
+/// Verifies a cascade that doesn't draw keeps the view it was last drawn with instead of this frame's fit, and that a
+/// cascade that holds no drawn map gets a view that no receiver falls in, while both drop their receiver bounds.
+#[test]
+fn cascades_that_do_not_draw_keep_their_drawn_view_in_the_besl_vm() {
+	let scene = receiver_fit_scene();
+	let program = asset!("directional-shadow-cascade-fit.besl");
+	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
+	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
+
+	// The first frame draws every cascade from the receivers the camera sees.
+	let drawn = run_cascade_fit(
+		&program,
+		&scene,
+		&scene.shader_data,
+		&mut run_receiver_bounds(&scene),
+		&mut size_steps,
+		&mut drawn_views,
+	);
+	// The second draws only the first sun's first cascade, from a box that fits it differently. The first sun's second
+	// cascade holds its map from the first frame, and the third holds none.
+	let masks = super::render_pass::ReceiverFitShaderData {
+		cascade_masks: [0b0001, 0b0011, 0, 0],
+		..scene.shader_data
+	};
+	let mut bounds = box_bounds(&program, 0.25);
+	for first in [6, 12] {
+		bounds.write_array_element(first, Value::U32(1)).expect("receiver bounds");
+	}
+	let views = run_cascade_fit(&program, &scene, &masks, &mut bounds, &mut size_steps, &mut drawn_views);
+
+	let view_projection = |views: &besl::vm::Buffer, view| read_matrix(views, view, "view_projection");
+	assert_ne!(
+		view_projection(&views, 1),
+		view_projection(&drawn, 1),
+		"The cascade that draws should fit this frame's receivers."
+	);
+	for field in ["view", "view_projection", "inverse_view"] {
+		assert_eq!(
+			read_matrix(&views, 2, field),
+			read_matrix(&drawn, 2, field),
+			"The cascade that doesn't draw changed its {field}. The most likely cause is that the fit did not restore its drawn view."
+		);
+	}
+	let outside = transform_point(&view_projection(&views, 3), 4, [1.0, 2.0, 3.0]);
+	assert_eq!(
+		outside,
+		[2.0, 0.0, 0.0, 1.0],
+		"A cascade without a drawn map should put every receiver outside it."
+	);
+	for bound in 6..18 {
+		assert_eq!(
+			bounds.read_array_element(bound).expect("receiver bound"),
+			Value::U32(0),
+			"Bound {bound} of a cascade that doesn't draw was not dropped."
+		);
+	}
+}
+
 /// Returns bounds holding one box, centered in the frustum fit, `half_size` normalized device units wide in x and y.
 fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
 	const STEPS_PER_UNIT: f32 = 4_194_304.0;
@@ -3481,8 +3562,17 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 	let scene = receiver_fit_scene();
 	let program = asset!("directional-shadow-cascade-fit.besl");
 	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
+	let mut drawn_views = buffer(&program, DRAWN_CASCADE_VIEWS_SLOT);
 	let mut fit = |half_size: f32| {
-		let views = run_cascade_fit(&program, &scene, &mut box_bounds(&program, half_size), &mut size_steps);
+		let mut bounds = box_bounds(&program, half_size);
+		let views = run_cascade_fit(
+			&program,
+			&scene,
+			&scene.shader_data,
+			&mut bounds,
+			&mut size_steps,
+			&mut drawn_views,
+		);
 		fitted_half_extent(&read_matrix(&views, 1, "view_projection"))
 	};
 

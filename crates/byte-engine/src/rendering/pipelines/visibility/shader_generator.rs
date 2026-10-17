@@ -19,8 +19,9 @@ pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading}
 use self::sources::*;
 use super::VisibilityFeatures;
 use super::layout::{
-	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES,
-	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, TRANSPARENT_SPECIALIZATION_ID,
+	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES,
+	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
+	MAX_PIXEL_MAPPING_ENTRIES, MIN_LOCAL_SHADOW_MAP_RESOLUTION, TRANSPARENT_SPECIALIZATION_ID,
 	material_variable_specialization_id,
 };
 use crate::application::parameters::Parameters;
@@ -37,6 +38,12 @@ const _: () = assert!(
 		&& super::skinning::MAX_SKINNED_VERTICES == 262144
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the array sizes in `scene.besl`, `visibility-buffer.besl`, `material-dispatch.besl`, and `material-evaluation.besl` when visibility limits change."
+);
+// `material-evaluation.besl` spells out the size-class count and the material evaluation suffix in `sources` the
+// smallest class's resolution.
+const _: () = assert!(
+	LOCAL_SHADOW_SIZE_CLASS_COUNT == 5 && MIN_LOCAL_SHADOW_MAP_RESOLUTION == 128,
+	"Update the `cone_shadow_maps` and `point_shadow_maps` counts in `material-evaluation.besl` and the point shadow resolution in the material evaluation suffix when local shadow size classes change."
 );
 // The material evaluation suffix in `sources` and `light-clusters.besl` spell out the cluster grid.
 const _: () = assert!(

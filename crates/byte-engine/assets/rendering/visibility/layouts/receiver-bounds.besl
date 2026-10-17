@@ -9,6 +9,8 @@ ReceiverFit: struct {
 	pixel_to_ray: vec4f,
 	depth_unproject: vec4f,
 	fit_constants: vec4f,
+	// One bit per fitted box in x for the cascades that draw this frame, and in y for the ones that hold a drawn map.
+	cascade_masks: vec4u,
 }
 
 // Per fitted box, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.

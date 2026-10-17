@@ -17,7 +17,7 @@ use super::render_pass::VisibilityRenderPass;
 use super::shader_data::{
 	IesProfileTexture, LightData, LightingData, NEUTRAL_UNIT_VECTOR, NO_IES_PROFILE_TEXTURE, ShaderMesh, ShaderViewData,
 };
-use super::shadow_selection::{LightShadow, ShadowLightSelection, sun_cascade_view};
+use super::shadow_selection::{LightShadow, sun_cascade_view};
 use super::skinning::SkinningDispatch;
 use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
@@ -220,7 +220,7 @@ impl VisibilityScene {
 	pub(crate) fn write_lighting(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		shadows: &ShadowLightSelection<'_>,
+		shadow_for: impl Fn(usize) -> LightShadow,
 		exposure: f32,
 		environment_intensity: f32,
 		ies_profiles: &[(f32, Option<IesProfileTexture>)],
@@ -233,7 +233,7 @@ impl VisibilityScene {
 		lighting_data.exposure = exposure;
 		lighting_data.environment_intensity = environment_intensity;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
-			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), ies_profiles[index].1);
+			lighting_data.lights[index] = light_data(light, transform, shadow_for(index), ies_profiles[index].1);
 		}
 		frame.sync_buffer(self.lighting_buffer);
 	}
@@ -253,18 +253,24 @@ pub(super) fn light_data(
 	shadow: LightShadow,
 	ies_texture: Option<IesProfileTexture>,
 ) -> LightData {
-	let (shadow_views, shadow_layer) = match shadow {
-		LightShadow::None => ([0; 8], 0),
+	let (shadow_views, shadow_size_class, shadow_layer) = match shadow {
+		LightShadow::None => ([0; 4], 0, 0),
 		// Each sun's cascades are its four views; its slot picks its sun-visibility layer.
 		LightShadow::Directional { slot } => {
 			let first_view = sun_cascade_view(slot as usize) as u32;
-			(
-				std::array::from_fn(|cascade| (cascade < SHADOW_CASCADE_COUNT) as u32 * (first_view + cascade as u32)),
-				slot,
-			)
+			let views = std::array::from_fn::<u32, SHADOW_CASCADE_COUNT, _>(|cascade| first_view + cascade as u32);
+			(views, 0, slot)
 		}
-		LightShadow::Cone { view_index, layer } => ([view_index, 0, 0, 0, 0, 0, 0, 0], layer),
-		LightShadow::Point { view_index, cube_index } => ([view_index, 0, 0, 0, 0, 0, 0, 0], cube_index),
+		LightShadow::Cone {
+			view_index,
+			size_class,
+			layer,
+		} => ([view_index, 0, 0, 0], size_class, layer),
+		LightShadow::Point {
+			view_index,
+			size_class,
+			cube_index,
+		} => ([view_index, 0, 0, 0], size_class, cube_index),
 	};
 	let position = transform.position().into_maths();
 	let orientation = transform.orientation();
@@ -311,11 +317,13 @@ pub(super) fn light_data(
 		cone_cosines,
 		light_type,
 		shadow_views,
+		shadow_size_class,
 		shadow_layer,
 		ies_profile_texture,
 		ies_c0_tangent,
 		reach: light_reach(color),
 		angular_radius_tangent: 0.0,
+		..LightData::default()
 	}
 }
 
@@ -432,7 +440,7 @@ mod tests {
 		let point_data = light_data(&Lights::Point(point), &transform, LightShadow::None, None);
 
 		assert_eq!(directional_data.color, ghi::pod::Vec3f::splat(80_000.0));
-		assert_eq!(directional_data.shadow_views, [5, 6, 7, 8, 0, 0, 0, 0]);
+		assert_eq!(directional_data.shadow_views, [5, 6, 7, 8]);
 		assert_eq!(directional_data.shadow_layer, 1);
 		assert_eq!(point_data.color, ghi::pod::Vec3f::splat(100.0));
 		assert_eq!(directional_data.light_type, 68);

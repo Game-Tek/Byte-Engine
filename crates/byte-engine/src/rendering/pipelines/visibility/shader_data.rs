@@ -88,7 +88,14 @@ pub struct LightData {
 	pub direction: Vec3f,
 	pub cone_cosines: [f32; 2],
 	pub light_type: u32,
-	pub shadow_views: [u32; 8],
+	/// A sun's four cascade views, or a cone's view or a point's first cube-face view in the first entry. Zero means
+	/// the light has no shadow map.
+	pub shadow_views: [u32; 4],
+	/// The size class of a cone or point light's shadow map, which picks the image of that class. See
+	/// [`super::layout::LOCAL_SHADOW_SIZE_CLASS_COUNT`].
+	pub(crate) shadow_size_class: u32,
+	pub(crate) _padding: [u32; 3],
+	/// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	pub shadow_layer: u32,
 	pub(crate) ies_profile_texture: u32,
 	pub(crate) ies_c0_tangent: RuntimeUnitVector,
@@ -231,6 +238,7 @@ const _: () = assert!(std::mem::offset_of!(LightData, direction) == 24);
 const _: () = assert!(std::mem::offset_of!(LightData, cone_cosines) == 36);
 const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 44);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 48);
+const _: () = assert!(std::mem::offset_of!(LightData, shadow_size_class) == 64);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 80);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 84);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 88);

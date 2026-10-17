@@ -390,8 +390,6 @@ impl VisibilityRenderPass {
 				shadow_maps.directional_depth_pyramid,
 				depth_pyramid_sampler,
 			),
-			evaluation.sampled("cone_shadow_map", shadow_maps.cone, depth_sampler),
-			evaluation.sampled("point_shadow_map", shadow_maps.point, depth_sampler),
 			dispatch.buffer("material_count_buffer", material_count),
 			dispatch.buffer("material_offset_buffer", material_offset),
 			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),
@@ -404,6 +402,13 @@ impl VisibilityRenderPass {
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
+		// One image of each local shadow-map size class, which a light picks by its class.
+		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
+			writes.extend([
+				evaluation.sampled_element("cone_shadow_maps", *cone, depth_sampler, size_class as u32),
+				evaluation.sampled_element("point_shadow_maps", *point, depth_sampler, size_class as u32),
+			]);
+		}
 		context.write(&writes);
 
 		Self {
@@ -515,9 +520,15 @@ impl VisibilityRenderPass {
 		};
 		let visibility_pipelines = self.visibility.pipelines.resolve(pipeline_manager)?;
 		let prepass_pipelines = self.material_prepasses.pipelines.resolve(pipeline_manager)?;
-		let cascade_fit =
-			self.cascade_fit
-				.prepare(frame, pipeline_manager, receiver_fit, shadow_work.cascade_resolution, sink)?;
+		let cascade_masks = [shadow_work.updated_cascades(), shadow_work.drawn_cascades];
+		let cascade_fit = self.cascade_fit.prepare(
+			frame,
+			pipeline_manager,
+			receiver_fit,
+			shadow_work.cascade_resolution,
+			cascade_masks,
+			sink,
+		)?;
 		let fitted_suns = receiver_fit.len() as u32;
 		let fits_receivers = fitted_suns > 0;
 		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;

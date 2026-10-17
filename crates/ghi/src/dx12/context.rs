@@ -586,7 +586,8 @@ struct RenderTargetAttachment {
 	resource: ID3D12Resource,
 	format: Formats,
 	array_layers: u32,
-	layer: Option<u32>,
+	/// The first layer the attachment covers, which a render-target index of zero writes.
+	first_layer: u32,
 	layer_count: u32,
 	/// The value the pass clears the target to, or `None` when it loads or discards the contents.
 	clear: Option<ClearValue>,

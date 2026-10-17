@@ -20,6 +20,9 @@ pub(crate) struct Image {
 	pub(crate) image: vk::Image,
 	pub(crate) full_image_view: vk::ImageView,
 	pub(crate) image_views: Vec<vk::ImageView>,
+	/// For a layered render target, entry `n` views layers `n + 1` through the last one, so a layered attachment can
+	/// start past the first layer. See [`crate::AttachmentInformation::layers`].
+	pub(crate) layer_suffix_views: Vec<vk::ImageView>,
 	pub(crate) extent: Extent,
 	pub(crate) format: vk::Format,
 	pub(crate) format_: Formats,

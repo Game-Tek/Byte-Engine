@@ -48,7 +48,12 @@ impl Drop for DetachedImage {
 		// SAFETY: Exporting requires every submission that used the image to have completed, and no context holds
 		// these objects anymore, so nothing else can use them.
 		unsafe {
-			for &view in image.image_views.iter().chain([&image.full_image_view]) {
+			for &view in image
+				.image_views
+				.iter()
+				.chain(&image.layer_suffix_views)
+				.chain([&image.full_image_view])
+			{
 				self.device.destroy_image_view(view, None);
 			}
 			self.device.destroy_image(image.image, None);

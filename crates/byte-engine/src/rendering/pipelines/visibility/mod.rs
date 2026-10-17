@@ -30,6 +30,7 @@ mod set_layouts;
 mod shader_data;
 mod shader_generator;
 mod shadow_selection;
+mod shadow_updates;
 mod skinning;
 #[cfg(test)]
 mod tests;

@@ -626,8 +626,8 @@ impl CommandBufferRecording<'_> {
 		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
 
 		assert!(
-			requested_layer_count <= image_layer_count,
-			"Invalid Vulkan attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
+			attachment.first_layer + requested_layer_count <= image_layer_count,
+			"Invalid Vulkan attachment layer range. The most likely cause is that the render pass requested layers the image does not provide."
 		);
 		assert!(
 			attachment.layer.is_none_or(|layer| layer < image_layer_count),
@@ -642,7 +642,13 @@ impl CommandBufferRecording<'_> {
 				image.layers.is_some(),
 				"Invalid layered Vulkan attachment image. The most likely cause is that layered rendering targeted a non-array image."
 			);
-			image.full_image_view
+			// The rendering info's layer count limits drawing and clearing to the requested layers of the view.
+			match attachment.first_layer {
+				0 => image.full_image_view,
+				first_layer => *image.layer_suffix_views.get(first_layer as usize - 1).expect(
+					"Vulkan attachment layer range is unavailable. The most likely cause is that layered rendering started past the first layer of an image that is not a render target.",
+				),
+			}
 		} else {
 			*image.image_views.get(attachment.layer.unwrap_or(0) as usize).expect(
 				"Vulkan attachment layer is unavailable. The most likely cause is that the selected layer exceeds the image array size.",

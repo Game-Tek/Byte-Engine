@@ -96,6 +96,7 @@ Every value here is validated, and a bad one stops startup.
 | Name | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `render.shadow-maps.budget-mb` | Positive MiB | 128 | Shadow-map memory shared by every shadow-casting light. |
+| `render.shadow-maps.update-texels` | Positive texels | 16,777,216 | Shadow-map texels drawn each frame. See [shadow map updates](/docs/reference/rendering#shadow-map-updates). |
 | `render.geometry.vertex-capacity` | Positive count | 262,144 | Scene-wide vertices. |
 | `render.geometry.vertex-index-capacity` | Positive count | 524,288 | Meshlet-local vertex indices. |
 | `render.geometry.triangle-capacity` | Positive count | 524,288 | Triangles. |

@@ -1018,22 +1018,32 @@ fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm()
 	}
 }
 
-/// Verifies point PCF compares against the center of the cube texel selected by closest sampling.
+/// Verifies point PCF compares against the center of the cube texel selected by closest sampling, for the largest and
+/// the smallest size class.
 #[test]
 fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
-			let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)));
+			let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)), 1024.0);
 			results.y_over_x = direction.y / direction.x;
 			results.z_over_x = direction.z / direction.x;
+			let coarse: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)), 128.0);
+			results.coarse_y_over_x = coarse.y / coarse.x;
+			results.coarse_z_over_x = coarse.z / coarse.x;
 		}
 		"#,
 		&mut [],
 		&[(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction")],
-		members("f32", &["y_over_x", "z_over_x"]),
+		members("f32", &["y_over_x", "z_over_x", "coarse_y_over_x", "coarse_z_over_x"]),
 	);
-	for (name, expected) in [("y_over_x", -0.25097656), ("z_over_x", 0.10058594)] {
+	// The direction falls in texel (460, 640) of 1024 and texel (57, 80) of 128 on the +x face.
+	for (name, expected) in [
+		("y_over_x", -0.25097656),
+		("z_over_x", 0.10058594),
+		("coarse_y_over_x", -0.2578125),
+		("coarse_z_over_x", 0.1015625),
+	] {
 		assert!(
 			(read_f32(&results, name) - expected).abs() < 0.000001,
 			"Unexpected point-shadow texel-center result for {name}."
@@ -1075,8 +1085,8 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 }
 
 /// Verifies a point-shadow tap worked out in the receiver's cube-face coordinates decides exactly as the general tap,
-/// which picks a face for every ray: for receivers inside each of the six faces with tilted receiver planes, for a
-/// degenerate receiver plane, and for a receiver beyond the far plane. The stored depth lies just in front of the
+/// which picks a face for every ray, at every size class: for receivers inside each of the six faces with tilted
+/// receiver planes, for a degenerate receiver plane, and for a receiver beyond the far plane. The stored depth lies just in front of the
 /// receivers, so the tilted planes leave some taps lit and some shadowed.
 #[test]
 fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
@@ -1126,41 +1136,44 @@ fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
 			let mismatches: f32 = 0.0;
 			let lit_inside_faces: f32 = 0.0;
 			let lit_fallbacks: f32 = 0.0;
-			for (let receiver: u32 = 0; receiver < 8; receiver = receiver + 1) {
-				// The same inputs `sample_point_shadow` prepares for both kinds of tap.
-				let light_to_surface: vec3f = test_light_to_surface(receiver);
-				let receiver_plane_normal: vec3f = test_receiver_plane_normal(receiver);
-				let center_direction: vec3f = light_to_surface / sqrt(dot(light_to_surface, light_to_surface));
-				let reference: vec3f = vec3f(0.0, 1.0, 0.0);
-				if (abs(center_direction.y) > 0.99) {
-					reference = vec3f(0.0, 0.0, 1.0);
-				}
-				let tangent: vec3f = normalize(cross(reference, center_direction));
-				let bitangent: vec3f = cross(center_direction, tangent);
-				let face_normal: vec3f = point_shadow_face_normal(center_direction);
-				let face_u: vec3f = vec3f(abs(face_normal.y) + face_normal.z, 0.0, -face_normal.x);
-				let face_v: vec3f = vec3f(0.0, -abs(face_normal.x) - abs(face_normal.z), face_normal.y);
-				let face_center: vec3f = vec3f(dot(center_direction, face_u), dot(center_direction, face_v), dot(center_direction, face_normal));
-				let face_tangent: vec3f = vec3f(dot(tangent, face_u), dot(tangent, face_v), dot(tangent, face_normal));
-				let face_bitangent: vec3f = vec3f(dot(bitangent, face_u), dot(bitangent, face_v), dot(bitangent, face_normal));
-				let face_plane_normal: vec3f = vec3f(
-					dot(receiver_plane_normal, face_u),
-					dot(receiver_plane_normal, face_v),
-					dot(receiver_plane_normal, face_normal)
-				);
-				let plane_distance: f32 = dot(receiver_plane_normal, light_to_surface);
-				let inverse_center_face_distance: f32 = 1.0
-					/ max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
-				for (let tap: u32 = 0; tap < 8; tap = tap + 1) {
-					let general: f32 = sample_point_shadow_tap(0, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, near, far, point_shadow_poisson_offset(tap), rotation);
-					let face: f32 = sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, 1.0 / plane_distance, inverse_center_face_distance, near, far, 0, point_shadow_poisson_offset(tap), rotation);
-					if (general != face) {
-						mismatches = mismatches + 1.0;
+			for (let size_class: u32 = 0; size_class < 5; size_class = size_class + 1) {
+				let resolution: f32 = f32(128 << size_class);
+				for (let receiver: u32 = 0; receiver < 8; receiver = receiver + 1) {
+					// The same inputs `sample_point_shadow` prepares for both kinds of tap.
+					let light_to_surface: vec3f = test_light_to_surface(receiver);
+					let receiver_plane_normal: vec3f = test_receiver_plane_normal(receiver);
+					let center_direction: vec3f = light_to_surface / sqrt(dot(light_to_surface, light_to_surface));
+					let reference: vec3f = vec3f(0.0, 1.0, 0.0);
+					if (abs(center_direction.y) > 0.99) {
+						reference = vec3f(0.0, 0.0, 1.0);
 					}
-					if (receiver < 6) {
-						lit_inside_faces = lit_inside_faces + general;
-					} else {
-						lit_fallbacks = lit_fallbacks + general;
+					let tangent: vec3f = normalize(cross(reference, center_direction));
+					let bitangent: vec3f = cross(center_direction, tangent);
+					let face_normal: vec3f = point_shadow_face_normal(center_direction);
+					let face_u: vec3f = vec3f(abs(face_normal.y) + face_normal.z, 0.0, -face_normal.x);
+					let face_v: vec3f = vec3f(0.0, -abs(face_normal.x) - abs(face_normal.z), face_normal.y);
+					let face_center: vec3f = vec3f(dot(center_direction, face_u), dot(center_direction, face_v), dot(center_direction, face_normal));
+					let face_tangent: vec3f = vec3f(dot(tangent, face_u), dot(tangent, face_v), dot(tangent, face_normal));
+					let face_bitangent: vec3f = vec3f(dot(bitangent, face_u), dot(bitangent, face_v), dot(bitangent, face_normal));
+					let face_plane_normal: vec3f = vec3f(
+						dot(receiver_plane_normal, face_u),
+						dot(receiver_plane_normal, face_v),
+						dot(receiver_plane_normal, face_normal)
+					);
+					let plane_distance: f32 = dot(receiver_plane_normal, light_to_surface);
+					let inverse_center_face_distance: f32 = 1.0
+						/ max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
+					for (let tap: u32 = 0; tap < 8; tap = tap + 1) {
+						let general: f32 = sample_point_shadow_tap(point_shadow_map, resolution, 0, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, near, far, point_shadow_poisson_offset(tap), rotation);
+						let face: f32 = sample_point_shadow_face_tap(face_u, face_v, face_normal, face_center, face_tangent, face_bitangent, face_plane_normal, plane_distance, 1.0 / plane_distance, inverse_center_face_distance, near, far, point_shadow_map, resolution, 0, point_shadow_poisson_offset(tap), rotation);
+						if (general != face) {
+							mismatches = mismatches + 1.0;
+						}
+						if (receiver < 6) {
+							lit_inside_faces = lit_inside_faces + general;
+						} else {
+							lit_fallbacks = lit_fallbacks + general;
+						}
 					}
 				}
 			}
@@ -1196,13 +1209,14 @@ fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
 	);
 	let lit_inside_faces = read_f32(&results, "lit_inside_faces");
 	assert!(
-		lit_inside_faces > 0.0 && lit_inside_faces < 48.0,
-		"Expected the tilted receivers to leave some of their 48 taps lit and some shadowed, got {lit_inside_faces} lit. \
+		lit_inside_faces > 0.0 && lit_inside_faces < 5.0 * 48.0,
+		"Expected the tilted receivers to leave some of their 48 taps per size class lit and some shadowed, got {lit_inside_faces} lit. \
 		 The most likely cause is a fixture whose stored depth no longer lies between the taps' receiver depths."
 	);
 	// Every tap of the degenerate plane compares the receiver's own depth, which the two-step margin keeps in front of the
-	// stored depth one step closer, and the far receiver is out of range, so all sixteen of their taps are lit.
-	assert_eq!(read_f32(&results, "lit_fallbacks"), 16.0);
+	// stored depth one step closer, and the far receiver is out of range, so all sixteen of their taps in every size
+	// class are lit.
+	assert_eq!(read_f32(&results, "lit_fallbacks"), 5.0 * 16.0);
 }
 
 /* Screen-space reflections */

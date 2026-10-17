@@ -130,8 +130,82 @@ are resident.
 | Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
 | Beyond the last cascade | No sun shadow. |
 
-Local shadow maps and the shadow budget are specified under
-[lighting](/docs/reference/lighting#shadow-maps).
+### Shadow maps
+
+Every shadow-casting light draws from one memory budget,
+`render.shadow-maps.budget-mb`, 128 MiB by default:
+
+| Light | Shadow map | Cost |
+| --- | --- | --- |
+| The first directional light | Four cascades of 2,048 texels per side by default, 16-bit depth | 32 MiB at the default resolution |
+| A cone light | One map of its size class, 16-bit depth | 32 KiB to 8 MiB |
+| A point light | A cube map of six faces of its size class, 16-bit depth | 192 KiB to 48 MiB |
+
+A cone map or point cube face takes one of five sizes, its size class:
+
+| Size class | Texels per side | Cone map | Point cube map |
+| --- | --- | --- | --- |
+| 0 | 128 | 32 KiB | 192 KiB |
+| 1 | 256 | 128 KiB | 768 KiB |
+| 2 | 512 | 512 KiB | 3 MiB |
+| 3 | 1,024 | 2 MiB | 12 MiB |
+| 4 | 2,048 | 8 MiB | 48 MiB |
+
+A light's span is its shadow range's projected diameter, in pixels, in the sink
+where it looks largest. A light whose range contains a sink's camera spans that
+sink's larger side. A cone light needs the span in texels per side, and a point
+light half the span. The light takes the smallest class with at least that many texels, up to class 4. A light
+moves to a larger class as soon as it needs one, and to a smaller class only once
+it needs fewer than three quarters of that class's texels.
+
+The first directional light is placed first, then cone and point lights in
+order of the screen area they cover, each at the cost of its size class, then
+any other directional lights. A light that doesn't fit stays lit without
+shadows, with one warning in the log. At most 4 directional, 16 cone, and 16 point lights hold shadow maps at once.
+
+### Shadow map updates
+
+A shadow map isn't drawn again every frame. Each frame draws a set of updates
+chosen within an update budget, `render.shadow-maps.update-texels`, 16,777,216
+texels by default. One update draws one of these:
+
+| Update | Texels |
+| --- | --- |
+| One cascade of a directional light | The cascade resolution squared, 4,194,304 at 2,048 texels per side |
+| One cone map | Its size class's texels per side squared |
+| One face of a point light's cube map | Its size class's texels per side squared |
+
+Every frame draws cascades 0 and 1 of every shadowed directional light. Their
+texels count against the budget first, even when they exceed it. Every other
+update is a candidate: cascades 2 and 3, cone maps, and point cube faces.
+
+Candidates are ordered in three tiers:
+
+1. Maps that haven't been drawn yet.
+2. Maps whose view changed since they were drawn: the light moved, turned, or
+   changed its shadow range, or, for a cascade, the camera or the sun moved it.
+3. Every other map.
+
+Within a tier, candidates are ordered by age times importance, highest first.
+Age is the number of frames since the map was drawn. Importance is the largest
+number of sink pixels the light's shadow range covers in any sink, and for a
+cascade, the pixel count of the largest sink. Candidates draw in that order
+while their texels fit in what's left of the budget. A candidate that doesn't
+fit is skipped, and later candidates can still draw. When no candidate fits,
+the first one draws anyway.
+
+Until a map has been drawn, its light is lit without that shadow. A map that
+isn't drawn this frame keeps the view it was drawn with, and receivers sample
+it with that view. A receiver outside a cascade's drawn square uses the next
+coarser cascade that covers it, and gets no shadow from that light when none
+does. A new map, a map in a new size class, and every map of an image that
+changed size count as not yet drawn.
+
+A light keeps its map, at the same place in its class's image, for as long as it
+stays selected in the same size class. A light that changes class gets a new
+map. The image of each class grows when the class needs more maps than it holds,
+and shrinks only when the budget needs its memory. An image that changes size
+loses every map it holds.
 
 ### Materials
 

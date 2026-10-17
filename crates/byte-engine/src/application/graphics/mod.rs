@@ -665,7 +665,7 @@ impl GraphicsApplication {
 		let mut alley = self.alley.take().expect(
 			"Alley is already executing. The most likely cause is that run_lanes was called from a lane of another execution.",
 		);
-		let executed = alley.execute_with_caller(lanes, || ());
+		let executed = alley.execute(lanes);
 		// Return the lanes before a panic resumes, so the application drops with them in place.
 		self.alley = Some(alley);
 		executed.unwrap_or_else(|panic| std::panic::resume_unwind(panic));

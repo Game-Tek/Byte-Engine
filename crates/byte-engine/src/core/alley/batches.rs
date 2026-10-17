@@ -222,7 +222,7 @@ impl PairBatches {
 		let lane = stage.lane();
 		check_lent(self.lent_to, lane);
 		let items = self.batch(stage.key() as usize);
-		let (index, lanes) = (lane.idx(), lane.state.lane_count);
+		let (index, lanes) = (lane.idx(), lane.lane_count);
 		let owner = ClaimOwner {
 			stamp: self.stamp,
 			batch: stage.key(),
@@ -371,7 +371,7 @@ impl<T> LaneRanges<LaneCells<T>> {
 				stamp,
 				batch: stage.key(),
 				lane: narrow(lane.idx()),
-				lanes: narrow(lane.state.lane_count),
+				lanes: narrow(lane.lane_count),
 			}),
 			taken: Some(&taken.0),
 		}

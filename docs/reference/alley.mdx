@@ -1,0 +1,68 @@
+---
+title: Alley and lanes
+description: Look up how an alley dispatch runs its lanes, what each collective section does, which lane runs it, what a lane waits for, and the limits and failure rules.
+icon: Boxes
+---
+
+An alley runs one function on several lanes at once. One such run is a
+dispatch, and inside it the lanes meet in collective sections. This page
+specifies how a dispatch runs, what each section does, which lane runs it, what
+a lane waits for, and the limits and failure rules. For how the alley does this
+inside and why, read the [Alley design note](/docs/develop/core/alley).
+
+## Dispatch
+
+| Rule | Behavior |
+| --- | --- |
+| Lanes | A dispatch runs its function once on each lane. Lanes are numbered from 0. The alley's parallelism sets the lane count. A phased dispatch can run fewer lanes, and a dispatch that binds mutable resources runs at most one lane for each resource. |
+| Calling thread | Runs lane 0 unless the caller has work of its own in the dispatch, so the dispatch wakes one worker fewer. Lane 0 has no other role. |
+| One lane | Runs on the calling thread and meets no other lane. |
+| Results | One value for each lane, in lane order. Results without size allocate nothing. |
+| Allocation | A dispatch allocates nothing for its sections. |
+| Overlap | A dispatch holds the alley until every lane and the caller finished, so dispatches never overlap. |
+| Mutable resources | Each resource bound to a dispatch belongs to one lane, which alone reaches it, without waiting for any other lane. |
+| Idle workers | Between dispatches, a worker keeps checking for work for 100 µs, then sleeps until a dispatch wakes it. |
+
+## Sections
+
+| Section | Runs its work | Waits | Returns |
+| --- | --- | --- | --- |
+| Each | Every lane. | At the end, every lane until every lane arrived. | Every lane's value, in lane order. |
+| Shared stage | Every lane, with shared access to the dispatch's resource. | At the end, every lane until every lane arrived. No lane waits to enter. | Every lane's value, in lane order. |
+| Keyed stage | Every lane, with shared access, while every lane works on the same key, such as one batch. | As a shared stage. | As a shared stage. |
+| Broadcast | The first lane to reach it. | Every other lane, until the lane that runs it finished. | Its value, on every lane. |
+| Exclusive broadcast | The first lane to reach it, with exclusive access to the resource. | As a broadcast. | As a broadcast. |
+| Claim | The first lanes to reach it, as many as its limit. A limit of 0 runs it on no lane, and a limit of at least the lane count on every lane. | No lane. | Nothing. |
+
+Every lane must run the same sections in the same order, with the same kind,
+value type, key, and claim limit.
+
+## Progress
+
+| Rule | Behavior |
+| --- | --- |
+| No leader | No lane leads a dispatch. A lane never waits for a particular lane. It waits only where the section table says. |
+| First to arrive | The first lanes to reach a broadcast or a claim run it, so a busy lane holds up a broadcast only while every lane is busy. |
+| Entering a stage | A lane starts its share of a shared or keyed stage as soon as it reaches it. |
+| Drift | Lanes can be any number of broadcasts and claims apart. They meet again at the end of the next each section or stage. |
+| Waiting | A waiting lane checks for about 10 µs, then yields its thread between checks. |
+
+## Agreement and failure
+
+| Rule | Behavior |
+| --- | --- |
+| Exclusive and shared access | An exclusive broadcast never runs while a lane has shared access to the resource. Lanes that would overlap fail the dispatch instead. |
+| Keys | Lanes with different keys never run a keyed stage at the same time. They fail the dispatch instead. |
+| Mismatch | Lanes that run different sections, kinds, value types, keys, or numbers of sections fail the dispatch where they meet: at the end of an each section or stage, or at a broadcast. A lane that only passes broadcasts and claims after the other lanes finished can finish without noticing. |
+| Panic | A panic in a lane fails the dispatch. |
+| Result of a failure | The dispatch returns once every lane and the caller finished, with the panic of the lane that failed it first. |
+| After a failure | A lane that catches the failure runs no further section. The alley stays usable. |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Section value | 64 bytes at most, aligned to 64 bytes at most. |
+| Sections with values | 32 in each dispatch. Sections whose value has no size don't count, so a dispatch runs any number of them. |
+| Lanes in one claim | 65,535. |
+| Claims when lanes drift | A lane that reaches a claim after a lane ahead took a later broadcast or claim doesn't run it. Fewer lanes than the limit can run it then, but always at least one. |

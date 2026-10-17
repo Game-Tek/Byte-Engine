@@ -569,7 +569,7 @@ pub(super) mod tests {
 	fn dispatch<T: Send + Sync>(
 		alley: &mut Alley,
 		storage: &mut T,
-		stages: impl Fn(&mut ConcreteLane<'_>, &LanePhased<'_, T>) + Clone + Send,
+		stages: impl Fn(&mut ConcreteLane<'_>, &LanePhased<'_, T>) + Sync,
 	) -> Option<String> {
 		let lanes = alley.parallelism();
 		alley.execute_phased(storage, lanes, stages).err().map(message)
@@ -618,7 +618,7 @@ pub(super) mod tests {
 	fn refusal<T: Send + Sync>(
 		alley: &mut Alley,
 		storage: &mut T,
-		stages: impl Fn(&mut ConcreteLane<'_>, &LanePhased<'_, T>) + Clone + Send,
+		stages: impl Fn(&mut ConcreteLane<'_>, &LanePhased<'_, T>) + Sync,
 	) -> Option<String> {
 		alley.execute_phased(storage, 1, stages).err().map(message)
 	}

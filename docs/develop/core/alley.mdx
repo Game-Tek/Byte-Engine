@@ -1,0 +1,115 @@
+---
+title: Alley
+description: Read this before you change the alley, to learn how it runs lanes and sections, why no lane leads, and what a change must keep.
+icon: Cpu
+---
+
+Read this note before you change the alley, the engine's parallel executor. Its
+behavior is specified in [Alley and lanes](/docs/reference/alley). This note
+explains how the alley is built and why, states the rules a change must keep,
+and names the tests and benchmarks that guard them. The code lives in
+`crates/byte-engine/src/core/alley.rs` and
+`crates/byte-engine/src/core/threadpool.rs`.
+
+## How a dispatch runs
+
+The lane pool keeps one worker for every lane, each on cache lines of its own.
+A dispatch hands every worker it uses a pointer to the job on the caller's stack
+and a dispatch number, then waits until each one reports that it finished, so a
+dispatch allocates nothing. The calling thread runs lane 0 itself unless the
+caller has work of its own, which saves one wake. Lane 0 has no other role.
+
+An idle worker checks for work for about 2 µs, yields its thread until 100 µs
+passed, and then parks. Long spins slow everything down when the machine has
+more runnable threads than cores, and the yields keep closely spaced dispatches
+from paying for a wake.
+
+A dispatch of one lane, and every section on one lane, takes a path that touches
+no shared memory. The paths for several lanes stay out of line, so the one-lane
+code around them stays small.
+
+## How lanes meet
+
+Each lane writes only its own lane block: its posts, the last section it left,
+its panic, and its section values. The other lanes only read it. Sections are
+numbered across dispatches, so nothing that a lane posted in an earlier dispatch
+reads as part of a later one, and no block needs clearing between dispatches.
+
+- **Each sections and stages** end with an all-to-all meeting. Every lane posts
+  its arrival and reads every other lane's post. No lane collects the arrivals
+  for the others.
+- **Broadcasts and claims** go to the first lane to arrive. It raises the
+  dispatch's turn with a compare-exchange, the only read-modify-write of shared
+  memory that a section makes. The other lanes of a broadcast wait until the
+  turn says that it ended, and read its value from a shared slot.
+- **Shared and keyed stages** are entered without waiting. A lane posts its
+  entry, then reads the turn and every other lane's post. A lane that takes an
+  exclusive broadcast raises the turn, then reads every lane's post. Both sides
+  put sequentially consistent order between their write and their reads, so of
+  two lanes that would overlap, at least one sees the other and fails the
+  dispatch before it reaches the resource. Lanes compare their keys through the
+  same posts.
+- **Failures** go to one failure line, which waiting lanes check. The dispatch
+  returns the panic of the lane that failed it first.
+
+## Why no lane leads
+
+A leader makes these sections cheaper. When lane 0 runs every broadcast and
+opens and closes every stage, no lane races for a turn, and entering a stage
+needs no cross-check. The alley had that design for a short time in October
+2026, and it was replaced because of what a leader costs:
+
+- A busy lane 0 holds up every other lane at every broadcast and at every stage
+  entry, even when those lanes could go on. Lane 0 is busy when it has more work,
+  runs on a slower core, or loses its core to the system.
+- Pinning one-lane work to fixed lanes hands it to lanes that might be the
+  busiest at the time.
+
+Leaving out the leader costs about one more cache-line handoff for every
+broadcast, for the compare-exchange, and a cross-check at every stage entry. On
+an Apple M4 in October 2026, a keyed stage on 4 lanes took about 150 ns against
+100 ns with a leader. An exclusive broadcast followed by a shared stage took
+about 230 ns against 100 ns. The first alley, which counted every section on
+one shared counter, took about 270 ns and 330 ns. Keep that cost. Don't bring a
+leader back to remove it.
+
+## Rules a change must keep
+
+1. No lane leads. No lane waits for a particular lane. The first lane to reach a
+   broadcast or a claim runs it. Don't pin work to fixed lanes, and don't elect
+   a lane ahead of time.
+2. A lane waits only where a section needs it: for every lane at the end of an
+   each section or stage, and for the running lane at a broadcast.
+3. An exclusive broadcast never overlaps a shared stage, and keyed stages with
+   different keys never overlap. Keep the write before the reads on both sides.
+4. A lane writes only its own lane block. The turn, the failure line, and the
+   broadcast slots are the only lines that several lanes write.
+5. Nothing allocates for a dispatch or a section, and a section whose value has
+   no size takes no slot.
+6. The next dispatch numbers its sections past every number that a lane posted
+   or kept.
+
+## Tests and benchmarks
+
+| Guard | Rules |
+| --- | --- |
+| `a_busy_lane_holds_up_no_broadcast` | 1, 2 |
+| `a_busy_lane_holds_up_no_lane_that_enters_a_shared_stage` | 1, 2 |
+| `a_claim_goes_to_the_first_lane_to_reach_it` | 1 |
+| `no_lane_reaches_the_resource_while_another_runs_an_exclusive_stage` | 3 |
+| `lanes_that_mix_each_with_each_ref_fail_the_dispatch` and the other mismatch tests | 3 |
+| `each_keeps_values_for_any_number_of_lanes` and `a_dispatch_runs_any_number_of_sections_without_values` | 5 |
+| `broadcasts_with_a_busy_lane` benchmark | 1 |
+
+Run the tests, then the benchmarks before and after your change:
+
+```bash
+cargo nextest run -p byte-engine -E 'test(/core::alley|core::threadpool/)'
+cargo bench -p byte-engine --bench alley
+cargo bench -p byte-engine --bench physics
+```
+
+Compare builds run by run: keep each build's benchmark binary and run them in
+turns, because other load on the machine shifts results from one run to the
+next. Results for 2 lanes also jump when the system moves a lane to an
+efficiency core, so repeat a run before you trust a change there.

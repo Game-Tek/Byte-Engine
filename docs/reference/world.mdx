@@ -77,8 +77,10 @@ A system subscribes by taking its listeners when it's constructed, so it sees
 only messages from then on plus the current tick's. Create a system before the
 entities it follows. Physics takes the transform route, the body, constraint,
 and ray query factories, and the deletion route; the scene graph takes the
-scene factories and deletions; rendering managers and passes take transforms
-and deletions. A headless build keeps every route except poses, so servers run
+scene factories and deletions; animation takes the animator factory, the
+request and look target routes, and deletions, and posts to the pose and root
+motion routes; rendering managers and passes take transforms, poses, and
+deletions. A headless build keeps every route except poses, so servers run
 the same gameplay code with nothing listening.
 
 ## Transforms

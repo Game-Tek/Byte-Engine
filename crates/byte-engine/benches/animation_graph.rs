@@ -1,4 +1,7 @@
 //! Run with `cargo bench -p byte-engine --bench animation_graph`.
+//!
+//! The `characters_*` benchmarks time a frame of many characters that share one graph and clip pool, the baseline the
+//! pooled animation system must beat.
 
 use byte_engine::animation::graph::benchmarks::{AnimationGraphBenchmark, AnimationGraphBenchmarkFixture};
 use divan::{Bencher, counter::ItemsCount};
@@ -28,4 +31,24 @@ fn active_root_motion(bencher: Bencher, node_count: usize) {
 #[divan::bench(args = [1, 32, 128])]
 fn inertialized_transition(bencher: Bencher, node_count: usize) {
 	benchmark(bencher, AnimationGraphBenchmark::InertializedTransition, node_count);
+}
+
+/// Skeleton size for the character benchmarks, about a game humanoid's joint count.
+const CHARACTER_NODE_COUNT: usize = 64;
+
+/// Times one frame of `character_count` characters that play one graph from one clip pool.
+fn characters(bencher: Bencher, benchmark: AnimationGraphBenchmark, character_count: usize) {
+	let mut fixture = AnimationGraphBenchmarkFixture::new(benchmark, CHARACTER_NODE_COUNT);
+	let mut state = fixture.prepare_characters(character_count);
+	bencher.counter(ItemsCount::new(character_count)).bench_local(|| state.advance());
+}
+
+#[divan::bench(args = [1, 64, 1024])]
+fn characters_root_motion(bencher: Bencher, character_count: usize) {
+	characters(bencher, AnimationGraphBenchmark::ActiveRootMotion, character_count);
+}
+
+#[divan::bench(args = [1, 64, 1024])]
+fn characters_transitioning(bencher: Bencher, character_count: usize) {
+	characters(bencher, AnimationGraphBenchmark::InertializedTransition, character_count);
 }

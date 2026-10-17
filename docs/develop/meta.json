@@ -1,6 +1,6 @@
 {
 	"title": "Contribute",
 	"description": "Change the engine: how to work on it, and what each system expects a change to keep.",
-	"pages": ["index", "documentation", "core", "rendering", "resource-management", "besl", "gui"],
+	"pages": ["index", "documentation", "core", "animation", "rendering", "resource-management", "besl", "gui"],
 	"root": true
 }

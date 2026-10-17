@@ -76,7 +76,9 @@ cargo bench -p byte-engine --bench animation_graph
 ```
 
 This benchmark also prepares graphs, resident clips, and retained pose buffers
-before each measured loop.
+before each measured loop. Its `characters_*` benchmarks time a frame of many
+characters that share one graph and clip pool; read the
+[animation system](/docs/develop/animation) note before you change playback.
 
 To check that one benchmark target builds and starts without collecting timing
 data, pass `--test` to Divan. For example:

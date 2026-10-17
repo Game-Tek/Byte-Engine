@@ -1,13 +1,14 @@
 ---
 title: Animation
-description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph, the clip pool, and flipbooks.
+description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph, animators and their updates, the look chain, the clip pool, and flipbooks.
 icon: Sparkles
 ---
 
 Animation turns clips baked from glTF, GLB, and FBX files into poses that the
 renderer skins with. This page specifies the data model, how a clip is sampled
-and blended, what the animation graph guarantees, and the limits of the clip
-pool. To author the source files, follow
+and blended, what the animation graph guarantees, how animators play graphs
+and post their updates, and the limits of the clip pool. To author the source
+files, follow
 [Author assets](/docs/use/resources/author); the importer rules are in the
 [asset formats reference](/docs/reference/assets#skeletal-models).
 
@@ -107,7 +108,8 @@ The visual pose keeps the rest values on the extracted channels.
 
 ## Animation graph
 
-A graph is a state machine built in code and played by one player per instance.
+A graph is a state machine built in code. Any number of
+[animators](#animators) can play one graph, and each keeps its own playback.
 
 ### States
 
@@ -120,7 +122,7 @@ A graph is a state machine built in code and played by one player per instance.
 Every clip in a blend shares one playback mode. A blend's duration is the
 weighted sum of its clips' durations, so all its clips share one phase. The
 last requested linear position and the last requested planar position are
-remembered across all blends of that kind; a blend entered without a position
+remembered per animator across all blends of that kind; a blend entered without a position
 starts there, and at the origin before any request.
 
 ### Routes
@@ -161,35 +163,143 @@ Building validates the graph and reports the first problem:
 | `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or its clips mix looping and once. |
 | `RoutePointClipMissing`, `RoutePointNeedsClip` | A wait point names a clip the source lacks, or a blend's wait point names no clip. |
 
-### Playing a graph
+## Animators
 
-A player advances by a time delta and a requested state each tick, and returns
-nothing until its initial state's first clip is resident. That clip's skeleton
-becomes the canonical skeleton for every clip the player samples.
+An animator plays one graph for one entity. The animation system steps every
+animator of the world scope it's created on, and posts each animator's pose and
+root motion to the world.
+
+### Creating and removing
+
+An animator is created through the world's animator factory under the handle of
+the entity it poses, usually a skinned renderable.
+
+| Field | Value |
+| --- | --- |
+| Graph | The graph to play. Any number of animators can play one graph. |
+| Root motion | Optional. The settings in [Root motion](#root-motion). |
+| Look chain | Optional. The settings in [Look chain](#look-chain). |
+
+| Rule | Behavior |
+| --- | --- |
+| Adoption | The system adopts animators created after the system, at the start of its next step. It never adopts one created before it. |
+| Replacement | An animator created again under the same handle replaces the previous one and starts over at its graph's initial state. |
+| Removal | A deletion of the handle removes the animator at the start of the next step. Nothing more is posted for that handle. |
+| Canonical skeleton | The skeleton of the first clip of the graph's initial state. Every animator of a graph shares it. Every clip an animator samples maps onto it, and the root motion and look chain node names resolve against it once it's resident. |
+| Rejection | An animator whose settings don't resolve against the canonical skeleton is rejected. The system reports the error and posts nothing for the handle. |
+
+### Requests
+
+A request is a targeted message on an animator's handle. It names a state, or a
+blend state with its position, and whether a position change is inertialized.
+
+| Rule | Behavior |
+| --- | --- |
+| Latest wins | A step applies the last request posted for each handle since the previous step. |
+| Persistence | A request holds until another replaces it. Before its first request, an animator plays its graph's initial state. |
+| Other graph | A request for a state of another graph is discarded and reported as `StateFromDifferentGraph`. The previous request holds. |
+| No animator | A request for a handle without an animator is discarded. |
+
+### Playback
+
+Each step advances every animator by the step's delta toward its latest
+request, through the routes of its graph.
 
 | Rule | Behavior |
 | --- | --- |
 | Phase | Advances by the delta divided by the clip's duration. A looping clip wraps; a clip played once stops at its end. A clip of zero duration stays at its start. |
-| Clips sampled per tick | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip. Only positive weights are sampled. |
+| Clips sampled per step | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip. Only positive weights are sampled. |
 | Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
-| Hand-over at a wait point or a one-shot's end | The time left in the tick plays on the next state in the same tick. |
-| Redirect | A blend in progress can be redirected along an anytime route once it has rendered a frame, from the pose and velocity on screen. |
-| Position change on a blend | An inertialized request blends the state from its current weights to the new ones, from the pose on screen. |
+| Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
+| Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
+| Position change on a blend | An inertialized request blends the state from its current weights to the new ones, from the pose posted last. |
 | Prefetch | Entering a state requests the clips of every state its routes can reach. |
-| Clip not resident | The player holds the previous tick's pose. |
+| Initial clip not resident | The animator posts nothing. |
+| Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |
 
-The result of a tick holds the skeleton, the local pose, the global pose as
-matrices, the root motion delta, and the current state.
+### Stepping
 
-| Error | Cause |
+The system steps once per frame, with the frame's delta. A step adopts new
+animators and removes deleted ones; applies the latest requests and look
+targets; admits the clips that finished loading; decides every animator's
+routes, phases, and hand-overs for the delta and pins the clips they sample;
+samples, blends, and inertializes every pose, extracts its root motion, applies
+its look chain, and builds its global pose; posts the updates; and finally
+unpins the clips.
+
+| Rule | Behavior |
 | --- | --- |
-| `RootMotionNodeNotFound`, `DuplicateRootMotionNodeName` | The root motion node name is absent or ambiguous. |
-| `StateFromDifferentGraph` | The requested state belongs to another graph. |
-| `NegativeDelta` | The time delta is negative. |
+| Lanes | A step spreads its animators over the alley's lanes. |
+| Independence | An animator's pose, root motion, and state don't depend on the lane count or on the other animators, whatever graphs they play. |
+| Completion | Every update of a step is posted before the step returns. |
+| Order | Animators post in no particular order. |
 
-### Clip pool
+### Updates
 
-A pool keeps packed clips in one arena sized by a byte budget that the
+Every step posts two updates for every animator whose initial clip is resident.
+
+| Update | Route | Carries |
+| --- | --- | --- |
+| Pose update | The world's pose route, in headed builds only. | The global matrix of every canonical skeleton node, in node order, after the look chain. |
+| Root motion update | The world's root motion route. | The step's root motion delta, in the entity's object space, and the state playing after the step. An animator without root motion settings carries the identity delta. |
+
+The system never moves an entity: applying root motion to a transform is up to
+the code that owns the entity.
+
+### Queries
+
+Between steps, the system answers these for each animator, as of the last step:
+
+| Query | Answer |
+| --- | --- |
+| Playing state | The state playing, or none before the initial clip is resident. |
+| Waiting for | The requested state whose route waits for the playing state to reach one of its wait points, or none. A new request cancels the wait. |
+| Time until a route | How long the playing state plays on before its route to a given state starts: zero for a route that doesn't wait, and the time to the nearest wait point for one that does. None when the playing state has no route to that state, a one-shot has played past every wait point, the animator is blending, or the initial clip isn't resident. |
+
+### Look chain
+
+A look chain turns a chain of nodes toward a direction on top of the graph's
+pose, before the global pose is built.
+
+| Setting | Value |
+| --- | --- |
+| Nodes | One or more node names with a share each, from the chain's base to its end. Each name must exist exactly once in the canonical skeleton, and each node must descend from the node before it. |
+| Shares | Finite and positive. They normalize by their sum. |
+| Body node | A node name that must exist exactly once. Its animated yaw centers the yaw limit. |
+| Yaw limit | Radians, from 0 to π. |
+| Up and down limits | Radians, from 0 to π/2 each. |
+| Response | Per second, finite and positive, or none for no easing. |
+
+A look target is a targeted message on an animator's handle with a yaw and a
+pitch in the entity's object space, or none to release the chain. The latest
+target holds until another replaces it; before the first one, the chain is
+released.
+
+| Rule | Behavior |
+| --- | --- |
+| Angles | Yaw turns about +Y and pitch about +X, by the right-hand rule, in object space. The object faces -Z, so a positive pitch looks up. A turn pitches first, then yaws. |
+| Animated yaw | For a node, the angle about +Y from -Z to -Z turned by the node's object-space rotation times the inverse of its rest object-space rotation, projected onto the XZ plane. |
+| Clamping | The target yaw clamps to within the yaw limit of the body node's animated yaw, and the target pitch to the up and down limits. |
+| Easing | The eased yaw and pitch start at the clamped target. Each step, they move the fraction 1 − e^(−response × delta) of the way to it, yaw along the shorter way around. Without a response, they equal the clamped target. |
+| Turn | The chain turns by the eased yaw minus the end node's animated yaw, and by the eased pitch. |
+| Distribution | Each node, from base to end, turns by its share of both angles about the object-space axes after its animated object-space rotation. Its descendants turn with it. |
+| Release | The chain stops turning at once. The next target starts the easing over. |
+| Root motion | The look chain never changes the root motion delta. |
+
+### Errors
+
+| Error | Cause | Result |
+| --- | --- | --- |
+| `RootMotionNodeNotFound`, `DuplicateRootMotionNodeName` | The root motion node name is absent or ambiguous. | The animator is rejected. |
+| `LookNodeNotFound`, `DuplicateLookNodeName` | A look chain or body node name is absent or ambiguous. | The animator is rejected. |
+| `LookChainOutOfOrder` | A look chain node doesn't descend from the node before it. | The animator is rejected. |
+| `InvalidLookChain` | The chain is empty, or a share, limit, or response is out of range. | The animator is rejected. |
+| `StateFromDifferentGraph` | A request names a state of another graph. | The request is discarded. |
+
+## Clip pool
+
+The animation system owns one pool, and every animator samples clips from it.
+The pool keeps packed clips in one arena sized by a byte budget that the
 application chooses, and loads clips on a worker.
 
 | Request result | Meaning |
@@ -199,10 +309,11 @@ application chooses, and loads clips on a worker.
 | `WaitingForCapacity` | The load queue holds 64 requests, or no room could be made. Request again later. |
 | `Failed` | The load failed or the clip is larger than the whole budget. |
 
-When a clip doesn't fit, the pool evicts the least recently used clips that no
-player is sampling. A clip a player samples is pinned and never evicted. Up to
-64 loaded clips can wait for room; further ones are dropped. The pool reports
-`LoadFailed`, `Oversized`, and `Evicted` events, keeping the latest 64.
+When a clip doesn't fit, the pool evicts the least recently used clips that the
+current step hasn't pinned. A clip any animator samples is pinned for the rest
+of the step and never evicted during it. Up to 64 loaded clips can wait for
+room; further ones are dropped. The pool reports `LoadFailed`, `Oversized`, and
+`Evicted` events, keeping the latest 64.
 
 ## Flipbooks
 
@@ -218,8 +329,10 @@ the [asset formats reference](/docs/reference/assets#flipbooks).
 | Limit | Value |
 | --- | --- |
 | Clip loads in flight, pool events kept, clips waiting for room | 64 each |
-| Clips sampled per tick per motion | 3 |
-| Remembered blend positions | One linear and one planar |
+| Clips sampled per step per motion | 3 |
+| Remembered blend positions | One linear and one planar per animator |
+| Requests and look targets applied per step | The last of each per animator |
+| Animators | No fixed limit |
 | Blend space samples | At least 1 for 1D, at least 3 for 2D |
 | Skeleton nodes, clips, states | No fixed limit; node indices are 32-bit |
 | Engine time resolution | 28,224,000 ticks per second |

@@ -60,30 +60,74 @@ impl AnimationGraphBenchmarkFixture {
 
 	/// Creates retained player buffers and selects the path measured by [`AnimationGraphBenchmarkState::advance`].
 	pub fn prepare(&mut self) -> AnimationGraphBenchmarkState<'_> {
-		let root_motion =
-			(self.benchmark == AnimationGraphBenchmark::ActiveRootMotion).then(|| RootMotionSettings::full("joint-0"));
-		let mut player = self.pool.create_player(&self.graph, root_motion);
-
-		// Resolve the initial state and, for the transition case, enter the
-		// inertialized path before Divan starts the measured loop. `benchmark_graph`
-		// returns a destination equal to the initial state unless the benchmark measures a transition.
-		player
-			.advance(MediaTime::ZERO, self.initial, &mut self.pool)
-			.expect("resident benchmark clip must initialize")
-			.expect("resident benchmark clip must initialize immediately");
-		if self.destination != self.initial {
-			player
-				.advance(benchmark_frame_delta(), self.destination, &mut self.pool)
-				.expect("resident benchmark clips must start their transition")
-				.expect("resident benchmark clips must remain ready");
-		}
-
+		let player = ready_player(
+			&self.graph,
+			&mut self.pool,
+			self.benchmark,
+			self.initial,
+			self.destination,
+			MediaTime::ZERO,
+		);
 		AnimationGraphBenchmarkState {
 			player,
 			pool: &mut self.pool,
 			requested: self.destination,
 		}
 	}
+
+	/// Creates `count` players that share this fixture's graph and pool, the way several characters play one graph.
+	///
+	/// Each player starts at its own phase, so the characters don't sample their clips in lockstep. Time them with
+	/// [`AnimationGraphCharactersState::advance`].
+	pub fn prepare_characters(&mut self, count: usize) -> AnimationGraphCharactersState<'_> {
+		let players = (0..count)
+			.map(|character| {
+				// Spread the characters over one second of their clips, a frame apart.
+				let offset = MediaTime::from_frames((character % 60) as i64, 60)
+					.expect("the engine timebase must represent 60 Hz exactly");
+				ready_player(
+					&self.graph,
+					&mut self.pool,
+					self.benchmark,
+					self.initial,
+					self.destination,
+					offset,
+				)
+			})
+			.collect();
+		AnimationGraphCharactersState {
+			players,
+			pool: &mut self.pool,
+			requested: self.destination,
+		}
+	}
+}
+
+/// Creates a player, plays its initial state for `offset`, and, for the transition benchmark, starts the
+/// inertialized transition, all before Divan starts the measured loop.
+fn ready_player<'graph>(
+	graph: &'graph AnimationGraph,
+	pool: &mut AnimationPool,
+	benchmark: AnimationGraphBenchmark,
+	initial: AnimationStateId,
+	destination: AnimationStateId,
+	offset: MediaTime,
+) -> AnimationGraphPlayer<'graph> {
+	let root_motion = (benchmark == AnimationGraphBenchmark::ActiveRootMotion).then(|| RootMotionSettings::full("joint-0"));
+	let mut player = pool.create_player(graph, root_motion);
+
+	// `benchmark_graph` returns a destination equal to the initial state unless the benchmark measures a transition.
+	player
+		.advance(offset, initial, pool)
+		.expect("resident benchmark clip must initialize")
+		.expect("resident benchmark clip must initialize immediately");
+	if destination != initial {
+		player
+			.advance(benchmark_frame_delta(), destination, pool)
+			.expect("resident benchmark clips must start their transition")
+			.expect("resident benchmark clips must remain ready");
+	}
+	player
 }
 
 /// The `AnimationGraphBenchmarkState` struct retains the player state used to time animation graph evaluation.
@@ -100,6 +144,26 @@ impl AnimationGraphBenchmarkState<'_> {
 			.advance(benchmark_frame_delta(), self.requested, self.pool)
 			.expect("resident benchmark clips must advance")
 			.expect("resident benchmark clips must remain ready")
+	}
+}
+
+/// The `AnimationGraphCharactersState` struct retains every character's player for timing a frame of a crowd.
+pub struct AnimationGraphCharactersState<'fixture> {
+	players: Vec<AnimationGraphPlayer<'fixture>>,
+	pool: &'fixture mut AnimationPool,
+	requested: AnimationStateId,
+}
+
+impl AnimationGraphCharactersState<'_> {
+	/// Advances every character by one prepared frame, one after another.
+	pub fn advance(&mut self) {
+		for player in &mut self.players {
+			let pose = player
+				.advance(benchmark_frame_delta(), self.requested, self.pool)
+				.expect("resident benchmark clips must advance")
+				.expect("resident benchmark clips must remain ready");
+			std::hint::black_box(pose.global_pose);
+		}
 	}
 }
 

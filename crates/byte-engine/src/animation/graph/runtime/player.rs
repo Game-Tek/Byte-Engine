@@ -88,14 +88,9 @@ impl<'graph> RuntimeMotion<'graph> {
 			.map_or(0.0, |(_, weight)| weight)
 	}
 
-	/// Returns how long playback takes from now to reach the earliest of `points`, or `None` when it reaches none, like
-	/// a one-shot already past them.
-	fn time_until(&self, points: &[ClipPoint]) -> Option<MediaTime> {
-		self.next_wait(points).map(|(time, _)| time)
-	}
-
-	/// Returns how long playback takes from now to reach the earliest of `points`, with that point.
-	fn next_wait(&self, points: &[ClipPoint]) -> Option<(MediaTime, ClipPoint)> {
+	/// Returns how long playback takes from now to reach the earliest of `points`, with that point, or `None` when it
+	/// reaches none, like a one-shot already past them.
+	fn time_until(&self, points: &[ClipPoint]) -> Option<(MediaTime, ClipPoint)> {
 		let (ahead, point) = self
 			.points_of_heaviest(points)
 			.filter_map(|point| {
@@ -724,7 +719,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		if route.wait.is_empty() {
 			Some(MediaTime::ZERO)
 		} else {
-			active.time_until(route.wait)
+			active.time_until(route.wait).map(|(time, _)| time)
 		}
 	}
 
@@ -775,6 +770,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 						.pending
 						.as_ref()
 						.and_then(|pending| active.time_until(pending.wait))
+						.map(|(time, _)| time)
 						.filter(|time| *time <= delta);
 					let played = match waited {
 						Some(time) => {

@@ -183,7 +183,7 @@ impl<'a> Wait<'a> {
 	/// Describes the wait of a route that waits for `points` of the playing `motion`.
 	fn new(motion: &'a RuntimeMotion<'a>, points: &[ClipPoint]) -> Option<Self> {
 		let clip = motion.heaviest(points)?;
-		let next = motion.next_wait(points);
+		let next = motion.time_until(points);
 		Some(Self {
 			clip: ClipName(&motion.samples[clip].resource_id),
 			weight: motion.weight_of(clip),

@@ -260,7 +260,6 @@ impl AnimationGraph {
 		id.graph == self.id && id.index < self.states.len()
 	}
 
-
 	/// Returns the routes of the space `id` belongs to, which it takes after its own; empty outside every space.
 	fn space_routes(&self, id: AnimationStateId) -> &[StateTransition] {
 		self.state(id)

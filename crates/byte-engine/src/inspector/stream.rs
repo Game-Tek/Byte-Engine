@@ -104,7 +104,7 @@ impl DataStream {
 		if self.output.changes_only {
 			self.line.clear();
 			serde_json::to_writer(&mut self.line, key).expect("stream keys serialize to JSON");
-			if !self.key.is_empty() && self.line == self.key {
+			if self.line == self.key {
 				return;
 			}
 			std::mem::swap(&mut self.line, &mut self.key);
@@ -135,29 +135,40 @@ impl DataStream {
 
 #[cfg(test)]
 mod tests {
+	use std::path::PathBuf;
+
 	use super::*;
+
+	/// Opens a stream for a new entity named `Box` to a temporary file, returned with its output and the file's path.
+	fn stream(changes_only: bool) -> (DataStream, Arc<StreamOutput>, PathBuf) {
+		let entity = Handle::new();
+		let path = std::env::temp_dir().join(format!("byte-engine-stream-{}-{}.ndjson", std::process::id(), entity.id()));
+		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
+		(DataStream::new(Arc::clone(&output), entity, "Box".into()), output, path)
+	}
+
+	/// Reads and removes the file at `path`, checking that it holds one JSON object per line.
+	fn records(path: PathBuf) -> Vec<serde_json::Value> {
+		let text = std::fs::read_to_string(&path).expect("file reads");
+		std::fs::remove_file(&path).expect("file removes");
+		assert!(text.ends_with('\n'));
+		text.lines()
+			.map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+			.collect()
+	}
 
 	#[test]
 	fn records_are_one_json_object_per_line_with_the_entity_envelope() {
-		let entity = Handle::new();
-		let path = std::env::temp_dir().join(format!("byte-engine-stream-{}-{}.ndjson", std::process::id(), entity.id()));
-		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), false, Instant::now()).expect("file opens"));
-		let mut stream = DataStream::new(Arc::clone(&output), entity, "Box".into());
+		let (mut stream, output, path) = stream(false);
 
 		output.set_tick(7);
 		stream.write("physics", &(), &serde_json::json!({ "speed": 0.5 }));
 		stream.write("physics", &(), &serde_json::json!({ "speed": f32::NAN }));
 
-		let text = std::fs::read_to_string(&path).expect("file reads");
-		std::fs::remove_file(&path).expect("file removes");
-		let records: Vec<serde_json::Value> = text
-			.lines()
-			.map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
-			.collect();
-		assert!(text.ends_with('\n'));
+		let records = records(path);
 		assert_eq!(records.len(), 2);
 		assert_eq!(records[0]["tick"], 7);
-		assert_eq!(records[0]["entity"], entity.id());
+		assert_eq!(records[0]["entity"], stream.entity.id());
 		assert_eq!(records[0]["name"], "Box");
 		assert_eq!(records[0]["stream"], "physics");
 		assert_eq!(records[0]["data"]["speed"], 0.5);
@@ -167,20 +178,15 @@ mod tests {
 
 	#[test]
 	fn changes_only_streams_skip_records_whose_key_repeats() {
-		let entity = Handle::new();
-		let path = std::env::temp_dir().join(format!("byte-engine-stream-{}-{}.ndjson", std::process::id(), entity.id()));
-		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), true, Instant::now()).expect("file opens"));
-		let mut stream = DataStream::new(output, entity, "Box".into());
+		let (mut stream, _, path) = stream(true);
 
 		for (key, speed) in [("rest", 0.0), ("rest", 0.1), ("moving", 0.2), ("moving", 0.3), ("rest", 0.4)] {
 			stream.write("physics", &key, &serde_json::json!({ "speed": speed }));
 		}
 
-		let text = std::fs::read_to_string(&path).expect("file reads");
-		std::fs::remove_file(&path).expect("file removes");
-		let speeds: Vec<f64> = text
-			.lines()
-			.map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["data"]["speed"].as_f64().unwrap())
+		let speeds: Vec<_> = records(path)
+			.iter()
+			.map(|record| record["data"]["speed"].as_f64().unwrap())
 			.collect();
 		assert_eq!(speeds, [0.0, 0.2, 0.4]);
 	}

@@ -66,14 +66,14 @@ character's playback is shared:
 
 | Shared data | Held once per | Holds |
 | --- | --- | --- |
-| Graph | Graph | States, routes, and clip resource IDs. Players refer to it, never copy it. |
+| Graph | Graph | States, spaces, routes, and clip resource IDs. Players refer to it, never copy it. |
 | Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates. The graph owns it. The first player takes the canonical skeleton from the initial clip, and a state binds the first time any player enters it with its clips resident. |
 | Clip pool | Pool | Packed clips in one arena. |
 | Scratch poses | Thread | A blend's per-clip poses and a hand-over's spans: poses a frame fills and reads, which no player keeps between frames. Lanes are persistent threads, so each lane's scratch lasts across steps. |
 
 A player keeps only what lasts from one frame to the next: its playback, whose
 weights fit inline because a blend weighs at most three clips; its pending
-route; its remembered blend positions; the active and destination poses with
+route; one blend position for each space of its graph; the active and destination poses with
 their previous samples; the posted local pose and the one before it; the
 global pose; its inertializer; and its root chain. Nothing grows after the
 player's first frames.

@@ -9,7 +9,9 @@
 //! one clip, or blends several placed on a line or a plane: build those with
 //! [`AnimationGraphStateBuilder::linear`] and
 //! [`AnimationGraphStateBuilder::planar`], and request them with a position
-//! through [`LinearStateId::at`] and [`PlanarStateId::at`]. Connect state
+//! through [`LinearStateId::at`] and [`PlanarStateId::at`]. Group states that
+//! share one position, like a walk and its starts and stops, into a space with
+//! [`AnimationGraphBuilder::planar_space`]. Connect state
 //! handles with [`AnimationGraphState::to`], then use
 //! [`AnimationGraphTransitionConditionBuilder::when`] or
 //! [`AnimationGraphTransitionConditionBuilder::anytime`] to choose whether a
@@ -115,8 +117,8 @@ struct StateTransition {
 	can_interrupt_transition: bool,
 	/// Moments of the source's playback the route waits for before it starts; empty starts it at once.
 	wait: Box<[ClipPoint]>,
-	/// Where in its clips the target starts; `None` starts it at its beginning.
-	entry: Option<ClipPoint>,
+	/// Where in its clips the target starts; empty starts it at its beginning.
+	entry: Box<[ClipPoint]>,
 }
 
 /// The `SelectedRoute` struct is a route the player takes: where to, how long to blend, when, and where to start.
@@ -125,7 +127,7 @@ struct SelectedRoute<'graph> {
 	target: AnimationStateId,
 	duration: MediaTime,
 	wait: &'graph [ClipPoint],
-	entry: Option<ClipPoint>,
+	entry: &'graph [ClipPoint],
 }
 
 impl SelectedRoute<'_> {
@@ -138,30 +140,39 @@ impl SelectedRoute<'_> {
 struct AnimationGraphStateData {
 	name: String,
 	motion: StateMotion,
+	/// The space whose position the state's blend weighs its clips at, and whose routes the state takes after its own.
+	space: Option<usize>,
 	/// Set only for one-shot transition states: the state entered after the clip finishes.
 	completion: Option<AnimationStateId>,
 	/// How long a finished one-shot inertializes into its completion state; zero cuts straight to it.
 	completion_blend: MediaTime,
 	/// Where in its clips the completion state starts after the one-shot.
-	completion_entry: Option<ClipPoint>,
+	completion_entry: Box<[ClipPoint]>,
 	transitions: Vec<StateTransition>,
 }
 
-impl AnimationGraphStateData {
-	/// Selects the first authored route whose persistent destination was requested.
-	///
-	/// When `interrupting` an active transition clip, only `.anytime` routes qualify.
-	fn select_route(&self, requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
-		self.transitions
-			.iter()
-			.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
-			.map(|transition| SelectedRoute {
-				target: transition.target,
-				duration: transition.duration,
-				wait: &transition.wait,
-				entry: transition.entry,
-			})
-	}
+/// The `AnimationSpaceData` struct is a group of states that share one blend position, and the routes every one of
+/// them can take.
+struct AnimationSpaceData {
+	name: String,
+	kind: SpaceKind,
+	/// Routes every state of the space takes after its own, added with [`AnimationGraphSpace::any_state_to`].
+	transitions: Vec<StateTransition>,
+}
+
+/// Selects the first of `transitions` whose persistent destination was requested.
+///
+/// When `interrupting` an active transition clip, only `.anytime` routes qualify.
+fn select_route(transitions: &[StateTransition], requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
+	transitions
+		.iter()
+		.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
+		.map(|transition| SelectedRoute {
+			target: transition.target,
+			duration: transition.duration,
+			wait: &transition.wait,
+			entry: &transition.entry,
+		})
 }
 
 /// The `AnimationGraph` struct stores immutable routes used to reconcile requested animation states.
@@ -176,6 +187,7 @@ impl AnimationGraphStateData {
 pub struct AnimationGraph {
 	id: u64,
 	states: Vec<AnimationGraphStateData>,
+	spaces: Box<[AnimationSpaceData]>,
 	/// Targets every state can route to after its own routes, with how long each blends in.
 	any_state_routes: Box<[(AnimationStateId, MediaTime)]>,
 	initial: AnimationStateId,
@@ -196,10 +208,10 @@ impl AnimationGraph {
 			graph,
 			data: RefCell::new(Some(AnimationGraphBuilderData {
 				states: Vec::new(),
+				spaces: Vec::new(),
 				transitions: Vec::new(),
 				any_state_routes: Vec::new(),
-				invalid_blends: Vec::new(),
-				invalid_points: Vec::new(),
+				errors: Vec::new(),
 			})),
 		}
 	}
@@ -224,6 +236,19 @@ impl AnimationGraph {
 		id.graph == self.id && id.index < self.states.len()
 	}
 
+	/// Returns the routes of the space `id` belongs to, which it takes after its own; empty outside every space.
+	fn space_routes(&self, id: AnimationStateId) -> &[StateTransition] {
+		self.state(id)
+			.space
+			.map_or(&[], |space| &self.spaces[space].transitions)
+	}
+
+	/// Selects the first route toward `requested` among `id`'s own routes, then its space's.
+	fn select_state_route(&self, id: AnimationStateId, requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
+		select_route(&self.state(id).transitions, requested, interrupting)
+			.or_else(|| select_route(self.space_routes(id), requested, interrupting))
+	}
+
 	/// Selects a route toward the requested persistent state or completes a one-shot state.
 	fn select_transition(
 		&self,
@@ -236,17 +261,17 @@ impl AnimationGraph {
 			return if source == requested {
 				None
 			} else {
-				source_state
-					.select_route(requested, false)
+				self.select_state_route(source, requested, false)
 					.or_else(|| self.select_any_state_route(requested))
 			};
 		};
 
-		if let Some(transition) = source_state.select_route(requested, false) {
+		// A one-shot's space only gives its blend a position: it takes its own routes, then its completion's.
+		if let Some(transition) = select_route(&source_state.transitions, requested, false) {
 			return Some(transition);
 		}
 		if requested != completion {
-			if let Some(transition) = self.state(completion).select_route(requested, true) {
+			if let Some(transition) = self.select_state_route(completion, requested, true) {
 				// Its wait points name moments of the completion state, which is not playing yet.
 				return Some(SelectedRoute { wait: &[], ..transition });
 			}
@@ -259,7 +284,7 @@ impl AnimationGraph {
 			target: completion,
 			duration: source_state.completion_blend,
 			wait: &[],
-			entry: source_state.completion_entry,
+			entry: &source_state.completion_entry,
 		})
 	}
 
@@ -275,8 +300,7 @@ impl AnimationGraph {
 		if destination == requested || state.completion.is_some() {
 			return None;
 		}
-		state
-			.select_route(requested, true)
+		self.select_state_route(destination, requested, true)
 			.or_else(|| self.select_any_state_route(requested))
 	}
 
@@ -290,7 +314,7 @@ impl AnimationGraph {
 				target,
 				duration,
 				wait: &[],
-				entry: None,
+				entry: &[],
 			})
 	}
 }
@@ -305,14 +329,14 @@ pub struct AnimationGraphBuilder {
 
 struct AnimationGraphBuilderData {
 	states: Vec<AnimationGraphStateData>,
+	spaces: Vec<AnimationSpaceData>,
 	/// Routes beside their source state, which [`AnimationGraphBuilder::build`] validates before attaching them.
 	transitions: Vec<(AnimationStateId, StateTransition)>,
 	/// Targets every state can route to, added with [`AnimationGraphBuilder::any_state_to`].
 	any_state_routes: Vec<(AnimationStateId, MediaTime)>,
-	/// Blend states whose samples were rejected, reported by [`AnimationGraphBuilder::build`].
-	invalid_blends: Vec<(usize, BlendSpaceError)>,
-	/// Route points that named a clip their state does not play, reported by [`AnimationGraphBuilder::build`].
-	invalid_points: Vec<AnimationGraphBuildError>,
+	/// Problems found while authoring, like a rejected blend or a route point naming a clip its state does not play,
+	/// which [`AnimationGraphBuilder::build`] reports, the first one first.
+	errors: Vec<AnimationGraphBuildError>,
 }
 
 impl AnimationGraphBuilderData {
@@ -324,13 +348,13 @@ impl AnimationGraphBuilderData {
 			Some(clip) => clips.iter().position(|candidate| candidate.resource_id() == clip),
 			None if clips.len() == 1 => Some(0),
 			None => {
-				self.invalid_points
+				self.errors
 					.push(AnimationGraphBuildError::RoutePointNeedsClip { state: state.index });
 				return None;
 			}
 		};
 		if index.is_none() {
-			self.invalid_points.push(AnimationGraphBuildError::RoutePointClipMissing {
+			self.errors.push(AnimationGraphBuildError::RoutePointClipMissing {
 				state: state.index,
 				clip: clip.unwrap_or_default().to_string(),
 			});
@@ -346,21 +370,46 @@ impl AnimationGraphBuilderData {
 		graph: u64,
 		name: String,
 		motion: StateMotion,
+		space: Option<usize>,
 		completion: Option<AnimationStateId>,
 		completion_blend: MediaTime,
 	) -> AnimationStateId {
 		self.states.push(AnimationGraphStateData {
 			name,
 			motion,
+			space,
 			completion,
 			completion_blend,
-			completion_entry: None,
+			completion_entry: Box::default(),
 			transitions: Vec::new(),
 		});
 		AnimationStateId {
 			graph,
 			index: self.states.len() - 1,
 		}
+	}
+
+	/// Appends a space with no routes and returns its index.
+	fn push_space(&mut self, name: String, kind: SpaceKind) -> usize {
+		self.spaces.push(AnimationSpaceData {
+			name,
+			kind,
+			transitions: Vec::new(),
+		});
+		self.spaces.len() - 1
+	}
+
+	/// Unwraps an authored motion, recording a rejected blend for [`AnimationGraphBuilder::build`] against the state
+	/// about to be pushed.
+	fn motion(&mut self, motion: AnimationMotion) -> StateMotion {
+		motion.0.unwrap_or_else(|error| {
+			self.errors.push(AnimationGraphBuildError::InvalidBlend {
+				state: self.states.len(),
+				error,
+			});
+			// A placeholder keeps state IDs stable until the build fails.
+			StateMotion::Clip(AnimationClip::looping("invalid-blend"))
+		})
 	}
 }
 
@@ -369,6 +418,23 @@ pub struct AnimationGraphStateBuilder<'builder> {
 	graph: u64,
 	data: &'builder RefCell<Option<AnimationGraphBuilderData>>,
 	name: String,
+	/// The space the state joins, set when it was named through [`AnimationGraphSpace::state`].
+	space: Option<usize>,
+}
+
+/// The `AnimationGraphSpace` struct groups states that share one blend position, like the idle, walk, starts, and
+/// stops of a character moving in one direction.
+///
+/// Create one with [`AnimationGraphBuilder::planar_space`] or [`AnimationGraphBuilder::linear_space`], then add its
+/// states with [`Self::state`]. Requesting any blend state of the space with a position, like
+/// [`PlanarStateId::at`], moves the position for every blend of the space, and a one-shot blend on a route into the
+/// space, like a stop, plays at the position the space had when it starts. Add routes every state of the space takes
+/// with [`Self::any_state_to`].
+#[derive(Clone, Copy)]
+pub struct AnimationGraphSpace<'builder> {
+	graph: u64,
+	data: &'builder RefCell<Option<AnimationGraphBuilderData>>,
+	index: usize,
 }
 
 /// The `AnimationGraphState` struct connects a state to other states during graph authoring.
@@ -383,17 +449,17 @@ pub struct AnimationGraphTransitionBuilder<'builder> {
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
 	wait: Vec<ClipPoint>,
-	entry: Option<ClipPoint>,
+	entry: Vec<ClipPoint>,
 }
 
 /// The `AnimationGraphTransitionConditionBuilder` struct holds unfinished one-shot route authoring so callers can choose its interruption policy.
 pub struct AnimationGraphTransitionConditionBuilder<'builder> {
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
-	clip: AnimationClip,
+	motion: AnimationMotion,
 	completion_blend: MediaTime,
 	wait: Vec<ClipPoint>,
-	entry: Option<ClipPoint>,
+	entry: Vec<ClipPoint>,
 }
 
 impl<'builder> AnimationGraphStateBuilder<'builder> {
@@ -401,32 +467,92 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 	pub fn with(self, clip: AnimationClip) -> AnimationGraphState<'builder> {
 		let mut builder = self.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let id = builder.push_state(self.graph, self.name, StateMotion::Clip(clip), None, MediaTime::ZERO);
+		let id = builder.push_state(
+			self.graph,
+			self.name,
+			StateMotion::Clip(clip),
+			self.space,
+			None,
+			MediaTime::ZERO,
+		);
 		AnimationGraphState { data: self.data, id }
 	}
 
 	/// Plays a blend of clips placed on a line. Request it with a position through [`LinearStateId::at`].
+	///
+	/// Named through [`AnimationGraphSpace::state`], it weighs its clips at the space's position, which must be linear.
+	/// Otherwise it forms a space of its own, named after the state.
 	pub fn linear(self, blend: AnimationBlend<f32>) -> LinearGraphState<'builder> {
-		LinearGraphState(self.with_blend(blend.into_motion()))
+		LinearGraphState(self.with_blend(blend.into()))
 	}
 
 	/// Plays a blend of clips placed on a plane, like locomotion directions. Request it with a position through
 	/// [`PlanarStateId::at`].
+	///
+	/// Named through [`AnimationGraphSpace::state`], it weighs its clips at the space's position, which must be planar.
+	/// Otherwise it forms a space of its own, named after the state.
 	pub fn planar(self, blend: AnimationBlend<[f32; 2]>) -> PlanarGraphState<'builder> {
-		PlanarGraphState(self.with_blend(blend.into_motion()))
+		PlanarGraphState(self.with_blend(blend.into()))
 	}
 
-	/// Adds a blend state, recording a rejected blend for [`AnimationGraphBuilder::build`] to report.
-	fn with_blend(self, motion: Result<StateMotion, BlendSpaceError>) -> AnimationGraphState<'builder> {
+	/// Adds a blend state to its space, or to a new space of its own, recording a rejected blend or a blend of the
+	/// wrong kind for [`AnimationGraphBuilder::build`] to report.
+	fn with_blend(self, motion: AnimationMotion) -> AnimationGraphState<'builder> {
 		let mut builder = self.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let motion = motion.unwrap_or_else(|error| {
-			builder.invalid_blends.push((builder.states.len(), error));
-			// A placeholder keeps state IDs stable until the build fails.
-			StateMotion::Clip(AnimationClip::looping("invalid-blend"))
-		});
-		let id = builder.push_state(self.graph, self.name, motion, None, MediaTime::ZERO);
+		let motion = builder.motion(motion);
+		// Only a rejected blend, which fails the build anyway, has no kind.
+		let kind = motion.kind().unwrap_or(SpaceKind::Linear);
+		let space = match self.space {
+			Some(space) => {
+				if builder.spaces[space].kind != kind {
+					builder.errors.push(AnimationGraphBuildError::SpaceKindMismatch {
+						state: builder.states.len(),
+					});
+				}
+				space
+			}
+			None => builder.push_space(self.name.clone(), kind),
+		};
+		let id = builder.push_state(self.graph, self.name, motion, Some(space), None, MediaTime::ZERO);
 		AnimationGraphState { data: self.data, id }
+	}
+}
+
+impl<'builder> AnimationGraphSpace<'builder> {
+	/// Names a state of this space. Call [`AnimationGraphStateBuilder::with`] next for a clip, or
+	/// [`AnimationGraphStateBuilder::planar`] or [`AnimationGraphStateBuilder::linear`] for a blend of the space's kind.
+	pub fn state(self, name: impl Into<String>) -> AnimationGraphStateBuilder<'builder> {
+		AnimationGraphStateBuilder {
+			graph: self.graph,
+			data: self.data,
+			name: name.into(),
+			space: Some(self.index),
+		}
+	}
+
+	/// Adds a route from every state of this space to `target`, taken when the playing state has no route of its own
+	/// to it. Use it for a state the whole space leads to the same way, like settling back into the idle.
+	///
+	/// Like [`AnimationGraphBuilder::any_state_to`], it cuts short a one-shot clip leading into the space or a blend in
+	/// progress, inertializing over `inertialization` from the pose on screen. The graph's any-state routes come after
+	/// it.
+	pub fn any_state_to(self, target: impl Into<AnimationGraphState<'builder>>, inertialization: MediaTime) {
+		let target = target.into();
+		assert!(
+			std::ptr::eq(self.data, target.data),
+			"the target animation state must use this space's builder"
+		);
+		let mut data = self.data.borrow_mut();
+		let data = data.as_mut().expect("the animation graph has already been built");
+		data.spaces[self.index].transitions.push(StateTransition {
+			target: target.id,
+			destination: target.id,
+			duration: inertialization,
+			can_interrupt_transition: true,
+			wait: Box::default(),
+			entry: Box::default(),
+		});
 	}
 }
 
@@ -447,7 +573,7 @@ impl<'builder> AnimationGraphState<'builder> {
 			source: self,
 			target,
 			wait: Vec::new(),
-			entry: None,
+			entry: Vec::new(),
 		}
 	}
 
@@ -473,6 +599,9 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 
 	/// Waits for the source's playback to reach any of `frames` of its clip `clip`, the resource ID of one of the
 	/// source's clips. For a blend, its clips share one phase, so the frames of one clip place the moments for all.
+	///
+	/// Call it for several clips of a blend to fit each, like the walk loops a stop blend's clips were measured
+	/// against: the route waits for the frames of the named clip that weighs the most, the first named among equals.
 	pub fn at_frames(mut self, clip: &str, frames: impl IntoIterator<Item = u32>) -> Self {
 		for frame in frames {
 			self.wait.extend(self.source.point(Some(clip), ClipTime::Frame(frame)));
@@ -491,8 +620,11 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 	/// Starts the target at `frame` of its clip `clip` instead of at its beginning. Use it to pick up a loop at the
 	/// point that fits the pose the route leaves from. On a route that plays a one-shot through [`Self::with`], the
 	/// target starts there once the one-shot hands over, like landing into a walk mid-stride.
+	///
+	/// Call it for several clips of a blend to fit each: the named clip that weighs the most where the target starts
+	/// picks the frame, the first named among equals.
 	pub fn entering_at_frame(mut self, clip: &str, frame: u32) -> Self {
-		self.entry = self.target.point(Some(clip), ClipTime::Frame(frame));
+		self.entry.extend(self.target.point(Some(clip), ClipTime::Frame(frame)));
 		self
 	}
 
@@ -526,18 +658,23 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 				duration: inertialization,
 				can_interrupt_transition,
 				wait: self.wait.into(),
-				entry: self.entry,
+				entry: self.entry.into(),
 			},
 		));
 		self.target
 	}
 
-	/// Assigns the one-shot clip played between the source and target states.
-	pub fn with(self, clip: AnimationClip) -> AnimationGraphTransitionConditionBuilder<'builder> {
+	/// Assigns the one-shot played between the source and target states: an [`AnimationClip`], or an
+	/// [`AnimationBlend`] of clips that play once.
+	///
+	/// A blend joins the target's space, or the source's when the target's space is of the other kind, and weighs its
+	/// clips at that space's position when it starts, keeping those weights until it ends. Use it for a start or a
+	/// stop that follows the walk's direction.
+	pub fn with(self, motion: impl Into<AnimationMotion>) -> AnimationGraphTransitionConditionBuilder<'builder> {
 		AnimationGraphTransitionConditionBuilder {
 			source: self.source,
 			target: self.target,
-			clip,
+			motion: motion.into(),
 			completion_blend: MediaTime::ZERO,
 			wait: self.wait,
 			entry: self.entry,
@@ -577,14 +714,29 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 			builder.states[self.target.id.index].name,
 			builder.states.len(),
 		);
+		let motion = builder.motion(self.motion);
+		// A blend takes its position from the target's space, or the source's when only that one is of its kind.
+		let space = motion.kind().and_then(|kind| {
+			let space = [self.target.id, self.source.id]
+				.into_iter()
+				.filter_map(|state| builder.states[state.index].space)
+				.find(|&space| builder.spaces[space].kind == kind);
+			if space.is_none() {
+				builder.errors.push(AnimationGraphBuildError::BlendOutsideSpace {
+					state: builder.states.len(),
+				});
+			}
+			space
+		});
 		let id = builder.push_state(
 			self.source.id.graph,
 			name,
-			StateMotion::Clip(self.clip),
+			motion,
+			space,
 			Some(self.target.id),
 			self.completion_blend,
 		);
-		builder.states[id.index].completion_entry = self.entry;
+		builder.states[id.index].completion_entry = self.entry.into();
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
@@ -593,7 +745,7 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 				duration: inertialization,
 				can_interrupt_transition,
 				wait: self.wait.into(),
-				entry: None,
+				entry: Box::default(),
 			},
 		));
 		AnimationGraphState {
@@ -610,6 +762,29 @@ impl AnimationGraphBuilder {
 			graph: self.graph,
 			data: &self.data,
 			name: name.into(),
+			space: None,
+		}
+	}
+
+	/// Starts a space whose states share one position on a plane, like the direction and speed a character moves at.
+	/// Add its states with [`AnimationGraphSpace::state`].
+	pub fn planar_space(&self, name: impl Into<String>) -> AnimationGraphSpace<'_> {
+		self.space(name.into(), SpaceKind::Planar)
+	}
+
+	/// Starts a space whose states share one position on a line, like a speed. Add its states with
+	/// [`AnimationGraphSpace::state`].
+	pub fn linear_space(&self, name: impl Into<String>) -> AnimationGraphSpace<'_> {
+		self.space(name.into(), SpaceKind::Linear)
+	}
+
+	fn space(&self, name: String, kind: SpaceKind) -> AnimationGraphSpace<'_> {
+		let mut data = self.data.borrow_mut();
+		let data = data.as_mut().expect("the animation graph has already been built");
+		AnimationGraphSpace {
+			graph: self.graph,
+			data: &self.data,
+			index: data.push_space(name, kind),
 		}
 	}
 
@@ -639,6 +814,7 @@ impl AnimationGraphBuilder {
 			self.graph,
 			name.into(),
 			StateMotion::Clip(clip),
+			None,
 			Some(completion),
 			MediaTime::ZERO,
 		)
@@ -660,10 +836,7 @@ impl AnimationGraphBuilder {
 			.take()
 			.expect("the animation graph has already been built");
 		let initial = initial.id;
-		if let Some(&(state, error)) = data.invalid_blends.first() {
-			return Err(AnimationGraphBuildError::InvalidBlend { state, error });
-		}
-		if let Some(error) = data.invalid_points.first() {
+		if let Some(error) = data.errors.first() {
 			return Err(error.clone());
 		}
 		if initial.index >= data.states.len() {
@@ -707,6 +880,20 @@ impl AnimationGraphBuilder {
 			}
 		}
 
+		for (space_index, space) in data.spaces.iter().enumerate() {
+			if space.name.trim().is_empty() {
+				return Err(AnimationGraphBuildError::EmptySpaceName { space: space_index });
+			}
+			if data.spaces[..space_index].iter().any(|other| other.name == space.name) {
+				return Err(AnimationGraphBuildError::DuplicateSpaceName {
+					name: space.name.clone(),
+				});
+			}
+			if space.transitions.iter().any(|transition| transition.duration < MediaTime::ZERO) {
+				return Err(AnimationGraphBuildError::NegativeTransitionDuration);
+			}
+		}
+
 		for (source, transition) in data.transitions {
 			if source.graph != self.graph || source.index >= data.states.len() {
 				return Err(AnimationGraphBuildError::TransitionSourceOutOfRange {
@@ -733,6 +920,7 @@ impl AnimationGraphBuilder {
 			id: self.graph,
 			binding: runtime::GraphBinding::new(data.states.len()),
 			states: data.states,
+			spaces: data.spaces.into(),
 			any_state_routes: data.any_state_routes.into(),
 			initial,
 		})
@@ -763,6 +951,27 @@ pub enum AnimationGraphBuildError {
 	DuplicateStateName {
 		/// The name shared by multiple states.
 		name: String,
+	},
+	/// A space cannot be identified because its name is empty.
+	EmptySpaceName {
+		/// The index of the unnamed space, in the order spaces were created.
+		space: usize,
+	},
+	/// A space name cannot identify one space because another space uses it.
+	DuplicateSpaceName {
+		/// The name shared by multiple spaces.
+		name: String,
+	},
+	/// A blend state cannot weigh its clips at its space's position because the two are of different kinds.
+	SpaceKindMismatch {
+		/// The index of the blend state.
+		state: usize,
+	},
+	/// A one-shot blend has no position to weigh its clips at because neither end of its route is in a space of its
+	/// kind.
+	BlendOutsideSpace {
+		/// The index of the one-shot blend's state.
+		state: usize,
 	},
 	/// A transition cannot start because its source is outside the graph.
 	TransitionSourceOutOfRange {
@@ -839,6 +1048,22 @@ impl fmt::Display for AnimationGraphBuildError {
 				formatter,
 				"Animation graph state name is duplicated. The most likely cause is multiple states named '{name}'."
 			),
+			Self::EmptySpaceName { space } => write!(
+				formatter,
+				"Animation graph space has no name. The most likely cause is space {space} being created with an empty label."
+			),
+			Self::DuplicateSpaceName { name } => write!(
+				formatter,
+				"Animation graph space name is duplicated. The most likely cause is multiple spaces named '{name}', or a blend state built outside a space, which forms a space named after itself, sharing a space's name."
+			),
+			Self::SpaceKindMismatch { state } => write!(
+				formatter,
+				"Animation blend state is of a different kind than its space. The most likely cause is state {state} being a linear blend in a planar space, or a planar blend in a linear one."
+			),
+			Self::BlendOutsideSpace { state } => write!(
+				formatter,
+				"Animation one-shot blend has no space to take its position from. The most likely cause is the route of state {state} joining two states that belong to no space of the blend's kind."
+			),
 			Self::TransitionSourceOutOfRange { state, state_count } => write!(
 				formatter,
 				"Animation transition source is missing. The most likely cause is selecting state {state} in a graph with {state_count} states."
@@ -900,8 +1125,10 @@ use std::{
 };
 
 use math::{AffineMatrix, Vector};
-pub use motion::{AnimationBlend, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId};
-use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, StateMotion};
+pub use motion::{
+	AnimationBlend, AnimationMotion, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId,
+};
+use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, SpaceKind, StateMotion};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{
@@ -1056,6 +1283,79 @@ mod tests {
 			"a state's own route comes first"
 		);
 		assert_eq!(route(dead.id(), false), None, "the target does not route to itself");
+	}
+
+	#[test]
+	fn space_routes_lead_from_every_state_of_the_space_between_its_own_and_any_state_routes() {
+		let builder = AnimationGraph::builder();
+		let standing = builder.planar_space("standing");
+		let idle = standing.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = standing.state("walk").with(AnimationClip::looping("walk.animation"));
+		let crouch = builder.state("crouch").with(AnimationClip::looping("crouch.animation"));
+		let dead = builder.state("dead").with(AnimationClip::once("death.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.when(MediaTime::ZERO);
+		walk.to(dead).when(MediaTime::from_millis(100));
+		standing.any_state_to(dead, MediaTime::from_millis(200));
+		builder.any_state_to(dead, MediaTime::from_millis(300));
+		let graph = builder.build(idle).expect("graph should build");
+		let route = |source: AnimationStateId| graph.select_transition(source, dead.id(), false).map(SelectedRoute::pair);
+
+		assert_eq!(route(idle.id()), Some((dead.id(), MediaTime::from_millis(200))));
+		assert_eq!(route(walk.id()), Some((dead.id(), MediaTime::from_millis(100))), "a state's own route comes first");
+		assert_eq!(
+			route(start_walk.id()),
+			Some((dead.id(), MediaTime::from_millis(200))),
+			"the space of a one-shot's completion cuts the one-shot short"
+		);
+		assert_eq!(
+			route(crouch.id()),
+			Some((dead.id(), MediaTime::from_millis(300))),
+			"a state outside the space takes the graph's any-state route"
+		);
+	}
+
+	#[test]
+	fn spaces_reject_blends_without_a_position_of_their_kind() {
+		let line = || {
+			AnimationBlend::new()
+				.sample(0.0, AnimationClip::looping("slow.animation"))
+				.sample(1.0, AnimationClip::looping("fast.animation"))
+		};
+
+		let builder = AnimationGraph::builder();
+		let standing = builder.planar_space("standing");
+		let idle = standing.state("idle").with(AnimationClip::looping("idle.animation"));
+		standing.state("speed").linear(line());
+		assert!(matches!(
+			builder.build(idle),
+			Err(AnimationGraphBuildError::SpaceKindMismatch { state: 1 })
+		));
+
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		idle.to(walk)
+			.with(
+				AnimationBlend::new()
+					.sample(0.0, AnimationClip::once("start-slow.animation"))
+					.sample(1.0, AnimationClip::once("start-fast.animation")),
+			)
+			.anytime(MediaTime::ZERO);
+		assert!(matches!(
+			builder.build(idle),
+			Err(AnimationGraphBuildError::BlendOutsideSpace { state: 2 })
+		));
+
+		let builder = AnimationGraph::builder();
+		let speed = builder.state("speed").linear(line());
+		builder.linear_space("speed");
+		assert!(matches!(
+			builder.build(speed),
+			Err(AnimationGraphBuildError::DuplicateSpaceName { name }) if name == "speed"
+		));
 	}
 
 	#[test]

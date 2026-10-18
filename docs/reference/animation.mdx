@@ -1,6 +1,6 @@
 ---
 title: Animation
-description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph, animators and their updates, the look chain, the clip pool, and flipbooks.
+description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph and its spaces, animators and their updates, the look chain, the clip pool, and flipbooks.
 icon: Sparkles
 ---
 
@@ -108,7 +108,8 @@ The visual pose keeps the rest values on the extracted channels.
 
 ## Animation graph
 
-A graph is a state machine built in code. Any number of
+A graph is a state machine built in code. Its states can be grouped into
+[spaces](#spaces) that share one blend position. Any number of
 [animators](#animators) can play one graph, and each keeps its own playback.
 
 ### States
@@ -116,14 +117,26 @@ A graph is a state machine built in code. Any number of
 | State | Holds | Playback |
 | --- | --- | --- |
 | Clip | One clip, looping or played once. | |
-| Linear blend | Clips at scalar positions, as a 1D blend space. | A request picks the position. |
-| Planar blend | Clips at 2D positions, as a 2D blend space with explicit or fan triangulation. | A request picks the position. |
+| Linear blend | Clips at scalar positions, as a 1D blend space. | Its space's position picks the weights. |
+| Planar blend | Clips at 2D positions, as a 2D blend space with explicit or fan triangulation. | Its space's position picks the weights. |
 
 Every clip in a blend shares one playback mode. A blend's duration is the
-weighted sum of its clips' durations, so all its clips share one phase. The
-last requested linear position and the last requested planar position are
-remembered per animator across all blends of that kind; a blend entered without a position
-starts there, and at the origin before any request.
+weighted sum of its clips' durations, so all its clips share one phase.
+
+### Spaces
+
+A space is a named group of states that share one blend position. A linear
+space's position is a scalar; a planar space's position is a 2D point.
+
+| Rule | Behavior |
+| --- | --- |
+| Membership | A state belongs to at most one space. A clip state may belong to one. A blend state always belongs to one: a blend state built outside a space forms a space of its own, named after the state, that holds only it. |
+| Kind | Every blend state of a linear space is a linear blend, and every blend state of a planar space is a planar blend. |
+| Samples | Each blend state of a space has its own clips and positions. Two blends of one space need not share positions or a clip count. |
+| Position | Each animator keeps one position for each space. A request for a state of the space that carries a position sets it. Before any request sets it, the position is the origin. |
+| Weights | A looping blend weighs its clips at its space's position every step. A blend played once weighs them at the position when it starts and keeps those weights. |
+| Nesting | A space can't hold another space. |
+| Other spaces | A space's position never changes the weights of another space's blends. |
 
 ### Routes
 
@@ -134,20 +147,27 @@ A route leads from a source state to a target state.
 | Direct, taken when the source settles | Waits until the source has reached its wait point, or its end for a clip played once, then inertializes into the target over the route's duration. A zero duration switches at once. |
 | Direct, taken anytime | Also cuts short a blend into the source or a one-shot leading to it. |
 | Through a one-shot clip | Plays a clip once between source and target, then inertializes into the target over the exit duration. The one-shot either must complete or may be interrupted. |
-| From any state | A route every state can take, considered after the state's own routes. |
+| Through a one-shot blend | Plays a blend of clips once between source and target, like a one-shot clip. The blend belongs to the target's space, or to the source's when the target belongs to no space or to a space of the other kind. It weighs its clips at that space's position when it starts and keeps those weights until it ends. |
+| From a space | A route every state of a space can take, considered after the state's own routes. |
+| From any state | A route every state can take, considered after the state's own routes and its space's routes. |
 
-A wait point is a frame on the source clip, several frames on one clip of a
-blend, or a time. Frames count at the clip's authored frame rate; a clip
-without a frame rate never reaches a frame point. A route can also enter the
-target at a given frame instead of its start.
+A wait point is a frame on the source clip, frames on one or more clips of a
+blend, or a time. When a route names frames on several clips of a blend, it
+waits for the frames of the named clip that weighs the most; between clips of
+equal weight, the first named wins. Frames count at the clip's authored frame
+rate; a clip without a frame rate never reaches a frame point. A route can also
+enter the target at a frame instead of its start. When it names frames on
+several clips of a blend, the named clip that weighs the most where the target
+starts picks the frame, by the same rule.
 
 Routes resolve in this order. A persistent state ignores a request for itself,
-then takes the first of its own routes to the requested state, then any-state
-routes. A one-shot takes its own routes first; while it plays, a request other
-than its completion may take the completion state's anytime routes or any-state
-routes; once it finishes, it takes its completion route. A blend in progress
-can only be redirected along anytime and any-state routes, and never toward a
-one-shot.
+then takes the first of its own routes to the requested state, then its space's
+routes, then any-state routes. A one-shot takes its own routes first; while it
+plays, a request other than its completion may take the anytime routes of the
+completion state or its space, or any-state routes; once it finishes, it takes
+its completion route. A blend in progress can only be redirected along anytime
+routes, of its destination state or that state's space, and any-state routes,
+and never toward a one-shot.
 
 ### Building a graph
 
@@ -157,11 +177,14 @@ Building validates the graph and reports the first problem:
 | --- | --- |
 | `InitialStateOutOfRange`, `TransitionSourceOutOfRange`, `TransitionTargetOutOfRange`, `TransitionStateCompletionOutOfRange` | A state index names no state. |
 | `EmptyStateName`, `DuplicateStateName` | A state has no name, or two share one. |
+| `EmptySpaceName`, `DuplicateSpaceName` | A space has no name, or two share one. |
 | `EmptyResourceId` | A clip has no resource ID. |
-| `TransitionStateMustPlayOnce` | A one-shot transition clip loops. |
+| `TransitionStateMustPlayOnce` | A one-shot transition clip, or a clip of a one-shot transition blend, loops. |
 | `NegativeTransitionDuration` | A route or exit duration is negative. |
 | `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or its clips mix looping and once. |
-| `RoutePointClipMissing`, `RoutePointNeedsClip` | A wait point names a clip the source lacks, or a blend's wait point names no clip. |
+| `SpaceKindMismatch` | A blend state's kind differs from its space's. |
+| `BlendOutsideSpace` | A one-shot transition blend's source and target belong to no space of its kind. |
+| `RoutePointClipMissing`, `RoutePointNeedsClip` | A wait or entry point names a clip its state lacks, or a point on a blend names no clip. |
 
 ## Animators
 
@@ -190,8 +213,9 @@ the entity it poses, usually a skinned renderable.
 
 ### Requests
 
-A request is a targeted message on an animator's handle. It names a state, or a
-blend state with its position, and whether a position change is inertialized.
+A request is a targeted message on an animator's handle. It names a state
+and whether a position change is inertialized. A request for a blend state can
+also carry a position of its space's kind.
 
 | Rule | Behavior |
 | --- | --- |
@@ -212,8 +236,8 @@ request, through the routes of its graph.
 | Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
 | Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
 | Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
-| Position change on a blend | An inertialized request blends the state from its current weights to the new ones, from the pose posted last. |
-| Prefetch | Entering a state requests the clips of every state its routes can reach. |
+| Position change on a blend | An inertialized request blends a looping blend from its current weights to the new ones, from the pose posted last. A blend played once keeps the weights it started with. |
+| Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. |
 | Initial clip not resident | The animator posts nothing. |
 | Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |
 
@@ -333,12 +357,12 @@ the [asset formats reference](/docs/reference/assets#flipbooks).
 | --- | --- |
 | Clip loads in flight, pool events kept, clips waiting for room | 64 each |
 | Clips sampled per step per motion | 3 |
-| Remembered blend positions | One linear and one planar per animator |
+| Remembered blend positions | One per space per animator |
 | Requests and look targets applied per step | The last of each per animator |
 | Animators | No fixed limit |
 | Animators for each lane a step adds | 16 |
 | Blend space samples | At least 1 for 1D, at least 3 for 2D |
-| Skeleton nodes, clips, states | No fixed limit; node indices are 32-bit |
+| Skeleton nodes, clips, states, spaces | No fixed limit; node indices are 32-bit |
 | Engine time resolution | 28,224,000 ticks per second |
 
 ## Rust API

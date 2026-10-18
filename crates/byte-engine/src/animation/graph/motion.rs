@@ -34,6 +34,15 @@ impl StateMotion {
 		self.clips()[0].playback()
 	}
 
+	/// Returns the kind of space a blend weighs its clips in, or `None` for a single clip.
+	pub(super) fn kind(&self) -> Option<SpaceKind> {
+		match self {
+			Self::Clip(_) => None,
+			Self::Linear { .. } => Some(SpaceKind::Linear),
+			Self::Planar { .. } => Some(SpaceKind::Planar),
+		}
+	}
+
 	/// Returns each clip's weight for the blend position `value`.
 	///
 	/// A value of the wrong kind or a non-finite one returns `current`, so the state keeps its last mix.
@@ -44,6 +53,39 @@ impl StateMotion {
 			(Self::Planar { space, .. }, BlendValue::Planar(value)) => space.weights(value).unwrap_or(current),
 			_ => current,
 		}
+	}
+}
+
+/// The `SpaceKind` enum names the dimensionality of a space's position, which every blend of the space weighs its
+/// clips at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SpaceKind {
+	Linear,
+	Planar,
+}
+
+/// The `AnimationMotion` struct is what a one-shot route plays: one clip, or a blend of clips that play once.
+///
+/// Pass an [`AnimationClip`], or an [`AnimationBlend`] on a line or a plane, to
+/// [`AnimationGraphTransitionBuilder::with`]. A blend weighs its clips at its space's position when it starts, so a
+/// stop can follow the direction the walk had.
+pub struct AnimationMotion(pub(super) Result<StateMotion, BlendSpaceError>);
+
+impl From<AnimationClip> for AnimationMotion {
+	fn from(clip: AnimationClip) -> Self {
+		Self(Ok(StateMotion::Clip(clip)))
+	}
+}
+
+impl From<AnimationBlend<f32>> for AnimationMotion {
+	fn from(blend: AnimationBlend<f32>) -> Self {
+		Self(blend.into_motion())
+	}
+}
+
+impl From<AnimationBlend<[f32; 2]>> for AnimationMotion {
+	fn from(blend: AnimationBlend<[f32; 2]>) -> Self {
+		Self(blend.into_motion())
 	}
 }
 
@@ -272,8 +314,9 @@ impl From<PlanarStateId> for AnimationRequest {
 /// blend.
 ///
 /// Make one from any state ID, or with [`LinearStateId::at`] and [`PlanarStateId::at`] for blend states, then pass
-/// it to [`AnimationGraphPlayer::advance`]. A blend state requested without a position keeps its last one, and a
-/// blend state the player enters on its own starts at the last position requested for a blend of its kind.
+/// it to [`AnimationGraphPlayer::advance`]. A position sets the position of the blend state's space, which every
+/// looping blend of the space follows. A blend requested without a position keeps its space's position, and a blend
+/// the player enters on its own starts there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationRequest {
 	pub(super) state: AnimationStateId,
@@ -326,34 +369,44 @@ pub(super) enum ClipTime {
 	Seconds(f32),
 }
 
-/// The `BlendPositions` struct remembers the last position a player was given for each kind of blend.
+/// The `BlendPositions` struct remembers the last position a player was given for each space of its graph.
 ///
-/// A blend state the player enters without a requested position, like a landing a jump hands over to, starts where
-/// the last blend of its kind left off rather than at the centre of its samples, where opposite directions can
-/// cancel out. All linear blends share one position, and all planar blends another.
-#[derive(Clone, Copy, Default)]
-pub(super) struct BlendPositions {
-	linear: Option<f32>,
-	planar: Option<[f32; 2]>,
-}
+/// A blend the player enters without a requested position, like a landing a jump hands over to, or a one-shot blend
+/// like a stop, starts where its space's position was left rather than at the centre of its samples, where opposite
+/// directions can cancel out. Each space keeps its own position; a position never changes another space's blends.
+pub(super) struct BlendPositions(Box<[BlendValue]>);
 
 impl BlendPositions {
-	/// Keeps a requested position for later blends of its kind. Non-finite positions are ignored.
-	pub(super) fn remember(&mut self, value: BlendValue) {
-		match value {
-			BlendValue::Linear(value) if value.is_finite() => self.linear = Some(value),
-			BlendValue::Planar(value) if value.iter().all(|component| component.is_finite()) => self.planar = Some(value),
+	/// Starts every space of a graph at its origin.
+	pub(super) fn new(spaces: &[AnimationSpaceData]) -> Self {
+		Self(
+			spaces
+				.iter()
+				.map(|space| match space.kind {
+					SpaceKind::Linear => BlendValue::Linear(0.0),
+					SpaceKind::Planar => BlendValue::Planar([0.0, 0.0]),
+				})
+				.collect(),
+		)
+	}
+
+	/// Keeps a position requested for a state of `space`. Positions of the other kind or non-finite ones are ignored.
+	pub(super) fn remember(&mut self, space: Option<usize>, value: BlendValue) {
+		let Some(position) = space.map(|space| &mut self.0[space]) else {
+			return;
+		};
+		match (*position, value) {
+			(BlendValue::Linear(_), BlendValue::Linear(value)) if value.is_finite() => *position = BlendValue::Linear(value),
+			(BlendValue::Planar(_), BlendValue::Planar(value)) if value.iter().all(|component| component.is_finite()) => {
+				*position = BlendValue::Planar(value)
+			}
 			_ => {}
 		}
 	}
 
-	/// Returns where `motion` starts: the last position of its kind, or the origin before the player was given one.
-	pub(super) fn recall(&self, motion: &StateMotion) -> BlendValue {
-		match motion {
-			StateMotion::Clip(_) => BlendValue::Unset,
-			StateMotion::Linear { .. } => BlendValue::Linear(self.linear.unwrap_or(0.0)),
-			StateMotion::Planar { .. } => BlendValue::Planar(self.planar.unwrap_or([0.0, 0.0])),
-		}
+	/// Returns the position of `space`, or no position for a state outside every space.
+	pub(super) fn recall(&self, space: Option<usize>) -> BlendValue {
+		space.map_or(BlendValue::Unset, |space| self.0[space])
 	}
 }
 

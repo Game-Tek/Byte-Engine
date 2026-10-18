@@ -64,11 +64,27 @@ impl<'graph> RuntimeMotion<'graph> {
 		})
 	}
 
+	/// Returns the points of the named clip that weighs the most, the first named among equals, so a route that names
+	/// frames on several clips of a blend follows the clip that plays the most.
+	fn points_of_heaviest<'points>(&self, points: &'points [ClipPoint]) -> impl Iterator<Item = &'points ClipPoint> {
+		let weight = |clip: usize| {
+			self.weights
+				.iter()
+				.find(|&(sample, _)| sample == clip)
+				.map_or(0.0, |(_, weight)| weight)
+		};
+		let heaviest = points
+			.iter()
+			.map(|point| point.clip)
+			.reduce(|best, clip| if weight(clip) > weight(best) { clip } else { best });
+		points.iter().filter(move |point| Some(point.clip) == heaviest)
+	}
+
 	/// Returns how long playback takes from now to reach the earliest of `points`, or `None` when it reaches none, like
 	/// a one-shot already past them.
 	fn time_until(&self, points: &[ClipPoint]) -> Option<MediaTime> {
-		let ahead = points
-			.iter()
+		let ahead = self
+			.points_of_heaviest(points)
 			.filter_map(|point| {
 				let ahead = self.phase_of(*point)? - self.phase;
 				match self.playback {
@@ -232,13 +248,14 @@ impl<'graph> Evaluation<'_, 'graph, '_> {
 		missing == 0
 	}
 
-	/// Lists the clips of the states directly reachable from `state` that aren't resident, without traversing the
-	/// graph further.
-	fn prefetch_neighbors(&mut self, graph: &'graph AnimationGraph, state: AnimationStateId) {
-		let state = graph.state(state);
+	/// Lists the clips of the states directly reachable from `state`, through its own routes and its space's, that
+	/// aren't resident, without traversing the graph further.
+	fn prefetch_neighbors(&mut self, graph: &'graph AnimationGraph, id: AnimationStateId) {
+		let state = graph.state(id);
 		let neighbors = state
 			.transitions
 			.iter()
+			.chain(graph.space_routes(id))
 			.map(|transition| transition.target)
 			.chain(state.completion);
 		for neighbor in neighbors {
@@ -264,7 +281,7 @@ struct PendingPlayerTransition<'graph> {
 	/// How long to blend from the source; `None` starts the target with nothing to blend from.
 	duration: Option<MediaTime>,
 	wait: &'graph [ClipPoint],
-	entry: Option<ClipPoint>,
+	entry: &'graph [ClipPoint],
 }
 
 /// The `RootMotionTranslation` struct selects node-local translation axes for root motion.
@@ -607,9 +624,9 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					target: graph.initial_state(),
 					duration: None,
 					wait: &[],
-					entry: None,
+					entry: &[],
 				}),
-				positions: BlendPositions::default(),
+				positions: BlendPositions::new(&graph.spaces),
 				last_delta: MediaTime::ZERO,
 				root_motion: RootMotionDelta::IDENTITY,
 				pose,
@@ -624,7 +641,7 @@ struct ReadyAnimationGraphPlayer<'graph> {
 	graph: &'graph AnimationGraph,
 	playback: Playback<'graph>,
 	pending: Option<PendingPlayerTransition<'graph>>,
-	/// Where blends entered without a requested position start.
+	/// Each space's position, which its looping blends follow and its blends start at.
 	positions: BlendPositions,
 	/// The latest frame's duration, which a redirected blend measures the on-screen pose's velocity over.
 	last_delta: MediaTime,
@@ -696,7 +713,8 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 	/// apply [`AnimationGraphPose::root_motion`] to the owning object and submit
 	/// [`AnimationGraphPose::global_pose`] to the rendering system.
 	fn advance(&mut self, delta: MediaTime, requested: AnimationRequest, evaluation: &mut Evaluation<'_, 'graph, '_>) {
-		self.positions.remember(requested.value);
+		self.positions
+			.remember(self.graph.state(requested.state).space, requested.value);
 		self.refresh_pending_transition(requested.state);
 		self.start_pending(evaluation);
 
@@ -821,10 +839,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		evaluation.prefetch_neighbors(self.graph, target);
 	}
 
-	/// Moves the requested blend state, wherever it plays, to the requested blend position.
+	/// Moves every looping blend of the requested state's space, wherever it plays, to the requested blend position.
 	///
 	/// A request that asks to be [inertialized](AnimationRequest::inertialized) blends a playing blend state to its
-	/// new position from the pose on screen instead.
+	/// new position from the pose on screen instead. Blends that play once keep the weights they started with, so a
+	/// stop keeps the direction it set off in.
 	fn apply_blend_position(&mut self, requested: AnimationRequest, evaluation: &mut Evaluation<'_, 'graph, '_>) {
 		// Clip states and blends requested without a position keep their weights.
 		if requested.value == BlendValue::Unset {
@@ -835,18 +854,23 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		{
 			return;
 		}
-		let motion = &self.graph.state(requested.state).motion;
-		// A blend in progress moves its destination, or its source when only that one is the requested state.
-		let runtime = match &mut self.playback {
-			Playback::AwaitingInitial => None,
-			Playback::Playing(active) => Some(active),
-			Playback::Transitioning(transition) if transition.destination.state == requested.state => {
-				Some(&mut transition.destination)
-			}
-			Playback::Transitioning(transition) => Some(&mut transition.source),
+		let graph = self.graph;
+		let Some(space) = graph.state(requested.state).space else {
+			return;
 		};
-		if let Some(runtime) = runtime.filter(|runtime| runtime.state == requested.state) {
-			runtime.weights = motion.weights(requested.value, runtime.weights);
+		let follow = |runtime: &mut RuntimeMotion| {
+			let state = graph.state(runtime.state);
+			if state.space == Some(space) && runtime.playback == AnimationPlayback::Loop {
+				runtime.weights = state.motion.weights(requested.value, runtime.weights);
+			}
+		};
+		match &mut self.playback {
+			Playback::AwaitingInitial => {}
+			Playback::Playing(active) => follow(active),
+			Playback::Transitioning(transition) => {
+				follow(&mut transition.source);
+				follow(&mut transition.destination);
+			}
 		}
 	}
 
@@ -864,8 +888,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		let Playback::Playing(active) = &self.playback else {
 			return false;
 		};
-		// The on-screen velocity needs a non-zero frame time.
-		if active.state != requested.state || self.last_delta == MediaTime::ZERO {
+		// The on-screen velocity needs a non-zero frame time, and a blend played once keeps its weights.
+		if active.state != requested.state
+			|| active.playback != AnimationPlayback::Loop
+			|| self.last_delta == MediaTime::ZERO
+		{
 			return false;
 		}
 		let mut destination = *active;
@@ -911,19 +938,21 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		});
 	}
 
-	/// Starts the motion of `target`, a blend at the last position requested for its kind, at `entry` or its beginning.
+	/// Starts the motion of `target`, a blend at its space's position, at the `entry` point of its heaviest named clip
+	/// or at its beginning.
 	fn start_motion(
 		&self,
 		target: AnimationStateId,
-		entry: Option<ClipPoint>,
+		entry: &[ClipPoint],
 		pool: &AnimationPool,
 	) -> RuntimeMotion<'graph> {
 		let graph = self.graph;
-		let motion = &graph.state(target).motion;
+		let state = graph.state(target);
 		let samples = graph
 			.binding
-			.state(target.index, || bind_clips(motion, pool, &self.pose.target));
-		let mut runtime = RuntimeMotion::new(target, motion, self.positions.recall(motion), samples);
+			.state(target.index, || bind_clips(&state.motion, pool, &self.pose.target));
+		let mut runtime = RuntimeMotion::new(target, &state.motion, self.positions.recall(state.space), samples);
+		let entry = runtime.points_of_heaviest(entry).next().copied();
 		if let Some(phase) = entry.and_then(|entry| runtime.phase_of(entry)) {
 			runtime.phase = phase;
 			runtime.previous_phase = phase;
@@ -2249,7 +2278,7 @@ mod tests {
 	}
 
 	#[test]
-	fn blends_entered_on_their_own_continue_at_the_last_requested_position() {
+	fn blends_entered_on_their_own_continue_at_their_space_position() {
 		let mut pool = pool_with(vec![
 			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
 			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
@@ -2258,8 +2287,9 @@ mod tests {
 			("jump.animation", test_motion("jump", [0.0, 0.0, 0.0], 0.5)),
 		]);
 		let builder = AnimationGraph::builder();
+		let moving = builder.planar_space("moving");
 		let directions = |name: &str| {
-			builder.state(name).planar(
+			moving.state(name).planar(
 				AnimationBlend::new()
 					.sample([0.0, 1.0], AnimationClip::looping("forward.animation"))
 					.sample([1.0, 0.0], AnimationClip::looping("right.animation"))
@@ -2283,6 +2313,80 @@ mod tests {
 		// The landing walks right like the walk did, rather than standing at the centre where the directions cancel.
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
 		math::assert_float_eq!(root_motion.translation.z(), 0.0);
+	}
+
+	#[test]
+	fn one_shot_blends_keep_the_position_their_space_had_when_they_start() {
+		let mut pool = pool_with(vec![
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
+			("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			("left.animation", test_motion("left", [-1.0, 0.0, 0.0], 1.0)),
+			("idle.animation", test_motion("idle", [0.0, 0.0, 0.0], 1.0)),
+		]);
+		let directions = |playback: fn(&'static str) -> AnimationClip| {
+			AnimationBlend::new()
+				.sample([0.0, 1.0], playback("forward.animation"))
+				.sample([1.0, 0.0], playback("right.animation"))
+				.sample([0.0, -1.0], playback("backward.animation"))
+				.sample([-1.0, 0.0], playback("left.animation"))
+		};
+		let builder = AnimationGraph::builder();
+		let moving = builder.planar_space("moving");
+		let walk = moving.state("walk").planar(directions(AnimationClip::looping));
+		let idle = moving.state("idle").with(AnimationClip::looping("idle.animation"));
+		// The stop must complete, so requesting the walk again while it plays only moves the space's position.
+		walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
+		idle.to(walk).when(MediaTime::ZERO);
+		let graph = builder.build(walk).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+
+		ready(player.advance(MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		let root_motion = ready(player.advance(MediaTime::from_millis(250), walk.id().at([0.0, 1.0]), &mut pool)).root_motion;
+
+		// The stop heads right, where the walk was when it started, though the space now points forward.
+		math::assert_float_eq!(root_motion.translation.x(), 0.25);
+		math::assert_float_eq!(root_motion.translation.z(), 0.0);
+	}
+
+	#[test]
+	fn routes_wait_for_the_frames_of_the_heaviest_named_clip() {
+		let mut pool = pool_with(vec![
+			("slow.animation", test_animation("slow", 1.0)),
+			("fast.animation", test_animation("fast", 2.0)),
+			("idle.animation", test_animation("idle", 0.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let speed = builder.state("speed").linear(
+			AnimationBlend::new()
+				.sample(0.0, AnimationClip::looping("slow.animation"))
+				.sample(1.0, AnimationClip::looping("fast.animation")),
+		);
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		// Frames of a 10 fps clip: 2 is 200 ms in and 7 is 700 ms in. Both clips last 1 s, and so does any mix.
+		speed
+			.to(idle)
+			.at_frames("slow.animation", [2])
+			.at_frames("fast.animation", [7])
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(speed).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+		let millis = |player: &AnimationGraphPlayer, position: f32| {
+			player
+				.time_until_route(idle.id())
+				.map(|time| (time.as_seconds_f32() * 1000.0).round() as i64)
+				.map(|time| (position, time))
+		};
+
+		for (position, expected) in [(0.25, 200), (0.75, 700), (0.5, 200)] {
+			ready(player.advance(MediaTime::ZERO, speed.id().at(position), &mut pool));
+			assert_eq!(
+				millis(&player, position),
+				Some((position, expected)),
+				"the clip that weighs the most, or the first named among equals, picks the frames"
+			);
+		}
 	}
 
 	#[test]

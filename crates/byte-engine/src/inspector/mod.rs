@@ -44,6 +44,9 @@ pub use screenshot::{
 	ScreenshotSubmitError, Screenshots,
 };
 mod shape;
+mod stream;
+pub use stream::DataStream;
+pub(crate) use stream::StreamOutput;
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.

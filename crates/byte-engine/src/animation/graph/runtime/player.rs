@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod stream;
 
 /// The `RuntimeMotion` struct plays one graph state, keeping a blend's clips in step through one shared phase.
 ///
@@ -388,6 +389,8 @@ pub struct AnimationGraphPlayer<'graph> {
 	requested: AnimationRequest,
 	/// The clips the latest evaluation needed but the pool didn't hold, for the pool to request.
 	missing: Vec<&'graph str>,
+	/// Where the player reports its state after each advance; see [`Self::set_stream`].
+	stream: Option<crate::inspector::DataStream>,
 }
 
 /// The `PlayerRuntime` enum follows a player from waiting for its initial clip to playing, or to never playing.
@@ -434,6 +437,7 @@ impl AnimationPool {
 			runtime: PlayerRuntime::Loading,
 			requested: graph.initial_state().into(),
 			missing: Vec::new(),
+			stream: None,
 		}
 	}
 
@@ -574,9 +578,19 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 
 	/// Starts playing once the initial clip is resident, then plays toward the latest request.
 	///
-	/// It only reads `pool`, listing the clips it needs but the pool lacks in [`Self::missing`]. Returns whether the
-	/// pool has work to settle for the player: clips to request, or a rejection to report.
+	/// It only reads `pool`, listing the clips it needs but the pool lacks in [`Self::missing`], then writes a record
+	/// to its stream when it has one. Returns whether the pool has work to settle for the player: clips to request, or
+	/// a rejection to report.
 	fn evaluate(&mut self, delta: MediaTime, pool: &AnimationPool, scratch: &mut PoseScratch) -> bool {
+		let unsettled = self.advance_runtime(delta, pool, scratch);
+		if self.stream.is_some() {
+			self.write_stream();
+		}
+		unsettled
+	}
+
+	/// Starts or advances the player's runtime, and returns whether the pool has work to settle for it.
+	fn advance_runtime(&mut self, delta: MediaTime, pool: &AnimationPool, scratch: &mut PoseScratch) -> bool {
 		if matches!(self.runtime, PlayerRuntime::Loading) {
 			self.start(pool);
 		}

@@ -1,0 +1,41 @@
+---
+title: Data streams
+description: Look up where a data stream's records go, how they're written, and the fields every record carries.
+icon: Bug
+---
+
+A data stream carries one entity's state, as a system that holds that state
+reports it, while the application runs. The application opens a stream for an
+entity and hands it to the system; the system writes a record every time it
+updates the entity. To open one, follow
+[Stream an entity's state](/docs/use/data-streams).
+
+## Destination
+
+The `debug.streams` parameter selects where every stream writes. All streams
+share the one destination.
+
+| Value | Records go to |
+| --- | --- |
+| Not set | Nowhere. No stream opens, and systems write nothing. |
+| `log` | The log, at the info level with the target `byte_engine::stream`, one record per log line. A `log.level` above `info` hides them. |
+| `stdout` | Standard output, one record per line. |
+| `stderr` | Standard error, one record per line. |
+| Any other text | The file at that path, relative to the working directory, created or truncated at startup. A file that can't be created stops startup. A path such as `/dev/fd/3` writes to an open file descriptor. |
+
+| Rule | Value |
+| --- | --- |
+| Format | NDJSON: one JSON object per line, ended by a line feed. |
+| Order | One stream's records arrive in the order the system wrote them. Records of different streams interleave, but never within a line. |
+| Delivery | Every record is written as the system writes it. A writer that can't keep up stalls the system; no record is dropped. |
+| Encoding | UTF-8. Numbers are JSON numbers; non-finite numbers are `null`. |
+
+## Record
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `time` | Number | Wall-clock milliseconds since the application started, when the record was written. The inspector's metrics use the same clock. |
+| `entity` | Integer | The entity's handle, as the inspector's entity query lists it. |
+| `name` | String | The name the application gave the stream when it opened it. |
+| `stream` | String | The system that wrote the record, which selects the shape of `data`. |
+| `data` | Object | The system's record, which the Reference page of each system that writes one specifies. |

@@ -1,6 +1,6 @@
 ---
 title: Animation
-description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph and its spaces, animators and their updates, the look chain, the clip pool, and flipbooks.
+description: Look up the skeleton, clip, pose, and sampling model, the blend and inertialization rules, root motion, the animation graph and its spaces, animators and their updates and data stream, the look chain, the clip pool, and flipbooks.
 icon: Sparkles
 ---
 
@@ -281,6 +281,74 @@ Between steps, the system answers these for each animator, as of the last step:
 | Playing state | The state playing, or none before the initial clip is resident. |
 | Waiting for | The requested state whose route waits for the playing state to reach one of its wait points, or none. A new request cancels the wait. |
 | Time until a route | How long the playing state plays on before its route to a given state starts: zero for a route that doesn't wait, and the time to the nearest wait point for one that does. None when the playing state has no route to that state, a one-shot has played past every wait point, the animator is blending, or the initial clip isn't resident. |
+
+### Data stream
+
+An animator given a [data stream](/docs/reference/data-streams) writes one
+record to it each time it advances, after the advance, with `stream` set to
+`animation`. An animator without a stream writes nothing. Times in `data` are
+seconds.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | `loading`, `ready`, or `rejected` | Whether the animator waits for its initial clip, plays, or never plays because it was [rejected](#errors). |
+| `error` | String or null | Why the animator was rejected; null otherwise. |
+| `missing` | Array of strings | The clips the advance needed but the pool didn't hold, by resource ID. The pool requests them. |
+| `request` | Request | The latest [request](#requests). |
+| `motion` | Motion or null | The state playing, or the state a blend moves to. Null until the initial clip plays. |
+| `transition` | Transition or null | The blend in progress; null when one state plays alone. |
+| `pending` | Pending or null | A route the animator selected but hasn't started; null when there's none. |
+| `root_motion` | Root motion | The motion the advance extracted for the entity to apply. |
+
+A request:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `state` | String | The requested state's name. |
+| `position` | Null, number, or array of two numbers | The requested blend position: null for none, a number on a line, or a point on a plane. |
+| `inertialization` | Number | How long the request blends to its position; zero changes the weights at once. |
+
+A motion:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `state` | String | The state's name. |
+| `playback` | `loop` or `once` | Whether the state's clips repeat or hold their last pose. |
+| `phase` | Number | Progress through the clips, from 0 at their start to 1 at their end. |
+| `time` | Number | The phase in seconds: the phase times the duration. |
+| `duration` | Number | One cycle: the clips' durations weighed by how much each plays. |
+| `clips` | Array of clip weights | The clips that contribute to the pose, at most three. Their weights sum to one. |
+
+A clip weight:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `clip` | String | The clip's resource ID. |
+| `weight` | Number | How much the clip contributes, above 0 and at most 1. |
+
+A transition:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `from` | Motion | The state the blend leaves, which keeps playing until the blend ends. |
+| `elapsed` | Number | How far the blend has progressed. |
+| `duration` | Number | How long the blend takes. |
+
+A pending route:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `requested` | String | The state the application requested. |
+| `target` | String | The state the route enters first, which is `requested` or a one-shot state on the way to it. |
+| `blend` | Number or null | How long the route blends from the playing state; null starts the target with nothing to blend from. |
+| `starts_in` | Number or null | How long the playing state plays before the route reaches its wait point; null when the route doesn't wait for one, or the playing state reaches none. A route that doesn't wait starts as soon as its target's clips load. |
+
+Root motion:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `translation` | Array of three numbers | The translation, in the skeleton root's parent space. |
+| `rotation` | Array of four numbers | The rotation quaternion, as x, y, z, w. |
 
 ### Look chain
 

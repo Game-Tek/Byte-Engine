@@ -49,6 +49,7 @@ A value is text that the reader converts:
 | `render-on-demand` | Lenient boolean | `false` | Renders only when something changed and waits in the window system while idle. |
 | `kill-after` | Tick count | None | Closes the application after that many ticks, without waiting while idle. Debug builds only; a release build ignores it. |
 | `metrics-out` | Path | None | Writes the metrics when the application closes: every retained tick as NDJSON when the extension is `ndjson`, otherwise the summary as JSON. |
+| `debug.streams` | `log`, `stdout`, `stderr`, or a path | None, so no stream opens | Where every entity data stream writes its records. See [Data streams](/docs/reference/data-streams). |
 | `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. A port in use stops startup. |
 | `physics.step-lanes` | `bodies:lanes` pairs separated by commas, each lane count at least 1 | 2 lanes from 512 bodies and up to 4 from 4,000, never more than the fastest cores' threads | How many lanes a physics step runs on, by body count. `0:1` keeps every step on the calling thread. See [Physics](/docs/reference/physics). |
 | `artnet.bind-address` | IPv4 address; invalid keeps the default | `0.0.0.0` | The Art-Net worker's bind address, with the `dmx` feature. |

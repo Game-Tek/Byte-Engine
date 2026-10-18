@@ -16,7 +16,7 @@ for it. Several views can be shown at once, from one pass or from several.
   renderer refuses the next view and says so; memory never grows with the number of views that exist.
 - **A pass writes only the views that are shown.** Every other view costs the pass nothing on that frame. One pass
   can show several of its views in the same dispatch.
-- **Selected at runtime, by name.** `render.debug.view.visibility.normals=true` through the inspector or startup
+- **Selected at runtime, by name.** `render.debug.view.VisibilityPipelineManager.normals=true` through the inspector or startup
   parameters, with no rebuild and no rebake.
 - **Gone from release bakes.** A project that leaves the feature out gets shaders without the branches, without the
   debug bindings, and a renderer with no pool and no present step.
@@ -50,7 +50,7 @@ The code lives in `rendering/debug_views.rs` (the handle, the registry, the cata
 
 ### Declaring views from a pass
 
-A pass declares its views once, while it is built, through the builder it already gets its targets from:
+A pass declares its views once, while it's built, through the builder it already gets its targets from:
 
 ```rust
 pub struct DebugViews {
@@ -86,7 +86,7 @@ impl<'a> RenderPassBuilder<'a> {
 ```
 
 `shown()` is one relaxed atomic read, so a pass calls it in `prepare` every frame and passes the number straight
-into its parameters buffer or push constant. The builder does not know the pass's name while the pass is built, so
+into its parameters buffer or push constant. The builder doesn't know the pass's name while the pass is built, so
 each instance gets its own cell and the renderer registers every instance's cell under [`RenderPass::name`], or
 the scene pipeline manager's name, once the pass exists; a selection writes every cell of that name, so one
 selection changes every window. Four bits per view bound the pool at 15 slots and a pass at 8 views per `u32`;
@@ -143,14 +143,14 @@ impl DebugViewRegistry {
 
 `render.debug.view.<pass>.<view>` arrives on its own [`ConfigurationPort`], registered next to `render.pass.`.
 Its value is `true` or `false`, and the port answers `Set` with the value or `NotSet` with the reason: an unknown
-view of a known pass, no free debug target, or debug views left out of this build. A view of a pass that has not
+view of a known pass, no free debug target, or debug views left out of this build. A view of a pass that hasn't
 registered yet stays `Pending`, like a `render.pass.` state does, so a startup parameter can name a pass that a
 deferred sink creates later. Each view is its own parameter so a refused one leaves the others as they were.
 Startup parameters queue through the same port, so `render.debug.view.VisibilityPipelineManager.normals=true` on
 the command line shows the view from the first frame.
 
-The pool size is `render.debug.targets`, a startup parameter from `1` to `15`, default `4`. It is read when the
-renderer is created, so it does not change at runtime.
+The pool size is `render.debug.targets`, a startup parameter from `1` to `15`, default `4`. It's read when the
+renderer is created, so it doesn't change at runtime.
 
 The inspector serves one read-only route, `GET /debug-views`, from a [`DebugViewCatalog`] the renderer publishes to
 on every registration and selection: every declared view, its slot while shown, the pool size, and whether the
@@ -161,7 +161,7 @@ build has the feature, so a tool can offer a picker without guessing names. Sele
 
 The renderer creates the pool per sink on the first `debug_views` call for that sink, in [`RenderTargets`]:
 `render.debug.targets` images in the sink's color format ([`SCENE_COLOR_FORMAT`]), with
-`Storage | Image | TransferSource` uses, named `Debug View <slot>`. They are non-member targets, so they are sized
+`Storage | Image | TransferSource` uses, named `Debug View <slot>`. They're non-member targets, so they're sized
 on their own, not placed with the sink's image group:
 
 - A free slot is sized `1×1`. The renderer already resizes non-member targets every frame from
@@ -253,7 +253,7 @@ Rules:
 - **Keep the view's arithmetic inside the branch.** The branch is a runtime flag, so its code stays in the
   pipeline of a debug bake; see [Shader variants](/docs/develop/rendering/shader-variants) for why. Nothing
   outside the branch should exist for the view's sake.
-- **Write the whole pixel of every shown view.** A slot is undefined where its view does not write.
+- **Write the whole pixel of every shown view.** A slot is undefined where its view doesn't write.
 
 Generated shaders, such as material evaluation, emit the same branches from the generator's suffix, so the
 `VisibilityShaderGenerator` tests can assert a view is present in a debug bake and absent in a release one at the
@@ -301,7 +301,7 @@ branches that never fire or the runtime selects a view that writes nothing and r
   before `Presentation`.
 - Per hand-written pass: the shader numbers each view as the Rust list declares it.
 - Generator seam: a bake with debug views reaches `debug_view_targets` from material evaluation and a bake without
-  them does not, and the program still lowers to the platform shader language. `present.besl` lexes and, in the
+  them doesn't, and the program still lowers to the platform shader language. `present.besl` lexes and, in the
   BESL VM, tiles two taken slots in slot order with black cells past the last view.
 - The BESL VM writes through an indexed storage-image array.
 - Configuration: `render.debug.view.<pass>.<view>` reports `Set` with the value and `NotSet` for an unknown view,
@@ -315,7 +315,7 @@ branches that never fire or the runtime selects a view that writes nothing and r
   and every pipeline that writes views would bind one more set. Declaring the pool by name in each shader costs
   nothing at run time.
 - **Resizing slots in the tile instead of the blit.** Would make a pass's output depend on how many views are
-  shown; passes should not know about the grid.
+  shown; passes shouldn't know about the grid.
 - **One parameter holding a list of views.** One event for several outcomes; a refused entry would have no state
   of its own. One parameter per view fits the configuration port's `Set`/`NotSet` per event.
 - **Generated view constants instead of numbers on both sides.** Only generated shaders can receive them;

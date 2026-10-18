@@ -559,8 +559,6 @@ material_evaluation_suffix: fn () -> void {
 	// half-precision material normal does.
 	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - vec3f(V_material);
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
-	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness))
-		* lighting_data.environment_intensity;
 	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
 	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
 	// Pre-exposure keeps daylight radiance within the half-float range. SSGI rescales previous-frame light when
@@ -598,7 +596,6 @@ material_evaluation_suffix: fn () -> void {
 	let specular_weight: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * f32(occlusion);
 	// Everything but the reflected light is known before the trace, so only these sums stay live through the march.
 	let direct_and_diffuse: vec3f = diffuse + specular;
-	let environment_specular: vec3f = reflection_radiance * specular_occlusion;
 	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
 	// cannot stand for a wide glossy lobe, so reflections fade back to the prefiltered environment from roughness 0.2
 	// to 0.4. A reflection that points into the geometric surface would only find the surface itself.
@@ -612,6 +609,10 @@ material_evaluation_suffix: fn () -> void {
 		);
 	}
 	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
+	// Sample the environment after the screen-space trace so its radiance does not stay live through the march.
+	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness))
+		* lighting_data.environment_intensity;
+	let environment_specular: vec3f = reflection_radiance * specular_occlusion;
 	let specular_radiance: vec3f = environment_specular * (1.0 - reflection_weight)
 		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a

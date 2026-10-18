@@ -48,6 +48,19 @@ pub(crate) struct RenderSkin {
 	pub(crate) source_vertex_offset: u32,
 	pub(crate) vertex_count: u32,
 	pub(crate) skeleton_node_count: u32,
+	/// The instance's own vertices, where skinning writes its pose, once the instance is first drawn posed.
+	pub(crate) posed_vertices: PosedVertices,
+}
+
+/// The `PosedVertices` enum follows a skinned instance's own range of the resident vertex streams.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PosedVertices {
+	/// Not drawn posed yet, so it holds no range.
+	Unallocated,
+	/// Holds this range until the instance is removed.
+	Allocated(std::ops::Range<u32>),
+	/// The vertex capacity couldn't hold its range when it was first posed, so it draws in its bind pose.
+	Unavailable,
 }
 
 /// The `MaterialEvaluation` struct is one material-evaluation dispatch of a visibility phase. It lets materials that
@@ -80,6 +93,9 @@ pub struct RenderInfo {
 	pub(crate) double_sided_masked_instances: Vec<Instance>,
 	pub(crate) transparent_instances: Vec<Instance>,
 	pub(crate) skinning_dispatches: Vec<SkinningDispatch>,
+	/// Copies of new posed ranges' bind-pose UVs, which skinning doesn't write. They're recorded before the skinning
+	/// dispatches, and kept across frames until a frame records them.
+	pub(crate) posed_uv_copies: Vec<ghi::BufferCopyDescriptor>,
 	pub(crate) opaque_evaluations: Vec<MaterialEvaluation>,
 	pub(crate) transparent_evaluations: Vec<MaterialEvaluation>,
 	/// The evaluation slots of the opaque and masked instances admitted this frame.
@@ -194,11 +210,24 @@ impl VisibilityScene {
 		pose.extend_from_slice(global_matrices);
 	}
 
-	/// Removes all scene state owned by the renderable identified by `handle`.
-	pub(crate) fn remove_renderable(&mut self, handle: Handle) {
+	/// Removes all scene state owned by the renderable identified by `handle`, handing each posed instance's vertex
+	/// range to `release`. A UV copy into the range that no frame recorded yet is dropped, so it can't overwrite the
+	/// range's next owner.
+	pub(crate) fn remove_renderable(&mut self, handle: Handle, mut release: impl FnMut(std::ops::Range<u32>)) {
 		self.skinning_poses.remove(&handle);
 		for render_entity_handle in self.render_entity_handles.remove(&handle).into_iter().flatten() {
-			self.render_entities.remove(render_entity_handle);
+			if let Some(entity) = self.render_entities.remove(render_entity_handle)
+				&& let Some(RenderSkin {
+					posed_vertices: PosedVertices::Allocated(range),
+					..
+				}) = entity.skinning
+			{
+				let start = range.start as usize * super::layout::VERTEX_UV_BUFFER_STRIDE as usize;
+				self.render_info
+					.posed_uv_copies
+					.retain(|copy| copy.destination_offset != start);
+				release(range);
+			}
 		}
 	}
 

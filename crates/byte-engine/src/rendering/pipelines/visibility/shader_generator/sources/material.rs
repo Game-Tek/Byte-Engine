@@ -59,53 +59,21 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	// Every lane sets up its own triangle. Lanes of one SIMD group often share a triangle, but a region that only a
 	// leader lane runs issues the same instructions as one every lane runs, so sharing the setup through ballots and
 	// broadcasts only added their own cost: material evaluation ran 3 % faster without it (2026-10-05).
+	let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
+	let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
+	let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
 	let model_space_vertex_positions: vec4f[3] = vec4f[3](
-		vec4f(0.0, 0.0, 0.0, 1.0),
-		vec4f(0.0, 0.0, 0.0, 1.0),
-		vec4f(0.0, 0.0, 0.0, 1.0)
+		vec4f(position0.x, position0.y, position0.z, 1.0),
+		vec4f(position1.x, position1.y, position1.z, 1.0),
+		vec4f(position2.x, position2.y, position2.z, 1.0)
 	);
+	// Octahedral decoding leaves a normal shorter than one. Interpolation below weights the normals as they are,
+	// so they are made unit length first.
 	let model_space_vertex_normals: vec3f[3] = vec3f[3](
-		vec3f(0.0, 0.0, 1.0),
-		vec3f(0.0, 0.0, 1.0),
-		vec3f(0.0, 0.0, 1.0)
+		normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]])),
+		normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]])),
+		normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]))
 	);
-
-	if (mesh.skinned_base_vertex_index != 4294967295) {
-		let skinned_vertex_indices: u32[3] = u32[3](
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index),
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index),
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index)
-		);
-		let skinned_vertices_for_triangle: SkinnedVertex[3] = SkinnedVertex[3](
-			skinned_vertices.vertices[skinned_vertex_indices[0]],
-			skinned_vertices.vertices[skinned_vertex_indices[1]],
-			skinned_vertices.vertices[skinned_vertex_indices[2]]
-		);
-		let skinned_position0: vec3f = skinned_vertices_for_triangle[0].position;
-		let skinned_position1: vec3f = skinned_vertices_for_triangle[1].position;
-		let skinned_position2: vec3f = skinned_vertices_for_triangle[2].position;
-		model_space_vertex_positions[0] = vec4f(skinned_position0.x, skinned_position0.y, skinned_position0.z, 1.0);
-		model_space_vertex_positions[1] = vec4f(skinned_position1.x, skinned_position1.y, skinned_position1.z, 1.0);
-		model_space_vertex_positions[2] = vec4f(skinned_position2.x, skinned_position2.y, skinned_position2.z, 1.0);
-		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
-		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
-		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
-	} else {
-		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
-		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
-		let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
-		// Octahedral decoding leaves a normal shorter than one. Interpolation below weights the normals as they are,
-		// so they are made unit length first, as skinning already writes them.
-		let normal0: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]));
-		let normal1: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]));
-		let normal2: vec3f = normalize(decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]));
-		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
-		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
-		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
-		model_space_vertex_normals[0] = normal0;
-		model_space_vertex_normals[1] = normal1;
-		model_space_vertex_normals[2] = normal2;
-	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let model: mat4x3f = mesh.model;
 	let view_projection: mat4f = views.views[0].view_projection;

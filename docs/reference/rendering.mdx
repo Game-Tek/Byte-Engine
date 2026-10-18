@@ -109,12 +109,17 @@ cameras or objects requests a redraw itself.
 | Materials, bindless textures | 1,024 each |
 | Texture slots per material | 16 |
 | Lights | 1,024; the rest are left out with one warning |
-| Skinned vertices per frame | 262,144 |
 | Shadowed lights | 4 directional with 4 cascades each, 16 cone, 16 point |
 | Light clusters | 16 by 8 by 24 |
 
 A renderable is drawn only once its mesh, every material, and every texture
 are resident.
+
+A skinned primitive instance that receives a pose takes its own vertices out of
+the geometry vertex capacity, as many as its primitive has, for as long as it
+keeps receiving poses. It gives them back when it's removed. When the capacity
+can't hold them, the instance draws in its bind pose and the pipeline logs one
+error for it.
 
 | Detail level rule | Value |
 | --- | --- |

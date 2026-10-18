@@ -20,11 +20,11 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 use super::features::{
 	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SSGI_ENABLED_PARAMETER, VisibilityFeatures,
 };
-use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
+use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
 	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
+	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::lod::{LodSettings, LodView};
@@ -33,9 +33,11 @@ use super::render_pass::{
 	ContactShadowSettings, GtaoSettings, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
 	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
-use super::scene::{Instance, MaterialEvaluation, RenderEntity, RenderSkin, SinkState, VisibilityScene};
+use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
-use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
+use super::shader_data::{
+	IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED, MaterialData, ShaderMesh, ShaderViewData,
+};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -44,8 +46,7 @@ use super::shadow_updates::{
 	DEFAULT_SHADOW_UPDATE_TEXELS, ShadowMapStates, ShadowViews, drawn_cascade_view, undrawn_cascade_view,
 };
 use super::skinning::{
-	DualQuaternion, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass,
-	append_dual_quaternion_palette,
+	DualQuaternion, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass, append_dual_quaternion_palette,
 };
 use crate::application::parameters::Parameters;
 use crate::core::factory::{CreateMessage, Handle};
@@ -558,6 +559,10 @@ pub struct VisibilityPipelineManager {
 	mesh_dispatch_work: MeshDispatchWorkBuffer,
 	skinning_pass: SkinningPass,
 	skinning_frame: SkinningFrame,
+	/// The resident streams, whose vertex ranges posed skinned instances take and give back.
+	geometry: GeometryHandles,
+	/// Whether the last frame recorded the pending UV copies of new posed ranges, so the next one drops them.
+	posed_uv_copies_recorded: bool,
 	pending_renderables: Vec<PendingRenderable>,
 	/// The two most recent transform samples per renderable, retained so a mesh that loads later starts in the
 	/// right place and so frames can show where a renderable was between two steps.
@@ -621,7 +626,7 @@ impl VisibilityPipelineManager {
 		settings: VisibilityPipelineSettings,
 	) -> Self {
 		let environment = create_fallback_environment(context, loader.environment_sampler);
-		let skinning_pass = SkinningPass::new(context, &pipeline_manager, geometry);
+		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
 		let host_buffer = |name, uses| {
 			ghi::buffer::Builder::new(uses)
 				.name(name)
@@ -648,7 +653,6 @@ impl VisibilityPipelineManager {
 			scene.buffer("meshes", meshes_buffer),
 			scene.buffer("vertex_positions", geometry.vertex_positions),
 			scene.buffer("vertex_normals", geometry.vertex_normals),
-			scene.buffer("skinned_vertices", skinning_pass.skinned_vertices_buffer),
 			scene.buffer("vertex_uvs", geometry.vertex_uvs),
 			scene.buffer("vertex_indices", geometry.vertex_indices),
 			scene.buffer("primitive_indices", geometry.primitive_indices),
@@ -678,6 +682,8 @@ impl VisibilityPipelineManager {
 			mesh_dispatch_work,
 			skinning_pass,
 			skinning_frame: SkinningFrame::default(),
+			geometry,
+			posed_uv_copies_recorded: false,
 			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::default(),
 			dirty_transforms: Vec::new(),
@@ -812,7 +818,12 @@ impl VisibilityPipelineManager {
 
 	fn remove_mesh_instance(&mut self, handle: Handle) {
 		self.pending_renderables.retain(|pending| pending.handle != handle);
-		self.scene.remove_renderable(handle);
+		let vertex_ranges = &self.geometry.vertex_ranges;
+		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
+		// order the next owner's writes after those reads.
+		self.scene.remove_renderable(handle, |range| {
+			vertex_ranges.lock().unwrap_or_else(|error| error.into_inner()).free(range);
+		});
 		self.availability.remove(&Availability::Renderable(handle)).expect(
 			"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",
 		);
@@ -1048,8 +1059,8 @@ impl VisibilityPipelineManager {
 					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
 					meshlet_count: primitive.lods.levels()[0].meshlet_count,
-					skinned_base_vertex_index: u32::MAX,
 					flags: 0,
+					_padding: 0,
 					bounding_sphere: primitive.bounding_sphere,
 				},
 				lods: primitive.lods,
@@ -1060,6 +1071,7 @@ impl VisibilityPipelineManager {
 						.expect("Skinned primitive has no GPU source range. The most likely cause is that skin streams were not uploaded with the mesh resource."),
 					vertex_count: primitive.skinning_vertex_count,
 					skeleton_node_count: mesh.skeleton_node_count,
+					posed_vertices: PosedVertices::Unallocated,
 				}),
 			});
 		}
@@ -1095,13 +1107,15 @@ impl VisibilityPipelineManager {
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame, lod_view: Option<LodView>) {
 		let render_info = &mut self.scene.render_info;
 		render_info.clear_active_instances();
+		if std::mem::take(&mut self.posed_uv_copies_recorded) {
+			render_info.posed_uv_copies.clear();
+		}
 		self.skinning_frame.clear();
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
-		let mut deformed_vertex_count = 0;
 		// Every admitted entity pushes exactly one instance, so this counts the instances so far.
 		let mut active_index = 0;
 
-		for entity in self.scene.render_entities.iter() {
+		for entity in self.scene.render_entities.iter_mut() {
 			// A renderable enters a frame as one object; never expose the subset whose materials loaded first.
 			if !self.availability.is_ready(entity.availability) {
 				continue;
@@ -1119,7 +1133,6 @@ impl VisibilityPipelineManager {
 			);
 
 			let mut shader_mesh = entity.shader_mesh;
-			shader_mesh.skinned_base_vertex_index = u32::MAX;
 			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
 			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
 			// Naming another meshlet range is all a level switch takes. Every view of the frame, shadows included,
@@ -1129,7 +1142,7 @@ impl VisibilityPipelineManager {
 				shader_mesh.base_meshlet_index += lod.first_meshlet;
 				shader_mesh.meshlet_count = lod.meshlet_count;
 			}
-			if let Some(skin) = &entity.skinning
+			if let Some(skin) = &mut entity.skinning
 				&& let Some(pose) = self.scene.skinning_poses.get(&entity.handle)
 			{
 				assert_eq!(
@@ -1137,24 +1150,37 @@ impl VisibilityPipelineManager {
 					skin.skeleton_node_count as usize,
 					"Visibility skin pose has the wrong matrix count. The most likely cause is that the pose was written for a different skeleton."
 				);
-				if skin.vertex_count > 0
+				// The first posed frame takes the instance's own vertices, which every later stage reads in place of the
+				// mesh's bind pose. Without room it keeps drawing the bind pose; the allocator logged why.
+				if skin.posed_vertices == PosedVertices::Unallocated && skin.vertex_count > 0 {
+					skin.posed_vertices =
+						allocate_vertices(&self.geometry.vertex_ranges, skin.vertex_count, "a posed skinned instance")
+							.map_or(PosedVertices::Unavailable, PosedVertices::Allocated);
+					// Skinning writes only positions and normals, so the bind-pose UVs are copied beside them once.
+					if let PosedVertices::Allocated(range) = &skin.posed_vertices {
+						let uv_stride = VERTEX_UV_BUFFER_STRIDE as usize;
+						render_info.posed_uv_copies.push(ghi::BufferCopyDescriptor::new(
+							self.geometry.vertex_uvs.into(),
+							shader_mesh.base_vertex_index as usize * uv_stride,
+							self.geometry.vertex_uvs.into(),
+							range.start as usize * uv_stride,
+							skin.vertex_count as usize * uv_stride,
+						));
+					}
+				}
+				if let PosedVertices::Allocated(range) = &skin.posed_vertices
 					&& let Some((palette_base, kind)) = self.skinning_frame.palette(entity.handle, &skin.binding, pose)
 				{
-					// Output is dense per active primitive, so shared meshes never overwrite another instance's pose.
-					shader_mesh.skinned_base_vertex_index = deformed_vertex_count as u32;
-					deformed_vertex_count += skin.vertex_count as usize;
-					assert!(
-						deformed_vertex_count <= MAX_SKINNED_VERTICES,
-						"Visibility deformed vertex limit exceeded. The most likely cause is that active animated instances require more frame-local vertex storage than the visibility pipeline supports."
-					);
 					render_info.skinning_dispatches.push(SkinningDispatch {
 						source_vertex_base: skin.source_vertex_offset,
-						destination_vertex_base: shader_mesh.skinned_base_vertex_index,
+						destination_vertex_base: range.start,
 						palette_base,
 						palette_count: skin.binding.entries.len() as u32,
 						vertex_count: skin.vertex_count,
 						palette_kind: kind as u32,
 					});
+					shader_mesh.base_vertex_index = range.start;
+					shader_mesh.flags |= MESH_FLAG_SKINNED;
 				}
 			}
 			mesh_data[active_index] = shader_mesh;
@@ -1453,6 +1479,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		if frame_work_recorded {
 			self.shadow_states = shadow_states;
 		}
+		// The frame-wide work records the UV copies of new posed ranges with the skinning dispatches.
+		self.posed_uv_copies_recorded = frame_work_recorded;
 		self.recorded_sinks = recorded_sinks;
 		self.recorded_exposure = exposure;
 		self.recorded_ssgi = self.ssgi_settings.enabled;

@@ -19,8 +19,8 @@ Mesh: struct {
 	base_triangle_index: u32,
 	base_meshlet_index: u32,
 	meshlet_count: u32,
-	skinned_base_vertex_index: u32,
 	flags: u32,
+	padding: u32,
 	bounding_sphere: vec4f,
 }
 
@@ -34,7 +34,3 @@ Meshlet: struct {
 	cone_axis: vec2u16,
 }
 
-SkinnedVertex: struct {
-	position: vec3f,
-	normal: vec3f,
-}

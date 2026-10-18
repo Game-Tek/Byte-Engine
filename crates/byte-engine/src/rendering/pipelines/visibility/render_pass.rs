@@ -597,6 +597,8 @@ impl VisibilityRenderPass {
 			c.start_region(|label| label.write_str("Visibility Render Model"));
 			if let Some((pass, pipeline)) = skinning {
 				c.counter(counters.skinning, |c| {
+					// New ranges get their UVs beside the positions and normals skinning writes, before any stage reads them.
+					ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &render_info.posed_uv_copies);
 					pass.record(c, &render_info.skinning_dispatches, pipeline)
 				});
 			}

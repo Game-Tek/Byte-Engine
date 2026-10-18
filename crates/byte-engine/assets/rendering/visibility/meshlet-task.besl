@@ -163,7 +163,7 @@ main: fn() -> void {
 
 	let mesh: Mesh = meshes.meshes[instance_index];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
-	let skinned: bool = mesh.skinned_base_vertex_index != 4294967295;
+	let skinned: bool = (mesh.flags & 2) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
 	let instance_sphere: vec4f = world_sphere(mesh.model, mesh.bounding_sphere);
 

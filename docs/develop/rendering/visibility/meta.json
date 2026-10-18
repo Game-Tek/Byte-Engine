@@ -2,6 +2,7 @@
 	"title": "Visibility pipeline",
 	"icon": "Computer",
 	"pages": [
-		"shadow-maps"
+		"shadow-maps",
+		"skinning"
 	]
 }

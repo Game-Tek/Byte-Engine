@@ -1,0 +1,74 @@
+---
+title: Skinning
+description: Understand where the visibility pipeline writes posed vertices and how animated instances share the vertex streams before you change GPU skinning.
+icon: PersonStanding
+---
+
+Read this page before you change GPU skinning, the vertex streams, or how
+animated instances are drawn. What an application can rely on is specified
+under [the visibility pipeline](/docs/reference/rendering#the-visibility-pipeline)
+in the rendering reference.
+
+## Posed vertices live in the resident vertex streams
+
+A skinned primitive keeps its bind pose twice: once in the resident vertex
+streams, like every mesh, and once in the compact skinning streams with its
+joints and weights. Each instance that receives a pose also owns a range of
+the resident `vertex_positions`, `vertex_normals`, and `vertex_uvs` streams,
+as long as its primitive. The skinning compute pass writes the instance's
+posed positions and normals into that range every frame, with normals in the
+same octahedral UNORM16 encoding the loader writes. The instance's mesh record
+points its `base_vertex_index` at the range, so every later stage reads posed
+vertices exactly the way it reads a static mesh's. No stage branches on
+skinning to find its vertices.
+
+The record's `MESH_FLAG_SKINNED` bit remains, because posed meshlets can leave
+their bind-pose bounds: task shaders keep every meshlet of a skinned instance
+instead of culling it by bounds or occlusion.
+
+## Vertex ranges come from one allocator
+
+Meshes and skinned instances share one budget, the geometry vertex capacity.
+`RangeAllocator` tracks which ranges of the vertex streams are free, and knows
+nothing about buffers. The loader takes a mesh's range from it, and the render
+thread takes and frees instance ranges from the same allocator. Whoever takes a
+range writes its buffers. The allocator is locked only when a mesh uploads or an
+instance starts or stops animating, never once per frame per instance.
+
+An instance's range lives from the first frame its entity is drawn with a pose
+until the entity is removed. Skinning writes only positions and normals, so
+the primitive's bind-pose UVs are copied into the range once, before the
+skinning dispatches. A range counts as copied only after a frame that recorded
+the copy; a frame that gives up before recording leaves the copy for the next
+one. Copying the UVs every frame instead made the skinning stage slower than
+the old separate buffer. When the allocator has no room, the
+instance draws in its bind pose from the mesh's own vertices and logs one
+error.
+
+## One range serves every frame in flight
+
+Frames overlap on the GPU: a frame waits on the CPU only for the frame that
+last used its slot, up to three frames back. An instance still owns a single
+range, not one per frame in flight. Every backend tracks each buffer's last
+access across command buffers and orders a frame's skinning writes after the
+previous frame's reads, so posed vertices are never overwritten while an
+earlier frame reads them. The cost is that a frame's skinning can wait for the
+previous frame's passes that read the vertex streams.
+
+A freed range can be handed to a new instance in the next frame for the same
+reason: its first writes are ordered after every earlier read.
+
+## Rules a change must keep
+
+- Draw skinned instances only through their own range. Never write posed
+  vertices over a mesh's bind pose, which other instances of the mesh read.
+- Copy UVs into a range once, before the first skinning write the range gets.
+- Keep `MESH_FLAG_SKINNED` set on every posed instance, so culling doesn't use
+  bind-pose bounds.
+- Keep allocator bookkeeping separate from buffer writes, and test it as its
+  own unit.
+
+The skinning layout tests and the skinning VM tests in
+`rendering/pipelines/visibility/skinning.rs` guard the shader's output
+encoding; the allocator tests in `rendering/pipelines/visibility/ranges.rs`
+guard range reuse and running out.

@@ -7,7 +7,7 @@ use besl::vm::{
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
-use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
+use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
 	output_buffer, push_constant_buffer, rgba, run_at, texture_2d,
@@ -31,7 +31,6 @@ const OCCLUSION_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1069);
 const OCCLUSION_VISIBILITY_SLOT: ResourceSlot = ResourceSlot::new(1070);
 const VERTEX_POSITIONS_SLOT: ResourceSlot = ResourceSlot::new(2);
 const VERTEX_UVS_SLOT: ResourceSlot = ResourceSlot::new(5);
-const SKINNED_VERTICES_SLOT: ResourceSlot = ResourceSlot::new(4);
 const VERTEX_INDICES_SLOT: ResourceSlot = ResourceSlot::new(6);
 const PRIMITIVE_INDICES_SLOT: ResourceSlot = ResourceSlot::new(7);
 const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
@@ -206,7 +205,6 @@ fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
 #[derive(Clone, Copy)]
 struct TaskMeshFixture {
-	skinned: bool,
 	/// The instance's `ShaderMesh::flags` word.
 	flags: u32,
 	/// Gives every meshlet a narrow normal cone facing straight away from the camera at the origin. Otherwise the
@@ -219,7 +217,6 @@ struct TaskMeshFixture {
 impl Default for TaskMeshFixture {
 	fn default() -> Self {
 		Self {
-			skinned: false,
 			flags: 0,
 			back_facing: false,
 			// Wide enough to reach every fixture meshlet, so the instance test passes unless a test moves it.
@@ -277,7 +274,6 @@ fn run_meshlet_task_workgroup(
 	for (field, value) in [
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 		("meshlet_count", meshlet_count),
-		("skinned_base_vertex_index", if mesh.skinned { 0 } else { u32::MAX }),
 		("flags", mesh.flags),
 	] {
 		meshes
@@ -437,7 +433,7 @@ fn task_main_selects_later_batched_workgroup() {
 #[test]
 fn task_main_keeps_skinned_meshlets_in_every_view() {
 	let skinned = TaskMeshFixture {
-		skinned: true,
+		flags: MESH_FLAG_SKINNED,
 		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
 		..Default::default()
 	};
@@ -630,7 +626,7 @@ fn task_main_keeps_meshlets_the_occlusion_pyramid_cannot_see_whole() {
 #[test]
 fn task_main_keeps_skinned_meshlets_behind_the_occlusion_pyramid() {
 	let skinned = TaskMeshFixture {
-		skinned: true,
+		flags: MESH_FLAG_SKINNED,
 		..Default::default()
 	};
 
@@ -847,45 +843,39 @@ impl MeshView {
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
 	view: MeshView,
-	skinned_positions: Option<[[f32; 3]; 3]>,
+	base_vertex: u32,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 ) {
-	// A posed fixture instance's positions start at this element of the skinned-vertex buffer.
-	const SKINNED_BASE_VERTEX: u32 = 7;
 	let mut views = buffer(&program, VIEWS_SLOT);
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("mesh model matrix");
 	for (field, value) in [
-		("base_vertex_index", 0),
+		("base_vertex_index", base_vertex),
 		("base_primitive_index", 0),
 		("base_triangle_index", 0),
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 		("meshlet_count", 1),
-		(
-			"skinned_base_vertex_index",
-			skinned_positions.map_or(u32::MAX, |_| SKINNED_BASE_VERTEX),
-		),
 	] {
 		meshes
 			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
 			.expect("mesh offset");
 	}
-	let mut positions = array_buffer(&program, VERTEX_POSITIONS_SLOT, 3);
+	let vertex_count = base_vertex as usize + 3;
+	let mut positions = array_buffer(&program, VERTEX_POSITIONS_SLOT, vertex_count);
 	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
 		positions
-			.write_array_element(index, Value::Vec3F(position))
+			.write_array_element(base_vertex as usize + index, Value::Vec3F(position))
 			.expect("mesh vertex");
 	}
-	let mut skinned_vertices = buffer(&program, SKINNED_VERTICES_SLOT);
-	let mut vertex_uvs = array_buffer(&program, VERTEX_UVS_SLOT, 3);
+	let mut vertex_uvs = array_buffer(&program, VERTEX_UVS_SLOT, vertex_count);
 	let mut vertex_indices = array_buffer(&program, VERTEX_INDICES_SLOT, 3);
 	let mut primitive_indices = array_buffer(&program, PRIMITIVE_INDICES_SLOT, 3);
 	for index in 0..3 {
 		vertex_uvs
-			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.write_array_element(base_vertex as usize + index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
 			.expect("mesh UV");
 		vertex_indices
 			.write_array_element(index, Value::U16(index as u16))
@@ -904,11 +894,6 @@ fn assert_triangle_mesh_program(
 		meshlets
 			.write_array_member(FIXTURE_MESHLET_INDEX, field, Value::U32(value))
 			.expect("meshlet field");
-	}
-	for (index, position) in skinned_positions.into_iter().flatten().enumerate() {
-		skinned_vertices
-			.write_array_member(SKINNED_BASE_VERTEX as usize + index, "position", Value::Vec3F(position))
-			.expect("skinned mesh vertex");
 	}
 	let mut push_constant = push_constant_buffer(&program);
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
@@ -939,7 +924,6 @@ fn assert_triangle_mesh_program(
 		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 		descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
 		descriptors.bind_buffer(VERTEX_UVS_SLOT, &mut vertex_uvs);
-		descriptors.bind_buffer(SKINNED_VERTICES_SLOT, &mut skinned_vertices);
 		descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut vertex_indices);
 		descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut primitive_indices);
 		descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
@@ -989,21 +973,20 @@ fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
-		None,
+		0,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 	);
 }
 
-/// Verifies that posed instances source raster positions from their frame-local deformation range.
+/// Verifies that an instance reads its vertices from the range its record names, as a posed instance's own range is.
 #[test]
-fn visibility_mesh_main_reads_skinned_positions() {
-	let skinned_positions = [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0], [8.0, 9.0, 10.0]];
+fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
 		MeshView::CAMERA,
-		Some(skinned_positions),
-		skinned_positions.map(|[x, y, z]| [x, y, z, 1.0]),
+		7,
+		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
 	);
 }
@@ -1020,7 +1003,7 @@ fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 			view_offset: 2,
 			view_projection: horizontally_translated_matrix(2.0),
 		},
-		None,
+		0,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 		Some(3),
 	);

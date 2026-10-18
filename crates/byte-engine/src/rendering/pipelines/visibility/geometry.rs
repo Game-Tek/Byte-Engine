@@ -1,12 +1,12 @@
 //! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet records, and skinning sources.
 //!
 //! [`PreparedMesh`] is built on a loader lane without touching GPU state. [`GeometryBuffers::append_mesh`] then
-//! places it after every resident mesh and returns the [`MeshData`] ranges the scene needs, with the copies the
-//! loader records to fill them.
+//! places its vertices in a free vertex range and its other streams after every resident mesh's, and returns the
+//! [`MeshData`] ranges the scene needs, with the copies the loader records to fill them.
 
 mod prepare;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ghi::context::ContextCreate as _;
 use resource_management::resources::skeleton::SkinBinding;
@@ -18,6 +18,7 @@ use super::layout::{
 	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
+use super::ranges::RangeAllocator;
 use crate::rendering::loading::{BufferRegion, Loader};
 
 /// Byte strides of the compact bind-pose streams consumed by GPU skinning.
@@ -36,7 +37,8 @@ pub(crate) const SKINNING_WEIGHTS_STRIDE: usize = std::mem::size_of::<[f32; 4]>(
 /// [`super::GEOMETRY_CAPACITY_PARAMETER_PREFIX`], such as `render.geometry.triangle-capacity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometryCapacity {
-	/// Vertices across every mesh. Each vertex stores a position, a normal, and a UV.
+	/// Vertices across every mesh, plus each posed skinned instance's own copy of its primitive's vertices. Each vertex
+	/// stores a position, a normal, and a UV.
 	pub vertices: u32,
 	/// Meshlet-local vertex indices across every mesh. Each meshlet stores one per vertex it references.
 	pub vertex_indices: u32,
@@ -85,6 +87,9 @@ impl GeometryCapacity {
 }
 
 /// The `GeometryCounts` struct measures one mesh, or the whole resident set, in elements of each geometry stream.
+///
+/// The resident set's `vertices` stays zero: vertex ranges come from [`GeometryHandles::vertex_ranges`] instead, since
+/// skinned instances free theirs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GeometryCounts {
 	pub(crate) vertices: u32,
@@ -98,7 +103,7 @@ impl GeometryCounts {
 	/// Returns the counts after appending `mesh`, or `None` when any stream would exceed its GPU buffer.
 	fn grown_by(self, mesh: GeometryCounts, capacity: &GeometryCapacity) -> Option<Self> {
 		Some(Self {
-			vertices: checked_capacity(self.vertices, mesh.vertices, capacity.vertices, "vertex")?,
+			vertices: self.vertices,
 			primitive_indices: checked_capacity(
 				self.primitive_indices,
 				mesh.primitive_indices,
@@ -115,6 +120,17 @@ impl GeometryCounts {
 			)?,
 		})
 	}
+}
+
+/// Takes `length` vertices from `ranges`, logging the error for `element` when the vertex capacity can't hold them.
+pub(crate) fn allocate_vertices(ranges: &Mutex<RangeAllocator>, length: u32, element: &str) -> Option<std::ops::Range<u32>> {
+	let range = ranges.lock().unwrap_or_else(|error| error.into_inner()).allocate(length);
+	if range.is_none() {
+		log::error!(
+			"Visibility vertex buffer capacity exceeded. The most likely cause is that the resident meshes and posed skinned instances need more vertices than the geometry capacity holds, with {length} more for {element}; raise it with VisibilityPipelineSettings::with_geometry_capacity or render.geometry.vertex-capacity."
+		);
+	}
+	range
 }
 
 /// Adds one mesh count, rejecting only the upload that would overflow the buffer's configured capacity.
@@ -165,9 +181,9 @@ pub(crate) struct MeshPrimitive {
 
 /// The `GeometryHandles` struct names the GPU streams every visibility stage reads.
 ///
-/// Handles are stable for the life of the pipeline, so the render thread copies this value at construction
+/// Handles are stable for the life of the pipeline, so the render thread clones this value at construction
 /// while the loader retains the allocation cursors that decide where the next mesh lands.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct GeometryHandles {
 	/// The element count of every stream below.
 	pub(crate) capacity: GeometryCapacity,
@@ -185,6 +201,9 @@ pub(crate) struct GeometryHandles {
 	pub(crate) skinning_rest_normals: ghi::BufferHandle<[[f32; 3]]>,
 	pub(crate) skinning_joints: ghi::BufferHandle<[[u16; 4]]>,
 	pub(crate) skinning_weights: ghi::BufferHandle<[[f32; 4]]>,
+	/// The free and used ranges of the vertex streams, which the loader takes mesh ranges from and the render thread
+	/// takes skinned instance ranges from.
+	pub(crate) vertex_ranges: Arc<Mutex<RangeAllocator>>,
 }
 
 /// The `GeometryBuffers` struct appends meshes to the geometry streams in the order they become resident.
@@ -230,6 +249,7 @@ impl GeometryHandles {
 			skinning_rest_normals: context.build_buffer(build("Visibility Skinning Rest Normals", storage, skinning)),
 			skinning_joints: context.build_buffer(build("Visibility Skinning Joints", storage, skinning)),
 			skinning_weights: context.build_buffer(build("Visibility Skinning Weights", storage, skinning)),
+			vertex_ranges: Arc::new(Mutex::new(RangeAllocator::new(vertices))),
 		}
 	}
 }
@@ -258,6 +278,7 @@ impl GeometryBuffers {
 				skinning_rest_normals: import(render, loader, handles.skinning_rest_normals),
 				skinning_joints: import(render, loader, handles.skinning_joints),
 				skinning_weights: import(render, loader, handles.skinning_weights),
+				vertex_ranges: handles.vertex_ranges.clone(),
 			},
 		}
 	}
@@ -289,6 +310,8 @@ impl GeometryBuffers {
 			return None;
 		}
 		let next_counts = self.counts.grown_by(prepared.counts, &self.handles.capacity)?;
+		// The vertex range is taken last, so a mesh rejected by another stream takes nothing.
+		let base_vertex = allocate_vertices(&self.handles.vertex_ranges, prepared.counts.vertices, "a mesh")?.start;
 		let base = &self.counts;
 		let streams = &prepared.streams;
 		let copy =
@@ -302,17 +325,17 @@ impl GeometryBuffers {
 			copy(
 				&streams.positions,
 				self.handles.vertex_positions.into(),
-				base.vertices as usize * 12,
+				base_vertex as usize * 12,
 			),
 			copy(
 				&streams.normals,
 				self.handles.vertex_normals.into(),
-				base.vertices as usize * VERTEX_NORMAL_BUFFER_STRIDE as usize,
+				base_vertex as usize * VERTEX_NORMAL_BUFFER_STRIDE as usize,
 			),
 			copy(
 				&streams.uvs,
 				self.handles.vertex_uvs.into(),
-				base.vertices as usize * VERTEX_UV_BUFFER_STRIDE as usize,
+				base_vertex as usize * VERTEX_UV_BUFFER_STRIDE as usize,
 			),
 			copy(
 				&streams.vertex_indices,
@@ -373,7 +396,7 @@ impl GeometryBuffers {
 		let mesh = MeshData {
 			primitives,
 			skeleton_node_count: prepared.skeleton_node_count,
-			vertex_offset: base.vertices,
+			vertex_offset: base_vertex,
 			primitive_offset: base.primitive_indices,
 			triangle_offset: base.triangles,
 			meshlet_offset: base.meshlets,

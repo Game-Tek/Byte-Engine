@@ -1,4 +1,5 @@
-//! Frame-local GPU skinning: deforms bind-pose vertices with matrix or dual-quaternion palettes.
+//! GPU skinning: deforms bind-pose vertices with matrix or dual-quaternion palettes into each posed instance's range
+//! of the resident vertex streams.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -11,16 +12,7 @@ use crate::rendering::PipelineManagerClient;
 use crate::rendering::pipelines::visibility::set_layouts;
 
 const WORKGROUP_SIZE: u32 = 64;
-pub(crate) const MAX_SKINNED_VERTICES: usize = 65_536 * 4;
 pub(crate) const MAX_SKINNING_MATRICES: usize = 65_536;
-
-/// The `SkinnedVertex` struct is one position-and-normal record read by every visibility stage after deformation.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct SkinnedVertex {
-	pub(crate) position: ghi::pod::Vec3f,
-	pub(crate) normal: ghi::pod::Vec3f,
-}
 
 /// The `DualQuaternion` struct is the rigid-transform palette layout consumed by GPU skinning.
 #[repr(C)]
@@ -51,22 +43,21 @@ pub(crate) struct SkinningDispatch {
 	pub(crate) palette_kind: u32,
 }
 
-/// The `SkinningPass` struct owns the frame-local palettes and deformed-vertex output every sink reads.
+/// The `SkinningPass` struct owns the frame-local palettes that pose every animated instance's vertices.
 pub(crate) struct SkinningPass {
 	pub(crate) pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
 	matrix_palette_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
 	dual_quaternion_palette_buffer: ghi::DynamicBufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
-	/// The deformed vertices every stage reads in place of the bind pose.
-	pub(crate) skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
 
 impl SkinningPass {
-	/// Creates the frame-local buffers over the resident bind-pose sources and requests the skinning pipeline.
+	/// Creates the frame-local palettes, binds the bind-pose sources and the resident streams the pass writes, and
+	/// requests the skinning pipeline.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		sources: GeometryHandles,
+		geometry: &GeometryHandles,
 	) -> Self {
 		let dynamic = |name, accesses| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -81,25 +72,23 @@ impl SkinningPass {
 			"Visibility Skinning Dual Quaternion Palette",
 			ghi::DeviceAccesses::HostToDevice,
 		));
-		let skinned_vertices_buffer =
-			context.build_dynamic_buffer(dynamic("Visibility Skinned Vertices", ghi::DeviceAccesses::DeviceOnly));
 		let descriptor_set = set_layouts::SKINNING.create_set(context, "Visibility Skinning Compute Set");
 		let skinning = set_layouts::SKINNING.binder(descriptor_set);
 		context.write(&[
-			skinning.buffer("source_positions", sources.skinning_rest_positions),
-			skinning.buffer("source_normals", sources.skinning_rest_normals),
-			skinning.buffer("source_joints", sources.skinning_joints),
-			skinning.buffer("source_weights", sources.skinning_weights),
+			skinning.buffer("source_positions", geometry.skinning_rest_positions),
+			skinning.buffer("source_normals", geometry.skinning_rest_normals),
+			skinning.buffer("source_joints", geometry.skinning_joints),
+			skinning.buffer("source_weights", geometry.skinning_weights),
 			skinning.buffer("matrix_palette", matrix_palette_buffer),
 			skinning.buffer("dual_quaternion_palette", dual_quaternion_palette_buffer),
-			skinning.buffer("skinned_vertices", skinned_vertices_buffer),
+			skinning.buffer("vertex_positions", geometry.vertex_positions),
+			skinning.buffer("vertex_normals", geometry.vertex_normals),
 		]);
 		Self {
 			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/skinning.pipeline"),
 			descriptor_set,
 			matrix_palette_buffer,
 			dual_quaternion_palette_buffer,
-			skinned_vertices_buffer,
 		}
 	}
 
@@ -140,8 +129,7 @@ impl SkinningPass {
 		c.bind_descriptor_sets(&[self.descriptor_set]);
 		for dispatch in dispatches.iter().filter(|dispatch| dispatch.vertex_count != 0) {
 			debug_assert!(
-				(dispatch.destination_vertex_base + dispatch.vertex_count) as usize <= MAX_SKINNED_VERTICES
-					&& (dispatch.palette_base + dispatch.palette_count) as usize <= MAX_SKINNING_MATRICES,
+				(dispatch.palette_base + dispatch.palette_count) as usize <= MAX_SKINNING_MATRICES,
 				"Skinning dispatch range exceeds its buffer. The most likely cause is corrupted primitive or skin metadata."
 			);
 			c.write_push_constant(0, *dispatch);
@@ -221,7 +209,7 @@ mod tests {
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("visibility/skinning.besl"));
 
 	/// Binds every skinning slot and runs one lane at the origin.
-	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 7], push_constant: &mut Buffer) {
+	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 8], push_constant: &mut Buffer) {
 		let mut descriptors = DescriptorBindings::new();
 		for (slot, buffer) in buffers.iter_mut().enumerate() {
 			descriptors.bind_buffer(ResourceSlot::new(slot as u32), buffer);
@@ -245,11 +233,30 @@ mod tests {
 		}
 	}
 
-	fn read_vec3(buffer: &Buffer, index: usize, field: &str) -> [f32; 3] {
-		match buffer.read_array_member(index, field).expect("Missing skinned output.") {
+	/// Slots of the resident streams skinning writes.
+	const POSITIONS: usize = 5;
+	const NORMALS: usize = 7;
+
+	fn read_position(buffers: &[Buffer; 8], index: usize) -> [f32; 3] {
+		match buffers[POSITIONS]
+			.read_array_element(index)
+			.expect("Missing skinned position.")
+		{
 			Value::Vec3F(value) => value,
-			_ => panic!("Skinning wrote a non-vector {field}."),
+			_ => panic!("Skinning wrote a non-vector position."),
 		}
+	}
+
+	fn read_normal(buffers: &[Buffer; 8], index: usize) -> [u16; 2] {
+		match buffers[NORMALS].read_array_element(index).expect("Missing skinned normal.") {
+			Value::Vec2U16(value) => value,
+			_ => panic!("Skinning wrote a non-octahedral normal."),
+		}
+	}
+
+	/// The resident encoding of `normal`, as the loader writes it.
+	fn encoded(normal: [f32; 3]) -> [u16; 2] {
+		super::super::geometry::encode_octahedral_unit_vector((normal[0], normal[1], normal[2]))
 	}
 
 	#[test]
@@ -265,7 +272,8 @@ mod tests {
 		assert_eq!(stride("source_joints"), std::mem::size_of::<[u16; 4]>());
 		assert_eq!(stride("matrix_palette"), std::mem::size_of::<ghi::pod::Mat4x3f>());
 		assert_eq!(stride("dual_quaternion_palette"), std::mem::size_of::<DualQuaternion>());
-		assert_eq!(stride("skinned_vertices"), std::mem::size_of::<SkinnedVertex>());
+		assert_eq!(stride("vertex_positions"), std::mem::size_of::<[f32; 3]>());
+		assert_eq!(stride("vertex_normals"), std::mem::size_of::<[u16; 2]>());
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 24);
 	}
 
@@ -313,13 +321,14 @@ mod tests {
 		}
 	}
 
-	/// Creates every skinning binding: runtime-length bind-pose sources in slots 0 to 3 and fixed palettes and output.
-	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 7] {
-		const SOURCE_VERTEX_COUNT: usize = 4;
+	/// Creates every skinning binding: runtime-length bind-pose sources in slots 0 to 3 and resident streams in slots 5
+	/// and 7, and fixed palettes.
+	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 8] {
+		const VERTEX_COUNT: usize = 4;
 		std::array::from_fn(|slot| {
 			let resource_slot = ResourceSlot::new(slot as u32);
-			if slot < 4 {
-				array_buffer(program, resource_slot, SOURCE_VERTEX_COUNT)
+			if slot < 4 || slot == POSITIONS || slot == NORMALS {
+				array_buffer(program, resource_slot, VERTEX_COUNT)
 			} else {
 				buffer(program, resource_slot)
 			}
@@ -328,7 +337,7 @@ mod tests {
 
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
-	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
+	fn skinning_besl_vm_blends_joint_matrices_and_writes_resident_position_and_normal() {
 		let program = compile(link_program(*SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
@@ -361,8 +370,8 @@ mod tests {
 
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		assert_eq!(read_vec3(&buffers[5], 2, "position"), [2.0, 3.0, 1.0]);
-		assert_eq!(read_vec3(&buffers[5], 2, "normal"), [0.0, 0.0, 1.0]);
+		assert_eq!(read_position(&buffers, 2), [2.0, 3.0, 1.0]);
+		assert_eq!(read_normal(&buffers, 2), encoded([0.0, 0.0, 1.0]));
 
 		// A malformed legacy joint must produce legal bind-pose output without indexing beyond the palette.
 		buffers[2]
@@ -373,7 +382,7 @@ mod tests {
 			.expect("skinning destination");
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		assert_eq!(read_vec3(&buffers[5], 3, "position"), [1.0, 1.0, 1.0]);
+		assert_eq!(read_position(&buffers, 3), [1.0, 1.0, 1.0]);
 	}
 
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
@@ -382,7 +391,7 @@ mod tests {
 		let program = compile(link_program(*SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
-		let [positions, normals, joints, weights, _, _, dual_quaternion_palette] = &mut buffers;
+		let [positions, normals, joints, weights, _, _, dual_quaternion_palette, _] = &mut buffers;
 		positions
 			.write_array_element(0, Value::Vec3F([0.0, 1.0, 0.0]))
 			.expect("twist source position");
@@ -431,12 +440,10 @@ mod tests {
 
 		run_skinning(&program, &mut buffers, &mut push_constant);
 
-		for (actual, expected) in read_vec3(&buffers[5], 0, "position").into_iter().zip([2.0, 1.0, 0.0]) {
+		for (actual, expected) in read_position(&buffers, 0).into_iter().zip([2.0, 1.0, 0.0]) {
 			math::assert_float_eq!(actual, expected);
 		}
-		for (actual, expected) in read_vec3(&buffers[5], 0, "normal").into_iter().zip([0.0, 1.0, 0.0]) {
-			math::assert_float_eq!(actual, expected);
-		}
+		assert_eq!(read_normal(&buffers, 0), encoded([0.0, 1.0, 0.0]));
 	}
 
 	/// Writes one column-major translation matrix into the compact VM palette fixture.

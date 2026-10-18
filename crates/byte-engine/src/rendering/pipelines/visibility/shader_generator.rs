@@ -35,7 +35,6 @@ const _: () = assert!(
 		&& MAX_MATERIALS == 1024
 		&& MAX_MATERIAL_TEXTURES == 16
 		&& MAX_BINDLESS_TEXTURES == 1024
-		&& super::skinning::MAX_SKINNED_VERTICES == 262144
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the array sizes in `scene.besl`, `visibility-buffer.besl`, `material-dispatch.besl`, and `material-evaluation.besl` when visibility limits change."
 );

@@ -24,6 +24,7 @@ mod loader;
 mod lod;
 mod manager;
 mod mesh_dispatch;
+mod ranges;
 mod render_pass;
 mod scene;
 mod set_layouts;

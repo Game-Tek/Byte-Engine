@@ -14,7 +14,7 @@ use crate::rendering::View;
 pub struct ShaderMesh {
 	pub(crate) model: Mat4x3f,
 	pub(crate) material_index: u32,
-	/// Base position in the vertex attribute buffers.
+	/// Base position in the vertex attribute buffers: the mesh's bind pose, or a posed skinned instance's own range.
 	pub(crate) base_vertex_index: u32,
 	/// Base position in the vertex-index buffer.
 	pub(crate) base_primitive_index: u32,
@@ -22,10 +22,9 @@ pub struct ShaderMesh {
 	pub(crate) base_triangle_index: u32,
 	pub(crate) base_meshlet_index: u32,
 	pub(crate) meshlet_count: u32,
-	/// Base vertex in the frame-local deformation buffer, or `u32::MAX` for immutable geometry.
-	pub(crate) skinned_base_vertex_index: u32,
-	/// Material bits such as [`MESH_FLAG_DOUBLE_SIDED`].
+	/// Bits such as [`MESH_FLAG_DOUBLE_SIDED`] and [`MESH_FLAG_SKINNED`].
 	pub(crate) flags: u32,
+	pub(crate) _padding: u32,
 	/// Object-space sphere around the primitive's meshlets, as xyz center and w radius. Task shaders place it with
 	/// `model` and skip instances no view reaches.
 	pub(crate) bounding_sphere: [f32; 4],
@@ -34,6 +33,9 @@ pub struct ShaderMesh {
 /// [`ShaderMesh::flags`] bit for a material with both faces visible. Task shaders keep its back-facing meshlets and
 /// material evaluation reverses the normal of its back-facing pixels. The shaders spell this bit as the literal `1`.
 pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1;
+/// [`ShaderMesh::flags`] bit for an instance skinning posed this frame. Posed meshlets can leave their bind-pose
+/// bounds, so task shaders keep all of its meshlets in every view. The shaders spell this bit as the literal `2`.
+pub(crate) const MESH_FLAG_SKINNED: u32 = 2;
 
 /// The `ShaderViewData` struct is one entry of the `views` buffer: the camera view followed by every shadow view.
 #[repr(C)]
@@ -219,8 +221,7 @@ pub(crate) struct ReflectionShaderParameters {
 /// in a shader that silently reads the wrong bytes.
 const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
-const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 76);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 72);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, bounding_sphere) == 80);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);

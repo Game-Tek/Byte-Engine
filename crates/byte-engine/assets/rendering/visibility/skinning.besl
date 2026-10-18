@@ -47,6 +47,41 @@ antipodal_sign: fn(reference_rotation: vec4f, value: vec4f) -> f32 {
 	return 1.0;
 }
 
+// Encodes a unit vector the way the loader's `encode_octahedral_unit_vector` does: folded onto the octahedron, then
+// mapped to two UNORM16 components.
+encode_octahedral_normal: fn(normal: vec3f) -> vec2u16 {
+	let length: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
+	if (length == 0.0) {
+		return vec2u16(32768, 32768);
+	}
+	let x: f32 = normal.x / length;
+	let y: f32 = normal.y / length;
+	if (normal.z < 0.0) {
+		// The lower hemisphere folds into the square's outer triangles, keeping each component's sign.
+		let sign_x: f32 = 1.0;
+		let sign_y: f32 = 1.0;
+		if (x < 0.0) {
+			sign_x = 0.0 - 1.0;
+		}
+		if (y < 0.0) {
+			sign_y = 0.0 - 1.0;
+		}
+		let folded_x: f32 = (1.0 - abs(y)) * sign_x;
+		y = (1.0 - abs(x)) * sign_y;
+		x = folded_x;
+	}
+	return vec2u16(
+		u32(round(clamp(x * 0.5 + 0.5, 0.0, 1.0) * 65535.0)),
+		u32(round(clamp(y * 0.5 + 0.5, 0.0, 1.0) * 65535.0))
+	);
+}
+
+// Writes one posed vertex into the instance's range of the resident streams.
+write_vertex: fn(index: u32, position: vec3f, normal: vec3f) -> void {
+	vertex_positions[index] = position;
+	vertex_normals[index] = encode_octahedral_normal(normal);
+}
+
 main: fn (input: StageInput) -> void {
 	let local_vertex_index: u32 = input.thread_id.x;
 	if (local_vertex_index >= push_constant.vertex_count) {
@@ -68,7 +103,7 @@ main: fn (input: StageInput) -> void {
 	) {
 		// Preserve legal output for malformed legacy assets instead of reading outside the matrix palette.
 		let fallback: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
-		skinned_vertices.values[destination_vertex_index] = SkinnedVertex(source_position, fallback);
+		write_vertex(destination_vertex_index, source_position, fallback);
 		return;
 	}
 	// Zero-weight lanes may contain legacy sentinel indices. Redirect them before any palette access.
@@ -162,5 +197,5 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 
-	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(vec3f(position.x, position.y, position.z), normal);
+	write_vertex(destination_vertex_index, vec3f(position.x, position.y, position.z), normal);
 }

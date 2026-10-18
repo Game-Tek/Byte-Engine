@@ -151,6 +151,11 @@ A route leads from a source state to a target state.
 | From a space | A route every state of a space can take, considered after the state's own routes. |
 | From any state | A route every state can take, considered after the state's own routes and its space's routes. |
 
+A route through a one-shot plays a state of its own, named after the route's
+source and target, as in `Walk -> Stop`. The second one-shot between the same
+source and target, in the order the graph is built, is named `Walk -> Stop 2`;
+each later one takes the next number.
+
 A wait point is a frame on the source clip, frames on one or more clips of a
 blend, or a time. When a route names frames on several clips of a blend, it
 waits for the frames of the named clip that weighs the most; between clips of
@@ -287,7 +292,9 @@ Between steps, the system answers these for each animator, as of the last step:
 An animator given a [data stream](/docs/reference/data-streams) writes one
 record to it each time it advances, after the advance, with `stream` set to
 `animation`. An animator without a stream writes nothing. Times in `data` are
-seconds.
+seconds. A clip is named by its resource ID's file name, without its directory
+or extension; when the ID's fragment picks a clip by name or index, as in
+`#animations/Walk`, a `#` and that name or index follow, as in `character#Walk`.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -331,6 +338,7 @@ A transition:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `from` | Motion | The state the blend leaves, which keeps playing until the blend ends. |
+| `route` | Route | Why the blend started. |
 | `elapsed` | Number | How far the blend has progressed. |
 | `duration` | Number | How long the blend takes. |
 
@@ -341,7 +349,24 @@ A pending route:
 | `requested` | String | The state the application requested. |
 | `target` | String | The state the route enters first, which is `requested` or a one-shot state on the way to it. |
 | `blend` | Number or null | How long the route blends from the playing state; null starts the target with nothing to blend from. |
-| `starts_in` | Number or null | How long the playing state plays before the route reaches its wait point; null when the route doesn't wait for one, or the playing state reaches none. A route that doesn't wait starts as soon as its target's clips load. |
+| `route` | Route | Where the route came from. |
+| `wait` | Wait or null | The moment of the playing state the route waits for; null when the route doesn't wait for one, which starts it as soon as its target's clips load. |
+
+A route:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kind` | `state`, `space`, `any-state`, `completion`, `position`, or `initial` | Which list the route came from: the routes of a state, of a space, or of every state; a one-shot's completion; a position change of the playing blend, which takes no route; or the start of the initial state. |
+| `owner` | String or null | The state or space whose routes held it, or the one-shot that completes. A one-shot that takes its completion state's routes names that state. Null for `any-state`, `position`, and `initial`. |
+
+A wait:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `clip` | String | The named clip whose wait points the route follows: the one that weighs the most, as [Routes](#routes) specifies. |
+| `weight` | Number | That clip's weight in the playing state, which is 0 for a clip that doesn't play. |
+| `point` | Point or null | The wait point of that clip the playing state reaches next; null when it reaches none, like a one-shot past all of them. A point is `{"frame": n}` or `{"seconds": s}`, as authored. |
+| `starts_in` | Number or null | How long the playing state plays before it reaches `point`; null with it. |
 
 Root motion:
 
@@ -349,6 +374,13 @@ Root motion:
 | --- | --- | --- |
 | `translation` | Array of three numbers | The translation, in the skeleton root's parent space. |
 | `rotation` | Array of four numbers | The rotation quaternion, as x, y, z, w. |
+
+The key, which [changes-only](/docs/reference/data-streams#destination) streams
+compare, is `status`, `missing`, the request's `state`, the motion's `state`
+and `clips`, the transition's `from` state and `route`, and the pending route's
+`requested`, `target`, `route`, and wait `clip`. Phases, times, the request's
+position, a blend's `elapsed`, the wait's `point` and `starts_in`, and root
+motion aren't part of it.
 
 ### Look chain
 

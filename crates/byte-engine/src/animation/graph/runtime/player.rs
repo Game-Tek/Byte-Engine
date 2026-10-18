@@ -68,33 +68,46 @@ impl<'graph> RuntimeMotion<'graph> {
 	/// Returns the points of the named clip that weighs the most, the first named among equals, so a route that names
 	/// frames on several clips of a blend follows the clip that plays the most.
 	fn points_of_heaviest<'points>(&self, points: &'points [ClipPoint]) -> impl Iterator<Item = &'points ClipPoint> {
-		let weight = |clip: usize| {
-			self.weights
-				.iter()
-				.find(|&(sample, _)| sample == clip)
-				.map_or(0.0, |(_, weight)| weight)
-		};
-		let heaviest = points
+		let heaviest = self.heaviest(points);
+		points.iter().filter(move |point| Some(point.clip) == heaviest)
+	}
+
+	/// Returns the named clip of `points` that weighs the most, the first named among equals.
+	fn heaviest(&self, points: &[ClipPoint]) -> Option<usize> {
+		points
 			.iter()
 			.map(|point| point.clip)
-			.reduce(|best, clip| if weight(clip) > weight(best) { clip } else { best });
-		points.iter().filter(move |point| Some(point.clip) == heaviest)
+			.reduce(|best, clip| if self.weight_of(clip) > self.weight_of(best) { clip } else { best })
+	}
+
+	/// Returns how much the clip at `clip` contributes, zero when it doesn't play.
+	fn weight_of(&self, clip: usize) -> f32 {
+		self.weights
+			.iter()
+			.find(|&(sample, _)| sample == clip)
+			.map_or(0.0, |(_, weight)| weight)
 	}
 
 	/// Returns how long playback takes from now to reach the earliest of `points`, or `None` when it reaches none, like
 	/// a one-shot already past them.
 	fn time_until(&self, points: &[ClipPoint]) -> Option<MediaTime> {
-		let ahead = self
+		self.next_wait(points).map(|(time, _)| time)
+	}
+
+	/// Returns how long playback takes from now to reach the earliest of `points`, with that point.
+	fn next_wait(&self, points: &[ClipPoint]) -> Option<(MediaTime, ClipPoint)> {
+		let (ahead, point) = self
 			.points_of_heaviest(points)
 			.filter_map(|point| {
 				let ahead = self.phase_of(*point)? - self.phase;
-				match self.playback {
+				let ahead = match self.playback {
 					AnimationPlayback::Loop => Some(ahead.rem_euclid(1.0)),
 					AnimationPlayback::Once => (ahead >= 0.0).then_some(ahead),
-				}
+				}?;
+				Some((ahead, *point))
 			})
-			.min_by(f32::total_cmp)?;
-		Some(MediaTime::from_seconds_f32(ahead * self.duration()))
+			.min_by(|(left, _), (right, _)| left.total_cmp(right))?;
+		Some((MediaTime::from_seconds_f32(ahead * self.duration()), point))
 	}
 
 	fn is_finished(&self) -> bool {
@@ -271,6 +284,8 @@ struct ActiveTransition<'graph> {
 	duration: MediaTime,
 	elapsed: MediaTime,
 	begun: bool,
+	/// Why the blend started, which the player's data stream reports.
+	origin: RouteOrigin,
 }
 
 /// The `PendingPlayerTransition` struct holds a selected route while its target loads or its source plays on to a
@@ -283,6 +298,8 @@ struct PendingPlayerTransition<'graph> {
 	duration: Option<MediaTime>,
 	wait: &'graph [ClipPoint],
 	entry: &'graph [ClipPoint],
+	/// Where the route came from, which the player's data stream reports.
+	origin: RouteOrigin,
 }
 
 /// The `RootMotionTranslation` struct selects node-local translation axes for root motion.
@@ -639,6 +656,7 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					duration: None,
 					wait: &[],
 					entry: &[],
+					origin: RouteOrigin::Initial,
 				}),
 				positions: BlendPositions::new(&graph.spaces),
 				last_delta: MediaTime::ZERO,
@@ -840,7 +858,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		if !route.wait.is_empty() || !evaluation.motion_ready(&self.graph.state(route.target).motion) {
 			return;
 		}
-		let (target, duration) = (route.target, route.duration);
+		let (target, duration, origin) = (route.target, route.duration, route.origin);
 		let destination = self.start_motion(target, route.entry, evaluation.pool);
 		let Playback::Transitioning(transition) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 			unreachable!("only a blend in progress can be redirected");
@@ -848,7 +866,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		// The interrupted blend's destination becomes the source, so its latest sample becomes the source's, which
 		// its root motion measures from; otherwise the next frame would measure from the old source's pose.
 		self.pose.active_current.copy_from_slice(&self.pose.destination_current);
-		self.blend_from_display(transition.destination, destination, duration, evaluation);
+		self.blend_from_display(transition.destination, destination, duration, origin, evaluation);
 		self.pending = None;
 		evaluation.prefetch_neighbors(self.graph, target);
 	}
@@ -923,7 +941,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			unreachable!("the playing motion was checked above");
 		};
 		// The playing motion's latest sample is already the active pose, which the source's root motion measures from.
-		self.blend_from_display(source, destination, duration, evaluation);
+		self.blend_from_display(source, destination, duration, RouteOrigin::Position, evaluation);
 		true
 	}
 
@@ -938,6 +956,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		source: RuntimeMotion<'graph>,
 		destination: RuntimeMotion<'graph>,
 		duration: MediaTime,
+		origin: RouteOrigin,
 		evaluation: &mut Evaluation<'_, 'graph, '_>,
 	) {
 		self.pose.sample(&destination, destination.phase, evaluation, Sampled::Destination);
@@ -949,6 +968,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			duration,
 			elapsed: MediaTime::ZERO,
 			begun: true,
+			origin,
 		});
 	}
 
@@ -991,14 +1011,14 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		};
 		let route = match &self.pending {
 			Some(pending) if !pending.wait.is_empty() => {
-				pending.duration.map(|duration| (pending.target, duration, pending.entry))
+				pending.duration.map(|duration| (pending.target, duration, pending.entry, pending.origin))
 			}
 			_ => self
 				.graph
 				.select_transition(active.state, requested.state, true)
-				.map(|route| (route.target, route.duration, route.entry)),
+				.map(|route| (route.target, route.duration, route.entry, route.origin)),
 		};
-		let Some((target, blend, entry)) = route else {
+		let Some((target, blend, entry, origin)) = route else {
 			return RootMotionDelta::IDENTITY;
 		};
 		if blend != MediaTime::ZERO && delta == MediaTime::ZERO {
@@ -1024,6 +1044,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 				duration: blend,
 				elapsed: leftover.min(blend),
 				begun: true,
+				origin,
 			}),
 			_ => Playback::Playing(destination),
 		};
@@ -1041,7 +1062,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		if !evaluation.motion_ready(&self.graph.state(pending.target).motion) || !pending.wait.is_empty() {
 			return;
 		}
-		let target = pending.target;
+		let (target, origin) = (pending.target, pending.origin);
 		let destination = self.start_motion(target, pending.entry, evaluation.pool);
 
 		// A route of zero length cuts to its target, so only the target plays this frame.
@@ -1057,6 +1078,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 				duration,
 				elapsed: MediaTime::ZERO,
 				begun: false,
+				origin,
 			})
 		} else {
 			self.pose.sample(&destination, destination.phase, evaluation, Sampled::Active);
@@ -1090,6 +1112,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 				duration: Some(route.duration),
 				wait: route.wait,
 				entry: route.entry,
+				origin: route.origin,
 			})
 	}
 }

@@ -128,6 +128,24 @@ struct SelectedRoute<'graph> {
 	duration: MediaTime,
 	wait: &'graph [ClipPoint],
 	entry: &'graph [ClipPoint],
+	origin: RouteOrigin,
+}
+
+/// The `RouteOrigin` enum names where a blend or pending route came from, so a player's data stream can say why it
+/// took it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RouteOrigin {
+	/// A route of the state at this index.
+	State(usize),
+	/// A route of the space at this index.
+	Space(usize),
+	AnyState,
+	/// The completion of the one-shot state at this index.
+	Completion(usize),
+	/// A position change of the playing blend, which takes no route.
+	Position,
+	/// The start of the initial state.
+	Initial,
 }
 
 impl SelectedRoute<'_> {
@@ -163,7 +181,12 @@ struct AnimationSpaceData {
 /// Selects the first of `transitions` whose persistent destination was requested.
 ///
 /// When `interrupting` an active transition clip, only `.anytime` routes qualify.
-fn select_route(transitions: &[StateTransition], requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
+fn select_route(
+	transitions: &[StateTransition],
+	origin: RouteOrigin,
+	requested: AnimationStateId,
+	interrupting: bool,
+) -> Option<SelectedRoute<'_>> {
 	transitions
 		.iter()
 		.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
@@ -172,6 +195,7 @@ fn select_route(transitions: &[StateTransition], requested: AnimationStateId, in
 			duration: transition.duration,
 			wait: &transition.wait,
 			entry: &transition.entry,
+			origin,
 		})
 }
 
@@ -236,6 +260,7 @@ impl AnimationGraph {
 		id.graph == self.id && id.index < self.states.len()
 	}
 
+
 	/// Returns the routes of the space `id` belongs to, which it takes after its own; empty outside every space.
 	fn space_routes(&self, id: AnimationStateId) -> &[StateTransition] {
 		self.state(id)
@@ -245,8 +270,11 @@ impl AnimationGraph {
 
 	/// Selects the first route toward `requested` among `id`'s own routes, then its space's.
 	fn select_state_route(&self, id: AnimationStateId, requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
-		select_route(&self.state(id).transitions, requested, interrupting)
-			.or_else(|| select_route(self.space_routes(id), requested, interrupting))
+		let state = self.state(id);
+		select_route(&state.transitions, RouteOrigin::State(id.index), requested, interrupting).or_else(|| {
+			let space = state.space?;
+			select_route(&self.spaces[space].transitions, RouteOrigin::Space(space), requested, interrupting)
+		})
 	}
 
 	/// Selects a route toward the requested persistent state or completes a one-shot state.
@@ -267,7 +295,7 @@ impl AnimationGraph {
 		};
 
 		// A one-shot's space only gives its blend a position: it takes its own routes, then its completion's.
-		if let Some(transition) = select_route(&source_state.transitions, requested, false) {
+		if let Some(transition) = select_route(&source_state.transitions, RouteOrigin::State(source.index), requested, false) {
 			return Some(transition);
 		}
 		if requested != completion {
@@ -285,6 +313,7 @@ impl AnimationGraph {
 			duration: source_state.completion_blend,
 			wait: &[],
 			entry: &source_state.completion_entry,
+			origin: RouteOrigin::Completion(source.index),
 		})
 	}
 
@@ -315,6 +344,7 @@ impl AnimationGraph {
 				duration,
 				wait: &[],
 				entry: &[],
+				origin: RouteOrigin::AnyState,
 			})
 	}
 }
@@ -708,12 +738,19 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 	fn add(self, inertialization: MediaTime, can_interrupt_transition: bool) -> AnimationGraphState<'builder> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let name = format!(
-			"{} -> {} [{}]",
-			builder.states[self.source.id.index].name,
-			builder.states[self.target.id.index].name,
-			builder.states.len(),
-		);
+		let (source, target) = (&builder.states[self.source.id.index].name, &builder.states[self.target.id.index].name);
+		// The second and later one-shots between the same pair take a number, so every name stays unique.
+		let earlier = builder
+			.transitions
+			.iter()
+			.filter(|(from, route)| {
+				*from == self.source.id && route.destination == self.target.id && route.target != route.destination
+			})
+			.count();
+		let name = match earlier {
+			0 => format!("{source} -> {target}"),
+			earlier => format!("{source} -> {target} {}", earlier + 1),
+		};
 		let motion = builder.motion(self.motion);
 		// A blend takes its position from the target's space, or the source's when only that one is of its kind.
 		let space = motion.kind().and_then(|kind| {

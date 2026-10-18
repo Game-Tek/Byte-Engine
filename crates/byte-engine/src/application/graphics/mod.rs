@@ -26,6 +26,7 @@
 /// - `inspector.port`: Serves the HTTP inspector on this loopback port. Give each application running on one machine its own port. The default is `6680`.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
 /// - `debug.streams`: Writes every entity data stream that [`Self::data_stream`] opens to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
+/// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
@@ -332,7 +333,10 @@ impl GraphicsApplication {
 			.get_parameter("metrics-out")
 			.map(|parameter| std::path::PathBuf::from(parameter.value()));
 		let streams = application.get_parameter("debug.streams").map(|parameter| {
-			let output = crate::inspector::StreamOutput::open(parameter.value(), start_time).unwrap_or_else(|error| {
+			let changes_only = application
+				.get_parameter("debug.streams.changes-only")
+				.is_some_and(|parameter| parameter.as_bool_simple());
+			let output = crate::inspector::StreamOutput::open(parameter.value(), changes_only, start_time).unwrap_or_else(|error| {
 				panic!(
 					"Data stream destination could not be opened. The most likely cause is that the `debug.streams` path '{}' names a directory that does not exist: {error}",
 					parameter.value()
@@ -790,6 +794,9 @@ impl GraphicsApplication {
 			presented,
 		};
 		self.tick_count += 1;
+		if let Some(streams) = &self.streams {
+			streams.set_tick(self.tick_count);
+		}
 
 		#[cfg(debug_assertions)]
 		if let Some(kill_after) = self.kill_after

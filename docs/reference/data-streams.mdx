@@ -28,12 +28,14 @@ share the one destination.
 | Format | NDJSON: one JSON object per line, ended by a line feed. |
 | Order | One stream's records arrive in the order the system wrote them. Records of different streams interleave, but never within a line. |
 | Delivery | Every record is written as the system writes it. A writer that can't keep up stalls the system; no record is dropped. |
+| Changes only | With `debug.streams.changes-only` set to `true`, a system writes a record only when its key differs from the key of the last record it wrote to that stream. A stream's first record is always written. The Reference page of each system that writes records specifies its key. The default is `false`, which writes every record. |
 | Encoding | UTF-8. Numbers are JSON numbers; non-finite numbers are `null`. |
 
 ## Record
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| `tick` | Integer | The application tick in progress when the record was written, zero-based. The inspector's metrics rows carry the same number. |
 | `time` | Number | Wall-clock milliseconds since the application started, when the record was written. The inspector's metrics use the same clock. |
 | `entity` | Integer | The entity's handle, as the inspector's entity query lists it. |
 | `name` | String | The name the application gave the stream when it opened it. |

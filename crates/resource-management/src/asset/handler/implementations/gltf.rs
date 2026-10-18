@@ -1045,11 +1045,11 @@ mod tests {
 		assert_eq!(image.format, Formats::RG8);
 		assert_eq!(image.extent, [2, 2, 0]);
 		assert_eq!(
-			&*resource_storage_backend
+			&resource_storage_backend
 				.get_resource_data_by_name(image_id)
-				.expect("the image payload should be stored"),
+				.expect("the image payload should be stored")[..8],
 			&[20, 30, 50, 60, 80, 90, 110, 120],
-			"the payload should hold glTF's green and blue channels as red and green"
+			"the base level should hold glTF's green and blue channels as red and green"
 		);
 
 		let variant = resource_storage_backend
@@ -1090,7 +1090,32 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(image.mip_count, 1, "no mip generator is installed");
+		assert_eq!(image.mip_count, 3, "every texture gets a full mip chain");
+	}
+
+	#[r#async::test]
+	async fn model_bead_image_settings_apply_to_the_images_it_contains() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file("flat_image.glb", &generated_textured_triangle_glb_named("Triangle"));
+		asset_storage_backend.add_file("flat_image.glb.bead", b"{ images: { mips: false } }");
+
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+
+		asset_manager
+			.bake("flat_image.glb#Test Texture")
+			.await
+			.expect("named image fragment should bake");
+
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("flat_image.glb#Test Texture"))
+			.expect("named GLB image fragment should be stored");
+
+		let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
+
+		assert_eq!(image.mip_count, 1, "the model's BEAD file turns mips off");
 	}
 
 	#[r#async::test]
@@ -1313,7 +1338,7 @@ mod tests {
 	}
 }
 
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap};
 
 use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use maths_rs::{
@@ -1346,7 +1371,6 @@ use crate::{
 		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
 		material::VariantModel,
-		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
 	},
 	types::{VertexComponent, VertexSemantics},

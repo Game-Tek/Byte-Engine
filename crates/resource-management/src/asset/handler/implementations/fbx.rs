@@ -1062,7 +1062,7 @@ mod tests {
 	}
 }
 
-use std::{alloc::Allocator, collections::HashSet, fmt, sync::Arc};
+use std::{alloc::Allocator, collections::HashSet, fmt};
 
 use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use serde_json::Value;
@@ -1088,7 +1088,6 @@ use crate::{
 		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
 		material::VariantModel,
-		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
 	},
 	types::{AlphaMode, VertexComponent, VertexSemantics},

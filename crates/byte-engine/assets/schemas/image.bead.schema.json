@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/image.bead.schema.json",
+  "title": "Byte Engine image import settings",
+  "description": "Optional source-image settings for .png and .exr assets.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "image": {
+      "type": "object",
+      "description": "Which optional processing steps the image gets. A key left out keeps the default for the image's semantic.",
+      "properties": {
+        "mips": {
+          "type": "boolean",
+          "description": "Whether the image stores a full mip chain. Defaults to true. Set false for images drawn at their authored size, such as UI art."
+        },
+        "compression": {
+          "type": "boolean",
+          "description": "Whether the image is block-compressed: BC5 for normal maps, BC7 otherwise. Defaults to true for albedo and normal maps and false for every other semantic. Packed metallic-roughness maps and half-float images are never compressed."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

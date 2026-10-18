@@ -409,6 +409,15 @@ impl<'a> BakeContext<'a> {
 		self.asset_storage_backend
 	}
 
+	/// Returns the image processor shared by every handler that produces images.
+	///
+	/// Decode pixels into an [`ImageSource`](crate::processors::image::ImageSource), then call
+	/// [`ImageProcessor::process_in`] instead of building an image resource by hand, so every source format gets the
+	/// same mips, compression, and packing.
+	pub fn image_processor(&self) -> &'a ImageProcessor {
+		&self.asset_manager.image_processor
+	}
+
 	/// Returns the allocator shared by source resolution, processing, and resource storage for this bake.
 	pub fn allocator(&self) -> &'a dyn Allocator {
 		self.allocator
@@ -443,4 +452,7 @@ use crate::asset::{
 	manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},
 };
-use crate::{Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture, resource};
+use crate::{
+	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture,
+	processors::image::ImageProcessor, resource,
+};

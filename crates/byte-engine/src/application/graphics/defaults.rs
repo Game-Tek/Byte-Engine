@@ -112,10 +112,10 @@ pub fn setup_default_resource_and_asset_management(
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
-		let (material_mips, ibl) = default_offline_generators();
+		asset_manager.set_image_processor(default_image_processor());
 
 		let features = VisibilityFeatures::from_parameters(application.parameters().scope(RENDER_PARAMETERS));
-		register_default_asset_handlers(&mut asset_manager, generator, features, material_mips, ibl);
+		register_default_asset_handlers(&mut asset_manager, generator, features);
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
@@ -124,15 +124,13 @@ pub fn setup_default_resource_and_asset_management(
 /// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`.
 ///
 /// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
-/// assets. `generator` adapts generated material shaders to the renderer, `features` removes left-out features from
-/// standalone shaders, and `material_mips` and `ibl` select the offline texture backends; [`default_offline_generators`]
-/// returns the usual ones.
+/// assets. `generator` adapts generated material shaders to the renderer, and `features` removes left-out features from
+/// standalone shaders. Every handler that produces images bakes them through the manager's image processor; install
+/// [`default_image_processor`] with [`AssetManager::set_image_processor`] to use the GPU backends.
 pub fn register_default_asset_handlers(
 	asset_manager: &mut AssetManager,
 	generator: impl ProgramGenerator + Clone + 'static,
 	features: VisibilityFeatures,
-	material_mips: Arc<MipGenerator>,
-	ibl: IBLGenerator,
 ) {
 	let mut material_asset_handler = BEMAAssetHandler::new();
 	material_asset_handler.set_shader_generator(generator.clone());
@@ -140,24 +138,20 @@ pub fn register_default_asset_handlers(
 
 	let mut fbx_asset_handler = FBXAssetHandler::new();
 	fbx_asset_handler.set_shader_generator(generator.clone());
-	fbx_asset_handler.set_material_mip_generator(material_mips.clone());
 	asset_manager.add_asset_handler(fbx_asset_handler);
 
 	let mut gltf_asset_handler = GLTFAssetHandler::new();
 	gltf_asset_handler.set_shader_generator(generator);
-	gltf_asset_handler.set_material_mip_generator(material_mips.clone());
 	asset_manager.add_asset_handler(gltf_asset_handler);
 
 	// PNG and EXR both handle `Image` sources and the asset manager picks the first match, so PNG must come first.
-	let mut png_asset_handler = PNGAssetHandler::new();
-	png_asset_handler.set_mip_generator(material_mips);
-	asset_manager.add_asset_handler(png_asset_handler);
+	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(IESAssetHandler::new());
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
-	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl));
+	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
@@ -167,17 +161,18 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 
-/// Returns the GPU material mip and environment-map generators, falling back to CPU generation when GPU setup fails.
+/// Returns an image processor with GPU mip and environment-map generators, falling back to CPU generation for each one
+/// whose GPU setup fails.
 ///
-/// Pass the result to [`register_default_asset_handlers`].
-pub fn default_offline_generators() -> (Arc<MipGenerator>, IBLGenerator) {
-	let material_mips = MaterialMipGenerator::try_with_default_gpu()
-		.map(|generator| Arc::new(MipGenerator::Gpu(generator)))
+/// Install it with [`AssetManager::set_image_processor`].
+pub fn default_image_processor() -> ImageProcessor {
+	let mips = MaterialMipGenerator::try_with_default_gpu()
+		.map(MipGenerator::Gpu)
 		.unwrap_or_else(|error| {
 			log::warn!(
-				"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+				"GPU texture mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
 			);
-			Arc::new(MipGenerator::Cpu)
+			MipGenerator::Cpu
 		});
 
 	let ibl = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
@@ -187,7 +182,7 @@ pub fn default_offline_generators() -> (Arc<MipGenerator>, IBLGenerator) {
 		IBLGenerator::new()
 	});
 
-	(material_mips, ibl)
+	ImageProcessor::new(mips, ibl)
 }
 
 /// Installs the device classes expected by [`super::process_default_window_input`].
@@ -302,7 +297,7 @@ pub fn setup_animation_pool(application: &mut GraphicsApplication, byte_budget: 
 	pool
 }
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::num::NonZeroUsize;
 
 #[cfg(debug_assertions)]
 use resource_management::asset::FileStorageBackend;
@@ -327,6 +322,7 @@ use resource_management::{
 		manager::AssetManager,
 	},
 	ibl::IBLGenerator,
+	processors::image::ImageProcessor,
 	resources::mips::{MipGenerator, gpu::MaterialMipGenerator},
 };
 use tracing::debug_span;

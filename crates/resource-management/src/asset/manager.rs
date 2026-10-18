@@ -12,6 +12,8 @@ pub struct AssetManager {
 /// The `AssetManagerState` struct keeps shared bake state independent from the worker runtimes that execute requests.
 pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn DynAssetHandler>>,
+	/// The image pipeline every handler that produces images shares.
+	pub(in crate::asset) image_processor: ImageProcessor,
 	storage_backend: Box<dyn DynStorageBackend>,
 	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
@@ -82,6 +84,7 @@ impl AssetManager {
 		Self {
 			state: Arc::new(AssetManagerState {
 				asset_handlers: Vec::with_capacity(8),
+				image_processor: ImageProcessor::default(),
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
@@ -133,6 +136,16 @@ impl AssetManager {
 			.expect("Asset handlers must be registered before the asset manager starts processing requests.")
 			.asset_handlers
 			.push(Box::new(asset_handler));
+	}
+
+	/// Replaces the image processor every handler that produces images bakes with.
+	///
+	/// A new manager processes images on the CPU. Install a processor with GPU backends here once, instead of on each
+	/// image-producing handler, so every source format bakes images the same way.
+	pub fn set_image_processor(&mut self, image_processor: ImageProcessor) {
+		Arc::get_mut(&mut self.state)
+			.expect("The image processor must be set before the asset manager starts processing requests.")
+			.image_processor = image_processor;
 	}
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.
@@ -1606,5 +1619,6 @@ use crate::{
 		handler::{DynAssetHandler, LoadErrors},
 	},
 	online_docs_url,
+	processors::image::ImageProcessor,
 	resource::{self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend},
 };

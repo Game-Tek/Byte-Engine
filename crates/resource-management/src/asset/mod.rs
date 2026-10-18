@@ -6,10 +6,10 @@ use serde_json::{Map, Value};
 
 use crate::{
 	processors::{
-		image::{ImageSource, Semantic, gamma_from_semantic, process_image_in},
+		image::{ImageProcessorSettings, ImageSource, Semantic, gamma_from_semantic},
 		mesh::MeshLodSettings,
 	},
-	resources::{mesh::MAX_PRIMITIVE_LODS, mips::MipGenerator},
+	resources::mesh::MAX_PRIMITIVE_LODS,
 };
 
 mod bake_memory;
@@ -107,6 +107,56 @@ pub(crate) fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettin
 	})
 }
 
+/// The `ImageSettingsManifest` struct is the optional image settings object of a BEAD manifest: `image` for a
+/// standalone image, `images` for every image a model contains. A key left out keeps the default for the image's
+/// semantic, and an unknown key is an error, so a misspelled key cannot silently leave the defaults in place.
+#[derive(Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ImageSettingsManifest {
+	mips: Option<bool>,
+	compression: Option<bool>,
+}
+
+/// The BEAD key that holds a standalone image's settings.
+pub(crate) const IMAGE_SETTINGS_KEY: &str = "image";
+
+/// The BEAD key that holds the settings of every image a model contains.
+pub(crate) const MODEL_IMAGE_SETTINGS_KEY: &str = "images";
+
+/// Reads the processing settings a BEAD manifest gives images under `key`, starting from the defaults for `semantic`.
+fn parse_image_settings(spec: Option<&BEADType>, key: &str, semantic: Semantic) -> Result<ImageProcessorSettings, String> {
+	let defaults = ImageProcessorSettings::for_semantic(semantic);
+	let Some(value) = spec.and_then(|spec| spec.get(key)) else {
+		return Ok(defaults);
+	};
+	let manifest = <ImageSettingsManifest as serde::Deserialize>::deserialize(value)
+		.map_err(|error| format!("`{key}` is invalid: {error}"))?;
+	Ok(ImageProcessorSettings {
+		mips: manifest.mips.unwrap_or(defaults.mips),
+		compression: manifest.compression.unwrap_or(defaults.compression),
+	})
+}
+
+/// Reads the image settings `spec` gives `id` under `key`, and reports a malformed object on the bake's trace.
+pub(crate) fn image_settings(
+	context: &handler::BakeContext<'_>,
+	id: ResourceId<'_>,
+	spec: Option<&BEADType>,
+	key: &str,
+	semantic: Semantic,
+) -> Result<ImageProcessorSettings, handler::LoadErrors> {
+	parse_image_settings(spec, key, semantic).map_err(|error| {
+		context.error(format_args!(
+			"Failed to read image settings for '{}': {error}. The most likely cause is a mistyped `{key}` object in the asset's BEAD file. See {}.",
+			id.as_ref(),
+			utils::online_docs_url(IMAGE_SETTINGS_DOCS_PATH)
+		));
+		handler::LoadErrors::FailedToProcess
+	})
+}
+
+const IMAGE_SETTINGS_DOCS_PATH: &str = "reference/assets#image-settings";
+
 /// The fragment that selects a container's only animation clip.
 pub(crate) const DEFAULT_ANIMATION_FRAGMENT: &str = "animation";
 
@@ -194,18 +244,23 @@ pub(crate) async fn store_model_owned<M: crate::Model, T: compio::buf::IoBuf>(
 		.map(Into::into)
 }
 
-/// Processes one texture a mesh importer extracted and stores its image resource.
+/// Processes one texture a mesh importer extracted through the shared image processor and stores its image resource.
 ///
-/// Importers pass the shared material `mip_generator`. When it is `None`, the image keeps only its top level.
+/// `spec` is the model's BEAD manifest, whose `images` object applies to every image the model contains.
 pub(crate) async fn store_imported_image(
 	context: handler::BakeContext<'_>,
 	id: ResourceId<'_>,
 	semantic: Semantic,
+	spec: Option<&BEADType>,
 	source: ImageSource<'_>,
-	mip_generator: Option<&MipGenerator>,
 ) -> Result<(), handler::LoadErrors> {
 	let gamma = gamma_from_semantic(semantic);
-	let (resource, data) = process_image_in(id, semantic, gamma, source, context.allocator(), mip_generator).await?;
+	let settings = image_settings(&context, id, spec, MODEL_IMAGE_SETTINGS_KEY, semantic)?;
+	let image = context
+		.image_processor()
+		.process_in(semantic, gamma, settings, source, context.allocator())
+		.await?;
+	let (resource, data) = image.into_asset(id);
 
 	context.store_resource(resource, &data).await.map(|_| ())
 }
@@ -249,6 +304,42 @@ mod container_default_resource_tests {
 		let skeleton = super::parse_json(r#"{ "default_resource": "skeleton" }"#).unwrap();
 
 		assert!(container_default_resource(Some(&skeleton)).is_err());
+	}
+}
+
+#[cfg(test)]
+mod image_settings_tests {
+	use super::parse_image_settings;
+	use crate::processors::image::{ImageProcessorSettings, Semantic};
+
+	fn settings(source: &str, semantic: Semantic) -> Result<ImageProcessorSettings, String> {
+		parse_image_settings(Some(&super::parse_json(source).unwrap()), "image", semantic)
+	}
+
+	#[test]
+	fn image_settings_override_only_the_keys_they_name() {
+		let albedo = ImageProcessorSettings::for_semantic(Semantic::Albedo);
+
+		assert_eq!(parse_image_settings(None, "image", Semantic::Albedo), Ok(albedo));
+		assert_eq!(settings("{ image: {} }", Semantic::Albedo), Ok(albedo));
+		assert_eq!(
+			settings("{ image: { mips: false } }", Semantic::Albedo),
+			Ok(ImageProcessorSettings { mips: false, ..albedo })
+		);
+		assert_eq!(
+			settings("{ image: { compression: true } }", Semantic::Roughness),
+			Ok(ImageProcessorSettings {
+				mips: true,
+				compression: true
+			})
+		);
+	}
+
+	#[test]
+	fn image_settings_reject_unknown_keys_and_non_boolean_values() {
+		assert!(settings("{ image: { mipmaps: false } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: { mips: 0 } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: false }", Semantic::Albedo).is_err());
 	}
 }
 

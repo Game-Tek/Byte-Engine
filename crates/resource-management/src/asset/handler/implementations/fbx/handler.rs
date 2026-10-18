@@ -90,7 +90,6 @@ async fn resolve_animation_skeleton(
 #[derive(Default)]
 pub struct FBXAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
-	material_mip_generator: Option<Arc<MipGenerator>>,
 }
 
 impl FBXAssetHandler {
@@ -104,19 +103,16 @@ impl FBXAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Selects the generator that produces mips for the texture resources an FBX contains.
-	pub fn set_material_mip_generator(&mut self, generator: Arc<MipGenerator>) {
-		self.material_mip_generator = Some(generator);
-	}
-
 	/// Bakes one texture of an FBX as its own image resource.
 	///
-	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data.
+	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data. `spec` is
+	/// the FBX's BEAD manifest, whose `images` object applies to every texture.
 	async fn store_texture(
 		&self,
 		context: BakeContext<'_>,
 		url: ResourceId<'_>,
 		source_id: ResourceId<'_>,
+		spec: Option<&asset::BEADType>,
 		data: &[u8],
 		texture_index: usize,
 	) -> Result<(), LoadErrors> {
@@ -143,7 +139,7 @@ impl FBXAssetHandler {
 			&pixels,
 		);
 
-		store_imported_image(context, url, Semantic::Albedo, source, self.material_mip_generator.as_deref()).await
+		store_imported_image(context, url, Semantic::Albedo, spec, source).await
 	}
 }
 
@@ -171,7 +167,9 @@ impl AssetHandler for FBXAssetHandler {
 		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
 
 		if let Some(texture_index) = fragment.and_then(fbx_image_fragment_texture_index) {
-			return self.store_texture(context, url, source_id, &data, texture_index).await;
+			return self
+				.store_texture(context, url, source_id, spec.as_ref(), &data, texture_index)
+				.await;
 		}
 
 		let scene = load_fbx_scene(&data, base.as_ref()).map_err(|error| {

@@ -106,6 +106,29 @@ Every key is optional. Set `lock_borders` to `true` when a model's primitives
 meet along a border, as when one surface is split by material, and gaps show
 between them at a distance. Locked borders simplify less.
 
+## Choose image mips and compression
+
+Every image gets a mip chain, and albedo and normal maps are also
+block-compressed. Images drawn at their authored size, such as UI art, don't
+need the smaller levels. To change either step for one PNG or EXR, add an
+`image` object to its BEAD file, for example `icons/heart.png.bead`:
+
+```json5
+{
+  $schema: "byte-engine/schemas/image.bead.schema.json",
+  image: {
+    mips: false,        // store only the authored size
+    compression: false, // keep exact colors instead of BC7
+  },
+}
+```
+
+Every key is optional; a key you leave out keeps its default. For a glTF, GLB,
+or FBX model, add the same keys under `images` in the model's BEAD file to
+change every image the model contains. The
+[image settings reference](/docs/reference/assets#image-settings) lists the
+defaults.
+
 ## Rust API
 
 - [`Environment`](/docs/api/latest/byte_engine/rendering)

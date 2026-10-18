@@ -1,4 +1,7 @@
-/// The `EXRAssetHandler` struct provides standalone linear HDR image resources.
+/// The `EXRAssetHandler` struct lets an asset manager bake EXR files into linear HDR image resources.
+///
+/// It only decodes; the shared [`ImageProcessor`] stores the pixels as an
+/// `RGBA16F` mip chain, as it would any other half-float source.
 pub struct EXRAssetHandler;
 
 impl EXRAssetHandler {
@@ -24,7 +27,7 @@ impl AssetHandler for EXRAssetHandler {
 			|| r#type.eq_ignore_ascii_case("image/x-exr")
 	}
 
-	/// Decodes one EXR and stores only its linear base image without environment lighting maps.
+	/// Decodes one EXR and stores its linear image without environment lighting maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
 		let (source, data_type) = context.resolve(url).await?;
 
@@ -32,7 +35,24 @@ impl AssetHandler for EXRAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let decoded = decode_rgba16f_in(source.as_slice(), context.allocator()).map_err(|error| {
+		// Decoded EXR pixels are already linear, so only the semantic comes from the file name.
+		let semantic = guess_semantic_from_name(url.get_base());
+		let spec = context.load_sidecar(url).await?;
+		let settings = image_settings(&context, url, spec.as_ref(), IMAGE_SETTINGS_KEY, semantic)?;
+
+		// Decoding reserves the whole stored chain, so the processor keeps the decoded pixels as the stored image.
+		let capacity = |extent| {
+			ImageProcessor::in_place_capacity(
+				semantic,
+				Gamma::Linear,
+				settings,
+				extent,
+				SourceChannels::RGBA,
+				SourceEncoding::F16LittleEndian,
+			)
+			.unwrap_or(0)
+		};
+		let decoded = decode_rgba16f_in(source.as_slice(), context.allocator(), capacity).map_err(|error| {
 			context.error(format_args!(
 				"EXR image '{}' could not be decoded. The most likely cause is invalid or unsupported EXR data. Decoder: {error}",
 				url.as_ref()
@@ -45,19 +65,19 @@ impl AssetHandler for EXRAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let image = Image {
-			format: Formats::RGBA16F,
-			gamma: Gamma::Linear,
-			extent: decoded.extent().as_array(),
-			mip_count: 1,
-			ibl: None,
-			photometry: None,
+		let source = OwnedImageSource {
+			extent: decoded.extent(),
+			channels: SourceChannels::RGBA,
+			encoding: SourceEncoding::F16LittleEndian,
+			data: decoded.into_data(),
 		};
-		let streams = vec![StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, decoded.data().len(), 0)];
+		let image = context
+			.image_processor()
+			.process_owned_in(semantic, Gamma::Linear, settings, source, context.allocator())
+			.await?;
+		let (asset, data) = image.into_asset(url);
 
-		context
-			.store_primary(ProcessedAsset::new(url, image).with_streams(streams), decoded.data())
-			.await
+		context.store_primary(asset, &data).await
 	}
 }
 
@@ -95,7 +115,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn exr_bakes_a_plain_linear_hdr_image() {
+	async fn exr_bakes_a_linear_hdr_mip_chain() {
 		let source_storage = TestStorageBackend::new();
 
 		source_storage.add_file("studio.exr", &hdr_fixture());
@@ -128,18 +148,22 @@ mod tests {
 		assert_eq!(image.format, Formats::RGBA16F);
 		assert_eq!(image.gamma, Gamma::Linear);
 		assert_eq!(image.extent, [2, 1, 0]);
-		assert_eq!(image.mip_count, 1);
+		assert_eq!(image.mip_count, 2);
 		assert!(image.ibl.is_none());
 		assert!(image.photometry.is_none());
-		assert_eq!(values, vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);
+		// The base level keeps the HDR values, and the 1x1 level averages them without clamping.
+		assert_eq!(
+			values,
+			vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0, 10.0, 1.25, 3.875, 1.0]
+		);
 
-		let streams = stored.streams().expect("the EXR image must describe its base mip");
+		let streams = stored.streams().expect("the EXR image must describe its mips");
 
-		assert_eq!(streams.len(), 1);
+		assert_eq!(streams.len(), 2);
 		assert_eq!(streams[0].name(), crate::resources::image::IMAGE_BASE_MIP_STREAM_NAME);
-		assert_eq!(streams[0].offset(), 0);
-		assert_eq!(streams[0].size(), 16);
-		assert_eq!(data.len(), 16);
+		assert_eq!((streams[0].offset(), streams[0].size()), (0, 16));
+		assert_eq!((streams[1].offset(), streams[1].size()), (16, 8));
+		assert_eq!(data.len(), 24);
 	}
 
 	#[r#async::test]
@@ -163,8 +187,9 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	ProcessedAsset, StreamDescription,
-	processors::image::decode_rgba16f_in,
-	resources::image::{IMAGE_BASE_MIP_STREAM_NAME, Image},
-	types::{Formats, Gamma},
+	asset::{IMAGE_SETTINGS_KEY, image_settings},
+	processors::image::{
+		ImageProcessor, OwnedImageSource, SourceChannels, SourceEncoding, decode_rgba16f_in, guess_semantic_from_name,
+	},
+	types::Gamma,
 };

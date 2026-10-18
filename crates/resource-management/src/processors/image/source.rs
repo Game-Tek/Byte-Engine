@@ -15,7 +15,7 @@ pub enum SourceChannels {
 }
 
 impl SourceChannels {
-	fn count(self) -> usize {
+	pub(super) fn count(self) -> usize {
 		match self {
 			Self::Luminance => 1,
 			Self::LuminanceAlpha => 2,
@@ -37,7 +37,7 @@ pub enum SourceEncoding {
 }
 
 impl SourceEncoding {
-	fn bytes_per_sample(self) -> usize {
+	pub(super) fn bytes_per_sample(self) -> usize {
 		match self {
 			Self::U8 => 1,
 			Self::U16LittleEndian | Self::U16BigEndian | Self::U16NativeEndian | Self::F16LittleEndian => 2,
@@ -59,7 +59,7 @@ pub struct ImageSource<'a> {
 }
 
 impl<'a> ImageSource<'a> {
-	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image_in`].
+	/// Creates a borrowed two-dimensional source view that can be passed to [`super::ImageProcessor::process_in`].
 	pub fn new(extent: Extent, channels: SourceChannels, encoding: SourceEncoding, data: &'a [u8]) -> Self {
 		Self {
 			extent,
@@ -130,21 +130,24 @@ impl<A: Allocator> CanonicalImageData<'_, A> {
 
 /// Converts a high-precision source into the linear RGBA16F surface required by environment processing.
 ///
-/// The surface is always a copy, because environment bakes keep it as their root stream.
+/// The surface is always a copy, because environment bakes keep it as their root stream. It reserves at least
+/// `capacity` bytes, so a caller can keep processing in the same buffer.
 pub(crate) fn canonicalize_rgba16f_in<A: Allocator>(
 	source: ImageSource<'_>,
 	gamma: Gamma,
+	capacity: usize,
 	allocator: A,
-) -> Option<Box<[u8], A>> {
+) -> Option<Vec<u8, A>> {
 	let pixel_count = validated_pixel_count(source)?;
-	let mut output = Vec::with_capacity_in(pixel_count.checked_mul(target_stride(Formats::RGBA16F)?)?, allocator);
+	let size = pixel_count.checked_mul(target_stride(Formats::RGBA16F)?)?;
+	let mut output = Vec::with_capacity_in(size.max(capacity), allocator);
 	if gamma == Gamma::Linear {
 		append_canonical_image_in(source, Formats::RGBA16F, &mut output)?;
 	} else {
 		append_rgba16f(source, gamma, &mut output)?;
 	}
 
-	Some(output.into_boxed_slice())
+	Some(output)
 }
 
 /// Normalizes source channels and sample byte order into the surface required by mip generation and compression.
@@ -155,7 +158,7 @@ pub(super) fn canonicalize_image_in<A: Allocator + Clone>(
 ) -> Option<CanonicalImageData<'_, A>> {
 	let pixel_count = validated_pixel_count(source)?;
 
-	if source_can_be_borrowed(source, target_format) {
+	if source_bytes_are(source, target_format) {
 		return Some(CanonicalImageData::Borrowed(source.data));
 	}
 
@@ -172,7 +175,7 @@ pub(super) fn append_canonical_image_in<A: Allocator>(
 	output: &mut Vec<u8, A>,
 ) -> Option<()> {
 	validated_pixel_count(source)?;
-	if source_can_be_borrowed(source, target_format) {
+	if source_bytes_are(source, target_format) {
 		output.extend_from_slice(source.data);
 		return Some(());
 	}
@@ -226,7 +229,10 @@ fn target_stride(target_format: Formats) -> Option<usize> {
 	}
 }
 
-fn source_can_be_borrowed(source: ImageSource<'_>, target_format: Formats) -> bool {
+/// Returns whether the source's bytes already are `target_format` texels, so they can be used without conversion.
+///
+/// Only the layout is read, so a view with empty data answers for any buffer with its layout.
+pub(super) fn source_bytes_are(source: ImageSource<'_>, target_format: Formats) -> bool {
 	matches!(
 		(source.channels, source.encoding, target_format),
 		(SourceChannels::RGBA, SourceEncoding::U8, Formats::RGBA8 | Formats::RGBA8SRGB)
@@ -402,6 +408,7 @@ mod tests {
 				&rgb16,
 			),
 			Gamma::Linear,
+			0,
 			Global,
 		)
 		.expect("16-bit RGB must normalize to RGBA16F");
@@ -415,7 +422,7 @@ mod tests {
 			SourceEncoding::F16LittleEndian,
 			&rgba16f,
 		);
-		let canonical = canonicalize_rgba16f_in(source, Gamma::Linear, Global).expect("RGBA16F must remain compatible");
+		let canonical = canonicalize_rgba16f_in(source, Gamma::Linear, 0, Global).expect("RGBA16F must remain compatible");
 
 		assert_eq!(*canonical, rgba16f);
 	}
@@ -432,8 +439,8 @@ mod tests {
 			SourceEncoding::U16NativeEndian,
 			&samples,
 		);
-		let canonical =
-			canonicalize_rgba16f_in(source, Gamma::SRGB, Global).expect("high-precision sRGB must normalize to linear RGBA16F");
+		let canonical = canonicalize_rgba16f_in(source, Gamma::SRGB, 0, Global)
+			.expect("high-precision sRGB must normalize to linear RGBA16F");
 		let values = decode_f16(&canonical);
 
 		assert!((values[0] - 0.214).abs() < 0.001);

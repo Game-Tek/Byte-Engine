@@ -13,10 +13,10 @@ use crate::types::Gamma;
 pub(crate) struct DecodedImage<'a> {
 	format: image::ImageFormat,
 	extent: Extent,
-	data: Box<[u8], &'a dyn Allocator>,
+	data: Vec<u8, &'a dyn Allocator>,
 }
 
-impl DecodedImage<'_> {
+impl<'a> DecodedImage<'a> {
 	/// Returns the encoded file format selected from the source content or extension hint.
 	pub(crate) fn format(&self) -> image::ImageFormat {
 		self.format
@@ -30,6 +30,11 @@ impl DecodedImage<'_> {
 	/// Returns the tightly packed linear RGBA16F pixels.
 	pub(crate) fn data(&self) -> &[u8] {
 		&self.data
+	}
+
+	/// Returns the pixel buffer, with the capacity the decode reserved.
+	pub(crate) fn into_data(self) -> Vec<u8, &'a dyn Allocator> {
+		self.data
 	}
 }
 
@@ -86,17 +91,22 @@ impl fmt::Display for ImageDecodeError {
 impl Error for ImageDecodeError {}
 
 /// Decodes one high-precision image to linear RGBA16F after identifying its encoded contents.
+///
+/// `capacity` returns how many bytes to reserve for the decoded pixels of an image of the given extent, so a caller
+/// that keeps processing in the same buffer, such as [`super::ImageProcessor::process_owned_in`], never reallocates
+/// it. The decode always reserves at least the pixels' own size.
 pub(crate) fn decode_rgba16f_in<'a>(
 	encoded: &[u8],
 	allocator: &'a dyn Allocator,
+	capacity: impl FnOnce(Extent) -> usize,
 ) -> Result<DecodedImage<'a>, ImageDecodeError> {
 	let format = image::guess_format(encoded).map_err(|_| ImageDecodeError::UnknownFormat)?;
 
 	if format == image::ImageFormat::OpenExr {
-		return decode_exr_in(encoded, allocator);
+		return decode_exr_in(encoded, allocator, capacity);
 	}
 
-	decode_image_rs_in(encoded, format, allocator)
+	decode_image_rs_in(encoded, format, allocator, capacity)
 }
 
 /// Decodes formats provided by `image` directly into the bake allocator.
@@ -104,6 +114,7 @@ fn decode_image_rs_in<'a>(
 	encoded: &[u8],
 	format: image::ImageFormat,
 	allocator: &'a dyn Allocator,
+	capacity: impl FnOnce(Extent) -> usize,
 ) -> Result<DecodedImage<'a>, ImageDecodeError> {
 	if !format.reading_enabled() {
 		return Err(ImageDecodeError::UnsupportedFormat(format));
@@ -134,7 +145,8 @@ fn decode_image_rs_in<'a>(
 
 	decoder.read_image(&mut data).map_err(|_| ImageDecodeError::InvalidData)?;
 	let source = ImageSource::new(Extent::rectangle(width, height), channels, encoding, &data);
-	let data = canonicalize_rgba16f_in(source, gamma, allocator).ok_or(ImageDecodeError::InvalidData)?;
+	let capacity = capacity(Extent::rectangle(width, height));
+	let data = canonicalize_rgba16f_in(source, gamma, capacity, allocator).ok_or(ImageDecodeError::InvalidData)?;
 
 	Ok(DecodedImage {
 		format,
@@ -235,8 +247,12 @@ struct DecodedExr<'a> {
 }
 
 impl<'a> DecodedExr<'a> {
-	/// Allocates the exact half-float RGBA surface required by the decoded EXR layer.
-	fn new(resolution: exr::prelude::Vec2<usize>, allocator: &'a dyn Allocator) -> Self {
+	/// Allocates the half-float RGBA surface required by the decoded EXR layer, reserving at least `capacity` bytes.
+	fn new(
+		resolution: exr::prelude::Vec2<usize>,
+		allocator: &'a dyn Allocator,
+		capacity: impl FnOnce(Extent) -> usize,
+	) -> Self {
 		let extent = u32::try_from(resolution.width())
 			.ok()
 			.zip(u32::try_from(resolution.height()).ok())
@@ -249,7 +265,8 @@ impl<'a> DecodedExr<'a> {
 		let valid = extent.is_some()
 			&& byte_len
 				.map(|byte_len| {
-					if data.try_reserve_exact(byte_len).is_err() {
+					let capacity = extent.map_or(byte_len, |extent| capacity(extent).max(byte_len));
+					if data.try_reserve_exact(capacity).is_err() {
 						return false;
 					}
 
@@ -302,13 +319,25 @@ impl<'a> DecodedExr<'a> {
 }
 
 /// Decodes EXR directly to half floats so highlights do not require an intermediate f32 surface.
-fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<DecodedImage<'a>, ImageDecodeError> {
+fn decode_exr_in<'a>(
+	encoded: &[u8],
+	allocator: &'a dyn Allocator,
+	capacity: impl FnOnce(Extent) -> usize,
+) -> Result<DecodedImage<'a>, ImageDecodeError> {
+	// The reader calls the layer constructor through `Fn`, though only for the one layer it keeps, so the callback is
+	// taken out of a cell.
+	let capacity = std::cell::Cell::new(Some(capacity));
 	// Bakes already run across the asset workers, and exr's rayon pool cannot be joined, so decode on the calling thread.
 	let image = exr::prelude::read()
 		.no_deep_data()
 		.largest_resolution_level()
 		.rgba_channels(
-			|resolution, _| DecodedExr::new(resolution, allocator),
+			|resolution, _| {
+				let capacity = capacity.take();
+				DecodedExr::new(resolution, allocator, |extent| {
+					capacity.map_or(0, |capacity| capacity(extent))
+				})
+			},
 			|pixels, position, channels: (f16, f16, f16, f16)| pixels.set_pixel(position, channels),
 		)
 		.first_valid_layer()
@@ -329,7 +358,7 @@ fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<Dec
 	Ok(DecodedImage {
 		format: image::ImageFormat::OpenExr,
 		extent,
-		data: decoded.data.into_boxed_slice(),
+		data: decoded.data,
 	})
 }
 
@@ -450,13 +479,13 @@ mod tests {
 
 	#[test]
 	fn content_sniffing_keeps_exr_hdr_values_and_layouts() {
-		let exr = decode_rgba16f_in(&exr_fixture(), &Global).expect("EXR content must decode");
+		let exr = decode_rgba16f_in(&exr_fixture(), &Global, |_| 0).expect("EXR content must decode");
 
 		assert_eq!(exr.format(), image::ImageFormat::OpenExr);
 		assert_eq!(exr.extent().as_array(), [2, 1, 0]);
 		assert_eq!(rgba16f_values(exr.data()), vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);
 
-		let hdr = decode_rgba16f_in(&hdr_fixture(), &Global).expect("Radiance HDR content must decode");
+		let hdr = decode_rgba16f_in(&hdr_fixture(), &Global, |_| 0).expect("Radiance HDR content must decode");
 
 		assert_eq!(hdr.format(), image::ImageFormat::Hdr);
 		assert_eq!(hdr.extent().as_array(), [2, 1, 0]);
@@ -465,8 +494,8 @@ mod tests {
 
 	#[test]
 	fn environment_decode_rejects_8_bit_but_accepts_16_bit_pngs() {
-		let eight_bit = decode_rgba16f_in(&png_fixture(png::BitDepth::Eight, PngTransfer::Unspecified), &Global);
-		let sixteen_bit = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Unspecified), &Global);
+		let eight_bit = decode_rgba16f_in(&png_fixture(png::BitDepth::Eight, PngTransfer::Unspecified), &Global, |_| 0);
+		let sixteen_bit = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Unspecified), &Global, |_| 0);
 
 		assert!(matches!(eight_bit, Err(ImageDecodeError::InsufficientPrecision)));
 		assert!(sixteen_bit.is_ok());
@@ -475,8 +504,12 @@ mod tests {
 	#[test]
 	fn supported_png_gamma_metadata_selects_the_linearization() {
 		for (gamma, expected_red) in [(45_000, 0.01435), (100_000, 0.125)] {
-			let decoded = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Gamma(gamma)), &Global)
-				.expect("supported PNG gamma must decode");
+			let decoded = decode_rgba16f_in(
+				&png_fixture(png::BitDepth::Sixteen, PngTransfer::Gamma(gamma)),
+				&Global,
+				|_| 0,
+			)
+			.expect("supported PNG gamma must decode");
 			let red = rgba16f_values(decoded.data())[0];
 
 			assert!((red - expected_red).abs() < 0.001);
@@ -490,7 +523,7 @@ mod tests {
 			(tiff_fixture(), image::ImageFormat::Tiff, 0.5),
 			(pnm_fixture(), image::ImageFormat::Pnm, 0.5),
 		] {
-			let decoded = decode_rgba16f_in(&encoded, &Global).expect("high-precision fixture must decode");
+			let decoded = decode_rgba16f_in(&encoded, &Global, |_| 0).expect("high-precision fixture must decode");
 			let red = rgba16f_values(decoded.data())[0];
 
 			assert_eq!(decoded.format(), expected_format);
@@ -500,7 +533,7 @@ mod tests {
 
 	#[test]
 	fn sixteen_bit_srgb_png_is_linearized_without_changing_alpha() {
-		let decoded = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Srgb), &Global)
+		let decoded = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Srgb), &Global, |_| 0)
 			.expect("16-bit sRGB PNG must decode");
 		let values = rgba16f_values(decoded.data());
 
@@ -512,9 +545,13 @@ mod tests {
 
 	#[test]
 	fn unsupported_explicit_png_transfer_is_rejected() {
-		let error = decode_rgba16f_in(&png_fixture(png::BitDepth::Sixteen, PngTransfer::Gamma(70_000)), &Global)
-			.err()
-			.expect("unsupported explicit PNG gamma must fail");
+		let error = decode_rgba16f_in(
+			&png_fixture(png::BitDepth::Sixteen, PngTransfer::Gamma(70_000)),
+			&Global,
+			|_| 0,
+		)
+		.err()
+		.expect("unsupported explicit PNG gamma must fail");
 
 		assert_eq!(error, ImageDecodeError::UnsupportedTransferFunction);
 	}

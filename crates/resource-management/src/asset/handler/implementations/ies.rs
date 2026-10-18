@@ -1,14 +1,15 @@
 use std::{alloc::Allocator, fmt};
 
 use exr::prelude::f16;
+use utils::Extent;
 
 use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	ProcessedAsset,
-	resources::image::{Image, ImagePhotometry},
+	processors::image::{ImageProcessorSettings, OwnedImageSource, Semantic, SourceChannels, SourceEncoding},
+	resources::image::ImagePhotometry,
 	types::{Formats, Gamma},
 };
 
@@ -61,16 +62,28 @@ impl AssetHandler for IESAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		let image = Image {
-			format: Formats::R16F,
-			gamma: Gamma::Linear,
-			extent: [IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 0],
-			mip_count: 1,
-			ibl: None,
-			photometry: Some(ImagePhotometry { intensity_scale_candela }),
+		// The intensity map is a lookup table the renderer reads by angle, so it stays one exact linear level.
+		// One R16F level is stored exactly as encoded, so the processor keeps the map's buffer as the stored image.
+		let source = OwnedImageSource {
+			extent: Extent::rectangle(IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT),
+			channels: SourceChannels::Luminance,
+			encoding: SourceEncoding::F16LittleEndian,
+			data,
 		};
+		let mut image = context
+			.image_processor()
+			.process_owned_in(
+				Semantic::Other,
+				Gamma::Linear,
+				ImageProcessorSettings::LOOKUP,
+				source,
+				context.allocator(),
+			)
+			.await?;
+		image.image.photometry = Some(ImagePhotometry { intensity_scale_candela });
+		let (asset, data) = image.into_asset(url);
 
-		context.store_primary(ProcessedAsset::new(url, image), &data).await
+		context.store_primary(asset, &data).await
 	}
 }
 

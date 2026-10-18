@@ -16,21 +16,14 @@ where
 {
 	let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
 
+	// A new asset manager already processes images on the CPU, which tests keep.
 	#[cfg(not(test))]
-	let (material_mips, ibl) = byte_engine::application::graphics::default_offline_generators();
-
-	#[cfg(test)]
-	let (material_mips, ibl) = (
-		std::sync::Arc::new(resource_management::resources::mips::MipGenerator::Cpu),
-		resource_management::ibl::IBLGenerator::new(),
-	);
+	asset_manager.set_image_processor(byte_engine::application::graphics::default_image_processor());
 
 	byte_engine::application::graphics::register_default_asset_handlers(
 		&mut asset_manager,
 		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::with_features(features),
 		features,
-		material_mips,
-		ibl,
 	);
 
 	asset_manager

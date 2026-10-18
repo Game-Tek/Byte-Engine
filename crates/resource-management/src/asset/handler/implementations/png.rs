@@ -1,21 +1,13 @@
-/// The `PNGAssetHandler` struct configures PNG decoding for image assets.
+/// The `PNGAssetHandler` struct lets an asset manager bake PNG files into image resources.
 ///
-/// Palette and low-bit-depth images are expanded to whole channels while decoding.
+/// Palette and low-bit-depth images are expanded to whole channels while decoding. The shared
+/// [`ImageProcessor`] does the rest.
 #[derive(Default)]
-pub struct PNGAssetHandler {
-	mip_generator: Option<Arc<MipGenerator>>,
-}
+pub struct PNGAssetHandler;
 
 impl PNGAssetHandler {
 	pub fn new() -> PNGAssetHandler {
-		PNGAssetHandler::default()
-	}
-
-	/// Selects the generator that produces the mip chain of every PNG this handler bakes.
-	///
-	/// Without one, images keep only their top level and alias wherever they are minified.
-	pub fn set_mip_generator(&mut self, generator: Arc<MipGenerator>) {
-		self.mip_generator = Some(generator);
+		PNGAssetHandler
 	}
 }
 
@@ -35,22 +27,37 @@ impl AssetHandler for PNGAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
+		let spec = context.load_sidecar(url).await?;
+		let settings = image_settings(&context, url, spec.as_ref(), IMAGE_SETTINGS_KEY, semantic)?;
+
 		let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+		let extent = Extent::rectangle(reader.info().width, reader.info().height);
+		let gamma = png_gamma(reader.info(), semantic);
+		let (color_type, bit_depth) = reader.output_color_type();
+		let (channels, encoding) = png_source_layout(color_type, bit_depth)?;
+
+		// The decode buffer reserves the whole stored chain when the processor can keep the decoded pixels as the
+		// stored image, so they're never copied.
 		let size = reader.output_buffer_size().ok_or(LoadErrors::FailedToProcess)?;
-		let mut buffer = Vec::with_capacity_in(size, allocator);
+		let capacity = ImageProcessor::in_place_capacity(semantic, gamma, settings, extent, channels, encoding).unwrap_or(0);
+		let mut buffer = Vec::with_capacity_in(size.max(capacity), allocator);
 		buffer.resize(size, 0);
 		let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
 		buffer.truncate(info.buffer_size());
 
-		let extent = Extent::rectangle(info.width, info.height);
-		let gamma = png_gamma(reader.info(), semantic);
-		let (channels, encoding) = png_source_layout(info.color_type, info.bit_depth)?;
-		let source = ImageSource::new(extent, channels, encoding, &buffer);
-		let (asset, data) = process_image_in(url, semantic, gamma, source, allocator, self.mip_generator.as_deref())
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let source = OwnedImageSource {
+			extent,
+			channels,
+			encoding,
+			data: buffer,
+		};
+		let image = context
+			.image_processor()
+			.process_owned_in(semantic, gamma, settings, source, allocator)
+			.await?;
+		let (asset, data) = image.into_asset(url);
 
 		context.store_primary(asset, &data).await
 	}
@@ -204,9 +211,51 @@ mod tests {
 			assert_eq!((image.gamma, image.format), (expected_gamma, expected_format), "asset: {id}");
 		}
 	}
-}
 
-use std::sync::Arc;
+	#[r#async::test]
+	async fn standalone_png_takes_mip_and_compression_settings_from_its_bead_file() {
+		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		let png = generated_rgba8_png(GammaMetadata::Unspecified);
+
+		asset_storage_backend.add_file("textures/ui_albedo.png", &png);
+		asset_storage_backend.add_file(
+			"textures/ui_albedo.png.bead",
+			b"{ image: { mips: false, compression: false } }",
+		);
+		asset_storage_backend.add_file("textures/brick_albedo.png", &png);
+		asset_storage_backend.add_file("textures/broken_albedo.png", &png);
+		asset_storage_backend.add_file("textures/broken_albedo.png.bead", b"{ image: { mipmaps: false } }");
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
+
+		// An albedo without a BEAD file keeps the semantic's BC7 mip chain; the BEAD file turns both steps off.
+		for (id, expected_format, expected_mips) in [
+			("textures/ui_albedo.png", Formats::RGBA8SRGB, 1),
+			("textures/brick_albedo.png", Formats::BC7SRGB, 3),
+		] {
+			asset_manager.bake(id).await.expect("generated PNG should bake");
+
+			let resource = resource_storage_backend
+				.get_resource(ResourceId::new(id))
+				.expect("baked PNG resource should be stored");
+			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
+
+			assert_eq!(
+				(image.format, image.mip_count),
+				(expected_format, expected_mips),
+				"asset: {id}"
+			);
+		}
+
+		assert!(
+			asset_manager.bake("textures/broken_albedo.png").await.is_err(),
+			"an unknown image setting must fail the bake"
+		);
+	}
+}
 
 use utils::Extent;
 
@@ -215,10 +264,10 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
+	asset::{IMAGE_SETTINGS_KEY, image_settings},
 	processors::image::{
-		ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name, png_declared_gamma,
-		process_image_in,
+		ImageProcessor, OwnedImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name,
+		png_declared_gamma,
 	},
-	resources::mips::MipGenerator,
 	types::Gamma,
 };

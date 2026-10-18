@@ -1,20 +1,16 @@
-/// The `EnvironmentMapAssetHandler` struct generates image-based lighting from standalone `.environment.bead` assets.
-pub struct EnvironmentMapAssetHandler {
-	ibl_generator: IBLGenerator,
-}
+/// The `EnvironmentMapAssetHandler` struct lets an asset manager bake image-based lighting from standalone
+/// `.environment.bead` assets.
+///
+/// Lighting comes from the IBL generator of the shared [`ImageProcessor`](crate::processors::image::ImageProcessor).
+#[derive(Default)]
+pub struct EnvironmentMapAssetHandler;
 
 impl EnvironmentMapAssetHandler {
-	/// Creates an environment-map handler that uses `ibl_generator` for offline lighting generation.
+	/// Creates an environment-map handler.
 	///
 	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
-	pub fn new(ibl_generator: IBLGenerator) -> Self {
-		Self { ibl_generator }
-	}
-}
-
-impl Default for EnvironmentMapAssetHandler {
-	fn default() -> Self {
-		Self::new(IBLGenerator::new())
+	pub fn new() -> Self {
+		Self
 	}
 }
 
@@ -49,7 +45,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 
 			LoadErrors::AssetCouldNotBeRead
 		})?;
-		let decoded = decode_rgba16f_in(encoded.as_slice(), context.allocator()).map_err(|error| {
+		let decoded = decode_rgba16f_in(encoded.as_slice(), context.allocator(), |_| 0).map_err(|error| {
 			context.error(format_args!(
 				"Environment-map source '{source_id}' is invalid. {error} See {}.",
 				crate::online_docs_url(ENVIRONMENT_MAP_DOCS_PATH)
@@ -69,7 +65,9 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			return Err(LoadErrors::FailedToProcess);
 		}
 
-		self.ibl_generator
+		context
+			.image_processor()
+			.ibl()
 			.generate_and_store(context, url, extent, decoded.data())
 			.await
 	}
@@ -206,7 +204,7 @@ mod tests {
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		// The raw EXR is a decoder input, so this test deliberately registers no EXR asset handler.
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
 			.bake("studio.environment.bead")
 			.await
@@ -268,7 +266,7 @@ mod tests {
 		let resource_storage = TestResourceStorage::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
 			.bake("raw.environment.bead")
 			.await
@@ -287,7 +285,7 @@ mod tests {
 		let resource_storage = TestResourceStorage::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 
 		assert!(asset_manager.bake("square.environment.bead").await.is_err());
 		assert!(
@@ -320,7 +318,7 @@ mod tests {
 		let resource_storage = TestResourceStorage::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 
 		for (id, _) in cases {
 			assert!(
@@ -341,7 +339,7 @@ mod tests {
 		let resource_storage = TestResourceStorage::new();
 		let mut asset_manager = AssetManager::new(source_storage.clone(), resource_storage.clone());
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
 			.bake_if_not_exists::<Image>("tracked.environment.bead")
 			.await
@@ -374,7 +372,7 @@ mod tests {
 		let bakes = Arc::new(AtomicUsize::new(0));
 
 		asset_manager.add_asset_handler(CountingEnvironmentMapAssetHandler {
-			inner: EnvironmentMapAssetHandler::default(),
+			inner: EnvironmentMapAssetHandler::new(),
 			bakes: bakes.clone(),
 		});
 		asset_manager
@@ -403,9 +401,11 @@ mod tests {
 		let resource_storage = TestResourceStorage::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(
+		asset_manager.set_image_processor(crate::processors::image::ImageProcessor::new(
+			crate::resources::mips::MipGenerator::Cpu,
 			crate::ibl::IBLGenerator::unavailable_for_test(),
 		));
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
 			.bake("fallback.environment.bead")
 			.await
@@ -425,4 +425,4 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::{ibl::IBLGenerator, processors::image::decode_rgba16f_in};
+use crate::processors::image::decode_rgba16f_in;

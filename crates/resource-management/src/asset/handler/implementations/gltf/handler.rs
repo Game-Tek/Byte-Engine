@@ -6,7 +6,6 @@ pub(crate) const MAX_SKIN_JOINTS: usize = u16::MAX as usize + 1;
 #[derive(Default)]
 pub struct GLTFAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
-	material_mip_generator: Option<Arc<MipGenerator>>,
 }
 
 impl GLTFAssetHandler {
@@ -16,11 +15,6 @@ impl GLTFAssetHandler {
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
 		self.generator = Some(Box::new(generator));
-	}
-
-	/// Selects the generator that produces mips for the image resources a glTF contains.
-	pub fn set_material_mip_generator(&mut self, generator: Arc<MipGenerator>) {
-		self.material_mip_generator = Some(generator);
 	}
 
 	/// Packs glTF primitives through the shared mesh processor, naming each primitive's material by its slot.
@@ -250,7 +244,7 @@ impl AssetHandler for GLTFAssetHandler {
 			let extent = Extent::rectangle(image.width, image.height);
 			let source = ImageSource::new(extent, channels, encoding, &image.pixels);
 
-			return store_imported_image(context, url, semantic, source, self.material_mip_generator.as_deref()).await;
+			return store_imported_image(context, url, semantic, spec.as_ref(), source).await;
 		}
 
 		// Any fragment left names an animation. An unfragmented request bakes the container's default resource.

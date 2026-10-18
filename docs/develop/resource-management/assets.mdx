@@ -26,7 +26,7 @@ The context keeps source resolution, recursive baking, allocator-aware resource 
 Each stored resource contains typed metadata plus the binary payload that consumers later upload, stream, decode, or play.
 
 When your handler needs adjacent `.bead` settings, call `context.load_sidecar(id)` explicitly.
-`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, and glTF handlers request sidecars. Other handlers read their sources independently.
+`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, glTF, PNG, and EXR handlers request sidecars. Other handlers read their sources independently.
 
 ```rust
 let (source, asset_type) = context.resolve(id).await?;
@@ -60,10 +60,27 @@ Image processing decodes pixels, infers semantics from names such as albedo, nor
 Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
 For color textures, supported sRGB or linear PNG metadata overrides the filename default. An unsupported transfer function falls back to the inferred semantic.
 EXR images keep their linear HDR values in an `RGBA16F` image and don't generate lighting maps by default.
-Material textures from glTF and FBX models get a full mip chain. Byte Engine filters the levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `fast` profile. Without a compatible GPU, the CPU filters and compresses the chain instead, at comparable quality.
+By default every image gets a full mip chain, whatever its source format, and albedo and normal maps are also block-compressed. Lookup tables such as IES intensity maps keep one uncompressed level. Byte Engine filters 8-bit levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `fast` profile. Sixteen-bit and half-float chains, and every chain without a compatible GPU, are filtered and compressed on the CPU, at comparable quality.
 A glTF metallic-roughness texture that every material in the file reads only through its green and blue channels is stored as a two-channel `RG8` image, or `RG16` from a sixteen-bit source, holding roughness in red and metallic in green. The generated materials read those channels, so the image samples the same values it did with all four channels. An image that a material also reads through another channel, such as an occlusion-roughness-metallic texture, keeps all its channels. This layout is part of the image fragment's contract: a hand-written material that samples `model.gltf#images/<index>` for metallic and roughness must read red and green.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Mesh processing also builds detail levels. It simplifies each primitive into coarser versions, each with about half the triangles of the one before, until a level stops getting smaller, fits in about two meshlets, or reaches the level limit. Every level uses the primitive's own vertices and is stored as extra meshlets after the full-detail ones, so levels add vertex indices, triangles, and meshlets but no vertices. Each level records an error: the estimated largest distance, in model units, between it and full detail. The renderer draws the coarsest level whose error covers at most a pixel. Skinned primitives keep full detail only.
+
+### One processor per resource type
+
+Every resource type has one processor, and every handler that produces that type uses it. A handler's job ends once it has decoded its source into the type's canonical source and chosen its settings: an `ImageSource` with a `Semantic`, gamma, and `ImageProcessorSettings` for images, `MeshPrimitiveSource` values for meshes, an `AudioDescription` with samples for audio. The processor decides everything after that. For images, that's channel packing, the mip chain, block compression, environment lighting, the stream layout, and the stored `Image` metadata.
+
+This keeps two rules true, so preserve them when you change a handler or a processor:
+
+- The same pixels with the same semantic and settings bake to the same image, whether they came from a PNG, an EXR, or a glTF or FBX texture. A step such as mip generation can't be present for one format and missing for another.
+- A handler holds no processing backend. The asset manager owns the `ImageProcessor`, which holds the mip and environment-lighting generators, and handlers reach it through `BakeContext::image_processor`. Install GPU backends once with `AssetManager::set_image_processor`; a new manager processes on the CPU.
+
+To add an image format, decode it into an `ImageSource` and call `ImageProcessor::process_in`, then name the result with `ProcessedImage::into_asset` and store it. Don't build an `Image` yourself. The `Semantic` decides the stored format and channel packing. `ImageProcessorSettings` decides the optional steps: whether the image gets a mip chain and whether it's block-compressed. Start from `ImageProcessorSettings::for_semantic` for a sampled texture, or `ImageProcessorSettings::LOOKUP` for a table read at exact coordinates. Authors override these through the asset's sidecar: read it with `image_settings`, which takes the `image` key for a standalone image or the `images` key for a model, so every format honors the same [image settings](/docs/reference/assets#image-settings). When your decoder writes into a buffer it owns, hand that buffer over with `ImageProcessor::process_owned_in` instead of lending it. When the decoded bytes already are the stored format, the processor keeps the buffer as the stored image and filters the mip chain into it after the base level, so the pixels are never copied. Reserve `ImageProcessor::in_place_capacity` bytes before decoding: the bake arena can't grow a buffer without copying it, and memory it frees isn't reused until the bake ends. The PNG, EXR, and IES handlers work this way.
+
+When your handler knows metadata the pixels don't carry, such as the IES photometric scale, set it on `ProcessedImage::image` before storing.
+
+When a step should apply to more images, add it to the processor, not to the handlers that need it. If a processor needs a backend, such as a GPU worker, the asset manager owns it the way it owns the image processor.
+
+The image processor tests cover format, packing, mip, and compression decisions against `ImageSource` inputs. Handler tests cover decoding and the semantic, gamma, and settings each format chooses.
 
 When you write a mesh importer, pass a `MeshLodSettings` to `MeshProcessorSession::new`; `MeshLodSettings::default()` gives the defaults listed under [detail levels](/docs/reference/assets#detail-levels).
 Have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
@@ -83,3 +100,4 @@ decode and import data long-lived.
 - [`AssetManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html)
 - [`AssetHandler`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_handler/trait.AssetHandler.html)
 - [`BakeContext`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_handler/struct.BakeContext.html)
+- [`ImageProcessor`](https://docs.rs/byte-engine-resource-management/latest/resource_management/processors/image/struct.ImageProcessor.html)

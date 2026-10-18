@@ -78,6 +78,26 @@ A model's BEAD file tunes its levels with a `lods` object:
 
 Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
 
+## Image settings
+
+Every image gets a full mip chain by default, and albedo and normal maps are
+also block-compressed: normal maps to BC5, other compressed images to BC7. An
+image's BEAD file can change either step with an object of these keys:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `mips` | `true` | `false` stores only the authored size, with no smaller levels. |
+| `compression` | `true` for albedo and normal maps, `false` otherwise | Whether the image is block-compressed. |
+
+Every key is optional, and a key left out keeps its default. Packed
+metallic-roughness maps and half-float images, such as EXR, are never
+block-compressed, so `compression` has no effect on them. A standalone PNG or
+EXR reads the object from its `image` key. A glTF, GLB, or FBX model reads it
+from its `images` key and applies it to every image the model contains.
+
+Turn `mips` off for images drawn at their authored size, such as UI art, and
+`compression` off for images whose exact colors matter more than their memory.
+
 ## Environment maps
 
 A standalone `.environment.bead` file generates image-based lighting from a
@@ -112,14 +132,17 @@ bake. Only these handlers read one:
 | --- | --- | --- |
 | glTF, GLB, FBX | `default_resource` | `mesh` or `animation`, which the bare ID bakes as. Skeletons always need the `#skeleton` fragment. |
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
+| glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
+| PNG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>.asset` | The ID of a `.bema` variant to use for that material. Unnamed glTF materials can't be overridden; unnamed FBX materials use the key `default`. |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | BESL | `stage`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives`, `layouts` | The stage metadata and layout layers specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
 
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `besl.bead.schema.json`,
-`environment.bead.schema.json`, `model.bead.schema.json` for the model
-sidecar, and `particles.schema.json`.
+`environment.bead.schema.json`, `image.bead.schema.json` for the image
+sidecar, `model.bead.schema.json` for the model sidecar, and
+`particles.schema.json`.
 
 ## Pipelines
 

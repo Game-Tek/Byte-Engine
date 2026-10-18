@@ -37,9 +37,9 @@ impl From<GpuWorkerError> for GPUMipError {
 	}
 }
 
-/// The `MaterialMipGenerator` struct moves material texture mip filtering and BC7 compression onto the GPU.
+/// The `MaterialMipGenerator` struct moves texture mip filtering and BC7 compression onto the GPU.
 ///
-/// Install it on material importers as [`crate::resources::mips::MipGenerator::Gpu`]. Requests it can't serve report
+/// Install it on the image processor as [`crate::resources::mips::MipGenerator::Gpu`]. Requests it can't serve report
 /// [`GPUMipError::UnsupportedRequest`], and the generator's caller falls back to the CPU path for those and for failed
 /// GPU work.
 pub struct MaterialMipGenerator {
@@ -47,7 +47,7 @@ pub struct MaterialMipGenerator {
 }
 
 impl MaterialMipGenerator {
-	/// Creates the dedicated offline GPU worker used by material importers.
+	/// Creates the dedicated offline GPU worker used by the image processor.
 	pub fn try_with_default_gpu() -> Result<Self, GPUMipError> {
 		Ok(Self {
 			worker: GpuWorker::spawn("GPU Material Mip Worker", GPUMipProcessor::try_new)?,
@@ -96,6 +96,44 @@ impl MaterialMipGenerator {
 			// The base level never left the caller, so it's encoded from the caller's copy; the rest from the readback.
 			encode_levels(output_format, width, height, 4, base_level, &bytes, output);
 		}
+		Ok(())
+	}
+
+	/// Filters the base level at the start of `chain` on the GPU and writes the levels below it into the rest of
+	/// `chain`.
+	///
+	/// The contract is that of [`crate::resources::mips::MipGenerator::filter_mip_chain_in_place`]. The GPU filters
+	/// RGBA8 levels, so other formats return [`GPUMipError::UnsupportedRequest`] at once. The base level is copied to
+	/// the worker, because it owns its bytes while the request is in flight, and the filtered levels are copied back
+	/// into place.
+	pub(super) async fn filter_mip_chain_in_place(
+		&self,
+		format: Formats,
+		gamma: Gamma,
+		width: u32,
+		height: u32,
+		chain: &mut [u8],
+	) -> Result<(), GPUMipError> {
+		let base_size = width as usize * height as usize * 4;
+		let sizes_match = Some(chain.len()) == encoded_mip_chain_size(format, Extent::rectangle(width, height));
+		if filtering_format(format) != Formats::RGBA8 || !stores_filtering_texels(format) || !sizes_match {
+			return Err(GPUMipError::UnsupportedRequest);
+		}
+		// A lone texel has no lower levels, so there is nothing to submit.
+		if width <= 1 && height <= 1 {
+			return Ok(());
+		}
+
+		let (base_level, lower_levels) = chain.split_at_mut(base_size);
+		let bytes = self
+			.worker
+			.submit((width, height, gamma, format), base_level.to_vec())
+			.await
+			.map_err(|_| GpuWorkerError::Unavailable)??;
+		if bytes.len() != lower_levels.len() {
+			return Err(GPUMipError::UnsupportedRequest);
+		}
+		lower_levels.copy_from_slice(&bytes);
 		Ok(())
 	}
 }
@@ -586,6 +624,31 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
+	async fn in_place_gpu_chain_matches_the_separate_output_chain() {
+		let generator = generator();
+		let (width, height) = (16_u32, 8_u32);
+		let base = test_image(width, height, true);
+
+		for gamma in [Gamma::Linear, Gamma::SRGB] {
+			let format = if gamma == Gamma::SRGB {
+				Formats::RGBA8SRGB
+			} else {
+				Formats::RGBA8
+			};
+			let expected = encode_chain(&generator, format, gamma, width, height, &base).await;
+			let mut chain = vec![0; expected.len()];
+			chain[..base.len()].copy_from_slice(&base);
+
+			generator
+				.filter_mip_chain_in_place(format, gamma, width, height, &mut chain)
+				.await
+				.expect("GPU in-place filtering should succeed");
+
+			assert_eq!(chain, expected, "gamma: {gamma:?}");
+		}
+	}
+
+	#[crate::r#async::test]
 	async fn gpu_worker_generates_complete_uniform_mip_chain() {
 		let generator = generator();
 		let base = [64_u8, 128, 192, 255].repeat(8 * 4);
@@ -898,7 +961,10 @@ use ghi::{
 };
 use utils::Extent;
 
-use super::{bc7::BC7_ENCODER, encode_levels, encoded_mip_chain_size, filtering_format, mip_extents, packed_lower_levels_size};
+use super::{
+	bc7::BC7_ENCODER, encode_levels, encoded_mip_chain_size, filtering_format, mip_extents, packed_lower_levels_size,
+	stores_filtering_texels,
+};
 use crate::{
 	gpu_worker::{
 		ComputeKernel, GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission,

@@ -1,5 +1,6 @@
 use std::{alloc::Global, error::Error, fmt, simd::Simd};
 
+use exr::prelude::f16;
 use utils::{
 	Extent,
 	color::{linear_to_srgb, srgb_to_linear},
@@ -23,16 +24,16 @@ pub(crate) struct MipLevel<'a> {
 	pub(crate) data: &'a [u8],
 }
 
-/// The `MipGenerator` enum selects where material importers filter and block-compress texture mip chains.
+/// The `MipGenerator` enum selects where the image processor filters and block-compresses texture mip chains.
 ///
-/// Material importers share one generator and call [`Self::encode_mip_chain`] once per material texture, after
-/// [`crate::processors::image::process_image_in`] sized the stored chain.
-/// `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
+/// An asset manager's [`crate::processors::image::ImageProcessor`] owns one generator and calls
+/// [`Self::encode_mip_chain`] once per image whose [`crate::processors::image::ImageProcessorSettings::mips`] is set,
+/// after sizing the stored chain. `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
 /// path for requests it can't serve or whose GPU work fails.
 pub enum MipGenerator {
 	/// Filters and encodes every level on the CPU.
 	///
-	/// Keep this path even though material importers normally use the GPU: it bakes wherever GPU setup or a GPU request
+	/// Keep this path even though bakes normally use the GPU: it bakes wherever GPU setup or a GPU request
 	/// fails, it's what bakes and tests use on machines without a compatible GPU, and its `intel_tex_2` encoder is the
 	/// reference the GPU BC7 encoder's quality is measured against.
 	Cpu,
@@ -95,6 +96,62 @@ impl MipGenerator {
 		);
 		Ok(())
 	}
+
+	/// Filters the base level at the start of `chain` down to one texel, writing each level into `chain` right after
+	/// the one before it.
+	///
+	/// This is the copy-free form of [`Self::encode_mip_chain`] for formats that [`stores_filtering_texels`]: the
+	/// stored base level is the filtering surface, so each level filters straight from the previous one in place, with
+	/// no separate base or lower-level buffers. `chain` holds exactly [`encoded_mip_chain_size`] bytes, and only its
+	/// base level needs to be written.
+	pub async fn filter_mip_chain_in_place(
+		&self,
+		format: Formats,
+		gamma: Gamma,
+		width: u32,
+		height: u32,
+		chain: &mut [u8],
+	) -> Result<(), MipGenerationError> {
+		if !stores_filtering_texels(format) {
+			return Err(MipGenerationError::UnsupportedFormat(format));
+		}
+		let expected = encoded_mip_chain_size(format, Extent::rectangle(width, height))
+			.ok_or(MipGenerationError::UnsupportedFormat(format))?;
+		if chain.len() != expected {
+			return Err(MipGenerationError::BufferSizeMismatch {
+				expected,
+				got: chain.len(),
+			});
+		}
+
+		#[cfg(feature = "gpu-mips")]
+		if let Self::Gpu(generator) = self {
+			match generator.filter_mip_chain_in_place(format, gamma, width, height, chain).await {
+				Ok(()) => return Ok(()),
+				// Requests outside the GPU path's formats are expected and take the CPU path quietly.
+				Err(gpu::GPUMipError::UnsupportedRequest) => {}
+				Err(error) => log::warn!(
+					"GPU texture mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
+				),
+			}
+		}
+
+		let bytes_per_pixel = format.texel_bytes().ok_or(MipGenerationError::UnsupportedFormat(format))?;
+		let (base_level, lower_levels) = chain.split_at_mut(width as usize * height as usize * bytes_per_pixel);
+		filter_lower_levels(format, gamma, width, height, base_level, lower_levels)
+	}
+}
+
+/// Returns whether `format` stores the texels it is filtered in unchanged, so its mip chain can be filtered in the
+/// stored buffer itself.
+///
+/// Block-compressed and packed formats encode their filtering surface into something else; every other storable
+/// format is its own filtering surface.
+pub fn stores_filtering_texels(format: Formats) -> bool {
+	!matches!(
+		format,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB | Formats::RG8 | Formats::RG16
+	)
 }
 
 /// Returns the levels below a `width` by `height` base level as stored back to back in `data`.
@@ -213,7 +270,7 @@ pub(crate) fn mip_extents(width: u32, height: u32) -> impl Iterator<Item = (u32,
 /// Returns the format mip levels are filtered in before they are encoded as `output_format`.
 ///
 /// Block-compressed outputs, sRGB RGBA8, and packed RG8 filter as RGBA8 texels, so the GPU path can filter them.
-/// Packed RG16 filters as RGBA16. Every other format filters in place. Convert the base level to this format before
+/// Packed RG16 filters as RGBA16. Every other format, including the half-float ones, filters in place. Convert the base level to this format before
 /// passing it to [`MipGenerator::encode_mip_chain`].
 pub fn filtering_format(output_format: Formats) -> Formats {
 	match output_format {
@@ -256,7 +313,7 @@ fn generate_lower_levels(
 	if width == 0 || height == 0 {
 		return Err(MipGenerationError::ZeroDimensions);
 	}
-	let bytes_per_pixel = bytes_per_pixel(format).ok_or(MipGenerationError::UnsupportedFormat(format))?;
+	let bytes_per_pixel = format.texel_bytes().ok_or(MipGenerationError::UnsupportedFormat(format))?;
 	let expected_base_size = (width as usize)
 		.checked_mul(height as usize)
 		.and_then(|texels| texels.checked_mul(bytes_per_pixel))
@@ -269,8 +326,23 @@ fn generate_lower_levels(
 	}
 	// The lower levels together are smaller than the base level, so their sizes can't overflow.
 	let mut data = vec![0_u8; packed_lower_levels_size(width, height, bytes_per_pixel)];
+	filter_lower_levels(format, gamma, width, height, base_level, &mut data)?;
+
+	Ok((bytes_per_pixel, data))
+}
+
+/// Filters `base_level` into the levels below it, laid out in `lower_levels` as [`packed_lower_levels`] reads them.
+fn filter_lower_levels(
+	format: Formats,
+	gamma: Gamma,
+	width: u32,
+	height: u32,
+	base_level: &[u8],
+	lower_levels: &mut [u8],
+) -> Result<(), MipGenerationError> {
+	let bytes_per_pixel = format.texel_bytes().ok_or(MipGenerationError::UnsupportedFormat(format))?;
 	// Each level filters the one before it, which the previous iteration just wrote.
-	let (mut source, mut remaining) = (base_level, data.as_mut_slice());
+	let (mut source, mut remaining) = (base_level, lower_levels);
 	for ((source_width, source_height), (level_width, level_height)) in
 		mip_extents(width, height).zip(mip_extents(width, height).skip(1))
 	{
@@ -280,16 +352,7 @@ fn generate_lower_levels(
 		source = destination;
 		remaining = rest;
 	}
-
-	Ok((bytes_per_pixel, data))
-}
-
-/// Returns the texel size of a format the CPU downsampler supports.
-fn bytes_per_pixel(format: Formats) -> Option<usize> {
-	match format {
-		Formats::R16F | Formats::RGBA16F => None,
-		format => format.texel_bytes(),
-	}
+	Ok(())
 }
 
 /// Downsamples one level according to format and channel depth.
@@ -309,6 +372,8 @@ fn downsample_level(
 		Formats::RGBA8 | Formats::RGBA8SRGB => downsample_unorm::<4, 1>(source_width, source_height, source, destination),
 		Formats::RGB16 => downsample_unorm::<3, 2>(source_width, source_height, source, destination),
 		Formats::RGBA16 => downsample_unorm::<4, 2>(source_width, source_height, source, destination),
+		Formats::R16F => downsample_f16::<1>(source_width, source_height, source, destination),
+		Formats::RGBA16F => downsample_f16::<4>(source_width, source_height, source, destination),
 		// Packed RG formats filter as their RGBA filtering format and are truncated when each level is encoded.
 		_ => return Err(MipGenerationError::UnsupportedFormat(format)),
 	}
@@ -316,49 +381,107 @@ fn downsample_level(
 	Ok(())
 }
 
+// The kernels below box-filter each 2x2 footprint into one texel. A level halves each side and floors it, so a
+// footprint's second column and row exist unless that side is one texel, where the only column or row repeats.
+//
+// They're written as plain loops over `#[inline(always)]` helpers on purpose: closures and iterator adapters such as
+// `map(..).sum()` in these loops were left as out-of-line calls in optimized builds, which made filtering several
+// times slower.
+
+/// Returns the two source rows that destination row `y` filters.
+#[inline(always)]
+fn footprint_rows(source: &[u8], row_bytes: usize, source_height: usize, y: usize) -> (&[u8], &[u8]) {
+	let y0 = y * 2;
+	let y1 = (y0 + 1).min(source_height - 1);
+	(&source[y0 * row_bytes..][..row_bytes], &source[y1 * row_bytes..][..row_bytes])
+}
+
 /// Downsamples sRGB RGB channels in linear light while keeping alpha linear.
 fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], destination: &mut [u8]) {
-	let source_width = source_width as usize;
-	let source_height = source_height as usize;
+	let (source_width, source_height) = (source_width as usize, source_height as usize);
 	let destination_width = (source_width / 2).max(1);
-	let destination_height = (source_height / 2).max(1);
-	// Each 8-bit code always decodes to the same linear value, so decoding the 256 codes once per process gives
-	// bit-identical averages without 12 powf calls per destination texel, even for the smallest levels.
-	static TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
-		std::sync::LazyLock::new(|| std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0)));
-	let to_linear = &*TO_LINEAR;
+	// The column after a footprint's first one, or the same column in a one-texel-wide level.
+	let next_column = usize::from(source_width > 1) * 4;
+	let to_linear = &*SRGB8_TO_LINEAR;
+	let thresholds = &*LINEAR_TO_SRGB8_THRESHOLDS;
 
-	for y in 0..destination_height {
-		let y0 = (y * 2).min(source_height - 1);
-		let y1 = (y0 + 1).min(source_height - 1);
-		for x in 0..destination_width {
-			let x0 = (x * 2).min(source_width - 1);
-			let x1 = (x0 + 1).min(source_width - 1);
-			let sources = [
-				(y0 * source_width + x0) * 4,
-				(y0 * source_width + x1) * 4,
-				(y1 * source_width + x0) * 4,
-				(y1 * source_width + x1) * 4,
-			];
-			let destination_pixel = (y * destination_width + x) * 4;
+	for (y, destination_row) in destination.chunks_exact_mut(destination_width * 4).enumerate() {
+		let (row0, row1) = footprint_rows(source, source_width * 4, source_height, y);
+		for (x, texel) in destination_row.chunks_exact_mut(4).enumerate() {
+			let at = x * 8;
+			let (a, b) = (&row0[at..at + 4], &row0[at + next_column..at + next_column + 4]);
+			let (c, d) = (&row1[at..at + 4], &row1[at + next_column..at + next_column + 4]);
 			for channel in 0..3 {
-				let linear_average = sources
-					.iter()
-					.map(|source_pixel| to_linear[usize::from(source[*source_pixel + channel])])
-					.sum::<f32>() * 0.25;
-				destination[destination_pixel + channel] = linear_to_srgb_u8(linear_average);
+				// Summed left to right, as the reference filter does, so the averages are bit-identical to it.
+				let sum = to_linear[usize::from(a[channel])]
+					+ to_linear[usize::from(b[channel])]
+					+ to_linear[usize::from(c[channel])]
+					+ to_linear[usize::from(d[channel])];
+				texel[channel] = encode_srgb8(sum * 0.25, thresholds);
 			}
-			let alpha_sum = sources
-				.iter()
-				.map(|source_pixel| u16::from(source[*source_pixel + 3]))
-				.sum::<u16>();
-			destination[destination_pixel + 3] = ((alpha_sum + 2) / 4) as u8;
+			let alpha_sum = u16::from(a[3]) + u16::from(b[3]) + u16::from(c[3]) + u16::from(d[3]);
+			texel[3] = ((alpha_sum + 2) / 4) as u8;
 		}
 	}
 }
 
+/// Each 8-bit sRGB code always decodes to the same linear value, so the 256 codes are decoded once per process.
+static SRGB8_TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
+	std::sync::LazyLock::new(|| std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0)));
+
+/// Holds, at index `code - 1`, the smallest linear value that [`linear_to_srgb_u8`] encodes to `code` or above, and
+/// infinity in the last slot, so [`encode_srgb8`] can encode by search instead of evaluating `powf`.
+///
+/// Each threshold is found by bisecting the bit patterns of non-negative `f32` values, which order like the values,
+/// against the reference encoder itself, so the search returns exactly what the reference would.
+static LINEAR_TO_SRGB8_THRESHOLDS: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+	std::array::from_fn(|index| {
+		let code = index + 1;
+		if code > 255 {
+			return f32::INFINITY;
+		}
+		let (mut low, mut high) = (0_u32, 1.0_f32.to_bits());
+		while low < high {
+			let middle = low + (high - low) / 2;
+			if usize::from(linear_to_srgb_u8(f32::from_bits(middle))) >= code {
+				high = middle;
+			} else {
+				low = middle + 1;
+			}
+		}
+		f32::from_bits(low)
+	})
+});
+
+/// Encodes a linear value in 0 to 1 as an 8-bit sRGB code, exactly as [`linear_to_srgb_u8`] does.
+///
+/// The code is the number of thresholds at or below `value`, found with eight branch-free halving steps.
+#[inline(always)]
+fn encode_srgb8(value: f32, thresholds: &[f32; 256]) -> u8 {
+	let mut code = 0;
+	for step in [128, 64, 32, 16, 8, 4, 2, 1] {
+		code += step * usize::from(thresholds[code + step - 1] <= value);
+	}
+	code as u8
+}
+
+/// Encodes a linear value as an 8-bit sRGB code. It's the reference [`encode_srgb8`] matches.
 fn linear_to_srgb_u8(value: f32) -> u8 {
 	(linear_to_srgb(value).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Reads one texel of `CHANNELS` little-endian samples, each `BYTES` wide, into SIMD lanes, leaving the rest zero.
+#[inline(always)]
+fn load_unorm<const CHANNELS: usize, const BYTES: usize>(texel: &[u8]) -> Simd<u32, 4> {
+	let mut lanes = [0_u32; 4];
+	for channel in 0..CHANNELS {
+		lanes[channel] = if BYTES == 1 {
+			u32::from(texel[channel])
+		} else {
+			u32::from(u16::from_le_bytes([texel[channel * 2], texel[channel * 2 + 1]]))
+		};
+	}
+	Simd::from_array(lanes)
 }
 
 /// Downsamples a level of `CHANNELS` unsigned-normalized samples, each `BYTES` little-endian bytes wide, with SIMD
@@ -371,37 +494,59 @@ fn downsample_unorm<const CHANNELS: usize, const BYTES: usize>(
 ) {
 	debug_assert!(CHANNELS > 0 && CHANNELS <= 4 && BYTES <= 2);
 
-	let source_width = source_width as usize;
-	let source_height = source_height as usize;
+	let (source_width, source_height) = (source_width as usize, source_height as usize);
 	let destination_width = (source_width / 2).max(1);
-	let destination_height = (source_height / 2).max(1);
 	let texel_bytes = CHANNELS * BYTES;
-	// Reads one texel's samples into SIMD lanes, leaving the unused lanes zero.
-	let load = |texel: usize| {
-		Simd::<u32, 4>::from_array(std::array::from_fn(|channel| {
-			let at = texel * texel_bytes + channel * BYTES;
-			match (channel < CHANNELS, BYTES) {
-				(false, _) => 0,
-				(true, 1) => u32::from(source[at]),
-				(true, _) => u32::from(u16::from_le_bytes([source[at], source[at + 1]])),
-			}
-		}))
-	};
+	// The column after a footprint's first one, or the same column in a one-texel-wide level.
+	let next_column = usize::from(source_width > 1) * texel_bytes;
 
-	for y in 0..destination_height {
-		let y0 = (y * 2).min(source_height - 1);
-		let y1 = (y0 + 1).min(source_height - 1);
-
-		for x in 0..destination_width {
-			let x0 = (x * 2).min(source_width - 1);
-			let x1 = (x0 + 1).min(source_width - 1);
-			let (a, b) = (load(y0 * source_width + x0), load(y0 * source_width + x1));
-			let (c, d) = (load(y1 * source_width + x0), load(y1 * source_width + x1));
-			let average = (a + b + c + d + Simd::splat(2)) / Simd::splat(4);
-			let destination_pixel = (y * destination_width + x) * texel_bytes;
+	for (y, destination_row) in destination.chunks_exact_mut(destination_width * texel_bytes).enumerate() {
+		let (row0, row1) = footprint_rows(source, source_width * texel_bytes, source_height, y);
+		for (x, texel) in destination_row.chunks_exact_mut(texel_bytes).enumerate() {
+			let at = x * 2 * texel_bytes;
+			let a = load_unorm::<CHANNELS, BYTES>(&row0[at..]);
+			let b = load_unorm::<CHANNELS, BYTES>(&row0[at + next_column..]);
+			let c = load_unorm::<CHANNELS, BYTES>(&row1[at..]);
+			let d = load_unorm::<CHANNELS, BYTES>(&row1[at + next_column..]);
+			let average = ((a + b + c + d + Simd::splat(2)) >> Simd::splat(2)).to_array();
 			// Every average fits in `BYTES` bytes, so its low little-endian bytes are the stored sample.
-			for (channel, value) in average.to_array()[..CHANNELS].iter().enumerate() {
-				destination[destination_pixel + channel * BYTES..][..BYTES].copy_from_slice(&value.to_le_bytes()[..BYTES]);
+			for channel in 0..CHANNELS {
+				texel[channel * BYTES..][..BYTES].copy_from_slice(&average[channel].to_le_bytes()[..BYTES]);
+			}
+		}
+	}
+}
+
+/// Reads one texel of `CHANNELS` little-endian half-float samples into `f32` lanes, leaving the rest zero.
+#[inline(always)]
+fn load_f16<const CHANNELS: usize>(texel: &[u8]) -> Simd<f32, 4> {
+	let mut lanes = [0.0_f32; 4];
+	for channel in 0..CHANNELS {
+		lanes[channel] = f16::from_le_bytes([texel[channel * 2], texel[channel * 2 + 1]]).to_f32();
+	}
+	Simd::from_array(lanes)
+}
+
+/// Downsamples a level of `CHANNELS` little-endian half-float samples, averaging their linear values in `f32`.
+///
+/// Half-float images hold linear values, often outside 0 to 1, so they average without a transfer function or clamp.
+fn downsample_f16<const CHANNELS: usize>(source_width: u32, source_height: u32, source: &[u8], destination: &mut [u8]) {
+	let (source_width, source_height) = (source_width as usize, source_height as usize);
+	let destination_width = (source_width / 2).max(1);
+	let texel_bytes = CHANNELS * 2;
+	let next_column = usize::from(source_width > 1) * texel_bytes;
+
+	for (y, destination_row) in destination.chunks_exact_mut(destination_width * texel_bytes).enumerate() {
+		let (row0, row1) = footprint_rows(source, source_width * texel_bytes, source_height, y);
+		for (x, texel) in destination_row.chunks_exact_mut(texel_bytes).enumerate() {
+			let at = x * 2 * texel_bytes;
+			let a = load_f16::<CHANNELS>(&row0[at..]);
+			let b = load_f16::<CHANNELS>(&row0[at + next_column..]);
+			let c = load_f16::<CHANNELS>(&row1[at..]);
+			let d = load_f16::<CHANNELS>(&row1[at + next_column..]);
+			let average = ((a + b + c + d) * Simd::splat(0.25)).to_array();
+			for channel in 0..CHANNELS {
+				texel[channel * 2..][..2].copy_from_slice(&f16::from_f32(average[channel]).to_le_bytes());
 			}
 		}
 	}
@@ -409,8 +554,29 @@ fn downsample_unorm<const CHANNELS: usize, const BYTES: usize>(
 
 #[cfg(test)]
 mod tests {
-	use super::{MipGenerationError, generate_lower_levels, mip_level_count, packed_lower_levels};
+	use super::{
+		LINEAR_TO_SRGB8_THRESHOLDS, MipGenerationError, encode_srgb8, generate_lower_levels, linear_to_srgb_u8,
+		mip_level_count, packed_lower_levels,
+	};
 	use crate::types::{Formats, Gamma};
+
+	#[test]
+	fn srgb8_search_encodes_exactly_like_the_reference() {
+		let thresholds = &*LINEAR_TO_SRGB8_THRESHOLDS;
+		// Every code boundary and the value just below it, where an inexact table would disagree first.
+		let boundaries = thresholds[..255]
+			.iter()
+			.flat_map(|&threshold| [threshold, f32::from_bits(threshold.to_bits().saturating_sub(1))]);
+		let sweep = (0..=1 << 16).map(|step| step as f32 / (1 << 16) as f32);
+
+		for value in boundaries.chain(sweep) {
+			assert_eq!(
+				encode_srgb8(value, thresholds),
+				linear_to_srgb_u8(value),
+				"linear value {value:e}"
+			);
+		}
+	}
 
 	#[test]
 	fn generates_rgba8_chain_with_odd_extent() {

@@ -45,6 +45,21 @@
       },
       "additionalProperties": false
     },
+    "images": {
+      "type": "object",
+      "description": "Which optional processing steps every image the model contains gets. A key left out keeps the default for each image's semantic.",
+      "properties": {
+        "mips": {
+          "type": "boolean",
+          "description": "Whether the image stores a full mip chain. Defaults to true. Set false for images drawn at their authored size, such as UI art."
+        },
+        "compression": {
+          "type": "boolean",
+          "description": "Whether the image is block-compressed: BC5 for normal maps, BC7 otherwise. Defaults to true for albedo and normal maps and false for every other semantic. Packed metallic-roughness maps and half-float images are never compressed."
+        }
+      },
+      "additionalProperties": false
+    },
     "asset": {
       "type": "object",
       "description": "FBX material-name overrides. Use default for an unassigned material slot.",

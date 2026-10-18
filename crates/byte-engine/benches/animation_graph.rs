@@ -52,3 +52,13 @@ fn characters_root_motion(bencher: Bencher, character_count: usize) {
 fn characters_transitioning(bencher: Bencher, character_count: usize) {
 	characters(bencher, AnimationGraphBenchmark::InertializedTransition, character_count);
 }
+
+#[divan::bench(args = [1, 64, 1024])]
+fn characters_switching(bencher: Bencher, character_count: usize) {
+	characters(bencher, AnimationGraphBenchmark::StateSwitching, character_count);
+}
+
+#[divan::bench(args = [1, 64, 1024])]
+fn characters_locomotion(bencher: Bencher, character_count: usize) {
+	characters(bencher, AnimationGraphBenchmark::Locomotion, character_count);
+}

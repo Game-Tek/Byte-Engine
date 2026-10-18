@@ -221,15 +221,17 @@ request, through the routes of its graph.
 
 The system steps once per frame, with the frame's delta. A step adopts new
 animators and removes deleted ones; applies the latest requests and look
-targets; admits the clips that finished loading; decides every animator's
-routes, phases, and hand-overs for the delta and pins the clips they sample;
-samples, blends, and inertializes every pose, extracts its root motion, applies
-its look chain, and builds its global pose; posts the updates; and finally
-unpins the clips.
+targets; admits the clips that finished loading; then evaluates every animator:
+it takes its routes, phases, and hand-overs for the delta, samples, blends, and
+inertializes its pose, extracts its root motion, applies its look chain, builds
+its global pose, and posts its updates. Evaluation only reads the clip pool, so
+an animator that needs a clip the pool doesn't hold lists it, and once every
+animator is evaluated, the pool requests the listed clips.
 
 | Rule | Behavior |
 | --- | --- |
-| Lanes | A step spreads its animators over the alley's lanes. |
+| Lanes | A step spreads its animators over the alley's lanes in balanced shares: one lane for each 16 animators, and never more lanes than the processor's fastest cores have hardware threads. Fewer than 32 animators stay on the calling thread. |
+| Missing clips | The pool requests a clip that an animator needs but the pool lacks after the step, so the next step is the earliest that can play it. |
 | Independence | An animator's pose, root motion, and state don't depend on the lane count or on the other animators, whatever graphs they play. |
 | Completion | Every update of a step is posted before the step returns. |
 | Order | Animators post in no particular order. |
@@ -240,7 +242,7 @@ Every step posts two updates for every animator whose initial clip is resident.
 
 | Update | Route | Carries |
 | --- | --- | --- |
-| Pose update | The world's pose route, in headed builds only. | The global matrix of every canonical skeleton node, in node order, after the look chain. |
+| Pose update | The world's pose route, in headed builds only. | The global transform of every canonical skeleton node, in node order, after the look chain: an affine matrix of three rows and four columns, scale applied first, then rotation, then translation. |
 | Root motion update | The world's root motion route. | The step's root motion delta, in the entity's object space, and the state playing after the step. An animator without root motion settings carries the identity delta. |
 
 The system never moves an entity: applying root motion to a transform is up to
@@ -309,10 +311,11 @@ application chooses, and loads clips on a worker.
 | `WaitingForCapacity` | The load queue holds 64 requests, or no room could be made. Request again later. |
 | `Failed` | The load failed or the clip is larger than the whole budget. |
 
-When a clip doesn't fit, the pool evicts the least recently used clips that the
-current step hasn't pinned. A clip any animator samples is pinned for the rest
-of the step and never evicted during it. Up to 64 loaded clips can wait for
-room; further ones are dropped. The pool reports `LoadFailed`, `Oversized`, and
+The pool admits loaded clips and evicts clips only before and after animators
+are evaluated, never while they sample. When a clip doesn't fit, the pool
+evicts the clips whose last sampling step is the oldest first; clips that one
+step sampled are equally recent. Up to 64
+loaded clips can wait for room; further ones are dropped. The pool reports `LoadFailed`, `Oversized`, and
 `Evicted` events, keeping the latest 64.
 
 ## Flipbooks
@@ -333,6 +336,7 @@ the [asset formats reference](/docs/reference/assets#flipbooks).
 | Remembered blend positions | One linear and one planar per animator |
 | Requests and look targets applied per step | The last of each per animator |
 | Animators | No fixed limit |
+| Animators for each lane a step adds | 16 |
 | Blend space samples | At least 1 for 1D, at least 3 for 2D |
 | Skeleton nodes, clips, states | No fixed limit; node indices are 32-bit |
 | Engine time resolution | 28,224,000 ticks per second |

@@ -55,13 +55,15 @@ pub fn blend_local_poses(
 		.iter()
 		.position(|weight| *weight > 0.0)
 		.expect("a positive total weight guarantees one reference rotation");
+	// Each pose's share is the same for every node, so it's divided out once. A blend weighs at most a triangle of
+	// clips, so the shares stay on the stack.
+	let normalized_weights: smallvec::SmallVec<[f32; 4]> = weights.iter().map(|weight| weight / weight_sum).collect();
 	for node in 0..output.len() {
 		let reference_rotation = poses[reference][node].rotation;
 		let mut translation = Vector::zero();
 		let mut rotation = Quaternion::new(0.0, 0.0, 0.0, 0.0);
 		let mut scale = Scale::new(0.0, 0.0, 0.0);
-		for (pose, weight) in poses.iter().zip(weights) {
-			let normalized_weight = *weight / weight_sum;
+		for (pose, &normalized_weight) in poses.iter().zip(&normalized_weights) {
 			let transform = pose[node];
 			translation += transform.translation * normalized_weight;
 			scale = scale + transform.scale * normalized_weight;
@@ -91,8 +93,8 @@ pub struct BlendSpace1D {
 impl BlendSpace1D {
 	/// Creates a blend space with finite, strictly ascending sample positions.
 	///
-	/// Next, call [`Self::write_weights`] during evaluation and pass the weights
-	/// to [`blend_local_poses`].
+	/// Next, call [`Self::weights`] during evaluation and blend the weighted
+	/// samples' poses with [`blend_local_poses`].
 	pub fn new(positions: impl Into<Vec<f32>>) -> Result<Self, BlendSpaceError> {
 		let positions = positions.into();
 		if positions.is_empty() {
@@ -107,7 +109,7 @@ impl BlendSpace1D {
 		Ok(Self { positions })
 	}
 
-	/// Returns the number of samples and weights required by [`Self::write_weights`].
+	/// Returns the number of samples.
 	pub fn len(&self) -> usize {
 		self.positions.len()
 	}
@@ -117,30 +119,23 @@ impl BlendSpace1D {
 		self.positions.is_empty()
 	}
 
-	/// Writes normalized weights for a scalar parameter, clamping outside the sample range.
-	pub fn write_weights(&self, value: f32, output: &mut [f32]) -> Result<(), BlendSpaceError> {
-		if output.len() != self.positions.len() {
-			return Err(BlendSpaceError::OutputLength {
-				expected: self.positions.len(),
-				actual: output.len(),
-			});
-		}
+	/// Returns the normalized weights for a scalar parameter, clamping outside the sample range.
+	///
+	/// At most the two samples around the parameter weigh above zero.
+	pub fn weights(&self, value: f32) -> Result<BlendWeights, BlendSpaceError> {
 		if !value.is_finite() {
 			return Err(BlendSpaceError::NonFiniteParameter);
 		}
-		output.fill(0.0);
 		let upper = self.positions.partition_point(|position| *position <= value);
-		match upper {
-			0 => output[0] = 1.0,
-			upper if upper == self.positions.len() => output[upper - 1] = 1.0,
+		Ok(match upper {
+			0 => BlendWeights::single(0),
+			upper if upper == self.positions.len() => BlendWeights::single(upper - 1),
 			upper => {
 				let lower = upper - 1;
 				let factor = (value - self.positions[lower]) / (self.positions[upper] - self.positions[lower]);
-				output[lower] = 1.0 - factor;
-				output[upper] = factor;
+				BlendWeights::from_samples([(lower, 1.0 - factor), (upper, factor)])
 			}
-		}
-		Ok(())
+		})
 	}
 }
 
@@ -156,7 +151,7 @@ impl BlendSpace2D {
 	/// Creates a triangulated blend space.
 	///
 	/// Each triangle lists three sample indices in order around it. Triangles may
-	/// share edges but must not be degenerate. Next, call [`Self::write_weights`]
+	/// share edges but must not be degenerate. Next, call [`Self::weights`]
 	/// to find the containing triangle or the closest point on the triangulated
 	/// boundary.
 	pub fn new(positions: impl Into<Vec<[f32; 2]>>, triangles: impl Into<Vec<[usize; 3]>>) -> Result<Self, BlendSpaceError> {
@@ -187,7 +182,7 @@ impl BlendSpace2D {
 		Ok(Self { positions, triangles })
 	}
 
-	/// Returns the number of samples and weights required by [`Self::write_weights`].
+	/// Returns the number of samples.
 	pub fn len(&self) -> usize {
 		self.positions.len()
 	}
@@ -197,21 +192,14 @@ impl BlendSpace2D {
 		self.positions.is_empty()
 	}
 
-	/// Writes normalized weights for a 2D parameter without allocating.
+	/// Returns the normalized weights for a 2D parameter without allocating.
 	///
-	/// Values outside the triangulated region clamp to the closest point on any
-	/// triangle, which provides stable behavior at directional blend-space edges.
-	pub fn write_weights(&self, value: [f32; 2], output: &mut [f32]) -> Result<(), BlendSpaceError> {
-		if output.len() != self.positions.len() {
-			return Err(BlendSpaceError::OutputLength {
-				expected: self.positions.len(),
-				actual: output.len(),
-			});
-		}
+	/// At most the three samples of one triangle weigh above zero. Values outside the triangulated region clamp to
+	/// the closest point on any triangle, which provides stable behavior at directional blend-space edges.
+	pub fn weights(&self, value: [f32; 2]) -> Result<BlendWeights, BlendSpaceError> {
 		if value.iter().any(|component| !component.is_finite()) {
 			return Err(BlendSpaceError::NonFiniteParameter);
 		}
-		output.fill(0.0);
 
 		let mut closest = None;
 		for indices in &self.triangles {
@@ -219,8 +207,7 @@ impl BlendSpace2D {
 			let weights = barycentric_coordinates(points[0], points[1], points[2], value)
 				.expect("blend-space construction rejects degenerate triangles");
 			if weights.iter().all(|weight| *weight >= -1.0e-5) {
-				write_triangle_weights(*indices, weights, output);
-				return Ok(());
+				return Ok(triangle_weights(*indices, weights));
 			}
 
 			let (clamped, distance_squared) = closest_triangle_weights(points, value);
@@ -230,8 +217,49 @@ impl BlendSpace2D {
 		}
 
 		let ((indices, weights), _) = closest.expect("blend-space construction requires at least one triangle");
-		write_triangle_weights(indices, weights, output);
-		Ok(())
+		Ok(triangle_weights(indices, weights))
+	}
+}
+
+/// The `BlendWeights` struct holds the samples a blend space weighs above zero for one parameter, at most three, in
+/// ascending sample order, so a blend samples only those and mixes them in a stable order.
+///
+/// Get it from [`BlendSpace1D::weights`] or [`BlendSpace2D::weights`], then sample each weighted clip and mix the
+/// poses with [`blend_local_poses`] in the order [`Self::iter`] gives.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlendWeights {
+	samples: [(u32, f32); Self::MAX],
+	len: u8,
+}
+
+impl BlendWeights {
+	/// The most samples a blend weighs at once: the corners of one triangle of a planar blend space.
+	pub const MAX: usize = 3;
+
+	/// Returns the weights of a blend that plays one sample alone.
+	pub fn single(sample: usize) -> Self {
+		Self::from_samples([(sample, 1.0)])
+	}
+
+	/// Collects the samples with a weight above zero, in ascending sample order. Samples must not repeat.
+	fn from_samples<const N: usize>(samples: [(usize, f32); N]) -> Self {
+		debug_assert!(N <= Self::MAX, "a blend weighs at most a triangle of samples");
+		let mut weights = Self::default();
+		for (sample, weight) in samples {
+			if weight > 0.0 {
+				weights.samples[usize::from(weights.len)] = (sample as u32, weight);
+				weights.len += 1;
+			}
+		}
+		weights.samples[..usize::from(weights.len)].sort_unstable_by_key(|(sample, _)| *sample);
+		weights
+	}
+
+	/// Returns each weighted sample and its weight, in ascending sample order.
+	pub fn iter(&self) -> impl ExactSizeIterator<Item = (usize, f32)> + '_ {
+		self.samples[..usize::from(self.len)]
+			.iter()
+			.map(|&(sample, weight)| (sample as usize, weight))
 	}
 }
 
@@ -307,13 +335,6 @@ pub enum BlendSpaceError {
 		/// Index of the degenerate triangle.
 		triangle: usize,
 	},
-	/// The output slice cannot hold one weight per sample.
-	OutputLength {
-		/// Required output length.
-		expected: usize,
-		/// Supplied output length.
-		actual: usize,
-	},
 	/// The evaluation parameter contains a non-finite component.
 	NonFiniteParameter,
 }
@@ -344,10 +365,6 @@ impl std::fmt::Display for BlendSpaceError {
 			Self::DegenerateTriangle { triangle } => write!(
 				formatter,
 				"Blend triangle has no area. The most likely cause is repeated or collinear points in triangle {triangle}."
-			),
-			Self::OutputLength { expected, actual } => write!(
-				formatter,
-				"Blend-weight output has the wrong length. The most likely cause is reserving {actual} weights for {expected} samples."
 			),
 			Self::NonFiniteParameter => write!(
 				formatter,
@@ -407,12 +424,11 @@ fn closest_triangle_weights(points: [[f32; 2]; 3], value: [f32; 2]) -> ([f32; 3]
 	(closest_weights, closest_distance)
 }
 
-fn write_triangle_weights(indices: [usize; 3], weights: [f32; 3], output: &mut [f32]) {
+/// Clamps a triangle's barycentric weights to `[0, 1]` and renormalizes them.
+fn triangle_weights(indices: [usize; 3], weights: [f32; 3]) -> BlendWeights {
 	let clamped = weights.map(|weight| weight.clamp(0.0, 1.0));
 	let sum = clamped.iter().sum::<f32>();
-	for (index, weight) in indices.into_iter().zip(clamped) {
-		output[index] = weight / sum;
-	}
+	BlendWeights::from_samples(std::array::from_fn::<_, 3, _>(|corner| (indices[corner], clamped[corner] / sum)))
 }
 
 fn subtract2(left: [f32; 2], right: [f32; 2]) -> [f32; 2] {
@@ -471,35 +487,34 @@ mod tests {
 	#[test]
 	fn one_dimensional_weights_interpolate_and_clamp() {
 		let space = BlendSpace1D::new(vec![0.0, 2.0, 6.0]).expect("expected test value");
-		let mut weights = [0.0; 3];
-		space.write_weights(4.0, &mut weights).expect("expected test value");
+		let weights = |value| space.weights(value).expect("expected test value").iter().collect::<Vec<_>>();
 
-		assert_eq!(weights, [0.0, 0.5, 0.5]);
-		space.write_weights(-1.0, &mut weights).expect("expected test value");
-
-		assert_eq!(weights, [1.0, 0.0, 0.0]);
-		space.write_weights(8.0, &mut weights).expect("expected test value");
-
-		assert_eq!(weights, [0.0, 0.0, 1.0]);
+		assert_eq!(weights(4.0), [(1, 0.5), (2, 0.5)]);
+		assert_eq!(weights(-1.0), [(0, 1.0)]);
+		assert_eq!(weights(8.0), [(2, 1.0)]);
 	}
 
 	#[test]
 	fn two_dimensional_weights_use_triangle_barycentrics() {
 		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![[0, 1, 2]]).expect("expected test value");
-		let mut weights = [0.0; 3];
-		space.write_weights([0.25, 0.25], &mut weights).expect("expected test value");
+		let weights = space.weights([0.25, 0.25]).expect("expected test value");
 
-		assert_eq!(weights, [0.5, 0.25, 0.25]);
+		assert_eq!(weights.iter().collect::<Vec<_>>(), [(0, 0.5), (1, 0.25), (2, 0.25)]);
 	}
 
 	#[test]
 	fn two_dimensional_weights_clamp_outside_to_closest_edge() {
 		let space = BlendSpace2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![[0, 1, 2]]).expect("expected test value");
-		let mut weights = [0.0; 3];
-		space.write_weights([0.75, 0.75], &mut weights).expect("expected test value");
+		let weights = space.weights([0.75, 0.75]).expect("expected test value");
+		let weight = |sample| {
+			weights
+				.iter()
+				.find(|(weighted, _)| *weighted == sample)
+				.map_or(0.0, |(_, weight)| weight)
+		};
 
-		assert!((weights[0] - 0.0).abs() < 1.0e-6);
-		assert!((weights[1] - 0.5).abs() < 1.0e-6);
-		assert!((weights[2] - 0.5).abs() < 1.0e-6);
+		assert!((weight(0) - 0.0).abs() < 1.0e-6);
+		assert!((weight(1) - 0.5).abs() < 1.0e-6);
+		assert!((weight(2) - 0.5).abs() < 1.0e-6);
 	}
 }

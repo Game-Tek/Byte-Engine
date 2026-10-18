@@ -219,6 +219,13 @@ impl Default for Orientation {
 }
 
 fn normalize(value: Quatf) -> Result<Quatf, OrientationError> {
+	// Rotations blend and compose every frame, so a length well inside the `f32` range takes one reciprocal square
+	// root. The squares can't overflow or lose their precision there; outside it, and for zero or non-finite
+	// components, the scaled path below guards and reports.
+	let length_squared = maths_rs::dot(value, value);
+	if (1.0e-20..=1.0e20).contains(&length_squared) {
+		return Ok(value * (1.0 / length_squared.sqrt()));
+	}
 	let components = [value.x, value.y, value.z, value.w];
 	if !components.iter().all(|component| component.is_finite()) {
 		return Err(OrientationError::NonFiniteQuaternion);

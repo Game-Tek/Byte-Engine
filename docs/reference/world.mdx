@@ -95,7 +95,7 @@ A transform is a world location, scale, and orientation.
 | Interpolation | Position and scale interpolate linearly, orientation along the shorter arc. |
 | Update | A transformation update is a creation message carrying a transform under the entity's handle, on the world's transform route. Creation and replacement travel on that one route. |
 | Hierarchy | None. A transform is always a world transform. |
-| Poses | A pose update carries an entity's global matrices on the world's pose route, in headed builds only. |
+| Poses | A pose update carries an entity's global affine transforms, one per skeleton node, on the world's pose route, in headed builds only. |
 
 ## Names
 

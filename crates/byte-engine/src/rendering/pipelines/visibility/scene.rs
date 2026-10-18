@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use math::Matrix;
 use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
@@ -189,13 +188,10 @@ impl VisibilityScene {
 	/// Retains one global transform per skeleton node for the renderable identified by `handle`.
 	///
 	/// A pose remains active until it is replaced or the renderable is removed.
-	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[Matrix]) {
+	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[math::AffineMatrix]) {
 		let pose = self.skinning_poses.entry(handle).or_default();
 		pose.clear();
-		pose.extend(global_matrices.iter().map(|matrix| {
-			assert_affine_matrix(matrix);
-			math::AffineMatrix::from_matrix(*matrix)
-		}));
+		pose.extend_from_slice(global_matrices);
 	}
 
 	/// Removes all scene state owned by the renderable identified by `handle`.
@@ -339,18 +335,6 @@ fn shader_vec3(value: maths_rs::Vec3f) -> ghi::pod::Vec3f {
 fn light_reach(color: maths_rs::Vec3f) -> f32 {
 	let reach = (color.x.max(color.y).max(color.z) / LIGHT_REACH_THRESHOLD_LUX).sqrt();
 	if reach.is_finite() { reach } else { 0.0 }
-}
-
-/// Rejects projective pose data before the compact representation would discard it.
-fn assert_affine_matrix(matrix: &Matrix) {
-	const AFFINE_EPSILON: f32 = 0.00001;
-	assert!(
-		matrix[(3, 0)].abs() <= AFFINE_EPSILON
-			&& matrix[(3, 1)].abs() <= AFFINE_EPSILON
-			&& matrix[(3, 2)].abs() <= AFFINE_EPSILON
-			&& (matrix[(3, 3)] - 1.0).abs() <= AFFINE_EPSILON,
-		"Skinned pose matrix is projective. The most likely cause is sending a view or projection matrix instead of an affine skeleton pose."
-	);
 }
 
 /// Applies one update to every live scene slot registered for one handle.

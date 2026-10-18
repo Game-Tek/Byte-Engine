@@ -3,7 +3,7 @@
 use std::ops::Deref;
 
 use super::*;
-use crate::animation::blend::{BlendSpace1D, BlendSpace2D, BlendSpaceError};
+use crate::animation::blend::{BlendSpace1D, BlendSpace2D, BlendSpaceError, BlendWeights};
 
 /// The `StateMotion` enum holds what one state plays, so the player can treat clips and blends alike.
 ///
@@ -34,19 +34,15 @@ impl StateMotion {
 		self.clips()[0].playback()
 	}
 
-	/// Writes each clip's weight for the blend position `value`.
+	/// Returns each clip's weight for the blend position `value`.
 	///
-	/// A value of the wrong kind or a non-finite one leaves `weights` unchanged, so the state keeps its last mix.
-	pub(super) fn write_weights(&self, value: BlendValue, weights: &mut [f32]) {
+	/// A value of the wrong kind or a non-finite one returns `current`, so the state keeps its last mix.
+	pub(super) fn weights(&self, value: BlendValue, current: BlendWeights) -> BlendWeights {
 		match (self, value) {
-			(Self::Clip(_), _) => weights[0] = 1.0,
-			(Self::Linear { space, .. }, BlendValue::Linear(value)) => {
-				let _ = space.write_weights(value, weights);
-			}
-			(Self::Planar { space, .. }, BlendValue::Planar(value)) => {
-				let _ = space.write_weights(value, weights);
-			}
-			_ => {}
+			(Self::Clip(_), _) => BlendWeights::single(0),
+			(Self::Linear { space, .. }, BlendValue::Linear(value)) => space.weights(value).unwrap_or(current),
+			(Self::Planar { space, .. }, BlendValue::Planar(value)) => space.weights(value).unwrap_or(current),
+			_ => current,
 		}
 	}
 }

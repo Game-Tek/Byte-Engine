@@ -7,26 +7,18 @@ struct CachedAnimation {
 	skeleton: Arc<Skeleton>,
 	/// The clip's word range in [`AnimationPool::storage`].
 	region: std::ops::Range<usize>,
-	last_used: std::cell::Cell<u64>,
-	lease_count: std::cell::Cell<usize>,
+	/// The last [`AnimationPool::update`] whose step sampled the clip, which eviction picks the oldest of.
+	///
+	/// Players on several lanes stamp it while they read the pool, so it is atomic.
+	last_used: AtomicU64,
 }
 
-/// Pins one resident arena region for the duration of an animation evaluation.
-struct ResidentAnimationLease<'a> {
-	entry: &'a CachedAnimation,
-	packed: PackedAnimation<'a>,
-}
-
-impl Drop for ResidentAnimationLease<'_> {
-	fn drop(&mut self) {
-		self.entry.lease_count.set(
-			self.entry
-				.lease_count
-				.get()
-				.checked_sub(1)
-				.expect("Resident animation lease count must match evaluation borrows."),
-		);
-	}
+/// The `ResidentAnimation` struct lends one resident clip's skeleton and packed words to a player that samples it.
+///
+/// It borrows the pool, so no admission or eviction, which take the pool mutably, can move the words while it lives.
+pub(crate) struct ResidentAnimation<'a> {
+	pub(crate) skeleton: &'a Arc<Skeleton>,
+	pub(crate) packed: PackedAnimation<'a>,
 }
 
 /// Tracks one clip through asynchronous loading, arena admission, residency, or failure.
@@ -47,7 +39,7 @@ type AnimationLoadCompletion = (String, Result<PackedAnimationData, resource_man
 /// The `AnimationPoolRequest` enum reports whether a clip can be sampled immediately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnimationPoolRequest {
-	/// Acquire and sample the requested clip.
+	/// The clip is resident, so players sample it.
 	Ready,
 	/// Wait while the requested clip loads asynchronously.
 	Loading,
@@ -85,9 +77,9 @@ pub enum AnimationPoolEvent {
 
 /// The `AnimationPool` struct owns a preallocated word arena and byte-bounded LRU clip cache.
 ///
-/// Graph clips keep their resource IDs as stable keys across eviction. During
-/// evaluation, the player pins resident arena regions so admission cannot reuse
-/// their words until sampling completes.
+/// Graph clips keep their resource IDs as stable keys across eviction. Players only read the pool while they
+/// evaluate, so any number of them can sample it at once, on any lanes; loads are admitted and clips evicted only
+/// by the calls that take it mutably, [`Self::update`] and [`Self::request`], between evaluations.
 pub struct AnimationPool {
 	commands: kanal::Sender<String>,
 	completions: kanal::Receiver<AnimationLoadCompletion>,
@@ -98,7 +90,8 @@ pub struct AnimationPool {
 	events: VecDeque<AnimationPoolEvent>,
 	byte_budget: usize,
 	resident_bytes: usize,
-	next_use: std::cell::Cell<u64>,
+	/// Counts [`Self::update`] calls, the steps whose use stamps each clip's least-recently-used order.
+	step: u64,
 	commands_closed: bool,
 	completions_closed: bool,
 }
@@ -147,7 +140,7 @@ impl AnimationPool {
 			events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 			byte_budget,
 			resident_bytes: 0,
-			next_use: std::cell::Cell::new(0),
+			step: 0,
 			commands_closed: false,
 			completions_closed: false,
 		};
@@ -160,6 +153,7 @@ impl AnimationPool {
 	/// share this pool. This keeps asynchronous queue polling independent from
 	/// the number of animated skeletons.
 	pub fn update(&mut self) {
+		self.step += 1;
 		self.submit_requests();
 		while !self.completions_closed {
 			match self.completions.try_recv_realtime() {
@@ -196,17 +190,26 @@ impl AnimationPool {
 		}
 	}
 
-	/// Pins a resident clip until the returned evaluation lease is dropped.
-	fn acquire(&self, resource_id: &str) -> Option<ResidentAnimationLease<'_>> {
+	/// Returns a resident clip to sample, and stamps it as used this step.
+	///
+	/// It only reads the pool, so players on several lanes call it at once.
+	pub(crate) fn resident(&self, resource_id: &str) -> Option<ResidentAnimation<'_>> {
 		let AnimationPoolEntry::Resident(entry) = self.entries.get(resource_id)? else {
 			return None;
 		};
-		entry.last_used.set(self.next_use());
-		entry.lease_count.set(entry.lease_count.get() + 1);
-		Some(ResidentAnimationLease {
-			entry,
+		// Only the first use in a step writes, so lanes that share a clip don't contend for its stamp.
+		if entry.last_used.load(Ordering::Relaxed) < self.step {
+			entry.last_used.store(self.step, Ordering::Relaxed);
+		}
+		Some(ResidentAnimation {
+			skeleton: &entry.skeleton,
 			packed: PackedAnimation::from_words(&self.storage[entry.region.clone()]),
 		})
+	}
+
+	/// Returns whether a clip is resident and can be sampled now.
+	pub(crate) fn is_resident(&self, resource_id: &str) -> bool {
+		matches!(self.entries.get(resource_id), Some(AnimationPoolEntry::Resident(_)))
 	}
 
 	/// Clears one recorded load failure and requests that clip again.
@@ -230,12 +233,6 @@ impl AnimationPool {
 	/// Drains asynchronous load and eviction events without allocating a new event list.
 	pub fn drain_events(&mut self) -> std::collections::vec_deque::Drain<'_, AnimationPoolEvent> {
 		self.events.drain(..)
-	}
-
-	fn next_use(&self) -> u64 {
-		let value = self.next_use.get();
-		self.next_use.set(value.wrapping_add(1));
-		value
 	}
 
 	fn queue_load(&mut self, resource_id: &str) -> bool {
@@ -336,8 +333,7 @@ impl AnimationPool {
 			AnimationPoolEntry::Resident(CachedAnimation {
 				skeleton: Arc::new(packed.skeleton.into_resource()),
 				region,
-				last_used: std::cell::Cell::new(self.next_use()),
-				lease_count: std::cell::Cell::new(0),
+				last_used: AtomicU64::new(self.step),
 			}),
 		);
 		debug_assert!(
@@ -349,7 +345,9 @@ impl AnimationPool {
 		);
 	}
 
-	/// Evicts unleased LRU entries until one contiguous arena range can hold the requested words.
+	/// Evicts the least recently used entries until one contiguous arena range can hold the requested words.
+	///
+	/// It takes the pool mutably, so no player is sampling the clips it evicts.
 	fn make_room(&mut self, required_bytes: usize) -> bool {
 		let required_words = required_bytes.div_ceil(std::mem::size_of::<u32>());
 		if required_bytes > self.byte_budget || required_words > self.storage.len() {
@@ -360,9 +358,7 @@ impl AnimationPool {
 				.entries
 				.iter()
 				.filter_map(|(resource_id, entry)| match entry {
-					AnimationPoolEntry::Resident(entry) if entry.lease_count.get() == 0 => {
-						Some((resource_id, entry.last_used.get()))
-					}
+					AnimationPoolEntry::Resident(entry) => Some((resource_id, entry.last_used.load(Ordering::Relaxed))),
 					_ => None,
 				})
 				.min_by_key(|(_, last_used)| *last_used)
@@ -412,7 +408,11 @@ impl AnimationLoadWorker {
 	}
 }
 
+mod binding;
 mod player;
+
+pub(super) use binding::GraphBinding;
+use binding::ClipBinding;
 
 #[doc(hidden)]
 pub mod benchmarks;
@@ -485,50 +485,24 @@ mod tests {
 	}
 
 	#[test]
-	fn pool_evicts_lru_entries_and_evaluation_leases_pin_arena_regions() {
-		let idle = test_animation("idle", 1.0);
-		let walk = test_animation("walk", 2.0);
-		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
-		let mut first_pool = AnimationPool::detached(budget);
+	fn pool_evicts_the_least_recently_sampled_clip_to_admit_another() {
+		let budget = packed_test_animation_bytes("idle", 1.0) * 2;
+		let mut pool = AnimationPool::detached(budget);
+		pool.admit("idle.animation".into(), test_animation("idle", 1.0));
+		pool.admit("walk.animation".into(), test_animation("walk", 2.0));
 
-		first_pool.admit("idle.animation".into(), idle);
-		first_pool.admit("walk.animation".into(), walk);
+		// The next step samples the walk only, so the idle becomes the least recently used clip.
+		pool.update();
+		assert!(pool.resident("walk.animation").is_some());
+		pool.admit("run.animation".into(), test_animation("run", 3.0));
 
-		assert!(matches!(
-			first_pool.entries.get("walk.animation"),
-			Some(AnimationPoolEntry::Resident(_))
-		));
-		assert!(!first_pool.entries.contains_key("idle.animation"));
+		assert_eq!(pool.request("walk.animation"), AnimationPoolRequest::Ready);
+		assert_eq!(pool.request("run.animation"), AnimationPoolRequest::Ready);
 		assert!(
-			first_pool
-				.drain_events()
+			pool.drain_events()
 				.any(|event| matches!(event, AnimationPoolEvent::Evicted { resource_id } if resource_id == "idle.animation"))
 		);
-		assert_eq!(first_pool.request("idle.animation"), AnimationPoolRequest::Loading);
-
-		let idle = test_animation("idle", 1.0);
-		let walk = test_animation("walk", 2.0);
-		let mut pool = AnimationPool::detached(budget);
-		pool.admit("idle.animation".into(), idle);
-
-		assert_eq!(pool.request("idle.animation"), AnimationPoolRequest::Ready);
-		let pinned = pool.acquire("idle.animation").expect("expected cached idle animation");
-
-		assert_eq!(pinned.entry.lease_count.get(), 1);
-		drop(pinned);
-
-		assert_eq!(
-			match pool.entries.get("idle.animation") {
-				Some(AnimationPoolEntry::Resident(entry)) => entry.lease_count.get(),
-				_ => panic!("idle animation should remain resident"),
-			},
-			0
-		);
-
-		pool.admit("walk.animation".into(), walk);
-
-		assert!(!pool.entries.contains_key("idle.animation"));
-		assert_eq!(pool.request("walk.animation"), AnimationPoolRequest::Ready);
+		assert_eq!(pool.request("idle.animation"), AnimationPoolRequest::Loading);
 	}
 
 	#[test]

@@ -1643,18 +1643,21 @@ impl Alley {
 		}
 	}
 
-	/// Distributes `items` evenly and gives each lane exclusive access to one partition.
+	/// Distributes `items` evenly over up to `lanes` lanes and gives each lane exclusive access to one partition.
 	///
-	/// Mutable access prevents overlapping or nested dispatches on this `Alley`. Gang-scheduled
-	/// lane collectives require exclusive access to its worker set and could otherwise deadlock.
+	/// Pass [`Self::parallelism`] to run every lane, or fewer when the items are too few to pay for waking them all.
+	/// At most one lane runs for each item. The calling thread runs the first lane, so a count of one runs `f` on
+	/// the calling thread alone, and a count of zero runs none, so `f` is never called. Mutable access prevents
+	/// overlapping or nested dispatches on this `Alley`. Gang-scheduled lane collectives require exclusive access to
+	/// its worker set and could otherwise deadlock.
 	#[allow(unsafe_code, reason = "Each lane borrows its own balanced range of the items.")]
-	pub fn for_each_mut<T, F>(&mut self, items: &mut [T], f: F)
+	pub fn for_each_mut<T, F>(&mut self, items: &mut [T], lanes: usize, f: F)
 	where
 		T: Send,
 		F: for<'dispatch> Fn(&mut ConcreteLane<'dispatch>, &mut [T]) + Sync,
 	{
 		// Lanes without items have no work, so only as many lanes run as there are items.
-		let lane_count = self.parallelism().min(items.len());
+		let lane_count = self.parallelism().min(items.len()).min(lanes);
 		let len = items.len();
 		let parts = LaneParts(items.as_mut_ptr());
 		let executed = self.dispatch(
@@ -2012,11 +2015,23 @@ mod tests {
 		let mut alley = Alley::with_parallelism(3);
 		let mut counters = [0; 10];
 
-		alley.for_each_mut(&mut counters, |lane, partition| {
+		alley.for_each_mut(&mut counters, 3, |lane, partition| {
 			partition.fill(lane.idx());
 		});
 
 		assert_eq!(counters, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]);
+	}
+
+	#[test]
+	fn a_lane_count_splits_the_items_among_that_many_lanes() {
+		let mut alley = Alley::with_parallelism(3);
+		let mut counters = [usize::MAX; 10];
+
+		alley.for_each_mut(&mut counters, 2, |lane, partition| {
+			partition.fill(lane.idx());
+		});
+
+		assert_eq!(counters, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]);
 	}
 
 	#[test]

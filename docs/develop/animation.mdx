@@ -1,142 +1,154 @@
 ---
 title: Animation system
-description: Read this before you change animation playback, to learn how a step splits into a serial resolve and a parallel evaluate, what animators share, and what a change must keep.
+description: Read this before you change animation playback, to learn how one frame's data flows through a player, what players share, how a crowd spreads over lanes, and what a change must keep.
 icon: Sparkles
 ---
 
-Read this note before you change animation playback: the animation system, its
-animators, the graph runtime, or the clip pool. Its behavior is specified in the
-[animation reference](/docs/reference/animation). This note explains how the
-system is built and why, states the rules a change must keep, and names the
+Read this note before you change animation playback: the graph player, the clip
+pool, packed clips, or how players advance together. Its behavior is specified
+in the [animation reference](/docs/reference/animation). This note explains how
+playback is built and why, states the rules a change must keep, and names the
 tests and benchmarks that guard them. The code lives in
 `crates/byte-engine/src/animation`.
 
-## Where the code is today
+The animation system that the reference specifies, with animators created
+through the world and updates posted to it, isn't built yet. The evaluation it
+drives is: graph players, a clip pool they share, and
+`AnimationPool::advance_players`, which advances many players together on the
+alley's lanes.
 
-The animation system is being built to replace the standalone graph player.
-Until it lands, `AnimationGraphPlayer` in `animation/graph/runtime/player.rs`
-plays one character per call and differs from this design in four ways:
+## How a frame flows
 
-- `advance` decides routes and samples poses in one pass. `hand_over` and
-  `begin_handover_blend` sample in the middle of a tick, as soon as a route is
-  chosen.
-- Each player keeps about 15 pose buffers the size of its skeleton, most of
-  them scratch space that only `advance` reads.
-- Entering a state allocates. `RuntimeMotion::new` builds the state's samples,
-  a pose map for every clip, and its weights, for every player that enters it.
-- Every call takes the clip pool mutably, because requests, prefetches, and
-  `acquire` pins go through it, so two players can't advance at once.
+The typical frame is a character walking: a planar blend of locomotion clips
+keyed at 30 frames per second, with root motion. Each stage reads and writes
+these:
 
-Move the code toward the design below; don't extend the player's API.
+| Stage | Reads | Writes |
+| --- | --- | --- |
+| Routes | The request, the graph, the player's playback | The playback's states, phases, and weights |
+| Residency | The pool, read only | The player's list of clips the pool lacks |
+| Sampling | Each weighted clip's packed words and its binding's track targets | One pose for each weighted clip, in the thread's scratch; a single clip writes the player's active pose directly |
+| Blending | The scratch poses | The player's active pose |
+| Root motion | Each weighted clip's root chain, the root motion node and its ancestors, at the previous and current phase | The step's root motion delta |
+| Visual pose | The active pose, and during a transition the inertializer | The local pose, with the extracted root channels at rest |
+| Global pose | The local pose and the skeleton's parents | One affine transform for each node, the form rendering stores |
 
-## What animators share
+On an Apple M4 in October 2026, with 64-node skeletons, sampling a 31-key clip
+took about 0.35 µs, blending three poses 0.27 µs, building the global pose
+0.4 µs, and sampling one clip's root chain 0.03 µs. A walking character took
+about 1.8 µs, and sampling was most of it, so that's where a change most
+likely pays.
+
+## Packed clips
+
+A pose samples every track of a clip at one time, so the packed layout serves
+that access:
+
+- **Timelines.** Curves keyed at the same times share one timeline, so a pose
+  searches each timeline's keys once instead of each curve's. Clips baked from
+  FBX key every curve at the same frames, so they have one timeline.
+- **Rows.** A timeline stores its values key by key, with every curve's value
+  at a key side by side. A sample reads two rows of adjacent words, the keys
+  before and after the time.
+- **Track targets.** A clip's binding maps each track to the canonical node it
+  writes, and each canonical node to the track that writes it. A pose samples
+  straight into the canonical pose, and root motion samples only the chain's
+  nodes.
+
+A pose places up to 16 timelines on the stack before it samples. A clip with
+more, such as a glTF clip with keys of its own on every channel, places each
+curve's time as it reads the curve, the way every curve did before timelines.
+
+## What players share
 
 Many characters play one graph, so everything that doesn't depend on one
 character's playback is shared:
 
 | Shared data | Held once per | Holds |
 | --- | --- | --- |
-| Graph | Graph | States, routes, and clip resource IDs. Animators refer to it, never copy it. |
-| Graph binding | Graph and canonical skeleton | For every clip of the graph: its pose map onto the canonical skeleton, its duration, and its frame rate. It's built once, when the canonical skeleton is resident, and animators refer to clips by their index in it. |
-| Clip pool | System | Packed clips in one arena. |
-| Lane scratch | Lane | The pose buffers that only evaluation reads: the blend samples, one clip's poses at the start and end of a step, the loop seam poses, and the global matrices before they're posted. |
+| Graph | Graph | States, routes, and clip resource IDs. Players refer to it, never copy it. |
+| Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates. The graph owns it. The first player takes the canonical skeleton from the initial clip, and a state binds the first time any player enters it with its clips resident. |
+| Clip pool | Pool | Packed clips in one arena. |
+| Scratch poses | Thread | A blend's per-clip poses and a hand-over's spans: poses a frame fills and reads, which no player keeps between frames. Lanes are persistent threads, so each lane's scratch lasts across steps. |
 
-An animator keeps only what must survive from one step to the next: its
-playback, which holds the playing and destination states, their clip indices,
-their weights, and their phases; its pending route; its remembered blend
-positions; the last step's delta; the posted local pose and the one before it;
-its inertializer; the destination poses while a transition runs; and the look
-chain's eased angles. Weights fit a fixed array of three, the most clips a
-motion samples. None of this grows after the animator is adopted.
+A player keeps only what lasts from one frame to the next: its playback, whose
+weights fit inline because a blend weighs at most three clips; its pending
+route; its remembered blend positions; the active and destination poses with
+their previous samples; the posted local pose and the one before it; the
+global pose; its inertializer; and its root chain. Nothing grows after the
+player's first frames.
 
-## How a step runs
+## How a crowd advances
 
-A step runs in four phases. Only the evaluate phase runs on several lanes.
+`AnimationPool::advance_players` advances every player by one delta toward its
+latest request:
 
-| Phase | Runs | Does |
-| --- | --- | --- |
-| Intake | Serially | Adopts and removes animators, applies the latest requests and look targets, and admits loaded clips into the pool. |
-| Resolve | Serially | Decides each animator's routes, phases, and hand-overs for the step, and writes them as a plan. Requests and prefetches clips, and pins every clip a plan samples. |
-| Evaluate | On the alley's lanes | Carries out each plan: samples clips through the graph binding, blends, inertializes, extracts root motion, applies the look chain, builds the global pose, and posts both updates. |
-| Release | Serially | Unpins the clips. |
+1. **Evaluate.** Players only read the pool while they evaluate. A residency
+   check reads the clip map, sampling reads the arena, and the
+   least-recently-used stamp is an atomic counter that only a step's first use
+   of a clip writes. A clip a player needs but the pool doesn't hold goes on
+   that player's list. Crowds of at least 32 players spread over the alley's
+   lanes in balanced shares, one lane for each 16 players.
+2. **Request.** Once no player reads the pool, the pool requests every listed
+   clip, which queues loads and can admit or evict clips. Each lane reports
+   whether its share listed anything, so a step with nothing to request
+   doesn't visit the players again.
 
-A plan is small and fixed in size. It holds at most two segments, one before a
-hand-over and one after it, because the time left in a step after a hand-over
-plays on the next state. Each segment lists the motions to sample, with their
-clip indices, weights, and the phase each starts and ends at, and the events
-that start the segment, such as a transition and its duration, or an
-inertializer seeded from the posted pose.
+Each player decides its routes and samples its pose in one pass, because both
+read only its own state and data that every player shares. That keeps a
+player's data in one core's cache for the whole frame. The only state players
+used to change in common was the pool, through requests and leases, so
+requests moved after evaluation and leases went away. The borrow checker now
+keeps any eviction from running while a player samples.
 
-### Why resolve never reads a pose
+### Why crowds stay on the fastest cores
 
-Every decision that resolve makes depends on time, the graph, and clip
-durations and frame rates: when a wait point is reached, how much of the step
-is left after a hand-over, which route a request takes. None of it depends on
-pose values. The work that does, such as seeding an inertializer from the pose
-on screen and its velocity, is an event in the plan, and evaluation carries it
-out.
-
-The split keeps the pool's mutable access in one short serial pass. Evaluation
-then reads the pool, the graph, and the binding through shared references and
-writes only its own animator and its lane's scratch, so lanes need no locks and
-an animator's result can't depend on which lane ran it.
-
-### Why scratch lives on lanes
-
-Scratch pose buffers are only live while one animator is evaluated, so a
-character crowd needs one set for each lane instead of one for each character.
-That's most of the 15 buffers a player keeps today. Keeping them on the lane
-also keeps them warm in that core's cache from one animator to the next.
-
-### Evaluation order
-
-Resolve orders the evaluation work by the first clip each plan samples, so a
-lane samples characters that play the same clip back to back while the clip's
-keys are in cache. The order is only a performance choice: results never depend
-on it.
+A step waits for its slowest lane, and balanced shares give every lane the
+same work. On the M4, which has 4 performance and 6 efficiency cores, 1,024
+walking characters took 0.60 ms on 4 lanes, 0.72 ms on 6, 0.58 ms on 8, and
+0.62 ms on 10. Lanes on efficiency cores fall behind and hold the step up, so
+a step uses at most as many lanes as the fastest cores have hardware threads,
+as physics does. Spreading work so that faster lanes take more, rather than
+balanced shares, is what would let the efficiency cores help.
 
 ## Rules a change must keep
 
-1. Resolve never reads or writes a pose. Evaluation never takes the pool, the
-   graph, or the binding mutably, and never reads another animator.
-2. An animator's pose, root motion, and state depend only on its own requests,
-   look targets, and the step deltas. They don't depend on the lane count, the
-   evaluation order, or the other animators.
-3. Every clip a plan samples stays pinned from resolve until the step's updates
-   are posted.
-4. Nothing allocates in a step for an animator that's already adopted, except
-   the matrices a pose update owns. Plans, scratch, and animator state are
-   retained.
-5. Every update of a step is posted before the step returns, so code that reads
-   after the step in the same frame sees the root motion of the pose it's about
-   to draw.
-6. A graph is bound once for each canonical skeleton. Adopting another animator
-   of a bound graph resolves no pose maps.
-7. The look chain runs after root motion is extracted and never changes it.
+1. Evaluation only reads the pool, the graph, and the binding. Whatever changes
+   the pool, a request, an admission, or an eviction, runs before or after
+   evaluation, never during it.
+2. A player's pose, root motion, and state depend only on its own requests and
+   the step deltas. They don't depend on the lane count, the order players are
+   evaluated in, or the other players.
+3. A graph binds a state once. A player that enters a bound state resolves no
+   track targets.
+4. Nothing allocates in a step for a player that has played a frame, except
+   the transforms a pose update owns. Weights live inline and scratch belongs
+   to the thread.
+5. Sampling a packed clip gives the same values as sampling the resource curves
+   it was packed from. Curves share a timeline only when their key times match
+   bit for bit.
+6. Root motion samples the root chain only, never a whole pose.
 
 ## Tests and benchmarks
 
-The playback tests in `animation/graph/runtime/player.rs` guard the routing,
-phase, hand-over, redirect, and root motion rules of the reference. Keep them
-passing as the code moves into the system; move them, don't drop them.
-
 | Guard | Rules |
 | --- | --- |
-| Playback tests in `animation/graph/runtime/player.rs` | 1, 7 |
-| `pool_evicts_lru_entries_and_evaluation_leases_pin_arena_regions` | 3 |
-| `characters_root_motion` and `characters_transitioning` benchmarks | 4, 6 |
-| `active_pose`, `active_root_motion`, and `inertialized_transition` benchmarks | The cost of one animator by skeleton size |
-
-Rules 2 and 5 have no guard until the system lands. Add these tests with it:
-animators that share a graph post what each would post alone, a step posts the
-same updates on any lane count, and root motion arrives in the step of its
-pose.
+| `players_advanced_together_match_each_player_advanced_alone` | 1, 2 |
+| `players_sharing_a_graph_play_as_each_would_alone` | 2, 3 |
+| `pool_evicts_the_least_recently_sampled_clip_to_admit_another` | 1 |
+| `packed_poses_match_the_resource_curves_they_were_packed_from` | 5 |
+| The playback tests in `animation/graph/runtime/player.rs` | 6, and the playback rules of the reference |
+| `characters_*` benchmarks | 3, 4, 6 |
+| `active_pose`, `active_root_motion`, and `inertialized_transition` benchmarks | The cost of one player by skeleton size |
 
 The `characters_*` benchmarks time one frame of 1, 64, and 1,024 characters
-with 64-node skeletons that share one graph and clip pool. The root motion case
-plays one looping clip; the transitioning case keeps every character inside an
-inertialized transition, the most expensive path. Each character starts at its
-own phase, so characters don't sample in lockstep.
+with 64-node skeletons that share one graph and clip pool, advanced together on
+an alley. The locomotion case steers through a planar blend of five clips keyed
+at 30 frames per second, with root motion, the typical frame above. The root
+motion case plays one looping clip, the transitioning case keeps every
+character inside an inertialized transition, and the switching case enters a
+state on every frame. Each character starts at its own phase, so characters
+don't sample in lockstep.
 
 Run the tests, then the benchmarks before and after your change:
 

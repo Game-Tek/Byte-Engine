@@ -1,12 +1,11 @@
-use math::{Matrix, Point};
-use maths_rs::mat::{MatScale as _, MatTranslate as _};
+use math::{AffineMatrix, Point};
 use resource_management::resources::{
 	ModelSpace,
 	animation::{Animation, Curve, CurveComponents},
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
-use super::math::{CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveInterpolation, CurveValue, KeySpan, interpolate};
 
 /// Samples one clip into a complete source-skeleton local pose.
 ///
@@ -35,14 +34,15 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 	}
 }
 
-/// Builds global skeleton matrices from a complete local pose.
+/// Builds global skeleton transforms from a complete local pose.
 ///
-/// Skeleton validation guarantees that every parent matrix precedes its
-/// children. The output retains capacity across calls.
+/// Skeleton validation guarantees that every parent transform precedes its
+/// children. The transforms are affine, as rendering stores skinned poses, so a
+/// pose update carries them as they are. The output retains capacity across calls.
 pub fn write_global_pose(
 	skeleton: &Skeleton,
 	local_pose: &[LocalTransform],
-	output: &mut Vec<Matrix>,
+	output: &mut Vec<AffineMatrix>,
 ) -> Result<(), PoseError> {
 	if local_pose.len() != skeleton.nodes.len() {
 		return Err(PoseError::LocalPoseLength {
@@ -52,7 +52,8 @@ pub fn write_global_pose(
 	}
 	output.clear();
 	for (index, node) in skeleton.nodes.iter().enumerate() {
-		let local = local_matrix(local_pose[index]);
+		let local = local_pose[index];
+		let local = AffineMatrix::from_scale_rotation_translation(local.scale, local.rotation, local.translation);
 		output.push(match node.parent {
 			Some(parent) => output[parent as usize] * local,
 			None => local,
@@ -61,10 +62,10 @@ pub fn write_global_pose(
 	Ok(())
 }
 
-/// Samples an animation clip into global matrices for a compatible target skeleton.
+/// Samples an animation clip into global affine transforms for a compatible target skeleton.
 ///
 /// The caller owns all pose storage so a retained animation player can reuse it each
-/// frame without allocating. Next, send the resulting matrices through the renderer's
+/// frame without allocating. Next, send the resulting transforms through the renderer's
 /// `UpdatePose` message for the renderable that owns the target skeleton.
 pub fn sample_pose(
 	animation: &Animation,
@@ -73,7 +74,7 @@ pub fn sample_pose(
 	time: f32,
 	source_locals: &mut Vec<LocalTransform>,
 	target_locals: &mut Vec<LocalTransform>,
-	output: &mut Vec<Matrix>,
+	output: &mut Vec<AffineMatrix>,
 ) {
 	sample_local_pose(animation, time, source_locals);
 
@@ -182,18 +183,10 @@ fn validate_skeleton_layout(first: &Skeleton, second: &Skeleton) -> Result<(), A
 	Ok(())
 }
 
-/// Returns where a global bone matrix from [`local_matrix`] places the bone's origin.
-fn matrix_translation(matrix: &Matrix) -> Point<ModelSpace> {
-	Point::new(matrix[3], matrix[7], matrix[11])
-}
-
-/// Converts a blendable local transform into the matrix convention used by render pose updates.
-///
-/// Scale applies first, then rotation, then translation, matching [`crate::gameplay::Transform::get_matrix`].
-fn local_matrix(local: LocalTransform) -> Matrix {
-	Matrix::from_translation(local.translation.into_maths())
-		* local.rotation.into_matrix()
-		* Matrix::from_scale(local.scale.into_maths())
+/// Returns where a global bone transform places the bone's origin.
+fn matrix_translation(matrix: &AffineMatrix) -> Point<ModelSpace> {
+	let [x, y, z] = matrix.columns()[3];
+	Point::new(x, y, z)
 }
 
 /// Samples one validated resource curve at `time`.
@@ -208,11 +201,9 @@ fn sample_resource_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize
 		} => (CurveInterpolation::CubicSpline, Some((in_tangents, out_tangents))),
 	};
 	let (times, values) = (curve.times(), curve.values());
-	sample_curve(
+	interpolate(
 		interpolation,
-		times.len(),
-		time,
-		|key| times[key],
+		KeySpan::find(times, time, |key| *key),
 		|key| values[key],
 		|key| {
 			let (in_tangents, out_tangents) = tangents.expect("Only cubic curves read tangents.");

@@ -2,8 +2,8 @@ use std::ops::Mul;
 
 use maths_rs::Mat34f;
 
-use crate::Matrix;
 use crate::serialization::serialize_as_array;
+use crate::{Matrix, Orientation, Scale, UnitVector, Vector};
 
 /// The `AffineMatrix` struct stores an affine transform compactly as four columns of three.
 ///
@@ -29,6 +29,22 @@ impl AffineMatrix {
 	/// Returns the three basis columns followed by the translation.
 	pub const fn columns(self) -> [[f32; 3]; 4] {
 		self.columns
+	}
+
+	/// Creates the transform that scales, then rotates, then translates, the order skeleton nodes and scene
+	/// transforms apply their parts in.
+	///
+	/// Use it to turn a node's local transform into the matrix that [`Mul`] composes with its parent's.
+	pub fn from_scale_rotation_translation<Space>(scale: Scale, rotation: Orientation, translation: Vector<Space>) -> Self {
+		// The rotated axes, each scaled by its axis' scale, are the basis columns.
+		let [x, y, z] = rotation.axes::<Space>();
+		let scaled = |axis: UnitVector<Space>, factor: f32| [axis.x() * factor, axis.y() * factor, axis.z() * factor];
+		Self::from_columns([
+			scaled(x, scale.x()),
+			scaled(y, scale.y()),
+			scaled(z, scale.z()),
+			translation.to_array(),
+		])
 	}
 
 	/// Returns whether every component is finite.
@@ -65,14 +81,25 @@ impl Mul for AffineMatrix {
 
 	// Composing affine transforms adds the left translation to the rotated right translation.
 	#[allow(clippy::suspicious_arithmetic_impl)]
+	#[inline]
 	fn mul(self, right: Self) -> Self {
-		let (left, right) = (self.columns, right.columns);
-		Self::from_columns(std::array::from_fn(|column| {
-			std::array::from_fn(|row| {
-				let linear = (0..3).map(|index| left[index][row] * right[column][index]).sum::<f32>();
-				if column == 3 { linear + left[3][row] } else { linear }
-			})
-		}))
+		let [x, y, z, translation] = self.columns;
+		// Each right column, read as a point or a direction, mapped through the left basis.
+		let map = |[a, b, c]: [f32; 3]| -> [f32; 3] {
+			[
+				x[0] * a + y[0] * b + z[0] * c,
+				x[1] * a + y[1] * b + z[1] * c,
+				x[2] * a + y[2] * b + z[2] * c,
+			]
+		};
+		let [right_x, right_y, right_z, right_translation] = right.columns;
+		let moved = map(right_translation);
+		Self::from_columns([
+			map(right_x),
+			map(right_y),
+			map(right_z),
+			[moved[0] + translation[0], moved[1] + translation[1], moved[2] + translation[2]],
+		])
 	}
 }
 
@@ -102,6 +129,26 @@ mod tests {
 			[[1.0, 5.0, 9.0], [2.0, 6.0, 10.0], [3.0, 7.0, 11.0], [4.0, 8.0, 12.0]]
 		);
 		assert_eq!(affine.into_matrix(), sequential_matrix());
+	}
+
+	#[test]
+	fn scale_rotation_translation_matches_the_full_matrix_product() {
+		use crate::{Orientation, Scale, Vector, WorldSpace};
+		use maths_rs::mat::{MatScale as _, MatTranslate as _};
+
+		let rotation =
+			Orientation::try_from_rotation_vector(Vector::<WorldSpace>::new(0.3, -1.1, 0.7)).expect("finite rotation");
+		let scale = Scale::new(2.0, 0.5, 1.5);
+		let translation = Vector::<WorldSpace>::new(1.0, -2.0, 3.0);
+		let expected = Matrix::from_translation(translation.into_maths())
+			* rotation.into_matrix()
+			* Matrix::from_scale(scale.into_maths());
+
+		let affine = AffineMatrix::from_scale_rotation_translation(scale, rotation, translation).into_matrix();
+
+		for (index, (affine, expected)) in affine.m.iter().zip(expected.m).enumerate() {
+			assert!((affine - expected).abs() < 1.0e-5, "component {index}: {affine} != {expected}");
+		}
 	}
 
 	#[test]

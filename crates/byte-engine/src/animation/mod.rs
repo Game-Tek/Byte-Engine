@@ -3,9 +3,9 @@
 //! Use [`flipbook::Flipbook`] to select images from a timed sequence.
 //!
 //! Use [`sample_local_pose`] to sample clips before applying [`blend`] or
-//! [`inertialization`]. Build renderer-facing matrices with
-//! [`write_global_pose`], then send those matrices through the renderer's
-//! `UpdatePose` message.
+//! [`inertialization`]. Build the renderer-facing affine transforms with
+//! [`write_global_pose`], then send them through the renderer's `UpdatePose`
+//! message.
 
 pub mod blend;
 pub mod flipbook;

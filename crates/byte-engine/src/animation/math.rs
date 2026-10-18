@@ -5,7 +5,7 @@ use resource_management::resources::{ParentSpace, animation::CurveComponents};
 
 /// Evaluates one cubic Hermite span, scaling the tangents by the span duration.
 ///
-/// [`sample_curve`] uses this to interpolate a cubic keyframe pair for both packed and unpacked clips.
+/// [`interpolate`] uses this to interpolate a cubic keyframe pair for both packed and unpacked clips.
 fn hermite<const N: usize>(
 	start: [f32; N],
 	start_tangent: [f32; N],
@@ -38,7 +38,7 @@ pub(crate) enum CurveInterpolation {
 	CubicSpline = 2,
 }
 
-/// The `CurveValue` trait lets [`sample_curve`] blend translations and scales component by component and
+/// The `CurveValue` trait lets [`interpolate`] blend translations and scales component by component and
 /// rotations as unit quaternions.
 pub(crate) trait CurveValue<const N: usize>: CurveComponents<N> {
 	/// Builds a value from interpolated or stored components, which is how rotations stay unit length.
@@ -87,48 +87,68 @@ impl CurveValue<4> for Orientation {
 	}
 }
 
-/// Samples one curve at `time` through key accessors, so resource and packed curves share one interpolation path.
+/// The `KeySpan` struct places a time among a curve's keys: the key a step curve holds and the pair a linear or cubic
+/// curve interpolates between.
 ///
-/// `time_at` reads the time of a key, `value_at` its value, and `tangents_at` its `(in, out)` tangents, which only
-/// cubic curves read. Keys must be sorted by time. Times before the first key or after the last one hold that key.
-pub(crate) fn sample_curve<V: CurveValue<N>, const N: usize>(
+/// [`KeySpan::find`] defines the search once, so resource curves and packed timelines place a time the same way. The
+/// keys are indices into the curve's keys, or wherever the caller's key data starts, like a packed timeline's rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct KeySpan {
+	/// The last key at or before the time, or the first key before every key.
+	pub(crate) step: usize,
+	pub(crate) lower: usize,
+	pub(crate) upper: usize,
+	/// How far the time lies from `lower` toward `upper`, in `[0, 1]`.
+	pub(crate) factor: f32,
+	/// The seconds between `lower` and `upper`, which scale cubic tangents.
+	pub(crate) span: f32,
+}
+
+impl KeySpan {
+	/// Finds where `time` lies among `keys`, whose times `seconds` reads. Keys must ascend, and a curve has at least
+	/// one.
+	///
+	/// Times before the first key or after the last one hold that key.
+	pub(crate) fn find<K>(keys: &[K], time: f32, seconds: impl Fn(&K) -> f32) -> Self {
+		let first_after = keys.partition_point(|key| seconds(key) <= time);
+		let upper = first_after.min(keys.len().saturating_sub(1));
+		let lower = upper.saturating_sub(1);
+		let (lower_time, upper_time) = (seconds(&keys[lower]), seconds(&keys[upper]));
+		let span = upper_time - lower_time;
+		let factor = if span > 0.0 { (time - lower_time) / span } else { 0.0 }.clamp(0.0, 1.0);
+		Self {
+			step: first_after.saturating_sub(1),
+			lower,
+			upper,
+			factor,
+			span,
+		}
+	}
+}
+
+/// Interpolates between the keys a [`KeySpan`] selected, so resource and packed curves share one interpolation
+/// path.
+///
+/// `value_at` reads a key's value and `tangents_at` its `(in, out)` tangents, which only cubic curves read.
+pub(crate) fn interpolate<V: CurveValue<N>, const N: usize>(
 	interpolation: CurveInterpolation,
-	key_count: usize,
-	time: f32,
-	time_at: impl Fn(usize) -> f32,
+	keys: KeySpan,
 	value_at: impl Fn(usize) -> V,
 	tangents_at: impl Fn(usize) -> ([f32; N], [f32; N]),
 ) -> V {
-	// Binary search for the first key after `time` through the accessor, so packed words need no typed slice.
-	let (mut first_after, mut end) = (0, key_count);
-	while first_after < end {
-		let middle = first_after + (end - first_after) / 2;
-		if time_at(middle) <= time {
-			first_after = middle + 1;
-		} else {
-			end = middle;
-		}
-	}
-	if interpolation == CurveInterpolation::Step {
-		return value_at(first_after.saturating_sub(1));
-	}
-
-	let upper = first_after.min(key_count.saturating_sub(1));
-	let lower = upper.saturating_sub(1);
-	let span = time_at(upper) - time_at(lower);
-	let factor = if span > 0.0 { (time - time_at(lower)) / span } else { 0.0 }.clamp(0.0, 1.0);
 	match interpolation {
-		CurveInterpolation::Linear => value_at(lower).lerp(value_at(upper), factor),
-		_ => {
-			let (_, start_tangent) = tangents_at(lower);
-			let (end_tangent, _) = tangents_at(upper);
+		CurveInterpolation::Step => value_at(keys.step),
+		CurveInterpolation::Linear => value_at(keys.lower).lerp(value_at(keys.upper), keys.factor),
+		CurveInterpolation::CubicSpline => {
+			let (_, start_tangent) = tangents_at(keys.lower);
+			let (end_tangent, _) = tangents_at(keys.upper);
 			V::from_components(hermite(
-				value_at(lower).components(),
+				value_at(keys.lower).components(),
 				start_tangent,
-				value_at(upper).components(),
+				value_at(keys.upper).components(),
 				end_tangent,
-				factor,
-				span,
+				keys.factor,
+				keys.span,
 			))
 		}
 	}

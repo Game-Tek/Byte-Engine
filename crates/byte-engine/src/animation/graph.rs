@@ -30,11 +30,17 @@
 //!    authored [`AnimationStateId`] (or an [`AnimationRequest`] that places a
 //!    blend state), call [`AnimationGraphPlayer::advance`],
 //!    apply its root motion to the owning object, and send
-//!    [`AnimationGraphPose::global_pose`] to rendering.
+//!    [`AnimationGraphPose::global_pose`] to rendering. For many characters,
+//!    set each player's request with [`AnimationGraphPlayer::request`] and
+//!    advance them together with [`AnimationPool::advance_players`], which
+//!    spreads them over the alley's lanes; then read each one's
+//!    [`AnimationGraphPlayer::pose`].
 //!
-//! The graph player owns its evaluation buffers. The renderer's `UpdatePose`
-//! message owns its matrix vector, so copying
-//! at that cross-system boundary is currently intentional. See
+//! Players share everything that isn't their own playback: the graph, the
+//! clips' bindings to the canonical skeleton, the pool's clips, and the poses a
+//! frame fills and reads, which belong to the thread that evaluates. The
+//! renderer's `UpdatePose` message owns its transform vector, so copying at
+//! that cross-system boundary is currently intentional. See
 //! `crates/byte-engine/examples/animation_graph.rs` for the complete headed
 //! application sequence.
 
@@ -163,12 +169,18 @@ impl AnimationGraphStateData {
 /// Build the graph once with [`AnimationGraphBuilder`], then share it between
 /// any number of [`AnimationGraphPlayer`] instances. Client code selects one of
 /// the graph's durable [`AnimationStateId`] values before each evaluation.
+///
+/// The graph also keeps its clips' pose maps, durations, and frame rates once
+/// players have resolved them against its canonical skeleton, so players that
+/// share a graph share that work too.
 pub struct AnimationGraph {
 	id: u64,
 	states: Vec<AnimationGraphStateData>,
 	/// Targets every state can route to after its own routes, with how long each blends in.
 	any_state_routes: Box<[(AnimationStateId, MediaTime)]>,
 	initial: AnimationStateId,
+	/// Clip data resolved once against the canonical skeleton, which every player of the graph shares.
+	binding: runtime::GraphBinding,
 }
 
 impl AnimationGraph {
@@ -719,6 +731,7 @@ impl AnimationGraphBuilder {
 
 		Ok(AnimationGraph {
 			id: self.graph,
+			binding: runtime::GraphBinding::new(data.states.len()),
 			states: data.states,
 			any_state_routes: data.any_state_routes.into(),
 			initial,
@@ -875,9 +888,18 @@ impl std::error::Error for AnimationGraphBuildError {}
 mod motion;
 mod runtime;
 
-use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc};
+use std::{
+	cell::RefCell,
+	collections::VecDeque,
+	fmt,
+	num::NonZeroUsize,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, AtomicU64, Ordering},
+	},
+};
 
-use math::{Matrix, Vector};
+use math::{AffineMatrix, Vector};
 pub use motion::{AnimationBlend, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId};
 use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, StateMotion};
 use resource_management::{
@@ -885,7 +907,7 @@ use resource_management::{
 	resources::{
 		ParentSpace,
 		animation::Animation,
-		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
+		skeleton::{LocalTransform, Skeleton},
 	},
 };
 #[doc(hidden)]
@@ -896,9 +918,9 @@ pub use runtime::{
 };
 
 use super::{
-	blend::{BlendSpaceError, blend_local_poses},
+	blend::{BlendSpaceError, BlendWeights, blend_local_poses},
 	inertialization::PoseInertializer,
-	packed::{PackedAnimation, PackedAnimationData},
+	packed::{PackedAnimation, PackedAnimationData, TrackTargets},
 	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,
 };

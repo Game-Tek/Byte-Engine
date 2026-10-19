@@ -603,12 +603,9 @@ impl<S: 'static, M: 'static> Future for Received<S, M> {
 		match waits.iter().position(|wait| wait.task == id) {
 			Some(index) => {
 				if let Some(message) = waits[index].inbox.pop_front() {
-					if waits[index].inbox.is_empty() {
-						waits.remove(index);
-						if let Some(listed) = task.mail.iter().position(|listed| *listed == key) {
-							task.mail.swap_remove(listed);
-						}
-					}
+					// Keep the emptied wait so the task's next wait reuses its inbox instead of allocating one each
+					// message. Until a poll registers it again it receives nothing; a sweep removes it if the task moved
+					// on.
 					this.done = true;
 					return Poll::Ready(message);
 				}

@@ -40,10 +40,11 @@ flat. Each task lists the mailboxes it has a wait in, so a sweep and the task's
 end reach its waits directly.
 
 - **Messages.** One mailbox per message type maps an entity to the waits for
-  it. `send` delivers to every counting wait and wakes its task. A task's list
-  is also swept once it has doubled since the last sweep, which removes entries
-  whose waits are gone. A swept wait loses the messages it held. Deleting the
-  entity drops its waits.
+  it. `send` delivers to every counting wait and wakes its task. A wait that
+  delivered its message stays, so the task's next wait for the same entity
+  reuses its inbox. A task's list is also swept once it has doubled since the
+  last sweep, which removes such waits once the task moved on. A swept wait
+  loses the messages it held. Deleting the entity drops its waits.
 - **Ticks.** A task's tick waits live with the task, and the task joins a list
   that the next `advance` walks, keeping only the waits of the task's latest
   poll. A tick wait first polled in a poll takes over
@@ -95,3 +96,18 @@ has one for futures such as channels. Its wakes go through a locked queue that
 ```bash
 cargo nextest run -p byte-engine -E 'test(/gameplay::tasks/)'
 ```
+
+## Benchmarks
+
+The `tasks` benchmark guards rule 6 at the scale of one task per entity. It
+times one tick of 4096 tasks: `tick_waits` wakes every task for the tick, and
+`received_waits` sends each task's entity one message and polls the task that
+waits for it. Divan reports the time per task.
+
+```bash
+cargo bench -p byte-engine --bench tasks
+```
+
+Run it before and after a change to the runtime. Keep each build's benchmark
+binary and run them in turns, because other load on the machine shifts results
+from one run to the next.

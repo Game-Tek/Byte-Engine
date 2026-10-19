@@ -61,6 +61,10 @@ name = "physics"
 harness = false
 
 [[bench]]
+name = "tasks"
+harness = false
+
+[[bench]]
 name = "ui"
 harness = false
 required-features = ["headed"]

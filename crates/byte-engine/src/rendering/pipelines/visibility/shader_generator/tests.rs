@@ -46,6 +46,30 @@ fn textured_parameters() -> Vec<MaterialParameter> {
 	]
 }
 
+/// A graph that reads dynamic parameters of every value width, one of them twice, beside a static one.
+const DYNAMIC_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
+		{ name: "tint_rgb", node: "swizzle", in: "tint", channels: "rgb" },
+		{ name: "alpha", node: "extract", in: "tint", index: 3 },
+		{ name: "glow", node: "parameter", parameter: "glow", type: "float" },
+		{ name: "glow_color", node: "parameter", parameter: "glow_color", type: "vector3" },
+		{ name: "emission", node: "multiply", in1: "glow_color", in2: "glow" },
+		{ name: "roughness", node: "parameter", parameter: "roughness", type: "float" },
+		{ name: "surface", node: "surface", base_color: "tint_rgb", opacity: "alpha", emission: "emission", roughness: "roughness" },
+	],
+}"#;
+
+/// The parameters [`DYNAMIC_GRAPH`] reads, in binding order: the static roughness between dynamic ones.
+fn dynamic_parameters() -> Vec<MaterialParameter> {
+	vec![
+		parameter("tint", ParameterKind::Dynamic(bemx::Type::Vector4)),
+		parameter("roughness", ParameterKind::Value(bemx::Type::Float)),
+		parameter("glow", ParameterKind::Dynamic(bemx::Type::Float)),
+		parameter("glow_color", ParameterKind::Dynamic(bemx::Type::Vector3)),
+	]
+}
+
 /// The access declaration used when baking material-evaluation shaders.
 fn material_generator() -> VisibilityShaderGenerator {
 	material_generator_with(VisibilityFeatures::default())
@@ -283,6 +307,54 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 	besl::lex(shader).expect("generated program should link");
 }
 
+/// Dynamic parameters read the instance's parameter block, at their position among the material's dynamic parameters,
+/// and never split pipelines through specialization constants.
+#[test]
+fn dynamic_parameters_read_the_instance_parameter_block() {
+	let graph = graph(DYNAMIC_GRAPH);
+	let parameters = dynamic_parameters();
+
+	let shader = material_generator()
+		.generate(&graph, &parameters)
+		.expect("a graph reading dynamic parameters should generate");
+
+	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
+		panic!("Expected generated material root scope.");
+	};
+	for name in ["tint", "glow", "glow_color"] {
+		assert!(
+			children.iter().all(|child| child.name() != Some(name)),
+			"Dynamic parameter `{name}` should not be a specialization constant."
+		);
+	}
+	assert!(
+		children.iter().any(|child| child.name() == Some("roughness")),
+		"Static parameter `roughness` should stay a specialization constant."
+	);
+
+	let root = besl::lex(shader).expect("generated dynamic-parameter program should link");
+	let main = root.get_main().expect("generated program should contain main");
+	assert!(
+		resource_management::shader::besl::graph::dependency_order(&main)
+			.iter()
+			.any(|node| node.borrow().get_name() == Some("material_parameters")),
+		"Material evaluation should read `material_parameters`."
+	);
+}
+
+#[test]
+fn a_dynamic_parameter_read_with_another_type_is_reported() {
+	let graph = graph(DYNAMIC_GRAPH);
+	let mut parameters = dynamic_parameters();
+	parameters[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
+
+	let error = material_generator()
+		.generate(&graph, &parameters)
+		.expect_err("a graph reading a dynamic parameter with another type should not generate");
+
+	assert!(error.contains("'glow'"), "{error}");
+}
+
 #[test]
 fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
 	let graph = graph(TEXTURED_GRAPH);
@@ -406,19 +478,21 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	// The textured graph reaches every optional reconstruction: texture coordinates, the tangent frame, and samples.
-	let graph = graph(TEXTURED_GRAPH);
-	let parameters = textured_parameters();
-	let shader = material_generator()
-		.generate(&graph, &parameters)
-		.expect("textured graph should generate");
-	let root = besl::lex(shader).expect("generated program should link");
+	// The dynamic graph reads the parameter buffer at every value width.
+	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+		let graph = graph(source);
+		let shader = material_generator()
+			.generate(&graph, &parameters)
+			.expect("test graph should generate");
+		let root = besl::lex(shader).expect("generated program should link");
 
-	let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
+		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
 
-	PlatformShaderCompiler::new()
-		.generate(&settings, &root)
-		.await
-		.expect("generated material evaluation program should compile for the platform shader language");
+		PlatformShaderCompiler::new()
+			.generate(&settings, &root)
+			.await
+			.expect("generated material evaluation program should compile for the platform shader language");
+	}
 }
 
 /// Verifies cone PCF evaluates its receiver plane at each fetched shadow texel center.

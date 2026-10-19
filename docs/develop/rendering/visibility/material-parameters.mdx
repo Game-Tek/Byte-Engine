@@ -1,0 +1,67 @@
+---
+title: Material parameters
+description: Understand where dynamic material parameter values live and how instances find them before you change how materials read runtime values.
+icon: SlidersHorizontal
+---
+
+Read this page before you change how dynamic material parameters are stored,
+uploaded, or read by material evaluation. How an application sets them is in
+[Change a parameter at runtime](/docs/use/resources/author#change-a-parameter-at-runtime),
+and the `.bema` fields are specified in the [.bema reference](/docs/reference/bema).
+
+## Static values split pipelines, dynamic values don't
+
+A static value parameter is a specialization constant, so each distinct value
+compiles its own pipeline and takes its own evaluation dispatch; see
+[Shader variants](/docs/develop/rendering/shader-variants). A dynamic parameter
+is read from memory instead, so materials that differ only in dynamic values
+share one pipeline, and changing a value never compiles anything.
+
+## Values live in blocks of one buffer
+
+The scene set's `material_parameters` buffer holds one `vec4f` entry per
+dynamic parameter. A block is a run of entries, one per dynamic parameter in the
+order the material declares them:
+
+- Every loaded material with dynamic parameters owns a block that holds its
+  defaults and the values set on the material.
+- An entity that the application set a parameter on gets its own block per
+  material it renders with: a copy of the material's block with the entity's
+  values written over it. It's written on the first frame that draws it, and
+  again after the entity's values or its material's change.
+
+Each frame, the manager writes the block an instance reads into the
+`parameter_block` field of its instance record, so material evaluation reads
+`material_parameters[mesh.parameter_block + k]` for the `k`-th dynamic
+parameter. `MaterialParameters` in `visibility/material_parameters.rs` hands out
+the blocks with the visibility `RangeAllocator`.
+
+## Uploads carry only changes
+
+Every frame sequence keeps its own copy of the buffer. A write widens each
+sequence's changed range, and a frame copies only its own sequence's range, after
+instances have named their blocks. A value set to what it already holds changes
+nothing, so code that sets a value every tick uploads only when it moves.
+
+## Rules a change must keep
+
+- **Keep one order.** The shader generator and the loader both number dynamic
+  parameters in declaration order. Change both together.
+- **Keep the graph unaware.** A BEMX graph reads a parameter by name and never
+  learns whether it's static or dynamic; the material stage decides how to read
+  it. See [BEMX material graphs](/docs/develop/resource-management/bemx).
+- **Read once.** The BEMX lowering binds a parameter read that isn't a name or a
+  literal to one local where the graph first reads it.
+- **Keep the frame allocation-free.** Messages carry borrowed names, and
+  steady-state frames allocate nothing.
+
+## Tests that guard it
+
+- The `MaterialParameters` tests check defaults, values set before a material
+  loads, entity blocks following material changes, unchanged values uploading
+  nothing, and block reuse.
+- The visibility generator tests check that a program reading dynamic
+  parameters links, reads the parameter buffer, and declares no specialization
+  constant for them.
+- The material handler tests check that dynamic variables bake their defaults
+  and that a dynamic texture fails to bake.

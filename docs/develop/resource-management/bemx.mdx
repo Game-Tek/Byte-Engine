@@ -77,7 +77,10 @@ and before it's hashed.
   transformed coordinate the material stage doesn't carry is an error that
   names the node, never an approximation that renders wrong.
 - **Keep parameters by name.** A graph reads material parameters by name and
-  never holds their values, so variants share one graph and one shader.
+  never holds their values or how they're bound, so variants share one graph and
+  one shader, and a parameter turns dynamic without a graph change. The stage
+  decides how to read each parameter; see
+  [Material parameters](/docs/develop/rendering/visibility/material-parameters).
 
 ## Tests that guard it
 

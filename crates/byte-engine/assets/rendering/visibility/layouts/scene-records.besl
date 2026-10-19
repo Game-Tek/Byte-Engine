@@ -20,7 +20,8 @@ Mesh: struct {
 	base_meshlet_index: u32,
 	meshlet_count: u32,
 	flags: u32,
-	padding: u32,
+	// The first entry of the instance's dynamic material parameters in `material_parameters`.
+	parameter_block: u32,
 	bounding_sphere: vec4f,
 }
 

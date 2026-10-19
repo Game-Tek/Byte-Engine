@@ -3,10 +3,10 @@
 //! The world is a [`MessageScope`]: entities are created through its factories with
 //! [`Creator::create`](crate::core::factory::Creator::create), so every system that listens to the scope
 //! receives the same lifecycle messages. The [`World`] trait names the routes those systems share: transforms,
-//! deletions, and poses. Systems such as [`SceneGraph`](crate::gameplay::SceneGraph) and
+//! deletions, poses, and material parameters. Systems such as [`SceneGraph`](crate::gameplay::SceneGraph) and
 //! [`Physics`](crate::physics::Physics) are created on the scope and stepped by the loop that owns them, in
-//! the order that loop chooses. Without the `headed` feature the scope keeps every route but poses, so servers
-//! run the same gameplay code with nothing listening.
+//! the order that loop chooses. Without the `headed` feature the scope keeps every route but poses and material
+//! parameters, so servers run the same gameplay code with nothing listening.
 
 /// The `World` trait names the entity routes of a world scope so systems agree on where transforms and deletions travel.
 ///
@@ -33,6 +33,10 @@ pub trait World {
 	/// Returns the route skeletal poses travel on.
 	#[cfg(feature = "headed")]
 	fn poses_channel(&self) -> DefaultChannel<UpdatePose>;
+
+	/// Returns the route dynamic material parameter changes travel on. See [`SetMaterialParameter`].
+	#[cfg(feature = "headed")]
+	fn material_parameters_channel(&self) -> DefaultChannel<SetMaterialParameter>;
 }
 
 impl World for MessageScope {
@@ -51,6 +55,11 @@ impl World for MessageScope {
 
 	#[cfg(feature = "headed")]
 	fn poses_channel(&self) -> DefaultChannel<UpdatePose> {
+		self.channel()
+	}
+
+	#[cfg(feature = "headed")]
+	fn material_parameters_channel(&self) -> DefaultChannel<SetMaterialParameter> {
 		self.channel()
 	}
 }
@@ -74,7 +83,7 @@ pub(crate) fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: 
 }
 
 #[cfg(feature = "headed")]
-use crate::rendering::UpdatePose;
+use crate::rendering::{SetMaterialParameter, UpdatePose};
 use crate::{
 	core::{
 		channel::{Channel, DefaultChannel},

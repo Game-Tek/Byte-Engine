@@ -23,6 +23,7 @@ mod layout;
 mod loader;
 mod lod;
 mod manager;
+mod material_parameters;
 mod mesh_dispatch;
 mod ranges;
 mod render_pass;

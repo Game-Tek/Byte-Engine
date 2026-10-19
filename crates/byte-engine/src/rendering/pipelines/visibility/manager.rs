@@ -23,11 +23,12 @@ use super::features::{
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
+	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::lod::{LodSettings, LodView};
+use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	ContactShadowSettings, GtaoSettings, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
@@ -61,7 +62,9 @@ use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmissio
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
-use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, UpdatePose, View};
+use crate::rendering::{
+	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, Sink, UpdatePose, View,
+};
 
 /// The startup parameters that set the local-light shadow pool capacities.
 /// The startup parameter, inside the `render` subtree, that sets the shadow-map memory every light shares, in
@@ -545,6 +548,10 @@ pub struct VisibilityPipelineManager {
 	environment_listener: DefaultListener<CreateMessage<Environment>>,
 	/// World edits adopted at the start of [`PipelineManager::prepare`].
 	pose_listener: DefaultListener<UpdatePose>,
+	material_parameter_listener: DefaultListener<SetMaterialParameter>,
+	/// Canonical dynamic material parameter values, copied into each frame-local buffer after they change.
+	material_parameters: MaterialParameters,
+	material_parameters_buffer: ghi::DynamicBufferHandle<[[f32; 4]; MAX_MATERIAL_PARAMETERS]>,
 	deletions_listener: DefaultListener<DeleteMessage>,
 	/// Canonical material table, copied into each frame-local buffer after it changes.
 	materials: Box<[MaterialData; MAX_MATERIALS]>,
@@ -640,6 +647,10 @@ impl VisibilityPipelineManager {
 			"Material Evaluations",
 			ghi::Uses::Storage | ghi::Uses::TransferDestination,
 		));
+		let material_parameters_buffer = context.build_dynamic_buffer(host_buffer(
+			"Material Parameters",
+			ghi::Uses::Storage | ghi::Uses::TransferDestination,
+		));
 		let views_buffer = context.build_dynamic_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage));
 		let meshes_buffer = context.build_dynamic_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::Storage));
 		let lighting_buffer =
@@ -659,6 +670,7 @@ impl VisibilityPipelineManager {
 			scene.buffer("meshlets", geometry.meshlets),
 			scene.buffer("materials", materials_buffer),
 			scene.buffer("material_evaluations", material_evaluations_buffer),
+			scene.buffer("material_parameters", material_parameters_buffer),
 		]);
 		Self {
 			loader,
@@ -672,6 +684,9 @@ impl VisibilityPipelineManager {
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			environment_listener: world.factory::<Environment>().listener(),
 			pose_listener: world.poses_channel().listener(),
+			material_parameter_listener: world.material_parameters_channel().listener(),
+			material_parameters: MaterialParameters::new(),
+			material_parameters_buffer,
 			deletions_listener: world.deletions_listener(),
 			materials: Box::new([MaterialData::default(); MAX_MATERIALS]),
 			materials_buffer,
@@ -775,13 +790,18 @@ impl VisibilityPipelineManager {
 		while let Some(message) = self.pose_listener.read() {
 			self.scene.write_skinned_pose(message.handle(), message.global_matrices());
 		}
+		while let Some(message) = self.material_parameter_listener.read() {
+			self.material_parameters.receive(message);
+		}
 		self.process_transform_updates(alpha);
 		while let Some(message) = self.deletions_listener.read() {
 			let handle = message.into_handle();
 			self.scene.remove_light(handle);
-			// A deleted renderable also drops the transform retained for its asynchronous creation.
+			// A deleted renderable also drops the transform retained for its asynchronous creation, and the material
+			// parameters set on it.
 			self.remove_mesh_instance(handle);
 			self.renderable_transforms.remove(&handle);
+			self.material_parameters.forget_entity(handle);
 		}
 	}
 
@@ -818,6 +838,7 @@ impl VisibilityPipelineManager {
 
 	fn remove_mesh_instance(&mut self, handle: Handle) {
 		self.pending_renderables.retain(|pending| pending.handle != handle);
+		self.material_parameters.release_entity(handle);
 		let vertex_ranges = &self.geometry.vertex_ranges;
 		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
 		// order the next owner's writes after those reads.
@@ -931,6 +952,7 @@ impl VisibilityPipelineManager {
 			double_sided,
 			coverage,
 			texture_slots: textures,
+			parameters,
 			..
 		} = material;
 		let material_data = &mut self.materials[index as usize];
@@ -965,10 +987,12 @@ impl VisibilityPipelineManager {
 		if slot >= self.loaded_materials.len() {
 			self.loaded_materials.resize_with(slot + 1, || None);
 		}
+		let name: Arc<str> = id.into();
+		self.material_parameters.adopt_material(index, name.clone(), parameters);
 		self.loaded_materials[slot] = Some(LoadedMaterial {
 			index,
 			pipeline,
-			name: id.into(),
+			name,
 			alpha_mode,
 			double_sided,
 			texture_indices,
@@ -1060,7 +1084,8 @@ impl VisibilityPipelineManager {
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
 					meshlet_count: primitive.lods.levels()[0].meshlet_count,
 					flags: 0,
-					_padding: 0,
+					// Each frame names the block the instance reads.
+					parameter_block: 0,
 					bounding_sphere: primitive.bounding_sphere,
 				},
 				lods: primitive.lods,
@@ -1135,6 +1160,7 @@ impl VisibilityPipelineManager {
 			let mut shader_mesh = entity.shader_mesh;
 			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
 			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
+			shader_mesh.parameter_block = self.material_parameters.block(entity.handle, shader_mesh.material_index);
 			// Naming another meshlet range is all a level switch takes. Every view of the frame, shadows included,
 			// then draws this level.
 			if let Some(view) = lod_view {
@@ -1357,6 +1383,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		// Detail levels follow the first sink's camera, like the views and exposure below.
 		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
 		self.rebuild_active_instances(frame, lod_view);
+		// Instances write their own parameter blocks as the frame names them, so the changes are copied after.
+		if let Some((first, changes)) = self.material_parameters.take_changes(sequence) {
+			frame.get_mut_dynamic_buffer_slice(self.material_parameters_buffer)[first..first + changes.len()]
+				.copy_from_slice(changes);
+			frame.sync_buffer(self.material_parameters_buffer);
+		}
 		let dispatches = self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info);
 
 		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {

@@ -79,6 +79,40 @@ pipeline and bakes the textures its variables reference. Variants share their
 parent's shader. At runtime, request the processed `Material`, `Variant`,
 `Shader`, and `Image` resources rather than the `.bema` file.
 
+### Change a parameter at runtime
+
+A `Static` variable's value is compiled into the material's shader. To change a
+`float`, `vec3f`, or `vec4f` variable from code instead, mark it `Dynamic`; its
+`value` becomes the default:
+
+```json
+{
+	"name": "color",
+	"data_type": "vec4f",
+	"type": "Dynamic",
+	"value": [1, 1, 1, 1]
+}
+```
+
+Then send a `SetMaterialParameter` on the world's material parameter route,
+either for one entity or for every entity that uses a material:
+
+```rust
+use byte_engine::gameplay::World as _;
+use byte_engine::rendering::SetMaterialParameter;
+
+let parameters = app.world().material_parameters_channel();
+// Only this entity turns red.
+parameters.send(SetMaterialParameter::new(handle, "color", [1.0, 0.0, 0.0, 1.0]));
+// Every entity drawn with this variant turns blue, unless it set `color` itself.
+parameters.send(SetMaterialParameter::material("materials/tiles.bema", "color", [0.0, 0.0, 1.0, 1.0]));
+```
+
+A value set on an entity stays until you set it again or delete the entity,
+and a value sent before the material finishes loading applies once it does.
+Variants that differ only in dynamic values share one pipeline. A variant can
+leave a dynamic variable out to keep its parent's default.
+
 ## Declare a flipbook
 
 List an image sequence and its playback rate in a `.flipbook` file:

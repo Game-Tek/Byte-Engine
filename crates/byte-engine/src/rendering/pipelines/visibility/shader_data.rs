@@ -24,7 +24,9 @@ pub struct ShaderMesh {
 	pub(crate) meshlet_count: u32,
 	/// Bits such as [`MESH_FLAG_DOUBLE_SIDED`] and [`MESH_FLAG_SKINNED`].
 	pub(crate) flags: u32,
-	pub(crate) _padding: u32,
+	/// The first entry of the instance's dynamic material parameters in the material parameter buffer: its own
+	/// block when the application set a parameter on it, else its material's. See [`super::material_parameters`].
+	pub(crate) parameter_block: u32,
 	/// Object-space sphere around the primitive's meshlets, as xyz center and w radius. Task shaders place it with
 	/// `model` and skip instances no view reaches.
 	pub(crate) bounding_sphere: [f32; 4],
@@ -222,6 +224,7 @@ pub(crate) struct ReflectionShaderParameters {
 const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 72);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, parameter_block) == 76);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, bounding_sphere) == 80);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);

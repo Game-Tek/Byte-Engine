@@ -90,6 +90,9 @@ pub trait Stage<'a> {
 
 	/// Returns a BESL expression reading the parameter named `name`, as the `f32` type of the same width as `type`.
 	///
+	/// A name or a literal is read wherever the graph uses the parameter. Any other expression, such as a buffer read,
+	/// is bound to a local where the graph first reads it, so it runs once.
+	///
 	/// Return [`LowerError::UnknownParameter`] when the material declares no such parameter with that type.
 	fn parameter(&mut self, name: &'a str, r#type: Type) -> Result<Node<'a>, LowerError>;
 }
@@ -133,6 +136,8 @@ pub struct Lowering<'a, S> {
 	tangent_normals: Vec<(NodeId, Expression<'a>)>,
 	/// The raw sample of each texture, shared by every image node that samples it.
 	samples: Vec<(&'a str, Expression<'a>)>,
+	/// The read of each parameter, shared by every parameter node that reads it.
+	parameters: Vec<(&'a str, Expression<'a>)>,
 	/// Which nodes the current request reaches, kept between requests so each one reuses the allocation.
 	needed: Vec<bool>,
 	locals: u32,
@@ -147,6 +152,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			values: vec![None; graph.nodes().len()],
 			tangent_normals: Vec::new(),
 			samples: Vec::new(),
+			parameters: Vec::new(),
 			needed: vec![false; graph.nodes().len()],
 			locals: 0,
 		}
@@ -187,10 +193,8 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	/// Returns a value whose components can be read more than once, binding it to a local first when it is anything
 	/// but a name.
 	pub fn addressable(&mut self, value: Expression<'a>) -> Expression<'a> {
-		let readable = matches!(value.syntax.node(), Nodes::Expression(Expressions::Member { .. }));
-
 		// A one-component value is never read through a component, so repeating it costs nothing either.
-		if readable || value.width() == 1 {
+		if reads_free(&value.syntax) || value.width() == 1 {
 			return value;
 		}
 
@@ -270,7 +274,7 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 
 		Ok(match graph.node(id) {
 			GraphNode::Constant(value) => Expression::new(constant(value), result),
-			GraphNode::Parameter { name, r#type } => Expression::new(self.stage.parameter(name, *r#type)?, result),
+			GraphNode::Parameter { name, r#type } => self.parameter(name, *r#type)?,
 			GraphNode::Position => Expression::new(self.stage.geometry(Geometry::Position), result),
 			GraphNode::Normal => Expression::new(self.stage.geometry(Geometry::Normal), result),
 			GraphNode::Tangent => Expression::new(self.stage.geometry(Geometry::Tangent), result),
@@ -525,6 +529,27 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			.push(Node::let_assignment(name.clone(), type_name(r#type), syntax));
 
 		Expression::new(Node::member_expression(name), r#type)
+	}
+
+	/// Returns the value of a parameter, reading it on first use.
+	///
+	/// A read that is a name or a literal is repeated wherever the graph uses it; any other read, such as a buffer
+	/// load, runs once into a local.
+	fn parameter(&mut self, name: &'a str, r#type: Type) -> Result<Expression<'a>, LowerError> {
+		if let Some((_, read)) = self.parameters.iter().find(|(read, _)| *read == name) {
+			return Ok(read.clone());
+		}
+
+		let syntax = self.stage.parameter(name, r#type)?;
+		let read = if reads_free(&syntax) {
+			Expression::new(syntax, r#type)
+		} else {
+			self.bind(r#type, syntax)
+		};
+
+		self.parameters.push((name, read.clone()));
+
+		Ok(read)
 	}
 
 	/// Returns the raw `vec4f` sample of a texture, sampling it on first use.
@@ -800,11 +825,19 @@ pub fn type_name(r#type: Type) -> &'static str {
 
 const COMPONENT_NAMES: [&str; 4] = ["x", "y", "z", "w"];
 
+/// Returns whether reading `syntax` again costs nothing: it is a name or a literal.
+fn reads_free(syntax: &Node<'_>) -> bool {
+	matches!(
+		syntax.node(),
+		Nodes::Expression(Expressions::Member { .. } | Expressions::Literal { .. })
+	)
+}
+
 /// Reads one float component out of a value of the given width.
 ///
 /// A one-component value is its own only component, so it is returned untouched rather than accessed through `.x`,
 /// which BESL does not define for `f32`.
-fn component<'a>(value: &Node<'a>, index: usize, width: usize) -> Node<'a> {
+pub fn component<'a>(value: &Node<'a>, index: usize, width: usize) -> Node<'a> {
 	if width <= 1 {
 		return value.clone();
 	}
@@ -813,7 +846,7 @@ fn component<'a>(value: &Node<'a>, index: usize, width: usize) -> Node<'a> {
 }
 
 /// Assembles float components back into a value of their combined width.
-fn construct<'a>(mut components: Vec<Node<'a>>) -> Node<'a> {
+pub fn construct<'a>(mut components: Vec<Node<'a>>) -> Node<'a> {
 	if components.len() == 1 {
 		return components.remove(0);
 	}

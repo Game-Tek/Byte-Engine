@@ -161,7 +161,8 @@ them with a value of the matching type:
 | `image` | `Texture2D` |
 
 A graph that reads a parameter its material doesn't declare with that type fails
-to bake.
+to bake. The material's `.bema` file, not the graph, says whether a value
+parameter is static or dynamic.
 
 ## .bemx files
 

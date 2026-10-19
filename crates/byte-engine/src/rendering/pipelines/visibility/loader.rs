@@ -11,6 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use resource_management::Reference;
+use resource_management::bemx;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::{Image as ResourceImage, ImagePhotometry},
@@ -93,6 +94,16 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) double_sided: bool,
 	pub(crate) coverage: MaterialCoverage,
 	pub(crate) texture_slots: Vec<Option<u32>>,
+	/// The material's dynamic parameters with their default values, in the order its program reads them.
+	pub(crate) parameters: Arc<[DynamicParameter]>,
+}
+
+/// The `DynamicParameter` struct is one value parameter of a material that the application can change at runtime.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DynamicParameter {
+	pub(crate) name: String,
+	/// The value the material starts with, which also fixes the parameter's type.
+	pub(crate) default: bemx::Value,
 }
 
 /// The `ResidentTexture` struct carries one upload-complete texture into renderer-owned descriptors.
@@ -583,6 +594,7 @@ impl VisibilityLoader {
 			})
 			.collect();
 		let specialization = specialization_entries(alpha_mode, &variant.variables);
+		let parameters = dynamic_parameters(&variant.variables);
 		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			return Err(LoadError(format!(
@@ -618,6 +630,7 @@ impl VisibilityLoader {
 			double_sided: material.double_sided(),
 			coverage: material.coverage,
 			texture_slots,
+			parameters,
 		}))
 	}
 
@@ -799,11 +812,11 @@ impl VisibilityLoader {
 	}
 }
 
-/// Converts a variant's constant parameters into shader specialization constants.
-///
-/// Image parameters bind through texture slots instead, so they never split pipelines.
 /// Returns the specialization constants of a material variant's evaluation pipeline: its phase, then its scalar and
 /// vector variables, at the ids the visibility shader generator declared them with.
+///
+/// Image parameters bind through texture slots and dynamic ones through the parameter buffer instead, so neither
+/// splits pipelines.
 fn specialization_entries(
 	alpha_mode: AlphaMode,
 	variables: &[resource_management::resources::material::VariantVariable],
@@ -813,6 +826,9 @@ fn specialization_entries(
 	let transparent = SpecializationMapEntry::new(TRANSPARENT_SPECIALIZATION_ID, matches!(alpha_mode, AlphaMode::Blend));
 	let variables = (0u32..).zip(variables).filter_map(|(index, variable)| {
 		let id = material_variable_specialization_id(index);
+		if variable.dynamic {
+			return None;
+		}
 		match &variable.value {
 			Value::Scalar(value) => SpecializationMapEntry::new(id, *value).into(),
 			Value::Vector3(value) => SpecializationMapEntry::new(id, ghi::pod::Vec3f::from(*value)).into(),
@@ -821,6 +837,27 @@ fn specialization_entries(
 		}
 	});
 	std::iter::once(transparent).chain(variables).collect()
+}
+
+/// Returns a variant's dynamic parameters with the values it gives them, in declaration order.
+fn dynamic_parameters(variables: &[resource_management::resources::material::VariantVariable]) -> Arc<[DynamicParameter]> {
+	variables
+		.iter()
+		.filter(|variable| variable.dynamic)
+		.filter_map(|variable| {
+			let default = match &variable.value {
+				Value::Scalar(value) => (*value).into(),
+				Value::Vector3(value) => (*value).into(),
+				Value::Vector4(value) => (*value).into(),
+				// The material handler never bakes a dynamic texture.
+				Value::Image(_) => return None,
+			};
+			Some(DynamicParameter {
+				name: variable.name.clone(),
+				default,
+			})
+		})
+		.collect()
 }
 
 /// Returns the illuminance that a baked diffuse irradiance cube delivers to an upward-facing surface.

@@ -40,6 +40,7 @@ pub mod mesh;
 #[doc(hidden)]
 pub mod renderable;
 
+mod material_parameter;
 mod pipeline_compilation;
 #[doc(hidden)]
 pub mod pipeline_manager;
@@ -81,6 +82,8 @@ pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
 	PhotometricIntensity, PointLight,
 };
+pub(crate) use material_parameter::MaterialParameterTarget;
+pub use material_parameter::SetMaterialParameter;
 pub use particles::ParticleEmitter;
 pub use pipeline_compilation::{PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
 pub use pipeline_manager::PipelineManager;

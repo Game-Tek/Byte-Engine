@@ -51,3 +51,6 @@ materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: de
 mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
 // The evaluation slot of every material table entry, which the material prepasses bucket pixels by.
 material_evaluations: descriptor<{ type: MaterialEvaluations, binding: 1068, access: read, memory: device }>;
+// The values of dynamic material parameters, one entry per parameter. An instance's `parameter_block` names where its
+// material's parameters start, in the order the material declares them.
+material_parameters: descriptor<{ type: vec4f[], binding: 1071, access: read, memory: device }>;

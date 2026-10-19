@@ -223,7 +223,7 @@ is generated from the material's [BEMX graph](/docs/reference/bemx).
 | --- | --- |
 | Alpha mode | Opaque, masked with a cutoff, or blended. Blended materials draw in the transparent phase. |
 | Double-sided | Draws without back-face culling. |
-| Variables | Scalars and vectors become specialization constants, so programs that differ only in textures share one pipeline and one dispatch. Texture variables take slots in declaration order, up to 16. |
+| Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |
 | Layout layers | Every material builds on the scene records, scene, visibility buffer, and material evaluation layers. |
 
 The evaluation shader writes the graph's surface into these properties. A surface

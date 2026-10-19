@@ -70,6 +70,30 @@ pub enum Value {
 	Vector4([f32; 4]),
 }
 
+impl From<f32> for Value {
+	fn from(value: f32) -> Self {
+		Value::Float(value)
+	}
+}
+
+impl From<[f32; 2]> for Value {
+	fn from(value: [f32; 2]) -> Self {
+		Value::Vector2(value)
+	}
+}
+
+impl From<[f32; 3]> for Value {
+	fn from(value: [f32; 3]) -> Self {
+		Value::Vector3(value)
+	}
+}
+
+impl From<[f32; 4]> for Value {
+	fn from(value: [f32; 4]) -> Self {
+		Value::Vector4(value)
+	}
+}
+
 impl Value {
 	/// Returns the type of this constant.
 	pub const fn r#type(&self) -> Type {

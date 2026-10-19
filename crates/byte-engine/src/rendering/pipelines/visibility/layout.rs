@@ -21,6 +21,9 @@ pub(crate) type ActiveEvaluationMask = [u64; MAX_MATERIALS / u64::BITS as usize]
 /// larger scene-wide bindless texture pool.
 pub(crate) const MAX_MATERIAL_TEXTURES: usize = 16;
 pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
+/// Entries of the material parameter buffer, one per dynamic parameter of a loaded material or of an instance the
+/// application set parameters on. See [`super::material_parameters`].
+pub(crate) const MAX_MATERIAL_PARAMETERS: usize = 16384;
 /// The size of the scene light table. Light bucketing keeps per-pixel cost proportional to the lights near each pixel.
 pub(crate) const MAX_LIGHTS: usize = 1024;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;

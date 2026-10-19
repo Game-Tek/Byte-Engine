@@ -27,8 +27,11 @@ pub struct MaterialParameter {
 /// The `ParameterKind` enum tells a program generator how a material parameter is bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParameterKind {
-	/// A constant of the given type, which [`bemx::Node::Parameter`] reads.
+	/// A constant of the given type, which [`bemx::Node::Parameter`] reads. Its value is compiled into the program.
 	Value(bemx::Type),
+	/// A value of the given type, which [`bemx::Node::Parameter`] reads, that the application can change while the
+	/// material is in use. The program reads it from memory the renderer writes.
+	Dynamic(bemx::Type),
 	/// A texture, which [`bemx::Node::Image`] samples.
 	Texture,
 }
@@ -58,14 +61,7 @@ impl BEMAAssetHandler {
 
 	/// Bakes a material definition and the shader its graph generates.
 	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
-		let invalid = |problem: &str| {
-			context.error(format_args!(
-				"Invalid material '{}': {problem} See {}.",
-				url.as_ref(),
-				online_docs_url(BEMA_DOCS_PATH)
-			));
-			LoadErrors::FailedToProcess
-		};
+		let invalid = |problem: &str| report_invalid(context, "material", url, problem);
 
 		// Every material declares its render domain, even though shader generation does not read it.
 		asset["domain"]
@@ -88,9 +84,10 @@ impl BEMAAssetHandler {
 			.unzip();
 
 		// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
+		let invalid = &invalid;
 		let value_requests = sources
 			.iter()
-			.map(|&(data_type, value)| async move { resolve_value(context, data_type, value).await });
+			.map(|&(data_type, value)| async move { resolve_value(context, data_type, value, invalid).await });
 
 		// The shader and the parameter values do not depend on each other, so they bake together.
 		let (shader, values) = std::future::join!(
@@ -104,6 +101,7 @@ impl BEMAAssetHandler {
 			.zip(sources)
 			.zip(values?)
 			.map(|((parameter, (data_type, _)), value)| ParameterModel {
+				dynamic: matches!(parameter.kind, ParameterKind::Dynamic(_)),
 				name: parameter.name,
 				r#type: data_type.to_string(),
 				value,
@@ -131,13 +129,25 @@ impl BEMAAssetHandler {
 		let material = context.bake_dependency(parent_material_url).await?;
 		let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
 		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
+		let invalid = |problem: &str| report_invalid(context, "material variant", url, problem);
+		let invalid = &invalid;
 		let value_requests = material_repr.parameters.iter().map(|parameter| async move {
 			let value = authored_variables
 				.iter()
 				.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
-				.and_then(|variable| variable["value"].as_str())
-				.ok_or(LoadErrors::FailedToProcess)?;
-			resolve_value(context, &parameter.r#type, value).await
+				.map(|variable| &variable["value"])
+				.filter(|value| !value.is_null());
+			// A dynamic value the variant leaves out starts at the parent's default.
+			if value.is_none() && parameter.dynamic {
+				return Ok(parameter.value.clone());
+			}
+			let value = value.ok_or_else(|| {
+				invalid(&format!(
+					"it gives no `value` for the parent's static variable '{}'. The most likely cause is a variable left out of the variant or written without a value.",
+					parameter.name
+				))
+			})?;
+			resolve_value(context, &parameter.r#type, value, invalid).await
 		});
 		let values = buffered_in_order(value_requests, 8).await?;
 		let variables = material_repr
@@ -148,6 +158,7 @@ impl BEMAAssetHandler {
 				value,
 				name: parameter.name.clone(),
 				r#type: parameter.r#type.clone(),
+				dynamic: parameter.dynamic,
 			})
 			.collect();
 		let alpha_mode = match asset.get("transparency") {
@@ -213,18 +224,40 @@ impl BEMAAssetHandler {
 }
 
 /// Reads one entry of a `.bema` file's `variables`: the parameter it declares, its data type, and its value.
-fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &str)), String> {
+fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &Value)), String> {
 	let name = variable["name"]
 		.as_str()
 		.ok_or("a variable has no `name`. The most likely cause is a variable written without one.")?;
 	let data_type = variable["data_type"].as_str().ok_or_else(|| {
 		format!("variable '{name}' has no `data_type`. The most likely cause is a variable written without one.")
 	})?;
+	// Values are compiled into the program unless the variable asks to change at runtime.
+	let dynamic = match variable.get("type").map(Value::as_str) {
+		None | Some(Some("Static")) => false,
+		Some(Some("Dynamic")) => true,
+		Some(_) => {
+			return Err(format!(
+				"variable '{name}' has a `type` other than `Static` or `Dynamic`. The most likely cause is a misspelt binding."
+			));
+		}
+	};
 
+	let value_kind = |r#type| {
+		if dynamic {
+			ParameterKind::Dynamic(r#type)
+		} else {
+			ParameterKind::Value(r#type)
+		}
+	};
 	let kind = match data_type {
-		"float" => ParameterKind::Value(bemx::Type::Float),
-		"vec3f" => ParameterKind::Value(bemx::Type::Vector3),
-		"vec4f" => ParameterKind::Value(bemx::Type::Vector4),
+		"float" => value_kind(bemx::Type::Float),
+		"vec3f" => value_kind(bemx::Type::Vector3),
+		"vec4f" => value_kind(bemx::Type::Vector4),
+		"Texture2D" if dynamic => {
+			return Err(format!(
+				"texture variable '{name}' is `Dynamic`. The most likely cause is a `type` copied from a value variable; only `float`, `vec3f`, and `vec4f` variables can change at runtime."
+			));
+		}
 		"Texture2D" => ParameterKind::Texture,
 		data_type => {
 			return Err(format!(
@@ -233,8 +266,9 @@ fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &str
 		}
 	};
 
-	let value = variable["value"]
-		.as_str()
+	let value = variable
+		.get("value")
+		.filter(|value| !value.is_null())
 		.ok_or_else(|| format!("variable '{name}' has no `value`. The most likely cause is a variable written without one."))?;
 
 	Ok((
@@ -435,6 +469,7 @@ async fn store_generated_materials(
 					name: material_texture_parameter_name(slot),
 					r#type: "Texture2D".to_string(),
 					value: ValueModel::Image(image),
+					dynamic: false,
 				}
 			})
 			.collect();
@@ -607,29 +642,69 @@ async fn store_generated_shaders(
 		.collect())
 }
 
-/// Resolves a material parameter value based on its type.
-async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -> Result<ValueModel, LoadErrors> {
-	let to_color = |name: &str| match name {
-		"Red" => [1f32, 0f32, 0f32, 1f32],
-		"Green" => [0f32, 1f32, 0f32, 1f32],
-		"Blue" => [0f32, 0f32, 1f32, 1f32],
-		"Purple" => [1f32, 0f32, 1f32, 1f32],
-		"White" => [1f32, 1f32, 1f32, 1f32],
-		"Black" => [0f32, 0f32, 0f32, 1f32],
-		_ => [1f32, 0f32, 1f32, 1f32],
+/// Reports why a `.bema` file of the given `kind`, such as `"material"`, can't bake, and returns the load error.
+fn report_invalid(context: BakeContext<'_>, kind: &str, url: ResourceId<'_>, problem: &str) -> LoadErrors {
+	context.error(format_args!(
+		"Invalid {kind} '{}': {problem} See {}.",
+		url.as_ref(),
+		online_docs_url(BEMA_DOCS_PATH)
+	));
+	LoadErrors::FailedToProcess
+}
+
+/// Resolves a material parameter value based on its type, reporting through `invalid` a value that isn't one of
+/// `data_type`.
+async fn resolve_value(
+	context: BakeContext<'_>,
+	data_type: &str,
+	value: &Value,
+	invalid: &dyn Fn(&str) -> LoadErrors,
+) -> Result<ValueModel, LoadErrors> {
+	let value = match data_type {
+		"vec4f" => vector::<4>(value).map(ValueModel::Vector4),
+		"vec3f" => vector::<3>(value).map(ValueModel::Vector3),
+		"float" => value.as_f64().map(|value| ValueModel::Scalar(value as f32)).ok_or_else(|| {
+			format!("the `float` value {value} is not a number. The most likely cause is a quoted number or a color name.")
+		}),
+		"Texture2D" => match value.as_str() {
+			Some(image) => Ok(ValueModel::Image(context.bake_dependency(image).await?)),
+			None => Err(format!(
+				"the `Texture2D` value {value} is not an asset ID. The most likely cause is a value written for another data type."
+			)),
+		},
+		data_type => Err(format!("the data type '{data_type}' has no values.")),
 	};
 
-	match data_type {
-		"vec4f" => Ok(ValueModel::Vector4(to_color(value))),
-		"vec3f" => {
-			let [red, green, blue, _] = to_color(value);
+	value.map_err(|problem| invalid(&problem))
+}
 
-			Ok(ValueModel::Vector3([red, green, blue]))
-		}
-		"float" => Ok(ValueModel::Scalar(0f32)),
-		"Texture2D" => Ok(ValueModel::Image(context.bake_dependency(value).await?)),
-		_ => Err(LoadErrors::FailedToProcess),
+/// Reads a `vec3f` or `vec4f` value: a named color or an array of `N` numbers.
+fn vector<const N: usize>(value: &Value) -> Result<[f32; N], String> {
+	if let Some(name) = value.as_str() {
+		let color = match name {
+			"Red" => [1f32, 0f32, 0f32, 1f32],
+			"Green" => [0f32, 1f32, 0f32, 1f32],
+			"Blue" => [0f32, 0f32, 1f32, 1f32],
+			"Purple" => [1f32, 0f32, 1f32, 1f32],
+			"White" => [1f32, 1f32, 1f32, 1f32],
+			"Black" => [0f32, 0f32, 0f32, 1f32],
+			_ => [1f32, 0f32, 1f32, 1f32],
+		};
+
+		return Ok(std::array::from_fn(|index| color[index]));
 	}
+
+	let components = value
+		.as_array()
+		.filter(|components| components.len() == N)
+		.and_then(|components| components.iter().map(Value::as_f64).collect::<Option<Vec<_>>>())
+		.ok_or_else(|| {
+			format!(
+				"the value {value} is neither a color name nor an array of {N} numbers. The most likely cause is an array with the wrong number of components."
+			)
+		})?;
+
+	Ok(std::array::from_fn(|index| components[index] as f32))
 }
 
 const BEMA_DOCS_PATH: &str = "reference/bema";
@@ -650,7 +725,10 @@ pub mod tests {
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
-		resources::material::{Binding, BindingKind, SetInterface, Shader, ShaderArtifact, ShaderInterface, VariantModel},
+		resources::material::{
+			Binding, BindingKind, MaterialModel, SetInterface, Shader, ShaderArtifact, ShaderInterface, ValueModel,
+			VariantModel,
+		},
 		shader::{besl::backends::msl::MSL_ENTRY_POINT, generator::ShaderGenerationSettings},
 	};
 
@@ -783,6 +861,127 @@ pub mod tests {
 
 		assert_eq!(variant.id, "load_variant.bema");
 		assert_eq!(variant.class, "Variant");
+	}
+
+	/// A dynamic variable keeps its flag through the material and its variants, its value is the default, and a variant
+	/// that leaves it out inherits that default.
+	#[r#async::test]
+	async fn dynamic_variables_bake_their_defaults() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file(
+			"dynamic_material.bema",
+			r#"{
+				"domain": "World",
+				"graph": "dynamic.bemx",
+				"variables": [
+					{ "name": "tint", "data_type": "vec4f", "type": "Dynamic", "value": [0.5, 0.25, 1.0, 1.0] },
+					{ "name": "glow", "data_type": "float", "type": "Dynamic", "value": 2 },
+					{ "name": "roughness", "data_type": "float", "type": "Static", "value": 0.75 }
+				]
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"dynamic.bemx",
+			r#"{
+				nodes: [
+					{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
+					{ name: "rgb", node: "swizzle", in: "tint", channels: "rgb" },
+					{ name: "surface", node: "surface", base_color: "rgb" },
+				],
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"dynamic_variant.bema",
+			r#"{
+				"parent": "dynamic_material.bema",
+				"variables": [
+					{ "name": "tint", "value": "White" },
+					{ "name": "roughness", "value": 0.25 }
+				]
+			}"#
+			.as_bytes(),
+		);
+
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		asset_manager.add_asset_handler(BEMAAssetHandler {
+			generator: Some(Box::new(MinimalTestShaderGenerator)),
+			compiler: Box::new(TestShaderCompiler),
+		});
+
+		let _: ReferenceModel<VariantModel> = asset_manager
+			.bake_if_not_exists("dynamic_variant.bema")
+			.await
+			.expect("Failed to bake a material with dynamic variables");
+
+		let material = resource_storage_backend
+			.get_resource(ResourceId::new("dynamic_material.bema"))
+			.expect("Expected material");
+		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
+		let parameters = material
+			.parameters
+			.iter()
+			.map(|parameter| (parameter.name.as_str(), parameter.dynamic, parameter.value.clone()))
+			.collect::<Vec<_>>();
+		assert!(matches!(
+			parameters.as_slice(),
+			[
+				("tint", true, ValueModel::Vector4([0.5, 0.25, 1.0, 1.0])),
+				("glow", true, ValueModel::Scalar(2.0)),
+				("roughness", false, ValueModel::Scalar(0.75)),
+			]
+		));
+
+		let variant = resource_storage_backend
+			.get_resource(ResourceId::new("dynamic_variant.bema"))
+			.expect("Expected variant");
+		let variant: VariantModel = crate::from_slice(&variant.resource).expect("Expected a variant model");
+		let variables = variant
+			.variables
+			.iter()
+			.map(|variable| (variable.name.as_str(), variable.dynamic, variable.value.clone()))
+			.collect::<Vec<_>>();
+		assert!(matches!(
+			variables.as_slice(),
+			[
+				("tint", true, ValueModel::Vector4([1.0, 1.0, 1.0, 1.0])),
+				("glow", true, ValueModel::Scalar(2.0)),
+				("roughness", false, ValueModel::Scalar(0.25)),
+			]
+		));
+	}
+
+	/// A texture can't change at runtime, so a material that declares one dynamic fails to bake.
+	#[r#async::test]
+	async fn a_dynamic_texture_fails_to_bake() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"dynamic_texture.bema",
+			r#"{
+				"domain": "World",
+				"graph": "dynamic_texture.bemx",
+				"variables": [
+					{ "name": "albedo", "data_type": "Texture2D", "type": "Dynamic", "value": "albedo.png" }
+				]
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"dynamic_texture.bemx",
+			r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes(),
+		);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, ResourceTestStorageBackend::new());
+		asset_manager.add_asset_handler(BEMAAssetHandler {
+			generator: Some(Box::new(MinimalTestShaderGenerator)),
+			compiler: Box::new(TestShaderCompiler),
+		});
+
+		let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("dynamic_texture.bema").await;
+
+		assert!(baked.is_err(), "A dynamic texture variable should fail the bake.");
 	}
 }
 

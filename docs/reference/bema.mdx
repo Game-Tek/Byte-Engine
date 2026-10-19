@@ -15,20 +15,29 @@ follow [Author assets](/docs/use/resources/author#declare-a-material).
 ## Material files
 
 A root material is a file without `parent`. The handler reads these fields and
-ignores any other, such as `type`:
+ignores any other, such as a material-level `type`:
 
 | Field | Value |
 | --- | --- |
 | `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader generation. |
 | `graph` | Required. The asset ID of the `.bemx` file that describes the material's surface. |
-| `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, and `value`. The graph's `parameter` and `image` nodes read them by name. |
+| `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, `value`, and optionally `type`. The graph's `parameter` and `image` nodes read them by name. |
+
+A variable's `type` says how its value reaches the shader:
+
+| `type` | Meaning |
+| --- | --- |
+| `Static`, or no field | The value is compiled into the shader. |
+| `Dynamic` | `value` is the default, and applications can change the value at runtime; see [Change a parameter at runtime](/docs/use/resources/author#change-a-parameter-at-runtime). Only `float`, `vec3f`, and `vec4f` variables can be dynamic. |
+
+Any other `type`, or a dynamic `Texture2D`, fails the bake.
 
 ## Variant files
 
 | Field | Value |
 | --- | --- |
 | `parent` | Required. The asset ID of the material this variant specializes. |
-| `variables` | Required. One object with `name` and `value` for every parameter of the parent material. A parent parameter without a value fails the bake. Each value resolves with the parent parameter's `data_type`. |
+| `variables` | Required. One object with `name` and `value` for parameters of the parent material. A static parent parameter without a value fails the bake; a dynamic one keeps the parent's default. Each value resolves with the parent parameter's `data_type`, and keeps the parent's `type`. |
 | `transparency` | `"Blend"` or `true` selects blended transparency. Any other value, or no field, selects opaque. |
 
 ## Values
@@ -37,12 +46,12 @@ ignores any other, such as `type`:
 
 | `data_type` | `value` |
 | --- | --- |
-| `vec4f` | A named color: `Red`, `Green`, `Blue`, `Purple`, `White`, or `Black`. Any other name resolves to the magenta placeholder `(1, 0, 1, 1)`. |
-| `vec3f` | A named color, as for `vec4f`, without the alpha component. |
-| `float` | Accepted, but the value isn't read: the parameter resolves to `0.0`. |
+| `vec4f` | An array of four numbers, or a named color: `Red`, `Green`, `Blue`, `Purple`, `White`, or `Black`. Any other name resolves to the magenta placeholder `(1, 0, 1, 1)`. |
+| `vec3f` | An array of three numbers, or a named color, as for `vec4f`, without the alpha component. |
+| `float` | A number. |
 | `Texture2D` | The asset ID of an image, which bakes as a dependency and is stored as a reference. |
 
-Any other `data_type` fails the bake.
+Any other `data_type`, or a value of the wrong form, fails the bake.
 
 ## What baking produces
 

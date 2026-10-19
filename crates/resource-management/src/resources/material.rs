@@ -133,6 +133,9 @@ pub struct VariantVariable {
 	pub name: String,
 	pub r#type: String,
 	pub value: Value,
+	/// Whether the application can change the value at runtime. A dynamic value is the default the renderer starts
+	/// from; a static one is compiled into the material's program.
+	pub dynamic: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -140,6 +143,8 @@ pub struct VariantVariableModel {
 	pub name: String,
 	pub r#type: String,
 	pub value: ValueModel,
+	/// Whether the application can change the value at runtime; see [`VariantVariable::dynamic`].
+	pub dynamic: bool,
 }
 
 impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
@@ -157,6 +162,7 @@ impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
 					ValueModel::Vector4(vector) => Value::Vector4(vector),
 					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
 				},
+				dynamic: self.dynamic,
 			})
 		})
 	}
@@ -494,6 +500,8 @@ pub struct Parameter {
 	pub r#type: String,
 	pub name: String,
 	pub value: Value,
+	/// Whether the application can change the value at runtime; see [`VariantVariable::dynamic`].
+	pub dynamic: bool,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -501,6 +509,8 @@ pub struct ParameterModel {
 	pub r#type: String,
 	pub name: String,
 	pub value: ValueModel,
+	/// Whether the application can change the value at runtime; see [`VariantVariable::dynamic`].
+	pub dynamic: bool,
 }
 
 impl<'de> Solver<'de, Parameter> for ParameterModel {
@@ -518,6 +528,7 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 					ValueModel::Vector4(vector) => Value::Vector4(vector),
 					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
 				},
+				dynamic: self.dynamic,
 			})
 		})
 	}

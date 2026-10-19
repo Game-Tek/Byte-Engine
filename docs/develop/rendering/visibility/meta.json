@@ -2,6 +2,7 @@
 	"title": "Visibility pipeline",
 	"icon": "Computer",
 	"pages": [
+		"material-parameters",
 		"shadow-maps",
 		"skinning"
 	]

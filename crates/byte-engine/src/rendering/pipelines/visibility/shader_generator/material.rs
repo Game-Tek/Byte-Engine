@@ -5,7 +5,7 @@ use besl::parser::Node;
 use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind};
 use resource_management::bemx::{
 	self,
-	besl::{Expression, Geometry, LowerError, Lowering, Stage},
+	besl::{Expression, Geometry, LowerError, Lowering, Stage, component, construct},
 };
 
 use super::ast::MaterialReconstructionFeatures;
@@ -79,19 +79,33 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 	}
 
 	fn parameter(&mut self, name: &'a str, r#type: bemx::Type) -> Result<Node<'a>, LowerError> {
-		// Value parameters are specialization constants the generator declares under their own names.
-		if !self
-			.parameters
-			.iter()
-			.any(|parameter| parameter.name == name && parameter.kind == ParameterKind::Value(r#type))
-		{
-			return Err(LowerError::UnknownParameter {
-				name: name.to_string(),
-				r#type,
-			});
+		// Dynamic parameters take entries of the instance's parameter block in the order the material declares them,
+		// which is the order the renderer writes their values in.
+		let mut entry = 0u32;
+		for parameter in self.parameters {
+			match parameter.kind {
+				// Static parameters are specialization constants the generator declares under their own names.
+				ParameterKind::Value(declared) if parameter.name == name && declared == r#type => {
+					return Ok(Node::member_expression(name));
+				}
+				ParameterKind::Dynamic(declared) if parameter.name == name && declared == r#type => {
+					let block = Node::accessor(Node::member_expression("mesh"), Node::member_expression("parameter_block"));
+					let index = Node::operator("+", block, Node::literal_expression(format!("{entry}u")));
+					let value = Node::accessor(Node::member_expression("material_parameters"), Node::sentence(vec![index]));
+
+					return Ok(construct(
+						(0..r#type.width()).map(|index| component(&value, index, 4)).collect(),
+					));
+				}
+				ParameterKind::Dynamic(_) => entry += 1,
+				_ => {}
+			}
 		}
 
-		Ok(Node::member_expression(name))
+		Err(LowerError::UnknownParameter {
+			name: name.to_string(),
+			r#type,
+		})
 	}
 }
 

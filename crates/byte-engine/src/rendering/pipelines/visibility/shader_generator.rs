@@ -116,8 +116,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				)
 			})?;
 
-		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Value parameters are
-		// specialization constants, while texture parameters reach the program as slots of `material.textures`.
+		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Static value parameters
+		// are specialization constants, dynamic ones are read from `material_parameters`, and texture parameters reach
+		// the program as slots of `material.textures`.
 		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
 		for (index, parameter) in (0u32..).zip(parameters) {
 			if let ParameterKind::Value(r#type) = parameter.kind {

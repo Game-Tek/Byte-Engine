@@ -1,0 +1,136 @@
+---
+title: Script gameplay with tasks
+description: Write a character's or a round's behavior as async tasks that your tick polls, so it waits for ticks, timers, and messages instead of keeping a state machine.
+icon: Workflow
+---
+
+Write gameplay that happens in steps, such as a character that walks until it
+dies and lies down until it revives, as an `async` function. A task runtime
+polls these functions from your tick. Each one waits for what it needs next: the
+next tick, an amount of game time, or a message such as a button press or a ray
+query's answer. The state between the steps is where the function is, so you
+don't keep flags such as `dead` or `pending_jump`.
+
+Keep continuous math, such as easing a camera, as ordinary per-tick code inside
+a task's loop. Tasks help most with the flow around it.
+
+## Create the runtime and its state
+
+Choose the state your tasks need to reach while they run, such as the world
+scope, the decoded controls, and your systems. Create the runtime on the world
+scope, so a task spawned on an entity ends when the world deletes the entity:
+
+```rust
+struct Scene {
+	world: MessageScope,
+	controls: Controls,
+	animation: AnimationSystem<'static>,
+}
+
+let mut runtime = TaskRuntime::<Scene>::new(app.world());
+```
+
+The runtime lends the state to tasks by type, so it can't borrow anything that
+lives shorter than the application.
+
+## Spawn tasks
+
+Clone the runtime's handle into every task. Spawn an entity's behavior on the
+entity, and everything else with `spawn`:
+
+```rust
+let tasks = runtime.tasks().clone();
+tasks.spawn_on(character, player(tasks.clone(), character));
+tasks.spawn(gun(tasks.clone(), camera));
+```
+
+A task can spawn more tasks, such as one per shot it fires. They run in the
+same poll.
+
+## Poll from your tick
+
+Each tick, advance the runtime's clock, then poll the tasks after every stage
+whose output they wait for. Send that output to them with `send`, addressed to
+the entity it's about:
+
+```rust
+fn tick(&mut self, app: &mut GraphicsApplication, time: Time) {
+	let tasks = self.runtime.tasks().clone();
+	self.runtime.advance(time);
+	if self.scene.controls.kill_pressed {
+		tasks.send(self.scene.controls.kill, Pressed);
+	}
+	self.runtime.poll(&mut self.scene);
+
+	self.scene.animation.step(time, app.alley_mut());
+	while let Some(update) = self.root_motion.read() {
+		tasks.send(update.handle(), update);
+	}
+	self.runtime.poll(&mut self.scene);
+}
+```
+
+A message that no task waits for is dropped, and `send` returns `false`.
+
+## Wait for time and messages
+
+Inside a task, await what the next step needs:
+
+```rust
+async fn walk(tasks: &Tasks<Scene>, body: &mut Character) -> Infallible {
+	loop {
+		let delta = tasks.tick().await;
+		let requested = tasks.with(|scene| body.select_state(&scene.controls, delta)).await;
+		tasks.with(|scene| scene.world.set(requested).on(body.handle)).await;
+		let motion = tasks.received::<RootMotionUpdate>(body.handle).await;
+		body.apply_root_motion(motion);
+	}
+}
+```
+
+- `tick` resolves at the next tick with the game time since the wait began, so
+  a task that waited a few ticks for something else moves by all of them.
+- `sleep` resolves once that much game time has passed. Pausing with a zero
+  delta holds every sleep.
+- `received` resolves with the next message of one type sent to one entity.
+- `with` reaches the state you passed to `poll`. Keep the borrow inside the
+  closure.
+- `now` returns the game time, which every task reads the same during a tick.
+
+Read time only through the runtime. Each task that read the system clock would
+see a different time, and pausing or slowing the game wouldn't reach it.
+
+## Cancel by dropping
+
+Race the waits with `select_biased!` from `utils::r#async`. The branch that
+loses is dropped, and its waits end with it:
+
+```rust
+async fn player(tasks: Tasks<Scene>, mut body: Character) {
+	let kill = tasks.with(|scene| scene.controls.kill).await;
+	loop {
+		select_biased! {
+			_ = tasks.received::<Pressed>(kill) => {}
+			never = walk(&tasks, &mut body).fuse() => match never {},
+		}
+		select_biased! {
+			_ = tasks.received::<Pressed>(kill) => {}
+			never = lie(&tasks, &mut body).fuse() => match never {},
+		}
+	}
+}
+```
+
+When a branch ends its tick wait in the middle of a tick, the next `tick` the
+task awaits in that poll resolves at once with the same time. `lie` starts in
+the tick that `K` was pressed in.
+
+Use combinators that poll every branch on each poll, such as `select!` and
+`join!`. A wait that its task stops polling ends, so a combinator that polls
+only the branches that woke loses the others' waits.
+
+## Rust API
+
+- [`gameplay::tasks`](/docs/api/latest/byte_engine/gameplay/tasks)
+- [`gameplay::TaskRuntime`](/docs/api/latest/byte_engine/gameplay/tasks/struct.TaskRuntime)
+- [`gameplay::Tasks`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Tasks)

@@ -1,0 +1,81 @@
+---
+title: Gameplay tasks
+description: Read this before you change the gameplay task runtime, to learn how its waits register and cancel, how time reaches tasks, and what a change must keep.
+icon: Workflow
+---
+
+Read this note before you change the gameplay task runtime, which polls an
+application's async gameplay from its tick. To use it, see
+[Script gameplay with tasks](/docs/use/gameplay-tasks). The code lives in
+`crates/byte-engine/src/gameplay/tasks.rs`.
+
+## How a poll runs
+
+The runtime keeps the futures of live tasks in a vector indexed by task slot.
+Everything else it shares with the `Tasks` handles through one `Rc<RefCell>`:
+the clock, each task's waits, the mailboxes, and the ready queue. Runtime
+methods and wait futures borrow the shared state only briefly, never across a
+task's poll. A task can therefore spawn, send, and wait from anywhere in its
+code, including inside `with`.
+
+`poll` pops the ready queue until it's empty. Each poll of a task gets a new
+number, which the task records as its latest poll. The application's state goes
+to the task through `ContextBuilder::ext`, which `with` downcasts. A task that
+finishes is removed, and its future drops once the shared state is released,
+since a destructor may reach it.
+
+## How waits register and cancel
+
+A wait records the number of the poll that made it. Polling a pending wait
+future records the current number again. A wait counts only while its number
+equals the latest poll of its task. A future the task dropped, or stopped
+polling, stops counting after that poll without any destructor. The UI engine's
+runtime uses the same scheme.
+
+- **Messages.** One mailbox per message type maps an entity to the waits for
+  it. `send` delivers to every counting wait and wakes its task, drops waits of
+  ended tasks, and keeps a dropped wait only while it holds messages. Deleting
+  the entity drops its waits.
+- **Ticks.** A task's tick waits live with the task, and the task joins a list
+  that the next `advance` walks. A tick wait first polled in a poll takes over
+  the earliest wait the task didn't poll again in that poll. This keeps ticks
+  counting when a `select!` loop drops its tick branch, and lets a new loop
+  resolve its tick in the same poll.
+- **Sleeps.** A min-heap orders deadlines. `advance` pops the due ones and wakes
+  the task when its wait still counts. A sleep polled again after its heap entry
+  was dropped pushes a new one.
+
+The runtime's own waits wake tasks directly, without a `Waker`. Each task still
+has one for futures such as channels. Its wakes go through a locked queue that
+`poll` drains, so they can come from any thread.
+
+## Rules a change must keep
+
+1. Tasks never read wall-clock time. The clock moves only by the deltas that
+   `advance` receives.
+2. One poll order for one input sequence: tasks run in the order they woke, and
+   nothing iterates a hash map to decide an order.
+3. A wait counts only while the latest poll of its task registered it.
+4. The shared state is never borrowed while a task's code runs or a future
+   drops.
+5. Tasks spawned on an entity end at the first `advance` after the world deletes
+   it.
+6. Per-tick work grows with the tasks that wait, not with every live task.
+
+## Tests
+
+| Test | Rule |
+| --- | --- |
+| `tick_resolves_with_the_time_since_the_wait_began` | 1 |
+| `sleep_waits_for_simulation_time` | 1 |
+| `a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one` | 3 |
+| `a_task_selecting_over_messages_and_ticks_counts_every_tick` | 3 |
+| `a_dropped_wait_receives_nothing` | 3 |
+| `messages_reach_waiting_tasks_and_drop_otherwise` | 2, 3 |
+| `deleting_an_entity_ends_the_tasks_spawned_on_it` | 4, 5 |
+| `tasks_spawned_by_a_task_run_in_the_same_poll` | 4 |
+| `foreign_futures_wake_their_task` | 4 |
+
+```bash
+cargo nextest run -p byte-engine -E 'test(/gameplay::tasks/)'
+```

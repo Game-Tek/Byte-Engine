@@ -16,6 +16,7 @@ pub mod name;
 pub mod pathfinding;
 #[doc(hidden)]
 pub mod scene;
+pub mod tasks;
 #[doc(hidden)]
 pub mod transform;
 #[doc(hidden)]
@@ -24,5 +25,6 @@ pub mod world;
 pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use name::Name;
 pub use scene::{Scene, SceneGraph, SceneNode};
+pub use tasks::{TaskRuntime, Tasks};
 pub use transform::{Transform, TransformationUpdate};
 pub use world::World;

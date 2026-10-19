@@ -157,7 +157,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::with_features(features));
+	besl_shader_asset_handler.set_program_transform(CommonShaderGenerator::with_features(features));
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 

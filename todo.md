@@ -85,7 +85,7 @@
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
 - Flatten glTF traversal into one caller-owned primitive record buffer rather than separate tree and primitive collections.
 - Bake each unique glTF material once, resolve primitive material references concurrently, and reuse generated resources.
-- Move generated glTF and FBX material factors (base color, metallic, roughness, emission, normal scale, occlusion strength) out of the BESL source into per-material GPU data, so materials that differ only in factors share one compiled shader. Generated shaders are already shared per graph (`store_generated_brdf_shaders`), but factors are still written into the program as literals. Specialization constants can carry them, but each distinct value still compiles its own pipeline; a factor array in the visibility `Material` struct, filled from variant variables, would let them share one.
+- Move generated glTF and FBX material factors (base color, metallic, roughness, emission, normal scale, occlusion strength) out of the BESL source into per-material GPU data, so materials that differ only in factors share one compiled shader. Generated shaders are already shared per graph (`store_generated_shaders`), but factors are still written into the program as literals. Specialization constants can carry them, but each distinct value still compiles its own pipeline; a factor array in the visibility `Material` struct, filled from variant variables, would let them share one.
 - Extract independent glTF primitive attributes concurrently before constructing the mesh source.
 - Run independent BEMA shader loading/compilation and material/variant variable resolution concurrently while preserving order.
 - Compress generated image mip levels concurrently after mip-chain generation.
@@ -121,11 +121,11 @@
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
 
-## MaterialX lowering
+## MaterialX conversion
 
-- Reduce MaterialX scattering closures onto the renderer's metallic-roughness BRDF, so a `<surface>` node built from `oren_nayar_diffuse_bsdf`, `dielectric_bsdf`, `conductor_bsdf`, `layer` and `mix` lowers instead of reporting an unsupported shading model. This is most of the MaterialX pbrlib test suite and the pbrlib-native way to write a surface.
-- Let a MaterialX `<image>` sample with transformed texture coordinates. This needs `sample_material` to take a coordinate argument and the visibility material stage to carry the matching texture-coordinate derivatives, otherwise a tiled or placed image picks the wrong mip level. Until then `place2d`, `tiledimage` and `hextiledimage` are reported as unsupported.
-- Add the MaterialX procedural and colour-conversion nodes the standard library defines with source code rather than node graphs: `noise2d`, `noise3d`, `fractal3d`, `cellnoise2d`, `worleynoise2d`, `flake2d`, `flake3d`, `hsvtorgb`, `rgbtohsv` and `blackbody`.
+- Reduce MaterialX scattering closures onto a BEMX `Surface`, so a `<surface>` node built from `oren_nayar_diffuse_bsdf`, `dielectric_bsdf`, `conductor_bsdf`, `layer` and `mix` converts instead of reporting an unsupported shading model. This is most of the MaterialX pbrlib test suite and the pbrlib-native way to write a surface.
+- Let a MaterialX `<image>` sample with transformed texture coordinates. BEMX image nodes already take a `texcoord` input; the visibility shader generator needs to honour it, sampling with the given coordinate and carrying the matching texture-coordinate derivatives, otherwise a tiled or placed image picks the wrong mip level. Until then `place2d`, `tiledimage` and `hextiledimage` are reported as unsupported.
+- Add BEMX nodes for the MaterialX procedural and colour-conversion nodes the standard library defines with source code rather than node graphs, and map them in `materialx::bemx`: `noise2d`, `noise3d`, `fractal3d`, `cellnoise2d`, `worleynoise2d`, `flake2d`, `flake3d`, `hsvtorgb`, `rgbtohsv` and `blackbody`.
 
 # P2 - BESL architecture
 

@@ -16,8 +16,10 @@ executes the program in the VM. The language itself is specified in the
 2. `stack_layers` places the declarations of the shader's
    [layout layers](/docs/reference/besl/interface#layout-layers) under that
    tree, lowest layer first. A shader without layers skips this step.
-3. An optional `ProgramGenerator` transforms that tree to add the renderer's
-   bindings, declarations, helpers, and entry-point contract.
+3. An optional `ProgramTransform` adapts that tree to the renderer, such as by
+   adding the helpers its shaders share. Material programs start here instead:
+   a renderer's `ProgramGenerator` builds their whole tree, bindings and entry
+   point included, from the material's [BEMX graph](/docs/reference/bemx).
 4. `lex` resolves names, types, members, calls, overloads, and references into a
    semantic graph. It normalizes `StageInput`, `interface`, `output`, and record
    returns into the stage input and output nodes that the VM and generators use.

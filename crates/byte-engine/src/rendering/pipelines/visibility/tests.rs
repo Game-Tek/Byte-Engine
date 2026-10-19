@@ -2627,15 +2627,14 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 /// Verifies that a project without contact shadows bakes a sun visibility resolve that never reads the trace.
 #[test]
 fn sun_visibility_without_contact_shadows_reaches_no_trace() {
-	use resource_management::asset::handler::implementations::bema::ProgramGenerator;
+	use resource_management::asset::handler::implementations::besl::ProgramTransform;
 
 	use crate::rendering::common_shader_generator::CommonShaderGenerator;
 
-	let context = resource_management::asset::JsonObject::new();
 	let reaches_trace = |features| {
 		let source = besl::parse(asset_source!("sun-visibility.besl")).expect("sun visibility should parse");
-		let root = besl::lex(CommonShaderGenerator::with_features(features).transform(source, &context))
-			.expect("sun visibility should link");
+		let root =
+			besl::lex(CommonShaderGenerator::with_features(features).transform(source)).expect("sun visibility should link");
 		let main = root.get_main().expect("sun visibility should contain main");
 		resource_management::shader::besl::graph::dependency_order(&main)
 			.iter()

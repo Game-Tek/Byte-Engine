@@ -1,18 +1,18 @@
-//! Adapts portable material programs into visibility material-evaluation compute shaders.
+//! Turns BEMX material graphs into visibility material-evaluation compute shaders.
 //!
 //! [`visibility_shader_scope`] declares the buffers, images, structs, and BESL helper functions every visibility
-//! shader can reference. [`VisibilityShaderGenerator`] wraps an authored material `main` with the pixel
-//! reconstruction prefix and the lighting suffix from [`sources`], and rewrites material shorthand such as
-//! `sample_material(texture)` into explicit bindless sampling.
+//! shader can reference. [`VisibilityShaderGenerator`] writes the statements that compute a graph's surface, see
+//! [`material`], and wraps them with the pixel reconstruction prefix and the lighting suffix from [`sources`].
 
 mod ast;
+mod material;
 mod sources;
 #[cfg(test)]
 mod tests;
 
 use besl::parser::Node;
-use resource_management::asset::JsonObject;
-use resource_management::asset::handler::implementations::bema::ProgramGenerator;
+use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind, ProgramGenerator};
+use resource_management::bemx;
 
 use self::ast::*;
 pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading};
@@ -62,7 +62,7 @@ const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 4] = [
 	layer!("visibility/layouts/material-evaluation.besl"),
 ];
 
-/// The `VisibilityShaderGenerator` struct turns portable material programs into visibility material-evaluation shaders.
+/// The `VisibilityShaderGenerator` struct turns BEMX material graphs into visibility material-evaluation shaders.
 ///
 /// Install it on the material, FBX, and glTF asset handlers so every baked material targets this pipeline. Build it
 /// with the project's [`VisibilityFeatures`] so material shaders carry no code for a left-out feature.
@@ -95,50 +95,44 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform<'a>(&self, root: Node<'a>, material: &'a JsonObject) -> Node<'a> {
-		// The layers declare the descriptor sets and the records they hold, ahead of everything that reads them.
-		let mut root = besl::stack_layers(root, MATERIAL_EVALUATION_LAYERS).unwrap_or_else(|error| {
-			panic!(
-				"Failed to stack a material on the visibility layout layers ({error:?}). The most likely cause is a material that declares a name one of the layers already declares."
-			)
-		});
-		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path.
-		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
-		let mut texture_slots = Vec::new();
-		for (index, variable) in (0u32..).zip(material["variables"].as_array().expect("material variables")) {
-			let name = variable["name"].as_str().expect("material variable name");
-			let data_type = variable["data_type"].as_str().expect("material variable type");
-			match data_type {
-				"u32" | "f32" | "vec2f" | "vec3f" | "vec4f" => {
-					declarations.push(Node::specialization(
-						name,
-						data_type,
-						material_variable_specialization_id(index),
-					));
-				}
-				"Texture2D" => {
-					let slot = texture_slots.len() as u32;
-					texture_slots.push((name, slot));
-					declarations.push(Node::constant(name, "u32", Node::literal_expression(format!("{slot}u"))));
-				}
-				_ => {}
-			}
+	fn generate<'a>(&self, graph: &'a bemx::Graph, parameters: &'a [MaterialParameter]) -> Result<Node<'a>, String> {
+		let (body, features) = material::material_body(graph, parameters).map_err(|error| error.to_string())?;
+
+		let mut statements = material_evaluation_prefix_statements(features);
+		statements.extend(body);
+		statements.extend(material_evaluation_suffix_statements(features, self.features));
+
+		let mut main = Node::main_function(statements);
+		if let besl::parser::Nodes::Function { params, .. } = main.node_mut() {
+			// The reconstruction prefix reads compute builtins through the structural entry input.
+			params.push(Node::parameter("input", "StageInput"));
 		}
 
-		let main = root.get_mut("main").expect("material program main");
-		let features = material_reconstruction_features(main);
-		add_material_sample_context(main, &texture_slots);
-		narrow_material_property_assignments(main);
-		if let besl::parser::Nodes::Function { params, statements, .. } = main.node_mut() {
-			// The injected reconstruction prefix reads compute builtins through the structural entry input.
-			params.push(Node::parameter("input", "StageInput"));
-			statements.splice(0..0, material_evaluation_prefix_statements(features));
-			statements.extend(material_evaluation_suffix_statements(features, self.features));
+		// The layers declare the descriptor sets and the records they hold, ahead of everything that reads them.
+		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS)
+			.map_err(|error| {
+				format!(
+					"Failed to stack a material on the visibility layout layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
+				)
+			})?;
+
+		// The suffix branches on `transparent`; each phase's pipeline compiles only its own path. Value parameters are
+		// specialization constants, while texture parameters reach the program as slots of `material.textures`.
+		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
+		for (index, parameter) in (0u32..).zip(parameters) {
+			if let ParameterKind::Value(r#type) = parameter.kind {
+				declarations.push(Node::specialization(
+					&parameter.name,
+					bemx::besl::type_name(r#type),
+					material_variable_specialization_id(index),
+				));
+			}
 		}
 
 		root.add(declarations);
 		root.add(vec![self.common.clone(), self.scope.clone()]);
-		root
+
+		Ok(root)
 	}
 }
 
@@ -190,7 +184,6 @@ pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 		(CONE_ATTENUATION_SOURCE, "cone_attenuation"),
 		(COMPUTE_VERTEX_INDICES_SOURCE, "compute_vertex_indices"),
 		(COMPUTE_TRIANGLE_INTERPOLATION_SOURCE, "compute_triangle_interpolation"),
-		(SAMPLE_VISIBILITY_NORMAL_SOURCE, "sample_visibility_normal"),
 		(FACING_NORMAL_SOURCE, "facing_normal"),
 		(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
 		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),

@@ -1,6 +1,6 @@
-//! Parser-tree transforms applied to an authored material `main` before linking.
+//! The statements wrapped around a material body, and the parser-tree transforms applied to them.
 
-use besl::parser::{ElseBranch, Expressions, Node, Nodes, TypeName};
+use besl::parser::{ElseBranch, Expressions, Node, Nodes};
 
 use super::sources::*;
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
@@ -92,93 +92,37 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 	}
 }
 
-fn member_name<'a>(node: &'a Node<'_>) -> Option<&'a str> {
-	match node.node() {
-		Nodes::Expression(Expressions::Member { name }) => Some(name.as_ref()),
-		_ => None,
-	}
-}
-
-/// The `MaterialReconstructionFeatures` struct records which optional pixel attributes a material needs reconstructed.
+/// The `MaterialReconstructionFeatures` struct records what a material reads and writes, so the prefix reconstructs
+/// only the pixel attributes it needs and the suffix rotates only a normal it wrote.
 #[derive(Clone, Copy, Default)]
 pub(super) struct MaterialReconstructionFeatures {
-	uses_uv: bool,
-	uses_tangent_frame: bool,
+	/// The material reads the vertex texture coordinates, directly or by sampling a texture.
+	pub reads_uv: bool,
+	/// The material reads the tangent or the bitangent.
+	pub reads_tangent_frame: bool,
+	/// The material writes a tangent-space normal, which the suffix turns out of the tangent frame.
+	pub writes_normal: bool,
 }
 
-/// Finds material sampling and tangent-frame operations before texture shorthand is expanded.
-pub(super) fn material_reconstruction_features(main: &mut Node<'_>) -> MaterialReconstructionFeatures {
-	const UV_CALLS: [&str; 6] = [
-		"sample_material",
-		"sample_normal",
-		"decode_material_normal",
-		"decode_material_normal_f16",
-		"scale_normal_xy",
-		"scale_material_normal_xy_f16",
-	];
-	let mut features = MaterialReconstructionFeatures::default();
-	walk_expressions(main, &mut |expression| match expression {
-		Expressions::Call {
-			name: TypeName::Named(name),
-			..
-		} if UV_CALLS.contains(name) => {
-			features.uses_uv = true;
-			features.uses_tangent_frame |= *name != "sample_material";
-		}
-		// Assigning anything but the canonical no-normal-map value needs the tangent frame.
-		Expressions::Operator {
-			operator: besl::Operators::Assignment,
-			left,
-			right,
-		} if member_name(left) == Some("normal") && !is_default_tangent_normal(right) => {
-			features.uses_uv = true;
-			features.uses_tangent_frame = true;
-		}
-		Expressions::Member { name } => match name.as_ref() {
-			"vertex_uv" => features.uses_uv = true,
-			"T" | "B" => {
-				features.uses_uv = true;
-				features.uses_tangent_frame = true;
-			}
-			_ => {}
-		},
-		_ => {}
-	});
-	features
-}
-
-/// Recognizes the canonical no-normal-map value emitted by the BRDF generators: `vec3f(0, 0, 1)` in f32 or f16.
-fn is_default_tangent_normal(node: &Node<'_>) -> bool {
-	let Nodes::Expression(Expressions::Call { name, parameters }) = node.node() else {
-		return false;
-	};
-	if !matches!(name, TypeName::Named(name) if matches!(*name, "vec3f" | "vec3f16")) || parameters.len() != 3 {
-		return false;
+impl MaterialReconstructionFeatures {
+	/// Reports whether the prefix rebuilds the tangent frame.
+	fn needs_tangent_frame(self) -> bool {
+		self.reads_tangent_frame || self.writes_normal
 	}
-	parameters.iter().zip([0.0_f32, 0.0, 1.0]).all(|(parameter, expected)| {
-		let literal = match parameter.node() {
-			Nodes::Expression(Expressions::Literal { value }) => Some(value),
-			Nodes::Expression(Expressions::Call { name, parameters })
-				if matches!(name, TypeName::Named(name) if *name == "f16") && parameters.len() == 1 =>
-			{
-				match parameters[0].node() {
-					Nodes::Expression(Expressions::Literal { value }) => Some(value),
-					_ => None,
-				}
-			}
-			_ => None,
-		};
-		literal.is_some_and(|value| value.parse::<f32>().is_ok_and(|value| value == expected))
-	})
+
+	/// Reports whether the prefix interpolates the texture coordinates, which the tangent frame is built from too.
+	fn needs_uv(self) -> bool {
+		self.reads_uv || self.needs_tangent_frame()
+	}
 }
 
-/// Statements that reconstruct the pixel's surface before the authored material body runs.
+/// Statements that reconstruct the pixel's surface before the material body runs.
 pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix");
-	if features.uses_uv {
+	if features.needs_uv() {
 		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_UV_SOURCE, "material_evaluation_uv"));
 	}
-	if features.uses_tangent_frame {
+	if features.needs_tangent_frame() {
 		statements.extend(parse_besl_statements(
 			MATERIAL_EVALUATION_TANGENT_SOURCE,
 			"material_evaluation_tangent",
@@ -191,14 +135,14 @@ pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstruc
 	statements
 }
 
-/// Statements that light the material outputs after the authored body runs.
+/// Statements that light the material outputs after the material body runs.
 ///
 /// The code of every feature `visibility_features` leaves out is removed, so the shader declares none of its bindings.
 pub(super) fn material_evaluation_suffix_statements(
 	features: MaterialReconstructionFeatures,
 	visibility_features: VisibilityFeatures,
 ) -> Vec<Node<'static>> {
-	let normal_source = if features.uses_tangent_frame {
+	let normal_source = if features.writes_normal {
 		MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE
 	} else {
 		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE
@@ -318,63 +262,5 @@ pub(crate) fn remove_statements_reading(statements: &mut Vec<Node<'_>>, name: &s
 			}
 			_ => !reads_name(statement),
 		}
-	});
-}
-
-/// Narrows material property assignments so every material graph uses the compact evaluation ABI.
-pub(super) fn narrow_material_property_assignments(main: &mut Node<'_>) {
-	walk_expressions(main, &mut |expression| {
-		let Expressions::Operator {
-			operator: besl::Operators::Assignment,
-			left,
-			right,
-		} = expression
-		else {
-			return;
-		};
-		let target_type = match member_name(left) {
-			Some("albedo") => "vec4f16",
-			Some("normal" | "emission") => "vec3f16",
-			Some("metalness" | "roughness" | "occlusion") => "f16",
-			_ => return,
-		};
-		**right = Node::call(target_type, vec![*right.clone()]);
-	});
-}
-
-/// Expands `sample_material(texture)` and `sample_normal(texture)` into explicit bindless gradient samples.
-pub(super) fn add_material_sample_context(main: &mut Node<'_>, texture_slots: &[(&str, u32)]) {
-	walk_expressions(main, &mut |expression| {
-		let Expressions::Call {
-			name: TypeName::Named(name),
-			parameters,
-		} = expression
-		else {
-			return;
-		};
-		if !matches!(*name, "sample_material" | "sample_normal") || parameters.len() != 1 {
-			return;
-		}
-		// The backend intrinsic consumes the bindless binding directly; the normal helper captures it from the scope.
-		let passes_bindless_binding = *name == "sample_material";
-		*name = if passes_bindless_binding {
-			"sample_texture_2d_array_grad"
-		} else {
-			"sample_visibility_normal"
-		};
-
-		let slot = parameters.remove(0);
-		let slot = member_name(&slot)
-			.and_then(|texture_name| texture_slots.iter().find(|(name, _)| *name == texture_name))
-			.map_or(slot, |(_, index)| Node::literal_expression(format!("{index}u")));
-		if passes_bindless_binding {
-			parameters.push(Node::member_expression("textures"));
-		}
-		// Index access keeps an expression on its right side so the linked AST can distinguish `textures[slot]` from `.field`.
-		let material_textures = Node::accessor(Node::member_expression("material"), Node::member_expression("textures"));
-		parameters.push(Node::accessor(material_textures, Node::sentence(vec![slot])));
-		parameters.push(Node::member_expression("vertex_uv"));
-		parameters.push(Node::member_expression("uv_derivative_x"));
-		parameters.push(Node::member_expression("uv_derivative_y"));
 	});
 }

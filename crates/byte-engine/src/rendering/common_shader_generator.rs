@@ -1,4 +1,4 @@
-use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
+use resource_management::asset::handler::implementations::besl::ProgramTransform;
 
 use crate::application::parameters::Parameters;
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
@@ -577,8 +577,8 @@ impl CommonShaderGenerator {
 	}
 }
 
-impl ProgramGenerator for CommonShaderGenerator {
-	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
+impl ProgramTransform for CommonShaderGenerator {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
 		// A feature's code sits in `main`; helpers it alone calls drop out because backends emit only what `main` reaches.
 		if let Some(besl::parser::Nodes::Function { statements, .. }) = root.get_mut("main").map(|main| main.node_mut()) {
 			self.features.remove_left_out_code(statements);

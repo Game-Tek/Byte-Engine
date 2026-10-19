@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/bemx.schema.json",
+  "title": "Byte Engine material expression",
+  "description": "A BEMX graph: the nodes that compute a material's metallic-roughness surface.",
+  "type": "object",
+  "required": ["nodes"],
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "surface": { "type": "string", "description": "The name of the surface node. Optional when the graph holds exactly one." },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["name", "node"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "The name other nodes connect to this node with." },
+        "node": {
+          "enum": [
+            "constant", "parameter", "position", "normal", "tangent", "bitangent", "viewdirection", "texcoord", "image",
+            "add", "subtract", "multiply", "divide", "modulo", "power", "min", "max", "atan2",
+            "absval", "floor", "ceil", "round", "sign", "sqrt", "exp", "ln", "sin", "cos", "tan", "asin", "acos", "normalize",
+            "clamp", "smoothstep", "mix", "remap", "dotproduct", "crossproduct", "magnitude",
+            "extract", "swizzle", "combine", "convert", "luminance", "invert", "premult", "unpremult",
+            "ifgreater", "ifgreatereq", "ifequal", "switch", "normalmap", "surface"
+          ],
+          "description": "The node kind, spelled as the MaterialX category it follows."
+        },
+        "value": { "$ref": "#/$defs/constant" },
+        "parameter": { "type": "string", "minLength": 1, "description": "The material parameter a parameter node reads." },
+        "texture": { "type": "string", "minLength": 1, "description": "The material texture parameter an image node samples." },
+        "type": { "enum": ["float", "vector2", "vector3", "vector4", "color3", "color4"] },
+        "index": { "type": "integer", "minimum": 0 },
+        "channels": { "type": "string", "pattern": "^[xyzwrgba01]{1,4}$" },
+        "lumacoeffs": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+      },
+      "additionalProperties": { "$ref": "#/$defs/input" }
+    },
+    "input": {
+      "description": "The name of the node that drives the input, or a constant written inline.",
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/constant" }]
+    },
+    "constant": {
+      "oneOf": [
+        { "type": "number" },
+        { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 4 }
+      ]
+    }
+  }
+}

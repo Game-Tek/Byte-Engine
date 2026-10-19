@@ -5,8 +5,9 @@ icon: SwatchBook
 ---
 
 A `.bema` file declares a material or a material variant in JSON5. A material
-describes shader stages, a render domain, and named parameters. A variant names
-a parent material and supplies a value for each of its parameters. `.bema` is a
+names the [BEMX graph](/docs/reference/bemx) that computes its surface, a render
+domain, and named parameters. A variant names a parent material and supplies a
+value for each of its parameters. `.bema` is a
 declaration format, not runtime data: at runtime, applications use the
 processed `Material`, `Variant`, `Shader`, and `Image` resources. To write one,
 follow [Author assets](/docs/use/resources/author#declare-a-material).
@@ -18,9 +19,9 @@ ignores any other, such as `type`:
 
 | Field | Value |
 | --- | --- |
-| `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader compilation. |
-| `shaders` | Required. An object that maps each shader stage name, such as `Fragment`, to the asset ID of its BESL source. |
-| `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, and `value`. |
+| `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader generation. |
+| `graph` | Required. The asset ID of the `.bemx` file that describes the material's surface. |
+| `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, and `value`. The graph's `parameter` and `image` nodes read them by name. |
 
 ## Variant files
 
@@ -46,9 +47,10 @@ Any other `data_type` fails the bake.
 ## What baking produces
 
 - A `Material` resource for a root material file, referring to its generated
-  shaders and resolved parameters.
+  shader and resolved parameters.
 - A `Variant` resource for a variant file, referring to its parent material and
   resolved values.
-- A `Shader` resource for each referenced shader source, compiled for the
-  active render pipeline.
+- A `Shader` resource generated from the graph for the active render pipeline,
+  with the material's ID and a `#shader` fragment. A graph that reads a
+  parameter the material doesn't declare with a matching type fails the bake.
 - A dependent `Image` resource for each image a `Texture2D` parameter names.

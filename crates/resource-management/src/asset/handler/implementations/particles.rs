@@ -7,7 +7,7 @@ use utils::Extent;
 
 use super::{
 	ResourceId,
-	besl::{PlatformShaderCompilerAdapter, ShaderCompiler},
+	besl::{PlatformShaderCompilerAdapter, ShaderCompiler, parse_besl_source},
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	store_model, store_model_owned,
 };
@@ -90,7 +90,10 @@ impl AssetHandler for ParticleSystemAssetHandler {
 		// resources and the reported error the same as compiling one stage at a time.
 		let compiled = utils::r#async::join_all(stages.map(|(stage, source, settings)| async move {
 			let id = shader(stage);
-			let result = self.compiler.compile(&source, &[], None, settings.name(id.clone())).await;
+			let result = match parse_besl_source(&source) {
+				Ok(program) => self.compiler.compile(program, settings.name(id.clone())).await,
+				Err(error) => Err(error),
+			};
 			(stage, id, result)
 		}))
 		.await;

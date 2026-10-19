@@ -21,7 +21,7 @@ mod tests {
 	use maths_rs::mat::MatNew4;
 
 	use super::{
-		GLTFAssetHandler, GltfImportError, generated_gltf_brdf, generated_gltf_image_id, generated_image_fragment_index,
+		GLTFAssetHandler, GltfImportError, generated_gltf_image_id, generated_gltf_material, generated_image_fragment_index,
 		generated_material_base_id, gltf_image_semantics, gltf_normal_transform, gltf_transform_orientation, gltf_vertex_skin,
 		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, load_gltf_buffers,
 		merge_gltf_texture_semantics, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
@@ -35,9 +35,9 @@ mod tests {
 			ResourceId, handler::AssetHandler, handler::implementations::bema::tests::MinimalTestShaderGenerator,
 			manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
-		pbr::{
-			BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
-			BrdfTexture, BrdfValue,
+		bemx::{
+			self,
+			import::{ImportedGraphBuilder, ImportedMaterial},
 		},
 		processors::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
@@ -861,55 +861,63 @@ mod tests {
 
 	#[test]
 	fn merges_each_texture_read_into_its_image_semantic() {
-		let mut builder = BrdfMaterialBuilder::new();
+		let mut graph = ImportedGraphBuilder::new();
 
-		let texture = |builder: &mut BrdfMaterialBuilder, image_index| {
-			builder.texture(BrdfTexture {
-				image_index,
-				texcoord_channel: 0,
+		let base_color = graph.image(2, bemx::Type::Vector3).unwrap();
+		let metallic_roughness = graph.image(5, bemx::Type::Vector4).unwrap();
+		let metalness = graph
+			.builder
+			.add(bemx::Node::Extract {
+				value: metallic_roughness,
+				index: 2,
 			})
-		};
+			.unwrap();
+		let roughness = graph
+			.builder
+			.add(bemx::Node::Extract {
+				value: metallic_roughness,
+				index: 1,
+			})
+			.unwrap();
+		let normal_texture = graph.image(8, bemx::Type::Vector3).unwrap();
+		let scale = graph.builder.constant(bemx::Value::Float(1.0));
+		let normal = graph
+			.builder
+			.add(bemx::Node::NormalMap {
+				value: normal_texture,
+				scale,
+			})
+			.unwrap();
+		let occlusion_texture = graph.image(10, bemx::Type::Vector4).unwrap();
+		let occlusion = graph
+			.builder
+			.add(bemx::Node::Extract {
+				value: occlusion_texture,
+				index: 0,
+			})
+			.unwrap();
+		let emission = graph.builder.constant(bemx::Value::Vector3([1.0, 0.25, 0.5]));
 
-		let base_color = texture(&mut builder, 2);
-
-		let metallic_roughness = texture(&mut builder, 5);
-
-		let metallic = builder.extract_channel(metallic_roughness, BrdfChannel::Blue);
-
-		let roughness = builder.extract_channel(metallic_roughness, BrdfChannel::Green);
-
-		let normal_source = texture(&mut builder, 8);
-
-		let normal = builder.add(BrdfNode::NormalMap {
-			source: normal_source,
-			scale: 1.0,
-		});
-
-		let occlusion_source = texture(&mut builder, 10);
-
-		let occlusion = builder.add(BrdfNode::Occlusion {
-			source: occlusion_source,
-			strength: 0.75,
-		});
-
-		let emission_color = builder.constant(BrdfValue::Vector3([1.0, 0.25, 0.5]));
-
-		let emission = builder.add(BrdfNode::Emission { color: emission_color });
-
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: Some(normal),
-			occlusion: Some(occlusion),
-			emission: Some(emission),
-		}));
-
-		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
+		let material = graph
+			.finish(
+				None,
+				bemx::Surface {
+					base_color: Some(base_color),
+					metalness: Some(metalness),
+					roughness: Some(roughness),
+					normal: Some(normal),
+					occlusion: Some(occlusion),
+					emission: Some(emission),
+					..bemx::Surface::default()
+				},
+				false,
+				AlphaMode::Opaque,
+			)
+			.unwrap();
 
 		let mut semantics = vec![None; 11];
 
-		merge_gltf_texture_semantics(&material, &mut semantics).expect("texture semantics should merge");
+		merge_gltf_texture_semantics(&material, &mut semantics);
 
 		assert_eq!(
 			semantics
@@ -942,21 +950,19 @@ mod tests {
 		.expect("test glTF should parse")
 	}
 
-	/// Returns the channels the generated material reads metallic and roughness from.
-	fn metallic_and_roughness_channels(brdf: &BrdfMaterialDescription) -> (BrdfChannel, BrdfChannel) {
-		let BrdfNode::MetallicRoughness(surface) = brdf.node(brdf.surface).unwrap() else {
-			panic!("generated material should have a metallic-roughness surface");
-		};
-		let channel = |factor: BrdfNodeId| {
-			let BrdfNode::Multiply { right, .. } = brdf.node(factor).unwrap() else {
-				panic!("textured metallic and roughness should multiply a factor by a channel");
+	/// Returns the channels the generated material reads metalness and roughness from.
+	fn metalness_and_roughness_channels(material: &ImportedMaterial) -> (u8, u8) {
+		let graph = &material.graph;
+		let channel = |factor: Option<bemx::NodeId>| {
+			let bemx::Node::Binary { right, .. } = graph.node(factor.unwrap()) else {
+				panic!("textured metalness and roughness should multiply a factor by a channel");
 			};
-			let BrdfNode::ExtractChannel { channel, .. } = brdf.node(*right).unwrap() else {
-				panic!("textured metallic and roughness should extract one channel");
+			let bemx::Node::Extract { index, .. } = graph.node(*right) else {
+				panic!("textured metalness and roughness should extract one channel");
 			};
-			*channel
+			*index
 		};
-		(channel(surface.metallic), channel(surface.roughness))
+		(channel(graph.surface().metalness), channel(graph.surface().roughness))
 	}
 
 	#[test]
@@ -975,13 +981,12 @@ mod tests {
 		);
 
 		for material in gltf.materials() {
-			let brdf = generated_gltf_brdf(&material, &semantics).expect("generated material should build");
+			let material = generated_gltf_material(&material, &semantics).expect("generated material should build");
 
-			assert_eq!(brdf.validate(), Ok(()));
 			assert_eq!(
-				metallic_and_roughness_channels(&brdf),
-				(BrdfChannel::Green, BrdfChannel::Red),
-				"metallic moves from blue to green and roughness from green to red"
+				metalness_and_roughness_channels(&material),
+				(1, 0),
+				"metalness moves from blue to green and roughness from green to red"
 			);
 		}
 	}
@@ -1000,12 +1005,9 @@ mod tests {
 		assert_eq!(semantics, [None, Some(Semantic::AO), None]);
 
 		for material in gltf.materials() {
-			let brdf = generated_gltf_brdf(&material, &semantics).expect("generated material should build");
+			let material = generated_gltf_material(&material, &semantics).expect("generated material should build");
 
-			assert_eq!(
-				metallic_and_roughness_channels(&brdf),
-				(BrdfChannel::Blue, BrdfChannel::Green)
-			);
+			assert_eq!(metalness_and_roughness_channels(&material), (2, 1));
 		}
 	}
 
@@ -1359,7 +1361,7 @@ use crate::asset::handler::implementations::bema::{
 use crate::{
 	ProcessedAsset, ReferenceModel,
 	asset::{self},
-	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
+	bemx::{self, gltf::material_from_gltf, import::ImportedMaterial},
 	processors::{
 		image::{
 			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,

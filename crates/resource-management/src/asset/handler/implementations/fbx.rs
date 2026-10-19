@@ -18,7 +18,7 @@ mod tests {
 
 	use super::{
 		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
-		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
+		canonical_animation_node_map, decode_fbx_texture_image, fbx_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
 		select_fbx_skin, skin_weights, used_material_keys,
@@ -37,7 +37,7 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		pbr::{BrdfMaterialDescription, BrdfNode, BrdfValue},
+		bemx::{self, import::ImportedMaterial},
 		processors::mesh::ProcessedMesh,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
@@ -564,9 +564,9 @@ mod tests {
 			1.0
 		);
 
-		let phong_brdf = fbx_brdf_material(Some(phong));
+		let phong_material = fbx_material(Some(phong)).expect("Phong material should convert");
 
-		let (base_color, metallic, roughness, emission) = brdf_values(&phong_brdf);
+		let (base_color, metallic, roughness, emission) = material_values(&phong_material);
 
 		assert_close(base_color, [0.2, 0.1, 0.05, 1.0]);
 
@@ -574,14 +574,12 @@ mod tests {
 
 		assert_close(emission, [0.2, 0.6, 1.0]);
 
-		assert_eq!(phong_brdf.alpha_mode, AlphaMode::Opaque);
-		assert!(phong_brdf.nodes.iter().any(|node| {
-			matches!(node, BrdfNode::Texture(texture) if texture.image_index == diffuse_texture.element.typed_id)
-		}));
+		assert_eq!(phong_material.alpha_mode, AlphaMode::Opaque);
+		assert_eq!(phong_material.images, vec![diffuse_texture.element.typed_id]);
 
-		let pbr_brdf = fbx_brdf_material(Some(metal_rough));
+		let pbr_material = fbx_material(Some(metal_rough)).expect("PBR material should convert");
 
-		let (base_color, metallic, roughness, emission) = brdf_values(&pbr_brdf);
+		let (base_color, metallic, roughness, emission) = material_values(&pbr_material);
 
 		assert_close(base_color, [0.25, 0.5, 0.75, 0.4]);
 
@@ -687,7 +685,7 @@ mod tests {
 		assert_eq!(variant.alpha_mode, AlphaMode::Opaque);
 		assert_eq!(variant.variables.len(), 1);
 		assert_eq!(variant.variables[0].r#type, "Texture2D");
-		assert_eq!(variant.variables[0].name, crate::pbr::material_texture_variable_name(0));
+		assert_eq!(variant.variables[0].name, crate::bemx::material_texture_parameter_name(0));
 
 		let ValueModel::Image(image) = &variant.variables[0].value else {
 			panic!("Phong diffuse texture should become an image variable");
@@ -990,59 +988,49 @@ mod tests {
 	}
 
 	/// Extracts the constant metallic-roughness values produced by the focused material fixtures.
-	fn brdf_values(material: &BrdfMaterialDescription) -> ([f32; 4], f32, f32, [f32; 3]) {
-		let BrdfNode::MetallicRoughness(surface) = material
-			.node(material.surface)
-			.expect("material surface should reference a node")
-		else {
-			panic!("FBX material should use a metallic-roughness surface");
+	fn material_values(material: &ImportedMaterial) -> ([f32; 4], f32, f32, [f32; 3]) {
+		let graph = &material.graph;
+		let surface = graph.surface();
+
+		let Some(bemx::Node::Swizzle { value: base_color, .. }) = surface.base_color.map(|node| graph.node(node)) else {
+			panic!("FBX base color should be the colour channels of the factor product");
 		};
 
-		let base_color = base_color_factor(material, surface.base_color);
-
-		let BrdfValue::Scalar(metallic) = constant_value(material, surface.metallic) else {
+		let bemx::Value::Float(metallic) = constant_value(graph, surface.metalness) else {
 			panic!("FBX metalness should be a scalar constant");
 		};
 
-		let BrdfValue::Scalar(roughness) = constant_value(material, surface.roughness) else {
+		let bemx::Value::Float(roughness) = constant_value(graph, surface.roughness) else {
 			panic!("FBX roughness should be a scalar constant");
 		};
 
-		let emission_node = surface.emission.expect("FBX material should contain an emission node");
-
-		let BrdfNode::Emission { color } = material.node(emission_node).expect("emission should reference a node") else {
-			panic!("FBX emission should use an emission node");
-		};
-
-		let BrdfValue::Vector3(emission) = constant_value(material, *color) else {
+		let bemx::Value::Vector3(emission) = constant_value(graph, surface.emission) else {
 			panic!("FBX emission should be a vector3 constant");
 		};
 
-		(base_color, metallic, roughness, emission)
+		(base_color_factor(graph, *base_color), metallic, roughness, emission)
 	}
 
 	/// Extracts the constant color factor from a base-color graph with an optional texture sample.
-	fn base_color_factor(material: &BrdfMaterialDescription, node: crate::pbr::BrdfNodeId) -> [f32; 4] {
-		match material.node(node).expect("base color should reference a node") {
-			BrdfNode::Constant(BrdfValue::Vector4(value)) => *value,
-			BrdfNode::Multiply { left, right } => [left, right]
+	fn base_color_factor(graph: &bemx::Graph, node: bemx::NodeId) -> [f32; 4] {
+		match graph.node(node) {
+			bemx::Node::Constant(bemx::Value::Vector4(value)) => *value,
+			bemx::Node::Binary { left, right, .. } => [left, right]
 				.into_iter()
-				.find_map(
-					|node| match material.node(*node).expect("base-color factor should reference a node") {
-						BrdfNode::Constant(BrdfValue::Vector4(value)) => Some(*value),
-						_ => None,
-					},
-				)
+				.find_map(|node| match graph.node(*node) {
+					bemx::Node::Constant(bemx::Value::Vector4(value)) => Some(*value),
+					_ => None,
+				})
 				.expect("textured FBX base color should retain its vector4 factor"),
 			_ => panic!("FBX base color should be a vector4 constant or texture-factor product"),
 		}
 	}
 
-	/// Reads one constant node from a fixture-generated BRDF graph.
-	fn constant_value(material: &BrdfMaterialDescription, node: crate::pbr::BrdfNodeId) -> BrdfValue {
-		match material.node(node).expect("constant should reference a node") {
-			BrdfNode::Constant(value) => *value,
-			_ => panic!("fixture BRDF value should be constant"),
+	/// Reads one constant surface input from a fixture-generated graph.
+	fn constant_value(graph: &bemx::Graph, node: Option<bemx::NodeId>) -> bemx::Value {
+		match node.map(|node| graph.node(node)) {
+			Some(bemx::Node::Constant(value)) => *value,
+			_ => panic!("fixture surface input should be constant"),
 		}
 	}
 
@@ -1079,7 +1067,10 @@ use crate::asset::handler::implementations::bema::{
 };
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,
-	pbr::{BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
+	bemx::{
+		self,
+		import::{ImportedGraphBuilder, ImportedMaterial},
+	},
 	processors::{
 		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
 		mesh::{MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},

@@ -26,6 +26,7 @@ The standard graphics setup bakes these formats:
 - glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
 - FBX meshes, skeletons, and skeletal animation clips
 - `.bema` materials and variants
+- `.bemx` material graphs, which `.bema` materials name
 - `.pipeline` GPU pipeline descriptions
 - `.flipbook` image sequences with a playback rate
 - `.particles` [GPU particle systems](/docs/reference/particles), which bake into generated shaders and pipelines
@@ -36,7 +37,7 @@ The standard graphics setup bakes these formats:
 ## JSON5
 
 Byte Engine expects JSON5 wherever an asset format or sidecar uses JSON. Write
-comments and trailing commas in `.bead`, `.bema`, and JSON glTF asset files.
+comments and trailing commas in `.bead`, `.bema`, `.bemx`, and JSON glTF asset files.
 JSON5 also supports unquoted object keys, single-quoted strings, and other
 authoring conveniences.
 
@@ -149,7 +150,7 @@ Only these handlers read sidecars:
 | BESL | `stage`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives`, `layouts` | The stage metadata and layout layers specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
 
 Every hand-written format has a JSON schema under the engine's
-`assets/schemas` directory: `bema.schema.json`, `besl.bead.schema.json`,
+`assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
 `environment.bead.schema.json`, `image.bead.schema.json` for the image
 sidecar, `model.bead.schema.json` for the model sidecar, and
 `particles.schema.json`.

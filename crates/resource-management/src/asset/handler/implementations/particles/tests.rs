@@ -5,9 +5,7 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 use super::{ParticleSystemAssetHandler, generator, schema::ParticleSystemSource};
 use crate::{
 	asset::{
-		JsonObject,
-		handler::implementations::{bema::ProgramGenerator, besl::ShaderCompiler},
-		manager::AssetManager,
+		handler::implementations::besl::ShaderCompiler, manager::AssetManager,
 		storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 	},
 	r#async,
@@ -59,13 +57,11 @@ struct LinkingCompiler;
 impl ShaderCompiler for LinkingCompiler {
 	fn compile<'a>(
 		&'a self,
-		source: &'a str,
-		_layers: &'a [(String, String)],
-		_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+		program: besl::parser::Node<'a>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 		Box::pin(async move {
-			besl::lex(besl::parse(source).map_err(|error| format!("{error:?}"))?).map_err(|error| format!("{error:?}"))?;
+			besl::lex(program).map_err(|error| format!("{error:?}"))?;
 			Ok((
 				Shader {
 					id: settings.name,

@@ -20,7 +20,7 @@ pub(crate) fn unique_gltf_materials<'a>(
 
 /// Resolves glTF materials into variants, in the order given.
 ///
-/// Maps each material to a BEAD override or a generated BRDF graph, then resolves them all through
+/// Maps each material to a BEAD override or a generated BEMX graph, then resolves them all through
 /// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest.
 pub(crate) async fn resolve_gltf_materials(
 	context: BakeContext<'_>,
@@ -34,19 +34,19 @@ pub(crate) async fn resolve_gltf_materials(
 	let sources = materials
 		.iter()
 		// Unnamed materials have no BEAD override key, so they are always generated.
-		.map(|material| match material.name().and_then(|name| bead_material_override(spec, name)) {
-			Some(override_id) => Ok(MaterialSource::Override(override_id)),
-			None => {
-				let base_id = generated_material_base_id(mesh_url, material);
-				let brdf = generated_gltf_brdf(material, &image_semantics).map_err(|error| {
-					log::error!(
-						"Failed to generate the glTF material '{base_id}': {error:?}. The most likely cause is a texture read of a channel its packed image does not store."
-					);
-					LoadErrors::FailedToProcess
-				})?;
-				Ok(MaterialSource::Generated(GeneratedMaterial { base_id, brdf }))
-			}
-		})
+		.map(
+			|material| match material.name().and_then(|name| bead_material_override(spec, name)) {
+				Some(override_id) => Ok(MaterialSource::Override(override_id)),
+				None => {
+					let base_id = generated_material_base_id(mesh_url, material);
+					let material = generated_gltf_material(material, &image_semantics).map_err(|error| {
+						log::error!("Failed to generate the glTF material '{base_id}': {error}");
+						LoadErrors::FailedToProcess
+					})?;
+					Ok(MaterialSource::Generated(GeneratedMaterial { base_id, material }))
+				}
+			},
+		)
 		.collect::<Result<Vec<_>, LoadErrors>>()?;
 
 	let image_ids = gltf
@@ -57,22 +57,26 @@ pub(crate) async fn resolve_gltf_materials(
 	resolve_container_materials(context, generator, mesh_url, &image_ids, sources).await
 }
 
-/// Builds the BRDF graph of a generated glTF material, with channel reads moved to where its packed images store them.
+/// Builds the BEMX graph of a generated glTF material, with channel reads moved to where its packed images store them.
 ///
 /// `image_semantics` comes from [`gltf_image_semantics`], the same table image fragments bake with.
-pub(crate) fn generated_gltf_brdf(
+pub(crate) fn generated_gltf_material(
 	material: &gltf::Material<'_>,
 	image_semantics: &[Option<Semantic>],
-) -> Result<BrdfMaterialDescription, BrdfMaterialValidationError> {
-	let mut brdf = brdf_material_from_gltf(material);
-	brdf.pack_texture_channels(|image_index| {
-		image_semantics
-			.get(image_index as usize)
-			.copied()
-			.flatten()
-			.and_then(channel_packing_for_semantic)
-	})?;
-	Ok(brdf)
+) -> Result<ImportedMaterial, String> {
+	let mut material = material_from_gltf(material).map_err(|error| error.to_string())?;
+
+	material
+		.pack_texture_channels(|image_index| {
+			image_semantics
+				.get(image_index as usize)
+				.copied()
+				.flatten()
+				.and_then(channel_packing_for_semantic)
+		})
+		.map_err(|error| error.to_string())?;
+
+	Ok(material)
 }
 
 pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {

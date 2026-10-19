@@ -6,7 +6,7 @@ pub(crate) enum MaterialKey {
 
 /// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a fallback.
 ///
-/// Maps each material to a BEAD override or a generated BRDF graph, then resolves them all through
+/// Maps each material to a BEAD override or a generated BEMX graph, then resolves them all through
 /// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest. Returns the variants
 /// in the order of `keys`, which [`used_material_keys`] returns.
 pub(crate) async fn resolve_fbx_materials(
@@ -32,16 +32,21 @@ pub(crate) async fn resolve_fbx_materials(
 				.unwrap_or("default");
 
 			match bead_material_override(spec, name) {
-				Some(override_id) => MaterialSource::Override(override_id),
-				None => MaterialSource::Generated(GeneratedMaterial {
-					base_id: generated_fbx_material_base_id(url, key, material),
-					brdf: fbx_brdf_material(material),
-				}),
+				Some(override_id) => Ok(MaterialSource::Override(override_id)),
+				None => {
+					let base_id = generated_fbx_material_base_id(url, key, material);
+					let material = fbx_material(material).map_err(|error| {
+						log::error!("Failed to generate the FBX material '{base_id}': {error}");
+						LoadErrors::FailedToProcess
+					})?;
+
+					Ok(MaterialSource::Generated(GeneratedMaterial { base_id, material }))
+				}
 			}
 		})
-		.collect::<Vec<_>>();
+		.collect::<Result<Vec<_>, LoadErrors>>()?;
 
-	// FBX graphs index textures by their position in the scene's texture list.
+	// FBX materials index images by their position in the scene's texture list.
 	let image_ids = scene
 		.textures
 		.iter()
@@ -213,9 +218,9 @@ pub(crate) fn fbx_image_fragment_texture_index(fragment: &str) -> Option<usize> 
 	fragment.strip_prefix(FBX_IMAGE_FRAGMENT_PREFIX)?.parse().ok()
 }
 
-/// Converts ufbx's normalized PBR values into the engine's metallic-roughness graph.
-pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr::BrdfMaterialDescription {
-	let mut builder = BrdfMaterialBuilder::new();
+/// Converts ufbx's normalized PBR values into a BEMX metallic-roughness graph.
+pub(crate) fn fbx_material(material: Option<&ufbx::Material>) -> Result<ImportedMaterial, bemx::GraphError> {
+	let mut graph = ImportedGraphBuilder::new();
 
 	let (name, base_color, base_color_texture, metallic, roughness, emission, double_sided) = if let Some(material) = material {
 		let base_factor = material_map_scalar(&material.pbr.base_factor, 1.0).clamp(0.0, 1.0);
@@ -255,35 +260,14 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 		(None, [1.0; 4], None, 0.0, 1.0, [0.0; 3], false)
 	};
 
-	let base_color_node = builder.constant(BrdfValue::Vector4(base_color));
-
-	let base_color_node = if let Some(texture) = base_color_texture {
-		let texture = builder.texture(BrdfTexture {
-			image_index: texture.element.typed_id,
-			texcoord_channel: 0,
-		});
-
-		builder.multiply(base_color_node, texture)
-	} else {
-		base_color_node
-	};
-
-	let metallic_node = builder.constant(BrdfValue::Scalar(metallic));
-
-	let roughness_node = builder.constant(BrdfValue::Scalar(roughness));
-
-	let emission_color = builder.constant(BrdfValue::Vector3(emission));
-
-	let emission_node = builder.add(BrdfNode::Emission { color: emission_color });
-
-	let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-		base_color: base_color_node,
-		metallic: metallic_node,
-		roughness: roughness_node,
-		normal: None,
-		occlusion: None,
-		emission: Some(emission_node),
-	}));
+	let base_color_node = graph.factor_times_image(
+		bemx::Value::Vector4(base_color),
+		base_color_texture.map(|texture| texture.element.typed_id),
+	)?;
+	let (rgb, opacity) = graph.color_and_opacity(base_color_node)?;
+	let metalness = graph.builder.constant(bemx::Value::Float(metallic));
+	let roughness = graph.builder.constant(bemx::Value::Float(roughness));
+	let emission = graph.builder.constant(bemx::Value::Vector3(emission));
 
 	let alpha_mode = if base_color[3] < 0.999 {
 		AlphaMode::Blend
@@ -291,7 +275,19 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 		AlphaMode::Opaque
 	};
 
-	builder.finish(name, surface, double_sided, alpha_mode)
+	graph.finish(
+		name,
+		bemx::Surface {
+			base_color: Some(rgb),
+			opacity: Some(opacity),
+			metalness: Some(metalness),
+			roughness: Some(roughness),
+			emission: Some(emission),
+			..bemx::Surface::default()
+		},
+		double_sided,
+		alpha_mode,
+	)
 }
 
 /// Returns a material texture only when ufbx reports its source map as enabled.

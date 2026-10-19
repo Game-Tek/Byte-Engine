@@ -215,8 +215,9 @@ loses every map it holds.
 ### Materials
 
 The pipeline accepts a material whose render model is `Visibility` with the
-`MaterialEvaluation` pass, which is what every `.bema` file bakes to, and whose
-first shader is its evaluation shader.
+`MaterialEvaluation` pass, which is what every `.bema` file and imported model
+bakes to, and whose first shader is its evaluation shader. The evaluation shader
+is generated from the material's [BEMX graph](/docs/reference/bemx).
 
 | Rule | Value |
 | --- | --- |
@@ -225,22 +226,25 @@ first shader is its evaluation shader.
 | Variables | Scalars and vectors become specialization constants, so programs that differ only in textures share one pipeline and one dispatch. Texture variables take slots in declaration order, up to 16. |
 | Layout layers | Every material builds on the scene records, scene, visibility buffer, and material evaluation layers. |
 
-A material's evaluation shader writes these properties; unwritten ones keep
-their defaults:
+The evaluation shader writes the graph's surface into these properties. A surface
+input the graph leaves out takes its [BEMX default](/docs/reference/bemx#surface),
+and a graph without a normal keeps the geometric one:
 
 | Property | Type | Default |
 | --- | --- | --- |
-| `albedo` | Four half floats; the fourth is alpha in the transparent phase | 1, 0, 0, 1 |
+| `albedo` | Four half floats: the base colour, then the opacity, which is alpha in the transparent phase | 0.8, 0.8, 0.8, 1 |
 | `normal` | Three half floats in tangent space | 0, 0, 1, meaning no normal map |
 | `metalness` | Half float | 0 |
 | `roughness` | Half float | 0.5 |
 | `occlusion` | Half float, multiplying indirect diffuse light | 1 |
 | `emission` | Three half floats, added to the diffuse light | 0, 0, 0 |
 
-`sample_material` samples a texture variable at the vertex UV with the
-derivatives the pipeline computed, and `sample_normal` samples a normal map.
-Writing a normal, sampling one, or reading the tangent, bitangent, or UV makes
-the pipeline build the tangent frame for that material.
+The surface's world-space normal is converted to the tangent frame. A BEMX
+`image` node samples its texture at the
+vertex UV with the derivatives the pipeline computed. Writing a normal or
+reading the tangent or bitangent makes the pipeline build the tangent frame for
+that material, and sampling a texture or reading texture coordinates makes it
+reconstruct the UV.
 
 ### Stages and targets
 

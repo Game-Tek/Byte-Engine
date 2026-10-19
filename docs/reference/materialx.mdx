@@ -10,14 +10,16 @@ directed acyclic graph of nodes: every reference is resolved to an edge, every
 node is matched to its declaration, and connected ports are checked to agree on
 their type.
 
-To read a document from Rust, lower a material to a shader, or fix a document
-that fails to load, follow
+Each material converts into a
+[Byte Engine Material Expression (BEMX)](/docs/reference/bemx) graph, the
+material description every renderer reads. To read a document from Rust, convert a
+material, or fix a document that fails to load, follow
 [MaterialX documents](/docs/develop/resource-management/materialx).
 
 ## Shading models
 
-Four shading models reach the renderer's bidirectional reflectance distribution
-function (BRDF) directly: `standard_surface`,
+Four shading models convert directly onto the metallic-roughness surface a BEMX
+graph ends in: `standard_surface`,
 `open_pbr_surface`, `UsdPreviewSurface` and `gltf_pbr`. Two more are read as
 special cases: Disney's `disney_principled`, and `surface_unlit`, whose emission
 carries everything it shows. A model you define yourself works too, as long as
@@ -25,11 +27,13 @@ its node graph produces one of those.
 
 Behind the shading model, the network may use the standard library's value,
 channel, geometric, texture, math, adjustment and compositing nodes, and any
-node graph the document defines.
+node graph the document defines. Each of those converts to the BEMX node of the
+same meaning. Integer and boolean values become floats, because BEMX computes in
+floats alone.
 
 Byte Engine reports anything else rather than approximating it. In particular, a surface built out of individual scattering closures, such as a
 `<surface>` node fed by `dielectric_bsdf` and `oren_nayar_diffuse_bsdf`, does
-not map onto the renderer's fixed BRDF. Rebuild it on one of those models,
+not map onto a BEMX surface. Rebuild it on one of those models,
 or bake the network into textures with the MaterialX tools.
 
 ## Differences from the document
@@ -41,10 +45,15 @@ Three things behave differently from the document:
 - Images sample with the mesh's own texture coordinates. An `<image>` whose
   `texcoord` is driven by anything else, such as a `place2d` or a `tiledimage`,
   is reported instead of being sampled at the wrong place.
-- Shading models take a world-space normal, which is projected exactly onto
-  the stage's tangent frame.
+- A `texcoord` node that reads a set other than zero converts, but a renderer
+  that carries one texture coordinate set reports it when it builds the shader.
 
-Coat, sheen, transmission and subsurface inputs are read but not shaded.
+A shading model's normal input is a world-space normal, and it becomes the BEMX
+surface's normal unchanged when a shading network drives it. A constant or
+unconnected normal leaves the geometric normal in place.
+
+Coat, sheen, transmission and subsurface inputs aren't converted, because a BEMX
+surface has no input for them.
 
 ## Elements that are read
 

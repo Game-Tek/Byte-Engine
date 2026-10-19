@@ -1,12 +1,18 @@
+/// The `ProgramTransform` trait lets a renderer adapt standalone BESL programs before they link, such as by adding
+/// the helper functions every one of its shaders may call.
+///
+/// Install one on [`BESLShaderAssetHandler::set_program_transform`]. Materials do not go through it: they are BEMX
+/// graphs that a [`ProgramGenerator`](super::bema::ProgramGenerator) turns into whole programs.
+pub trait ProgramTransform: Send + Sync {
+	/// Returns `program` adapted to the renderer, before it links.
+	fn transform<'a>(&self, program: besl::parser::Node<'a>) -> besl::parser::Node<'a>;
+}
+
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 pub struct BESLShaderAssetHandler {
 	compiler: Box<dyn ShaderCompiler>,
-	generator: Option<Box<dyn ProgramGenerator>>,
+	transform: Option<Box<dyn ProgramTransform>>,
 }
-
-/// The empty material context handed to [`ProgramGenerator::transform`], since standalone shaders have no material.
-static STANDALONE_CONTEXT: LazyLock<JsonObject> =
-	LazyLock::new(|| JsonObject::from_iter([("variables".to_string(), serde_json::Value::Array(Vec::new()))]));
 
 impl Default for BESLShaderAssetHandler {
 	fn default() -> Self {
@@ -18,13 +24,14 @@ impl BESLShaderAssetHandler {
 	pub fn new() -> Self {
 		Self {
 			compiler: Box::new(PlatformShaderCompilerAdapter),
-			generator: None,
+			transform: None,
 		}
 	}
 
-	/// Configures the shared program scope applied before standalone shaders are linked and lowered.
-	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Box::new(generator));
+	/// Configures the transform applied to standalone shaders after their layout layers are stacked and before they
+	/// link.
+	pub fn set_program_transform<T: ProgramTransform + 'static>(&mut self, transform: T) {
+		self.transform = Some(Box::new(transform));
 	}
 }
 
@@ -63,38 +70,36 @@ impl AssetHandler for BESLShaderAssetHandler {
 			.await
 			.map_err(settings_error)?;
 
-		let generator = self.generator.as_deref().map(|generator| (generator, &*STANDALONE_CONTEXT));
+		let compile_error = |error: String| {
+			log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
+
+			LoadErrors::FailedToProcess
+		};
+
+		let program = parse_standalone_program(source, &layers, self.transform.as_deref()).map_err(compile_error)?;
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = self
 			.compiler
-			.compile(source, &layers, generator, settings.name(id.as_ref().to_string()))
+			.compile(program, settings.name(id.as_ref().to_string()))
 			.await
-			.map_err(|error| {
-				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
-
-				LoadErrors::FailedToProcess
-			})?;
+			.map_err(compile_error)?;
 
 		context.store_primary_owned(ProcessedAsset::new(id, shader), bytes).await
 	}
 }
 
-/// The `ShaderCompiler` trait lets the BESL and BEMA asset handlers compile shaders through the platform toolchain in
-/// production and through a test double in handler tests.
+/// The `ShaderCompiler` trait lets the BESL, BEMA, and particle asset handlers compile shaders through the platform
+/// toolchain in production and through a test double in handler tests.
 ///
 /// Production handlers use [`PlatformShaderCompilerAdapter`], which runs [`prepare_besl_shader`] and
 /// [`PreparedBeslShader::compile`].
 pub(crate) trait ShaderCompiler: Send + Sync {
-	/// Compiles `source` for the stage in `settings` into the shader named by `settings`.
-	///
-	/// `layers` holds the asset ID and source of each layout layer `source` builds on, lowest layer first. See
-	/// [`besl::stack_layers`].
+	/// Compiles `program`, a parsed module that already holds everything it links against, for the stage in
+	/// `settings` into the shader named by `settings`.
 	fn compile<'a>(
 		&'a self,
-		source: &'a str,
-		layers: &'a [(String, String)],
-		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+		program: besl::parser::Node<'a>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
@@ -105,26 +110,40 @@ pub(crate) struct PlatformShaderCompilerAdapter;
 impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
-		source: &'a str,
-		layers: &'a [(String, String)],
-		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+		program: besl::parser::Node<'a>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
-		Box::pin(async move {
-			let parsed = besl::parse(source).map_err(|error| {
-				format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax.")
-			})?;
-			let parsed = stack_layout_layers(parsed, layers)?;
-			prepare_besl_shader(parsed, generator, &settings)?
-				.compile(&settings.name)
-				.await
-		})
+		Box::pin(async move { prepare_besl_shader(program, &settings)?.compile(&settings.name).await })
 	}
+}
+
+/// Parses a standalone shader, stacks it on its layout layers, and applies the renderer's transform.
+///
+/// `layers` holds the asset ID and source of each layout layer `source` builds on, lowest layer first. See
+/// [`besl::stack_layers`].
+pub(crate) fn parse_standalone_program<'a>(
+	source: &'a str,
+	layers: &'a [(String, String)],
+	transform: Option<&dyn ProgramTransform>,
+) -> Result<besl::parser::Node<'a>, String> {
+	let parsed = parse_besl_source(source)?;
+	let parsed = stack_layout_layers(parsed, layers)?;
+
+	Ok(match transform {
+		Some(transform) => transform.transform(parsed),
+		None => parsed,
+	})
+}
+
+/// Parses BESL source text, reporting a failure the way every shader handler does.
+pub(crate) fn parse_besl_source(source: &str) -> Result<besl::parser::Node<'_>, String> {
+	besl::parse(source)
+		.map_err(|error| format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax."))
 }
 
 /// Places the declarations of `layers` under `module`, lowest layer first.
 ///
-/// The program generator runs on the result, so it adapts a module that already carries its layers.
+/// The program transform runs on the result, so it adapts a module that already carries its layers.
 pub(crate) fn stack_layout_layers<'a>(
 	module: besl::parser::Node<'a>,
 	layers: &'a [(String, String)],
@@ -336,21 +355,14 @@ fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 	})
 }
 
-/// Links a parsed shader, after the renderer's program generator adapts it, and reflects its resource interface
-/// before platform lowering starts.
+/// Links a parsed shader and reflects its resource interface before platform lowering starts.
 ///
 /// `name` names the layout of the descriptors the shader declares itself; layout layers name their own.
 fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
 	name: &str,
 	workgroup_size: Option<(u32, u32, u32)>,
-	generator: Option<(&dyn ProgramGenerator, &JsonObject)>,
 ) -> Result<(besl::NodeReference, ShaderInterface), String> {
-	let parsed = match generator {
-		Some((generator, context)) => generator.transform(parsed, context),
-		None => parsed,
-	};
-
 	let program = besl::lex(parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
@@ -383,11 +395,10 @@ pub(crate) struct PreparedBeslShader {
 /// Next, call [`PreparedBeslShader::compile`].
 pub(crate) fn prepare_besl_shader(
 	parsed: besl::parser::Node<'_>,
-	generator: Option<(&dyn ProgramGenerator, &JsonObject)>,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
 	let workgroup_size = settings.stage.local_size().map(|local_size| local_size.as_tuple());
-	let (program, interface) = prepare_shader(parsed, &settings.name, workgroup_size, generator)?;
+	let (program, interface) = prepare_shader(parsed, &settings.name, workgroup_size)?;
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
 	Ok(PreparedBeslShader {
@@ -400,7 +411,7 @@ pub(crate) fn prepare_besl_shader(
 impl PreparedBeslShader {
 	/// Returns a key that changes whenever compiling this shader could produce a different binary.
 	///
-	/// The key covers the lowered platform source, which already reflects the program generator, the BESL backend,
+	/// The key covers the lowered platform source, which already reflects the program generator or transform, the BESL backend,
 	/// and the generation settings, together with the stage, the compiler diagnostic name, and `compiler_identity`
 	/// from [`PlatformShaderCompiler::compiler_identity`].
 	pub(crate) fn cache_key(&self, compiler_identity: &str) -> u64 {
@@ -525,14 +536,13 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 #[cfg(test)]
 mod tests {
 	use super::{
-		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH,
-		parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
-		shader_compilation_error_message, stack_layout_layers,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, ProgramTransform, ShaderCompiler,
+		WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader,
+		shader_compilation_docs_path, shader_compilation_error_message, stack_layout_layers,
 	};
 	use crate::{
 		asset::{
 			handler::LoadErrors,
-			handler::implementations::bema::ProgramGenerator,
 			manager::{AssetManager, LoadMessages},
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
@@ -545,18 +555,18 @@ mod tests {
 
 	struct TestShaderCompiler;
 
-	/// The `TestStandaloneGenerator` struct supplies one reusable helper to standalone shader bake tests.
-	struct TestStandaloneGenerator;
+	/// The `TestStandaloneTransform` struct supplies one reusable helper to standalone shader bake tests.
+	struct TestStandaloneTransform;
 
-	impl ProgramGenerator for TestStandaloneGenerator {
-		fn transform<'a>(&self, mut node: besl::parser::Node<'a>, _: &'a crate::asset::JsonObject) -> besl::parser::Node<'a> {
+	impl ProgramTransform for TestStandaloneTransform {
+		fn transform<'a>(&self, mut node: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
 			let mut helper_scope = besl::parse("shared_value: fn () -> f32 { return 0.5; }")
-				.expect("Failed to parse the standalone generator fixture. The most likely cause is invalid BESL test syntax.");
+				.expect("Failed to parse the standalone transform fixture. The most likely cause is invalid BESL test syntax.");
 
 			let helpers = match helper_scope.node_mut() {
 				besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
 				_ => unreachable!(
-					"Invalid standalone generator fixture root. The most likely cause is a parser contract regression."
+					"Invalid standalone transform fixture root. The most likely cause is a parser contract regression."
 				),
 			};
 
@@ -569,25 +579,18 @@ mod tests {
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			source: &'a str,
-			layers: &'a [(String, String)],
-			generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
+			program: besl::parser::Node<'a>,
 			settings: ShaderGenerationSettings,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
 				assert_eq!(settings.name, "passes/resolve.besl");
-				assert!(source.contains("main"));
 				assert!(matches!(
 					settings.stage,
 					Stages::Compute { local_size } if local_size == utils::Extent::new(8, 8, 1)
 				));
 
-				prepare_shader(
-					stack_layout_layers(besl::parse(source).map_err(|error| format!("{error:?}"))?, layers)?,
-					&settings.name,
-					Some((8, 8, 1)),
-					generator,
-				)?;
+				// Linking checks the program has a `main` and resolves everything its layers and transform added.
+				prepare_shader(program, &settings.name, Some((8, 8, 1)))?;
 
 				Ok((
 					Shader {
@@ -648,7 +651,7 @@ mod tests {
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
-			generator: None,
+			transform: None,
 		});
 
 		assert!(asset_manager.supports("passes/resolve.besl"));
@@ -668,7 +671,7 @@ mod tests {
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
-			generator: None,
+			transform: None,
 		});
 
 		let result = asset_manager.bake("passes/no-settings.besl").await;
@@ -683,7 +686,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn standalone_besl_handler_applies_the_configured_program_generator() {
+	async fn standalone_besl_handler_applies_the_configured_program_transform() {
 		let source = "main: fn () -> void { let value: f32 = shared_value(); value; }";
 
 		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
@@ -700,10 +703,10 @@ mod tests {
 
 		let mut handler = BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
-			generator: None,
+			transform: None,
 		};
 
-		handler.set_shader_generator(TestStandaloneGenerator);
+		handler.set_program_transform(TestStandaloneTransform);
 
 		asset_manager.add_asset_handler(handler);
 
@@ -711,7 +714,7 @@ mod tests {
 			.bake("passes/resolve.besl")
 			.await
 			.expect(
-				"Failed to bake a generated standalone shader. The most likely cause is that the configured program generator was not forwarded to compilation.",
+				"Failed to bake a transformed standalone shader. The most likely cause is that the configured program transform was not applied before compilation.",
 			);
 	}
 
@@ -738,7 +741,7 @@ mod tests {
 
 			asset_manager.add_asset_handler(BESLShaderAssetHandler {
 				compiler: Box::new(TestShaderCompiler),
-				generator: None,
+				transform: None,
 			});
 
 			asset_manager.bake("passes/resolve.besl").await
@@ -901,7 +904,7 @@ mod tests {
 				main: fn () -> void {{ data.value = {value}; }}"
 			);
 
-			prepare_besl_shader(besl::parse(&source).unwrap(), None, &settings)
+			prepare_besl_shader(besl::parse(&source).unwrap(), &settings)
 				.expect("Failed to prepare the cache key fixture. The most likely cause is invalid BESL test syntax.")
 				.cache_key(compiler_identity)
 		};
@@ -931,7 +934,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", None, None).expect(
+		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", None).expect(
 			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
 		);
 
@@ -971,7 +974,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "atomics.besl", Some((32, 32, 1)), None).expect(
+		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "atomics.besl", Some((32, 32, 1))).expect(
 			"Failed to prepare atomic descriptor reflection. The most likely cause is invalid visibility fixture syntax.",
 		);
 
@@ -1018,7 +1021,7 @@ mod tests {
 		"#;
 
 		let parsed = stack_layout_layers(besl::parse(source).unwrap(), &layers).expect("Expected the layers to stack");
-		let (_, interface) = prepare_shader(parsed, "passes/resolve.besl", None, None)
+		let (_, interface) = prepare_shader(parsed, "passes/resolve.besl", None)
 			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
 
 		let sets = interface
@@ -1051,7 +1054,7 @@ mod tests {
 		};
 		let identity = |layers: &[(String, String)], source: &str| {
 			let parsed = stack_layout_layers(besl::parse(source).unwrap(), layers).expect("Expected the layer to stack");
-			let (_, interface) = prepare_shader(parsed, "shader.besl", None, None).expect("Expected the shader to link");
+			let (_, interface) = prepare_shader(parsed, "shader.besl", None).expect("Expected the shader to link");
 			interface.sets[0].identity()
 		};
 
@@ -1068,7 +1071,7 @@ mod tests {
 	}
 }
 
-use std::{fmt, sync::LazyLock};
+use std::fmt;
 
 use serde::Deserialize as _;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -1081,10 +1084,8 @@ use super::{
 	BEADType, ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::asset::handler::implementations::bema::ProgramGenerator;
 use crate::{
 	ProcessedAsset,
-	asset::JsonObject,
 	r#async::spawn_cpu_task,
 	online_docs_url,
 	resources::material::{SetInterface, Shader, ShaderInterface},

@@ -83,9 +83,9 @@
 //! that only describe user interface layout are recognised and skipped, because neither changes the
 //! graph.
 //!
-//! Next, convert the resolved [`Dag`] into whatever your renderer evaluates.
+//! Next, convert the resolved [`Dag`] into the BEMX graph a renderer evaluates with [`bemx::convert`].
 
-pub mod besl;
+pub mod bemx;
 pub mod dag;
 pub mod document;
 pub mod error;

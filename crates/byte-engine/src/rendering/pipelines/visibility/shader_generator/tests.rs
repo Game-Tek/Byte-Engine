@@ -1,5 +1,6 @@
 use besl::vm::{DescriptorBindings, ResourceSlot, Sampler, Texture, Value};
-use resource_management::asset::handler::implementations::bema::ProgramGenerator;
+use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind, ProgramGenerator};
+use resource_management::bemx;
 
 use super::super::tests::{
 	SSGI_CONTACT_WALL_Z, SSGI_WALL_NORMAL, ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
@@ -7,13 +8,42 @@ use super::super::tests::{
 use super::*;
 use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d};
 
-macro_rules! material_metadata {
-	($($json:tt)*) => {
-		serde_json::json!({ $($json)* })
-			.as_object()
-			.expect("test material metadata should be an object")
-			.clone()
-	};
+/// Reads a `.bemx` test graph.
+fn graph(source: &str) -> bemx::Graph {
+	bemx::json::parse(source).unwrap_or_else(|error| panic!("Invalid test graph: {error}"))
+}
+
+/// Declares a material parameter.
+fn parameter(name: &str, kind: ParameterKind) -> MaterialParameter {
+	MaterialParameter {
+		name: name.to_string(),
+		kind,
+	}
+}
+
+/// A graph that reads every kind of input the material stage supplies: a value parameter, two textures, a normal map,
+/// and the tangent frame through a world-space geometric node.
+const TEXTURED_GRAPH: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "base_color", type: "vector3" },
+		{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
+		{ name: "tint_rgb", node: "swizzle", in: "tint", channels: "rgb" },
+		{ name: "tinted", node: "multiply", in1: "albedo", in2: "tint_rgb" },
+		{ name: "encoded", node: "image", texture: "normal_map", type: "vector3" },
+		{ name: "bumped", node: "normalmap", in: "encoded", scale: 0.5 },
+		{ name: "tangent", node: "tangent" },
+		{ name: "rim", node: "dotproduct", in1: "bumped", in2: "tangent" },
+		{ name: "surface", node: "surface", base_color: "tinted", normal: "bumped", roughness: "rim", metalness: 0.25 },
+	],
+}"#;
+
+/// The parameters [`TEXTURED_GRAPH`] reads, in binding order.
+fn textured_parameters() -> Vec<MaterialParameter> {
+	vec![
+		parameter("base_color", ParameterKind::Texture),
+		parameter("tint", ParameterKind::Value(bemx::Type::Vector4)),
+		parameter("normal_map", ParameterKind::Texture),
+	]
 }
 
 /// The access declaration used when baking material-evaluation shaders.
@@ -221,51 +251,72 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 }
 
 #[test]
-fn vec4f_variable_becomes_specialization() {
-	let material = material_metadata! {
-		"variables": [{ "name": "albedo", "data_type": "vec4f" }]
-	};
-	let shader_node = besl::parse("main: fn () -> void { out_color = albedo; }").expect("test shader");
+fn value_parameters_become_specializations_at_their_variable_index() {
+	let graph = graph(
+		r#"{ nodes: [
+			{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
+			{ name: "rgb", node: "swizzle", in: "tint", channels: "rgb" },
+			{ name: "surface", node: "surface", base_color: "rgb" },
+		] }"#,
+	);
+	let parameters = [
+		parameter("albedo_map", ParameterKind::Texture),
+		parameter("tint", ParameterKind::Value(bemx::Type::Vector4)),
+	];
 
-	let shader = VisibilityShaderGenerator::with_features(VisibilityFeatures::default()).transform(shader_node, &material);
+	let shader = material_generator()
+		.generate(&graph, &parameters)
+		.expect("a graph reading declared parameters should generate");
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
 	};
-	let child = |name| children.iter().find(|child| child.name() == Some(name));
-	let specialization = child("albedo").expect("Generated material program should declare the vec4f variable.");
+	let specialization = children
+		.iter()
+		.find(|child| child.name() == Some("tint"))
+		.expect("Generated material program should declare the vec4f parameter.");
 	assert!(matches!(
 		specialization.node(),
-		besl::parser::Nodes::Specialization { r#type, .. } if *r#type == "vec4f"
+		besl::parser::Nodes::Specialization { r#type, id, .. }
+			if *r#type == "vec4f" && *id == material_variable_specialization_id(1)
 	));
-	let main = child("main").expect("Generated material program should contain main.");
-	let besl::parser::Nodes::Function { statements, .. } = main.node() else {
-		panic!("Expected generated material main function.");
-	};
-	assert!(statements.iter().any(|statement| {
-		matches!(
-			statement.node(),
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment
-					&& matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "out_color")
-					&& matches!(right.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "albedo")
-		)
-	}));
+	besl::lex(shader).expect("generated program should link");
 }
 
 #[test]
-fn material_evaluation_texture_variables_produce_valid_besl() {
-	let material = material_metadata! {
-		"variables": [
-			{ "name": "base_color", "data_type": "Texture2D" },
-			{ "name": "normal_map", "data_type": "Texture2D" }
-		]
-	};
-	let shader_node =
-		besl::parse("main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }")
-			.expect("test shader");
-	let shader = material_generator().transform(shader_node, &material);
+fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
+	let graph = graph(TEXTURED_GRAPH);
+	let parameters = textured_parameters();
+	let shader = material_generator()
+		.generate(&graph, &parameters)
+		.expect("textured graph should generate");
 	besl::lex(shader).expect("generated normal-mapped program should link");
+}
+
+/// A world-space normal that is not a normal map is projected onto the tangent frame, which has to link as well.
+#[test]
+fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
+	let graph = graph(
+		r#"{ nodes: [
+			{ name: "position", node: "position" },
+			{ name: "bent", node: "normalize", in: "position" },
+			{ name: "surface", node: "surface", normal: "bent", emission: [0.5, 0.25, 0.0], occlusion: 0.5 },
+		] }"#,
+	);
+	let shader = material_generator().generate(&graph, &[]).expect("graph should generate");
+	besl::lex(shader).expect("generated world-normal program should link");
+}
+
+#[test]
+fn a_graph_reading_an_undeclared_parameter_is_reported() {
+	let graph = graph(TEXTURED_GRAPH);
+	let parameters = [parameter("base_color", ParameterKind::Texture)];
+
+	let error = material_generator()
+		.generate(&graph, &parameters)
+		.expect_err("a graph reading parameters the material does not declare should not generate");
+
+	assert!(error.contains("'tint'"), "{error}");
 }
 
 /// The suffix sums irradiance behind the view index the table gives the irradiance view.
@@ -283,11 +334,12 @@ fn irradiance_view_is_summed_at_its_table_index() {
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
 #[test]
 fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
-	let material = material_metadata! { "variables": [] };
+	let graph = graph(r#"{ nodes: [{ name: "surface", node: "surface", base_color: [1.0, 1.0, 1.0] }] }"#);
 	let reaches = |features, binding: &str| {
-		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
-		let root = besl::lex(material_generator_with(features).transform(shader_node, &material))
-			.expect("generated program should link");
+		let shader = material_generator_with(features)
+			.generate(&graph, &[])
+			.expect("constant graph should generate");
+		let root = besl::lex(shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&main)
 			.iter()
@@ -353,9 +405,12 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
-	let material = material_metadata! { "variables": [] };
-	let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
-	let shader = material_generator().transform(shader_node, &material);
+	// The textured graph reaches every optional reconstruction: texture coordinates, the tangent frame, and samples.
+	let graph = graph(TEXTURED_GRAPH);
+	let parameters = textured_parameters();
+	let shader = material_generator()
+		.generate(&graph, &parameters)
+		.expect("textured graph should generate");
 	let root = besl::lex(shader).expect("generated program should link");
 
 	let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());

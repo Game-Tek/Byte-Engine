@@ -670,18 +670,3 @@ compute_triangle_interpolation: fn (
 	return TriangleInterpolation(origin, inverse_w, raw_ddx, raw_ddy);
 }
 "#;
-
-// Normal-map decoding stays in the visibility module; BESL only lowers the general texture-array gradient sample.
-pub(crate) const SAMPLE_VISIBILITY_NORMAL_SOURCE: &str = r#"
-sample_visibility_normal: fn (
-	texture_index: u32,
-	uv: vec2f,
-	uv_derivative_x: vec2f,
-	uv_derivative_y: vec2f
-) -> vec3f {
-	let encoded: vec4f = sample_texture_2d_array_grad(
-		textures, texture_index, uv, uv_derivative_x, uv_derivative_y
-	);
-	return unit_vector_from_xy(vec2f(encoded.x, encoded.y));
-}
-"#;

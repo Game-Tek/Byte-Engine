@@ -1,0 +1,92 @@
+---
+title: BEMX material graphs
+description: Understand how BEMX graphs are built, read, imported, and turned into shaders, and what a change to the node set must keep true.
+icon: Workflow
+---
+
+Read this page before you add a BEMX node, change how a material source becomes
+a graph, or change how a renderer turns a graph into a shader. The nodes, the
+surface, and the `.bemx` format are specified in the
+[BEMX reference](/docs/reference/bemx).
+
+## How a material reaches a shader
+
+Every material source becomes one BEMX graph, and every renderer reads one:
+
+| Layer | Code | Job |
+| --- | --- | --- |
+| Graph | `bemx::graph` | The node set, the type rules, and `GraphBuilder`, which checks every node as it's added. |
+| JSON form | `bemx::json` | Reads `.bemx` files: resolves names, orders nodes, fills MaterialX defaults. |
+| MaterialX | `materialx::bemx` | Converts a resolved MaterialX document, expanding its node graphs and definitions. |
+| Importers | `bemx::gltf`, the FBX handler, `bemx::import` | Build a graph from each imported material and number the images it samples. |
+| Lowering | `bemx::besl` | Writes the BESL statements that compute any value of a graph, asking a `Stage` for what only the renderer knows. |
+| Generator | `ProgramGenerator` in the BEMA handler, `VisibilityShaderGenerator` in the engine | Builds the whole program: entry point, bindings, and the code that hands the surface to the BRDF. |
+
+The BEMA, glTF, and FBX handlers hand the graph and the material's parameter
+list to the installed generator, then compile and store the program it returns.
+Standalone `.besl` shaders don't take this path; they go through a
+`ProgramTransform` instead.
+
+## Why the graph is checked as it's built
+
+`GraphBuilder::add` checks each node against the nodes before it, and a `Graph`
+can only come from a builder. So a graph is always well typed and acyclic, and
+nothing that reads one checks it again: the lowering never meets a missing input
+or a type it can't write. Keep it that way. A rule the lowering relies on
+belongs in `infer`, not in an error path of the lowering.
+
+Nodes are stored in an order in which each node follows its inputs. The lowering
+relies on it to write a value in one forward pass without recursion, however
+deep the graph is.
+
+## Why the stage is a trait
+
+The lowering knows how a node computes its value, which is the same for every
+renderer. It doesn't know where the shaded point's normal lives, how a texture
+is bound, or which attributes are free to read. The generator answers those
+through `Stage`, and records what the graph asked for while it answers. The
+visibility generator uses that record to reconstruct texture coordinates and
+the tangent frame only for materials that read them; see
+[Shader variants](/docs/develop/rendering/shader-variants).
+
+The lowering computes in `f32`. A generator narrows values where its own outputs
+are narrower, as the visibility generator does for its half-precision material
+outputs.
+
+## Why importers number textures
+
+An imported material's image nodes name texture parameters by slot, in the order
+the graph first samples each image, and the material keeps which container
+image each slot binds. Two materials that differ only in their images build
+identical graphs, so the shader cache, which keys on the graph and its texture
+count, compiles one shader for both. Channel packing moves `extract` reads of a
+packed image to where the image processor stores them, after the graph is built
+and before it's hashed.
+
+## Rules a change must keep
+
+- **Follow MaterialX.** A node kind is spelled as its MaterialX category, its
+  inputs have the MaterialX names and defaults, and its result matches the
+  standard library's definition. Where BEMX differs, such as the normal map
+  rebuilding its third component, the reference says so.
+- **Add a node everywhere at once.** A new kind needs its variant and input
+  visitor in `bemx::graph`, its rule in `infer`, its arm in `bemx::json`, its
+  arm in `bemx::besl`, its row in the reference, its name in
+  `bemx.schema.json`, and its MaterialX category in `materialx::bemx`.
+- **Report what a stage can't supply.** A texture coordinate set or a
+  transformed coordinate the material stage doesn't carry is an error that
+  names the node, never an approximation that renders wrong.
+- **Keep parameters by name.** A graph reads material parameters by name and
+  never holds their values, so variants share one graph and one shader.
+
+## Tests that guard it
+
+- `bemx/tests.rs` checks the type rules and the JSON form, including the errors
+  each mistake reports.
+- `bemx/besl/tests.rs` lowers graphs with a fixed stage and runs them in the BESL
+  VM, so each node's arithmetic is checked against the values MaterialX defines.
+- The importer tests check the graphs glTF and FBX materials build, and the
+  channel moves packing makes.
+- The visibility generator tests check that generated programs link, and on
+  macOS that they compile through the platform shader compiler, which is the
+  seam where a backend rejects what BESL accepts.

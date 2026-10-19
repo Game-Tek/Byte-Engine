@@ -44,6 +44,7 @@ use asset::ResourceId;
 pub(crate) use utils::online_docs_url;
 
 pub mod asset;
+pub mod bemx;
 pub mod resource;
 
 pub mod model;
@@ -61,7 +62,6 @@ pub mod shader;
 mod gpu_worker;
 pub mod ibl;
 pub mod materialx;
-pub mod pbr;
 
 pub mod processors;
 

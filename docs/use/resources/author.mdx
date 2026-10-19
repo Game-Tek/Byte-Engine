@@ -7,21 +7,44 @@ icon: Boxes
 Write the source files that describe your content in JSON5, next to the images,
 models, audio, and shaders that your tools produce. This page shows one of each.
 Their fields and allowed values are in the
-[asset formats](/docs/reference/assets) and [.bema files](/docs/reference/bema)
-references.
+[asset formats](/docs/reference/assets), [.bema files](/docs/reference/bema),
+and [BEMX graphs](/docs/reference/bemx) references.
 
 ## Declare a material
 
-A root material names its domain, its shader stages, and its variables:
+A material is two files: a `.bemx` graph that computes its surface, and a
+`.bema` file that names the graph and gives its parameters their values.
+
+Write the graph as a list of named nodes. Each input names the node that drives
+it, or holds a constant. This graph tints a texture by a color parameter:
+
+```json
+{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "albedo_map", type: "color3" },
+		{ name: "tint", node: "parameter", parameter: "color", type: "color4" },
+		{ name: "tint_rgb", node: "swizzle", in: "tint", channels: "rgb" },
+		{ name: "tinted", node: "multiply", in1: "albedo", in2: "tint_rgb" },
+		{ name: "surface", node: "surface", base_color: "tinted", roughness: 0.6 },
+	],
+}
+```
+
+Then declare the material. Its variables supply the parameters the graph reads,
+by name:
 
 ```json
 {
 	"domain": "World",
 	"type": "Surface",
-	"shaders": {
-		"Fragment": "shaders/material.besl"
-	},
+	"graph": "materials/tinted.bemx",
 	"variables": [
+		{
+			"name": "albedo_map",
+			"data_type": "Texture2D",
+			"type": "Static",
+			"value": "textures/bricks.png"
+		},
 		{
 			"name": "color",
 			"data_type": "vec4f",
@@ -39,6 +62,10 @@ A variant names its parent material and replaces the values it changes:
 	"parent": "materials/base.bema",
 	"variables": [
 		{
+			"name": "albedo_map",
+			"value": "textures/tiles.png"
+		},
+		{
 			"name": "color",
 			"value": "Red"
 		}
@@ -47,10 +74,10 @@ A variant names its parent material and replaces the values it changes:
 }
 ```
 
-Baking a material compiles its shaders for the active render pipeline and bakes
-the textures its variables reference. At runtime, request the processed
-`Material`, `Variant`, `Shader`, and `Image` resources rather than the `.bema`
-file.
+Baking a material generates its shader from the graph for the active render
+pipeline and bakes the textures its variables reference. Variants share their
+parent's shader. At runtime, request the processed `Material`, `Variant`,
+`Shader`, and `Image` resources rather than the `.bema` file.
 
 ## Declare a flipbook
 

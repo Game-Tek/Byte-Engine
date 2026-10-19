@@ -1,0 +1,187 @@
+---
+title: BEMX graphs
+description: Look up the BEMX value types, every node kind with its inputs and defaults, the surface it ends in, and the fields of a .bemx file.
+icon: Workflow
+---
+
+BEMX, the Byte Engine material expression, describes how a material computes its
+surface. A graph is a set of nodes, each of which produces one value from the
+values of the nodes it reads, and ends in one surface node that hands a
+metallic-roughness surface to the renderer. Every material reaches the renderer
+as a BEMX graph: `.bema` materials name a `.bemx` file, MaterialX documents are
+converted to one, and glTF and FBX materials are imported as one. To write a
+graph, follow [Author assets](/docs/use/resources/author#declare-a-material).
+
+The node set follows the [MaterialX](https://materialx.org) standard library:
+each node kind is spelled as the MaterialX category it follows, and its inputs
+have the MaterialX names and defaults. Unlike MaterialX, a graph has no node
+definitions, nested graphs, or overloads per type.
+
+## Value types
+
+| Type | Components | Also written as |
+| --- | --- | --- |
+| `float` | 1 | |
+| `vector2` | 2 | |
+| `vector3` | 3 | `color3` |
+| `vector4` | 4 | `color4` |
+
+A colour and a vector of the same width are the same type. BEMX has no integer
+or Boolean type; MaterialX values of those types convert to `float`.
+
+## Graph rules
+
+- A node reads only nodes of the same graph, and no node reads its own value,
+  directly or through other nodes.
+- Every input carries the type its node accepts. Where an input accepts either
+  T or `float`, a `float` applies to every component of a value of type T.
+- A node whose inputs set its type, such as `add`, produces the wider of its
+  inputs.
+- Nothing reads the surface node, because it produces no value.
+- Geometric values are in world space.
+
+A graph that breaks a rule fails to load and names the node at fault.
+
+## Values and geometry
+
+| Kind | Inputs and fields | Produces |
+| --- | --- | --- |
+| `constant` | `value`: a number, or an array of two to four numbers | The type of `value` |
+| `parameter` | `parameter`: the name of a material parameter. `type`: its type | `type` |
+| `position` | None | `vector3`: the position of the shaded point |
+| `normal` | None | `vector3`: the unit geometric normal |
+| `tangent` | None | `vector3`: the unit tangent, along increasing texture coordinate u |
+| `bitangent` | None | `vector3`: the unit bitangent, along increasing texture coordinate v |
+| `viewdirection` | None | `vector3`: the unit direction from the viewer toward the shaded point |
+| `texcoord` | `index`: the coordinate set, default 0 | `vector2` |
+| `image` | `texture`: the name of a material texture parameter. `type`: how many channels to keep, default `vector4`. `texcoord`: a `vector2`, default coordinate set 0 | `type`: the first channels of the texel |
+
+The material stage carries texture coordinate set 0 only, and samples every
+image at those coordinates. A graph that reads another set, or samples an image
+at coordinates computed from them, fails to bake.
+
+## Math
+
+The inputs of these nodes have type T, or accept T or `float`, and the node
+produces T.
+
+| Kind | Inputs, with defaults | Produces |
+| --- | --- | --- |
+| `add` | `in1`, `in2` = 0 | `in1 + in2` |
+| `subtract` | `in1`, `in2` = 0 | `in1 - in2` |
+| `multiply` | `in1`, `in2` = 1 | `in1 × in2` |
+| `divide` | `in1`, `in2` = 1 | `in1 ÷ in2` |
+| `modulo` | `in1`, `in2` = 1 | The remainder of `in1 ÷ in2`, with the sign of `in2` |
+| `power` | `in1`, `in2` = 1 | `in1` raised to `in2` |
+| `min`, `max` | `in1`, `in2` = 0 | The smaller or larger operand |
+| `atan2` | `in1`, `in2` = 1 | The arc tangent of `in1 ÷ in2`, in the quadrant both signs select |
+| `absval`, `floor`, `ceil`, `round`, `sign`, `sqrt`, `exp`, `ln`, `sin`, `cos`, `tan`, `asin`, `acos` | `in` | The function of each component. `sign` gives 1, −1, or 0, and `ln` is the natural logarithm |
+| `normalize` | `in` | `in` scaled to unit length |
+| `clamp` | `in`, `low` = 0, `high` = 1 | `in` limited to the range from `low` to `high` |
+| `smoothstep` | `in`, `low` = 0, `high` = 1 | A smooth step from 0 at `low` to 1 at `high` |
+| `mix` | `bg`, `fg`, `mix` = 0 | The linear blend from `bg` at a `mix` of 0 to `fg` at 1 |
+| `remap` | `in`, `inlow` = 0, `inhigh` = 1, `outlow` = 0, `outhigh` = 1 | `in` moved from the input range onto the output range |
+| `invert` | `in`, `amount` = 1 | `amount - in` |
+
+| Kind | Inputs | Produces |
+| --- | --- | --- |
+| `dotproduct` | `in1`, `in2`, of one type | `float` |
+| `crossproduct` | `in1`, `in2`, both `vector3` | `vector3` |
+| `magnitude` | `in` | `float`: the length of `in` |
+
+## Channels
+
+| Kind | Inputs and fields | Produces |
+| --- | --- | --- |
+| `extract` | `in`. `index`: the channel, default 0 | `float` |
+| `swizzle` | `in`. `channels`: one to four letters from `xyzw` or `rgba`, or `0` and `1` for constant channels | One channel per letter |
+| `combine` | `in1` to `in4`, at least two components in all | The components of every input, first to last |
+| `convert` | `in`. `type`: the target type | A `float` fills every component; a narrower value gains components of 1; a wider value loses its last components |
+
+## Colour
+
+| Kind | Inputs and fields | Produces |
+| --- | --- | --- |
+| `luminance` | `in`, a `vector3` or `vector4`. `lumacoeffs`: three weights, default 0.2722287, 0.6740818, 0.0535895 | The weighted sum of the colour channels in each colour channel. Alpha passes through |
+| `premult` | `in`, a `vector4` | The colour channels multiplied by alpha |
+| `unpremult` | `in`, a `vector4` | The colour channels divided by alpha, which is kept above 0.000001 |
+
+## Conditions
+
+| Kind | Inputs, with defaults | Produces |
+| --- | --- | --- |
+| `ifgreater` | `value1` = 1, `value2` = 0, `in1` = 0, `in2` = 0 | `in1` when `value1` is greater than `value2`, otherwise `in2` |
+| `ifgreatereq` | As for `ifgreater` | `in1` when `value1` is greater than or equal to `value2`, otherwise `in2` |
+| `ifequal` | As for `ifgreater` | `in1` when `value1` equals `value2`, otherwise `in2` |
+| `switch` | `which` = 0, `in1` to `in10`, numbered without gaps | The input at position `which` rounded to the nearest whole number, counting from 0 |
+
+`value1` and `value2` are `float`. `in1` and `in2` share one type, or one of
+them is a `float`.
+
+## Normal maps
+
+| Kind | Inputs, with defaults | Produces |
+| --- | --- | --- |
+| `normalmap` | `in`, a `vector3` texel in the 0 to 1 range. `scale` = 1 | `vector3`: the world-space normal the tangent-space texel encodes |
+
+Only the first two channels of the texel are read. Each maps from the 0 to 1
+range to the −1 to 1 range, the third component is rebuilt so the normal has
+unit length, and `scale` then scales the first two. A normal map stored with two
+channels decodes the same as one stored with three.
+
+## Surface
+
+Every graph ends in one `surface` node. An input left out takes its default.
+
+| Input | Type | Default |
+| --- | --- | --- |
+| `base_color` | `vector3` | 0.8, 0.8, 0.8 |
+| `opacity` | `float` | 1 |
+| `metalness` | `float`, 0 to 1 | 0 |
+| `roughness` | `float`, 0 to 1 | 0.5 |
+| `normal` | `vector3`, in world space | The geometric normal |
+| `emission` | `vector3` | 0, 0, 0 |
+| `occlusion` | `float`, 0 to 1, multiplying indirect diffuse light | 1 |
+
+How the renderer shades these inputs is in
+[Rendering](/docs/reference/rendering#materials).
+
+## Parameters
+
+A graph names the values and textures it reads from its material instead of
+holding them. A `parameter` node reads a value parameter and an `image` node
+samples a texture parameter. The material that uses the graph declares each of
+them with a value of the matching type:
+
+| BEMX | `.bema` `data_type` |
+| --- | --- |
+| `parameter` of type `float` | `float` |
+| `parameter` of type `vector3` | `vec3f` |
+| `parameter` of type `vector4` | `vec4f` |
+| `image` | `Texture2D` |
+
+A graph that reads a parameter its material doesn't declare with that type fails
+to bake.
+
+## .bemx files
+
+A `.bemx` file holds one graph in JSON5:
+
+| Field | Value |
+| --- | --- |
+| `nodes` | Required. An array of node objects, in any order. |
+| `surface` | The name of the surface node. Required when the graph holds more than one surface node. |
+
+Each node object has these fields:
+
+| Field | Value |
+| --- | --- |
+| `name` | Required. A name unique in the file, which other nodes connect to it with. |
+| `node` | Required. The node kind. |
+| Each input | The name of the node that drives it, or a constant: a number, or an array of two to four numbers. |
+| Each other field the kind lists | The value the tables above give it. |
+
+A field the node kind doesn't list, a connection to a name the file doesn't
+hold, and a numbered input that follows a missing one each fail to load. The
+schema `bemx.schema.json` in the engine's `assets/schemas` directory describes
+the same fields.

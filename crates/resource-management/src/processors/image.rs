@@ -19,8 +19,8 @@ pub enum Semantic {
 	Roughness,
 	/// A glTF metallic-roughness map read only through its green and blue channels.
 	///
-	/// The processor stores it as two channels through [`METALLIC_ROUGHNESS_PACKING`], and material generators remap
-	/// their channel reads with the same table. See [`crate::pbr::BrdfMaterialDescription::pack_texture_channels`].
+	/// The processor stores it as two channels through [`METALLIC_ROUGHNESS_PACKING`], and material importers move
+	/// their channel reads with the same table, so a packed image is sampled where it was stored.
 	MetallicRoughness,
 	Emissive,
 	Height,

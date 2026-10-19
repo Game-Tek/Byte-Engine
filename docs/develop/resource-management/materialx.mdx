@@ -1,6 +1,6 @@
 ---
 title: MaterialX documents
-description: Read MaterialX shading graphs into Byte Engine and fix documents that fail to load.
+description: Read MaterialX shading graphs into Byte Engine, convert their materials into material graphs, and fix documents that fail to load.
 icon: Cable
 ---
 
@@ -105,38 +105,37 @@ Load the libraries a document depends on before you resolve it. Without them a
 node keeps the inputs the document wrote but has no declaration, so its defaults
 and its extra outputs are unknown.
 
-## Turn a material into a shader
+## Convert a material into a material graph
 
-`materialx::besl::lower` takes the resolved graph and gives back the BESL
-program that shades one of its materials, together with the images that program
-samples:
+`materialx::bemx::convert` takes the resolved graph and gives back the
+[Byte Engine Material Expression (BEMX)](/docs/reference/bemx) graph that
+shades one of its materials, together with the images that graph samples:
 
 ```rust
 use resource_management::materialx;
 
 let dag = materialx::parse(&source, allocator)?;
-let program = materialx::besl::lower(&dag)?;
+let conversion = materialx::bemx::convert(&dag)?;
 ```
 
-`program.root` is a root scope holding one `main` function that writes the
-material properties the renderer's bidirectional reflectance distribution
-function (BRDF) reads: `albedo`, `metalness`,
-`roughness`, `emission`, `occlusion` and `normal`. Hand it to the shader
-pipeline's program generator, which adds the stage interface and the bindings
-around it.
+`conversion.graph` is a BEMX graph that ends in one metallic-roughness surface.
+The shading model's base colour, opacity, metalness, roughness, emission and
+occlusion become the surface's inputs, and so does its normal when a shading
+network drives it. Hand the graph to a renderer's program generator, which
+writes the shader around it.
 
-`program.textures` lists the images in slot order. Declare one `Texture2D`
-material variable per entry, named `material_texture_0`, `material_texture_1`,
-and onward through the last slot, so the program's sampling calls resolve. Each entry keeps the file
-exactly as the document wrote it, next to the prefix and colour space the
-document declared, because resolving a reference against the document's location
-is your asset pipeline's decision.
+`conversion.textures` lists the images in slot order. The graph's image nodes
+sample texture parameters named `material_texture_0`, `material_texture_1`, and
+onward through the last slot, so declare one texture parameter per entry. Each
+entry keeps the file exactly as the document wrote it, next to the prefix and
+colour space the document declared, because resolving a reference against the
+document's location is your asset pipeline's decision.
 
-Every MaterialX node the material reaches becomes one local, in the order the
-values have to be computed. A node nothing reads is never emitted, so a document
-that carries a whole library of unused networks costs nothing.
+Every MaterialX node the material reaches becomes one BEMX node. A node nothing
+reads is left out, so a document that carries a whole library of unused
+networks costs nothing.
 
-Call `materialx::besl::lower_material` instead when a document holds several
+Call `materialx::bemx::convert_material` instead when a document holds several
 materials and you want to pick one out of `Dag::materials`.
 
 ## Fix a document that fails to load
@@ -170,7 +169,14 @@ that caused it, so report it next to the document name and fix the markup.
 
 ### Unsupported shading model, or unsupported MaterialX node
 
-The material reached something the renderer doesn't evaluate. The error names
+The material reached something BEMX has no equivalent for. The error names
 the node and its category. See
 [the shading models Byte Engine supports](/docs/reference/materialx#shading-models) for
 what to rebuild it on.
+
+### A node reads a value of the wrong type
+
+A node's inputs carry types its BEMX equivalent doesn't accept, such as a
+`dotproduct` of a `vector3` and a `vector2`. The error names the MaterialX node
+and the input. Add a `convert` or `swizzle` node in the authoring tool so the
+types agree.

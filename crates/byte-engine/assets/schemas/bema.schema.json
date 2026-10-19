@@ -10,20 +10,15 @@
   "$defs": {
     "material": {
       "type": "object",
-      "required": ["domain", "shaders", "variables"],
+      "required": ["domain", "graph", "variables"],
       "properties": {
 		"$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
         "domain": { "type": "string", "description": "The material render domain." },
         "type": { "type": "string", "description": "An optional material classification retained for authoring tools." },
-        "shaders": {
-          "type": "object",
-          "description": "BESL source paths indexed by shader stage.",
-          "properties": {
-            "Vertex": { "$ref": "#/$defs/shaderPath" },
-            "Fragment": { "$ref": "#/$defs/shaderPath" },
-            "Compute": { "$ref": "#/$defs/shaderPath" }
-          },
-          "additionalProperties": false
+        "graph": {
+          "type": "string",
+          "pattern": "\\.bemx$",
+          "description": "The asset ID of the .bemx graph that describes the material's surface."
         },
         "variables": {
           "type": "array",
@@ -51,7 +46,6 @@
       },
       "additionalProperties": false
     },
-    "shaderPath": { "type": "string", "pattern": "\\.besl$" },
     "materialVariable": {
       "type": "object",
       "required": ["name", "data_type", "value"],

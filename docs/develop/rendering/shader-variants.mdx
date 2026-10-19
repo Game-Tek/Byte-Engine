@@ -34,20 +34,21 @@ flag only for state that changes while the pipeline stays the same.
 
 ## Leave unused features out while baking
 
-When the authored program alone shows that it never needs a feature, don't
-generate that feature's code. The `ProgramGenerator` sees the parsed program
-before linking, so it can inspect the program and splice in only what the
-program uses.
+When the program alone shows that it never needs a feature, don't generate that
+feature's code. The `ProgramGenerator` builds a material's program from its
+[BEMX graph](/docs/reference/bemx), so it knows every value the graph reads
+before it writes any code, and splices in only what the graph uses.
 
-Material evaluation does this with `MaterialReconstructionFeatures`. The
-generator walks the material's `main` and reconstructs UVs only when the
-material samples a texture or reads `vertex_uv`. It builds the tangent frame only
-when the material writes a normal or reads `T` or `B`. A material without
-textures never contains UV interpolation.
+Material evaluation does this with `MaterialReconstructionFeatures`. While the
+generator lowers the graph, its stage records each value the graph asks for: it
+reconstructs UVs only when the graph samples a texture or reads texture
+coordinates, and builds the tangent frame only when the graph writes a normal or
+reads the tangent or bitangent. A material without textures never contains UV
+interpolation.
 
 Keep these rules:
 
-- **Decide from the baked program and its asset, never from the scene.** One
+- **Decide from the graph and its material, never from the scene.** One
   baked shader serves every material and variant that references it. Only leave
   code out when none of them can need it.
 - **Splice whole statements or helpers.** Backends emit only the functions that

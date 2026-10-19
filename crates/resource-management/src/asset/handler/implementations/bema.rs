@@ -1,7 +1,36 @@
-/// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
+/// The `ProgramGenerator` trait turns a material's BEMX graph into the BESL program its renderer evaluates.
+///
+/// Each renderer owns how a material reaches its BRDF: the entry point, the bindings, and the code around the surface.
+/// Install one on the material, glTF, and FBX asset handlers so every material they bake targets that renderer.
+/// Generators write node values with [`bemx::besl::Lowering`].
 pub trait ProgramGenerator: Send + Sync {
-	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a>;
+	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
+	/// the renderer binds them.
+	///
+	/// Returns the error text to report when the graph needs something the renderer cannot supply, such as a
+	/// parameter `parameters` does not declare.
+	fn generate<'a>(
+		&self,
+		graph: &'a bemx::Graph,
+		parameters: &'a [MaterialParameter],
+	) -> Result<besl::parser::Node<'a>, String>;
+}
+
+/// The `MaterialParameter` struct declares one value or texture a material supplies, so a generated program can bind
+/// what a graph's parameter and image nodes name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialParameter {
+	pub name: String,
+	pub kind: ParameterKind,
+}
+
+/// The `ParameterKind` enum tells a program generator how a material parameter is bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterKind {
+	/// A constant of the given type, which [`bemx::Node::Parameter`] reads.
+	Value(bemx::Type),
+	/// A texture, which [`bemx::Node::Image`] samples.
+	Texture,
 }
 
 pub struct BEMAAssetHandler {
@@ -27,34 +56,56 @@ impl BEMAAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Bakes a material definition and its independently compiled shader stages.
+	/// Bakes a material definition and the shader its graph generates.
 	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
-		let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
-		// Every material declares its render domain, even though shader compilation does not read it.
-		asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+		let invalid = |problem: &str| {
+			context.error(format_args!(
+				"Invalid material '{}': {problem} See {}.",
+				url.as_ref(),
+				online_docs_url(BEMA_DOCS_PATH)
+			));
+			LoadErrors::FailedToProcess
+		};
+
+		// Every material declares its render domain, even though shader generation does not read it.
+		asset["domain"]
+			.as_str()
+			.ok_or_else(|| invalid("it has no `domain`. The most likely cause is a material written without one."))?;
 		let generator = self.generator.as_deref().ok_or(LoadErrors::FailedToProcess)?;
-		let asset_shaders = asset["shaders"].as_object().ok_or(LoadErrors::FailedToProcess)?;
-
-		// Compile independent stages together while preserving declaration order in the material model.
-		let shader_requests = asset_shaders.iter().map(|(shader_type, shader_json)| {
-			self.compile_and_store_shader(context, generator, asset_object, shader_json, shader_type)
-		});
-		let shaders = buffered_in_order(shader_requests, 4).await?;
-
-		let asset_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
-		// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
-		let value_requests = asset_variables.iter().map(|variable| async move {
-			let data_type = variable["data_type"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-			let value = variable["value"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-			resolve_value(context, data_type, value).await
-		});
-		let values = buffered_in_order(value_requests, 8).await?;
-		let parameters = asset_variables
+		let graph = asset["graph"].as_str().ok_or_else(|| {
+			invalid("it names no `graph`. The most likely cause is a material written for the removed `shaders` field; point `graph` at a `.bemx` file instead.")
+		})?;
+		let asset_variables = asset["variables"].as_array().ok_or_else(|| {
+			invalid("it has no `variables` array. The most likely cause is a missing or misspelt `variables` field.")
+		})?;
+		// Each variable is read once: the shader binds its parameter and the material stores its value.
+		let (parameters, sources): (Vec<_>, Vec<_>) = asset_variables
 			.iter()
-			.zip(values)
-			.map(|(variable, value)| ParameterModel {
-				name: variable["name"].as_str().unwrap().to_string(),
-				r#type: variable["data_type"].as_str().unwrap().to_string(),
+			.map(material_variable)
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|problem| invalid(&problem))?
+			.into_iter()
+			.unzip();
+
+		// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
+		let value_requests = sources
+			.iter()
+			.map(|&(data_type, value)| async move { resolve_value(context, data_type, value).await });
+
+		// The shader and the parameter values do not depend on each other, so they bake together.
+		let (shader, values) = std::future::join!(
+			self.compile_graph(context, url, generator, ResourceId::new(graph), &parameters),
+			buffered_in_order(value_requests, 8),
+		)
+		.await;
+
+		let parameters = parameters
+			.into_iter()
+			.zip(sources)
+			.zip(values?)
+			.map(|((parameter, (data_type, _)), value)| ParameterModel {
+				name: parameter.name,
+				r#type: data_type.to_string(),
 				value,
 			})
 			.collect();
@@ -67,7 +118,7 @@ impl BEMAAssetHandler {
 				name: "Visibility".to_string(),
 				pass: "MaterialEvaluation".to_string(),
 			},
-			shaders,
+			shaders: vec![shader?],
 			parameters,
 		};
 
@@ -113,45 +164,86 @@ impl BEMAAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
 
-	/// Compiles a shader definition and stores the resulting resource and binary payload.
-	async fn compile_and_store_shader(
+	/// Reads the material's BEMX graph, generates its program, and compiles and stores the shader.
+	///
+	/// The shader is stored under the material's own ID with a `#shader` fragment, because the program depends on the
+	/// material's parameters as well as on the graph, so two materials sharing a graph may still need two shaders.
+	async fn compile_graph(
 		&self,
 		context: BakeContext<'_>,
+		material: ResourceId<'_>,
 		generator: &dyn ProgramGenerator,
-		material: &JsonObject,
-		shader_json: &Value,
-		stage: &str,
+		path: ResourceId<'_>,
+		parameters: &[MaterialParameter],
 	) -> Result<ReferenceModel<Shader>, LoadErrors> {
-		let path = ResourceId::new(shader_json.as_str().ok_or(LoadErrors::FailedToProcess)?);
+		let (source, format) = context.resolve(path).await?;
 
-		let (arlp, format) = context.resolve(path).await?;
-
-		if format != "besl" {
+		if format != "bemx" {
 			context.error(format_args!(
-				"Unknown material shader format '{format}'. The most likely cause is an unsupported format in the .bema declaration. See {}.",
+				"Unknown material graph format '{format}' in '{}'. The most likely cause is a `graph` field that names a file other than a `.bemx` graph. See {}.",
+				material.as_ref(),
 				online_docs_url(BEMA_DOCS_PATH)
 			));
 			return Err(LoadErrors::FailedToProcess);
 		}
 
-		let shader_code = std::str::from_utf8(&arlp).map_err(|_| LoadErrors::FailedToProcess)?;
-
-		let base = path.get_base();
-		let name = base.as_ref();
-
+		let shader_id = format!("{}#shader", material.as_ref());
 		let compile_error = |error: String| {
-			context.error(shader_compilation_error_message(name, &error));
+			context.error(shader_compilation_error_message(&shader_id, &error));
 			LoadErrors::FailedToProcess
 		};
-		let settings = material_shader_stage(name, stage).map_err(compile_error)?;
-		let (shader, result_shader_bytes) = self
+
+		let source = std::str::from_utf8(&source).map_err(|_| {
+			compile_error(format!(
+				"Material graph '{}' is not UTF-8 text. The most likely cause is a binary file saved with a `.bemx` extension.",
+				path.as_ref()
+			))
+		})?;
+		let graph = bemx::json::parse(source)
+			.map_err(|error| compile_error(format!("Failed to read material graph '{}': {error}", path.as_ref())))?;
+		let program = generator.generate(&graph, parameters).map_err(compile_error)?;
+		let (shader, bytes) = self
 			.compiler
-			.compile(shader_code, &[], Some((generator, material)), settings)
+			.compile(program, compute_material_stage(&shader_id))
 			.await
 			.map_err(compile_error)?;
 
-		store_model_owned(context, path.as_ref(), shader, result_shader_bytes).await
+		store_model_owned(context, &shader_id, shader, bytes).await
 	}
+}
+
+/// Reads one entry of a `.bema` file's `variables`: the parameter it declares, its data type, and its value.
+fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &str)), String> {
+	let name = variable["name"]
+		.as_str()
+		.ok_or("a variable has no `name`. The most likely cause is a variable written without one.")?;
+	let data_type = variable["data_type"].as_str().ok_or_else(|| {
+		format!("variable '{name}' has no `data_type`. The most likely cause is a variable written without one.")
+	})?;
+
+	let kind = match data_type {
+		"float" => ParameterKind::Value(bemx::Type::Float),
+		"vec3f" => ParameterKind::Value(bemx::Type::Vector3),
+		"vec4f" => ParameterKind::Value(bemx::Type::Vector4),
+		"Texture2D" => ParameterKind::Texture,
+		data_type => {
+			return Err(format!(
+				"variable '{name}' has the unsupported data type '{data_type}'. The most likely cause is a type other than `float`, `vec3f`, `vec4f`, or `Texture2D`."
+			));
+		}
+	};
+
+	let value = variable["value"]
+		.as_str()
+		.ok_or_else(|| format!("variable '{name}' has no `value`. The most likely cause is a variable written without one."))?;
+
+	Ok((
+		MaterialParameter {
+			name: name.to_string(),
+			kind,
+		},
+		(data_type, value),
+	))
 }
 
 /// Runs `requests` with at most `limit` in flight and returns their results in input order once all have finished.
@@ -194,22 +286,7 @@ impl AssetHandler for BEMAAssetHandler {
 	}
 }
 
-/// Maps a BEMA shader stage name to its generation settings for the shader named `name`.
-fn material_shader_stage(name: &str, stage: &str) -> Result<ShaderGenerationSettings, String> {
-	let settings = match stage {
-		"Vertex" => ShaderGenerationSettings::vertex(),
-		"Fragment" => ShaderGenerationSettings::fragment(),
-		"Compute" => return Ok(compute_material_stage(name)),
-		stage => {
-			return Err(format!(
-				"Unsupported material shader stage '{stage}'. The most likely cause is that a `shaders` key in the .bema declaration is not `Vertex`, `Fragment`, or `Compute`."
-			));
-		}
-	};
-	Ok(settings.name(name.to_string()))
-}
-
-/// Returns the compute generation settings shared by authored BEMA and generated BRDF material shaders.
+/// Returns the compute generation settings shared by authored and generated material shaders.
 fn compute_material_stage(name: &str) -> ShaderGenerationSettings {
 	ShaderGenerationSettings::compute(Extent::line(128)).name(name.to_string())
 }
@@ -224,15 +301,15 @@ const TEXTURE_BAKE_CONCURRENCY: usize = 8;
 pub(crate) struct GeneratedMaterial {
 	/// The material and variant are stored as `<base_id>.material` and `<base_id>.variant`.
 	pub(crate) base_id: String,
-	/// The material graph. Each texture node's `image_index` indexes the container's image IDs.
-	pub(crate) brdf: BrdfMaterialDescription,
+	/// The material. Its `images` index the container's image IDs.
+	pub(crate) material: ImportedMaterial,
 }
 
 /// The `MaterialSource` enum tells [`resolve_container_materials`] where one glTF or FBX material's variant comes from.
 pub(crate) enum MaterialSource {
 	/// A BEAD sidecar names an authored variant, which bakes as a dependency.
 	Override(String),
-	/// The importer describes the material as a BRDF graph, which is generated.
+	/// The importer describes the material as a BEMX graph, which is generated.
 	Generated(GeneratedMaterial),
 }
 
@@ -243,7 +320,7 @@ const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
 ///
 /// glTF and FBX importers call this once per container. Overrides bake as dependencies while the other materials are
 /// generated through [`store_generated_materials`]; both run concurrently. `image_ids` holds the resource ID of each
-/// container image, indexed by the graphs' texture nodes.
+/// container image, indexed by the materials' `images`.
 ///
 /// Next, reference the returned variants from the container's mesh primitives.
 pub(crate) async fn resolve_container_materials(
@@ -289,7 +366,7 @@ pub(crate) fn bead_material_override(spec: Option<&serde_json::Value>, name: &st
 
 /// Generates and stores the variants of a container's generated materials, in the order given.
 ///
-/// Every image the graphs sample bakes once, as its own dependency, while materials whose graphs match share one
+/// Every image the materials sample bakes once, as its own dependency, while materials whose graphs match share one
 /// compiled shader.
 async fn store_generated_materials(
 	context: BakeContext<'_>,
@@ -310,18 +387,9 @@ async fn store_generated_materials(
 		LoadErrors::FailedToProcess
 	})?;
 
-	// Slots follow each graph's first use of an image, so graphs that differ only in their images become identical.
-	let materials = materials
-		.into_iter()
-		.map(|mut material| {
-			let slots = assign_first_use_texture_slots(&mut material.brdf);
-			(material, slots)
-		})
-		.collect::<Vec<_>>();
-
 	let mut baked_images = Vec::new();
 
-	for &image_index in materials.iter().flat_map(|(_, slots)| slots) {
+	for &image_index in materials.iter().flat_map(|generated| &generated.material.images) {
 		if !baked_images.contains(&image_index) {
 			baked_images.push(image_index);
 		}
@@ -337,12 +405,12 @@ async fn store_generated_materials(
 		})
 		.collect::<Result<Vec<_>, _>>()?;
 
-	let brdfs = materials.iter().map(|(material, _)| &material.brdf).collect::<Vec<_>>();
+	let imported = materials.iter().map(|generated| &generated.material).collect::<Vec<_>>();
 
 	// Texture bakes and shader compiles do not depend on each other, so they run together.
 	let (images, shaders) = std::future::join!(
 		context.bake_dependencies::<Image>(&baked_image_ids, TEXTURE_BAKE_CONCURRENCY),
-		store_generated_brdf_shaders(context, generator, container_id, &brdfs),
+		store_generated_shaders(context, generator, container_id, &imported),
 	)
 	.await;
 
@@ -350,8 +418,10 @@ async fn store_generated_materials(
 
 	let mut variants = Vec::with_capacity(materials.len());
 
-	for ((material, slots), shader) in materials.into_iter().zip(shaders) {
-		let variables = slots
+	for (generated, shader) in materials.into_iter().zip(shaders) {
+		let variables = generated
+			.material
+			.images
 			.iter()
 			.enumerate()
 			.map(|(slot, image_index)| {
@@ -362,48 +432,32 @@ async fn store_generated_materials(
 					.expect("every sampled image was baked");
 
 				VariantVariableModel {
-					name: material_texture_variable_name(slot as u32),
+					name: material_texture_parameter_name(slot),
 					r#type: "Texture2D".to_string(),
 					value: ValueModel::Image(image),
 				}
 			})
 			.collect();
 
-		variants.push(store_generated_variant(context, material, shader, variables).await?);
+		variants.push(store_generated_variant(context, generated, shader, variables).await?);
 	}
 
 	Ok(variants)
 }
 
-/// Renumbers a graph's texture nodes into slots in first-use order and returns the image index of each slot.
-fn assign_first_use_texture_slots(brdf: &mut BrdfMaterialDescription) -> Vec<u32> {
-	let mut slots = Vec::new();
-
-	brdf.assign_texture_slots(|image_index| {
-		let slot = slots.iter().position(|&used| used == image_index).unwrap_or_else(|| {
-			slots.push(image_index);
-			slots.len() - 1
-		});
-
-		slot as u32
-	});
-
-	slots
-}
-
 /// Stores one generated material and its variant.
 async fn store_generated_variant(
 	context: BakeContext<'_>,
-	GeneratedMaterial { base_id, brdf }: GeneratedMaterial,
+	GeneratedMaterial { base_id, material }: GeneratedMaterial,
 	shader: ReferenceModel<Shader>,
 	variables: Vec<VariantVariableModel>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	let alpha_mode = brdf.alpha_mode;
+	let alpha_mode = material.alpha_mode;
 
-	let material = MaterialModel {
-		double_sided: brdf.double_sided,
+	let model = MaterialModel {
+		double_sided: material.double_sided,
 		alpha_mode,
-		coverage: generated_material_coverage(&brdf),
+		coverage: generated_material_coverage(&material),
 		model: RenderModel {
 			name: "Visibility".to_string(),
 			pass: "MaterialEvaluation".to_string(),
@@ -412,10 +466,10 @@ async fn store_generated_variant(
 		parameters: Vec::new(),
 	};
 
-	let material = store_model::<MaterialModel>(context, &format!("{base_id}.material"), material, &[]).await?;
+	let model = store_model::<MaterialModel>(context, &format!("{base_id}.material"), model, &[]).await?;
 
 	let variant = VariantModel {
-		material,
+		material: model,
 		variables,
 		alpha_mode,
 	};
@@ -423,41 +477,66 @@ async fn store_generated_variant(
 	store_model::<VariantModel>(context, &format!("{base_id}.variant"), variant, &[]).await
 }
 
-/// Extracts the base-color alpha expression of a slot-numbered graph into the compact masked-raster contract.
-fn generated_material_coverage(material: &BrdfMaterialDescription) -> MaterialCoverage {
-	fn collect(material: &BrdfMaterialDescription, node: BrdfNodeId, factor: &mut f32, slot: &mut Option<u32>) {
-		match material.node(node) {
-			Ok(BrdfNode::Constant(BrdfValue::Vector4(value))) => *factor *= value[3],
-			Ok(BrdfNode::Texture(texture)) => *slot = Some(texture.image_index),
-			Ok(BrdfNode::Multiply { left, right }) => {
-				collect(material, *left, factor, slot);
-				collect(material, *right, factor, slot);
+/// Extracts a generated material's opacity into the compact masked-raster contract: a constant factor times, at most,
+/// the alpha of one texture.
+fn generated_material_coverage(material: &ImportedMaterial) -> MaterialCoverage {
+	/// Folds the constants an opacity multiplies together and finds the texture whose alpha it reads.
+	fn collect<'a>(graph: &'a bemx::Graph, node: bemx::NodeId, factor: &mut f32, texture: &mut Option<&'a str>) {
+		match graph.node(node) {
+			bemx::Node::Constant(bemx::Value::Float(value)) => *factor *= value,
+			// A colour constant is reached through the extraction of its alpha below.
+			bemx::Node::Constant(bemx::Value::Vector4(value)) => *factor *= value[3],
+			bemx::Node::Image { texture: name, .. } => *texture = Some(name),
+			bemx::Node::Extract { value, index: 3 } => collect(graph, *value, factor, texture),
+			bemx::Node::Binary {
+				operator: bemx::BinaryOperator::Multiply,
+				left,
+				right,
+			} => {
+				collect(graph, *left, factor, texture);
+				collect(graph, *right, factor, texture);
 			}
 			_ => {}
 		}
 	}
 
 	let mut coverage = MaterialCoverage::default();
+	let mut texture = None;
 
-	if let Ok(BrdfNode::MetallicRoughness(surface)) = material.node(material.surface) {
-		collect(material, surface.base_color, &mut coverage.factor, &mut coverage.texture_slot);
+	if let Some(opacity) = material.graph.surface().opacity {
+		collect(&material.graph, opacity, &mut coverage.factor, &mut texture);
 	}
+
+	coverage.texture_slot = texture
+		.and_then(material_texture_slot)
+		.filter(|slot| *slot < material.images.len())
+		.map(|slot| slot as u32);
 
 	coverage
 }
 
-/// Compiles each distinct generated BRDF shader once and stores it under an ID derived from its compile inputs.
+/// Declares the texture parameters a generated material binds: one per image, named by slot.
+fn generated_material_parameters(material: &ImportedMaterial) -> Vec<MaterialParameter> {
+	(0..material.images.len())
+		.map(|slot| MaterialParameter {
+			name: material_texture_parameter_name(slot),
+			kind: ParameterKind::Texture,
+		})
+		.collect()
+}
+
+/// Compiles each distinct generated shader once and stores it under an ID derived from its compile inputs.
 ///
-/// Texture nodes must already use slot indices. Returns one shader reference per entry in `materials`, in order.
+/// Returns one shader reference per entry in `materials`, in order.
 ///
 /// The ID hashes the lowered platform source and the compiler identity, so a later bake of the same container reuses
 /// the stored binary while a change to the graph, program generator, BESL backend, settings, or toolchain compiles
 /// again.
-async fn store_generated_brdf_shaders(
+async fn store_generated_shaders(
 	context: BakeContext<'_>,
 	generator: &dyn ProgramGenerator,
 	container_id: ResourceId<'_>,
-	materials: &[&BrdfMaterialDescription],
+	materials: &[&ImportedMaterial],
 ) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
 	// Every generated shader of a container shares one compiler name, so the name never depends on the key it feeds.
 	let compiler_name = format!("{}#shaders", container_id.as_ref());
@@ -469,31 +548,27 @@ async fn store_generated_brdf_shaders(
 
 	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
 
-	// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
+	// Generated materials evaluate in the same compute stage as authored material shaders.
 	let settings = compute_material_stage(&compiler_name);
 
-	// Graph hashes skip lowering repeated graphs; cache keys also merge distinct graphs that lower to the same source.
+	// Graph hashes skip generating repeated graphs; cache keys also merge distinct graphs that lower to the same source.
 	let mut unique_by_graph: HashMap<u64, usize> = HashMap::new();
 	let mut unique_by_key: HashMap<u64, usize> = HashMap::new();
 	let mut unique = Vec::new();
 	let mut unique_index_per_material = Vec::with_capacity(materials.len());
 
 	for &material in materials {
-		// Only the node graph reaches the program; names, sidedness, and alpha mode stay in the material resource.
-		let graph = serde_json::to_vec(&(&material.nodes, material.surface)).map_err(|_| LoadErrors::FailedToProcess)?;
+		// Only the graph and its texture count reach the program; images, names, sidedness, and alpha mode stay in
+		// the material resource.
+		let graph = serde_json::to_vec(&(&material.graph, material.images.len())).map_err(|_| LoadErrors::FailedToProcess)?;
 		let graph_hash = crate::resource::compression::payload_hash(&graph);
 
 		let index = match unique_by_graph.entry(graph_hash) {
 			Entry::Occupied(entry) => *entry.get(),
 			Entry::Vacant(entry) => {
-				let program = generate_textured_brdf_program(material).map_err(|error| {
-					compile_error(format!(
-						"Failed to generate the BRDF material program ({error:?}). The most likely cause is an unsupported node in the imported material graph."
-					))
-				})?;
-				let material_json = generated_brdf_material_json(material);
-				let prepared =
-					prepare_besl_shader(program, Some((generator, &material_json)), &settings).map_err(compile_error)?;
+				let parameters = generated_material_parameters(material);
+				let program = generator.generate(&material.graph, &parameters).map_err(compile_error)?;
+				let prepared = prepare_besl_shader(program, &settings).map_err(compile_error)?;
 				let key = prepared.cache_key(compiler_identity);
 
 				*entry.insert(*unique_by_key.entry(key).or_insert_with(|| {
@@ -532,25 +607,6 @@ async fn store_generated_brdf_shaders(
 		.collect())
 }
 
-/// Declares one `Texture2D` material variable per texture slot used by a generated BRDF graph.
-fn generated_brdf_material_json(material: &BrdfMaterialDescription) -> JsonObject {
-	let slot_count = material
-		.nodes
-		.iter()
-		.filter_map(|node| match node {
-			BrdfNode::Texture(texture) => Some(texture.image_index + 1),
-			_ => None,
-		})
-		.max()
-		.unwrap_or(0);
-
-	let variables = (0..slot_count)
-		.map(|slot| serde_json::json!({ "name": material_texture_variable_name(slot), "data_type": "Texture2D" }))
-		.collect();
-
-	JsonObject::from_iter([("variables".to_string(), Value::Array(variables))])
-}
-
 /// Resolves a material parameter value based on its type.
 async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -> Result<ValueModel, LoadErrors> {
 	let to_color = |name: &str| match name {
@@ -583,9 +639,9 @@ pub mod tests {
 
 	use std::sync::Arc;
 
-	use super::ProgramGenerator;
-	use crate::asset::JsonObject;
+	use super::{MaterialParameter, ProgramGenerator};
 	use crate::asset::handler::implementations::besl::ShaderCompiler;
+	use crate::bemx;
 	use crate::{
 		ReferenceModel,
 		asset::{
@@ -603,9 +659,7 @@ pub mod tests {
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			_source: &'a str,
-			_layers: &'a [(String, String)],
-			_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+			_program: besl::parser::Node<'a>,
 			settings: ShaderGenerationSettings,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
@@ -634,8 +688,10 @@ pub mod tests {
 	pub struct MinimalTestShaderGenerator;
 
 	impl ProgramGenerator for MinimalTestShaderGenerator {
-		fn transform<'a>(&self, _: besl::parser::Node<'a>, _: &'a JsonObject) -> besl::parser::Node<'a> {
-			besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())])
+		fn generate<'a>(&self, _: &'a bemx::Graph, _: &'a [MaterialParameter]) -> Result<besl::parser::Node<'a>, String> {
+			Ok(besl::parser::Node::root_with_children(vec![
+				besl::parser::Node::main_function(Vec::new()),
+			]))
 		}
 	}
 
@@ -645,10 +701,8 @@ pub mod tests {
 
 		let material_json = r#"{
 			"domain": "World",
-				"type": "Surface",
-				"shaders": {
-					"Compute": "load_variant_fragment.besl"
-				},
+			"type": "Surface",
+			"graph": "load_variant.bemx",
 			"variables": [
 				{
 					"name": "color",
@@ -661,11 +715,15 @@ pub mod tests {
 
 		asset_storage_backend.add_file("load_variant_material.bema", material_json.as_bytes());
 
-		let shader_file = "main: fn () -> void {
-			materials;
-		}";
+		let graph = r#"{
+			nodes: [
+				{ name: "color", node: "parameter", parameter: "color", type: "vector4" },
+				{ name: "rgb", node: "swizzle", in: "color", channels: "rgb" },
+				{ name: "surface", node: "surface", base_color: "rgb" },
+			],
+		}"#;
 
-		asset_storage_backend.add_file("load_variant_fragment.besl", shader_file.as_bytes());
+		asset_storage_backend.add_file("load_variant.bemx", graph.as_bytes());
 
 		let variant_json = r#"{
 			"parent": "load_variant_material.bema",
@@ -698,14 +756,14 @@ pub mod tests {
 		assert_eq!(generated_resources.len(), 3);
 
 		let shader = resource_storage_backend
-			.get_resource(ResourceId::new("load_variant_fragment.besl"))
+			.get_resource(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader");
 
-		assert_eq!(shader.id, "load_variant_fragment.besl");
+		assert_eq!(shader.id, "load_variant_material.bema#shader");
 		assert_eq!(shader.class, "Shader");
 
 		let shader_spirv = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("load_variant_fragment.besl"))
+			.get_resource_data_by_name(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader data");
 
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
@@ -743,13 +801,10 @@ use super::{
 use crate::asset::handler::implementations::besl::{
 	PlatformShaderCompilerAdapter, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
 };
-use crate::pbr::{
-	BrdfMaterialDescription, BrdfNode, BrdfNodeId, BrdfValue, generate_textured_brdf_program, material_texture_variable_name,
-};
+use crate::bemx::{self, import::ImportedMaterial, material_texture_parameter_name, material_texture_slot};
 use crate::resources::image::Image;
 use crate::{
-	ProcessedAsset, ReferenceModel,
-	asset::{self, JsonObject},
+	ProcessedAsset, ReferenceModel, asset,
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{

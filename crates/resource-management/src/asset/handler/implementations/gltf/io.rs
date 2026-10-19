@@ -180,75 +180,59 @@ pub(crate) fn gltf_image_source_layout(format: gltf::image::Format) -> Result<(S
 	}
 }
 
-/// Merges how one material samples each image into `semantics`, which is indexed by image.
+/// Merges how one material samples each image into `semantics`, which is indexed by container image.
 ///
-/// The material is validated before any texture is read, so a material that fails validation leaves `semantics`
-/// unchanged. Images outside `semantics` are ignored.
-pub(crate) fn merge_gltf_texture_semantics(
-	material: &BrdfMaterialDescription,
-	semantics: &mut [Option<Semantic>],
-) -> Result<(), BrdfMaterialValidationError> {
-	material.validate()?;
-
-	let BrdfNode::MetallicRoughness(surface) = material.node(material.surface)? else {
-		return Ok(());
-	};
+/// Images outside `semantics` are ignored.
+pub(crate) fn merge_gltf_texture_semantics(material: &ImportedMaterial, semantics: &mut [Option<Semantic>]) {
+	let surface = material.graph.surface();
 
 	for (node, semantic) in [
-		(Some(surface.base_color), Semantic::Albedo),
-		(Some(surface.metallic), Semantic::Metallic),
-		(Some(surface.roughness), Semantic::Roughness),
+		(surface.base_color, Semantic::Albedo),
+		(surface.opacity, Semantic::Albedo),
+		(surface.metalness, Semantic::Metallic),
+		(surface.roughness, Semantic::Roughness),
 		(surface.normal, Semantic::Normal),
 		(surface.occlusion, Semantic::AO),
 		(surface.emission, Semantic::Emissive),
 	] {
 		if let Some(node) = node {
-			merge_texture_semantics_from_node(material, node, semantic, semantics)?;
+			merge_texture_semantics_from_node(material, node, semantic, semantics);
 		}
 	}
-
-	Ok(())
 }
 
+/// Merges the semantic every image `node` reaches is sampled with, reading it as `semantic` unless the path to the
+/// image says otherwise.
 pub(crate) fn merge_texture_semantics_from_node(
-	material: &BrdfMaterialDescription,
-	node: BrdfNodeId,
+	material: &ImportedMaterial,
+	node: bemx::NodeId,
 	semantic: Semantic,
 	semantics: &mut [Option<Semantic>],
-) -> Result<(), BrdfMaterialValidationError> {
-	match material.node(node)? {
-		BrdfNode::Texture(texture) => {
-			if let Some(merged) = semantics.get_mut(texture.image_index as usize) {
+) {
+	let graph = &material.graph;
+
+	match graph.node(node) {
+		bemx::Node::Image { texture, .. } => {
+			if let Some(merged) = material.image(texture).and_then(|image| semantics.get_mut(image as usize)) {
 				*merged = Some(merged.map_or(semantic, |merged| merge_texture_semantics(merged, semantic)));
 			}
 		}
-		BrdfNode::Multiply { left, right } => {
-			merge_texture_semantics_from_node(material, *left, semantic, semantics)?;
-
-			merge_texture_semantics_from_node(material, *right, semantic, semantics)?;
-		}
-		BrdfNode::ExtractChannel { source, channel } => {
+		bemx::Node::Extract { value, index } => {
 			// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
 			// other read of the image outranks it in `merge_texture_semantics`, so only fully packable images pack.
 			let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
-				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some()
-				&& matches!(material.node(*source)?, BrdfNode::Texture(_));
+				&& METALLIC_ROUGHNESS_PACKING.stored_channel(usize::from(*index)).is_some()
+				&& matches!(graph.node(*value), bemx::Node::Image { .. });
 			let semantic = if packable { Semantic::MetallicRoughness } else { semantic };
-			merge_texture_semantics_from_node(material, *source, semantic, semantics)?;
-		}
-		BrdfNode::NormalMap { source, .. } => {
-			merge_texture_semantics_from_node(material, *source, Semantic::Normal, semantics)?;
-		}
-		BrdfNode::Occlusion { source, .. } => {
-			merge_texture_semantics_from_node(material, *source, Semantic::AO, semantics)?;
-		}
-		BrdfNode::Emission { color } => {
-			merge_texture_semantics_from_node(material, *color, Semantic::Emissive, semantics)?;
-		}
-		BrdfNode::Constant(_) | BrdfNode::MetallicRoughness(_) => {}
-	}
 
-	Ok(())
+			merge_texture_semantics_from_node(material, *value, semantic, semantics);
+		}
+		bemx::Node::NormalMap { value, scale } => {
+			merge_texture_semantics_from_node(material, *value, Semantic::Normal, semantics);
+			merge_texture_semantics_from_node(material, *scale, semantic, semantics);
+		}
+		other => other.visit_inputs(|input| merge_texture_semantics_from_node(material, input, semantic, semantics)),
+	}
 }
 
 /// Picks the semantic an image bakes with when materials sample it in more than one way.
@@ -280,8 +264,10 @@ pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semant
 pub(crate) fn gltf_image_semantics(gltf: &gltf::Gltf) -> Vec<Option<Semantic>> {
 	let mut semantics = vec![None; gltf.images().count()];
 	for material in gltf.materials() {
-		// A material whose graph fails validation samples no texture, so its error needs no handling here.
-		let _ = merge_gltf_texture_semantics(&brdf_material_from_gltf(&material), &mut semantics);
+		// A material that fails to convert is reported when it is generated, so here it simply samples nothing.
+		if let Ok(material) = material_from_gltf(&material) {
+			merge_gltf_texture_semantics(&material, &mut semantics);
+		}
 	}
 	semantics
 }

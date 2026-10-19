@@ -17,6 +17,7 @@ pub mod packed;
 pub mod root_motion;
 /// Local-pose sampling, global-pose construction, and pose comparison.
 pub mod skeletal;
+pub mod system;
 
 pub use skeletal::{
 	AnimationBonePositionComparison, AnimationComparisonError, BonePositionDifference, PoseError,

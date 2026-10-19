@@ -34,6 +34,9 @@ pub trait World {
 	#[cfg(feature = "headed")]
 	fn poses_channel(&self) -> DefaultChannel<UpdatePose>;
 
+	/// Returns the route the animation system posts each animator's root motion on. See [`RootMotionUpdate`].
+	fn root_motion_channel(&self) -> DefaultChannel<RootMotionUpdate>;
+
 	/// Returns the route dynamic material parameter changes travel on. See [`SetMaterialParameter`].
 	#[cfg(feature = "headed")]
 	fn material_parameters_channel(&self) -> DefaultChannel<SetMaterialParameter>;
@@ -55,6 +58,10 @@ impl World for MessageScope {
 
 	#[cfg(feature = "headed")]
 	fn poses_channel(&self) -> DefaultChannel<UpdatePose> {
+		self.channel()
+	}
+
+	fn root_motion_channel(&self) -> DefaultChannel<RootMotionUpdate> {
 		self.channel()
 	}
 
@@ -83,6 +90,7 @@ pub(crate) fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: 
 }
 
 #[cfg(feature = "headed")]
+use crate::animation::system::RootMotionUpdate;
 use crate::rendering::{SetMaterialParameter, UpdatePose};
 use crate::{
 	core::{

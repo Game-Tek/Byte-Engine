@@ -2,7 +2,11 @@
 
 use super::*;
 
+mod look;
 mod stream;
+
+pub use look::{LookChainSettings, LookTarget};
+use look::LookChain;
 
 /// The `RuntimeMotion` struct plays one graph state, keeping a blend's clips in step through one shared phase.
 ///
@@ -396,6 +400,10 @@ pub struct AnimationGraphPlayer<'graph> {
 	graph: &'graph AnimationGraph,
 	/// Retained until the initial clip supplies the canonical skeleton that resolves the node name.
 	root_motion: Option<RootMotionSettings<'graph>>,
+	/// Retained like `root_motion`, until the canonical skeleton resolves the chain's nodes.
+	look_chain: Option<LookChainSettings<'graph>>,
+	/// Where the look chain turns toward; see [`Self::set_look`].
+	look_target: Option<LookTarget>,
 	runtime: PlayerRuntime<'graph>,
 	/// The latest request, which holds until another replaces it.
 	requested: AnimationRequest,
@@ -446,6 +454,8 @@ impl AnimationPool {
 		AnimationGraphPlayer {
 			graph,
 			root_motion,
+			look_chain: None,
+			look_target: None,
 			runtime: PlayerRuntime::Loading,
 			requested: graph.initial_state().into(),
 			missing: Vec::new(),
@@ -511,6 +521,23 @@ impl AnimationPool {
 }
 
 impl<'graph> AnimationGraphPlayer<'graph> {
+	/// Gives the player a look chain, which turns toward the target [`Self::set_look`] sets on top of the graph's pose.
+	///
+	/// Call it right after [`AnimationPool::create_player`]; the chain resolves against the canonical skeleton once
+	/// the initial clip is resident, and a chain that does not resolve rejects the player.
+	pub fn with_look_chain(mut self, settings: LookChainSettings<'graph>) -> Self {
+		self.look_chain = Some(settings);
+		self
+	}
+
+	/// Points the look chain at `target`, in the entity's object space, or releases it with `None`.
+	///
+	/// The target holds until another replaces it, so set it when the view changes or every frame. A target's
+	/// [`turned`](LookTarget::turned) applies to the next advance only.
+	pub fn set_look(&mut self, target: Option<LookTarget>) {
+		self.look_target = target;
+	}
+
 	/// Returns the currently playing destination state after the initial clip has loaded.
 	pub fn state(&self) -> Option<AnimationStateId> {
 		self.ready().and_then(ReadyAnimationGraphPlayer::state)
@@ -614,7 +641,11 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					missing: &mut self.missing,
 					scratch,
 				};
-				runtime.advance(delta, self.requested, &mut evaluation);
+				runtime.advance(delta, self.requested, self.look_target, &mut evaluation);
+				// The entity's turn is applied once; a held target does not keep turning the chain back.
+				if let Some(target) = &mut self.look_target {
+					target.turned = 0.0;
+				}
 			}
 			PlayerRuntime::Rejected { reported, .. } => return !*reported,
 			PlayerRuntime::Loading => {}
@@ -640,7 +671,7 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					.skeleton,
 			)
 		}));
-		self.runtime = match PlayerPose::new(skeleton, self.root_motion) {
+		self.runtime = match PlayerPose::new(skeleton, self.root_motion, self.look_chain) {
 			// The canonical skeleton sizes every retained evaluation buffer, and the player starts in the initial state.
 			Ok(pose) => PlayerRuntime::Ready(ReadyAnimationGraphPlayer {
 				graph,
@@ -702,6 +733,13 @@ struct PlayerPose {
 	local_previous: Vec<LocalTransform>,
 	global_pose: Vec<AffineMatrix>,
 	inertializer: PoseInertializer,
+	/// The look chain, where it turns toward this frame, and the frame's duration it eases over.
+	look: Option<LookChain>,
+	look_target: Option<LookTarget>,
+	frame_delta: MediaTime,
+	/// The local pose with the look chain turned, which the global pose is built from; `local_pose` stays the
+	/// graph's own pose, which later blends measure from.
+	looked_pose: Vec<LocalTransform>,
 }
 
 impl<'graph> ReadyAnimationGraphPlayer<'graph> {
@@ -742,7 +780,15 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 	/// clip and the next request can cancel or retarget that pending route. Next,
 	/// apply [`AnimationGraphPose::root_motion`] to the owning object and submit
 	/// [`AnimationGraphPose::global_pose`] to the rendering system.
-	fn advance(&mut self, delta: MediaTime, requested: AnimationRequest, evaluation: &mut Evaluation<'_, 'graph, '_>) {
+	fn advance(
+		&mut self,
+		delta: MediaTime,
+		requested: AnimationRequest,
+		look: Option<LookTarget>,
+		evaluation: &mut Evaluation<'_, 'graph, '_>,
+	) {
+		self.pose.look_target = look;
+		self.pose.frame_delta = delta;
 		self.positions
 			.remember(self.graph.state(requested.state).space, requested.value);
 		self.refresh_pending_transition(requested.state);
@@ -1145,8 +1191,15 @@ enum Sampled {
 
 impl PlayerPose {
 	/// Allocates sampling buffers once from the canonical rest pose.
-	fn new(target: Arc<Skeleton>, root_motion: Option<RootMotionSettings<'_>>) -> Result<Self, AnimationGraphPlayerError> {
+	fn new(
+		target: Arc<Skeleton>,
+		root_motion: Option<RootMotionSettings<'_>>,
+		look_chain: Option<LookChainSettings<'_>>,
+	) -> Result<Self, AnimationGraphPlayerError> {
 		let root_motion = resolve_root_motion_target(&target, root_motion)?;
+		let look = look_chain
+			.map(|settings| LookChain::resolve(&target, settings))
+			.transpose()?;
 		let root_chain = RootChain::new(&target, root_motion);
 		let node_count = target.nodes.len();
 		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
@@ -1163,9 +1216,13 @@ impl PlayerPose {
 			destination_current: rest_pose.clone(),
 			root_chain,
 			local_previous: rest_pose.clone(),
+			looked_pose: rest_pose.clone(),
 			local_pose: rest_pose,
 			global_pose,
 			inertializer: PoseInertializer::new(node_count),
+			look,
+			look_target: None,
+			frame_delta: MediaTime::ZERO,
 		})
 	}
 
@@ -1213,8 +1270,7 @@ impl PlayerPose {
 		self.sample(active, active.phase, evaluation, Sampled::Active);
 		let root_motion = self.root_delta(active, wrapped_loops, evaluation.pool, Sampled::Active);
 		self.local_pose.copy_from_slice(&self.active_current);
-		self.remove_root_motion_from_visual_pose();
-		self.write_global_pose();
+		self.finish_visual_pose();
 		root_motion
 	}
 
@@ -1279,8 +1335,7 @@ impl PlayerPose {
 		} else {
 			(transition.elapsed.as_seconds_f32() / duration.as_seconds_f32()).clamp(0.0, 1.0)
 		};
-		self.remove_root_motion_from_visual_pose();
-		self.write_global_pose();
+		self.finish_visual_pose();
 
 		if transition.elapsed == duration {
 			self.active_previous.copy_from_slice(&self.destination_current);
@@ -1380,8 +1435,7 @@ impl PlayerPose {
 		self.inertializer
 			.apply(&self.destination_current, leftover, &mut self.local_pose)
 			.expect("player pose buffers must match the canonical skeleton");
-		self.remove_root_motion_from_visual_pose();
-		self.write_global_pose();
+		self.finish_visual_pose();
 		root_motion
 	}
 
@@ -1415,6 +1469,25 @@ impl PlayerPose {
 			*output = node.rest_local;
 		}
 		self.write_global_pose();
+	}
+
+	/// Finishes the frame's visual pose: removes the extracted root motion, turns the look chain, and builds the
+	/// global pose.
+	fn finish_visual_pose(&mut self) {
+		self.remove_root_motion_from_visual_pose();
+		match (&mut self.look, self.look_target) {
+			(Some(chain), Some(target)) => {
+				self.looked_pose.copy_from_slice(&self.local_pose);
+				chain.apply(&self.target, &mut self.looked_pose, target, self.frame_delta);
+				write_global_pose(&self.target, &self.looked_pose, &mut self.global_pose)
+					.expect("player local pose always matches its canonical skeleton");
+			}
+			(Some(chain), None) => {
+				chain.release();
+				self.write_global_pose();
+			}
+			(None, _) => self.write_global_pose(),
+		}
 	}
 
 	/// Removes extracted motion from the visual pose so the owning object applies it once.
@@ -1455,6 +1528,26 @@ pub enum AnimationGraphPlayerError {
 	StateFromDifferentGraph,
 	/// Pass a nonnegative frame duration to [`AnimationGraphPlayer::advance`].
 	NegativeDelta,
+	/// Name look chain and body nodes that exist in the canonical skeleton.
+	LookChainNodeNotFound {
+		/// The requested node name.
+		name: String,
+	},
+	/// Name look chain and body nodes that are unique in the canonical skeleton.
+	DuplicateLookChainNodeName {
+		/// The ambiguous node name.
+		name: String,
+	},
+	/// List the look chain's nodes from its base to its end, each a descendant of the one before.
+	LookChainNodeNotDescendant {
+		/// The node that does not descend from the one listed before it.
+		name: String,
+	},
+	/// Give the look chain positive shares, limits within their range, and a positive response.
+	LookChainSettingOutOfRange {
+		/// The setting that is out of range.
+		setting: &'static str,
+	},
 }
 
 impl fmt::Display for AnimationGraphPlayerError {
@@ -1475,6 +1568,22 @@ impl fmt::Display for AnimationGraphPlayerError {
 			Self::NegativeDelta => write!(
 				formatter,
 				"Animation graph advance delta is negative. The most likely cause is passing a timeline offset instead of a frame duration."
+			),
+			Self::LookChainNodeNotFound { name } => write!(
+				formatter,
+				"Look chain node was not found. The most likely cause is that the canonical skeleton has no node named '{name}'."
+			),
+			Self::DuplicateLookChainNodeName { name } => write!(
+				formatter,
+				"Look chain node name is ambiguous. The most likely cause is that the canonical skeleton has more than one node named '{name}'."
+			),
+			Self::LookChainNodeNotDescendant { name } => write!(
+				formatter,
+				"Look chain node '{name}' does not descend from the node before it. The most likely cause is listing the chain out of order; list it from its base to its end."
+			),
+			Self::LookChainSettingOutOfRange { setting } => write!(
+				formatter,
+				"Look chain setting '{setting}' is out of range. The most likely cause is a share or response that is not positive, a yaw limit above π, or a pitch limit above π/2."
 			),
 		}
 	}
@@ -2912,6 +3021,174 @@ mod tests {
 		assert_eq!(player.state(), Some(start.id()));
 		ready(player.advance(MediaTime::from_millis(100), dead.id(), &mut pool));
 		assert_eq!(player.state(), Some(dead.id()), "an any-state route cuts the one-shot short");
+	}
+
+	/// Builds a player on an idle clip over a Hips, Spine, Head chain, with the look chain `settings`.
+	fn look_player<'graph>(
+		graph: &'graph AnimationGraph,
+		settings: LookChainSettings<'graph>,
+	) -> (AnimationGraphPlayer<'graph>, AnimationPool) {
+		let skeleton = Skeleton {
+			nodes: vec![
+				test_node(Some("Hips"), None, LocalTransform::identity()),
+				test_node(Some("Spine"), Some(0), LocalTransform::identity()),
+				test_node(Some("Head"), Some(1), LocalTransform::identity()),
+			],
+		};
+		let idle = Animation {
+			name: Some("idle".into()),
+			skeleton: Reference::in_memory("look.skeleton", skeleton),
+			duration: 1.0,
+			frame_rate: None,
+			tracks: Vec::new(),
+		};
+		let mut pool = AnimationPool::detached(idle.estimated_resident_bytes());
+		pool.admit("idle.animation".into(), PackedAnimationData::from_resource(idle));
+		let player = pool.create_player(graph, None).with_look_chain(settings);
+		(player, pool)
+	}
+
+	/// Returns the yaw about +Y and the pitch the node's global transform looks along, as the look chain defines them.
+	fn look_angles(pose: &AnimationGraphPose, node: usize) -> (f32, f32) {
+		let forward = pose.global_pose[node].columns()[2];
+		(forward[0].atan2(forward[2]), -forward[1])
+	}
+
+	const LOOK_SETTINGS: LookChainSettings<'static> = LookChainSettings {
+		nodes: &[("Spine", 0.5), ("Head", 0.5)],
+		body_node: "Hips",
+		yaw_limit: 1.2,
+		up_limit: 0.5,
+		down_limit: 0.5,
+		response: None,
+	};
+
+	#[test]
+	fn look_chain_turns_toward_the_target_within_its_limits() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let graph = builder.build(idle).expect("graph should build");
+		let (mut player, mut pool) = look_player(&graph, LOOK_SETTINGS);
+		let frame = MediaTime::from_millis(100);
+
+		// Without a target the chain follows the clip.
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, 0.0);
+
+		// Each node turns by its share, so the head reaches the target and the spine half of it.
+		player.set_look(Some(LookTarget::new(0.4, 0.0)));
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, 0.4);
+		math::assert_float_eq!(look_angles(&pose, 1).0, 0.2);
+
+		// Yaw clamps to the limit around the hips, pitch to the up limit.
+		player.set_look(Some(LookTarget::new(2.0, 1.0)));
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		let (yaw, pitch) = look_angles(&pose, 2);
+		math::assert_float_eq!(yaw, 1.2);
+		math::assert_float_eq!(pitch, 0.5f32.sin());
+
+		// A released chain stops turning at once.
+		player.set_look(None);
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, 0.0);
+	}
+
+	#[test]
+	fn look_chain_eases_and_holds_its_direction_when_the_entity_turns() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let graph = builder.build(idle).expect("graph should build");
+		let settings = LookChainSettings {
+			response: Some(1.0),
+			..LOOK_SETTINGS
+		};
+		let (mut player, mut pool) = look_player(&graph, settings);
+		let second = MediaTime::from_seconds(1);
+		let follow = 1.0 - (-1.0f32).exp();
+
+		// The first target is taken at once; the next eases toward over the step.
+		player.set_look(Some(LookTarget::new(0.0, 0.0)));
+		ready(player.advance(second, idle.id(), &mut pool));
+		player.set_look(Some(LookTarget::new(1.0, 0.0)));
+		let pose = ready(player.advance(second, idle.id(), &mut pool));
+		let eased = follow;
+		math::assert_float_eq!(look_angles(&pose, 2).0, eased);
+
+		// The entity turned 0.5 under the chain, so the eased yaw turns back by 0.5 before it eases on, and the turn
+		// applies once: a second step with the held target eases from where it got to.
+		player.set_look(Some(LookTarget::new(1.0, 0.0).turned_by(0.5)));
+		let pose = ready(player.advance(second, idle.id(), &mut pool));
+		let turned = eased - 0.5;
+		let eased = turned + (1.0 - turned) * follow;
+		math::assert_float_eq!(look_angles(&pose, 2).0, eased);
+		let pose = ready(player.advance(second, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, eased + (1.0 - eased) * follow);
+	}
+
+	#[test]
+	fn look_chain_keeps_its_side_when_the_target_passes_behind() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let graph = builder.build(idle).expect("graph should build");
+		let (mut player, mut pool) = look_player(&graph, LOOK_SETTINGS);
+		let frame = MediaTime::from_millis(100);
+
+		// A chain near the middle takes the target's side.
+		player.set_look(Some(LookTarget::new(-3.0, 0.0)));
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, -1.2);
+
+		// A chain already well to the right keeps the right as the target passes behind to the left.
+		player.set_look(Some(LookTarget::new(1.0, 0.0)));
+		ready(player.advance(frame, idle.id(), &mut pool));
+		player.set_look(Some(LookTarget::new(-3.0, 0.0)));
+		let pose = ready(player.advance(frame, idle.id(), &mut pool));
+		math::assert_float_eq!(look_angles(&pose, 2).0, 1.2);
+	}
+
+	#[test]
+	fn look_chain_settings_must_resolve_against_the_canonical_skeleton() {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let graph = builder.build(idle).expect("graph should build");
+		let frame = MediaTime::from_millis(100);
+
+		let (mut player, mut pool) = look_player(
+			&graph,
+			LookChainSettings {
+				body_node: "Pelvis",
+				..LOOK_SETTINGS
+			},
+		);
+		assert!(matches!(
+			player.advance(frame, idle.id(), &mut pool),
+			Err(AnimationGraphPlayerError::LookChainNodeNotFound { name }) if name == "Pelvis"
+		));
+
+		let (mut player, mut pool) = look_player(
+			&graph,
+			LookChainSettings {
+				nodes: &[("Head", 0.5), ("Spine", 0.5)],
+				..LOOK_SETTINGS
+			},
+		);
+		assert!(matches!(
+			player.advance(frame, idle.id(), &mut pool),
+			Err(AnimationGraphPlayerError::LookChainNodeNotDescendant { name }) if name == "Spine"
+		));
+
+		let (mut player, mut pool) = look_player(
+			&graph,
+			LookChainSettings {
+				yaw_limit: 4.0,
+				..LOOK_SETTINGS
+			},
+		);
+		assert!(matches!(
+			player.advance(frame, idle.id(), &mut pool),
+			Err(AnimationGraphPlayerError::LookChainSettingOutOfRange { setting: "yaw_limit" })
+		));
 	}
 
 	#[test]

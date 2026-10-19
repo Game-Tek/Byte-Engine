@@ -291,7 +291,7 @@ impl AnimationPool {
 		}
 	}
 
-	fn admit(&mut self, resource_id: Box<str>, packed: PackedAnimationData) {
+	pub(crate) fn admit(&mut self, resource_id: Box<str>, packed: PackedAnimationData) {
 		let resident_bytes = packed.resident_bytes();
 		if resident_bytes > self.byte_budget || resident_bytes / std::mem::size_of::<u32>() > self.storage.len() {
 			self.entries.insert(resource_id.clone(), AnimationPoolEntry::Failed);
@@ -418,8 +418,8 @@ use binding::ClipBinding;
 pub mod benchmarks;
 
 pub use player::{
-	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, RootMotionRotation, RootMotionSettings,
-	RootMotionTranslation,
+	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, LookChainSettings, LookTarget,
+	RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 };
 
 #[cfg(test)]

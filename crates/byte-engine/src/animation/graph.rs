@@ -225,6 +225,12 @@ pub struct AnimationGraph {
 }
 
 impl AnimationGraph {
+	/// Returns the number that tells this graph from every other, which its state IDs and the animators that play it
+	/// carry.
+	pub const fn id(&self) -> u64 {
+		self.id
+	}
+
 	/// Starts a builder for an animation reconciliation graph.
 	pub fn builder() -> AnimationGraphBuilder {
 		use std::hash::BuildHasher as _;
@@ -1227,7 +1233,8 @@ use resource_management::{
 pub use runtime::benchmarks;
 pub use runtime::{
 	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, AnimationLoadWorker, AnimationPool,
-	AnimationPoolEvent, AnimationPoolRequest, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
+	AnimationPoolEvent, AnimationPoolRequest, LookChainSettings, LookTarget, RootMotionRotation, RootMotionSettings,
+	RootMotionTranslation,
 };
 
 use super::{

@@ -1,0 +1,149 @@
+---
+title: Animate a character
+description: Play an animation graph on a skinned mesh, drive it from your gameplay state, and move the entity by its root motion.
+icon: PersonStanding
+---
+
+Give a skinned renderable an animator, step the animation system once per
+tick, and each frame tell the animator which state your gameplay wants. The
+system samples, blends, and posts the pose. Your code keeps the decisions:
+which state to ask for, where the head looks, and where the root motion moves
+the entity.
+
+This page shows the frame loop. The rules behind it, such as how routes
+resolve, what a request carries, and what a step posts, are in the
+[animation reference](/docs/reference/animation#animators).
+
+## Build the graph
+
+Describe the states your character can be in and the routes between them
+once, at startup. A locomotion graph puts its walk loops in a space whose
+position is the direction and speed, with starts and stops as one-shots on the
+way in and out:
+
+```rust
+let graph = AnimationGraph::builder();
+let standing = graph.planar_space("standing");
+let idle = standing.state("idle").with(AnimationClip::looping("anims/idle.fbx#animation"));
+let walk = standing.state("walk").planar(walk_ring());
+idle.to(walk).with(start_ring()).exit(exit).anytime(blend);
+walk.to(idle).with(stop_ring()).at_frames("walk_f", [4, 18]).anytime(settle);
+let graph = graph.build(idle)?;
+```
+
+Keep the graph and the state IDs it hands back; requests name states by ID.
+
+## Create the system, then the animators
+
+The system steps every animator created on its world scope after it, so create
+it before the characters, as you do with physics:
+
+```rust
+let mut animation = AnimationSystem::new(app.world(), animation_pool);
+animation.register(&graph);
+
+let character = app
+	.world()
+	.create(RenderableMesh::resource("MotusMan/MotusMan_v55.fbx"))
+	.with(Animator::new(&graph).with_root_motion(RootMotionSettings {
+		node_name: "Hips",
+		translation: RootMotionTranslation::X.union(RootMotionTranslation::Z),
+		rotation: RootMotionRotation::None,
+	}))
+	.with(Transform::from_position(start))
+	.handle();
+```
+
+Every character that plays the same graph gets its own `Animator` on the same
+graph; the system shares the graph's bindings and clips between them.
+
+## Drive it every tick
+
+Keep the order below. The step posts the frame's pose and root motion before it
+returns, so the transform you write afterwards matches the pose on screen.
+Reading the root motion a tick later leaves the pose one frame ahead of the
+body.
+
+```rust
+let root_motion = app.world().root_motion_channel().listener();
+
+while app.tick_with(|app, time| {
+	let world = app.world();
+	controls.pull(time.delta());
+
+	// 1. Ask for the state gameplay wants. Requests persist, so asking every
+	//    frame is fine, and a position moves the walk around its ring.
+	let state = animation.player(character).and_then(|player| player.state());
+	world.set(select_state(&controls, state)).on(character);
+	world.set(Some(LookTarget::new(view_yaw, view_pitch))).on(character);
+
+	// 2. Advance every animator. Poses reach the renderer here.
+	animation.step(time, app.alley_mut());
+
+	// 3. Move the entity by what the step extracted, in its own frame.
+	while let Some(update) = root_motion.read() {
+		if update.handle() == character {
+			position += orientation.rotate_vector(update.delta().translation);
+		}
+	}
+	world.set(Transform::new(position, Scale::identity(), orientation)).on(character);
+
+	// 4. Systems that read transforms step last.
+	physics.step(time, app.alley_mut());
+})
+.is_some()
+{}
+```
+
+If your application runs physics at a fixed step with `tick_stepped_with`,
+step the animation system in the frame callback, since poses are drawn every
+frame, and apply root motion there too. The fixed step then reads the
+transform the last frame moved.
+
+## Decide from what's playing
+
+Gameplay often needs to know what the animator is doing before it asks for the
+next thing: which state plays, whether a requested route is still waiting for
+its wait point, and how long until a route can start. The system answers these
+between steps, as of the last step:
+
+```rust
+let player = animation.player(character).expect("the animator was created");
+if player.state().is_some_and(|state| catalog.is_turn(state)) {
+	// Keep asking for the idle; the turn plays through and hands over.
+}
+if player.waiting_for() == Some(jump_landing) {
+	// The jump waits for the stride to fit; do not replace the request.
+}
+```
+
+A one-shot built with `when` plays to its end whatever you request next, so a
+jump or a turn needs one request to start and none to protect it. Routes built
+with `anytime` cut short on the next request, which suits starts and stops.
+
+## Turn the head
+
+Give the animator a look chain and send it a target in the entity's object
+space each frame. The system clamps the yaw around the hips, eases it, and
+turns the chain on top of the pose:
+
+```rust
+Animator::new(&graph).with_look_chain(LookChainSettings {
+	nodes: &[("Spine2", 0.2), ("Neck", 0.3), ("Head", 0.5)],
+	body_node: "Hips",
+	yaw_limit: 70f32.to_radians(),
+	up_limit: 30f32.to_radians(),
+	down_limit: 40f32.to_radians(),
+	response: Some(8.0),
+})
+```
+
+The target is in the entity's object space, so when your code turns the
+entity, say by how much with `turned_by`, and the chain holds its direction in
+the world. Send `None` to let the chain follow the animation again.
+
+## Rust API
+
+- [`animation::graph`](/docs/api/latest/byte_engine/animation/graph)
+- [`animation::root_motion`](/docs/api/latest/byte_engine/animation/root_motion)
+- [`gameplay::World`](/docs/api/latest/byte_engine/gameplay/trait.World)

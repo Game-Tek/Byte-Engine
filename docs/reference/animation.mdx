@@ -223,6 +223,7 @@ the entity it poses, usually a skinned renderable.
 
 | Rule | Behavior |
 | --- | --- |
+| System | The application creates one animation system on a world scope, with the clip pool it plays from, and steps it once per frame from its own tick. The system belongs to the animators of that scope. |
 | Adoption | The system adopts animators created after the system, at the start of its next step. It never adopts one created before it. |
 | Replacement | An animator created again under the same handle replaces the previous one and starts over at its graph's initial state. |
 | Removal | A deletion of the handle removes the animator at the start of the next step. Nothing more is posted for that handle. |
@@ -254,7 +255,7 @@ request, through the routes of its graph.
 | Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
 | Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
 | Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
-| Position change on a blend | An inertialized request blends the playing blend from its current weights to the new ones, from the pose posted last. A blend played once blends this way while at least the request's duration of it is left to play, and moves its weights at once otherwise, so its end is never held back by the blend. A request without a position leaves every blend's weights as they are. While a blend to a new position plays, later requests move only the position it heads to; the weights it left stay until it ends, so its root motion ramps across the blend. |
+| Position change on a blend | An inertialized request blends the playing blend from its current weights to the new ones, from the pose posted last. A blend played once blends this way while it has at least the request's duration left to play, and moves its weights at once otherwise, so its end is never held back by the blend. A request without a position leaves every blend's weights as they are. While a blend to a new position plays, later requests move only the position it heads to; the weights it left stay until it ends, so its root motion ramps across the blend. |
 | Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. A round robin needs all its clips resident before the animator enters it. |
 | Initial clip not resident | The animator posts nothing. |
 | Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |
@@ -290,6 +291,12 @@ Every step posts two updates for every animator whose initial clip is resident.
 The system never moves an entity: applying root motion to a transform is up to
 the code that owns the entity.
 
+| Rule | Behavior |
+| --- | --- |
+| Same tick | A step posts its updates before it returns, so code that steps the system and then reads the root motion route in the same tick moves the entity by the delta of the pose that frame draws. Reading the route a tick later shows the pose one frame ahead of the transform. |
+| Order of a tick | Post requests and look targets, step the system, apply the root motion updates to transforms, then step the systems that read transforms, such as physics. |
+| Fixed-step simulation | The system steps with the frame, since poses are drawn every frame; a fixed-step physics then reads the transform root motion last moved at its next step. |
+
 ### Queries
 
 Between steps, the system answers these for each animator, as of the last step:
@@ -299,6 +306,9 @@ Between steps, the system answers these for each animator, as of the last step:
 | Playing state | The state playing, or none before the initial clip is resident. |
 | Waiting for | The requested state whose route waits for the playing state to reach one of its wait points, or none. A new request cancels the wait. |
 | Time until a route | How long the playing state plays on before its route to a given state starts: zero for a route that doesn't wait, and the time to the nearest wait point for one that does. None when the playing state has no route to that state, a one-shot has played past every wait point, the animator is blending, or the initial clip isn't resident. |
+
+The system answers them through the animator's player, which it lends out
+between steps; the queries are the player's.
 
 ### Data stream
 
@@ -419,9 +429,11 @@ released.
 | Angles | Yaw turns about +Y and pitch about +X, by the right-hand rule, in object space. The object faces -Z, so a positive pitch looks up. A turn pitches first, then yaws. |
 | Animated yaw | For a node, the angle about +Y from -Z to -Z turned by the node's object-space rotation times the inverse of its rest object-space rotation, projected onto the XZ plane. |
 | Clamping | The target yaw clamps to within the yaw limit of the body node's animated yaw, and the target pitch to the up and down limits. |
+| Unreachable yaw | A target yaw beyond the limit clamps toward the side the eased yaw already lies on when that side is more than half the limit from the body node's yaw, and toward the target's own side otherwise, so a target passing behind the body doesn't swing the chain across. |
 | Easing | The eased yaw and pitch start at the clamped target. Each step, they move the fraction 1 − e^(−response × delta) of the way to it, yaw along the shorter way around. Without a response, they equal the clamped target. |
 | Turn | The chain turns by the eased yaw minus the end node's animated yaw, and by the eased pitch. |
-| Distribution | Each node, from base to end, turns by its share of both angles about the object-space axes after its animated object-space rotation. Its descendants turn with it. |
+| Distribution | The turn is one rotation, the pitch then the yaw. Each node, from base to end, turns by its share of that rotation's angle about its axis, in object space after its animated object-space rotation, so the shares compose to the whole turn at the end node. Its descendants turn with it. |
+| Entity turn | A target may say how far the entity turned about +Y since the last step. The eased yaw turns the other way by that much before it eases, so the chain holds its direction in the world when the entity takes over a turn clip's rotation. The turn applies to one step. |
 | Release | The chain stops turning at once. The next target starts the easing over. |
 | Root motion | The look chain never changes the root motion delta. |
 

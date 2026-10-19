@@ -11,11 +11,12 @@ playback is built and why, states the rules a change must keep, and names the
 tests and benchmarks that guard them. The code lives in
 `crates/byte-engine/src/animation`.
 
-The animation system that the reference specifies, with animators created
-through the world and updates posted to it, isn't built yet. The evaluation it
-drives is: graph players, a clip pool they share, and
-`AnimationPool::advance_players`, which advances many players together on the
-alley's lanes.
+The animation system the reference specifies lives in `animation/system.rs`:
+`AnimationSystem` adopts the `Animator` values created on its world scope,
+applies the requests and look targets sent to their handles, advances their
+players together with `AnimationPool::advance_players`, and posts each pose and
+root motion. The evaluation it drives is below it: graph players, a clip pool
+they share, and the lanes the players spread over.
 
 ## How a frame flows
 

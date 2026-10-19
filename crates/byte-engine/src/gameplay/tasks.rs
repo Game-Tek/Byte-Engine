@@ -19,8 +19,9 @@
 //! # Waits and cancellation
 //!
 //! A wait stays registered only while its task keeps polling the future that made it: every poll numbers the task,
-//! and a wait that the latest poll did not register again no longer wakes the task or receives messages. Dropping a
-//! wait future, as the losing branch of a `select!` is, cancels it that way, without a destructor. Combinators that
+//! and a wait the latest poll did not register again no longer wakes the task or receives messages. Dropping a wait
+//! future, as the losing branch of a `select!` is, cancels it that way, and the runtime removes the waits a poll
+//! dropped once that poll ends. A task that ends leaves no waits behind. Combinators that
 //! poll every live branch on each poll, such as `select!` and `join!`, keep their branches registered. Do not hold a
 //! pending wait in a combinator that polls only woken branches.
 //!
@@ -63,6 +64,10 @@ type BoxedTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 /// Task slots are reused, so a wake or a wait left by an ended task finds nothing instead of its successor.
 type TaskId = StableVecHandle;
 
+/// Indexes [`State::mailboxes`]. Waits name their mailbox by slot rather than by [`TypeId`], which keeps each task's
+/// list of waits small.
+type MailboxSlot = u32;
+
 /// The `TaskRuntime` struct runs an application's gameplay tasks from its tick, lending them the state `S` while they
 /// are polled.
 ///
@@ -77,6 +82,8 @@ pub struct TaskRuntime<S> {
 	remote: Arc<RemoteWakes>,
 	/// Reused to drain [`Self::remote`] without allocating.
 	woken: Vec<TaskId>,
+	/// Swapped with [`State::spawned`] so spawned futures are adopted, or dropped, with the shared state released.
+	adopting: Vec<(TaskId, BoxedTask)>,
 	deletions: DefaultListener<DeleteMessage>,
 }
 
@@ -99,6 +106,7 @@ impl<S: 'static> TaskRuntime<S> {
 			running: Vec::new(),
 			remote: Arc::new(RemoteWakes::default()),
 			woken: Vec::new(),
+			adopting: Vec::new(),
 			deletions: world.deletions_listener(),
 		}
 	}
@@ -125,7 +133,7 @@ impl<S: 'static> TaskRuntime<S> {
 		for id in ticking.drain(..) {
 			let Some(task) = state.tasks.get_mut(id) else { continue };
 			task.listed = false;
-			// Only the latest poll's waits count; the rest belong to futures the task dropped.
+			// Only the latest poll's waits count; the rest belong to futures the task dropped or stopped polling.
 			let poll = task.poll;
 			task.ticks.retain(|wait| wait.poll == poll);
 			if !task.ticks.is_empty() {
@@ -149,6 +157,7 @@ impl<S: 'static> TaskRuntime<S> {
 				wake(&mut state.ready, task, deadline.task);
 			} else {
 				task.sleeps.swap_remove(index);
+				state.sleeping -= 1;
 			}
 		}
 	}
@@ -181,22 +190,27 @@ impl<S: 'static> TaskRuntime<S> {
 				let mut context = ContextBuilder::from_waker(&running.waker).ext(&mut *scene).build();
 				running.future.as_mut().poll(&mut context)
 			};
-			self.tasks.state.borrow_mut().current = None;
-
+			let mut state = self.tasks.state.borrow_mut();
+			state.current = None;
+			let sweep = std::mem::take(&mut state.sweep_current);
 			if result.is_ready() {
-				self.tasks.state.borrow_mut().end(id);
+				state.end(id);
+				drop(state);
 				self.release(id);
+			} else if sweep {
+				state.sweep(id);
 			}
 		}
 	}
 
 	/// Moves the tasks spawned since the last poll into [`Self::running`] and queues the wakes foreign futures sent.
 	fn adopt(&mut self) {
-		let mut state = self.tasks.state.borrow_mut();
-		let state = &mut *state;
-		for (id, future) in state.spawned.drain(..) {
-			// A task can end before its first poll when the world deletes its owner.
-			if !state.tasks.contains_handle(id) {
+		std::mem::swap(&mut self.adopting, &mut self.tasks.state.borrow_mut().spawned);
+		for (id, future) in self.adopting.drain(..) {
+			// A task can end before its first poll when the world deletes its owner. Its future drops here, with the
+			// shared state released, since its destructor may reach it.
+			if !self.tasks.state.borrow().tasks.contains_handle(id) {
+				drop(future);
 				continue;
 			}
 			if self.running.len() <= id.index() {
@@ -209,6 +223,8 @@ impl<S: 'static> TaskRuntime<S> {
 			self.running[id.index()] = Some(Running { future, waker });
 		}
 
+		let mut state = self.tasks.state.borrow_mut();
+		let state = &mut *state;
 		// `wake` skips tasks already queued, so repeated foreign wakes poll a task once.
 		std::mem::swap(&mut self.woken, &mut *self.remote.ready.lock());
 		for id in self.woken.drain(..) {
@@ -224,7 +240,7 @@ impl<S: 'static> TaskRuntime<S> {
 			let handle = *deletion.handle();
 			let owned = {
 				let mut state = self.tasks.state.borrow_mut();
-				for mailbox in state.mailboxes.values_mut() {
+				for mailbox in &mut state.mailboxes {
 					mailbox.forget(handle);
 				}
 				let owned = state.owned.remove(&handle).unwrap_or_default();
@@ -243,6 +259,28 @@ impl<S: 'static> TaskRuntime<S> {
 	fn release(&mut self, id: TaskId) {
 		if let Some(slot) = self.running.get_mut(id.index()) {
 			*slot = None;
+		}
+	}
+}
+
+impl<S> Drop for TaskRuntime<S> {
+	/// Drops every future and message the runtime still keeps.
+	///
+	/// Tasks not yet polled and queued messages live in the shared state, and they may hold [`Tasks`] handles to it.
+	/// That cycle would keep them alive after the runtime is gone, so they are dropped here, with the shared state
+	/// released, until their destructors leave nothing behind.
+	fn drop(&mut self) {
+		self.running.clear();
+		loop {
+			let (spawned, mailboxes) = {
+				let mut state = self.tasks.state.borrow_mut();
+				// `Tasks` handles may outlive the runtime, so they must find no slots for the mailboxes taken here.
+				state.mailbox_slots.clear();
+				(std::mem::take(&mut state.spawned), std::mem::take(&mut state.mailboxes))
+			};
+			if spawned.is_empty() && mailboxes.is_empty() {
+				break;
+			}
 		}
 	}
 }
@@ -314,6 +352,7 @@ impl<S: 'static> Tasks<S> {
 		Received {
 			tasks: self.clone(),
 			handle,
+			slot: None,
 			done: false,
 			message: PhantomData,
 		}
@@ -326,13 +365,10 @@ impl<S: 'static> Tasks<S> {
 	pub fn send<M: Clone + 'static>(&self, handle: Handle, message: M) -> bool {
 		let mut state = self.state.borrow_mut();
 		let state = &mut *state;
-		let Some(mailbox) = state.mailboxes.get_mut(&TypeId::of::<M>()) else {
+		let Some(&slot) = state.mailbox_slots.get(&TypeId::of::<M>()) else {
 			return false;
 		};
-		let mailbox = mailbox
-			.as_any_mut()
-			.downcast_mut::<Mailbox<M>>()
-			.expect("a mailbox is keyed by its message type");
+		let mailbox = State::mailbox_at::<M>(&mut state.mailboxes, slot);
 		let Some(waits) = mailbox.waits.get_mut(&handle) else {
 			return false;
 		};
@@ -342,13 +378,13 @@ impl<S: 'static> Tasks<S> {
 			let Some(task) = state.tasks.get_mut(wait.task) else {
 				return false;
 			};
-			if wait.poll != task.poll {
-				// A wait the task dropped receives nothing, but keeps what it received before.
-				return !wait.inbox.is_empty();
+			// A wait its task has not registered again in a poll still under way receives nothing; the sweep after that
+			// poll removes it unless the poll registers it.
+			if wait.poll == task.poll {
+				wait.inbox.push_back(message.clone());
+				wake(&mut state.ready, task, wait.task);
+				delivered = true;
 			}
-			wait.inbox.push_back(message.clone());
-			wake(&mut state.ready, task, wait.task);
-			delivered = true;
 			true
 		});
 		if waits.is_empty() {
@@ -396,9 +432,10 @@ impl<S: 'static> Future for Tick<S> {
 		}
 		let mut state = this.tasks.state.borrow_mut();
 		let state = &mut *state;
-		let (id, poll) = state.current();
+		let id = state.current();
 		let clock = state.clock;
 		let task = state.tasks.get_mut(id).expect("the polled task is live");
+		let poll = task.poll;
 
 		let (token, since, since_elapsed) = match this.wait {
 			Some(wait) => wait,
@@ -475,8 +512,10 @@ impl<S: 'static> Future for Sleep<S> {
 		}
 		let mut state = this.tasks.state.borrow_mut();
 		let state = &mut *state;
-		let (id, poll) = state.current();
+		let id = state.current();
 		let elapsed = state.clock.elapsed;
+		let task = state.tasks.get_mut(id).expect("the polled task is live");
+		let poll = task.poll;
 		let (token, deadline) = match this.wait {
 			Some(wait) => wait,
 			None => {
@@ -484,19 +523,22 @@ impl<S: 'static> Future for Sleep<S> {
 				(state.tokens, elapsed + this.duration)
 			}
 		};
-		let task = state.tasks.get_mut(id).expect("the polled task is live");
 
 		if elapsed >= deadline {
-			task.sleeps.retain(|wait| wait.token != token);
+			if let Some(index) = task.sleeps.iter().position(|wait| wait.token == token) {
+				task.sleeps.swap_remove(index);
+				state.sleeping -= 1;
+			}
 			this.done = true;
 			return Poll::Ready(());
 		}
 
 		match task.sleeps.iter_mut().find(|wait| wait.token == token) {
 			Some(wait) => wait.poll = poll,
-			// A first poll, or a wait that went stale while the task stopped polling it and lost its deadline.
+			// A first poll, or a sleep its task stopped polling for a while, which a sweep removed with its deadline.
 			None => {
 				task.sleeps.push(SleepWait { token, poll });
+				state.sleeping += 1;
 				state.deadlines.push(Reverse(Deadline {
 					at: deadline,
 					token,
@@ -515,10 +557,20 @@ impl<S: 'static> FusedFuture for Sleep<S> {
 	}
 }
 
+impl<S> Drop for Sleep<S> {
+	fn drop(&mut self) {
+		if !self.done && self.wait.is_some() {
+			flag_dropped_wait(&self.tasks.state);
+		}
+	}
+}
+
 /// The `Received` struct is the future [`Tasks::received`] returns.
 pub struct Received<S, M> {
 	tasks: Tasks<S>,
 	handle: Handle,
+	/// The mailbox of `M`, once first polled, so later polls skip the lookup by type.
+	slot: Option<MailboxSlot>,
 	done: bool,
 	message: PhantomData<fn() -> M>,
 }
@@ -535,25 +587,46 @@ impl<S: 'static, M: 'static> Future for Received<S, M> {
 			return Poll::Pending;
 		}
 		let mut state = this.tasks.state.borrow_mut();
-		let (id, poll) = state.current();
-		let waits = state.mailbox::<M>().waits.entry(this.handle).or_default();
+		let state = &mut *state;
+		let slot = *this.slot.get_or_insert_with(|| state.mailbox_slot::<M>());
+		let id = state.current();
+		let task = state.tasks.get_mut(id).expect("the polled task is live");
+		let poll = task.poll;
+		// The task lists the mailboxes it waits in, one entry per wait, so sweeps and its end reach its waits without
+		// searching every mailbox.
+		let key = (slot, this.handle);
+		let waits = State::mailbox_at::<M>(&mut state.mailboxes, slot)
+			.waits
+			.entry(this.handle)
+			.or_default();
 
 		match waits.iter().position(|wait| wait.task == id) {
 			Some(index) => {
 				if let Some(message) = waits[index].inbox.pop_front() {
 					if waits[index].inbox.is_empty() {
 						waits.remove(index);
+						if let Some(listed) = task.mail.iter().position(|listed| *listed == key) {
+							task.mail.swap_remove(listed);
+						}
 					}
 					this.done = true;
 					return Poll::Ready(message);
 				}
 				waits[index].poll = poll;
 			}
-			None => waits.push(Wait {
-				task: id,
-				poll,
-				inbox: VecDeque::new(),
-			}),
+			None => {
+				waits.push(Wait {
+					task: id,
+					poll,
+					inbox: VecDeque::new(),
+				});
+				task.mail.push(key);
+				// Entries whose waits are gone, or that the task stopped registering, stay listed until a sweep; sweep
+				// once they could make up half the list.
+				if task.mail.len() > 2 * task.swept_mail as usize + 4 {
+					state.sweep_current = true;
+				}
+			}
 		}
 		Poll::Pending
 	}
@@ -562,6 +635,25 @@ impl<S: 'static, M: 'static> Future for Received<S, M> {
 impl<S: 'static, M: 'static> FusedFuture for Received<S, M> {
 	fn is_terminated(&self) -> bool {
 		self.done
+	}
+}
+
+impl<S, M> Drop for Received<S, M> {
+	fn drop(&mut self) {
+		if !self.done && self.slot.is_some() {
+			flag_dropped_wait(&self.tasks.state);
+		}
+	}
+}
+
+/// Asks the runtime to sweep the polled task once its poll ends, since a wait future it registered was dropped there.
+///
+/// A wait future dropped outside a poll belongs to a task that is ending, and the task's end removes its waits.
+fn flag_dropped_wait(state: &RefCell<State>) {
+	if let Ok(mut state) = state.try_borrow_mut()
+		&& state.current.is_some()
+	{
+		state.sweep_current = true;
 	}
 }
 
@@ -584,8 +676,14 @@ struct State {
 	/// The tasks with a tick wait, which the next [`TaskRuntime::advance`] wakes.
 	ticking: Vec<TaskId>,
 	deadlines: BinaryHeap<Reverse<Deadline>>,
-	/// One [`Mailbox`] per message type, keyed by its type.
-	mailboxes: HashMap<TypeId, Box<dyn ErasedMailbox>>,
+	/// The sleeps tasks wait on, so [`Self::compact_deadlines`] knows how many of the deadlines still count.
+	sleeping: usize,
+	/// Whether the task being polled left waits behind that [`Self::sweep`] should remove once its poll ends: it dropped
+	/// a wait future, or its mailbox list doubled. Polls that leave nothing behind skip the sweep.
+	sweep_current: bool,
+	/// One [`Mailbox`] per message type, by the slot [`Self::mailbox_slots`] gives the type.
+	mailboxes: Vec<Box<dyn ErasedMailbox>>,
+	mailbox_slots: HashMap<TypeId, MailboxSlot>,
 	/// The tasks each entity owns; see [`Tasks::spawn_on`].
 	owned: HashMap<Handle, SmallVec<[TaskId; 2]>>,
 	/// Spawned tasks whose futures the runtime has not taken yet.
@@ -606,9 +704,16 @@ impl State {
 		self.spawned.push((id, future));
 	}
 
-	/// Forgets an ended task. Its waits stay where they are until a delivery or a deadline finds them dead.
+	/// Forgets an ended task and removes its waits.
 	fn end(&mut self, id: TaskId) {
 		let Some(task) = self.tasks.remove(id) else { return };
+		for (slot, handle) in task.mail {
+			if let Some(mailbox) = self.mailboxes.get_mut(slot as usize) {
+				mailbox.remove(handle, id);
+			}
+		}
+		self.sleeping -= task.sleeps.len();
+		self.compact_deadlines();
 		if let Some(owner) = task.owner
 			&& let Some(owned) = self.owned.get_mut(&owner)
 		{
@@ -619,22 +724,67 @@ impl State {
 		}
 	}
 
-	/// Returns the task being polled and the number of its poll.
-	fn current(&self) -> (TaskId, u64) {
-		let id = self.current.expect(
-			"A gameplay task wait was polled outside a task poll. The most likely cause is awaiting it on another executor instead of inside a task its runtime polls.",
-		);
-		let poll = self.tasks.get(id).expect("the polled task is live").poll;
-		(id, poll)
+	/// Removes the waits that the latest poll of a pending task did not register again, since they belong to futures it
+	/// dropped or stopped polling.
+	///
+	/// The runtime calls it after a poll that dropped a wait future or grew the task's mailbox list; see
+	/// [`Self::sweep_current`]. A tick wait it removes has done its job: a tick first polled in the same poll already
+	/// took its time over.
+	fn sweep(&mut self, id: TaskId) {
+		let Some(task) = self.tasks.get_mut(id) else { return };
+		let poll = task.poll;
+		task.ticks.retain(|wait| wait.poll == poll);
+		let sleeps = task.sleeps.len();
+		task.sleeps.retain(|wait| wait.poll == poll);
+		let swept_sleeps = sleeps - task.sleeps.len();
+		let mailboxes = &mut self.mailboxes;
+		task.mail.retain(|&mut (slot, handle)| {
+			mailboxes
+				.get_mut(slot as usize)
+				.is_some_and(|mailbox| mailbox.sweep(handle, id, poll))
+		});
+		task.swept_mail = u32::try_from(task.mail.len()).unwrap_or(u32::MAX);
+		if swept_sleeps > 0 {
+			self.sleeping -= swept_sleeps;
+			self.compact_deadlines();
+		}
 	}
 
-	fn mailbox<M: 'static>(&mut self) -> &mut Mailbox<M> {
-		self.mailboxes
-			.entry(TypeId::of::<M>())
-			.or_insert_with(|| Box::new(Mailbox::<M>::default()))
+	/// Rebuilds the deadline heap once most of its entries belong to sleeps that ended, so long sleeps of ended or
+	/// cancelled waits don't pile up until they fall due.
+	fn compact_deadlines(&mut self) {
+		if self.deadlines.len() <= 2 * self.sleeping + 64 {
+			return;
+		}
+		let tasks = &self.tasks;
+		self.deadlines.retain(|Reverse(deadline)| {
+			tasks
+				.get(deadline.task)
+				.is_some_and(|task| task.sleeps.iter().any(|wait| wait.token == deadline.token))
+		});
+	}
+
+	/// Returns the task being polled.
+	fn current(&self) -> TaskId {
+		self.current.expect(
+			"A gameplay task wait was polled outside a task poll. The most likely cause is awaiting it on another executor instead of inside a task its runtime polls.",
+		)
+	}
+
+	/// Returns the slot of `M`'s mailbox, creating the mailbox the first time a task waits for an `M`.
+	fn mailbox_slot<M: 'static>(&mut self) -> MailboxSlot {
+		let mailboxes = &mut self.mailboxes;
+		*self.mailbox_slots.entry(TypeId::of::<M>()).or_insert_with(|| {
+			mailboxes.push(Box::new(Mailbox::<M>::default()));
+			MailboxSlot::try_from(mailboxes.len() - 1).expect("there are fewer message types than `u32::MAX`")
+		})
+	}
+
+	fn mailbox_at<M: 'static>(mailboxes: &mut [Box<dyn ErasedMailbox>], slot: MailboxSlot) -> &mut Mailbox<M> {
+		mailboxes[slot as usize]
 			.as_any_mut()
 			.downcast_mut()
-			.expect("a mailbox is keyed by its message type")
+			.expect("a mailbox slot is given to one message type")
 	}
 }
 
@@ -649,6 +799,10 @@ struct TaskState {
 	owner: Option<Handle>,
 	ticks: SmallVec<[TickWait; 1]>,
 	sleeps: SmallVec<[SleepWait; 1]>,
+	/// The mailboxes, by message type and entity, the task has a wait in.
+	mail: SmallVec<[(MailboxSlot, Handle); 1]>,
+	/// How long [`Self::mail`] was after the last sweep, so the list is swept again once it has doubled.
+	swept_mail: u32,
 }
 
 /// Queues `task` for the next poll unless it already is.
@@ -734,6 +888,13 @@ trait ErasedMailbox {
 
 	/// Drops the waits and messages for a deleted entity.
 	fn forget(&mut self, handle: Handle);
+
+	/// Removes `task`'s wait for `handle` unless the poll numbered `poll` registered it, and reports whether the wait
+	/// is left.
+	fn sweep(&mut self, handle: Handle, task: TaskId, poll: u64) -> bool;
+
+	/// Removes `task`'s wait for `handle`, with the messages it held.
+	fn remove(&mut self, handle: Handle, task: TaskId);
 }
 
 impl<M: 'static> ErasedMailbox for Mailbox<M> {
@@ -743,6 +904,26 @@ impl<M: 'static> ErasedMailbox for Mailbox<M> {
 
 	fn forget(&mut self, handle: Handle) {
 		self.waits.remove(&handle);
+	}
+
+	fn sweep(&mut self, handle: Handle, task: TaskId, poll: u64) -> bool {
+		let registered = self
+			.waits
+			.get(&handle)
+			.and_then(|waits| waits.iter().find(|wait| wait.task == task))
+			.map(|wait| wait.poll == poll);
+		if registered == Some(false) {
+			self.remove(handle, task);
+		}
+		registered == Some(true)
+	}
+
+	fn remove(&mut self, handle: Handle, task: TaskId) {
+		let Some(waits) = self.waits.get_mut(&handle) else { return };
+		waits.retain(|wait| wait.task != task);
+		if waits.is_empty() {
+			self.waits.remove(&handle);
+		}
 	}
 }
 

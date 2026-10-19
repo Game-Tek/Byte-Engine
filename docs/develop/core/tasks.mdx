@@ -28,22 +28,33 @@ since a destructor may reach it.
 
 A wait records the number of the poll that made it. Polling a pending wait
 future records the current number again. A wait counts only while its number
-equals the latest poll of its task. A future the task dropped, or stopped
-polling, stops counting after that poll without any destructor. The UI engine's
-runtime uses the same scheme.
+equals the latest poll of its task, so a future the task dropped, or stopped
+polling, stops counting after that poll. The UI engine's runtime uses the same
+scheme.
+
+Stale waits are also removed, so they don't pile up. A message or sleep wait
+future that drops while registered flags its task's poll, and once that poll
+ends the runtime sweeps the task's waits and keeps only the ones the poll
+registered. Polls that drop nothing skip the sweep, which keeps a tick's cost
+flat. Each task lists the mailboxes it has a wait in, so a sweep and the task's
+end reach its waits directly.
 
 - **Messages.** One mailbox per message type maps an entity to the waits for
-  it. `send` delivers to every counting wait and wakes its task, drops waits of
-  ended tasks, and keeps a dropped wait only while it holds messages. Deleting
-  the entity drops its waits.
+  it. `send` delivers to every counting wait and wakes its task. A task's list
+  is also swept once it has doubled since the last sweep, which removes entries
+  whose waits are gone. A swept wait loses the messages it held. Deleting the
+  entity drops its waits.
 - **Ticks.** A task's tick waits live with the task, and the task joins a list
-  that the next `advance` walks. A tick wait first polled in a poll takes over
+  that the next `advance` walks, keeping only the waits of the task's latest
+  poll. A tick wait first polled in a poll takes over
   the earliest wait the task didn't poll again in that poll. This keeps ticks
   counting when a `select!` loop drops its tick branch, and lets a new loop
   resolve its tick in the same poll.
 - **Sleeps.** A min-heap orders deadlines. `advance` pops the due ones and wakes
-  the task when its wait still counts. A sleep polled again after its heap entry
-  was dropped pushes a new one.
+  the task when its wait still counts. A sleep polled again after a sweep
+  removed it pushes a new deadline. Swept and ended sleeps leave their entries
+  in the heap, so the runtime rebuilds the heap once more than half its entries
+  are dead.
 
 The runtime's own waits wake tasks directly, without a `Waker`. Each task still
 has one for futures such as channels. Its wakes go through a locked queue that
@@ -61,6 +72,9 @@ has one for futures such as channels. Its wakes go through a locked queue that
 5. Tasks spawned on an entity end at the first `advance` after the world deletes
    it.
 6. Per-tick work grows with the tasks that wait, not with every live task.
+7. Nothing outlives its task. An ended task leaves no waits, and dropping the
+   runtime drops every future and message it kept, including tasks it never
+   polled.
 
 ## Tests
 
@@ -75,6 +89,8 @@ has one for futures such as channels. Its wakes go through a locked queue that
 | `deleting_an_entity_ends_the_tasks_spawned_on_it` | 4, 5 |
 | `tasks_spawned_by_a_task_run_in_the_same_poll` | 4 |
 | `foreign_futures_wake_their_task` | 4 |
+| `a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops` | 4, 5 |
+| `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
 
 ```bash
 cargo nextest run -p byte-engine -E 'test(/gameplay::tasks/)'

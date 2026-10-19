@@ -168,20 +168,21 @@ fn a_dropped_wait_receives_nothing() {
 	assert!(!runtime.tasks().send(second, ()), "the losing branch was dropped");
 }
 
+/// Records when the future that owns it drops.
+struct Guard(Rc<Cell<bool>>);
+
+impl Drop for Guard {
+	fn drop(&mut self) {
+		self.0.set(true);
+	}
+}
+
 #[test]
 fn deleting_an_entity_ends_the_tasks_spawned_on_it() {
 	let (world, mut runtime) = runtime();
 	let mut log = Log::default();
 	let owner = Handle::new();
 	let dropped = Rc::new(Cell::new(false));
-
-	/// Records when the task's future drops.
-	struct Guard(Rc<Cell<bool>>);
-	impl Drop for Guard {
-		fn drop(&mut self) {
-			self.0.set(true);
-		}
-	}
 
 	let tasks = runtime.tasks().clone();
 	let guard = Guard(Rc::clone(&dropped));
@@ -238,4 +239,47 @@ fn foreign_futures_wake_their_task() {
 	runtime.poll(&mut log);
 
 	assert_eq!(log.0, ["7"]);
+}
+
+#[test]
+fn a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops() {
+	let (world, mut runtime) = runtime();
+	let mut log = Log::default();
+	let owner = Handle::new();
+	let dropped = Rc::new(Cell::new(false));
+
+	/// Reads the runtime's clock as it drops, as a destructor that cleans up through `Tasks` would.
+	struct Reader(Tasks<Log>, Rc<Cell<bool>>);
+	impl Drop for Reader {
+		fn drop(&mut self) {
+			let _ = self.0.now();
+			self.1.set(true);
+		}
+	}
+
+	let reader = Reader(runtime.tasks().clone(), Rc::clone(&dropped));
+	runtime.tasks().spawn_on(owner, async move {
+		let _reader = reader;
+	});
+	world.delete(owner);
+	advance(&mut runtime, 10);
+	runtime.poll(&mut log);
+
+	assert!(dropped.get());
+}
+
+#[test]
+fn dropping_the_runtime_drops_tasks_it_never_polled() {
+	let (_world, runtime) = runtime();
+	let dropped = Rc::new(Cell::new(false));
+	let tasks = runtime.tasks().clone();
+	let guard = Guard(Rc::clone(&dropped));
+	runtime.tasks().spawn(async move {
+		let _guard = guard;
+		tasks.tick().await;
+	});
+
+	drop(runtime);
+
+	assert!(dropped.get());
 }

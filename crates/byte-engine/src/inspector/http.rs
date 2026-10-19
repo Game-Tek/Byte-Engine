@@ -1,6 +1,6 @@
 use std::{
 	io::{self, Write as _},
-	net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+	net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},
 	time::Duration,
 };
 
@@ -71,7 +71,8 @@ pub struct HttpInspectorServer {
 	_server: ListeningServer,
 }
 
-/// The loopback port the inspector serves on unless the `inspector.port` parameter names another.
+/// The loopback port the inspector serves on unless the `inspector.port` parameter names another or another
+/// application already uses it.
 pub const DEFAULT_PORT: u16 = 6680;
 
 impl HttpInspectorServer {
@@ -81,12 +82,18 @@ impl HttpInspectorServer {
 	///
 	/// # Parameters
 	/// Read from `parameters`, the `inspector` subtree of the application's:
-	/// - `port`: The port to serve on, so two applications can run on one machine. Defaults to [`DEFAULT_PORT`]; a
-	///   value that is not a port stops startup.
+	/// - `port`: The port to serve on. Defaults to [`DEFAULT_PORT`], or to a free port the system picks when that one
+	///   is in use, which is logged as a warning. A named port that is in use, or a value that is not a port, stops
+	///   startup.
 	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker, parameters: impl Parameters) -> Self {
-		let port = parameters
-			.get_parameter("port")
-			.map_or(DEFAULT_PORT, |port| port.parse().unwrap_or_else(|error| panic!("{error}")));
+		let port = match parameters.get_parameter("port") {
+			Some(port) => port.parse().unwrap_or_else(|error| panic!("{error}")),
+			None => free_port(DEFAULT_PORT).unwrap_or_else(|error| {
+				panic!(
+					"HTTP inspector could not find a free port. The most likely cause is that the loopback interface does not accept IPv4 or IPv6 listeners: {error}"
+				)
+			}),
+		};
 		Self::spawn(
 			inspector,
 			waker,
@@ -125,6 +132,25 @@ impl HttpInspectorServer {
 
 		Ok(Self { _server: server })
 	}
+}
+
+/// Returns `preferred` when both loopback addresses can listen on it, otherwise a free port the system picks for both,
+/// logged as a warning.
+///
+/// Ports are probed and released before the server binds them, because a server that binds one address and fails on
+/// the other keeps listening on the first.
+fn free_port(preferred: u16) -> io::Result<u16> {
+	let bind_both = |port| -> io::Result<u16> {
+		let port = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?.local_addr()?.port();
+		TcpListener::bind((Ipv6Addr::LOCALHOST, port))?;
+		Ok(port)
+	};
+	bind_both(preferred).or_else(|_| {
+		// The system picks a port that is free on IPv4 only, so pick again while IPv6 already uses it.
+		let port = (0..8).fold(bind_both(0), |port, _| port.or_else(|_| bind_both(0)))?;
+		log::warn!("HTTP inspector port {preferred} is in use, so the inspector serves on port {port} instead.");
+		Ok(port)
+	})
 }
 
 /// Answers one inspector request.
@@ -820,6 +846,15 @@ mod tests {
 			.expect("response headers")
 			+ 4;
 		&response[start..]
+	}
+
+	#[test]
+	fn free_port_keeps_the_preferred_port_and_falls_back_when_it_is_taken() {
+		let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy inspector test port");
+		let taken_port = taken.local_addr().expect("read occupied port").port();
+		let fallback = super::free_port(taken_port).expect("pick fallback port");
+		assert_ne!(fallback, taken_port);
+		assert_eq!(super::free_port(fallback).expect("keep free port"), fallback);
 	}
 
 	#[test]

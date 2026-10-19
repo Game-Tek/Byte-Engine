@@ -51,7 +51,7 @@ A value is text that the reader converts:
 | `metrics-out` | Path | None | Writes the metrics when the application closes: every retained tick as NDJSON when the extension is `ndjson`, otherwise the summary as JSON. |
 | `debug.streams` | `log`, `stdout`, `stderr`, or a path | None, so no stream opens | Where every entity data stream writes its records. See [Data streams](/docs/reference/data-streams). |
 | `debug.streams.changes-only` | Lenient boolean | `false` | Writes a data stream record only when the system's key for it changed. |
-| `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. A port in use stops startup. |
+| `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. When the default is in use, the inspector serves on a free port the system picks and logs it as a warning; a port you set that is in use stops startup. |
 | `physics.step-lanes` | `bodies:lanes` pairs separated by commas, each lane count at least 1 | 2 lanes from 512 bodies and up to 4 from 4,000, never more than the fastest cores' threads | How many lanes a physics step runs on, by body count. `0:1` keeps every step on the calling thread. See [Physics](/docs/reference/physics). |
 | `artnet.bind-address` | IPv4 address; invalid keeps the default | `0.0.0.0` | The Art-Net worker's bind address, with the `dmx` feature. |
 | `artnet.poll-target` | IPv4 address; invalid keeps the default | `255.255.255.255` | Where Art-Net polls and output go. |

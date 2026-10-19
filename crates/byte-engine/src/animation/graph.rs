@@ -162,6 +162,9 @@ struct AnimationGraphStateData {
 	space: Option<usize>,
 	/// Set only for one-shot transition states: the state entered after the clip finishes.
 	completion: Option<AnimationStateId>,
+	/// Whether a request for another state cuts a playing one-shot short along its completion state's `.anytime`
+	/// routes. A one-shot that must complete plays to its end; only any-state routes cut it short.
+	interruptible: bool,
 	/// How long a finished one-shot inertializes into its completion state; zero cuts straight to it.
 	completion_blend: MediaTime,
 	/// Where in its clips the completion state starts after the one-shot.
@@ -293,12 +296,15 @@ impl AnimationGraph {
 			};
 		};
 
-		// A one-shot's space only gives its blend a position: it takes its own routes, then its completion's.
+		// A one-shot's space only gives its blend a position: it takes its own routes, then, if it may be interrupted,
+		// its completion's `.anytime` routes. Any-state routes cut either kind short.
 		if let Some(transition) = select_route(&source_state.transitions, RouteOrigin::State(source.index), requested, false) {
 			return Some(transition);
 		}
 		if requested != completion {
-			if let Some(transition) = self.select_state_route(completion, requested, true) {
+			if source_state.interruptible
+				&& let Some(transition) = self.select_state_route(completion, requested, true)
+			{
 				// Its wait points name moments of the completion state, which is not playing yet.
 				return Some(SelectedRoute { wait: &[], ..transition });
 			}
@@ -408,6 +414,7 @@ impl AnimationGraphBuilderData {
 			motion,
 			space,
 			completion,
+			interruptible: true,
 			completion_blend,
 			completion_entry: Box::default(),
 			transitions: Vec::new(),
@@ -697,8 +704,9 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 	/// [`AnimationBlend`] of clips that play once.
 	///
 	/// A blend joins the target's space, or the source's when the target's space is of the other kind, and weighs its
-	/// clips at that space's position when it starts, keeping those weights until it ends. Use it for a start or a
-	/// stop that follows the walk's direction.
+	/// clips at that space's position and follows the position while it plays, like a loop. Use it for a start or
+	/// a stop that follows the walk's direction; keep requesting it without a position to hold the direction it set
+	/// off in.
 	pub fn with(self, motion: impl Into<AnimationMotion>) -> AnimationGraphTransitionConditionBuilder<'builder> {
 		AnimationGraphTransitionConditionBuilder {
 			source: self.source,
@@ -719,7 +727,8 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 		self
 	}
 
-	/// Adds a one-shot route that must complete before reconciling another request.
+	/// Adds a one-shot route that must complete before reconciling another request. Only an any-state route, added
+	/// with [`AnimationGraphBuilder::any_state_to`], cuts its clip short.
 	///
 	/// `inertialization` works as in [`AnimationGraphTransitionBuilder::when`].
 	pub fn when(self, inertialization: MediaTime) -> AnimationGraphState<'builder> {
@@ -773,6 +782,7 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 			self.completion_blend,
 		);
 		builder.states[id.index].completion_entry = self.entry.into();
+		builder.states[id.index].interruptible = can_interrupt_transition;
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
@@ -1332,7 +1342,7 @@ mod tests {
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.when(MediaTime::ZERO);
+			.anytime(MediaTime::ZERO);
 		walk.to(dead).when(MediaTime::from_millis(100));
 		standing.any_state_to(dead, MediaTime::from_millis(200));
 		builder.any_state_to(dead, MediaTime::from_millis(300));

@@ -134,7 +134,7 @@ space's position is a scalar; a planar space's position is a 2D point.
 | Kind | Every blend state of a linear space is a linear blend, and every blend state of a planar space is a planar blend. |
 | Samples | Each blend state of a space has its own clips and positions. Two blends of one space need not share positions or a clip count. |
 | Position | Each animator keeps one position for each space. A request for a state of the space that carries a position sets it. Before any request sets it, the position is the origin. |
-| Weights | A looping blend weighs its clips at its space's position every step. A blend played once weighs them at the position when it starts and keeps those weights. |
+| Weights | A blend weighs its clips at its space's position every step, whether it loops or plays once, until a blend played once finishes and holds its last pose. |
 | Nesting | A space can't hold another space. |
 | Other spaces | A space's position never changes the weights of another space's blends. |
 
@@ -146,8 +146,8 @@ A route leads from a source state to a target state.
 | --- | --- |
 | Direct, taken when the source settles | Waits until the source has reached its wait point, or its end for a clip played once, then inertializes into the target over the route's duration. A zero duration switches at once. |
 | Direct, taken anytime | Also cuts short a blend into the source or a one-shot leading to it. |
-| Through a one-shot clip | Plays a clip once between source and target, then inertializes into the target over the exit duration. The one-shot either must complete or may be interrupted. |
-| Through a one-shot blend | Plays a blend of clips once between source and target, like a one-shot clip. The blend belongs to the target's space, or to the source's when the target belongs to no space or to a space of the other kind. It weighs its clips at that space's position when it starts and keeps those weights until it ends. |
+| Through a one-shot clip | Plays a clip once between source and target, then inertializes into the target over the exit duration. The one-shot either must complete or may be interrupted, as [Routes resolve](#route-order) describes. |
+| Through a one-shot blend | Plays a blend of clips once between source and target, like a one-shot clip. The blend belongs to the target's space, or to the source's when the target belongs to no space or to a space of the other kind. It weighs its clips at that space's position and follows the position while it plays, so a start re-aimed by a new request heads where the request points. |
 | From a space | A route every state of a space can take, considered after the state's own routes. |
 | From any state | A route every state can take, considered after the state's own routes and its space's routes. |
 
@@ -165,14 +165,18 @@ enter the target at a frame instead of its start. When it names frames on
 several clips of a blend, the named clip that weighs the most where the target
 starts picks the frame, by the same rule.
 
+<a id="route-order"></a>
 Routes resolve in this order. A persistent state ignores a request for itself,
 then takes the first of its own routes to the requested state, then its space's
-routes, then any-state routes. A one-shot takes its own routes first; while it
-plays, a request other than its completion may take the anytime routes of the
-completion state or its space, or any-state routes; once it finishes, it takes
-its completion route. A blend in progress can only be redirected along anytime
-routes, of its destination state or that state's space, and any-state routes,
-and never toward a one-shot.
+routes, then any-state routes. A one-shot takes its own routes first. While a
+one-shot that may be interrupted plays, a request other than its completion may
+take the anytime routes of the completion state or its space, or any-state
+routes. While a one-shot that must complete plays, such a request may take only
+any-state routes; otherwise the request holds and the one-shot plays to its end.
+Once a one-shot finishes, it takes its completion route, and the request that
+held resolves from the completion state. A blend in progress can only be
+redirected along anytime routes, of its destination state or that state's
+space, and any-state routes, and never toward a one-shot.
 
 ### Building a graph
 
@@ -241,7 +245,7 @@ request, through the routes of its graph.
 | Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
 | Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
 | Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
-| Position change on a blend | An inertialized request blends a looping blend from its current weights to the new ones, from the pose posted last. A blend played once keeps the weights it started with. |
+| Position change on a blend | An inertialized request blends the playing blend from its current weights to the new ones, from the pose posted last. A blend played once blends this way while at least the request's duration of it is left to play, and moves its weights at once otherwise, so its end is never held back by the blend. A request without a position leaves every blend's weights as they are. While a blend to a new position plays, later requests move only the position it heads to; the weights it left stay until it ends, so its root motion ramps across the blend. |
 | Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. |
 | Initial clip not resident | The animator posts nothing. |
 | Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |

@@ -867,11 +867,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		evaluation.prefetch_neighbors(self.graph, target);
 	}
 
-	/// Moves every looping blend of the requested state's space, wherever it plays, to the requested blend position.
+	/// Moves every blend of the requested state's space, wherever it plays, to the requested blend position.
 	///
 	/// A request that asks to be [inertialized](AnimationRequest::inertialized) blends a playing blend state to its
-	/// new position from the pose on screen instead. Blends that play once keep the weights they started with, so a
-	/// stop keeps the direction it set off in.
+	/// new position from the pose on screen instead. A blend played once follows the position like a loop until it
+	/// finishes; the application holds a stop's direction by requesting it without a position.
 	fn apply_blend_position(&mut self, requested: AnimationRequest, evaluation: &mut Evaluation<'_, 'graph, '_>) {
 		// Clip states and blends requested without a position keep their weights.
 		if requested.value == BlendValue::Unset {
@@ -888,7 +888,8 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		};
 		let follow = |runtime: &mut RuntimeMotion| {
 			let state = graph.state(runtime.state);
-			if state.space == Some(space) && runtime.playback == AnimationPlayback::Loop {
+			// A finished one-shot holds its last pose, which new weights would move.
+			if state.space == Some(space) && !runtime.is_finished() {
 				runtime.weights = state.motion.weights(requested.value, runtime.weights);
 			}
 		};
@@ -896,7 +897,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			Playback::AwaitingInitial => {}
 			Playback::Playing(active) => follow(active),
 			Playback::Transitioning(transition) => {
-				follow(&mut transition.source);
+				// A blend to a new position keeps its source at the weights it left, so the plain requests that follow
+				// the inertialized one move only where it is heading and the root motion still ramps across the blend.
+				if transition.origin != RouteOrigin::Position {
+					follow(&mut transition.source);
+				}
 				follow(&mut transition.destination);
 			}
 		}
@@ -916,17 +921,29 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		let Playback::Playing(active) = &self.playback else {
 			return false;
 		};
-		// The on-screen velocity needs a non-zero frame time, and a blend played once keeps its weights.
-		if active.state != requested.state
-			|| active.playback != AnimationPlayback::Loop
+		// The playing state itself, or a one-shot blend of the requested state's space, such as a start on the way to
+		// the walk. The on-screen velocity needs a non-zero frame time, and a finished one-shot holds its last pose.
+		let space = self.graph.state(requested.state).space;
+		let one_shot_of_space = active.playback == AnimationPlayback::Once
+			&& space.is_some()
+			&& self.graph.state(active.state).space == space;
+		if (active.state != requested.state && !one_shot_of_space)
+			|| active.is_finished()
 			|| self.last_delta == MediaTime::ZERO
+		{
+			return false;
+		}
+		// A one-shot's end is only noticed once it plays on its own, so a blend that outlasts the clip would hold its
+		// last pose until the blend ends. With less than the blend's duration left, the weights move at once instead.
+		if active.playback == AnimationPlayback::Once
+			&& MediaTime::from_seconds_f32((1.0 - active.phase) * active.duration()) < duration
 		{
 			return false;
 		}
 		let mut destination = *active;
 		destination.weights = self
 			.graph
-			.state(requested.state)
+			.state(active.state)
 			.motion
 			.weights(requested.value, destination.weights);
 		// A held request asks for the weights already playing, which need no blend.
@@ -2349,7 +2366,7 @@ mod tests {
 	}
 
 	#[test]
-	fn one_shot_blends_keep_the_position_their_space_had_when_they_start() {
+	fn one_shot_blends_follow_their_space_position_until_they_finish() {
 		let mut pool = pool_with(vec![
 			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
 			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
@@ -2369,7 +2386,7 @@ mod tests {
 		let walk = moving.state("walk").planar(directions(AnimationClip::looping));
 		let idle = moving.state("idle").with(AnimationClip::looping("idle.animation"));
 		// The stop must complete, so requesting the walk again while it plays only moves the space's position.
-		walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
+		let stop = walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
 		idle.to(walk).when(MediaTime::ZERO);
 		let graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
@@ -2378,9 +2395,106 @@ mod tests {
 		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
 		let root_motion = ready(player.advance(MediaTime::from_millis(250), walk.id().at([0.0, 1.0]), &mut pool)).root_motion;
 
-		// The stop heads right, where the walk was when it started, though the space now points forward.
-		math::assert_float_eq!(root_motion.translation.x(), 0.25);
-		math::assert_float_eq!(root_motion.translation.z(), 0.0);
+		// The stop set off to the right but follows the space forward as soon as the request points there.
+		assert_eq!(player.state(), Some(stop.id()));
+		math::assert_float_eq!(root_motion.translation.x(), 0.0);
+		math::assert_float_eq!(root_motion.translation.z(), 0.25);
+
+		// A request without a position leaves the weights alone, so the stop keeps heading forward.
+		let root_motion = ready(player.advance(MediaTime::from_millis(250), idle.id(), &mut pool)).root_motion;
+		assert_eq!(player.state(), Some(stop.id()));
+		math::assert_float_eq!(root_motion.translation.x(), 0.0);
+		math::assert_float_eq!(root_motion.translation.z(), 0.25);
+	}
+
+	#[test]
+	fn position_blends_keep_their_source_weights_under_later_requests() {
+		let mut pool = pool_with(vec![
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
+			("left.animation", test_motion("left", [-1.0, 0.0, 0.0], 1.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let moving = builder.planar_space("moving");
+		let walk = moving.state("walk").planar(
+			AnimationBlend::new()
+				.sample([0.0, 1.0], AnimationClip::looping("forward.animation"))
+				.sample([1.0, 0.0], AnimationClip::looping("right.animation"))
+				.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
+		);
+		let graph = builder.build(walk).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+		let frame = MediaTime::from_millis(100);
+
+		ready(player.advance(MediaTime::ZERO, walk.id().at([-1.0, 0.0]), &mut pool));
+		ready(player.advance(frame, walk.id().at([-1.0, 0.0]), &mut pool));
+
+		// A turnaround asks for the right loop with a 300 ms blend, then keeps asking for it plainly every frame, as
+		// an application does. The root motion ramps from left to right across the three frames instead of flipping
+		// once the plain requests arrive.
+		let first = ready(player.advance(frame, walk.id().at([1.0, 0.0]).inertialized(MediaTime::from_millis(300)), &mut pool))
+			.root_motion;
+		let second = ready(player.advance(frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
+		let third = ready(player.advance(frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
+		math::assert_float_eq!(first.translation.x(), -0.1 / 3.0);
+		math::assert_float_eq!(second.translation.x(), 0.1 / 3.0);
+		math::assert_float_eq!(third.translation.x(), 0.1);
+	}
+
+	#[test]
+	fn one_shot_blends_inertialize_to_a_new_position_while_they_have_time_left() {
+		let mut pool = pool_with(vec![
+			("forward.animation", test_motion("forward", [0.0, 0.0, 1.0], 1.0)),
+			("right.animation", test_motion("right", [1.0, 0.0, 0.0], 1.0)),
+			("backward.animation", test_motion("backward", [0.0, 0.0, -1.0], 1.0)),
+			("idle.animation", test_motion("idle", [0.0, 0.0, 0.0], 1.0)),
+		]);
+		let directions = |playback: fn(&'static str) -> AnimationClip| {
+			AnimationBlend::new()
+				.sample([0.0, 1.0], playback("forward.animation"))
+				.sample([1.0, 0.0], playback("right.animation"))
+				.sample([0.0, -1.0], playback("backward.animation"))
+		};
+		let builder = AnimationGraph::builder();
+		let moving = builder.planar_space("moving");
+		let walk = moving.state("walk").planar(directions(AnimationClip::looping));
+		let idle = moving.state("idle").with(AnimationClip::looping("idle.animation"));
+		let stop = walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
+		idle.to(walk).when(MediaTime::ZERO);
+		let graph = builder.build(walk).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
+		let blend = MediaTime::from_millis(200);
+		let frame = MediaTime::from_millis(100);
+
+		ready(player.advance(MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(frame, idle.id(), &mut pool));
+
+		// With 900 ms of the stop left, an inertialized request blends it from heading right to heading forward over
+		// two frames, starting from the pose on screen: halfway through after the first.
+		let request = walk.id().at([0.0, 1.0]).inertialized(blend);
+		let halfway = ready(player.advance(frame, request, &mut pool)).root_motion;
+		assert_eq!(player.state(), Some(stop.id()));
+		math::assert_float_eq!(halfway.translation.x(), 0.05);
+		math::assert_float_eq!(halfway.translation.z(), 0.05);
+		ready(player.advance(frame, request, &mut pool));
+		let settled = ready(player.advance(frame, idle.id(), &mut pool)).root_motion;
+		math::assert_float_eq!(settled.translation.x(), 0.0);
+		math::assert_float_eq!(settled.translation.z(), 0.1);
+
+		// With 100 ms left, less than the blend, the weights move at once so the stop still ends on time.
+		ready(player.advance(MediaTime::from_millis(500), idle.id(), &mut pool));
+		let at_once = ready(player.advance(
+			MediaTime::from_millis(50),
+			walk.id().at([1.0, 0.0]).inertialized(blend),
+			&mut pool,
+		))
+		.root_motion;
+		assert_eq!(player.state(), Some(stop.id()));
+		math::assert_float_eq!(at_once.translation.x(), 0.05);
+		math::assert_float_eq!(at_once.translation.z(), 0.0);
+		ready(player.advance(MediaTime::from_millis(100), idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(idle.id()), "the stop ends on time and hands over");
 	}
 
 	#[test]
@@ -2694,6 +2808,47 @@ mod tests {
 			.expect("enters idle after the stop transition clip");
 
 		assert_eq!(player.state(), Some(idle.id()));
+	}
+
+	#[test]
+	fn must_complete_one_shots_hold_other_requests_until_they_end() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("start.animation", test_animation("start", 1.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+			("dead.animation", test_animation("dead", 3.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let dead = builder.state("dead").with(AnimationClip::once("dead.animation"));
+		let start = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.when(MediaTime::ZERO);
+		walk.to(idle).anytime(MediaTime::ZERO);
+		builder.any_state_to(dead, MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+		assert_eq!(player.state(), Some(start.id()));
+
+		// The walk's anytime route back to the idle would cut an interruptible start short; this one plays on.
+		ready(player.advance(MediaTime::from_millis(100), idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(start.id()), "the one-shot must play through another request");
+
+		// Once it ends, the request that held resolves from the walk it completed into.
+		ready(player.advance(MediaTime::from_seconds(1), idle.id(), &mut pool));
+		ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(idle.id()), "the held request resolves after the one-shot");
+
+		// An any-state route still cuts a must-complete one-shot short.
+		ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
+		assert_eq!(player.state(), Some(start.id()));
+		ready(player.advance(MediaTime::from_millis(100), dead.id(), &mut pool));
+		assert_eq!(player.state(), Some(dead.id()), "an any-state route cuts the one-shot short");
 	}
 
 	#[test]

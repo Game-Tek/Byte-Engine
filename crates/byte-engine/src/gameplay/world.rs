@@ -89,8 +89,8 @@ pub(crate) fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: 
 	deletes.forget_entity(handle);
 }
 
-#[cfg(feature = "headed")]
 use crate::animation::system::RootMotionUpdate;
+#[cfg(feature = "headed")]
 use crate::rendering::{SetMaterialParameter, UpdatePose};
 use crate::{
 	core::{

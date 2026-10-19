@@ -33,10 +33,28 @@ let (source, asset_type) = context.resolve(id).await?;
 let settings = context.load_sidecar(id).await?;
 ```
 
-The sidecar helper parses JSON5 and returns `None` when the sidecar is missing.
-It records the sidecar's own file ID as a dependency, including its absence, so creating, editing, or removing it makes the resource stale.
+The sidecar helper parses JSON5, merges the [directory defaults](/docs/reference/assets#sidecars) under the sidecar, and returns `None` when none of those files exist.
+It records each file's ID as a dependency, including its absence, so creating, editing, or removing any of them makes the resource stale.
 A sidecar that your handler doesn't request has no effect on baking or freshness.
-Custom source backends provide the same utility through `StorageBackend::load_sidecar`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
+Custom source backends provide the same utility through `StorageBackend::load_sidecar`, which reads each file with `StorageBackend::load_bead`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
+
+### Directory defaults
+
+A `.bead` file in a directory gives sidecar keys to every asset below it, so a folder of animation clips names its skeleton once instead of repeating it in a sidecar per clip.
+Settings that depend on where an asset is used, not on its contents, belong in the folder: a clip carries its own copy of the joint hierarchy, not a link to the rig it was authored for, so the bake can't infer the rig from the file.
+
+`StorageBackend::load_sidecar` builds the settings, and nothing else does.
+It reads the root's `.bead`, then each directory's down to the asset's own, then the asset's sidecar, each through `StorageBackend::load_bead`, and merges every file over the ones before it: objects key by key and recursively, any other value by replacement.
+Handlers see one merged object and can't tell which file a key came from, so a key means the same whether it's set per asset or per directory.
+
+Keep these rules when you change it:
+
+- Every file the merge consults is a bake dependency, present or absent. `TrackingStorageBackend` overrides `load_bead`, not `load_sidecar`, so each layer goes through `tracked` on its own. The watcher needs nothing extra, since a change to `anims/.bead` reports that ID and the resources that depend on it rebake.
+- The more specific file wins. Don't stop at the first file found; layers combine, so a sidecar can override one key of its directory's `images` object and keep the rest.
+- Directory defaults configure assets; they don't select them. Discovery still asks for an adjacent sidecar, through `AssetSource::has_sidecar`, so a folder default doesn't turn every `.besl` below it into a standalone shader. A `.bead` file has no asset type, so discovery never offers it as an asset.
+- Handlers read keys by name and ignore keys they don't know, which a folder shared by different formats relies on. Strict parsing belongs to each key's value, such as `lods` or `images`, never the whole object.
+
+`directory_defaults_merge_under_the_sidecar_from_the_root_down` in `storage_backend.rs` guards the order and the merge, and `lazy_baking_reuses_fresh_assets_and_rebakes_changed_sources_and_sidecars` in `manager.rs` guards freshness when a directory default is created or edited.
 
 ## Trace asset baking
 

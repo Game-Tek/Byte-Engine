@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A `.bead` file in an asset directory sets sidecar defaults for every asset in that directory and the ones below it, so a folder of clips names its skeleton once instead of in a sidecar for each clip. An asset's own sidecar merges over the defaults key by key, and creating, editing, or removing a default rebakes the assets below it. `StorageBackend::load_bead` reads one BEAD file, and `load_sidecar` merges them.
+
 - The HTTP inspector serves on a free port the system picks when its default port, 6680, is in use, and logs that port as a warning, so a second application on one machine starts without setting `inspector.port`. Before, it panicked. A port set with `inspector.port` that is in use still stops startup.
 
 - Skinned instances write their poses into the resident vertex streams, so the number of animated characters is bounded by the geometry vertex capacity instead of a fixed limit of 262,144 skinned vertices per frame, which panicked when exceeded. Each instance that receives a pose takes its own range of `render.geometry.vertex-capacity`, as many vertices as its primitive has, until it's removed; when the capacity can't hold it, the instance draws in its bind pose and logs one error. On an Apple M4 with two animated MotusMen, skinning takes 0.063 ms where it took 0.064 ms, the visibility raster 0.166 ms where it took 0.174 ms, and material evaluation 0.528 ms where it took 0.542 ms.

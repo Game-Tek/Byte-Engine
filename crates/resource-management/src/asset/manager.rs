@@ -1239,6 +1239,15 @@ pub mod tests {
 		assert_eq!(invocations.load(Ordering::SeqCst), 5);
 		bake("an unchanged absent sidecar should stay fresh").await;
 		assert_eq!(invocations.load(Ordering::SeqCst), 5);
+
+		asset_storage.add_file(".bead", br#"{ purpose: "directory" }"#);
+		bake("a new directory default should rebake").await;
+		assert_eq!(invocations.load(Ordering::SeqCst), 6);
+		asset_storage.add_file(".bead", br#"{ purpose: "changed directory" }"#);
+		bake("a changed directory default should rebake").await;
+		assert_eq!(invocations.load(Ordering::SeqCst), 7);
+		bake("an unchanged directory default should stay fresh").await;
+		assert_eq!(invocations.load(Ordering::SeqCst), 7);
 	}
 
 	#[r#async::test]

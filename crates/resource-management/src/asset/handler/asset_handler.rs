@@ -136,10 +136,9 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		self.tracked(url, || self.inner.resolve_in(url, allocator)).await
 	}
 
-	async fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> Result<Option<BEADType>, ()> {
-		// Track absence as well as content, so creating a sidecar invalidates the baked resource.
-		let path = format!("{}.bead", url.get_base().as_ref());
-		self.tracked(ResourceId::new(&path), || self.inner.load_sidecar(url)).await
+	async fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> Result<Option<BEADType>, ()> {
+		// Track absence as well as content, so creating a sidecar or directory default invalidates the baked resource.
+		self.tracked(id, || self.inner.load_bead(id)).await
 	}
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
@@ -203,7 +202,8 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
-	/// Loads optional BEAD settings and records their presence or absence as a bake dependency.
+	/// Loads optional BEAD settings, the directory `.bead` defaults merged under the source's sidecar, and records the
+	/// presence or absence of each file as a bake dependency.
 	///
 	/// Call this only when the handler consumes sidecar settings, then read the source with [`Self::resolve`].
 	pub async fn load_sidecar(&self, id: ResourceId<'_>) -> Result<Option<BEADType>, LoadErrors> {

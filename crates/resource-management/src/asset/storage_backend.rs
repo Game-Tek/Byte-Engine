@@ -71,14 +71,29 @@ pub trait StorageBackend: Send + Sync {
 		}
 	}
 
-	/// Loads optional JSON5 settings adjacent to the source, using this backend's namespace.
+	/// Loads the source's BEAD settings: every `.bead` directory default from the asset root down, then the source's
+	/// own sidecar, each merged over the ones before it.
 	///
-	/// During baking, use [`crate::asset::handler::BakeContext::load_sidecar`] to record the sidecar dependency,
-	/// including its absence. Read the source separately with [`Self::resolve`].
+	/// During baking, use [`crate::asset::handler::BakeContext::load_sidecar`] to record every file it consults,
+	/// including absent ones. Read the source separately with [`Self::resolve`].
 	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
 		async move {
-			let path = format!("{}.bead", url.get_base().as_ref());
-			let id = ResourceId::new(&path);
+			let mut settings = None;
+			for path in sidecar_paths(url.get_base().as_ref()) {
+				if let Some(layer) = self.load_bead(ResourceId::new(&path)).await? {
+					settings = Some(match settings {
+						Some(base) => merge_bead(base, layer),
+						None => layer,
+					});
+				}
+			}
+			Ok(settings)
+		}
+	}
+
+	/// Loads the JSON5 file at exactly `id`, or `None` when it does not exist.
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
+		async move {
 			if self.version(id).await?.source.is_none() {
 				return Ok(None);
 			}
@@ -103,6 +118,7 @@ pub trait DynStorageBackend: Send + Sync {
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
 }
 
@@ -132,8 +148,39 @@ impl<T: StorageBackend> DynStorageBackend for T {
 		Box::pin(self.load_sidecar(url))
 	}
 
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>> {
+		Box::pin(self.load_bead(id))
+	}
+
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
 		Box::pin(self.version(url))
+	}
+}
+
+/// Returns the BEAD files that configure the source at `base`, least specific first: the `.bead` directory default of
+/// the asset root and of each directory down to the source's own, then the source's sidecar.
+fn sidecar_paths(base: &str) -> impl Iterator<Item = String> + '_ {
+	let directories = base.match_indices('/').map(|(end, _)| &base[..=end]);
+	std::iter::once("")
+		.chain(directories)
+		.map(|directory| format!("{directory}.bead"))
+		.chain(std::iter::once(format!("{base}.bead")))
+}
+
+/// Merges `layer` over `base`. Objects merge key by key, recursively, and any other value replaces the one before it.
+fn merge_bead(base: BEADType, layer: BEADType) -> BEADType {
+	match (base, layer) {
+		(BEADType::Object(mut base), BEADType::Object(layer)) => {
+			for (key, value) in layer {
+				let merged = match base.remove(&key) {
+					Some(existing) => merge_bead(existing, value),
+					None => value,
+				};
+				base.insert(key, merged);
+			}
+			BEADType::Object(base)
+		}
+		(_, layer) => layer,
 	}
 }
 
@@ -679,6 +726,41 @@ pub mod tests {
 		assert!(backend.load_sidecar(id).await.is_err());
 		backend.remove_file("explicit.test.bead");
 		assert!(backend.load_sidecar(id).await.unwrap().is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn directory_defaults_merge_under_the_sidecar_from_the_root_down() {
+		let backend = TestStorageBackend::new();
+		let id = ResourceId::new("anims/run/clip.fbx#animation");
+		backend.add_file("anims/run/clip.fbx", b"source");
+		backend.add_file(".bead", b"{ root: true, images: { mips: false } }");
+		backend.add_file(
+			"anims/.bead",
+			b"{ skeleton: 'rig.fbx#skeleton', images: { compression: false } }",
+		);
+		backend.add_file("anims/run/.bead", b"{ skeleton: 'runner.fbx#skeleton' }");
+		backend.add_file("anims/run/clip.fbx.bead", b"{ images: { mips: true } }");
+		backend.add_file("other/.bead", b"{ unrelated: true }");
+
+		let settings = backend.load_sidecar(id).await.unwrap().unwrap();
+		assert_eq!(
+			settings,
+			super::parse_json("{ root: true, skeleton: 'runner.fbx#skeleton', images: { mips: true, compression: false } }")
+				.unwrap()
+		);
+
+		backend.remove_file("anims/run/clip.fbx.bead");
+		backend.remove_file("anims/run/.bead");
+		assert_eq!(
+			backend.load_sidecar(id).await.unwrap().unwrap()["skeleton"],
+			"rig.fbx#skeleton"
+		);
+		assert_eq!(
+			backend.load_sidecar(ResourceId::new("loose.fbx")).await.unwrap().unwrap()["root"],
+			true
+		);
+		backend.add_file("anims/.bead", b"invalid json5");
+		assert!(backend.load_sidecar(id).await.is_err());
 	}
 }
 

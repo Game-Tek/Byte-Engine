@@ -126,7 +126,17 @@ world environment.
 
 A sidecar is a JSON5 file named after the asset with `.bead` appended, next
 to it. A missing sidecar means defaults; one that can't be read fails the
-bake. Only these handlers read one:
+bake.
+
+A file named `.bead` in a directory holds directory defaults: sidecar keys for
+every asset in that directory and the directories below it. An asset's settings
+are the `.bead` files from the asset root down to its own directory, then its
+sidecar, each merged over the ones before it. Objects merge key by key, and any
+other value replaces the one before it. A directory default that can't be read
+fails the bake of every asset that reads sidecars below it. Directory defaults
+don't make an asset discoverable the way an adjacent `.besl.bead` does.
+
+Only these handlers read sidecars:
 
 | Asset | Key | Value |
 | --- | --- | --- |

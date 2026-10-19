@@ -440,7 +440,9 @@ impl GraphicsApplication {
 	/// charging it twice.
 	///
 	/// After the loop waited for events, `elapsed` still advances by the time spent waiting, but the delta is capped
-	/// at one frame so systems stepping by it do not jump across the idle stretch.
+	/// at one frame so systems stepping by it do not jump across the idle stretch. Any other interval is capped at
+	/// [`STALL_FRAMES`] paces the same way, so a stall the loop did not wait through, such as a sleep or a presentation
+	/// the system held for a second, cannot advance a clip or a body by that whole second in one tick.
 	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>, waited: bool) -> Time {
 		let now = std::time::Instant::now();
 		// A presented time from more than a frame before the previous tick shows a frame from before a stretch in which
@@ -448,16 +450,14 @@ impl GraphicsApplication {
 		// that whole stretch into the delta of the next presented time, so it counts as none.
 		let present_time =
 			present_time.filter(|present_time| *present_time + self.skipped_frame_pace >= self.last_tick_instant);
-		let wall_delta = MediaTime::from_std(now - self.last_tick_instant);
-		let (delta, advance) = match (present_time, self.last_present_time) {
+		let interval = match (present_time, self.last_present_time) {
 			(Some(current), Some(previous)) if current > previous => {
 				let target = self.elapsed_at_last_present + MediaTime::from_std(current - previous);
-				let delta = target.max(self.elapsed) - self.elapsed;
-				(delta, delta)
+				target.max(self.elapsed) - self.elapsed
 			}
-			_ if waited => (wall_delta.min(MediaTime::from_std(self.skipped_frame_pace)), wall_delta),
-			_ => (wall_delta, wall_delta),
+			_ => MediaTime::from_std(now - self.last_tick_instant),
 		};
+		let (delta, advance) = frame_delta(interval, MediaTime::from_std(self.skipped_frame_pace), waited);
 		self.last_tick_instant = now;
 		self.elapsed += advance;
 		if present_time.is_some() && present_time != self.last_present_time {
@@ -1074,6 +1074,21 @@ pub(crate) fn queue_startup_parameters(parameters: &[Parameter], configuration: 
 /// refresh rate is known.
 const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
 
+/// The most skipped-frame paces one tick's delta spans. A longer interval is a stall: the clock still advances by
+/// it, but the delta systems step by is capped here, since simulating through a stall pops poses and tunnels bodies.
+const STALL_FRAMES: i64 = 4;
+
+/// Chooses the delta a tick hands to systems and the advance of the application clock from the interval the clock
+/// measured, which is the display interval when a frame presented and the wall time since the last tick otherwise.
+///
+/// The clock always advances by the full interval. The delta is capped at one `pace` after the loop waited for
+/// events, since an idle stretch is not simulated, and at [`STALL_FRAMES`] paces otherwise, since a stall is not
+/// either; see the [time reference](/docs/reference/time).
+fn frame_delta(interval: MediaTime, pace: MediaTime, waited: bool) -> (MediaTime, MediaTime) {
+	let cap = if waited { pace } else { pace * STALL_FRAMES };
+	(interval.min(cap), interval)
+}
+
 /// Chooses how long an idle on-demand tick waits for window events.
 ///
 /// A wake that arrived since the last wait, or a UI that needs a tick now, runs the tick at once. Otherwise the
@@ -1169,6 +1184,21 @@ mod tests {
 		assert_eq!(idle_wait(false, Some(later), None, now), Wait::Until(later));
 		assert_eq!(idle_wait(false, Some(later), Some(soon), now), Wait::Until(soon));
 		assert_eq!(idle_wait(false, None, Some(soon), now), Wait::Until(soon));
+	}
+
+	#[test]
+	fn frame_delta_passes_ordinary_intervals_and_caps_waits_and_stalls() {
+		let pace = MediaTime::from_micros(16_667);
+		let frame = MediaTime::from_micros(20_000);
+		let stall = MediaTime::from_seconds(1);
+
+		// A tick that neither waited nor stalled steps by what it measured.
+		assert_eq!(frame_delta(frame, pace, false), (frame, frame));
+		// A stall advances the clock in full but steps systems by at most four paces.
+		assert_eq!(frame_delta(stall, pace, false), (pace * STALL_FRAMES, stall));
+		// An idle wait steps by at most one pace, while the clock still advances by the whole wait.
+		assert_eq!(frame_delta(stall, pace, true), (pace, stall));
+		assert_eq!(frame_delta(frame, pace, true), (pace, frame));
 	}
 
 	#[test]

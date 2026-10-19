@@ -218,6 +218,8 @@ pub struct AnimationGraph {
 	/// Targets every state can route to after its own routes, with how long each blends in.
 	any_state_routes: Box<[(AnimationStateId, MediaTime)]>,
 	initial: AnimationStateId,
+	/// How many round-robin states the graph has, which sizes each player's [`RoundRobinTurns`].
+	round_robins: usize,
 	/// Clip data resolved once against the canonical skeleton, which every player of the graph shares.
 	binding: runtime::GraphBinding,
 }
@@ -238,6 +240,7 @@ impl AnimationGraph {
 				spaces: Vec::new(),
 				transitions: Vec::new(),
 				any_state_routes: Vec::new(),
+				round_robins: 0,
 				errors: Vec::new(),
 			})),
 		}
@@ -369,6 +372,8 @@ struct AnimationGraphBuilderData {
 	transitions: Vec<(AnimationStateId, StateTransition)>,
 	/// Targets every state can route to, added with [`AnimationGraphBuilder::any_state_to`].
 	any_state_routes: Vec<(AnimationStateId, MediaTime)>,
+	/// How many round-robin states were built, which numbers their slots.
+	round_robins: usize,
 	/// Problems found while authoring, like a rejected blend or a route point naming a clip its state does not play,
 	/// which [`AnimationGraphBuilder::build`] reports, the first one first.
 	errors: Vec<AnimationGraphBuildError>,
@@ -511,6 +516,27 @@ impl<'builder> AnimationGraphStateBuilder<'builder> {
 			None,
 			MediaTime::ZERO,
 		);
+		AnimationGraphState { data: self.data, id }
+	}
+
+	/// Plays one of `clips` at a time, the next one each time a player enters the state, starting with the first and
+	/// wrapping after the last. Use it to vary a state that plays again and again, like a death or a hit reaction,
+	/// without picking the clip in application code.
+	///
+	/// Every clip must loop, or every one must play once. Each player keeps its own turn. Request the state like a clip
+	/// state, with [`AnimationGraphState::id`], and connect it with [`AnimationGraphState::to`] or
+	/// [`AnimationGraphBuilder::any_state_to`].
+	pub fn round_robin(self, clips: impl IntoIterator<Item = AnimationClip>) -> AnimationGraphState<'builder> {
+		let mut builder = self.data.borrow_mut();
+		let builder = builder.as_mut().expect("the animation graph has already been built");
+		// Slots number the round robins in the order they were built.
+		let slot = builder.round_robins;
+		builder.round_robins += 1;
+		let motion = StateMotion::RoundRobin {
+			clips: clips.into_iter().collect(),
+			slot,
+		};
+		let id = builder.push_state(self.graph, self.name, motion, self.space, None, MediaTime::ZERO);
 		AnimationGraphState { data: self.data, id }
 	}
 
@@ -896,6 +922,10 @@ impl AnimationGraphBuilder {
 			if state.name.trim().is_empty() {
 				return Err(AnimationGraphBuildError::EmptyStateName { state: state_index });
 			}
+			// Checked before playback, which reads a state's first clip.
+			if state.motion.clips().is_empty() {
+				return Err(AnimationGraphBuildError::EmptyRoundRobin { state: state_index });
+			}
 			if state.motion.clips().iter().any(|clip| clip.resource_id().trim().is_empty()) {
 				return Err(AnimationGraphBuildError::EmptyResourceId { state: state_index });
 			}
@@ -964,6 +994,7 @@ impl AnimationGraphBuilder {
 
 		Ok(AnimationGraph {
 			id: self.graph,
+			round_robins: data.round_robins,
 			binding: runtime::GraphBinding::new(data.states.len()),
 			states: data.states,
 			spaces: data.spaces.into(),
@@ -1056,9 +1087,14 @@ pub enum AnimationGraphBuildError {
 		/// Why the positions were rejected.
 		error: BlendSpaceError,
 	},
-	/// A blend state cannot keep its clips in step because some loop and others play once.
+	/// A blend or round-robin state cannot keep its clips in step because some loop and others play once.
 	MixedBlendPlayback {
-		/// The index of the blend state.
+		/// The index of the blend or round-robin state.
+		state: usize,
+	},
+	/// A round-robin state has no clip to play.
+	EmptyRoundRobin {
+		/// The index of the round-robin state.
 		state: usize,
 	},
 	/// A route point names a clip that its state does not play.
@@ -1148,7 +1184,11 @@ impl fmt::Display for AnimationGraphBuildError {
 			),
 			Self::MixedBlendPlayback { state } => write!(
 				formatter,
-				"Animation blend state mixes looping and one-shot clips. The most likely cause is state {state} using `AnimationClip::once` for some samples and `AnimationClip::looping` for others."
+				"Animation blend or round-robin state mixes looping and one-shot clips. The most likely cause is state {state} using `AnimationClip::once` for some clips and `AnimationClip::looping` for others."
+			),
+			Self::EmptyRoundRobin { state } => write!(
+				formatter,
+				"Animation round-robin state has no clips. The most likely cause is state {state} being built with `round_robin` from an empty list."
 			),
 		}
 	}
@@ -1174,7 +1214,7 @@ use math::{AffineMatrix, Vector};
 pub use motion::{
 	AnimationBlend, AnimationMotion, AnimationRequest, LinearGraphState, LinearStateId, PlanarGraphState, PlanarStateId,
 };
-use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, SpaceKind, StateMotion};
+use motion::{BlendPositions, BlendValue, ClipPoint, ClipTime, RoundRobinTurns, SpaceKind, StateMotion};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{

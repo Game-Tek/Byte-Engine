@@ -654,6 +654,7 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 					origin: RouteOrigin::Initial,
 				}),
 				positions: BlendPositions::new(&graph.spaces),
+				turns: RoundRobinTurns::new(graph.round_robins),
 				last_delta: MediaTime::ZERO,
 				root_motion: RootMotionDelta::IDENTITY,
 				pose,
@@ -670,6 +671,8 @@ struct ReadyAnimationGraphPlayer<'graph> {
 	pending: Option<PendingPlayerTransition<'graph>>,
 	/// Each space's position, which its looping blends follow and its blends start at.
 	positions: BlendPositions,
+	/// Which clip each round robin plays the next time this player enters it.
+	turns: RoundRobinTurns,
 	/// The latest frame's duration, which a redirected blend measures the on-screen pose's velocity over.
 	last_delta: MediaTime,
 	/// The root motion of the latest advance.
@@ -985,10 +988,10 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		});
 	}
 
-	/// Starts the motion of `target`, a blend at its space's position, at the `entry` point of its heaviest named clip
-	/// or at its beginning.
+	/// Starts the motion of `target`, a blend at its space's position or a round robin at its next clip, at the `entry`
+	/// point of its heaviest named clip or at its beginning.
 	fn start_motion(
-		&self,
+		&mut self,
 		target: AnimationStateId,
 		entry: &[ClipPoint],
 		pool: &AnimationPool,
@@ -999,6 +1002,9 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			.binding
 			.state(target.index, || bind_clips(&state.motion, pool, &self.pose.target));
 		let mut runtime = RuntimeMotion::new(target, &state.motion, self.positions.recall(state.space), samples);
+		if let Some(clip) = self.turns.take(&state.motion) {
+			runtime.weights = BlendWeights::single(clip);
+		}
 		let entry = runtime.points_of_heaviest(entry).next().copied();
 		if let Some(phase) = entry.and_then(|entry| runtime.phase_of(entry)) {
 			runtime.phase = phase;
@@ -1075,11 +1081,11 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		if !evaluation.motion_ready(&self.graph.state(pending.target).motion) || !pending.wait.is_empty() {
 			return;
 		}
-		let (target, origin) = (pending.target, pending.origin);
-		let destination = self.start_motion(target, pending.entry, evaluation.pool);
+		let (target, origin, entry, duration) = (pending.target, pending.origin, pending.entry, pending.duration);
+		let destination = self.start_motion(target, entry, evaluation.pool);
 
 		// A route of zero length cuts to its target, so only the target plays this frame.
-		self.playback = if let Some(duration) = pending.duration.filter(|duration| *duration > MediaTime::ZERO) {
+		self.playback = if let Some(duration) = duration.filter(|duration| *duration > MediaTime::ZERO) {
 			let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
 				unreachable!("Only a playing clip can start a graph transition");
 			};
@@ -1842,6 +1848,63 @@ mod tests {
 			assert_eq!(shared_pose.global_pose, solo_pose.global_pose);
 			assert_eq!(shared_pose.root_motion, solo_pose.root_motion);
 		}
+	}
+
+	#[test]
+	fn round_robins_play_their_next_clip_each_time_a_player_enters_them() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("first.animation", test_animation("first", 1.0)),
+			("second.animation", test_animation("second", 2.0)),
+			("third.animation", test_animation("third", 3.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let dead = builder.state("dead").round_robin([
+			AnimationClip::once("first.animation"),
+			AnimationClip::once("second.animation"),
+			AnimationClip::once("third.animation"),
+		]);
+		builder.any_state_to(dead, MediaTime::ZERO);
+		dead.to(idle).anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+
+		// Enters the round robin from the idle, plays its clip to the end, and returns where the clip left the root.
+		let fall = |player: &mut AnimationGraphPlayer<'_>, pool: &mut AnimationPool| {
+			ready(player.advance(MediaTime::ZERO, idle.id(), pool));
+			ready(player.advance(MediaTime::ZERO, dead.id(), pool));
+			ready(player.advance(MediaTime::from_millis(1000), dead.id(), pool)).local_pose[0]
+				.translation
+				.x()
+		};
+
+		let mut first = pool.create_player(&graph, None);
+		let falls: Vec<f32> = (0..4).map(|_| fall(&mut first, &mut pool)).collect();
+		assert_eq!(falls, [1.0, 2.0, 3.0, 1.0]);
+
+		// Another player of the graph keeps its own turn.
+		let mut second = pool.create_player(&graph, None);
+		math::assert_float_eq!(fall(&mut second, &mut pool), 1.0);
+	}
+
+	#[test]
+	fn round_robins_reject_empty_clip_lists_and_mixed_playback() {
+		let builder = AnimationGraph::builder();
+		let empty = builder.state("empty").round_robin([]);
+		assert_eq!(
+			builder.build(empty).err(),
+			Some(AnimationGraphBuildError::EmptyRoundRobin { state: 0 })
+		);
+
+		let builder = AnimationGraph::builder();
+		let mixed = builder.state("mixed").round_robin([
+			AnimationClip::looping("loop.animation"),
+			AnimationClip::once("once.animation"),
+		]);
+		assert_eq!(
+			builder.build(mixed).err(),
+			Some(AnimationGraphBuildError::MixedBlendPlayback { state: 0 })
+		);
 	}
 
 	#[test]

@@ -18,6 +18,12 @@ pub(super) enum StateMotion {
 		clips: Box<[AnimationClip]>,
 		space: BlendSpace2D,
 	},
+	/// Plays one of `clips` at a time, the next one each time a player enters the state.
+	RoundRobin {
+		clips: Box<[AnimationClip]>,
+		/// The state's slot among the graph's round robins, which indexes each player's [`RoundRobinTurns`].
+		slot: usize,
+	},
 }
 
 impl StateMotion {
@@ -25,7 +31,7 @@ impl StateMotion {
 	pub(super) fn clips(&self) -> &[AnimationClip] {
 		match self {
 			Self::Clip(clip) => std::slice::from_ref(clip),
-			Self::Linear { clips, .. } | Self::Planar { clips, .. } => clips,
+			Self::Linear { clips, .. } | Self::Planar { clips, .. } | Self::RoundRobin { clips, .. } => clips,
 		}
 	}
 
@@ -37,7 +43,7 @@ impl StateMotion {
 	/// Returns the kind of space a blend weighs its clips in, or `None` for a single clip.
 	pub(super) fn kind(&self) -> Option<SpaceKind> {
 		match self {
-			Self::Clip(_) => None,
+			Self::Clip(_) | Self::RoundRobin { .. } => None,
 			Self::Linear { .. } => Some(SpaceKind::Linear),
 			Self::Planar { .. } => Some(SpaceKind::Planar),
 		}
@@ -45,10 +51,12 @@ impl StateMotion {
 
 	/// Returns each clip's weight for the blend position `value`.
 	///
-	/// A value of the wrong kind or a non-finite one returns `current`, so the state keeps its last mix.
+	/// A value of the wrong kind or a non-finite one returns `current`, so the state keeps its last mix. A round robin
+	/// keeps the clip its turn picked, whatever the position.
 	pub(super) fn weights(&self, value: BlendValue, current: BlendWeights) -> BlendWeights {
 		match (self, value) {
 			(Self::Clip(_), _) => BlendWeights::single(0),
+			(Self::RoundRobin { .. }, _) => current,
 			(Self::Linear { space, .. }, BlendValue::Linear(value)) => space.weights(value).unwrap_or(current),
 			(Self::Planar { space, .. }, BlendValue::Planar(value)) => space.weights(value).unwrap_or(current),
 			_ => current,
@@ -407,6 +415,32 @@ impl BlendPositions {
 	/// Returns the position of `space`, or no position for a state outside every space.
 	pub(super) fn recall(&self, space: Option<usize>) -> BlendValue {
 		space.map_or(BlendValue::Unset, |space| self.0[space])
+	}
+}
+
+/// The `RoundRobinTurns` struct remembers, for each round robin of a graph, which clip a player plays the next time
+/// it enters that state.
+///
+/// Each player keeps its own turns, so players of one graph vary independently and the clip a player picks never
+/// depends on the order players are evaluated in.
+pub(super) struct RoundRobinTurns(Box<[usize]>);
+
+impl RoundRobinTurns {
+	/// Starts every round robin of a graph with `count` of them at its first clip.
+	pub(super) fn new(count: usize) -> Self {
+		Self(vec![0; count].into_boxed_slice())
+	}
+
+	/// Takes the turn of the state playing `motion`: returns the clip it plays now and moves on to the next one,
+	/// wrapping after the last. Any other motion plays its clips as their weights say, so this returns `None`.
+	pub(super) fn take(&mut self, motion: &StateMotion) -> Option<usize> {
+		let StateMotion::RoundRobin { clips, slot } = motion else {
+			return None;
+		};
+		let turn = &mut self.0[*slot];
+		let clip = *turn;
+		*turn = (clip + 1) % clips.len();
+		Some(clip)
 	}
 }
 

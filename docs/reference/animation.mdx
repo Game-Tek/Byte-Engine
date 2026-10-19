@@ -117,11 +117,19 @@ A graph is a state machine built in code. Its states can be grouped into
 | State | Holds | Playback |
 | --- | --- | --- |
 | Clip | One clip, looping or played once. | |
+| Round robin | One or more clips, in order. | Plays one clip at a time, as a clip state. Each time the animator enters the state, it plays the next clip, starting with the first and wrapping after the last. |
 | Linear blend | Clips at scalar positions, as a 1D blend space. | Its space's position picks the weights. |
 | Planar blend | Clips at 2D positions, as a 2D blend space with explicit or fan triangulation. | Its space's position picks the weights. |
 
-Every clip in a blend shares one playback mode. A blend's duration is the
-weighted sum of its clips' durations, so all its clips share one phase.
+Every clip in a blend or a round robin shares one playback mode. A blend's
+duration is the weighted sum of its clips' durations, so all its clips share one
+phase.
+
+Each animator keeps its own turn for each round robin, so animators that play one
+graph don't advance each other's turns. Entering a round robin takes a turn
+whether the animator enters it through a route, a hand-over, or a redirect. A
+blend position never changes which clip a round robin plays, and a route point on
+a round robin names one of its clips, as on a blend.
 
 ### Spaces
 
@@ -190,7 +198,8 @@ Building validates the graph and reports the first problem:
 | `EmptyResourceId` | A clip has no resource ID. |
 | `TransitionStateMustPlayOnce` | A one-shot transition clip, or a clip of a one-shot transition blend, loops. |
 | `NegativeTransitionDuration` | A route or exit duration is negative. |
-| `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or its clips mix looping and once. |
+| `InvalidBlend`, `MixedBlendPlayback` | A blend space is invalid, or the clips of a blend or a round robin mix looping and once. |
+| `EmptyRoundRobin` | A round robin has no clips. |
 | `SpaceKindMismatch` | A blend state's kind differs from its space's. |
 | `BlendOutsideSpace` | A one-shot transition blend's source and target belong to no space of its kind. |
 | `RoutePointClipMissing`, `RoutePointNeedsClip` | A wait or entry point names a clip its state lacks, or a point on a blend names no clip. |
@@ -241,12 +250,12 @@ request, through the routes of its graph.
 | Rule | Behavior |
 | --- | --- |
 | Phase | Advances by the delta divided by the clip's duration. A looping clip wraps; a clip played once stops at its end. A clip of zero duration stays at its start. |
-| Clips sampled per step | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip. Only positive weights are sampled. |
+| Clips sampled per step | At most three per motion: the triangle of a planar blend, the pair of a linear blend, or one clip, which for a round robin is the clip of its current turn. Only positive weights are sampled. |
 | Transition | The destination is sampled at its start phase, both motions advance, and the inertializer carries the pose until the route's duration elapses. |
 | Hand-over at a wait point or a one-shot's end | The time left in the step plays on the next state in the same step. |
 | Redirect | A blend in progress can be redirected along an anytime route once the animator has posted a pose, from the pose and velocity it posted last. |
 | Position change on a blend | An inertialized request blends the playing blend from its current weights to the new ones, from the pose posted last. A blend played once blends this way while at least the request's duration of it is left to play, and moves its weights at once otherwise, so its end is never held back by the blend. A request without a position leaves every blend's weights as they are. While a blend to a new position plays, later requests move only the position it heads to; the weights it left stay until it ends, so its root motion ramps across the blend. |
-| Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. |
+| Prefetch | Entering a state requests the clips of every state its own routes and its space's routes can reach. A round robin needs all its clips resident before the animator enters it. |
 | Initial clip not resident | The animator posts nothing. |
 | Other clip not resident | The animator holds and posts its previous pose, with an identity root motion delta. |
 

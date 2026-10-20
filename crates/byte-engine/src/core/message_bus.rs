@@ -34,6 +34,7 @@ use std::{
 	ptr::NonNull,
 	sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence},
 	sync::{Arc, OnceLock},
+	task::{Context, Poll, Waker},
 	time::{Duration, Instant},
 };
 
@@ -456,6 +457,9 @@ impl MessageScope {
 			state,
 			observed_type: OnceLock::new(),
 			watcher: AtomicPtr::new(std::ptr::null_mut()),
+			waiting: AtomicBool::new(false),
+			wakes: AtomicU64::new(0),
+			waiters: Mutex::new(Vec::new()),
 			_marker: PhantomData,
 		});
 		registry.insert(key, topic.clone());
@@ -1249,6 +1253,17 @@ pub(crate) struct Topic<M> {
 	///
 	/// Sends load it relaxed, and only watched sends pay for the acquire fence.
 	watcher: AtomicPtr<Watcher<M>>,
+	/// Whether a listener waits for this route's next message; see [`DefaultListener::recv`].
+	///
+	/// Sends load it after stamping the slot and wake the waiters only when it is set, so a route nobody awaits pays
+	/// one load per send.
+	///
+	/// [`DefaultListener::recv`]: crate::core::listener::DefaultListener::recv
+	waiting: AtomicBool,
+	/// Counts the times the waiters were woken, so a listener that already registered for the coming message does
+	/// not register again.
+	wakes: AtomicU64,
+	waiters: Mutex<Vec<Waker>>,
 	_marker: PhantomData<fn() -> M>,
 }
 
@@ -1308,8 +1323,55 @@ where
 			// SAFETY: The payload was just written and stays owned by this publisher until it is stamped.
 			notify_watcher(watcher, unsafe { &*payload });
 		}
+		// Sequentially consistent, with the load after it, so a listener that registers to wait either sees the
+		// flag's waker woken here or the message in the read that follows its registration; see `register`.
 		pool.stamp(chunk, slot, layout)
-			.store(self.state.stamp(sequence), Ordering::Release);
+			.store(self.state.stamp(sequence), Ordering::SeqCst);
+		if self.waiting.load(Ordering::SeqCst) {
+			self.wake_waiters();
+		}
+	}
+
+	/// Wakes every listener waiting for the next message.
+	///
+	/// Kept out of line so the unawaited send path stays small.
+	#[cold]
+	#[inline(never)]
+	fn wake_waiters(&self) {
+		let wakers = {
+			let mut waiters = self.waiters.lock();
+			self.waiting.store(false, Ordering::Relaxed);
+			self.wakes.fetch_add(1, Ordering::Release);
+			std::mem::take(&mut *waiters)
+		};
+		// Woken outside the lock, since a waker may run code that reaches this route again.
+		for waker in wakers {
+			waker.wake();
+		}
+	}
+
+	/// Registers `waker` to be woken by the next message, unless `registered` shows it already is.
+	///
+	/// `registered` is the listener's record of its last registration: the wake count it registered under and the
+	/// waker. A listener polled again before a message arrives finds its registration current and takes no lock.
+	fn register(&self, waker: &Waker, registered: &mut Option<(u64, Waker)>) {
+		let current = self.wakes.load(Ordering::Acquire);
+		if let Some((wakes, known)) = registered
+			&& *wakes == current
+			&& known.will_wake(waker)
+		{
+			return;
+		}
+		let mut waiters = self.waiters.lock();
+		// A wake that ran since the load above took the earlier waiters, so register under the count it left.
+		let current = self.wakes.load(Ordering::Relaxed);
+		waiters.push(waker.clone());
+		*registered = Some((current, waker.clone()));
+		self.waiting.store(true, Ordering::SeqCst);
+		drop(waiters);
+		// Pairs with the stamp and flag in `publish`: either that send sees the flag, or the caller's next read sees
+		// its message.
+		fence(Ordering::SeqCst);
 	}
 
 	/// Reserves up to `wanted` slots that follow each other in the route's current chunk, attaching chunks as they
@@ -1420,6 +1482,7 @@ where
 			topic: Arc::clone(self),
 			cursor,
 			shared,
+			registered: None,
 		}
 	}
 
@@ -1641,6 +1704,8 @@ where
 	topic: Arc<Topic<M>>,
 	cursor: SlotCursor,
 	shared: Arc<ListenerShared>,
+	/// The listener's registration to be woken by the next message; see [`Topic::register`].
+	registered: Option<(u64, Waker)>,
 }
 
 impl<M> ListenerToken<M>
@@ -1653,6 +1718,19 @@ where
 
 	pub(crate) fn new_listener(&self, created_at: &'static Location<'static>) -> Self {
 		self.topic.subscribe(created_at)
+	}
+
+	/// Reads the next message, or registers the context's waker to be woken when one is sent.
+	pub(crate) fn poll_read(&mut self, context: &mut Context<'_>) -> Poll<M> {
+		if let Some(message) = self.read() {
+			return Poll::Ready(message);
+		}
+		self.topic.register(context.waker(), &mut self.registered);
+		// A message sent before the registration took effect is read here; one sent after it wakes the waker.
+		match self.read() {
+			Some(message) => Poll::Ready(message),
+			None => Poll::Pending,
+		}
 	}
 }
 

@@ -1,4 +1,12 @@
-use std::{collections::VecDeque, marker::PhantomData, panic::Location};
+use std::{
+	collections::VecDeque,
+	marker::PhantomData,
+	panic::Location,
+	pin::Pin,
+	task::{Context, Poll},
+};
+
+use utils::r#async::FusedFuture;
 
 use crate::core::message_bus::ListenerToken;
 
@@ -94,6 +102,66 @@ where
 	pub(crate) fn from_token(token: ListenerToken<M>) -> Self {
 		Self { token }
 	}
+
+	/// Returns a future that resolves with the next message, waiting until one is sent if none is queued.
+	///
+	/// Await it from a gameplay task or a UI component instead of polling [`Listener::read`] every tick. Messages
+	/// sent while the future is not awaited stay queued for this listener, so dropping it, as the losing branch of a
+	/// `select!` is, loses nothing. Every send on the channel wakes every waiting listener; to wait for one entity's
+	/// messages, use [`Self::recv_where`].
+	pub fn recv(&mut self) -> Recv<'_, M> {
+		Recv {
+			listener: self,
+			done: false,
+		}
+	}
+
+	/// Waits for the next message `accept` returns `true` for, skipping the ones before it.
+	///
+	/// The skipped messages are consumed, so a listener used with this reads only what it waits for.
+	pub async fn recv_where(&mut self, mut accept: impl FnMut(&M) -> bool) -> M {
+		loop {
+			let message = self.recv().await;
+			if accept(&message) {
+				return message;
+			}
+		}
+	}
+}
+
+/// The `Recv` struct is the future [`DefaultListener::recv`] returns, so tasks and components can await a channel.
+pub struct Recv<'a, M>
+where
+	M: Clone + Send + Sync + 'static,
+{
+	listener: &'a mut DefaultListener<M>,
+	done: bool,
+}
+
+impl<M> Future for Recv<'_, M>
+where
+	M: Clone + Send + Sync + 'static,
+{
+	type Output = M;
+
+	fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<M> {
+		let this = self.get_mut();
+		if this.done {
+			return Poll::Pending;
+		}
+		let result = this.listener.token.poll_read(context);
+		this.done = result.is_ready();
+		result
+	}
+}
+
+impl<M> FusedFuture for Recv<'_, M>
+where
+	M: Clone + Send + Sync + 'static,
+{
+	fn is_terminated(&self) -> bool {
+		self.done
+	}
 }
 
 impl<M> Listener<M> for DefaultListener<M>
@@ -169,6 +237,43 @@ mod tests {
 
 		assert_eq!(even.by_ref().collect::<Vec<_>>(), [2, 4, 6]);
 		assert_eq!(even.read(), None);
+	}
+
+	#[test]
+	fn recv_resolves_with_a_queued_message_and_wakes_its_waiter_on_send() {
+		use std::{
+			pin::pin,
+			sync::{
+				Arc,
+				atomic::{AtomicUsize, Ordering},
+			},
+			task::{Context, Poll, Wake, Waker},
+		};
+
+		/// Counts the wakes the listener's future asks for.
+		struct Count(AtomicUsize);
+		impl Wake for Count {
+			fn wake(self: Arc<Self>) {
+				self.0.fetch_add(1, Ordering::Relaxed);
+			}
+		}
+
+		let channel = DefaultChannel::new();
+		let mut listener = channel.listener();
+		let count = Arc::new(Count(AtomicUsize::new(0)));
+		let waker = Waker::from(Arc::clone(&count));
+		let mut context = Context::from_waker(&waker);
+
+		channel.send(1);
+		assert_eq!(pin!(listener.recv()).poll(&mut context), Poll::Ready(1));
+
+		let mut next = pin!(listener.recv());
+		assert_eq!(next.as_mut().poll(&mut context), Poll::Pending);
+		// Polling again before a send registers nothing more, so the send wakes once.
+		assert_eq!(next.as_mut().poll(&mut context), Poll::Pending);
+		channel.send(2);
+		assert_eq!(count.0.load(Ordering::Relaxed), 1);
+		assert_eq!(next.poll(&mut context), Poll::Ready(2));
 	}
 
 	#[test]

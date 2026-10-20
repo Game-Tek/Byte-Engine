@@ -6,7 +6,7 @@ use byte_engine::{
 	MediaTime,
 	application::Time,
 	core::{
-		factory::{Factory, Handle},
+		channel::{Channel as _, DefaultChannel},
 		message_bus::MessageScope,
 	},
 	gameplay::TaskRuntime,
@@ -50,20 +50,21 @@ fn tick_waits(bencher: Bencher) {
 	divan::black_box(total.get());
 }
 
-/// Measures one tick in which the host sends each task's entity one message and polls the tasks waiting for it.
+/// Measures one tick in which the host sends one message on a channel every task awaits through its own listener.
+///
+/// Every send wakes every waiting listener, so this is the fan-out cost of one broadcast.
 #[divan::bench(sample_count = 20, sample_size = 8)]
-fn received_waits(bencher: Bencher) {
+fn listener_waits(bencher: Bencher) {
 	let world = MessageScope::standalone("tasks");
 	let mut runtime = TaskRuntime::new(&world);
 	let total = Rc::new(Cell::new(0u64));
-	let entities = Factory::new();
-	let handles: Vec<Handle> = (0..TASK_COUNT).map(|_| entities.create(())).collect();
-	for &handle in &handles {
-		let tasks = runtime.tasks().clone();
+	let channel = DefaultChannel::<u64>::new();
+	for _ in 0..TASK_COUNT {
+		let mut messages = channel.listener();
 		let total = Rc::clone(&total);
-		runtime.tasks().spawn_on(handle, async move {
+		runtime.tasks().spawn(async move {
 			loop {
-				let value = tasks.received::<u64>(handle).await;
+				let value = messages.recv().await;
 				total.set(total.get() + value);
 			}
 		});
@@ -72,10 +73,8 @@ fn received_waits(bencher: Bencher) {
 
 	bencher.counter(ItemsCount::new(TASK_COUNT)).bench_local(|| {
 		advance(&mut runtime);
-		for &handle in &handles {
-			runtime.tasks().send(handle, 1u64);
-		}
+		channel.send(1);
 		runtime.poll(&mut ());
 	});
-	assert!(total.get() > 0, "The tasks must receive the messages the host sends");
+	assert!(total.get() > 0, "The tasks must receive the message the host sends");
 }

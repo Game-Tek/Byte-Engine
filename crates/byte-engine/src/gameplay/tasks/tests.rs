@@ -3,6 +3,7 @@ use std::{cell::Cell, rc::Rc};
 use utils::r#async::{FutureExt as _, select_biased};
 
 use super::*;
+use crate::core::channel::{Channel as _, DefaultChannel};
 
 /// What the test tasks write into while they are polled.
 #[derive(Default)]
@@ -47,14 +48,15 @@ fn tick_resolves_with_the_time_since_the_wait_began() {
 
 #[test]
 fn a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one() {
-	let (world, mut runtime) = runtime();
+	let (_world, mut runtime) = runtime();
 	let mut log = Log::default();
 	let tasks = runtime.tasks().clone();
-	let switch = Handle::new();
+	let switch = DefaultChannel::<()>::new();
+	let mut switched = switch.listener();
 	runtime.tasks().spawn(async move {
 		// The first loop's tick wait is dropped when the message wins; the second loop's resolves in the same poll.
 		select_biased! {
-			_ = tasks.received::<()>(switch) => {}
+			_ = switched.recv() => {}
 			_ = async { loop { tasks.tick().await; } }.fuse() => {}
 		}
 		let delta = tasks.tick().await;
@@ -63,11 +65,10 @@ fn a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one() {
 
 	runtime.poll(&mut log);
 	advance(&mut runtime, 16);
-	runtime.tasks().send(switch, ());
+	switch.send(());
 	runtime.poll(&mut log);
 
 	assert_eq!(log.0, ["switched after 16"]);
-	drop(world);
 }
 
 #[test]
@@ -75,11 +76,12 @@ fn a_task_selecting_over_messages_and_ticks_counts_every_tick() {
 	let (_world, mut runtime) = runtime();
 	let mut log = Log::default();
 	let tasks = runtime.tasks().clone();
-	let target = Handle::new();
+	let channel = DefaultChannel::<u32>::new();
+	let mut messages = channel.listener();
 	runtime.tasks().spawn(async move {
 		loop {
 			select_biased! {
-				message = tasks.received::<u32>(target) => note(&tasks, format!("message {message}")).await,
+				message = messages.recv() => note(&tasks, format!("message {message}")).await,
 				delta = tasks.tick() => note(&tasks, format!("tick {}", delta.as_seconds_f64() * 1000.0)).await,
 			}
 		}
@@ -87,7 +89,7 @@ fn a_task_selecting_over_messages_and_ticks_counts_every_tick() {
 
 	runtime.poll(&mut log);
 	advance(&mut runtime, 10);
-	runtime.tasks().send(target, 1u32);
+	channel.send(1);
 	runtime.poll(&mut log);
 
 	assert_eq!(log.0, ["message 1", "tick 10"]);
@@ -119,53 +121,77 @@ fn sleep_waits_for_simulation_time() {
 }
 
 #[test]
-fn messages_reach_waiting_tasks_and_drop_otherwise() {
+fn a_task_awaiting_a_listener_reads_every_message_sent_on_its_channel() {
 	let (_world, mut runtime) = runtime();
 	let mut log = Log::default();
 	let tasks = runtime.tasks().clone();
-	let target = Handle::new();
-
-	assert!(!runtime.tasks().send(target, 1u32), "nobody waits yet");
-
+	let channel = DefaultChannel::<u32>::new();
+	let mut messages = channel.listener();
+	// Sent before the task first awaits; the listener keeps it.
+	channel.send(1);
 	runtime.tasks().spawn(async move {
 		loop {
-			let message = tasks.received::<u32>(target).await;
+			let message = messages.recv().await;
 			note(&tasks, format!("{message}")).await;
 		}
 	});
 	runtime.poll(&mut log);
 
-	// Both arrive before the task is polled again and are read one wait at a time.
-	assert!(runtime.tasks().send(target, 2u32));
-	assert!(runtime.tasks().send(target, 3u32));
-	// Another type or another entity is a different wait.
-	assert!(!runtime.tasks().send(target, 4u64));
-	assert!(!runtime.tasks().send(Handle::new(), 5u32));
+	// Both arrive before the task is polled again and are read one await at a time.
+	channel.send(2);
+	channel.send(3);
 	runtime.poll(&mut log);
 
-	assert_eq!(log.0, ["2", "3"]);
+	assert_eq!(log.0, ["1", "2", "3"]);
 }
 
 #[test]
-fn a_dropped_wait_receives_nothing() {
+fn a_listener_dropped_from_a_select_keeps_its_messages() {
 	let (_world, mut runtime) = runtime();
 	let mut log = Log::default();
 	let tasks = runtime.tasks().clone();
-	let first = Handle::new();
-	let second = Handle::new();
+	let first = DefaultChannel::<u32>::new();
+	let second = DefaultChannel::<u32>::new();
+	let mut firsts = first.listener();
+	let mut seconds = second.listener();
 	runtime.tasks().spawn(async move {
 		select_biased! {
-			_ = tasks.received::<()>(first) => {}
-			_ = tasks.received::<()>(second) => {}
+			_ = firsts.recv() => {}
+			_ = seconds.recv() => {}
 		}
-		tasks.sleep(MediaTime::from_millis(100)).await;
+		// The losing branch's message, sent after it was dropped, is still read.
+		let message = seconds.recv().await;
+		note(&tasks, format!("{message}")).await;
 	});
 
 	runtime.poll(&mut log);
-	runtime.tasks().send(first, ());
+	first.send(1);
+	runtime.poll(&mut log);
+	second.send(2);
 	runtime.poll(&mut log);
 
-	assert!(!runtime.tasks().send(second, ()), "the losing branch was dropped");
+	assert_eq!(log.0, ["2"]);
+}
+
+#[test]
+fn a_message_sent_from_another_thread_wakes_the_awaiting_task() {
+	let (_world, mut runtime) = runtime();
+	let mut log = Log::default();
+	let tasks = runtime.tasks().clone();
+	let channel = DefaultChannel::<u32>::new();
+	let mut messages = channel.listener();
+	runtime.tasks().spawn(async move {
+		let message = messages.recv().await;
+		note(&tasks, format!("{message}")).await;
+	});
+
+	runtime.poll(&mut log);
+	std::thread::spawn(move || channel.send(7))
+		.join()
+		.expect("the sending thread finishes");
+	runtime.poll(&mut log);
+
+	assert_eq!(log.0, ["7"]);
 }
 
 /// Records when the future that owns it drops.

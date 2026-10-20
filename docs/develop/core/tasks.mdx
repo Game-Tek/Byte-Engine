@@ -13,10 +13,10 @@ application's async gameplay from its tick. To use it, see
 
 The runtime keeps the futures of live tasks in a vector indexed by task slot.
 Everything else it shares with the `Tasks` handles through one `Rc<RefCell>`:
-the clock, each task's waits, the mailboxes, and the ready queue. Runtime
-methods and wait futures borrow the shared state only briefly, never across a
-task's poll. A task can therefore spawn, send, and wait from anywhere in its
-code, including inside `with`.
+the clock, each task's waits, and the ready queue. Runtime methods and wait
+futures borrow the shared state only briefly, never across a task's poll. A
+task can therefore spawn and wait from anywhere in its code, including inside
+`with`.
 
 `poll` pops the ready queue until it's empty. Each poll of a task gets a new
 number, which the task records as its latest poll. The application's state goes
@@ -32,19 +32,18 @@ equals the latest poll of its task, so a future the task dropped, or stopped
 polling, stops counting after that poll. The UI engine's runtime uses the same
 scheme.
 
-Stale waits are also removed, so they don't pile up. A message or sleep wait
-future that drops while registered flags its task's poll, and once that poll
-ends the runtime sweeps the task's waits and keeps only the ones the poll
-registered. Polls that drop nothing skip the sweep, which keeps a tick's cost
-flat. Each task lists the mailboxes it has a wait in, so a sweep and the task's
-end reach its waits directly.
+Stale waits are also removed, so they don't pile up. A sleep future that drops
+while registered flags its task's poll, and once that poll ends the runtime
+sweeps the task's waits and keeps only the ones the poll registered. Polls that
+drop nothing skip the sweep, which keeps a tick's cost flat.
 
-- **Messages.** One mailbox per message type maps an entity to the waits for
-  it. `send` delivers to every counting wait and wakes its task. A wait that
-  delivered its message stays, so the task's next wait for the same entity
-  reuses its inbox. A task's list is also swept once it has doubled since the
-  last sweep, which removes such waits once the task moved on. A swept wait
-  loses the messages it held. Deleting the entity drops its waits.
+- **Messages.** The runtime keeps no messages. Tasks await the message bus
+  through `DefaultListener::recv`, which registers the task's waker on the
+  channel's topic when nothing is queued. A send stamps its slot, then loads the
+  topic's waiting flag and wakes every registered waker when it's set. Both
+  sides use sequentially consistent operations, so either the send sees the
+  flag or the listener's read after registering sees the message. A listener
+  registers once per wake, and a dropped one costs at most one spurious wake.
 - **Ticks.** A task's tick waits live with the task, and the task joins a list
   that the next `advance` walks, keeping only the waits of the task's latest
   poll. A tick wait first polled in a poll takes over
@@ -57,9 +56,10 @@ end reach its waits directly.
   in the heap, so the runtime rebuilds the heap once more than half its entries
   are dead.
 
-The runtime's own waits wake tasks directly, without a `Waker`. Each task still
-has one for futures such as channels. Its wakes go through a locked queue that
-`poll` drains, so they can come from any thread.
+The runtime's tick and sleep waits wake tasks directly, without a `Waker`. Each
+task also has one for channel listeners and other futures. Its wakes go through
+a locked queue that `poll` drains, so they can come from any thread, such as
+alley lanes that send during a system's step.
 
 ## Rules a change must keep
 
@@ -74,8 +74,8 @@ has one for futures such as channels. Its wakes go through a locked queue that
    it.
 6. Per-tick work grows with the tasks that wait, not with every live task.
 7. Nothing outlives its task. An ended task leaves no waits, and dropping the
-   runtime drops every future and message it kept, including tasks it never
-   polled.
+   runtime drops every future it kept, including tasks it never polled.
+8. A send on a channel nobody awaits pays one flag load and no lock.
 
 ## Tests
 
@@ -85,8 +85,10 @@ has one for futures such as channels. Its wakes go through a locked queue that
 | `sleep_waits_for_simulation_time` | 1 |
 | `a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one` | 3 |
 | `a_task_selecting_over_messages_and_ticks_counts_every_tick` | 3 |
-| `a_dropped_wait_receives_nothing` | 3 |
-| `messages_reach_waiting_tasks_and_drop_otherwise` | 2, 3 |
+| `a_listener_dropped_from_a_select_keeps_its_messages` | 3 |
+| `a_task_awaiting_a_listener_reads_every_message_sent_on_its_channel` | 2 |
+| `a_message_sent_from_another_thread_wakes_the_awaiting_task` | 4 |
+| `recv_resolves_with_a_queued_message_and_wakes_its_waiter_on_send` (`core::listener`) | 8 |
 | `deleting_an_entity_ends_the_tasks_spawned_on_it` | 4, 5 |
 | `tasks_spawned_by_a_task_run_in_the_same_poll` | 4 |
 | `foreign_futures_wake_their_task` | 4 |
@@ -94,18 +96,21 @@ has one for futures such as channels. Its wakes go through a locked queue that
 | `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
 
 ```bash
-cargo nextest run -p byte-engine -E 'test(/gameplay::tasks/)'
+cargo nextest run -p byte-engine -E 'test(/gameplay::tasks|core::listener/)'
 ```
 
 ## Benchmarks
 
 The `tasks` benchmark guards rule 6 at the scale of one task per entity. It
 times one tick of 4096 tasks: `tick_waits` wakes every task for the tick, and
-`received_waits` sends each task's entity one message and polls the task that
-waits for it. Divan reports the time per task.
+`listener_waits` sends one message on a channel every task awaits through its
+own listener, which is the fan-out of one broadcast. Divan reports the time per
+task. Rule 8 is guarded by the `channel` benchmark, whose sends never have a
+waiter.
 
 ```bash
 cargo bench -p byte-engine --bench tasks
+cargo bench -p byte-engine --bench channel
 ```
 
 Run it before and after a change to the runtime. Keep each build's benchmark

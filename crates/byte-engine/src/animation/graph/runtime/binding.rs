@@ -7,7 +7,7 @@ use super::*;
 /// The `ClipBinding` struct keeps what playing one clip of a state needs once the clip is resident: how its tracks
 /// map onto the canonical skeleton, how long it lasts, and the frame rate its frame points count in.
 pub(in crate::animation::graph) struct ClipBinding {
-	pub(super) resource_id: Box<str>,
+	pub(super) resource_id: Arc<str>,
 	pub(super) targets: TrackTargets,
 	pub(super) duration: f32,
 	/// The authored frames per second, which [`ClipTime::Frame`] points count in.
@@ -46,5 +46,12 @@ impl GraphBinding {
 	/// Call [`Self::skeleton`] first: `resolve` maps clips onto the skeleton it returns.
 	pub(super) fn state(&self, state: usize, resolve: impl FnOnce() -> Box<[ClipBinding]>) -> &[ClipBinding] {
 		self.states[state].get_or_init(resolve)
+	}
+
+	/// Returns the bindings of a state's clips, which [`Self::state`] resolved when a player first started the state.
+	pub(super) fn bound(&self, state: usize) -> &[ClipBinding] {
+		self.states[state]
+			.get()
+			.expect("a playing state's clips were bound when a player started it")
 	}
 }

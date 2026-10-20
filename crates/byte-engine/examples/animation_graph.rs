@@ -110,7 +110,7 @@ fn main() {
 			let moving = (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2);
 			let requested = if moving { animation.walk } else { animation.idle };
 			let Some(pose) = player
-				.advance(time.delta(), requested, &mut pool)
+				.advance(&animation.graph, time.delta(), requested, &mut pool)
 				.expect("application frame time and root-motion settings must be valid")
 			else {
 				return;

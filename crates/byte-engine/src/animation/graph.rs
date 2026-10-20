@@ -74,13 +74,14 @@ pub enum AnimationPlayback {
 /// eviction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnimationClip {
-	resource_id: Box<str>,
+	/// Shared, so the players that list the clip as missing hold it without copying the ID.
+	resource_id: Arc<str>,
 	playback: AnimationPlayback,
 }
 
 impl AnimationClip {
 	/// Creates a clip that restarts from its first sample after reaching its duration.
-	pub fn looping(resource_id: impl Into<Box<str>>) -> Self {
+	pub fn looping(resource_id: impl Into<Arc<str>>) -> Self {
 		Self {
 			resource_id: resource_id.into(),
 			playback: AnimationPlayback::Loop,
@@ -88,7 +89,7 @@ impl AnimationClip {
 	}
 
 	/// Creates a clip that holds its final sample after reaching its duration.
-	pub fn once(resource_id: impl Into<Box<str>>) -> Self {
+	pub fn once(resource_id: impl Into<Arc<str>>) -> Self {
 		Self {
 			resource_id: resource_id.into(),
 			playback: AnimationPlayback::Once,
@@ -97,6 +98,11 @@ impl AnimationClip {
 
 	/// Returns the resource ID requested by an [`AnimationPool`].
 	pub fn resource_id(&self) -> &str {
+		&self.resource_id
+	}
+
+	/// Returns the resource ID as the graph shares it, for players that keep it past an evaluation.
+	pub(crate) fn shared_resource_id(&self) -> &Arc<str> {
 		&self.resource_id
 	}
 
@@ -128,7 +134,31 @@ struct SelectedRoute<'graph> {
 	duration: MediaTime,
 	wait: &'graph [ClipPoint],
 	entry: &'graph [ClipPoint],
+	/// Where the graph keeps `wait` and `entry`, for a player that keeps the route past this selection.
+	wait_points: RoutePoints,
+	entry_points: RoutePoints,
 	origin: RouteOrigin,
+}
+
+/// The `RoutePoints` enum names a selected route's wait or entry points by where the graph keeps them, so a player
+/// that waits for a route keeps it small and without borrowing the graph.
+///
+/// Resolve it with [`AnimationGraph::points`]. A route with no points of a kind names [`Self::None`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RoutePoints {
+	None,
+	/// The wait points of route `route` among the routes of the state or space `origin` names.
+	Wait {
+		origin: RouteOrigin,
+		route: u32,
+	},
+	/// The entry points of route `route` among the routes of the state or space `origin` names.
+	Entry {
+		origin: RouteOrigin,
+		route: u32,
+	},
+	/// The points the completion of the one-shot state at this index starts its completion state at.
+	CompletionEntry(u32),
 }
 
 /// The `RouteOrigin` enum names where a blend or pending route came from, so a player's data stream can say why it
@@ -192,13 +222,27 @@ fn select_route(
 ) -> Option<SelectedRoute<'_>> {
 	transitions
 		.iter()
-		.find(|transition| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
-		.map(|transition| SelectedRoute {
-			target: transition.target,
-			duration: transition.duration,
-			wait: &transition.wait,
-			entry: &transition.entry,
-			origin,
+		.enumerate()
+		.find(|(_, transition)| (!interrupting || transition.can_interrupt_transition) && transition.destination == requested)
+		.map(|(index, transition)| {
+			let route = u32::try_from(index).expect("a state has fewer routes than `u32::MAX`");
+			SelectedRoute {
+				target: transition.target,
+				duration: transition.duration,
+				wait: &transition.wait,
+				entry: &transition.entry,
+				wait_points: if transition.wait.is_empty() {
+					RoutePoints::None
+				} else {
+					RoutePoints::Wait { origin, route }
+				},
+				entry_points: if transition.entry.is_empty() {
+					RoutePoints::None
+				} else {
+					RoutePoints::Entry { origin, route }
+				},
+				origin,
+			}
 		})
 }
 
@@ -268,23 +312,27 @@ impl AnimationGraph {
 		&self.states[id.index]
 	}
 
-	fn contains(&self, id: AnimationStateId) -> bool {
-		id.graph == self.id && id.index < self.states.len()
-	}
-
 	/// Returns the routes of the space `id` belongs to, which it takes after its own; empty outside every space.
 	fn space_routes(&self, id: AnimationStateId) -> &[StateTransition] {
-		self.state(id)
-			.space
-			.map_or(&[], |space| &self.spaces[space].transitions)
+		self.state(id).space.map_or(&[], |space| &self.spaces[space].transitions)
 	}
 
 	/// Selects the first route toward `requested` among `id`'s own routes, then its space's.
-	fn select_state_route(&self, id: AnimationStateId, requested: AnimationStateId, interrupting: bool) -> Option<SelectedRoute<'_>> {
+	fn select_state_route(
+		&self,
+		id: AnimationStateId,
+		requested: AnimationStateId,
+		interrupting: bool,
+	) -> Option<SelectedRoute<'_>> {
 		let state = self.state(id);
 		select_route(&state.transitions, RouteOrigin::State(id.index), requested, interrupting).or_else(|| {
 			let space = state.space?;
-			select_route(&self.spaces[space].transitions, RouteOrigin::Space(space), requested, interrupting)
+			select_route(
+				&self.spaces[space].transitions,
+				RouteOrigin::Space(space),
+				requested,
+				interrupting,
+			)
 		})
 	}
 
@@ -315,7 +363,11 @@ impl AnimationGraph {
 				&& let Some(transition) = self.select_state_route(completion, requested, true)
 			{
 				// Its wait points name moments of the completion state, which is not playing yet.
-				return Some(SelectedRoute { wait: &[], ..transition });
+				return Some(SelectedRoute {
+					wait: &[],
+					wait_points: RoutePoints::None,
+					..transition
+				});
 			}
 			if let Some(transition) = self.select_any_state_route(requested) {
 				return Some(transition);
@@ -327,6 +379,12 @@ impl AnimationGraph {
 			duration: source_state.completion_blend,
 			wait: &[],
 			entry: &source_state.completion_entry,
+			wait_points: RoutePoints::None,
+			entry_points: if source_state.completion_entry.is_empty() {
+				RoutePoints::None
+			} else {
+				RoutePoints::CompletionEntry(u32::try_from(source.index).expect("a graph has fewer states than `u32::MAX`"))
+			},
 			origin: RouteOrigin::Completion(source.index),
 		})
 	}
@@ -334,11 +392,7 @@ impl AnimationGraph {
 	/// Selects an `.anytime` route that cuts short a blend into `destination` toward the requested state.
 	///
 	/// A one-shot destination is left to the routes [`Self::select_transition`] finds once it plays on its own.
-	fn select_interruption(
-		&self,
-		destination: AnimationStateId,
-		requested: AnimationStateId,
-	) -> Option<SelectedRoute<'_>> {
+	fn select_interruption(&self, destination: AnimationStateId, requested: AnimationStateId) -> Option<SelectedRoute<'_>> {
 		let state = self.state(destination);
 		if destination == requested || state.completion.is_some() {
 			return None;
@@ -358,8 +412,25 @@ impl AnimationGraph {
 				duration,
 				wait: &[],
 				entry: &[],
+				wait_points: RoutePoints::None,
+				entry_points: RoutePoints::None,
 				origin: RouteOrigin::AnyState,
 			})
+	}
+
+	/// Returns the points `points` names, which a player kept from a route it selected.
+	fn points(&self, points: RoutePoints) -> &[ClipPoint] {
+		let routes = |origin| match origin {
+			RouteOrigin::State(index) => &self.states[index].transitions,
+			RouteOrigin::Space(index) => &self.spaces[index].transitions,
+			_ => unreachable!("only state and space routes name points"),
+		};
+		match points {
+			RoutePoints::None => &[],
+			RoutePoints::Wait { origin, route } => &routes(origin)[route as usize].wait,
+			RoutePoints::Entry { origin, route } => &routes(origin)[route as usize].entry,
+			RoutePoints::CompletionEntry(state) => &self.states[state as usize].completion_entry,
+		}
 	}
 }
 
@@ -778,7 +849,10 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 	fn add(self, inertialization: MediaTime, can_interrupt_transition: bool) -> AnimationGraphState<'builder> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
-		let (source, target) = (&builder.states[self.source.id.index].name, &builder.states[self.target.id.index].name);
+		let (source, target) = (
+			&builder.states[self.source.id.index].name,
+			&builder.states[self.target.id.index].name,
+		);
 		// The second and later one-shots between the same pair take a number, so every name stays unique.
 		let earlier = builder
 			.transitions
@@ -871,7 +945,11 @@ impl AnimationGraphBuilder {
 	///
 	/// Like an [`AnimationGraphTransitionBuilder::anytime`] route, it cuts short a one-shot clip or a blend in
 	/// progress, inertializing over `inertialization` from the pose on screen.
-	pub fn any_state_to<'builder>(&'builder self, target: impl Into<AnimationGraphState<'builder>>, inertialization: MediaTime) {
+	pub fn any_state_to<'builder>(
+		&'builder self,
+		target: impl Into<AnimationGraphState<'builder>>,
+		inertialization: MediaTime,
+	) {
 		let target = target.into();
 		assert!(
 			std::ptr::eq(&self.data, target.data),
@@ -971,7 +1049,11 @@ impl AnimationGraphBuilder {
 					name: space.name.clone(),
 				});
 			}
-			if space.transitions.iter().any(|transition| transition.duration < MediaTime::ZERO) {
+			if space
+				.transitions
+				.iter()
+				.any(|transition| transition.duration < MediaTime::ZERO)
+			{
 				return Err(AnimationGraphBuildError::NegativeTransitionDuration);
 			}
 		}
@@ -1297,7 +1379,9 @@ mod tests {
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, false).map(SelectedRoute::pair),
+			graph
+				.select_transition(start_walk.id, idle.id, false)
+				.map(SelectedRoute::pair),
 			Some((stop_walk.id, MediaTime::ZERO)),
 			"a matching any-time transition must interrupt an active transition clip"
 		);
@@ -1362,7 +1446,8 @@ mod tests {
 		walk.to(dead).when(MediaTime::from_millis(100));
 		builder.any_state_to(dead, MediaTime::from_millis(300));
 		let graph = builder.build(idle).expect("graph should build");
-		let route = |source: AnimationStateId, finished| graph.select_transition(source, dead.id(), finished).map(SelectedRoute::pair);
+		let route =
+			|source: AnimationStateId, finished| graph.select_transition(source, dead.id(), finished).map(SelectedRoute::pair);
 
 		assert_eq!(route(idle.id(), false), Some((dead.id(), MediaTime::from_millis(300))));
 		assert_eq!(
@@ -1397,7 +1482,11 @@ mod tests {
 		let route = |source: AnimationStateId| graph.select_transition(source, dead.id(), false).map(SelectedRoute::pair);
 
 		assert_eq!(route(idle.id()), Some((dead.id(), MediaTime::from_millis(200))));
-		assert_eq!(route(walk.id()), Some((dead.id(), MediaTime::from_millis(100))), "a state's own route comes first");
+		assert_eq!(
+			route(walk.id()),
+			Some((dead.id(), MediaTime::from_millis(100))),
+			"a state's own route comes first"
+		);
 		assert_eq!(
 			route(start_walk.id()),
 			Some((dead.id(), MediaTime::from_millis(200))),

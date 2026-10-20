@@ -31,21 +31,23 @@ walk.to(idle).with(stop_ring()).at_frames("walk_f", [4, 18]).anytime(settle);
 let graph = graph.build(idle)?;
 ```
 
-Keep the graph and the state IDs it hands back; requests name states by ID.
+Keep the state IDs it hands back; requests name states by ID. The graph itself
+goes to the animation system next.
 
 ## Create the system, then the animators
 
 The system steps every animator created on its world scope after it, so create
-it before the characters, as you do with physics:
+it before the characters, as you do with physics. Give it the graph: the system
+owns it from then on and hands back the ID animators name it by:
 
 ```rust
 let mut animation = AnimationSystem::new(app.world(), animation_pool);
-animation.register(&graph);
+let graph = animation.register(graph);
 
 let character = app
 	.world()
 	.create(RenderableMesh::resource("MotusMan/MotusMan_v55.fbx"))
-	.with(Animator::new(&graph).with_root_motion(RootMotionSettings {
+	.with(Animator::new(graph).with_root_motion(RootMotionSettings {
 		node_name: "Hips",
 		translation: RootMotionTranslation::X.union(RootMotionTranslation::Z),
 		rotation: RootMotionRotation::None,
@@ -128,7 +130,7 @@ space each frame. The system clamps the yaw around the hips, eases it, and
 turns the chain on top of the pose:
 
 ```rust
-Animator::new(&graph).with_look_chain(LookChainSettings {
+Animator::new(graph).with_look_chain(LookChainSettings {
 	nodes: &[("Spine2", 0.2), ("Neck", 0.3), ("Head", 0.5)],
 	body_node: "Hips",
 	yaw_limit: 70f32.to_radians(),

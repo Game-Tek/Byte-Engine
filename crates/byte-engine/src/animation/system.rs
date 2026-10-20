@@ -26,9 +26,9 @@ use crate::{
 /// The `Animator` struct is the request to play one graph on one entity, created through the world under the handle
 /// of the entity it poses, usually a skinned renderable.
 ///
-/// Build it with [`Self::new`] and the graph the [`AnimationSystem`] has [registered](AnimationSystem::register),
-/// then create it with the entity, as in `world.create(mesh).with(Animator::new(&graph))`. Next, send the states to
-/// play with `world.set(request).on(handle)` and read the root motion the system posts.
+/// Build it with [`Self::new`] and the ID [`AnimationSystem::register`] returned for its graph, then create it with
+/// the entity, as in `world.create(mesh).with(Animator::new(graph))`. Next, send the states to play with
+/// `world.set(request).on(handle)` and read the root motion the system posts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Animator {
 	graph: u64,
@@ -37,10 +37,10 @@ pub struct Animator {
 }
 
 impl Animator {
-	/// Plays `graph`, which the system must have registered.
-	pub fn new(graph: &AnimationGraph) -> Self {
+	/// Plays the graph the system registered under `graph`.
+	pub fn new(graph: AnimationGraphId) -> Self {
 		Self {
-			graph: graph.id(),
+			graph: graph.0,
 			root_motion: None,
 			look_chain: None,
 		}
@@ -58,6 +58,13 @@ impl Animator {
 		self
 	}
 }
+
+/// The `AnimationGraphId` struct names a graph an [`AnimationSystem`] owns, so animators and the application refer to
+/// it without holding it.
+///
+/// Get one from [`AnimationSystem::register`], then pass it to [`Animator::new`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AnimationGraphId(u64);
 
 /// The `RootMotionUpdate` struct carries the root motion a step extracted for one animator, for the code that owns
 /// the entity to move it by. The system never moves an entity itself.
@@ -121,9 +128,10 @@ impl TargetedMessagePublisher<Option<LookTarget>> for MessageScope {
 /// call [`Self::step`] once per frame after your requests for that frame and before the systems that read
 /// transforms, such as [`Physics::step`](crate::physics::Physics::step). Between steps, [`Self::player`] answers
 /// what each animator plays.
-pub struct AnimationSystem<'graph> {
+pub struct AnimationSystem {
 	pool: AnimationPool,
-	graphs: Vec<&'graph AnimationGraph>,
+	/// The graphs the system plays, which it lends its players every step.
+	graphs: Vec<AnimationGraph>,
 	animators: DefaultListener<CreateMessage<Animator>>,
 	requests: DefaultListener<CreateMessage<AnimationRequest>>,
 	looks: DefaultListener<CreateMessage<Option<LookTarget>>>,
@@ -133,10 +141,10 @@ pub struct AnimationSystem<'graph> {
 	root_motion: DefaultChannel<RootMotionUpdate>,
 	/// The playing animators' entities, in the order of `players`.
 	handles: Vec<Handle>,
-	players: Vec<AnimationGraphPlayer<'graph>>,
+	players: Vec<AnimationGraphPlayer>,
 }
 
-impl<'graph> AnimationSystem<'graph> {
+impl AnimationSystem {
 	/// Creates the system for the animators created in `scope` from now on, playing clips from `pool`.
 	pub fn new(scope: &MessageScope, pool: AnimationPool) -> Self {
 		Self {
@@ -154,12 +162,22 @@ impl<'graph> AnimationSystem<'graph> {
 		}
 	}
 
-	/// Makes `graph` available to the animators that name it. Register a graph before creating them; an animator
-	/// whose graph is unknown is reported and never plays.
-	pub fn register(&mut self, graph: &'graph AnimationGraph) {
-		if !self.graphs.iter().any(|known| known.id() == graph.id()) {
+	/// Takes `graph` for the animators that name it, and returns its ID for [`Animator::new`]. Register a graph
+	/// before creating its animators; an animator whose graph is unknown is reported and never plays.
+	///
+	/// The system keeps the graph for as long as it lives, and its players share it, so nothing outside needs to.
+	pub fn register(&mut self, graph: AnimationGraph) -> AnimationGraphId {
+		let id = AnimationGraphId(graph.id());
+		if !self.graphs.iter().any(|known| known.id() == id.0) {
 			self.graphs.push(graph);
 		}
+		id
+	}
+
+	/// Returns the registered graph with `id`, for what the application asks of it between steps, such as a state's
+	/// routes.
+	pub fn graph(&self, id: AnimationGraphId) -> Option<&AnimationGraph> {
+		self.graphs.iter().find(|graph| graph.id() == id.0)
 	}
 
 	/// Advances every animator by the frame and posts its pose and root motion before returning.
@@ -172,7 +190,10 @@ impl<'graph> AnimationSystem<'graph> {
 		self.apply_requests();
 		// Submit queued clip loads and admit completed animations once for this step.
 		self.pool.update();
-		if let Err(error) = self.pool.advance_players(&mut self.players, time.delta(), alley) {
+		if let Err(error) = self
+			.pool
+			.advance_players(&mut self.players, &self.graphs, time.delta(), alley)
+		{
 			log::error!("An animator was rejected and posts nothing: {error}");
 		}
 		for (handle, player) in self.handles.iter().zip(&self.players) {
@@ -192,13 +213,13 @@ impl<'graph> AnimationSystem<'graph> {
 
 	/// Returns the player of the animator on `handle`, for what it plays, what it waits for, and how long until a
 	/// route, as of the last step.
-	pub fn player(&self, handle: Handle) -> Option<&AnimationGraphPlayer<'graph>> {
+	pub fn player(&self, handle: Handle) -> Option<&AnimationGraphPlayer> {
 		self.index_of(handle).map(|index| &self.players[index])
 	}
 
 	/// Returns the player of the animator on `handle` for settings that belong to the application, such as a data
 	/// stream.
-	pub fn player_mut(&mut self, handle: Handle) -> Option<&mut AnimationGraphPlayer<'graph>> {
+	pub fn player_mut(&mut self, handle: Handle) -> Option<&mut AnimationGraphPlayer> {
 		self.index_of(handle).map(|index| &mut self.players[index])
 	}
 
@@ -221,7 +242,7 @@ impl<'graph> AnimationSystem<'graph> {
 	fn adopt_created(&mut self) {
 		while let Some(created) = self.animators.read() {
 			let animator = *created.data();
-			let Some(graph) = self.graphs.iter().copied().find(|graph| graph.id() == animator.graph) else {
+			let Some(graph) = self.graphs.iter().find(|graph| graph.id() == animator.graph) else {
 				log::error!(
 					"An animator names a graph the animation system does not know. The most likely cause is creating the animator before registering its graph with AnimationSystem::register."
 				);
@@ -326,10 +347,10 @@ mod tests {
 		let mut alley = Alley::new();
 
 		let mut system = AnimationSystem::new(&scope, pool);
-		system.register(&graph);
+		let graph = system.register(graph);
 		let mut root_motion = scope.root_motion_channel().listener();
 		let entity = scope
-			.create(Animator::new(&graph).with_root_motion(RootMotionSettings::full("root")))
+			.create(Animator::new(graph).with_root_motion(RootMotionSettings::full("root")))
 			.handle();
 
 		// The first step adopts the animator and starts its initial clip; the next posts a frame of root motion.
@@ -352,7 +373,7 @@ mod tests {
 		math::assert_float_eq!(last.delta().translation.x(), 0.2);
 
 		// An animator created again on the handle starts over; a deleted entity leaves and posts nothing more.
-		scope.factory::<Animator>().derive(entity, Animator::new(&graph));
+		scope.factory::<Animator>().derive(entity, Animator::new(graph));
 		system.step(frame(5), &mut alley);
 		assert_eq!(system.player(entity).and_then(|player| player.state()), Some(idle.id()));
 		root_motion.to_vec();

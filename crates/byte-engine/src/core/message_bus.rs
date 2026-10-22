@@ -459,7 +459,7 @@ impl MessageScope {
 			watcher: AtomicPtr::new(std::ptr::null_mut()),
 			waiting: AtomicBool::new(false),
 			wakes: AtomicU64::new(0),
-			waiters: Mutex::new(Vec::new()),
+			waiters: Mutex::new(Waiters::default()),
 			_marker: PhantomData,
 		});
 		registry.insert(key, topic.clone());
@@ -1263,7 +1263,7 @@ pub(crate) struct Topic<M> {
 	/// Counts the times the waiters were woken, so a listener that already registered for the coming message does
 	/// not register again.
 	wakes: AtomicU64,
-	waiters: Mutex<Vec<Waker>>,
+	waiters: Mutex<Waiters>,
 	_marker: PhantomData<fn() -> M>,
 }
 
@@ -1342,36 +1342,72 @@ where
 			let mut waiters = self.waiters.lock();
 			self.waiting.store(false, Ordering::Relaxed);
 			self.wakes.fetch_add(1, Ordering::Release);
-			std::mem::take(&mut *waiters)
+			// The wake count changed, so every slot index handed out so far is spent.
+			waiters.free.clear();
+			std::mem::take(&mut waiters.slots)
 		};
 		// Woken outside the lock, since a waker may run code that reaches this route again.
-		for waker in wakers {
+		for waker in wakers.into_iter().flatten() {
 			waker.wake();
 		}
 	}
 
 	/// Registers `waker` to be woken by the next message, unless `registered` shows it already is.
 	///
-	/// `registered` is the listener's record of its last registration: the wake count it registered under and the
-	/// waker. A listener polled again before a message arrives finds its registration current and takes no lock.
-	fn register(&self, waker: &Waker, registered: &mut Option<(u64, Waker)>) {
+	/// `registered` is the listener's record of its last registration. A listener polled again before a message
+	/// arrives finds its registration current and takes no lock; one polled with another waker replaces its
+	/// registration in place, so a listener holds at most one.
+	fn register(&self, waker: &Waker, registered: &mut Option<Registration>) {
 		let current = self.wakes.load(Ordering::Acquire);
-		if let Some((wakes, known)) = registered
-			&& *wakes == current
-			&& known.will_wake(waker)
+		if let Some(known) = registered
+			&& known.wakes == current
+			&& known.waker.will_wake(waker)
 		{
 			return;
 		}
 		let mut waiters = self.waiters.lock();
 		// A wake that ran since the load above took the earlier waiters, so register under the count it left.
 		let current = self.wakes.load(Ordering::Relaxed);
-		waiters.push(waker.clone());
-		*registered = Some((current, waker.clone()));
+		if let Some(known) = registered.as_mut().filter(|known| known.wakes == current) {
+			waiters.slots[known.slot as usize] = Some(waker.clone());
+			known.waker.clone_from(waker);
+		} else {
+			let slot = waiters.insert(waker.clone());
+			*registered = Some(Registration {
+				wakes: current,
+				slot,
+				waker: waker.clone(),
+			});
+		}
 		self.waiting.store(true, Ordering::SeqCst);
 		drop(waiters);
 		// Pairs with the stamp and flag in `publish`: either that send sees the flag, or the caller's next read sees
 		// its message.
 		fence(Ordering::SeqCst);
+	}
+
+	/// Withdraws `registered`, so a listener that stops waiting leaves no waker behind for the next send to wake.
+	fn deregister(&self, registered: Option<Registration>) {
+		let Some(registered) = registered else {
+			return;
+		};
+		// A wake since the registration already took its waker.
+		if self.wakes.load(Ordering::Acquire) != registered.wakes {
+			return;
+		}
+		let mut waiters = self.waiters.lock();
+		// Wakes change the count under this lock, so the slot is still this listener's when the count matches.
+		if self.wakes.load(Ordering::Relaxed) != registered.wakes {
+			return;
+		}
+		waiters.slots[registered.slot as usize] = None;
+		waiters.free.push(registered.slot);
+		if waiters.free.len() == waiters.slots.len() {
+			// Registrations and wakes change the flag under this lock too, so clearing it here hides no waiter.
+			waiters.slots.clear();
+			waiters.free.clear();
+			self.waiting.store(false, Ordering::Relaxed);
+		}
 	}
 
 	/// Reserves up to `wanted` slots that follow each other in the route's current chunk, attaching chunks as they
@@ -1696,6 +1732,38 @@ impl SlotCursor {
 	}
 }
 
+/// The `Waiters` struct holds the wakers registered for a route's next message in slots, so a listener can replace
+/// or withdraw its registration without searching the others; see [`Topic::register`] and [`Topic::deregister`].
+#[derive(Default)]
+struct Waiters {
+	/// One slot per registration since the last wake. A withdrawn registration leaves `None` until a later one
+	/// reuses it, so the slots never outnumber the listeners that waited at once.
+	slots: Vec<Option<Waker>>,
+	/// The withdrawn slots, reused before the slots grow.
+	free: Vec<u32>,
+}
+
+impl Waiters {
+	/// Stores `waker` in a free slot, or a new one, and returns the slot.
+	fn insert(&mut self, waker: Waker) -> u32 {
+		if let Some(slot) = self.free.pop() {
+			self.slots[slot as usize] = Some(waker);
+			return slot;
+		}
+		self.slots.push(Some(waker));
+		u32::try_from(self.slots.len() - 1).expect("a route has fewer waiting listeners than `u32::MAX`")
+	}
+}
+
+/// The `Registration` struct is a listener's record of the waker it registered for its route's next message, which
+/// [`Topic::register`] checks before taking the lock and [`Topic::deregister`] withdraws when the listener drops.
+struct Registration {
+	/// The wake count the registration was made under. Its slot belongs to it only while the count is unchanged.
+	wakes: u64,
+	slot: u32,
+	waker: Waker,
+}
+
 /// The `ListenerToken` struct owns one route cursor for a typed listener.
 pub(crate) struct ListenerToken<M>
 where
@@ -1705,7 +1773,7 @@ where
 	cursor: SlotCursor,
 	shared: Arc<ListenerShared>,
 	/// The listener's registration to be woken by the next message; see [`Topic::register`].
-	registered: Option<(u64, Waker)>,
+	registered: Option<Registration>,
 }
 
 impl<M> ListenerToken<M>
@@ -1739,6 +1807,7 @@ where
 	M: Clone + Send + Sync + 'static,
 {
 	fn drop(&mut self) {
+		self.topic.deregister(self.registered.take());
 		self.topic.unsubscribe(self.cursor, &self.shared);
 	}
 }

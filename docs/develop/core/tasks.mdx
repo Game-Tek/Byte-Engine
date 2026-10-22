@@ -57,7 +57,9 @@ drop nothing skip the sweep, which keeps a tick's cost flat.
   topic's waiting flag and wakes every registered waker when it's set. Both
   sides use sequentially consistent operations, so either the send sees the
   flag or the listener's read after registering sees the message. A listener
-  registers once per wake, and a dropped one costs at most one spurious wake.
+  holds at most one registration, a slot in the topic's waiter list: polling it
+  with another waker replaces the waker in its slot, and dropping it withdraws
+  the slot, so a send never wakes a listener that's gone.
 - **Ticks.** A task's tick waits live with the task, and the task joins a list
   that the next `advance` walks, keeping only the waits of the task's latest
   poll. A tick wait first polled in a poll takes over
@@ -107,8 +109,9 @@ activities borrow the same local state one after another, and `break` and
 7. Nothing outlives its task. An ended task leaves no waits, and dropping the
    runtime drops every future it kept, including tasks it never polled.
 8. A send on a channel nobody awaits pays one flag load and no lock.
-9. The application drops the runtime before its world and systems.
-10. The task macros poll in the task's own context and run in the caller's
+9. A dropped listener leaves no waker on its topic.
+10. The application drops the runtime before its world and systems.
+11. The task macros poll in the task's own context and run in the caller's
     scope.
 
 ## Tests
@@ -128,15 +131,16 @@ activities borrow the same local state one after another, and `break` and
 | `foreign_futures_wake_their_task` | 4 |
 | `a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops` | 4, 5 |
 | `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
+| `dropping_a_waiting_listener_releases_its_waker` (`core::listener`) | 9 |
 | `separately_requested_handles_share_time_and_borrow_the_polled_state` | 1 |
-| `and_finishes_each_activity_before_the_next_borrows_shared_state` | 10 |
-| `and_checks_events_without_stalling_or_repeating_a_consumed_event` | 10 |
-| `and_guards_keep_task_context_and_await_selected_activities_in_order` | 10 |
-| `always_runs_initially_and_between_branches_with_the_same_mutable_state` | 10 |
-| `always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax` | 10 |
-| `perform_checks_ready_events_in_written_order` | 2, 10 |
-| `perform_finishes_selected_actions_before_handling_another_event` | 10 |
-| `a_nested_performance_replaces_outer_updates_until_it_ends` | 10 |
+| `and_finishes_each_activity_before_the_next_borrows_shared_state` | 11 |
+| `and_checks_events_without_stalling_or_repeating_a_consumed_event` | 11 |
+| `and_guards_keep_task_context_and_await_selected_activities_in_order` | 11 |
+| `always_runs_initially_and_between_branches_with_the_same_mutable_state` | 11 |
+| `always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax` | 11 |
+| `perform_checks_ready_events_in_written_order` | 2, 11 |
+| `perform_finishes_selected_actions_before_handling_another_event` | 11 |
+| `a_nested_performance_replaces_outer_updates_until_it_ends` | 11 |
 
 ```bash
 cargo nextest run -p byte-engine -E 'test(/gameplay::tasks|core::listener/)'

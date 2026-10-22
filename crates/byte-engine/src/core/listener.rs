@@ -277,6 +277,50 @@ mod tests {
 	}
 
 	#[test]
+	fn dropping_a_waiting_listener_releases_its_waker() {
+		use std::{
+			pin::pin,
+			sync::{
+				Arc,
+				atomic::{AtomicUsize, Ordering},
+			},
+			task::{Context, Poll, Wake, Waker},
+		};
+
+		/// Counts the wakes the listener's future asks for.
+		struct Count(AtomicUsize);
+		impl Wake for Count {
+			fn wake(self: Arc<Self>) {
+				self.0.fetch_add(1, Ordering::Relaxed);
+			}
+		}
+
+		let channel = DefaultChannel::<u32>::new();
+		let count = Arc::new(Count(AtomicUsize::new(0)));
+		let waker = Waker::from(Arc::clone(&count));
+		let mut context = Context::from_waker(&waker);
+		let other = Arc::new(Count(AtomicUsize::new(0)));
+		let other_waker = Waker::from(Arc::clone(&other));
+
+		let mut listener = channel.listener();
+		{
+			let mut next = pin!(listener.recv());
+			assert_eq!(next.as_mut().poll(&mut context), Poll::Pending);
+			// Polling with another waker replaces the registration instead of adding one.
+			assert_eq!(next.as_mut().poll(&mut Context::from_waker(&other_waker)), Poll::Pending);
+		}
+		drop(listener);
+		drop(waker);
+		drop(other_waker);
+
+		assert_eq!(Arc::strong_count(&count), 1);
+		assert_eq!(Arc::strong_count(&other), 1);
+		channel.send(1);
+		assert_eq!(count.0.load(Ordering::Relaxed), 0);
+		assert_eq!(other.0.load(Ordering::Relaxed), 0);
+	}
+
+	#[test]
 	fn listener_cloned_after_messages_starts_at_the_current_tail() {
 		let channel = DefaultChannel::new();
 		let mut original = channel.listener();

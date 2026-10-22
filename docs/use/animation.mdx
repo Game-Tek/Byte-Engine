@@ -31,21 +31,37 @@ walk.to(idle).with(stop_ring()).at_frames("walk_f", [4, 18]).anytime(settle);
 let graph = graph.build(idle)?;
 ```
 
-Keep the graph and the state IDs it hands back; requests name states by ID.
+To turn in place, play the turn clip once into an idle twin whose pose faces
+where the clip started, and say how far the clip turns the body. When the clip
+ends, its turn reaches your code as root-motion rotation, in the same frame the
+pose hands over:
+
+```rust
+idle.to(turned)
+	.with(AnimationClip::once("anims/turn_90.fbx#animation"))
+	.turning(90f32.to_radians())
+	.when(blend);
+```
+
+Pass the angle the clip turns the body in its pose, about +Y.
+
+Keep the state IDs it hands back; requests name states by ID. The graph itself
+goes to the animation system next.
 
 ## Create the system, then the animators
 
 The system steps every animator created on its world scope after it, so create
-it before the characters, as you do with physics:
+it before the characters, as you do with physics. Give it the graph: the system
+owns it from then on and hands back the ID animators name it by:
 
 ```rust
 let mut animation = AnimationSystem::new(app.world(), animation_pool);
-animation.register(&graph);
+let graph = animation.register(graph);
 
 let character = app
 	.world()
 	.create(RenderableMesh::resource("MotusMan/MotusMan_v55.fbx"))
-	.with(Animator::new(&graph).with_root_motion(RootMotionSettings {
+	.with(Animator::new(graph).with_root_motion(RootMotionSettings {
 		node_name: "Hips",
 		translation: RootMotionTranslation::X.union(RootMotionTranslation::Z),
 		rotation: RootMotionRotation::None,
@@ -65,15 +81,16 @@ Reading the root motion a tick later leaves the pose one frame ahead of the
 body.
 
 ```rust
-let root_motion = app.world().root_motion_channel().listener();
+let mut root_motion = app.world().channel::<RootMotionUpdate>().listener();
+let mut playback: Option<RootMotionUpdate> = None;
 
 while app.tick_with(|app, time| {
-	let world = app.world();
+	let world = app.world().clone();
 	controls.pull(time.delta());
 
 	// 1. Ask for the state gameplay wants. Requests persist, so asking every
 	//    frame is fine, and a position moves the walk around its ring.
-	let state = animation.player(character).and_then(|player| player.state());
+	let state = playback.and_then(|update| update.state());
 	world.set(select_state(&controls, state)).on(character);
 	world.set(Some(LookTarget::new(view_yaw, view_pitch))).on(character);
 
@@ -83,10 +100,14 @@ while app.tick_with(|app, time| {
 	// 3. Move the entity by what the step extracted, in its own frame.
 	while let Some(update) = root_motion.read() {
 		if update.handle() == character {
+			playback = Some(update);
 			position += orientation.rotate_vector(update.delta().translation);
+			orientation = orientation.compose(update.delta().rotation);
 		}
 	}
-	world.set(Transform::new(position, Scale::identity(), orientation)).on(character);
+	world
+		.channel::<TransformationUpdate>()
+		.send(TransformationUpdate::new(character, Transform::new(position, Scale::identity(), orientation)));
 
 	// 4. Systems that read transforms step last.
 	physics.step(time, app.alley_mut());
@@ -103,19 +124,43 @@ transform the last frame moved.
 ## Decide from what's playing
 
 Gameplay often needs to know what the animator is doing before it asks for the
-next thing: which state plays, whether a requested route is still waiting for
-its wait point, and how long until a route can start. The system answers these
-between steps, as of the last step:
+next thing: which state plays, and whether a requested route still waits for
+its wait point. Each step posts both in the animator's `RootMotionUpdate`, so
+keep the latest one for your character until the next arrives:
 
 ```rust
-let player = animation.player(character).expect("the animator was created");
-if player.state().is_some_and(|state| catalog.is_turn(state)) {
-	// Keep asking for the idle; the turn plays through and hands over.
-}
-if player.waiting_for() == Some(jump_landing) {
-	// The jump waits for the stride to fit; do not replace the request.
+if let Some(update) = playback {
+	if update.state().is_some_and(|state| catalog.is_turn(state)) {
+		// Keep asking for the idle; the turn plays through and hands over.
+	}
+	if update.waiting_for() == Some(jump_landing) {
+		// The jump waits for the stride to fit; do not replace the request.
+	}
 }
 ```
+
+To let one idle request choose the earliest fitted stop, author several routes
+to that idle with `matching_frames()`. Each route lists the source clips its
+stop fits. The graph checks the playing blend's clips and chooses the route
+whose next fitted frame comes first:
+
+```rust
+walk.to(idle)
+	.matching_frames()
+	.at_frames("walk.animation", [5, 20])
+	.with(AnimationClip::once("stop-left.animation"))
+	.anytime(blend);
+walk.to(idle)
+	.matching_frames()
+	.at_frames("walk.animation", [12, 28])
+	.with(AnimationClip::once("stop-right.animation"))
+	.anytime(blend);
+```
+
+Request idle when movement stops. The graph keeps the blend position, waits for
+the fitted frame, plays the chosen stop, and enters idle, so your code doesn't
+track feet. Clips that no alternative fits, such as a blend's idle center,
+don't restrict the choice. Equal wait times keep authoring order.
 
 A one-shot built with `when` plays to its end whatever you request next, so a
 jump or a turn needs one request to start and none to protect it. Routes built
@@ -128,7 +173,7 @@ space each frame. The system clamps the yaw around the hips, eases it, and
 turns the chain on top of the pose:
 
 ```rust
-Animator::new(&graph).with_look_chain(LookChainSettings {
+Animator::new(graph).with_look_chain(LookChainSettings {
 	nodes: &[("Spine2", 0.2), ("Neck", 0.3), ("Head", 0.5)],
 	body_node: "Hips",
 	yaw_limit: 70f32.to_radians(),
@@ -140,10 +185,11 @@ Animator::new(&graph).with_look_chain(LookChainSettings {
 
 The target is in the entity's object space, so when your code turns the
 entity, say by how much with `turned_by`, and the chain holds its direction in
-the world. Send `None` to let the chain follow the animation again.
+the world. Turns that arrive as root motion, like a turn in place, need no
+`turned_by`: the chain already holds its direction across them. Send `None` to
+let the chain follow the animation again.
 
 ## Rust API
 
 - [`animation::graph`](/docs/api/latest/byte_engine/animation/graph)
 - [`animation::root_motion`](/docs/api/latest/byte_engine/animation/root_motion)
-- [`gameplay::World`](/docs/api/latest/byte_engine/gameplay/trait.World)

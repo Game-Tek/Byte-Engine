@@ -44,9 +44,12 @@ pub use screenshot::{
 	ScreenshotSubmitError, Screenshots,
 };
 mod shape;
+// Only the graphics application opens stream output and adopts requests; headless builds leave that side unused.
+#[cfg_attr(not(feature = "headed"), allow(dead_code, unused_imports))]
 mod stream;
-pub use stream::DataStream;
-pub(crate) use stream::StreamOutput;
+pub use stream::{DebugDataStream, DebugDataStreamWriter};
+#[cfg_attr(not(feature = "headed"), allow(unused_imports))]
+pub(crate) use stream::{DebugDataStreams, StreamOutput};
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.
@@ -210,7 +213,7 @@ impl DefaultInspector {
 			)
 		});
 		let properties = Arc::new(Mutex::new(HashMap::new()));
-		watch_properties(&messages, &properties);
+		watch_properties(&messages, &properties, &message_observer);
 		Self {
 			events,
 			configuration,
@@ -321,8 +324,13 @@ impl DefaultInspector {
 /// Keeps `properties` current by watching the scope's routes for every tracked value.
 ///
 /// Watchers see each publication, whatever sent it, so physics and gameplay
-/// updates count as well as spawns. Deletions drop the entity's properties.
-fn watch_properties(messages: &MessageScope, properties: &Arc<Mutex<HashMap<Handle, InspectedProperties>>>) {
+/// updates count as well as spawns. Deletions drop the entity's properties and its
+/// diagnostics catalog entry, so any sender of a [`DeleteMessage`] retires the handle.
+fn watch_properties(
+	messages: &MessageScope,
+	properties: &Arc<Mutex<HashMap<Handle, InspectedProperties>>>,
+	observer: &MessageObserver,
+) {
 	let names = Arc::clone(properties);
 	messages.channel::<CreateMessage<Name>>().watch(move |creation| {
 		names.lock().entry(creation.handle()).or_default().name = Some(creation.data().clone());
@@ -332,8 +340,10 @@ fn watch_properties(messages: &MessageScope, properties: &Arc<Mutex<HashMap<Hand
 		positions.lock().entry(update.handle()).or_default().position = Some(update.transform().get_position());
 	});
 	let deleted = Arc::clone(properties);
+	let observer = observer.clone();
 	messages.channel::<DeleteMessage>().watch(move |deletion| {
 		deleted.lock().remove(deletion.handle());
+		observer.forget_entity(*deletion.handle());
 	});
 }
 
@@ -346,8 +356,11 @@ mod tests {
 	use super::{DefaultInspector, InspectedValue};
 	use crate::{
 		configuration::Configuration,
-		core::{Creator as _, channel::Channel as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},
-		gameplay::{Name, Transform, TransformationUpdate, World as _},
+		core::{
+			Creator as _, channel::Channel as _, channel::DefaultChannel, factory::Handle, message::DeleteMessage,
+			message_bus::MessageBus,
+		},
+		gameplay::{Name, Transform, TransformationUpdate},
 		metrics::Metrics,
 	};
 
@@ -384,7 +397,7 @@ mod tests {
 		);
 
 		// Updates sent straight to the transform route, as physics does, replace the spawn position.
-		world.transforms_channel().send(TransformationUpdate::new(
+		world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
 			handle,
 			Transform::from_position(Point::new(4.0, 5.0, 6.0)),
 		));
@@ -397,7 +410,7 @@ mod tests {
 			Some(InspectedValue::Point(Point::new(4.0, 5.0, 6.0)))
 		);
 
-		world.delete(handle);
+		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));
 		assert!(inspector.entities(None, Some("shipping crate")).is_empty());
 	}
 }

@@ -1,4 +1,4 @@
-//! The animation record a player writes to its [`DataStream`], as the
+//! The animation record a player writes to its [`DebugDataStreamWriter`], as the
 //! [animation reference](/docs/reference/animation#data-stream) specifies.
 //!
 //! The record borrows the player's state, so writing one allocates nothing once the stream's line has grown.
@@ -8,26 +8,29 @@ use std::fmt;
 use serde::{Serialize, Serializer};
 
 use super::*;
-use crate::inspector::DataStream;
+use crate::inspector::DebugDataStreamWriter;
 
 #[derive(Serialize)]
 struct Record<'a> {
 	status: &'static str,
 	#[serde(serialize_with = "message")]
 	error: Option<&'a AnimationGraphPlayerError>,
-	missing: &'a [&'a str],
+	#[serde(serialize_with = "resource_ids")]
+	missing: &'a [Arc<str>],
 	request: Request<'a>,
 	motion: Option<Motion<'a>>,
 	transition: Option<Transition<'a>>,
 	pending: Option<Pending<'a>>,
 	root_motion: RootMotion,
+	look: Option<super::look::LookReport>,
 }
 
 /// The part of a [`Record`] whose change warrants a record in a changes-only stream.
 #[derive(Serialize)]
 struct Key<'a> {
 	status: &'static str,
-	missing: &'a [&'a str],
+	#[serde(serialize_with = "resource_ids")]
+	missing: &'a [Arc<str>],
 	request: &'a str,
 	motion: Option<(&'a str, &'a Clips<'a>)>,
 	transition: Option<(&'a str, &'a Route<'a>)>,
@@ -61,7 +64,7 @@ struct Motion<'a> {
 }
 
 /// A motion's weighted clips, serialized as a sequence without collecting them.
-struct Clips<'a>(&'a RuntimeMotion<'a>);
+struct Clips<'a>(&'a AnimationGraph, &'a RuntimeMotion);
 
 #[derive(Serialize)]
 struct ClipWeight<'a> {
@@ -119,8 +122,8 @@ struct RootMotion {
 }
 
 impl<'a> Motion<'a> {
-	fn new(graph: &'a AnimationGraph, motion: &'a RuntimeMotion<'a>) -> Self {
-		let duration = motion.duration();
+	fn new(graph: &'a AnimationGraph, motion: &'a RuntimeMotion) -> Self {
+		let duration = motion.duration(motion.samples(graph));
 		Self {
 			state: graph.state(motion.state).name.as_str(),
 			playback: match motion.playback {
@@ -130,16 +133,17 @@ impl<'a> Motion<'a> {
 			phase: motion.phase,
 			time: motion.phase * duration,
 			duration,
-			clips: Clips(motion),
+			clips: Clips(graph, motion),
 		}
 	}
 }
 
 impl Serialize for Clips<'_> {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-		let motion = self.0;
+		let Self(graph, motion) = *self;
+		let samples = motion.samples(graph);
 		serializer.collect_seq(motion.weights.iter().map(|(sample, weight)| ClipWeight {
-			clip: ClipName(&motion.samples[sample].resource_id),
+			clip: ClipName(&samples[sample].resource_id),
 			weight,
 		}))
 	}
@@ -147,7 +151,10 @@ impl Serialize for Clips<'_> {
 
 impl fmt::Display for ClipName<'_> {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let (path, fragment) = self.0.split_once('#').map_or((self.0, None), |(path, fragment)| (path, Some(fragment)));
+		let (path, fragment) = self
+			.0
+			.split_once('#')
+			.map_or((self.0, None), |(path, fragment)| (path, Some(fragment)));
 		let file = path.rsplit_once('/').map_or(path, |(_, file)| file);
 		formatter.write_str(file.rsplit_once('.').map_or(file, |(stem, _)| stem))?;
 		// `#animation` picks the file's first clip, so only a fragment that names one adds to the stem.
@@ -181,11 +188,11 @@ impl<'a> Route<'a> {
 
 impl<'a> Wait<'a> {
 	/// Describes the wait of a route that waits for `points` of the playing `motion`.
-	fn new(motion: &'a RuntimeMotion<'a>, points: &[ClipPoint]) -> Option<Self> {
+	fn new(graph: &'a AnimationGraph, motion: &'a RuntimeMotion, points: &[ClipPoint]) -> Option<Self> {
 		let clip = motion.heaviest(points)?;
-		let next = motion.time_until(points);
+		let next = motion.time_until(motion.samples(graph), points);
 		Some(Self {
-			clip: ClipName(&motion.samples[clip].resource_id),
+			clip: ClipName(&motion.samples(graph)[clip].resource_id),
 			weight: motion.weight_of(clip),
 			point: next.map(|(_, point)| match point.time {
 				ClipTime::Frame(frame) => Point::Frame(frame),
@@ -221,6 +228,11 @@ impl<'a> Record<'a> {
 }
 
 /// Serializes a rejection as its message.
+/// Writes the resource IDs of missing clips as a list of strings.
+fn resource_ids<S: Serializer>(ids: &&[Arc<str>], serializer: S) -> Result<S::Ok, S::Error> {
+	serializer.collect_seq(ids.iter().map(|id| &**id))
+}
+
 fn message<S: Serializer>(error: &Option<&AnimationGraphPlayerError>, serializer: S) -> Result<S::Ok, S::Error> {
 	match error {
 		Some(error) => serializer.collect_str(error),
@@ -228,13 +240,12 @@ fn message<S: Serializer>(error: &Option<&AnimationGraphPlayerError>, serializer
 	}
 }
 
-impl AnimationGraphPlayer<'_> {
+impl AnimationGraphPlayer {
 	/// Attaches a stream the player writes a record to after every advance, or detaches it with `None`.
 	///
-	/// Open the stream with
-	/// [`GraphicsApplication::data_stream`](crate::application::graphics::GraphicsApplication::data_stream) for the
-	/// entity the player animates. A player without a stream does no reporting work.
-	pub fn set_stream(&mut self, stream: Option<DataStream>) {
+	/// The animation system attaches writers created from world-spawned
+	/// [`DebugDataStream`](crate::inspector::DebugDataStream) requests. A player without a writer does no reporting work.
+	pub fn set_stream(&mut self, stream: Option<DebugDataStreamWriter>) {
 		self.stream = stream;
 	}
 
@@ -242,18 +253,17 @@ impl AnimationGraphPlayer<'_> {
 	// Debugging only: kept out of line so it does not weigh on the every-frame path.
 	#[cold]
 	#[inline(never)]
-	pub(super) fn write_stream(&mut self) {
+	pub(super) fn write_stream(&mut self, graph: &AnimationGraph) {
 		// The record borrows the player, so the stream steps out while it writes.
 		if let Some(mut stream) = self.stream.take() {
-			let record = self.record();
+			let record = self.record(graph);
 			stream.write("animation", &record.key(), &record);
 			self.stream = Some(stream);
 		}
 	}
 
 	/// Borrows the player's state as the record its stream carries.
-	fn record(&self) -> Record<'_> {
-		let graph = self.graph;
+	fn record<'a>(&'a self, graph: &'a AnimationGraph) -> Record<'a> {
 		let name = |state: AnimationStateId| graph.state(state).name.as_str();
 		let (status, error) = match &self.runtime {
 			PlayerRuntime::Loading => ("loading", None),
@@ -278,7 +288,7 @@ impl AnimationGraphPlayer<'_> {
 			let pending = ready.pending.as_ref()?;
 			// Only a state playing on its own reaches wait points.
 			let wait = match &ready.playback {
-				Playback::Playing(active) => Wait::new(active, pending.wait),
+				Playback::Playing(active) => Wait::new(graph, active, graph.points(pending.wait)),
 				_ => None,
 			};
 			Some(Pending {
@@ -310,6 +320,10 @@ impl AnimationGraphPlayer<'_> {
 				translation: root_motion.translation.to_array(),
 				rotation: root_motion.rotation.to_array(),
 			},
+			look: match &self.runtime {
+				PlayerRuntime::Ready(ready) => ready.pose.look.as_ref().and_then(|chain| chain.report),
+				_ => None,
+			},
 		}
 	}
 }
@@ -323,11 +337,15 @@ mod tests {
 	use crate::{core::factory::Handle, inspector::StreamOutput};
 
 	/// Opens a stream for a new entity to a temporary file, returned with the file's path.
-	fn stream(changes_only: bool) -> (DataStream, PathBuf) {
+	fn stream(changes_only: bool) -> (DebugDataStreamWriter, PathBuf) {
 		let entity = Handle::new();
-		let path = std::env::temp_dir().join(format!("byte-engine-animation-stream-{}-{}.ndjson", std::process::id(), entity.id()));
+		let path = std::env::temp_dir().join(format!(
+			"byte-engine-animation-stream-{}-{}.ndjson",
+			std::process::id(),
+			entity.id()
+		));
 		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
-		(DataStream::new(output, entity, "Character".into()), path)
+		(DebugDataStreamWriter::new(output, entity, "Character".into()), path)
 	}
 
 	/// Reads and removes the records at `path`, returning each one's `data`.
@@ -341,7 +359,11 @@ mod tests {
 
 	/// Builds a pool holding a slow and a fast clip, under IDs of a single-clip file and of a pack, and an idle clip.
 	fn speed_pool() -> AnimationPool {
-		let clips = [("anims/slow.fbx#animation", 1.0), ("pack.glb#animations/Fast", 2.0), ("idle.animation", 0.0)];
+		let clips = [
+			("anims/slow.fbx#animation", 1.0),
+			("pack.glb#animations/Fast", 2.0),
+			("idle.animation", 0.0),
+		];
 		let mut pool = AnimationPool::detached(clips.iter().map(|&(id, end)| packed_test_animation_bytes(id, end)).sum());
 		for (id, end) in clips {
 			pool.admit(id.into(), test_animation(id, end));
@@ -361,12 +383,20 @@ mod tests {
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
-		player.advance(MediaTime::ZERO, idle.id(), &mut pool).expect("waits for the initial clip");
+		player
+			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.expect("waits for the initial clip");
 		pool.admit("idle.animation".into(), test_animation("idle", 1.0));
 		pool.admit("walk.animation".into(), test_animation("walk", 2.0));
-		player.advance(MediaTime::ZERO, idle.id(), &mut pool).expect("enters idle");
-		player.advance(MediaTime::from_millis(250), idle.id(), &mut pool).expect("plays idle");
-		player.advance(MediaTime::from_millis(100), walk.id(), &mut pool).expect("blends to walk");
+		player
+			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.expect("enters idle");
+		player
+			.advance(&graph, MediaTime::from_millis(250), idle.id(), &mut pool)
+			.expect("plays idle");
+		player
+			.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool)
+			.expect("blends to walk");
 
 		let records = records(path);
 		assert_eq!(records.len(), 4, "one record per advance");
@@ -383,14 +413,20 @@ mod tests {
 		assert_eq!(playing["motion"]["playback"], "loop");
 		assert_eq!(playing["motion"]["phase"], 0.25);
 		assert_eq!(playing["motion"]["duration"], 1.0);
-		assert_eq!(playing["motion"]["clips"], serde_json::json!([{ "clip": "idle", "weight": 1.0 }]));
+		assert_eq!(
+			playing["motion"]["clips"],
+			serde_json::json!([{ "clip": "idle", "weight": 1.0 }])
+		);
 		assert!(playing["transition"].is_null());
 
 		let blending = &records[3];
 		assert_eq!(blending["request"]["state"], "walk");
 		assert_eq!(blending["motion"]["state"], "walk");
 		assert_eq!(blending["transition"]["from"]["state"], "idle");
-		assert_eq!(blending["transition"]["route"], serde_json::json!({ "kind": "state", "owner": "idle" }));
+		assert_eq!(
+			blending["transition"]["route"],
+			serde_json::json!({ "kind": "state", "owner": "idle" })
+		);
 		assert_eq!(blending["transition"]["duration"], 0.5);
 		assert!(blending["pending"].is_null());
 	}
@@ -407,16 +443,26 @@ mod tests {
 		);
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		// Only the fast clip names a frame, so at the slow end the route follows a clip that doesn't play.
-		speed.to(idle).at_frames("pack.glb#animations/Fast", [7]).anytime(MediaTime::ZERO);
+		speed
+			.to(idle)
+			.at_frames("pack.glb#animations/Fast", [7])
+			.anytime(MediaTime::ZERO);
 		let graph = builder.build(speed).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
-		player.advance(MediaTime::ZERO, speed.id().at(0.0), &mut pool).expect("plays the slow end");
-		player.advance(MediaTime::ZERO, idle.id(), &mut pool).expect("waits for the fast clip's frame");
+		player
+			.advance(&graph, MediaTime::ZERO, speed.id().at(0.0), &mut pool)
+			.expect("plays the slow end");
+		player
+			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.expect("waits for the fast clip's frame");
 
 		let records = records(path);
-		assert_eq!(records[0]["motion"]["clips"], serde_json::json!([{ "clip": "slow", "weight": 1.0 }]));
+		assert_eq!(
+			records[0]["motion"]["clips"],
+			serde_json::json!([{ "clip": "slow", "weight": 1.0 }])
+		);
 		let pending = &records[1]["pending"];
 		assert_eq!(pending["requested"], "idle");
 		assert_eq!(pending["route"], serde_json::json!({ "kind": "state", "owner": "speed" }));
@@ -437,17 +483,28 @@ mod tests {
 				.sample(1.0, AnimationClip::looping("pack.glb#animations/Fast")),
 		);
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		speed.to(idle).at_frames("pack.glb#animations/Fast", [7]).anytime(MediaTime::ZERO);
+		speed
+			.to(idle)
+			.at_frames("pack.glb#animations/Fast", [7])
+			.anytime(MediaTime::ZERO);
 		let graph = builder.build(speed).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 		let step = MediaTime::from_millis(100);
 
-		player.advance(MediaTime::ZERO, speed.id().at(0.25), &mut pool).expect("plays the blend");
-		player.advance(step, speed.id().at(0.25), &mut pool).expect("only the phase moves");
-		player.advance(step, speed.id().at(0.75), &mut pool).expect("the weights change");
-		player.advance(step, idle.id(), &mut pool).expect("a route waits");
-		player.advance(step, idle.id(), &mut pool).expect("only the wait comes closer");
+		player
+			.advance(&graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool)
+			.expect("plays the blend");
+		player
+			.advance(&graph, step, speed.id().at(0.25), &mut pool)
+			.expect("only the phase moves");
+		player
+			.advance(&graph, step, speed.id().at(0.75), &mut pool)
+			.expect("the weights change");
+		player.advance(&graph, step, idle.id(), &mut pool).expect("a route waits");
+		player
+			.advance(&graph, step, idle.id(), &mut pool)
+			.expect("only the wait comes closer");
 
 		let records = records(path);
 		let weights: Vec<_> = records
@@ -473,8 +530,12 @@ mod tests {
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
-		player.advance(MediaTime::ZERO, idle.id(), &mut pool).expect("plays idle");
-		player.advance(MediaTime::ZERO, walk.id(), &mut pool).expect("starts the one-shot");
+		player
+			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.expect("plays idle");
+		player
+			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.expect("starts the one-shot");
 
 		assert_eq!(records(path)[1]["motion"]["state"], "idle -> walk");
 	}

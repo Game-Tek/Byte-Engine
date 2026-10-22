@@ -1,0 +1,165 @@
+---
+title: Gameplay tasks
+description: Read this before you change the gameplay task runtime, to learn how its waits register and cancel, how time reaches tasks, and what a change must keep.
+icon: Workflow
+---
+
+Read this note before you change the gameplay task runtime, which polls an
+application's async gameplay from its tick. To use it, see
+[Script gameplay with tasks](/docs/use/gameplay-tasks). The code lives in
+`crates/byte-engine/src/gameplay/tasks.rs`.
+
+## Who owns the runtime
+
+`GraphicsApplication` owns one `Runtime` and advances its clock once per
+simulation step, before the tick or simulation callback runs. The application
+only polls when the callback calls `poll`. The runtime is the application's
+first field, so it drops before the world and the systems: task futures can
+still reach their listeners and channels while they drop. Applications without
+graphics own a `Runtime` themselves.
+
+`Runtime::tasks` hands out `Tasks<S>` handles that share the runtime's state.
+`S` only names the type that `with` downcasts the poll's state to, so tasks
+with different state types can share one runtime as long as each poll lends
+the type its tasks name.
+
+## How a poll runs
+
+The runtime keeps the futures of live tasks in a vector indexed by task slot.
+Everything else it shares with the `Tasks` handles through one `Rc<RefCell>`:
+the clock, each task's waits, and the ready queue. Runtime methods and wait
+futures borrow the shared state only briefly, never across a task's poll. A
+task can therefore spawn and wait from anywhere in its code, including inside
+`with`.
+
+`poll` pops the ready queue until it's empty. Each poll of a task gets a new
+number, which the task records as its latest poll. The application's state goes
+to the task through `ContextBuilder::ext`, which `with` downcasts. A task that
+finishes is removed, and its future drops once the shared state is released,
+since a destructor may reach it.
+
+## How waits register and cancel
+
+A wait records the number of the poll that made it. Polling a pending wait
+future records the current number again. A wait counts only while its number
+equals the latest poll of its task, so a future the task dropped, or stopped
+polling, stops counting after that poll. The UI engine's runtime uses the same
+scheme.
+
+Stale waits are also removed, so they don't pile up. A sleep future that drops
+while registered flags its task's poll, and once that poll ends the runtime
+sweeps the task's waits and keeps only the ones the poll registered. Polls that
+drop nothing skip the sweep, which keeps a tick's cost flat.
+
+- **Messages.** The runtime keeps no messages. Tasks await the message bus
+  through `DefaultListener::recv`, which registers the task's waker on the
+  channel's topic when nothing is queued. A send stamps its slot, then loads the
+  topic's waiting flag and wakes every registered waker when it's set. Both
+  sides use sequentially consistent operations, so either the send sees the
+  flag or the listener's read after registering sees the message. A listener
+  holds at most one registration, a slot in the topic's waiter list: polling it
+  with another waker replaces the waker in its slot, and dropping it withdraws
+  the slot, so a send never wakes a listener that's gone.
+- **Ticks.** A task's tick waits live with the task, and the task joins a list
+  that the next `advance` walks, keeping only the waits of the task's latest
+  poll. A tick wait first polled in a poll takes over
+  the earliest wait the task didn't poll again in that poll. This keeps ticks
+  counting when a `select!` loop drops its tick branch, and lets a new loop
+  resolve its tick in the same poll.
+- **Sleeps.** A min-heap orders deadlines. `advance` pops the due ones and wakes
+  the task when its wait still counts. A sleep polled again after a sweep
+  removed it pushes a new deadline. Swept and ended sleeps leave their entries
+  in the heap, so the runtime rebuilds the heap once more than half its entries
+  are dead.
+
+The runtime's tick and sleep waits wake tasks directly, without a `Waker`. Each
+task also has one for channel listeners and other futures. Its wakes go through
+a locked queue that `poll` drains, so they can come from any thread, such as
+alley lanes that send during a system's step.
+
+## How the macros expand
+
+`perform!` and `and!` are the syntax tasks use to choose and sequence
+activities. Both expand in the caller's scope, so branches, shared steps, and
+activities borrow the same local state one after another, and `break` and
+`return` keep their meaning.
+
+- **`perform!`** expands to a `loop` around `select_biased!`, with each `when`
+  and `each` wait wrapped in `fuse`. Raw `select_biased!` branches pass through
+  unchanged. `always` blocks run at the top of the loop, before each selection,
+  and never alongside a branch.
+- **`and!`** awaits each activity before it builds the next. Its `when` guard
+  pins the event, polls it once with the task's own context, and drops it. The
+  context must be the task's, not a no-op one: `Tasks::with` reads the state
+  lent through it, and a pending event registers the task's own waker, so the
+  message the event missed wakes the task that reads it on its next pass.
+
+## Rules a change must keep
+
+1. Tasks never read wall-clock time. The clock moves only by the deltas that
+   `advance` receives.
+2. One poll order for one input sequence: tasks run in the order they woke, and
+   nothing iterates a hash map to decide an order.
+3. A wait counts only while the latest poll of its task registered it.
+4. The shared state is never borrowed while a task's code runs or a future
+   drops.
+5. Tasks spawned on an entity end at the first `advance` after the world deletes
+   it.
+6. Per-tick work grows with the tasks that wait, not with every live task.
+7. Nothing outlives its task. An ended task leaves no waits, and dropping the
+   runtime drops every future it kept, including tasks it never polled.
+8. A send on a channel nobody awaits pays one flag load and no lock.
+9. A dropped listener leaves no waker on its topic.
+10. The application drops the runtime before its world and systems.
+11. The task macros poll in the task's own context and run in the caller's
+    scope.
+
+## Tests
+
+| Test | Rule |
+| --- | --- |
+| `tick_resolves_with_the_time_since_the_wait_began` | 1 |
+| `sleep_waits_for_simulation_time` | 1 |
+| `a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one` | 3 |
+| `a_task_selecting_over_messages_and_ticks_counts_every_tick` | 3 |
+| `a_listener_dropped_from_a_select_keeps_its_messages` | 3 |
+| `a_task_awaiting_a_listener_reads_every_message_sent_on_its_channel` | 2 |
+| `a_message_sent_from_another_thread_wakes_the_awaiting_task` | 4 |
+| `recv_resolves_with_a_queued_message_and_wakes_its_waiter_on_send` (`core::listener`) | 8 |
+| `deleting_an_entity_ends_the_tasks_spawned_on_it` | 4, 5 |
+| `tasks_spawned_by_a_task_run_in_the_same_poll` | 4 |
+| `foreign_futures_wake_their_task` | 4 |
+| `a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops` | 4, 5 |
+| `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
+| `dropping_a_waiting_listener_releases_its_waker` (`core::listener`) | 9 |
+| `separately_requested_handles_share_time_and_borrow_the_polled_state` | 1 |
+| `and_finishes_each_activity_before_the_next_borrows_shared_state` | 11 |
+| `and_checks_events_without_stalling_or_repeating_a_consumed_event` | 11 |
+| `and_guards_keep_task_context_and_await_selected_activities_in_order` | 11 |
+| `always_runs_initially_and_between_branches_with_the_same_mutable_state` | 11 |
+| `always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax` | 11 |
+| `perform_checks_ready_events_in_written_order` | 2, 11 |
+| `perform_finishes_selected_actions_before_handling_another_event` | 11 |
+| `a_nested_performance_replaces_outer_updates_until_it_ends` | 11 |
+
+```bash
+cargo nextest run -p byte-engine -E 'test(/gameplay::tasks|core::listener/)'
+```
+
+## Benchmarks
+
+The `tasks` benchmark guards rule 6 at the scale of one task per entity. It
+times one tick of 4096 tasks: `tick_waits` wakes every task for the tick, and
+`listener_waits` sends one message on a channel every task awaits through its
+own listener, which is the fan-out of one broadcast. Divan reports the time per
+task. Rule 8 is guarded by the `channel` benchmark, whose sends never have a
+waiter.
+
+```bash
+cargo bench -p byte-engine --bench tasks
+cargo bench -p byte-engine --bench channel
+```
+
+Run it before and after a change to the runtime. Keep each build's benchmark
+binary and run them in turns, because other load on the machine shifts results
+from one run to the next.

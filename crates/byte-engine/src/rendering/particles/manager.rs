@@ -16,7 +16,6 @@ use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
-use crate::gameplay::World as _;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::rendering::loading::{Event, LoaderClient};
 use crate::rendering::pipeline_manager::PipelineManager;
@@ -129,8 +128,8 @@ impl ParticleManager {
 		Self {
 			systems_loader,
 			emitter_listener: world.factory::<ParticleEmitter>().listener(),
-			transforms_listener: world.transforms_channel().listener(),
-			deletions_listener: world.deletions_listener(),
+			transforms_listener: world.channel::<TransformationUpdate>().listener(),
+			deletions_listener: world.channel::<DeleteMessage>().listener(),
 			emitters: HashMap::default(),
 			systems: Vec::new(),
 			prepare_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/particles/prepare.pipeline"),

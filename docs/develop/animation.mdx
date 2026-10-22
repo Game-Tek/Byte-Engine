@@ -18,6 +18,18 @@ players together with `AnimationPool::advance_players`, and posts each pose and
 root motion. The evaluation it drives is below it: graph players, a clip pool
 they share, and the lanes the players spread over.
 
+The system owns the graphs it plays: `AnimationSystem::register` takes a graph
+and returns the `AnimationGraphId` animators name it by. A player keeps only
+its graph's ID. Whoever owns the graph lends it to every call that evaluates,
+`advance` and `advance_players`, and to `time_until_route`, and the player
+checks that it's the graph it was created with. Systems and players have no
+lifetime and share nothing. A player's playback state never holds part of the
+graph either: a playing motion reads its clips from the graph's binding by
+state, and a pending route names its wait and entry points by where the graph
+keeps them. Keep it that way: a reference counted handle in per-frame playback
+state made crowds that switch states slower, because players on several lanes
+start the same state in one frame.
+
 ## How a frame flows
 
 The typical frame is a character walking: a planar blend of locomotion clips

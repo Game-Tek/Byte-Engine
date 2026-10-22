@@ -62,7 +62,10 @@ impl AnimationGraphBenchmarkFixture {
 			AnimationGraphBenchmark::Locomotion => LOCOMOTION_CLIPS
 				.iter()
 				.map(|&(resource_id, direction, duration)| {
-					(resource_id, locomotion_animation(resource_id, node_count, direction, duration))
+					(
+						resource_id,
+						locomotion_animation(resource_id, node_count, direction, duration),
+					)
 				})
 				.collect(),
 			AnimationGraphBenchmark::ActivePose | AnimationGraphBenchmark::ActiveRootMotion => {
@@ -101,6 +104,7 @@ impl AnimationGraphBenchmarkFixture {
 		);
 		AnimationGraphBenchmarkState {
 			player,
+			graph: &self.graph,
 			pool: &mut self.pool,
 			requested: self.destination,
 		}
@@ -128,6 +132,7 @@ impl AnimationGraphBenchmarkFixture {
 			.collect();
 		AnimationGraphCharactersState {
 			players,
+			graph: &self.graph,
 			pool: &mut self.pool,
 			alley: crate::core::alley::Alley::new(),
 			requests: CharacterRequests {
@@ -143,14 +148,14 @@ impl AnimationGraphBenchmarkFixture {
 
 /// Creates a player, plays its initial state for `offset`, and, for the transition benchmark, starts the
 /// inertialized transition, all before Divan starts the measured loop.
-fn ready_player<'graph>(
-	graph: &'graph AnimationGraph,
+fn ready_player(
+	graph: &AnimationGraph,
 	pool: &mut AnimationPool,
 	benchmark: AnimationGraphBenchmark,
 	initial: AnimationStateId,
 	destination: AnimationStateId,
 	offset: MediaTime,
-) -> AnimationGraphPlayer<'graph> {
+) -> AnimationGraphPlayer {
 	let root_motion = match benchmark {
 		AnimationGraphBenchmark::ActiveRootMotion => Some(RootMotionSettings::full("joint-0")),
 		// A walking character takes its horizontal travel and leaves the body's bob and turn in the pose.
@@ -165,12 +170,12 @@ fn ready_player<'graph>(
 
 	// `benchmark_graph` returns a destination equal to the initial state unless the benchmark measures a transition.
 	player
-		.advance(offset, initial, pool)
+		.advance(graph, offset, initial, pool)
 		.expect("resident benchmark clip must initialize")
 		.expect("resident benchmark clip must initialize immediately");
 	if destination != initial {
 		player
-			.advance(benchmark_frame_delta(), destination, pool)
+			.advance(graph, benchmark_frame_delta(), destination, pool)
 			.expect("resident benchmark clips must start their transition")
 			.expect("resident benchmark clips must remain ready");
 	}
@@ -179,7 +184,8 @@ fn ready_player<'graph>(
 
 /// The `AnimationGraphBenchmarkState` struct retains the player state used to time animation graph evaluation.
 pub struct AnimationGraphBenchmarkState<'fixture> {
-	player: AnimationGraphPlayer<'fixture>,
+	player: AnimationGraphPlayer,
+	graph: &'fixture AnimationGraph,
 	pool: &'fixture mut AnimationPool,
 	requested: AnimationStateId,
 }
@@ -188,7 +194,7 @@ impl AnimationGraphBenchmarkState<'_> {
 	/// Advances one prepared frame and returns the borrowed pose to the benchmark harness.
 	pub fn advance(&mut self) -> AnimationGraphPose<'_> {
 		self.player
-			.advance(benchmark_frame_delta(), self.requested, self.pool)
+			.advance(self.graph, benchmark_frame_delta(), self.requested, self.pool)
 			.expect("resident benchmark clips must advance")
 			.expect("resident benchmark clips must remain ready")
 	}
@@ -196,7 +202,8 @@ impl AnimationGraphBenchmarkState<'_> {
 
 /// The `AnimationGraphCharactersState` struct retains every character's player for timing a frame of a crowd.
 pub struct AnimationGraphCharactersState<'fixture> {
-	players: Vec<AnimationGraphPlayer<'fixture>>,
+	players: Vec<AnimationGraphPlayer>,
+	graph: &'fixture AnimationGraph,
 	pool: &'fixture mut AnimationPool,
 	requests: CharacterRequests,
 	/// The lanes a crowd spreads over, one for each hardware thread as an application's alley has.
@@ -212,7 +219,12 @@ impl AnimationGraphCharactersState<'_> {
 				.expect("benchmark requests come from the benchmark graph");
 		}
 		self.pool
-			.advance_players(&mut self.players, benchmark_frame_delta(), &mut self.alley)
+			.advance_players(
+				&mut self.players,
+				std::slice::from_ref(self.graph),
+				benchmark_frame_delta(),
+				&mut self.alley,
+			)
 			.expect("resident benchmark clips must advance");
 		std::hint::black_box(&self.players);
 		self.requests.frame += 1;
@@ -354,11 +366,13 @@ fn locomotion_animation(name: &str, node_count: usize, direction: [f32; 2], dura
 			let rotation = times
 				.iter()
 				.map(|&time| {
-					math::Orientation::try_from_rotation_vector(math::Vector::<resource_management::resources::ParentSpace>::new(
-						0.2 * sway(time, node),
-						0.1 * sway(time, node + 7),
-						0.05,
-					))
+					math::Orientation::try_from_rotation_vector(
+						math::Vector::<resource_management::resources::ParentSpace>::new(
+							0.2 * sway(time, node),
+							0.1 * sway(time, node + 7),
+							0.05,
+						),
+					)
 					.expect("a finite rotation vector is a valid rotation")
 				})
 				.collect();
@@ -403,5 +417,3 @@ fn pack_clip(
 fn benchmark_frame_delta() -> MediaTime {
 	MediaTime::from_frames(1, 60).expect("the engine timebase must represent 60 Hz exactly")
 }
-
-

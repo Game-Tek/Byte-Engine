@@ -1,7 +1,6 @@
 //! Graphics pipeline and render-pass setup.
 
 use super::*;
-use crate::gameplay::World as _;
 use crate::rendering::DirectionalLight;
 
 /// Installs the retained wireframe debug scene after the render passes registered before this call.
@@ -13,12 +12,12 @@ use crate::rendering::DirectionalLight;
 /// pipeline's `depth` image without modifying it. Register this pass before
 /// creating the first window. Next, call [`Factory::create`] once for each
 /// [`rendering::DebugMesh`], [`Factory::derive`] to replace it, and
-/// [`World::delete`](crate::gameplay::World::delete) to remove it.
+/// a [`DeleteMessage`](crate::core::message::DeleteMessage) on the world scope to remove it.
 pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Factory<rendering::DebugMesh> {
 	let factory = application.world().factory::<rendering::DebugMesh>();
 	// Register future-only lifecycle listeners before returning the producer factory.
 	let listener = factory.listener();
-	let delete_listener = application.world().deletions_listener();
+	let delete_listener = application.world().channel::<DeleteMessage>().listener();
 	let scene = std::rc::Rc::new(std::cell::RefCell::new(rendering::DebugSceneManager::new(
 		application.renderer.context_mut(),
 		listener,
@@ -537,7 +536,7 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let fog_factory = application.world().factory::<rendering::ExponentialHeightFog>();
 	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().transforms_channel();
+	let transform_channel = application.world().channel::<TransformationUpdate>();
 
 	application
 		.renderer
@@ -564,7 +563,7 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let light_factory = application.world().factory::<DirectionalLight>();
-	let transform_channel = application.world().transforms_channel();
+	let transform_channel = application.world().channel::<TransformationUpdate>();
 	let renderer = &mut application.renderer;
 
 	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {

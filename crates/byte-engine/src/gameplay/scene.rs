@@ -2,21 +2,18 @@
 //!
 //! Create a scene root with [`Scene`], then attach entities to it, or to any
 //! other scene member, by chaining [`SceneNode::under`] while spawning them.
-//! [`World::delete`](crate::gameplay::World::delete) publishes the deleted handle
+//! Sending a [`DeleteMessage`] on the scope's channel publishes the deleted handle
 //! immediately. The next [`SceneGraph::cascade`] publishes every nested element,
 //! children before their parents.
 
 use std::collections::HashMap;
 
-use crate::{
-	core::{
-		channel::DefaultChannel,
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-		message::DeleteMessage,
-		message_bus::MessageScope,
-	},
-	gameplay::world::publish_deletion,
+use crate::core::{
+	channel::{Channel, DefaultChannel},
+	factory::{CreateMessage, Handle},
+	listener::{DefaultListener, Listener},
+	message::DeleteMessage,
+	message_bus::MessageScope,
 };
 
 /// The `Scene` struct gives a level or other group of entities an identity that its members attach to.
@@ -94,7 +91,7 @@ impl SceneGraph {
 		let deletes = &self.deletes;
 		while let Some(deletion) = self.posted_deletes.read() {
 			self.tree
-				.remove_subtree(deletion.into_handle(), |member| publish_deletion(deletes, member));
+				.remove_subtree(deletion.into_handle(), |member| deletes.send(DeleteMessage::new(member)));
 		}
 	}
 
@@ -187,5 +184,80 @@ impl Tree {
 			link = &mut self.nodes.get_mut(&sibling).expect("Siblings are tracked.").next_sibling;
 		}
 		*link = next;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::core::factory::Creator as _;
+	use crate::gameplay::Name;
+
+	/// Reads every pending deletion handle in publication order.
+	fn deleted(deletions: &mut DefaultListener<DeleteMessage>) -> Vec<Handle> {
+		std::iter::from_fn(|| deletions.read().map(DeleteMessage::into_handle)).collect()
+	}
+
+	/// Publishes a deletion for `handle` on the scope's deletion route.
+	fn delete(world: &MessageScope, handle: Handle) {
+		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));
+	}
+
+	#[test]
+	fn deleting_a_scene_publishes_it_and_the_cascade_publishes_members_children_first() {
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
+		let mut deletions = world.channel::<DeleteMessage>().listener();
+
+		let scene: Handle = world.create(Scene).into();
+		let tank: Handle = world.create(Name::new("tank")).with(SceneNode::under(scene)).into();
+		let turret: Handle = world.create(Name::new("turret")).with(SceneNode::under(tank)).into();
+		let rock: Handle = world.create(Name::new("rock")).with(SceneNode::under(scene)).into();
+		let outsider: Handle = world.create(Name::new("outsider")).into();
+
+		delete(&world, scene);
+		assert_eq!(deleted(&mut deletions), [scene]);
+
+		scenes.cascade();
+		let deleted = deleted(&mut deletions);
+		assert_eq!(deleted.len(), 3);
+		let position = |handle| deleted.iter().position(|&h| h == handle).expect("member deleted");
+		assert!(position(turret) < position(tank));
+		assert!(deleted.contains(&rock));
+		assert!(!deleted.contains(&scene));
+		assert!(!deleted.contains(&outsider));
+	}
+
+	#[test]
+	fn deleting_a_member_detaches_it_from_its_scene() {
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
+		let mut deletions = world.channel::<DeleteMessage>().listener();
+
+		let scene: Handle = world.create(Scene).into();
+		let first: Handle = world.create(Name::new("first")).with(SceneNode::under(scene)).into();
+		let second: Handle = world.create(Name::new("second")).with(SceneNode::under(scene)).into();
+
+		delete(&world, first);
+		scenes.cascade();
+		assert_eq!(deleted(&mut deletions), [first]);
+
+		delete(&world, scene);
+		scenes.cascade();
+		assert_eq!(deleted(&mut deletions), [scene, second]);
+	}
+
+	#[test]
+	#[cfg(debug_assertions)]
+	#[should_panic(expected = "stale scene handle")]
+	fn attaching_under_a_deleted_member_panics() {
+		let world = MessageScope::standalone("world");
+		let mut scenes = SceneGraph::new(&world);
+		let scene: Handle = world.create(Scene).into();
+		let member: Handle = world.create(Name::new("member")).with(SceneNode::under(scene)).into();
+		delete(&world, member);
+		scenes.cascade();
+		world.create(Name::new("late")).with(SceneNode::under(member));
+		scenes.cascade();
 	}
 }

@@ -3,9 +3,10 @@
 
 use std::f32::consts::PI;
 
+use resource_management::resources::ParentSpace;
+
 use super::*;
 use crate::math::{Orientation, Vector};
-use resource_management::resources::ParentSpace;
 
 /// The `LookChainSettings` struct names the nodes a player turns toward its look target, from a spine to the head,
 /// and how far and how fast they turn.
@@ -70,6 +71,20 @@ pub(super) struct LookChain {
 	response: Option<f32>,
 	/// The eased yaw and pitch the chain looks along, or none while it is released.
 	eased: Option<(f32, f32)>,
+	/// What the last step measured and turned, for the player's debug data stream.
+	pub(super) report: Option<LookReport>,
+}
+
+/// The `LookReport` struct is what one look chain step measured and turned, in radians, which a player's debug data
+/// stream reports.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub(super) struct LookReport {
+	pub(super) target: f32,
+	pub(super) body: f32,
+	pub(super) end: f32,
+	pub(super) clamped: f32,
+	pub(super) eased: f32,
+	pub(super) turn: f32,
 }
 
 impl LookChain {
@@ -107,7 +122,10 @@ impl LookChain {
 		if !(0.0..=PI / 2.0).contains(&settings.down_limit) {
 			return Err(out_of_range("down_limit"));
 		}
-		if settings.response.is_some_and(|response| !(response.is_finite() && response > 0.0)) {
+		if settings
+			.response
+			.is_some_and(|response| !(response.is_finite() && response > 0.0))
+		{
 			return Err(out_of_range("response"));
 		}
 		let mut nodes = Vec::with_capacity(settings.nodes.len());
@@ -134,12 +152,14 @@ impl LookChain {
 			down_limit: settings.down_limit,
 			response: settings.response,
 			eased: None,
+			report: None,
 		})
 	}
 
 	/// Stops turning at once; the next target starts the easing over.
 	pub(super) fn release(&mut self) {
 		self.eased = None;
+		self.report = None;
 	}
 
 	/// Turns `pose` toward `target`, easing over `delta` from where the chain looked last step.
@@ -182,10 +202,19 @@ impl LookChain {
 		// turns in object space after its animated rotation, and its descendants turn with it, since their parents'
 		// rotations are read after the turn.
 		let turn_yaw = wrap_angle(yaw - end_yaw);
+		self.report = Some(LookReport {
+			target: target.yaw,
+			body: body_yaw,
+			end: end_yaw,
+			clamped: wrap_angle(clamped_yaw),
+			eased: yaw,
+			turn: turn_yaw,
+		});
 		let whole: Vector<ParentSpace> = yaw_pitch_rotation(turn_yaw, pitch).to_rotation_vector();
 		for &(node, share) in &self.nodes {
 			let parent = model_rotation(skeleton, |node| pose[node].rotation, skeleton.nodes[node].parent);
-			let turn = Orientation::try_from_rotation_vector(whole * share).expect("a share of a finite turn is a valid rotation");
+			let turn =
+				Orientation::try_from_rotation_vector(whole * share).expect("a share of a finite turn is a valid rotation");
 			let local = &mut pose[node];
 			local.rotation = parent.inverse().compose(turn.compose(parent.compose(local.rotation)));
 		}
@@ -233,6 +262,6 @@ fn yaw_pitch_rotation(yaw: f32, pitch: f32) -> Orientation {
 }
 
 /// Wraps an angle in radians into -π..π.
-fn wrap_angle(angle: f32) -> f32 {
+pub(super) fn wrap_angle(angle: f32) -> f32 {
 	(angle + PI).rem_euclid(2.0 * PI) - PI
 }

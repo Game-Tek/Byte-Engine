@@ -1,14 +1,12 @@
 ---
-title: Data streams
-description: Look up where a data stream's records go, how they're written, and the fields every record carries.
+title: Debug data streams
+description: Look up where a debug data stream's records go, how they're written, and the fields every record carries.
 icon: Bug
 ---
 
-A data stream carries one entity's state, as a system that holds that state
-reports it, while the application runs. The application opens a stream for an
-entity and hands it to the system; the system writes a record every time it
-updates the entity. To open one, follow
-[Stream an entity's state](/docs/use/data-streams).
+A debug data stream (DDS) carries one entity's state as a system reports it while the application runs.
+Each DDS record describes the entity at one update. To report an entity's state, follow
+[Debug data streams](/docs/use/debug-data-streams).
 
 ## Destination
 

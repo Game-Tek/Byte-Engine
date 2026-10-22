@@ -1,9 +1,8 @@
 //! Per-entity debugging data streams, written as NDJSON.
 //!
-//! The application opens a [`DataStream`] for an entity with
-//! [`GraphicsApplication::data_stream`](crate::application::graphics::GraphicsApplication::data_stream) and hands it
-//! to the system that holds the entity's state. The `debug.streams` parameter selects where every stream writes; the
-//! [data streams reference](/docs/reference/data-streams) specifies the destinations and the records.
+//! Create a [`DebugDataStream`] through the world's message bus to request records for an entity. The output
+//! service supplies writers to subscribed systems without giving gameplay a reference to those systems.
+//! The [debug data streams reference](/docs/reference/debug-data-streams) specifies the destinations and records.
 
 use std::{
 	borrow::Cow,
@@ -18,7 +17,83 @@ use std::{
 use serde::Serialize;
 use utils::sync::Mutex;
 
-use crate::core::factory::Handle;
+use crate::core::{
+	factory::{CreateMessage, Factory, Handle},
+	listener::{DefaultListener, Listener as _},
+	message::DeleteMessage,
+	message_bus::MessageScope,
+};
+
+/// The `DebugDataStream` struct requests debugging records for one entity from systems that hold its state.
+///
+/// Spawn it with `world.create(DebugDataStream::new(entity, "Character"))` after creating the consuming systems.
+/// The `debug.streams` destination enables reporting. Deleting this DDS entity stops its records.
+#[derive(Clone)]
+pub struct DebugDataStream {
+	entity: Handle,
+	name: Cow<'static, str>,
+}
+
+impl DebugDataStream {
+	/// Requests records for `entity`, labeled `name` in every record.
+	pub fn new(entity: Handle, name: impl Into<Cow<'static, str>>) -> Self {
+		Self {
+			entity,
+			name: name.into(),
+		}
+	}
+}
+
+/// The `DebugDataStreams` struct connects world-spawned DDS entities to the configured output destination.
+pub(crate) struct DebugDataStreams {
+	creations: DefaultListener<CreateMessage<DebugDataStream>>,
+	writers: Factory<DebugDataStreamWriter>,
+	output: Option<Arc<StreamOutput>>,
+	deletions: DefaultListener<DeleteMessage>,
+	/// Reused to suppress requests deleted before this service observed their creation.
+	deleted: Vec<Handle>,
+}
+
+impl DebugDataStreams {
+	/// Subscribes before gameplay creates DDS entities, using no writers when output is disabled.
+	pub(crate) fn new(world: &MessageScope, output: Option<Arc<StreamOutput>>) -> Self {
+		Self {
+			creations: world.factory().listener(),
+			writers: world.factory(),
+			output,
+			deletions: world.channel::<DeleteMessage>().listener(),
+			deleted: Vec::new(),
+		}
+	}
+
+	/// Publishes a writer under each DDS entity's handle; the writer names the entity whose state it reports.
+	pub(crate) fn update(&mut self) {
+		self.deleted.clear();
+		while let Some(deletion) = self.deletions.read() {
+			if self.output.is_some() {
+				self.deleted.push(*deletion.handle());
+			}
+		}
+		while let Some(created) = self.creations.read() {
+			let Some(output) = &self.output else { continue };
+			let request = created.data();
+			if self.deleted.contains(&created.handle()) {
+				continue;
+			}
+			self.writers.derive(
+				created.handle(),
+				DebugDataStreamWriter::new(Arc::clone(output), request.entity, request.name.clone()),
+			);
+		}
+	}
+
+	/// Sets the tick attached to every subsequent record.
+	pub(crate) fn set_tick(&self, tick: u64) {
+		if let Some(output) = &self.output {
+			output.set_tick(tick);
+		}
+	}
+}
 
 /// The `StreamOutput` struct is the one destination every data stream of an application shares.
 pub(crate) struct StreamOutput {
@@ -57,12 +132,12 @@ impl StreamOutput {
 	}
 }
 
-/// The `DataStream` struct lets the system that holds an entity's state report that state, one record per update,
-/// for agents and tools that debug the entity.
+/// The `DebugDataStreamWriter` struct keeps a system's record buffers and its connection to the debug destination.
 ///
-/// Open one with [`GraphicsApplication::data_stream`](crate::application::graphics::GraphicsApplication::data_stream)
-/// and pass it to the system, which calls [`Self::write`] after each update.
-pub struct DataStream {
+/// Listen for its creation on the world scope after a [`DebugDataStream`] is spawned. Use [`Self::entity`] to
+/// match it to your system's state, then call [`Self::write`] after each update. Each clone has independent
+/// record and change-detection buffers.
+pub struct DebugDataStreamWriter {
 	output: Arc<StreamOutput>,
 	entity: Handle,
 	name: Cow<'static, str>,
@@ -70,6 +145,13 @@ pub struct DataStream {
 	line: Vec<u8>,
 	/// The key of the last record written, which changes-only streams compare the next key with.
 	key: Vec<u8>,
+}
+
+impl Clone for DebugDataStreamWriter {
+	fn clone(&self) -> Self {
+		// Each subscriber starts fresh; cloning a writer must not copy its scratch buffers or suppress its first record.
+		Self::new(Arc::clone(&self.output), self.entity, self.name.clone())
+	}
 }
 
 /// The fields every record carries, around the system's `data`.
@@ -83,7 +165,12 @@ struct Record<'a, T> {
 	data: &'a T,
 }
 
-impl DataStream {
+impl DebugDataStreamWriter {
+	/// Returns the entity whose state this writer reports.
+	pub fn entity(&self) -> Handle {
+		self.entity
+	}
+
 	/// Creates a stream for `entity`, labeled `name` in every record, that writes to `output`.
 	pub(crate) fn new(output: Arc<StreamOutput>, entity: Handle, name: Cow<'static, str>) -> Self {
 		Self {
@@ -140,11 +227,15 @@ mod tests {
 	use super::*;
 
 	/// Opens a stream for a new entity named `Box` to a temporary file, returned with its output and the file's path.
-	fn stream(changes_only: bool) -> (DataStream, Arc<StreamOutput>, PathBuf) {
+	fn stream(changes_only: bool) -> (DebugDataStreamWriter, Arc<StreamOutput>, PathBuf) {
 		let entity = Handle::new();
 		let path = std::env::temp_dir().join(format!("byte-engine-stream-{}-{}.ndjson", std::process::id(), entity.id()));
 		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
-		(DataStream::new(Arc::clone(&output), entity, "Box".into()), output, path)
+		(
+			DebugDataStreamWriter::new(Arc::clone(&output), entity, "Box".into()),
+			output,
+			path,
+		)
 	}
 
 	/// Reads and removes the file at `path`, checking that it holds one JSON object per line.

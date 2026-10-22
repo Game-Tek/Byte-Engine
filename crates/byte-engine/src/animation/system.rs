@@ -1,6 +1,8 @@
 //! The animation system an application steps on its world scope: it plays every animator's graph and posts each
 //! one's pose and root motion, as the animation reference's Animators section specifies.
 
+#[cfg(feature = "headed")]
+use crate::rendering::UpdatePose;
 use crate::{
 	animation::{
 		graph::{
@@ -20,15 +22,14 @@ use crate::{
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},
-	gameplay::World as _,
 };
 
 /// The `Animator` struct is the request to play one graph on one entity, created through the world under the handle
 /// of the entity it poses, usually a skinned renderable.
 ///
-/// Build it with [`Self::new`] and the graph the [`AnimationSystem`] has [registered](AnimationSystem::register),
-/// then create it with the entity, as in `world.create(mesh).with(Animator::new(&graph))`. Next, send the states to
-/// play with `world.set(request).on(handle)` and read the root motion the system posts.
+/// Build it with [`Self::new`] and the ID [`AnimationSystem::register`] returned for its graph, then create it with
+/// the entity, as in `world.create(mesh).with(Animator::new(graph))`. Next, send the states to play with
+/// `world.set(request).on(handle)` and read the root motion the system posts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Animator {
 	graph: u64,
@@ -37,10 +38,10 @@ pub struct Animator {
 }
 
 impl Animator {
-	/// Plays `graph`, which the system must have registered.
-	pub fn new(graph: &AnimationGraph) -> Self {
+	/// Plays the graph the system registered under `graph`.
+	pub fn new(graph: AnimationGraphId) -> Self {
 		Self {
-			graph: graph.id(),
+			graph: graph.0,
 			root_motion: None,
 			look_chain: None,
 		}
@@ -59,16 +60,24 @@ impl Animator {
 	}
 }
 
+/// The `AnimationGraphId` struct names a graph an [`AnimationSystem`] owns, so animators and the application refer to
+/// it without holding it.
+///
+/// Get one from [`AnimationSystem::register`], then pass it to [`Animator::new`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AnimationGraphId(u64);
+
 /// The `RootMotionUpdate` struct carries the root motion a step extracted for one animator, for the code that owns
 /// the entity to move it by. The system never moves an entity itself.
 ///
-/// Listen on [`World::root_motion_channel`](crate::gameplay::World::root_motion_channel) and read the updates right
+/// Listen on the scope's `channel::<RootMotionUpdate>()` and read the updates right
 /// after [`AnimationSystem::step`], so the transform you write matches the pose that frame draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RootMotionUpdate {
 	handle: Handle,
 	delta: RootMotionDelta,
 	state: Option<AnimationStateId>,
+	waiting_for: Option<AnimationStateId>,
 }
 
 impl RootMotionUpdate {
@@ -88,12 +97,18 @@ impl RootMotionUpdate {
 	pub const fn state(&self) -> Option<AnimationStateId> {
 		self.state
 	}
+
+	/// Returns the requested state whose route waits for a moment of the playing clip, such as a frame, or `None`
+	/// when no route waits.
+	pub const fn waiting_for(&self) -> Option<AnimationStateId> {
+		self.waiting_for
+	}
 }
 
 impl Message for RootMotionUpdate {}
 
 // Requests and look targets travel as targeted messages on the scope, so `world.set(request).on(handle)` addresses
-// an animator the way `world.set(transform).on(handle)` places an entity.
+// an animator.
 impl Publisher<CreateMessage<AnimationRequest>> for MessageScope {
 	fn publish(&self, message: CreateMessage<AnimationRequest>) {
 		self.channel().send(message);
@@ -119,12 +134,16 @@ impl TargetedMessagePublisher<Option<LookTarget>> for MessageScope {
 ///
 /// Create it with [`Self::new`] before the animators it must play and [register](Self::register) their graphs, then
 /// call [`Self::step`] once per frame after your requests for that frame and before the systems that read
-/// transforms, such as [`Physics::step`](crate::physics::Physics::step). Between steps, [`Self::player`] answers
-/// what each animator plays.
-pub struct AnimationSystem<'graph> {
+/// transforms, such as [`Physics::step`](crate::physics::Physics::step). Read what each animator plays, and the root
+/// motion to move it by, from the [`RootMotionUpdate`] each step posts.
+pub struct AnimationSystem {
 	pool: AnimationPool,
-	graphs: Vec<&'graph AnimationGraph>,
+	/// The graphs the system plays, which it lends its players every step.
+	graphs: Vec<AnimationGraph>,
 	animators: DefaultListener<CreateMessage<Animator>>,
+	stream_creations: DefaultListener<CreateMessage<crate::inspector::DebugDataStreamWriter>>,
+	/// DDS subscriptions outlive animator replacement and can arrive before an animator.
+	streams: Vec<(Handle, crate::inspector::DebugDataStreamWriter)>,
 	requests: DefaultListener<CreateMessage<AnimationRequest>>,
 	looks: DefaultListener<CreateMessage<Option<LookTarget>>>,
 	deletions: DefaultListener<DeleteMessage>,
@@ -133,33 +152,39 @@ pub struct AnimationSystem<'graph> {
 	root_motion: DefaultChannel<RootMotionUpdate>,
 	/// The playing animators' entities, in the order of `players`.
 	handles: Vec<Handle>,
-	players: Vec<AnimationGraphPlayer<'graph>>,
+	players: Vec<AnimationGraphPlayer>,
 }
 
-impl<'graph> AnimationSystem<'graph> {
+impl AnimationSystem {
 	/// Creates the system for the animators created in `scope` from now on, playing clips from `pool`.
 	pub fn new(scope: &MessageScope, pool: AnimationPool) -> Self {
 		Self {
 			pool,
 			graphs: Vec::new(),
 			animators: scope.factory().listener(),
+			stream_creations: scope.factory().listener(),
+			streams: Vec::new(),
 			requests: scope.factory().listener(),
 			looks: scope.factory().listener(),
-			deletions: scope.deletions_listener(),
+			deletions: scope.channel::<DeleteMessage>().listener(),
 			#[cfg(feature = "headed")]
-			poses: scope.poses_channel(),
-			root_motion: scope.root_motion_channel(),
+			poses: scope.channel::<UpdatePose>(),
+			root_motion: scope.channel::<RootMotionUpdate>(),
 			handles: Vec::new(),
 			players: Vec::new(),
 		}
 	}
 
-	/// Makes `graph` available to the animators that name it. Register a graph before creating them; an animator
-	/// whose graph is unknown is reported and never plays.
-	pub fn register(&mut self, graph: &'graph AnimationGraph) {
-		if !self.graphs.iter().any(|known| known.id() == graph.id()) {
+	/// Takes `graph` for the animators that name it, and returns its ID for [`Animator::new`]. Register a graph
+	/// before creating its animators; an animator whose graph is unknown is reported and never plays.
+	///
+	/// The system keeps the graph for as long as it lives, and its players share it, so nothing outside needs to.
+	pub fn register(&mut self, graph: AnimationGraph) -> AnimationGraphId {
+		let id = AnimationGraphId(graph.id());
+		if !self.graphs.iter().any(|known| known.id() == id.0) {
 			self.graphs.push(graph);
 		}
+		id
 	}
 
 	/// Advances every animator by the frame and posts its pose and root motion before returning.
@@ -167,12 +192,16 @@ impl<'graph> AnimationSystem<'graph> {
 	/// Deleted animators leave and created ones join first; then the latest request and look target sent to each
 	/// apply; then the players advance together on `alley`'s lanes. No other dispatch of `alley` may be running.
 	pub fn step(&mut self, time: Time, alley: &mut Alley) {
+		self.adopt_streams();
 		self.retire_deleted();
 		self.adopt_created();
 		self.apply_requests();
 		// Submit queued clip loads and admit completed animations once for this step.
 		self.pool.update();
-		if let Err(error) = self.pool.advance_players(&mut self.players, time.delta(), alley) {
+		if let Err(error) = self
+			.pool
+			.advance_players(&mut self.players, &self.graphs, time.delta(), alley)
+		{
 			log::error!("An animator was rejected and posts nothing: {error}");
 		}
 		for (handle, player) in self.handles.iter().zip(&self.players) {
@@ -186,20 +215,9 @@ impl<'graph> AnimationSystem<'graph> {
 				handle: *handle,
 				delta: pose.root_motion,
 				state: pose.state,
+				waiting_for: player.waiting_for(),
 			});
 		}
-	}
-
-	/// Returns the player of the animator on `handle`, for what it plays, what it waits for, and how long until a
-	/// route, as of the last step.
-	pub fn player(&self, handle: Handle) -> Option<&AnimationGraphPlayer<'graph>> {
-		self.index_of(handle).map(|index| &self.players[index])
-	}
-
-	/// Returns the player of the animator on `handle` for settings that belong to the application, such as a data
-	/// stream.
-	pub fn player_mut(&mut self, handle: Handle) -> Option<&mut AnimationGraphPlayer<'graph>> {
-		self.index_of(handle).map(|index| &mut self.players[index])
 	}
 
 	fn index_of(&self, handle: Handle) -> Option<usize> {
@@ -209,10 +227,50 @@ impl<'graph> AnimationSystem<'graph> {
 	/// Removes the animators of deleted entities.
 	fn retire_deleted(&mut self) {
 		while let Some(deletion) = self.deletions.read() {
-			if let Some(index) = self.index_of(*deletion.handle()) {
+			let deleted = *deletion.handle();
+			if let Some(index) = self.index_of(deleted) {
 				self.handles.swap_remove(index);
 				self.players.swap_remove(index);
 			}
+			// A DDS has its own entity lifetime; deleting it detaches its writer even when its target remains alive.
+			let mut index = 0;
+			while index < self.streams.len() {
+				let (owner, stream) = &self.streams[index];
+				if *owner == deleted || stream.entity() == deleted {
+					let (_, removed) = self.streams.remove(index);
+					if let Some(player) = self.index_of(removed.entity()) {
+						let replacement = self
+							.streams
+							.iter()
+							.rev()
+							.find(|(_, stream)| stream.entity() == removed.entity())
+							.map(|(_, stream)| stream.clone());
+						self.players[player].set_stream(replacement);
+					}
+				} else {
+					index += 1;
+				}
+			}
+		}
+	}
+
+	/// Adopts DDS writers independently of animator arrival, attaching them to players already present.
+	fn adopt_streams(&mut self) {
+		while let Some(created) = self.stream_creations.read() {
+			let owner = created.handle();
+			let stream = created.data().clone();
+			if let Some(index) = self.streams.iter().position(|(known, _)| *known == owner) {
+				let previous = self.streams.remove(index).1;
+				if previous.entity() != stream.entity()
+					&& let Some(player) = self.index_of(previous.entity())
+				{
+					self.players[player].set_stream(None);
+				}
+			}
+			if let Some(index) = self.index_of(stream.entity()) {
+				self.players[index].set_stream(Some(stream.clone()));
+			}
+			self.streams.push((owner, stream));
 		}
 	}
 
@@ -221,7 +279,7 @@ impl<'graph> AnimationSystem<'graph> {
 	fn adopt_created(&mut self) {
 		while let Some(created) = self.animators.read() {
 			let animator = *created.data();
-			let Some(graph) = self.graphs.iter().copied().find(|graph| graph.id() == animator.graph) else {
+			let Some(graph) = self.graphs.iter().find(|graph| graph.id() == animator.graph) else {
 				log::error!(
 					"An animator names a graph the animation system does not know. The most likely cause is creating the animator before registering its graph with AnimationSystem::register."
 				);
@@ -230,6 +288,14 @@ impl<'graph> AnimationSystem<'graph> {
 			let mut player = self.pool.create_player(graph, animator.root_motion);
 			if let Some(look_chain) = animator.look_chain {
 				player = player.with_look_chain(look_chain);
+			}
+			if let Some((_, stream)) = self
+				.streams
+				.iter()
+				.rev()
+				.find(|(_, stream)| stream.entity() == created.handle())
+			{
+				player.set_stream(Some(stream.clone()));
 			}
 			match self.index_of(created.handle()) {
 				Some(index) => self.players[index] = player,
@@ -309,6 +375,125 @@ mod tests {
 	}
 
 	#[test]
+	fn one_jump_request_waits_for_takeoff_plays_the_clip_and_lands() {
+		let scope = MessageScope::standalone("one jump request");
+		let walking_clip = moving_clip("walking", 1.0);
+		let jump_clip = moving_clip("jumping", 2.0);
+		let mut pool = AnimationPool::detached(walking_clip.resident_bytes() + jump_clip.resident_bytes());
+		pool.admit("walking.animation".into(), walking_clip);
+		pool.admit("jumping.animation".into(), jump_clip);
+		let builder = AnimationGraph::builder();
+		let walking = builder.state("walking").with(AnimationClip::looping("walking.animation"));
+		let landed = builder.state("landed").with(AnimationClip::looping("walking.animation"));
+		let jumping = walking
+			.to(landed)
+			.at_frame(5)
+			.with(AnimationClip::once("jumping.animation"))
+			.when(MediaTime::ZERO)
+			.id();
+		let mut system = AnimationSystem::new(&scope, pool);
+		let graph = system.register(builder.build(walking).unwrap());
+		let entity = scope.create(Animator::new(graph)).handle();
+		let mut motion = scope.channel::<RootMotionUpdate>().listener();
+		let mut alley = Alley::new();
+		system.step(frame(1), &mut alley);
+		system.step(frame(2), &mut alley);
+		motion.to_vec();
+
+		// Request once. Subsequent steps receive no requests from gameplay.
+		scope.set(AnimationRequest::from(landed.id())).on(entity);
+		system.step(frame(3), &mut alley);
+		let waiting = motion.to_vec().pop().unwrap();
+		assert_eq!(waiting.state(), Some(walking.id()));
+		assert_eq!(waiting.waiting_for(), Some(landed.id()));
+		let mut saw_jump = false;
+		let mut last = waiting;
+		for tick in 4..25 {
+			system.step(frame(tick), &mut alley);
+			for update in motion.to_vec() {
+				saw_jump |= update.state() == Some(jumping);
+				last = update;
+			}
+		}
+		assert!(saw_jump);
+		assert_eq!(last.state(), Some(landed.id()));
+		assert_eq!(last.waiting_for(), None);
+	}
+
+	#[test]
+	fn world_streams_attach_before_or_after_animators_and_follow_their_lifetime() {
+		use std::{sync::Arc, time::Instant};
+
+		use crate::inspector::{DebugDataStream, DebugDataStreams, StreamOutput};
+
+		// A DDS may precede its animator by a step, accompany it, or join an already playing animator.
+		for arrival in 0..3 {
+			let scope = MessageScope::standalone("animation streams");
+			let clip = moving_clip("idle", 1.0);
+			let mut pool = AnimationPool::detached(clip.resident_bytes());
+			pool.admit("idle.animation".into(), clip);
+			let builder = AnimationGraph::builder();
+			let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+			let mut system = AnimationSystem::new(&scope, pool);
+			let graph = system.register(builder.build(idle).expect("graph builds"));
+			let entity = Handle::new();
+			let path = std::env::temp_dir().join(format!("animation-dds-{}-{}.ndjson", std::process::id(), entity.id()));
+			let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), false, Instant::now()).unwrap());
+			let mut debug = DebugDataStreams::new(&scope, Some(output));
+			let mut alley = Alley::new();
+			let mut publish_stream = || {
+				let created = scope.create(DebugDataStream::new(entity, "Character"));
+				debug.update();
+				created.handle()
+			};
+			if arrival == 0 {
+				publish_stream();
+				system.step(frame(0), &mut alley);
+				assert!(std::fs::read_to_string(&path).unwrap().is_empty());
+			}
+			scope.factory::<Animator>().derive(entity, Animator::new(graph));
+			if arrival == 2 {
+				system.step(frame(0), &mut alley);
+				assert!(std::fs::read_to_string(&path).unwrap().is_empty());
+			}
+			if arrival != 0 {
+				publish_stream();
+			}
+			system.step(frame(1), &mut alley);
+			let records = std::fs::read_to_string(&path).unwrap();
+			let record: serde_json::Value = serde_json::from_str(records.trim()).unwrap();
+			assert_eq!(record["entity"], entity.id());
+			assert_eq!(record["name"], "Character");
+			assert_eq!(record["stream"], "animation");
+
+			// Replacing the animator keeps the DDS; deleting the entity ends the subscription.
+			scope.factory::<Animator>().derive(entity, Animator::new(graph));
+			system.step(frame(2), &mut alley);
+			assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+			scope.channel::<DeleteMessage>().send(DeleteMessage::new(entity));
+			system.step(frame(3), &mut alley);
+			scope.factory::<Animator>().derive(entity, Animator::new(graph));
+			system.step(frame(4), &mut alley);
+			assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+			// A fresh DDS can be removed independently of the still-playing animator.
+			let active = scope.create(DebugDataStream::new(entity, "Replacement")).handle();
+			debug.update();
+			system.step(frame(5), &mut alley);
+			assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+			scope.channel::<DeleteMessage>().send(DeleteMessage::new(active));
+			system.step(frame(6), &mut alley);
+			assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+			// A DDS created and deleted before output adoption must never begin reporting.
+			let cancelled = scope.create(DebugDataStream::new(entity, "Cancelled")).handle();
+			scope.channel::<DeleteMessage>().send(DeleteMessage::new(cancelled));
+			debug.update();
+			system.step(frame(7), &mut alley);
+			assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+			std::fs::remove_file(path).unwrap();
+		}
+	}
+
+	#[test]
 	fn system_plays_animators_created_after_it_and_posts_their_root_motion() {
 		let bus = MessageBus::default();
 		let scope = bus.new_scope("world");
@@ -326,15 +511,14 @@ mod tests {
 		let mut alley = Alley::new();
 
 		let mut system = AnimationSystem::new(&scope, pool);
-		system.register(&graph);
-		let mut root_motion = scope.root_motion_channel().listener();
+		let graph = system.register(graph);
+		let mut root_motion = scope.channel::<RootMotionUpdate>().listener();
 		let entity = scope
-			.create(Animator::new(&graph).with_root_motion(RootMotionSettings::full("root")))
+			.create(Animator::new(graph).with_root_motion(RootMotionSettings::full("root")))
 			.handle();
 
 		// The first step adopts the animator and starts its initial clip; the next posts a frame of root motion.
 		system.step(frame(1), &mut alley);
-		assert_eq!(system.player(entity).and_then(|player| player.state()), Some(idle.id()));
 		system.step(frame(2), &mut alley);
 		let update = root_motion.to_vec();
 		let last = update.last().expect("the step posts root motion");
@@ -345,20 +529,18 @@ mod tests {
 		// A request sent to the handle is applied by the next step, and the root motion follows the new clip.
 		scope.set(AnimationRequest::from(walk.id())).on(entity);
 		system.step(frame(3), &mut alley);
-		assert_eq!(system.player(entity).and_then(|player| player.state()), Some(walk.id()));
 		system.step(frame(4), &mut alley);
 		let last = root_motion.to_vec().pop().expect("the step posts root motion");
 		assert_eq!(last.state(), Some(walk.id()));
 		math::assert_float_eq!(last.delta().translation.x(), 0.2);
 
 		// An animator created again on the handle starts over; a deleted entity leaves and posts nothing more.
-		scope.factory::<Animator>().derive(entity, Animator::new(&graph));
+		scope.factory::<Animator>().derive(entity, Animator::new(graph));
 		system.step(frame(5), &mut alley);
-		assert_eq!(system.player(entity).and_then(|player| player.state()), Some(idle.id()));
-		root_motion.to_vec();
-		scope.delete(entity);
 		system.step(frame(6), &mut alley);
-		assert!(system.player(entity).is_none());
+		assert_eq!(root_motion.to_vec().last().and_then(|update| update.state()), Some(idle.id()));
+		scope.channel::<DeleteMessage>().send(DeleteMessage::new(entity));
+		system.step(frame(7), &mut alley);
 		assert!(root_motion.to_vec().iter().all(|update| update.handle() != entity));
 	}
 }

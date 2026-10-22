@@ -21,7 +21,7 @@ use byte_engine::{
 		},
 	},
 	core::{Creator as _, channel::Channel as _},
-	gameplay::{Transform, TransformationUpdate, World as _},
+	gameplay::{Transform, TransformationUpdate},
 	rendering::{Camera, RenderableMesh, UpdatePose, window::Window},
 };
 use math::{Orientation, Point, Scale, Vector};
@@ -110,7 +110,7 @@ fn main() {
 			let moving = (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2);
 			let requested = if moving { animation.walk } else { animation.idle };
 			let Some(pose) = player
-				.advance(time.delta(), requested, &mut pool)
+				.advance(&animation.graph, time.delta(), requested, &mut pool)
 				.expect("application frame time and root-motion settings must be valid")
 			else {
 				return;
@@ -124,14 +124,14 @@ fn main() {
 			root_orientation = root_motion.rotation.compose(root_orientation);
 
 			let world = app.world();
-			world.transforms_channel().send(TransformationUpdate::new(
+			world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
 				animated_handle,
 				Transform::new(root_position, Scale::identity(), root_orientation),
 			));
 			// `UpdatePose` crosses into renderer-owned state, so it owns a matrix
 			// vector. Graph evaluation itself continues to reuse its retained buffers.
 			world
-				.poses_channel()
+				.channel::<UpdatePose>()
 				.send(UpdatePose::new(animated_handle, pose.global_pose.to_vec()));
 		})
 		.is_some()

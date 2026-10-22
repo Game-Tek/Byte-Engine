@@ -1,5 +1,6 @@
 pub use futures::channel::oneshot;
 pub use futures::future::FusedFuture;
+pub use futures::future::FutureExt;
 pub use futures::future::join_all;
 pub use futures::future::try_join_all;
 pub use futures::select;

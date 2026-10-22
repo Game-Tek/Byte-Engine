@@ -81,7 +81,7 @@ impl DefaultInspector {
 						)
 					})?;
 					channel.send(M::from_handle_and_payload(target, payload));
-					// Terminal posts use the same diagnostic lifecycle as World::delete.
+					// Terminal posts retire the handle from diagnostics, as the inspector's deletion watcher does.
 					if M::ENDS_TARGET_LIFECYCLE {
 						channel.forget_entity(target);
 					}

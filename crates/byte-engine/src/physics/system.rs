@@ -8,9 +8,10 @@ use crate::{
 		alley::Alley,
 		channel::DefaultChannel,
 		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
-	gameplay::{World as _, transform::TransformationUpdate},
+	gameplay::transform::TransformationUpdate,
 	physics::dynabit,
 };
 
@@ -41,12 +42,12 @@ impl Physics {
 	/// Creates a simulation of the bodies, constraints, and ray queries published in `scope` from now on, set up
 	/// from `parameters`, the physics subtree of the application's.
 	pub fn new(scope: &MessageScope, parameters: impl Parameters) -> Self {
-		let transforms = scope.transforms_channel();
+		let transforms = scope.channel::<TransformationUpdate>();
 		let authored = transforms.listener();
 		let mut world = dynabit::World::new(
 			scope.factory().listener(),
 			scope.factory().listener(),
-			scope.deletions_listener(),
+			scope.channel::<DeleteMessage>().listener(),
 			scope.factory().listener(),
 			scope.factory(),
 		);
@@ -92,5 +93,54 @@ impl Deref for Physics {
 impl DerefMut for Physics {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.world
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use math::{Point, Vector};
+
+	use super::*;
+	use crate::{
+		core::{
+			channel::Channel as _,
+			factory::{Creator as _, Handle},
+			message_bus::{MessageBus, MessageBusConfig},
+		},
+		gameplay::Transform,
+		physics::{Body, BodyTypes, RayQuery, RayQueryResponse, Shapes},
+		time::MediaTime,
+	};
+
+	#[test]
+	fn a_ray_query_made_in_one_tick_is_answered_to_its_client_in_the_next() {
+		// A ticking bus, run the way the application runs it: a tick begins, application code runs, then physics
+		// steps.
+		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
+		let world = bus.new_scope("world");
+		let mut physics = Physics::new(&world, &[][..] as &[crate::application::Parameter]);
+		let mut responses = world.factory::<RayQueryResponse>().listener();
+		let mut alley = Alley::with_parallelism(1);
+		let step = MediaTime::from_seconds_f32(1.0 / 60.0);
+
+		bus.begin_tick();
+		// The ground's top is at height one.
+		let ground: Handle = world
+			.create(Body::new(BodyTypes::Static, Shapes::cube(Vector::new(4.0, 1.0, 4.0))))
+			.into();
+		world
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(ground, Transform::identity()));
+		let query: Handle = world
+			.create(RayQuery::segment(Point::new(0.0, 10.0, 0.0), Point::new(0.0, -10.0, 0.0)).expect("a segment"))
+			.into();
+		physics.step(Time::new(step, step), &mut alley);
+		physics.flush_deletions();
+
+		bus.begin_tick();
+		let response = responses.read().expect("the response arrives in the next tick");
+		assert_eq!(response.data().query(), query);
+		assert_eq!(response.data().hit().map(|hit| hit.body()), Some(ground));
+		assert!(responses.read().is_none());
 	}
 }

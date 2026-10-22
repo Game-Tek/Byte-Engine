@@ -55,7 +55,6 @@ use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
 use crate::gameplay::Transform;
-use crate::gameplay::World as _;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
@@ -676,18 +675,18 @@ impl VisibilityPipelineManager {
 			loader,
 			resource_events: Vec::new(),
 			pipeline_manager,
-			transforms_listener: world.transforms_channel().listener(),
+			transforms_listener: world.channel::<TransformationUpdate>().listener(),
 			resource_listener: world.factory::<Resource>().listener(),
 			cone_light_listener: world.factory::<ConeLight>().listener(),
 			directional_light_listener: world.factory::<DirectionalLight>().listener(),
 			point_light_listener: world.factory::<PointLight>().listener(),
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			environment_listener: world.factory::<Environment>().listener(),
-			pose_listener: world.poses_channel().listener(),
-			material_parameter_listener: world.material_parameters_channel().listener(),
+			pose_listener: world.channel::<UpdatePose>().listener(),
+			material_parameter_listener: world.channel::<SetMaterialParameter>().listener(),
 			material_parameters: MaterialParameters::new(),
 			material_parameters_buffer,
-			deletions_listener: world.deletions_listener(),
+			deletions_listener: world.channel::<DeleteMessage>().listener(),
 			materials: Box::new([MaterialData::default(); MAX_MATERIALS]),
 			materials_buffer,
 			material_evaluations: Box::new([NO_EVALUATION; MAX_MATERIALS]),

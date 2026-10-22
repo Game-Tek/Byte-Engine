@@ -211,7 +211,7 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	let mut audio_graphs_listener = AudioGraphFactory::in_scope(&application.world).listener();
 
-	let mut deletions_listener = application.world.deletions_listener();
+	let mut deletions_listener = application.world.channel::<DeleteMessage>().listener();
 
 	let (mut sample_loader_client, sample_loader) =
 		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());
@@ -341,8 +341,7 @@ use crate::{
 		audio_system::DefaultAudioSystem,
 		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
 	},
-	core::listener::Listener as _,
-	gameplay::World as _,
+	core::{listener::Listener as _, message::DeleteMessage},
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
 };

@@ -25,7 +25,7 @@
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `inspector.port`: Serves the HTTP inspector on this loopback port. The default is `6680`, or a free port the system picks, logged as a warning, when another application uses it. A port set here that is in use stops startup.
 /// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
-/// - `debug.streams`: Writes every entity data stream that [`Self::data_stream`] opens to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
+/// - `debug.streams`: Writes every entity data stream that world-spawned [`DebugDataStream`](crate::inspector::DebugDataStream) requests to `log`, `stdout`, `stderr`, or the file at this path, such as `/dev/fd/3`, as NDJSON. The default is `None`, which opens no stream.
 /// - `debug.streams.changes-only`: Writes a data stream record only when the system's key for it changed, leaving out records where only progress like a phase moved. The default is `false`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
@@ -57,6 +57,8 @@
 /// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
+	/// Dropped before the world and systems, so task futures release their resources while those still live.
+	runtime: crate::gameplay::Runtime,
 	application: BaseApplication,
 	window_events: DefaultChannel<ghi::window::Event>,
 
@@ -130,8 +132,8 @@ pub struct GraphicsApplication {
 
 	/// Where the metrics summary or rows are written when the application closes, until written.
 	metrics_out: Option<std::path::PathBuf>,
-	/// Where every entity data stream writes; `None` when `debug.streams` is not set, so no stream opens.
-	streams: Option<Arc<crate::inspector::StreamOutput>>,
+	/// Observes world-spawned DDS entities and supplies writers when a debug destination is configured.
+	streams: crate::inspector::DebugDataStreams,
 
 	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
@@ -345,7 +347,10 @@ impl GraphicsApplication {
 			Arc::new(output)
 		});
 
+		let streams = crate::inspector::DebugDataStreams::new(&world_messages, streams);
+
 		GraphicsApplication {
+			runtime: crate::gameplay::Runtime::new(&world_messages),
 			application,
 			window_events: services.window_events,
 
@@ -633,6 +638,7 @@ impl GraphicsApplication {
 			let _span = debug_span!("GraphicsApplication::simulation_step").entered();
 			self.simulation_elapsed += step;
 			let time = Time::new(self.simulation_elapsed, step);
+			self.runtime.advance(time);
 			simulate(self, time);
 			// The step's state is complete once the callback has stepped its systems.
 			self.renderer.step();
@@ -652,12 +658,23 @@ impl GraphicsApplication {
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		self.assert_tied_simulation_rate();
 		self.tick_internal(|application, time| {
+			application.runtime.advance(time);
 			let result = debug_span!("GraphicsApplication::user_tick").in_scope(|| f(application, time));
 			// The step's state is complete once the callback has stepped its systems.
 			application.renderer.step();
 			application.simulation_alpha = 1.0;
 			result
 		})
+	}
+
+	/// Returns the gameplay task runtime owned by the application.
+	///
+	/// Spawn behaviors through [`Runtime::spawn`](crate::gameplay::Runtime::spawn), then call
+	/// [`Runtime::poll`](crate::gameplay::Runtime::poll) before and after the systems whose messages tasks
+	/// await. The application advances task time before each [`Self::tick_with`] callback or each simulation
+	/// callback of [`Self::tick_stepped_with`].
+	pub fn runtime(&mut self) -> &mut crate::gameplay::Runtime {
+		&mut self.runtime
 	}
 
 	/// Runs `lanes` once on every lane of the application's alley, from a tick callback, and returns when every
@@ -773,7 +790,9 @@ impl GraphicsApplication {
 		debug_span!("GraphicsApplication::update_input")
 			.in_scope(|| self.actions.pull(&mut self.input, |_| input::Capture::Passed));
 
+		self.streams.update();
 		let result = run(self, time);
+		self.streams.update();
 
 		self.renderer.update();
 		self.prepare_renderer_state();
@@ -794,9 +813,7 @@ impl GraphicsApplication {
 			presented,
 		};
 		self.tick_count += 1;
-		if let Some(streams) = &self.streams {
-			streams.set_tick(self.tick_count);
-		}
+		self.streams.set_tick(self.tick_count);
 
 		#[cfg(debug_assertions)]
 		if let Some(kill_after) = self.kill_after
@@ -987,20 +1004,6 @@ impl GraphicsApplication {
 		let port = self.configuration.register(prefix);
 		queue_startup_parameters(self.application.parameters(), &self.configuration, prefix);
 		port
-	}
-
-	/// Opens a data stream that reports `entity`'s state, labeled `name`, to the `debug.streams` destination.
-	///
-	/// Returns `None` when `debug.streams` is not set, so the system that would write it skips the work. Next, hand
-	/// the stream to the system that holds the entity's state. See the
-	/// [data streams reference](/docs/reference/data-streams) for the records.
-	pub fn data_stream(
-		&self,
-		entity: crate::core::factory::Handle,
-		name: impl Into<std::borrow::Cow<'static, str>>,
-	) -> Option<crate::inspector::DataStream> {
-		let output = self.streams.as_ref()?;
-		Some(crate::inspector::DataStream::new(Arc::clone(output), entity, name.into()))
 	}
 
 	/// Returns the resolved startup parameters.

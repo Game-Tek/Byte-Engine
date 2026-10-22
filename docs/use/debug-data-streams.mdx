@@ -1,0 +1,51 @@
+---
+title: Debug data streams
+description: Report what a system knows about one entity as NDJSON lines that you or an agent can read while the application runs.
+icon: Bug
+---
+
+Use a debug data stream (DDS) when you want to follow what a system does with one entity, frame by frame, without stopping the
+application. The system that holds the entity's state writes one JSON line each time it updates the entity, so you
+can read the stream yourself, filter it, or hand it to an agent that debugs the application.
+
+## Open a stream for an entity
+
+Spawn a debug data stream as a `DebugDataStream` entity through the world's message bus. Give it the handle of the entity you want to
+observe and a name for its records:
+
+```rust
+let dds = world.create(DebugDataStream::new(entity, "Character")).handle();
+```
+
+Systems that support debug data streams start reporting during a normal update. You can spawn the debug data stream before or after its animator. Create the systems before the debug data stream so their listeners
+observe it. No extra animation step or direct system reference is needed.
+
+Without a `debug.streams` destination, the debug data stream remains a request and writes no records. Delete the debug data stream entity when
+you want to stop reporting without deleting the character.
+
+## Choose where the records go
+
+Start the application with `debug.streams` set to `stderr`, `stdout`, `log`, or a file path:
+
+```bash
+cargo run -- --debug.streams=streams.ndjson
+```
+
+To keep the records apart from the application's own output, send them to a file descriptor and read it from another
+program:
+
+```bash
+cargo run -- --debug.streams=/dev/fd/3 3>&1 1>/dev/null | jq -c 'select(.name == "Character") | .data'
+```
+
+## Read the records
+
+Each line is one record with the time, the entity, the stream name, and the system's `data`.
+[Debug data streams](/docs/reference/debug-data-streams) specifies the fields every record carries, and the Reference page of the
+system that wrote it specifies its `data`.
+
+## Rust API
+
+- [`DebugDataStream`](/docs/api/latest/byte_engine/inspector/struct.DebugDataStream)
+- [`DebugDataStreamWriter`](/docs/api/latest/byte_engine/inspector/struct.DebugDataStreamWriter)
+- [`MessageScope::create`](/docs/api/latest/byte_engine/core/factory/trait.Creator#method.create)

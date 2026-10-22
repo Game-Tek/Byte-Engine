@@ -22,6 +22,7 @@ struct Record<'a> {
 	transition: Option<Transition<'a>>,
 	pending: Option<Pending<'a>>,
 	root_motion: RootMotion,
+	look: Option<super::look::LookReport>,
 }
 
 /// The part of a [`Record`] whose change warrants a record in a changes-only stream.
@@ -318,6 +319,10 @@ impl AnimationGraphPlayer {
 			root_motion: RootMotion {
 				translation: root_motion.translation.to_array(),
 				rotation: root_motion.rotation.to_array(),
+			},
+			look: match &self.runtime {
+				PlayerRuntime::Ready(ready) => ready.pose.look.as_ref().and_then(|chain| chain.report),
+				_ => None,
 			},
 		}
 	}

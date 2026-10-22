@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Animation graphs pick fitted stops and hand turns in place to root motion.
+  - Routes from one state to the same destination marked with `matching_frames()` compete, so one request, such as idle, takes the stop whose wait frame fits the playing blend soonest, like a stop off either foot. Clips that no alternative names frames on don't restrict the choice.
+  - A one-shot route given `turning(yaw)` hands the clip's turn to the entity through root motion when the one-shot completes, so a turn in place ends with the entity, not the pose, turned. The look chain holds its direction across the hand-over, and animation debug records carry a `look` object with what the chain measured and turned.
+
 - Gameplay can run as async tasks that the application's tick polls, so a character's life or a round's phases read as one function instead of a state machine. `GraphicsApplication::runtime` returns the `gameplay::Runtime`, which the application advances once per simulation step. Spawn an entity's behavior with `Runtime::spawn_on`, which ends it when the world deletes the entity, or any other task with `Runtime::spawn`, then call `Runtime::poll` with your state after each stage whose messages tasks wait for.
   - Through `Tasks`, a task waits for the next tick, which resolves with the simulation time since the wait began, sleeps in simulation time, and reaches the state lent to the poll with `with`. Tasks never read the wall clock, so pausing with a zero delta holds every sleep.
   - `DefaultListener::recv` resolves with a listener's next message and `recv_where` with the next one that matches, so tasks, and any other executor, await the message bus directly. A listener keeps what was sent while its task waited for something else. On an Apple M4, one send that 4,096 waiting tasks receive takes about 105 µs, and a send that nobody waits for costs 2% to 3% more than before.

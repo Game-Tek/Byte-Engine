@@ -686,10 +686,9 @@ impl AnimationGraphPlayer {
 					scratch,
 				};
 				runtime.advance(graph, delta, self.requested, self.look_target, &mut evaluation);
-				// The entity's turn is applied once; a held target does not keep turning the chain back.
-				if let Some(target) = &mut self.look_target {
-					target.turned = 0.0;
-				}
+				// A hand-over turned the held target with the entity, and it stays turned. The application's turn is applied
+				// once; a held target does not keep turning the chain back.
+				self.look_target = runtime.pose.look_target.map(|target| LookTarget { turned: 0.0, ..target });
 			}
 			PlayerRuntime::Rejected { reported, .. } => return !*reported,
 			PlayerRuntime::Loading => {}
@@ -800,7 +799,7 @@ impl ReadyAnimationGraphPlayer {
 		let Playback::Playing(active) = &self.playback else {
 			return None;
 		};
-		let route = graph.select_transition(active.state, target, active.is_finished())?;
+		let route = self.playback_route(graph, active, target)?;
 		if route.wait.is_empty() {
 			Some(MediaTime::ZERO)
 		} else {
@@ -909,6 +908,10 @@ impl ReadyAnimationGraphPlayer {
 			Some(leftover) => root_motion.then(self.hand_over(graph, delta, leftover, requested, evaluation)),
 			None => root_motion,
 		};
+		// The look chain turns once, on the frame's last pose, after any hand-over turned the entity under it.
+		if !matches!(self.playback, Playback::AwaitingInitial) {
+			self.pose.write_visual_pose();
+		}
 
 		self.last_delta = delta;
 		self.root_motion = root_motion;
@@ -1154,6 +1157,23 @@ impl ReadyAnimationGraphPlayer {
 			self.pose
 				.begin_handover_blend(&mut destination, delta, leftover, blend, evaluation)
 		};
+		// A one-shot that turned the body in its pose hands the turn to the entity at the hand-over moment, so what
+		// the next state plays after it is in the turned frame.
+		let root_motion = match origin {
+			RouteOrigin::Completion(state) if graph.states[state].completion_turn != 0.0 => {
+				let turn = graph.states[state].completion_turn;
+				self.pose.turn_entity(turn);
+				let rotation = crate::math::Orientation::try_from_rotation_vector(crate::math::Vector::<
+					resource_management::resources::ParentSpace,
+				>::new(0.0, turn, 0.0))
+				.expect("a finite turn is a valid rotation");
+				RootMotionDelta {
+					translation: rotation.rotate_vector(root_motion.translation),
+					rotation: root_motion.rotation.compose(rotation),
+				}
+			}
+			_ => root_motion,
+		};
 
 		self.playback = match std::mem::replace(&mut self.playback, Playback::AwaitingInitial) {
 			Playback::Playing(source) if blend != MediaTime::ZERO => Playback::Transitioning(ActiveTransition {
@@ -1228,6 +1248,72 @@ impl ReadyAnimationGraphPlayer {
 		}
 	}
 
+	/// Resolves fitted alternatives using the playing blend's retained weights and phase, keeping clip choices inside
+	/// the graph. Ordinary routes keep their authored ordering and state routes still precede space routes.
+	fn playback_route<'graph>(
+		&self,
+		graph: &'graph AnimationGraph,
+		active: &RuntimeMotion,
+		requested: AnimationStateId,
+	) -> Option<SelectedRoute<'graph>> {
+		let route = graph.select_transition(active.state, requested, active.is_finished())?;
+		let RouteOrigin::State(source) = route.origin else {
+			return Some(route);
+		};
+		// A route of another state, like an interruptible one-shot's completion route, keeps the waits
+		// `select_transition` cleared: its frames name moments of a state that is not playing.
+		if source != active.state.index {
+			return Some(route);
+		}
+		let routes = &graph.states[source].transitions;
+		let first = routes.iter().find(|edge| edge.destination == requested)?;
+		if !first.matching_frames {
+			return Some(route);
+		}
+		routes
+			.iter()
+			.enumerate()
+			.filter(|(_, edge)| edge.destination == requested && edge.matching_frames)
+			.filter(|(_, edge)| {
+				active.weights.iter().all(|(clip, weight)| {
+					weight <= 1.0e-3
+						|| edge.wait.iter().any(|point| point.clip == clip)
+						|| !routes
+							.iter()
+							.filter(|other| other.matching_frames && other.destination == requested)
+							.any(|other| other.wait.iter().any(|point| point.clip == clip))
+				})
+			})
+			.filter_map(|(index, edge)| {
+				let (time, _) = active.time_until(active.samples(graph), &edge.wait)?;
+				Some((index, time))
+			})
+			.min_by_key(|(_, time)| time.as_ticks())
+			.map(|(index, _)| {
+				let edge = &routes[index];
+				let route = u32::try_from(index).expect("a state has fewer routes than `u32::MAX`");
+				SelectedRoute {
+					target: edge.target,
+					duration: edge.duration,
+					wait: &edge.wait,
+					entry: &edge.entry,
+					wait_points: RoutePoints::Wait {
+						origin: RouteOrigin::State(source),
+						route,
+					},
+					entry_points: if edge.entry.is_empty() {
+						RoutePoints::None
+					} else {
+						RoutePoints::Entry {
+							origin: RouteOrigin::State(source),
+							route,
+						}
+					},
+					origin: RouteOrigin::State(source),
+				}
+			})
+	}
+
 	/// Resolves the active clip toward the persistent state requested by client code.
 	fn selected_transition(
 		&self,
@@ -1235,8 +1321,7 @@ impl ReadyAnimationGraphPlayer {
 		active: &RuntimeMotion,
 		requested: AnimationStateId,
 	) -> Option<PendingPlayerTransition> {
-		graph
-			.select_transition(active.state, requested, active.is_finished())
+		self.playback_route(graph, active, requested)
 			.map(|route| PendingPlayerTransition {
 				requested,
 				target: route.target,
@@ -1568,10 +1653,23 @@ impl PlayerPose {
 		self.write_global_pose();
 	}
 
-	/// Finishes the frame's visual pose: removes the extracted root motion, turns the look chain, and builds the
-	/// global pose.
+	/// Finishes a sampled visual pose by removing the extracted root motion. The step builds the global pose from the
+	/// last one with [`Self::write_visual_pose`].
 	fn finish_visual_pose(&mut self) {
 		self.remove_root_motion_from_visual_pose();
+	}
+
+	/// Tells the look chain the entity turned by `turn` about +Y at a hand-over within this frame: the target, set in
+	/// the entity's frame before the turn, and the eased yaw turn back by as much, so the look holds in the world.
+	fn turn_entity(&mut self, turn: f32) {
+		if let Some(target) = &mut self.look_target {
+			target.yaw = look::wrap_angle(target.yaw - turn);
+			target.turned += turn;
+		}
+	}
+
+	/// Turns the look chain on the frame's visual pose and builds the global pose.
+	fn write_visual_pose(&mut self) {
 		match (&mut self.look, self.look_target) {
 			(Some(chain), Some(target)) => {
 				self.looked_pose.copy_from_slice(&self.local_pose);
@@ -2324,6 +2422,69 @@ mod tests {
 	}
 
 	#[test]
+	fn matching_routes_choose_the_earliest_supported_stop_and_keep_the_blend_position() {
+		let mut pool = pool_with(vec![
+			("forward.animation", test_animation("forward", 1.0)),
+			("side.animation", test_animation("side", 1.0)),
+			("idle.animation", test_animation("idle", 1.0)),
+			("stop.animation", test_animation("stop", 1.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let space = builder.planar_space("locomotion");
+		let walk = space.state("walk").planar(
+			AnimationBlend::new()
+				.sample([0.0, 0.0], AnimationClip::looping("idle.animation"))
+				.sample([1.0, 0.0], AnimationClip::looping("forward.animation"))
+				.sample([0.0, 1.0], AnimationClip::looping("side.animation")),
+		);
+		let idle = space.state("idle").with(AnimationClip::looping("idle.animation"));
+		let forward_only = walk
+			.to(idle)
+			.matching_frames()
+			.at_frames("forward.animation", [4])
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(MediaTime::ZERO);
+		let _late = walk
+			.to(idle)
+			.matching_frames()
+			.at_frames("forward.animation", [8])
+			.at_frames("side.animation", [8])
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(MediaTime::ZERO);
+		let early = walk
+			.to(idle)
+			.matching_frames()
+			.at_frames("forward.animation", [5])
+			.at_frames("side.animation", [5])
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(MediaTime::ZERO);
+		let _tie = walk
+			.to(idle)
+			.matching_frames()
+			.at_frames("forward.animation", [5])
+			.at_frames("side.animation", [5])
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(walk).unwrap();
+		let mut player = pool.create_player(&graph, None);
+		// The idle sample contributes too, but no alternative fits it. Only the fitted gait clips constrain selection.
+		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([0.3, 0.3]), &mut pool));
+		ready(player.advance(&graph, MediaTime::from_millis(300), walk.id().at([0.3, 0.3]), &mut pool));
+		let wait = player.time_until_route(&graph, idle.id()).unwrap().as_seconds_f32();
+		assert!((wait - 0.2).abs() < 1.0e-4);
+		ready(player.advance(&graph, MediaTime::from_millis(250), idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(early.id()));
+		ready(player.advance(&graph, MediaTime::from_millis(1100), idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(idle.id()));
+		// A pure forward blend can take the earlier alternative that the mixed blend excluded.
+		let mut forward = pool.create_player(&graph, None);
+		ready(forward.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(forward.advance(&graph, MediaTime::from_millis(300), walk.id().at([1.0, 0.0]), &mut pool));
+		ready(forward.advance(&graph, MediaTime::from_millis(150), idle.id(), &mut pool));
+		assert_eq!(forward.state(), Some(forward_only.id()));
+	}
+
+	#[test]
 	fn routes_enter_their_target_at_an_entry_frame() {
 		let mut pool = pool_with(vec![
 			("idle.animation", test_animation("idle", 1.0)),
@@ -2850,6 +3011,37 @@ mod tests {
 	}
 
 	#[test]
+	fn one_shots_take_their_completions_matching_routes_without_waiting() {
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("start.animation", test_animation("start", 1.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let start = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.anytime(MediaTime::ZERO);
+		walk.to(idle)
+			.matching_frames()
+			.at_frames("walk.animation", [9])
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+
+		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+		ready(player.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool));
+		assert_eq!(player.state(), Some(start.id()));
+		// The walk's frames name moments of the walk, which is not playing, so the start is cut short at once.
+		assert_eq!(player.time_until_route(&graph, idle.id()), Some(MediaTime::ZERO));
+		ready(player.advance(&graph, MediaTime::from_millis(100), idle.id(), &mut pool));
+		assert_eq!(player.state(), Some(idle.id()));
+	}
+
+	#[test]
 	fn anytime_routes_redirect_a_blend_in_progress_from_the_pose_on_screen() {
 		for interruptible in [true, false] {
 			let mut pool = pool_with(vec![
@@ -3238,6 +3430,116 @@ mod tests {
 		math::assert_float_eq!(look_angles(&pose, 2).0, eased);
 		let pose = ready(player.advance(&graph, second, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, eased + (1.0 - eased) * follow);
+	}
+
+	/// Builds a graph whose idle turns in place by `TURN` into a twin idle, through a one-shot whose hips turn by as
+	/// much, and a player with a look chain over it. `interruptible` picks how the one-shot route is added.
+	fn turning_player(interruptible: bool) -> (AnimationGraph, [AnimationStateId; 3], AnimationGraphPlayer, AnimationPool) {
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let turned = builder.state("turned").with(AnimationClip::looping("idle.animation"));
+		let route = idle.to(turned).with(AnimationClip::once("turn.animation")).turning(TURN);
+		let turn = if interruptible {
+			turned.to(idle).anytime(MediaTime::ZERO);
+			route.anytime(MediaTime::ZERO)
+		} else {
+			route.when(MediaTime::ZERO)
+		};
+		let graph = builder.build(idle).expect("graph should build");
+		let settings = LookChainSettings {
+			response: Some(1.0),
+			..LOOK_SETTINGS
+		};
+		let (player, mut pool) = look_player(&graph, settings);
+		let skeleton = Skeleton {
+			nodes: vec![
+				test_node(Some("Hips"), None, LocalTransform::identity()),
+				test_node(Some("Spine"), Some(0), LocalTransform::identity()),
+				test_node(Some("Head"), Some(1), LocalTransform::identity()),
+			],
+		};
+		let turn_clip = Animation {
+			name: Some("turn".into()),
+			skeleton: Reference::in_memory("look.skeleton", skeleton),
+			duration: 1.0,
+			frame_rate: None,
+			tracks: vec![NodeTrack {
+				node: 0,
+				translation: None,
+				rotation: Some(RotationCurve::Linear {
+					times: vec![0.0, 1.0],
+					values: vec![math::Orientation::identity(), yaw(TURN)],
+				}),
+				scale: None,
+			}],
+		};
+		pool.admit("turn.animation".into(), PackedAnimationData::from_resource(turn_clip));
+		(graph, [idle.id(), turned.id(), turn.id()], player, pool)
+	}
+
+	/// The turn the one-shot of [`turning_player`] makes, in radians about +Y.
+	const TURN: f32 = 0.5;
+
+	fn yaw(angle: f32) -> math::Orientation {
+		math::Orientation::try_from_rotation_vector(math::Vector::<resource_management::resources::ParentSpace>::new(
+			0.0, angle, 0.0,
+		))
+		.expect("a finite angle is a valid rotation")
+	}
+
+	/// Returns the angle about +Y of a rotation about the vertical axis.
+	fn yaw_of(rotation: math::Orientation) -> f32 {
+		let [_, y, _, w] = rotation.to_array();
+		2.0 * y.atan2(w)
+	}
+
+	#[test]
+	fn completed_turns_hand_their_turn_to_root_motion_and_the_look_holds_in_the_world() {
+		let (graph, [_, turned, turn], mut player, mut pool) = turning_player(false);
+		let frame = MediaTime::from_millis(100);
+		// The target is set once, in the entity's frame before it turns, and held.
+		player.set_look(Some(LookTarget::new(0.9, 0.0)));
+		let mut entity = 0.0;
+		let mut hips = 0.0;
+		let mut handed_over = false;
+		for step in 0..16 {
+			let pose = ready(player.advance(&graph, frame, turned, &mut pool));
+			let rotation = yaw_of(pose.root_motion.rotation);
+			// Only the step that hands over turns the entity, by the whole turn.
+			if pose.state == Some(turned) && !handed_over {
+				handed_over = true;
+				math::assert_float_eq!(rotation, TURN);
+			} else {
+				math::assert_float_eq!(rotation, 0.0);
+			}
+			entity += rotation;
+			// The look holds its direction in the world in every step, the hand-over included.
+			math::assert_float_eq!(entity + look_angles(&pose, 2).0, 0.9);
+			// The body turns with the one-shot, then the entity takes over without a jump.
+			let world_hips = entity + look_angles(&pose, 0).0;
+			assert!(
+				(world_hips - hips).abs() <= TURN * 0.12,
+				"step {step}: hips jumped from {hips} to {world_hips}"
+			);
+			hips = world_hips;
+			if step == 0 {
+				assert_eq!(pose.state, Some(turn));
+			}
+		}
+		assert!(handed_over, "the one-shot should hand over to its target");
+	}
+
+	#[test]
+	fn one_shots_cut_short_hand_over_no_turn() {
+		let (graph, [idle, turned, turn], mut player, mut pool) = turning_player(true);
+		let frame = MediaTime::from_millis(100);
+		let pose = ready(player.advance(&graph, frame, turned, &mut pool));
+		assert_eq!(pose.state, Some(turn));
+		for _ in 0..4 {
+			let pose = ready(player.advance(&graph, frame, idle, &mut pool));
+			math::assert_float_eq!(yaw_of(pose.root_motion.rotation), 0.0);
+		}
+		assert_eq!(player.state(), Some(idle));
 	}
 
 	#[test]

@@ -106,6 +106,12 @@ positively weighted clip contributes its own delta, mixed as a weighted mean. In
 a transition, the source and destination deltas blend by the transition factor.
 The visual pose keeps the rest values on the extracted channels.
 
+A step in which a one-shot hands over to its target with a
+[hand-over turn](#routes) rotates by the turn at the hand-over moment, whatever
+the rotation setting: the delta's rotation composes the motion before the
+hand-over, the turn, and the motion after it. The motion after the hand-over is
+in the turned frame, so its translation rotates by the turn before it adds.
+
 ## Animation graph
 
 A graph is a state machine built in code. Its states can be grouped into
@@ -159,6 +165,14 @@ A route leads from a source state to a target state.
 | From a space | A route every state of a space can take, considered after the state's own routes. |
 | From any state | A route every state can take, considered after the state's own routes and its space's routes. |
 
+A route through a one-shot can carry a hand-over turn: an angle in radians
+about +Y, by the right-hand rule. It suits a one-shot that turns the body in its
+pose into a target whose pose faces where the one-shot started, like a turn in
+place into an idle. When the one-shot completes and hands over to its target,
+the entity takes over the turn through [root motion](#root-motion), so the pose
+and the entity together keep the body where the one-shot left it. A one-shot cut
+short by another route hands over no turn.
+
 A route through a one-shot plays a state of its own, named after the route's
 source and target, as in `Walk -> Stop`. The second one-shot between the same
 source and target, in the order the graph is built, is named `Walk -> Stop 2`;
@@ -185,6 +199,18 @@ Once a one-shot finishes, it takes its completion route, and the request that
 held resolves from the completion state. A blend in progress can only be
 redirected along anytime routes, of its destination state or that state's
 space, and any-state routes, and never toward a one-shot.
+
+A route can be a fitted alternative: one of several routes from a state to the
+same destination, each fitting the source clips it names wait frames in. When
+the first route from the state to the requested destination is a fitted
+alternative, the alternatives compete:
+
+| Rule | Behavior |
+| --- | --- |
+| Eligibility | An alternative is eligible when it fits every source clip that contributes more than 0.001 weight and that any alternative fits. Clips that no alternative fits don't restrict the choice. |
+| Choice | The eligible alternative whose next wait frame comes first wins. Equal times keep the order the graph is built in. |
+| Blending in | While the source blends in, fitted alternatives wait for it to settle instead of falling back to a route from its space. |
+| One-shots | While a one-shot plays, a request resolved from its completion state's alternatives takes the first one without waiting, since their frames name moments of a state that isn't playing. |
 
 ### Building a graph
 
@@ -329,6 +355,7 @@ or extension; when the ID's fragment picks a clip by name or index, as in
 | `transition` | Transition or null | The blend in progress; null when one state plays alone. |
 | `pending` | Pending or null | A route the animator selected but hasn't started; null when there's none. |
 | `root_motion` | Root motion | The motion the advance extracted for the entity to apply. |
+| `look` | Look or null | What the [look chain](#look-chain) measured and turned in the advance; null without a look chain or while it's released. |
 
 A request:
 
@@ -398,12 +425,23 @@ Root motion:
 | `translation` | Array of three numbers | The translation, in the skeleton root's parent space. |
 | `rotation` | Array of four numbers | The rotation quaternion, as x, y, z, w. |
 
+A look, in radians about +Y in the entity's object space:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `target` | Number | The target's yaw the advance looked toward, after any hand-over turn. |
+| `body` | Number | The body node's animated yaw. |
+| `end` | Number | The end node's animated yaw before the chain turns it. |
+| `clamped` | Number | The target's yaw clamped around `body`. |
+| `eased` | Number | The eased yaw the chain looks along. |
+| `turn` | Number | How far the chain turns the end node: `eased` minus `end`. |
+
 The key, which [changes-only](/docs/reference/debug-data-streams#destination) streams
 compare, is `status`, `missing`, the request's `state`, the motion's `state`
 and `clips`, the transition's `from` state and `route`, and the pending route's
 `requested`, `target`, `route`, and wait `clip`. Phases, times, the request's
-position, a blend's `elapsed`, the wait's `point` and `starts_in`, and root
-motion aren't part of it.
+position, a blend's `elapsed`, the wait's `point` and `starts_in`, root
+motion, and the look aren't part of it.
 
 ### Look chain
 
@@ -433,7 +471,9 @@ released.
 | Easing | The eased yaw and pitch start at the clamped target. Each step, they move the fraction 1 − e^(−response × delta) of the way to it, yaw along the shorter way around. Without a response, they equal the clamped target. |
 | Turn | The chain turns by the eased yaw minus the end node's animated yaw, and by the eased pitch. |
 | Distribution | The turn is one rotation, the pitch then the yaw. Each node, from base to end, turns by its share of that rotation's angle about its axis, in object space after its animated object-space rotation, so the shares compose to the whole turn at the end node. Its descendants turn with it. |
-| Entity turn | A target may say how far the entity turned about +Y since the last step. The eased yaw turns the other way by that much before it eases, so the chain holds its direction in the world when the entity takes over a turn clip's rotation. The turn applies to one step. |
+| Entity turn | A target may say how far the application turned the entity about +Y since the last step. The eased yaw turns the other way by that much before it eases, so the chain holds its direction in the world. The turn applies to one step. Turns the step's root motion carries aren't part of it. |
+| Hand-over turn | A step whose one-shot hands over with a [hand-over turn](#routes) turns the eased yaw and the target's yaw the other way by the turn, before the chain eases, so the chain holds its direction in the world once the entity applies the step's root motion. The target stays turned until another replaces it. |
+| Steps | The chain turns once a step, on the step's last pose, after any hand-over within it. |
 | Release | The chain stops turning at once. The next target starts the easing over. |
 | Root motion | The look chain never changes the root motion delta. |
 

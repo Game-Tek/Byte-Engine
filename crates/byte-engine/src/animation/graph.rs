@@ -113,6 +113,8 @@ impl AnimationClip {
 }
 
 struct StateTransition {
+	/// Competes with other matching routes by wait time; every fitted, contributing source clip must have frames.
+	matching_frames: bool,
 	// `target` may be an internal one-shot state, while `destination` is the
 	// persistent state requested by client code.
 	target: AnimationStateId,
@@ -199,6 +201,9 @@ struct AnimationGraphStateData {
 	completion_blend: MediaTime,
 	/// Where in its clips the completion state starts after the one-shot.
 	completion_entry: Box<[ClipPoint]>,
+	/// The angle about +Y, in radians, the entity takes over through root motion when the one-shot hands over to its
+	/// completion state; zero for none.
+	completion_turn: f32,
 	transitions: Vec<StateTransition>,
 }
 
@@ -499,6 +504,7 @@ impl AnimationGraphBuilderData {
 			interruptible: true,
 			completion_blend,
 			completion_entry: Box::default(),
+			completion_turn: 0.0,
 			transitions: Vec::new(),
 		});
 		AnimationStateId {
@@ -564,6 +570,7 @@ pub struct AnimationGraphState<'builder> {
 
 /// The `AnimationGraphTransitionBuilder` struct assigns a clip to a route between two states.
 pub struct AnimationGraphTransitionBuilder<'builder> {
+	matching_frames: bool,
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
 	wait: Vec<ClipPoint>,
@@ -572,10 +579,12 @@ pub struct AnimationGraphTransitionBuilder<'builder> {
 
 /// The `AnimationGraphTransitionConditionBuilder` struct holds unfinished one-shot route authoring so callers can choose its interruption policy.
 pub struct AnimationGraphTransitionConditionBuilder<'builder> {
+	matching_frames: bool,
 	source: AnimationGraphState<'builder>,
 	target: AnimationGraphState<'builder>,
 	motion: AnimationMotion,
 	completion_blend: MediaTime,
+	turn: f32,
 	wait: Vec<ClipPoint>,
 	entry: Vec<ClipPoint>,
 }
@@ -685,6 +694,7 @@ impl<'builder> AnimationGraphSpace<'builder> {
 		let mut data = self.data.borrow_mut();
 		let data = data.as_mut().expect("the animation graph has already been built");
 		data.spaces[self.index].transitions.push(StateTransition {
+			matching_frames: false,
 			target: target.id,
 			destination: target.id,
 			duration: inertialization,
@@ -709,6 +719,7 @@ impl<'builder> AnimationGraphState<'builder> {
 			"animation graph states must use the same builder"
 		);
 		AnimationGraphTransitionBuilder {
+			matching_frames: false,
 			source: self,
 			target,
 			wait: Vec::new(),
@@ -725,6 +736,20 @@ impl<'builder> AnimationGraphState<'builder> {
 }
 
 impl<'builder> AnimationGraphTransitionBuilder<'builder> {
+	/// Makes this route one of several fitted alternatives to the same destination, so a single request, such as
+	/// idle, picks the stop that fits the playing blend soonest, like a stop off either foot.
+	///
+	/// An alternative is eligible only when it names frames on every contributing source clip that any alternative
+	/// names frames on; clips no alternative names don't constrain the choice. The eligible alternative whose frame
+	/// comes first wins, and equal times keep authoring order. While the source blends in, the route waits for it to
+	/// settle instead of taking a route of its space.
+	///
+	/// Next, name the clips' frames with [`Self::at_frames`], then assign the stop with [`Self::with`].
+	pub fn matching_frames(mut self) -> Self {
+		self.matching_frames = true;
+		self
+	}
+
 	/// Waits for the source's playback to reach `frame` of its clip before taking the route. Use it to start a clip
 	/// at the point of a loop it fits, like a jump off the right foot.
 	///
@@ -792,6 +817,7 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
+				matching_frames: self.matching_frames,
 				target: self.target.id,
 				destination: self.target.id,
 				duration: inertialization,
@@ -812,10 +838,12 @@ impl<'builder> AnimationGraphTransitionBuilder<'builder> {
 	/// off in.
 	pub fn with(self, motion: impl Into<AnimationMotion>) -> AnimationGraphTransitionConditionBuilder<'builder> {
 		AnimationGraphTransitionConditionBuilder {
+			matching_frames: self.matching_frames,
 			source: self.source,
 			target: self.target,
 			motion: motion.into(),
 			completion_blend: MediaTime::ZERO,
+			turn: 0.0,
 			wait: self.wait,
 			entry: self.entry,
 		}
@@ -827,6 +855,15 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 	/// ends, which hides small pose mismatches between the two clips. Without it the target starts immediately.
 	pub fn exit(mut self, inertialization: MediaTime) -> Self {
 		self.completion_blend = inertialization;
+		self
+	}
+
+	/// Hands `yaw`, in radians about +Y, to the entity through root motion when the one-shot completes. Use it for a
+	/// turn in place: pass the angle the clip turns the body in its pose, and make the target a state whose pose
+	/// faces where the clip started, so the entity takes over the turn in the frame the pose gives it up. The look
+	/// chain holds its direction across it on its own. A one-shot cut short hands over no turn.
+	pub fn turning(mut self, yaw: f32) -> Self {
+		self.turn = yaw;
 		self
 	}
 
@@ -888,10 +925,12 @@ impl<'builder> AnimationGraphTransitionConditionBuilder<'builder> {
 			self.completion_blend,
 		);
 		builder.states[id.index].completion_entry = self.entry.into();
+		builder.states[id.index].completion_turn = self.turn;
 		builder.states[id.index].interruptible = can_interrupt_transition;
 		builder.transitions.push((
 			self.source.id,
 			StateTransition {
+				matching_frames: self.matching_frames,
 				target: id,
 				destination: self.target.id,
 				duration: inertialization,

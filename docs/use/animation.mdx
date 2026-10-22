@@ -31,6 +31,20 @@ walk.to(idle).with(stop_ring()).at_frames("walk_f", [4, 18]).anytime(settle);
 let graph = graph.build(idle)?;
 ```
 
+To turn in place, play the turn clip once into an idle twin whose pose faces
+where the clip started, and say how far the clip turns the body. When the clip
+ends, its turn reaches your code as root-motion rotation, in the same frame the
+pose hands over:
+
+```rust
+idle.to(turned)
+	.with(AnimationClip::once("anims/turn_90.fbx#animation"))
+	.turning(90f32.to_radians())
+	.when(blend);
+```
+
+Pass the angle the clip turns the body in its pose, about +Y.
+
 Keep the state IDs it hands back; requests name states by ID. The graph itself
 goes to the animation system next.
 
@@ -88,6 +102,7 @@ while app.tick_with(|app, time| {
 		if update.handle() == character {
 			playback = Some(update);
 			position += orientation.rotate_vector(update.delta().translation);
+			orientation = orientation.compose(update.delta().rotation);
 		}
 	}
 	world
@@ -124,6 +139,29 @@ if let Some(update) = playback {
 }
 ```
 
+To let one idle request choose the earliest fitted stop, author several routes
+to that idle with `matching_frames()`. Each route lists the source clips its
+stop fits. The graph checks the playing blend's clips and chooses the route
+whose next fitted frame comes first:
+
+```rust
+walk.to(idle)
+	.matching_frames()
+	.at_frames("walk.animation", [5, 20])
+	.with(AnimationClip::once("stop-left.animation"))
+	.anytime(blend);
+walk.to(idle)
+	.matching_frames()
+	.at_frames("walk.animation", [12, 28])
+	.with(AnimationClip::once("stop-right.animation"))
+	.anytime(blend);
+```
+
+Request idle when movement stops. The graph keeps the blend position, waits for
+the fitted frame, plays the chosen stop, and enters idle, so your code doesn't
+track feet. Clips that no alternative fits, such as a blend's idle center,
+don't restrict the choice. Equal wait times keep authoring order.
+
 A one-shot built with `when` plays to its end whatever you request next, so a
 jump or a turn needs one request to start and none to protect it. Routes built
 with `anytime` cut short on the next request, which suits starts and stops.
@@ -147,7 +185,9 @@ Animator::new(graph).with_look_chain(LookChainSettings {
 
 The target is in the entity's object space, so when your code turns the
 entity, say by how much with `turned_by`, and the chain holds its direction in
-the world. Send `None` to let the chain follow the animation again.
+the world. Turns that arrive as root motion, like a turn in place, need no
+`turned_by`: the chain already holds its direction across them. Send `None` to
+let the chain follow the animation again.
 
 ## Rust API
 

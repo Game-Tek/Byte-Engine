@@ -9,7 +9,7 @@ use byte_engine::{
 		channel::{Channel as _, DefaultChannel},
 		message_bus::MessageScope,
 	},
-	gameplay::TaskRuntime,
+	gameplay::Runtime,
 };
 use divan::{Bencher, counter::ItemsCount};
 
@@ -21,7 +21,7 @@ fn main() {
 }
 
 /// Starts a tick the way an application does, with a fixed 16 ms step.
-fn advance(runtime: &mut TaskRuntime<()>) {
+fn advance(runtime: &mut Runtime) {
 	runtime.advance(Time::new(MediaTime::ZERO, MediaTime::from_millis(16)));
 }
 
@@ -29,12 +29,12 @@ fn advance(runtime: &mut TaskRuntime<()>) {
 #[divan::bench(sample_count = 20, sample_size = 8)]
 fn tick_waits(bencher: Bencher) {
 	let world = MessageScope::standalone("tasks");
-	let mut runtime = TaskRuntime::new(&world);
+	let mut runtime = Runtime::new(&world);
 	let total = Rc::new(Cell::new(MediaTime::ZERO));
 	for _ in 0..TASK_COUNT {
-		let tasks = runtime.tasks().clone();
+		let tasks = runtime.tasks::<()>();
 		let total = Rc::clone(&total);
-		runtime.tasks().spawn(async move {
+		runtime.tasks::<()>().spawn(async move {
 			loop {
 				let delta = tasks.tick().await;
 				total.set(total.get() + delta);
@@ -56,13 +56,13 @@ fn tick_waits(bencher: Bencher) {
 #[divan::bench(sample_count = 20, sample_size = 8)]
 fn listener_waits(bencher: Bencher) {
 	let world = MessageScope::standalone("tasks");
-	let mut runtime = TaskRuntime::new(&world);
+	let mut runtime = Runtime::new(&world);
 	let total = Rc::new(Cell::new(0u64));
 	let channel = DefaultChannel::<u64>::new();
 	for _ in 0..TASK_COUNT {
 		let mut messages = channel.listener();
 		let total = Rc::clone(&total);
-		runtime.tasks().spawn(async move {
+		runtime.tasks::<()>().spawn(async move {
 			loop {
 				let value = messages.recv().await;
 				total.set(total.get() + value);

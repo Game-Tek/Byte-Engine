@@ -68,14 +68,15 @@ body.
 
 ```rust
 let mut root_motion = app.world().channel::<RootMotionUpdate>().listener();
+let mut playback: Option<RootMotionUpdate> = None;
 
 while app.tick_with(|app, time| {
-	let world = app.world();
+	let world = app.world().clone();
 	controls.pull(time.delta());
 
 	// 1. Ask for the state gameplay wants. Requests persist, so asking every
 	//    frame is fine, and a position moves the walk around its ring.
-	let state = animation.player(character).and_then(|player| player.state());
+	let state = playback.and_then(|update| update.state());
 	world.set(select_state(&controls, state)).on(character);
 	world.set(Some(LookTarget::new(view_yaw, view_pitch))).on(character);
 
@@ -85,6 +86,7 @@ while app.tick_with(|app, time| {
 	// 3. Move the entity by what the step extracted, in its own frame.
 	while let Some(update) = root_motion.read() {
 		if update.handle() == character {
+			playback = Some(update);
 			position += orientation.rotate_vector(update.delta().translation);
 		}
 	}
@@ -107,17 +109,18 @@ transform the last frame moved.
 ## Decide from what's playing
 
 Gameplay often needs to know what the animator is doing before it asks for the
-next thing: which state plays, whether a requested route is still waiting for
-its wait point, and how long until a route can start. The system answers these
-between steps, as of the last step:
+next thing: which state plays, and whether a requested route still waits for
+its wait point. Each step posts both in the animator's `RootMotionUpdate`, so
+keep the latest one for your character until the next arrives:
 
 ```rust
-let player = animation.player(character).expect("the animator was created");
-if player.state().is_some_and(|state| catalog.is_turn(state)) {
-	// Keep asking for the idle; the turn plays through and hands over.
-}
-if player.waiting_for() == Some(jump_landing) {
-	// The jump waits for the stride to fit; do not replace the request.
+if let Some(update) = playback {
+	if update.state().is_some_and(|state| catalog.is_turn(state)) {
+		// Keep asking for the idle; the turn plays through and hands over.
+	}
+	if update.waiting_for() == Some(jump_landing) {
+		// The jump waits for the stride to fit; do not replace the request.
+	}
 }
 ```
 

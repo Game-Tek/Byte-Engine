@@ -9,6 +9,20 @@ application's async gameplay from its tick. To use it, see
 [Script gameplay with tasks](/docs/use/gameplay-tasks). The code lives in
 `crates/byte-engine/src/gameplay/tasks.rs`.
 
+## Who owns the runtime
+
+`GraphicsApplication` owns one `Runtime` and advances its clock once per
+simulation step, before the tick or simulation callback runs. The application
+only polls when the callback calls `poll`. The runtime is the application's
+first field, so it drops before the world and the systems: task futures can
+still reach their listeners and channels while they drop. Applications without
+graphics own a `Runtime` themselves.
+
+`Runtime::tasks` hands out `Tasks<S>` handles that share the runtime's state.
+`S` only names the type that `with` downcasts the poll's state to, so tasks
+with different state types can share one runtime as long as each poll lends
+the type its tasks name.
+
 ## How a poll runs
 
 The runtime keeps the futures of live tasks in a vector indexed by task slot.
@@ -61,6 +75,23 @@ task also has one for channel listeners and other futures. Its wakes go through
 a locked queue that `poll` drains, so they can come from any thread, such as
 alley lanes that send during a system's step.
 
+## How the macros expand
+
+`perform!` and `and!` are the syntax tasks use to choose and sequence
+activities. Both expand in the caller's scope, so branches, shared steps, and
+activities borrow the same local state one after another, and `break` and
+`return` keep their meaning.
+
+- **`perform!`** expands to a `loop` around `select_biased!`, with each `when`
+  and `each` wait wrapped in `fuse`. Raw `select_biased!` branches pass through
+  unchanged. `always` blocks run at the top of the loop, before each selection,
+  and never alongside a branch.
+- **`and!`** awaits each activity before it builds the next. Its `when` guard
+  pins the event, polls it once with the task's own context, and drops it. The
+  context must be the task's, not a no-op one: `Tasks::with` reads the state
+  lent through it, and a pending event registers the task's own waker, so the
+  message the event missed wakes the task that reads it on its next pass.
+
 ## Rules a change must keep
 
 1. Tasks never read wall-clock time. The clock moves only by the deltas that
@@ -76,6 +107,9 @@ alley lanes that send during a system's step.
 7. Nothing outlives its task. An ended task leaves no waits, and dropping the
    runtime drops every future it kept, including tasks it never polled.
 8. A send on a channel nobody awaits pays one flag load and no lock.
+9. The application drops the runtime before its world and systems.
+10. The task macros poll in the task's own context and run in the caller's
+    scope.
 
 ## Tests
 
@@ -94,6 +128,15 @@ alley lanes that send during a system's step.
 | `foreign_futures_wake_their_task` | 4 |
 | `a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops` | 4, 5 |
 | `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
+| `separately_requested_handles_share_time_and_borrow_the_polled_state` | 1 |
+| `and_finishes_each_activity_before_the_next_borrows_shared_state` | 10 |
+| `and_checks_events_without_stalling_or_repeating_a_consumed_event` | 10 |
+| `and_guards_keep_task_context_and_await_selected_activities_in_order` | 10 |
+| `always_runs_initially_and_between_branches_with_the_same_mutable_state` | 10 |
+| `always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax` | 10 |
+| `perform_checks_ready_events_in_written_order` | 2, 10 |
+| `perform_finishes_selected_actions_before_handling_another_event` | 10 |
+| `a_nested_performance_replaces_outer_updates_until_it_ends` | 10 |
 
 ```bash
 cargo nextest run -p byte-engine -E 'test(/gameplay::tasks|core::listener/)'

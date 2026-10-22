@@ -77,6 +77,7 @@ pub struct RootMotionUpdate {
 	handle: Handle,
 	delta: RootMotionDelta,
 	state: Option<AnimationStateId>,
+	waiting_for: Option<AnimationStateId>,
 }
 
 impl RootMotionUpdate {
@@ -95,6 +96,12 @@ impl RootMotionUpdate {
 	/// acted on with the pose it produced.
 	pub const fn state(&self) -> Option<AnimationStateId> {
 		self.state
+	}
+
+	/// Returns the requested state whose route waits for a moment of the playing clip, such as a frame, or `None`
+	/// when no route waits.
+	pub const fn waiting_for(&self) -> Option<AnimationStateId> {
+		self.waiting_for
 	}
 }
 
@@ -127,8 +134,8 @@ impl TargetedMessagePublisher<Option<LookTarget>> for MessageScope {
 ///
 /// Create it with [`Self::new`] before the animators it must play and [register](Self::register) their graphs, then
 /// call [`Self::step`] once per frame after your requests for that frame and before the systems that read
-/// transforms, such as [`Physics::step`](crate::physics::Physics::step). Between steps, [`Self::player`] answers
-/// what each animator plays.
+/// transforms, such as [`Physics::step`](crate::physics::Physics::step). Read what each animator plays, and the root
+/// motion to move it by, from the [`RootMotionUpdate`] each step posts.
 pub struct AnimationSystem {
 	pool: AnimationPool,
 	/// The graphs the system plays, which it lends its players every step.
@@ -180,12 +187,6 @@ impl AnimationSystem {
 		id
 	}
 
-	/// Returns the registered graph with `id`, for what the application asks of it between steps, such as a state's
-	/// routes.
-	pub fn graph(&self, id: AnimationGraphId) -> Option<&AnimationGraph> {
-		self.graphs.iter().find(|graph| graph.id() == id.0)
-	}
-
 	/// Advances every animator by the frame and posts its pose and root motion before returning.
 	///
 	/// Deleted animators leave and created ones join first; then the latest request and look target sent to each
@@ -214,14 +215,9 @@ impl AnimationSystem {
 				handle: *handle,
 				delta: pose.root_motion,
 				state: pose.state,
+				waiting_for: player.waiting_for(),
 			});
 		}
-	}
-
-	/// Returns the player of the animator on `handle`, for what it plays, what it waits for, and how long until a
-	/// route, as of the last step.
-	pub fn player(&self, handle: Handle) -> Option<&AnimationGraphPlayer> {
-		self.index_of(handle).map(|index| &self.players[index])
 	}
 
 	fn index_of(&self, handle: Handle) -> Option<usize> {
@@ -376,6 +372,52 @@ mod tests {
 
 	fn frame(n: u32) -> Time {
 		Time::new(MediaTime::from_millis(100 * i64::from(n)), MediaTime::from_millis(100))
+	}
+
+	#[test]
+	fn one_jump_request_waits_for_takeoff_plays_the_clip_and_lands() {
+		let scope = MessageScope::standalone("one jump request");
+		let walking_clip = moving_clip("walking", 1.0);
+		let jump_clip = moving_clip("jumping", 2.0);
+		let mut pool = AnimationPool::detached(walking_clip.resident_bytes() + jump_clip.resident_bytes());
+		pool.admit("walking.animation".into(), walking_clip);
+		pool.admit("jumping.animation".into(), jump_clip);
+		let builder = AnimationGraph::builder();
+		let walking = builder.state("walking").with(AnimationClip::looping("walking.animation"));
+		let landed = builder.state("landed").with(AnimationClip::looping("walking.animation"));
+		let jumping = walking
+			.to(landed)
+			.at_frame(5)
+			.with(AnimationClip::once("jumping.animation"))
+			.when(MediaTime::ZERO)
+			.id();
+		let mut system = AnimationSystem::new(&scope, pool);
+		let graph = system.register(builder.build(walking).unwrap());
+		let entity = scope.create(Animator::new(graph)).handle();
+		let mut motion = scope.channel::<RootMotionUpdate>().listener();
+		let mut alley = Alley::new();
+		system.step(frame(1), &mut alley);
+		system.step(frame(2), &mut alley);
+		motion.to_vec();
+
+		// Request once. Subsequent steps receive no requests from gameplay.
+		scope.set(AnimationRequest::from(landed.id())).on(entity);
+		system.step(frame(3), &mut alley);
+		let waiting = motion.to_vec().pop().unwrap();
+		assert_eq!(waiting.state(), Some(walking.id()));
+		assert_eq!(waiting.waiting_for(), Some(landed.id()));
+		let mut saw_jump = false;
+		let mut last = waiting;
+		for tick in 4..25 {
+			system.step(frame(tick), &mut alley);
+			for update in motion.to_vec() {
+				saw_jump |= update.state() == Some(jumping);
+				last = update;
+			}
+		}
+		assert!(saw_jump);
+		assert_eq!(last.state(), Some(landed.id()));
+		assert_eq!(last.waiting_for(), None);
 	}
 
 	#[test]

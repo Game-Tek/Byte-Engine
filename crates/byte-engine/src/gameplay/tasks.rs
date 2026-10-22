@@ -1,11 +1,12 @@
 //! Gameplay tasks: async gameplay logic, such as a character's life or a round's phases, that the application's tick
 //! polls.
 //!
-//! A [`TaskRuntime`] is a plain value the application owns and steps by hand, like the other systems. Each tick it
-//! advances the simulation clock with [`TaskRuntime::advance`], then polls the woken tasks with
-//! [`TaskRuntime::poll`], lending them the application's own state. Between polls the application steps its systems,
-//! whose messages wake the tasks awaiting them, so a task can wait for the animation step or a ray query's answer and
-//! continue in the same tick.
+//! [`GraphicsApplication`](crate::application::graphics::GraphicsApplication) owns the runtime and advances its
+//! clock once per simulation step. Access it through
+//! [`GraphicsApplication::runtime`](crate::application::graphics::GraphicsApplication::runtime), start tasks
+//! with [`Runtime::spawn`] or [`Runtime::spawn_on`], then call [`Runtime::poll`] with your
+//! state before and after the systems whose messages tasks await. A task can wait for animation root motion or a
+//! ray query's answer and continue in the same tick. Applications without graphics can own a [`Runtime`] directly.
 //!
 //! Tasks wait on time through [`Tasks`], and on everything else through the message bus:
 //! - [`Tasks::tick`] resolves at the next tick with the simulation time since the wait began.
@@ -14,7 +15,7 @@
 //!   the same channels a system would.
 //! - [`Tasks::with`] resolves on its first poll with the state lent to the poll.
 //!
-//! Tasks never read wall-clock time. The clock moves only by the deltas [`TaskRuntime::advance`] receives, so
+//! Tasks never read wall-clock time. The clock moves only by the deltas [`Runtime::advance`] receives, so
 //! pausing, slowing, or fixing the step happens in one place, and every task polled in a tick reads the same time.
 //!
 //! # Waits and cancellation
@@ -30,7 +31,7 @@
 //! that selects over channel messages and ticks in a loop still counts every tick while messages keep winning, and a task
 //! that switches from one loop to another mid-tick resolves the new loop's tick in the same poll.
 //!
-//! Next, create a runtime with [`TaskRuntime::new`] and spawn the first tasks with [`Tasks::spawn_on`].
+//! Next, spawn the first entity behaviors with [`Runtime::spawn_on`].
 
 use std::{
 	cell::RefCell,
@@ -60,17 +61,116 @@ use crate::{
 
 type BoxedTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
+pub use utils::r#async::select_biased;
+
+pub use crate::{and, perform};
+
+/// Awaits related activities in written order, discarding their results.
+///
+/// Use this inside a [`perform!`] branch for activities that belong to the same update. Each expression is
+/// created only after the previous one finishes, so successive calls can borrow the same mutable state.
+/// If an activity suspends, the group suspends there; later activities start when it finishes.
+///
+/// Write `when future => { activities }` to run activities only if the event is ready at that point. The event is
+/// polled once in the current task's context, then dropped. A pending event skips its activities without suspending
+/// the group. Event futures must tolerate cancellation; keep their underlying listener or state between updates.
+/// The body uses the same awaited activity syntax, and can suspend once selected, just like an ordinary activity.
+#[macro_export]
+macro_rules! and {
+	() => {};
+	(when $event:expr => { $($activities:tt)* } $($rest:tt)*) => {{
+		// Keep the probe's borrow inside the condition and preserve the runtime's task context. A noop context would
+		// prevent guards such as `Tasks::with` from accessing the state lent by `Runtime::poll`.
+		if {
+			let mut event = ::std::pin::pin!($event);
+			::std::future::poll_fn(|context| {
+				::std::task::Poll::Ready(::std::future::Future::poll(event.as_mut(), context).is_ready())
+			}).await
+		} {
+			$crate::and! { $($activities)* }
+		}
+		$crate::and! { $($rest)* }
+	}};
+	(; $($rest:tt)*) => { $crate::and! { $($rest)* } };
+	($activity:expr; $($rest:tt)*) => {{
+		$activity.await;
+		$crate::and! { $($rest)* }
+	}};
+	($activity:expr) => {{ $activity.await; }};
+}
+
+/// Repeats async branches, checking their waits in written order.
+///
+/// Write `when future => { actions }` to handle an event, or `each value = future => { actions }` to handle
+/// repeated updates and use their results. Wait expressions are rebuilt for each selection and fused automatically.
+/// The first ready wait chooses the branch, whose actions run to completion before another branch is chosen. An
+/// await inside those actions can suspend the entire performance. Use `break` to end it or `return` to end the
+/// enclosing task.
+///
+/// Add `always { actions }` for a shared step before each selection, including the first. It runs again after a
+/// selected branch finishes, and may await while borrowing the same state as the branches. It does not run in
+/// parallel with a branch or while a nested performance is active. `break` and `return` leave immediately.
+///
+/// Nest a performance inside a branch to replace the outer activities until that inner performance ends.
+/// The original [`select_biased!`] branch syntax is also accepted; fuse those futures yourself.
+#[macro_export]
+macro_rules! perform {
+	// Hooks run in the caller's scope, so they can borrow the same state as branches without a second future or task.
+	(@branches [] [$($always:block)+]) => {
+		loop { $($always)* }
+	};
+	(@branches [$($branches:tt)*] [$($always:block)*]) => {
+		loop {
+			$($always)*
+			$crate::gameplay::tasks::select_biased! { $($branches)* }
+		}
+	};
+	(@branches [$($branches:tt)*] [$($always:block)*] , $($rest:tt)*) => {
+		$crate::perform!(@branches [$($branches)*] [$($always)*] $($rest)*)
+	};
+	(@branches [$($branches:tt)*] [$($always:block)*] always $actions:block $($rest:tt)*) => {
+		$crate::perform!(@branches [$($branches)*] [$($always)* $actions] $($rest)*)
+	};
+	(@branches [$($branches:tt)*] [$($always:block)*] when $event:expr => $actions:block $($rest:tt)*) => {
+		$crate::perform!(@branches [
+			$($branches)*
+			_ = $crate::utils::r#async::FutureExt::fuse($event) => $actions,
+		] [$($always)*] $($rest)*)
+	};
+	(@branches [$($branches:tt)*] [$($always:block)*] each $value:pat = $event:expr => $actions:block $($rest:tt)*) => {
+		$crate::perform!(@branches [
+			$($branches)*
+			$value = $crate::utils::r#async::FutureExt::fuse($event) => $actions,
+		] [$($always)*] $($rest)*)
+	};
+	// Preserve raw `select_biased!` syntax when it is mixed with shared steps.
+	(@branches [$($branches:tt)*] [$($always:block)*] $next:tt $($rest:tt)*) => {
+		$crate::perform!(@branches [$($branches)* $next] [$($always)*] $($rest)*)
+	};
+	(always $($branches:tt)*) => {
+		$crate::perform!(@branches [] [] always $($branches)*)
+	};
+	(when $($branches:tt)*) => {
+		$crate::perform!(@branches [] [] when $($branches)*)
+	};
+	(each $($branches:tt)*) => {
+		$crate::perform!(@branches [] [] each $($branches)*)
+	};
+	($($branches:tt)*) => {
+		$crate::perform!(@branches [] [] $($branches)*)
+	};
+}
+
 /// Task slots are reused, so a wake or a wait left by an ended task finds nothing instead of its successor.
 type TaskId = StableVecHandle;
 
-/// The `TaskRuntime` struct runs an application's gameplay tasks from its tick, lending them the state `S` while they
-/// are polled.
+/// The `Runtime` struct keeps gameplay tasks alive between simulation steps and lends them state while polled.
 ///
-/// Create it on the world scope with [`Self::new`], spawn tasks through [`Self::tasks`], and from each tick call
+/// Create it on the world scope with [`Self::new`], spawn tasks through [`Self::spawn`], and from each tick call
 /// [`Self::advance`] once and [`Self::poll`] after every stage whose output tasks wait for. Tasks run on the thread
 /// that polls, one at a time, in the order they were woken, so the same inputs replay the same way.
-pub struct TaskRuntime<S> {
-	tasks: Tasks<S>,
+pub struct Runtime {
+	state: Rc<RefCell<State>>,
 	/// The futures of the live tasks, by slot index. They live outside the shared state so a poll never holds it.
 	running: Vec<Option<Running>>,
 	/// Receives the wakes of foreign futures, which may come from any thread.
@@ -88,16 +188,13 @@ struct Running {
 	waker: Waker,
 }
 
-impl<S: 'static> TaskRuntime<S> {
+impl Runtime {
 	/// Creates a runtime whose tasks end with the entities of `world` they were spawned on.
 	///
-	/// Next, spawn tasks through [`Self::tasks`].
+	/// Next, spawn tasks through [`Self::spawn`].
 	pub fn new(world: &MessageScope) -> Self {
 		Self {
-			tasks: Tasks {
-				state: Rc::new(RefCell::new(State::default())),
-				scene: PhantomData,
-			},
+			state: Rc::new(RefCell::new(State::default())),
 			running: Vec::new(),
 			remote: Arc::new(RemoteWakes::default()),
 			woken: Vec::new(),
@@ -106,9 +203,34 @@ impl<S: 'static> TaskRuntime<S> {
 		}
 	}
 
-	/// Returns the handle tasks spawn and wait through. Clone it into the tasks that need it.
-	pub fn tasks(&self) -> &Tasks<S> {
-		&self.tasks
+	/// Returns a handle for tasks that reach context of type `S` through [`Tasks::with`].
+	///
+	/// Clone it into each task, then lend the same context type through [`Self::poll`].
+	pub fn tasks<S: 'static>(&self) -> Tasks<S> {
+		Tasks {
+			state: Rc::clone(&self.state),
+			context: PhantomData,
+		}
+	}
+
+	/// Starts a task with the handle it waits and spawns children through.
+	///
+	/// `create` builds the future now; [`Self::poll`] first polls it. Lend context of type `S` when polling.
+	pub fn spawn<S: 'static, F: Future<Output = ()> + 'static>(&mut self, create: impl FnOnce(Tasks<S>) -> F) {
+		let future = create(self.tasks());
+		self.state.borrow_mut().spawn(None, Box::pin(future));
+	}
+
+	/// Starts an entity's task with its own handle; deleting `owner` cancels the task and drops its future.
+	///
+	/// `create` builds the future now. Next, call [`Self::poll`] with context of type `S` to run it.
+	pub fn spawn_on<S: 'static, F: Future<Output = ()> + 'static>(
+		&mut self,
+		owner: Handle,
+		create: impl FnOnce(Tasks<S>) -> F,
+	) {
+		let future = create(self.tasks());
+		self.state.borrow_mut().spawn(Some(owner), Box::pin(future));
 	}
 
 	/// Starts a tick: ends the tasks of deleted entities, moves the clock by `time`'s delta, and wakes the tasks
@@ -119,7 +241,7 @@ impl<S: 'static> TaskRuntime<S> {
 	pub fn advance(&mut self, time: Time) {
 		self.end_deleted();
 
-		let mut state = self.tasks.state.borrow_mut();
+		let mut state = self.state.borrow_mut();
 		let state = &mut *state;
 		state.clock.tick += 1;
 		state.clock.elapsed += time.delta();
@@ -157,16 +279,16 @@ impl<S: 'static> TaskRuntime<S> {
 		}
 	}
 
-	/// Polls every woken task, including the tasks those polls spawn or wake, lending each poll `scene`.
+	/// Polls every woken task, including the tasks those polls spawn or wake, lending each poll `context`.
 	///
 	/// Call it after [`Self::advance`] and again after each stage whose messages tasks wait for, such as an animation
 	/// step whose root motion a character awaits.
-	pub fn poll(&mut self, scene: &mut S) {
+	pub fn poll<C: 'static>(&mut self, context: &mut C) {
 		loop {
 			self.adopt();
 
 			let id = {
-				let mut state = self.tasks.state.borrow_mut();
+				let mut state = self.state.borrow_mut();
 				let state = &mut *state;
 				let Some(id) = state.ready.pop_front() else { break };
 				// Generational handles reject wakes left by ended tasks.
@@ -182,10 +304,10 @@ impl<S: 'static> TaskRuntime<S> {
 				.as_mut()
 				.expect("a live task's future was adopted before its first poll");
 			let result = {
-				let mut context = ContextBuilder::from_waker(&running.waker).ext(&mut *scene).build();
-				running.future.as_mut().poll(&mut context)
+				let mut poll_context = ContextBuilder::from_waker(&running.waker).ext(&mut *context).build();
+				running.future.as_mut().poll(&mut poll_context)
 			};
-			let mut state = self.tasks.state.borrow_mut();
+			let mut state = self.state.borrow_mut();
 			state.current = None;
 			let sweep = std::mem::take(&mut state.sweep_current);
 			if result.is_ready() {
@@ -200,11 +322,11 @@ impl<S: 'static> TaskRuntime<S> {
 
 	/// Moves the tasks spawned since the last poll into [`Self::running`] and queues the wakes foreign futures sent.
 	fn adopt(&mut self) {
-		std::mem::swap(&mut self.adopting, &mut self.tasks.state.borrow_mut().spawned);
+		std::mem::swap(&mut self.adopting, &mut self.state.borrow_mut().spawned);
 		for (id, future) in self.adopting.drain(..) {
 			// A task can end before its first poll when the world deletes its owner. Its future drops here, with the
 			// shared state released, since its destructor may reach it.
-			if !self.tasks.state.borrow().tasks.contains_handle(id) {
+			if !self.state.borrow().tasks.contains_handle(id) {
 				drop(future);
 				continue;
 			}
@@ -218,7 +340,7 @@ impl<S: 'static> TaskRuntime<S> {
 			self.running[id.index()] = Some(Running { future, waker });
 		}
 
-		let mut state = self.tasks.state.borrow_mut();
+		let mut state = self.state.borrow_mut();
 		let state = &mut *state;
 		// `wake` skips tasks already queued, so repeated foreign wakes poll a task once.
 		std::mem::swap(&mut self.woken, &mut *self.remote.ready.lock());
@@ -234,7 +356,7 @@ impl<S: 'static> TaskRuntime<S> {
 		while let Some(deletion) = self.deletions.read() {
 			let handle = *deletion.handle();
 			let owned = {
-				let mut state = self.tasks.state.borrow_mut();
+				let mut state = self.state.borrow_mut();
 				let owned = state.owned.remove(&handle).unwrap_or_default();
 				for &id in &owned {
 					state.end(id);
@@ -255,7 +377,7 @@ impl<S: 'static> TaskRuntime<S> {
 	}
 }
 
-impl<S> Drop for TaskRuntime<S> {
+impl Drop for Runtime {
 	/// Drops every future the runtime still keeps.
 	///
 	/// Tasks not yet polled live in the shared state, and they may hold [`Tasks`] handles to it. That cycle would keep
@@ -264,7 +386,7 @@ impl<S> Drop for TaskRuntime<S> {
 	fn drop(&mut self) {
 		self.running.clear();
 		loop {
-			let spawned = std::mem::take(&mut self.tasks.state.borrow_mut().spawned);
+			let spawned = std::mem::take(&mut self.state.borrow_mut().spawned);
 			if spawned.is_empty() {
 				break;
 			}
@@ -274,25 +396,25 @@ impl<S> Drop for TaskRuntime<S> {
 
 /// The `Tasks` struct is the handle gameplay tasks spawn and wait on time through.
 ///
-/// Get it from [`TaskRuntime::tasks`] and clone it into each task; clones share one runtime. Its wait futures must be
+/// Get it from [`Runtime::tasks`] and clone it into each task; clones share one runtime. Its wait futures must be
 /// polled by the runtime that made it, inside one of its tasks.
 pub struct Tasks<S> {
 	state: Rc<RefCell<State>>,
-	scene: PhantomData<fn(&mut S)>,
+	context: PhantomData<fn(&mut S)>,
 }
 
 impl<S> Clone for Tasks<S> {
 	fn clone(&self) -> Self {
 		Self {
 			state: Rc::clone(&self.state),
-			scene: PhantomData,
+			context: PhantomData,
 		}
 	}
 }
 
 impl<S: 'static> Tasks<S> {
 	/// Starts `future` as a task that runs until it returns. It is first polled in the current or next
-	/// [`TaskRuntime::poll`].
+	/// [`Runtime::poll`].
 	pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
 		self.state.borrow_mut().spawn(None, Box::pin(future));
 	}
@@ -304,7 +426,7 @@ impl<S: 'static> Tasks<S> {
 		self.state.borrow_mut().spawn(Some(owner), Box::pin(future));
 	}
 
-	/// Returns the simulation time: the sum of every delta [`TaskRuntime::advance`] received.
+	/// Returns the simulation time: the sum of every delta [`Runtime::advance`] received.
 	pub fn now(&self) -> MediaTime {
 		self.state.borrow().clock.elapsed
 	}
@@ -331,20 +453,20 @@ impl<S: 'static> Tasks<S> {
 		}
 	}
 
-	/// Returns a future that runs `read` on its first poll with the state the runtime lends its tasks.
+	/// Returns a future that runs `read` on its first poll with the context the runtime lends its tasks.
 	///
-	/// The future is ready at once; awaiting it only reaches the state. Keep the borrow inside `read`: the state is
+	/// The future is ready at once; awaiting it only reaches the context. Keep the borrow inside `read`: the context is
 	/// lent to one poll at a time.
 	pub fn with<R>(&self, read: impl FnOnce(&mut S) -> R) -> impl Future<Output = R> {
 		let mut read = Some(read);
-		std::future::poll_fn(move |context| {
+		std::future::poll_fn(move |poll_context| {
 			let read = read.take().expect(
 				"A task state read was polled after it completed. The most likely cause is polling a finished future again.",
 			);
-			let scene = context.ext().downcast_mut::<S>().expect(
+			let context = poll_context.ext().downcast_mut::<S>().expect(
 				"A task reached for state its poll did not lend. The most likely cause is awaiting it outside the runtime that made its `Tasks`.",
 			);
-			Poll::Ready(read(scene))
+			Poll::Ready(read(context))
 		})
 	}
 }
@@ -530,7 +652,7 @@ struct State {
 	polls: u64,
 	/// Hands every tick and sleep wait a distinct token.
 	tokens: u64,
-	/// The tasks with a tick wait, which the next [`TaskRuntime::advance`] wakes.
+	/// The tasks with a tick wait, which the next [`Runtime::advance`] wakes.
 	ticking: Vec<TaskId>,
 	deadlines: BinaryHeap<Reverse<Deadline>>,
 	/// The sleeps tasks wait on, so [`Self::compact_deadlines`] knows how many of the deadlines still count.
@@ -636,7 +758,7 @@ fn wake(ready: &mut VecDeque<TaskId>, task: &mut TaskState, id: TaskId) {
 
 #[derive(Clone, Copy, Default)]
 struct Clock {
-	/// Counts [`TaskRuntime::advance`] calls, so a tick wait knows whether a tick began since it started.
+	/// Counts [`Runtime::advance`] calls, so a tick wait knows whether a tick began since it started.
 	tick: u64,
 	elapsed: MediaTime,
 }

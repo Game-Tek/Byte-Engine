@@ -14,20 +14,19 @@ don't keep flags such as `dead` or `pending_jump`.
 Keep continuous math, such as easing a camera, as ordinary per-tick code inside
 a task's loop. Tasks help most with the flow around it.
 
-## Create the runtime and its state
+## Choose the task state
 
 Choose the state your tasks need to reach while they run, such as the world
-scope, the decoded controls, and your systems. Create the runtime on the world
-scope, so a task spawned on an entity ends when the world deletes the entity:
+scope, the decoded controls, and your systems. `GraphicsApplication` owns the
+runtime on its world scope, so a task spawned on an entity ends when the world
+deletes the entity:
 
 ```rust
 struct Scene {
 	world: MessageScope,
 	controls: Controls,
-	animation: AnimationSystem<'static>,
+	animation: AnimationSystem,
 }
-
-let mut runtime = TaskRuntime::<Scene>::new(app.world());
 ```
 
 The runtime lends the state to tasks by type, so it can't borrow anything that
@@ -35,13 +34,13 @@ lives shorter than the application.
 
 ## Spawn tasks
 
-Clone the runtime's handle into every task. Spawn an entity's behavior on the
-entity, and everything else with `spawn`:
+Call `spawn_on` on the application's runtime for an entity's behavior, and
+`spawn` for everything else. The closure receives the handle the task waits
+and spawns children through:
 
 ```rust
-let tasks = runtime.tasks().clone();
-tasks.spawn_on(character, player(tasks.clone(), character));
-tasks.spawn(gun(tasks.clone(), camera));
+app.runtime().spawn_on(character, |tasks| player(tasks, character));
+app.runtime().spawn(|tasks| gun(tasks, camera));
 ```
 
 A task can spawn more tasks, such as one per shot it fires. They run in the
@@ -49,17 +48,16 @@ same poll.
 
 ## Poll from your tick
 
-Each tick, advance the runtime's clock, then poll the tasks after every stage
-whose messages they wait for. Your systems' messages reach the tasks through
-the world's channels, so the tick only steps and polls:
+The application advances task time before your simulation callback. Poll the
+tasks after every stage whose messages they wait for. Your systems' messages
+reach the tasks through the world's channels, so the tick only steps and polls:
 
 ```rust
 fn tick(&mut self, app: &mut GraphicsApplication, time: Time) {
-	self.runtime.advance(time);
-	self.runtime.poll(&mut self.scene);
+	app.runtime().poll(&mut self.scene);
 
 	self.scene.animation.step(time, app.alley_mut());
-	self.runtime.poll(&mut self.scene);
+	app.runtime().poll(&mut self.scene);
 }
 ```
 
@@ -82,9 +80,9 @@ async fn walk(tasks: &Tasks<Scene>, body: &mut Character, root_motion: &mut Defa
 ```
 
 Create the listener when the task starts, before its first await, as in
-`world.channel::<RootMotionUpdate>().listener()`. A listener keeps every message sent
-on its channel from then on until the task reads it, including the ones sent
-while the task waited for something else.
+`world.channel::<RootMotionUpdate>().listener()`. A listener keeps every
+message sent on its channel from then on until the task reads it, including the
+ones sent while the task waited for something else.
 
 - `tick` resolves at the next tick with the game time since the wait began, so
   a task that waited a few ticks for something else moves by all of them.
@@ -93,50 +91,109 @@ while the task waited for something else.
 - `recv` resolves with the listener's next message. Every message on the
   channel wakes every task that awaits it, so give many tasks their own
   channels rather than one they all filter.
-- `with` reaches the state you passed to `poll`. Keep the borrow inside the
-  closure.
+- `with` reaches the state you passed to `Runtime::poll`. Keep the borrow
+  inside the closure.
 - `now` returns the game time, which every task reads the same during a tick.
 
 Read time only through the runtime. Each task that read the system clock would
 see a different time, and pausing or slowing the game wouldn't reach it.
 
-## Cancel by dropping
+## Choose activities with events and ticks
 
-Race the waits with `select_biased!` from `utils::r#async`. The branch that
-loses is dropped, and its waits end with it:
+Use `perform!` from `byte_engine::gameplay::tasks` to keep the player's
+alternatives visible. Write `when` for an event and `each` for repeated
+updates. Put actions that can happen together in the same branch, in order.
+Use `always` for a shared step before each selection. The step also runs
+before the first selection, so it can await the initial animation pose:
 
 ```rust
-async fn player(tasks: Tasks<Scene>, world: MessageScope, mut body: Character, kill: Handle) {
-	let mut actions = world.channel::<ActionEvent>().listener();
-	let mut root_motion = world.channel::<RootMotionUpdate>().listener();
-	loop {
-		select_biased! {
-			_ = pressed(&mut actions, kill).fuse() => {}
-			never = walk(&tasks, &mut body, &mut root_motion).fuse() => match never {},
+let mut actions = world.channel::<ActionEvent>().listener();
+let mut shooting = world.channel::<ActionEvent>().listener();
+
+perform! {
+	always {
+		player.character.advance().await;
+		if player.alive {
+			and! {
+				player.follow();
+				when pressed(&mut shooting, shoot) => {
+					player.shoot();
+				}
+			}
 		}
-		select_biased! {
-			_ = pressed(&mut actions, kill).fuse() => {}
-			never = lie(&tasks, &mut body, &mut root_motion).fuse() => match never {},
+	}
+
+	when pressed(&mut actions, kill) => {
+		player.alive = !player.alive;
+		if player.alive {
+			// Discard presses received while dead.
+			while shooting.read().is_some() {}
+		} else {
+			player.character.die();
+		}
+	}
+
+	each delta = player.tasks.tick() => {
+		player.delta_seconds = delta.as_seconds_f32();
+		if player.alive {
+			player.walk().await;
 		}
 	}
 }
 ```
+
+The action functions and methods in this example are your own. Each does one
+update. Import `and!` from `byte_engine::gameplay::tasks` to group these
+activities. It awaits them in written order: movement finishes before the
+camera follows, and shooting uses the updated camera. Each call can borrow
+the same mutable player state. A wait pauses the group until it can continue.
+
+Inside `and!`, `when` checks its event once without waiting. A ready event runs
+its activities; a pending event skips them and lets the group continue. The
+body uses the same activity syntax as the rest of `and!`, with each call
+awaited automatically. Once selected, its activities can suspend the group.
+The event future is dropped after the check, so use cancellation-safe waits
+and retain their listeners between updates. Give independent events separate
+listeners so one event's filtering doesn't consume another event's messages.
+
+The shared step applies animation in either mode. Movement intent, camera
+following, and shooting run only while alive. A movement branch sends its
+request; the next shared step applies the resulting pose before the camera
+and shooting use the new position.
+
+The shared step and branches borrow the same state in sequence. `always`
+doesn't run in parallel with a branch or while a nested performance is active.
+An await in the shared step pauses selection until it completes. Nest a
+performance inside a branch when you want to replace all outer activities,
+including its shared step, until the inner performance ends.
+
+The first ready wait in written order selects the branch. Its actions finish
+before the next selection, so an await inside a branch pauses the whole
+performance until that action can continue. The macro handles fusion of the
+wait futures. You can also use the original `select_biased!` branch syntax
+when you need direct control of those futures.
 
 `pressed` is your own helper that awaits the action's next `true` event with
 `recv_where`. A listener whose wait loses the race keeps its messages, so the
 next await reads them.
 
 When a branch ends its tick wait in the middle of a tick, the next `tick` the
-task awaits in that poll resolves at once with the same time. `lie` starts in
-the tick that `K` was pressed in.
+task awaits in that poll resolves at once with the same time. A kill press that
+wins the selection therefore doesn't cost the `each` branch a tick.
 
 Use combinators that poll every branch on each poll, such as `select!` and
 `join!`. A wait that its task stops polling ends, so a combinator that polls
 only the branches that woke loses the others' waits.
 
+The application advances task time once per simulation step. With
+`tick_stepped_with`, task time advances in the simulation callback and stays
+unchanged in the frame callback. Poll tasks with the state type their `Tasks`
+handles name, since `with` finds the state by its type.
+
 ## Rust API
 
 - [`gameplay::tasks`](/docs/api/latest/byte_engine/gameplay/tasks)
-- [`gameplay::TaskRuntime`](/docs/api/latest/byte_engine/gameplay/tasks/struct.TaskRuntime)
+- [`GraphicsApplication::runtime`](/docs/api/latest/byte_engine/application/graphics/struct.GraphicsApplication#method.runtime)
+- [`gameplay::Runtime`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Runtime)
 - [`gameplay::Tasks`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Tasks)
 - [`core::listener::DefaultListener`](/docs/api/latest/byte_engine/core/listener/struct.DefaultListener)

@@ -1,4 +1,4 @@
-//! The animation record a player writes to its [`DataStream`], as the
+//! The animation record a player writes to its [`DebugDataStreamWriter`], as the
 //! [animation reference](/docs/reference/animation#data-stream) specifies.
 //!
 //! The record borrows the player's state, so writing one allocates nothing once the stream's line has grown.
@@ -8,7 +8,7 @@ use std::fmt;
 use serde::{Serialize, Serializer};
 
 use super::*;
-use crate::inspector::DataStream;
+use crate::inspector::DebugDataStreamWriter;
 
 #[derive(Serialize)]
 struct Record<'a> {
@@ -242,10 +242,9 @@ fn message<S: Serializer>(error: &Option<&AnimationGraphPlayerError>, serializer
 impl AnimationGraphPlayer {
 	/// Attaches a stream the player writes a record to after every advance, or detaches it with `None`.
 	///
-	/// Open the stream with
-	/// [`GraphicsApplication::data_stream`](crate::application::graphics::GraphicsApplication::data_stream) for the
-	/// entity the player animates. A player without a stream does no reporting work.
-	pub fn set_stream(&mut self, stream: Option<DataStream>) {
+	/// The animation system attaches writers created from world-spawned
+	/// [`DebugDataStream`](crate::inspector::DebugDataStream) requests. A player without a writer does no reporting work.
+	pub fn set_stream(&mut self, stream: Option<DebugDataStreamWriter>) {
 		self.stream = stream;
 	}
 
@@ -333,7 +332,7 @@ mod tests {
 	use crate::{core::factory::Handle, inspector::StreamOutput};
 
 	/// Opens a stream for a new entity to a temporary file, returned with the file's path.
-	fn stream(changes_only: bool) -> (DataStream, PathBuf) {
+	fn stream(changes_only: bool) -> (DebugDataStreamWriter, PathBuf) {
 		let entity = Handle::new();
 		let path = std::env::temp_dir().join(format!(
 			"byte-engine-animation-stream-{}-{}.ndjson",
@@ -341,7 +340,7 @@ mod tests {
 			entity.id()
 		));
 		let output = Arc::new(StreamOutput::open(path.to_str().unwrap(), changes_only, Instant::now()).expect("file opens"));
-		(DataStream::new(output, entity, "Character".into()), path)
+		(DebugDataStreamWriter::new(output, entity, "Character".into()), path)
 	}
 
 	/// Reads and removes the records at `path`, returning each one's `data`.

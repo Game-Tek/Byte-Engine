@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- An application reaches its world's routes through the scope's own channels, and streams an entity's debugging state by creating an entity, so gameplay needs neither a trait nor the application to reach them.
+  - The `gameplay::World` trait is gone. Send and listen on the scope's `channel::<T>()` instead: `channel::<TransformationUpdate>()` replaces `transforms_channel`, `channel::<DeleteMessage>().listener()` replaces `deletions_listener`, and the same holds for poses, root motion, and material parameters. Delete an entity by sending a `DeleteMessage`, and place one by sending a `TransformationUpdate`, which replaces `world.set(transform).on(handle)`. The inspector retires a deleted handle from its diagnostics whatever sent the deletion.
+  - Create a `DebugDataStream` through the world to stream an entity's state, as `world.create(DebugDataStream::new(entity, "Character"))`, and delete it to stop the records. It replaces `GraphicsApplication::data_stream`, and `DebugDataStreamWriter` replaces `DataStream`. The animation system attaches a stream whether it arrives before or after the animator, and keeps it when the animator is created again, so `AnimationSystem::player_mut` is gone. The data streams pages are now the debug data streams pages.
+
 - A `.bead` file in an asset directory sets sidecar defaults for every asset in that directory and the ones below it, so a folder of clips names its skeleton once instead of in a sidecar for each clip. An asset's own sidecar merges over the defaults key by key, and creating, editing, or removing a default rebakes the assets below it. `StorageBackend::load_bead` reads one BEAD file, and `load_sidecar` merges them.
 
 - The HTTP inspector serves on a free port the system picks when its default port, 6680, is in use, and logs that port as a warning, so a second application on one machine starts without setting `inspector.port`. Before, it panicked. A port set with `inspector.port` that is in use still stops startup.

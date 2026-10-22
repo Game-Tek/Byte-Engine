@@ -9,7 +9,7 @@ use crate::core::{factory::Handle, message::Message};
 /// The `SetMaterialParameter` struct lets gameplay code animate a material parameter its `.bema` file declares
 /// `Dynamic`, on one entity or on every entity drawn with a material.
 ///
-/// Send it on [`World::material_parameters_channel`](crate::gameplay::World::material_parameters_channel); see
+/// Send it on the world scope's `channel::<SetMaterialParameter>()`; see
 /// [Change a parameter at runtime](https://byte-engine.0x44491229.dev/docs/use/resources/author#change-a-parameter-at-runtime).
 #[derive(Clone, Debug)]
 pub struct SetMaterialParameter {

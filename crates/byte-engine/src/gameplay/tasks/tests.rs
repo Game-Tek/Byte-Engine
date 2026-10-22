@@ -223,7 +223,7 @@ fn deleting_an_entity_ends_the_tasks_spawned_on_it() {
 	runtime.poll(&mut log);
 	advance(&mut runtime, 10);
 	runtime.poll(&mut log);
-	world.delete(owner);
+	world.channel::<DeleteMessage>().send(DeleteMessage::new(owner));
 	advance(&mut runtime, 10);
 	runtime.poll(&mut log);
 
@@ -287,7 +287,7 @@ fn a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops() {
 	runtime.tasks().spawn_on(owner, async move {
 		let _reader = reader;
 	});
-	world.delete(owner);
+	world.channel::<DeleteMessage>().send(DeleteMessage::new(owner));
 	advance(&mut runtime, 10);
 	runtime.poll(&mut log);
 

@@ -424,7 +424,7 @@ pub struct AnimationGraphPlayer {
 	/// The clips the latest evaluation needed but the pool didn't hold, for the pool to request.
 	missing: Vec<Arc<str>>,
 	/// Where the player reports its state after each advance; see [`Self::set_stream`].
-	stream: Option<crate::inspector::DataStream>,
+	stream: Option<crate::inspector::DebugDataStreamWriter>,
 }
 
 /// The `PlayerRuntime` enum follows a player from waiting for its initial clip to playing, or to never playing.

@@ -98,10 +98,9 @@ Then send a `SetMaterialParameter` on the world's material parameter route,
 either for one entity or for every entity that uses a material:
 
 ```rust
-use byte_engine::gameplay::World as _;
 use byte_engine::rendering::SetMaterialParameter;
 
-let parameters = app.world().material_parameters_channel();
+let parameters = app.world().channel::<SetMaterialParameter>();
 // Only this entity turns red.
 parameters.send(SetMaterialParameter::new(handle, "color", [1.0, 0.0, 0.0, 1.0]));
 // Every entity drawn with this variant turns blue, unless it set `color` itself.

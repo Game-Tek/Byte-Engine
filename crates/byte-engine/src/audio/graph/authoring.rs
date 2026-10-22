@@ -18,7 +18,7 @@ impl Creator<&mut AudioGraph> for MessageScope {
 /// [`fns::gain`], [`fns::varispeed`], [`fns::pitch_shift`], and
 /// [`fns::custom`]. Publish it with [`Creator::create`] on the world scope, or through an
 /// [`AudioGraphFactory`] on it. Next, submit the same mutable graph again to advance its
-/// selector nodes. Stop its current playback through [`crate::gameplay::World::delete`].
+/// selector nodes. Stop its current playback by sending a [`crate::core::message::DeleteMessage`] for it.
 #[must_use = "Audio graphs do not play until they are published on the world scope"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioGraph {
@@ -243,8 +243,7 @@ impl AudioGraphFactory {
 	/// This commits each selector node on the selected path. Keep the graph and
 	/// submit it again to play its next selection.
 	///
-	/// Pass the returned handle to
-	/// [`crate::gameplay::World::delete`] to stop the graph.
+	/// Send a [`crate::core::message::DeleteMessage`] for the returned handle to stop the graph.
 	pub fn create(&self, graph: &mut AudioGraph) -> Handle {
 		let handle = Handle::new();
 		self.derive(handle, graph);

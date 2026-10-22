@@ -67,7 +67,7 @@ Reading the root motion a tick later leaves the pose one frame ahead of the
 body.
 
 ```rust
-let root_motion = app.world().root_motion_channel().listener();
+let mut root_motion = app.world().channel::<RootMotionUpdate>().listener();
 
 while app.tick_with(|app, time| {
 	let world = app.world();
@@ -88,7 +88,9 @@ while app.tick_with(|app, time| {
 			position += orientation.rotate_vector(update.delta().translation);
 		}
 	}
-	world.set(Transform::new(position, Scale::identity(), orientation)).on(character);
+	world
+		.channel::<TransformationUpdate>()
+		.send(TransformationUpdate::new(character, Transform::new(position, Scale::identity(), orientation)));
 
 	// 4. Systems that read transforms step last.
 	physics.step(time, app.alley_mut());
@@ -148,4 +150,3 @@ the world. Send `None` to let the chain follow the animation again.
 
 - [`animation::graph`](/docs/api/latest/byte_engine/animation/graph)
 - [`animation::root_motion`](/docs/api/latest/byte_engine/animation/root_motion)
-- [`gameplay::World`](/docs/api/latest/byte_engine/gameplay/trait.World)

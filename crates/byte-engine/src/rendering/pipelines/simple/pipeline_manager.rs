@@ -129,8 +129,8 @@ impl PipelineManager {
 			pipeline_manager,
 			loader,
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
-			deletions_listener: world.deletions_listener(),
-			transforms_listener: world.transforms_channel().listener(),
+			deletions_listener: world.channel::<DeleteMessage>().listener(),
+			transforms_listener: world.channel::<TransformationUpdate>().listener(),
 			resident_meshes: HashMap::default(),
 			pending_renderables: Vec::new(),
 			instances: StableVec::new(),
@@ -318,10 +318,7 @@ use crate::{
 		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
-	gameplay::{
-		World as _,
-		transform::{Transform, TransformationUpdate},
-	},
+	gameplay::transform::{Transform, TransformationUpdate},
 	rendering::{
 		RenderableMesh, Sink,
 		pipelines::simple::{

@@ -56,7 +56,6 @@ use crate::{
 		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
-	gameplay::World as _,
 };
 
 type BoxedTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
@@ -103,7 +102,7 @@ impl<S: 'static> TaskRuntime<S> {
 			remote: Arc::new(RemoteWakes::default()),
 			woken: Vec::new(),
 			adopting: Vec::new(),
-			deletions: world.deletions_listener(),
+			deletions: world.channel::<DeleteMessage>().listener(),
 		}
 	}
 

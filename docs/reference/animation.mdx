@@ -312,7 +312,7 @@ between steps; the queries are the player's.
 
 ### Data stream
 
-An animator given a [data stream](/docs/reference/data-streams) writes one
+An animator given a [debug data stream (DDS)](/docs/reference/debug-data-streams) writes one
 record to it each time it advances, after the advance, with `stream` set to
 `animation`. An animator without a stream writes nothing. Times in `data` are
 seconds. A clip is named by its resource ID's file name, without its directory
@@ -398,7 +398,7 @@ Root motion:
 | `translation` | Array of three numbers | The translation, in the skeleton root's parent space. |
 | `rotation` | Array of four numbers | The rotation quaternion, as x, y, z, w. |
 
-The key, which [changes-only](/docs/reference/data-streams#destination) streams
+The key, which [changes-only](/docs/reference/debug-data-streams#destination) streams
 compare, is `status`, `missing`, the request's `state`, the motion's `state`
 and `clips`, the transition's `from` state and `route`, and the pending route's
 `requested`, `target`, `route`, and wait `clip`. Phases, times, the request's

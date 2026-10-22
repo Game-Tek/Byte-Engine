@@ -82,7 +82,7 @@ async fn walk(tasks: &Tasks<Scene>, body: &mut Character, root_motion: &mut Defa
 ```
 
 Create the listener when the task starts, before its first await, as in
-`world.root_motion_channel().listener()`. A listener keeps every message sent
+`world.channel::<RootMotionUpdate>().listener()`. A listener keeps every message sent
 on its channel from then on until the task reads it, including the ones sent
 while the task waited for something else.
 
@@ -108,7 +108,7 @@ loses is dropped, and its waits end with it:
 ```rust
 async fn player(tasks: Tasks<Scene>, world: MessageScope, mut body: Character, kill: Handle) {
 	let mut actions = world.channel::<ActionEvent>().listener();
-	let mut root_motion = world.root_motion_channel().listener();
+	let mut root_motion = world.channel::<RootMotionUpdate>().listener();
 	loop {
 		select_biased! {
 			_ = pressed(&mut actions, kill).fuse() => {}

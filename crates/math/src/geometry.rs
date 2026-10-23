@@ -243,36 +243,44 @@ pub fn closest_point_on_segment_xz<Space>(point: Point<Space>, start: Point<Spac
 	start + (end - start) * fraction
 }
 
-/// Returns how long until two circles moving at constant velocities touch on XZ, or [`None`] when they never do.
+/// Returns when two points moving at constant velocities are closest on XZ, in seconds from now.
 ///
-/// The circles start at `first` and `second` and touch when their centers come within `radius`, the sum of their
-/// radii. Circles that already touch return zero unless they move apart, so agents that overlap keep counting as in
-/// contact until they separate. Use it to score candidate velocities when steering agents around each other.
-pub fn time_to_contact_xz<Space>(
+/// Negative means they were closest in the past and now move apart. Points that keep their distance, such as two at
+/// rest, are closest now. Use it to find how near two agents come and when, so they can step apart in time.
+pub fn closest_approach_time_xz<Space>(
 	first: Point<Space>,
 	first_velocity: Vector<Space>,
 	second: Point<Space>,
 	second_velocity: Vector<Space>,
-	radius: f32,
-) -> Option<f32> {
-	let (offset_x, offset_z) = (second.x() - first.x(), second.z() - first.z());
+) -> f32 {
+	let (offset_x, offset_z) = (first.x() - second.x(), first.z() - second.z());
 	let (closing_x, closing_z) = (
 		first_velocity.x() - second_velocity.x(),
 		first_velocity.z() - second_velocity.z(),
 	);
-	// The squared distance after t seconds is gap - 2 approach t + closing² t², a quadratic in t.
-	let approach = offset_x * closing_x + offset_z * closing_z;
-	let gap = offset_x * offset_x + offset_z * offset_z - radius * radius;
-	if gap <= 0.0 {
-		return (approach >= 0.0).then_some(0.0);
-	}
-	if approach <= 0.0 {
-		// Moving apart, or keeping their distance, never brings separate circles closer.
-		return None;
-	}
+	// The distance is least where its derivative along the relative motion vanishes.
 	let closing = closing_x * closing_x + closing_z * closing_z;
-	let discriminant = approach * approach - closing * gap;
-	(discriminant >= 0.0).then(|| (approach - discriminant.sqrt()) / closing)
+	if closing == 0.0 {
+		return 0.0;
+	}
+	-(offset_x * closing_x + offset_z * closing_z) / closing
+}
+
+/// Returns the point `distance` along the polyline through `points`, measured on XZ, or [`None`] when it has no points.
+///
+/// The point interpolates all three coordinates along its segment, so it keeps the polyline's height. Distances past
+/// the end return the last point, and negative ones the first. Use it to aim an agent a little way ahead along its path
+/// so it starts turning before a corner.
+pub fn point_along_xz<Space>(points: &[Point<Space>], distance: f32) -> Option<Point<Space>> {
+	let mut left = distance.max(0.0);
+	for pair in points.windows(2) {
+		let length = distance_xz(pair[0], pair[1]);
+		if left <= length && length > 0.0 {
+			return Some(pair[0] + (pair[1] - pair[0]) * (left / length));
+		}
+		left -= length;
+	}
+	points.last().copied()
 }
 
 /// Returns the signed area of a polygon's XZ projection.
@@ -792,39 +800,30 @@ mod tests {
 	}
 
 	#[test]
-	fn time_to_contact_finds_the_first_touch_and_ignores_misses_and_separation() {
+	fn the_closest_approach_is_when_the_points_draw_abreast_and_past_for_points_moving_apart() {
 		let still = Vector::<LocalSpace>::new(0.0, 0.0, 0.0);
-		let toward = Vector::new(1.0, 0.0, 0.0);
+		let east = Vector::new(1.0, 0.0, 0.0);
 
-		// Centers 4 m apart close at 1 m/s and touch 1 m apart.
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 0.0), still, 1.0),
-			Some(3.0)
-		);
-		// Both moving toward each other close twice as fast.
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 0.0), -toward, 1.0),
-			Some(1.5)
-		);
-		// Passing 2 m to the side misses circles that touch at 1 m.
-		assert_eq!(time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 2.0), still, 1.0), None);
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), -toward, point(4.0, 0.0), still, 1.0),
-			None
-		);
-		// Overlapping circles touch now while closing in or keeping their distance, and not at all while moving apart.
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), toward, point(0.0, 0.5), toward, 1.0),
-			Some(0.0)
-		);
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), toward, point(0.5, 0.0), still, 1.0),
-			Some(0.0)
-		);
-		assert_eq!(
-			time_to_contact_xz(point(0.0, 0.0), -toward, point(0.5, 0.0), still, 1.0),
-			None
-		);
+		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 0.0), still), 4.0);
+		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 2.0), still), 4.0);
+		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 0.0), -east), 2.0);
+		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), -east, point(4.0, 0.0), still), -4.0);
+		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), still, point(4.0, 0.0), still), 0.0);
+	}
+
+	#[test]
+	fn a_point_along_a_polyline_follows_its_segments_and_clamps_to_its_ends() {
+		let path = [
+			Point::<LocalSpace>::new(0.0, 0.0, 0.0),
+			Point::new(2.0, 0.0, 0.0),
+			Point::new(2.0, 1.0, 2.0),
+		];
+
+		assert_eq!(point_along_xz(&path, 1.0), Some(Point::new(1.0, 0.0, 0.0)));
+		assert_eq!(point_along_xz(&path, 3.0), Some(Point::new(2.0, 0.5, 1.0)));
+		assert_eq!(point_along_xz(&path, 9.0), Some(path[2]));
+		assert_eq!(point_along_xz(&path, -1.0), Some(path[0]));
+		assert_eq!(point_along_xz::<LocalSpace>(&[], 1.0), None);
 	}
 
 	#[test]

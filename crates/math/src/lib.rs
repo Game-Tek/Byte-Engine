@@ -46,9 +46,9 @@ pub use affine::AffineMatrix;
 pub use angle::{Degrees, Radians};
 pub use capsule::Capsule;
 pub use geometry::{
-	NormalizationError, Point, UnitVector, Vector, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz,
-	is_finite, line_fraction_xz, point_on_segment_xz, polygon_area_xz, segments_intersect_xz, signed_area_xz,
-	signed_distance_to_line_xz, split_convex_polygon_xz, time_to_contact_xz,
+	NormalizationError, Point, UnitVector, Vector, WorldSpace, barycentric_xz, closest_approach_time_xz,
+	closest_point_on_segment_xz, distance_xz, is_finite, line_fraction_xz, point_along_xz, point_on_segment_xz,
+	polygon_area_xz, segments_intersect_xz, signed_area_xz, signed_distance_to_line_xz, split_convex_polygon_xz,
 };
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
 ///

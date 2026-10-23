@@ -39,7 +39,10 @@ app.world()
 ```
 
 Paths are for a point, so make each obstacle larger than its wall by the
-character's radius. Characters then pass the wall with their body clear of it.
+character's radius, plus however far your characters cut corners: aiming a
+little way along the path, as the next section does, cuts a corner by about a
+third of that distance. Characters then pass the wall with their body clear of
+it.
 
 ## Update the mesh each tick
 
@@ -81,26 +84,42 @@ player's. Give it the character's radius:
 ```rust
 app.world()
 	.create(RenderableMesh::resource(MODEL))
-	.with(NavigationAgent::new(CHARACTER_RADIUS).with_response_time(0.5))
+	.with(NavigationAgent::new(CHARACTER_RADIUS))
 	.with(transform);
 ```
 
-Set a response time when the character can't change course at once, such as one
-moved by root motion, whose body turns and whose stops slide over a moment.
-Steering then plans from where the character is by the time it changes
-course.
-
-Each tick, pass the direction toward the path's next corner and the speeds the
-character can move at, preferred first. Steering returns the velocity to move
-at: turned aside, slowed, or zero when others leave no room:
+Each tick, pass the velocity the character means to move at: toward the path's
+next corner at its gait's speed, or zero to stand. Steering returns that
+velocity changed as little as it takes to keep clear of the other characters
+and on the mesh:
 
 ```rust
-let velocity = navigation.steer(character, next_corner - position, &[SPRINT_SPEED, WALK_SPEED]);
+let velocity = navigation.steer(character, toward_corner * WALK_SPEED);
 ```
 
-Turn the character along the velocity and pick its gait from its speed. To
-let a standing character make way for others, steer it with a zero speed first,
-such as `&[0.0, WALK_SPEED]`: it stays put unless someone runs into it.
+Aim the character a little way along its path, such as 0.8 m, rather than at
+the next corner, so each turn starts before the corner. Turn its heading toward
+the result at a rate bounded by how hard it can lean into a turn, such as
+5 m/s² divided by its speed, up to 150° per second: a walk then turns tight and
+a sprint sweeps wide, and a sprint can't take a sharp bend, so walk before
+one. The result changes smoothly as the
+characters move, so the character's way bends smoothly too. A character that
+means to stand gets a velocity only when others press on it; move it when that
+velocity is more than a brush, such as above 0.5 m/s.
+
+Give precedence to whoever should hold their ground when two characters meet:
+a character steps aside only for others of equal or greater precedence. Rank the
+player highest, a settled character by how early it settled, and a moving one
+lowest, publishing the agent again under its handle as the character settles
+or sets off. A late arrival that lands on a settled character then moves itself
+out, and the settled one keeps its spot:
+
+```rust
+world.channel::<CreateMessage<NavigationAgent>>().send(CreateMessage::new(
+	character,
+	NavigationAgent::new(CHARACTER_RADIUS).with_precedence(-settled_at),
+));
+```
 
 ## Rust API
 

@@ -54,6 +54,7 @@ before the path searches that should see a step's changes.
 | --- | --- |
 | Path | The corners from a start to a target, both included, that a point-sized agent follows through the mesh. Fails when either end isn't on the mesh or no polygons connect them. |
 | Closest point | A point the mesh covers, moved onto the mesh's surface. Any other point moves to the nearest point of the mesh's boundary on XZ, at the boundary's height. An empty mesh has no closest point. |
+| Closest boundary point | The point of the mesh's boundary closest on XZ to a point, on or off the mesh. An empty mesh has none. |
 
 ## Agents
 
@@ -63,46 +64,50 @@ around, such as a character.
 | Property | Default | Unit | Notes |
 | --- | --- | --- | --- |
 | Radius | Required | Meters | The circle on XZ the agent occupies. Finite and greater than zero. |
-| Response time | 0 | Seconds | How long the agent keeps its velocity before a steered one takes effect, such as a character whose animation turns and stops over a moment. Finite and zero or more. |
+| Precedence | 0 | | Who holds their course when two agents meet: an agent steps aside only for agents of equal or greater precedence. Any number, infinities included. |
 
 | Rule | Behavior |
 | --- | --- |
 | Create | Publish the agent through the world scope's factory. Publishing again under the same handle replaces its radius. |
 | Place | Send a transformation update for the handle. The agent is at the transform's position. An agent without a transform doesn't take part in steering. |
-| Velocity | At each navigation update, the agent's displacement since the previous update, over the time between them. An agent that didn't move has zero velocity. |
+| Velocity | The agent's displacement per second, averaged over about a quarter of a second. Each navigation update moves it toward the displacement since the previous update over the time between them, by one minus e to the power of minus that time over 0.25 s. An agent that stops moving slows to zero this way. |
 | Delete | Delete the handle. Other agents stop steering around it. |
 
 ## Steering
 
-Steering picks the velocity an agent moves at to follow its preferred
-direction without running into other agents. Each agent steers on its own,
-with no plan shared between agents.
+Steering adjusts the velocity an agent means to move at so it doesn't run into
+other agents or the mesh boundary, by the least change that clears them in
+time. Each agent steers on its own from where the others are and how fast they
+move now, with no plan shared between agents.
 
 | Input | Meaning |
 | --- | --- |
-| Agent | The agent that steers. |
-| Direction | Where the agent wants to go, projected onto XZ. A direction with no length steers to standing still. |
-| Speeds | The speeds in meters per second the agent can move at, preferred first. A preferred speed of zero prefers standing still. |
+| Agent | The agent that steers. Its radius sizes its contacts with other agents. An agent that doesn't exist or has no transform steers to its velocity unchanged. |
+| Velocity | The velocity the agent means to move at, on XZ. Zero means standing still. |
 
-Steering scores standing still and every pairing of a speed above zero with a
-heading: the direction itself, and the direction turned by 15°, 30°, 45°, 60°,
-90°, and 120° to either side. It moves at the velocity with the lowest cost.
-When costs tie, it keeps the speed listed first, then the smaller turn, then a
-counterclockwise turn over the same clockwise one, and standing still last.
+For every other agent of equal or greater precedence, the agent takes a
+sidestep; it holds its course for agents of less precedence, which step aside
+for it:
 
-| Cost | Value |
+| Term | Value |
 | --- | --- |
-| Turn | The heading's angle from the direction, over 180°. Standing still has no turn cost. |
-| Speed change | The difference between the speed and the preferred speed, over the fastest speed listed. Standing still has a speed of zero. |
-| Contact | Two times one minus the time to the earliest contact with another agent, over 2 s, when a contact comes within 2 s. Contact is when the circles of the two agents touch, with the other agent keeping its velocity. Agents that already touch are in contact unless they move apart. |
-| Leaving the mesh | Three when the point the velocity reaches 0.5 s after the response time isn't on the mesh. |
+| Contact distance | The sum of the two radii and the comfort distance of 0.15 m. |
+| Closest approach | The time from now at which the two are closest, with the agent at its velocity and the other at its own, held between now and the horizon of 2 s. Two that keep their distance or move apart are closest now. |
+| Shortfall | The contact distance minus the distance between them at the closest approach, when that's positive. |
+| Sidestep | A velocity away from the other at the closest approach, of the shortfall over the time to the closest approach, no shorter than 0.25 s, times one minus that time over the horizon. Two exactly on course for each other sidestep to the right of their relative motion. |
 
-The velocity takes effect after the agent's response time. Until then the agent
-keeps its own velocity and the others keep theirs, so contacts and the mesh are
-checked from where that leaves them, and the time to a contact counts from now.
+Against the closest point of the mesh boundary, the agent counts as a point,
+since the mesh already allows for its size, and slides instead of stepping
+aside:
 
-An agent that doesn't exist or has no transform steers at the direction and its
-preferred speed.
+| Term | Value |
+| --- | --- |
+| Approach | The part of the velocity, with the sidesteps added, toward the closest boundary point. |
+| Slide | The part of the approach above the distance to that point over 0.5 s, removed: the agent approaches the boundary no faster than it could reach it in 0.5 s, so it arrives sliding along it. Paths that run along the boundary without crossing it lose nothing. An agent off the mesh doesn't slide: its way back on is across the boundary. |
+
+The result is the velocity with the sidesteps added and the slide removed. It
+changes continuously as the agents move, so an agent that turns toward it at a
+bounded rate moves smoothly.
 
 ## Tolerances
 

@@ -158,6 +158,8 @@ pub struct NavigationMesh<Space = WorldSpace> {
 	polygons: Vec<NavigationPolygon<Space>>,
 	adjacency_offsets: Vec<usize>,
 	adjacency: Vec<NavigationAdjacency<Space>>,
+	/// The edges only one polygon has, which bound the mesh.
+	boundary: Vec<(NavigationVertexHandle, NavigationVertexHandle)>,
 }
 
 impl<Space> NavigationMesh<Space> {
@@ -241,13 +243,14 @@ impl<Space> NavigationMesh<Space> {
 			});
 		}
 
-		let (adjacency_offsets, adjacency) = build_adjacency(&vertices, &polygon_vertices, &polygons)?;
+		let (adjacency_offsets, adjacency, boundary) = build_adjacency(&vertices, &polygon_vertices, &polygons)?;
 		Ok(Self {
 			vertices,
 			polygon_vertices,
 			polygons,
 			adjacency_offsets,
 			adjacency,
+			boundary,
 		})
 	}
 
@@ -322,20 +325,21 @@ impl<Space> NavigationMesh<Space> {
 		if !is_finite(point) {
 			return None;
 		}
-		if let Some(projected) = self.project_point(point) {
-			return Some(projected);
-		}
+		self.project_point(point).or_else(|| self.closest_boundary_point(point))
+	}
 
-		// Shared edges are inside the mesh and never closer than the boundary edge beyond them, so scanning every
-		// edge finds the boundary's closest point without first telling the boundary apart.
-		self.polygons
+	/// Returns the point of the mesh's boundary closest to `point` on XZ, or [`None`] when the mesh is empty or `point`
+	/// isn't finite.
+	///
+	/// The boundary is where the mesh ends: the outer edge of the walkable surface and the edges of the holes
+	/// obstacles cut. Use it to keep an agent from steering off the mesh.
+	pub fn closest_boundary_point(&self, point: Point<Space>) -> Option<Point<Space>> {
+		if !is_finite(point) {
+			return None;
+		}
+		self.boundary
 			.iter()
-			.flat_map(|polygon| {
-				let indices = &self.polygon_vertices[polygon.first_vertex..polygon.first_vertex + polygon.vertex_count];
-				indices.iter().zip(indices.iter().cycle().skip(1)).map(|(&from, &to)| {
-					closest_point_on_segment_xz(point, self.vertices[from as usize], self.vertices[to as usize])
-				})
-			})
+			.map(|&(from, to)| closest_point_on_segment_xz(point, self.vertices[from as usize], self.vertices[to as usize]))
 			.min_by(|first, second| distance_xz(*first, point).total_cmp(&distance_xz(*second, point)))
 	}
 
@@ -562,7 +566,14 @@ fn build_adjacency<Space>(
 	vertices: &[Point<Space>],
 	polygon_vertices: &[NavigationVertexHandle],
 	polygons: &[NavigationPolygon<Space>],
-) -> Result<(Vec<usize>, Vec<NavigationAdjacency<Space>>), NavigationMeshBuildError> {
+) -> Result<
+	(
+		Vec<usize>,
+		Vec<NavigationAdjacency<Space>>,
+		Vec<(NavigationVertexHandle, NavigationVertexHandle)>,
+	),
+	NavigationMeshBuildError,
+> {
 	let mut edge_uses = HashMap::new();
 	let mut connections = Vec::new();
 
@@ -632,7 +643,13 @@ fn build_adjacency<Space>(
 		adjacency_offsets[index] += adjacency_offsets[index - 1];
 	}
 	let adjacency = directed.into_iter().map(|(_, edge)| edge).collect();
-	Ok((adjacency_offsets, adjacency))
+	// Edges no second polygon claimed bound the mesh. Sorted, so the boundary doesn't depend on hashing.
+	let mut boundary: Vec<_> = edge_uses
+		.into_iter()
+		.filter_map(|(edge, owner)| owner.map(|_| edge))
+		.collect();
+	boundary.sort_unstable();
+	Ok((adjacency_offsets, adjacency, boundary))
 }
 
 fn oriented_portal_handles<Space>(
@@ -934,6 +951,21 @@ mod tests {
 		let corner = Point::new(2.0, 2.0, 2.0);
 
 		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
+	}
+
+	#[test]
+	fn the_closest_boundary_point_ignores_edges_shared_between_polygons() {
+		let mesh = l_shaped_mesh();
+
+		// The edge from (2, 0) to (2, 2) is shared, so from beside it the boundary is the bottom edge.
+		assert_eq!(mesh.closest_boundary_point(point(2.0, 0.5)), Some(point(2.0, 0.0)));
+		assert_eq!(mesh.closest_boundary_point(point(-1.0, 1.0)), Some(point(0.0, 1.0)));
+		assert_eq!(
+			NavigationMesh::<WorldSpace>::new(Vec::new(), Vec::new())
+				.expect("an empty mesh")
+				.closest_boundary_point(point(0.0, 0.0)),
+			None
+		);
 	}
 
 	#[test]

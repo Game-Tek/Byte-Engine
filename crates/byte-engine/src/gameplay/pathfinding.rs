@@ -2,7 +2,7 @@
 //!
 //! Declare where agents walk with [`NavigationArea`] components on the world and let a [`Navigation`] system build
 //! their [`NavigationMesh`]; then call [`NavigationMesh::find_path`] on it for a string-pulled world-space path, and
-//! [`Navigation::steer`] to move each [`NavigationAgent`] along it without running into the others.
+//! [`Navigation::steer`] to keep each [`NavigationAgent`] moving along it clear of the others.
 //! Build a mesh directly with [`NavigationMesh::from_areas`] or [`NavigationMesh::new`] when the polygons don't come
 //! from the world. Use [`a_star`] for one search on an arbitrary graph, and [`a_star_batch`] or a retained
 //! [`PathSearch`] when several searches share one graph, so they also share their working storage.

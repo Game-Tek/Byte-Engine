@@ -53,11 +53,11 @@ fn checked_half_extents(half_x: f32, half_z: f32) -> [f32; 2] {
 ///
 /// Create one on the world scope with a [`Transform`] under the same handle, usually beside a character's body, and
 /// give it the character's radius. Then call [`Navigation::steer`] each tick to pick the velocity the character
-/// moves at.
+/// moves at. Publish it again under the same handle to change its precedence as the character settles or sets off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NavigationAgent {
 	radius: f32,
-	response_time: f32,
+	precedence: f32,
 }
 
 impl NavigationAgent {
@@ -67,22 +67,20 @@ impl NavigationAgent {
 			radius.is_finite() && radius > 0.0,
 			"Invalid navigation agent radius. The most likely cause is a radius that is zero, negative, or not finite."
 		);
-		Self {
-			radius,
-			response_time: 0.0,
-		}
+		Self { radius, precedence: 0.0 }
 	}
 
-	/// Makes steering expect the agent to keep its current velocity for `seconds` before a new one takes effect.
+	/// Ranks the agent among those it meets: it steps aside only for agents of equal or greater `precedence`, and
+	/// agents of less precedence step aside for it.
 	///
-	/// Use it for agents that can't change course at once, such as a character whose animation turns and stops over a
-	/// moment, so steering starts avoiding others from where the agent will really be.
-	pub fn with_response_time(mut self, seconds: f32) -> Self {
+	/// Use it so a character that has settled holds its spot against one still arriving, and a player holds its
+	/// course against every NPC. Any number does, infinities included.
+	pub fn with_precedence(mut self, precedence: f32) -> Self {
 		assert!(
-			seconds.is_finite() && seconds >= 0.0,
-			"Invalid navigation agent response time. The most likely cause is a time that is negative or not finite."
+			!precedence.is_nan(),
+			"Invalid navigation agent precedence. The most likely cause is a value computed from a NaN."
 		);
-		self.response_time = seconds;
+		self.precedence = precedence;
 		self
 	}
 }
@@ -91,8 +89,10 @@ impl NavigationAgent {
 struct PlacedAgent {
 	agent: NavigationAgent,
 	position: Option<Point>,
-	/// The displacement since the previous update over the time between them.
+	/// The displacement per second, averaged over about [`VELOCITY_AVERAGE_SECONDS`].
 	velocity: Vector,
+	/// How far the agent's transforms moved it in this update, until it joins the average.
+	displacement: Vector,
 }
 
 /// The `Navigation` struct keeps the navigation mesh of a world's areas for the path searches that run on it, and
@@ -149,12 +149,9 @@ impl Navigation {
 					agent,
 					position: None,
 					velocity: Vector::new(0.0, 0.0, 0.0),
+					displacement: Vector::new(0.0, 0.0, 0.0),
 				})
 				.agent = agent;
-		}
-		// Each agent's velocity sums the moves its transforms make in this update, so one that didn't move is still.
-		for agent in self.agents_by_id.values_mut() {
-			agent.velocity = Vector::new(0.0, 0.0, 0.0);
 		}
 		// The route carries every entity's transforms, so only the areas' own count as changes.
 		while let Some(message) = self.transforms.read() {
@@ -165,10 +162,19 @@ impl Navigation {
 			}
 			if let Some(agent) = self.agents_by_id.get_mut(&id) {
 				let position = message.transform().get_position();
-				if let Some(previous) = agent.position.filter(|_| seconds > 0.0) {
-					agent.velocity += (position - previous) / seconds;
+				if let Some(previous) = agent.position {
+					agent.displacement += position - previous;
 				}
 				agent.position = Some(position);
+			}
+		}
+		// Root-motion strides speed up and slow down within each step, so velocities average this update's displacement
+		// into the last quarter of a second's instead of taking it alone.
+		if seconds > 0.0 {
+			let follow = 1.0 - (-seconds / VELOCITY_AVERAGE_SECONDS).exp();
+			for agent in self.agents_by_id.values_mut() {
+				agent.velocity += (agent.displacement / seconds - agent.velocity) * follow;
+				agent.displacement = Vector::new(0.0, 0.0, 0.0);
 			}
 		}
 		while let Some(message) = self.deletions.read() {
@@ -188,26 +194,31 @@ impl Navigation {
 		&self.mesh
 	}
 
-	/// Returns the velocity `agent` moves at to head along `direction` at one of `speeds` without running into other
-	/// agents or off the mesh.
+	/// Returns `velocity`, the velocity `agent` means to move at, adjusted by the least change that keeps it clear of
+	/// the other agents and on the mesh.
 	///
-	/// List the speeds the agent can move at, preferred first; a preferred speed of zero stands unless others crowd the
-	/// agent, and a zero velocity means standing still. Each agent steers
-	/// on its own against where the others are and how fast they moved at the latest update, so call it for each agent
-	/// after [`Self::update`]. An agent without a transform steers at `direction` and its preferred speed.
-	pub fn steer(&self, agent: Handle, direction: Vector, speeds: &[f32]) -> Vector {
+	/// Call it for each agent after [`Self::update`], with the velocity toward the agent's next path corner at the
+	/// speed it goes, or zero when it means to stand; the result's direction is where to head and its length how fast.
+	/// It changes continuously as the agents move, so turn the agent toward it at a bounded rate rather than snapping
+	/// to it. An agent without a transform gets `velocity` back unchanged.
+	pub fn steer(&self, agent: Handle, velocity: Vector) -> Vector {
 		let id = agent.id();
 		let Some((placed, position)) = self.agents_by_id.get(&id).and_then(|placed| Some((placed, placed.position?))) else {
-			return steering::preferred_velocity(direction, speeds);
+			return velocity;
 		};
-		let others = self
-			.agents_by_id
+		let NavigationAgent { radius, precedence } = placed.agent;
+		steering::steer(&self.mesh, (position, radius, precedence), velocity, self.others(id))
+	}
+
+	/// Returns the position, velocity, radius, and precedence of every placed agent but the one with `id`.
+	fn others(&self, id: u32) -> impl Iterator<Item = (Point, Vector, f32, f32)> + '_ {
+		self.agents_by_id
 			.iter()
 			.filter(move |&(&other, _)| other != id)
-			.filter_map(|(_, other)| Some((other.position?, other.velocity, other.agent.radius)));
-		let NavigationAgent { radius, response_time } = placed.agent;
-		let agent = (position, placed.velocity, radius);
-		steering::steer(&self.mesh, agent, response_time, direction, speeds, others)
+			.filter_map(|(_, other)| {
+				let NavigationAgent { radius, precedence } = other.agent;
+				Some((other.position?, other.velocity, radius, precedence))
+			})
 	}
 
 	/// Builds a mesh from every placed area, in creation order.
@@ -225,6 +236,9 @@ impl Navigation {
 		NavigationMesh::from_areas(&walkable, &obstacles)
 	}
 }
+
+/// How long, in seconds, agent velocities average displacements over.
+const VELOCITY_AVERAGE_SECONDS: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {
@@ -269,6 +283,22 @@ mod tests {
 			Transform::from_position(Point::new(x, 0.0, z)),
 		));
 	}
+
+	/// Walks each agent at its velocity for a second of ticks, ending at its point, so its averaged velocity settles.
+	///
+	/// Create each agent where the walk starts, a second's travel before its point.
+	fn walk(bus: &MessageBus, world: &MessageScope, navigation: &mut Navigation, walks: &[(Handle, [f32; 2], Vector)]) {
+		for step in (0..WALK_TICKS).rev() {
+			bus.begin_tick();
+			for &(agent, [x, z], velocity) in walks {
+				let behind = velocity * (step as f32 / WALK_TICKS as f32);
+				moved(world, agent, x - behind.x(), z - behind.z());
+			}
+			navigation.update(tick()).expect("the agents walked");
+		}
+	}
+
+	const WALK_TICKS: usize = 60;
 
 	const WALK: f32 = 1.4;
 	fn east() -> Vector {
@@ -344,117 +374,133 @@ mod tests {
 	}
 
 	#[test]
-	fn an_agent_with_open_ground_heads_straight_at_its_preferred_speed() {
+	fn an_agent_with_open_ground_keeps_its_velocity() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
 		let walker = agent(&world, 0.0, 0.0);
-		navigation.update(tick()).expect("an agent");
+		agent(&world, 0.0, 3.0);
+		navigation.update(tick()).expect("two agents");
 
-		assert_eq!(navigation.steer(walker, east() * 3.0, &[WALK]), east() * WALK);
+		assert_eq!(navigation.steer(walker, east() * WALK), east() * WALK);
+		assert_eq!(
+			navigation.steer(walker, Vector::new(0.0, 0.0, 0.0)),
+			Vector::new(0.0, 0.0, 0.0)
+		);
 	}
 
 	#[test]
-	fn an_agent_walks_around_a_standing_one_in_its_way() {
+	fn an_agent_steps_aside_from_a_standing_one_in_its_way_and_keeps_going() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
 		let walker = agent(&world, 0.0, 0.0);
 		agent(&world, 1.5, 0.0);
 		navigation.update(tick()).expect("two agents");
 
-		let velocity = navigation.steer(walker, east(), &[WALK]);
-		assert!(velocity.z().abs() > 0.0, "it turns aside instead of walking into the other");
-		assert!(velocity.x() > 0.0, "it still makes progress");
+		let steered = navigation.steer(walker, east() * WALK);
+		assert!(steered.z().abs() > 0.0, "it steps aside instead of walking into the other");
+		assert_eq!(steered.x(), WALK, "a sidestep is across its way, not against it");
 	}
 
 	#[test]
-	fn an_agent_avoids_one_that_moves_across_its_way() {
+	fn an_agent_passes_on_the_side_it_is_already_offset_to() {
+		let (bus, world, mut navigation) = floor();
+		bus.begin_tick();
+		let left = agent(&world, 0.0, 0.1);
+		let right = agent(&world, 0.0, -0.1);
+		agent(&world, 1.5, 0.0);
+		navigation.update(tick()).expect("three agents");
+
+		assert!(navigation.steer(left, east() * WALK).z() > 0.0);
+		assert!(navigation.steer(right, east() * WALK).z() < 0.0);
+	}
+
+	#[test]
+	fn an_agent_steps_aside_from_one_that_crosses_its_way_but_not_from_one_that_has_passed() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
 		let walker = agent(&world, 0.0, 0.0);
-		// Standing, the other would pass 2 m to the side. Walking north, it reaches the walker's line when the walker
-		// does.
-		let crosser = agent(&world, 2.0, -2.0 - WALK / 60.0);
-		navigation.update(tick()).expect("two agents");
-		bus.begin_tick();
-		moved(&world, crosser, 2.0, -2.0);
-		navigation.update(tick()).expect("the crosser moved");
+		// Standing, the crosser would be 2 m aside. Walking north, it reaches the walker's line when the walker does.
+		let crosser = agent(&world, 2.0, -2.0 - WALK);
+		let passed = agent(&world, -1.0, -1.0 - WALK);
+		let north = Vector::new(0.0, 0.0, WALK);
+		walk(
+			&bus,
+			&world,
+			&mut navigation,
+			&[(crosser, [2.0, -2.0], north), (passed, [-1.0, -1.0], north)],
+		);
 
-		assert_ne!(navigation.steer(walker, east(), &[WALK]), east() * WALK);
+		assert_ne!(navigation.steer(walker, east() * WALK), east() * WALK);
+		world.channel::<DeleteMessage>().send(DeleteMessage::new(crosser));
+		bus.begin_tick();
+		navigation.update(tick()).expect("the crosser is gone");
+		// The one behind and to the side moves away from the walker's way.
+		assert_eq!(navigation.steer(walker, east() * WALK), east() * WALK);
 	}
 
 	#[test]
-	fn an_agent_boxed_in_by_others_stands_still() {
-		let (bus, world, mut navigation) = floor();
-		bus.begin_tick();
-		let boxed = agent(&world, 0.0, 0.0);
-		for step in 0..8 {
-			let (sine, cosine) = (step as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
-			agent(&world, 0.8 * cosine, 0.8 * sine);
-		}
-		navigation.update(tick()).expect("a ring of agents");
-
-		assert_eq!(navigation.steer(boxed, east(), &[WALK]), Vector::new(0.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn an_agent_that_prefers_standing_stays_unless_another_touches_it() {
+	fn standing_agents_too_close_step_apart_and_lone_ones_stay() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
 		let alone = agent(&world, -3.0, 0.0);
 		let crowded = agent(&world, 2.0, 0.0);
-		agent(&world, 2.3, 0.0);
+		agent(&world, 2.5, 0.0);
 		navigation.update(tick()).expect("three agents");
+		let still = Vector::new(0.0, 0.0, 0.0);
 
-		assert_eq!(navigation.steer(alone, east(), &[0.0, WALK]), Vector::new(0.0, 0.0, 0.0));
-		let step = navigation.steer(crowded, east(), &[0.0, WALK]);
-		assert!(step.length() > 0.0, "it steps out of the other's way");
+		assert_eq!(navigation.steer(alone, still), still);
+		let step = navigation.steer(crowded, still);
+		assert!(step.x() < 0.0, "it steps away from the one beside it");
+		assert!(step.length() <= 2.0, "at a bounded speed");
 	}
 
 	#[test]
-	fn an_agent_at_the_edge_turns_instead_of_leaving_the_mesh() {
+	fn an_agent_heading_at_the_edge_slows_to_a_slide_and_one_heading_along_it_keeps_going() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
 		let walker = agent(&world, 4.9, 0.0);
 		navigation.update(tick()).expect("an agent at the edge");
+		let north = Vector::new(0.0, 0.0, WALK);
 
-		let velocity = navigation.steer(walker, east(), &[WALK]);
-		assert!(velocity.length() > 0.0);
-		assert!(
-			navigation
-				.mesh()
-				.locate_polygon(Point::new(4.9, 0.0, 0.0) + velocity * 0.5)
-				.is_some()
-		);
+		// A tenth of a meter from the edge, most of the approach is given up; the rest goes the next time around.
+		let into = navigation.steer(walker, east() * WALK);
+		assert!(into.x() < 0.25 * WALK && into.x() >= 0.0);
+		assert_eq!(navigation.steer(walker, north), north);
+		// Approaching at a slant keeps the part along the edge.
+		let along = WALK / 2f32.sqrt();
+		let slant = navigation.steer(walker, Vector::new(along, 0.0, along));
+		assert_eq!(slant.z(), along);
+		assert!(slant.x() < 0.25 * WALK);
+
+		// Off the mesh, heading back across the edge loses nothing.
+		bus.begin_tick();
+		let outside = agent(&world, 5.5, 3.0);
+		navigation.update(tick()).expect("an agent off the mesh");
+		assert_eq!(navigation.steer(outside, -east() * WALK), -east() * WALK);
 	}
 
 	#[test]
-	fn steering_starts_from_where_the_response_time_carries_the_agent() {
+	fn an_agent_holds_its_course_for_those_of_less_precedence_and_they_step_aside_for_it() {
 		let (bus, world, mut navigation) = floor();
-		let north = Vector::new(0.0, 0.0, 1.0);
 		bus.begin_tick();
-		// Both walk east toward the floor's edge at x = 5, one of them unable to change course for a second.
-		let nimble = agent(&world, 4.0 - WALK / 60.0, -2.0);
-		let sluggish: Handle = world
-			.create(NavigationAgent::new(0.35).with_response_time(1.0))
-			.with(Transform::from_position(Point::new(4.0 - WALK / 60.0, 0.0, 2.0)))
+		let settled: Handle = world
+			.create(NavigationAgent::new(0.35).with_precedence(1.0))
+			.with(Transform::from_position(Point::new(2.0, 0.0, 0.0)))
 			.into();
-		navigation.update(tick()).expect("two agents");
-		bus.begin_tick();
-		moved(&world, nimble, 4.0, -2.0);
-		moved(&world, sluggish, 4.0, 2.0);
-		navigation.update(tick()).expect("both moved");
+		let late = agent(&world, 2.5, 0.0);
+		navigation.update(tick()).expect("two agents too close");
+		let still = Vector::new(0.0, 0.0, 0.0);
 
-		assert_eq!(navigation.steer(nimble, north, &[WALK]), north * WALK);
-		// A second at its velocity carries it past the edge, so it heads back onto the mesh.
-		assert!(navigation.steer(sluggish, north, &[WALK]).x() < 0.0);
+		assert_eq!(navigation.steer(settled, still), still);
+		assert!(navigation.steer(late, still).x() > 0.0, "the late one steps away");
 	}
 
 	#[test]
-	fn an_unknown_agent_heads_along_its_direction_at_its_preferred_speed() {
+	fn an_unknown_agent_gets_its_velocity_back() {
 		let (_bus, world, navigation) = floor();
 		let unplaced: Handle = world.create(NavigationAgent::new(0.35)).into();
 
-		assert_eq!(navigation.steer(unplaced, east() * 2.0, &[WALK, 0.5]), east() * WALK);
+		assert_eq!(navigation.steer(unplaced, east() * 2.0), east() * 2.0);
 	}
 }
 

@@ -1145,6 +1145,7 @@ impl ReadyAnimationGraphPlayer {
 		if !evaluation.motion_ready(&graph.state(target).motion) {
 			return RootMotionDelta::IDENTITY;
 		}
+		let source = *active;
 		let mut destination = self.start_motion(graph, target, entry, evaluation.pool);
 
 		let root_motion = if blend == MediaTime::ZERO {
@@ -1155,7 +1156,7 @@ impl ReadyAnimationGraphPlayer {
 			self.pose.advance_active(&mut destination, samples, leftover, evaluation)
 		} else {
 			self.pose
-				.begin_handover_blend(&mut destination, delta, leftover, blend, evaluation)
+				.begin_handover_blend(&source, &mut destination, delta, leftover, blend, evaluation)
 		};
 		// A one-shot that turned the body in its pose hands the turn to the entity at the hand-over moment, so what
 		// the next state plays after it is in the turned frame.
@@ -1538,18 +1539,21 @@ impl PlayerPose {
 	/// Starts inertializing from the motion that just handed over, a finished one-shot or a source at its wait point,
 	/// into `destination`, which then plays `leftover` of this frame.
 	///
-	/// The source's last two samples and two destination samples from where it starts on give both sides their velocity.
+	/// Samples each motion over one frame at its current weights to measure its velocity without a gait change
+	/// being divided by the fraction of the frame left before the hand-over.
 	fn begin_handover_blend(
 		&mut self,
+		source: &RuntimeMotion,
 		destination: &mut RuntimeMotion,
 		delta: MediaTime,
 		leftover: MediaTime,
 		blend: MediaTime,
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> RootMotionDelta {
-		// The one-shot only moved until its end, so its last step spans the frame minus the leftover. Sampling the
-		// destination over the same span keeps both velocities comparable.
-		let interval = if delta > leftover { delta - leftover } else { delta };
+		// The source can finish only microseconds into this frame. Its retained previous pose has last frame's
+		// weights, so dividing their difference by that remainder invents extreme velocities when a gait changes.
+		// Use a full-frame span at the current weights for both motions, kept within one cycle to avoid root wraps.
+		let interval = delta;
 		// The source stopped at the hand-over moment, so the offset must compare it with the destination at that same
 		// moment, where it starts, not after it plays the leftover, or the destination's own travel would count as an
 		// offset. Spans of a clip are measured within one cycle: looping clips need not be continuous across their wrap
@@ -1579,6 +1583,25 @@ impl PlayerPose {
 		// The scratch spans hold as many transforms as this skeleton has nodes.
 		let nodes = self.local_pose.len();
 		let (loop_start, loop_end) = (&mut loop_start[..nodes], &mut loop_end[..nodes]);
+		let source_samples = source.samples(evaluation.graph);
+		let source_duration = source.duration(source_samples);
+		let span = if source_duration > 0.0 {
+			(interval.as_seconds_f32() / source_duration).min(1.0)
+		} else {
+			0.0
+		};
+		let later = source.phase.clamp(span, 1.0);
+		sample_motion(source, source_samples, later - span, pool, blend_poses, loop_start);
+		sample_motion(source, source_samples, later, pool, blend_poses, loop_end);
+		for (((previous, earlier), later), current) in self
+			.active_previous
+			.iter_mut()
+			.zip(&*loop_start)
+			.zip(&*loop_end)
+			.zip(&self.active_current)
+		{
+			*previous = shifted_sample(*earlier, *later, current);
+		}
 		// The loop buffers only serve root motion, which is measured below, so they hold spans until then.
 		let (earlier, later) = within_cycle(leftover);
 		sample_motion(destination, samples, earlier, pool, blend_poses, loop_start);
@@ -2572,6 +2595,43 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn hand_over_near_a_frame_boundary_keeps_a_changing_blend_bounded() {
+		let mut pool = pool_with(vec![
+			("slow.animation", test_motion("slow", [1.0, 0.0, 0.0], 1.0)),
+			("fast.animation", test_motion("fast", [3.0, 0.0, 0.0], 1.0)),
+			("idle.animation", test_motion("idle", [0.0, 0.0, 0.0], 1.0)),
+		]);
+		let builder = AnimationGraph::builder();
+		let space = builder.linear_space("speed");
+		let idle = space.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = space.state("walk").linear(
+			AnimationBlend::new()
+				.sample(0.0, AnimationClip::looping("idle.animation"))
+				.sample(1.0, AnimationClip::looping("idle.animation")),
+		);
+		idle.to(walk)
+			.with(
+				AnimationBlend::new()
+					.sample(0.0, AnimationClip::once("slow.animation"))
+					.sample(1.0, AnimationClip::once("fast.animation")),
+			)
+			.exit(MediaTime::from_millis(150))
+			.anytime(MediaTime::ZERO);
+		let graph = builder.build(idle).unwrap();
+		let mut player = pool.create_player(&graph, None);
+		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at(1.0), &mut pool));
+		// A gait weight changes on the frame whose one-shot ends only a few microseconds into the frame.
+		ready(player.advance(&graph, MediaTime::from_seconds_f32(0.999994), walk.id().at(1.0), &mut pool));
+		let pose = ready(player.advance(&graph, MediaTime::from_seconds_f32(1.0 / 60.0), walk.id().at(0.99), &mut pool));
+		let x = pose.local_pose[0].translation.x();
+		assert!(
+			(0.0..=3.1).contains(&x),
+			"handover invented motion outside the authored poses: {x}"
+		);
 	}
 
 	#[test]

@@ -55,7 +55,7 @@ it before the characters, as you do with physics. Give it the graph: the system
 owns it from then on and hands back the ID animators name it by:
 
 ```rust
-let mut animation = AnimationSystem::new(app.world(), animation_pool);
+let mut animation = byte_engine::application::graphics::setup_animation_system(&mut app);
 let graph = animation.register(graph);
 
 let character = app
@@ -72,6 +72,11 @@ let character = app
 
 Every character that plays the same graph gets its own `Animator` on the same
 graph; the system shares the graph's bindings and clips between them.
+
+Create the system before you start the application's loading thread. It creates
+its own clip pool. Set `animation.pool-bytes` in your application parameters to
+change the decoded clip budget from the default of 32 MiB; use a positive
+number of bytes.
 
 ## Drive it every tick
 

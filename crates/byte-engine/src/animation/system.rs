@@ -156,8 +156,27 @@ pub struct AnimationSystem {
 }
 
 impl AnimationSystem {
+	/// Creates the system and its clip-loading worker before any animators are created in `scope`.
+	///
+	/// Pass the application's `animation` parameter scope. `pool-bytes` sets the decoded clip budget in bytes
+	/// and must be nonzero; it defaults to 32 MiB. Invalid values stop startup.
+	/// Spawn the returned worker on the loading runtime, then [register](Self::register) the graphs to play.
+	pub fn new(
+		scope: &MessageScope,
+		resources: crate::core::EntityHandle<resource_management::resource::resource_manager::ResourceManager>,
+		parameters: impl crate::application::parameters::Parameters,
+	) -> (Self, crate::animation::graph::AnimationLoadWorker) {
+		let budget = parameters
+			.get_parameter("pool-bytes")
+			.map(|parameter| parameter.parse().unwrap_or_else(|error| panic!("{error}")))
+			.unwrap_or(std::num::NonZeroUsize::new(32 * 1024 * 1024).unwrap());
+		// Playback stays on the caller's thread; resource loading belongs to the returned worker.
+		let (pool, worker) = AnimationPool::new(resources, budget);
+		(Self::with_pool(scope, pool), worker)
+	}
+
 	/// Creates the system for the animators created in `scope` from now on, playing clips from `pool`.
-	pub fn new(scope: &MessageScope, pool: AnimationPool) -> Self {
+	fn with_pool(scope: &MessageScope, pool: AnimationPool) -> Self {
 		Self {
 			pool,
 			graphs: Vec::new(),
@@ -391,7 +410,7 @@ mod tests {
 			.with(AnimationClip::once("jumping.animation"))
 			.when(MediaTime::ZERO)
 			.id();
-		let mut system = AnimationSystem::new(&scope, pool);
+		let mut system = AnimationSystem::with_pool(&scope, pool);
 		let graph = system.register(builder.build(walking).unwrap());
 		let entity = scope.create(Animator::new(graph)).handle();
 		let mut motion = scope.channel::<RootMotionUpdate>().listener();
@@ -434,7 +453,7 @@ mod tests {
 			pool.admit("idle.animation".into(), clip);
 			let builder = AnimationGraph::builder();
 			let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-			let mut system = AnimationSystem::new(&scope, pool);
+			let mut system = AnimationSystem::with_pool(&scope, pool);
 			let graph = system.register(builder.build(idle).expect("graph builds"));
 			let entity = Handle::new();
 			let path = std::env::temp_dir().join(format!("animation-dds-{}-{}.ndjson", std::process::id(), entity.id()));
@@ -510,7 +529,7 @@ mod tests {
 		let graph = builder.build(idle).expect("graph should build");
 		let mut alley = Alley::new();
 
-		let mut system = AnimationSystem::new(&scope, pool);
+		let mut system = AnimationSystem::with_pool(&scope, pool);
 		let graph = system.register(graph);
 		let mut root_motion = scope.channel::<RootMotionUpdate>().listener();
 		let entity = scope

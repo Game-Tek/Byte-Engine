@@ -1349,8 +1349,8 @@ pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_image_processor, default_setup, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
-	setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
+	default_image_processor, default_setup, register_default_asset_handlers, setup_animation_pool, setup_animation_system,
+	setup_default_audio, setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;
 #[cfg(feature = "dmx")]

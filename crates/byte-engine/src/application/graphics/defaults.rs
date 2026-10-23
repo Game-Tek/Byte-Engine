@@ -279,6 +279,26 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 		}));
 }
 
+/// Creates the world's animation system from the application's `animation` parameters.
+///
+/// Call before starting the loading thread and creating animators. Next, register graphs with
+/// [`AnimationSystem::register`](crate::animation::system::AnimationSystem::register) and step the system each frame.
+pub fn setup_animation_system(application: &mut GraphicsApplication) -> crate::animation::system::AnimationSystem {
+	use crate::application::parameters::Parameters as _;
+
+	let (system, worker) = crate::animation::system::AnimationSystem::new(
+		application.world(),
+		application.resource_manager_handle(),
+		application.parameters().scope("animation"),
+	);
+
+	application.add_deferred_task(move |runtime| {
+		runtime.spawn(worker.run()).detach();
+	});
+
+	system
+}
+
 /// Creates an [`AnimationPool`] with the given decoded-clip byte budget and
 /// queues its load worker on the application's loading thread.
 ///

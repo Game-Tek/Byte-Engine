@@ -98,7 +98,11 @@ impl Mul for AffineMatrix {
 			map(right_x),
 			map(right_y),
 			map(right_z),
-			[moved[0] + translation[0], moved[1] + translation[1], moved[2] + translation[2]],
+			[
+				moved[0] + translation[0],
+				moved[1] + translation[1],
+				moved[2] + translation[2],
+			],
 		])
 	}
 }
@@ -133,8 +137,9 @@ mod tests {
 
 	#[test]
 	fn scale_rotation_translation_matches_the_full_matrix_product() {
-		use crate::{Orientation, Scale, Vector, WorldSpace};
 		use maths_rs::mat::{MatScale as _, MatTranslate as _};
+
+		use crate::{Orientation, Scale, Vector, WorldSpace};
 
 		let rotation =
 			Orientation::try_from_rotation_vector(Vector::<WorldSpace>::new(0.3, -1.1, 0.7)).expect("finite rotation");
@@ -147,7 +152,10 @@ mod tests {
 		let affine = AffineMatrix::from_scale_rotation_translation(scale, rotation, translation).into_matrix();
 
 		for (index, (affine, expected)) in affine.m.iter().zip(expected.m).enumerate() {
-			assert!((affine - expected).abs() < 1.0e-5, "component {index}: {affine} != {expected}");
+			assert!(
+				(affine - expected).abs() < 1.0e-5,
+				"component {index}: {affine} != {expected}"
+			);
 		}
 	}
 

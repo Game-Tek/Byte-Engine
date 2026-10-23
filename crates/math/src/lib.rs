@@ -48,7 +48,7 @@ pub use capsule::Capsule;
 pub use geometry::{
 	NormalizationError, Point, UnitVector, Vector, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz,
 	is_finite, line_fraction_xz, point_on_segment_xz, polygon_area_xz, segments_intersect_xz, signed_area_xz,
-	signed_distance_to_line_xz, split_convex_polygon_xz,
+	signed_distance_to_line_xz, split_convex_polygon_xz, time_to_contact_xz,
 };
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
 ///

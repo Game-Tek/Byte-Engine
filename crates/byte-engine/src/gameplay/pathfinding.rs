@@ -1,7 +1,8 @@
 //! Graph search, navigation meshes, and XZ-plane path finding.
 //!
 //! Declare where agents walk with [`NavigationArea`] components on the world and let a [`Navigation`] system build
-//! their [`NavigationMesh`]; then call [`NavigationMesh::find_path`] on it for a string-pulled world-space path.
+//! their [`NavigationMesh`]; then call [`NavigationMesh::find_path`] on it for a string-pulled world-space path, and
+//! [`Navigation::steer`] to move each [`NavigationAgent`] along it without running into the others.
 //! Build a mesh directly with [`NavigationMesh::from_areas`] or [`NavigationMesh::new`] when the polygons don't come
 //! from the world. Use [`a_star`] for one search on an arbitrary graph, and [`a_star_batch`] or a retained
 //! [`PathSearch`] when several searches share one graph, so they also share their working storage.
@@ -9,8 +10,9 @@
 mod area_mesh;
 mod navigation;
 mod navigation_mesh;
+mod steering;
 
-pub use navigation::{Navigation, NavigationArea};
+pub use navigation::{Navigation, NavigationAgent, NavigationArea};
 pub use navigation_mesh::{
 	NAVIGATION_TOLERANCE, NavigationMesh, NavigationMeshBuildError, NavigationPathError, NavigationPortal,
 	NavigationVertexHandle, StringPullError, string_pull, string_pull_into,

@@ -1,6 +1,6 @@
 ---
 title: Navigation
-description: Look up the navigation area kinds, how the navigation system turns them into a navigation mesh, and the tolerances and limits of the mesh.
+description: Look up the navigation area kinds, how the navigation system turns them into a navigation mesh, how agents steer around each other, and the tolerances and limits of the mesh.
 icon: Route
 ---
 
@@ -43,7 +43,7 @@ scale is ignored. An area without a transform isn't part of the mesh.
 | Create | Publish the area through the world scope's factory. Publishing again under the same handle replaces it. |
 | Place | Send a transformation update for the handle. A later update moves the area. |
 | Delete | Delete the handle. The area leaves the mesh. |
-| Rebuild | Each navigation update adopts the area changes published since the last one and rebuilds the whole mesh when any area changed. An update without changes keeps the mesh. |
+| Rebuild | Each navigation update adopts the area changes published since the last one and rebuilds the whole mesh when any area changed. An update without changes keeps the mesh. Agents moving never rebuild it. |
 
 Create the navigation system before the areas it builds from, and update it
 before the path searches that should see a step's changes.
@@ -54,6 +54,55 @@ before the path searches that should see a step's changes.
 | --- | --- |
 | Path | The corners from a start to a target, both included, that a point-sized agent follows through the mesh. Fails when either end isn't on the mesh or no polygons connect them. |
 | Closest point | A point the mesh covers, moved onto the mesh's surface. Any other point moves to the nearest point of the mesh's boundary on XZ, at the boundary's height. An empty mesh has no closest point. |
+
+## Agents
+
+An agent is something that moves on the mesh and that other agents steer
+around, such as a character.
+
+| Property | Default | Unit | Notes |
+| --- | --- | --- | --- |
+| Radius | Required | Meters | The circle on XZ the agent occupies. Finite and greater than zero. |
+| Response time | 0 | Seconds | How long the agent keeps its velocity before a steered one takes effect, such as a character whose animation turns and stops over a moment. Finite and zero or more. |
+
+| Rule | Behavior |
+| --- | --- |
+| Create | Publish the agent through the world scope's factory. Publishing again under the same handle replaces its radius. |
+| Place | Send a transformation update for the handle. The agent is at the transform's position. An agent without a transform doesn't take part in steering. |
+| Velocity | At each navigation update, the agent's displacement since the previous update, over the time between them. An agent that didn't move has zero velocity. |
+| Delete | Delete the handle. Other agents stop steering around it. |
+
+## Steering
+
+Steering picks the velocity an agent moves at to follow its preferred
+direction without running into other agents. Each agent steers on its own,
+with no plan shared between agents.
+
+| Input | Meaning |
+| --- | --- |
+| Agent | The agent that steers. |
+| Direction | Where the agent wants to go, projected onto XZ. A direction with no length steers to standing still. |
+| Speeds | The speeds in meters per second the agent can move at, preferred first. A preferred speed of zero prefers standing still. |
+
+Steering scores standing still and every pairing of a speed above zero with a
+heading: the direction itself, and the direction turned by 15°, 30°, 45°, 60°,
+90°, and 120° to either side. It moves at the velocity with the lowest cost.
+When costs tie, it keeps the speed listed first, then the smaller turn, then a
+counterclockwise turn over the same clockwise one, and standing still last.
+
+| Cost | Value |
+| --- | --- |
+| Turn | The heading's angle from the direction, over 180°. Standing still has no turn cost. |
+| Speed change | The difference between the speed and the preferred speed, over the fastest speed listed. Standing still has a speed of zero. |
+| Contact | Two times one minus the time to the earliest contact with another agent, over 2 s, when a contact comes within 2 s. Contact is when the circles of the two agents touch, with the other agent keeping its velocity. Agents that already touch are in contact unless they move apart. |
+| Leaving the mesh | Three when the point the velocity reaches 0.5 s after the response time isn't on the mesh. |
+
+The velocity takes effect after the agent's response time. Until then the agent
+keeps its own velocity and the others keep theirs, so contacts and the mesh are
+checked from where that leaves them, and the time to a contact counts from now.
+
+An agent that doesn't exist or has no transform steers at the direction and its
+preferred speed.
 
 ## Tolerances
 

@@ -243,6 +243,38 @@ pub fn closest_point_on_segment_xz<Space>(point: Point<Space>, start: Point<Spac
 	start + (end - start) * fraction
 }
 
+/// Returns how long until two circles moving at constant velocities touch on XZ, or [`None`] when they never do.
+///
+/// The circles start at `first` and `second` and touch when their centers come within `radius`, the sum of their
+/// radii. Circles that already touch return zero unless they move apart, so agents that overlap keep counting as in
+/// contact until they separate. Use it to score candidate velocities when steering agents around each other.
+pub fn time_to_contact_xz<Space>(
+	first: Point<Space>,
+	first_velocity: Vector<Space>,
+	second: Point<Space>,
+	second_velocity: Vector<Space>,
+	radius: f32,
+) -> Option<f32> {
+	let (offset_x, offset_z) = (second.x() - first.x(), second.z() - first.z());
+	let (closing_x, closing_z) = (
+		first_velocity.x() - second_velocity.x(),
+		first_velocity.z() - second_velocity.z(),
+	);
+	// The squared distance after t seconds is gap - 2 approach t + closing² t², a quadratic in t.
+	let approach = offset_x * closing_x + offset_z * closing_z;
+	let gap = offset_x * offset_x + offset_z * offset_z - radius * radius;
+	if gap <= 0.0 {
+		return (approach >= 0.0).then_some(0.0);
+	}
+	if approach <= 0.0 {
+		// Moving apart, or keeping their distance, never brings separate circles closer.
+		return None;
+	}
+	let closing = closing_x * closing_x + closing_z * closing_z;
+	let discriminant = approach * approach - closing * gap;
+	(discriminant >= 0.0).then(|| (approach - discriminant.sqrt()) / closing)
+}
+
 /// Returns the signed area of a polygon's XZ projection.
 ///
 /// A positive result means the vertices run counterclockwise, the winding [`signed_area_xz`] calls positive.
@@ -757,6 +789,42 @@ mod tests {
 		assert_eq!(closest_point_on_segment_xz(point(-2.0, 1.0), start, end), start);
 		assert_eq!(closest_point_on_segment_xz(point(9.0, -1.0), start, end), end);
 		assert_eq!(closest_point_on_segment_xz(point(9.0, -1.0), start, start), start);
+	}
+
+	#[test]
+	fn time_to_contact_finds_the_first_touch_and_ignores_misses_and_separation() {
+		let still = Vector::<LocalSpace>::new(0.0, 0.0, 0.0);
+		let toward = Vector::new(1.0, 0.0, 0.0);
+
+		// Centers 4 m apart close at 1 m/s and touch 1 m apart.
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 0.0), still, 1.0),
+			Some(3.0)
+		);
+		// Both moving toward each other close twice as fast.
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 0.0), -toward, 1.0),
+			Some(1.5)
+		);
+		// Passing 2 m to the side misses circles that touch at 1 m.
+		assert_eq!(time_to_contact_xz(point(0.0, 0.0), toward, point(4.0, 2.0), still, 1.0), None);
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), -toward, point(4.0, 0.0), still, 1.0),
+			None
+		);
+		// Overlapping circles touch now while closing in or keeping their distance, and not at all while moving apart.
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), toward, point(0.0, 0.5), toward, 1.0),
+			Some(0.0)
+		);
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), toward, point(0.5, 0.0), still, 1.0),
+			Some(0.0)
+		);
+		assert_eq!(
+			time_to_contact_xz(point(0.0, 0.0), -toward, point(0.5, 0.0), still, 1.0),
+			None
+		);
 	}
 
 	#[test]

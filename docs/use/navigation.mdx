@@ -1,13 +1,14 @@
 ---
 title: Find paths around obstacles
-description: Declare where characters can walk and what blocks them, then find each character a path to its target that goes around the obstacles.
+description: Declare where characters can walk and what blocks them, find each character a path to its target around the obstacles, and steer characters around each other.
 icon: Route
 ---
 
 Give characters such as NPCs a way to reach a target without walking through
 walls. You mark the floors as walkable and the walls as obstacles, and the
 navigation system builds a navigation mesh from them. Each tick, a character
-asks the mesh for a path to its target and walks toward the path's next corner.
+asks the mesh for a path to its target and walks toward the path's next corner,
+steering around the other characters on its own.
 
 ## Create the navigation system
 
@@ -42,11 +43,12 @@ character's radius. Characters then pass the wall with their body clear of it.
 
 ## Update the mesh each tick
 
-Call `update` at the start of the tick, before anything searches the mesh. It
-rebuilds the mesh only when an area was created, moved, or deleted:
+Call `update` at the start of the tick, before anything searches the mesh, with
+the time since the last tick. It rebuilds the mesh only when an area was
+created, moved, or deleted:
 
 ```rust
-if let Err(error) = navigation.update() {
+if let Err(error) = navigation.update(time.delta()) {
 	eprintln!("{error}");
 }
 ```
@@ -71,9 +73,39 @@ between ticks to reuse its storage. To stop near the target, add up the
 distances between the corners and stop the character once the sum is short
 enough.
 
+## Steer around other characters
+
+Make every character that others should avoid a navigation agent, including the
+player's. Give it the character's radius:
+
+```rust
+app.world()
+	.create(RenderableMesh::resource(MODEL))
+	.with(NavigationAgent::new(CHARACTER_RADIUS).with_response_time(0.5))
+	.with(transform);
+```
+
+Set a response time when the character can't change course at once, such as one
+moved by root motion, whose body turns and whose stops slide over a moment.
+Steering then plans from where the character is by the time it changes
+course.
+
+Each tick, pass the direction toward the path's next corner and the speeds the
+character can move at, preferred first. Steering returns the velocity to move
+at: turned aside, slowed, or zero when others leave no room:
+
+```rust
+let velocity = navigation.steer(character, next_corner - position, &[SPRINT_SPEED, WALK_SPEED]);
+```
+
+Turn the character along the velocity and pick its gait from its speed. To
+let a standing character make way for others, steer it with a zero speed first,
+such as `&[0.0, WALK_SPEED]`: it stays put unless someone runs into it.
+
 ## Rust API
 
 - [`gameplay::pathfinding`](/docs/api/latest/byte_engine/gameplay/pathfinding)
 - [`Navigation`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.Navigation)
 - [`NavigationArea`](/docs/api/latest/byte_engine/gameplay/pathfinding/enum.NavigationArea)
+- [`NavigationAgent`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationAgent)
 - [`NavigationMesh`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationMesh)

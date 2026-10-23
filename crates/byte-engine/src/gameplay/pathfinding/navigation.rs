@@ -733,11 +733,13 @@ mod tests {
 		assert_eq!(slant.z(), along);
 		assert!(slant.x() < 0.25 * WALK);
 
-		// Off the mesh, heading back across the edge loses nothing.
+		// Off the mesh, heading back across the edge loses nothing, and the boundary is one way: the part of a velocity
+		// that leads farther out is removed, while the part along the edge stays.
 		bus.begin_tick();
 		let outside = agent(&world, 5.5, 3.0);
 		navigation.update(tick()).expect("an agent off the mesh");
 		assert_eq!(navigation.steer(outside, -east() * WALK), -east() * WALK);
+		assert_eq!(navigation.steer(outside, (east() + north) * WALK), north * WALK);
 	}
 
 	#[test]

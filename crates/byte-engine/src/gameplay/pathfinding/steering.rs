@@ -27,11 +27,20 @@ pub(super) fn steer(
 				)
 		});
 	// The slide applies to the velocity with the sidesteps in, so no sidestep leads off the mesh. Off the mesh, the
-	// nearest boundary is the way back on.
+	// boundary is one way: nothing may lead farther from it, so an agent pushed off can come back but never deeper.
 	match mesh.closest_boundary_point(position) {
 		Some(boundary) if mesh.locate_polygon(position).is_some() => stepped - slide(position, stepped, boundary),
-		_ => stepped,
+		Some(boundary) => stepped - receding(position, stepped, boundary),
+		None => stepped,
 	}
+}
+
+/// Returns the part of `velocity` that carries an agent at `position`, off the mesh, farther from `boundary`.
+fn receding(position: Point, velocity: Vector, boundary: Point) -> Vector {
+	let Some(toward) = flat_unit(boundary - position) else {
+		return Vector::new(0.0, 0.0, 0.0);
+	};
+	toward * velocity.dot(toward).min(0.0)
 }
 
 /// The `Crowd` struct is one circle an agent steers around: a group of others that touch each other, or one alone.

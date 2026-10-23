@@ -109,7 +109,8 @@ aside:
 | Term | Value |
 | --- | --- |
 | Approach | The part of the velocity, with the sidesteps added, toward the closest boundary point. |
-| Slide | The part of the approach above the distance to that point over 0.5 s, removed: the agent approaches the boundary no faster than it could reach it in 0.5 s, so it arrives sliding along it. Paths that run along the boundary without crossing it lose nothing. An agent off the mesh doesn't slide: its way back on is across the boundary. |
+| Slide | The part of the approach above the distance to that point over 0.5 s, removed: the agent approaches the boundary no faster than it could reach it in 0.5 s, so it arrives sliding along it. Paths that run along the boundary without crossing it lose nothing. |
+| One way | An agent off the mesh, pushed off by others, keeps the part of its velocity toward or along the closest boundary point and loses the part away from it, so it can come back onto the mesh but never go deeper. |
 
 The result is the velocity with the sidesteps added and the slide removed. It
 changes continuously as the agents move, so an agent that turns toward it at a
@@ -147,6 +148,7 @@ registering the debug mesh render pass.
 | Tolerance | Value | Rule |
 | --- | --- | --- |
 | Coincident vertices | 1 mm | Vertices closer than this on XZ merge into one. |
+| On the mesh | 1 mm | A point within this of a polygon's edge counts as on the polygon, so a point put on the boundary by rounding is on the mesh. |
 | Straight corners | 1 mm | A polygon corner closer than this to the line through its neighbors counts as straight. |
 | Slivers | 1 mm | Parts of a walkable area thinner than this are dropped. |
 

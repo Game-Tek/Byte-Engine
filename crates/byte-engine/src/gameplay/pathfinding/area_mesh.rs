@@ -295,6 +295,31 @@ mod tests {
 	}
 
 	#[test]
+	fn the_closest_point_from_inside_a_hole_is_on_the_mesh_and_a_path_starts_there() {
+		let mesh = scene_mesh();
+
+		// Inside each block's clearance, near every edge, the way out lands on the mesh within rounding.
+		for inside in [
+			point(6.0, 10.0),
+			point(5.5, 7.0),
+			point(6.6, 12.0),
+			point(6.87, 12.0),
+			point(5.13, 12.0),
+			point(6.0, 5.5),
+			point(2.0, -4.0),
+			point(-10.0, 0.0),
+		] {
+			assert_eq!(mesh.locate_polygon(inside), None, "{inside:?} is in a hole");
+			let out = mesh.closest_point(inside).expect("a way out");
+			assert!(
+				mesh.locate_polygon(out).is_some(),
+				"the way out of {inside:?}, {out:?}, is on the mesh"
+			);
+			assert!(mesh.find_path(out, point(10.0, 10.0)).is_ok());
+		}
+	}
+
+	#[test]
 	fn no_walkable_area_gives_an_empty_mesh() {
 		let mesh = NavigationMesh::from_areas(NONE, &[rectangle([0.0, 0.0], [1.0, 1.0])]).expect("an empty mesh");
 

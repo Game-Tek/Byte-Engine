@@ -450,12 +450,13 @@ impl<Space> NavigationMesh<Space> {
 		Some(&self.adjacency[start..end])
 	}
 
-	/// Tests an XZ point against every directed half-plane of a convex polygon.
+	/// Tests an XZ point against every directed half-plane of a convex polygon, counting a point within
+	/// [`NAVIGATION_TOLERANCE`] of an edge as inside, so a point put on the boundary by rounding is still on the mesh.
 	fn contains_xz(&self, polygon: &NavigationPolygon<Space>, point: Point<Space>) -> bool {
-		if point.x() < polygon.minimum_x
-			|| point.x() > polygon.maximum_x
-			|| point.z() < polygon.minimum_z
-			|| point.z() > polygon.maximum_z
+		if point.x() < polygon.minimum_x - NAVIGATION_TOLERANCE
+			|| point.x() > polygon.maximum_x + NAVIGATION_TOLERANCE
+			|| point.z() < polygon.minimum_z - NAVIGATION_TOLERANCE
+			|| point.z() > polygon.maximum_z + NAVIGATION_TOLERANCE
 		{
 			return false;
 		}
@@ -466,10 +467,10 @@ impl<Space> NavigationMesh<Space> {
 			.copied()
 			.zip(handles.iter().copied().cycle().skip(1))
 			.all(|(from, to)| {
-				let side = signed_area_xz(self.vertices[from as usize], self.vertices[to as usize], point);
+				let inside = signed_distance_to_line_xz(point, self.vertices[from as usize], self.vertices[to as usize]);
 				match polygon.winding {
-					Winding::CounterClockwise => side >= -orientation_tolerance(side),
-					Winding::Clockwise => side <= orientation_tolerance(side),
+					Winding::CounterClockwise => inside >= -NAVIGATION_TOLERANCE,
+					Winding::Clockwise => inside <= NAVIGATION_TOLERANCE,
 				}
 			})
 	}
@@ -1144,7 +1145,7 @@ use std::{
 
 use math::{
 	Point, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_crossing_xz,
-	segments_intersect_xz, signed_area_xz,
+	segments_intersect_xz, signed_area_xz, signed_distance_to_line_xz,
 };
 
 use super::{Graph, NodeHandle, PathSearch};

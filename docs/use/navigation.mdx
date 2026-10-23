@@ -1,0 +1,79 @@
+---
+title: Find paths around obstacles
+description: Declare where characters can walk and what blocks them, then find each character a path to its target that goes around the obstacles.
+icon: Route
+---
+
+Give characters such as NPCs a way to reach a target without walking through
+walls. You mark the floors as walkable and the walls as obstacles, and the
+navigation system builds a navigation mesh from them. Each tick, a character
+asks the mesh for a path to its target and walks toward the path's next corner.
+
+## Create the navigation system
+
+Create a `Navigation` system on the world scope before you create the areas.
+It builds only from the areas published after it exists:
+
+```rust
+let navigation = Navigation::new(app.world());
+```
+
+Keep it where your gameplay can reach it, such as the state your tasks share.
+
+## Mark floors and obstacles
+
+Create a navigation area beside each floor and wall, with a transform that
+places it. An area is a rectangle given by its half extents along local X and
+local Z:
+
+```rust
+app.world()
+	.create(NavigationArea::walkable(100.0, 100.0))
+	.with(Transform::identity());
+
+app.world()
+	.create(RenderableMesh::generated(wall_mesh))
+	.with(NavigationArea::obstacle(0.25 + CHARACTER_RADIUS, 6.0 + CHARACTER_RADIUS))
+	.with(Transform::from_position(Point::new(6.0, 1.5, 12.0)));
+```
+
+Paths are for a point, so make each obstacle larger than its wall by the
+character's radius. Characters then pass the wall with their body clear of it.
+
+## Update the mesh each tick
+
+Call `update` at the start of the tick, before anything searches the mesh. It
+rebuilds the mesh only when an area was created, moved, or deleted:
+
+```rust
+if let Err(error) = navigation.update() {
+	eprintln!("{error}");
+}
+```
+
+## Follow a path
+
+Search from where the character stands to its target, and head for the second
+corner of the path: the first corner is the start. Move both ends onto the mesh
+with `closest_point` first, because a character that cuts a corner, or a target
+that stands against a wall, can be just off it:
+
+```rust
+let mesh = navigation.mesh();
+let start = mesh.closest_point(position)?;
+let target = mesh.closest_point(target)?;
+let corners = mesh.find_path_into(start, target, &mut path).ok()?;
+let next_corner = corners.get(1).copied();
+```
+
+Search again every tick, so the path follows a moving target. Keep `path`
+between ticks to reuse its storage. To stop near the target, add up the
+distances between the corners and stop the character once the sum is short
+enough.
+
+## Rust API
+
+- [`gameplay::pathfinding`](/docs/api/latest/byte_engine/gameplay/pathfinding)
+- [`Navigation`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.Navigation)
+- [`NavigationArea`](/docs/api/latest/byte_engine/gameplay/pathfinding/enum.NavigationArea)
+- [`NavigationMesh`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationMesh)

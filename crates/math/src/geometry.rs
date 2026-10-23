@@ -231,6 +231,18 @@ pub fn line_fraction_xz<Space>(point: Point<Space>, start: Point<Space>, end: Po
 	((point.x() - start.x()) * x + (point.z() - start.z()) * z) / (x * x + z * z)
 }
 
+/// Returns the point of the segment from `start` to `end` closest to `point` on XZ.
+///
+/// The result interpolates all three coordinates along the segment, so it keeps the segment's height. Use it to pull a
+/// point that strays outside an area back onto the area's boundary. A segment whose ends meet on XZ returns `start`.
+pub fn closest_point_on_segment_xz<Space>(point: Point<Space>, start: Point<Space>, end: Point<Space>) -> Point<Space> {
+	if distance_xz(start, end) == 0.0 {
+		return start;
+	}
+	let fraction = line_fraction_xz(point, start, end).clamp(0.0, 1.0);
+	start + (end - start) * fraction
+}
+
 /// Returns the signed area of a polygon's XZ projection.
 ///
 /// A positive result means the vertices run counterclockwise, the winding [`signed_area_xz`] calls positive.
@@ -732,6 +744,19 @@ mod tests {
 		assert_eq!(line_fraction_xz(point(1.0, 3.0), start, end), 0.25);
 		assert_eq!(line_fraction_xz(point(-2.0, 1.0), start, end), -0.5);
 		assert_eq!(line_fraction_xz(end, start, end), 1.0);
+	}
+
+	#[test]
+	fn the_closest_segment_point_clamps_to_the_ends_and_keeps_the_segment_height() {
+		let (start, end) = (Point::<LocalSpace>::new(0.0, 0.0, 0.0), Point::new(4.0, 2.0, 0.0));
+
+		assert_eq!(
+			closest_point_on_segment_xz(point(1.0, 3.0), start, end),
+			Point::new(1.0, 0.5, 0.0)
+		);
+		assert_eq!(closest_point_on_segment_xz(point(-2.0, 1.0), start, end), start);
+		assert_eq!(closest_point_on_segment_xz(point(9.0, -1.0), start, end), end);
+		assert_eq!(closest_point_on_segment_xz(point(9.0, -1.0), start, start), start);
 	}
 
 	#[test]

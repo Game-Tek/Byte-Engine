@@ -48,6 +48,13 @@ scale is ignored. An area without a transform isn't part of the mesh.
 Create the navigation system before the areas it builds from, and update it
 before the path searches that should see a step's changes.
 
+## Queries
+
+| Query | Result |
+| --- | --- |
+| Path | The corners from a start to a target, both included, that a point-sized agent follows through the mesh. Fails when either end isn't on the mesh or no polygons connect them. |
+| Closest point | A point the mesh covers, moved onto the mesh's surface. Any other point moves to the nearest point of the mesh's boundary on XZ, at the boundary's height. An empty mesh has no closest point. |
+
 ## Tolerances
 
 | Tolerance | Value | Rule |

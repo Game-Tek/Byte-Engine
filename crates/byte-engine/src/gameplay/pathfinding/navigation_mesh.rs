@@ -312,6 +312,33 @@ impl<Space> NavigationMesh<Space> {
 		Some(Point::new(point.x(), y, point.z()))
 	}
 
+	/// Returns the point of the mesh closest to `point` on XZ, or [`None`] when the mesh is empty or `point` isn't
+	/// finite.
+	///
+	/// A point the mesh covers is projected onto its surface like [`Self::project_point`]; any other is pulled to the
+	/// nearest polygon edge, at that edge's height. Use it before [`Self::find_path`] when an agent or its target may
+	/// stand just off the mesh, such as an agent cutting a corner or a target inside an obstacle's clearance.
+	pub fn closest_point(&self, point: Point<Space>) -> Option<Point<Space>> {
+		if !is_finite(point) {
+			return None;
+		}
+		if let Some(projected) = self.project_point(point) {
+			return Some(projected);
+		}
+
+		// Shared edges are inside the mesh and never closer than the boundary edge beyond them, so scanning every
+		// edge finds the boundary's closest point without first telling the boundary apart.
+		self.polygons
+			.iter()
+			.flat_map(|polygon| {
+				let indices = &self.polygon_vertices[polygon.first_vertex..polygon.first_vertex + polygon.vertex_count];
+				indices.iter().zip(indices.iter().cycle().skip(1)).map(|(&from, &to)| {
+					closest_point_on_segment_xz(point, self.vertices[from as usize], self.vertices[to as usize])
+				})
+			})
+			.min_by(|first, second| distance_xz(*first, point).total_cmp(&distance_xz(*second, point)))
+	}
+
 	/// Finds and string-pulls a path between two points projected onto the mesh.
 	///
 	/// The result includes the exact start and target. Intermediate points are portal vertices whose
@@ -910,6 +937,22 @@ mod tests {
 	}
 
 	#[test]
+	fn the_closest_point_projects_covered_points_and_pulls_others_to_the_boundary() {
+		let mesh = l_shaped_mesh();
+
+		assert_eq!(mesh.closest_point(point(1.0, 0.5)), mesh.project_point(point(1.0, 0.5)));
+		assert_eq!(mesh.closest_point(point(-1.0, 1.0)), Some(point(0.0, 1.0)));
+		assert_eq!(mesh.closest_point(point(5.0, 1.0)), Some(point(4.0, 1.0)));
+		assert_eq!(mesh.closest_point(Point::new(f32::NAN, 0.0, 0.0)), None);
+		assert_eq!(
+			NavigationMesh::<WorldSpace>::new(Vec::new(), Vec::new())
+				.expect("an empty mesh")
+				.closest_point(point(0.0, 0.0)),
+			None
+		);
+	}
+
+	#[test]
 	fn locates_the_nearest_height_when_xz_projections_overlap() {
 		let mesh = NavigationMesh::new(
 			vec![
@@ -1023,6 +1066,9 @@ use std::{
 	fmt,
 };
 
-use math::{Point, WorldSpace, barycentric_xz, distance_xz, is_finite, segments_intersect_xz, signed_area_xz};
+use math::{
+	Point, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_intersect_xz,
+	signed_area_xz,
+};
 
 use super::{Graph, NodeHandle, a_star};

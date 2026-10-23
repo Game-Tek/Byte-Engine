@@ -100,9 +100,9 @@ let velocity = navigation.steer(character, toward_corner * WALK_SPEED);
 Aim the character a little way along its path, such as 0.8 m, rather than at
 the next corner, so each turn starts before the corner. Turn its heading toward
 the result at a rate bounded by how hard it can lean into a turn, such as
-5 m/s² divided by its speed, up to 150° per second: a walk then turns tight and
-a sprint sweeps wide, and a sprint can't take a sharp bend, so walk before
-one. The result changes smoothly as the
+10 m/s² divided by its speed, up to 150° per second: a walk then turns on half
+a meter and a sprint on about 4 m. Pick the gait from the distance to the target
+alone, not from the path's turns, so the character hurries through them. The result changes smoothly as the
 characters move, so the character's way bends smoothly too. A character that
 means to stand gets a velocity only when others press on it; move it when that
 velocity is more than a brush, such as above 0.5 m/s.

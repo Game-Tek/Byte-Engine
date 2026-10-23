@@ -11,8 +11,6 @@
 pub mod anchor;
 #[doc(hidden)]
 pub mod name;
-
-#[doc(hidden)]
 pub mod pathfinding;
 #[doc(hidden)]
 pub mod scene;

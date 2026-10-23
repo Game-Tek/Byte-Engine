@@ -1,0 +1,69 @@
+---
+title: Navigation
+description: Look up the navigation area kinds, how the navigation system turns them into a navigation mesh, and the tolerances and limits of the mesh.
+icon: Route
+---
+
+Navigation describes where agents can walk. An application creates navigation
+areas on the world scope and places them with transforms. The navigation system
+combines them into one navigation mesh that path searches run on. The message
+model it builds on is in [World and messages](/docs/reference/world).
+
+## Areas
+
+| Kind | Effect |
+| --- | --- |
+| Walkable | Adds its rectangle to the navigable surface. |
+| Obstacle | Removes its rectangle from every walkable area it overlaps, at any height. |
+
+| Property | Default | Unit | Notes |
+| --- | --- | --- | --- |
+| Half extents | Required | Meters, area space | Half the rectangle's size along local X and local Z. Both must be finite and greater than zero. |
+
+An area's rectangle lies in its local XZ plane, centered on its origin. Its
+transform's position and orientation place the rectangle in the world, and its
+scale is ignored. An area without a transform isn't part of the mesh.
+
+## Building the mesh
+
+| Rule | Behavior |
+| --- | --- |
+| Surface | The mesh covers the union of every walkable rectangle minus the union of every obstacle rectangle, both projected onto XZ. |
+| Overlap | Where walkable areas overlap on XZ, the area created first keeps the overlap. |
+| Height | Each mesh vertex keeps the height of the walkable rectangle it lies on. Where vertices of rectangles at different heights merge, the rectangle created first sets the height. Obstacles have no height. |
+| Polygons | The mesh is a set of convex polygons. Polygons that share an edge share both of its vertices, so an agent can cross from one to the other. |
+| Seams | Walkable areas whose edges touch or overlap on XZ connect along the shared part of the edge. |
+| Clearance | The mesh models a point-sized agent. Size obstacles to include the clearance agents need. |
+| Empty | No walkable area gives an empty mesh, which contains no point. |
+
+## Updating the mesh
+
+| Rule | Behavior |
+| --- | --- |
+| Create | Publish the area through the world scope's factory. Publishing again under the same handle replaces it. |
+| Place | Send a transformation update for the handle. A later update moves the area. |
+| Delete | Delete the handle. The area leaves the mesh. |
+| Rebuild | Each navigation update adopts the area changes published since the last one and rebuilds the whole mesh when any area changed. An update without changes keeps the mesh. |
+
+Create the navigation system before the areas it builds from, and update it
+before the path searches that should see a step's changes.
+
+## Tolerances
+
+| Tolerance | Value | Rule |
+| --- | --- | --- |
+| Coincident vertices | 1 mm | Vertices closer than this on XZ merge into one. |
+| Straight corners | 1 mm | A polygon corner closer than this to the line through its neighbors counts as straight. |
+| Slivers | 1 mm | Parts of a walkable area thinner than this are dropped. |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Area shape | Rectangles |
+| Levels | One: obstacles cut walkable areas at every height |
+| Vertices and polygons | Fewer than 2^32 each |
+
+## Rust API
+
+- [`pathfinding` module](/docs/api/latest/byte_engine/gameplay/pathfinding)

@@ -213,6 +213,92 @@ pub fn segments_intersect_xz<Space>(
 		&& ((third_side > 0.0 && fourth_side < 0.0) || (third_side < 0.0 && fourth_side > 0.0))
 }
 
+/// Returns the signed distance from `point` to the XZ line through `start` and `end`.
+///
+/// The sign follows [`signed_area_xz`]: positive means `point` lies counterclockwise of the directed line.
+/// `start` and `end` must differ on XZ; otherwise the line has no direction and the result is not finite.
+pub fn signed_distance_to_line_xz<Space>(point: Point<Space>, start: Point<Space>, end: Point<Space>) -> f32 {
+	signed_area_xz(start, end, point) / distance_xz(start, end)
+}
+
+/// Returns where `point` projects onto the XZ line from `start` to `end`, as a fraction of the way along it.
+///
+/// Zero is at `start` and one at `end`; values outside that range project beyond the segment. Use it with
+/// [`signed_distance_to_line_xz`] to find points that lie on a segment, and to order them along it. `start` and `end`
+/// must differ on XZ.
+pub fn line_fraction_xz<Space>(point: Point<Space>, start: Point<Space>, end: Point<Space>) -> f32 {
+	let (x, z) = (end.x() - start.x(), end.z() - start.z());
+	((point.x() - start.x()) * x + (point.z() - start.z()) * z) / (x * x + z * z)
+}
+
+/// Returns the signed area of a polygon's XZ projection.
+///
+/// A positive result means the vertices run counterclockwise, the winding [`signed_area_xz`] calls positive.
+/// Reverse a polygon with a negative area to make it counterclockwise before calling
+/// [`split_convex_polygon_xz`] on it.
+pub fn polygon_area_xz<Space>(polygon: &[Point<Space>]) -> f32 {
+	polygon
+		.iter()
+		.zip(polygon.iter().cycle().skip(1))
+		.map(|(from, to)| from.x() * to.z() - to.x() * from.z())
+		.sum::<f32>()
+		* 0.5
+}
+
+/// Splits a convex polygon's XZ projection along the directed line from `start` to `end`.
+///
+/// Use it to clip one convex polygon by the edges of another, for example to cut an obstacle out of a walkable
+/// area. The part counterclockwise of the line goes into `left` and the rest into `right`; both keep the polygon's
+/// winding and replace what the vectors held. Vertices within `tolerance` of the line belong to both parts. An edge
+/// that crosses from one side to the other gains a vertex on the line, interpolated in all three coordinates. A
+/// part that reaches no further than `tolerance` from the line is a sliver and is left empty.
+pub fn split_convex_polygon_xz<Space>(
+	polygon: &[Point<Space>],
+	start: Point<Space>,
+	end: Point<Space>,
+	tolerance: f32,
+	left: &mut Vec<Point<Space>>,
+	right: &mut Vec<Point<Space>>,
+) {
+	left.clear();
+	right.clear();
+	let mut reaches_left = false;
+	let mut reaches_right = false;
+
+	for (index, &current) in polygon.iter().enumerate() {
+		let next = polygon[(index + 1) % polygon.len()];
+		let current_distance = signed_distance_to_line_xz(current, start, end);
+		let next_distance = signed_distance_to_line_xz(next, start, end);
+
+		if current_distance >= -tolerance {
+			left.push(current);
+		}
+		if current_distance <= tolerance {
+			right.push(current);
+		}
+		reaches_left |= current_distance > tolerance;
+		reaches_right |= current_distance < -tolerance;
+
+		// Only an edge that jumps the whole tolerance band crosses the line between two vertices; an edge that ends
+		// inside the band already has its crossing vertex in both parts.
+		let crosses = (current_distance > tolerance && next_distance < -tolerance)
+			|| (current_distance < -tolerance && next_distance > tolerance);
+		if crosses {
+			let fraction = current_distance / (current_distance - next_distance);
+			let crossing = current + (next - current) * fraction;
+			left.push(crossing);
+			right.push(crossing);
+		}
+	}
+
+	if !reaches_left {
+		left.clear();
+	}
+	if !reaches_right {
+		right.clear();
+	}
+}
+
 fn orientation_tolerance(value: f32) -> f32 {
 	f32::EPSILON * 16.0 * value.abs().max(1.0)
 }
@@ -619,6 +705,82 @@ mod tests {
 		assert!(segments_intersect_xz(start, end, point(0.0, 2.0), point(2.0, 0.0)));
 		assert!(segments_intersect_xz(start, end, point(1.0, 1.0), point(3.0, 3.0)));
 		assert!(!segments_intersect_xz(start, end, point(3.0, 2.0), point(4.0, 3.0)));
+	}
+
+	#[test]
+	fn xz_polygon_area_and_line_distance_are_signed_counterclockwise() {
+		let square = [point(0.0, 0.0), point(2.0, 0.0), point(2.0, 2.0), point(0.0, 2.0)];
+		let mut reversed = square;
+		reversed.reverse();
+
+		assert_eq!(polygon_area_xz(&square), 4.0);
+		assert_eq!(polygon_area_xz(&reversed), -4.0);
+		assert_eq!(
+			signed_distance_to_line_xz(point(1.0, 3.0), point(0.0, 0.0), point(4.0, 0.0)),
+			3.0
+		);
+		assert_eq!(
+			signed_distance_to_line_xz(point(1.0, -3.0), point(0.0, 0.0), point(4.0, 0.0)),
+			-3.0
+		);
+	}
+
+	#[test]
+	fn line_fraction_measures_projections_along_the_line() {
+		let (start, end) = (point(0.0, 0.0), point(4.0, 0.0));
+
+		assert_eq!(line_fraction_xz(point(1.0, 3.0), start, end), 0.25);
+		assert_eq!(line_fraction_xz(point(-2.0, 1.0), start, end), -0.5);
+		assert_eq!(line_fraction_xz(end, start, end), 1.0);
+	}
+
+	#[test]
+	fn splitting_a_convex_polygon_keeps_both_sides_and_interpolates_crossings() {
+		let square = [
+			Point::<LocalSpace>::new(0.0, 0.0, 0.0),
+			Point::new(2.0, 2.0, 0.0),
+			Point::new(2.0, 2.0, 2.0),
+			Point::new(0.0, 0.0, 2.0),
+		];
+		let (mut left, mut right) = (Vec::new(), Vec::new());
+
+		// The line x = 1 running toward +Z has the square's low-X half counterclockwise of it.
+		split_convex_polygon_xz(&square, point(1.0, 0.0), point(1.0, 1.0), 1.0e-3, &mut left, &mut right);
+
+		assert_eq!(
+			left,
+			[
+				Point::new(0.0, 0.0, 0.0),
+				Point::new(1.0, 1.0, 0.0),
+				Point::new(1.0, 1.0, 2.0),
+				Point::new(0.0, 0.0, 2.0)
+			]
+		);
+		assert_eq!(
+			right,
+			[
+				Point::new(1.0, 1.0, 0.0),
+				Point::new(2.0, 2.0, 0.0),
+				Point::new(2.0, 2.0, 2.0),
+				Point::new(1.0, 1.0, 2.0)
+			]
+		);
+		assert!(polygon_area_xz(&left) > 0.0 && polygon_area_xz(&right) > 0.0);
+	}
+
+	#[test]
+	fn splitting_leaves_the_far_side_empty_and_drops_slivers_within_tolerance() {
+		let square = [point(0.0, 0.0), point(2.0, 0.0), point(2.0, 2.0), point(0.0, 2.0)];
+		let (mut left, mut right) = (vec![point(9.0, 9.0)], vec![point(9.0, 9.0)]);
+
+		split_convex_polygon_xz(&square, point(5.0, 0.0), point(5.0, 1.0), 1.0e-3, &mut left, &mut right);
+		assert_eq!(left, square);
+		assert!(right.is_empty());
+
+		// The square's right edge sits inside the tolerance band, so nothing reaches beyond it on the right.
+		split_convex_polygon_xz(&square, point(2.0005, 0.0), point(2.0005, 1.0), 1.0e-3, &mut left, &mut right);
+		assert_eq!(left, square);
+		assert!(right.is_empty());
 	}
 
 	#[test]

@@ -3,6 +3,12 @@
 /// A vertex index in a [`NavigationMesh`].
 pub type NavigationVertexHandle = u32;
 
+/// The distance in meters under which navigation geometry treats XZ points as coincident or collinear.
+///
+/// [`NavigationMesh::new`] counts a corner within it of the line through its neighbors as straight, and
+/// [`NavigationMesh::from_areas`] welds vertices, joins edges, and drops slivers within it.
+pub const NAVIGATION_TOLERANCE: f32 = 1.0e-3;
+
 /// The `NavigationPortal` struct carries an oriented polygon opening through an XZ path corridor.
 ///
 /// `left` and `right` are relative to travel through the corridor. Pass ordered portals to
@@ -158,7 +164,8 @@ impl<Space> NavigationMesh<Space> {
 	/// Builds a navigation mesh from vertices and convex polygon index loops.
 	///
 	/// Polygon winding may be clockwise or counterclockwise, but each polygon's XZ projection must
-	/// be convex and have nonzero area. Y coordinates do not affect connectivity or funnel decisions.
+	/// be convex and have nonzero area. A corner within [`NAVIGATION_TOLERANCE`] of the line through its neighbors counts
+	/// as straight. Y coordinates do not affect connectivity or funnel decisions.
 	/// Call [`Self::find_path`] after construction to query the mesh.
 	pub fn new(
 		vertices: Vec<Point<Space>>,
@@ -633,8 +640,12 @@ fn is_convex_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHan
 		.zip(indices.iter().copied().cycle().skip(1))
 		.zip(indices.iter().copied().cycle().skip(2))
 		.all(|((first, second), third)| {
-			let corner = signed_area_xz(vertices[first as usize], vertices[second as usize], vertices[third as usize]);
-			corner == 0.0 || corner.is_sign_positive() == polygon_area.is_sign_positive()
+			let [first, second, third] = [first, second, third].map(|vertex| vertices[vertex as usize]);
+			let corner = signed_area_xz(first, second, third);
+			// A vertex inserted on a neighbor's edge sits on its own edge's line only within rounding, so corners that
+			// close to straight count as straight. Twice the triangle's area over its base is the vertex's distance.
+			corner.abs() <= NAVIGATION_TOLERANCE * distance_xz(first, third)
+				|| corner.is_sign_positive() == polygon_area.is_sign_positive()
 		});
 	if !corners_are_convex {
 		return false;

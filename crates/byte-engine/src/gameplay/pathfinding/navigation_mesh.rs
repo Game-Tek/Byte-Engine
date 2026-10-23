@@ -328,6 +328,14 @@ impl<Space> NavigationMesh<Space> {
 		self.project_point(point).or_else(|| self.closest_boundary_point(point))
 	}
 
+	/// Returns the edges that bound the mesh: the outer edge of the walkable surface and the edges of the holes
+	/// obstacles cut, each as its two endpoints.
+	pub fn boundary(&self) -> impl Iterator<Item = (Point<Space>, Point<Space>)> + '_ {
+		self.boundary
+			.iter()
+			.map(|&(from, to)| (self.vertices[from as usize], self.vertices[to as usize]))
+	}
+
 	/// Returns the point of the mesh's boundary closest to `point` on XZ, or [`None`] when the mesh is empty or `point`
 	/// isn't finite.
 	///

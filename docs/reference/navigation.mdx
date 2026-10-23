@@ -109,6 +109,15 @@ The result is the velocity with the sidesteps added and the slide removed. It
 changes continuously as the agents move, so an agent that turns toward it at a
 bounded rate moves smoothly.
 
+## Debug drawing
+
+With the `navigation.debug` parameter set to `true`, the navigation system draws
+the mesh's boundary, each agent's radius as a circle where it stands, and each
+agent's latest path in the world as debug meshes, 5 cm above the surface,
+moving the circle with the agent, replacing the path at the agent's next search,
+and removing both when the agent is deleted. The application shows them by
+registering the debug mesh render pass.
+
 ## Tolerances
 
 | Tolerance | Value | Rule |

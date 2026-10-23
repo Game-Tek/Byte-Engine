@@ -96,11 +96,17 @@ struct PlacedAgent {
 }
 
 /// The `Navigation` struct keeps the navigation mesh of a world's areas for the path searches that run on it, and
-/// the world's agents for steering them around each other.
+/// the world's agents for finding their paths and steering them around each other.
 ///
 /// Create it with [`Self::new`] before the areas and agents it reads, then call [`Self::update`] once per tick before
-/// the searches that should see that tick's changes. Search [`Self::mesh`] with [`NavigationMesh::find_path`], then
-/// pass the direction toward the path's next corner to [`Self::steer`].
+/// the searches that should see that tick's changes. Find each agent's path with [`Self::find_path`], then pass the
+/// velocity toward a point along it to [`Self::steer`].
+///
+/// # Configuration
+/// Read from the parameters the caller routes to it, usually `app.parameters().scope("navigation")`:
+/// - `debug`: When `true`, draws the mesh's boundary, each agent's radius, and each agent's latest path in the world
+///   as debug meshes, which the application shows by registering
+///   [`setup_debug_mesh_render_pass`](crate::application::graphics::setup_debug_mesh_render_pass) first.
 pub struct Navigation {
 	areas: DefaultListener<CreateMessage<NavigationArea>>,
 	agents: DefaultListener<CreateMessage<NavigationAgent>>,
@@ -111,11 +117,70 @@ pub struct Navigation {
 	areas_by_id: BTreeMap<u32, (NavigationArea, Option<Transform>)>,
 	agents_by_id: BTreeMap<u32, PlacedAgent>,
 	mesh: NavigationMesh,
+	drawing: Option<Drawing>,
+}
+
+/// The `Drawing` struct keeps the debug meshes that show the mesh's boundary, the agents' radii, and their paths, so
+/// each redraw replaces them under the same handles instead of piling up.
+struct Drawing {
+	meshes: Factory<DebugMesh>,
+	deletions: DefaultChannel<DeleteMessage>,
+	boundary: Vec<Handle>,
+	radii: BTreeMap<u32, Vec<Handle>>,
+	paths: BTreeMap<u32, Vec<Handle>>,
+}
+
+impl Drawing {
+	/// Shows `meshes` under `handles`, reusing them, creating the handles it lacks, and deleting the ones it no
+	/// longer needs.
+	fn show(&mut self, handles: &mut Vec<Handle>, meshes: impl Iterator<Item = DebugMesh>) {
+		let mut count = 0;
+		for (index, mesh) in meshes.enumerate() {
+			match handles.get(index) {
+				Some(&handle) => self.meshes.derive(handle, mesh),
+				None => handles.push(self.meshes.create(mesh)),
+			}
+			count = index + 1;
+		}
+		for handle in handles.drain(count..) {
+			self.deletions.send(DeleteMessage::new(handle));
+		}
+	}
+
+	/// Shows `meshes` under the handles kept for `id` in `kept`, the agent's radius or its path.
+	fn show_for(
+		&mut self,
+		kept: fn(&mut Self) -> &mut BTreeMap<u32, Vec<Handle>>,
+		id: u32,
+		meshes: impl Iterator<Item = DebugMesh>,
+	) {
+		let mut handles = kept(self).remove(&id).unwrap_or_default();
+		self.show(&mut handles, meshes);
+		if !handles.is_empty() {
+			kept(self).insert(id, handles);
+		}
+	}
+}
+
+/// Returns a debug line from `start` to `end` in `color`, just above the surface so the floor doesn't hide it.
+fn line(start: Point, end: Point, color: RGBA) -> DebugMesh {
+	let lift = Vector::new(0.0, LINE_HEIGHT, 0.0);
+	DebugMesh::new(
+		DebugShape::Segment {
+			start: start + lift,
+			end: end + lift,
+		},
+		color,
+	)
 }
 
 impl Navigation {
-	/// Creates a system that builds from the navigation areas published in `world` from now on.
-	pub fn new(world: &MessageScope) -> Self {
+	/// Creates a system that builds from the navigation areas published in `world` from now on, set up from
+	/// `parameters`, the navigation subtree of the application's.
+	pub fn new(world: &MessageScope, parameters: impl Parameters) -> Self {
+		let debug = parameters
+			.get_parameter("debug")
+			.is_some_and(|parameter| parameter.as_bool_simple());
 		Self {
 			areas: world.factory::<NavigationArea>().listener(),
 			agents: world.factory::<NavigationAgent>().listener(),
@@ -124,6 +189,13 @@ impl Navigation {
 			areas_by_id: BTreeMap::new(),
 			agents_by_id: BTreeMap::new(),
 			mesh: NavigationMesh::new(Vec::new(), Vec::new()).expect("an empty mesh is valid"),
+			drawing: debug.then(|| Drawing {
+				meshes: world.factory(),
+				deletions: world.channel(),
+				boundary: Vec::new(),
+				radii: BTreeMap::new(),
+				paths: BTreeMap::new(),
+			}),
 		}
 	}
 
@@ -172,21 +244,75 @@ impl Navigation {
 		// into the last quarter of a second's instead of taking it alone.
 		if seconds > 0.0 {
 			let follow = 1.0 - (-seconds / VELOCITY_AVERAGE_SECONDS).exp();
-			for agent in self.agents_by_id.values_mut() {
+			let drawing = &mut self.drawing;
+			for (&id, agent) in &mut self.agents_by_id {
 				agent.velocity += (agent.displacement / seconds - agent.velocity) * follow;
+				// An agent's radius is drawn where it stands, and again wherever it moves.
+				if let (Some(drawing), Some(position)) = (drawing.as_mut(), agent.position)
+					&& (agent.displacement.length() > 0.0 || !drawing.radii.contains_key(&id))
+				{
+					let circle = DebugShape::Circle {
+						center: position + Vector::new(0.0, LINE_HEIGHT, 0.0),
+						radius: agent.agent.radius,
+						normal: UnitVector::y_axis(),
+					};
+					let mesh = DebugMesh::new(circle, RADIUS_COLOR);
+					drawing.show_for(|drawing| &mut drawing.radii, id, std::iter::once(mesh));
+				}
 				agent.displacement = Vector::new(0.0, 0.0, 0.0);
 			}
 		}
 		while let Some(message) = self.deletions.read() {
 			let id = message.handle().id();
 			changed |= self.areas_by_id.remove(&id).is_some();
-			self.agents_by_id.remove(&id);
+			if self.agents_by_id.remove(&id).is_some()
+				&& let Some(drawing) = &mut self.drawing
+			{
+				drawing.show_for(|drawing| &mut drawing.radii, id, std::iter::empty());
+				drawing.show_for(|drawing| &mut drawing.paths, id, std::iter::empty());
+			}
 		}
 
 		if changed {
 			self.mesh = self.build()?;
+			if let Some(drawing) = &mut self.drawing {
+				let mut lines = std::mem::take(&mut drawing.boundary);
+				let edges = self.mesh.boundary().map(|(from, to)| line(from, to, BOUNDARY_COLOR));
+				drawing.show(&mut lines, edges);
+				drawing.boundary = lines;
+			}
 		}
 		Ok(())
+	}
+
+	/// Finds the path from where `agent` stands to `target` and writes its corners into `path`, both ends moved onto
+	/// the mesh first.
+	///
+	/// Either end may be just off the mesh, the agent from being pushed and the target inside an obstacle's
+	/// clearance, so each starts from the closest point on it. Aim the agent a little way along the result, then
+	/// pass that velocity to [`Self::steer`]. With debug drawing on, the path shows in the world until the agent's
+	/// next search. An agent without a transform has no start.
+	pub fn find_path<'path>(
+		&mut self,
+		agent: Handle,
+		target: Point,
+		path: &'path mut Vec<Point>,
+	) -> Result<&'path [Point], NavigationPathError> {
+		let id = agent.id();
+		let position = self.agents_by_id.get(&id).and_then(|placed| placed.position);
+		let start = position
+			.and_then(|position| self.mesh.closest_point(position))
+			.ok_or(NavigationPathError::StartOutsideMesh)?;
+		let target = self
+			.mesh
+			.closest_point(target)
+			.ok_or(NavigationPathError::TargetOutsideMesh)?;
+		self.mesh.find_path_into(start, target, path)?;
+		if let Some(drawing) = &mut self.drawing {
+			let legs = path.windows(2).map(|pair| line(pair[0], pair[1], PATH_COLOR));
+			drawing.show_for(|drawing| &mut drawing.paths, id, legs);
+		}
+		Ok(path)
 	}
 
 	/// Returns the mesh built at the latest update that changed an area.
@@ -240,6 +366,13 @@ impl Navigation {
 /// How long, in seconds, agent velocities average displacements over.
 const VELOCITY_AVERAGE_SECONDS: f32 = 0.25;
 
+/// How far above the surface, in meters, debug lines are drawn.
+const LINE_HEIGHT: f32 = 0.05;
+
+const BOUNDARY_COLOR: RGBA = RGBA::new(0.2, 0.9, 1.0, 1.0);
+const RADIUS_COLOR: RGBA = RGBA::new(0.7, 0.3, 1.0, 1.0);
+const PATH_COLOR: RGBA = RGBA::new(1.0, 0.8, 0.1, 1.0);
+
 #[cfg(test)]
 mod tests {
 	use math::{Orientation, Scale};
@@ -250,6 +383,10 @@ mod tests {
 		factory::Creator as _,
 		message_bus::{MessageBus, MessageBusConfig},
 	};
+
+	fn navigation(world: &MessageScope) -> Navigation {
+		Navigation::new(world, &[][..] as &[crate::application::Parameter])
+	}
 
 	fn place(world: &MessageScope, area: NavigationArea, transform: Transform) -> Handle {
 		world.create(area).with(transform).into()
@@ -263,7 +400,7 @@ mod tests {
 	fn floor() -> (MessageBus, MessageScope, Navigation) {
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
 		let world = bus.new_scope("world");
-		let mut navigation = Navigation::new(&world);
+		let mut navigation = navigation(&world);
 		bus.begin_tick();
 		place(&world, NavigationArea::walkable(5.0, 5.0), Transform::identity());
 		navigation.update(tick()).expect("a floor");
@@ -309,7 +446,7 @@ mod tests {
 	fn the_mesh_follows_areas_as_they_are_created_moved_and_deleted() {
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
 		let world = bus.new_scope("world");
-		let mut navigation = Navigation::new(&world);
+		let mut navigation = navigation(&world);
 
 		bus.begin_tick();
 		place(&world, NavigationArea::walkable(5.0, 5.0), Transform::identity());
@@ -347,7 +484,7 @@ mod tests {
 	fn an_area_is_placed_by_its_transform_position_and_orientation() {
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
 		let world = bus.new_scope("world");
-		let mut navigation = Navigation::new(&world);
+		let mut navigation = navigation(&world);
 		let quarter_turn =
 			Orientation::try_from_axis_angle(crate::constants::up(), math::Radians::new(std::f32::consts::FRAC_PI_2))
 				.expect("a rotation");
@@ -496,6 +633,37 @@ mod tests {
 	}
 
 	#[test]
+	fn an_agent_finds_its_path_from_where_it_stands_and_shows_it_when_drawing() {
+		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
+		let world = bus.new_scope("world");
+		let mut navigation = Navigation::new(&world, &[crate::application::Parameter::new("debug", "true")][..]);
+		let mut meshes = world.factory::<DebugMesh>().listener();
+		bus.begin_tick();
+		place(&world, NavigationArea::walkable(5.0, 5.0), Transform::identity());
+		let walker = agent(&world, -3.0, 0.0);
+		let unplaced: Handle = world.create(NavigationAgent::new(0.35)).into();
+		navigation.update(tick()).expect("a floor and an agent");
+		let mut path = Vec::new();
+
+		// The target off the edge is pulled onto it.
+		let found = navigation
+			.find_path(walker, Point::new(7.0, 0.0, 0.0), &mut path)
+			.expect("a path");
+		assert_eq!(found, [Point::new(-3.0, 0.0, 0.0), Point::new(5.0, 0.0, 0.0)]);
+		assert_eq!(
+			navigation.find_path(unplaced, Point::new(0.0, 0.0, 0.0), &mut path),
+			Err(NavigationPathError::StartOutsideMesh)
+		);
+
+		// Four boundary edges, the agent's radius, and one path segment were drawn.
+		let mut drawn = 0;
+		while meshes.read().is_some() {
+			drawn += 1;
+		}
+		assert_eq!(drawn, 6);
+	}
+
+	#[test]
 	fn an_unknown_agent_gets_its_velocity_back() {
 		let (_bus, world, navigation) = floor();
 		let unplaced: Handle = world.create(NavigationAgent::new(0.35)).into();
@@ -506,16 +674,20 @@ mod tests {
 
 use std::collections::BTreeMap;
 
-use math::{Point, Vector};
+use math::{Point, UnitVector, Vector};
+use utils::RGBA;
 
-use super::{NavigationMesh, NavigationMeshBuildError, steering};
+use super::{NavigationMesh, NavigationMeshBuildError, NavigationPathError, steering};
 use crate::{
 	MediaTime,
+	application::parameters::Parameters,
 	core::{
-		factory::{CreateMessage, Handle},
+		channel::{Channel as _, DefaultChannel},
+		factory::{CreateMessage, Factory, Handle},
 		listener::{DefaultListener, Listener as _},
 		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
 	gameplay::{Transform, TransformationUpdate},
+	rendering::debug::{DebugMesh, DebugShape},
 };

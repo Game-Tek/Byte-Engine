@@ -22,7 +22,7 @@ contract of the visibility pipeline. The design notes behind it are under
 | Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
 | Environment | A baked environment map, optionally scaled to deliver a given illuminance. Without one, the visibility pipeline uses an opaque black fallback. |
 | Fog, lights, particle emitters | Specified with their own pages: [Light a scene](/docs/use/lighting), [lighting](/docs/reference/lighting), [particles](/docs/reference/particles). The newest fog wins. |
-| Debug mesh | A retained wireframe sphere, box, capsule, or segment with a color, tested against scene depth or drawn over it. |
+| Debug mesh | A retained wireframe sphere, box, capsule, segment, or circle with a color, tested against scene depth or drawn over it. |
 
 Scene color is linear HDR in the packed `RGBu11u11u10` format. Tone-mapping
 passes write 16-bit float display color. The window's swapchain is `BGRAsRGB`.

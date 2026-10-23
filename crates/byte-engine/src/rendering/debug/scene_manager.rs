@@ -39,6 +39,7 @@ impl DebugSceneManager {
 			MeshKind::Sphere => self.meshes.sphere,
 			MeshKind::Box => self.meshes.r#box,
 			MeshKind::Cylinder => self.meshes.cylinder,
+			MeshKind::Ring => self.meshes.ring,
 		}
 	}
 }
@@ -116,15 +117,17 @@ struct DebugMeshes {
 	sphere: ghi::MeshHandle,
 	r#box: ghi::MeshHandle,
 	cylinder: ghi::MeshHandle,
+	ring: ghi::MeshHandle,
 }
 
 impl DebugMeshes {
-	/// Uploads the canonical unit sphere, box, and +Z cylinder used by shape transforms.
+	/// Uploads the canonical unit sphere, box, +Z cylinder, and XY ring used by shape transforms.
 	fn new(context: &mut ghi::implementation::Context) -> Self {
 		Self {
 			sphere: upload_generated_mesh(context, &SphereMeshGenerator::new()),
 			r#box: upload_generated_mesh(context, &BoxMeshGenerator::new()),
 			cylinder: upload_cylinder(context),
+			ring: upload_ring(context),
 		}
 	}
 }
@@ -135,6 +138,7 @@ pub(crate) enum MeshKind {
 	Sphere,
 	Box,
 	Cylinder,
+	Ring,
 }
 
 /// Converts one existing mesh generator into the position-only u16 layout used by debug pipelines.
@@ -197,6 +201,31 @@ fn upload_cylinder(context: &mut ghi::implementation::Context) -> ghi::MeshHandl
 	upload_mesh(context, &positions, &indices)
 }
 
+/// Builds a unit circle in the XY plane as a thin band of triangles, so it draws as one ring whether the pipeline
+/// rasterizes edges or faces.
+fn upload_ring(context: &mut ghi::implementation::Context) -> ghi::MeshHandle {
+	const SEGMENTS: usize = 24;
+	const INNER_RADIUS: f32 = 0.98;
+	let mut positions = Vec::with_capacity(SEGMENTS * 2);
+	for segment in 0..SEGMENTS {
+		let angle = std::f32::consts::TAU * segment as f32 / SEGMENTS as f32;
+		let (sin, cos) = angle.sin_cos();
+		positions.push([cos, sin, 0.0]);
+		positions.push([cos * INNER_RADIUS, sin * INNER_RADIUS, 0.0]);
+	}
+
+	let mut indices = Vec::with_capacity(SEGMENTS * 6);
+	for segment in 0..SEGMENTS {
+		let outer = (segment * 2) as u16;
+		let inner = outer + 1;
+		let next_outer = (((segment + 1) % SEGMENTS) * 2) as u16;
+		let next_inner = next_outer + 1;
+		indices.extend_from_slice(&[outer, next_outer, inner, inner, next_outer, next_inner]);
+	}
+
+	upload_mesh(context, &positions, &indices)
+}
+
 /// Uploads tightly packed position and u16 index data as one retained GHI mesh.
 fn upload_mesh(context: &mut ghi::implementation::Context, positions: &[[f32; 3]], indices: &[u16]) -> ghi::MeshHandle {
 	context.add_mesh_from_vertices_and_indices(
@@ -227,6 +256,7 @@ pub(crate) fn valid_debug_mesh(debug_mesh: DebugMesh) -> bool {
 		}
 		DebugShape::Capsule { start, end, radius } => valid_endpoints(start, end, true) && radius.is_finite() && radius > 0.0,
 		DebugShape::Segment { start, end } => valid_endpoints(start, end, false),
+		DebugShape::Circle { center, radius, .. } => math::is_finite(center) && radius.is_finite() && radius > 0.0,
 	}
 }
 
@@ -277,6 +307,11 @@ mod tests {
 				start: Point::origin(),
 				end: Point::new(1.0, 0.0, 0.0),
 			},
+			DebugShape::Circle {
+				center: Point::origin(),
+				radius: 0.5,
+				normal: math::UnitVector::y_axis(),
+			},
 		];
 		assert!(
 			valid
@@ -302,6 +337,11 @@ mod tests {
 			DebugShape::Segment {
 				start: Point::origin(),
 				end: Point::origin(),
+			},
+			DebugShape::Circle {
+				center: Point::origin(),
+				radius: 0.0,
+				normal: math::UnitVector::y_axis(),
 			},
 		];
 		assert!(

@@ -26,6 +26,8 @@ pub enum DebugShape {
 	Capsule { start: Point, end: Point, radius: f32 },
 	/// A thin line segment between two world-space endpoints.
 	Segment { start: Point, end: Point },
+	/// A circle of `radius` around `center` in the plane `normal` is perpendicular to, such as a footprint on the floor.
+	Circle { center: Point, radius: f32, normal: UnitVector },
 }
 
 /// The `DebugDepthMode` enum selects whether a debug shape is hidden by nearer scene geometry.
@@ -82,5 +84,5 @@ impl DebugMesh {
 	}
 }
 
-use math::{Orientation, Point, Vector};
+use math::{Orientation, Point, UnitVector, Vector};
 use utils::RGBA;

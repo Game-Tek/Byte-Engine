@@ -59,15 +59,12 @@ if let Err(error) = navigation.update(time.delta()) {
 ## Follow a path
 
 Search from where the character stands to its target, and head for the second
-corner of the path: the first corner is the start. Move both ends onto the mesh
-with `closest_point` first, because a character that cuts a corner, or a target
-that stands against a wall, can be just off it:
+corner of the path: the first corner is the start. The search moves both ends
+onto the mesh first, because a character that cuts a corner, or a target that
+stands against a wall, can be just off it:
 
 ```rust
-let mesh = navigation.mesh();
-let start = mesh.closest_point(position)?;
-let target = mesh.closest_point(target)?;
-let corners = mesh.find_path_into(start, target, &mut path).ok()?;
+let corners = navigation.find_path(character, target, &mut path).ok()?;
 let next_corner = corners.get(1).copied();
 ```
 
@@ -120,6 +117,19 @@ world.channel::<CreateMessage<NavigationAgent>>().send(CreateMessage::new(
 	NavigationAgent::new(CHARACTER_RADIUS).with_precedence(-settled_at),
 ));
 ```
+
+## See the paths
+
+Register the debug mesh render pass after tone mapping, and create the
+navigation system with its parameters so `navigation.debug` reaches it:
+
+```rust
+byte_engine::application::graphics::setup_debug_mesh_render_pass(&mut app);
+let navigation = Navigation::new(app.world(), app.parameters().scope("navigation"));
+```
+
+Then run with `--navigation.debug=true`. The mesh's boundary draws in cyan,
+each character's radius in purple on the floor, and its latest path in amber.
 
 ## Rust API
 

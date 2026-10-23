@@ -72,6 +72,7 @@ impl DebugMeshRenderPass {
 		let sphere = scene.mesh(MeshKind::Sphere);
 		let r#box = scene.mesh(MeshKind::Box);
 		let cylinder = scene.mesh(MeshKind::Cylinder);
+		let ring = scene.mesh(MeshKind::Ring);
 
 		let view_projection = sink.view_projection();
 		let mut depth_draws = bumpalo::collections::Vec::new_in(frame_allocator);
@@ -87,6 +88,7 @@ impl DebugMeshRenderPass {
 					MeshKind::Sphere => sphere,
 					MeshKind::Box => r#box,
 					MeshKind::Cylinder => cylinder,
+					MeshKind::Ring => ring,
 				};
 				target.push(PreparedDraw {
 					mesh,
@@ -240,6 +242,15 @@ fn for_each_shape_instance(shape: DebugShape, mut visit: impl FnMut(MeshKind, Ma
 			);
 			visit(MeshKind::Cylinder, cylinder(start, axis, direction, length, SEGMENT_RADIUS));
 		}
+		// The XY unit ring faces +Z, so facing it along the normal lays it in the circle's plane.
+		DebugShape::Circle { center, radius, normal } => visit(
+			MeshKind::Ring,
+			model_matrix(
+				center,
+				orientation_from_direction(normal).into_matrix(),
+				Vec3f::new(radius, radius, 1.0),
+			),
+		),
 	}
 }
 
@@ -341,6 +352,17 @@ mod tests {
 
 		let segment_start = Point::new(2.0, -3.0, 7.0);
 		let segment_end = Point::new(-1.0, 6.0, 2.0);
+		let circle = shape_instances(DebugShape::Circle {
+			center: Point::new(1.0, 2.0, 3.0),
+			radius: 0.5,
+			normal: math::UnitVector::y_axis(),
+		});
+		assert_eq!(circle.len(), 1);
+		assert_eq!(circle[0].0, MeshKind::Ring);
+		// A point on the unit ring's rim lands half a meter from the center, in the horizontal plane.
+		let rim = circle[0].1 * Vec4f::new(1.0, 0.0, 0.0, 1.0);
+		assert!((rim.y - 2.0).abs() < 1.0e-5 && ((rim.x - 1.0).hypot(rim.z - 3.0) - 0.5).abs() < 1.0e-5);
+
 		let segment = shape_instances(DebugShape::Segment {
 			start: segment_start,
 			end: segment_end,

@@ -283,6 +283,76 @@ pub fn point_along_xz<Space>(points: &[Point<Space>], distance: f32) -> Option<P
 	points.last().copied()
 }
 
+/// Returns the corner of the way around a circle for a straight leg from `start` to `end` that would cross it, on XZ,
+/// passing the circle on its clockwise side when `clockwise` and on its counterclockwise side otherwise.
+///
+/// The corner is where the tangent from `start` and the tangent from `end`, both on that side, meet, so the legs to
+/// and from it just graze the circle. Returns [`None`] when the leg clears the circle, or when either end is inside it
+/// and has no tangent. Use it to route an agent around another, or around a group of others; pass the circle on the
+/// side the agent already moves toward, so its way doesn't flip as the circle drifts.
+pub fn detour_corner_xz<Space>(
+	start: Point<Space>,
+	end: Point<Space>,
+	center: Point<Space>,
+	radius: f32,
+	clockwise: bool,
+) -> Option<Point<Space>> {
+	let length = distance_xz(start, end);
+	if length == 0.0 || distance_xz(start, center) <= radius || distance_xz(end, center) <= radius {
+		return None;
+	}
+	let along = line_fraction_xz(center, start, end).clamp(0.0, 1.0);
+	if distance_xz(start + (end - start) * along, center) >= radius {
+		return None;
+	}
+	let turn = if clockwise { -1.0 } else { 1.0 };
+	let tangent = |from: Point<Space>, turn: f32| {
+		let (x, z) = (center.x() - from.x(), center.z() - from.z());
+		let distance = x.hypot(z);
+		let angle = (radius / distance).asin() * turn;
+		let (sine, cosine) = angle.sin_cos();
+		// The direction to the center, turned by the tangent angle, points along the tangent.
+		[(x * cosine - z * sine) / distance, (x * sine + z * cosine) / distance]
+	};
+	let [ax, az] = tangent(start, turn);
+	let [bx, bz] = tangent(end, -turn);
+	// Where the two tangent lines meet: start + s (ax, az) = end + t (bx, bz).
+	let denominator = ax * bz - az * bx;
+	if denominator.abs() <= f32::EPSILON {
+		return None;
+	}
+	let (dx, dz) = (end.x() - start.x(), end.z() - start.z());
+	let s = (dx * bz - dz * bx) / denominator;
+	Some(Point::new(
+		start.x() + ax * s,
+		start.y() + (end.y() - start.y()) * along,
+		start.z() + az * s,
+	))
+}
+
+/// Returns where the closed segment from `start` to `end` crosses the one from `third` to `fourth` on XZ, as a point
+/// of the first segment, or [`None`] when they don't cross or lie along one line.
+///
+/// The point interpolates all three coordinates along the first segment, so it keeps that segment's height. Use it
+/// to find where a straight way crosses a portal between two navigation polygons.
+pub fn segments_crossing_xz<Space>(
+	start: Point<Space>,
+	end: Point<Space>,
+	third: Point<Space>,
+	fourth: Point<Space>,
+) -> Option<Point<Space>> {
+	let (dx, dz) = (end.x() - start.x(), end.z() - start.z());
+	let (ex, ez) = (fourth.x() - third.x(), fourth.z() - third.z());
+	let denominator = dx * ez - dz * ex;
+	if denominator == 0.0 {
+		return None;
+	}
+	let (ox, oz) = (third.x() - start.x(), third.z() - start.z());
+	let along = (ox * ez - oz * ex) / denominator;
+	let across = (ox * dz - oz * dx) / denominator;
+	((0.0..=1.0).contains(&along) && (0.0..=1.0).contains(&across)).then(|| start + (end - start) * along)
+}
+
 /// Returns the signed area of a polygon's XZ projection.
 ///
 /// A positive result means the vertices run counterclockwise, the winding [`signed_area_xz`] calls positive.
@@ -824,6 +894,37 @@ mod tests {
 		assert_eq!(point_along_xz(&path, 9.0), Some(path[2]));
 		assert_eq!(point_along_xz(&path, -1.0), Some(path[0]));
 		assert_eq!(point_along_xz::<LocalSpace>(&[], 1.0), None);
+	}
+
+	#[test]
+	fn the_detour_corner_grazes_the_circle_on_the_side_asked_for() {
+		let (start, end) = (point(0.0, 0.0), point(10.0, 0.0));
+
+		// Clockwise around a circle on a leg along +X is toward -Z; the corner is where the tangents meet.
+		let corner = detour_corner_xz(start, end, point(5.0, 0.0), 1.0, true).expect("a corner");
+		let reach = 1.0 / (1.0 - (1.0f32 / 5.0).powi(2)).sqrt();
+		assert!((corner.x() - 5.0).abs() < 1.0e-4 && (corner.z() + reach).abs() < 1.0e-4);
+		let corner = detour_corner_xz(start, end, point(5.0, 0.0), 1.0, false).expect("a corner");
+		assert!((corner.z() - reach).abs() < 1.0e-4);
+		// Passing a circle beside the leg on its near side puts the corner just past its edge.
+		let corner = detour_corner_xz(start, end, point(5.0, 0.5), 1.0, true).expect("a corner");
+		assert!(corner.z() < -0.5 && corner.z() > -0.6);
+		assert_eq!(detour_corner_xz(start, end, point(5.0, 2.0), 1.0, true), None);
+		assert_eq!(detour_corner_xz(start, end, point(0.5, 0.0), 1.0, true), None);
+		assert_eq!(detour_corner_xz(start, end, point(12.0, 0.0), 1.0, true), None);
+	}
+
+	#[test]
+	fn segments_cross_at_one_point_of_the_first_or_not_at_all() {
+		let (start, end) = (Point::<LocalSpace>::new(0.0, 0.0, 0.0), Point::new(4.0, 2.0, 0.0));
+
+		assert_eq!(
+			segments_crossing_xz(start, end, point(1.0, -1.0), point(1.0, 1.0)),
+			Some(Point::new(1.0, 0.5, 0.0))
+		);
+		assert_eq!(segments_crossing_xz(start, end, point(5.0, -1.0), point(5.0, 1.0)), None);
+		assert_eq!(segments_crossing_xz(start, end, point(1.0, 1.0), point(2.0, 1.0)), None);
+		assert_eq!(segments_crossing_xz(start, end, point(1.0, 0.0), point(2.0, 0.0)), None);
 	}
 
 	#[test]

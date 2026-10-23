@@ -59,11 +59,21 @@ pub fn a_star_batch<T>(
 ///
 /// Keep one per system that searches every tick, or let [`a_star_batch`] own one
 /// for a batch. A search may run on any graph; storage grows to the largest
-/// graph seen.
-#[derive(Default)]
-pub struct PathSearch {
+/// graph seen. `P` is what a search carries along its route, such as the point a
+/// navigation mesh path enters each polygon at; a plain graph search carries
+/// nothing.
+pub struct PathSearch<P = ()> {
 	frontier: BinaryHeap<FrontierEntry>,
-	paths: Vec<Option<PathState>>,
+	paths: Vec<Option<PathState<P>>>,
+}
+
+impl<P> Default for PathSearch<P> {
+	fn default() -> Self {
+		Self {
+			frontier: BinaryHeap::new(),
+			paths: Vec::new(),
+		}
+	}
 }
 
 impl PathSearch {
@@ -84,6 +94,35 @@ impl PathSearch {
 		distance: impl Fn(NodeHandle, NodeHandle) -> f32,
 		path: &mut Vec<NodeHandle>,
 	) -> bool {
+		self.find_with(
+			start,
+			(),
+			target,
+			graph,
+			|from, (), to| (distance(from, to), ()),
+			|node, ()| distance(node, target),
+			path,
+		)
+	}
+}
+
+impl<P: Copy> PathSearch<P> {
+	/// Finds the lowest-cost path from `start`, carrying `payload`, to `target` and writes it into `path`.
+	///
+	/// `step` gives the cost of going from a node, with what the route carries there, to a neighbor, and what the
+	/// route carries into the neighbor; `heuristic` estimates the cost left from a node with what it carries, and
+	/// must not overestimate it for the path to be the cheapest. Use it when a step's cost depends on how the route
+	/// arrived, such as where it crosses into a polygon. `path` is replaced as in [`Self::find_into`].
+	pub fn find_with<T>(
+		&mut self,
+		start: NodeHandle,
+		payload: P,
+		target: NodeHandle,
+		graph: &impl Graph<T>,
+		step: impl Fn(NodeHandle, P, NodeHandle) -> (f32, P),
+		heuristic: impl Fn(NodeHandle, P) -> f32,
+		path: &mut Vec<NodeHandle>,
+	) -> bool {
 		path.clear();
 		let Self { frontier, paths } = self;
 		frontier.clear();
@@ -97,6 +136,7 @@ impl PathSearch {
 		paths[start as usize] = Some(PathState {
 			cost: 0f32,
 			predecessor: None,
+			payload,
 		});
 
 		while let Some(FrontierEntry { cost, node, .. }) = frontier.pop() {
@@ -114,7 +154,8 @@ impl PathSearch {
 			}
 
 			for next in graph.neighbors(node) {
-				let new_cost = current_path.cost + distance(node, next);
+				let (step_cost, payload) = step(node, current_path.payload, next);
+				let new_cost = current_path.cost + step_cost;
 				let next_path = &mut paths[next as usize];
 				let improves_path = next_path.is_none_or(|path| new_cost < path.cost);
 
@@ -122,9 +163,10 @@ impl PathSearch {
 					*next_path = Some(PathState {
 						cost: new_cost,
 						predecessor: Some(node),
+						payload,
 					});
 					frontier.push(FrontierEntry {
-						priority: new_cost + distance(next, target),
+						priority: new_cost + heuristic(next, payload),
 						cost: new_cost,
 						node: next,
 					});
@@ -152,12 +194,20 @@ struct FrontierEntry {
 	node: NodeHandle,
 }
 
-/// The `PathState` struct stores the best-known route to a visited node.
-#[derive(Clone, Copy)]
-struct PathState {
+/// The `PathState` struct stores the best-known route to a visited node, with what the route carries there.
+struct PathState<P> {
 	cost: f32,
 	predecessor: Option<NodeHandle>,
+	payload: P,
 }
+
+impl<P: Copy> Clone for PathState<P> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<P: Copy> Copy for PathState<P> {}
 
 impl Eq for FrontierEntry {}
 

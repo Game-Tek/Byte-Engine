@@ -1,27 +1,29 @@
 //! Local avoidance: the least change to an agent's velocity that keeps it clear of its neighbors and on the mesh.
 
-/// Returns `velocity` with a sidestep added for each of `others` and the slide along the mesh boundary removed.
+/// Returns `velocity` with a sidestep added for each crowd among `others` and the slide along the mesh boundary
+/// removed.
 ///
 /// Every term is a continuous function of where the agents are and how fast they move, so an agent that turns toward
 /// the result at a bounded rate moves smoothly; see the navigation Reference page for the terms. `agent` and each item
-/// of `others` are a position, a velocity, a radius, and a precedence; the agent holds its course for others of less
-/// precedence, which step aside for it.
+/// of `others` are a position, a velocity, a radius, and a precedence. Others that touch each other are avoided as one
+/// crowd, so an agent goes around a group instead of between its members; the agent holds its course for crowds of
+/// less precedence, which step aside for it.
 pub(super) fn steer(
 	mesh: &NavigationMesh,
 	(position, radius, precedence): (Point, f32, f32),
 	velocity: Vector,
 	others: impl Iterator<Item = (Point, Vector, f32, f32)>,
 ) -> Vector {
-	let stepped = others
-		.filter(|&(_, _, _, other_precedence)| other_precedence >= precedence)
-		.fold(velocity, |stepped, (other, other_velocity, other_radius, _)| {
+	let stepped = crowds(others)
+		.filter(|crowd| crowd.precedence >= precedence)
+		.fold(velocity, |stepped, crowd| {
 			stepped
 				+ sidestep(
 					position,
 					velocity,
-					radius + other_radius + COMFORT_DISTANCE,
-					other,
-					other_velocity,
+					radius + crowd.radius + COMFORT_DISTANCE,
+					crowd.center,
+					crowd.velocity,
 				)
 		});
 	// The slide applies to the velocity with the sidesteps in, so no sidestep leads off the mesh. Off the mesh, the
@@ -30,6 +32,65 @@ pub(super) fn steer(
 		Some(boundary) if mesh.locate_polygon(position).is_some() => stepped - slide(position, stepped, boundary),
 		_ => stepped,
 	}
+}
+
+/// The `Crowd` struct is one circle an agent steers around: a group of others that touch each other, or one alone.
+pub(super) struct Crowd {
+	pub(super) center: Point,
+	pub(super) velocity: Vector,
+	pub(super) radius: f32,
+	pub(super) precedence: f32,
+}
+
+/// Groups `others` into the crowds an agent steers around: others within contact distance of each other join one
+/// crowd, avoided as one circle around them all that moves at their mean velocity and has their greatest precedence.
+///
+/// Sidesteps from the members of a group an agent heads into would push it to either side and cancel out, so it
+/// would walk in between; one circle sends it around.
+pub(super) fn crowds(others: impl Iterator<Item = (Point, Vector, f32, f32)>) -> impl Iterator<Item = Crowd> {
+	// Few agents are ever near each other, so a small buffer holds them without reaching for the heap.
+	let mut members: SmallVec<[(Point, Vector, f32, f32, usize); 16]> = others
+		.enumerate()
+		.map(|(index, (position, velocity, radius, precedence))| (position, velocity, radius, precedence, index))
+		.collect();
+	// Each member joins the group of any member it touches, until no two touching members are apart.
+	let mut merged = true;
+	while merged {
+		merged = false;
+		for first in 0..members.len() {
+			for second in first + 1..members.len() {
+				let (a, b) = (members[first], members[second]);
+				if a.4 != b.4 && distance_xz(a.0, b.0) <= a.2 + b.2 + COMFORT_DISTANCE {
+					let (from, to) = (a.4.max(b.4), a.4.min(b.4));
+					members
+						.iter_mut()
+						.filter(|member| member.4 == from)
+						.for_each(|member| member.4 = to);
+					merged = true;
+				}
+			}
+		}
+	}
+	let groups: SmallVec<[usize; 16]> = members.iter().map(|member| member.4).collect();
+	let mut seen: SmallVec<[usize; 16]> = SmallVec::new();
+	groups.into_iter().filter_map(move |group| {
+		if seen.contains(&group) {
+			return None;
+		}
+		seen.push(group);
+		let crowd = members.iter().filter(|member| member.4 == group);
+		let count = crowd.clone().count() as f32;
+		let (x, z, velocity) = crowd.clone().fold((0.0, 0.0, Vector::new(0.0, 0.0, 0.0)), |(x, z, v), m| {
+			(x + m.0.x(), z + m.0.z(), v + m.1)
+		});
+		let center = Point::new(x / count, 0.0, z / count);
+		Some(Crowd {
+			center,
+			velocity: velocity / count,
+			radius: crowd.clone().map(|m| distance_xz(center, m.0) + m.2).fold(0.0, f32::max),
+			precedence: crowd.map(|m| m.3).fold(f32::NEG_INFINITY, f32::max),
+		})
+	})
 }
 
 /// Returns the velocity an agent at `position` moving at `velocity` adds to pass `other` at `contact` distance.
@@ -74,7 +135,7 @@ fn flat_unit(vector: Vector) -> Option<Vector> {
 }
 
 /// How far ahead, in seconds, steering looks for other agents.
-const HORIZON_SECONDS: f32 = 2.0;
+pub(super) const HORIZON_SECONDS: f32 = 2.0;
 
 /// The soonest, in seconds, an agent may be on course to reach the boundary; nearer it, it slows its approach so it
 /// arrives sliding. Paths run along the boundary without crossing it, and lose nothing to this.
@@ -84,8 +145,9 @@ const BOUNDARY_SECONDS: f32 = 0.5;
 const LEAST_SECONDS: f32 = 0.25;
 
 /// How much room, in meters, agents keep between their edges when they pass.
-const COMFORT_DISTANCE: f32 = 0.15;
+pub(super) const COMFORT_DISTANCE: f32 = 0.15;
 
 use math::{Point, UnitVector, Vector, closest_approach_time_xz, distance_xz};
+use smallvec::SmallVec;
 
 use super::{NAVIGATION_TOLERANCE, NavigationMesh};

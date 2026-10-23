@@ -252,6 +252,48 @@ mod tests {
 		assert!(mesh.find_path(point(1.0, 1.0), point(5.0, 5.0)).is_ok());
 	}
 
+	/// The third_person scene: a 100 m floor, two walls, a ledge, and a cube, each grown by the clearance.
+	fn scene_mesh() -> NavigationMesh {
+		let block = |x: f32, z: f32, half_x: f32, half_z: f32| {
+			rectangle([x - half_x - 0.63, z - half_z - 0.63], [x + half_x + 0.63, z + half_z + 0.63])
+		};
+		NavigationMesh::from_areas(
+			&[rectangle([-50.0, -50.0], [50.0, 50.0])],
+			&[
+				block(6.0, -12.0, 0.25, 6.0),
+				block(6.0, 12.0, 0.25, 6.0),
+				block(-10.0, 0.0, 0.25, 20.0),
+				block(2.0, -4.0, 0.5, 0.5),
+			],
+		)
+		.expect("the scene")
+	}
+
+	#[test]
+	fn a_path_across_open_floor_is_the_straight_line_however_the_floor_is_split() {
+		let mesh = scene_mesh();
+		let length = |path: &[Point]| path.windows(2).map(|pair| distance_xz(pair[0], pair[1])).sum::<f32>();
+
+		// The strip between the ledge and the walls is clear end to end, from either direction, though the floor is
+		// split there into pieces whose centers lie far from the way across.
+		for (start, target) in [
+			(point(-5.0, 30.0), point(-5.0, -30.0)),
+			(point(-5.0, -30.0), point(-5.0, 30.0)),
+			(point(-8.0, 25.0), point(-8.0, -25.0)),
+		] {
+			let path = mesh.find_path(start, target).expect("a path");
+			let found = length(&path);
+			let straight = distance_xz(start, target);
+			assert!(
+				(found - straight).abs() < 0.01,
+				"the path is {found:.1} m for {straight:.1} m straight: {path:?}"
+			);
+		}
+		// The ledge blocks the way along z = 0, so that path goes around its north end.
+		let path = mesh.find_path(point(-20.0, 0.0), point(20.0, 0.0)).expect("a path");
+		assert!((length(&path) - 63.2).abs() < 0.1);
+	}
+
 	#[test]
 	fn no_walkable_area_gives_an_empty_mesh() {
 		let mesh = NavigationMesh::from_areas(NONE, &[rectangle([0.0, 0.0], [1.0, 1.0])]).expect("an empty mesh");

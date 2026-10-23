@@ -286,12 +286,14 @@ impl Navigation {
 	}
 
 	/// Finds the path from where `agent` stands to `target` and writes its corners into `path`, both ends moved onto
-	/// the mesh first.
+	/// the mesh first and the first leg bent around the first crowd of other agents it would cross.
 	///
 	/// Either end may be just off the mesh, the agent from being pushed and the target inside an obstacle's
-	/// clearance, so each starts from the closest point on it. Aim the agent a little way along the result, then
-	/// pass that velocity to [`Self::steer`]. With debug drawing on, the path shows in the world until the agent's
-	/// next search. An agent without a transform has no start.
+	/// clearance, so each starts from the closest point on it. The way around a crowd turns at the corner where the
+	/// tangents from the leg's ends meet, so the agent swerves from where it is rather than when it gets there; see
+	/// the navigation Reference page. Aim the agent a little way along the result, then pass that velocity to
+	/// [`Self::steer`]. With debug drawing on, the path shows in the world until the agent's next search. An agent
+	/// without a transform has no start.
 	pub fn find_path<'path>(
 		&mut self,
 		agent: Handle,
@@ -308,6 +310,7 @@ impl Navigation {
 			.closest_point(target)
 			.ok_or(NavigationPathError::TargetOutsideMesh)?;
 		self.mesh.find_path_into(start, target, path)?;
+		self.detour(id, path);
 		if let Some(drawing) = &mut self.drawing {
 			let legs = path.windows(2).map(|pair| line(pair[0], pair[1], PATH_COLOR));
 			drawing.show_for(|drawing| &mut drawing.paths, id, legs);
@@ -334,6 +337,69 @@ impl Navigation {
 		};
 		let NavigationAgent { radius, precedence } = placed.agent;
 		steering::steer(&self.mesh, (position, radius, precedence), velocity, self.others(id))
+	}
+
+	/// Bends the first leg of `path` around the first crowd it would cross within [`DETOUR_DISTANCE`], taking the
+	/// crowd where the agent with `id` meets it at its pace.
+	///
+	/// The way around keeps to the side the agent already moves past the crowd on, and takes the other side when that
+	/// corner is off the mesh, such as inside a wall the crowd gathers against. When the leg ends inside the crowd,
+	/// which is what a group gathered at a path corner looks like, the way around leads to the leg after it instead and
+	/// its corner replaces the end. A corner off the mesh either way leaves the path as it is, as does a crowd the agent
+	/// itself stands in; steering still keeps them apart.
+	///
+	/// An agent standing still doesn't detour: a detour is a maneuver of one on its way, and a still agent's path
+	/// length should say how far its target is, not how far around a group. Nor does a leg that starts or ends close to
+	/// a crowd: its tangents run nearly side by side and meet far off, where no one should head; steering handles the
+	/// last meter.
+	fn detour(&self, id: u32, path: &mut Vec<Point>) {
+		let Some(placed) = self.agents_by_id.get(&id) else { return };
+		let (Some(&start), Some(&end)) = (path.first(), path.get(1)) else {
+			return;
+		};
+		let speed = placed.velocity.length();
+		if speed < MOVING_SPEED {
+			return;
+		}
+		let precedence = placed.agent.precedence;
+		let heading = start + placed.velocity;
+		let found = steering::crowds(self.others(id))
+			.filter(|crowd| crowd.precedence >= precedence)
+			.filter_map(|crowd| {
+				let distance = distance_xz(start, crowd.center);
+				if distance > DETOUR_DISTANCE {
+					return None;
+				}
+				let seconds = (distance / speed).min(steering::HORIZON_SECONDS);
+				let center = crowd.center + crowd.velocity * seconds;
+				let radius = crowd.radius + placed.agent.radius + steering::COMFORT_DISTANCE;
+				// A center counterclockwise from the way the agent moves is passed clockwise, and the other way round.
+				let natural = signed_area_xz(start, heading, center) >= 0.0;
+				let usable = |corner: Point| {
+					distance_xz(corner, center) <= DETOUR_REACH * radius && self.mesh.locate_polygon(corner).is_some()
+				};
+				// Around the leg itself, or past its end when the crowd gathers there.
+				let around = |to: Point| {
+					[natural, !natural]
+						.into_iter()
+						.filter_map(|clockwise| detour_corner_xz(start, to, center, radius, clockwise))
+						.find(|&corner| usable(corner))
+				};
+				let past_end = || {
+					let after = *path.get(2)?;
+					(distance_xz(end, center) <= radius).then(|| around(after).map(|corner| (corner, true)))?
+				};
+				around(end)
+					.map(|corner| (corner, false))
+					.or_else(past_end)
+					.map(|found| (distance, found))
+			})
+			.min_by(|first, second| first.0.total_cmp(&second.0));
+		match found {
+			Some((_, (corner, true))) => path[1] = corner,
+			Some((_, (corner, false))) => path.insert(1, corner),
+			None => {}
+		}
 	}
 
 	/// Returns the position, velocity, radius, and precedence of every placed agent but the one with `id`.
@@ -365,6 +431,16 @@ impl Navigation {
 
 /// How long, in seconds, agent velocities average displacements over.
 const VELOCITY_AVERAGE_SECONDS: f32 = 0.25;
+
+/// How far away, in meters, a crowd must be at most for a path to bend around it; farther ones will have moved.
+const DETOUR_DISTANCE: f32 = 4.0;
+
+/// How far from a crowd's center, as a multiple of the contact distance, a detour's corner may be at most. A leg that
+/// starts or ends close to the crowd asks for a corner far off, which is no way to go.
+const DETOUR_REACH: f32 = 2.0;
+
+/// How fast, in meters per second, an agent must move to detour at all.
+const MOVING_SPEED: f32 = 0.1;
 
 /// How far above the surface, in meters, debug lines are drawn.
 const LINE_HEIGHT: f32 = 0.05;
@@ -576,6 +652,54 @@ mod tests {
 	}
 
 	#[test]
+	fn an_agent_goes_around_a_pair_in_its_way_instead_of_between_them() {
+		let (bus, world, mut navigation) = floor();
+		bus.begin_tick();
+		let walker = agent(&world, 0.0, 0.0);
+		// Two standing shoulder to shoulder, a second ahead; sidesteps from each alone would cancel.
+		agent(&world, 1.5, 0.35);
+		agent(&world, 1.5, -0.35);
+		navigation.update(tick()).expect("three agents");
+
+		let steered = navigation.steer(walker, east() * WALK);
+		assert!(steered.z().abs() > 0.3, "it swerves around the pair");
+	}
+
+	#[test]
+	fn a_path_bends_around_a_crowd_in_its_way_but_not_around_one_off_it_nor_for_a_still_agent() {
+		let (bus, world, mut navigation) = floor();
+		bus.begin_tick();
+		let walker = agent(&world, -3.0 - WALK, 0.0);
+		agent(&world, 0.0, 0.35);
+		agent(&world, 0.0, -0.35);
+		walk(&bus, &world, &mut navigation, &[(walker, [-3.0, 0.0], east() * WALK)]);
+		let mut path = Vec::new();
+
+		let found = navigation
+			.find_path(walker, Point::new(3.0, 0.0, 0.0), &mut path)
+			.expect("a path");
+		assert_eq!(found.len(), 3, "the way around has a corner");
+		// The corner clears the pair as one circle, their radius and a half plus the walker's and the comfort, and
+		// doesn't fly off.
+		let contact = 0.7 + 0.35 + 0.15;
+		let reach = distance_xz(found[1], Point::new(0.0, 0.0, 0.0));
+		assert!(reach >= contact && reach <= 2.0 * contact);
+		assert!(found[1].z().abs() > 1.0);
+		// A leg that misses the pair stays straight, and so does a standing agent's.
+		let found = navigation
+			.find_path(walker, Point::new(-3.0, 0.0, 4.0), &mut path)
+			.expect("a path");
+		assert_eq!(found.len(), 2);
+		let still = agent(&world, -3.0, 1.0);
+		bus.begin_tick();
+		navigation.update(tick()).expect("a still agent");
+		let found = navigation
+			.find_path(still, Point::new(3.0, 0.0, 1.0), &mut path)
+			.expect("a path");
+		assert_eq!(found.len(), 2);
+	}
+
+	#[test]
 	fn standing_agents_too_close_step_apart_and_lone_ones_stay() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
@@ -674,7 +798,7 @@ mod tests {
 
 use std::collections::BTreeMap;
 
-use math::{Point, UnitVector, Vector};
+use math::{Point, UnitVector, Vector, detour_corner_xz, distance_xz, signed_area_xz};
 use utils::RGBA;
 
 use super::{NavigationMesh, NavigationMeshBuildError, NavigationPathError, steering};

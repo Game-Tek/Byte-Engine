@@ -382,10 +382,24 @@ impl<Space> NavigationMesh<Space> {
 
 		let start_polygon = self.locate_polygon(start).ok_or(NavigationPathError::StartOutsideMesh)?;
 		let target_polygon = self.locate_polygon(target).ok_or(NavigationPathError::TargetOutsideMesh)?;
-		let polygon_path = a_star(start_polygon, target_polygon, self, |from, to| {
-			distance_xz(self.polygons[from as usize].centroid, self.polygons[to as usize].centroid)
-		});
-		if polygon_path.is_empty() {
+		// Each step costs the way from where the route entered a polygon to where it crosses into the next: where the
+		// straight line to the target crosses the portal, or the portal's nearest point to that line. Along a clear
+		// straight line the costs add up to its length, so no corridor around can look shorter, whatever shape the
+		// polygons have.
+		let mut polygon_path = Vec::new();
+		let reached = PathSearch::default().find_with(
+			start_polygon,
+			start,
+			target_polygon,
+			self,
+			|from, entered, to| {
+				let crossing = self.crossing(from, to, entered, target);
+				(distance_xz(entered, crossing), crossing)
+			},
+			|_, entered| distance_xz(entered, target),
+			&mut polygon_path,
+		);
+		if !reached {
 			return Err(NavigationPathError::Unreachable);
 		}
 
@@ -401,6 +415,28 @@ impl<Space> NavigationMesh<Space> {
 			path,
 		);
 		Ok(path)
+	}
+
+	/// Returns where a route entering polygon `from` at `entered` and bound for `target` crosses into polygon `to`:
+	/// where its straight line to the target crosses their portal, or else the portal's point nearest that line.
+	fn crossing(&self, from: NodeHandle, to: NodeHandle, entered: Point<Space>, target: Point<Space>) -> Point<Space> {
+		let portal = self.portal(from, to).expect("navigation adjacency must contain its portal");
+		if let Some(crossing) = segments_crossing_xz(portal.left, portal.right, entered, target) {
+			return crossing;
+		}
+		// Two segments that don't cross are nearest at an end of one of them.
+		[
+			closest_point_on_segment_xz(entered, portal.left, portal.right),
+			closest_point_on_segment_xz(target, portal.left, portal.right),
+			portal.left,
+			portal.right,
+		]
+		.into_iter()
+		.min_by(|&first, &second| {
+			let gap = |point: Point<Space>| distance_xz(point, closest_point_on_segment_xz(point, entered, target));
+			gap(first).total_cmp(&gap(second))
+		})
+		.expect("a portal has endpoints")
 	}
 
 	fn vertex_handles(&self, polygon: &NavigationPolygon<Space>) -> &[NavigationVertexHandle] {
@@ -1107,8 +1143,8 @@ use std::{
 };
 
 use math::{
-	Point, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_intersect_xz,
-	signed_area_xz,
+	Point, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_crossing_xz,
+	segments_intersect_xz, signed_area_xz,
 };
 
-use super::{Graph, NodeHandle, a_star};
+use super::{Graph, NodeHandle, PathSearch};

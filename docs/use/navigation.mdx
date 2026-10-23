@@ -68,8 +68,11 @@ let corners = navigation.find_path(character, target, &mut path).ok()?;
 let next_corner = corners.get(1).copied();
 ```
 
-Search again every tick, so the path follows a moving target. Keep `path`
-between ticks to reuse its storage. To stop near the target, add up the
+The path also bends around other characters in its way, taking a group that
+stands together as one, so a character swerves from where it stands instead
+of when it gets there. Search again every tick, so the path follows a moving
+target and the others as they move. Keep `path` between ticks to reuse its
+storage. To stop near the target, add up the
 distances between the corners and stop the character once the sum is short
 enough.
 

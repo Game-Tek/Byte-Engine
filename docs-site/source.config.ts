@@ -1,4 +1,5 @@
 import { defineConfig, defineDocs } from 'fumadocs-mdx/config';
+import { beslGrammar } from './src/lib/besl-grammar';
 
 export const docs = defineDocs({
 	dir: '../docs',
@@ -10,4 +11,11 @@ export const docs = defineDocs({
 	},
 });
 
-export default defineConfig();
+export default defineConfig({
+	mdxOptions: {
+		rehypeCodeOptions: {
+			// Shiki doesn't bundle BESL; preload its grammar so ```besl blocks highlight instead of failing the page.
+			langs: [beslGrammar],
+		},
+	},
+});

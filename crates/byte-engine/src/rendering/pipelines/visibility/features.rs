@@ -22,7 +22,7 @@ pub const SSGI_ENABLED_PARAMETER: &str = "ssgi.enabled";
 /// value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds debug views into the project. Absent, debug
-/// builds have them and release builds do not. See [`crate::rendering::render_pass::DebugViews`].
+/// builds have them and release builds do not. See [`crate::rendering::DebugViews`].
 pub const DEBUG_VIEWS_ENABLED_PARAMETER: &str = "debug-views.enabled";
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
@@ -41,7 +41,7 @@ pub struct VisibilityFeatures {
 	pub ssgi: bool,
 	/// Whether the sun visibility resolve multiplies in the contact-shadow trace.
 	pub contact_shadows: bool,
-	/// Whether passes can show their debug views; see [`crate::rendering::render_pass::DebugViews`].
+	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
 	pub debug_views: bool,
 }
 

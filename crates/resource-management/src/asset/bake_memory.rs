@@ -48,9 +48,9 @@ impl BakeMemoryBudget {
 				}
 				Err(retained_bytes) if !reported_pause => {
 					log::info!(
-						"Pausing new asset bakes because reserved or retained bake memory is {} MiB and the configured budget is {} MiB. Active bakes will continue so they can release memory.",
-						retained_bytes / (1024 * 1024),
-						self.byte_limit / (1024 * 1024)
+						"Pausing new asset bakes because reserved or retained bake memory is {} and the configured budget is {}. Active bakes will continue so they can release memory.",
+						utils::ByteSize::from(retained_bytes),
+						utils::ByteSize::from(self.byte_limit)
 					);
 					reported_pause = true;
 				}

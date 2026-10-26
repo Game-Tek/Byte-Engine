@@ -9,6 +9,7 @@ pub mod sync;
 pub mod r#async;
 pub mod availability_graph;
 pub mod bit_array;
+pub mod byte_size;
 pub mod copy_fn;
 pub mod hex;
 pub mod range_allocator;
@@ -32,6 +33,7 @@ pub fn online_docs_url(path: &str) -> String {
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
 pub use availability_graph::{AvailabilityGraph, AvailabilityGraphError, AvailabilityHandle};
+pub use byte_size::ByteSize;
 pub use copy_fn::{InlineCopyFn, InlineCopyFnError};
 /// Fast in-memory hashing for engine collections.
 ///

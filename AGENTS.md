@@ -32,11 +32,15 @@ Write usage-oriented documentation. How/where will this element be used, instead
 
 If a function is longer than a few lines, write a short description of what the function does.
 
-# Errors
+# Errors and log messages
 
-When writing errors, first write a succinct error message and then a sentence with the most likely cause of the error.
+Write every error and every logged warning or error in three parts:
 
-When an error or warning has a documented recovery workflow, include a direct link to the relevant online documentation page. Do not link to a generic documentation landing page when a focused page exists.
+1. A succinct statement of what happened.
+2. A sentence with the most likely cause.
+3. A suggestion: the action that most likely fixes it, such as the parameter to change and to what.
+
+When the problem has a documented recovery workflow, end with a direct link to the relevant online documentation page, built with `online_docs_url`. Do not link to a generic documentation landing page when a focused page exists.
 
 # API Design
 

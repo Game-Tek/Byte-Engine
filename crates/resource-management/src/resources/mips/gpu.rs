@@ -853,7 +853,8 @@ mod tests {
 			.and_then(|output| String::from_utf8(output.stdout).ok())
 			.and_then(|rss| rss.trim().parse::<u64>().ok())
 			.unwrap_or(0);
-		eprintln!("resident memory after the batch: {} MB", resident / 1024);
+		// `ps` reports the resident set in KiB.
+		eprintln!("resident memory after the batch: {}", utils::ByteSize(resident * 1024));
 	}
 
 	/// Splits one 2K texture's bake into its CPU and GPU phases. Run it by hand to decide where to optimize:

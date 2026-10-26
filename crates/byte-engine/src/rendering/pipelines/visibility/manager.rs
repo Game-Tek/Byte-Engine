@@ -1415,8 +1415,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
 			format!(
-				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} MiB set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
-				self.settings.shadow_map_budget_mib, shadows.unshadowed_count,
+				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
+				utils::ByteSize(u64::from(self.settings.shadow_map_budget_mib) << 20),
+				shadows.unshadowed_count,
 			)
 		});
 		self.shadow_layout = retain_layout(self.shadow_layout, shadows.layout(), &budget);

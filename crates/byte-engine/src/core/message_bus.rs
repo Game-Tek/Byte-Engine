@@ -15,10 +15,11 @@
 //! route or a listener, and inside [`MessageBus::begin_tick`].
 //!
 //! When the pool has no free chunk, a publisher waits instead of overwriting
-//! or dropping a message. After one second it logs which routes hold the pool
-//! and where their slowest listener was created. A system that stops reading
-//! its messages must drop its listener so the chunks behind it return to the
-//! pool.
+//! or dropping a message. The bus's first wait logs a warning that suggests a
+//! larger `messages.capacity`. After one second of waiting, a publisher logs
+//! which routes hold the pool and where their slowest listener was created. A
+//! system that stops reading its messages must drop its listener so the chunks
+//! behind it return to the pool.
 
 #![allow(
 	unsafe_code,
@@ -39,6 +40,7 @@ use std::{
 };
 
 use utils::{
+	ByteSize,
 	hash::HashMap,
 	sync::{Mutex, MutexGuard},
 };
@@ -73,6 +75,8 @@ const STAMP_SEQUENCE_MASK: u64 = (1 << STAMP_SEQUENCE_BITS) - 1;
 const MAX_TOPICS: usize = (1 << (u64::BITS - STAMP_SEQUENCE_BITS)) - 1;
 /// Longest pause, in spin iterations, a publisher takes after losing a slot reservation race.
 const RESERVATION_BACKOFF_LIMIT: u32 = 256;
+/// Docs page that says how to set `messages.capacity`, the recovery an exhausted pool needs.
+const CAPACITY_DOCS_PATH: &str = "reference/parameters#application";
 /// Delay before a publisher waiting on an exhausted pool reports it, and between later reports.
 const EXHAUSTED_POOL_FIRST_REPORT: Duration = Duration::from_secs(1);
 const EXHAUSTED_POOL_REPORT_INTERVAL: Duration = Duration::from_secs(5);
@@ -136,7 +140,10 @@ impl fmt::Display for MessageBusConfigError {
 		match self {
 			Self::CapacityTooSmall { capacity, minimum } => write!(
 				formatter,
-				"Message bus capacity {capacity} is below the {minimum} byte minimum. The most likely cause is a messages.capacity parameter smaller than two chunks."
+				"Message bus capacity {} is below the {} minimum. The most likely cause is a messages.capacity parameter smaller than two chunks. Set messages.capacity to at least {minimum} bytes; see {}.",
+				ByteSize::from(*capacity),
+				ByteSize::from(*minimum),
+				crate::online_docs_url(CAPACITY_DOCS_PATH)
 			),
 		}
 	}
@@ -170,7 +177,9 @@ impl fmt::Display for MessageRouteError {
 				chunk_bytes,
 			} => write!(
 				formatter,
-				"Message type '{message_type}' needs {message_bytes} bytes, but one pool chunk has {chunk_bytes} bytes. The most likely cause is a message that stores a large value inline instead of behind a pointer."
+				"Message type '{message_type}' needs {}, but one pool chunk has {}. The most likely cause is a message that stores a large value inline instead of behind a pointer.",
+				ByteSize::from(*message_bytes),
+				ByteSize::from(*chunk_bytes)
 			),
 			Self::MessageOveraligned {
 				message_type,
@@ -969,9 +978,12 @@ impl BusCore {
 		}
 	}
 
-	/// Waits without the control lock until the pool has a free chunk, reporting long waits.
+	/// Waits without the control lock until the pool has a free chunk, reporting the first exhaustion and long waits.
 	fn wait_for_chunk(&self, state: &TopicState) {
-		self.pool.waits.fetch_add(1, Ordering::Relaxed);
+		// Only the bus's first wait warns, so a pool that runs dry every tick logs once instead of flooding.
+		if self.pool.waits.fetch_add(1, Ordering::Relaxed) == 0 {
+			self.report_first_exhaustion(state);
+		}
 		let started = Instant::now();
 		let mut next_report = started + EXHAUSTED_POOL_FIRST_REPORT;
 		let mut spins = 0u32;
@@ -982,6 +994,21 @@ impl BusCore {
 			}
 			backoff(&mut spins);
 		}
+	}
+
+	/// Warns that the pool ran out of chunks for the first time and suggests a larger capacity.
+	#[cold]
+	#[inline(never)]
+	fn report_first_exhaustion(&self, waiting: &TopicState) {
+		let capacity = self.pool.chunks.len() * CHUNK_BYTES;
+		log::warn!(
+			"Message bus capacity exhausted: a publisher of '{}' is waiting for space in the {} of message storage. The most likely cause is that the application publishes more messages per tick than messages.capacity holds. Raise messages.capacity, for example to {} bytes ({}); see {}.",
+			waiting.message_type,
+			ByteSize::from(capacity),
+			capacity * 2,
+			ByteSize::from(capacity * 2),
+			crate::online_docs_url(CAPACITY_DOCS_PATH)
+		);
 	}
 
 	/// Logs which routes hold the pool while a publisher is stalled.
@@ -997,9 +1024,10 @@ impl BusCore {
 			.collect::<Vec<_>>();
 		usage.sort_unstable_by_key(|(chunks, _)| std::cmp::Reverse(*chunks));
 		let mut report = format!(
-			"Message pool exhausted: a publisher of '{}' has waited {:.1} s for a free chunk. The most likely cause is a listener that no longer reads its messages; a system that stops consuming must drop its listener, or raise messages.capacity. Chunks held:",
+			"Message pool exhausted: a publisher of '{}' has waited {:.1} s for a free chunk. The most likely cause is a listener that no longer reads its messages; a system that stops consuming must drop its listener, or raise messages.capacity (see {}). Chunks held:",
 			waiting.message_type,
-			elapsed.as_secs_f64()
+			elapsed.as_secs_f64(),
+			crate::online_docs_url(CAPACITY_DOCS_PATH)
 		);
 		for (chunks, state) in usage.iter().take(3) {
 			let _ = write!(report, " '{}' holds {chunks}", state.message_type);

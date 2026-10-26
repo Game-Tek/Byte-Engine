@@ -283,11 +283,11 @@ impl PackedResourceAllocator {
 
 		let resources_path = self.pack_path.parent().unwrap_or_else(|| Path::new("."));
 		log::warn!(
-			"Resource pack is fragmented: {}% of '{}' is free across {} reusable slots, but the largest slot is only {} bytes. The most likely cause is repeated packed-resource rebuilds with changing payload sizes. Delete '{}' and bake again to compact it. See {}.",
+			"Resource pack is fragmented: {}% of '{}' is free across {} reusable slots, but the largest slot is only {}. The most likely cause is repeated packed-resource rebuilds with changing payload sizes. Delete '{}' and bake again to compact it. See {}.",
 			fragmentation.free_percent(),
 			self.pack_path.display(),
 			fragmentation.free_slot_count,
-			fragmentation.largest_free_slot,
+			utils::ByteSize(fragmentation.largest_free_slot),
 			resources_path.display(),
 			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		);

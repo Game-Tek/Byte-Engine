@@ -360,8 +360,9 @@ impl AudioSampleLoader {
 		let resident_bytes = layout.decoded_byte_count()?;
 		if resident_bytes > self.pool.byte_budget {
 			return Err(format!(
-				"Audio sample exceeds the pool budget. The decoded sample requires {resident_bytes} bytes but the pool allows {} bytes.",
-				self.pool.byte_budget
+				"Audio sample exceeds the pool budget. The decoded sample requires {} but the pool allows {}.",
+				utils::ByteSize::from(resident_bytes),
+				utils::ByteSize::from(self.pool.byte_budget)
 			));
 		}
 		if !self.pool.make_room(resident_bytes) {

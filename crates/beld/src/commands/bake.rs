@@ -202,8 +202,8 @@ async fn bake_ids(
 	asset_manager.set_bake_memory_budget(memory_budget);
 	let asset_manager = &*asset_manager;
 	log::info!(
-		"Using a {} MiB soft memory budget for concurrent asset bakes.",
-		memory_budget.get() / (1024 * 1024)
+		"Using a {} soft memory budget for concurrent asset bakes.",
+		utils::ByteSize::from(memory_budget.get())
 	);
 
 	let resource_count = ids.len();

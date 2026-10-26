@@ -80,6 +80,37 @@ bake `trace`. Release builds omit trace storage and output.
 
 BELD continues baking after an individual asset fails, but the command exits with status `1` if any selected asset failed. A successful command logs the total elapsed bake time and success/failure counts.
 
+## Check what a bake produces
+
+Use a dry run to see the resources an asset bakes into without writing them to
+your resources directory. BELD bakes the asset and everything it depends on in
+memory, prints the result, and leaves the destination untouched:
+
+```bash
+beld --source assets bake --dry-run --format json character.glb
+```
+
+Add `--payload typed` to include each stream's data as JSON values, such as
+vertex positions, texels, audio frames, and LUT entries. Use `--payload base64`
+when you need the exact bytes. Both need `--format json`:
+
+```bash
+beld --source assets bake --dry-run --format json --payload typed character.glb \
+  | jq '.resources[] | select(.class == "Mesh") | .streams[] | select(.name == "Vertex.Position") | .data[:3]'
+```
+
+Animation clips already print their keyframes under `resource.tracks`, so you
+don't need `--payload` to read them. Name the clip's ID to bake it:
+
+```bash
+beld --source assets bake --dry-run --format json 'character.fbx#animations/Walk'
+```
+
+To read the data of a resource you already baked, add the same `--payload`
+option to `beld inspect`. Logs go to standard error, so you can redirect the
+output to a file or pipe it to another tool. The
+[payloads reference](/docs/reference/beld#payloads) lists every stream format.
+
 ## Control bake memory
 
 BELD limits how much memory concurrent bake work can reserve. By default, the soft memory budget is half of the system memory available when `beld bake` starts, and never less than a quarter of the installed memory. For example, BELD uses a 6 GiB budget when 12 GiB is available at startup, and a 4 GiB budget on a 16 GiB machine under memory pressure.

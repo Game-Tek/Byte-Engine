@@ -91,7 +91,7 @@ mod tests {
 	use crate::{
 		asset::{ResourceId, manager::AssetManager, storage_backend::tests::TestStorageBackend},
 		r#async,
-		resource::{ReadStorageBackend as _, storage_backend::tests::TestStorageBackend as TestResourceStorage},
+		resource::{ReadStorageBackend as _, storage_backend::MemoryStorageBackend},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -120,7 +120,7 @@ mod tests {
 
 		source_storage.add_file("studio.exr", &hdr_fixture());
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
@@ -172,7 +172,7 @@ mod tests {
 
 		source_storage.add_file("broken.exr", b"not an exr image");
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(EXRAssetHandler::new());

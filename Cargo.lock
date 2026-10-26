@@ -167,11 +167,13 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 name = "beld"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "byte-engine",
  "byte-engine-resource-management",
  "byte-engine-utils",
  "clap",
  "log",
+ "serde",
  "serde_json",
  "simple_logger",
  "sysinfo",

@@ -226,7 +226,6 @@ impl ResourceHash {
 }
 
 impl ResourceWriter {
-	#[cfg(test)]
 	pub(super) fn memory(expected_size: usize) -> Result<Self, ()> {
 		let mut data = Vec::new();
 		data.try_reserve_exact(expected_size).map_err(|_| ())?;
@@ -335,7 +334,6 @@ impl ResourceWriter {
 
 // A closed target set keeps each write as a direct enum branch without a boxed writer.
 enum ResourceWriteTarget {
-	#[cfg(test)]
 	Memory(Vec<u8>),
 	ReservedFile(AsyncResourceFile),
 	StagedFile {
@@ -347,7 +345,6 @@ enum ResourceWriteTarget {
 impl ResourceWriteTarget {
 	async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
 		match self {
-			#[cfg(test)]
 			Self::Memory(output) => {
 				output.extend_from_slice(data);
 				Ok(())
@@ -358,7 +355,6 @@ impl ResourceWriteTarget {
 
 	async fn flush(&mut self) -> std::io::Result<()> {
 		match self {
-			#[cfg(test)]
 			Self::Memory(_) => Ok(()),
 			Self::ReservedFile(output) | Self::StagedFile { file: output, .. } => output.flush().await,
 		}
@@ -366,7 +362,6 @@ impl ResourceWriteTarget {
 
 	async fn write_owned<T: IoBuf>(&mut self, buffer: T) -> BufResult<(), T> {
 		match self {
-			#[cfg(test)]
 			Self::Memory(output) => {
 				output.extend_from_slice(buffer.as_init());
 				BufResult(Ok(()), buffer)
@@ -401,7 +396,6 @@ impl ResourceWriteTarget {
 
 	async fn finish(self) -> std::io::Result<FinishedResourceWriteTarget> {
 		match self {
-			#[cfg(test)]
 			Self::Memory(data) => Ok(FinishedResourceWriteTarget::Memory(data)),
 			Self::ReservedFile(file) => {
 				file.finish().await?;
@@ -623,7 +617,6 @@ impl Drop for StagedResourceFile {
 }
 
 enum FinishedResourceWriteTarget {
-	#[cfg(test)]
 	Memory(Vec<u8>),
 	ReservedFile,
 	StagedFile(StagedResourceFile),
@@ -657,7 +650,6 @@ impl ResourceWriteOutput {
 		self.encoding
 	}
 
-	#[cfg(test)]
 	pub(super) fn into_memory(self) -> Result<Vec<u8>, ()> {
 		match self.target {
 			FinishedResourceWriteTarget::Memory(data) => Ok(data),

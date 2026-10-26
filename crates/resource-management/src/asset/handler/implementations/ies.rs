@@ -680,7 +680,7 @@ mod tests {
 	use crate::{
 		asset::{ResourceId, manager::AssetManager, storage_backend::tests::TestStorageBackend},
 		r#async,
-		resource::{ReadStorageBackend as _, storage_backend::tests::TestStorageBackend as TestResourceStorage},
+		resource::{ReadStorageBackend as _, storage_backend::MemoryStorageBackend},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -755,7 +755,7 @@ TILT=NONE
 
 		source_storage.add_file("lights/quadrant.ies", QUADRANT_PROFILE);
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 

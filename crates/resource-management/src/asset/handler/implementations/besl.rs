@@ -547,7 +547,7 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::storage_backend::MemoryStorageBackend,
 		resources::material::{Binding, BindingKind, SetInterface, Shader, ShaderArtifact, ShaderInterface, TextureView},
 		shader::generator::{ShaderGenerationSettings, Stages},
 		types::ShaderTypes,
@@ -647,7 +647,7 @@ mod tests {
 	fn standalone_besl_discovery_requires_an_adjacent_sidecar() {
 		let asset_storage = AssetTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage, ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
@@ -665,7 +665,7 @@ mod tests {
 
 		asset_storage.add_file("passes/no-settings.besl", b"main: fn () -> void {}");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
@@ -697,7 +697,7 @@ mod tests {
 
 		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
@@ -737,7 +737,7 @@ mod tests {
 				asset_storage.add_file(path, contents.as_bytes());
 			}
 
-			let mut asset_manager = AssetManager::new(asset_storage, ResourceTestStorageBackend::new());
+			let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
 
 			asset_manager.add_asset_handler(BESLShaderAssetHandler {
 				compiler: Box::new(TestShaderCompiler),

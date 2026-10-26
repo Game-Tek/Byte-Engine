@@ -133,7 +133,7 @@ mod tests {
 			storage_backend::tests::TestStorageBackend,
 		},
 		r#async,
-		resource::{ReadStorageBackend as _, storage_backend::tests::TestStorageBackend as TestResourceStorage},
+		resource::{ReadStorageBackend as _, storage_backend::MemoryStorageBackend},
 		resources::image::{
 			IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IMAGE_BASE_MIP_STREAM_NAME, Image, ibl_prefiltered_specular_stream_name,
 		},
@@ -200,7 +200,7 @@ mod tests {
 		);
 		source_storage.add_file("studio.exr", &exr_fixture(4.0));
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		// The raw EXR is a decoder input, so this test deliberately registers no EXR asset handler.
@@ -263,7 +263,7 @@ mod tests {
 		source_storage.add_file("raw.exr", &exr_fixture(4.0));
 		source_storage.add_file("raw.exr.bead", b"this is not JSON5");
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -282,7 +282,7 @@ mod tests {
 		source_storage.add_file("square.environment.bead", br#"{ source: "square.exr" }"#);
 		source_storage.add_file("square.exr", &square_exr_fixture());
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -315,7 +315,7 @@ mod tests {
 			source_storage.add_file(id, manifest.as_bytes());
 		}
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -336,7 +336,7 @@ mod tests {
 		source_storage.add_file("tracked.environment.bead", br#"{ source: "tracked.exr" }"#);
 		source_storage.add_file("tracked.exr", &exr_fixture(4.0));
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage.clone(), resource_storage.clone());
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -367,7 +367,7 @@ mod tests {
 		source_storage.add_file("stable.environment.bead", br#"{ source: "stable.exr" }"#);
 		source_storage.add_file("stable.exr", &exr_fixture(4.0));
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage.clone(), resource_storage);
 		let bakes = Arc::new(AtomicUsize::new(0));
 
@@ -398,7 +398,7 @@ mod tests {
 		source_storage.add_file("fallback.environment.bead", br#"{ source: "fallback.exr" }"#);
 		source_storage.add_file("fallback.exr", &exr_fixture(4.0));
 
-		let resource_storage = TestResourceStorage::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
 		asset_manager.set_image_processor(crate::processors::image::ImageProcessor::new(

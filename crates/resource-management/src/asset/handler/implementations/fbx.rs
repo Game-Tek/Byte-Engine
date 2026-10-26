@@ -39,7 +39,7 @@ mod tests {
 		r#async,
 		bemx::{self, import::ImportedMaterial},
 		processors::mesh::ProcessedMesh,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::storage_backend::MemoryStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
 			image::Image,
@@ -659,7 +659,7 @@ mod tests {
 
 		asset_storage.add_file("textures/factored_diffuse.png", &encoded);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
@@ -735,7 +735,7 @@ mod tests {
 
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
@@ -762,7 +762,7 @@ mod tests {
 			br#"{ "asset": { "default": { "asset": "materials/test.variant" } } }"#,
 		);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
@@ -800,7 +800,7 @@ mod tests {
 
 		asset_storage.add_file("broken.fbx", b"not an FBX");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
@@ -822,7 +822,7 @@ mod tests {
 
 		asset_storage.add_file("animation_only.fbx", ANIMATION_ONLY_FBX);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
@@ -859,7 +859,7 @@ mod tests {
 			}"#,
 		);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
@@ -881,7 +881,7 @@ mod tests {
 
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 

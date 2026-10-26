@@ -372,7 +372,7 @@ pub(crate) mod tests {
 		LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkeletonPoseMap, SkinBinding, SkinJoint, SkinPaletteEntry,
 		SkinPaletteError,
 	};
-	use crate::{Solver, resource::storage_backend::tests::TestStorageBackend};
+	use crate::{Solver, resource::storage_backend::MemoryStorageBackend};
 
 	/// Builds a skeleton node whose rest pose only translates, for tests that author small hierarchies.
 	pub(crate) fn node(name: Option<&str>, parent: Option<u32>, translation: [f32; 3]) -> SkeletonNode {
@@ -393,7 +393,7 @@ pub(crate) mod tests {
 				nodes: vec![node(None, Some(parent), [0.0; 3])],
 			};
 
-			assert!(model.solve(&TestStorageBackend::new()).await.is_err());
+			assert!(model.solve(&MemoryStorageBackend::new()).await.is_err());
 		}
 	}
 
@@ -403,7 +403,7 @@ pub(crate) mod tests {
 			nodes: vec![node(None, None, [f32::NAN, 0.0, 0.0])],
 		};
 
-		assert!(model.solve(&TestStorageBackend::new()).await.is_err());
+		assert!(model.solve(&MemoryStorageBackend::new()).await.is_err());
 	}
 
 	#[test]

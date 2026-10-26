@@ -6,7 +6,7 @@ mod maintenance;
 mod query;
 mod shared;
 
-pub use bake::bake;
+pub use bake::{bake, bake_dry_run};
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
 #[cfg(test)]
@@ -248,6 +248,7 @@ mod tests {
 				resources_path.to_string_lossy().into_owned(),
 				"broken.png".to_string(),
 				OutputFormat::JSON,
+				crate::Payload::None,
 			)),
 			Ok(())
 		);
@@ -256,6 +257,7 @@ mod tests {
 				resources_path.to_string_lossy().into_owned(),
 				"successful.audio".to_string(),
 				OutputFormat::JSON,
+				crate::Payload::None,
 			)),
 			Ok(())
 		);

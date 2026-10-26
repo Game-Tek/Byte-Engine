@@ -9,7 +9,7 @@ pub const IBL_DIFFUSE_IRRADIANCE_STREAM_NAME: &str = "ibl.diffuse_irradiance.mip
 /// Number of perceptual-roughness levels baked for specular image-based lighting.
 pub const IBL_PREFILTERED_SPECULAR_MIP_COUNT: u32 = 8;
 
-const IBL_PREFILTERED_SPECULAR_STREAM_PREFIX: &str = "ibl.prefiltered_specular.mip";
+pub(crate) const IBL_PREFILTERED_SPECULAR_STREAM_PREFIX: &str = "ibl.prefiltered_specular.mip";
 
 /// Returns the stream name for one roughness-prefiltered specular mip.
 pub fn ibl_prefiltered_specular_stream_name(mip_level: u32) -> String {
@@ -92,7 +92,7 @@ mod tests {
 	use crate::{
 		ProcessedAsset, ReferenceModel, Resource, Solver,
 		asset::ResourceId,
-		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
+		resource::{WriteStorageBackend, storage_backend::MemoryStorageBackend},
 		solver::SolveError,
 		types::{Formats, Gamma},
 	};
@@ -123,7 +123,7 @@ mod tests {
 			photometry: None,
 		};
 		let model = ReferenceModel::new("texture.image", 99, 3, &image, None);
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let stored = storage
 			.store(ProcessedAsset::new(ResourceId::new("texture.image"), image), &[1, 2, 3])
 			.await
@@ -160,11 +160,11 @@ mod tests {
 		let missing = ReferenceModel::new("missing.image", 0, 0, &image, None);
 
 		assert!(matches!(
-			missing.solve(&TestStorageBackend::new()).await,
+			missing.solve(&MemoryStorageBackend::new()).await,
 			Err(SolveError::UnreadableDependency { id }) if id == "missing.image"
 		));
 
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		storage
 			.store(
 				ProcessedAsset::new_with_serialized("broken.image", "Image", vec![1, 2, 3]),

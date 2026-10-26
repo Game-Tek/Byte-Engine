@@ -145,7 +145,7 @@ mod tests {
 	#[r#async::test]
 	async fn standalone_png_infers_gamma_from_semantics_and_supported_metadata() {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::MemoryStorageBackend::new();
 		let cases = [
 			(
 				"textures/default.png",
@@ -215,7 +215,7 @@ mod tests {
 	#[r#async::test]
 	async fn standalone_png_takes_mip_and_compression_settings_from_its_bead_file() {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::MemoryStorageBackend::new();
 		let png = generated_rgba8_png(GammaMetadata::Unspecified);
 
 		asset_storage_backend.add_file("textures/ui_albedo.png", &png);

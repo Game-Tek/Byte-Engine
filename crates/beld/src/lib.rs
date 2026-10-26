@@ -9,7 +9,7 @@
 mod commands;
 mod utils;
 
-pub use commands::{bake, clear, delete, inspect, list, query, wipe};
+pub use commands::{bake, bake_dry_run, clear, delete, inspect, list, query, wipe};
 pub use resource_management::r#async::Executor;
 
 /// Selects the representation written by commands that return structured output.
@@ -19,4 +19,18 @@ pub enum OutputFormat {
 	Human,
 	/// Writes stable JSON for scripts and editor integrations.
 	JSON,
+}
+
+/// Selects whether commands that print resources add each payload stream's bytes, and in which form.
+///
+/// Anything other than [`Payload::None`] needs [`OutputFormat::JSON`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum Payload {
+	/// Prints stream descriptions only.
+	#[default]
+	None,
+	/// Decodes streams with a known layout into values and prints the rest as base64.
+	Typed,
+	/// Prints every stream as base64.
+	Base64,
 }

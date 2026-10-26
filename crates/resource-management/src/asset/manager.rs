@@ -797,7 +797,7 @@ pub mod tests {
 		Model, ProcessedAsset,
 		asset::{handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::{self, BoxedFuture},
-		resource::{ReadStorageBackend, storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend},
+		resource::{ReadStorageBackend, storage_backend::MemoryStorageBackend},
 	};
 
 	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -813,8 +813,8 @@ pub mod tests {
 	struct CompoundBeadAssetHandler;
 
 	/// Builds a manager with [`TestAssetHandler`] over `storage` and returns the resource store it writes to.
-	fn test_asset_manager(storage: TestStorageBackend) -> (AssetManager, ResourceTestStorageBackend) {
-		let resource_storage = ResourceTestStorageBackend::new();
+	fn test_asset_manager(storage: TestStorageBackend) -> (AssetManager, MemoryStorageBackend) {
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(storage, resource_storage.clone());
 		asset_manager.add_asset_handler(TestAssetHandler);
 		(asset_manager, resource_storage)
@@ -851,7 +851,7 @@ pub mod tests {
 
 	fn versioned_asset_manager(
 		storage: TestStorageBackend,
-		resource_storage: ResourceTestStorageBackend,
+		resource_storage: MemoryStorageBackend,
 	) -> (AssetManager, Arc<AtomicUsize>) {
 		let invocations = Arc::new(AtomicUsize::new(0));
 
@@ -978,7 +978,7 @@ pub mod tests {
 
 		let (release, release_announcement) = announcement::Announcement::new();
 
-		let mut manager = AssetManager::new(TestStorageBackend::new(), ResourceTestStorageBackend::new());
+		let mut manager = AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new());
 
 		manager.add_asset_handler(CoordinatingAssetHandler {
 			invocations: Arc::clone(&invocations),
@@ -1041,7 +1041,7 @@ pub mod tests {
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new(TestStorageBackend::new(), ResourceTestStorageBackend::new())
+		AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new())
 	}
 
 	/// Releases the blocked test handler once `started` reports that the awaited invocation began.
@@ -1074,7 +1074,7 @@ pub mod tests {
 		storage_backend.add_file("studio.environment.bead.bead", b"{ invalid: true }");
 		storage_backend.add_file("studio.exr.bead", b"{ image: true }");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(storage_backend, resource_storage.clone());
 		asset_manager.add_asset_handler(CompoundBeadAssetHandler);
 
@@ -1128,7 +1128,7 @@ pub mod tests {
 
 		asset_storage.add_file("child.test", b"child");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (manager, _) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
@@ -1162,7 +1162,7 @@ pub mod tests {
 
 		asset_storage.add_file("stable.test", b"stable");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (manager, _) = versioned_asset_manager(asset_storage, resource_storage);
 
@@ -1187,7 +1187,7 @@ pub mod tests {
 
 		asset_storage.add_file("versioned.test", b"first source");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
 
@@ -1258,7 +1258,7 @@ pub mod tests {
 
 		asset_storage.add_file("external.bin", b"first dependency");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
@@ -1294,7 +1294,7 @@ pub mod tests {
 
 		asset_storage.add_file("child.test", b"first child");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
@@ -1326,7 +1326,7 @@ pub mod tests {
 
 		asset_storage.add_file("child.test", b"child");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (first_run, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
 
@@ -1360,7 +1360,7 @@ pub mod tests {
 
 		asset_storage.add_file("removed.test", b"source");
 
-		let resource_storage = ResourceTestStorageBackend::new();
+		let resource_storage = MemoryStorageBackend::new();
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
@@ -1450,7 +1450,7 @@ pub mod tests {
 
 		let parent_started_for_release = started_announcement.listener();
 
-		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new());
 
 		asset_manager.set_bake_memory_budget(NonZeroUsize::MIN);
 

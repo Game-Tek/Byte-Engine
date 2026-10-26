@@ -4,6 +4,7 @@ mod source;
 mod validation;
 
 pub use lod::MeshLodSettings;
+pub(crate) use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;

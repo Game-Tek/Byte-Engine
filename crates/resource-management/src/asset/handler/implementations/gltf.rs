@@ -40,7 +40,7 @@ mod tests {
 			import::{ImportedGraphBuilder, ImportedMaterial},
 		},
 		processors::image::Semantic,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::storage_backend::MemoryStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
 			image::Image,
@@ -215,7 +215,7 @@ mod tests {
 	}
 
 	/// Builds an asset manager whose glTF handler generates material shaders with the minimal test generator.
-	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorageBackend) -> AssetManager {
+	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
 
 		let mut handler = GLTFAssetHandler::new();
@@ -571,7 +571,7 @@ mod tests {
 
 		asset_storage_backend.add_file("animation_only.glb", &generated_animation_only_glb());
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
@@ -603,7 +603,7 @@ mod tests {
 			}"#,
 		);
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
@@ -667,7 +667,7 @@ mod tests {
 
 		asset_storage_backend.add_file("characters/generated_skeletal.gltf", &document);
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend);
 
@@ -724,7 +724,7 @@ mod tests {
 
 		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
@@ -758,7 +758,7 @@ mod tests {
 		asset_storage_backend.add_file("triangle.glb", &package_fixture_glb(&document, binary));
 		asset_storage_backend.add_file("triangle.glb.bead", b"{ lods: { levels: 2 } }");
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, ResourceTestStorageBackend::new());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, MemoryStorageBackend::new());
 
 		let mesh: Result<ReferenceModel<MeshModel>, _> = asset_manager.bake_if_not_exists("triangle.glb").await;
 
@@ -1027,7 +1027,7 @@ mod tests {
 
 		asset_storage_backend.add_file("packed.glb", &glb);
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
@@ -1075,7 +1075,7 @@ mod tests {
 
 		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb_named("Triangle"));
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
@@ -1102,7 +1102,7 @@ mod tests {
 		asset_storage_backend.add_file("flat_image.glb", &generated_textured_triangle_glb_named("Triangle"));
 		asset_storage_backend.add_file("flat_image.glb.bead", b"{ images: { mips: false } }");
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
@@ -1126,7 +1126,7 @@ mod tests {
 
 		asset_storage_backend.add_file("two_materials.glb", &generated_two_material_textured_glb());
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
@@ -1203,7 +1203,7 @@ mod tests {
 	/// A later bake that keeps the marker reused the stored shader; one that replaces it compiled again.
 	async fn bake_textured_triangle_and_mark_its_shader(
 		asset_storage_backend: &AssetTestStorageBackend,
-		resource_storage_backend: &ResourceTestStorageBackend,
+		resource_storage_backend: &MemoryStorageBackend,
 		marker: &[u8],
 	) -> String {
 		use crate::resource::WriteStorageBackend as _;
@@ -1237,7 +1237,7 @@ mod tests {
 	#[r#async::test]
 	async fn rebaking_an_edited_mesh_reuses_its_stored_generated_shader() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let shader_id =
 			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"reused").await;
@@ -1274,7 +1274,7 @@ mod tests {
 	#[r#async::test]
 	async fn forced_rebuilds_compile_stored_generated_shaders_again() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let shader_id =
 			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
@@ -1318,7 +1318,7 @@ mod tests {
 
 		asset_storage_backend.add_file("shared.glb", &package_fixture_glb(&document, binary));
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 

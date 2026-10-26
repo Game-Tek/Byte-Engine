@@ -25,9 +25,9 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--config <path>`, default `config.json` in the working directory; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. |
+| `bake [ids...]` | `--force`; `--config <path>`, default `config.json` in the working directory; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
-| `inspect <id or uid>` | `--format human` or `json` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
+| `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query <class> [property=value...]` | `--limit <n>`, `--cursor <hex>`, `--format human` or `json` | Lists resources of a class matching every predicate, read-only, with a cursor when more remain. |
 | `delete <ids...>` | | Removes each resource. |
 | `clear`, `wipe` | | Removes every resource and payload, keeping the store's mode. |
@@ -38,6 +38,22 @@ leaves out the pipelines and shaders of render features the configuration
 turns off. Explicit IDs always bake. Up to 16 assets bake at once, and each
 is skipped when its stored resource is current with every source file it was
 baked from.
+
+## Dry runs
+
+`bake --dry-run` bakes the given IDs and every resource they depend on into
+an empty in-memory store, prints that store, and discards it. It reads the
+source directory and the configuration, and it doesn't read, create, or write
+anything under the destination directory.
+
+| Rule | Effect |
+| --- | --- |
+| IDs | At least one ID is required; a dry run doesn't discover assets. |
+| `--force`, `--texture-compression` | Rejected with exit code 2. Every dry run bakes from scratch, and payloads stay uncompressed. |
+| `--destination`, `--storage-mode` | No effect. |
+| `--memory-budget-mib`, `--config` | Apply as in a normal bake. |
+| `--format`, `--payload` | Accepted on `bake` only with `--dry-run`. |
+| Exit code | The same as a normal bake of the same IDs. |
 
 ## Exit codes
 
@@ -51,8 +67,10 @@ baked from.
 
 | Output | Shape |
 | --- | --- |
-| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `properties`, `streams`, and `resource`, the model as JSON. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
+| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `properties`, `streams`, and `resource`, the model as JSON. Each stream has `name`, `size`, and `offset`. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
 | `inspect`, human | `key: value` lines, nested objects indented by two spaces, arrays as dashed items. |
+| `bake --dry-run`, JSON | An object with `resources`, every stored resource in the `inspect` JSON shape ordered by ID, and `failed`, one object per requested ID that failed, with `id` and `error`. Debug builds add `trace` to both. |
+| `bake --dry-run`, human | The same object in the `inspect` human layout. |
 | `query`, JSON | An object with `resources`, each with `id`, `uid`, `class`, and `properties`, and `cursor`, null on the last page. |
 | `query`, human | Each ID on its own line with its properties indented, then the cursor when more pages exist. |
 
@@ -60,6 +78,51 @@ A cursor is the hexadecimal encoding of the page token. Models with a JSON
 form are animation, audio, image, LUT, material, mesh, primitive, shader,
 skeleton, and variant; flipbooks, pipelines, and particle systems print an
 unsupported marker.
+
+Logs go to standard error, so standard output carries only the command's
+output.
+
+## Payloads
+
+`--payload` adds each stream's bytes to the `inspect` and `bake --dry-run`
+output. Any value other than `none` requires `--format json`; other
+combinations exit with code 2.
+
+| Value | Each stream adds |
+| --- | --- |
+| `none` | Nothing. |
+| `typed` | `encoding` `json`, `element`, and `data`, an array of decoded elements, when the stream's layout appears in the next table. Otherwise the stream falls back to `base64`. |
+| `base64` | `encoding` `base64` and `data`, the stream's decoded bytes as one padded base64 string in the standard alphabet. |
+
+A resource whose payload has no named streams but isn't empty, like audio or a
+LUT, prints one stream named `payload` that covers all of it. Bytes are always
+the decoded payload, never the stored compressed form. A payload stored with
+`metal-io-lz4` compression can't be read on the CPU, so `inspect` exits with
+code 1.
+
+| Class | Stream | `element` | Each element in `data` |
+| --- | --- | --- | --- |
+| Mesh | `Vertex.Position`, `Vertex.Normal`, `Vertex.Tangent`, `Vertex.BiTangent`, `Vertex.UV`, `Vertex.Color`, `Vertex.Joints`, `Vertex.Weights` | The vertex component format, such as `vec3f` | An array of the format's component count. |
+| Mesh | `VertexIndices`, `TriangleIndices` | `u16` | An integer. |
+| Mesh | `MeshletIndices` | `u8` | An integer. |
+| Mesh | `Meshlets` | `meshlet` | An object with `vertex_count`, `triangle_count`, `center`, `radius`, `cone_apex`, `cone_cutoff`, and `cone_axis`. |
+| Image | Every stream | The stream's texel format, such as `RGBA8` | An array of channel values. |
+| Audio | `payload` | `frame` | An array with one sample per channel. |
+| LUT | `payload` | `rgb` | An array of three numbers. |
+
+Elements appear in stream order, and image texels appear row by row from the
+top-left texel. An image stream uses the format of the image-based lighting
+level it belongs to, or the image's own format.
+
+| Element type | Values |
+| --- | --- |
+| `f` and `f16` vertex components; `R16F` and `RGBA16F` texels; LUT entries | The shortest decimal that reads back as the same 32-bit float. Half-precision values widen to 32 bits first. NaN and infinities print as null. |
+| `u16` and `i16` vertex components; `u` and `i` vertex components | Integers. |
+| `RG8`, `RGB8`, `RGBA8`, and `RGBA8SRGB` texels | Integers from 0 to 255, sRGB-encoded where the format is. |
+| `RG16`, `RGB16`, and `RGBA16` texels | Integers from 0 to 65535. |
+| `BC5`, `BC5SNORM`, `BC7`, and `BC7SRGB` texels | No element; the stream falls back to `base64`. |
+| 8-bit audio samples | Unsigned integers from 0 to 255, centered on 128. |
+| 16-, 24-, and 32-bit audio samples | Signed integers of that width. |
 
 ## Handlers
 

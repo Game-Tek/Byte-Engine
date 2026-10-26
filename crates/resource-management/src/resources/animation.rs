@@ -363,11 +363,11 @@ mod tests {
 	use crate::{
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
-		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
+		resource::{WriteStorageBackend, storage_backend::MemoryStorageBackend},
 		resources::skeleton::{SkeletonModel, tests::node},
 	};
 
-	async fn skeleton_reference(storage: &TestStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
+	async fn skeleton_reference(storage: &MemoryStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
 		let skeleton = SkeletonModel {
 			nodes: (0..node_count)
 				.map(|index| {
@@ -386,7 +386,7 @@ mod tests {
 			.into()
 	}
 
-	async fn valid_model(storage: &TestStorageBackend) -> AnimationModel {
+	async fn valid_model(storage: &MemoryStorageBackend) -> AnimationModel {
 		AnimationModel {
 			name: Some("walk".into()),
 			skeleton: skeleton_reference(storage, 2).await,
@@ -409,7 +409,7 @@ mod tests {
 
 	#[crate::r#async::test]
 	async fn solving_rejects_unsorted_duplicate_and_out_of_range_tracks() {
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let mut model = valid_model(&storage).await;
 		model.tracks.insert(
 			0,
@@ -434,7 +434,7 @@ mod tests {
 
 	#[crate::r#async::test]
 	async fn solving_rejects_invalid_curve_cardinality_timing_and_numbers() {
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let mut model = valid_model(&storage).await;
 		model.tracks[0].translation = Some(TranslationCurve::CubicSpline {
 			times: vec![0.0, 0.0],
@@ -453,7 +453,7 @@ mod tests {
 
 	#[crate::r#async::test]
 	async fn solving_accepts_arbitrary_finite_rotation_cubic_tangents() {
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let mut model = valid_model(&storage).await;
 		model.tracks[0].rotation = Some(RotationCurve::CubicSpline {
 			times: vec![0.0, 1.0],

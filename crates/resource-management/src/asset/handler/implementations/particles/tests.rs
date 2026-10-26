@@ -9,7 +9,7 @@ use crate::{
 		storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 	},
 	r#async,
-	resource::{resource_manager::ResourceManager, storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend},
+	resource::{resource_manager::ResourceManager, storage_backend::MemoryStorageBackend},
 	resources::{
 		material::{Shader, ShaderArtifact, ShaderInterface},
 		particle_system::ParticleSystem,
@@ -78,7 +78,7 @@ impl ShaderCompiler for LinkingCompiler {
 	}
 }
 
-fn asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorageBackend) -> AssetManager {
+fn asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
 	let mut asset_manager = AssetManager::new(assets, resources);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler {
 		compiler: Box::new(LinkingCompiler),
@@ -90,7 +90,7 @@ fn asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorage
 #[r#async::test]
 async fn baking_a_system_stores_its_pipelines_and_shaders() {
 	let assets = AssetTestStorageBackend::new();
-	let resources = ResourceTestStorageBackend::new();
+	let resources = MemoryStorageBackend::new();
 	assets.add_file("effects/sparks.particles", SPARKS.as_bytes());
 
 	asset_manager(assets, resources.clone())
@@ -147,9 +147,7 @@ async fn systems_that_cannot_run_are_rejected() {
 	] {
 		let assets = AssetTestStorageBackend::new();
 		assets.add_file("bad.particles", source.as_bytes());
-		let result = asset_manager(assets, ResourceTestStorageBackend::new())
-			.bake("bad.particles")
-			.await;
+		let result = asset_manager(assets, MemoryStorageBackend::new()).bake("bad.particles").await;
 		assert!(result.is_err(), "a system with {name} should not bake");
 	}
 }
@@ -358,7 +356,7 @@ async fn generated_programs_lower_to_the_platform_shader_language() {
 	let assets = AssetTestStorageBackend::new();
 	assets.add_file("sparks.particles", SPARKS.as_bytes());
 	assets.add_file("smoke.particles", SMOKE.as_bytes());
-	let mut asset_manager = AssetManager::new(assets, ResourceTestStorageBackend::new());
+	let mut asset_manager = AssetManager::new(assets, MemoryStorageBackend::new());
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 
 	for id in ["sparks.particles", "smoke.particles"] {

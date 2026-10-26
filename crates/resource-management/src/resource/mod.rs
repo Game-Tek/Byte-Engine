@@ -24,8 +24,8 @@ pub use storage_backend::redb::{
 	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
 };
 pub use storage_backend::{
-	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, ReadStorageBackend, ResourceTransaction, StorageBackend,
-	WriteStorageBackend,
+	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, MemoryStorageBackend, ReadStorageBackend,
+	ResourceTransaction, StorageBackend, WriteStorageBackend,
 };
 
 use crate::Model;

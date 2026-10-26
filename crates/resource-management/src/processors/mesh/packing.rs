@@ -620,6 +620,8 @@ pub(super) fn rewind_triangles_to_clockwise(indices: &mut [u32]) {
 	}
 }
 
+/// Appends one meshlet record: vertex and triangle counts, two padding bytes, then the bounding sphere, cone apex and
+/// cutoff, and cone axis as little-endian floats. Keep [`crate::inspect`]'s meshlet decoder in step with this layout.
 fn write_meshlet_record(bytes: &mut Vec<u8>, meshlet: meshopt::clusterize::Meshlet<'_>, bounds: &meshopt::clusterize::Bounds) {
 	let offset = bytes.len();
 	bytes.push(meshlet.vertices.len() as u8);
@@ -671,7 +673,8 @@ fn stream_name(stream_type: Streams) -> &'static str {
 const MESHLET_MAX_VERTICES: usize = 64;
 pub(super) const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
-pub(super) const MESHLET_STREAM_STRIDE: usize = 52;
+/// The byte size of one record in a mesh's `Meshlets` stream. [`crate::inspect`] decodes the same layout.
+pub(crate) const MESHLET_STREAM_STRIDE: usize = 52;
 
 use math::{AABB, Point, Vector};
 

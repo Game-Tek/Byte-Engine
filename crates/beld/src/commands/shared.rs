@@ -1,15 +1,24 @@
+use resource_management::inspect::PayloadFormat;
 use resource_management::{
-	QueryableValue,
+	QueryableValue, SerializableResource,
 	asset::ResourceId,
-	resource::{ReDBStorageBackend, ReadStorageBackend, storage_backend::QueryCursor},
+	resource::{
+		ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
+		resource_handler::MultiResourceReader, storage_backend::QueryCursor,
+	},
 };
 #[cfg(debug_assertions)]
 use resource_management::{ResourceTraceItem, ResourceTraceLevel};
 use serde_json::{Value, json};
 
+use crate::{OutputFormat, Payload};
+
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
-pub(super) async fn read_resource_trace(storage_backend: &ReDBStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
+pub(super) async fn read_resource_trace(
+	storage_backend: &impl ReadStorageBackend,
+	id: &str,
+) -> Result<Vec<ResourceTraceItem>, i32> {
 	storage_backend.read_trace(ResourceId::new(id)).await.map_err(|error| {
 		log::error!(
 			"Failed to read the resource trace for '{}'. The most likely cause is an unreadable resources database. Error: {}",
@@ -205,6 +214,82 @@ pub(super) async fn open_read_only_storage(destination_path: String, operation: 
 		log::error!(
 			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
 			operation,
+			error
+		);
+		1
+	})
+}
+
+/// Reads a resource's whole decoded payload so its streams can be printed.
+pub(super) async fn read_payload(resource: &SerializableResource, mut reader: MultiResourceReader) -> Result<Box<[u8]>, i32> {
+	if reader.encoding() == ResourcePayloadEncoding::MetalIoLz4 {
+		log::error!(
+			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See https://byte-engine.0x44491229.dev/docs/reference/beld#payloads",
+			resource.id()
+		);
+		return Err(1);
+	}
+	if resource.size() == 0 {
+		return Ok(Box::new([]));
+	}
+
+	let buffer = vec![0u8; resource.size()].into_boxed_slice();
+	match reader
+		.read_into(
+			None,
+			ReadTargetsMut::Box {
+				buffer,
+				offset: 0,
+				size: None,
+			},
+		)
+		.await
+	{
+		Ok(ReadTargets::Box(bytes)) if bytes.len() == resource.size() => Ok(bytes),
+		_ => {
+			log::error!(
+				"Failed to read the payload of resource '{}'. The most likely cause is a missing or truncated payload file, so the resource should be baked again.",
+				resource.id()
+			);
+			Err(1)
+		}
+	}
+}
+
+/// Returns how to print payload streams, or exit code 2 for a payload in the human format, which has no form for
+/// stream data.
+pub(super) fn payload_format(payload: Payload, format: OutputFormat) -> Result<Option<PayloadFormat>, i32> {
+	let payload = match payload {
+		Payload::None => return Ok(None),
+		Payload::Typed => PayloadFormat::Typed,
+		Payload::Base64 => PayloadFormat::Base64,
+	};
+	if format == OutputFormat::Human {
+		log::error!(
+			"Invalid payload output. `--payload` needs `--format json`, because the human format has no form for stream data."
+		);
+		return Err(2);
+	}
+	Ok(Some(payload))
+}
+
+/// Adds a resource's development trace to its JSON in debug builds; release builds store no traces.
+pub(super) async fn attach_trace(value: &mut Value, storage_backend: &impl ReadStorageBackend, id: &str) -> Result<(), i32> {
+	#[cfg(debug_assertions)]
+	insert_trace_json(value, &read_resource_trace(storage_backend, id).await?);
+	#[cfg(not(debug_assertions))]
+	let _ = (value, storage_backend, id);
+	Ok(())
+}
+
+/// Writes one JSON document, pretty-printed and followed by a newline, to `output`.
+pub(super) fn write_json(output: &mut impl std::io::Write, value: &impl serde::Serialize) -> Result<(), i32> {
+	let result = serde_json::to_writer_pretty(&mut *output, value)
+		.map_err(std::io::Error::from)
+		.and_then(|()| writeln!(output));
+	result.map_err(|error| {
+		log::error!(
+			"Failed to write JSON output. The most likely cause is that standard output was closed, for example by a pipe that exited early. Error: {}",
 			error
 		);
 		1

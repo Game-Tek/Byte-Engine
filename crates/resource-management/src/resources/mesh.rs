@@ -352,7 +352,7 @@ mod tests {
 	use crate::{
 		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
-		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
+		resource::{WriteStorageBackend, storage_backend::MemoryStorageBackend},
 		resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint, SkinPaletteEntry, tests::node},
 		types::{Stream, Streams, VertexComponent, VertexSemantics},
 	};
@@ -377,7 +377,7 @@ mod tests {
 
 		assert!(validate_skin_metadata(None, std::slice::from_ref(&skin), &skin_vertex_layout(), &[]).is_err());
 
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let skeleton = test_skeleton(&storage).await;
 
 		assert!(
@@ -407,7 +407,7 @@ mod tests {
 
 		assert!(validate_skin_metadata(None, &[], &[], std::slice::from_ref(&primitive)).is_err());
 
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let skeleton = test_skeleton(&storage).await;
 
 		assert!(validate_skin_metadata(Some(&skeleton), &[], &[], std::slice::from_ref(&primitive)).is_ok());
@@ -424,7 +424,7 @@ mod tests {
 		]
 	}
 
-	async fn test_skeleton(storage: &TestStorageBackend) -> Reference<Skeleton> {
+	async fn test_skeleton(storage: &MemoryStorageBackend) -> Reference<Skeleton> {
 		let model = SkeletonModel {
 			nodes: vec![node(Some("root"), None, [0.0; 3])],
 		};

@@ -724,7 +724,7 @@ pub mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::storage_backend::MemoryStorageBackend,
 		resources::material::{
 			Binding, BindingKind, MaterialModel, SetInterface, Shader, ShaderArtifact, ShaderInterface, ValueModel,
 			VariantModel,
@@ -815,7 +815,7 @@ pub mod tests {
 
 		asset_storage_backend.add_file("load_variant.bema", variant_json.as_bytes());
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 
@@ -905,7 +905,7 @@ pub mod tests {
 			.as_bytes(),
 		);
 
-		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(BEMAAssetHandler {
 			generator: Some(Box::new(MinimalTestShaderGenerator)),
@@ -973,7 +973,7 @@ pub mod tests {
 			"dynamic_texture.bemx",
 			r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes(),
 		);
-		let mut asset_manager = AssetManager::new(asset_storage_backend, ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
 		asset_manager.add_asset_handler(BEMAAssetHandler {
 			generator: Some(Box::new(MinimalTestShaderGenerator)),
 			compiler: Box::new(TestShaderCompiler),

@@ -2,24 +2,29 @@
 use resource_management::ResourceTraceItem;
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid},
+	inspect::{ResourceDocument, inspect_payload},
+	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid, resource_handler::MultiResourceReader},
 };
+#[cfg(debug_assertions)]
 use serde_json::{Value, json};
 
 #[cfg(debug_assertions)]
 use crate::commands::shared::{insert_trace_json, read_resource_trace};
 use crate::{
-	OutputFormat,
-	commands::shared::{open_read_only_storage, print_human_value},
+	OutputFormat, Payload,
+	commands::shared::{attach_trace, open_read_only_storage, payload_format, print_human_value, read_payload, write_json},
 };
 
 /// Inspects one resource by ID or UID and writes it in the selected format.
 ///
-/// Call [`crate::query`] when you need to find resources by class or indexed properties first.
-pub async fn inspect(destination_path: String, id: String, format: OutputFormat) -> Result<(), i32> {
+/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Call [`crate::query`] when you
+/// need to find resources by class or indexed properties first, or [`crate::bake_dry_run`] to see what a bake would
+/// produce without a store.
+pub async fn inspect(destination_path: String, id: String, format: OutputFormat, payload: Payload) -> Result<(), i32> {
+	let payload = payload_format(payload, format)?;
 	let storage_backend = open_read_only_storage(destination_path, "inspect").await?;
 	let resource = read_resource(&storage_backend, &id).await;
-	let Some(resource) = resource else {
+	let Some((resource, reader)) = resource else {
 		#[cfg(debug_assertions)]
 		{
 			let trace = read_resource_trace(&storage_backend, &id).await?;
@@ -46,23 +51,29 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat)
 		);
 	}
 	let mut output = inspection.json;
-	#[cfg(debug_assertions)]
-	let trace = read_resource_trace(&storage_backend, resource.id()).await?;
-	#[cfg(debug_assertions)]
-	insert_trace_json(&mut output, &trace);
+	attach_trace(&mut output, &storage_backend, resource.id()).await?;
+
+	let payload_bytes = match payload {
+		Some(_) => Some(read_payload(&resource, reader).await?),
+		None => None,
+	};
+	let payload = match (payload, &payload_bytes) {
+		(Some(payload), Some(bytes)) => Some(inspect_payload(&resource, bytes, payload).map_err(|error| {
+			log::error!("{}", error);
+			1
+		})?),
+		_ => None,
+	};
 
 	match format {
 		OutputFormat::Human => print_human_value(&output, 0),
-		OutputFormat::JSON => println!(
-			"{}",
-			serde_json::to_string_pretty(&output).map_err(|error| {
-				log::error!(
-					"Failed to print resource JSON. The most likely cause is an invalid JSON value. Error: {}",
-					error
-				);
-				1
-			})?
-		),
+		OutputFormat::JSON => write_json(
+			&mut std::io::stdout().lock(),
+			&ResourceDocument {
+				json: &output,
+				payload: payload.as_ref(),
+			},
+		)?,
 	}
 
 	Ok(())
@@ -79,27 +90,21 @@ pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem],
 
 	match format {
 		OutputFormat::Human => print_human_value(&output, 0),
-		OutputFormat::JSON => println!(
-			"{}",
-			serde_json::to_string_pretty(&output).map_err(|error| {
-				log::error!(
-					"Failed to print resource trace JSON. The most likely cause is an invalid JSON value. Error: {}",
-					error
-				);
-				1
-			})?
-		),
+		OutputFormat::JSON => write_json(&mut std::io::stdout().lock(), &output)?,
 	}
 
 	Ok(())
 }
 
-async fn read_resource(storage_backend: &ReDBStorageBackend, id: &str) -> Option<resource_management::SerializableResource> {
+async fn read_resource(
+	storage_backend: &ReDBStorageBackend,
+	id: &str,
+) -> Option<(resource_management::SerializableResource, MultiResourceReader)> {
 	if let Some(uid) = ResourceUid::from_uid_hex(id)
-		&& let Some((resource, _)) = storage_backend.read_uid(uid).await
+		&& let Some(resource) = storage_backend.read_uid(uid).await
 	{
 		return Some(resource);
 	}
 
-	storage_backend.read(ResourceId::new(id)).await.map(|(resource, _)| resource)
+	storage_backend.read(ResourceId::new(id)).await
 }

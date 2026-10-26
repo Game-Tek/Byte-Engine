@@ -1,4 +1,12 @@
-fn main() -> Result<(), i32> {
+/// Exits with the code a command returns, so invalid arguments the library detects also exit with 2.
+fn main() -> ExitCode {
+	match run_cli() {
+		Ok(()) => ExitCode::SUCCESS,
+		Err(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+	}
+}
+
+fn run_cli() -> Result<(), i32> {
 	let _ = simple_logger::SimpleLogger::new().env().init();
 
 	let color = parse_color_choice(std::env::args());
@@ -32,19 +40,34 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			cursor,
 			format,
 		} => beld::query(cli.destination, class, properties, limit, cursor, format).await,
-		Commands::Inspect { id, format } => beld::inspect(cli.destination, id, format).await,
+		Commands::Inspect { id, format, payload } => beld::inspect(cli.destination, id, format, payload).await,
 		Commands::Bake {
 			ids,
 			memory_budget,
 			texture_compression,
 			force,
 			config,
+			dry_run,
+			format,
+			payload,
 		} => {
 			let configuration = read_configuration_file(std::path::Path::new(&config)).map_err(|error| {
 				log::error!("Failed to read the project configuration. {error}");
 				1
 			})?;
 			let features = VisibilityFeatures::from_parameters(configuration.as_slice().scope("render"));
+			if dry_run {
+				return beld::bake_dry_run(
+					cli.source,
+					ids,
+					bake_memory_budget(memory_budget),
+					features,
+					format.unwrap_or(OutputFormat::Human),
+					payload.unwrap_or_default(),
+					&mut std::io::stdout().lock(),
+				)
+				.await;
+			}
 			beld::bake(
 				cli.source,
 				cli.destination,
@@ -174,6 +197,10 @@ enum Commands {
 		id: String,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human)]
 		format: OutputFormat,
+		/// Adds each payload stream's bytes, decoded into values or as base64. Needs `--format json`.
+		/// Example: `beld inspect mesh.gltf --format json --payload typed`
+		#[arg(long, value_enum, default_value_t = Payload::None)]
+		payload: Payload,
 	},
 	/// Bake source assets into resources.
 	Bake {
@@ -184,6 +211,18 @@ enum Commands {
 		/// Native transport compression for baked texture files.
 		#[arg(long, value_enum)]
 		texture_compression: Option<TextureCompression>,
+		/// Bake into memory and print every resource the bake produces, without reading or writing the destination.
+		/// Requires asset IDs.
+		/// Example: `beld bake --dry-run --format json --payload typed mesh.gltf`
+		#[arg(long, requires = "ids", conflicts_with_all = ["force", "texture_compression"])]
+		dry_run: bool,
+		/// The dry-run output format. Defaults to `human`.
+		#[arg(long, value_enum, requires = "dry_run")]
+		format: Option<OutputFormat>,
+		/// Adds each payload stream's bytes to the dry-run output, decoded into values or as base64. Needs
+		/// `--format json`.
+		#[arg(long, value_enum, requires = "dry_run")]
+		payload: Option<Payload>,
 		/// Rebake every selected asset, even when its resource is current with its source files.
 		/// Use it after changing an asset processor, `--texture-compression`, or a baked setting in `--config`, which
 		/// source versions don't track.
@@ -239,9 +278,9 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 	}
 }
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, process::ExitCode};
 
-use beld::OutputFormat;
+use beld::{OutputFormat, Payload};
 use byte_engine::application::parameters::{Parameters as _, read_configuration_file};
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use clap::{

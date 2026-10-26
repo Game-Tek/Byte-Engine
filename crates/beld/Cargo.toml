@@ -23,10 +23,14 @@ utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
 resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.2.0", features = ["gpu-ibl", "gpu-mips"] }
 
 clap = { version = "4.5.32", features = ["derive"] }
-simple_logger = "5.0.0"
+simple_logger = { version = "5.0.0", features = ["stderr"] }
 log = "0.4.26"
+serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sysinfo = "0.37.2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+base64 = "0.13.1"

@@ -87,7 +87,7 @@ mod tests {
 
 	fn asset_manager(
 		assets: asset::storage_backend::tests::TestStorageBackend,
-		resources: resource::storage_backend::tests::TestStorageBackend,
+		resources: resource::storage_backend::MemoryStorageBackend,
 	) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
@@ -98,7 +98,7 @@ mod tests {
 	#[r#async::test]
 	async fn baked_flipbook_is_requested_with_its_rate_and_ordered_images() {
 		let assets = asset::storage_backend::tests::TestStorageBackend::new();
-		let resources = resource::storage_backend::tests::TestStorageBackend::new();
+		let resources = resource::storage_backend::MemoryStorageBackend::new();
 		assets.add_file("char/run1.png", &generated_png());
 		assets.add_file("char/run0.png", &generated_png());
 		assets.add_file(
@@ -129,7 +129,7 @@ mod tests {
 			let assets = asset::storage_backend::tests::TestStorageBackend::new();
 			assets.add_file("char/run0.png", &generated_png());
 			assets.add_file("char/run.flipbook", source);
-			let resources = resource::storage_backend::tests::TestStorageBackend::new();
+			let resources = resource::storage_backend::MemoryStorageBackend::new();
 
 			assert!(asset_manager(assets, resources).bake("char/run.flipbook").await.is_err());
 		}

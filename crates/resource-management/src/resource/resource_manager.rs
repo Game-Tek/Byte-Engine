@@ -377,7 +377,7 @@ mod tests {
 		r#async,
 		resource::{
 			ReDBStorageBackend, ReadTargetsMut, ResourceStorageMode, WriteStorageBackend,
-			storage_backend::{Query, QueryError, tests::TestStorageBackend},
+			storage_backend::{MemoryStorageBackend, Query, QueryError},
 		},
 		resources::{
 			audio::Audio,
@@ -390,7 +390,7 @@ mod tests {
 
 	#[r#async::test]
 	async fn stored_request_awaits_metadata_and_preserves_deferred_payload_loading() {
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 
 		let audio = Audio {
 			bit_depth: BitDepths::Sixteen,
@@ -426,7 +426,7 @@ mod tests {
 
 	#[r#async::test]
 	async fn request_reports_an_unreadable_dependency_by_id() {
-		let storage = TestStorageBackend::new();
+		let storage = MemoryStorageBackend::new();
 		let image = Image {
 			format: Formats::RGBA8,
 			gamma: Gamma::Linear,
@@ -483,7 +483,7 @@ mod debug_tests {
 			storage_backend::{FileStorageBackend, tests::TestStorageBackend as AssetTestStorageBackend},
 		},
 		r#async,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::storage_backend::MemoryStorageBackend,
 		resources::material::{Shader, ShaderArtifact, ShaderInterface},
 		types::ShaderTypes,
 	};
@@ -589,7 +589,7 @@ mod debug_tests {
 	}
 
 	fn resource_manager_with_file_assets(path: std::path::PathBuf) -> ResourceManager {
-		let storage = Arc::new(ResourceTestStorageBackend::new());
+		let storage = Arc::new(MemoryStorageBackend::new());
 
 		let mut asset_manager = AssetManager::new_shared(FileStorageBackend::new(path), storage.clone());
 
@@ -665,7 +665,7 @@ mod debug_tests {
 
 		let (release, release_announcement) = announcement::Announcement::new();
 
-		let storage = Arc::new(ResourceTestStorageBackend::new());
+		let storage = Arc::new(MemoryStorageBackend::new());
 
 		let mut asset_manager = AssetManager::new_shared(AssetTestStorageBackend::new(), storage.clone());
 
@@ -712,7 +712,7 @@ mod debug_tests {
 
 		asset_storage.add_file("versioned.test", b"first shader");
 
-		let storage = Arc::new(ResourceTestStorageBackend::new());
+		let storage = Arc::new(MemoryStorageBackend::new());
 
 		let mut asset_manager = AssetManager::new_shared(asset_storage.clone(), storage.clone());
 

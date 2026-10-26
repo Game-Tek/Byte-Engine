@@ -1,6 +1,6 @@
 //! The `debug` module provides placeholder GHI handles for tests that check handle bookkeeping without a GPU.
 
-use crate::{BaseBufferHandle, BaseImageHandle, DynamicImageHandle, ImageGroupHandle, SamplerHandle, image, sampler};
+use crate::{BaseBufferHandle, BaseImageHandle, DynamicImageHandle, ImageGroupHandle, SamplerHandle, buffer, image, sampler};
 
 /// The `Device` struct hands out placeholder handles, so unit tests can fill resource tables without a GPU backend.
 ///
@@ -25,11 +25,7 @@ impl Device {
 		SamplerHandle(0)
 	}
 
-	pub fn create_acceleration_structure_instance_buffer(
-		&mut self,
-		_name: Option<&str>,
-		_max_instance_count: u32,
-	) -> BaseBufferHandle {
+	pub fn build_buffer(&mut self, _builder: buffer::Builder) -> BaseBufferHandle {
 		BaseBufferHandle(0)
 	}
 }

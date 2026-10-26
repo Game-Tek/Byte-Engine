@@ -1,6 +1,6 @@
 use std::alloc::{Allocator, Global};
 
-/// The `Device` struct owns the Metal GPU entry point and host allocator for the macOS 26-only backend.
+/// The `Device` struct owns the Metal GPU entry point and host allocator for the macOS 27-only backend.
 ///
 /// The backend calls Metal 4 directly and does not provide an older Metal fallback.
 pub struct Device<A: Allocator = Global> {
@@ -49,6 +49,7 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 	type Allocator = A;
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = Pipeline;
+	type RayTracingPipeline = Pipeline;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&self.allocator
@@ -84,6 +85,12 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
 		panic!(
 			"Metal device compute pipeline creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
+	}
+
+	fn create_ray_tracing_pipeline(&mut self, _builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		panic!(
+			"Metal device ray tracing pipeline creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory. Create the pipeline through a Context or a Factory."
 		);
 	}
 }

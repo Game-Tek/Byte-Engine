@@ -211,6 +211,7 @@ impl<'a> CommandBufferRecording<'a> {
 			acceleration_structures: &context.acceleration_structures,
 			meshes: &context.meshes,
 			pipelines: &context.pipelines,
+			shader_binding_tables: &context.shader_binding_tables,
 			swapchains: &context.swapchains,
 			frames: context.frames,
 			debug_labels: context.settings.debug_labels,
@@ -223,6 +224,8 @@ impl<'a> CommandBufferRecording<'a> {
 			texture_readbacks: &mut context.texture_readbacks,
 			descriptor_sets: &mut context.descriptor_sets,
 			upload_arena: &mut context.upload_arenas[arena_index],
+			scratch_arena: &mut context.scratch_arenas[arena_index],
+			pending_compactions: &mut context.pending_compactions,
 			argument_tables: &mut context.argument_tables,
 			image_groups: &mut context.image_groups,
 			counters: &mut context.counters,
@@ -259,6 +262,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_render_attachment_uses: SmallVec::new(),
 			command_uses: SmallVec::new(),
 			texture_readbacks: SmallVec::new(),
+			builds: Default::default(),
 			_autorelease_pool: autorelease_pool,
 		}
 	}
@@ -328,7 +332,12 @@ impl<'a> CommandBufferRecording<'a> {
 				synchronization::MetalResourceKey::Buffer(handle) => self.device.buffers.resource(handle).name.as_deref(),
 				synchronization::MetalResourceKey::Image(handle) => self.device.images.resource(handle).name.as_deref(),
 				synchronization::MetalResourceKey::SwapchainDrawable(_) => Some("Drawable"),
-				synchronization::MetalResourceKey::AccelerationStructure(_) => Some("Acceleration Structure"),
+				synchronization::MetalResourceKey::BottomLevelAccelerationStructures => {
+					Some("Bottom-Level Acceleration Structures")
+				}
+				synchronization::MetalResourceKey::TopLevelAccelerationStructure { .. } => {
+					Some("Top-Level Acceleration Structure")
+				}
 				synchronization::MetalResourceKey::GroupHeap(_) => Some("Image Group Heap"),
 			};
 			let _ = label.write_str(name.unwrap_or("Unnamed Resource"));
@@ -462,6 +471,7 @@ impl<'a> CommandBufferRecording<'a> {
 			queue_handle: self.commit.queue_handle,
 			command_buffer: self.command_buffer.take(),
 			texture_readbacks: std::mem::take(&mut self.texture_readbacks),
+			builds: std::mem::take(&mut self.builds),
 		}
 	}
 
@@ -609,11 +619,30 @@ impl<'a> CommandBufferRecording<'a> {
 		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
-	/// Updates one stage table and associates it with the active encoder before its next snapshot command.
+	/// Sets buffer index `binding` of one stage table to `address`; see [`Self::set_stage_binding`].
+	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
+		// SAFETY: `binding` is checked against the fixed table size, and `address` names a retained buffer.
+		self.set_stage_binding(stage, binding, |table| unsafe { table.setAddress_atIndex(address, binding as _) });
+	}
+
+	/// Sets buffer index `binding` of one stage table to the resource `resource` names, such as a visible function
+	/// table; see [`Self::set_stage_binding`]. The caller keeps the resource alive and resident.
+	pub(super) fn set_stage_resource(&mut self, stage: ArgumentTableStage, binding: u32, resource: mtl::MTLResourceID) {
+		// SAFETY: `binding` is checked against the fixed table size, and the caller retains the resource.
+		self.set_stage_binding(stage, binding, |table| unsafe { table.setResource_atBufferIndex(resource, binding as _) });
+	}
+
+	/// Updates one buffer index of a stage table with `write` and associates the table with the active encoder before
+	/// its next snapshot command.
 	///
 	/// Each stage's shared table is created on first use. An encoder keeps the table it was given, and draws and
 	/// dispatches snapshot table contents when they are encoded, so each encoder is given each stage's table once.
-	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
+	fn set_stage_binding(
+		&mut self,
+		stage: ArgumentTableStage,
+		binding: u32,
+		write: impl FnOnce(&ProtocolObject<dyn mtl::MTL4ArgumentTable>),
+	) {
 		assert!(
 			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
 			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader declared more descriptor sets than Metal has buffer indices. binding={binding}",
@@ -639,10 +668,7 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer.retain_object(&*table);
 			table
 		});
-		// SAFETY: `binding` is checked against the fixed table size and `address` names a retained buffer.
-		unsafe {
-			table.setAddress_atIndex(address, binding as _);
-		}
+		write(table);
 
 		let state = encoder
 			.as_mut()
@@ -885,8 +911,11 @@ fn retain_tracked_use(
 			);
 			command_buffer.retain_allocation(&*device.images.resource(member).texture);
 		}
-		synchronization::MetalResourceKey::AccelerationStructure(index) => {
-			command_buffer.retain_allocation(&*device.acceleration_structures[index].structure);
+		// The commands that use bottom-level structures retain the ones they name, since the key spans all of them.
+		synchronization::MetalResourceKey::BottomLevelAccelerationStructures => {}
+		synchronization::MetalResourceKey::TopLevelAccelerationStructure { handle, copy } => {
+			let handle = graphics_hardware_interface::TopLevelAccelerationStructureHandle(handle);
+			command_buffer.retain_allocation(&**device.acceleration_structures.top_level_copy(handle, copy));
 		}
 		synchronization::MetalResourceKey::SwapchainDrawable(_) => {}
 	}

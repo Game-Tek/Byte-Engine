@@ -27,32 +27,12 @@ impl Device {
 		self.counters.hlsl_specialization_compile_count
 	}
 
-	pub(crate) fn ray_tracing_state_object_create_attempt_count(&self) -> usize {
-		self.counters.ray_tracing_state_object_create_attempt_count
-	}
-
-	pub(crate) fn pipeline_has_ray_tracing_state_object(&self, pipeline: PipelineHandle) -> Option<bool> {
-		self.pipelines
-			.get(pipeline.0 as usize)
-			.map(|pipeline| pipeline.ray_tracing_state_object.is_some())
-	}
-
-	pub(crate) fn ray_tracing_shader_identifier_count(&self, pipeline: PipelineHandle) -> Option<usize> {
-		self.pipelines
-			.get(pipeline.0 as usize)
-			.map(|pipeline| pipeline.ray_tracing_shader_identifiers.len())
-	}
-
 	pub(crate) fn compute_dispatch_encode_count(&self) -> usize {
 		self.counters.compute_dispatch_encode_count
 	}
 
 	pub(crate) fn indirect_dispatch_encode_count(&self) -> usize {
 		self.counters.indirect_dispatch_encode_count
-	}
-
-	pub(crate) fn trace_rays_record_count(&self) -> usize {
-		self.counters.trace_rays_record_count
 	}
 
 	pub(crate) fn mesh_dispatch_encode_count(&self) -> usize {

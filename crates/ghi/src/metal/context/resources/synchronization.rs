@@ -24,8 +24,12 @@ impl Context {
 		self.retire_internal_uploads(frame_key.sequence_index);
 		// Resources replaced in earlier frames are gone once those frames completed, so their memory can be reused.
 		self.allocator.collect(allocator::COLLECTION_STEP);
-		// Every command that read this sequence's upload pages has completed, so the pages can be rewound.
+		// The sequence's last frame completed, so the compacted sizes its builds wrote are final. They live in its
+		// upload pages, so they are read before the pages are rewound.
+		self.advance_acceleration_structures();
+		// Every command that read this sequence's upload pages or build scratch has completed, so both can be rewound.
 		self.upload_arenas[frame_key.sequence_index as usize].reset();
+		self.scratch_arenas[frame_key.sequence_index as usize].reset();
 		self.process_tasks(frame_key.sequence_index);
 		crate::queue::StartedFrame::new(
 			super::super::Frame::new(self, frame_key, queue_handle, allocator),

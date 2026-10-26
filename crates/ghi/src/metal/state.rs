@@ -201,8 +201,8 @@ impl DescriptorSet {
 			Some(Descriptor::Sampler { sampler }) => {
 				self.words[word] = resource_id(resources.samplers[sampler.0 as usize].gpuResourceID());
 			}
-			Some(Descriptor::AccelerationStructure { handle }) => {
-				let structure = &resources.acceleration_structures[handle.0 as usize].structure;
+			Some(Descriptor::TopLevelAccelerationStructure { handle, copy }) => {
+				let structure = resources.acceleration_structures.top_level_copy(handle, copy);
 				self.words[word] = resource_id(structure.gpuResourceID());
 				pin(allocation(&**structure));
 			}
@@ -244,7 +244,7 @@ pub(crate) struct ArgumentResources<'a> {
 	pub(crate) buffers: &'a ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: &'a [Retained<ProtocolObject<dyn mtl::MTLSamplerState>>],
-	pub(crate) acceleration_structures: &'a [AccelerationStructure],
+	pub(crate) acceleration_structures: &'a super::acceleration_structures::AccelerationStructures,
 	pub(crate) swapchains: &'a [Swapchain],
 }
 

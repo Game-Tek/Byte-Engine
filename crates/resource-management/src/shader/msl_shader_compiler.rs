@@ -94,12 +94,13 @@ impl Drop for TempShaderDir {
 
 /// Returns the build-dependent Metal compiler flags that [`compile_msl_source_to_metallib`] passes.
 fn metal_build_arguments() -> &'static [&'static str] {
+	// Every shader compiles as MSL 4.1, the version the GHI compiles source shaders at, whatever the SDK defaults to.
 	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
-	// Omit in release builds to keep the compiled library smaller.
+	// Omit them in release builds to keep the compiled library smaller.
 	if cfg!(debug_assertions) {
-		&["-gline-tables-only", "-frecord-sources=yes"]
+		&["-std=metal4.1", "-gline-tables-only", "-frecord-sources=yes"]
 	} else {
-		&[]
+		&["-std=metal4.1"]
 	}
 }
 

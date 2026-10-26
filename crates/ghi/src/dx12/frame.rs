@@ -65,6 +65,14 @@ impl<'a> Frame<'a> {
 		))
 	}
 
+	/// Interns a factory-built ray tracing pipeline, of which DX12 has none.
+	pub fn intern_ray_tracing_pipeline(
+		&mut self,
+		pipeline: crate::dx12::factory::RayTracingPipeline,
+	) -> crate::PipelineHandle {
+		match pipeline {}
+	}
+
 	/// Interns a factory-built image through this frame's device.
 	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> crate::ImageHandle {
 		self.device.intern_image(image)

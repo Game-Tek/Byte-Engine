@@ -404,45 +404,6 @@ impl Device {
 		self.image_states.insert(key, after);
 	}
 
-	/// Prepares a dedicated acceleration-structure buffer for a native build write.
-	pub(crate) fn transition_acceleration_structure_for_build(
-		&mut self,
-		command_list: &ID3D12GraphicsCommandList7,
-		resource: &ID3D12Resource,
-	) {
-		let mut barriers = EnhancedBarrierBatch::default();
-		self.transition_buffer_resource_into(resource, BufferBarrierState::ACCELERATION_STRUCTURE_WRITE, &mut barriers);
-		barriers.submit(command_list);
-	}
-
-	/// Makes a completed acceleration-structure build visible to subsequent builds and ray dispatches.
-	pub(crate) fn complete_acceleration_structure_build(
-		&mut self,
-		command_list: &ID3D12GraphicsCommandList7,
-		resource: &ID3D12Resource,
-	) {
-		let mut barriers = EnhancedBarrierBatch::default();
-		// Build scratch and destination writes share the cache contract used by a legacy null UAV barrier.
-		let raytracing_uav_sync = D3D12_BARRIER_SYNC_ALL_SHADING
-			| D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE
-			| D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE
-			| D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
-		let raytracing_uav_access = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS
-			| D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE
-			| D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ;
-		barriers.global.push(D3D12_GLOBAL_BARRIER {
-			SyncBefore: raytracing_uav_sync,
-			SyncAfter: raytracing_uav_sync,
-			AccessBefore: raytracing_uav_access,
-			AccessAfter: raytracing_uav_access,
-		});
-		barriers.submit(command_list);
-		let key = Self::native_resource_key(resource);
-		self.remember_buffer_state(key);
-		self.buffer_states
-			.insert(key, BufferBarrierState::ACCELERATION_STRUCTURE_READ);
-	}
-
 	pub(crate) fn align_up(value: usize, alignment: usize) -> usize {
 		value.div_ceil(alignment) * alignment
 	}

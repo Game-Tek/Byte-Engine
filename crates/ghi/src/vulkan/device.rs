@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use ash::vk::{self, TaggedStructure as _};
-use utils::{Extent, hash::HashMap};
+use utils::Extent;
 
 use super::{
 	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
@@ -65,8 +65,6 @@ pub struct InnerDevice {
 	pub(super) device: ash::Device,
 	pub(super) swapchain: ash::khr::swapchain::Device,
 	pub(super) surface: ash::khr::surface::Instance,
-	pub(super) acceleration_structure: ash::khr::acceleration_structure::Device,
-	pub(super) ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device,
 	pub(super) mesh_shading: ash::ext::mesh_shader::Device,
 	pub(super) descriptor_heap: ash::ext::descriptor_heap::Device,
 	pub(super) descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
@@ -111,7 +109,6 @@ impl std::ops::Deref for InnerDevice {
 pub struct ComputePipeline {
 	pub(crate) pipeline: vk::Pipeline,
 	pub(crate) layout: crate::vulkan::PipelineLayout,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 }
 
 /// The `RasterPipeline` struct carries a Vulkan raster pipeline that a factory thread compiled, until a frame gives

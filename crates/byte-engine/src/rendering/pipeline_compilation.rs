@@ -493,10 +493,6 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 		resource_management::types::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
 		resource_management::types::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
 		resource_management::types::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-		resource_management::types::ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-		resource_management::types::ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-		resource_management::types::ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-		resource_management::types::ShaderTypes::Callable => ghi::ShaderTypes::Callable,
 	}
 }
 

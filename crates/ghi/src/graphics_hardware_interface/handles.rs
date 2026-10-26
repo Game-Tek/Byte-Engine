@@ -114,6 +114,15 @@ pub struct ShaderHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct PipelineHandle(pub(crate) u64);
 
+/// The `ShaderBindingTableHandle` struct names the table that maps the records rays hit to the hit groups of a ray
+/// tracing pipeline.
+///
+/// Create one with [`crate::context::ContextCreate::create_shader_binding_table`], fill it with
+/// [`crate::context::ContextCreate::write_shader_binding_table`], then pass it to
+/// [`crate::command_buffer::BoundRayTracingPipelineMode::trace_rays`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ShaderBindingTableHandle(pub(crate) u64);
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(pub(crate) u64);
 
@@ -183,7 +192,6 @@ pub struct TextureCopyHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handles {
 	Buffer(BaseBufferHandle),
-	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
 	Pipeline(PipelineHandle),
@@ -197,7 +205,6 @@ pub enum Handles {
 	Swapchain(SwapchainHandle),
 	Allocation(AllocationHandle),
 	TextureCopy(TextureCopyHandle),
-	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 #[cfg(target_os = "linux")]

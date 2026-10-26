@@ -17,9 +17,7 @@ impl Device {
 		if let Some(layout) = self.pipeline_layouts.get(pipeline.layout.0 as usize) {
 			unsafe {
 				match pipeline.kind {
-					PipelineKind::Compute | PipelineKind::RayTracing => {
-						command_list.SetComputeRootSignature(&layout.root_signature)
-					}
+					PipelineKind::Compute => command_list.SetComputeRootSignature(&layout.root_signature),
 					PipelineKind::Raster => command_list.SetGraphicsRootSignature(&layout.root_signature),
 				}
 			}
@@ -28,12 +26,6 @@ impl Device {
 		if let Some(pipeline_state) = &pipeline.pipeline_state {
 			unsafe { command_list.SetPipelineState(pipeline_state) };
 			self.counters.pipeline_state_bind_count += 1;
-		}
-		if let Some(state_object) = &pipeline.ray_tracing_state_object {
-			if let Ok(command_list) = command_list.cast::<ID3D12GraphicsCommandList4>() {
-				unsafe { command_list.SetPipelineState1(state_object) };
-				self.counters.pipeline_state_bind_count += 1;
-			}
 		}
 		if matches!(pipeline.kind, PipelineKind::Raster) {
 			unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };

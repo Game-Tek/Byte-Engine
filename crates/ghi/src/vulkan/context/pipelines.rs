@@ -10,7 +10,6 @@ impl Context {
 		&mut self,
 		pipeline: vk::Pipeline,
 		layout: PipelineLayout,
-		shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layouts = &mut self.pipeline_layouts;
 		let layout = *self
@@ -20,11 +19,7 @@ impl Context {
 				layouts.push(layout);
 				graphics_hardware_interface::PipelineLayoutHandle(layouts.len() as u64 - 1)
 			});
-		self.pipelines.push(Pipeline {
-			pipeline,
-			layout,
-			shader_handles,
-		});
+		self.pipelines.push(Pipeline { pipeline, layout });
 		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
 	}
 }
@@ -339,9 +334,5 @@ pub(crate) fn build_compute_pipeline(
 	})
 	.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.");
 
-	crate::vulkan::ComputePipeline {
-		pipeline,
-		layout,
-		shader_handles: HashMap::from_iter([(*shader_parameter.handle, [0; 32])]),
-	}
+	crate::vulkan::ComputePipeline { pipeline, layout }
 }

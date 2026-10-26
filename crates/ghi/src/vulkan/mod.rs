@@ -61,24 +61,13 @@ pub(super) enum Descriptor {
 	Sampler {
 		sampler: graphics_hardware_interface::SamplerHandle,
 	},
-	AccelerationStructure {
-		handle: TopLevelAccelerationStructureHandle,
-	},
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct TopLevelAccelerationStructureHandle(pub(super) u64);
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Handles {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
 	VkBuffer(vk::Buffer),
-	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
-	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 #[derive(Clone, PartialEq)]
@@ -232,7 +221,6 @@ impl Shader {
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
-	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 }
 
 /// The `MappedMemoryPointer` struct lets context-owned Vulkan mappings move with their context.
@@ -521,11 +509,6 @@ struct Mesh {
 	vertex_count: u32,
 	index_count: u32,
 	vertex_size: usize,
-}
-
-struct AccelerationStructure {
-	acceleration_structure: vk::AccelerationStructureKHR,
-	buffer: vk::Buffer,
 }
 
 #[derive(Clone, Copy)]

@@ -21,6 +21,9 @@ use crate::{
 /// the MSL generator in resource-management declares them.
 pub(super) const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+/// The buffer index of the visible function table a ray generation kernel calls closest hits through: the records of
+/// the shader binding table its trace names. Only compute encoders bind it, so it doesn't collide with vertex buffers.
+pub(super) const SHADER_BINDING_TABLE_BINDING_INDEX: u32 = 14;
 /// Every buffer index Metal offers: vertex buffers, the push constants, and up to fifteen descriptor sets.
 const ARGUMENT_TABLE_BUFFER_COUNT: usize = 31;
 /// Upload ranges start at the texture copy alignment, so any range can be the source of a buffer-to-texture copy.
@@ -175,9 +178,10 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
 	pub(super) buffers: &'a ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) acceleration_structures: &'a [AccelerationStructure],
+	pub(super) acceleration_structures: &'a acceleration_structures::AccelerationStructures,
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
+	pub(super) shader_binding_tables: &'a [ShaderBindingTable],
 	pub(super) swapchains: &'a [Swapchain],
 	/// The number of frames in flight, which resolves frame offsets into per-frame resource copies.
 	pub(super) frames: u8,
@@ -200,6 +204,10 @@ pub(super) struct RecordingCommit<'a> {
 	pub(super) descriptor_sets: &'a mut context::DescriptorSets,
 	/// Upload pages owned by this recording's frame, or the transient arena for detached recordings.
 	pub(super) upload_arena: &'a mut UploadArena,
+	/// Build scratch owned by this recording's frame, or the transient arena for detached recordings.
+	pub(super) scratch_arena: &'a mut acceleration_structures::ScratchArena,
+	/// Where a detached recording's executed bottom-level builds wait to compact.
+	pub(super) pending_compactions: &'a mut Vec<acceleration_structures::PendingCompaction>,
 	pub(super) argument_tables: &'a mut CommandArgumentTables,
 	pub(super) image_groups: &'a mut crate::image_group::ImageGroups,
 	/// Hands out the timestamp slots counters write; see [`crate::counters::Counters`].
@@ -425,6 +433,8 @@ pub struct CommandBufferRecording<'a> {
 	command_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// Readbacks recorded but not yet handed to submission. Dropping the recording abandons whatever is left.
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
+	/// Acceleration-structure builds recorded but not yet handed to submission. Dropping the recording abandons them.
+	builds: acceleration_structures::RecordedBuilds,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }
 
@@ -437,6 +447,7 @@ impl Drop for CommandBufferRecording<'_> {
 			// Dropping the returned storage releases the retained native staging buffer immediately.
 			self.commit.texture_readbacks.abandon_recorded(handle);
 		}
+		std::mem::take(&mut self.builds).abandon(self.device.acceleration_structures);
 	}
 }
 
@@ -446,6 +457,8 @@ pub struct FinishedCommandBuffer {
 	pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	pub(crate) command_buffer: queue::NativeCommand,
 	pub(crate) texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
+	/// The acceleration-structure builds the recording holds, which submitting it executes.
+	pub(crate) builds: acceleration_structures::RecordedBuilds,
 }
 
 mod encoding;

@@ -130,10 +130,6 @@ impl Device {
 		self.counters.image_uav_descriptor_write_count
 	}
 
-	pub(crate) fn acceleration_structure_descriptor_write_count(&self) -> usize {
-		self.counters.acceleration_structure_descriptor_write_count
-	}
-
 	#[cfg(test)]
 	pub(crate) fn sampler_descriptor_write_records(&self) -> &[SamplerDescriptorWriteRecord] {
 		&self.counters.sampler_descriptor_write_records

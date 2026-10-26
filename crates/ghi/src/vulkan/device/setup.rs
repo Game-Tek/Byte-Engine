@@ -275,8 +275,6 @@ impl InnerDevice {
 			physical_device,
 			swapchain: ash::khr::swapchain::Device::load(vk_instance, &device),
 			surface: ash::khr::surface::Instance::load(vk_entry, vk_instance),
-			acceleration_structure: ash::khr::acceleration_structure::Device::load(vk_instance, &device),
-			ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device::load(vk_instance, &device),
 			mesh_shading: ash::ext::mesh_shader::Device::load(vk_instance, &device),
 			descriptor_heap: ash::ext::descriptor_heap::Device::load(vk_instance, &device),
 			descriptor_heap_properties,
@@ -465,15 +463,6 @@ fn required_device_extensions(settings: &crate::device::Features) -> Vec<(&'stat
 		extensions.push(extension!(ash::ext::mesh_shader::NAME, "VK_EXT_mesh_shader"));
 	}
 
-	if settings.ray_tracing {
-		extensions.extend([
-			extension!(ash::khr::acceleration_structure::NAME, "VK_KHR_acceleration_structure"),
-			extension!(ash::khr::deferred_host_operations::NAME, "VK_KHR_deferred_host_operations"),
-			extension!(ash::khr::ray_tracing_pipeline::NAME, "VK_KHR_ray_tracing_pipeline"),
-			extension!(ash::khr::ray_tracing_maintenance1::NAME, "VK_KHR_ray_tracing_maintenance1"),
-		]);
-	}
-
 	extensions
 }
 
@@ -488,8 +477,6 @@ struct DeviceFeatures {
 	swapchain_maintenance1: vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT<'static>,
 	shader_atomic_float: vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT<'static>,
 	mesh_shader: vk::PhysicalDeviceMeshShaderFeaturesEXT<'static>,
-	acceleration_structure: vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'static>,
-	ray_tracing_pipeline: vk::PhysicalDeviceRayTracingPipelineFeaturesKHR<'static>,
 }
 
 impl DeviceFeatures {
@@ -506,12 +493,6 @@ impl DeviceFeatures {
 
 		if settings.mesh_shading {
 			chain = chain.push(&mut self.mesh_shader);
-		}
-
-		if settings.ray_tracing {
-			chain = chain
-				.push(&mut self.acceleration_structure)
-				.push(&mut self.ray_tracing_pipeline);
 		}
 
 		chain
@@ -586,14 +567,6 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 
 	if settings.mesh_shading {
 		features.extend([feature!(mesh_shader.task_shader), feature!(mesh_shader.mesh_shader)]);
-	}
-
-	if settings.ray_tracing {
-		features.extend([
-			feature!(acceleration_structure.acceleration_structure),
-			feature!(ray_tracing_pipeline.ray_tracing_pipeline),
-			feature!(ray_tracing_pipeline.ray_traversal_primitive_culling),
-		]);
 	}
 
 	features

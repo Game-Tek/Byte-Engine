@@ -46,10 +46,6 @@ pub enum ShaderTypes {
 	Mesh,
 	RayGen,
 	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
 }
 
 impl From<crate::shader::generator::Stages> for ShaderTypes {

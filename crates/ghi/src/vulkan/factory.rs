@@ -17,6 +17,10 @@ pub type Factory = crate::vulkan::Device;
 
 pub use crate::vulkan::device::{ComputePipeline, RasterPipeline};
 
+/// The `RayTracingPipeline` type names the ray tracing pipelines a Vulkan factory builds. Vulkan doesn't trace rays
+/// yet, so the type has no values.
+pub type RayTracingPipeline = std::convert::Infallible;
+
 /// The `DetachedImage` struct is an image no context owns, on its way from one context to another.
 ///
 /// A loader context fills an image, then [`Context::export_image`] moves it out and [`Context::intern_image`] or
@@ -297,14 +301,17 @@ impl Context {
 impl Frame<'_> {
 	/// Interns a raster pipeline that a factory thread already compiled into this frame's device.
 	pub fn intern_raster_pipeline(&mut self, pipeline: RasterPipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device_mut()
-			.add_pipeline(pipeline.pipeline, pipeline.layout, utils::hash::HashMap::default())
+		self.device_mut().add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
 	/// Interns a factory-built compute pipeline into this frame's device.
 	pub fn intern_compute_pipeline(&mut self, pipeline: ComputePipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device_mut()
-			.add_pipeline(pipeline.pipeline, pipeline.layout, pipeline.shader_handles)
+		self.device_mut().add_pipeline(pipeline.pipeline, pipeline.layout)
+	}
+
+	/// Interns a factory-built ray tracing pipeline, of which Vulkan has none.
+	pub fn intern_ray_tracing_pipeline(&mut self, pipeline: RayTracingPipeline) -> graphics_hardware_interface::PipelineHandle {
+		match pipeline {}
 	}
 
 	/// Interns an image another context exported. See [`Context::intern_image`].

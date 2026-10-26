@@ -6,8 +6,8 @@
 
 /// The `Factory` struct lets compiler threads build shaders and pipelines without owning render context state.
 ///
-/// Get one from [`Context::create_factory`], then hand its pipelines to [`Frame::intern_raster_pipeline`] or
-/// [`Frame::intern_compute_pipeline`].
+/// Get one from [`Context::create_factory`], then hand its pipelines to [`Frame::intern_raster_pipeline`],
+/// [`Frame::intern_compute_pipeline`], or [`Frame::intern_ray_tracing_pipeline`].
 pub struct Factory {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	pub(crate) compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
@@ -36,6 +36,9 @@ pub type RasterPipeline = Pipeline;
 
 /// The `ComputePipeline` type alias preserves the cross-platform compute pipeline name.
 pub type ComputePipeline = Pipeline;
+
+/// The `RayTracingPipeline` type alias preserves the cross-platform ray tracing pipeline name.
+pub type RayTracingPipeline = Pipeline;
 
 /// The `DetachedImage` type is an image no context owns, on its way from one context to another.
 ///

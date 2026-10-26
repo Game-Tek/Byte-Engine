@@ -180,9 +180,6 @@ impl CommandBufferRecording<'_> {
 					Descriptor::Image { image, layout, .. } | Descriptor::CombinedImageSampler { image, layout, .. } => {
 						(Handles::Image(image), layout)
 					}
-					Descriptor::AccelerationStructure { handle } => {
-						(Handles::TopLevelAccelerationStructure(handle), crate::Layouts::General)
-					}
 					Descriptor::Sampler { .. } => continue,
 				};
 				consumptions.push(Consumption {
@@ -287,16 +284,7 @@ impl CommandBufferRecording<'_> {
 			|handle| Some(self.get_buffer(handle).buffer),
 		);
 
-		// Global barriers cover all memory, so one barrier with the union of masks orders everything the individual ones did.
-		let folded_memory_barrier = planned.memory_barriers.iter().copied().reduce(|folded, barrier| {
-			folded
-				.src_stage_mask(folded.src_stage_mask | barrier.src_stage_mask)
-				.src_access_mask(folded.src_access_mask | barrier.src_access_mask)
-				.dst_stage_mask(folded.dst_stage_mask | barrier.dst_stage_mask)
-				.dst_access_mask(folded.dst_access_mask | barrier.dst_access_mask)
-		});
-		let has_barriers =
-			!planned.image_barriers.is_empty() || !planned.buffer_barriers.is_empty() || folded_memory_barrier.is_some();
+		let has_barriers = !planned.image_barriers.is_empty() || !planned.buffer_barriers.is_empty();
 
 		assert!(
 			!self.active_rendering || !has_barriers,
@@ -310,7 +298,6 @@ impl CommandBufferRecording<'_> {
 			let dependency_info = vk::DependencyInfo::default()
 				.image_memory_barriers(&planned.image_barriers)
 				.buffer_memory_barriers(&planned.buffer_barriers)
-				.memory_barriers(folded_memory_barrier.as_slice())
 				.dependency_flags(vk::DependencyFlags::BY_REGION);
 			unsafe {
 				self.device
@@ -568,15 +555,6 @@ impl CommandBufferRecording<'_> {
 					planned
 						.buffer_barriers
 						.push(buffer_barrier(src_stage, src_access, buffer, range));
-				}
-				Handles::TopLevelAccelerationStructure(_) | Handles::BottomLevelAccelerationStructure(_) => {
-					planned.memory_barriers.push(
-						vk::MemoryBarrier2::default()
-							.src_stage_mask(src_stage)
-							.src_access_mask(src_access)
-							.dst_stage_mask(dst_stage)
-							.dst_access_mask(dst_access),
-					);
 				}
 			}
 

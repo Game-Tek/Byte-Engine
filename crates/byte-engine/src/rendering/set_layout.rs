@@ -624,7 +624,7 @@ mod tests {
 			binding("result", BindingKind::StorageImage, 2, false, true),
 		];
 		let mut device = ghi::debug::Device::new();
-		let buffer = device.create_acceleration_structure_instance_buffer(None, 1);
+		let buffer = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage));
 		let image = device.build_dynamic_image(ghi::image::Builder::new(
 			ghi::Formats::RGBA16F,
 			ghi::Uses::Image | ghi::Uses::Storage,

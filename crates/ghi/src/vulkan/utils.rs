@@ -21,14 +21,8 @@ pub(super) fn uses_to_vk_usage_flags(usage: Uses) -> vk::BufferUsageFlags {
 			(Uses::Storage, Flags::STORAGE_BUFFER),
 			(Uses::TransferSource, Flags::TRANSFER_SRC),
 			(Uses::TransferDestination, Flags::TRANSFER_DST),
-			(Uses::AccelerationStructure, Flags::ACCELERATION_STRUCTURE_STORAGE_KHR),
 			(Uses::Indirect, Flags::INDIRECT_BUFFER),
-			(Uses::ShaderBindingTable, Flags::SHADER_BINDING_TABLE_KHR),
-			(Uses::AccelerationStructureBuildScratch, Flags::STORAGE_BUFFER),
-			(
-				Uses::AccelerationStructureBuild,
-				Flags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-			),
+			// Vulkan builds no acceleration structures, so Uses::AccelerationStructureBuild adds no usage.
 		],
 		|uses| usage.contains(uses),
 	)
@@ -57,7 +51,7 @@ pub(super) fn texture_format_and_resource_use_to_image_layout(
 	access: Option<crate::AccessPolicies>,
 ) -> vk::ImageLayout {
 	match layout {
-		Layouts::Undefined | Layouts::ShaderBindingTable | Layouts::Indirect => vk::ImageLayout::UNDEFINED,
+		Layouts::Undefined | Layouts::Indirect => vk::ImageLayout::UNDEFINED,
 		Layouts::RenderTarget if texture_format.is_depth() => vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		Layouts::RenderTarget => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
 		Layouts::Transfer => match access {
@@ -232,10 +226,6 @@ pub(super) fn to_pipeline_stage_flags(
 			(Stages::PRESENTATION, Flags::ALL_COMMANDS),
 			(Stages::RAYGEN, Flags::RAY_TRACING_SHADER_KHR),
 			(Stages::CLOSEST_HIT, Flags::RAY_TRACING_SHADER_KHR),
-			(Stages::ANY_HIT, Flags::RAY_TRACING_SHADER_KHR),
-			(Stages::INTERSECTION, Flags::RAY_TRACING_SHADER_KHR),
-			(Stages::MISS, Flags::RAY_TRACING_SHADER_KHR),
-			(Stages::CALLABLE, Flags::RAY_TRACING_SHADER_KHR),
 			(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_BUILD_KHR),
 			(Stages::LAST, Flags::BOTTOM_OF_PIPE),
 		],
@@ -266,11 +256,6 @@ pub(super) fn to_access_flags(
 		} else {
 			Flags::SHADER_READ
 		};
-		let raygen = if layout == Layouts::ShaderBindingTable {
-			Flags::SHADER_BINDING_TABLE_READ_KHR
-		} else {
-			Flags::ACCELERATION_STRUCTURE_READ_KHR
-		};
 		access_flags |= fold_flags(
 			&[
 				(Stages::VERTEX, Flags::VERTEX_ATTRIBUTE_READ),
@@ -278,7 +263,7 @@ pub(super) fn to_access_flags(
 				(Stages::TRANSFER, Flags::TRANSFER_READ),
 				(Stages::FRAGMENT, fragment),
 				(Stages::COMPUTE, compute),
-				(Stages::RAYGEN, raygen),
+				(Stages::RAYGEN, Flags::ACCELERATION_STRUCTURE_READ_KHR),
 				(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_READ_KHR),
 			],
 			|stage| stages.intersects(stage),
@@ -372,10 +357,6 @@ impl From<Stages> for vk::ShaderStageFlags {
 				(Stages::TASK, Self::TASK_EXT),
 				(Stages::RAYGEN, Self::RAYGEN_KHR),
 				(Stages::CLOSEST_HIT, Self::CLOSEST_HIT_KHR),
-				(Stages::ANY_HIT, Self::ANY_HIT_KHR),
-				(Stages::INTERSECTION, Self::INTERSECTION_KHR),
-				(Stages::MISS, Self::MISS_KHR),
-				(Stages::CALLABLE, Self::CALLABLE_KHR),
 			],
 			|stage| stages.intersects(stage),
 		)

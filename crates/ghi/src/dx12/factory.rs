@@ -86,11 +86,16 @@ pub type Image = FactoryImage;
 /// The `Sampler` type alias preserves the detached sampler name used by backend-specific factory paths.
 pub type Sampler = FactorySampler;
 
+/// The `RayTracingPipeline` type names the ray tracing pipelines a DX12 factory builds. DX12 doesn't trace rays
+/// yet, so the type has no values.
+pub type RayTracingPipeline = std::convert::Infallible;
+
 impl crate::device::Device for Factory {
 	type Context = crate::dx12::Device;
 	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
+	type RayTracingPipeline = RayTracingPipeline;
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
 
@@ -178,6 +183,10 @@ impl crate::device::Device for Factory {
 			},
 			factory_shaders: self.shaders.clone(),
 		}
+	}
+
+	fn create_ray_tracing_pipeline(&mut self, _: pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		crate::rt::unsupported("DX12")
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> Self::Image {

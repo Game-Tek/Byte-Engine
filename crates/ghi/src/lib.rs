@@ -53,12 +53,11 @@ pub(crate) use crate::frame_resources::*;
 #[cfg(target_os = "windows")]
 pub(crate) use crate::graphics_hardware_interface::PipelineLayoutHandle;
 pub use crate::graphics_hardware_interface::{
-	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureDescriptions, BottomLevelAccelerationStructureHandle, BufferHandle, ClearValue,
-	CommandBufferHandle, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle, FrameKey,
-	ImageGroupHandle, ImageHandle, ImageOrSwapchain, LoadOp, MeshHandle, PipelineHandle, PresentKey, PresentationModes,
-	QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderHandle, StoreOp, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TextureViewTypes, TopLevelAccelerationStructureHandle,
+	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructureHandle,
+	BufferHandle, ClearValue, CommandBufferHandle, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle,
+	DynamicImageHandle, FrameKey, ImageGroupHandle, ImageHandle, ImageOrSwapchain, LoadOp, MeshHandle, PipelineHandle,
+	PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
+	StoreOp, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes, TopLevelAccelerationStructureHandle,
 };
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle, Ranges};
 pub use crate::window::Window;
@@ -101,6 +100,7 @@ pub mod queue;
 pub mod rt;
 pub mod sampler;
 pub mod shader;
+pub(crate) mod slots;
 pub mod swapchain;
 pub mod synchronizer;
 
@@ -182,10 +182,6 @@ pub(crate) enum PrivateHandles {
 	Swapchain(swapchain::SwapchainHandle),
 	#[cfg(target_os = "linux")]
 	VkBuffer(ash::vk::Buffer),
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 pub(crate) trait HandleLike: Copy + PartialEq {

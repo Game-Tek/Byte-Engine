@@ -6,11 +6,10 @@ use utils::hash::HashSet;
 use utils::{Extent, hash::HashMap};
 
 use super::{
-	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DedicatedResource,
-	DescriptorHeapArena, DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image,
-	MAX_FRAMES_IN_FLIGHT, MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState,
+	Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DedicatedResource, DescriptorHeapArena,
+	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
+	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
+	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TransitionState,
 	utils::{into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, uses_to_vk_usage_flags},
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
@@ -57,7 +56,6 @@ pub struct Context {
 	free_materialization_handles: Vec<DescriptorMaterializationHandle>,
 	descriptor_sequence_epochs: [u64; MAX_FRAMES_IN_FLIGHT],
 	pub(super) meshes: Vec<Mesh>,
-	pub(super) acceleration_structures: Vec<AccelerationStructure>,
 	pub(super) shaders: Vec<Shader>,
 	pub(super) pipelines: Vec<Pipeline>,
 	pub(super) command_buffers: Vec<CommandBuffer>,

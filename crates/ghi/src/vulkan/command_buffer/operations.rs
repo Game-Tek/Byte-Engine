@@ -5,7 +5,7 @@ mod raster;
 mod ray_tracing;
 mod transfer;
 
-/// Consumes a whole non-image resource (buffer or acceleration structure), which has no layout to transition.
+/// Consumes a whole buffer, which has no layout to transition.
 fn vulkan_consumption(handle: Handles, stages: vk::PipelineStageFlags2, access: vk::AccessFlags2) -> VulkanConsumption {
 	VulkanConsumption {
 		handle,

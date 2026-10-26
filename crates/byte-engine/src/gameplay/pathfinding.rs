@@ -12,7 +12,7 @@ mod navigation;
 mod navigation_mesh;
 mod steering;
 
-pub use navigation::{Navigation, NavigationAgent, NavigationArea};
+pub use navigation::{Navigation, NavigationAgent, NavigationArea, NavigationSteering};
 pub use navigation_mesh::{
 	NAVIGATION_TOLERANCE, NavigationMesh, NavigationMeshBuildError, NavigationPathError, NavigationPortal,
 	NavigationVertexHandle, StringPullError, string_pull, string_pull_into,

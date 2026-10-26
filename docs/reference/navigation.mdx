@@ -1,6 +1,6 @@
 ---
 title: Navigation
-description: Look up the navigation area kinds, how the navigation system turns them into a navigation mesh, how agents steer around each other, and the tolerances and limits of the mesh.
+description: Look up navigation areas, route and steering results, and navigation mesh tolerances and limits.
 icon: Route
 ---
 
@@ -75,64 +75,41 @@ around, such as a character.
 
 ## Steering
 
-Steering adjusts the velocity an agent means to move at so it doesn't run into
-other agents or the mesh boundary, by the least change that clears them in
-time. Each agent steers on its own from where the others are and how fast they
-move now, with no plan shared between agents.
+Steering selects a passing direction for a moving agent or a separation velocity
+for a standing agent. Routes describe the walkable surface independently of
+other agents. Their length excludes local passes around other agents.
 
 | Input | Meaning |
 | --- | --- |
-| Agent | The agent that steers. Its radius sizes its contacts with other agents. An agent that doesn't exist or has no transform steers to its velocity unchanged. |
-| Velocity | The velocity the agent means to move at, on XZ. Zero means standing still. |
+| Agent | The agent that steers. Its radius sizes contacts with other agents. An agent without a transform gets its input velocity unchanged. |
+| Velocity | The desired velocity on XZ at the agent's gait speed. Zero means standing still. |
 
-Other agents that touch each other count as one crowd: a group of others in
-which each is within contact distance of another member. A crowd is avoided as
-one circle centered on the mean of its members' positions, reaching to the far
-edge of its farthest member, moving at the mean of their velocities, with the
-greatest precedence among them. An agent on its own is a crowd of one.
-
-For every crowd of equal or greater precedence, the agent takes a sidestep; it
-holds its course for crowds of less precedence, whose members step aside for
-it:
-
-| Term | Value |
+| Rule | Result |
 | --- | --- |
-| Contact distance | The sum of the two radii and the comfort distance of 0.15 m. |
-| Closest approach | The time from now at which the two are closest, with the agent at its velocity and the crowd at its own, held between now and the horizon of 2 s. Two that keep their distance or move apart are closest now. |
-| Shortfall | The contact distance minus the distance between them at the closest approach, when that's positive. |
-| Sidestep | A velocity away from the crowd at the closest approach, of the shortfall over the time to the closest approach, no shorter than 0.25 s, times one minus that time over the horizon. Two exactly on course for each other sidestep to the right of their relative motion. |
+| Precedence | An agent yields only to others of equal or greater precedence. |
+| Contact distance | The sum of both radii plus 0.15 m of comfort distance. |
+| Prediction | Each other agent moves at its velocity for the time needed to reach its current position at the requested speed, up to 2 s. |
+| Blocked directions | The headings that intersect another agent's predicted contact circle within the prediction distance. Overlapping angular intervals form one blocked range. |
+| Passing direction | An endpoint of the blocked range containing the desired heading. A gap wide enough for the agent remains available. Passing keeps the requested speed unless a leader or boundary limits it. |
+| Passing side | The endpoint nearest the current heading, or the desired heading while still, with the clockwise side for equal angles. The side holds while the endpoint's agent remains in the blocked range or ahead through a clear range. If the side's one-second travel, limited to 1 m, ends outside the mesh, the other side is used when it ends on the mesh. |
+| Following | Another agent ahead within contact width, travelling within about 37 degrees of the desired heading and faster than 0.2 m/s, is a leader. The speed ceiling is its forward speed plus the gap between contact circles divided by 2 s, at least zero. A follower yields speed instead of passing that leader. |
+| No forward pass | When the chosen endpoint turns at least 90 degrees away from the desired heading, the result is zero, so followers wait instead of reversing into the line behind them. |
+| Standing | The sum of velocities away from current overlaps, each of the overlap depth divided by 0.25 s. A coincident pair separates toward positive X. Standing agents don't anticipate future crossings. |
 
-Against the closest point of the mesh boundary, the agent counts as a point,
-since the mesh already allows for its size, and slides instead of stepping
-aside:
+The mesh boundary constrains the resulting velocity:
 
-| Term | Value |
+| Rule | Result |
 | --- | --- |
-| Approach | The part of the velocity, with the sidesteps added, toward the closest boundary point. |
-| Slide | The part of the approach above the distance to that point over 0.5 s, removed: the agent approaches the boundary no faster than it could reach it in 0.5 s, so it arrives sliding along it. Paths that run along the boundary without crossing it lose nothing. |
-| One way | An agent off the mesh, pushed off by others, keeps the part of its velocity toward or along the closest boundary point and loses the part away from it, so it can come back onto the mesh but never go deeper. |
+| On the mesh | The component toward the closest boundary point is limited to the distance to that point over 0.5 s. |
+| Off the mesh | The component away from the closest boundary point is removed. Components toward or along it remain. |
 
-The result is the velocity with the sidesteps added and the slide removed. It
-changes continuously as the agents move, so an agent that turns toward it at a
-bounded rate moves smoothly.
+The result carries a desired velocity and a following speed ceiling. The
+following ceiling isn't limited by the requested speed and is infinity without
+a leader.
 
-## Detours
-
-An agent's path bends around the first crowd its first leg would cross, among
-crowds of equal or greater precedence within 4 m of the leg's start. The crowd
-counts where the agent meets it: moved on at its velocity for the time the
-agent takes to reach it at its current speed, no longer than the steering
-horizon. The way around keeps to the side the agent already moves past the
-crowd's center on, or the leg's side away from it when the agent is still, with
-the clockwise side for a center dead ahead; it turns at the corner where the
-tangents from the leg's two ends on that side meet, so both legs graze the
-crowd at contact distance. When that corner is off the mesh, the other side's
-corner is taken when that one is on it. When the leg ends inside the crowd, the
-way around leads to the end of the leg after it and the corner takes the place
-of the end. A corner off the mesh on both sides, a corner farther from the
-crowd's center than twice the contact distance, or a crowd the agent stands
-inside, leaves the path unchanged, and an agent moving slower than 0.1 m/s
-doesn't detour.
+The result is a desired velocity. A character with limited turning or root
+motion may follow it at a different velocity. Steering doesn't guarantee
+collision-free motion for such a character.
 
 ## Debug drawing
 

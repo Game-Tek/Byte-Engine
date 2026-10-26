@@ -85,6 +85,18 @@ impl NavigationAgent {
 	}
 }
 
+/// The `NavigationSteering` struct lets a character select a passing direction and a gait that leaves headway.
+///
+/// Use [`Self::velocity`] for the desired motion. A clip-driven controller can use [`Self::following_speed`] to
+/// require enough headway for a complete start and stop before it resumes following a leader.
+pub struct NavigationSteering {
+	/// The desired velocity after passing, following, and boundary constraints.
+	pub velocity: Vector,
+	/// The leader's forward speed plus available contact clearance over two seconds, or infinity without a leader.
+	/// This ceiling is independent of the requested speed, so a standing follower can check room before setting off.
+	pub following_speed: f32,
+}
+
 /// The `PlacedAgent` struct joins an agent with where its transforms put it and how fast that moved it.
 struct PlacedAgent {
 	agent: NavigationAgent,
@@ -93,6 +105,8 @@ struct PlacedAgent {
 	velocity: Vector,
 	/// How far the agent's transforms moved it in this update, until it joins the average.
 	displacement: Vector,
+	/// The endpoint agent and clockwise side of the current pass, retained while that agent is ahead.
+	passing: Option<(u32, bool)>,
 }
 
 /// The `Navigation` struct keeps the navigation mesh of a world's areas for the path searches that run on it, and
@@ -222,6 +236,7 @@ impl Navigation {
 					position: None,
 					velocity: Vector::new(0.0, 0.0, 0.0),
 					displacement: Vector::new(0.0, 0.0, 0.0),
+					passing: None,
 				})
 				.agent = agent;
 		}
@@ -285,15 +300,11 @@ impl Navigation {
 		Ok(())
 	}
 
-	/// Finds the path from where `agent` stands to `target` and writes its corners into `path`, both ends moved onto
-	/// the mesh first and the first leg bent around the first crowd of other agents it would cross.
+	/// Finds the route from where `agent` stands to `target`, moving both ends onto the mesh first.
 	///
-	/// Either end may be just off the mesh, the agent from being pushed and the target inside an obstacle's
-	/// clearance, so each starts from the closest point on it. The way around a crowd turns at the corner where the
-	/// tangents from the leg's ends meet, so the agent swerves from where it is rather than when it gets there; see
-	/// the navigation Reference page. Aim the agent a little way along the result, then pass that velocity to
-	/// [`Self::steer`]. With debug drawing on, the path shows in the world until the agent's next search. An agent
-	/// without a transform has no start.
+	/// The route describes the walkable surface, so its length measures progress and arrival independently of moving
+	/// crowds. Pass a velocity toward a point along it to [`Self::steer`] to go around other agents. Keep `path` between
+	/// searches to reuse its storage. With debug drawing on, the route stays visible until the next search.
 	pub fn find_path<'path>(
 		&mut self,
 		agent: Handle,
@@ -310,7 +321,6 @@ impl Navigation {
 			.closest_point(target)
 			.ok_or(NavigationPathError::TargetOutsideMesh)?;
 		self.mesh.find_path_into(start, target, path)?;
-		self.detour(id, path);
 		if let Some(drawing) = &mut self.drawing {
 			let legs = path.windows(2).map(|pair| line(pair[0], pair[1], PATH_COLOR));
 			drawing.show_for(|drawing| &mut drawing.paths, id, legs);
@@ -323,93 +333,48 @@ impl Navigation {
 		&self.mesh
 	}
 
-	/// Returns `velocity`, the velocity `agent` means to move at, adjusted by the least change that keeps it clear of
-	/// the other agents and on the mesh.
+	/// Returns the velocity for `agent` to follow its route while passing crowds and staying on the mesh.
 	///
-	/// Call it for each agent after [`Self::update`], with the velocity toward the agent's next path corner at the
-	/// speed it goes, or zero when it means to stand; the result's direction is where to head and its length how fast.
-	/// It changes continuously as the agents move, so turn the agent toward it at a bounded rate rather than snapping
-	/// to it. An agent without a transform gets `velocity` back unchanged.
-	pub fn steer(&self, agent: Handle, velocity: Vector) -> Vector {
+	/// Call after [`Self::update`] with the velocity toward the next route point at the character's gait speed, or zero
+	/// to stand. Moving agents retain their passing side and yield speed to a slower leader or a blocked forward
+	/// range. Standing agents get a separation velocity only when crowded. Mesh boundaries can also reduce speed.
+	/// With root-motion clips, choose a gait at or below the result's speed, turn toward its direction at the
+	/// character's bounded rate, then publish the root-motion transform.
+	pub fn steer(&mut self, agent: Handle, velocity: Vector) -> NavigationSteering {
 		let id = agent.id();
 		let Some((placed, position)) = self.agents_by_id.get(&id).and_then(|placed| Some((placed, placed.position?))) else {
-			return velocity;
+			return NavigationSteering {
+				velocity,
+				following_speed: f32::INFINITY,
+			};
 		};
 		let NavigationAgent { radius, precedence } = placed.agent;
-		steering::steer(&self.mesh, (position, radius, precedence), velocity, self.others(id))
-	}
-
-	/// Bends the first leg of `path` around the first crowd it would cross within [`DETOUR_DISTANCE`], taking the
-	/// crowd where the agent with `id` meets it at its pace.
-	///
-	/// The way around keeps to the side the agent already moves past the crowd on, and takes the other side when that
-	/// corner is off the mesh, such as inside a wall the crowd gathers against. When the leg ends inside the crowd,
-	/// which is what a group gathered at a path corner looks like, the way around leads to the leg after it instead and
-	/// its corner replaces the end. A corner off the mesh either way leaves the path as it is, as does a crowd the agent
-	/// itself stands in; steering still keeps them apart.
-	///
-	/// An agent standing still doesn't detour: a detour is a maneuver of one on its way, and a still agent's path
-	/// length should say how far its target is, not how far around a group. Nor does a leg that starts or ends close to
-	/// a crowd: its tangents run nearly side by side and meet far off, where no one should head; steering handles the
-	/// last meter.
-	fn detour(&self, id: u32, path: &mut Vec<Point>) {
-		let Some(placed) = self.agents_by_id.get(&id) else { return };
-		let (Some(&start), Some(&end)) = (path.first(), path.get(1)) else {
-			return;
-		};
-		let speed = placed.velocity.length();
-		if speed < MOVING_SPEED {
-			return;
-		}
-		let precedence = placed.agent.precedence;
-		let heading = start + placed.velocity;
-		let found = steering::crowds(self.others(id))
-			.filter(|crowd| crowd.precedence >= precedence)
-			.filter_map(|crowd| {
-				let distance = distance_xz(start, crowd.center);
-				if distance > DETOUR_DISTANCE {
-					return None;
-				}
-				let seconds = (distance / speed).min(steering::HORIZON_SECONDS);
-				let center = crowd.center + crowd.velocity * seconds;
-				let radius = crowd.radius + placed.agent.radius + steering::COMFORT_DISTANCE;
-				// A center counterclockwise from the way the agent moves is passed clockwise, and the other way round.
-				let natural = signed_area_xz(start, heading, center) >= 0.0;
-				let usable = |corner: Point| {
-					distance_xz(corner, center) <= DETOUR_REACH * radius && self.mesh.locate_polygon(corner).is_some()
-				};
-				// Around the leg itself, or past its end when the crowd gathers there.
-				let around = |to: Point| {
-					[natural, !natural]
-						.into_iter()
-						.filter_map(|clockwise| detour_corner_xz(start, to, center, radius, clockwise))
-						.find(|&corner| usable(corner))
-				};
-				let past_end = || {
-					let after = *path.get(2)?;
-					(distance_xz(end, center) <= radius).then(|| around(after).map(|corner| (corner, true)))?
-				};
-				around(end)
-					.map(|corner| (corner, false))
-					.or_else(past_end)
-					.map(|found| (distance, found))
-			})
-			.min_by(|first, second| first.0.total_cmp(&second.0));
-		match found {
-			Some((_, (corner, true))) => path[1] = corner,
-			Some((_, (corner, false))) => path.insert(1, corner),
-			None => {}
+		let mut passing = placed.passing;
+		let (velocity, following_speed) = steering::steer(
+			&self.mesh,
+			(position, placed.velocity, radius, precedence),
+			velocity,
+			&mut passing,
+			self.others(id),
+		);
+		self.agents_by_id
+			.get_mut(&id)
+			.expect("The steering agent is missing. The most likely cause is an inconsistent navigation registry.")
+			.passing = passing;
+		NavigationSteering {
+			velocity,
+			following_speed,
 		}
 	}
 
-	/// Returns the position, velocity, radius, and precedence of every placed agent but the one with `id`.
-	fn others(&self, id: u32) -> impl Iterator<Item = (Point, Vector, f32, f32)> + '_ {
+	/// Returns the identity, position, velocity, radius, and precedence of every other placed agent.
+	fn others(&self, id: u32) -> impl Iterator<Item = (u32, Point, Vector, f32, f32)> + '_ {
 		self.agents_by_id
 			.iter()
 			.filter(move |&(&other, _)| other != id)
-			.filter_map(|(_, other)| {
+			.filter_map(|(&id, other)| {
 				let NavigationAgent { radius, precedence } = other.agent;
-				Some((other.position?, other.velocity, radius, precedence))
+				Some((id, other.position?, other.velocity, radius, precedence))
 			})
 	}
 
@@ -431,16 +396,6 @@ impl Navigation {
 
 /// How long, in seconds, agent velocities average displacements over.
 const VELOCITY_AVERAGE_SECONDS: f32 = 0.25;
-
-/// How far away, in meters, a crowd must be at most for a path to bend around it; farther ones will have moved.
-const DETOUR_DISTANCE: f32 = 4.0;
-
-/// How far from a crowd's center, as a multiple of the contact distance, a detour's corner may be at most. A leg that
-/// starts or ends close to the crowd asks for a corner far off, which is no way to go.
-const DETOUR_REACH: f32 = 2.0;
-
-/// How fast, in meters per second, an agent must move to detour at all.
-const MOVING_SPEED: f32 = 0.1;
 
 /// How far above the surface, in meters, debug lines are drawn.
 const LINE_HEIGHT: f32 = 0.05;
@@ -594,11 +549,22 @@ mod tests {
 		agent(&world, 0.0, 3.0);
 		navigation.update(tick()).expect("two agents");
 
-		assert_eq!(navigation.steer(walker, east() * WALK), east() * WALK);
+		assert_eq!(navigation.steer(walker, east() * WALK).velocity, east() * WALK);
 		assert_eq!(
-			navigation.steer(walker, Vector::new(0.0, 0.0, 0.0)),
+			navigation.steer(walker, Vector::new(0.0, 0.0, 0.0)).velocity,
 			Vector::new(0.0, 0.0, 0.0)
 		);
+	}
+
+	#[test]
+	fn an_agent_keeps_walking_when_neighbors_only_block_sideways() {
+		let (bus, world, mut navigation) = floor();
+		bus.begin_tick();
+		let walker = agent(&world, 0.0, 0.0);
+		agent(&world, 0.0, 0.7);
+		agent(&world, 0.0, -0.7);
+		navigation.update(tick()).unwrap();
+		assert_eq!(navigation.steer(walker, east() * WALK).velocity, east() * WALK);
 	}
 
 	#[test]
@@ -609,9 +575,9 @@ mod tests {
 		agent(&world, 1.5, 0.0);
 		navigation.update(tick()).expect("two agents");
 
-		let steered = navigation.steer(walker, east() * WALK);
+		let steered = navigation.steer(walker, east() * WALK).velocity;
 		assert!(steered.z().abs() > 0.0, "it steps aside instead of walking into the other");
-		assert_eq!(steered.x(), WALK, "a sidestep is across its way, not against it");
+		assert!((steered.length() - WALK).abs() < 0.001, "passing keeps the gait speed");
 	}
 
 	#[test]
@@ -623,8 +589,8 @@ mod tests {
 		agent(&world, 1.5, 0.0);
 		navigation.update(tick()).expect("three agents");
 
-		assert!(navigation.steer(left, east() * WALK).z() > 0.0);
-		assert!(navigation.steer(right, east() * WALK).z() < 0.0);
+		assert!(navigation.steer(left, east() * WALK).velocity.z() > 0.0);
+		assert!(navigation.steer(right, east() * WALK).velocity.z() < 0.0);
 	}
 
 	#[test]
@@ -643,12 +609,12 @@ mod tests {
 			&[(crosser, [2.0, -2.0], north), (passed, [-1.0, -1.0], north)],
 		);
 
-		assert_ne!(navigation.steer(walker, east() * WALK), east() * WALK);
+		assert_ne!(navigation.steer(walker, east() * WALK).velocity, east() * WALK);
 		world.channel::<DeleteMessage>().send(DeleteMessage::new(crosser));
 		bus.begin_tick();
 		navigation.update(tick()).expect("the crosser is gone");
 		// The one behind and to the side moves away from the walker's way.
-		assert_eq!(navigation.steer(walker, east() * WALK), east() * WALK);
+		assert_eq!(navigation.steer(walker, east() * WALK).velocity, east() * WALK);
 	}
 
 	#[test]
@@ -661,42 +627,118 @@ mod tests {
 		agent(&world, 1.5, -0.35);
 		navigation.update(tick()).expect("three agents");
 
-		let steered = navigation.steer(walker, east() * WALK);
+		let steered = navigation.steer(walker, east() * WALK).velocity;
 		assert!(steered.z().abs() > 0.3, "it swerves around the pair");
 	}
 
 	#[test]
-	fn a_path_bends_around_a_crowd_in_its_way_but_not_around_one_off_it_nor_for_a_still_agent() {
+	fn route_distance_and_fixed_speed_passing_agree_through_a_crowd() {
 		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
-		let walker = agent(&world, -3.0 - WALK, 0.0);
+		let walker = agent(&world, -3.0, 0.0);
 		agent(&world, 0.0, 0.35);
 		agent(&world, 0.0, -0.35);
-		walk(&bus, &world, &mut navigation, &[(walker, [-3.0, 0.0], east() * WALK)]);
+		navigation.update(tick()).expect("three agents");
+		let target = Point::new(3.0, 0.0, 0.0);
+		let mut position = Point::new(-3.0, 0.0, 0.0);
+		let mut heading = std::f32::consts::FRAC_PI_2;
+		let mut planned = east();
 		let mut path = Vec::new();
+		let mut last_plan = None::<f32>;
+		let mut previous_turn = 0.0_f32;
+		let mut reversals = 0;
+		let mut closest = f32::INFINITY;
+		for frame in 0..360 {
+			bus.begin_tick();
+			moved(&world, walker, position.x(), position.z());
+			navigation.update(tick()).expect("the walker moved");
+			if distance_xz(position, target) < 0.3 {
+				break;
+			}
+			if frame % 6 == 0 {
+				let found = navigation.find_path(walker, target, &mut path).expect("a route");
+				let remaining: f32 = found.windows(2).map(|p| distance_xz(p[0], p[1])).sum();
+				assert!(
+					(remaining - distance_xz(position, target)).abs() < 0.001,
+					"crowd avoidance must not change the distance used for arrival and gait"
+				);
+				let toward = (target - position).normalized().unwrap().into_vector() * WALK;
+				planned = navigation.steer(walker, toward).velocity;
+				assert!(
+					(planned.length() - WALK).abs() < 0.001,
+					"passing must work at the requested gait's speed"
+				);
+				let angle = planned.x().atan2(planned.z());
+				if let Some(last) = last_plan {
+					let turn = wrap(angle - last);
+					if turn.abs() > 0.15 && previous_turn.abs() > 0.15 && turn * previous_turn < 0.0 {
+						reversals += 1;
+					}
+					previous_turn = turn;
+				}
+				last_plan = Some(angle);
+			}
+			// Match a root-motion controller: fixed walking speed and a bounded turn, with plans at 10 Hz.
+			let turn = wrap(planned.x().atan2(planned.z()) - heading).clamp(-2.6 / 60.0, 2.6 / 60.0);
+			heading += turn;
+			position += Vector::new(heading.sin(), 0.0, heading.cos()) * (WALK / 60.0);
+			for z in [-0.35, 0.35] {
+				closest = closest.min(distance_xz(position, Point::new(0.0, 0.0, z)));
+			}
+		}
+		assert!(distance_xz(position, target) < 0.3, "the walker must get around the pair");
+		assert!(closest >= 0.7, "fixed-speed passing must keep bodies apart: {closest}");
+		assert_eq!(reversals, 0, "passing must not alternate its turn each plan");
+	}
 
-		let found = navigation
-			.find_path(walker, Point::new(3.0, 0.0, 0.0), &mut path)
-			.expect("a path");
-		assert_eq!(found.len(), 3, "the way around has a corner");
-		// The corner clears the pair as one circle, their radius and a half plus the walker's and the comfort, and
-		// doesn't fly off.
-		let contact = 0.7 + 0.35 + 0.15;
-		let reach = distance_xz(found[1], Point::new(0.0, 0.0, 0.0));
-		assert!(reach >= contact && reach <= 2.0 * contact);
-		assert!(found[1].z().abs() > 1.0);
-		// A leg that misses the pair stays straight, and so does a standing agent's.
-		let found = navigation
-			.find_path(walker, Point::new(-3.0, 0.0, 4.0), &mut path)
-			.expect("a path");
-		assert_eq!(found.len(), 2);
-		let still = agent(&world, -3.0, 1.0);
+	fn wrap(angle: f32) -> f32 {
+		let pi = std::f32::consts::PI;
+		(angle + pi).rem_euclid(2.0 * pi) - pi
+	}
+
+	#[test]
+	fn a_follower_yields_speed_to_a_leader_but_passes_it_after_it_stops() {
+		let (bus, world, mut navigation) = floor();
 		bus.begin_tick();
-		navigation.update(tick()).expect("a still agent");
-		let found = navigation
-			.find_path(still, Point::new(3.0, 0.0, 1.0), &mut path)
-			.expect("a path");
-		assert_eq!(found.len(), 2);
+		let follower = agent(&world, -2.0, 0.0);
+		let leader = agent(&world, -WALK, 0.0);
+		walk(&bus, &world, &mut navigation, &[(leader, [0.0, 0.0], east() * WALK)]);
+		let following = navigation.steer(follower, east() * 6.5).velocity;
+		assert!(
+			following.x() >= WALK && following.x() < 6.5,
+			"a faster follower leaves headway"
+		);
+		assert!(following.z().abs() < 0.001, "it follows instead of beginning an overtake");
+		for _ in 0..120 {
+			bus.begin_tick();
+			navigation.update(tick()).unwrap();
+		}
+		let passing = navigation.steer(follower, east() * WALK).velocity;
+		assert!(
+			(passing.length() - WALK).abs() < 0.001,
+			"a standing leader can be passed at walking speed"
+		);
+		assert!(
+			passing.z().abs() > 0.1,
+			"the follower must not queue forever behind a standing agent"
+		);
+	}
+
+	#[test]
+	fn a_closed_forward_range_waits_and_resumes_when_a_pass_opens() {
+		let (bus, world, mut navigation) = floor();
+		bus.begin_tick();
+		let walker = agent(&world, 0.0, 0.0);
+		let left = agent(&world, 0.3, 0.2);
+		let right = agent(&world, 0.3, -0.2);
+		navigation.update(tick()).unwrap();
+		assert_eq!(navigation.steer(walker, east() * WALK).velocity, Vector::new(0.0, 0.0, 0.0));
+		bus.begin_tick();
+		moved(&world, left, 2.0, 0.2);
+		moved(&world, right, 2.0, -0.2);
+		navigation.update(tick()).unwrap();
+		let passing = navigation.steer(walker, east() * WALK).velocity;
+		assert!(passing.x() > 0.0, "the walker resumes forward progress");
 	}
 
 	#[test]
@@ -709,8 +751,8 @@ mod tests {
 		navigation.update(tick()).expect("three agents");
 		let still = Vector::new(0.0, 0.0, 0.0);
 
-		assert_eq!(navigation.steer(alone, still), still);
-		let step = navigation.steer(crowded, still);
+		assert_eq!(navigation.steer(alone, still).velocity, still);
+		let step = navigation.steer(crowded, still).velocity;
 		assert!(step.x() < 0.0, "it steps away from the one beside it");
 		assert!(step.length() <= 2.0, "at a bounded speed");
 	}
@@ -724,12 +766,12 @@ mod tests {
 		let north = Vector::new(0.0, 0.0, WALK);
 
 		// A tenth of a meter from the edge, most of the approach is given up; the rest goes the next time around.
-		let into = navigation.steer(walker, east() * WALK);
+		let into = navigation.steer(walker, east() * WALK).velocity;
 		assert!(into.x() < 0.25 * WALK && into.x() >= 0.0);
-		assert_eq!(navigation.steer(walker, north), north);
+		assert_eq!(navigation.steer(walker, north).velocity, north);
 		// Approaching at a slant keeps the part along the edge.
 		let along = WALK / 2f32.sqrt();
-		let slant = navigation.steer(walker, Vector::new(along, 0.0, along));
+		let slant = navigation.steer(walker, Vector::new(along, 0.0, along)).velocity;
 		assert_eq!(slant.z(), along);
 		assert!(slant.x() < 0.25 * WALK);
 
@@ -738,8 +780,8 @@ mod tests {
 		bus.begin_tick();
 		let outside = agent(&world, 5.5, 3.0);
 		navigation.update(tick()).expect("an agent off the mesh");
-		assert_eq!(navigation.steer(outside, -east() * WALK), -east() * WALK);
-		assert_eq!(navigation.steer(outside, (east() + north) * WALK), north * WALK);
+		assert_eq!(navigation.steer(outside, -east() * WALK).velocity, -east() * WALK);
+		assert_eq!(navigation.steer(outside, (east() + north) * WALK).velocity, north * WALK);
 	}
 
 	#[test]
@@ -754,8 +796,8 @@ mod tests {
 		navigation.update(tick()).expect("two agents too close");
 		let still = Vector::new(0.0, 0.0, 0.0);
 
-		assert_eq!(navigation.steer(settled, still), still);
-		assert!(navigation.steer(late, still).x() > 0.0, "the late one steps away");
+		assert_eq!(navigation.steer(settled, still).velocity, still);
+		assert!(navigation.steer(late, still).velocity.x() > 0.0, "the late one steps away");
 	}
 
 	#[test]
@@ -791,16 +833,16 @@ mod tests {
 
 	#[test]
 	fn an_unknown_agent_gets_its_velocity_back() {
-		let (_bus, world, navigation) = floor();
+		let (_bus, world, mut navigation) = floor();
 		let unplaced: Handle = world.create(NavigationAgent::new(0.35)).into();
 
-		assert_eq!(navigation.steer(unplaced, east() * 2.0), east() * 2.0);
+		assert_eq!(navigation.steer(unplaced, east() * 2.0).velocity, east() * 2.0);
 	}
 }
 
 use std::collections::BTreeMap;
 
-use math::{Point, UnitVector, Vector, detour_corner_xz, distance_xz, signed_area_xz};
+use math::{Point, UnitVector, Vector, distance_xz};
 use utils::RGBA;
 
 use super::{NavigationMesh, NavigationMeshBuildError, NavigationPathError, steering};

@@ -285,3 +285,42 @@ fn navigation_mesh_path(bencher: Bencher, side: usize) {
 		divan::black_box(mesh.find_path(start, target).unwrap());
 	});
 }
+
+/// Measures a six-agent pursuit plan, including retained path storage and crowd steering.
+#[divan::bench]
+fn crowd_navigation(bencher: Bencher) {
+	use byte_engine::{
+		MediaTime,
+		core::{
+			factory::Creator as _,
+			message_bus::{MessageBus, MessageBusConfig},
+		},
+		gameplay::{
+			Transform,
+			pathfinding::{Navigation, NavigationAgent, NavigationArea},
+		},
+		math::{Orientation, Scale, Vector},
+	};
+	let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).unwrap();
+	let world = bus.new_scope("benchmark");
+	let mut navigation = Navigation::new(&world, &[][..] as &[byte_engine::application::Parameter]);
+	bus.begin_tick();
+	world.create(NavigationArea::walkable(20.0, 20.0)).with(Transform::identity());
+	let agents: Vec<_> = (0..6)
+		.map(|i| {
+			let position = Point::new(-3.0 + i as f32, 0.0, 0.0);
+			world
+				.create(NavigationAgent::new(0.35))
+				.with(Transform::new(position, Scale::identity(), Orientation::identity()))
+				.handle()
+		})
+		.collect();
+	navigation.update(MediaTime::from_seconds_f32(1.0 / 60.0)).unwrap();
+	let mut path = Vec::new();
+	bencher.counter(ItemsCount::new(6usize)).bench_local(|| {
+		for &agent in &agents {
+			divan::black_box(navigation.find_path(agent, Point::new(10.0, 0.0, 0.0), &mut path).unwrap());
+			divan::black_box(navigation.steer(agent, Vector::new(1.4, 0.0, 0.0)));
+		}
+	});
+}

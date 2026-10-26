@@ -6,7 +6,8 @@ icon: Workflow
 
 Read this note before you change the gameplay task runtime, which polls an
 application's async gameplay from its tick. To use it, see
-[Script gameplay with tasks](/docs/use/gameplay-tasks). The code lives in
+[Script gameplay with tasks](/docs/use/gameplay-tasks). What each wait resolves
+at is specified in [Gameplay tasks](/docs/reference/tasks). The code lives in
 `crates/byte-engine/src/gameplay/tasks.rs`.
 
 ## Who owns the runtime
@@ -71,6 +72,13 @@ drop nothing skip the sweep, which keeps a tick's cost flat.
   removed it pushes a new deadline. Swept and ended sleeps leave their entries
   in the heap, so the runtime rebuilds the heap once more than half its entries
   are dead.
+- **Intervals.** An `Interval` keeps its schedule, the deadline its next one
+  counts from and the time of its last fire, outside its wait futures. Each
+  `next` is a sleep to the absolute deadline that schedule gives, on the same
+  heap and with the same registration as `sleep`. A wait that loses a `select!`
+  only drops a heap entry, and the next `next` pushes the same deadline again.
+  A fire moves the schedule past every deadline it reached, so missed deadlines
+  never fire in a burst.
 
 The runtime's tick and sleep waits wake tasks directly, without a `Waker`. Each
 task also has one for channel listeners and other futures. Its wakes go through
@@ -113,6 +121,9 @@ activities borrow the same local state one after another, and `break` and
 10. The application drops the runtime before its world and systems.
 11. The task macros poll in the task's own context and run in the caller's
     scope.
+12. An interval fires at most once per advance, and its deadlines stay on the
+    grid of its start, phase, and period; late fires and lost waits never
+    shift them.
 
 ## Tests
 
@@ -120,6 +131,13 @@ activities borrow the same local state one after another, and `break` and
 | --- | --- |
 | `tick_resolves_with_the_time_since_the_wait_began` | 1 |
 | `sleep_waits_for_simulation_time` | 1 |
+| `an_interval_fires_at_anchored_deadlines_with_the_time_since_its_previous_fire` | 1, 12 |
+| `an_interval_that_missed_deadlines_fires_once_and_keeps_its_schedule` | 12 |
+| `an_interval_wait_that_loses_a_select_keeps_its_deadline` | 3, 12 |
+| `a_phase_delays_every_deadline` | 12 |
+| `a_new_period_counts_from_the_latest_passed_deadline` | 12 |
+| `an_interval_shorter_than_the_step_fires_once_per_advance_that_moves_time` | 1 |
+| `a_period_shortened_after_a_fire_waits_for_the_next_advance` | 12 |
 | `a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one` | 3 |
 | `a_task_selecting_over_messages_and_ticks_counts_every_tick` | 3 |
 | `a_listener_dropped_from_a_select_keeps_its_messages` | 3 |

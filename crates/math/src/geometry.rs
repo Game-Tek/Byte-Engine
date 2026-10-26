@@ -243,29 +243,6 @@ pub fn closest_point_on_segment_xz<Space>(point: Point<Space>, start: Point<Spac
 	start + (end - start) * fraction
 }
 
-/// Returns when two points moving at constant velocities are closest on XZ, in seconds from now.
-///
-/// Negative means they were closest in the past and now move apart. Points that keep their distance, such as two at
-/// rest, are closest now. Use it to find how near two agents come and when, so they can step apart in time.
-pub fn closest_approach_time_xz<Space>(
-	first: Point<Space>,
-	first_velocity: Vector<Space>,
-	second: Point<Space>,
-	second_velocity: Vector<Space>,
-) -> f32 {
-	let (offset_x, offset_z) = (first.x() - second.x(), first.z() - second.z());
-	let (closing_x, closing_z) = (
-		first_velocity.x() - second_velocity.x(),
-		first_velocity.z() - second_velocity.z(),
-	);
-	// The distance is least where its derivative along the relative motion vanishes.
-	let closing = closing_x * closing_x + closing_z * closing_z;
-	if closing == 0.0 {
-		return 0.0;
-	}
-	-(offset_x * closing_x + offset_z * closing_z) / closing
-}
-
 /// Returns the point `distance` along the polyline through `points`, measured on XZ, or [`None`] when it has no points.
 ///
 /// The point interpolates all three coordinates along its segment, so it keeps the polyline's height. Distances past
@@ -281,53 +258,6 @@ pub fn point_along_xz<Space>(points: &[Point<Space>], distance: f32) -> Option<P
 		left -= length;
 	}
 	points.last().copied()
-}
-
-/// Returns the corner of the way around a circle for a straight leg from `start` to `end` that would cross it, on XZ,
-/// passing the circle on its clockwise side when `clockwise` and on its counterclockwise side otherwise.
-///
-/// The corner is where the tangent from `start` and the tangent from `end`, both on that side, meet, so the legs to
-/// and from it just graze the circle. Returns [`None`] when the leg clears the circle, or when either end is inside it
-/// and has no tangent. Use it to route an agent around another, or around a group of others; pass the circle on the
-/// side the agent already moves toward, so its way doesn't flip as the circle drifts.
-pub fn detour_corner_xz<Space>(
-	start: Point<Space>,
-	end: Point<Space>,
-	center: Point<Space>,
-	radius: f32,
-	clockwise: bool,
-) -> Option<Point<Space>> {
-	let length = distance_xz(start, end);
-	if length == 0.0 || distance_xz(start, center) <= radius || distance_xz(end, center) <= radius {
-		return None;
-	}
-	let along = line_fraction_xz(center, start, end).clamp(0.0, 1.0);
-	if distance_xz(start + (end - start) * along, center) >= radius {
-		return None;
-	}
-	let turn = if clockwise { -1.0 } else { 1.0 };
-	let tangent = |from: Point<Space>, turn: f32| {
-		let (x, z) = (center.x() - from.x(), center.z() - from.z());
-		let distance = x.hypot(z);
-		let angle = (radius / distance).asin() * turn;
-		let (sine, cosine) = angle.sin_cos();
-		// The direction to the center, turned by the tangent angle, points along the tangent.
-		[(x * cosine - z * sine) / distance, (x * sine + z * cosine) / distance]
-	};
-	let [ax, az] = tangent(start, turn);
-	let [bx, bz] = tangent(end, -turn);
-	// Where the two tangent lines meet: start + s (ax, az) = end + t (bx, bz).
-	let denominator = ax * bz - az * bx;
-	if denominator.abs() <= f32::EPSILON {
-		return None;
-	}
-	let (dx, dz) = (end.x() - start.x(), end.z() - start.z());
-	let s = (dx * bz - dz * bx) / denominator;
-	Some(Point::new(
-		start.x() + ax * s,
-		start.y() + (end.y() - start.y()) * along,
-		start.z() + az * s,
-	))
 }
 
 /// Returns where the closed segment from `start` to `end` crosses the one from `third` to `fourth` on XZ, as a point
@@ -870,18 +800,6 @@ mod tests {
 	}
 
 	#[test]
-	fn the_closest_approach_is_when_the_points_draw_abreast_and_past_for_points_moving_apart() {
-		let still = Vector::<LocalSpace>::new(0.0, 0.0, 0.0);
-		let east = Vector::new(1.0, 0.0, 0.0);
-
-		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 0.0), still), 4.0);
-		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 2.0), still), 4.0);
-		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), east, point(4.0, 0.0), -east), 2.0);
-		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), -east, point(4.0, 0.0), still), -4.0);
-		assert_eq!(closest_approach_time_xz(point(0.0, 0.0), still, point(4.0, 0.0), still), 0.0);
-	}
-
-	#[test]
 	fn a_point_along_a_polyline_follows_its_segments_and_clamps_to_its_ends() {
 		let path = [
 			Point::<LocalSpace>::new(0.0, 0.0, 0.0),
@@ -894,24 +812,6 @@ mod tests {
 		assert_eq!(point_along_xz(&path, 9.0), Some(path[2]));
 		assert_eq!(point_along_xz(&path, -1.0), Some(path[0]));
 		assert_eq!(point_along_xz::<LocalSpace>(&[], 1.0), None);
-	}
-
-	#[test]
-	fn the_detour_corner_grazes_the_circle_on_the_side_asked_for() {
-		let (start, end) = (point(0.0, 0.0), point(10.0, 0.0));
-
-		// Clockwise around a circle on a leg along +X is toward -Z; the corner is where the tangents meet.
-		let corner = detour_corner_xz(start, end, point(5.0, 0.0), 1.0, true).expect("a corner");
-		let reach = 1.0 / (1.0 - (1.0f32 / 5.0).powi(2)).sqrt();
-		assert!((corner.x() - 5.0).abs() < 1.0e-4 && (corner.z() + reach).abs() < 1.0e-4);
-		let corner = detour_corner_xz(start, end, point(5.0, 0.0), 1.0, false).expect("a corner");
-		assert!((corner.z() - reach).abs() < 1.0e-4);
-		// Passing a circle beside the leg on its near side puts the corner just past its edge.
-		let corner = detour_corner_xz(start, end, point(5.0, 0.5), 1.0, true).expect("a corner");
-		assert!(corner.z() < -0.5 && corner.z() > -0.6);
-		assert_eq!(detour_corner_xz(start, end, point(5.0, 2.0), 1.0, true), None);
-		assert_eq!(detour_corner_xz(start, end, point(0.5, 0.0), 1.0, true), None);
-		assert_eq!(detour_corner_xz(start, end, point(12.0, 0.0), 1.0, true), None);
 	}
 
 	#[test]

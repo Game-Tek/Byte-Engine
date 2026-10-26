@@ -1,0 +1,73 @@
+---
+title: Gameplay tasks
+description: Look up the clock gameplay tasks read, what each wait resolves at and with, how intervals schedule their fires, and the order woken tasks run in.
+icon: Workflow
+---
+
+A gameplay task is async gameplay logic that a task runtime polls from the
+application's tick. A task runs until it waits, and a wait wakes it again. This
+page specifies the clock tasks read, the waits, and the order tasks run in. To
+write tasks, see [Script gameplay with tasks](/docs/use/gameplay-tasks). The
+time unit and the simulation loops are in [Time and ticks](/docs/reference/time).
+
+## Clock
+
+| Rule | Behavior |
+| --- | --- |
+| Simulation time | The sum of every delta the runtime advanced by. It starts at zero. |
+| Advance | The application advances the runtime once per simulation step, by the step's delta, before the step's callback runs. |
+| Reading | Every task reads the same simulation time between two advances. |
+| Pause | An advance by a zero delta counts as a tick but doesn't move simulation time. |
+
+## Waits
+
+| Wait | Resolves | Value |
+| --- | --- | --- |
+| Tick | At the first advance after the wait began. | The simulation time since the wait began. |
+| Sleep | Once simulation time reaches the wait's start plus its duration. A duration of zero or less resolves at once. | None. |
+| Interval | At the interval's next deadline. See [Intervals](#intervals). | The simulation time since the interval's previous fire. |
+| Message | When the listener's channel has a message the listener hasn't read. | The message. |
+| State | At once. | What the read returns from the state lent to the poll. |
+
+| Rule | Behavior |
+| --- | --- |
+| Start | A wait begins at its first poll. |
+| Registration | A wait counts only while the latest poll of its task polled it. A wait the task drops, or stops polling, never wakes the task. |
+| Tick takeover | A tick wait that begins in a poll in which the same task dropped another tick wait takes over the dropped wait's start. |
+| Task end | A task that returns, or whose owner entity the world deleted, leaves no waits. |
+| Owner deletion | A task spawned on an entity ends at the first advance after the world deletes the entity. |
+
+## Intervals
+
+An interval fires a task at a fixed rate of simulation time. Its waits resolve
+at its deadlines, one wait for each fire.
+
+| Property | Default | Unit | Notes |
+| --- | --- | --- | --- |
+| Period | Required | Simulation time | The time between two deadlines. Must be greater than zero. |
+| Phase | Zero | Simulation time | Delays every deadline. Must not be negative. |
+
+| Rule | Behavior |
+| --- | --- |
+| Start | The simulation time when the interval is made. |
+| Deadlines | The start plus the phase plus each whole multiple of the period, from one period on. |
+| Fire | A wait resolves at the first advance that reaches the next deadline, or at once when the deadline passed before the wait began. |
+| Missed deadlines | A fire passes every deadline that simulation time has reached. The interval fires once, and its next deadline is the first one after the fire. |
+| Value | The simulation time since the previous fire, or since the start for the first fire. |
+| Cancellation | A wait that drops before it resolves leaves the interval's next deadline unchanged, so the next wait resolves at the same deadline. |
+| Period change | The next deadline becomes the latest deadline the interval passed, or the start plus the phase before the first fire, plus the new period. A deadline that simulation time already reached resolves the next wait at once, unless the interval already fired in that advance; then the wait resolves at the next advance that moves simulation time. |
+| Rate | An interval fires at most once per advance. A period shorter than the step fires at every advance that moves simulation time. |
+
+## Order
+
+| Rule | Behavior |
+| --- | --- |
+| Poll order | Woken tasks run one at a time, in the order they woke. |
+| Advance | An advance wakes the tasks waiting for a tick first, then the tasks whose sleeps and intervals fell due, by deadline. Equal deadlines wake in the order their waits began. |
+| Spawn | A spawned task runs in the same poll as the task that spawned it, after the tasks already woken. |
+| Repeat | The same sequence of advances, messages, and spawns runs the tasks in the same order. |
+
+## Rust API
+
+- [`gameplay::tasks`](/docs/api/latest/byte_engine/gameplay/tasks)
+- [`gameplay::Interval`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Interval)

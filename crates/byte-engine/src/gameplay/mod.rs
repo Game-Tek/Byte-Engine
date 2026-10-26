@@ -21,5 +21,5 @@ pub mod transform;
 pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use name::Name;
 pub use scene::{Scene, SceneGraph, SceneNode};
-pub use tasks::{Runtime, Tasks};
+pub use tasks::{Interval, Runtime, Tasks};
 pub use transform::{Transform, TransformationUpdate};

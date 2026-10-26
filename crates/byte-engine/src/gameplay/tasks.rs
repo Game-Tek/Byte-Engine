@@ -11,6 +11,8 @@
 //! Tasks wait on time through [`Tasks`], and on everything else through the message bus:
 //! - [`Tasks::tick`] resolves at the next tick with the simulation time since the wait began.
 //! - [`Tasks::sleep`] resolves once that much simulation time has passed.
+//! - [`Tasks::every`] makes an [`Interval`], whose [`Interval::next`] resolves at a fixed rate of simulation time, for
+//!   work that doesn't need every tick, such as an agent re-planning its route.
 //! - [`DefaultListener::recv`] resolves with a channel's next message. A task keeps its own listeners, so it reads
 //!   the same channels a system would.
 //! - [`Tasks::with`] resolves on its first poll with the state lent to the poll.
@@ -453,6 +455,25 @@ impl<S: 'static> Tasks<S> {
 		}
 	}
 
+	/// Returns an interval that fires every `period` of simulation time, starting one period from now.
+	///
+	/// Keep the interval across a task's loop and await [`Interval::next`] in it. Spread many intervals of the same
+	/// period across ticks with [`Interval::phase`].
+	///
+	/// # Panics
+	///
+	/// Panics when `period` isn't greater than zero.
+	pub fn every(&self, period: MediaTime) -> Interval<S> {
+		assert_period(period);
+		let now = self.now();
+		Interval {
+			tasks: self.clone(),
+			period,
+			anchor: now,
+			last: now,
+		}
+	}
+
 	/// Returns a future that runs `read` on its first poll with the context the runtime lends its tasks.
 	///
 	/// The future is ready at once; awaiting it only reaches the context. Keep the borrow inside `read`: the context is
@@ -570,44 +591,10 @@ impl<S: 'static> Future for Sleep<S> {
 		if this.done {
 			return Poll::Pending;
 		}
-		let mut state = this.tasks.state.borrow_mut();
-		let state = &mut *state;
-		let id = state.current();
-		let elapsed = state.clock.elapsed;
-		let task = state.tasks.get_mut(id).expect("the polled task is live");
-		let poll = task.poll;
-		let (token, deadline) = match this.wait {
-			Some(wait) => wait,
-			None => {
-				state.tokens += 1;
-				(state.tokens, elapsed + this.duration)
-			}
-		};
-
-		if elapsed >= deadline {
-			if let Some(index) = task.sleeps.iter().position(|wait| wait.token == token) {
-				task.sleeps.swap_remove(index);
-				state.sleeping -= 1;
-			}
-			this.done = true;
-			return Poll::Ready(());
-		}
-
-		match task.sleeps.iter_mut().find(|wait| wait.token == token) {
-			Some(wait) => wait.poll = poll,
-			// A first poll, or a sleep its task stopped polling for a while, which a sweep removed with its deadline.
-			None => {
-				task.sleeps.push(SleepWait { token, poll });
-				state.sleeping += 1;
-				state.deadlines.push(Reverse(Deadline {
-					at: deadline,
-					token,
-					task: id,
-				}));
-			}
-		}
-		this.wait = Some((token, deadline));
-		Poll::Pending
+		let duration = this.duration;
+		let polled = poll_deadline(&this.tasks.state, &mut this.wait, |elapsed| elapsed + duration);
+		this.done = polled.is_ready();
+		polled.map(|_| ())
 	}
 }
 
@@ -623,6 +610,172 @@ impl<S> Drop for Sleep<S> {
 			flag_dropped_wait(&self.tasks.state);
 		}
 	}
+}
+
+/// The `Interval` struct keeps a task's fixed-rate schedule between its waits, so work such as re-planning a route
+/// runs a few times a second instead of every tick.
+///
+/// Make it with [`Tasks::every`] before a task's loop and await [`Self::next`] inside it, or use `next` as a
+/// [`perform!`] `each` wait. The schedule lives here rather than in the wait futures, so a wait that loses a
+/// `select!` keeps its deadline for the next one.
+pub struct Interval<S> {
+	tasks: Tasks<S>,
+	period: MediaTime,
+	/// The deadline the next one counts from: the latest deadline the interval passed, or the start plus the phase
+	/// before the first fire.
+	anchor: MediaTime,
+	/// The simulation time of the latest fire, or of the interval's start before the first fire.
+	last: MediaTime,
+}
+
+impl<S: 'static> Interval<S> {
+	/// Delays every deadline of the interval by `offset`.
+	///
+	/// Give the intervals of many entities different offsets within one period, so their fires land on different ticks
+	/// instead of the same one. Derive the offset from the entity, not from a random source, to keep runs repeatable.
+	///
+	/// # Panics
+	///
+	/// Panics when `offset` is negative.
+	pub fn phase(mut self, offset: MediaTime) -> Self {
+		assert!(
+			offset >= MediaTime::ZERO,
+			"An interval phase was negative. The most likely cause is an offset computed by subtracting a later time from an earlier one."
+		);
+		self.anchor += offset;
+		self
+	}
+
+	/// Changes the time between deadlines, counting the next deadline from the latest one the interval passed.
+	///
+	/// Use it to make an agent think less often as it moves away from the player. A next deadline that has already
+	/// passed resolves the next wait at once, or at the next advance that moves simulation time when the interval
+	/// already fired in this one.
+	///
+	/// # Panics
+	///
+	/// Panics when `period` isn't greater than zero.
+	pub fn set_period(&mut self, period: MediaTime) {
+		assert_period(period);
+		self.period = period;
+	}
+
+	/// Returns a future that resolves at the interval's next deadline with the simulation time since its previous fire.
+	///
+	/// A fire passes every deadline simulation time reached, so a task that waited on something else for several
+	/// periods fires once, with all the time that passed.
+	pub fn next(&mut self) -> IntervalTick<'_, S> {
+		IntervalTick {
+			interval: self,
+			wait: None,
+			done: false,
+		}
+	}
+}
+
+/// The `IntervalTick` struct is the future [`Interval::next`] returns.
+pub struct IntervalTick<'a, S> {
+	interval: &'a mut Interval<S>,
+	/// The wait's token and deadline, once first polled.
+	wait: Option<(u64, MediaTime)>,
+	done: bool,
+}
+
+impl<S> Unpin for IntervalTick<'_, S> {}
+
+impl<S: 'static> Future for IntervalTick<'_, S> {
+	type Output = MediaTime;
+
+	fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> Poll<MediaTime> {
+		let this = self.get_mut();
+		if this.done {
+			return Poll::Pending;
+		}
+		let interval = &mut *this.interval;
+		// A period shortened right after a fire can put the next deadline at or before that fire. Waiting until time
+		// moves past the fire keeps the interval to one fire per advance.
+		let deadline = (interval.anchor + interval.period).max(interval.last + MediaTime::from_ticks(1));
+		let Poll::Ready(now) = poll_deadline(&interval.tasks.state, &mut this.wait, |_| deadline) else {
+			return Poll::Pending;
+		};
+		this.done = true;
+		// Pass every deadline that simulation time reached, so a late fire doesn't repeat for the ones it missed.
+		let passed = (now - interval.anchor).as_ticks() / interval.period.as_ticks();
+		interval.anchor += interval.period * passed;
+		let since = now - interval.last;
+		interval.last = now;
+		Poll::Ready(since)
+	}
+}
+
+impl<S: 'static> FusedFuture for IntervalTick<'_, S> {
+	fn is_terminated(&self) -> bool {
+		self.done
+	}
+}
+
+impl<S> Drop for IntervalTick<'_, S> {
+	fn drop(&mut self) {
+		if !self.done && self.wait.is_some() {
+			flag_dropped_wait(&self.interval.tasks.state);
+		}
+	}
+}
+
+/// Panics unless `period` can separate an interval's deadlines.
+fn assert_period(period: MediaTime) {
+	assert!(
+		period > MediaTime::ZERO,
+		"An interval period wasn't greater than zero. The most likely cause is a rate converted to a period that rounded down to zero ticks."
+	);
+}
+
+/// Polls the polled task's wait for a deadline and resolves with the simulation time once it is reached.
+///
+/// `due` computes the deadline from the simulation time of the wait's first poll. `wait` keeps the wait's token and
+/// deadline between polls, so the caller's future can register it again and remove it once it resolves.
+fn poll_deadline(
+	state: &RefCell<State>,
+	wait: &mut Option<(u64, MediaTime)>,
+	due: impl FnOnce(MediaTime) -> MediaTime,
+) -> Poll<MediaTime> {
+	let mut state = state.borrow_mut();
+	let state = &mut *state;
+	let id = state.current();
+	let elapsed = state.clock.elapsed;
+	let task = state.tasks.get_mut(id).expect("the polled task is live");
+	let poll = task.poll;
+	let (token, deadline) = match *wait {
+		Some(wait) => wait,
+		None => {
+			state.tokens += 1;
+			(state.tokens, due(elapsed))
+		}
+	};
+
+	if elapsed >= deadline {
+		if let Some(index) = task.sleeps.iter().position(|wait| wait.token == token) {
+			task.sleeps.swap_remove(index);
+			state.sleeping -= 1;
+		}
+		return Poll::Ready(elapsed);
+	}
+
+	match task.sleeps.iter_mut().find(|wait| wait.token == token) {
+		Some(wait) => wait.poll = poll,
+		// A first poll, or a wait its task stopped polling for a while, which a sweep removed with its deadline.
+		None => {
+			task.sleeps.push(SleepWait { token, poll });
+			state.sleeping += 1;
+			state.deadlines.push(Reverse(Deadline {
+				at: deadline,
+				token,
+				task: id,
+			}));
+		}
+	}
+	*wait = Some((token, deadline));
+	Poll::Pending
 }
 
 /// Asks the runtime to sweep the polled task once its poll ends, since a sleep it registered was dropped there.

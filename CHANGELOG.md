@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gameplay tasks can run work at a fixed rate of simulation time instead of every tick. `Tasks::every(period)` returns a `gameplay::Interval`, whose `next` resolves at each deadline with the simulation time since the previous fire. Deadlines stay one period apart from the interval's start, a wait that loses a `select!` keeps its deadline, and a task that was busy past several deadlines fires once instead of catching up in a burst. `Interval::phase` delays every deadline, to spread the intervals of many entities across ticks, and `Interval::set_period` changes the rate. The new Gameplay tasks reference page specifies every task wait.
+
 - Animation graphs pick fitted stops and hand turns in place to root motion.
   - Routes from one state to the same destination marked with `matching_frames()` compete, so one request, such as idle, takes the stop whose wait frame fits the playing blend soonest, like a stop off either foot. Clips that no alternative names frames on don't restrict the choice.
   - A one-shot route given `turning(yaw)` hands the clip's turn to the entity through root motion when the one-shot completes, so a turn in place ends with the entity, not the pose, turned. The look chain holds its direction across the hand-over, and animation debug records carry a `look` object with what the chain measured and turned.

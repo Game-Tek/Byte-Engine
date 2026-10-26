@@ -88,6 +88,8 @@ ones sent while the task waited for something else.
   a task that waited a few ticks for something else moves by all of them.
 - `sleep` resolves once that much game time has passed. Pausing with a zero
   delta holds every sleep.
+- `every` makes an interval whose `next` resolves at a fixed rate of game
+  time. See [Run work at a fixed rate](#run-work-at-a-fixed-rate).
 - `recv` resolves with the listener's next message. Every message on the
   channel wakes every task that awaits it, so give many tasks their own
   channels rather than one they all filter.
@@ -97,6 +99,45 @@ ones sent while the task waited for something else.
 
 Read time only through the runtime. Each task that read the system clock would
 see a different time, and pausing or slowing the game wouldn't reach it.
+
+## Run work at a fixed rate
+
+Run work that doesn't need every tick, such as re-planning an agent's route,
+on an interval. Make the interval before the task's loop, and await its `next`
+in the loop or as an `each` wait:
+
+```rust
+let mut think = tasks.every(MediaTime::from_millis(100)).phase(offset);
+
+perform! {
+	when shot(&mut answers) => {
+		character.die();
+		break;
+	}
+
+	each delta = think.next() => {
+		let velocity = tasks.with(|scene| plan(scene, &mut character, delta)).await;
+		character.steer(velocity);
+	}
+}
+```
+
+`shot`, `plan`, and the character's methods are your own.
+
+- `next` resolves with the game time since the previous fire, so movement
+  that scales by `delta` stays correct at any rate.
+- The deadlines stay one period apart from when you made the interval. A wait
+  that loses the selection keeps its deadline for the next one.
+- When the task was busy past several deadlines, the interval fires once and
+  then keeps its schedule, so it never catches up in a burst.
+- Give each entity a different `phase` within the period, such as its index
+  times the period over the number of entities, so their work lands on
+  different ticks instead of the same one.
+- Call `set_period` to change the rate, for example to make agents far from
+  the player think less often.
+
+An interval fires at most once per simulation step. Use `tick` for work that
+must run every step.
 
 ## Choose activities with events and ticks
 
@@ -196,4 +237,5 @@ handles name, since `with` finds the state by its type.
 - [`GraphicsApplication::runtime`](/docs/api/latest/byte_engine/application/graphics/struct.GraphicsApplication#method.runtime)
 - [`gameplay::Runtime`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Runtime)
 - [`gameplay::Tasks`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Tasks)
+- [`gameplay::Interval`](/docs/api/latest/byte_engine/gameplay/tasks/struct.Interval)
 - [`core::listener::DefaultListener`](/docs/api/latest/byte_engine/core/listener/struct.DefaultListener)

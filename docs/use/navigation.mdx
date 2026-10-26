@@ -16,7 +16,7 @@ Create a `Navigation` system on the world scope before you create the areas.
 It builds only from the areas published after it exists:
 
 ```rust
-let navigation = Navigation::new(app.world());
+let navigation = Navigation::new(app.world(), app.parameters().scope("navigation"));
 ```
 
 Keep it where your gameplay can reach it, such as the state your tasks share.
@@ -68,13 +68,10 @@ let corners = navigation.find_path(character, target, &mut path).ok()?;
 let next_corner = corners.get(1).copied();
 ```
 
-The path also bends around other characters in its way, taking a group that
-stands together as one, so a character swerves from where it stands instead
-of when it gets there. Search again every tick, so the path follows a moving
-target and the others as they move. Keep `path` between ticks to reuse its
-storage. To stop near the target, add up the
-distances between the corners and stop the character once the sum is short
-enough.
+Keep `path` between searches to reuse its storage. Search again when the target
+moves or the route needs updating. The route accounts for walls and walkable
+surfaces; steering handles moving characters separately. Add up the distances
+between route corners to choose the gait and decide when to stop near the target.
 
 ## Steer around other characters
 
@@ -89,29 +86,36 @@ app.world()
 ```
 
 Each tick, pass the velocity the character means to move at: toward the path's
-next corner at its gait's speed, or zero to stand. Steering returns that
-velocity changed as little as it takes to keep clear of the other characters
-and on the mesh:
+next corner at its gait's speed, or zero to stand. Steering returns a direction around other characters
+and a speed ceiling for following a slower character ahead or approaching the
+mesh boundary:
 
 ```rust
-let velocity = navigation.steer(character, toward_corner * WALK_SPEED);
+let steering = navigation.steer(character, toward_corner * WALK_SPEED);
+let velocity = steering.velocity;
 ```
 
 Aim the character a little way along its path, such as 0.8 m, rather than at
 the next corner, so each turn starts before the corner. Turn its heading toward
 the result at a rate bounded by how hard it can lean into a turn, such as
 10 m/s² divided by its speed, up to 150° per second: a walk then turns on half
-a meter and a sprint on about 4 m. Pick the gait from the distance to the target
-alone, not from the path's turns, so the character hurries through them. The result changes smoothly as the
-characters move, so the character's way bends smoothly too. A character that
-means to stand gets a velocity only when others press on it; move it when that
+a meter and a sprint on about 4 m. Choose the desired gait from route distance,
+then reduce it when steering reports a lower speed ceiling. Steering retains
+the side of a pass while the blocking character remains ahead.
+A character following another in the same direction yields speed instead of
+trying to overtake it. With root-motion clips, choose a gait at or below the
+returned speed ceiling and allow room for the stopping animation. Before a
+stopped follower sets off, check `steering.following_speed`: this ceiling isn't
+limited to the requested gait speed, so you can require room for a complete
+start and stop. A character that means to stand gets a velocity only when others press on it; move it when that
 velocity is more than a brush, such as above 0.5 m/s.
 
 Give precedence to whoever should hold their ground when two characters meet:
 a character steps aside only for others of equal or greater precedence. Rank the
 player highest, a settled character by how early it settled, and a moving one
-lowest, publishing the agent again under its handle as the character settles
-or sets off. A late arrival that lands on a settled character then moves itself
+lowest. With root motion, wait for the stopping clip to reach a standing state
+before giving settled precedence or requesting another start. Publish the agent
+again under its handle as the character settles or sets off. A late arrival that lands on a settled character then moves itself
 out, and the settled one keeps its spot:
 
 ```rust
@@ -139,5 +143,6 @@ each character's radius in purple on the floor, and its latest path in amber.
 - [`gameplay::pathfinding`](/docs/api/latest/byte_engine/gameplay/pathfinding)
 - [`Navigation`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.Navigation)
 - [`NavigationArea`](/docs/api/latest/byte_engine/gameplay/pathfinding/enum.NavigationArea)
+- [`NavigationSteering`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationSteering)
 - [`NavigationAgent`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationAgent)
 - [`NavigationMesh`](/docs/api/latest/byte_engine/gameplay/pathfinding/struct.NavigationMesh)

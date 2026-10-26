@@ -29,9 +29,9 @@ The design reuses three things the renderer already has, so it adds no new mecha
 
 | Existing mechanism | What it does for debug views |
 |---|---|
-| Named, sink-scoped render targets planned by node ([`RenderTargets`]) | Each pool slot is a named target, `Debug View 0` to `Debug View N-1`, written by the declaring nodes and read by one new node that presents them. |
+| Named, sink-scoped render targets planned by node (`RenderTargets`) | Each pool slot is a named target, `Debug View 0` to `Debug View N-1`, written by the declaring nodes and read by one new node that presents them. |
 | Runtime parameters through a [`ConfigurationPort`] (`render.pass.<name>`, `render.motion-blur.taps`) | `render.debug.view.<pass>.<view>` shows or hides one view; each is its own event, so `GET /configuration` reports which views are on and why one was refused. |
-| Bake-time features that strip statements reading one member ([`VisibilityFeatures::remove_left_out_code`]) | A `debug-views` feature strips every statement that reads `debug_views`, and with it the descriptors only those statements use. |
+| Bake-time features that strip statements reading one member (`VisibilityFeatures::remove_left_out_code`) | A `debug-views` feature strips every statement that reads `debug_views`, and with it the descriptors only those statements use. |
 
 The frame of a sink becomes:
 
@@ -152,20 +152,20 @@ the command line shows the view from the first frame.
 The pool size is `render.debug.targets`, a startup parameter from `1` to `15`, default `4`. It's read when the
 renderer is created, so it doesn't change at runtime.
 
-The inspector serves one read-only route, `GET /debug-views`, from a [`DebugViewCatalog`] the renderer publishes to
+The inspector serves one read-only route, `GET /debug-views`, from a `DebugViewCatalog` the renderer publishes to
 on every registration and selection: every declared view, its slot while shown, the pool size, and whether the
 build has the feature, so a tool can offer a picker without guessing names. Selecting goes through the existing
 `/configuration` route.
 
 ### The pool and its memory
 
-The renderer creates the pool per sink on the first `debug_views` call for that sink, in [`RenderTargets`]:
-`render.debug.targets` images in the sink's color format ([`SCENE_COLOR_FORMAT`]), with
+The renderer creates the pool per sink on the first `debug_views` call for that sink, in `RenderTargets`:
+`render.debug.targets` images in the sink's color format (`SCENE_COLOR_FORMAT`), with
 `Storage | Image | TransferSource` uses, named `Debug View <slot>`. They're non-member targets, so they're sized
 on their own, not placed with the sink's image group:
 
 - A free slot is sized `1×1`. The renderer already resizes non-member targets every frame from
-  [`RenderTargets::get_images_for_sink`], so this adds a branch there and nothing else. An idle pool of four
+  `RenderTargets::get_images_for_sink`, so this adds a branch there and nothing else. An idle pool of four
   costs four tiny images.
 - The frame a view takes a slot, that slot is resized to the sink extent. Views write it that frame; `DebugView`
   presents it that frame. The slot goes back to `1×1` the frame after the view is hidden.
@@ -326,12 +326,7 @@ branches that never fire or the runtime selects a view that writes nothing and r
   removes them from release anyway.
 - **A Cargo feature for the Rust side.** Covered above: a second switch for a `Cell` read.
 
-[`RenderTargets`]: /docs/api/latest/byte_engine/rendering/renderer/struct.RenderTargets
-[`RenderTargets::get_images_for_sink`]: /docs/api/latest/byte_engine/rendering/renderer/struct.RenderTargets
-[`ConfigurationPort`]: /docs/api/latest/byte_engine/configuration/struct.ConfigurationPort
-[`VisibilityFeatures::remove_left_out_code`]: /docs/api/latest/byte_engine/rendering/pipelines/visibility/struct.VisibilityFeatures
-[`RenderPassBuilder`]: /docs/api/latest/byte_engine/rendering/render_pass/struct.RenderPassBuilder
-[`RenderPass::name`]: /docs/api/latest/byte_engine/rendering/render_pass/trait.RenderPass
-[`RenderPassState`]: /docs/api/latest/byte_engine/rendering/render_pass/enum.RenderPassState
-[`SCENE_COLOR_FORMAT`]: /docs/api/latest/byte_engine/rendering/constant.SCENE_COLOR_FORMAT
-[`DebugViewCatalog`]: /docs/api/latest/byte_engine/rendering/struct.DebugViewCatalog
+[`ConfigurationPort`]: /docs/api/latest/byte_engine/configuration#configurationport
+[`RenderPassBuilder`]: /docs/api/latest/byte_engine/rendering/render_pass#renderpassbuildera
+[`RenderPass::name`]: /docs/api/latest/byte_engine/rendering/render_pass#renderpass
+[`RenderPassState`]: /docs/api/latest/byte_engine/rendering/render_pass#renderpassstate

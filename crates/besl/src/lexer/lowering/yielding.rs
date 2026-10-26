@@ -11,8 +11,7 @@
 
 use super::*;
 
-const YIELDING_DOCUMENTATION: &str =
-	"https://byte-engine.0x44491229.dev/docs/reference/besl/language#use-if-and-match-as-values";
+const YIELDING_DOCS_PATH: &str = "reference/besl/language#use-if-and-match-as-values";
 
 /// The `BranchBlock` struct holds one lexed branch of an `if` or `match` value, so the lowering can choose between a
 /// `?:` and hoisted statements once every branch is known.
@@ -107,7 +106,8 @@ impl Lexer {
 			Some(parser::ElseBranch::If(link)) => self.lex_branch_block(std::slice::from_ref(link), expected)?,
 			None => {
 				return Err(LexError::invalid(format!(
-					"An `if` used as a value needs an `else` branch. The most likely cause is a missing `else`, which would leave the value undefined when the condition is false. See {YIELDING_DOCUMENTATION}."
+					"An `if` used as a value needs an `else` branch. The most likely cause is a missing `else`, which would leave the value undefined when the condition is false. See {docs}.",
+					docs = crate::online_docs_url(YIELDING_DOCS_PATH)
 				)));
 			}
 		};
@@ -217,7 +217,8 @@ impl Lexer {
 		};
 		if !produces_nothing {
 			return Err(LexError::invalid(format!(
-				"A block ends in a value that nothing uses. The most likely cause is a missing `;`, or a value meant to be returned: BESL functions return with `return`, not with their last expression. See {YIELDING_DOCUMENTATION}."
+				"A block ends in a value that nothing uses. The most likely cause is a missing `;`, or a value meant to be returned: BESL functions return with `return`, not with their last expression. See {docs}.",
+				docs = crate::online_docs_url(YIELDING_DOCS_PATH)
 			)));
 		}
 		Ok(value)
@@ -235,8 +236,7 @@ impl Lexer {
 		let read = read(&temporary);
 		let hoisted = self.hoisted.as_mut().ok_or_else(|| {
 			LexError::invalid(format!(
-				"This `if` or `match` value has to run statements before its statement, which isn't possible here. The most likely cause is a `match`, or a branch with statements, in a `for` loop's condition or update, or in a `const`; compute the value with a `let` first, at the start of the loop body for a loop. See {YIELDING_DOCUMENTATION}."
-			))
+				"This `if` or `match` value has to run statements before its statement, which isn't possible here. The most likely cause is a `match`, or a branch with statements, in a `for` loop's condition or update, or in a `const`; compute the value with a `let` first, at the start of the loop body for a loop. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
 		})?;
 		hoisted.extend([temporary, statement]);
 		Ok(read)
@@ -251,8 +251,7 @@ impl Lexer {
 
 		let r#type = infer_expression_type(&operand).ok_or_else(|| {
 			LexError::invalid(format!(
-				"Can't keep the value of an operand that runs before an `if` or `match` value with statements. The most likely cause is an operand without a known type; assign it to a typed `let` before this statement. See {YIELDING_DOCUMENTATION}."
-			))
+				"Can't keep the value of an operand that runs before an `if` or `match` value with statements. The most likely cause is an operand without a known type; assign it to a typed `let` before this statement. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
 		})?;
 		let temporary = self.temporary(r#type);
 		let read = read(&temporary);
@@ -433,7 +432,8 @@ pub(super) fn branch_operand<'n, 'a>(node: &'n parser::Node<'a>) -> Option<&'n p
 /// Returns the error for a branch of an `if` or `match` value that doesn't end in a value.
 fn no_value_error() -> LexError {
 	LexError::invalid(format!(
-		"A branch of an `if` or `match` value has no value. The most likely cause is a `;` after the branch's last expression; remove it, or end the branch with `return`, `break`, `continue`, or `discard`. See {YIELDING_DOCUMENTATION}."
+		"A branch of an `if` or `match` value has no value. The most likely cause is a `;` after the branch's last expression; remove it, or end the branch with `return`, `break`, `continue`, or `discard`. See {docs}.",
+		docs = crate::online_docs_url(YIELDING_DOCS_PATH)
 	))
 }
 
@@ -446,7 +446,8 @@ fn value_type<'b>(
 	let values: Vec<&NodeReference> = blocks.into_iter().filter_map(|block| block.value.as_ref()).collect();
 	if values.is_empty() {
 		return Err(LexError::invalid(format!(
-			"This `if` or `match` value never produces a value. The most likely cause is that every branch ends with `return`, `break`, `continue`, or `discard`; write it as a statement instead. See {YIELDING_DOCUMENTATION}."
+			"This `if` or `match` value never produces a value. The most likely cause is that every branch ends with `return`, `break`, `continue`, or `discard`; write it as a statement instead. See {docs}.",
+			docs = crate::online_docs_url(YIELDING_DOCS_PATH)
 		)));
 	}
 	if let Some(expected) = expected {
@@ -460,8 +461,7 @@ fn value_type<'b>(
 		.find_map(|value| infer_expression_type(value))
 		.ok_or_else(|| {
 			LexError::invalid(format!(
-				"Can't tell the type of this `if` or `match` value. The most likely cause is branches whose values have no known type; assign it to a typed `let` first. See {YIELDING_DOCUMENTATION}."
-			))
+				"Can't tell the type of this `if` or `match` value. The most likely cause is branches whose values have no known type; assign it to a typed `let` first. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
 		})
 }
 

@@ -124,6 +124,18 @@ in a larger workflow, add a short next-step hint with a link to the item a
 developer normally uses next. Add these hints to modules, types, constructors,
 and transition methods. Skip trivial fields and accessors.
 
+Link this site from Rust in one of two forms, so the links follow
+`BYTE_ENGINE_DOCS_BASE_URL` and the link check can find them:
+
+- In doc comments, write a relative link: `[Bake](/docs/use/resources/bake)`.
+- In code, such as an error message, pass the path to `online_docs_url`:
+  `online_docs_url("use/resources/bake")`, or a `*_DOCS_PATH` constant that
+  holds that path.
+
+To link a heading inside a tab, give the `<Tab>` an `id` and link that `id`.
+The site prerenders only the first tab's headings, and opening the link
+selects the tab.
+
 ## Check the result
 
 Lint the pages, then build the site from `docs-site` and check every link:
@@ -138,6 +150,10 @@ the engine's own rules in `docs-site/styles/ByteEngine`. Errors fail the build.
 Warnings print, so read them before you commit. Add an engine term that Vale
 flags as a misspelling or an unexplained acronym to
 `docs-site/styles/config/vocabularies/ByteEngine/accept.txt`.
+
+`check:links` also reads every Rust file under `crates`. It fails on a docs
+link that names a missing page or heading, and on a production URL written
+out in full. Each failure names the file and line.
 
 The build regenerates the API section first, so it needs the pinned nightly
 toolchain. To check only the hand-written pages against an API section you

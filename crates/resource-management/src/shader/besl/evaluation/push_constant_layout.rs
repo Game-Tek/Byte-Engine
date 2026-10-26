@@ -4,7 +4,7 @@ use std::{collections::HashSet, num::NonZeroUsize, ops::Range};
 
 use super::reflection::{StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_storage_type_layout};
 
-const PUSH_CONSTANT_DOCUMENTATION: &str = "https://byte-engine.0x44491229.dev/docs/reference/besl/interface#push-constants";
+const PUSH_CONSTANT_DOCS_PATH: &str = "reference/besl/interface#push-constants";
 
 /// The size of one HLSL constant-buffer register.
 const REGISTER: usize = 16;
@@ -34,16 +34,20 @@ pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> 
 		let dx12 = constant_buffer_range(r#type, count, offset, name)?;
 		if cpu.start != metal.start || cpu.start != dx12.start {
 			return Err(format!(
-				"Push-constant member `{name}` starts at byte {} on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is that a value crosses a 16-byte boundary, or that an array doesn't start on one; reorder the members or add explicit padding. See {PUSH_CONSTANT_DOCUMENTATION}.",
-				cpu.start, metal.start, dx12.start
+				"Push-constant member `{name}` starts at byte {} on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is that a value crosses a 16-byte boundary, or that an array doesn't start on one; reorder the members or add explicit padding. See {docs}.",
+				cpu.start,
+				metal.start,
+				dx12.start,
+				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)
 			));
 		}
 		if cpu.len() != metal.len() || cpu.len() != dx12.len() {
 			return Err(format!(
-				"Push-constant member `{name}` takes {} bytes on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is an array of elements smaller than 16 bytes, or a type whose size differs between backends, such as `bool` or `u8`; use `vec4` elements or `u32` instead. See {PUSH_CONSTANT_DOCUMENTATION}.",
+				"Push-constant member `{name}` takes {} bytes on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is an array of elements smaller than 16 bytes, or a type whose size differs between backends, such as `bool` or `u8`; use `vec4` elements or `u32` instead. See {docs}.",
 				cpu.len(),
 				metal.len(),
-				dx12.len()
+				dx12.len(),
+				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)
 			));
 		}
 		offset = cpu.end;
@@ -79,8 +83,7 @@ fn constant_buffer_range(
 		.filter(|_| !type_name.starts_with("mat") || type_name == "mat4f")
 		.ok_or_else(|| {
 			format!(
-				"Push-constant member `{name}` has type `{type_name}`, which DX12 can't read with the scalar layout. The most likely cause is a struct, a resource handle, or a matrix other than `mat4f` in a push constant; use scalars, vectors, `mat4f`, or arrays of them, or move the value to a buffer binding. See {PUSH_CONSTANT_DOCUMENTATION}."
-			)
+				"Push-constant member `{name}` has type `{type_name}`, which DX12 can't read with the scalar layout. The most likely cause is a struct, a resource handle, or a matrix other than `mat4f` in a push constant; use scalars, vectors, `mat4f`, or arrays of them, or move the value to a buffer binding. See {docs}.", docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH))
 		})?;
 	let (start, size) = match count {
 		// Each array element starts on a new register; the last one may share its register with the next value.
@@ -173,7 +176,7 @@ mod tests {
 			let error = validate_push_constant_layout(&members(&block)).expect_err("Expected the block to be rejected");
 
 			assert!(error.contains(expected), "{block:?}: {error}");
-			assert!(error.contains(PUSH_CONSTANT_DOCUMENTATION), "{error}");
+			assert!(error.contains(&crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)), "{error}");
 		}
 	}
 }

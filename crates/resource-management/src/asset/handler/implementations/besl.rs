@@ -493,9 +493,9 @@ impl PreparedBeslShader {
 
 const BESL_DOCS_PATH: &str = "reference/besl";
 
-const MACOS_SETUP_DOCS_PATH: &str = "use/setup/environment/macos";
+const MACOS_SETUP_DOCS_PATH: &str = "use/setup/environment#setup-macos";
 
-const WINDOWS_SETUP_DOCS_PATH: &str = "use/setup/environment/windows";
+const WINDOWS_SETUP_DOCS_PATH: &str = "use/setup/environment#setup-windows";
 
 /// Selects recovery documentation only when the compiler error identifies an actionable user configuration problem.
 fn shader_compilation_docs_path(error: &str) -> Option<&'static str> {
@@ -619,7 +619,7 @@ mod tests {
 
 		let message = shader_compilation_error_message("passes/resolve.besl", missing_metal);
 
-		assert!(message.contains("/use/setup/environment/macos"));
+		assert!(message.contains("/use/setup/environment#setup-macos"));
 		assert!(!message.contains("/reference/besl"));
 		assert_eq!(
 			shader_compilation_docs_path("Failed to create DXC. The DirectX Shader Compiler runtime is unavailable"),

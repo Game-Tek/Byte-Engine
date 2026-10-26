@@ -66,7 +66,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `limit=<count>` to keep only the newest rows. GPU values of the last frames in
 /// flight arrive once those frames complete.
 ///
-/// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
+/// See the [inspector reference](/docs/reference/inspector) for its endpoints, payloads, and limits.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
 }

@@ -40,7 +40,7 @@ Write every error and every logged warning or error in three parts:
 2. A sentence with the most likely cause.
 3. A suggestion: the action that most likely fixes it, such as the parameter to change and to what.
 
-When the problem has a documented recovery workflow, end with a direct link to the relevant online documentation page, built with `online_docs_url`. Do not link to a generic documentation landing page when a focused page exists.
+When the problem has a documented recovery workflow, end with a direct link to the relevant online documentation page, built with `online_docs_url`. Do not link to a generic documentation landing page when a focused page exists. Never write the production docs URL out in full: `bun run check:links` rejects it and checks that every docs path in Rust names an existing page and heading.
 
 # API Design
 

@@ -251,8 +251,8 @@ impl VisibilityPipelineSettings {
 	///
 	/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
 	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. The
-	/// rules are specified in the shadow map updates of the visibility pipeline reference, at
-	/// <https://byte-engine.0x44491229.dev/docs/reference/rendering#shadow-map-updates>.
+	/// rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
+	/// pipeline reference.
 	///
 	/// # Errors
 	///
@@ -460,7 +460,8 @@ fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileText
 fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	if enabled && !built_in {
 		log::warn!(
-			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See https://byte-engine.0x44491229.dev/docs/use/resources/bake#leave-render-features-out-of-the-bake"
+			"`{RENDER_PARAMETERS}.{parameter}` was not enabled. The most likely cause is that it was `false` at startup, so its feature was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
+			crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
 		);
 	}
 	enabled && built_in

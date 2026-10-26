@@ -224,8 +224,9 @@ pub(super) async fn open_read_only_storage(destination_path: String, operation: 
 pub(super) async fn read_payload(resource: &SerializableResource, mut reader: MultiResourceReader) -> Result<Box<[u8]>, i32> {
 	if reader.encoding() == ResourcePayloadEncoding::MetalIoLz4 {
 		log::error!(
-			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See https://byte-engine.0x44491229.dev/docs/reference/beld#payloads",
-			resource.id()
+			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See {}.",
+			resource.id(),
+			utils::online_docs_url("reference/beld#payloads")
 		);
 		return Err(1);
 	}

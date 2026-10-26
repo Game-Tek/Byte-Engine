@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use super::{LexError, MatchArm, NodeReference};
 use crate::parser;
 
-const MATCH_DOCUMENTATION: &str = "https://byte-engine.0x44491229.dev/docs/reference/besl/language#match";
+const MATCH_DOCS_PATH: &str = "reference/besl/language#match";
 
 /// The `MatchDomain` struct describes the values a match scrutinee can hold,
 /// so the lexer can type-check patterns and prove a match exhaustive.
@@ -26,7 +26,8 @@ impl MatchDomain {
 	pub(super) fn of(r#type: Option<&NodeReference>) -> Result<Self, LexError> {
 		let Some(r#type) = r#type else {
 			return Err(LexError::invalid(format!(
-				"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {MATCH_DOCUMENTATION}."
+				"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {docs}.",
+				docs = crate::online_docs_url(MATCH_DOCS_PATH)
 			)));
 		};
 
@@ -38,8 +39,9 @@ impl MatchDomain {
 			Some("i32") => ("i32", i32::MIN.into(), i32::MAX.into()),
 			other => {
 				return Err(LexError::invalid(format!(
-					"Can't match on a value of type `{}`. The most likely cause is a scrutinee that isn't a `bool`, `u8`, `u16`, `u32`, or `i32` value. See {MATCH_DOCUMENTATION}.",
-					other.unwrap_or("unnamed")
+					"Can't match on a value of type `{}`. The most likely cause is a scrutinee that isn't a `bool`, `u8`, `u16`, `u32`, or `i32` value. See {docs}.",
+					other.unwrap_or("unnamed"),
+					docs = crate::online_docs_url(MATCH_DOCS_PATH)
 				)));
 			}
 		};
@@ -69,17 +71,19 @@ impl MatchDomain {
 		};
 		let Some(magnitude) = magnitude else {
 			return Err(LexError::invalid(format!(
-				"Match pattern `{}{value}` doesn't have type `{}`. The most likely cause is a pattern of a different type than the value being matched. See {MATCH_DOCUMENTATION}.",
+				"Match pattern `{}{value}` doesn't have type `{}`. The most likely cause is a pattern of a different type than the value being matched. See {docs}.",
 				if negative { "-" } else { "" },
-				self.type_name
+				self.type_name,
+				docs = crate::online_docs_url(MATCH_DOCS_PATH)
 			)));
 		};
 
 		let value = if negative { -magnitude } else { magnitude };
 		if !(self.minimum..=self.maximum).contains(&value) {
 			return Err(LexError::invalid(format!(
-				"Match pattern `{value}` is out of range for `{}`. The most likely cause is a literal larger than the scrutinee type can hold. See {MATCH_DOCUMENTATION}.",
-				self.type_name
+				"Match pattern `{value}` is out of range for `{}`. The most likely cause is a literal larger than the scrutinee type can hold. See {docs}.",
+				self.type_name,
+				docs = crate::online_docs_url(MATCH_DOCS_PATH)
 			)));
 		}
 
@@ -114,8 +118,9 @@ pub(super) fn normalize_arms(
 
 	if seen.len() as u64 != domain.maximum.abs_diff(domain.minimum) + 1 {
 		return Err(LexError::invalid(format!(
-			"Non-exhaustive match on `{}`. The most likely cause is a missing `_` arm for the values no other arm lists. See {MATCH_DOCUMENTATION}.",
-			domain.type_name
+			"Non-exhaustive match on `{}`. The most likely cause is a missing `_` arm for the values no other arm lists. See {docs}.",
+			domain.type_name,
+			docs = crate::online_docs_url(MATCH_DOCS_PATH)
 		)));
 	}
 

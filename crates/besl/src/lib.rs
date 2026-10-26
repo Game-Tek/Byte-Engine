@@ -31,6 +31,23 @@ pub use lexer::infer_expression_type;
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::{BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MatchArm};
 
+/// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.
+///
+/// This mirrors `online_docs_url` in `byte-engine-utils`, kept here so BESL doesn't depend on that crate.
+const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+	Some(url) => url,
+	None => "https://byte-engine.0x44491229.dev/docs",
+};
+
+/// Builds a link to one online documentation page, such as the language rule a compile error points to.
+pub(crate) fn online_docs_url(path: &str) -> String {
+	format!(
+		"{}/{}",
+		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
+		path.trim_start_matches('/')
+	)
+}
+
 /// Names the current vertex invocation's vertex index.
 ///
 /// Vertex shaders can read this implicit `u32` value as `vertex_index` without declaring an

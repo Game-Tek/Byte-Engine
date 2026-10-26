@@ -4,9 +4,8 @@ use crate::parser;
 
 mod yielding;
 
-const ATOMIC_INTRINSICS_DOCUMENTATION: &str =
-	"https://byte-engine.0x44491229.dev/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics";
-const ARRAY_DOCUMENTATION: &str = "https://byte-engine.0x44491229.dev/docs/reference/besl/language#pass-and-return-arrays";
+const ATOMIC_INTRINSICS_DOCS_PATH: &str = "reference/besl/intrinsics#buffer-and-workgroup-atomics";
+const ARRAY_DOCS_PATH: &str = "reference/besl/language#pass-and-return-arrays";
 
 #[derive(Clone, Copy)]
 enum AtomicAccessRequirement {
@@ -64,17 +63,20 @@ fn atomic_target_root(target: &NodeReference) -> Option<AtomicTargetRoot> {
 fn validate_atomic_target(name: &str, target: &NodeReference, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
 	let Some(root) = atomic_target_root(target) else {
 		return Err(LexError::invalid(format!(
-			"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+			"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {docs}.",
+			docs = crate::online_docs_url(ATOMIC_INTRINSICS_DOCS_PATH)
 		)));
 	};
 
 	match (root, requirement) {
 		(AtomicTargetRoot::Binding { write: false, .. }, AtomicAccessRequirement::Write) => Err(LexError::invalid(format!(
-			"Atomic store requires a writable buffer. The most likely cause is that the descriptor used by `{name}` does not include write access. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+			"Atomic store requires a writable buffer. The most likely cause is that the descriptor used by `{name}` does not include write access. See {docs}.",
+			docs = crate::online_docs_url(ATOMIC_INTRINSICS_DOCS_PATH)
 		))),
 		(AtomicTargetRoot::Binding { read, write }, AtomicAccessRequirement::ReadWrite) if !(read && write) => {
 			Err(LexError::invalid(format!(
-				"Atomic operation requires a read-write buffer. The most likely cause is that the descriptor used by `{name}` does not use `read_write` access. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+				"Atomic operation requires a read-write buffer. The most likely cause is that the descriptor used by `{name}` does not use `read_write` access. See {docs}.",
+				docs = crate::online_docs_url(ATOMIC_INTRINSICS_DOCS_PATH)
 			)))
 		}
 		_ => Ok(()),
@@ -741,6 +743,7 @@ fn validate_return_type(name: &str, return_type: &parser::TypeName) -> Result<()
 		return Ok(());
 	}
 	Err(LexError::invalid(format!(
-		"Function `{name}` can't return an array of {count} elements. The most likely cause is a function that returns a larger array; only arrays of two to four `f32`, `u16`, or `u32` values can be returned, so return a vector or struct with the values the caller needs instead. See {ARRAY_DOCUMENTATION}."
+		"Function `{name}` can't return an array of {count} elements. The most likely cause is a function that returns a larger array; only arrays of two to four `f32`, `u16`, or `u32` values can be returned, so return a vector or struct with the values the caller needs instead. See {docs}.",
+		docs = crate::online_docs_url(ARRAY_DOCS_PATH)
 	)))
 }

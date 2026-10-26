@@ -2,7 +2,7 @@
 
 Byte-Engine's own code is covered by [LICENSE](LICENSE). The following notices
 apply to the identified adaptations and assets. Source and design credits are
-listed in [Attribution and thanks](ATTRIBUTIONS.md).
+listed in [Attribution and thanks](docs/attribution.mdx).
 
 ## Slug coverage shader
 

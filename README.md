@@ -269,5 +269,5 @@ Publishing-specific verification and crate order are documented in
 
 Byte-Engine is licensed under the [MIT license](LICENSE).
 Adapted code retains its own notices in [Third-party notices](THIRD_PARTY_NOTICES.md).
-See [Attribution and thanks](ATTRIBUTIONS.md)
+See [Attribution and thanks](docs/attribution.mdx)
 for the people and published work the engine builds on.

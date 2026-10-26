@@ -1,9 +1,16 @@
+import { rustApiModel } from '@/lib/rust-api/load';
+import { renderRustPageMarkdown } from '@/lib/rust-api/markdown';
 import { source } from '@/lib/source';
 
 /**
  * Return a page in the portable Markdown form exposed to agents.
  */
 export async function getLLMText(page: (typeof source)['$inferPage']) {
+	// Rust API pages render from the API model, with `.md` links between them.
+	if (page.type === 'rust' && rustApiModel) {
+		return `# ${page.data.title} (${page.url})\n\n${renderRustPageMarkdown(rustApiModel, page.data.rustKey)}`;
+	}
+
 	// Virtual OpenAPI pages expose searchable structured text instead of
 	// compiled MDX text.
 	const processed = 'getText' in page.data

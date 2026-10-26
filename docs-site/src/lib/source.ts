@@ -29,6 +29,8 @@ import {
 import { createElement, type ComponentType } from 'react';
 import { docs } from '@/.source/server';
 import { inspectorOpenAPI } from '@/lib/openapi';
+import { rustApiModel } from '@/lib/rust-api/load';
+import { rustApiLoaderPlugin, rustApiSource } from '@/lib/rust-api/source';
 
 type GlassIcon = ComponentType<{
 	'aria-hidden': true;
@@ -82,9 +84,12 @@ export const source = loader({
 			baseDir: 'api/inspector',
 			meta: true,
 		}),
+		// The Rust API pages are built from the model that
+		// `scripts/generate-api-docs.sh` writes, the same way.
+		rust: rustApiSource(rustApiModel),
 	},
 	baseUrl: '/docs',
-	plugins: [inspectorOpenAPI.loaderPlugin()],
+	plugins: [inspectorOpenAPI.loaderPlugin(), rustApiLoaderPlugin()],
 	icon(icon) {
 		if (!icon) {
 			return;

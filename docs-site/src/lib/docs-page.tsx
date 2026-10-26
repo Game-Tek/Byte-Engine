@@ -34,6 +34,10 @@ import {
 } from 'react';
 import browserCollections from '@/.source/browser';
 import { InspectorOpenAPIPage } from '@/components/inspector-openapi-page';
+import { InlineText } from '@/components/rust-api/parts';
+import { RustItemPage, RustItemTitle, RustLandingPage } from '@/components/rust-api/rust-api-page';
+import { rustApiModel } from '@/lib/rust-api/load';
+import { buildRustPageView, type RustPageView } from '@/lib/rust-api/view';
 import { getMarkdownUrl } from '@/lib/llm';
 import { baseOptions } from '@/lib/layout.shared';
 import { source } from '@/lib/source';
@@ -59,7 +63,14 @@ type OpenAPIDocsPageData = SharedDocsPageData & {
 	openapiProps: OpenAPIPageProps_Spec;
 };
 
-export type DocsPageData = MdxDocsPageData | OpenAPIDocsPageData;
+type RustDocsPageData = SharedDocsPageData & {
+	kind: 'rust';
+	title: string;
+	description: string;
+	view: RustPageView;
+};
+
+export type DocsPageData = MdxDocsPageData | OpenAPIDocsPageData | RustDocsPageData;
 
 export const loadDocsPage = createServerFn({
 	method: 'GET',
@@ -87,6 +98,16 @@ export const loadDocsPage = createServerFn({
 			};
 		}
 
+		if (page.type === 'rust' && rustApiModel) {
+			return {
+				...shared,
+				kind: 'rust' as const,
+				title: page.data.title,
+				description: page.data.description,
+				view: await buildRustPageView(rustApiModel, page.data.rustKey),
+			};
+		}
+
 		return {
 			...shared,
 			kind: 'mdx' as const,
@@ -94,7 +115,6 @@ export const loadDocsPage = createServerFn({
 	});
 
 type DocsContentProps = {
-	docsRsUrl?: string;
 	githubUrl: string;
 	markdownUrl: string;
 };
@@ -108,39 +128,14 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 		return (
 			<DocsPage
 				toc={visibleToc}
+				breadcrumb={{ className: 'be-breadcrumb' }}
 				footer={{ className: 'be-page-navigation' }}
 			>
 				<div className="flex justify-end gap-2">
-					{pageActions.docsRsUrl && (
-						<a
-							className={buttonVariants({
-								color: 'secondary',
-								size: 'sm',
-								className: 'gap-2 [&_svg]:size-3.5',
-							})}
-							href={pageActions.docsRsUrl}
-							rel="noreferrer"
-							target="_blank"
-						>
-							View on docs.rs
-							<svg
-								aria-hidden="true"
-								fill="none"
-								stroke="currentColor"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								strokeWidth="2"
-								viewBox="0 0 24 24"
-							>
-								<path d="M7 17 17 7" />
-								<path d="M7 7h10v10" />
-							</svg>
-						</a>
-					)}
-				<MarkdownCopyButton
-					aria-label="Copy Markdown"
-					markdownUrl={pageActions.markdownUrl}
-				/>
+					<MarkdownCopyButton
+						aria-label="Copy Markdown"
+						markdownUrl={pageActions.markdownUrl}
+					/>
 					<ViewOptionsPopover
 						githubUrl={pageActions.githubUrl}
 						markdownUrl={pageActions.markdownUrl}
@@ -279,28 +274,6 @@ function ApiNavigationName({ name, kind }: { name: string; kind: string }) {
 	);
 }
 
-function RustModuleNavigationName({ name }: { name: string }) {
-	return (
-		<span className="be-rust-module-name">
-			<span>{name}</span>
-			<span className="be-rust-module-kind">mod</span>
-		</span>
-	);
-}
-
-// Generated folders under the crate represent Rust modules. Decorate the
-// merged tree so nested modules receive the marker without changing output.
-function decorateRustModuleNavigation(node: Node): Node {
-	if (node.type !== 'folder') return node;
-
-	const name = getPageTreeName(node.name);
-	return {
-		...node,
-		name: name ? <RustModuleNavigationName name={name} /> : node.name,
-		children: node.children.map(decorateRustModuleNavigation),
-	};
-}
-
 // The HTTP reference is virtual and the Rust reference is generated, so add
 // their shared navigation treatment after both sources become one page tree.
 function decorateApiNavigation(node: Node): Node {
@@ -325,7 +298,6 @@ function decorateApiNavigation(node: Node): Node {
 		return {
 			...node,
 			name: <ApiNavigationName name="byte_engine" kind="rust" />,
-			children: node.children.map(decorateRustModuleNavigation),
 			icon: (
 				<IconBox
 					aria-hidden
@@ -445,6 +417,8 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 		>
 			{data.kind === 'openapi' ? (
 				<OpenAPIDocsContent data={data} />
+			) : data.kind === 'rust' ? (
+				<RustDocsContent data={data} />
 			) : (
 				<MdxDocsContent data={data} />
 			)}
@@ -455,27 +429,61 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 function MdxDocsContent({ data }: { data: MdxDocsPageData }) {
 	const Content = clientLoader.getComponent(data.path);
 	const markdownUrl = getMarkdownUrl(data.url);
-	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/main/docs/${data.path}`;
-	const docsRsUrl = getDocsRsUrl(data.url);
+	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/master/docs/${data.path}`;
 
 	return (
 		<Content
-			docsRsUrl={docsRsUrl}
 			githubUrl={githubUrl}
 			markdownUrl={markdownUrl}
 		/>
 	);
 }
 
-const rustApiBaseUrl = '/docs/api/latest/byte_engine';
-const docsRsBaseUrl = 'https://docs.rs/byte-engine/latest/byte_engine/';
+// Rust API pages render from the API model, so they have no MDX module to load.
+function RustDocsContent({ data }: { data: RustDocsPageData }) {
+	const contentRef = useRef<HTMLDivElement>(null);
+	const visibleToc = useVisibleTableOfContents(data.view.toc, contentRef);
+	const markdownUrl = getMarkdownUrl(data.url);
+	const item = data.view.kind === 'item' ? data.view.item : undefined;
+	const linkButton = buttonVariants({ color: 'secondary', size: 'sm' });
 
-function getDocsRsUrl(url: string) {
-	if (url === rustApiBaseUrl) return docsRsBaseUrl;
-	if (!url.startsWith(`${rustApiBaseUrl}/`)) return;
-
-	const modulePath = url.slice(rustApiBaseUrl.length + 1);
-	return `${docsRsBaseUrl}${modulePath}/index.html`;
+	return (
+		<DocsPage
+			toc={visibleToc}
+			breadcrumb={{ className: 'be-breadcrumb' }}
+			footer={{ className: 'be-page-navigation' }}
+		>
+			<div className="flex justify-end gap-2">
+				{item?.sourceUrl && (
+					<a className={linkButton} href={item.sourceUrl} rel="noreferrer" target="_blank">
+						Source
+					</a>
+				)}
+				{item && (
+					<a className={linkButton} href={item.docsRsUrl} rel="noreferrer" target="_blank">
+						docs.rs
+					</a>
+				)}
+				<MarkdownCopyButton aria-label="Copy Markdown" markdownUrl={markdownUrl} />
+				<ViewOptionsPopover markdownUrl={markdownUrl} />
+			</div>
+			{item ? (
+				<RustItemTitle item={item} title={<DocsTitle>{data.title}</DocsTitle>} />
+			) : (
+				<DocsTitle>{data.title}</DocsTitle>
+			)}
+			<DocsDescription>
+				<InlineText text={data.description} />
+			</DocsDescription>
+			<DocsBody ref={contentRef}>
+				{data.view.kind === 'landing' ? (
+					<RustLandingPage landing={data.view.landing} />
+				) : (
+					<RustItemPage item={data.view.item} />
+				)}
+			</DocsBody>
+		</DocsPage>
+	);
 }
 
 function OpenAPIDocsContent({ data }: { data: OpenAPIDocsPageData }) {

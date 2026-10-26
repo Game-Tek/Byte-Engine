@@ -1,0 +1,14 @@
+# A tiny crate whose rustdoc JSON the API model tests read. It is its own workspace
+# so it stays out of the engine build. Regenerate `rustdoc.json` with the command
+# in docs-site/test/rustdoc/build-model.test.ts.
+[package]
+name = "rustdoc-sample"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "sample"
+path = "src/lib.rs"
+
+[workspace]

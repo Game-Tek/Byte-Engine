@@ -1,8 +1,6 @@
 /target
 /resources
 /coverage
-# Regenerate the latest API reference with scripts/generate-api-docs.sh.
-/docs/api/latest/
 *.db
 *.db.*
 *.glb

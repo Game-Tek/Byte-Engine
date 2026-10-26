@@ -19,3 +19,5 @@ node_modules
 
 src/routeTree.gen.ts
 .source
+# Written by scripts/generate-api-docs.sh.
+/generated/

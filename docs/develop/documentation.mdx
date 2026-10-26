@@ -72,13 +72,15 @@ The pages at the root of `docs`: [Welcome](/docs),
 ## API
 
 `docs/api`, shown as [API](/docs/api/latest). `scripts/generate-api-docs.sh`
-renders the Rust pages from rustdoc, and the site renders the inspector's HTTP
-pages from `docs-site/openapi/inspector.json`.
+turns rustdoc output into an API model, `docs-site/generated/rust-api.json`, and
+the site renders the Rust pages, their Markdown, and the symbol index from it.
+The site renders the inspector's HTTP pages from
+`docs-site/openapi/inspector.json`.
 
 - **Reader:** Anyone at one function, type, module, or endpoint.
 - **Question:** What does this item do, and what do I call next?
-- **A page is:** Generated. Nothing under `docs/api/latest` is written by hand,
-  and Git ignores that directory.
+- **A page is:** Generated. No Rust API page is written by hand, and Git
+  ignores the generated model.
 - **Never:** An edit. To change a Rust page, change the doc comment in the
   source. To change an HTTP page, change the OpenAPI schema.
 

@@ -20,5 +20,6 @@
       "@/.source/*": ["./.source/*"]
     },
     "noEmit": true
-  }
+  },
+  "exclude": ["test"]
 }

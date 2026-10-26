@@ -12,9 +12,6 @@ const anchorCache = new Map();
 for (const sourceFile of pages) {
 	const sourceRoute = routeForFile(sourceFile);
 	const html = await readFile(sourceFile, 'utf8');
-	if (sourceRoute.startsWith('/docs/api/') && hasInlineImplementationSignature(html)) {
-		failures.add(`${sourceRoute} renders an implementation signature as inline code`);
-	}
 	if (sourceRoute.startsWith('/docs/api/') && hasAbsoluteSameSiteLink(html)) {
 		failures.add(`${sourceRoute} contains a hardcoded production documentation link`);
 	}
@@ -60,10 +57,6 @@ for (const sourceFile of rustFiles) {
 			if (failure) failures.add(`${location} -> ${href} (${failure})`);
 		}
 	}
-}
-
-function hasInlineImplementationSignature(html) {
-	return /<li>\s*<p><code>(?:(?:unsafe|async)\s+)*(?:fn\s+\w+\(|const\s+(?:fn\s+)?\w+|type\s+\w+)/i.test(html);
 }
 
 function hasAbsoluteSameSiteLink(html) {
@@ -146,8 +139,7 @@ function isNonPageRoute(pathname) {
 	return pathname.startsWith('/assets/') ||
 		pathname.startsWith('/api/') ||
 		pathname.endsWith('.md') ||
-		pathname === '/llms.txt' ||
-		pathname === '/llms-full.txt';
+		pathname.endsWith('.txt');
 }
 
 async function anchorsIn(file) {

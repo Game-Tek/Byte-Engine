@@ -260,6 +260,7 @@ hit_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
 }
 
 // Maps two uniform numbers to a cosine-weighted direction around `normal` (Duff et al. 2017 orthonormal basis).
+// https://jcgt.org/published/0006/01/01/
 cosine_hemisphere_direction: fn (normal: vec3f, u1: f32, u2: f32) -> vec3f {
 	// `step` returns the positive sign at zero.
 	let axis_sign: f32 = step(0.0, normal.z) * 2.0 - 1.0;

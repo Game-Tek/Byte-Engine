@@ -146,6 +146,8 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return b_to_p;
 	}
 
+	// Jorge Jimenez's interleaved gradient noise, with the temporal offset described by Alan Wolfe:
+	// https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/
 	interleaved_gradient_noise: fn (pixel_x: u32, pixel_y: u32, frame: u32) -> f32 {
 		let wrapped_frame: u32 = frame % 64;
 		let frame_offset: f32 = 5.588238 * f32(wrapped_frame);
@@ -377,6 +379,8 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return f0 + (grazing - f0) * factor;
 	}
 
+	// Follows CalcFullBary in John Hable's article, including the corrected gradients by James McLaren and Stephen Hill:
+	// https://filmicworlds.com/blog/visibility-buffer-rendering-with-material-graphs/
 	calculate_full_bary: fn (
 		pt0: vec4f,
 		pt1: vec4f,

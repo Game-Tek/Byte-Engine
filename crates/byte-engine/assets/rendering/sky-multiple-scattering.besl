@@ -5,6 +5,7 @@ parameters: descriptor<{ type: SkyParameters, binding: 2, access: read, memory: 
 // Light that has scattered more than once arrives from nearly every direction evenly, so its contribution depends only
 // on altitude and the sun's angle. Each texel stores that light for one altitude (y) and one sun zenith cosine (x), per
 // lux of sunlight, following Hillaire 2020, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique".
+// https://sebh.github.io/publications/egsr2020.pdf
 
 get_planet_center: fn () -> vec3f {
 	return vec3f(parameters.planet_center.x, parameters.planet_center.y, parameters.planet_center.z);

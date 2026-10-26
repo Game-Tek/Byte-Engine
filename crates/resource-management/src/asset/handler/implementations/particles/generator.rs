@@ -142,7 +142,9 @@ group_base: workgroup<atomicu32>;
 
 DECAY_STEPS: const f32 = {decay_steps};
 
-// PCG hash: a cheap, well-mixed 32-bit permutation.
+// Melissa O'Neill's PCG RXS-M-XS variant, used as a hash by Mark Jarzynski and Marc Olano:
+// https://jcgt.org/published/0009/03/02/
+// https://www.pcg-random.org/paper.html
 hash: fn (value: u32) -> u32 {{
 	let state: u32 = value * 747796405 + 2891336453;
 	let word: u32 = ((state >> ((state >> 28) + 4)) ^ state) * 277803737;

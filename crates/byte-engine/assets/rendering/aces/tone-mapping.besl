@@ -5,6 +5,8 @@ result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 // overflowed, would give NaN and show as black. Holding the input to the half-float range maps it to white.
 HALF_FLOAT_MAX: const f32 = 65504.0;
 
+// Krzysztof Narkowicz's ACES filmic curve fit, used under his CC0 option:
+// https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
 aces_narkowicz: fn(input_color: vec3f) -> vec3f {
 	let color: vec3f = clamp(input_color, vec3f(0.0, 0.0, 0.0), vec3f(HALF_FLOAT_MAX, HALF_FLOAT_MAX, HALF_FLOAT_MAX));
 	let a: f32 = 2.51;

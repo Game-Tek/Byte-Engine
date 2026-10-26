@@ -11,6 +11,12 @@ and names the tests and benchmarks that guard them. The code lives in
 `crates/byte-engine/src/core/alley.rs` and
 `crates/byte-engine/src/core/threadpool.rs`.
 
+The execution model follows Ryan Fleury's
+[Multi-Core By Default](https://www.dgtlgrove.com/p/multi-core-by-default).
+Lanes run the same function, narrow to serial work, and share results before
+continuing in parallel. The sections below describe the engine's synchronization
+design.
+
 ## How a dispatch runs
 
 The lane pool keeps one worker for every lane, each on cache lines of its own.

@@ -733,6 +733,8 @@ fn lerp_radiance(a: Radiance, b: Radiance, amount: f32) -> Radiance {
 }
 
 /// Builds a stable tangent frame without choosing a different helper axis near the lat-long poles.
+///
+/// Uses Duff et al.'s [Building an Orthonormal Basis, Revisited](https://jcgt.org/published/0006/01/01/).
 fn orthonormal_basis(normal: Vector) -> (Vector, Vector) {
 	let sign = if normal.z() >= 0.0 { 1.0 } else { -1.0 };
 	let a = -1.0 / (sign + normal.z());

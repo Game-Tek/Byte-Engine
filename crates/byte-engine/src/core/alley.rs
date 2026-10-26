@@ -1,5 +1,8 @@
 /// The `Alley` struct provides reusable parallel execution across a fixed number of owned lanes.
 ///
+/// The execution model follows Ryan Fleury's [Multi-Core By Default](https://www.dgtlgrove.com/p/multi-core-by-default):
+/// lanes run the same function, narrow to serial work, and share results before continuing in parallel.
+///
 /// A dispatch runs one function on every lane, and the lanes meet in collective sections such as
 /// [`ConcreteLane::each`] and [`ConcreteLane::broadcast`]. Sections cost far less than dispatches, which wake
 /// threads, and a dispatch allocates nothing for its sections, so prefer one dispatch that runs a whole algorithm

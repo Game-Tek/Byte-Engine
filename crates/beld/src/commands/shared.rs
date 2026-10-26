@@ -226,7 +226,7 @@ pub(super) async fn read_payload(resource: &SerializableResource, mut reader: Mu
 		log::error!(
 			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See {}.",
 			resource.id(),
-			utils::online_docs_url("reference/beld#payloads")
+			utils::online_docs_url("api/beld#payloads")
 		);
 		return Err(1);
 	}

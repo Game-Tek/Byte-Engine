@@ -75,14 +75,16 @@ The pages at the root of `docs`: [Welcome](/docs),
 turns rustdoc output into an API model, `docs-site/generated/rust-api.json`, and
 the site renders the Rust pages, their Markdown, and the symbol index from it.
 The site renders the inspector's HTTP pages from
-`docs-site/openapi/inspector.json`.
+`docs-site/openapi/inspector.json`. The command-line pages, such as
+[BELD](/docs/api/beld), are the one hand-written part of the section.
 
-- **Reader:** Anyone at one function, type, module, or endpoint.
+- **Reader:** Anyone at one function, type, module, endpoint, or command.
 - **Question:** What does this item do, and what do I call next?
-- **A page is:** Generated. No Rust API page is written by hand, and Git
-  ignores the generated model.
-- **Never:** An edit. To change a Rust page, change the doc comment in the
-  source. To change an HTTP page, change the OpenAPI schema.
+- **A page is:** Generated, or for a command-line tool, a specification of its
+  commands, flags, exit codes, and output, written in the Reference shape. No
+  Rust API page is written by hand, and Git ignores the generated model.
+- **Never:** An edit to a generated page. To change a Rust page, change the doc
+  comment in the source. To change an HTTP page, change the OpenAPI schema.
 
 ## Choose the section for a page
 
@@ -100,7 +102,8 @@ Ask these questions in order, and stop at the first yes:
    Use.
 3. Does it define something a reader looks up? Put it in Reference.
 4. Is it about one Rust item or one endpoint? Write it in the doc comment or the
-   OpenAPI schema. The API section picks it up.
+   OpenAPI schema. The API section picks it up. Is it the command line of a
+   tool? Write it in `docs/api`.
 
 If a page answers two of these questions, split it. Keep the steps in Use or
 Contribute, move the tables and definitions to Reference, and link the pages to

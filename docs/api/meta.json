@@ -1,6 +1,6 @@
 {
 	"title": "API",
-	"description": "Generated Rust and HTTP API reference.",
-	"pages": ["inspector", "...latest"],
+	"description": "Generated Rust and HTTP API reference, and the BELD command line.",
+	"pages": ["inspector", "beld", "...latest"],
 	"root": true
 }

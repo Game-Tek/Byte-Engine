@@ -114,6 +114,10 @@
 	color: hsl(25 86% 44%);
 }
 
+.be-api-navigation-kind[data-kind='cli'] {
+	color: hsl(135 62% 32%);
+}
+
 .be-rust-module-name {
 	display: inline-flex;
 	width: 100%;
@@ -138,6 +142,10 @@
 
 .dark .be-api-navigation-kind[data-kind='rust'] {
 	color: hsl(28 95% 68%);
+}
+
+.dark .be-api-navigation-kind[data-kind='cli'] {
+	color: var(--be-green);
 }
 
 /* Pair the repository card with a compact vertical theme switch. */

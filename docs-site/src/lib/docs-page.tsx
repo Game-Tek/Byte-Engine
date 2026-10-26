@@ -246,7 +246,7 @@ const sections = new Map([
 		'API',
 		{
 			url: '/docs/api/latest',
-			description: 'Generated Rust and HTTP API reference.',
+			description: 'Generated Rust and HTTP API reference, and the BELD command line.',
 		},
 	],
 ]);
@@ -274,9 +274,14 @@ function ApiNavigationName({ name, kind }: { name: string; kind: string }) {
 	);
 }
 
-// The HTTP reference is virtual and the Rust reference is generated, so add
-// their shared navigation treatment after both sources become one page tree.
+// The HTTP reference is virtual, the Rust reference is generated, and the CLI
+// reference is written by hand, so add their shared navigation treatment after
+// every source becomes one page tree.
 function decorateApiNavigation(node: Node): Node {
+	if (node.type === 'page' && node.url === '/docs/api/beld') {
+		return { ...node, name: <ApiNavigationName name="BELD" kind="cli" /> };
+	}
+
 	if (node.type !== 'folder') return node;
 
 	const name = getPageTreeName(node.name);

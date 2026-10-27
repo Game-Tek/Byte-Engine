@@ -52,8 +52,8 @@ impl<'a> ResourceCandidate<'a> {
 /// The `ResourceValidator` trait lets a project reject baked resources that break its own rules.
 ///
 /// The asset manager calls [`Self::validate`] for every resource a bake stores, including generated dependencies,
-/// before the resource is written. A rejection fails the bake of that resource and of every resource that depends
-/// on it, and nothing is written for it.
+/// before the resource is published to resource storage. A rejection fails the bake of that resource and of every
+/// resource that depends on it, and nothing is stored for it.
 ///
 /// Register a validator with
 /// [`AssetManager::add_resource_validator`](crate::asset::manager::AssetManager::add_resource_validator).

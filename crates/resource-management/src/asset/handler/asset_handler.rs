@@ -335,7 +335,8 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 	) -> Result<SerializableResource, LoadErrors> {
 		// Incremental transactions store bytes uncompressed, so the reserved size is the decoded payload size.
-		// Dropping a rejected transaction returns its reserved storage.
+		// The handler has already written the payload into the reservation; dropping a rejected transaction discards it
+		// by deleting the staged file or returning the packed range, so nothing is published.
 		self.validate(&resource, transaction.expected_size())?;
 		self.commit_validated(transaction, resource).await
 	}

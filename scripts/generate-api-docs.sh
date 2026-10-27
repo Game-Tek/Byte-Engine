@@ -18,6 +18,10 @@ fi
 
 cd "$REPOSITORY_ROOT"
 
+# The previous cargo-docs-md generator wrote MDX pages here. The docs site loads everything under docs/, so stale
+# pages would sit next to the generated API pages; remove them once on checkouts that ran the old generator.
+rm -rf "$REPOSITORY_ROOT/docs/api/latest"
+
 # Generate only the public library API. Cargo still builds dependencies needed to
 # analyze the crate, but rustdoc writes one JSON artifact for byte-engine.
 # Hidden items are included because many public types are defined in

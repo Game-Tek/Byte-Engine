@@ -144,7 +144,7 @@ impl AssetManager {
 	/// Registers a project rule that every baked resource must pass before it is stored.
 	///
 	/// Validators run in registration order for each resource a bake stores, including generated dependencies. The
-	/// first rejection fails that bake with [`LoadErrors::ValidationFailed`] and nothing is written for the resource.
+	/// first rejection fails that bake with [`LoadErrors::ValidationFailed`] and nothing is stored for the resource.
 	/// Register validators before calling [`Self::bake`] or sharing the manager.
 	///
 	/// Next, call [`Self::bake_if_stale`] for each root, or [`Self::rebuild_resources_baked_before`] first when

@@ -75,11 +75,13 @@ The trace is an in-memory development tool: release builds don't expose it, and 
 A `ResourceValidator` lets a project reject resources that break its own rules, such as a payload size limit.
 Register validators with `AssetManager::add_resource_validator`; the asset manager keeps them next to its handlers.
 
-The validators run inside `BakeContext`, before a resource reaches resource storage, so a rejected resource is never written.
+The validators run inside `BakeContext`, before a resource is published to resource storage, so a rejected resource is never stored.
 A change must keep these rules:
 
-- Every store path validates before it writes. `store_resource` and `store_resource_owned` validate the decoded payload size before any CPU compression.
-  `commit_resource` validates the size its transaction reserved, which is the decoded size because transactions store bytes uncompressed; a rejected transaction is dropped, which returns its reservation.
+- Every store path validates before it publishes. `store_resource` and `store_resource_owned` validate the decoded payload size before any CPU compression, so a rejected payload is never written.
+  `commit_resource` validates the size its transaction reserved, which is the decoded size because transactions store bytes uncompressed.
+  A streamed handler has already written that payload into the reservation, because its metadata exists only after processing.
+  A rejected transaction is dropped, which deletes the staged file or returns the packed range, so the payload is never published.
 - A validator sees `ResourceCandidate`: metadata and payload size, never payload bytes. Streamed writes don't hold their payload in memory, so passing bytes would force them to buffer it.
 - A rejection records an error in the resource trace and fails the bake with `LoadErrors::ValidationFailed`.
   A rejected dependency fails its parent, the same as any other dependency failure.

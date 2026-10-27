@@ -114,6 +114,10 @@
 	color: hsl(25 86% 44%);
 }
 
+.be-api-navigation-kind[data-kind='cli'] {
+	color: hsl(135 62% 32%);
+}
+
 .be-rust-module-name {
 	display: inline-flex;
 	width: 100%;
@@ -125,7 +129,6 @@
 .be-rust-module-kind {
 	flex-shrink: 0;
 	margin-inline-start: auto;
-	color: hsl(25 86% 44%);
 	font-family: var(--font-mono);
 	font-size: 0.75rem;
 	font-weight: 500;
@@ -141,8 +144,8 @@
 	color: hsl(28 95% 68%);
 }
 
-.dark .be-rust-module-kind {
-	color: hsl(28 95% 68%);
+.dark .be-api-navigation-kind[data-kind='cli'] {
+	color: var(--be-green);
 }
 
 /* Pair the repository card with a compact vertical theme switch. */
@@ -253,4 +256,242 @@
 		0 0 28px hsl(var(--be-green-hsl) / 16%),
 		0 0 52px hsl(var(--be-green-hsl) / 8%),
 		inset 0 0 18px hsl(var(--be-green-hsl) / 8%);
+}
+
+/* Rust API pages: declaration tokens use the GitHub themes the code blocks use.
+   Inside code blocks Fumadocs colors spans from Shiki's --shiki-light and
+   --shiki-dark variables, so tokens set those; `color` covers inline code. */
+.be-tok-keyword {
+	--shiki-light: #d73a49;
+	--shiki-dark: #f97583;
+}
+
+.be-tok-type,
+.be-tok-fn {
+	--shiki-light: #6f42c1;
+	--shiki-dark: #b392f0;
+}
+
+.be-tok-primitive,
+.be-tok-literal {
+	--shiki-light: #005cc5;
+	--shiki-dark: #79b8ff;
+}
+
+.be-tok-generic,
+.be-tok-lifetime {
+	--shiki-light: #e36209;
+	--shiki-dark: #ffab70;
+}
+
+.be-tok-name,
+.be-tok-punct {
+	--shiki-light: #24292e;
+	--shiki-dark: #e1e4e8;
+}
+
+:is(.be-tok-keyword, .be-tok-type, .be-tok-fn, .be-tok-primitive, .be-tok-literal, .be-tok-generic, .be-tok-lifetime, .be-tok-name, .be-tok-punct) {
+	color: var(--shiki-light);
+}
+
+.dark :is(.be-tok-keyword, .be-tok-type, .be-tok-fn, .be-tok-primitive, .be-tok-literal, .be-tok-generic, .be-tok-lifetime, .be-tok-name, .be-tok-punct) {
+	color: var(--shiki-dark);
+}
+
+a.be-tok-link {
+	text-decoration: underline;
+	text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+	text-underline-offset: 3px;
+}
+
+a.be-tok-link:hover {
+	text-decoration-color: currentColor;
+}
+
+/* An item's title, kind chip, and qualified path share one line and wrap on narrow screens. */
+.be-rust-title {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	column-gap: 0.75rem;
+	row-gap: 0.25rem;
+}
+
+.be-rust-kind-badge {
+	padding: 0.0625rem 0.5rem;
+	border-radius: 9999px;
+	background: color-mix(in srgb, currentColor 14%, transparent);
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	font-weight: 500;
+}
+
+.be-rust-breadcrumbs {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--color-fd-muted-foreground);
+	font-family: var(--font-mono);
+	font-size: 0.875rem;
+}
+
+.be-rust-breadcrumbs a {
+	color: var(--color-fd-muted-foreground);
+	text-decoration: none;
+}
+
+.be-rust-breadcrumbs a:hover {
+	color: var(--color-fd-foreground);
+}
+
+.be-rust-source-link {
+	flex-shrink: 0;
+	color: var(--color-fd-muted-foreground);
+	font-size: 0.8125rem;
+	text-decoration: none;
+}
+
+.be-rust-source-link:hover {
+	color: var(--color-fd-primary);
+}
+
+.be-rust-member {
+	margin-top: 2rem;
+}
+
+.be-rust-member-heading {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.be-rust-member-heading > :first-child {
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+.be-rust-impl-header {
+	display: block;
+	margin-top: 1.5rem;
+	overflow-x: auto;
+	white-space: pre;
+}
+
+.be-rust-impl-list code {
+	white-space: pre-wrap;
+}
+
+/* Link targets for members listed in type tables; offset for the sticky header. */
+.be-rust-anchor {
+	display: block;
+	scroll-margin-top: 6rem;
+}
+
+/* TypeTable labels its first column "Prop"; Rust members are names. */
+.be-rust-type-table > div:first-child > p:first-child {
+	font-size: 0;
+}
+
+.be-rust-type-table > div:first-child > p:first-child::before {
+	content: 'Name';
+	font-size: 0.875rem;
+}
+
+.be-rust-item-table td:first-child {
+	white-space: nowrap;
+}
+
+.be-rust-reexport,
+.be-rust-derived {
+	margin-inline-start: 0.375rem;
+	color: var(--color-fd-muted-foreground);
+	font-size: 0.75rem;
+}
+
+.be-rust-trait-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	padding: 0;
+	list-style: none;
+}
+
+.be-rust-trait-chips li {
+	margin: 0;
+	padding: 0.125rem 0.625rem;
+	border: 1px solid var(--color-fd-border);
+	border-radius: 9999px;
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+}
+
+.be-rust-trait-chips a {
+	text-decoration: none;
+}
+
+/* Each Rust item kind keeps one color in the sidebar tags and page chips; modules keep orange. */
+:is(.be-rust-module-kind, .be-rust-kind-badge) {
+	--be-kind: hsl(25 86% 44%);
+	--be-kind-dark: hsl(28 95% 68%);
+	color: var(--be-kind);
+}
+
+.dark :is(.be-rust-module-kind, .be-rust-kind-badge) {
+	color: var(--be-kind-dark);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='struct'], [data-kind='union']) {
+	--be-kind: hsl(174 62% 33%);
+	--be-kind-dark: hsl(174 60% 62%);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='enum']) {
+	--be-kind: hsl(205 75% 42%);
+	--be-kind-dark: hsl(205 85% 70%);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='trait'], [data-kind='trait_alias']) {
+	--be-kind: hsl(290 55% 48%);
+	--be-kind-dark: hsl(290 75% 78%);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='type_alias']) {
+	--be-kind: hsl(335 65% 46%);
+	--be-kind-dark: hsl(335 80% 76%);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='function'], [data-kind='macro']) {
+	--be-kind: hsl(140 55% 34%);
+	--be-kind-dark: hsl(140 55% 64%);
+}
+
+:is(.be-rust-module-kind, .be-rust-kind-badge):is([data-kind='constant'], [data-kind='static']) {
+	--be-kind: hsl(45 80% 36%);
+	--be-kind-dark: hsl(45 85% 66%);
+}
+
+/* Member headings name a method; keep them heading-sized text, not code chips. */
+.be-rust-member-heading code {
+	padding: 0;
+	border: 0;
+	background: none;
+	font-size: inherit;
+}
+
+/* Fumadocs' breadcrumb truncates each item, which turns the sidebar's inline-flex name
+   into an overflow box that sits on its bottom edge. Lay the name out as a block flex
+   row instead so the label and its kind chip center on the chevrons. */
+.be-breadcrumb .be-rust-module-name {
+	display: flex;
+	width: auto;
+}
+
+.be-breadcrumb .be-rust-module-kind {
+	margin-inline-start: 0;
+}
+
+/* Prose drops the first element's top margin, but code blocks opt out of prose, so a
+   declaration that opens a page would sit 16px lower than an MDX page's first paragraph. */
+.prose > .be-rust-declaration:first-child {
+	margin-top: 0;
 }

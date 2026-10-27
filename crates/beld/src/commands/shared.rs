@@ -192,7 +192,7 @@ fn print_indent(indent: usize) {
 }
 
 /// Runs filesystem work that Compio does not support without blocking its runtime thread.
-pub(super) async fn offload_file_operation<T, F>(operation: F) -> T
+pub(crate) async fn offload_file_operation<T, F>(operation: F) -> T
 where
 	T: Send + 'static,
 	F: FnOnce() -> T + Send + 'static,

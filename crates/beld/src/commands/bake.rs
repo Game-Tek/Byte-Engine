@@ -1,22 +1,18 @@
-use std::{num::NonZeroUsize, time::Instant};
+use std::num::NonZeroUsize;
 
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::{
-	asset::{FileStorageBackend, ResourceId, manager::AssetManager, manager::LoadMessages},
+	asset::{ResourceId, manager::AssetManager},
 	inspect::{ResourceDocument, inspect_payload, inspect_resource},
-	resource::{
-		MemoryStorageBackend, ReDBStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
-		ResourceStorageSettings,
-	},
+	resource::{MemoryStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use utils::r#async::StreamExt;
 
 use crate::{
 	OutputFormat, Payload,
-	commands::shared::{attach_trace, offload_file_operation, payload_format, print_human_value, read_payload, write_json},
-	utils::get_asset_manager,
+	commands::shared::{attach_trace, payload_format, print_human_value, read_payload, write_json},
+	pipeline::{bake_ids, default_asset_manager, open_asset_storage, open_resource_storage},
 };
 
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
@@ -38,25 +34,11 @@ pub async fn bake(
 	force: bool,
 	features: VisibilityFeatures,
 ) -> Result<(), i32> {
-	let asset_storage_backend = open_asset_storage(source_path).await?;
-	let destination_path = std::path::PathBuf::from(destination_path);
-	let resource_storage_backend = offload_file_operation(move || match texture_compression {
-		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
-			destination_path,
-			ResourceStorageSettings::new(storage_mode.unwrap_or_default()).image_compression(compression),
-		),
-		None => match storage_mode {
-			Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode),
-			None => Ok(ReDBStorageBackend::new_writable(destination_path)),
-		},
-	})
-	.await
-	.map_err(|error| {
-		log::error!("Failed to bake resources. {error}");
-		1
-	})?;
+	let asset_storage_backend = open_asset_storage(source_path.into()).await?;
+	let resource_storage_backend = open_resource_storage(destination_path.into(), storage_mode, texture_compression).await?;
 
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, features);
+	let mut asset_manager = default_asset_manager(asset_storage_backend, resource_storage_backend, features);
+	set_memory_budget(&mut asset_manager, memory_budget);
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
 	if force {
@@ -81,7 +63,7 @@ pub async fn bake(
 		return Ok(());
 	}
 
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let failures = bake_ids(&asset_manager, ids).await;
 
 	if failures.is_empty() { Ok(()) } else { Err(1) }
 }
@@ -103,11 +85,12 @@ pub async fn bake_dry_run(
 ) -> Result<(), i32> {
 	let payload = payload_format(payload, format)?;
 
-	let asset_storage_backend = open_asset_storage(source_path).await?;
+	let asset_storage_backend = open_asset_storage(source_path.into()).await?;
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let mut asset_manager = default_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
+	set_memory_budget(&mut asset_manager, memory_budget);
+	let failures = bake_ids(&asset_manager, ids).await;
 	drop(asset_manager);
 
 	let mut resource_ids = resource_storage_backend.list().await.map_err(|error| {
@@ -180,68 +163,11 @@ struct DryRunDocument<'a> {
 	failed: Vec<Value>,
 }
 
-/// Opens the source asset directory a bake reads from.
-async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i32> {
-	let source_path = std::path::PathBuf::from(source_path);
-	FileStorageBackend::open(source_path.clone()).await.map_err(|error| {
-		log::error!(
-			"Failed to open assets directory '{}'. The most likely cause is that the directory cannot be created or accessed. Error: {error}",
-			source_path.display()
-		);
-		1
-	})
-}
-
-/// Bakes every ID that is stale, up to 16 at once within `memory_budget`, logs each outcome, and returns the IDs that
-/// failed with their errors.
-async fn bake_ids(
-	asset_manager: &mut AssetManager,
-	ids: Vec<String>,
-	memory_budget: NonZeroUsize,
-) -> Vec<(String, LoadMessages)> {
+/// Sets the soft memory budget for concurrent bakes and logs it.
+fn set_memory_budget(asset_manager: &mut AssetManager, memory_budget: NonZeroUsize) {
 	asset_manager.set_bake_memory_budget(memory_budget);
-	let asset_manager = &*asset_manager;
 	log::info!(
 		"Using a {} soft memory budget for concurrent asset bakes.",
 		utils::ByteSize::from(memory_budget.get())
 	);
-
-	let resource_count = ids.len();
-
-	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
-	let tasks = ids.into_iter().map(async |id| {
-		log::info!("Baking resource '{}'", id);
-
-		match asset_manager.bake_if_stale(&id).await {
-			Ok(_) => {
-				// A current resource is reused rather than baked, so report the outcome both paths share.
-				log::info!("Resource '{}' is up to date", id);
-
-				None
-			}
-			Err(e) => {
-				log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-
-				Some((id, e))
-			}
-		}
-	});
-
-	let bake_start = Instant::now();
-
-	let failures = utils::r#async::stream::iter(tasks)
-		.buffer_unordered(16)
-		.filter_map(async |failure| failure)
-		.collect::<Vec<_>>()
-		.await;
-
-	log::info!(
-		"Processed {} assets in {:?}: {} succeeded, {} failed",
-		resource_count,
-		bake_start.elapsed(),
-		resource_count - failures.len(),
-		failures.len()
-	);
-
-	failures
 }

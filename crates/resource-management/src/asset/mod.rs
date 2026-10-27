@@ -15,6 +15,7 @@ use crate::{
 mod bake_memory;
 pub mod handler;
 pub mod manager;
+pub mod validation;
 
 #[cfg(debug_assertions)]
 pub mod resource_trace;

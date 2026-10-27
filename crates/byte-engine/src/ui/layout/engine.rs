@@ -127,7 +127,7 @@ impl<C> Drop for Engine<C> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerState {
 	/// Where the pointer is in layout units of the frame being evaluated, so it compares directly with
-	/// [`Geometry`](crate::ui::layout::Geometry).
+	/// [`Geometry`].
 	pub position: UiPoint,
 	pub pressed: bool,
 }

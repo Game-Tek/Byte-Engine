@@ -2,15 +2,13 @@
 
 set -euo pipefail
 
-# rustdoc JSON and cargo-docs-md must agree on the unstable schema version.
+# rustdoc JSON is unstable. This toolchain must produce the format version that
+# RUSTDOC_FORMAT_VERSION in docs-site/src/lib/rustdoc/format.ts names; change both together.
 readonly TOOLCHAIN="nightly-2026-08-31"
-readonly CARGO_DOCS_MD_VERSION="0.2.4"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly JSON_TARGET="$REPOSITORY_ROOT/target/api-docs-json"
-readonly TOOL_ROOT="$REPOSITORY_ROOT/target/api-docs-tools"
-readonly GENERATOR="$TOOL_ROOT/bin/cargo-docs-md"
-readonly OUTPUT="$REPOSITORY_ROOT/docs/api/latest"
+readonly OUTPUT="$REPOSITORY_ROOT/docs-site/generated/rust-api.json"
 
 if ! rustup run "$TOOLCHAIN" rustc --version >/dev/null 2>&1; then
 	printf 'Missing Rust toolchain %s. Install it with `rustup toolchain install %s`.\n' \
@@ -18,45 +16,25 @@ if ! rustup run "$TOOLCHAIN" rustc --version >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [[ ! -x "$GENERATOR" ]] || \
-	[[ "$($GENERATOR docs-md --version 2>/dev/null)" != "cargo-docs-md $CARGO_DOCS_MD_VERSION" ]]; then
-	RUSTC_WRAPPER= cargo +"$TOOLCHAIN" install cargo-docs-md \
-		--version "$CARGO_DOCS_MD_VERSION" \
-		--locked \
-		--root "$TOOL_ROOT"
-fi
-
 cd "$REPOSITORY_ROOT"
+
+# The previous cargo-docs-md generator wrote MDX pages here. The docs site loads everything under docs/, so stale
+# pages would sit next to the generated API pages; remove them once on checkouts that ran the old generator.
+rm -rf "$REPOSITORY_ROOT/docs/api/latest"
 
 # Generate only the public library API. Cargo still builds dependencies needed to
 # analyze the crate, but rustdoc writes one JSON artifact for byte-engine.
+# Hidden items are included because many public types are defined in
+# `#[doc(hidden)]` modules and re-exported; the model builder drops the rest.
 RUSTC_WRAPPER= CARGO_TARGET_DIR="$JSON_TARGET" \
 	cargo +"$TOOLCHAIN" rustdoc \
 		-p byte-engine \
 		--lib \
 		--all-features \
 		-Z unstable-options \
-		--output-format json
+		--output-format json \
+		-- -Z unstable-options --document-hidden-items
 
-readonly STAGING="$(mktemp -d "$JSON_TARGET/markdown.XXXXXX")"
-trap 'rm -rf "$STAGING"' EXIT
-
-"$GENERATOR" docs-md \
-	--dir "$JSON_TARGET/doc" \
-	--output "$STAGING" \
-	--primary-crate byte_engine \
-	--exclude-private \
-	--full-method-docs \
-	--source-locations \
-	--no-mdbook \
-	--no-search-index
-
-bun "$SCRIPT_DIR/prepare-api-docs.mjs" "$STAGING"
-
-mkdir -p "$OUTPUT"
-# The output is generated and ignored. Clear it completely so removed pages and
-# metadata cannot survive locally and hide clean-checkout failures.
-find "$OUTPUT" -mindepth 1 -delete
-cp -R "$STAGING/." "$OUTPUT/"
-
-printf 'Generated API documentation in %s.\n' "$OUTPUT"
+bun "$REPOSITORY_ROOT/docs-site/scripts/build-rust-api-model.ts" \
+	"$JSON_TARGET/doc/byte_engine.json" \
+	"$OUTPUT"

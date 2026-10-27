@@ -1,3 +1,6 @@
+//! GPU IBL kernels. Their tangent frames use Duff et al.'s
+//! [Building an Orthonormal Basis, Revisited](https://jcgt.org/published/0006/01/01/), as does the CPU baker.
+
 pub(super) const GPU_IBL_GLSL: &str = r#"#version 460
 #pragma shader_stage(compute)
 

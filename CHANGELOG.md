@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- You can build your own version of BELD, such as one that rejects every resource over 1 MB. `beld::pipeline` exposes the bake steps, and a `ResourceValidator` registered with `AssetManager::add_resource_validator` checks every resource a bake stores, generated dependencies included. A rejected resource isn't stored and fails its bake with `LoadErrors::ValidationFailed`. The new Build a custom BELD page shows how.
+
 - Gameplay tasks can run work at a fixed rate of simulation time instead of every tick. `Tasks::every(period)` returns a `gameplay::Interval`, whose `next` resolves at each deadline with the simulation time since the previous fire. Deadlines stay one period apart from the interval's start, a wait that loses a `select!` keeps its deadline, and a task that was busy past several deadlines fires once instead of catching up in a burst. `Interval::phase` delays every deadline, to spread the intervals of many entities across ticks, and `Interval::set_period` changes the rate. The new Gameplay tasks reference page specifies every task wait.
 
 - Animation graphs pick fitted stops and hand turns in place to root motion.

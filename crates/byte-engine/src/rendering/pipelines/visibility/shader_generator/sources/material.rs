@@ -555,6 +555,8 @@ material_evaluation_suffix: fn () -> void {
 		0.0,
 		1.0
 	);
+	// Brian Karis's environment BRDF fit, based on Dimitar Lazarov's work. Epic permits use without attribution:
+	// https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile
 	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
 	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
 	let r: vec4f16 = roughness * c0 + c1;

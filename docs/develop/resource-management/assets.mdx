@@ -70,6 +70,18 @@ Read the trace through `AssetManager::resource_trace` or, after installing the a
 Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
 The trace is an in-memory development tool: release builds don't expose it, and trace items are never stored as production resources.
 
+## Validate resources
+
+A `ResourceValidator`, registered with `AssetManager::add_resource_validator`, lets a project reject resources that break its own rules, such as a size limit.
+`BakeContext` runs the validators on every store path before it publishes a resource, so a rejected resource is never stored:
+
+- `store_resource` and `store_resource_owned` validate the decoded payload size before writing anything.
+- `commit_resource` validates after a streamed handler wrote its payload into the transaction, because the metadata exists only after processing. A rejected transaction is dropped, which discards the payload.
+- A validator sees the `ProcessedAsset` and the payload size, never the payload bytes, so streamed writes don't buffer.
+- A rejection records an error in the resource trace and fails the bake with `LoadErrors::ValidationFailed`.
+
+`validators_reject_oversized_resources_on_every_store_path_without_storing_them` in `manager.rs` guards these rules.
+
 ## Processing
 
 Asset processing turns source data into engine data.

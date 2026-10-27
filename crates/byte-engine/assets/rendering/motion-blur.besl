@@ -87,7 +87,8 @@ main: fn (input: StageInput) -> void {
 	let taps: u32 = min(parameters.taps, u32(length) + 1);
 	let step_size: f32 = 1.0 / f32(taps);
 	let step: vec2f = blur * step_size;
-	// Interleaved gradient noise, with this frame's offset already added on the CPU.
+	// Jorge Jimenez's interleaved gradient noise, with this frame's offset already added on the CPU.
+	// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
 	let noisy: vec2f = coordinate + vec2f(parameters.noise_offset, parameters.noise_offset);
 	let jitter: f32 = fract(52.9829189 * fract(0.06711056 * noisy.x + 0.00583715 * noisy.y));
 	// The first tap lies jitter / taps − 0.5 of the blur from the pixel and the rest follow a step apart.

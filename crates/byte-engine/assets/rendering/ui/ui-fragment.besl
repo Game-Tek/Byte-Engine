@@ -51,7 +51,9 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
 	return max(fill_coverage - inner_coverage, 0.0);
 }
 
-// The error function, within 5e-4 (Abramowitz and Stegun 7.1.27).
+// Rounded-rectangle shadow integration adapted from Evan Wallace's CC0 shader:
+// https://madebyevan.com/shaders/fast-rounded-rectangle-shadows/
+// The error function is within 5e-4 (Abramowitz and Stegun 7.1.27).
 shadow_erf: fn (x: f32) -> f32 {
 	let a: f32 = abs(x);
 	let p: f32 = 1.0 + (0.278393 + (0.230389 + 0.078108 * a * a) * a) * a;
@@ -307,6 +309,28 @@ curve_coverage: fn (index: u32, from: vec2f, control: vec2f, to: vec2f, pixel: v
 // Glyph coverage computed per pixel from outline curves with the Slug algorithm.
 // Ported from the reference pixel shader by Eric Lengyel, copyright 2017, used under the MIT license:
 // https://github.com/EricLengyel/Slug
+//
+// MIT License
+//
+// Copyright (c) 2017 Eric Lengyel
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 //
 // The reference reads its curves and bands from two 4096 texel wide textures. Storage buffers hold
 // the same data here, so a location is one index and needs no wrap to the next texture row.

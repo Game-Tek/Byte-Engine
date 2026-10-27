@@ -8,6 +8,7 @@ screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 
 // Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly.
+// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
 interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }

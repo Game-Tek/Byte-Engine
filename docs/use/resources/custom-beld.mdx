@@ -1,0 +1,82 @@
+---
+title: Build a custom BELD
+description: Build your own bake tool from BELD's pipeline steps and add project rules, such as a resource size limit.
+icon: Wrench
+---
+
+Build your own version of BELD when your pipeline needs a rule that `beld bake`
+doesn't have, such as rejecting every resource larger than 1 MB.
+
+## Write a rule
+
+A rule implements `ResourceValidator`. The bake calls it for every resource it's
+about to store, including the textures and shaders an asset generates. Return a
+message to reject the resource: what happened, the most likely cause, and the fix.
+
+```rust
+use resource_management::{ProcessedAsset, asset::validation::ResourceValidator};
+
+struct MaxPayloadSize(usize);
+
+impl ResourceValidator for MaxPayloadSize {
+	fn validate(&self, resource: &ProcessedAsset, payload_size: usize) -> Result<(), String> {
+		if payload_size <= self.0 {
+			return Ok(());
+		}
+		Err(format!(
+			"'{}' is {payload_size} bytes, over the {}-byte limit. The most likely cause is an oversized source asset. Reduce its resolution or length.",
+			resource.id(),
+			self.0
+		))
+	}
+}
+```
+
+## Compose the bake
+
+Add `beld`, `byte-engine`, and `byte-engine-resource-management` as
+dependencies. Then run the steps in `beld::pipeline` and register your rule
+before the bake starts:
+
+```rust
+use std::num::NonZeroUsize;
+
+use beld::pipeline;
+use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
+
+async fn bake() -> Result<(), i32> {
+	let features = VisibilityFeatures::default();
+	let assets = pipeline::open_asset_storage("assets".into()).await?;
+	let resources = pipeline::open_resource_storage("resources".into(), None, None).await?;
+
+	let mut asset_manager = pipeline::default_asset_manager(assets, resources, features);
+	asset_manager.add_resource_validator(MaxPayloadSize(1024 * 1024));
+	asset_manager.set_bake_memory_budget(NonZeroUsize::new(1 << 30).unwrap());
+
+	let ids = asset_manager.discover().await.map_err(|_| 1)?;
+	let failures = pipeline::bake_ids(&asset_manager, ids).await;
+	if failures.is_empty() { Ok(()) } else { Err(1) }
+}
+
+fn main() -> std::process::ExitCode {
+	let executor = beld::Executor::new().expect("Failed to start the asynchronous runtime.");
+	match executor.block_on(bake()) {
+		Ok(()) => std::process::ExitCode::SUCCESS,
+		Err(code) => std::process::ExitCode::from(code as u8),
+	}
+}
+```
+
+A rejected resource isn't stored, and every asset that needed it fails. Each
+failure is logged, and `beld inspect` prints the rule's message from the asset's
+trace in debug builds. Resources already current in the store are reused
+without a check; call `asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now())`
+before `bake_ids` to check them all.
+
+Next, [check the baked output](/docs/use/resources/bake#check-the-baked-output).
+
+## Rust API
+
+- `beld::pipeline`: `open_asset_storage`, `open_resource_storage`, `default_asset_manager`, `bake_ids`
+- `resource_management::asset::validation::ResourceValidator`
+- `AssetManager::add_resource_validator`

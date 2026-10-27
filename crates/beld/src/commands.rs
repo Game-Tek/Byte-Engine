@@ -4,7 +4,7 @@ mod bake;
 mod inspect;
 mod maintenance;
 mod query;
-mod shared;
+pub(crate) mod shared;
 
 pub use bake::{bake, bake_dry_run};
 pub use inspect::inspect;
@@ -38,7 +38,7 @@ mod tests {
 	use super::{decode_query_cursor, encode_query_cursor, parse_query_property};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
-	use crate::utils::get_asset_manager;
+	use crate::pipeline::default_asset_manager as get_asset_manager;
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {

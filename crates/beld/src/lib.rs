@@ -1,13 +1,14 @@
 //! Bake source assets and inspect Byte-Engine resource stores.
 //!
 //! Call one of the command functions, such as [`bake`] or [`list`], from an
-//! [`Executor`] runtime.
+//! [`Executor`] runtime. To build your own version of BELD, for example one that
+//! rejects resources over a size limit, compose the steps in [`pipeline`].
 
 // Command integration tests keep complete CLI workflows together for readability.
 #![allow(clippy::too_many_lines)]
 
 mod commands;
-mod utils;
+pub mod pipeline;
 
 pub use commands::{bake, bake_dry_run, clear, delete, inspect, list, query, wipe};
 pub use resource_management::r#async::Executor;

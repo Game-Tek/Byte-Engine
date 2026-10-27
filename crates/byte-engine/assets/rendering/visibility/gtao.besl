@@ -54,6 +54,8 @@ cached_depth: workgroup<f32, 1560>;
 required_mips: workgroup<u32, 128>;
 group_required_mip: workgroup<u32, 1>;
 
+// Jorge Jimenez's interleaved gradient noise:
+// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
 interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }

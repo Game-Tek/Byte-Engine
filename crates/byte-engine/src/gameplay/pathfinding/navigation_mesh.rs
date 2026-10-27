@@ -545,6 +545,8 @@ pub fn string_pull_into<'path, Space>(
 }
 
 /// Applies the simple-stupid-funnel restart rule without revalidating mesh-owned points.
+///
+/// Follows Mikko Mononen's [Simple Stupid Funnel Algorithm](https://digestingduck.blogspot.com/2010/03/simple-stupid-funnel-algorithm.html).
 fn string_pull_from_corridor<Space>(
 	start: Point<Space>,
 	target: Point<Space>,

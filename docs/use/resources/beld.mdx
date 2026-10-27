@@ -8,7 +8,7 @@ Use BELD to bake, inspect, query, and delete Byte Engine resources.
 
 [Install BELD](/docs/use/resources/install-beld) before you
 run the commands on this page. Every flag, default, exit code, and output
-format is in the [BELD command line reference](/docs/reference/beld).
+format is in the [BELD command line reference](/docs/api/beld).
 
 It reads source assets from an assets directory and writes processed resources to a resources directory.
 By default those paths are `assets` and `resources`, but both are configurable.
@@ -109,7 +109,7 @@ beld --source assets bake --dry-run --format json 'character.fbx#animations/Walk
 To read the data of a resource you already baked, add the same `--payload`
 option to `beld inspect`. Logs go to standard error, so you can redirect the
 output to a file or pipe it to another tool. The
-[payloads reference](/docs/reference/beld#payloads) lists every stream format.
+[payloads reference](/docs/api/beld#payloads) lists every stream format.
 
 ## Control bake memory
 

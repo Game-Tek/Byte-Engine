@@ -30,6 +30,14 @@ pub struct QueryableProperty {
 pub trait Model: crate::ResourceArchive {
 	fn get_class() -> &'static str;
 
+	/// Returns the IDs of the resources this model names, in the order it names them.
+	///
+	/// Debug builds store them with the resource so tools such as `beld browse` can follow them. Override it in every
+	/// model with a [`ReferenceModel`](crate::ReferenceModel) field or a field that holds a resource ID.
+	fn references(&self) -> Vec<&str> {
+		Vec::new()
+	}
+
 	fn queryable_properties(&self, id: &str) -> Vec<QueryableProperty> {
 		vec![QueryableProperty {
 			name: "name".to_string(),

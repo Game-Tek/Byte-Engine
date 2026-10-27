@@ -4,8 +4,8 @@ use resource_management::{
 	Model, ProcessedAsset,
 	asset::ResourceId,
 	resource::{
-		ReDBStorageBackend, ReadStorageBackend as _, ResourceCompressionPolicy, ResourcePayloadEncoding, ResourceStorageMode,
-		WriteStorageBackend as _,
+		self, ReDBStorageBackend, ReadStorageBackend as _, ResourceCompressionPolicy, ResourcePayloadEncoding,
+		ResourceStorageMode, WriteStorageBackend as _,
 	},
 };
 
@@ -499,4 +499,78 @@ async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mod
 
 		std::fs::remove_dir_all(path).unwrap();
 	}
+}
+
+#[resource_management::r#async::test]
+async fn usage_reports_every_payload_file_and_leftover_staging_file() {
+	let path = temporary_store();
+	let id = ResourceId::new("replaced.fixture");
+	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).unwrap();
+	let mut hashes = Vec::new();
+
+	for size in [2048, 4096] {
+		let stored = storage
+			.store(
+				ProcessedAsset::new(id, StoredFixture).with_compression(ResourceCompressionPolicy::Disabled),
+				&incompressible_payload(size),
+			)
+			.await
+			.unwrap();
+		hashes.push(stored.hash());
+	}
+	std::fs::write(path.join(".resource-write-interrupted.tmp"), [0; 7]).unwrap();
+
+	let usage = storage.usage().unwrap();
+	let mut payload_files = usage
+		.payload_files
+		.iter()
+		.map(|file| (file.uid, file.hash, file.encoding, file.size))
+		.collect::<Vec<_>>();
+	payload_files.sort_by_key(|file| file.3);
+	let uid = resource::ResourceId::from(id.as_ref());
+
+	// Replacing the resource keeps the first payload file, which no resource records any more.
+	assert_eq!(
+		payload_files,
+		[
+			(uid, hashes[0], ResourcePayloadEncoding::Raw, 2048),
+			(uid, hashes[1], ResourcePayloadEncoding::Raw, 4096),
+		]
+	);
+	assert_eq!(usage.staging_files, (1, 7));
+	assert!(usage.database_size > 0);
+	assert!(usage.pack.is_none());
+
+	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
+}
+
+#[resource_management::r#async::test]
+async fn usage_reports_the_pack_range_a_deleted_resource_frees() {
+	let path = temporary_store();
+	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+
+	for (id, size) in [("first.fixture", 1024), ("middle.fixture", 4096), ("last.fixture", 1024)] {
+		storage
+			.store(
+				ProcessedAsset::new(ResourceId::new(id), StoredFixture).with_compression(ResourceCompressionPolicy::Disabled),
+				&incompressible_payload(size),
+			)
+			.await
+			.unwrap();
+	}
+	storage.delete(ResourceId::new("middle.fixture")).unwrap();
+
+	let usage = storage.usage().unwrap();
+	let pack = usage.pack.unwrap();
+
+	assert!(usage.payload_files.is_empty());
+	assert_eq!(pack.file_size, 6144);
+	assert_eq!(pack.free_bytes, 4096);
+	assert_eq!(pack.free_slot_count, 1);
+	assert_eq!(pack.largest_free_slot, 4096);
+	assert!(!pack.is_excessive());
+
+	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
 }

@@ -110,10 +110,18 @@ pub async fn bake_dry_run(
 	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 	drop(asset_manager);
 
-	let mut resource_ids = resource_storage_backend.list().await.map_err(|error| {
-		log::error!("Failed to list the baked resources. The most likely cause is an internal storage error. Error: {error}");
-		1
-	})?;
+	let mut resource_ids = resource_storage_backend
+		.list()
+		.await
+		.map_err(|error| {
+			log::error!(
+				"Failed to list the baked resources. The most likely cause is an internal storage error. Error: {error}"
+			);
+			1
+		})?
+		.into_iter()
+		.map(|resource| resource.id().to_owned())
+		.collect::<Vec<_>>();
 	resource_ids.sort_unstable();
 
 	// Read every resource first: payload inspections borrow the resources and their bytes until the document is written.

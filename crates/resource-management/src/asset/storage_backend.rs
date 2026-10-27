@@ -292,10 +292,13 @@ impl AssetVersion {
 }
 
 /// The `AssetDependency` struct records one source asset and the version used by a baked resource.
+///
+/// Read a resource's dependencies with [`crate::SerializableResource::asset_dependencies`], and check which changed
+/// with [`crate::asset::manager::stale_sources`].
 #[derive(
 	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
-pub(crate) struct AssetDependency {
+pub struct AssetDependency {
 	id: String,
 	version: AssetVersion,
 }
@@ -310,7 +313,7 @@ impl AssetDependency {
 	}
 
 	/// Returns the source ID used for a freshness check.
-	pub(crate) fn id(&self) -> &str {
+	pub fn id(&self) -> &str {
 		&self.id
 	}
 

@@ -1,7 +1,9 @@
 // Resource declarations repeat the same persisted class and runtime-model association.
 // Keeping that contract in one explicit invocation prevents the two identifiers from drifting.
+//
+// `references` names a function that lists the IDs the model refers to, as `Model::references` returns them.
 macro_rules! impl_resource_model {
-	($resource:ty, $model:ty, $class:literal) => {
+	($resource:ty, $model:ty, $class:literal $(, references = $references:path)?) => {
 		impl $crate::Resource for $resource {
 			type Model = $model;
 		}
@@ -10,6 +12,12 @@ macro_rules! impl_resource_model {
 			fn get_class() -> &'static str {
 				$class
 			}
+
+			$(
+				fn references(&self) -> Vec<&str> {
+					$references(self)
+				}
+			)?
 		}
 	};
 }
@@ -19,8 +27,8 @@ pub(crate) use impl_resource_model;
 // Direct resources use the same type for persisted metadata and runtime access.
 // This remains opt-in so resources that resolve dependencies can keep specialized solvers.
 macro_rules! impl_direct_resource {
-	($resource:ty, $class:literal) => {
-		$crate::resources::impl_resource_model!($resource, $resource, $class);
+	($resource:ty, $class:literal $(, references = $references:path)?) => {
+		$crate::resources::impl_resource_model!($resource, $resource, $class $(, references = $references)?);
 
 		impl $crate::StoredModel for $resource {
 			type Resource = $resource;

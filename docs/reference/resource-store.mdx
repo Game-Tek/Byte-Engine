@@ -1,6 +1,6 @@
 ---
 title: Resource store
-description: Look up the files of a resources directory, the storage modes and payload encodings, the metadata and queryable properties every resource carries, the version marker, and every resource class.
+description: Look up the files of a resources directory, the storage modes and payload encodings, the metadata and queryable properties every resource carries, the development records, the version marker, and every resource class.
 icon: Storage
 ---
 
@@ -15,7 +15,7 @@ reference.
 
 | File | Content |
 | --- | --- |
-| `resources.db` | The database of every resource's metadata, the class and property indexes, the packed payload offsets, the store configuration, and, in debug builds, bake traces. |
+| `resources.db` | The database of every resource's metadata, the class and property indexes, the packed payload offsets, the store configuration, and, in debug builds, the [development records](#development-records). |
 | One file per resource, named `<uid>-<hash>-<encoding>` | The payload in files mode: the resource's UID as 32 hexadecimal characters, the payload hash as 16, and the encoding name. No extension. |
 | `resources.pack` | Every payload, in packed mode. |
 | `.resource-management-version` | The signature of the engine that wrote the store. |
@@ -34,6 +34,10 @@ saw the old metadata can still open it. Deleting a resource removes the file.
 The mode is written when the store is created, and opening the store with a
 different mode fails. Clearing the store removes its resources and payloads
 but keeps the mode. Packed mode can't hold GPU-loaded encodings.
+
+The fragmentation rule holds when the pack is 64 MiB or more, has at least 32
+free ranges, is a quarter or more free, and has no single free range holding
+half of the free space. A packed store that meets it logs a warning once.
 
 ## Payload encodings
 
@@ -91,6 +95,28 @@ Every resource records:
 | Index | The first predicate drives an index scan; later predicates filter the results. Without a predicate the class index is scanned. |
 | Paging | A page holds up to the limit. When more remain, the page carries a cursor for the next one; a limit of zero returns an empty page. An invalid cursor is an error. |
 
+## Development records
+
+Debug builds write and read two records per resource ID besides its metadata.
+Release builds neither write nor read them, so a store baked by a release build
+has none.
+
+| Record | Content |
+| --- | --- |
+| Trace | The messages of the latest bake of the ID, each with a level of info, warning, or error, and the ID itself. A bake that stores no resource still records its trace. An empty trace isn't recorded. |
+| References | The IDs of the resources the stored resource's model names, listed in the next table, each once, in the order the model first names it. Written with the resource and removed with it. |
+
+| Class | References |
+| --- | --- |
+| `Mesh` | Its skeleton and its material variants. |
+| `Variant` | Its material and every image a variable's value names. |
+| `Material` | Its shaders and every image a parameter's value names. |
+| `Animation` | Its skeleton. |
+| `Flipbook` | Its images. |
+| `Pipeline` | Its shaders. |
+| `ParticleSystem` | Its simulate and draw pipelines. |
+| Every other class | None. |
+
 ## Version marker
 
 The marker holds a signature derived from the engine's resource-management
@@ -99,10 +125,6 @@ database deletes the whole directory, recreates it, and writes the marker.
 Debug builds open the store writable, so a stale store resets itself; release
 builds open read-only and fail on a mismatch. BELD's read-only commands report
 the mismatch without touching the directory.
-
-A packed store logs a fragmentation warning once when the pack is 64 MiB or
-more with at least 32 free ranges, a quarter or more of it free, and no single
-free range holding half of the free space.
 
 ## Resource classes
 

@@ -34,13 +34,15 @@ async fn run(cli: Cli) -> Result<(), i32> {
 		Commands::Clear {} => beld::clear(cli.destination).await,
 		Commands::List {} => beld::list(cli.destination).await,
 		Commands::Query {
-			class,
-			properties,
+			terms,
+			group,
+			sort,
+			reverse,
 			limit,
-			cursor,
 			format,
-		} => beld::query(cli.destination, class, properties, limit, cursor, format).await,
+		} => beld::query(cli.source, cli.destination, terms, group, sort, reverse, limit, format).await,
 		Commands::Inspect { id, format, payload } => beld::inspect(cli.destination, id, format, payload).await,
+		Commands::Browse {} => beld::browse(cli.source, cli.destination).await,
 		Commands::Bake {
 			ids,
 			memory_budget,
@@ -172,24 +174,31 @@ enum Commands {
 	Clear {},
 	/// List all baked resources.
 	List {},
-	/// Find resources by class and indexed property values.
+	/// Print the resources that match a filter, grouped and sorted. It takes the filter and fields of `browse`.
 	Query {
-		/// The resource class to query.
-		/// Example: `beld query Material group=opaque tag=hero`
-		class: String,
-		/// Property equality filters in `property=value` form.
-		/// Example: `beld query Material name=materials/hero`
-		#[clap(value_delimiter = ' ', num_args = 0..)]
-		properties: Vec<String>,
-		/// The maximum number of resources to return.
+		/// Filter terms, all of which a resource must match. Put `--` before the terms when one starts with `-`.
+		/// Example: `beld query --group class -- 'stored>1MiB' -is:compressed`
+		terms: Vec<String>,
+		/// The field to group resources by.
+		/// Example: `beld query class=Image --group model.format`
+		#[arg(long)]
+		group: Option<String>,
+		/// The field to order groups and resources by. Defaults to `stored`, largest first.
+		/// Example: `beld query --sort baked`
+		#[arg(long)]
+		sort: Option<String>,
+		/// Reverses the order of groups and resources.
+		#[arg(long)]
+		reverse: bool,
+		/// The most resources to list in each group. Counts and sums still cover every match.
 		#[arg(long)]
 		limit: Option<usize>,
-		/// The cursor printed by a previous query page.
-		#[arg(long)]
-		cursor: Option<String>,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human)]
 		format: OutputFormat,
 	},
+	/// Browse every resource interactively: filter, group, and sort them, and follow their sources and references.
+	/// Needs an interactive terminal. Example: `beld browse`
+	Browse {},
 	/// Inspect one resource.
 	Inspect {
 		/// The resource ID or UID to inspect.

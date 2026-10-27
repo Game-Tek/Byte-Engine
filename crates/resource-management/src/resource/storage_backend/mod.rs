@@ -16,7 +16,10 @@ pub trait DynStorageBackend: DynReadStorageBackend + DynWriteStorageBackend {}
 
 /// The `ReadStorageBackend` trait provides metadata and decoded payload readers for stored resources.
 pub trait ReadStorageBackend: Sync + Send {
-	fn list(&self) -> impl Future<Output = Result<Vec<String>, String>>;
+	/// Returns the metadata of every stored resource without opening any payload.
+	///
+	/// Call [`Self::read`] with a resource's ID when you need its payload.
+	fn list(&self) -> impl Future<Output = Result<Vec<SerializableResource>, String>>;
 	fn read<'a>(&'a self, id: ResourceId<'a>)
 	-> impl Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a;
 
@@ -34,7 +37,7 @@ pub trait ReadStorageBackend: Sync + Send {
 
 /// The `DynReadStorageBackend` trait provides object-safe resource lookup for runtime-selected storage.
 pub trait DynReadStorageBackend: Send + Sync {
-	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<SerializableResource>, String>>;
 	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
 	fn query(
 		&self,
@@ -261,7 +264,7 @@ impl std::fmt::Display for QueryError {
 impl std::error::Error for QueryError {}
 
 impl<T: ReadStorageBackend> DynReadStorageBackend for T {
-	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<SerializableResource>, String>> {
 		Box::pin(self.list())
 	}
 

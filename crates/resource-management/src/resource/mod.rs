@@ -21,7 +21,8 @@ pub use resource_id::ResourceId;
 #[cfg(debug_assertions)]
 pub use resource_manager::{ResourceUpdate, ResourceUpdateListener};
 pub use storage_backend::redb::{
-	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
+	PackedFragmentation, PayloadFile, ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
+	ResourceStorageSettings, StorageUsage,
 };
 pub use storage_backend::{
 	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, MemoryStorageBackend, ReadStorageBackend,

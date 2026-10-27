@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 use crate::commands::shared::{insert_trace_json, read_resource_trace};
 use crate::{
 	OutputFormat, Payload,
-	commands::shared::{attach_trace, open_read_only_storage, payload_format, print_human_value, read_payload, write_json},
+	commands::shared::{
+		attach_trace, log_failure, open_read_only_storage, payload_format, print_human_value, read_payload, write_json,
+	},
 };
 
 /// Inspects one resource by ID or UID and writes it in the selected format.
@@ -22,7 +24,9 @@ use crate::{
 /// produce without a store.
 pub async fn inspect(destination_path: String, id: String, format: OutputFormat, payload: Payload) -> Result<(), i32> {
 	let payload = payload_format(payload, format)?;
-	let storage_backend = open_read_only_storage(destination_path, "inspect").await?;
+	let storage_backend = open_read_only_storage(destination_path, "inspect")
+		.await
+		.map_err(log_failure)?;
 	let resource = read_resource(&storage_backend, &id).await;
 	let Some((resource, reader)) = resource else {
 		#[cfg(debug_assertions)]

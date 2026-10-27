@@ -1,10 +1,10 @@
 ---
 title: Use BELD
-description: Bake, inspect, and query resources with BELD.
+description: Bake, inspect, query, and browse resources with BELD.
 icon: TerminalSquare
 ---
 
-Use BELD to bake, inspect, query, and delete Byte Engine resources.
+Use BELD to bake, inspect, query, browse, and delete Byte Engine resources.
 
 [Install BELD](/docs/use/resources/install-beld) before you
 run the commands on this page. Every flag, default, exit code, and output
@@ -69,10 +69,8 @@ You can inspect a failed asset by ID even when it produced no resource. In that
 case, the output contains `resource: null` and the trace that explains the
 failure.
 
-`beld query` filters resources by class and indexed properties.
-The first equality predicate can use the property index, and paged results print a cursor when more results are available.
-In development builds, every human-readable and JSON query result includes its
-bake `trace`. Release builds omit trace storage and output.
+`beld query` prints the resources that match a filter, grouped and sorted.
+See [Query resources](#query-resources).
 
 `beld delete` removes resources by ID.
 
@@ -128,15 +126,74 @@ The budget is soft rather than a strict process-memory cap. One large asset or a
 
 ## Query resources
 
+Use `beld query` to answer questions about your resource store from a script or
+an AI agent. It takes the filter, fields, group, and sort of
+[`beld browse`](#find-what-fills-the-store), prints the result, and doesn't
+change the store:
+
 ```bash
-beld query Material
-beld query Image name=textures/hero_albedo.png
-beld query Variant --limit 20
+beld query class=Material
+beld query class=Image name=textures/hero_albedo.png
+beld query --group source --limit 5
+beld query --format json --limit 20 -- class=Image 'stored>1MiB' -is:compressed
+beld query --format json is:stale
 beld inspect material.bema --format json
 ```
 
-The query system supports string equality predicates over queryable properties.
-Every resource model gets a `name` property by default.
+- Quote terms that contain `>`, `<`, `*`, or `?`, so your shell doesn't read
+  them.
+- Put `--` before the terms when one starts with `-`, and put the options
+  before `--`.
+- `--limit` caps the resources listed in each group. Counts and sizes still
+  cover every match, so `--group class --limit 0` prints only the size of each
+  class.
+- In development builds, the JSON output includes each resource's bake `trace`.
+
+Every resource model gets a `name` property by default. The
+[Query reference](/docs/api/beld#query) lists every option and the shape of the
+JSON output.
+
+## Find what fills the store
+
+Use `beld browse` to find the resources that take the most space, the ones a
+bake left out of date, and what each resource pulls in. It opens a full-screen
+view of the whole store in your terminal and doesn't change the store:
+
+```bash
+beld --source assets --destination resources browse
+```
+
+The table lists every resource, largest stored payload first. Press `/` and
+type a filter to narrow it, `g` to group it, and `s` to change the sort. Press
+`Enter` to keep the filter. These filters answer common questions:
+
+| To find | Do this |
+| --- | --- |
+| The source files that produce the most data | Press `g` and pick `source`. |
+| Large textures stored uncompressed | Filter `class=Image stored>1MiB -is:compressed`. |
+| Identical payloads stored more than once | Filter `is:duplicate`, then press `g` and pick `hash`. |
+| Resources the next bake processes again | Filter `is:stale`. |
+| Bakes that failed or warned, in development builds | Filter `is:failed` or `has:warnings`. |
+| Images in one format | Filter `class=Image model.format=BC7`. |
+
+Select a resource and press `Enter` to read its details: its streams, the
+source files it came from, and its bake trace. In development builds, the
+details also list the resources it uses and the resources that use it. Press
+`Enter` on one of those to jump to it, and `Backspace` to go back.
+
+Press `u` to see the usage of the whole store: the size of each class,
+duplicate payloads, payload files that no resource uses anymore, and how
+fragmented a packed store is. To reclaim the space of unused payload files or
+of a fragmented pack, clear the store and bake it again.
+
+After you bake in another terminal, press `R` to read the store again. Your
+filter, group, and sort stay. Press `q` to quit.
+
+`beld browse` needs an interactive terminal. In scripts, use
+[`beld query`](#query-resources), which takes the same filter, group, and sort.
+The [Browse reference](/docs/api/beld#browse) lists every key, and
+[Filter, group, and sort](/docs/api/beld#filter-group-and-sort) lists every
+field and filter term.
 
 ## Choose when to use BELD
 
@@ -145,6 +202,7 @@ Use BELD when you need deterministic resource output:
 - Prepare assets before a release build.
 - Inspect the resources that an asset produced.
 - Check shader reflection metadata.
+- Find what fills your resource store.
 - Rebuild resources after you change a processor.
 - Delete stale resources while you debug asset import.
 

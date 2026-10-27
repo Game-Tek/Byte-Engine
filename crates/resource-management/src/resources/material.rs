@@ -58,7 +58,30 @@ impl Material {
 	}
 }
 
-super::impl_resource_model!(Material, MaterialModel, "Material");
+super::impl_resource_model!(Material, MaterialModel, "Material", references = material_references);
+
+/// Lists the material's shaders, then the images its parameters name.
+fn material_references(material: &MaterialModel) -> Vec<&str> {
+	material
+		.shaders
+		.iter()
+		.map(|shader| shader.id().as_str())
+		.chain(
+			material
+				.parameters
+				.iter()
+				.filter_map(|parameter| image_reference(&parameter.value)),
+		)
+		.collect()
+}
+
+/// Returns the ID of the image a value names, if it names one.
+fn image_reference(value: &ValueModel) -> Option<&str> {
+	match value {
+		ValueModel::Image(image) => Some(image.id().as_str()),
+		ValueModel::Scalar(_) | ValueModel::Vector3(_) | ValueModel::Vector4(_) => None,
+	}
+}
 
 impl crate::StoredModel for MaterialModel {
 	type Resource = Material;
@@ -194,6 +217,13 @@ impl crate::Model for VariantModel {
 	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
 		let material = crate::from_slice::<MaterialModel>(&self.material.resource).ok();
 		variant_queryable_properties(id, material.as_ref().map(|material| &material.model))
+	}
+
+	/// Lists the variant's material, then the images its variables name.
+	fn references(&self) -> Vec<&str> {
+		std::iter::once(self.material.id().as_str())
+			.chain(self.variables.iter().filter_map(|variable| image_reference(&variable.value)))
+			.collect()
 	}
 }
 

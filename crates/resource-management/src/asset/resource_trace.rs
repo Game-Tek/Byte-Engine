@@ -16,6 +16,17 @@ pub enum ResourceTraceLevel {
 	Error,
 }
 
+impl ResourceTraceLevel {
+	/// Returns the level's name as tools print it: `info`, `warn`, or `error`.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			ResourceTraceLevel::Info => "info",
+			ResourceTraceLevel::Warn => "warn",
+			ResourceTraceLevel::Error => "error",
+		}
+	}
+}
+
 /// The `ResourceTraceItem` struct preserves one message emitted while a resource was baked.
 #[derive(
 	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,

@@ -148,13 +148,13 @@ pub struct ProcessedAsset {
 	class: String,
 	/// Source versions that must still match before this baked resource can be reused.
 	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
-	/// The resources that this resource depends on.
-	// required_resources: Vec<ProcessedResources>,
 	/// The serialized resource metadata.
-	// resource: Data,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
 	queryable_properties: Vec<QueryableProperty>,
+	/// The IDs the model names, each once, which debug storage records for tools.
+	#[cfg(debug_assertions)]
+	references: Vec<String>,
 	compression: resource::ResourceCompressionPolicy,
 }
 
@@ -172,8 +172,16 @@ impl ProcessedAsset {
 			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
+			#[cfg(debug_assertions)]
+			references: unique_references(resource.references()),
 			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
+	}
+
+	/// Returns the IDs the model names, each once, in the order the model first names them.
+	#[cfg(debug_assertions)]
+	pub(crate) fn references(&self) -> &[String] {
+		&self.references
 	}
 
 	/// Returns the stable ID that storage must publish for this resource.
@@ -238,6 +246,8 @@ impl ProcessedAsset {
 				name: "name".to_string(),
 				value: QueryableValue::String(id.to_string()),
 			}],
+			#[cfg(debug_assertions)]
+			references: Vec::new(),
 			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
 	}
@@ -314,8 +324,22 @@ pub struct SerializableResource {
 	baked_at: u64,
 }
 
+/// Keeps the first occurrence of each referenced ID, so a model that names a resource twice records it once.
+#[cfg(debug_assertions)]
+fn unique_references(references: Vec<&str>) -> Vec<String> {
+	let mut unique: Vec<String> = Vec::with_capacity(references.len());
+	for id in references {
+		if !unique.iter().any(|existing| existing == id) {
+			unique.push(id.to_string());
+		}
+	}
+	unique
+}
+
 /// Returns the current time in nanoseconds since the Unix epoch, the unit of [`SerializableResource::baked_at`].
-pub(crate) fn unix_time_nanos() -> u64 {
+///
+/// Tools subtract `baked_at` from it to tell how long ago a resource was baked.
+pub fn unix_time_nanos() -> u64 {
 	std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
@@ -323,7 +347,7 @@ pub(crate) fn unix_time_nanos() -> u64 {
 
 impl SerializableResource {
 	/// Returns when the resource was stored, in nanoseconds since the Unix epoch.
-	pub(crate) fn baked_at(&self) -> u64 {
+	pub fn baked_at(&self) -> u64 {
 		self.baked_at
 	}
 
@@ -340,7 +364,9 @@ impl SerializableResource {
 	}
 
 	/// Returns the source versions that determine whether this resource needs to be baked again.
-	pub(crate) fn asset_dependencies(&self) -> &[asset::storage_backend::AssetDependency] {
+	///
+	/// Pass the resource to [`asset::manager::stale_sources`] to find the ones that changed.
+	pub fn asset_dependencies(&self) -> &[asset::storage_backend::AssetDependency] {
 		&self.asset_dependencies
 	}
 

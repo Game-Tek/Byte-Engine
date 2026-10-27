@@ -267,7 +267,12 @@ pub struct AnimationModel {
 	pub tracks: Vec<NodeTrack>,
 }
 
-super::impl_resource_model!(Animation, AnimationModel, "Animation");
+super::impl_resource_model!(Animation, AnimationModel, "Animation", references = animation_references);
+
+/// Lists the skeleton the clip animates.
+fn animation_references(animation: &AnimationModel) -> Vec<&str> {
+	vec![animation.skeleton.id().as_str()]
+}
 
 impl<'de> Solver<'de, Animation> for AnimationModel {
 	/// Resolves the target skeleton and rejects clip data that a CPU graph could not evaluate deterministically.

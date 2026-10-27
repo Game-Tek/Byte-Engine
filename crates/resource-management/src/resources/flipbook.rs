@@ -35,7 +35,12 @@ pub struct FlipbookModel {
 	pub frames_per_second: u32,
 	pub images: Vec<ReferenceModel<Image>>,
 }
-super::impl_resource_model!(Flipbook, FlipbookModel, "Flipbook");
+super::impl_resource_model!(Flipbook, FlipbookModel, "Flipbook", references = flipbook_references);
+
+/// Lists the images the flipbook plays, in frame order.
+fn flipbook_references(flipbook: &FlipbookModel) -> Vec<&str> {
+	flipbook.images.iter().map(|image| image.id().as_str()).collect()
+}
 
 impl crate::StoredModel for FlipbookModel {
 	type Resource = Flipbook;

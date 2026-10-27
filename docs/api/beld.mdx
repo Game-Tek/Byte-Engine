@@ -1,6 +1,6 @@
 ---
 title: BELD command line
-description: Look up every BELD command, flag, default, exit code, and output format, and the file extensions its handlers bake.
+description: Look up every BELD command, flag, default, exit code, output format, and resource filter, and the file extensions its handlers bake.
 icon: TerminalSquare
 ---
 
@@ -28,7 +28,8 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 | `bake [ids...]` | `--force`; `--config <path>`, default `config.json` in the working directory; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
-| `query <class> [property=value...]` | `--limit <n>`, `--cursor <hex>`, `--format human` or `json` | Lists resources of a class matching every predicate, read-only, with a cursor when more remain. |
+| `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
+| `browse` | | Opens an interactive view of every resource in the store, read-only; see [Browse](#browse). |
 | `delete <ids...>` | | Removes each resource. |
 | `clear`, `wipe` | | Removes every resource and payload, keeping the store's mode. |
 
@@ -55,26 +56,189 @@ anything under the destination directory.
 | `--format`, `--payload` | Accepted on `bake` only with `--dry-run`. |
 | Exit code | The same as a normal bake of the same IDs. |
 
+## Query
+
+`query` prints the resources that match a [filter](#filter), grouped and
+sorted, and exits. It reads the store as described in
+[Filter, group, and sort](#filter-group-and-sort).
+
+| Argument or flag | Effect |
+| --- | --- |
+| `terms...` | The terms of one [filter](#filter). An argument can hold several terms separated by spaces. Without terms, every resource matches. A term that starts with `-` must follow a `--` argument. |
+| `--group <field>` | Groups the resources by a [field](#fields). Without it, the output has no groups. |
+| `--sort <field>` | Orders the groups and the resources by a [field](#fields), in that field's [direction](#grouping-and-sorting). Defaults to `stored`, largest first. |
+| `--reverse` | Reverses the order of the groups and of the resources in each group. |
+| `--limit <n>` | Lists at most `n` resources in each group, or in all when ungrouped. Counts and sums still cover every matching resource, so `--limit 0` prints only those. |
+| `--format human` or `json` | The [output format](#output-formats). Defaults to `human`. |
+
+A term, `--group` field, or `--sort` field that doesn't parse exits with code 2
+and prints nothing.
+
+## Browse
+
+`browse` shows the store in an interactive terminal view that you filter,
+group, and sort as described in
+[Filter, group, and sort](#filter-group-and-sort).
+
+| Rule | Effect |
+| --- | --- |
+| Terminal | Standard input and standard output must be an interactive terminal, or `browse` exits with code 1. |
+| Snapshot | The view shows the store as read at startup or at the last `R`. |
+| Initial view | No filter, no group, sorted by `stored`, largest first. |
+
+### Panes
+
+| Pane | Shows |
+| --- | --- |
+| Table | One row per resource: its ID, class, stored size, encoding, and ratio, and the sort field when it isn't one of those. When grouped, one row per group, collapsed at first, with its resource count, summed stored and decoded sizes, and share of the stored bytes of every resource in the store. |
+| Detail | The selected resource: the `inspect` output, its streams largest first, its source files and whether each is current, the resources it references and the resources that reference it, its `total`, and its bake trace. A failed bake shows its trace only. A selected group shows its resource count, summed decoded and stored sizes, ratio, and share of the store. |
+| Usage | The whole store, regardless of the filter; see [Usage](#usage). |
+
+### Key bindings
+
+| Key | Effect |
+| --- | --- |
+| `/` | Edits the filter. The view follows each keystroke while the filter is valid. `Enter` keeps the filter, and `Esc` restores the filter from before the edit. |
+| `g` | Opens the group picker: `none`, every field, every declared property in the store, and `model.` followed by a typed path. |
+| `s` | Opens the sort picker, with the entries of the group picker except `none`. |
+| `r` | Reverses the sort order. |
+| `↑`, `↓`, `Page Up`, `Page Down`, `Home`, `End` | Move the selection in the focused pane. |
+| `Enter` | On a group, expands or collapses it. On a resource, focuses the detail pane. On a reference in the detail pane, shows that resource in the detail pane, and selects it in the table when the filter shows it. |
+| `Tab` | Moves the focus between the table and the detail pane. |
+| `Backspace` | Shows the resource from before the last jump through a reference. |
+| `u` | Shows or hides the usage pane. |
+| `R` | Reads the store and the source directory again, keeping the filter, group, and sort. |
+| `Esc` | Closes a picker, or returns the focus to the table. |
+| `q`, `Ctrl+C` | Quits with code 0. |
+
+### Usage
+
+| Entry | Value |
+| --- | --- |
+| Classes | For each class, the resource count and the summed decoded and stored sizes. |
+| Database | The size of `resources.db`, and the summed `metadata` of every resource. |
+| Duplicates | Each group of two or more resources with the same hash and a non-empty payload. The wasted bytes are the stored sizes of all but one resource in each group. |
+| Orphaned payloads | In files mode, the count and size of payload files whose name doesn't match the UID, hash, and encoding of a stored resource. See the store's [files](/docs/reference/resource-store#files). |
+| Staging files | The count and size of `.resource-write-*` files. |
+| Pack | In packed mode, the pack file's size, the bytes resources occupy, the free bytes, the number of free ranges, the largest free range, and whether the pack meets the [fragmentation rule](/docs/reference/resource-store#storage-modes). |
+| Bakes | The number of stale resources and, in debug builds, of failed bakes. |
+
+## Filter, group, and sort
+
+`browse` and `query` read the metadata of every resource in the destination
+directory, without payloads, and read the source directory to check whether
+each resource is current. They write to neither directory.
+
+| Rule | Effect |
+| --- | --- |
+| Source directory | Read for source file versions. If it can't be read, every resource's status is `unknown`. |
+| Release builds | Read no traces or references. Failed bakes don't appear, and fields and flags marked debug are rejected. A store baked by a release build has no references. |
+
+### Filter
+
+```
+filter   = [ term { " " term } ]
+term     = [ "-" ] ( word | field operator value | "is:" flag | "has:" level )
+operator = "=" | "!=" | "~" | ">" | ">=" | "<" | "<="
+level    = "warnings" | "errors"
+```
+
+A resource matches when it matches every term. A leading `-` negates a term.
+An empty filter matches every resource. Values can't contain spaces.
+
+| Term | Matches when |
+| --- | --- |
+| `word` | The ID contains `word`, ignoring case. A word with `*` or `?` is a glob that must match the whole ID, also ignoring case: `*` matches any run of characters, and `?` matches one character. |
+| `field=value` | The field's value equals `value`, exactly for text and numerically for the other types. |
+| `field!=value` | The field's value differs from `value`, or the resource doesn't have the field. |
+| `field~text` | The field's value, as text, contains `text`, ignoring case. |
+| `field>value`, `field>=value`, `field<value`, `field<=value` | The field's value compares that way with `value`. The field can't be text. |
+| `is:flag` | The [flag](#flags) holds. |
+| `has:warnings`, `has:errors` | The bake trace has at least one warning, or at least one error. Debug. |
+
+A resource without a field matches no term on that field except `!=`. A term
+that names an unknown field, compares text with a number operator, or has a
+value that doesn't parse for its field type is an error.
+
+| Field type | Value |
+| --- | --- |
+| Text | Any characters. |
+| Number | A decimal number. |
+| Size | A decimal number followed by `B`, `KiB`, `MiB`, or `GiB` in any case, or by nothing for bytes. |
+| Age | A decimal number followed by `s`, `m`, `h`, or `d`. `baked<1h` matches resources stored less than an hour ago. |
+
+### Fields
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `id` | Text | The resource ID. |
+| `class` | Text | The resource class. |
+| `source` | Text | The ID without its fragment. |
+| `encoding` | Text | `raw`, `cpu-lz4`, or `metal-io-lz4`. |
+| `hash` | Text | The payload hash as 16 lowercase hexadecimal characters. |
+| `status` | Text | One of the [statuses](#statuses). |
+| `size` | Size | The decoded payload size. |
+| `stored` | Size | The stored payload size. |
+| `ratio` | Number | `stored` divided by `size`, or 1 for an empty payload. |
+| `metadata` | Size | The size of the serialized model. |
+| `baked` | Age | The time since the resource was stored. |
+| `refs` | Number | The number of resources the resource references. Debug. |
+| `used-by` | Number | The number of resources that reference the resource. Debug. |
+| `total` | Size | The `stored` size of the resource and of every resource it references, directly or through other resources, each counted once. Debug. |
+| A declared property, such as `render-pass` | Text | The property's value. A field in this table with the same name takes precedence. |
+| `model.<path>` | Number or text | The value at `path` in the `resource` object of the `inspect` JSON output. `path` is object keys and array indexes separated by dots, such as `model.extent.width` or `model.shaders.0.id`. A number is a number; any other value is text, with objects and arrays as compact JSON. |
+
+A failed bake has only `id`, `source`, and `status`.
+
+### Flags
+
+| Flag | Holds when |
+| --- | --- |
+| `is:failed` | The status is `failed`. Debug. |
+| `is:stale` | The status is `stale`. |
+| `is:compressed` | The encoding isn't `raw`. |
+| `is:duplicate` | Another resource has the same hash, and neither payload is empty. |
+| `is:unreferenced` | No resource references the resource. Debug. |
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| `current` | Every source file version the resource records matches the source directory. |
+| `stale` | At least one source file the resource records changed or no longer exists, so the next `bake` processes it again. |
+| `unknown` | The source directory couldn't be read. |
+| `failed` | The latest bake of the ID stored no resource and left a trace. Debug. |
+
+### Grouping and sorting
+
+| Rule | Effect |
+| --- | --- |
+| Groups | Each distinct value of the group field is a group. Resources without the field form a group named `(none)`. |
+| Resource order | By the sort field, text in code point order, with ties ordered by ID. Resources without the field come last. |
+| Group order | By the summed value of the group's resources for `size`, `stored`, `metadata`, and `total`; by the group's summed `stored` divided by its summed `size` for `ratio`; and by the group's value, in the direction of the group field, for every other field. |
+| Direction | A sort field orders sizes and numbers largest first, ages newest first, and text and model fields in ascending order. `r` in `browse` and `--reverse` in `query` reverse resources and groups; missing values stay last. |
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | The configuration couldn't be read, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, or at least one delete failed. |
-| 2 | Invalid arguments. |
+| 1 | The configuration couldn't be read, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, at least one delete failed, or `browse` ran without an interactive terminal. |
+| 2 | Invalid arguments, including a `query` filter term or field that doesn't parse. |
 
 ## Output formats
 
 | Output | Shape |
 | --- | --- |
-| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `properties`, `streams`, and `resource`, the model as JSON. Each stream has `name`, `size`, and `offset`. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
+| `inspect`, JSON | An object with `id`, `uid`, `class`, `hash`, `size`, `stored_size`, `encoding`, `serialized_resource_size`, `baked_at`, in nanoseconds since the Unix epoch, `properties`, `streams`, and `resource`, the model as JSON. Each stream has `name`, `size`, and `offset`. Debug builds add `trace`, the bake messages. A failed asset with only a trace prints `resource` as null. |
 | `inspect`, human | `key: value` lines, nested objects indented by two spaces, arrays as dashed items. |
 | `bake --dry-run`, JSON | An object with `resources`, every stored resource in the `inspect` JSON shape ordered by ID, and `failed`, one object per requested ID that failed, with `id` and `error`. Debug builds add `trace` to both. |
 | `bake --dry-run`, human | The same object in the `inspect` human layout. |
-| `query`, JSON | An object with `resources`, each with `id`, `uid`, `class`, and `properties`, and `cursor`, null on the last page. |
-| `query`, human | Each ID on its own line with its properties indented, then the cursor when more pages exist. |
+| `query`, JSON | An object with `count`, the number of matching resources and failed bakes; `size` and `stored`, their summed decoded and stored sizes; and `share`, `stored` divided by the summed stored size of every resource in the store, or 0 for an empty store. Without `--group`, it adds `resources`, the listed resources in order. With `--group`, it adds `groups` in order, each with `name`, the group's value as text, and the group's own `count`, `size`, `stored`, `share`, and `resources`. |
+| `query`, JSON resource | An object with `uid`, `properties`, and every [field](#fields) with a fixed name that the resource has, under that name. Sizes are in bytes, and `baked` is in seconds. It adds each `model.<path>` field that the filter, `--group`, or `--sort` names, when the resource has it. Debug builds add `trace`, the bake messages. A failed bake has `id`, `source`, `status`, and `trace`. |
+| `query`, human | A line of field names, then one line per resource with its `id`, `class`, `stored`, `encoding`, and `ratio`, followed by every other field that the filter, `--group`, or `--sort` names. A failed bake shows `failed` as its class. With `--group`, each group starts with a line of its name and totals, and its resources follow, indented. A line says how many resources `--limit` left out of a group. The last line gives the totals of every matching resource. |
 
-A cursor is the hexadecimal encoding of the page token. Models with a JSON
+Models with a JSON
 form are animation, audio, image, LUT, material, mesh, primitive, shader,
 skeleton, and variant; flipbooks, pipelines, and particle systems print an
 unsupported marker.

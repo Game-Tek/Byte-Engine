@@ -3,7 +3,7 @@ use resource_management::{
 	resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
 };
 
-use crate::commands::shared::{offload_file_operation, open_read_only_storage};
+use crate::commands::shared::{log_failure, offload_file_operation, open_read_only_storage};
 
 /// Removes every baked resource through the configured resource storage backend.
 ///
@@ -31,7 +31,7 @@ pub async fn clear(destination_path: String) -> Result<(), i32> {
 ///
 /// Pass an ID to [`crate::inspect`] to read its metadata.
 pub async fn list(destination_path: String) -> Result<(), i32> {
-	let storage_backend = open_read_only_storage(destination_path, "list").await?;
+	let storage_backend = open_read_only_storage(destination_path, "list").await.map_err(log_failure)?;
 
 	match storage_backend.list().await {
 		Ok(resources) => {
@@ -40,7 +40,7 @@ pub async fn list(destination_path: String) -> Result<(), i32> {
 			}
 
 			for resource in resources {
-				println!("{}", resource);
+				println!("{}", resource.id());
 			}
 
 			Ok(())

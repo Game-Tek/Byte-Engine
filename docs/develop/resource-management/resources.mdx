@@ -57,6 +57,18 @@ Every model exposes at least a `name` queryable property by default. Specific
 models can add properties as editor and tooling needs grow. A backend can choose
 how it evaluates those queries as long as it preserves the query contract.
 
+In development builds, `ProcessedAsset::new` also collects the IDs of the
+resources a model refers to from `Model::references`, and the ReDB backend
+stores them in the same transaction as the resource, for `beld browse`. When
+you add a model field that holds a `ReferenceModel` or another resource's ID,
+add it to the model's `references` and to the per-class table in the
+[development records](/docs/reference/resource-store#development-records)
+reference. Release builds neither collect nor store references, so shipped
+stores don't carry them. The ReDB backend test
+`references_are_stored_with_the_resource_and_removed_with_it` guards that a
+replacement, a delete, and a clear keep the records in step with the
+resources.
+
 ## Payload authoring and encoding
 
 The default complete-payload authoring path uses CPU LZ4 compression. It keeps a payload uncompressed when it's smaller than 1 KiB, compression wouldn't save more than 12.5 percent, or the temporary compression output can't be prepared safely. Before it compresses a payload of 128 KiB or more, it compresses four 16 KiB samples spread across the payload. When the samples save less than 6.25 percent, it stores the payload uncompressed without compressing the rest, which is the usual outcome for BC7 textures. Set `ProcessedAsset::with_compression(ResourceCompressionPolicy::Disabled)` when one resource must remain uncompressed. A backend can override the CPU compression policy when it needs another transport path.

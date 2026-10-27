@@ -123,4 +123,12 @@ const fn default_depth_write() -> bool {
 	true
 }
 
-super::impl_direct_resource!(Pipeline, "Pipeline");
+super::impl_direct_resource!(Pipeline, "Pipeline", references = pipeline_references);
+
+/// Lists the shaders the pipeline runs, by ID.
+fn pipeline_references(pipeline: &Pipeline) -> Vec<&str> {
+	match &pipeline.kind {
+		PipelineKind::Compute { shader, .. } => vec![shader.as_str()],
+		PipelineKind::Raster { shaders, .. } => shaders.iter().map(String::as_str).collect(),
+	}
+}

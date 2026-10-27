@@ -202,7 +202,7 @@ impl PackedAllocatorState {
 		self.free_slots.insert(offset, size);
 	}
 
-	fn fragmentation(&self) -> PackedFragmentation {
+	pub(super) fn fragmentation(&self) -> PackedFragmentation {
 		// A large total is useful only when at least one slot can satisfy a
 		// similarly large replacement, so retain both total and largest values.
 		let free_bytes = self.free_slots.values().copied().sum();
@@ -300,7 +300,11 @@ impl PackedResourceAllocator {
 }
 
 /// Reconstructs occupied and free slots while validating every database-visible range.
-fn reconstruct_state(pack_path: &Path, high_water: u64, live_ranges: Vec<PackedRange>) -> Result<PackedAllocatorState, String> {
+pub(super) fn reconstruct_state(
+	pack_path: &Path,
+	high_water: u64,
+	live_ranges: Vec<PackedRange>,
+) -> Result<PackedAllocatorState, String> {
 	let mut allocations: BTreeMap<u64, PackedAllocation> = BTreeMap::new();
 	for range in live_ranges {
 		if range.size == 0 {
@@ -354,17 +358,23 @@ fn reconstruct_state(pack_path: &Path, high_water: u64, live_ranges: Vec<PackedR
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The `PackedFragmentation` struct measures whether free space is too scattered for effective reuse.
-struct PackedFragmentation {
-	file_size: u64,
-	free_bytes: u64,
-	largest_free_slot: u64,
-	free_slot_count: usize,
+/// The `PackedFragmentation` struct measures whether a pack's free space is too scattered for new payloads to reuse.
+///
+/// Read it from [`super::StorageUsage::pack`] to report how much of a packed store no resource occupies.
+pub struct PackedFragmentation {
+	/// The size of the pack file in bytes.
+	pub file_size: u64,
+	/// The bytes no resource occupies.
+	pub free_bytes: u64,
+	/// The size of the largest free range.
+	pub largest_free_slot: u64,
+	/// The number of free ranges.
+	pub free_slot_count: usize,
 }
 
 impl PackedFragmentation {
-	/// Requires both substantial free space and substantial external fragmentation before warning.
-	fn is_excessive(self) -> bool {
+	/// Returns whether the pack meets the fragmentation rule: substantial free space that is too scattered to reuse.
+	pub fn is_excessive(self) -> bool {
 		self.file_size >= FRAGMENTATION_MIN_FILE_SIZE
 			&& self.free_slot_count >= FRAGMENTATION_MIN_FREE_SLOTS
 			&& u128::from(self.free_bytes) * 4 >= u128::from(self.file_size)

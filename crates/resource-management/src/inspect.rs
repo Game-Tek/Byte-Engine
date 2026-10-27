@@ -91,6 +91,7 @@ pub fn inspect_resource(resource: &SerializableResource) -> Result<ResourceInspe
 		"stored_size": resource.stored_size(),
 		"encoding": resource.encoding().as_str(),
 		"serialized_resource_size": resource.resource().len(),
+		"baked_at": resource.baked_at(),
 		"properties": queryable_properties_to_json(resource),
 		"streams": streams_to_json(resource),
 		"resource": resource_json,
@@ -100,6 +101,12 @@ pub fn inspect_resource(resource: &SerializableResource) -> Result<ResourceInspe
 		json,
 		unsupported_resource_section,
 	})
+}
+
+/// Returns only a resource's model JSON, the `resource` field of [`inspect_resource`], for tools that read model
+/// fields without building the rest of the inspection.
+pub fn inspect_model(resource: &SerializableResource) -> Result<Value, ResourceInspectError> {
+	inspect_resource_section(resource).map(|(value, _)| value)
 }
 
 fn inspect_resource_section(resource: &SerializableResource) -> Result<(Value, bool), ResourceInspectError> {

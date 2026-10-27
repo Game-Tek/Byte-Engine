@@ -1,19 +1,20 @@
 //! BELD command implementations grouped by operation and shared presentation support.
 
 mod bake;
+mod browse;
+mod catalog;
+mod filter;
 mod inspect;
 mod maintenance;
 mod query;
 mod shared;
+mod view;
 
 pub use bake::{bake, bake_dry_run};
+pub use browse::browse;
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
-#[cfg(test)]
-use query::parse_query_property;
 pub use query::query;
-#[cfg(test)]
-use shared::{decode_query_cursor, encode_query_cursor};
 #[cfg(test)]
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,42 +23,20 @@ mod tests {
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
+		asset::ResourceId,
 		resource::{ReadStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
 	};
-	use resource_management::{
-		asset::{FileStorageBackend, ResourceId},
-		resource::{ReDBStorageBackend, storage_backend::QueryCursor},
-	};
+	use resource_management::{asset::FileStorageBackend, resource::ReDBStorageBackend};
 
 	#[cfg(debug_assertions)]
 	use super::list;
 	#[cfg(debug_assertions)]
 	use super::{bake, inspect, query};
-	use super::{decode_query_cursor, encode_query_cursor, parse_query_property};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
 	use crate::utils::get_asset_manager;
-
-	#[test]
-	fn query_property_parser_splits_once_and_rejects_missing_halves() {
-		assert_eq!(parse_query_property("name=hero"), Ok(("name", "hero")));
-		assert_eq!(parse_query_property("expression=a=b"), Ok(("expression", "a=b")));
-		assert_eq!(parse_query_property("name"), Err(1));
-		assert_eq!(parse_query_property("=value"), Err(1));
-		assert_eq!(parse_query_property("name="), Err(1));
-	}
-
-	#[test]
-	fn query_cursor_codec_is_lossless_and_rejects_non_cursor_json() {
-		let cursor = QueryCursor::new(vec![0, 1, 2, 0xfe, 0xff]);
-		let encoded = encode_query_cursor(&cursor);
-
-		assert_eq!(decode_query_cursor(&encoded), Ok(cursor));
-		assert_eq!(decode_query_cursor("not-hex"), Err(1));
-		assert_eq!(decode_query_cursor(&utils::hex::encode(br#"{"wrong":true}"#)), Err(1));
-	}
 
 	#[cfg(debug_assertions)]
 	#[test]
@@ -261,17 +240,22 @@ mod tests {
 			)),
 			Ok(())
 		);
-		assert_eq!(
+		let query = |terms: &[&str]| {
 			executor.block_on(query(
+				assets_path.to_string_lossy().into_owned(),
 				resources_path.to_string_lossy().into_owned(),
-				"Audio".to_string(),
-				Vec::new(),
+				terms.iter().map(|term| term.to_string()).collect(),
 				None,
+				None,
+				false,
 				None,
 				OutputFormat::JSON,
-			)),
-			Ok(())
-		);
+			))
+		};
+		assert_eq!(query(&["class=Audio"]), Ok(()));
+		assert_eq!(query(&["is:failed", "has:errors"]), Ok(()));
+		// A field no resource declares is an invalid argument, not a failed read.
+		assert_eq!(query(&["bogus=1"]), Err(2));
 		std::fs::remove_dir_all(root).unwrap();
 	}
 }

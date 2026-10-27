@@ -746,20 +746,52 @@ impl AssetManagerState {
 			return true;
 		}
 
-		let checks = resource.asset_dependencies().iter().map(|dependency| async move {
-			let id = ResourceId::new(dependency.id());
-			let current = self.storage_backend.version(id).await;
-
-			current.as_ref().ok() != Some(dependency.version())
-		});
+		let storage_backend = self.storage_backend.as_ref();
+		let checks = resource
+			.asset_dependencies()
+			.iter()
+			.map(|dependency| source_changed(dependency, storage_backend));
 
 		// Provenance entries are independent; bound metadata pressure and stop after the first stale source.
 		utils::r#async::stream::iter(checks)
-			.buffer_unordered(8)
+			.buffer_unordered(SOURCE_VERSION_CONCURRENCY)
 			.any(|stale| async move { stale })
 			.await
 	}
 }
+
+/// Returns the IDs of the source files a stored resource records that changed or no longer exist.
+///
+/// A resource without stale sources is current, so a bake keeps it. Pass the asset storage backend of the source
+/// directory the resource was baked from, such as a [`FileStorageBackend`](crate::asset::FileStorageBackend). The IDs
+/// keep the order of [`SerializableResource::asset_dependencies`](crate::SerializableResource::asset_dependencies).
+pub async fn stale_sources<'a>(
+	resource: &'a crate::SerializableResource,
+	storage_backend: &dyn DynStorageBackend,
+) -> Vec<&'a str> {
+	use utils::r#async::StreamExt as _;
+
+	let checks = resource
+		.asset_dependencies()
+		.iter()
+		.map(|dependency| async move { source_changed(dependency, storage_backend).await.then_some(dependency.id()) });
+
+	utils::r#async::stream::iter(checks)
+		.buffered(SOURCE_VERSION_CONCURRENCY)
+		.filter_map(|stale| async move { stale })
+		.collect()
+		.await
+}
+
+/// Returns whether one recorded source version differs from the asset backend's current version.
+async fn source_changed(dependency: &AssetDependency, storage_backend: &dyn DynStorageBackend) -> bool {
+	let current = storage_backend.version(ResourceId::new(dependency.id())).await;
+
+	current.as_ref().ok() != Some(dependency.version())
+}
+
+/// Bounds how many source versions one staleness check reads at once.
+const SOURCE_VERSION_CONCURRENCY: usize = 8;
 
 /// Converts a watcher path into its raw asset ID and, for BEAD files, its possible sidecar source ID.
 #[cfg(debug_assertions)]
@@ -1378,6 +1410,36 @@ pub mod tests {
 	}
 
 	#[r#async::test]
+	async fn stale_sources_names_only_the_changed_and_removed_sources() {
+		let asset_storage = TestStorageBackend::new();
+
+		asset_storage.add_file("external.test", b"source");
+		asset_storage.add_file("external.bin", b"payload");
+		asset_storage.add_file("removed.test", b"source");
+
+		let resource_storage = MemoryStorageBackend::new();
+		let (asset_manager, _) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
+
+		for id in ["external.test", "removed.test"] {
+			asset_manager
+				.bake_if_not_exists::<TestResource>(id)
+				.await
+				.expect("fixture source should bake");
+		}
+
+		let (external, _) = resource_storage.read(ResourceId::new("external.test")).await.unwrap();
+		let (removed, _) = resource_storage.read(ResourceId::new("removed.test")).await.unwrap();
+
+		assert!(stale_sources(&external, &asset_storage).await.is_empty());
+
+		asset_storage.add_file("external.bin", b"edited payload");
+		asset_storage.remove_file("removed.test");
+
+		assert_eq!(stale_sources(&external, &asset_storage).await, ["external.bin"]);
+		assert_eq!(stale_sources(&removed, &asset_storage).await, ["removed.test"]);
+	}
+
+	#[r#async::test]
 	async fn concurrent_bakes_for_one_asset_and_store_share_one_invocation() {
 		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
 
@@ -1626,6 +1688,7 @@ use crate::{
 	asset::{
 		self, DynStorageBackend, ResourceId,
 		handler::{DynAssetHandler, LoadErrors},
+		storage_backend::AssetDependency,
 	},
 	online_docs_url,
 	processors::image::ImageProcessor,

@@ -134,7 +134,16 @@ pub struct MeshModel {
 	pub primitives: Vec<Primitive>,
 }
 
-super::impl_resource_model!(Mesh, MeshModel, "Mesh");
+super::impl_resource_model!(Mesh, MeshModel, "Mesh", references = mesh_references);
+
+/// Lists the mesh's skeleton, then its material variants.
+fn mesh_references(mesh: &MeshModel) -> Vec<&str> {
+	mesh.skeleton
+		.iter()
+		.map(|skeleton| skeleton.id().as_str())
+		.chain(mesh.materials.iter().map(|material| material.id().as_str()))
+		.collect()
+}
 
 impl crate::StoredModel for MeshModel {
 	type Resource = Mesh;

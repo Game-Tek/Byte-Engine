@@ -47,6 +47,11 @@ impl<'a> ResourceId<'a> {
 		Self { full }
 	}
 
+	/// Returns the full ID, borrowed for as long as the string it was created from.
+	pub fn as_str(&self) -> &'a str {
+		self.full
+	}
+
 	pub fn get_base(&self) -> ResourceIdBase<'a> {
 		ResourceIdBase {
 			base: get_base(self.full).unwrap(),

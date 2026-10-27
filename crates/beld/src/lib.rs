@@ -9,7 +9,7 @@
 mod commands;
 mod utils;
 
-pub use commands::{bake, bake_dry_run, clear, delete, inspect, list, query, wipe};
+pub use commands::{bake, bake_dry_run, browse, clear, delete, inspect, list, query, wipe};
 pub use resource_management::r#async::Executor;
 
 /// Selects the representation written by commands that return structured output.

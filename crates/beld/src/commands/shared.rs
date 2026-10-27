@@ -1,15 +1,16 @@
 use resource_management::inspect::PayloadFormat;
 use resource_management::{
 	QueryableValue, SerializableResource,
-	asset::ResourceId,
 	resource::{
 		ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
-		resource_handler::MultiResourceReader, storage_backend::QueryCursor,
+		resource_handler::MultiResourceReader,
 	},
 };
 #[cfg(debug_assertions)]
-use resource_management::{ResourceTraceItem, ResourceTraceLevel};
-use serde_json::{Value, json};
+use resource_management::{ResourceTraceItem, asset::ResourceId};
+use serde_json::Value;
+#[cfg(debug_assertions)]
+use serde_json::json;
 
 use crate::{OutputFormat, Payload};
 
@@ -37,11 +38,7 @@ pub(super) fn resource_trace_json(items: &[ResourceTraceItem]) -> Value {
 			.iter()
 			.map(|item| {
 				json!({
-					"level": match item.level() {
-						ResourceTraceLevel::Info => "info",
-						ResourceTraceLevel::Warn => "warn",
-						ResourceTraceLevel::Error => "error",
-					},
+					"level": item.level().as_str(),
 					"message": item.message(),
 				})
 			})
@@ -58,12 +55,6 @@ pub(super) fn insert_trace_json(value: &mut Value, items: &[ResourceTraceItem]) 
 	object.insert("trace".to_string(), resource_trace_json(items));
 }
 
-/// Prints one trace using the same nested layout as resource inspection.
-#[cfg(debug_assertions)]
-pub(super) fn print_human_trace(items: &[ResourceTraceItem], indent: usize) {
-	print_human_field("trace", &resource_trace_json(items), indent);
-}
-
 /// Converts indexed properties to JSON without reading the resource body.
 pub(super) fn queryable_properties_json(properties: &[resource_management::QueryableProperty]) -> Value {
 	let properties = properties
@@ -78,39 +69,6 @@ pub(super) fn queryable_properties_json(properties: &[resource_management::Query
 		.collect();
 
 	Value::Object(properties)
-}
-
-/// Prints one queryable value without allocating an intermediate string.
-pub(super) fn print_queryable_value(value: &QueryableValue) {
-	match value {
-		QueryableValue::String(value) => print!("{}", value),
-	}
-}
-
-/// Encodes an opaque query cursor as shell-safe hexadecimal JSON.
-pub(super) fn encode_query_cursor(cursor: &QueryCursor) -> String {
-	let bytes = serde_json::to_vec(cursor).expect("query cursors should serialize");
-	utils::hex::encode(&bytes)
-}
-
-/// Decodes a query cursor produced by [`encode_query_cursor`].
-pub(super) fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
-	let bytes = utils::hex::decode(cursor).ok_or_else(|| {
-		log::error!(
-			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result.",
-			cursor
-		);
-		1
-	})?;
-
-	serde_json::from_slice(&bytes).map_err(|error| {
-		log::error!(
-			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result. Error: {}",
-			cursor,
-			error
-		);
-		1
-	})
 }
 
 pub(super) fn print_human_value(value: &Value, indent: usize) {
@@ -191,6 +149,15 @@ fn print_indent(indent: usize) {
 	}
 }
 
+/// Writes a count with a noun, adding `s` unless the count is one.
+pub(super) fn plural(count: usize, noun: &str) -> String {
+	if count == 1 {
+		format!("{count} {noun}")
+	} else {
+		format!("{count} {noun}s")
+	}
+}
+
 /// Runs filesystem work that Compio does not support without blocking its runtime thread.
 pub(super) async fn offload_file_operation<T, F>(operation: F) -> T
 where
@@ -207,17 +174,22 @@ where
 }
 
 /// Opens a BELD read command without allowing signature synchronization to replace persisted resources.
-pub(super) async fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
+///
+/// Returns the error message instead of logging it, so `browse` can show a failed reload in place.
+pub(super) async fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, String> {
 	let storage = offload_file_operation(move || ReDBStorageBackend::open_read_only(destination_path.into())).await;
 
 	storage.map_err(|error| {
-		log::error!(
-			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
-			operation,
-			error
-		);
-		1
+		format!(
+			"Failed to {operation} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {error}"
+		)
 	})
+}
+
+/// Logs an error message and returns the exit code of a failed command.
+pub(super) fn log_failure(error: String) -> i32 {
+	log::error!("{error}");
+	1
 }
 
 /// Reads a resource's whole decoded payload so its streams can be printed.

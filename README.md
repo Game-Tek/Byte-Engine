@@ -177,7 +177,7 @@ Then run its resource commands:
 beld --source assets --destination resources bake texture.png scene.glb character.fbx
 beld --destination resources list
 beld --destination resources inspect texture.png
-beld --destination resources query Material group=opaque --format json
+beld --destination resources query class=Material --group source --format json
 ```
 
 For design information, see

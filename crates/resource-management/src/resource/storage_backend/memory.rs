@@ -56,6 +56,8 @@ impl MemoryStorageBackend {
 					resource: resource.resource,
 					streams: resource.streams,
 					queryable_properties: resource.queryable_properties,
+					#[cfg(debug_assertions)]
+					references: Vec::new(),
 					compression: crate::resource::ResourceCompressionPolicy::Enabled,
 				}
 			})
@@ -79,6 +81,8 @@ impl MemoryStorageBackend {
 					resource: resource.resource,
 					streams: resource.streams,
 					queryable_properties: resource.queryable_properties,
+					#[cfg(debug_assertions)]
+					references: Vec::new(),
 					compression: crate::resource::ResourceCompressionPolicy::Enabled,
 				}
 			})
@@ -104,8 +108,20 @@ impl MemoryStorageBackend {
 }
 
 impl ReadStorageBackend for MemoryStorageBackend {
-	fn list(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
-		crate::r#async::future(async { Ok(self.resources.lock().keys().map(|x| x.to_string()).collect()) })
+	fn list(&self) -> impl std::future::Future<Output = Result<Vec<SerializableResource>, String>> {
+		crate::r#async::future(async {
+			self.resources
+				.lock()
+				.values()
+				.map(|(metadata, _)| {
+					crate::from_slice(metadata).map_err(|error| {
+						format!(
+							"Failed to list resources. The most likely cause is corrupt in-memory resource metadata. Error: {error}"
+						)
+					})
+				})
+				.collect()
+		})
 	}
 
 	fn read<'a>(

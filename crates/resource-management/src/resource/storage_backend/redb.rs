@@ -6,6 +6,8 @@
 
 mod packed_allocator;
 
+pub use packed_allocator::PackedFragmentation;
+
 /// The `ReDBStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
 ///
 /// Use one backend instance for a directory while it can be updated. Drop any
@@ -56,7 +58,7 @@ impl ReDBStorageBackend {
 	/// After handling an incompatibility, use [`Self::new_writable`] only when the user has requested a resource update.
 	pub fn open_read_only(base_path: std::path::PathBuf) -> Result<Self, String> {
 		validate_resource_management_signature(&base_path)?;
-		let database_path = base_path.join("resources.db");
+		let database_path = base_path.join(RESOURCES_DATABASE_FILE);
 		let db = redb::ReadOnlyDatabase::open(&database_path)
 			.map(RedbDatabase::ReadOnly)
 			.map_err(|error| format!("resource database '{}' could not be opened: {error}", database_path.display()))?;
@@ -118,7 +120,7 @@ impl ReDBStorageBackend {
 			)
 		} else {
 			sync_resource_management_signature(&base_path);
-			let db = redb::Database::create(base_path.join("resources.db")).unwrap_or_else(|_| {
+			let db = redb::Database::create(base_path.join(RESOURCES_DATABASE_FILE)).unwrap_or_else(|_| {
 				redb::Database::builder()
 					.create_with_backend(redb::backends::InMemoryBackend::new())
 					.unwrap_or_else(|_| panic!("Could not create in-memory database"))
@@ -137,7 +139,9 @@ impl ReDBStorageBackend {
 		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
 		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
 		#[cfg(debug_assertions)]
-		let _ = write.open_table(RESOURCE_TRACES_TABLE);
+		for table in DEVELOPMENT_TABLES {
+			let _ = write.open_table(table);
+		}
 		let settings = {
 			let mut configuration = write.open_table(STORE_CONFIGURATION_TABLE).unwrap();
 			let stored_mode = configuration.get(STORAGE_MODE_KEY).unwrap().map(|value| {
@@ -183,7 +187,11 @@ impl ReDBStorageBackend {
 			ResourceStorageMode::Files => None,
 			ResourceStorageMode::Packed => Some(PackedResourceAllocator::open(
 				base_path.join(PACKED_RESOURCES_FILE),
-				read_packed_ranges(writable_db)?,
+				read_packed_ranges(
+					&writable_db
+						.begin_read()
+						.map_err(|error| packed_database_error("Packed resource metadata could not be read", error))?,
+				)?,
 			)?),
 		};
 
@@ -409,6 +417,111 @@ impl ReDBStorageBackend {
 		r#async::future(self.read_resource(id))
 	}
 
+	/// Measures the files of the store, so tools can report the space that no resource uses.
+	///
+	/// Compare [`StorageUsage::payload_files`] with the UID, hash, and encoding of each resource from
+	/// [`ReadStorageBackend::list`] to find payload files that no resource records. This reads the directory and,
+	/// in packed mode, every resource's metadata, so call it where blocking is acceptable.
+	pub fn usage(&self) -> Result<StorageUsage, String> {
+		let usage_error = |action: &str, error: &dyn std::fmt::Display| {
+			format!(
+				"Failed to measure the resource store: could not {action}. The most likely cause is that '{}' can't be read. Error: {error}",
+				self.base_path.display()
+			)
+		};
+		let mut usage = StorageUsage {
+			database_size: std::fs::metadata(self.base_path.join(RESOURCES_DATABASE_FILE)).map_or(0, |metadata| metadata.len()),
+			payload_files: Vec::new(),
+			staging_files: (0, 0),
+			pack: None,
+		};
+
+		for entry in std::fs::read_dir(&self.base_path).map_err(|error| usage_error("list the directory", &error))? {
+			let entry = entry.map_err(|error| usage_error("read a directory entry", &error))?;
+			let metadata = entry.metadata().map_err(|error| usage_error("read a file's size", &error))?;
+			if !metadata.is_file() {
+				continue;
+			}
+			let file_name = entry.file_name();
+			let Some(name) = file_name.to_str() else {
+				continue;
+			};
+
+			if let Some((uid, hash, encoding)) = parse_payload_name(name) {
+				usage.payload_files.push(PayloadFile {
+					uid,
+					hash,
+					encoding,
+					size: metadata.len(),
+				});
+			} else if name.starts_with(STAGED_RESOURCE_FILE_PREFIX) {
+				usage.staging_files.0 += 1;
+				usage.staging_files.1 += metadata.len();
+			}
+		}
+
+		if self.storage_mode == ResourceStorageMode::Packed {
+			// The allocator's own reconstruction yields the free ranges, so the report matches what a bake would reuse.
+			let pack_path = self.base_path.join(PACKED_RESOURCES_FILE);
+			let pack_size = std::fs::metadata(&pack_path).map_or(0, |metadata| metadata.len());
+			let read = self
+				.begin_read()
+				.map_err(|error| usage_error("read the resources database", &error))?;
+			let state = packed_allocator::reconstruct_state(&pack_path, pack_size, read_packed_ranges(&read)?)?;
+			usage.pack = Some(state.fragmentation());
+		}
+
+		Ok(usage)
+	}
+
+	/// Returns every recorded bake trace with its resource ID, including traces of bakes that stored no resource.
+	///
+	/// Debug builds record traces; a store baked by a release build has none. Call
+	/// [`ReadStorageBackend::read_trace`] for one ID.
+	#[cfg(debug_assertions)]
+	pub fn traces(&self) -> Result<Vec<(String, Vec<ResourceTraceItem>)>, String> {
+		self.development_records(RESOURCE_TRACES_TABLE, "traces", crate::from_slice)
+	}
+
+	/// Returns the IDs each stored resource's model names, by resource ID, for tools that follow them.
+	///
+	/// Debug builds record references; a store baked by a release build has none. A resource that names no other
+	/// resource isn't listed.
+	#[cfg(debug_assertions)]
+	pub fn references(&self) -> Result<Vec<(String, Vec<String>)>, String> {
+		self.development_records(RESOURCE_REFERENCES_TABLE, "references", crate::from_slice)
+	}
+
+	/// Decodes every value of a debug-only table. A missing table, as in a store baked by a release build, has none.
+	#[cfg(debug_assertions)]
+	fn development_records<T>(
+		&self,
+		table: redb::TableDefinition<[u8; 16], &[u8]>,
+		name: &str,
+		decode: impl Fn(&[u8]) -> Result<T, crate::ResourceArchiveError>,
+	) -> Result<Vec<T>, String> {
+		let record_error = |error: &dyn std::fmt::Display| {
+			format!(
+				"Failed to read resource {name}. The most likely cause is a corrupt resources database. Delete the resources directory and bake again. Error: {error}"
+			)
+		};
+		let read = self.begin_read().map_err(|error| record_error(&error))?;
+		let table = match read.open_table(table) {
+			Ok(table) => table,
+			Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+			Err(error) => return Err(record_error(&error)),
+		};
+
+		table
+			.iter()
+			.map_err(|error| record_error(&error))?
+			.map(|entry| {
+				let (_, value) = entry.map_err(|error| record_error(&error))?;
+				decode(value.value()).map_err(|error| record_error(&error))
+			})
+			.collect()
+	}
+
 	/// Removes one resource from the live store and returns its standalone payload path when one exists.
 	fn remove_resource_record(&self, id: asset::ResourceId<'_>) -> Result<Option<std::path::PathBuf>, String> {
 		// Packed metadata changes and allocator transitions share this lock so a
@@ -433,8 +546,6 @@ impl ReDBStorageBackend {
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
 			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
-			#[cfg(debug_assertions)]
-			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
 
 			if let Some(existing) = resources_table.get(&id).unwrap() {
 				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
@@ -456,7 +567,9 @@ impl ReDBStorageBackend {
 			let _ = resources_table.remove(&id);
 			let _ = packed_offsets.remove(&id);
 			#[cfg(debug_assertions)]
-			let _ = traces_table.remove(&id);
+			for table in DEVELOPMENT_TABLES {
+				let _ = write.open_table(table).unwrap().remove(&id);
+			}
 		}
 
 		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
@@ -505,10 +618,6 @@ impl ReDBStorageBackend {
 			let mut packed_offsets = write
 				.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
 				.map_err(|error| resource_clear_error("open the packed resource offsets", error))?;
-			#[cfg(debug_assertions)]
-			let mut traces_table = write
-				.open_table(RESOURCE_TRACES_TABLE)
-				.map_err(|error| resource_clear_error("open the resource traces table", error))?;
 
 			if self.storage_mode == ResourceStorageMode::Packed {
 				for entry in resources_table
@@ -551,9 +660,15 @@ impl ReDBStorageBackend {
 				.retain(|_, _| false)
 				.map_err(|error| resource_clear_error("clear the packed resource offsets", error))?;
 			#[cfg(debug_assertions)]
-			traces_table
-				.retain(|_, _| false)
-				.map_err(|error| resource_clear_error("clear the resource traces table", error))?;
+			for table in DEVELOPMENT_TABLES {
+				use redb::TableHandle as _;
+
+				write
+					.open_table(table)
+					.map_err(|error| resource_clear_error(&format!("open the {} table", table.name()), error))?
+					.retain(|_, _| false)
+					.map_err(|error| resource_clear_error(&format!("clear the {} table", table.name()), error))?;
+			}
 		}
 
 		write
@@ -635,17 +750,18 @@ impl ReDBStorageBackend {
 }
 
 impl ReadStorageBackend for ReDBStorageBackend {
-	fn list(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
+	fn list(&self) -> impl std::future::Future<Output = Result<Vec<SerializableResource>, String>> {
 		r#async::future(async {
-			let mut resources = Vec::new();
+			let read = self.begin_read().map_err(|error| resource_list_error(&error))?;
+			let table = read
+				.open_table(RESOURCES_TABLE)
+				.map_err(|error| resource_list_error(&error))?;
+			let entries = table.iter().map_err(|error| resource_list_error(&error))?;
+			let mut resources = Vec::with_capacity(entries.size_hint().0);
 
-			let read = self.begin_read().unwrap();
-			let table = read.open_table(RESOURCES_TABLE).unwrap();
-
-			for doc in table.iter().unwrap() {
-				let doc = doc.unwrap();
-				let resource: SerializableResource = crate::from_slice(doc.1.value()).unwrap();
-				resources.push(resource.id);
+			for entry in entries {
+				let (_, metadata) = entry.map_err(|error| resource_list_error(&error))?;
+				resources.push(crate::from_slice(metadata.value()).map_err(|error| resource_list_error(&error))?);
 			}
 
 			Ok(resources)
@@ -717,11 +833,13 @@ impl ReadStorageBackend for ReDBStorageBackend {
 				.open_table(RESOURCE_TRACES_TABLE)
 				.map_err(|_| "Failed to open resource traces table".to_string())?;
 			let id = ResourceId::from(id.as_ref());
-			let Some(items) = table.get(&id).map_err(|_| "Failed to read resource trace".to_string())? else {
+			let Some(trace) = table.get(&id).map_err(|_| "Failed to read resource trace".to_string())? else {
 				return Ok(Vec::new());
 			};
 
-			crate::from_slice(items.value()).map_err(|_| "Failed to deserialize resource trace".to_string())
+			crate::from_slice::<(String, Vec<ResourceTraceItem>)>(trace.value())
+				.map(|(_, items)| items)
+				.map_err(|_| "Failed to deserialize resource trace".to_string())
 		})
 	}
 }
@@ -803,18 +921,19 @@ impl WriteStorageBackend for ReDBStorageBackend {
 		write
 			.set_durability(redb::Durability::None)
 			.map_err(|_| "Failed to defer resource trace durability".to_string())?;
-		let id = ResourceId::from(id.as_ref());
+		let key = ResourceId::from(id.as_ref());
 		{
 			let mut table = write
 				.open_table(RESOURCE_TRACES_TABLE)
 				.map_err(|_| "Failed to open resource traces table".to_string())?;
 			if items.is_empty() {
-				table.remove(&id).map_err(|_| "Failed to clear resource trace".to_string())?;
+				table.remove(&key).map_err(|_| "Failed to clear resource trace".to_string())?;
 			} else {
-				let serialized =
-					crate::to_vec(&items.to_vec()).map_err(|_| "Failed to serialize resource trace".to_string())?;
+				// The ID is kept with the trace because a failed bake has no resource record to name it.
+				let serialized = crate::to_vec(&(id.to_string(), items.to_vec()))
+					.map_err(|_| "Failed to serialize resource trace".to_string())?;
 				table
-					.insert(&id, serialized.as_slice())
+					.insert(&key, serialized.as_slice())
 					.map_err(|_| "Failed to store resource trace".to_string())?;
 			}
 		}
@@ -885,6 +1004,12 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 				prepared_stored_size
 			}
 		};
+		// The references are written in the same transaction as the record, so the two never disagree.
+		#[cfg(debug_assertions)]
+		let references = (!resource.references().is_empty())
+			.then(|| crate::to_vec(&(resource.id().to_string(), resource.references().to_vec())))
+			.transpose()
+			.map_err(|_| ())?;
 		let resource = resource.into_serializable(hash, size, stored_size, encoding);
 		let serialized_resource = crate::to_vec_in(&resource, allocator).map_err(|_| ())?;
 		let packed_allocator = self.packed_allocator.as_ref();
@@ -926,6 +1051,19 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 				let _ = packed_offsets.remove(&resource_id);
 			}
 			insert_indexes(&mut class_table, &mut property_table, &resource, resource_id.0);
+
+			#[cfg(debug_assertions)]
+			{
+				let mut references_table = write.open_table(RESOURCE_REFERENCES_TABLE).map_err(|_| ())?;
+				match &references {
+					Some(references) => {
+						references_table.insert(&resource_id, references.as_slice()).map_err(|_| ())?;
+					}
+					None => {
+						references_table.remove(&resource_id).map_err(|_| ())?;
+					}
+				}
+			}
 		}
 
 		write.commit().map_err(|_| ())?;
@@ -944,6 +1082,39 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 }
 
 impl StorageBackend for ReDBStorageBackend {}
+
+/// The `StorageUsage` struct describes the disk space a resource store occupies, so tools can find space that no
+/// resource uses.
+///
+/// Read it with [`ReDBStorageBackend::usage`].
+#[derive(Clone, Debug)]
+pub struct StorageUsage {
+	/// The size of the resources database in bytes.
+	pub database_size: u64,
+	/// Every payload file in the directory. A files-mode store writes one per payload.
+	pub payload_files: Vec<PayloadFile>,
+	/// The number and total size of staging files that interrupted writes left behind.
+	pub staging_files: (usize, u64),
+	/// The pack's size and free space in packed mode, or `None` in files mode.
+	pub pack: Option<PackedFragmentation>,
+}
+
+/// The `PayloadFile` struct names one payload file by what it stores, so a tool can tell whether any resource still
+/// records it.
+///
+/// A resource records the file when its UID, [`SerializableResource::hash`], and
+/// [`SerializableResource::encoding`] all match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadFile {
+	/// The UID of the resource the file was written for.
+	pub uid: ResourceId,
+	/// The hash of the decoded payload.
+	pub hash: u64,
+	/// The payload encoding.
+	pub encoding: ResourcePayloadEncoding,
+	/// The file size in bytes.
+	pub size: u64,
+}
 
 /// Selects how one resource store persists binary payloads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1042,10 +1213,7 @@ impl ResourceStorageSettings {
 }
 
 /// Reconstructs every live packed extent so allocator state needs no separate persistent journal.
-fn read_packed_ranges(db: &redb::Database) -> Result<Vec<PackedRange>, String> {
-	let read = db
-		.begin_read()
-		.map_err(|error| packed_database_error("Packed resource metadata could not be read", error))?;
+fn read_packed_ranges(read: &redb::ReadTransaction) -> Result<Vec<PackedRange>, String> {
 	let resources = read
 		.open_table(RESOURCES_TABLE)
 		.map_err(|error| packed_database_error("Packed resource metadata could not be opened", error))?;
@@ -1160,7 +1328,7 @@ fn sync_resource_management_signature(base_path: &Path) {
 			RESOURCE_MANAGEMENT_CODE_HASH
 		);
 		reset_resource_cache(base_path);
-	} else if base_path.join("resources.db").exists() {
+	} else if base_path.join(RESOURCES_DATABASE_FILE).exists() {
 		log::info!(
 			"Deleting resources at '{}' because the resource-management signature marker is missing.",
 			base_path.display()
@@ -1172,6 +1340,12 @@ fn sync_resource_management_signature(base_path: &Path) {
 }
 
 /// Creates a consistent storage error for one REDB clear step.
+fn resource_list_error(error: &dyn std::fmt::Display) -> String {
+	format!(
+		"Failed to list resources. The most likely cause is a corrupt resources database. Delete the resources directory and bake again. Error: {error}"
+	)
+}
+
 fn resource_clear_error(action: &str, error: impl std::fmt::Display) -> String {
 	format!(
 		"Failed to {action}. The most likely cause is that the resources database is corrupt or cannot be updated. Error: {error}"
@@ -1224,7 +1398,7 @@ fn resource_payload_paths_in(base_path: &Path) -> Result<Vec<std::path::PathBuf>
 			continue;
 		};
 
-		if file_type.is_file() && is_resource_payload_name(name) {
+		if file_type.is_file() && parse_payload_name(name).is_some() {
 			payload_paths.push(entry.path());
 		}
 	}
@@ -1232,19 +1406,26 @@ fn resource_payload_paths_in(base_path: &Path) -> Result<Vec<std::path::PathBuf>
 	Ok(payload_paths)
 }
 
-/// Returns whether a file name is one of this backend's content-addressed payload extents.
-fn is_resource_payload_name(name: &str) -> bool {
-	let Some((resource_id, remainder)) = name.split_once('-') else {
-		return false;
-	};
-	let Some((hash, encoding)) = remainder.split_once('-') else {
-		return false;
-	};
+/// Reads the resource UID, payload hash, and encoding from a payload file name written by [`resource_payload_path`].
+fn parse_payload_name(name: &str) -> Option<(ResourceId, u64, ResourcePayloadEncoding)> {
+	let (resource_id, remainder) = name.split_once('-')?;
+	let (hash, encoding) = remainder.split_once('-')?;
+	if hash.len() != 16 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+		return None;
+	}
+	let encoding = [
+		ResourcePayloadEncoding::Raw,
+		ResourcePayloadEncoding::CpuLz4,
+		ResourcePayloadEncoding::MetalIoLz4,
+	]
+	.into_iter()
+	.find(|candidate| candidate.as_str() == encoding)?;
 
-	ResourceId::from_uid_hex(resource_id).is_some()
-		&& hash.len() == 16
-		&& hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-		&& matches!(encoding, "raw" | "cpu-lz4" | "metal-io-lz4")
+	Some((
+		ResourceId::from_uid_hex(resource_id)?,
+		u64::from_str_radix(hash, 16).ok()?,
+		encoding,
+	))
 }
 
 /// Selects ordinary textures while environment images retain their existing multi-image CPU upload path.
@@ -1321,12 +1502,18 @@ const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 	redb::TableDefinition::new("resource-property-index");
 #[cfg(debug_assertions)]
 const RESOURCE_TRACES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-traces");
+#[cfg(debug_assertions)]
+const RESOURCE_REFERENCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-references");
+/// The debug-only tables, which hold at most one record per resource UID and lose it when the resource is deleted.
+#[cfg(debug_assertions)]
+const DEVELOPMENT_TABLES: [redb::TableDefinition<[u8; 16], &[u8]>; 2] = [RESOURCE_TRACES_TABLE, RESOURCE_REFERENCES_TABLE];
 
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
 const STORAGE_MODE_KEY: &str = "payload-storage-mode";
 const IMAGE_COMPRESSION_KEY: &str = "image-compression";
 const PACKED_RESOURCES_FILE: &str = "resources.pack";
+const RESOURCES_DATABASE_FILE: &str = "resources.db";
 const STAGED_RESOURCE_FILE_PREFIX: &str = ".resource-write";
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "use/resources/bake";
 
@@ -1337,7 +1524,7 @@ mod tests {
 		ResourceStorageMode, STAGED_RESOURCE_FILE_PREFIX, resource_payload_path, validate_resource_management_signature,
 	};
 	use crate::{
-		Model, ProcessedAsset,
+		Model, ProcessedAsset, SerializableResource,
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
 	};
 	#[cfg(debug_assertions)]
@@ -1508,7 +1695,11 @@ mod tests {
 				},
 			)
 			.await;
-			assert_eq!(backend.list().await.unwrap(), ["materials/rebuilt"]);
+			let resources = backend.list().await.unwrap();
+			assert_eq!(
+				resources.iter().map(SerializableResource::id).collect::<Vec<_>>(),
+				["materials/rebuilt"]
+			);
 
 			std::fs::remove_dir_all(&backend.base_path).unwrap();
 		}
@@ -2269,6 +2460,70 @@ mod tests {
 		}
 	}
 
+	#[cfg(debug_assertions)]
+	#[crate::r#async::test]
+	async fn references_are_stored_with_the_resource_and_removed_with_it() {
+		use crate::resources::{
+			material::{ValueModel, VariantVariableModel},
+			pipeline::{Pipeline, PipelineKind},
+		};
+
+		let backend = backend();
+		let mut variant = variant_for("Visibility");
+		// Two variables name the same image, which the references list once.
+		for name in ["albedo", "albedo-again"] {
+			variant.variables.push(VariantVariableModel {
+				name: name.to_string(),
+				r#type: "Texture2D".to_string(),
+				value: ValueModel::Image(crate::ReferenceModel::new_serialized(
+					"textures/albedo.png",
+					0,
+					0,
+					Vec::new(),
+					None,
+				)),
+				dynamic: false,
+			});
+		}
+		let compute = |shader: &str| Pipeline {
+			name: "compute".to_string(),
+			kind: PipelineKind::Compute {
+				shader: shader.to_string(),
+				push_constants: Vec::new(),
+			},
+		};
+
+		store_mock(&backend, "materials/hero.variant", variant).await;
+		store_mock(&backend, "pipelines/replaced.pipeline", compute("shaders/first.besl")).await;
+		store_mock(&backend, "pipelines/replaced.pipeline", compute("shaders/second.besl")).await;
+		store_mock(&backend, "pipelines/kept.pipeline", compute("shaders/kept.besl")).await;
+
+		let mut references = backend.references().unwrap();
+		references.sort();
+		assert_eq!(
+			references,
+			[
+				(
+					"materials/hero.variant".to_string(),
+					vec!["materials/shared.material".to_string(), "textures/albedo.png".to_string()]
+				),
+				("pipelines/kept.pipeline".to_string(), vec!["shaders/kept.besl".to_string()]),
+				(
+					"pipelines/replaced.pipeline".to_string(),
+					vec!["shaders/second.besl".to_string()]
+				),
+			]
+		);
+
+		backend
+			.delete(crate::asset::ResourceId::new("pipelines/replaced.pipeline"))
+			.unwrap();
+		assert_eq!(backend.references().unwrap().len(), 2);
+
+		backend.clear().await.unwrap();
+		assert!(backend.references().unwrap().is_empty());
+	}
+
 	#[crate::r#async::test]
 	async fn variant_query_ids_match_the_material_render_model() {
 		let backend = backend();
@@ -2301,12 +2556,14 @@ mod tests {
 		backend.replace_trace(id, &items).unwrap();
 
 		assert_eq!(backend.read_trace(id).await.unwrap(), items);
+		assert_eq!(backend.traces().unwrap(), [("broken.asset".to_string(), items.clone())]);
 		assert!(backend.read(id).await.is_none());
 		assert!(backend.list().await.unwrap().is_empty());
 
 		backend.delete(id).unwrap();
 
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
+		assert!(backend.traces().unwrap().is_empty());
 	}
 
 	#[crate::r#async::test]

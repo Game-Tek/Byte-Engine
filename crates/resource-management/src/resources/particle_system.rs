@@ -22,4 +22,9 @@ pub struct ParticleSystem {
 	pub draw_pipeline: String,
 }
 
-super::impl_direct_resource!(ParticleSystem, "ParticleSystem");
+super::impl_direct_resource!(ParticleSystem, "ParticleSystem", references = particle_system_references);
+
+/// Lists the simulate pipeline, then the draw pipeline.
+fn particle_system_references(system: &ParticleSystem) -> Vec<&str> {
+	vec![system.simulate_pipeline.as_str(), system.draw_pipeline.as_str()]
+}

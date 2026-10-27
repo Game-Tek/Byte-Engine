@@ -107,7 +107,7 @@ mod tests {
 				.expect("Resource list is unreadable. The most likely cause is a test storage failure.");
 
 			assert_eq!(resources.len(), 5);
-			assert!(resources.iter().any(|resource| resource == "triangle_move.fbx#skeleton"));
+			assert!(resources.iter().any(|resource| resource.id() == "triangle_move.fbx#skeleton"));
 
 			drop(resource_storage);
 

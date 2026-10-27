@@ -1127,6 +1127,110 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_be
 	}
 }
 
+/// Reconstructs a visible triangle whose smooth normals point sideways: reflection visibility must still use its plane.
+#[test]
+fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
+	use crate::rendering::shader_vm_test::{IDENTITY_MATRIX, push_constant_buffer};
+	const RESULTS: ResourceSlot = ResourceSlot::new(2000);
+	let mut statements = material_evaluation_prefix_statements(MaterialReconstructionFeatures::default());
+	for (source, name) in [
+		(MATERIAL_EVALUATION_DEFAULTS_SOURCE, "material_evaluation_defaults"),
+		(MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE, "material_evaluation_normal"),
+	] {
+		let mut function = parse_besl_function(source, name);
+		let besl::parser::Nodes::Function { statements: body, .. } = function.node_mut() else {
+			unreachable!()
+		};
+		statements.append(body);
+	}
+	let mut output = parse_besl_function(
+		r#"result: fn () -> void {
+			results.surface = geometric_normal;
+			results.shading = vec3f(normal);
+			results.into_surface = dot(geometric_normal, vec3f(0.0, 0.0, 1.0));
+		}"#,
+		"result",
+	);
+	let besl::parser::Nodes::Function { statements: output, .. } = output.node_mut() else {
+		unreachable!()
+	};
+	statements.append(output);
+	let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
+	let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS).unwrap();
+	root.add(vec![
+		common_shader_scope(),
+		visibility_shader_scope(),
+		results_binding(
+			vec![
+				Node::member("surface", "vec3f"),
+				Node::member("shading", "vec3f"),
+				Node::member("into_surface", "f32"),
+			],
+			RESULTS,
+		),
+	]);
+	let program = besl::lex(root).expect("material reconstruction links");
+	besl::optimization::optimize(&program.get_main().unwrap());
+	let executable = compile(program);
+	let slots = [0, 1, 2, 3, 6, 7, 8, 1033, 1034, 1037];
+	let mut inputs: Vec<_> = slots
+		.iter()
+		.map(|slot| buffer(&executable, ResourceSlot::new(*slot)))
+		.collect();
+	// The triangle supplies three entries in each runtime-sized vertex/index stream.
+	for index in [2, 3, 4, 5] {
+		inputs[index] = besl::vm::Buffer::new_array(inputs[index].layout().clone(), 3).unwrap();
+	}
+	let affine_identity = Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+	inputs[0]
+		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+		.unwrap();
+	inputs[0]
+		.write_array_member(0, "inverse_view", affine_identity.clone())
+		.unwrap();
+	inputs[1].write_array_member(0, "model", affine_identity).unwrap();
+	for (index, position) in [[-1.0, -1.0, 2.0], [1.0, -1.0, 2.0], [0.0, 1.0, 2.0]].into_iter().enumerate() {
+		inputs[2].write_array_element(index, Value::Vec3F(position)).unwrap();
+		inputs[3].write_array_element(index, Value::Vec2U16([65535, 32768])).unwrap();
+		inputs[4].write_array_element(index, Value::U16(index as u16)).unwrap();
+	}
+	inputs[7].write_array_element(0, Value::U32(1)).unwrap();
+	inputs[9].write_array_element(0, Value::Vec2U16([1, 1])).unwrap();
+	let mut triangles = Texture::new(1, 1).unwrap();
+	let mut instances = Texture::new(1, 1).unwrap();
+	let mut push_constant = push_constant_buffer(&executable);
+	let mut results = buffer(&executable, RESULTS);
+	// Reversing the winding must not move the ray origin into a visible double-sided surface.
+	for (flags, indices) in [(0, [0, 1, 2]), (1, [0, 1, 2]), (1, [0, 2, 1])] {
+		inputs[1].write_array_member(0, "flags", Value::U32(flags)).unwrap();
+		for (index, vertex) in indices.into_iter().enumerate() {
+			inputs[5].write_array_element(index, Value::U8(vertex)).unwrap();
+		}
+		let mut descriptors = DescriptorBindings::new();
+		for (slot, input) in slots.into_iter().zip(&mut inputs) {
+			descriptors.bind_buffer(ResourceSlot::new(slot), input);
+		}
+		descriptors.bind_image(ResourceSlot::new(1039), &mut triangles);
+		descriptors.bind_image(ResourceSlot::new(1040), &mut instances);
+		descriptors.bind_push_constant(&mut push_constant);
+		descriptors.bind_buffer(RESULTS, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+		drop(descriptors);
+		assert_eq!(results.read("surface").unwrap(), Value::Vec3F([0.0, 0.0, -1.0]));
+		assert!(
+			read_f32(&results, "into_surface") < 0.0,
+			"A reflection into the triangle must be rejected."
+		);
+		let Value::Vec3F(shading) = results.read("shading").unwrap() else {
+			panic!("Expected a shading normal.");
+		};
+		assert!(
+			shading[0] > 0.99,
+			"Reflection visibility must preserve the smooth shading normal."
+		);
+	}
+}
+
 /// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding.
 #[test]
 fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {

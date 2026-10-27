@@ -135,11 +135,16 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	if ((mesh.flags & 1) != 0) {
 		N = facing_normal(N, V, world_edge1, world_edge2);
 	}
-	// Everything after the prefix reads the view vector and the interpolated normal at half precision: the BRDF, the
-	// tangent frame, SSGI, and the reflection ray. Making the copies here ends their f32 originals with the prefix, so
-	// they do not stay live through the material body, the screen-space reads, and the light loop.
+	// Shading reads the view vector and the interpolated normal at half precision. The triangle normal below stays
+	// at full precision for reflection visibility and the world-space ray offset.
 	let V_material: vec3f16 = vec3f16(V);
-	let geometric_normal: vec3f16 = vec3f16(N);
+	let base_normal: vec3f16 = vec3f16(N);
+	// Reflection visibility and ray offsets follow the triangle plane, not its interpolated shading normals.
+	// Point toward the camera so a visible back face of a double-sided surface offsets into the visible half-space.
+	let geometric_normal: vec3f = normalize(cross(world_edge1, world_edge2));
+	if (dot(geometric_normal, V) < 0.0) {
+		geometric_normal = geometric_normal * (0.0 - 1.0);
+	}
 }
 "#;
 
@@ -208,13 +213,13 @@ material_evaluation_defaults: fn () -> void {
 
 pub(crate) const MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = vec3f16(normalize(f32(normal.x) * vec3f(T) + f32(normal.y) * vec3f(B) + f32(normal.z) * vec3f(geometric_normal)));
+	normal = vec3f16(normalize(f32(normal.x) * vec3f(T) + f32(normal.y) * vec3f(B) + f32(normal.z) * vec3f(base_normal)));
 }
 "#;
 
 pub(crate) const MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = geometric_normal;
+	normal = base_normal;
 }
 "#;
 
@@ -282,9 +287,9 @@ material_evaluation_suffix: fn () -> void {
 				1.0
 			);
 			let view_space_normal: vec3f = views.views[0].view * vec4f(
-				f32(geometric_normal.x),
-				f32(geometric_normal.y),
-				f32(geometric_normal.z),
+				f32(base_normal.x),
+				f32(base_normal.y),
+				f32(base_normal.z),
 				0.0
 			);
 			let screen_space_indirect: vec4f = sample_screen_space_indirect_diffuse(
@@ -582,10 +587,10 @@ material_evaluation_suffix: fn () -> void {
 	// cannot stand for a wide glossy lobe, so reflections fade back to the prefiltered environment from roughness 0.2
 	// to 0.4. A reflection that points into the geometric surface would only find the surface itself.
 	let screen_space_reflection: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	if (f32(roughness) < 0.4 && dot(reflection_direction, vec3f(geometric_normal)) > 0.0) {
+	if (f32(roughness) < 0.4 && dot(reflection_direction, geometric_normal) > 0.0) {
 		screen_space_reflection = trace_screen_space_reflection(
 			world_space_vertex_position,
-			vec3f(geometric_normal),
+			geometric_normal,
 			reflection_direction,
 			views.views[0].view_projection
 		);

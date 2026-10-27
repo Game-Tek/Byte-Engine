@@ -51,14 +51,15 @@ delta since the previous tick, or the fixed step in the stepped loop.
 
 | Loop | Rule |
 | --- | --- |
-| Tied to frames | The simulation advances once per tick by the frame delta. With a simulation rate set, every tick asserts the rate matches the presentation cadence within 1 percent. |
+| Tied to frames | The simulation advances once per tick by the frame delta, and the display time is the end of that step. With a simulation rate set, every tick asserts the rate matches the presentation cadence within 1 percent. |
 | Stepped | The simulation runs zero or more fixed steps of the simulation rate, 60 per second by default, then the frame callback runs with the display-derived time. |
 
 | Stepped loop | Value |
 | --- | --- |
 | Steps per frame | At most 8. Any further debt is dropped, so simulated time is lost rather than stretching later frames. |
 | Remainder | Carries to the next frame. |
-| Blend factor | The pending time over the step, so a frame shows the world one step behind, blended between the previous and latest steps. The same factor is available to application code. |
+| Display time | The end of the latest step, less one step, plus the remainder. A frame shows the world one step behind, at the [shown transforms](/docs/reference/rendering#shown-transforms) of this time. |
+| Blend factor | The remainder over the step: how far the display time lies from the previous step toward the latest. Available to application code. |
 | Wake-up | The next step's deadline wakes an idle on-demand loop. |
 
 ## Ending a run

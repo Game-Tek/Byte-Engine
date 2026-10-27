@@ -1,0 +1,88 @@
+---
+title: Shown transforms
+description: Understand how one timeline places every entity between simulation samples for all scene pipelines and cameras before you change how frames show motion.
+icon: Computer
+---
+
+Read this page before you change how frames place entities between simulation
+steps, the transform contract of `PipelineManager`, or the loop's display time.
+What an application can rely on is specified under
+[shown transforms](/docs/reference/rendering#shown-transforms) in the
+rendering reference, and the display time under
+[loops](/docs/reference/time#loops).
+
+## One timeline for the whole frame
+
+`ShownTransforms` is the only display-side reader of the world's transform
+route. The application owns it and lends it to the renderer, which places the
+cameras with it and hands it to every pipeline manager in `update` and
+`prepare`. A manager moves what it draws from `changed` and places what it
+starts drawing with `get`; it keeps no transform listener and no transform map
+of its own.
+
+Before this, every consumer mirrored the route: the visibility pipeline blended
+two samples per renderable, the isometric sample app copied that scheme, and
+cameras, particles, and the simple pipeline took the latest transform as it
+came. A camera that followed a unit stepped at the simulation rate while the
+unit moved smoothly, and particle emitters ran up to a step ahead of the mesh
+they belonged to. With one timeline, everything a frame shows comes from the
+same display time.
+
+Simulation systems such as physics and navigation keep their own listeners.
+They need the latest sample, not the transform a frame shows a step behind.
+
+## Samples carry stamps, not step numbers
+
+A sample is a transform read in a simulation step, stamped with that step's
+end time. A handle's segment starts at its stamp less one step, from wherever
+the previous segment stands at that time, and lasts as long as the time since
+the handle's previous stamp.
+
+Keying samples by step number only worked for sources that publish every step.
+A source that publishes every fourth step, such as a character's task at 15 Hz under a
+60 Hz physics step, was blended over one step and then held still for three.
+Measuring the span from stamps lets each handle move at its own cadence, at any
+phase, without the source stating it. The span is capped at 250 ms, because
+after a rest the gap since the previous stamp says nothing about the cadence: a
+handle that starts moving after a minute would otherwise take a minute to get
+there. The next sample's segment starts from wherever the capped one reached,
+so the handle catches up within one sample.
+
+Starting each segment from the transform shown at its start, not from the
+previous sample, keeps motion continuous when a sample arrives early or late.
+
+Stamps are differences, so they never need a shared clock. A replicated source
+could stamp samples with its own simulation time and keep its spans exact under
+network jitter. The transform route can't carry such a stamp yet: entity
+creation publishes the same message through the factory.
+
+## Placements end motion
+
+A transform read outside a step is a placement, such as frame code that moves a
+character by root motion or a camera rig. It shows at once and resets the
+stamp, so the next sample spans one step.
+
+## Adopt every tick, resolve every frame
+
+The loop calls `step` after each simulation step, `adopt` once per tick after
+the frame callback, and `resolve` only for a tick that renders. Adopting every
+tick keeps the routes from holding back their publishers while an on-demand
+application draws nothing. Resolving only for rendered frames keeps `changed`
+from growing across ticks that no manager sees.
+
+## Rules a change must keep
+
+- Read the transform route for display only through `ShownTransforms`. A
+  pipeline manager never keeps its own transform listener or transform map.
+- Adopt every tick, whether or not the tick renders.
+- Keep the segment rules in the pure `Segment` and `Timeline` code, apart from
+  draining listeners.
+- Start a new segment from the transform shown at its start, never from the
+  previous sample.
+- In a manager, apply `changed` on every prepared frame, including frames that
+  draw nothing, and place new entities with `get`.
+
+The spec tests in `rendering/shown_transforms.rs` guard the reference rules:
+blending a source that publishes every step, sources that publish every fourth
+step at every phase, placements, the span limit after a rest, a second sample in
+one step, and first updates and deletions.

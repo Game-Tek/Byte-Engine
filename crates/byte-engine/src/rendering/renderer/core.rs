@@ -79,8 +79,8 @@ pub struct Renderer {
 	swapchain_images: Option<u8>,
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
-	/// Cameras and their stable handles.
-	cameras: SmallVec<[(Handle, Camera, Transform); 16]>,
+	/// Cameras and their stable handles. Each one is placed at its handle's shown transform.
+	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
 	#[cfg(debug_assertions)]
@@ -690,16 +690,9 @@ impl Renderer {
 	}
 
 	/// Starts scene resource requests before window setup or frame preparation borrows the context.
-	pub(crate) fn update(&mut self) {
+	pub(crate) fn update(&mut self, transforms: &ShownTransforms) {
 		for pipeline_manager in &mut self.pipeline_managers {
-			pipeline_manager.update();
-		}
-	}
-
-	/// Tells every pipeline manager that one simulation step ended; see [`PipelineManager::step`].
-	pub(crate) fn step(&mut self) {
-		for pipeline_manager in &mut self.pipeline_managers {
-			pipeline_manager.step();
+			pipeline_manager.update(transforms);
 		}
 	}
 
@@ -736,10 +729,9 @@ impl Renderer {
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn prepare(
 		&'_ mut self,
-		transforms_listener: &mut impl Listener<TransformationUpdate>,
+		transforms: &ShownTransforms,
 		frame_allocator: &bumpalo::Bump,
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
-		alpha: f32,
 		time: crate::time::MediaTime,
 		frame_interval: crate::time::MediaTime,
 	) -> (u64, Vec<Result<ghi::TextureReadback, RendererScreenshotError>>) {
@@ -789,16 +781,6 @@ impl Renderer {
 
 		self.context.start_frame_capture();
 
-		{
-			let _span = debug_span!("Renderer::update_camera_transforms").entered();
-			while let Some(message) = transforms_listener.read() {
-				if let Some((.., transform)) = self.cameras.iter_mut().find(|(handle, ..)| *handle == message.handle()) {
-					transform.set_position(message.transform().get_position());
-					transform.set_orientation(message.transform().get_orientation());
-				}
-			}
-		}
-
 		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame =
 			ghi::queue::FrameRequest::new_in(self.started_frame_count, self.render_finished_synchronizer, &frame_allocator);
@@ -838,12 +820,12 @@ impl Renderer {
 						let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
 							continue;
 						};
-						let Some((_, camera, transform)) = self.cameras.iter().find(|(handle, ..)| handle == camera_handle)
-						else {
+						let Some((_, camera)) = self.cameras.iter().find(|(handle, _)| handle == camera_handle) else {
 							continue;
 						};
 
-						let view = make_perspective_view_from_camera(camera, transform, extent);
+						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
+						let view = make_perspective_view_from_camera(camera, &transform, extent);
 						sinks.push(
 							Sink::new(view, extent, *sink_id)
 								.with_exposure_scale(camera.exposure_scale())
@@ -874,7 +856,7 @@ impl Renderer {
 					let _span = debug_span!("Renderer::prepare_pipeline_managers").entered();
 					self.pipeline_managers
 						.iter_mut()
-						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, alpha, time))
+						.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, transforms, time))
 						.collect()
 				};
 
@@ -1153,14 +1135,14 @@ impl Renderer {
 	}
 
 	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
-		if let Some((_, existing_camera, _)) = self
+		if let Some((_, existing_camera)) = self
 			.cameras
 			.iter_mut()
-			.find(|(existing_handle, ..)| *existing_handle == handle)
+			.find(|(existing_handle, _)| *existing_handle == handle)
 		{
 			*existing_camera = camera;
 		} else {
-			self.cameras.push((handle, camera, Transform::default()));
+			self.cameras.push((handle, camera));
 		}
 		self.redraw_requested = true;
 	}
@@ -1274,22 +1256,18 @@ use crate::rendering::{
 use crate::{
 	application::parameters::Parameters,
 	configuration::ConfigurationPort,
-	core::{EntityHandle, factory::Handle, listener::Listener},
-	gameplay::transform::TransformationUpdate,
+	core::{EntityHandle, factory::Handle},
 	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
-		Camera, PipelineManagerServer, Sink, make_perspective_view_from_camera,
+		Camera, PipelineManagerServer, ShownTransforms, Sink, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::RenderPassReturn,
 		window::{self, Window},
 	},
 };
-use crate::{
-	gameplay::Transform,
-	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
-		render_passes::blit::ImageBypassPass,
-	},
+use crate::rendering::{
+	render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
+	render_passes::blit::ImageBypassPass,
 };
 
 #[cfg(test)]

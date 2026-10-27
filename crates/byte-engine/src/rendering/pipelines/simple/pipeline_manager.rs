@@ -23,16 +23,13 @@ pub struct PipelineManager {
 	loader: SimpleLoaderClient,
 	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
 	deletions_listener: DefaultListener<DeleteMessage>,
-	transforms_listener: DefaultListener<TransformationUpdate>,
 	resident_meshes: HashMap<MeshKey, ResidentSimpleMesh>,
 	pending_renderables: Vec<PendingRenderable>,
-	/// Live scene instances in draw order. A slot's index is its instance-data index.
-	instances: StableVec<(ResidentSimpleMesh, Handle)>,
+	/// Live scene instances in draw order, with the matrix composed from each one's shown transform. A slot's index
+	/// is its instance-data index.
+	instances: StableVec<(ResidentSimpleMesh, ghi::pod::Mat4x3f)>,
 	/// The instance slot of each renderable that has one.
 	instance_slots: HashMap<Handle, StableVecHandle>,
-	// TODO: Replace this temporary map with proper retained component storage.
-	/// Each renderable's latest transform and, once a frame needed it, the instance matrix composed from it.
-	renderable_transforms: HashMap<Handle, (Transform, Option<ghi::pod::Mat4x3f>)>,
 	sinks: Vec<RenderPass>,
 }
 
@@ -130,12 +127,10 @@ impl PipelineManager {
 			loader,
 			mesh_listener: world.factory::<RenderableMesh>().listener(),
 			deletions_listener: world.channel::<DeleteMessage>().listener(),
-			transforms_listener: world.channel::<TransformationUpdate>().listener(),
 			resident_meshes: HashMap::default(),
 			pending_renderables: Vec::new(),
 			instances: StableVec::new(),
 			instance_slots: HashMap::default(),
-			renderable_transforms: HashMap::default(),
 			sinks: Vec::with_capacity(4),
 		}
 	}
@@ -148,8 +143,7 @@ impl PipelineManager {
 		let source = renderable.source().clone();
 		let key = source.key();
 
-		// Creation is an upsert. Keep the independently retained transform while
-		// replacing resident or pending geometry for this handle.
+		// Creation is an upsert that replaces resident or pending geometry for this handle.
 		self.remove_mesh_instance(handle);
 		self.remove_pending(handle);
 
@@ -160,31 +154,39 @@ impl PipelineManager {
 		self.pending_renderables.push(PendingRenderable { handle, key });
 	}
 
-	/// Writes every live instance's transform into this frame's copy of the instance-data buffer.
+	/// Writes every live instance's matrix into this frame's copy of the instance-data buffer.
 	///
 	/// Each frame in flight reads its own copy, and a copy last written by an earlier frame misses every change
-	/// since. So each frame writes its whole copy instead of only the slots that changed. A matrix is composed again
-	/// only after its transform changes.
+	/// since. So each frame writes its whole copy instead of only the slots that changed.
 	fn write_instance_data(&mut self, frame: &mut ghi::implementation::Frame) {
 		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
-		for (slot, (_, handle)) in self.instances.indexed_iter() {
-			instance_data[slot] = match self.renderable_transforms.get_mut(handle) {
-				Some((transform, matrix)) => *matrix.get_or_insert_with(|| transform.get_matrix().into()),
-				None => Transform::default().get_matrix().into(),
-			};
+		for (slot, (_, model)) in self.instances.indexed_iter() {
+			instance_data[slot] = *model;
 		}
 	}
 
-	/// Removes a mesh and any transform retained for later creation.
+	/// Composes the matrix of every instance whose shown transform changed this frame.
+	fn move_instances(&mut self, transforms: &ShownTransforms) {
+		for (handle, transform) in transforms.changed() {
+			if let Some((_, model)) = self
+				.instance_slots
+				.get(handle)
+				.and_then(|slot| self.instances.get_mut(*slot))
+			{
+				*model = transform.get_matrix().into();
+			}
+		}
+	}
+
+	/// Removes a mesh's resident and pending state.
 	///
 	/// In-flight loader work remains coalesced and may populate the resident cache.
 	fn remove_mesh(&mut self, handle: Handle) {
 		self.remove_mesh_instance(handle);
 		self.remove_pending(handle);
-		self.renderable_transforms.remove(&handle);
 	}
 
-	/// Removes only resident instance state so an upsert can reuse the retained transform.
+	/// Removes only resident instance state so an upsert can replace it.
 	fn remove_mesh_instance(&mut self, handle: Handle) {
 		if let Some(slot) = self.instance_slots.remove(&handle) {
 			self.instances.remove(slot);
@@ -198,8 +200,9 @@ impl PipelineManager {
 		}
 	}
 
-	/// Creates scene instances whose shared mesh uploads completed at the frame boundary.
-	fn resolve_pending_renderables(&mut self) {
+	/// Creates scene instances whose shared mesh uploads completed at the frame boundary, where their handles are
+	/// shown.
+	fn resolve_pending_renderables(&mut self, transforms: &ShownTransforms) {
 		let mut index = 0usize;
 		while index < self.pending_renderables.len() {
 			let key = self.pending_renderables[index].key;
@@ -207,9 +210,13 @@ impl PipelineManager {
 				index += 1;
 				continue;
 			};
-			// Each resident instance gets one slot; `write_instance_data` uploads its retained transform.
+			// Each resident instance gets one slot; `write_instance_data` uploads its matrix.
 			let pending = self.pending_renderables.swap_remove(index);
-			let slot = self.instances.push((resident, pending.handle));
+			let model = transforms
+				.get(pending.handle)
+				.map_or_else(math::Matrix::identity, Transform::get_matrix)
+				.into();
+			let slot = self.instances.push((resident, model));
 			if slot.index() >= MAX_INSTANCES {
 				self.instances.remove(slot);
 				log::error!(
@@ -223,8 +230,9 @@ impl PipelineManager {
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
-	/// Adopts mesh creation messages so their loads overlap window setup.
-	fn update(&mut self) {
+	/// Adopts mesh creation messages so their loads overlap window setup. Instances take their transform once the
+	/// mesh is resident, in `prepare`.
+	fn update(&mut self, _transforms: &ShownTransforms) {
 		while let Some(message) = self.mesh_listener.read() {
 			self.request_mesh(message.handle(), message.into_data());
 		}
@@ -235,15 +243,11 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-		_alpha: f32,
+		transforms: &ShownTransforms,
 		_time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
-		// Transforms apply before deletions, so a renderable moved and deleted in one tick ends deleted. A transform that
-		// arrives before residency is kept, and the instance reads it once it exists.
-		while let Some(message) = self.transforms_listener.read() {
-			self.renderable_transforms
-				.insert(message.handle(), (message.transform().clone(), None));
-		}
+		// Instances move even on frames that draw nothing, so none is left at a stale matrix.
+		self.move_instances(transforms);
 		while let Some(message) = self.deletions_listener.read() {
 			self.remove_mesh(message.into_handle());
 		}
@@ -260,7 +264,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		let Some(pipeline) = self.pipeline_manager.pipeline(self.pipeline) else {
 			return SmallVec::new();
 		};
-		self.resolve_pending_renderables();
+		self.resolve_pending_renderables(transforms);
 		self.write_instance_data(frame);
 		let instance_batches: &[InstanceBatch] = instance_batches_in(&self.instances, frame_allocator).leak();
 
@@ -318,9 +322,9 @@ use crate::{
 		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
-	gameplay::transform::{Transform, TransformationUpdate},
+	gameplay::Transform,
 	rendering::{
-		RenderableMesh, Sink,
+		RenderableMesh, ShownTransforms, Sink,
 		pipelines::simple::{
 			CameraShaderData, RenderPass,
 			resource_manager::{ResidentSimpleMesh, SharedSimpleResourceStore, SimpleLoaderClient},

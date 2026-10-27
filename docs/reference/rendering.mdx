@@ -37,8 +37,31 @@ passes write 16-bit float display color. The window's swapchain is `BGRAsRGB`.
 | Projection | Perspective | Sinks always use a perspective view. |
 | Aspect ratio, aperture, focus distance | | Stored but not read; the aspect ratio comes from the window's extent. |
 
-The camera's position and orientation come from its transform. Up is +Y,
-unless the view direction is within 1 percent of vertical, when +Z is used.
+The camera's position and orientation come from its shown transform. Up is
++Y, unless the view direction is within 1 percent of vertical, when +Z is used.
+
+## Shown transforms
+
+Every frame shows each entity's transform at the frame's
+[display time](/docs/reference/time#loops). Scene pipelines, lights, cameras,
+and particle emitters all follow the shown transform. Poses aren't blended;
+animation steps once per frame.
+
+| Term | Rule |
+| --- | --- |
+| Sample | A transformation update read during a simulation step. Its stamp is the end time of that step. |
+| Placement | A transformation update read outside a simulation step. It's shown at once and ends any motion in progress. |
+| First update | A handle's first update is shown at once, sample or placement. |
+| Span | The time from the handle's previous stamp to the sample's stamp, at most 250 ms. A sample after a placement spans one step. |
+| Segment | Starts at the sample's stamp less one step, from the transform shown at that time, and reaches the sample one span later. Between the two, position and scale move linearly and orientation turns along the shorter arc. |
+| Same step | A later sample in the same step replaces the earlier one's target and keeps its segment. |
+| At rest | Past the end of its segment, a handle stays at its latest sample until its next update. |
+
+| Source | Result |
+| --- | --- |
+| Publishes every step | Shown between its two latest samples by the blend factor, one step behind. |
+| Publishes every _n_ steps | Moves without stopping between samples and is shown _n_ steps behind, as long as _n_ steps last at most 250 ms. |
+| Starts moving after a rest | Its first segment lasts up to 250 ms; the next sample's segment starts from wherever that one reached. |
 
 ## Pipelines and passes
 

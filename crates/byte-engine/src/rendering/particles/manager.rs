@@ -16,12 +16,12 @@ use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
-use crate::gameplay::transform::TransformationUpdate;
+use crate::gameplay::Transform;
 use crate::rendering::loading::{Event, LoaderClient};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::set_layout::{PipelineSets, PublishedSets, Resource};
-use crate::rendering::{PipelineManagerClient, PipelineRef, Sink};
+use crate::rendering::{PipelineManagerClient, PipelineRef, ShownTransforms, Sink};
 use crate::time::MediaTime;
 
 /// The longest step one frame simulates, in seconds. A longer hitch slows particles down instead of scattering them.
@@ -36,7 +36,6 @@ const LONGEST_STEP: f32 = 0.1;
 pub struct ParticleManager {
 	systems_loader: LoaderClient<ParticleSystemLoader>,
 	emitter_listener: DefaultListener<CreateMessage<ParticleEmitter>>,
-	transforms_listener: DefaultListener<TransformationUpdate>,
 	deletions_listener: DefaultListener<DeleteMessage>,
 	emitters: HashMap<Handle, EmitterState>,
 	/// Every system an emitter asked for, in request order. Emitters refer to their system by index.
@@ -128,7 +127,6 @@ impl ParticleManager {
 		Self {
 			systems_loader,
 			emitter_listener: world.factory::<ParticleEmitter>().listener(),
-			transforms_listener: world.channel::<TransformationUpdate>().listener(),
 			deletions_listener: world.channel::<DeleteMessage>().listener(),
 			emitters: HashMap::default(),
 			systems: Vec::new(),
@@ -141,8 +139,9 @@ impl ParticleManager {
 		}
 	}
 
-	/// Applies emitter creations, replacements, transforms, and deletions published since the last call.
-	fn adopt_messages(&mut self) {
+	/// Applies emitter creations, replacements, and deletions published since the last call. A new emitter starts
+	/// where `transforms` shows its handle.
+	fn adopt_messages(&mut self, transforms: &ShownTransforms) {
 		while let Some(message) = self.emitter_listener.read() {
 			let handle = message.handle();
 			let emitter = message.into_data();
@@ -155,9 +154,11 @@ impl ParticleManager {
 				}
 				// A new emitter, or one that switched systems and gives its old slot back.
 				_ => {
-					let mut model = math::Matrix::identity().into();
+					let model = transforms
+						.get(handle)
+						.map_or_else(math::Matrix::identity, Transform::get_matrix)
+						.into();
 					if let Some(previous) = self.emitters.remove(&handle) {
-						model = previous.model;
 						release(&mut self.systems, previous, self.simulated_time);
 					}
 					self.emitters.insert(
@@ -173,11 +174,6 @@ impl ParticleManager {
 						},
 					);
 				}
-			}
-		}
-		while let Some(message) = self.transforms_listener.read() {
-			if let Some(state) = self.emitters.get_mut(&message.handle()) {
-				state.model = message.transform().get_matrix().into();
 			}
 		}
 		while let Some(message) = self.deletions_listener.read() {
@@ -346,13 +342,8 @@ fn write_frame_data(
 
 impl PipelineManager for ParticleManager {
 	/// Drains world messages every tick, so a window that draws no frames never holds back the world's channels.
-	fn update(&mut self) {
-		self.adopt_messages();
-	}
-
-	/// Drains world messages after each simulation step, which may publish many transforms per tick.
-	fn step(&mut self) {
-		self.adopt_messages();
+	fn update(&mut self, transforms: &ShownTransforms) {
+		self.adopt_messages(transforms);
 	}
 
 	/// Advances the simulation clock, then records every system's simulation once and its draw for every sink.
@@ -361,11 +352,17 @@ impl PipelineManager for ParticleManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-		_alpha: f32,
+		transforms: &ShownTransforms,
 		time: MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		let mut commands = SmallVec::new();
-		self.adopt_messages();
+		self.adopt_messages(transforms);
+		// Emitters move with the meshes and cameras of the frame.
+		for (handle, transform) in transforms.changed() {
+			if let Some(state) = self.emitters.get_mut(handle) {
+				state.model = transform.get_matrix().into();
+			}
+		}
 		self.adopt_loaded_systems(frame);
 
 		let delta_time = self.last_frame_time.map_or(0.0, |last| {

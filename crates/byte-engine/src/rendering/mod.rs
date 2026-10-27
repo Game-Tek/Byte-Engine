@@ -57,6 +57,7 @@ pub mod render_pass;
 #[doc(hidden)]
 pub mod render_passes;
 pub mod resource_loading;
+pub mod shown_transforms;
 
 #[cfg(test)]
 pub(crate) mod shader_vm_test;
@@ -96,6 +97,7 @@ pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
 pub use set_layout::{SetBinder, SetLayout};
+pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;
 pub use view::View;
 pub use window::{Features, Window};

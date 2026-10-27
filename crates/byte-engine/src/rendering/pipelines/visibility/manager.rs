@@ -60,14 +60,14 @@ use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
 use crate::gameplay::Transform;
-use crate::gameplay::transform::TransformationUpdate;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{
-	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, Sink, UpdatePose, View,
+	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink, UpdatePose,
+	View,
 };
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -575,66 +575,6 @@ fn indirect_diffuse_source(ssgi: bool, surfel_gi: bool, ray_tracing: bool) -> Op
 	}
 }
 
-/// The `TransformSamples` struct keeps the two most recent transforms of one renderable and which step the latest
-/// arrived in.
-struct TransformSamples {
-	previous: Transform,
-	current: Transform,
-	/// The step `current` was published in. Older than the latest step once the renderable stopped publishing.
-	step: u64,
-	/// Whether a frame still has to show the latest state.
-	dirty: bool,
-}
-
-impl TransformSamples {
-	/// Starts both samples at rest at `transform`, so the renderable is shown there until a step moves it. Next, call
-	/// [`Self::sample`] or [`Self::snap`] to queue it for a frame.
-	fn snapped(transform: &Transform) -> Self {
-		Self {
-			previous: transform.clone(),
-			current: transform.clone(),
-			step: 0,
-			dirty: false,
-		}
-	}
-
-	/// Keeps `transform` as the state at the end of `step`.
-	///
-	/// A second sample within the same step replaces the first, and a renderable that skipped steps starts the
-	/// new segment from where it stood still.
-	fn sample(&mut self, transform: &Transform, step: u64) {
-		if self.step != step {
-			self.previous = self.current.clone();
-			self.step = step;
-		}
-		self.current = transform.clone();
-		self.dirty = true;
-	}
-
-	/// Shows `transform` at once: a write made outside a step is a placement, not motion.
-	fn snap(&mut self, transform: &Transform) {
-		self.previous = transform.clone();
-		self.current = transform.clone();
-		self.dirty = true;
-	}
-
-	/// Returns the transform a frame should show, or `None` when the last shown one still stands.
-	///
-	/// A renderable published by the latest step (`step`) moves from `previous` to `current` with `alpha`; once a
-	/// step passes without a sample it rests at `current` and stops reporting.
-	fn shown(&mut self, step: u64, alpha: f32) -> Option<Transform> {
-		if !self.dirty {
-			return None;
-		}
-		if self.step == step {
-			Some(self.previous.interpolate(&self.current, alpha))
-		} else {
-			self.dirty = false;
-			Some(self.current.clone())
-		}
-	}
-}
-
 /// The `VisibilityPipelineManager` struct provides the visibility-buffer implementation of the world render domain.
 ///
 /// Register it through [`crate::rendering::Renderer::add_pipeline_manager`]. Scene changes arrive through the
@@ -645,8 +585,6 @@ pub struct VisibilityPipelineManager {
 	/// Retained storage for readiness events awaiting renderer adoption.
 	resource_events: Vec<VisibilityLoaderEvent>,
 	pipeline_manager: PipelineManagerClient,
-	/// Transform updates consumed after resource completions and before instance rebuilds.
-	transforms_listener: DefaultListener<TransformationUpdate>,
 	/// World creation messages adopted by [`PipelineManager::update`].
 	resource_listener: DefaultListener<CreateMessage<Resource>>,
 	cone_light_listener: DefaultListener<CreateMessage<ConeLight>>,
@@ -679,13 +617,6 @@ pub struct VisibilityPipelineManager {
 	/// Whether the last frame recorded the pending UV copies of new posed ranges, so the next one drops them.
 	posed_uv_copies_recorded: bool,
 	pending_renderables: Vec<PendingRenderable>,
-	/// The two most recent transform samples per renderable, retained so a mesh that loads later starts in the
-	/// right place and so frames can show where a renderable was between two steps.
-	renderable_transforms: HashMap<Handle, TransformSamples>,
-	/// The handles whose samples a frame still has to show, so frames skip renderables at rest.
-	dirty_transforms: Vec<Handle>,
-	/// The number of simulation steps marked so far; a sample tagged with it belongs to the latest step.
-	step_count: u64,
 	/// Adopted materials indexed by material table slot.
 	loaded_materials: Vec<Option<LoadedMaterial>>,
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
@@ -819,7 +750,6 @@ impl VisibilityPipelineManager {
 			loader,
 			resource_events: Vec::new(),
 			pipeline_manager,
-			transforms_listener: world.channel::<TransformationUpdate>().listener(),
 			resource_listener: world.factory::<Resource>().listener(),
 			cone_light_listener: world.factory::<ConeLight>().listener(),
 			directional_light_listener: world.factory::<DirectionalLight>().listener(),
@@ -843,9 +773,6 @@ impl VisibilityPipelineManager {
 			geometry,
 			posed_uv_copies_recorded: false,
 			pending_renderables: Vec::new(),
-			renderable_transforms: HashMap::default(),
-			dirty_transforms: Vec::new(),
-			step_count: 0,
 			loaded_materials: Vec::new(),
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
@@ -902,67 +829,36 @@ impl VisibilityPipelineManager {
 
 	/* Scene changes */
 
-	/// Keeps a published transform as a sample of `step`, or as a placement when it arrived outside a step, and
-	/// queues the handle for the next frame when it was at rest.
-	fn record_transform(&mut self, handle: Handle, transform: &Transform, step: Option<u64>) {
-		let samples = self
-			.renderable_transforms
-			.entry(handle)
-			.or_insert_with(|| TransformSamples::snapped(transform));
-		if !samples.dirty {
-			self.dirty_transforms.push(handle);
-		}
-		match step {
-			Some(step) => samples.sample(transform, step),
-			None => samples.snap(transform),
-		}
-	}
-
-	/// Shows transforms written outside a step where they are, then moves every renderable that changed since its
-	/// last shown transform to where it lies `alpha` of the way between its two samples.
-	fn process_transform_updates(&mut self, alpha: f32) {
-		while let Some(message) = self.transforms_listener.read() {
-			self.record_transform(message.handle(), message.transform(), None);
-		}
-		let (transforms, scene, step) = (&mut self.renderable_transforms, &mut self.scene, self.step_count);
-		// A handle leaves the queue once its latest state is shown, or when it was removed.
-		self.dirty_transforms.retain(|handle| {
-			let Some(samples) = transforms.get_mut(handle) else {
-				return false;
-			};
-			if let Some(transform) = samples.shown(step, alpha) {
-				scene.update_transform(*handle, &transform);
-			}
-			samples.dirty
-		});
-	}
-
-	/// Applies the frame's scene edits before anything is drawn: poses, then transforms at `alpha`, then deletions.
-	fn adopt_scene_updates(&mut self, alpha: f32) {
+	/// Applies the frame's scene edits before anything is drawn: poses, then the transforms the frame shows, then
+	/// deletions.
+	fn adopt_scene_updates(&mut self, transforms: &ShownTransforms) {
 		while let Some(message) = self.pose_listener.read() {
 			self.scene.write_skinned_pose(message.handle(), message.global_matrices());
 		}
 		while let Some(message) = self.material_parameter_listener.read() {
 			self.material_parameters.receive(message);
 		}
-		self.process_transform_updates(alpha);
+		for (handle, transform) in transforms.changed() {
+			self.scene.update_transform(*handle, transform);
+		}
 		while let Some(message) = self.deletions_listener.read() {
 			let handle = message.into_handle();
 			self.scene.remove_light(handle);
-			// A deleted renderable also drops the transform retained for its asynchronous creation, and the material
-			// parameters set on it.
+			// A deleted renderable also drops the material parameters set on it.
 			self.remove_mesh_instance(handle);
-			self.renderable_transforms.remove(&handle);
 			self.material_parameters.forget_entity(handle);
 		}
 	}
 
-	/// Adds one light and requests its optional photometric texture dependency.
-	fn create_light(&mut self, handle: Handle, light: Lights) {
+	/// Adds one light where its handle is shown and requests its optional photometric texture dependency.
+	fn create_light(&mut self, handle: Handle, light: Lights, transforms: &ShownTransforms) {
 		if let Some(profile) = light.local().and_then(LocalEmission::ies_profile) {
 			self.loader.request_texture(profile.resource_id().to_owned());
 		}
 		self.scene.add_light(handle, light);
+		if let Some(transform) = transforms.get(handle) {
+			self.scene.update_transform(handle, transform);
+		}
 	}
 
 	/// Selects an environment and requests its baked lighting resources.
@@ -976,13 +872,13 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Requests the renderable's mesh and keeps the scene instance pending until the mesh is resident.
-	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
-		// Creation messages are upserts, but the latest independently published transform must survive replacement.
+	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh, transforms: &ShownTransforms) {
+		// Creation messages are upserts; the replacement starts where the handle is shown.
 		self.remove_mesh_instance(handle);
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
 		if let Some(mesh) = resident {
-			self.add_renderable(handle, mesh_key, &mesh);
+			self.add_renderable(handle, mesh_key, &mesh, transforms);
 		} else {
 			self.pending_renderables.push(PendingRenderable { handle, mesh_key });
 		}
@@ -1005,14 +901,14 @@ impl VisibilityPipelineManager {
 	/* Resource adoption */
 
 	/// Finishes renderer-specific adoption of loaded resources and publishes only fully usable ones.
-	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
+	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame, transforms: &ShownTransforms) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
 		// Material readiness changes rebuild the material lists once, after every event of the frame.
 		let mut materials_changed = false;
 		for event in events.drain(..) {
 			match event {
-				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh),
+				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh, transforms),
 				VisibilityLoaderEvent::MaterialReady(material, pipeline) => {
 					self.adopt_material(material, pipeline);
 					materials_changed = true;
@@ -1205,27 +1101,26 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Creates scene instances for every pending renderable whose mesh is now resident.
-	fn resolve_pending_renderables(&mut self, key: MeshKey, mesh: &MeshData) {
+	fn resolve_pending_renderables(&mut self, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
 		let mut pending = std::mem::take(&mut self.pending_renderables);
 		pending.retain(|renderable| {
 			if renderable.mesh_key != key {
 				return true;
 			}
-			self.add_renderable(renderable.handle, key, mesh);
+			self.add_renderable(renderable.handle, key, mesh, transforms);
 			false
 		});
 		self.pending_renderables = pending;
 	}
 
-	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData) {
+	/// Adds one resident renderable where its handle is shown.
+	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData, transforms: &ShownTransforms) {
 		if let Some(structures) = &mut self.acceleration_structures {
 			structures.register_mesh(key, mesh);
 		}
-		let model = self
-			.renderable_transforms
-			.get(&handle)
-			.map_or_else(Transform::default, |samples| samples.current.clone())
-			.get_matrix()
+		let model = transforms
+			.get(handle)
+			.map_or_else(math::Matrix::identity, Transform::get_matrix)
 			.into();
 		let availability = self.availability.get_or_insert(Availability::Renderable(handle), true);
 		for (index, primitive) in mesh.primitives.iter().enumerate() {
@@ -1518,34 +1413,26 @@ impl VisibilityPipelineManager {
 impl PipelineManager for VisibilityPipelineManager {
 	/// Drains creation messages in dependency order: resources first so their loads start before any entity
 	/// needs them, then lights, meshes, and environments.
-	fn update(&mut self) {
+	fn update(&mut self, transforms: &ShownTransforms) {
 		while let Some(message) = self.resource_listener.read() {
 			self.loader.request_resource(message.into_data());
 		}
 		// Concrete routes keep application-defined creation strongly typed. The scene erases each light only at its
 		// storage boundary.
 		while let Some(message) = self.cone_light_listener.read() {
-			self.create_light(message.handle(), message.into_data().into());
+			self.create_light(message.handle(), message.into_data().into(), transforms);
 		}
 		while let Some(message) = self.directional_light_listener.read() {
-			self.create_light(message.handle(), message.into_data().into());
+			self.create_light(message.handle(), message.into_data().into(), transforms);
 		}
 		while let Some(message) = self.point_light_listener.read() {
-			self.create_light(message.handle(), message.into_data().into());
+			self.create_light(message.handle(), message.into_data().into(), transforms);
 		}
 		while let Some(message) = self.mesh_listener.read() {
-			self.request_mesh(message.handle(), message.into_data());
+			self.request_mesh(message.handle(), message.into_data(), transforms);
 		}
 		while let Some(message) = self.environment_listener.read() {
 			self.create_environment(message.into_data());
-		}
-	}
-
-	/// Marks the end of one simulation step and keeps the transforms it published as the samples frames move toward.
-	fn step(&mut self) {
-		self.step_count += 1;
-		while let Some(message) = self.transforms_listener.read() {
-			self.record_transform(message.handle(), message.transform(), Some(self.step_count));
 		}
 	}
 
@@ -1554,12 +1441,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-		alpha: f32,
+		transforms: &ShownTransforms,
 		_time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
-		self.adopt_scene_updates(alpha);
+		self.adopt_scene_updates(transforms);
 		self.apply_runtime_settings();
-		self.adopt_resource_completions(frame);
+		self.adopt_resource_completions(frame, transforms);
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
 		if !self.materials_copies_current[sequence] {
@@ -1872,56 +1759,6 @@ mod tests {
 
 	use super::*;
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
-
-	fn at(x: f32) -> Transform {
-		Transform::from_position(math::Point::new(x, 0.0, 0.0))
-	}
-
-	fn shown_x(samples: &mut TransformSamples, step: u64, alpha: f32) -> Option<f32> {
-		samples.shown(step, alpha).map(|transform| transform.get_position().x())
-	}
-
-	#[test]
-	fn samples_move_from_the_previous_step_to_the_latest_then_rest() {
-		let mut samples = TransformSamples::snapped(&at(0.0));
-		samples.sample(&at(2.0), 1);
-
-		assert_eq!(shown_x(&mut samples, 1, 0.0), Some(0.0));
-		assert_eq!(shown_x(&mut samples, 1, 0.5), Some(1.0));
-		// No sample in step 2: the renderable rests at its latest state and reports once.
-		assert_eq!(shown_x(&mut samples, 2, 0.3), Some(2.0));
-		assert_eq!(shown_x(&mut samples, 2, 0.9), None);
-	}
-
-	#[test]
-	fn a_second_sample_in_one_step_replaces_the_first() {
-		let mut samples = TransformSamples::snapped(&at(0.0));
-		samples.sample(&at(1.0), 1);
-		samples.sample(&at(4.0), 1);
-
-		assert_eq!(shown_x(&mut samples, 1, 0.0), Some(0.0));
-		assert_eq!(shown_x(&mut samples, 1, 1.0), Some(4.0));
-	}
-
-	#[test]
-	fn a_renderable_that_paused_starts_its_next_segment_where_it_rested() {
-		let mut samples = TransformSamples::snapped(&at(0.0));
-		samples.sample(&at(2.0), 1);
-		assert_eq!(shown_x(&mut samples, 2, 0.5), Some(2.0));
-		samples.sample(&at(6.0), 3);
-
-		assert_eq!(shown_x(&mut samples, 3, 0.0), Some(2.0));
-		assert_eq!(shown_x(&mut samples, 3, 0.5), Some(4.0));
-	}
-
-	#[test]
-	fn a_snap_shows_at_once_and_ends_the_motion_in_progress() {
-		let mut samples = TransformSamples::snapped(&at(0.0));
-		samples.sample(&at(2.0), 1);
-		samples.snap(&at(10.0));
-
-		assert_eq!(shown_x(&mut samples, 1, 0.5), Some(10.0));
-	}
 
 	#[test]
 	fn resolved_ies_profile_texture_applies_the_per_light_dimmer() {

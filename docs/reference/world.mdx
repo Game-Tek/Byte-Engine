@@ -70,7 +70,7 @@ At startup the runtime opens these routes on the world:
 | --- | --- |
 | Action events and action declarations | The input sink |
 | Camera creations | The renderer |
-| Transformation updates | The renderer's listener, and the inspector's watch |
+| Transformation updates | The shown transforms that frames draw, and the inspector's watch |
 | Deletions and action triggers | The inspector, for posting |
 
 A system subscribes by taking its listeners when it's constructed, so it sees
@@ -79,9 +79,10 @@ entities it follows. Physics takes the transform route, the body, constraint,
 and ray query factories, and the deletion route; the scene graph takes the
 scene factories and deletions; animation takes the animator factory, the
 request and look target routes, and deletions, and posts to the pose and root
-motion routes; rendering managers and passes take transforms, poses, and
-deletions. A headless build keeps every route except poses, so servers run
-the same gameplay code with nothing listening.
+motion routes; rendering reads transforms once, through its shown transforms,
+and its managers and passes take poses and deletions. A headless build keeps
+every route except poses, so servers run the same gameplay code with nothing
+listening.
 
 ## Transforms
 
@@ -94,6 +95,7 @@ A transform is a world location, scale, and orientation.
 | Matrix | Translation times rotation times scale: scale applies first. |
 | Interpolation | Position and scale interpolate linearly, orientation along the shorter arc. |
 | Update | A transformation update is a creation message carrying a transform under the entity's handle, on the world's transform route. Creation and replacement travel on that one route. |
+| Shown | Frames show an update read during a simulation step as a sample and any other update as a placement; see [shown transforms](/docs/reference/rendering#shown-transforms). |
 | Hierarchy | None. A transform is always a world transform. |
 | Poses | A pose update carries an entity's global affine transforms, one per skeleton node, on the world's pose route, in headed builds only. |
 

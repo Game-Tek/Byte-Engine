@@ -2,7 +2,7 @@ use smallvec::SmallVec;
 
 use crate::{
 	rendering::{
-		Sink,
+		ShownTransforms, Sink,
 		render_pass::{RenderPassBuilder, RenderPassReturn},
 	},
 	time::MediaTime,
@@ -28,20 +28,16 @@ pub trait PipelineManager {
 	/// The application calls this after publishing the tick's changes and without borrowing the graphics
 	/// context. Start loading here so it can overlap native window and sink setup. Adopt completed resources
 	/// later in [`Self::prepare`], where the current frame can use everything that finished in the meantime.
-	fn update(&mut self) {}
-
-	/// Marks the end of one simulation step.
 	///
-	/// Transform updates waiting on a listener at this point were published by the step that just ran. A manager
-	/// that shows motion between steps reads them here and keeps them as the sample its next frames move toward;
-	/// whatever it reads later, in [`Self::update`] or [`Self::prepare`], was written outside a step and is shown
-	/// where it is. A manager that shows every transform as it arrives has nothing to do here.
-	fn step(&mut self) {}
+	/// `transforms` places anything the manager starts drawing here: [`ShownTransforms::get`] already shows every
+	/// transform published so far.
+	fn update(&mut self, _transforms: &ShownTransforms) {}
 
 	/// Adopts loader completions and prepares sink-local render commands for one frame.
 	///
-	/// `alpha` is how far this frame lies between the two most recent simulation steps: `0` at the older one,
-	/// `1` at the one [`Self::step`] last marked. It is `1` when simulation runs once per frame.
+	/// `transforms` holds what this frame shows. Move what the manager already draws by
+	/// [`ShownTransforms::changed`], and place what it starts drawing with [`ShownTransforms::get`], so it moves with
+	/// the cameras and the other managers between simulation steps.
 	///
 	/// `time` is the frame clock's elapsed time. Drive playback that must follow the display instead of the
 	/// simulation rate from it, such as flipbook frames.
@@ -56,7 +52,7 @@ pub trait PipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-		alpha: f32,
+		transforms: &ShownTransforms,
 		time: MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]>;
 

@@ -79,6 +79,9 @@ pub struct GraphicsApplication {
 	simulation_elapsed: MediaTime,
 	/// How far the frame lies between the two most recent steps; `1` when simulation runs once per frame.
 	simulation_alpha: f32,
+	/// The simulation time frames show: one step behind the latest step in the stepped loop, and the latest step
+	/// when simulation runs once per frame.
+	display_time: MediaTime,
 	/// The frame period the loop sleeps for when no window presents; see [`skipped_frame_pace`].
 	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
@@ -109,7 +112,8 @@ pub struct GraphicsApplication {
 	/// application code that steps them.
 	world: MessageScope,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
-	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
+	/// The transforms every frame shows, sampled after each simulation step and resolved before each frame.
+	shown_transforms: ShownTransforms,
 
 	/// Every window and gamepad event ends up here before the world's actions pull it.
 	input: input::InputCollector,
@@ -168,7 +172,7 @@ struct Services {
 	input: input::InputCollector,
 	actions: input::InputSink,
 	cameras_listener: DefaultListener<CreateMessage<Camera>>,
-	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
+	shown_transforms: ShownTransforms,
 	http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	waker: LoopWaker,
@@ -232,9 +236,9 @@ impl GraphicsApplication {
 						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
 							.with_declarations(world_messages.factory::<Action>().listener());
 						let cameras_listener = world_messages.factory::<Camera>().listener();
-						let renderer_transforms_listener = transforms.listener();
+						let shown_transforms = ShownTransforms::new(&world_messages);
 
-						// Register reflected posts after the renderer's future-only transform listener exists.
+						// Register reflected posts after the shown transforms' future-only listener exists.
 						let mut inspector = DefaultInspector::new(
 							application_events.clone(),
 							configuration.clone(),
@@ -268,7 +272,7 @@ impl GraphicsApplication {
 							input,
 							actions,
 							cameras_listener,
-							renderer_transforms_listener,
+							shown_transforms,
 							http_inspector,
 							screenshot_broker,
 							waker,
@@ -364,7 +368,7 @@ impl GraphicsApplication {
 
 			world: world_messages,
 			cameras_listener: services.cameras_listener,
-			renderer_transforms_listener: services.renderer_transforms_listener,
+			shown_transforms: services.shown_transforms,
 
 			input: services.input,
 			actions: services.actions,
@@ -390,6 +394,7 @@ impl GraphicsApplication {
 			simulation_pending: MediaTime::ZERO,
 			simulation_elapsed: MediaTime::ZERO,
 			simulation_alpha: 1.0,
+			display_time: MediaTime::ZERO,
 			skipped_frame_pace: skipped_frame_pace(present_interval, None),
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
@@ -425,8 +430,9 @@ impl GraphicsApplication {
 
 	/// Returns how far the frame about to be drawn lies between the two most recent simulation steps, from 0 to 1.
 	///
-	/// Renderers show step state blended by this amount, so frame code that places anything over the scene, such
-	/// as UI that follows an entity, blends the same way to keep pace with what they draw.
+	/// Renderers show an entity that publishes every step blended by this amount; see
+	/// [`ShownTransforms`](crate::rendering::ShownTransforms). Frame code that places anything over the scene, such
+	/// as UI that follows such an entity, blends the same way to keep pace with what they draw.
 	pub fn simulation_alpha(&self) -> f32 {
 		self.simulation_alpha
 	}
@@ -585,11 +591,11 @@ impl GraphicsApplication {
 			.iter()
 			.flat_map(|request| request.captures.iter().map(|selection| (selection.sink, &selection.capture)))
 			.collect::<Vec<_>>();
+		self.shown_transforms.resolve(self.display_time);
 		let (frame, results) = self.renderer.prepare(
-			&mut self.renderer_transforms_listener,
+			&self.shown_transforms,
 			&self.application.frame_allocator,
 			&captures,
-			self.simulation_alpha,
 			time.elapsed(),
 			time.delta(),
 		);
@@ -641,11 +647,12 @@ impl GraphicsApplication {
 			self.runtime.advance(time);
 			simulate(self, time);
 			// The step's state is complete once the callback has stepped its systems.
-			self.renderer.step();
+			self.shown_transforms.step(time);
 		}
 		// Frames show the world one step behind, moving from the previous step's state to the latest one's as
 		// the pending time fills the step.
 		self.simulation_alpha = self.simulation_pending.as_seconds_f32() / step.as_seconds_f32();
+		self.display_time = self.simulation_elapsed - step + self.simulation_pending;
 		// An idle on-demand loop waits in the window system, so the next step has to be one of the deadlines it
 		// waits for. Frames the loop runs anyway reach the step sooner and cost nothing here.
 		self.schedule_tick(Some(std::time::Instant::now() + (step - self.simulation_pending).to_std()));
@@ -661,8 +668,9 @@ impl GraphicsApplication {
 			application.runtime.advance(time);
 			let result = debug_span!("GraphicsApplication::user_tick").in_scope(|| f(application, time));
 			// The step's state is complete once the callback has stepped its systems.
-			application.renderer.step();
+			application.shown_transforms.step(time);
 			application.simulation_alpha = 1.0;
+			application.display_time = time.elapsed();
 			result
 		})
 	}
@@ -714,8 +722,9 @@ impl GraphicsApplication {
 	/// cameras, and animation.
 	///
 	/// A frame that owes more steps than the loop runs in one tick drops the outstanding time instead of running
-	/// it later. Renderers consume the state left by the last step, so a simulation rate below the frame rate
-	/// repeats a frame's worth of state until the next step lands.
+	/// it later. Frames show the world one step behind, moving each entity between the samples its steps published,
+	/// so a simulation rate below the frame rate still moves every frame; see
+	/// [shown transforms](/docs/reference/rendering#shown-transforms).
 	pub fn tick_stepped_with<R, S: FnMut(&mut Self, Time), F: FnOnce(&mut Self, Time) -> R>(
 		&mut self,
 		mut simulate: S,
@@ -794,7 +803,10 @@ impl GraphicsApplication {
 		let result = run(self, time);
 		self.streams.update();
 
-		self.renderer.update();
+		// Transforms the frame code wrote are placements; adopting them every tick keeps the route from holding
+		// back its publishers while nothing renders.
+		self.shown_transforms.adopt();
+		self.renderer.update(&self.shown_transforms);
 		self.prepare_renderer_state();
 		let screenshot_requests = self.screenshot_broker.drain();
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
@@ -1317,6 +1329,7 @@ use crate::{
 	},
 	metrics::TickClock,
 	rendering::{
+		ShownTransforms,
 		pipelines::{
 			simple::SimplePipelineManager,
 			visibility::{RENDER_PARAMETERS, VisibilityPipelineManager, VisibilityPipelineSettings},

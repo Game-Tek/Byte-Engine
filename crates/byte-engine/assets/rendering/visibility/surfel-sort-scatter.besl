@@ -1,0 +1,16 @@
+// The last pass of the hit sort: places each ray that hit in its material's run, at its rank among the run's hits.
+//
+// Next, the shade pass runs the closest-hit shader of each sorted hit, so neighboring invocations mostly run the same
+// shader.
+
+main: fn (input: StageInput) -> void {
+	let ray: u32 = input.thread_id.x;
+	if (ray >= surfel_pool.rays) {
+		return;
+	}
+	let key: u32 = surfel_hit_keys[ray];
+	if (key == NO_SURFEL) {
+		return;
+	}
+	surfel_sorted_hits[surfel_hit_sort.offsets[key >> SURFEL_HIT_RANK_BITS] + (key & SURFEL_HIT_RANK_MASK)] = ray;
+}

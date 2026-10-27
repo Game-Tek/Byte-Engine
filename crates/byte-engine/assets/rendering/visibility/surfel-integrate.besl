@@ -1,0 +1,259 @@
+// Folds one live surfel's rays of this frame into its light estimate, its guide, and its radial depth, and rewrites
+// its record for this frame's lookups: its light, its radius at the camera's distance, and how much lookups trust it.
+//
+// Each ray's guide cells learn the pre-exposed light it found there, times its cosine, and its radial depth cell learns
+// how far it went, up to twice the surfel's radius, which the resolve reads to keep a surfel's light from reaching
+// pixels behind a wall. Both follow webgiya. As in webgiya, a miss brings back the environment's light from its
+// direction, so the estimate holds the sky the surfel sees through each opening, and the guide steers rays toward the
+// openings the sky shines through.
+//
+// The estimate is the multiscale mean estimator (MSME) of "Hybrid Rendering for Real-Time Ray Tracing" by Colin
+// Barré-Brisebois et al. (Ray Tracing Gems, 2019), run as webgiya runs it: each frame's average is one sample, a young
+// surfel averages its first samples evenly, and fireflies are clamped near the short-window mean. Unlike webgiya's, its
+// long mean never moves slower than an even average of the frames it holds. Its light is pre-exposed, so it follows the
+// exposure the way the lit image does. Its fourth channel, the hit fraction, which webgiya doesn't keep, counts only the
+// rays the cosine-weighted distribution drew, each once: the weights that undo the guide for the light would scatter it
+// around its value even where every ray hits, and reflections it dims would leak into enclosed rooms.
+
+// Frames over which a new surfel fades in.
+SURFEL_FADE_FRAMES: const f32 = 4.0;
+// Lookups trust a surfel fully once its estimate holds this many frames of rays, and until then it averages them
+// evenly.
+SURFEL_SETTLED_COUNT: const f32 = 32.0;
+// The most frames of rays an estimate counts.
+SURFEL_MAX_COUNT: const f32 = 200.0;
+// The smallest variance the estimator divides by.
+SURFEL_VARIANCE_FLOOR: const f32 = 0.00001;
+// The specular level of the environment a miss brings light back from, the one prefiltered for roughness 2/7. Its blur
+// keeps a small bright patch of sky from making the estimate noisy, as webgiya's blurred level does.
+SURFEL_SKY_LEVEL: const f32 = 2.0;
+
+// Returns the deviation of a channel's variance, kept away from zero.
+surfel_deviation: fn (variance: f32) -> f32 {
+	return sqrt(max(variance, SURFEL_VARIANCE_FLOOR));
+}
+
+// Returns the luminance of the light channels of `value`.
+surfel_luma: fn (value: vec4f) -> f32 {
+	return value.x * 0.299 + value.y * 0.587 + value.z * 0.114;
+}
+
+// Moves the guide cells around `point`, starting at `guide`, toward `light` by their bilinear shares, and returns how
+// much their sum changed.
+surfel_guide_learn: fn (guide: u32, point: vec2f, light: f32) -> f32 {
+	let position: vec2f = point * f32(SURFEL_GUIDE_SIDE) - vec2f(0.5, 0.5);
+	let first_x: f32 = floor(position.x);
+	let first_y: f32 = floor(position.y);
+	let fraction_x: f32 = position.x - first_x;
+	let fraction_y: f32 = position.y - first_y;
+	let change: f32 = 0.0;
+	for (let corner: u32 = 0; corner < 4; corner = corner + 1) {
+		let x: f32 = first_x + f32(corner & 1);
+		let y: f32 = first_y + f32(corner >> 1);
+		if (x >= 0.0 && y >= 0.0 && x < f32(SURFEL_GUIDE_SIDE) && y < f32(SURFEL_GUIDE_SIDE)) {
+			let share_x: f32 = 1.0 - fraction_x + (2.0 * fraction_x - 1.0) * f32(corner & 1);
+			let share_y: f32 = 1.0 - fraction_y + (2.0 * fraction_y - 1.0) * f32(corner >> 1);
+			let index: u32 = guide + u32(y) * SURFEL_GUIDE_SIDE + u32(x);
+			let previous: f32 = f32(surfel_guides[index]);
+			let next: f16 = f16(mix(previous, light * share_x * share_y, SURFEL_GUIDE_RATE));
+			surfel_guides[index] = next;
+			// The sum follows the stored cells, so rounding never makes it drift from them.
+			change = change + f32(next) - previous;
+		}
+	}
+	return change;
+}
+
+// Folds `distance` into the radial depth cell of `direction`, a direction of the surfel's hemisphere in its own frame,
+// whose cells start at `depth`.
+surfel_depth_learn: fn (depth: u32, direction: vec3f, distance: f32) -> void {
+	let index: u32 = depth + surfel_square_cell(surfel_hemisphere_to_depth_square(direction), SURFEL_DEPTH_SIDE);
+	let first: f32 = max(distance, 0.0001);
+	let second: f32 = first * first;
+	let moments: vec4f = vec4f(first, second, second * first, second * second);
+	let previous: vec4f = surfel_depths[index];
+	if (previous.w == 0.0) {
+		surfel_depths[index] = moments;
+		return;
+	}
+	let rate: f32 = SURFEL_DEPTH_NEARER_RATE;
+	if (first > previous.x) {
+		rate = SURFEL_DEPTH_FARTHER_RATE;
+	}
+	let next: vec4f = previous + (moments - previous) * rate;
+	// Blending can leave moments no distribution has, which the occlusion test can't read.
+	next.y = max(next.y, next.x * next.x);
+	next.w = max(next.w, next.y * next.y);
+	surfel_depths[index] = next;
+}
+
+// Returns `estimate` after one MSME step with `sample`. `short_blend` is the short window's blend factor.
+surfel_msme: fn (estimate: SurfelIrradiance, sample: vec4f, short_blend: f32) -> SurfelIrradiance {
+	let result: SurfelIrradiance = estimate;
+	// A sample counts only up to eight deviations above the short mean, which keeps a rare bright hit from flashing.
+	let clamped: vec4f = vec4f(
+		min(sample.x, 0.1 + estimate.short_mean.x + surfel_deviation(estimate.variance.x) * 8.0),
+		min(sample.y, 0.1 + estimate.short_mean.y + surfel_deviation(estimate.variance.y) * 8.0),
+		min(sample.z, 0.1 + estimate.short_mean.z + surfel_deviation(estimate.variance.z) * 8.0),
+		min(sample.w, 0.1 + estimate.short_mean.w + surfel_deviation(estimate.variance.w) * 8.0)
+	);
+	let delta: vec4f = clamped - estimate.short_mean;
+	result.short_mean = estimate.short_mean + delta * short_blend;
+	let delta_after: vec4f = clamped - result.short_mean;
+	// The variance follows over a window twice as long as the short mean's.
+	let variance: vec4f = estimate.variance + (delta * delta_after - estimate.variance) * (short_blend * 0.5);
+	result.variance = vec4f(max(variance.x, 0.0), max(variance.y, 0.0), max(variance.z, 0.0), max(variance.w, 0.0));
+	let deviation: vec4f = vec4f(
+		surfel_deviation(result.variance.x),
+		surfel_deviation(result.variance.y),
+		surfel_deviation(result.variance.z),
+		surfel_deviation(result.variance.w)
+	);
+
+	// How many deviations the long mean lies from the short one; a lasting gap means the light changed.
+	let gap: vec4f = estimate.mean - result.short_mean;
+	let relative_difference: f32 = surfel_luma(
+		vec4f(abs(gap.x) / deviation.x, abs(gap.y) / deviation.y, abs(gap.z) / deviation.z, 0.0)
+	);
+	result.inconsistency = mix(estimate.inconsistency, relative_difference, 0.08);
+	// Noisy light for its level slows the long mean down.
+	let variance_blend: f32 = clamp(
+		surfel_luma(vec4f(
+			result.short_mean.x * 0.5 / deviation.x,
+			result.short_mean.y * 0.5 / deviation.y,
+			result.short_mean.z * 0.5 / deviation.z,
+			0.0
+		)),
+		1.0 / 32.0,
+		1.0
+	);
+	// The long mean catches up quickly while the means disagree, scaled by the reduction the previous step left.
+	let catch_up: f32 = clamp(
+		smoothstep(0.0, 1.0, relative_difference * max(0.02, result.inconsistency - 0.2)),
+		1.0 / 256.0,
+		1.0
+	) * estimate.blend;
+	result.blend = mix(estimate.blend, variance_blend, 0.1);
+	// The long mean moves at least as fast as an even average of the frames the estimate holds. On its own the catch-up
+	// falls to 1/8192 a frame while the light looks steady, which kept each surfel's error from its first 32 frames for
+	// thousands of frames: a few percent of the sky, enough to set neighbors visibly apart in a dim room.
+	let even: f32 = 1.0 / (1.0 + estimate.count);
+	result.mean = estimate.mean + (clamped - estimate.mean) * max(clamp(catch_up, 0.0, 1.0), even);
+	return result;
+}
+
+main: fn (input: StageInput) -> void {
+	let slot: u32 = input.thread_id.x;
+	if (slot >= surfel_parameters.surfel_capacity || surfel_states[slot].life == 0) {
+		return;
+	}
+	let estimate: SurfelIrradiance = surfel_irradiance[slot];
+	// Keep the estimator's state usable whatever a slot held before.
+	estimate.blend = clamp(estimate.blend, 1.0 / 32.0, 1.0);
+	estimate.inconsistency = clamp(estimate.inconsistency, 0.0, 10.0);
+	// The estimate moves to this frame's exposure, as the lit image does.
+	let rescale: f32 = surfel_parameters.exposure / surfel_parameters.previous_exposure;
+	let light_scale: vec4f = vec4f(rescale, rescale, rescale, 1.0);
+	estimate.mean = estimate.mean * light_scale;
+	estimate.short_mean = estimate.short_mean * light_scale;
+	estimate.variance = estimate.variance * light_scale * light_scale;
+
+	// The rays the budget granted this surfel lie in the frame's window of wanted rays, from its first wanted ray on.
+	let wanted: u32 = surfel_ray_wants[slot];
+	let first_ray: u32 = surfel_scan[SURFEL_CELL_COUNT + slot] - surfel_pool.cell_entries;
+	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
+	let depth: u32 = slot * SURFEL_DEPTH_CELLS;
+	let reach: f32 = 2.0 * surfel_records[slot].radius;
+	let normal: vec3f = decode_surfel_normal(surfel_records[slot].normal);
+	let basis: SurfelBasis = surfel_basis(normal);
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	let samples: f32 = 0.0;
+	// The rays the cosine-weighted distribution drew, and how many of them hit.
+	let cosine_rays: f32 = 0.0;
+	let cosine_hits: f32 = 0.0;
+	let mass: f32 = estimate.guide_mass;
+	for (let sample: u32 = 0; sample < wanted; sample = sample + 1) {
+		let ray: u32 = (first_ray + sample + surfel_pool.rays_wanted - surfel_pool.ray_cursor) % surfel_pool.rays_wanted;
+		if (ray < surfel_pool.rays) {
+			let result: SurfelRayResult = surfel_ray_results[ray];
+			let hit: f32 = step(0.0, result.distance);
+			let point: vec2f = surfel_unpack_square(result.direction);
+			let local: vec3f = surfel_square_to_hemisphere(point);
+			// A hit brings back what the shade pass found there, and a miss the environment's light from its direction.
+			let found: vec3f = result.radiance;
+			if (hit == 0.0) {
+				let sky: vec4f = texture_lod(
+					surfel_environment_radiance,
+					surfel_to_world(basis, normal, local),
+					SURFEL_SKY_LEVEL
+				);
+				found = vec3f(sky.x, sky.y, sky.z) * surfel_parameters.environment_intensity;
+			}
+			// Each ray's weight turns the mixture it was drawn from back into the cosine-weighted distribution, whose
+			// plain average estimates irradiance over π.
+			sum = sum + found * result.weight;
+			samples = samples + 1.0;
+			if (result.guided == 0) {
+				cosine_rays = cosine_rays + 1.0;
+				cosine_hits = cosine_hits + hit;
+			}
+			let luminance: f32 = found.x * 0.2126 + found.y * 0.7152 + found.z * 0.0722;
+			mass = mass + surfel_guide_learn(guide, point, luminance * surfel_parameters.exposure * local.z);
+			surfel_depth_learn(depth, local, mix(reach, min(result.distance, reach), hit));
+		}
+	}
+	estimate.guide_mass = max(mass, 0.0);
+	// The clearance is the nearest distance where any cell's radial depth could start hiding a point; a cell no ray
+	// reached hides nothing.
+	let clearance: f32 = SURFEL_RAY_LENGTH;
+	for (let cell: u32 = 0; cell < SURFEL_DEPTH_CELLS; cell = cell + 1) {
+		let moments: vec4f = surfel_depths[depth + cell];
+		if (moments.w != 0.0) {
+			clearance = min(clearance, surfel_moment_clearance(moments));
+		}
+	}
+	surfel_clearances[slot] = clearance;
+	if (samples > 0.0) {
+		let light: f32 = surfel_parameters.exposure / samples;
+		// Given which distribution drew each ray, the cosine-weighted ones are plain cosine-weighted samples, so the
+		// share of them that hit estimates the hit fraction without bias.
+		let hit_fraction: f32 = estimate.mean.w;
+		if (cosine_rays > 0.0) {
+			hit_fraction = cosine_hits / cosine_rays;
+		}
+		let frame_sample: vec4f = vec4f(sum.x * light, sum.y * light, sum.z * light, hit_fraction);
+		let previous: SurfelIrradiance = estimate;
+		if (estimate.count < SURFEL_SETTLED_COUNT) {
+			// The first frames average evenly, so a young surfel's estimate settles without lag.
+			let blend: f32 = 1.0 / (1.0 + estimate.count);
+			estimate.mean = estimate.mean + (frame_sample - estimate.mean) * blend;
+			estimate.short_mean = estimate.short_mean + (frame_sample - estimate.short_mean) * blend;
+			estimate.variance = estimate.variance + (vec4f(1.0, 1.0, 1.0, 1.0) - estimate.variance) * blend;
+			estimate.blend = 1.0;
+			estimate.inconsistency = max(estimate.inconsistency, 1.0);
+		} else {
+			// More rays this frame make its average a steadier sample, so the short window follows it faster.
+			estimate = surfel_msme(estimate, frame_sample, clamp(1.0 - exp(0.0 - samples / 12.5), 0.01, 0.1));
+		}
+		if (cosine_rays == 0.0) {
+			// A frame whose rays all came from the guide leaves the hit fraction's estimate as it was. Which rays the
+			// guide draws doesn't depend on what they find, so skipping these frames biases nothing.
+			estimate.mean = vec4f(estimate.mean.x, estimate.mean.y, estimate.mean.z, previous.mean.w);
+			estimate.short_mean = vec4f(
+				estimate.short_mean.x,
+				estimate.short_mean.y,
+				estimate.short_mean.z,
+				previous.short_mean.w
+			);
+			estimate.variance = vec4f(estimate.variance.x, estimate.variance.y, estimate.variance.z, previous.variance.w);
+		}
+		estimate.count = min(estimate.count + 1.0, SURFEL_MAX_COUNT);
+	}
+	surfel_irradiance[slot] = estimate;
+
+	let position: vec3f = surfel_records[slot].position;
+	surfel_records[slot].radius = surfel_radius(position);
+	surfel_records[slot].weight = clamp(f32(surfel_states[slot].frames) / SURFEL_FADE_FRAMES, 0.0, 1.0)
+		* clamp(estimate.count / SURFEL_SETTLED_COUNT, 0.0, 1.0);
+	surfel_records[slot].irradiance = vec4f16(estimate.mean);
+}

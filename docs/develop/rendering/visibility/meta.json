@@ -4,6 +4,7 @@
 	"pages": [
 		"material-parameters",
 		"shadow-maps",
-		"skinning"
+		"skinning",
+		"surfel-gi"
 	]
 }

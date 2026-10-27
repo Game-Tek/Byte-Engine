@@ -21,6 +21,7 @@ use super::skinning::SkinningDispatch;
 use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
 use crate::rendering::lights::Lights;
+use crate::rendering::renderable::mesh::MeshKey;
 use crate::space::{Orientable as _, Positionable as _};
 
 /// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.
@@ -33,6 +34,10 @@ pub struct Instance {
 /// The `RenderEntity` struct is one resident primitive of a renderable, ready to become a frame instance.
 pub struct RenderEntity {
 	pub(crate) handle: Handle,
+	/// The mesh the primitive belongs to, whose bottom-level acceleration structure rays hit it through.
+	pub(crate) mesh: MeshKey,
+	/// The primitive's index in its mesh.
+	pub(crate) primitive: u32,
 	/// Dependency-closure handle checked during frame-local admission.
 	pub(crate) availability: AvailabilityHandle,
 	/// The record of the primitive at full detail. Each frame copies it and names the level picked for that frame.
@@ -236,6 +241,21 @@ impl VisibilityScene {
 		for slot in self.light_handles.remove(&handle).into_iter().flatten() {
 			self.lights.remove(slot);
 		}
+	}
+
+	/// Returns the scene's suns as surfel rays' hits see them: the direction each sun's light travels, and the
+	/// illuminance it gives a surface that faces it.
+	pub(crate) fn surfel_suns(&self) -> impl Iterator<Item = super::render_pass::SurfelSun> + '_ {
+		self.lights.iter().filter_map(|(_, light, transform)| match light {
+			Lights::Direction(light) => {
+				let direction = math::direction_from_orientation(transform.orientation()).into_maths();
+				Some(super::render_pass::SurfelSun::new(
+					[direction.x, direction.y, direction.z],
+					[light.color.x, light.color.y, light.color.z],
+				))
+			}
+			Lights::Cone(_) | Lights::Point(_) => None,
+		})
 	}
 
 	/// Uploads the current scene lights and the frame's lighting scales to the GPU buffer used by material evaluation.

@@ -3,9 +3,9 @@ use smallvec::SmallVec;
 use utils::{Extent, hash::HashMap};
 
 use super::{
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
-	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
-	Swapchain, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	Buffer, BufferHandle, BufferRange, BufferTransitionState, CommandBufferInternal, Consumption, Context, Descriptor,
+	DescriptorMaterializationHandle, Handles, Image, ImageHandle, Swapchain, TextureReadbackStorage, TransitionState,
+	VulkanConsumption,
 	utils::{
 		extent_into_vk_extent, image_aspect_mask, texture_format_and_resource_use_to_image_layout, to_access_flags,
 		to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation,
@@ -150,7 +150,7 @@ mod tests {
 			Some(vk::Buffer::from_raw(13)),
 		);
 
-		assert!(planned.image_barriers.is_empty() && planned.memory_barriers.is_empty());
+		assert!(planned.image_barriers.is_empty());
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		assert_eq!(planned.updates.states.len(), 1);
 		let barrier = planned.buffer_barriers[0];
@@ -543,40 +543,6 @@ mod tests {
 		let (updated_handle, updated_state) = planned.updates.states[0];
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
-	}
-
-	#[test]
-	fn planner_builds_memory_barrier_for_acceleration_structures() {
-		let handle = Handles::TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle(8));
-		let previous = buffer_transition(
-			vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-			vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-		);
-		let destination = buffer_transition(
-			vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR,
-			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-		);
-
-		let planned = plan(
-			&[(handle, previous)],
-			&BufferStates::default(),
-			[consumption(handle, destination)],
-			None,
-			None,
-		);
-
-		assert_eq!(planned.memory_barriers.len(), 1);
-		let barrier = planned.memory_barriers[0];
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(previous.stage, previous.access)
-		);
-		assert_eq!(
-			(barrier.dst_stage_mask, barrier.dst_access_mask),
-			(destination.stage, destination.access)
-		);
-		assert_eq!(planned.updates.states.len(), 1);
-		assert_visible_state_eq(planned.updates.states[0].1, destination);
 	}
 
 	#[test]

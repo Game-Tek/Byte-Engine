@@ -186,6 +186,44 @@ pub(super) fn material_body<'a>(
 	Ok((statements, stage.features))
 }
 
+/// Returns the statements that compute what a ray tracing hit reads of `graph`'s surface, with the hit attributes they
+/// need reconstructed.
+///
+/// The outputs are the half-precision locals the hit prefix declares: `albedo`, the base color, `metalness`, and
+/// `emission`. Rays carry only diffuse light, so the hit leaves out the normal, roughness, occlusion, and opacity, and
+/// lowers none of the nodes only those read.
+pub(super) fn material_hit_body<'a>(
+	graph: &'a bemx::Graph,
+	parameters: &'a [MaterialParameter],
+) -> Result<(Vec<Node<'a>>, MaterialReconstructionFeatures), LowerError> {
+	let surface = *graph.surface();
+	let mut lowering = Lowering::new(
+		graph,
+		MaterialStage {
+			parameters,
+			features: MaterialReconstructionFeatures::default(),
+		},
+	);
+	let mut statements = Vec::with_capacity(graph.nodes().len() + 3);
+
+	let base_color = value_or_default(&mut lowering, surface.base_color, bemx::Surface::DEFAULT_BASE_COLOR)?;
+	let base_color = lowering.addressable(base_color);
+	let color = Node::call("vec3f", (0..3).map(|index| base_color.component(index)).collect());
+	assign(&mut statements, &mut lowering, "albedo", "vec3f16", color);
+	for (name, narrow, input, default) in [
+		("metalness", "f16", surface.metalness, bemx::Surface::DEFAULT_METALNESS),
+		("emission", "vec3f16", surface.emission, bemx::Surface::DEFAULT_EMISSION),
+	] {
+		let value = value_or_default(&mut lowering, input, default)?;
+		assign(&mut statements, &mut lowering, name, narrow, value.syntax);
+	}
+
+	let (remaining, stage) = lowering.finish();
+	statements.extend(remaining);
+
+	Ok((statements, stage.features))
+}
+
 /// Returns the value of a surface input, or the constant `default` when the graph leaves it out.
 fn value_or_default<'a>(
 	lowering: &mut Lowering<'a, MaterialStage<'a>>,

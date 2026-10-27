@@ -46,6 +46,11 @@ coordinates, and builds the tangent frame only when the graph writes a normal or
 reads the tangent or bitangent. A material without textures never contains UV
 interpolation.
 
+A whole program can stay out the same way. The generator builds a material's
+closest-hit shader only when surfel GI is built in, and lowers only the values a
+ray's hit needs, its base color, metalness, and emission, so hit shaders never
+carry normal maps or roughness.
+
 Keep these rules:
 
 - **Decide from the graph and its material, never from the scene.** One
@@ -93,6 +98,10 @@ The transparent phase works this way:
 The pipeline manager compiles one pipeline per distinct shader and
 specialization values, and reuses it for every material that requests the same
 pair. Materials that share a pipeline also share an evaluation dispatch.
+Closest-hit shaders follow the same rule inside surfel GI's one ray tracing
+pipeline: each distinct shader and specialization values is one hit group, which
+every material that requests the pair shares. See
+[Surfel GI](/docs/develop/rendering/visibility/surfel-gi#hit-groups-keep-their-numbers).
 
 Keep these rules:
 

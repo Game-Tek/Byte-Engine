@@ -1,0 +1,1 @@
+{"name":"Surfel Scan Add","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-scan-add.besl"}}

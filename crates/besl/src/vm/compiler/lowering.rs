@@ -15,20 +15,7 @@ mod statements;
 #[allow(clippy::mutable_key_type)]
 pub(crate) fn compile(program: NodeReference, specializations: &SpecializationValues) -> Result<ExecutableProgram, VmError> {
 	let main = program.get_main().ok_or(VmError::MissingMainFunction)?;
-	let main_signature = extract_function_signature(&main)?;
-	if !main_signature.params.is_empty() {
-		return Err(VmError::UnsupportedMainSignature {
-			message: "Main functions with parameters are not supported".to_string(),
-		});
-	}
-	if main_signature.return_type.is_some() {
-		return Err(VmError::UnsupportedMainSignature {
-			message: format!(
-				"Main functions must return void, but found `{}`",
-				main_signature.return_type.as_ref().map(ValueType::name).unwrap_or("void")
-			),
-		});
-	}
+	let closest_hit_payload = closest_hit_payload(&extract_function_signature(&main)?)?;
 
 	let function_nodes = main.reachable_functions();
 	for function in &function_nodes {
@@ -51,11 +38,40 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 		)?);
 	}
 
+	// The lexer makes every `invoke` call in a program pass the same payload type, so the first call names it.
+	let invoke_payload =
+		functions
+			.iter()
+			.flat_map(|function| &function.instructions)
+			.find_map(|instruction| match instruction {
+				Instruction::RayTracing(RayTracingInstruction::Invoke { payload_type, .. }) => Some(payload_type.clone()),
+				_ => None,
+			});
+
 	Ok(ExecutableProgram {
 		descriptor_layouts,
 		functions,
 		main_function: function_ids[&main],
+		closest_hit_payload,
+		invoke_payload,
 	})
+}
+
+/// Returns the payload of a closest-hit `main`, which takes a payload struct and returns the same type, or `None` for
+/// every other `main`, which takes nothing and returns nothing.
+fn closest_hit_payload(signature: &FunctionSignature) -> Result<Option<ValueType>, VmError> {
+	match (signature.params.as_slice(), &signature.return_type) {
+		([], None) => Ok(None),
+		([payload], Some(return_type @ ValueType::Struct { .. })) if payload.value_type == *return_type => {
+			Ok(Some(return_type.clone()))
+		}
+		([], Some(return_type)) => Err(VmError::UnsupportedMainSignature {
+			message: format!("Main functions must return void, but found `{}`", return_type.name()),
+		}),
+		_ => Err(VmError::UnsupportedMainSignature {
+			message: "Main functions with parameters are not supported, except a closest hit's payload".to_string(),
+		}),
+	}
 }
 
 /// Rejects malformed linked calls before any argument is indexed or lowered.

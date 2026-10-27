@@ -51,7 +51,7 @@ A value is text that the reader converts:
 | `metrics-out` | Path | None | Writes the metrics when the application closes: every retained tick as NDJSON when the extension is `ndjson`, otherwise the summary as JSON. |
 | `debug.streams` | `log`, `stdout`, `stderr`, or a path | None, so no stream opens | Where every entity data stream writes its records. See [Debug data streams](/docs/reference/debug-data-streams). |
 | `debug.streams.changes-only` | Lenient boolean | `false` | Writes a data stream record only when the system's key for it changed. |
-| `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. When the default is in use, the inspector serves on a free port the system picks and logs it as a warning; a port you set that is in use stops startup. |
+| `inspector.port` | Port number | 6680 | The HTTP inspector's port on both loopback addresses. When the default is in use, the inspector serves on a free port the system picks and logs it as a warning; a port you set that's in use stops startup. |
 | `physics.step-lanes` | `bodies:lanes` pairs separated by commas, each lane count at least 1 | 2 lanes from 512 bodies and up to 4 from 4,000, never more than the fastest cores' threads | How many lanes a physics step runs on, by body count. `0:1` keeps every step on the calling thread. See [Physics](/docs/reference/physics). |
 | `artnet.bind-address` | IPv4 address; invalid keeps the default | `0.0.0.0` | The Art-Net worker's bind address, with the `dmx` feature. |
 | `artnet.poll-target` | IPv4 address; invalid keeps the default | `255.255.255.255` | Where Art-Net polls and output go. |
@@ -67,6 +67,7 @@ Booleans here are lenient.
 | `render.debug.extended` | `false` | GPU-assisted validation. |
 | `render.debug.labels` | The value of `render.debug` | Object labels and command debug groups. |
 | `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
+| `render.ghi.features.ray-tracing` | The value of `render.surfel-gi.enabled` | Requests ray tracing from the device. Only the Metal backend traces rays; elsewhere the device reports none. |
 | `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
 
 ## Renderer and loader
@@ -89,6 +90,7 @@ asks.
 | --- | --- | --- |
 | `render.gtao.enabled` | `true` | Ground-truth ambient occlusion in material shaders, its pipelines, and its pass. |
 | `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines. |
+| `render.surfel-gi.enabled` | `false` | Ray-traced surfel global illumination, its pipelines, and its ray tracing shaders. It takes the place of SSGI on a device that traces rays; see [indirect diffuse light](/docs/reference/rendering#indirect-diffuse-light). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
 
 ## Visibility pipeline
@@ -108,6 +110,8 @@ Every value here is validated, and a bad one stops startup.
 | `render.directional-shadows.split-blend` | 0 through 1 | 0.8 | The share of logarithmic versus even cascade splits. |
 | `render.directional-shadows.fitting` | `receivers` or `frustum` | `receivers` | What each cascade covers. |
 | `render.directional-shadows.resolution` | A positive multiple of 16 | 2,048 | Cascade texels per side. |
+| `render.surfel-gi.surfel-capacity` | A power of two from 1,024 through 16,777,216 | 32,768 | The most surfels alive at once. |
+| `render.surfel-gi.ray-budget` | A multiple of 1,024 from 1,024 through 1,048,576 | 16,384 | The most rays surfels trace each frame. |
 
 ## Runtime settings
 
@@ -125,11 +129,12 @@ fatal, and the inspector can change them while the application runs.
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
 
-The `enabled` names of the three render features double as runtime settings
-with the same meaning. Pass names a default setup can install are `bloom`,
-`motion-blur`, `smaa`, `lens-flare`, `exponential-height-fog`, `atmosphere sky`
-(with a space), `ui`, and `debug-meshes`; a pass exists only when its setup
-function ran.
+The `enabled` names of the four render features double as runtime settings
+with the same meaning. The surfel capacity and ray budget keep their startup
+values: a runtime update to another value is rejected. Pass names a default
+setup can install are `bloom`, `motion-blur`, `smaa`, `lens-flare`,
+`exponential-height-fog`, `atmosphere sky` (with a space), `ui`, and
+`debug-meshes`; a pass exists only when its setup function ran.
 
 ## Other process inputs
 

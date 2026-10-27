@@ -606,6 +606,8 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	/// Returns the name the node declares, which other declarations use it by. A push constant block takes the reserved
+	/// `push_constant`, which shaders read it through.
 	pub fn name(&self) -> Option<&'a str> {
 		match &self.node {
 			Nodes::Scope { name, .. } => Some(name),
@@ -620,7 +622,7 @@ impl<'a> Node<'a> {
 			Nodes::RawCode { .. } => None,
 			Nodes::Intrinsic { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
-			Nodes::PushConstant { .. } => None,
+			Nodes::PushConstant { .. } => Some("push_constant"),
 			Nodes::Input { name, .. }
 			| Nodes::Output { name, .. }
 			| Nodes::TaskPayload { name, .. }

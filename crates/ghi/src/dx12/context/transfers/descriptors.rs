@@ -82,8 +82,6 @@ impl Device {
 		match pipeline_kind {
 			PipelineKind::Raster => D3D12_BARRIER_SYNC_ALL_SHADING,
 			PipelineKind::Compute => D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-			// DispatchRays shader resources use the shading scope; RAYTRACING only accepts acceleration-structure reads.
-			PipelineKind::RayTracing => D3D12_BARRIER_SYNC_ALL_SHADING,
 		}
 	}
 
@@ -227,9 +225,7 @@ impl Device {
 					slot,
 				);
 			}
-			WriteData::AccelerationStructure { handle } => {
-				self.write_native_acceleration_structure_descriptor(handle, heap, slot)
-			}
+			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("DX12"),
 			_ => {}
 		}
 	}
@@ -369,37 +365,6 @@ impl Device {
 		u32::try_from(aligned_size).expect(
 			"Invalid DX12 constant-buffer view size. The most likely cause is that the aligned range exceeds the native 32-bit descriptor field.",
 		)
-	}
-
-	pub(crate) fn write_native_acceleration_structure_descriptor(
-		&mut self,
-		handle: TopLevelAccelerationStructureHandle,
-		heap: &DescriptorHeap,
-		slot: u32,
-	) {
-		let Some(acceleration_structure) = self.top_level_acceleration_structures.get(handle.0 as usize) else {
-			return;
-		};
-		let Some(resource) = acceleration_structure.resource.as_ref() else {
-			return;
-		};
-		let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-			Format: DXGI_FORMAT_UNKNOWN,
-			ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
-			Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-			Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-				RaytracingAccelerationStructure: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
-					Location: unsafe { resource.GetGPUVirtualAddress() },
-				},
-			},
-		};
-		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
-		unsafe {
-			self.device
-				.CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-		}
-		self.counters.descriptor_write_count += 1;
-		self.counters.acceleration_structure_descriptor_write_count += 1;
 	}
 
 	/// Writes one native image descriptor using the active shader resource representation.

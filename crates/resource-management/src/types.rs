@@ -46,10 +46,6 @@ pub enum ShaderTypes {
 	Mesh,
 	RayGen,
 	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
 }
 
 impl From<crate::shader::generator::Stages> for ShaderTypes {
@@ -63,6 +59,8 @@ impl From<crate::shader::generator::Stages> for ShaderTypes {
 			Stages::Compute { .. } => Self::Compute,
 			Stages::Task { .. } => Self::Task,
 			Stages::Mesh { .. } => Self::Mesh,
+			Stages::RayGeneration => Self::RayGen,
+			Stages::ClosestHit => Self::ClosestHit,
 		}
 	}
 }

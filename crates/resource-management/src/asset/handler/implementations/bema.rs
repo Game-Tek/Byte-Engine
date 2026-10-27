@@ -14,6 +14,20 @@ pub trait ProgramGenerator: Send + Sync {
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
 	) -> Result<besl::parser::Node<'a>, String>;
+
+	/// Builds the closest-hit BESL program that reports `graph`'s surface to the rays that hit it, or `None` when the
+	/// renderer traces no rays.
+	///
+	/// The bake stores the shader beside the one [`Self::generate`] builds, and the renderer's ray tracing pipelines run
+	/// it for hits on surfaces of the material. Returns the error text to report, as [`Self::generate`] does.
+	fn generate_hit<'a>(
+		&self,
+		graph: &'a bemx::Graph,
+		parameters: &'a [MaterialParameter],
+	) -> Result<Option<besl::parser::Node<'a>>, String> {
+		let _ = (graph, parameters);
+		Ok(None)
+	}
 }
 
 /// The `MaterialParameter` struct declares one value or texture a material supplies, so a generated program can bind
@@ -116,7 +130,7 @@ impl BEMAAssetHandler {
 				name: "Visibility".to_string(),
 				pass: "MaterialEvaluation".to_string(),
 			},
-			shaders: vec![shader?],
+			shaders: shader?,
 			parameters,
 		};
 
@@ -175,10 +189,12 @@ impl BEMAAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
 
-	/// Reads the material's BEMX graph, generates its program, and compiles and stores the shader.
+	/// Reads the material's BEMX graph, generates its programs, and compiles and stores their shaders: the material's
+	/// shader, then its closest-hit shader when the generator builds one.
 	///
-	/// The shader is stored under the material's own ID with a `#shader` fragment, because the program depends on the
-	/// material's parameters as well as on the graph, so two materials sharing a graph may still need two shaders.
+	/// The shaders are stored under the material's own ID with `#shader` and `#hit-shader` fragments, because the
+	/// programs depend on the material's parameters as well as on the graph, so two materials sharing a graph may still
+	/// need two shaders.
 	async fn compile_graph(
 		&self,
 		context: BakeContext<'_>,
@@ -186,7 +202,7 @@ impl BEMAAssetHandler {
 		generator: &dyn ProgramGenerator,
 		path: ResourceId<'_>,
 		parameters: &[MaterialParameter],
-	) -> Result<ReferenceModel<Shader>, LoadErrors> {
+	) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
 		let (source, format) = context.resolve(path).await?;
 
 		if format != "bemx" {
@@ -213,13 +229,36 @@ impl BEMAAssetHandler {
 		let graph = bemx::json::parse(source)
 			.map_err(|error| compile_error(format!("Failed to read material graph '{}': {error}", path.as_ref())))?;
 		let program = generator.generate(&graph, parameters).map_err(compile_error)?;
-		let (shader, bytes) = self
-			.compiler
-			.compile(program, compute_material_stage(&shader_id))
-			.await
-			.map_err(compile_error)?;
+		let hit_program = generator.generate_hit(&graph, parameters).map_err(compile_error)?;
 
-		store_model_owned(context, &shader_id, shader, bytes).await
+		let hit_shader_id = format!("{}#hit-shader", material.as_ref());
+		let hit_compile_error = |error: String| {
+			context.error(shader_compilation_error_message(&hit_shader_id, &error));
+			LoadErrors::FailedToProcess
+		};
+		// The two programs don't depend on each other, so they compile together.
+		let shader = async {
+			let (shader, bytes) = self
+				.compiler
+				.compile(program, compute_material_stage(&shader_id))
+				.await
+				.map_err(compile_error)?;
+			store_model_owned(context, &shader_id, shader, bytes).await
+		};
+		let hit_shader = async {
+			let Some(program) = hit_program else {
+				return Ok(None);
+			};
+			let (shader, bytes) = self
+				.compiler
+				.compile(program, closest_hit_material_stage(&hit_shader_id))
+				.await
+				.map_err(hit_compile_error)?;
+			store_model_owned(context, &hit_shader_id, shader, bytes).await.map(Some)
+		};
+		let (shader, hit_shader) = std::future::join!(shader, hit_shader).await;
+
+		Ok(std::iter::once(shader?).chain(hit_shader?).collect())
 	}
 }
 
@@ -323,6 +362,11 @@ impl AssetHandler for BEMAAssetHandler {
 /// Returns the compute generation settings shared by authored and generated material shaders.
 fn compute_material_stage(name: &str) -> ShaderGenerationSettings {
 	ShaderGenerationSettings::compute(Extent::line(128)).name(name.to_string())
+}
+
+/// Returns the closest-hit generation settings shared by authored and generated materials' hit shaders.
+fn closest_hit_material_stage(name: &str) -> ShaderGenerationSettings {
+	ShaderGenerationSettings::closest_hit().name(name.to_string())
 }
 
 /// Bounds concurrent generated-material shader compiles so platform compiler processes do not oversubscribe the machine.
@@ -452,7 +496,7 @@ async fn store_generated_materials(
 
 	let mut variants = Vec::with_capacity(materials.len());
 
-	for (generated, shader) in materials.into_iter().zip(shaders) {
+	for (generated, shaders) in materials.into_iter().zip(shaders) {
 		let variables = generated
 			.material
 			.images
@@ -474,17 +518,17 @@ async fn store_generated_materials(
 			})
 			.collect();
 
-		variants.push(store_generated_variant(context, generated, shader, variables).await?);
+		variants.push(store_generated_variant(context, generated, shaders, variables).await?);
 	}
 
 	Ok(variants)
 }
 
-/// Stores one generated material and its variant.
+/// Stores one generated material, which evaluates with `shaders`, and its variant.
 async fn store_generated_variant(
 	context: BakeContext<'_>,
 	GeneratedMaterial { base_id, material }: GeneratedMaterial,
-	shader: ReferenceModel<Shader>,
+	shaders: Vec<ReferenceModel<Shader>>,
 	variables: Vec<VariantVariableModel>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let alpha_mode = material.alpha_mode;
@@ -497,7 +541,7 @@ async fn store_generated_variant(
 			name: "Visibility".to_string(),
 			pass: "MaterialEvaluation".to_string(),
 		},
-		shaders: vec![shader],
+		shaders,
 		parameters: Vec::new(),
 	};
 
@@ -560,9 +604,10 @@ fn generated_material_parameters(material: &ImportedMaterial) -> Vec<MaterialPar
 		.collect()
 }
 
-/// Compiles each distinct generated shader once and stores it under an ID derived from its compile inputs.
+/// Compiles each distinct generated shader once and stores it under an ID derived from its compile inputs, with the
+/// closest-hit shader beside it when the generator builds one.
 ///
-/// Returns one shader reference per entry in `materials`, in order.
+/// Returns the shader references of each entry in `materials`, in order: its shader, then its hit shader, if any.
 ///
 /// The ID hashes the lowered platform source and the compiler identity, so a later bake of the same container reuses
 /// the stored binary while a change to the graph, program generator, BESL backend, settings, or toolchain compiles
@@ -572,7 +617,7 @@ async fn store_generated_shaders(
 	generator: &dyn ProgramGenerator,
 	container_id: ResourceId<'_>,
 	materials: &[&ImportedMaterial],
-) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
+) -> Result<Vec<Vec<ReferenceModel<Shader>>>, LoadErrors> {
 	// Every generated shader of a container shares one compiler name, so the name never depends on the key it feeds.
 	let compiler_name = format!("{}#shaders", container_id.as_ref());
 
@@ -583,8 +628,9 @@ async fn store_generated_shaders(
 
 	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
 
-	// Generated materials evaluate in the same compute stage as authored material shaders.
+	// Generated materials evaluate in the same compute stage as authored material shaders, and are hit the same way.
 	let settings = compute_material_stage(&compiler_name);
+	let hit_settings = closest_hit_material_stage(&compiler_name);
 
 	// Graph hashes skip generating repeated graphs; cache keys also merge distinct graphs that lower to the same source.
 	let mut unique_by_graph: HashMap<u64, usize> = HashMap::new();
@@ -604,10 +650,17 @@ async fn store_generated_shaders(
 				let parameters = generated_material_parameters(material);
 				let program = generator.generate(&material.graph, &parameters).map_err(compile_error)?;
 				let prepared = prepare_besl_shader(program, &settings).map_err(compile_error)?;
+				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too.
+				let hit = generator
+					.generate_hit(&material.graph, &parameters)
+					.map_err(compile_error)?
+					.map(|program| prepare_besl_shader(program, &hit_settings))
+					.transpose()
+					.map_err(compile_error)?;
 				let key = prepared.cache_key(compiler_identity);
 
 				*entry.insert(*unique_by_key.entry(key).or_insert_with(|| {
-					unique.push((key, prepared));
+					unique.push((key, prepared, hit));
 					unique.len() - 1
 				}))
 			}
@@ -616,21 +669,15 @@ async fn store_generated_shaders(
 		unique_index_per_material.push(index);
 	}
 
-	let requests = unique.into_iter().map(|(key, prepared)| async move {
+	let requests = unique.into_iter().map(|(key, prepared, hit)| async move {
 		let shader_id = format!("{}#shaders/{key:016x}", container_id.as_ref());
-
-		// A stored shader under this key came from the same platform source and compiler, so compiling again cannot
-		// change it. This is what keeps iterating on a mesh from waiting on the platform compiler.
-		if let Some(stored) = context.reusable_resource(ResourceId::new(&shader_id)).await {
-			return Ok(stored.into());
+		let mut shaders = vec![store_generated_shader(context, &shader_id, prepared).await?];
+		if let Some(hit) = hit {
+			let hit_key = hit.cache_key(compiler_identity);
+			let hit_shader_id = format!("{}#hit-shaders/{hit_key:016x}", container_id.as_ref());
+			shaders.push(store_generated_shader(context, &hit_shader_id, hit).await?);
 		}
-
-		let (shader, shader_bytes) = prepared.compile(&shader_id).await.map_err(|error| {
-			context.error(shader_compilation_error_message(&shader_id, &error));
-			LoadErrors::FailedToProcess
-		})?;
-
-		store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await
+		Ok(shaders)
 	});
 
 	// Ordered buffering keeps the stored shader order deterministic while platform compiler processes overlap.
@@ -640,6 +687,26 @@ async fn store_generated_shaders(
 		.into_iter()
 		.map(|index| unique_shaders[index].clone())
 		.collect())
+}
+
+/// Compiles and stores one generated shader under `shader_id`, unless a stored one can be reused.
+async fn store_generated_shader(
+	context: BakeContext<'_>,
+	shader_id: &str,
+	prepared: PreparedBeslShader,
+) -> Result<ReferenceModel<Shader>, LoadErrors> {
+	// A stored shader under this key came from the same platform source and compiler, so compiling again cannot
+	// change it. This is what keeps iterating on a mesh from waiting on the platform compiler.
+	if let Some(stored) = context.reusable_resource(ResourceId::new(shader_id)).await {
+		return Ok(stored.into());
+	}
+
+	let (shader, shader_bytes) = prepared.compile(shader_id).await.map_err(|error| {
+		context.error(shader_compilation_error_message(shader_id, &error));
+		LoadErrors::FailedToProcess
+	})?;
+
+	store_model_owned::<Shader, _>(context, shader_id, shader, shader_bytes).await
 }
 
 /// Reports why a `.bema` file of the given `kind`, such as `"material"`, can't bake, and returns the load error.
@@ -751,6 +818,7 @@ pub mod tests {
 								"material",
 								vec![Binding::new(0, BindingKind::StorageBuffer, 1, Some(4), true, false)],
 							)],
+							ray_payload: None,
 						},
 						artifact: ShaderArtifact::Msl {
 							entry_point: MSL_ENTRY_POINT.to_string(),
@@ -954,6 +1022,67 @@ pub mod tests {
 		));
 	}
 
+	/// The `HitTestShaderGenerator` struct builds a hit program beside every material program, as a renderer that
+	/// traces rays does.
+	struct HitTestShaderGenerator;
+
+	impl ProgramGenerator for HitTestShaderGenerator {
+		fn generate<'a>(
+			&self,
+			graph: &'a bemx::Graph,
+			parameters: &'a [MaterialParameter],
+		) -> Result<besl::parser::Node<'a>, String> {
+			MinimalTestShaderGenerator.generate(graph, parameters)
+		}
+
+		fn generate_hit<'a>(
+			&self,
+			graph: &'a bemx::Graph,
+			parameters: &'a [MaterialParameter],
+		) -> Result<Option<besl::parser::Node<'a>>, String> {
+			self.generate(graph, parameters).map(Some)
+		}
+	}
+
+	/// A generator that builds hit programs gives each material a closest-hit shader after its compute shader, stored
+	/// under the material's ID with a `#hit-shader` fragment.
+	#[r#async::test]
+	async fn materials_store_a_hit_shader_when_the_generator_builds_one() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"hit_material.bema",
+			r#"{ "domain": "World", "graph": "hit.bemx", "variables": [] }"#.as_bytes(),
+		);
+		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		asset_manager.add_asset_handler(BEMAAssetHandler {
+			generator: Some(Box::new(HitTestShaderGenerator)),
+			compiler: Box::new(TestShaderCompiler),
+		});
+
+		let _: ReferenceModel<MaterialModel> = asset_manager
+			.bake_if_not_exists("hit_material.bema")
+			.await
+			.expect("Failed to bake a material with a hit shader");
+
+		let material = resource_storage_backend
+			.get_resource(ResourceId::new("hit_material.bema"))
+			.expect("Expected material");
+		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
+		let shaders = material
+			.shaders
+			.iter()
+			.map(|shader| shader.id().as_ref().to_string())
+			.collect::<Vec<_>>();
+		assert_eq!(shaders, ["hit_material.bema#shader", "hit_material.bema#hit-shader"]);
+		let hit_shader = resource_storage_backend
+			.get_resource(ResourceId::new("hit_material.bema#hit-shader"))
+			.expect("Expected the hit shader");
+		let hit_shader: Shader = crate::from_slice(&hit_shader.resource).expect("Expected a shader model");
+		assert_eq!(hit_shader.stage, crate::types::ShaderTypes::ClosestHit);
+	}
+
 	/// A texture can't change at runtime, so a material that declares one dynamic fails to bake.
 	#[r#async::test]
 	async fn a_dynamic_texture_fails_to_bake() {
@@ -998,7 +1127,7 @@ use super::{
 	store_model, store_model_owned,
 };
 use crate::asset::handler::implementations::besl::{
-	PlatformShaderCompilerAdapter, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
+	PlatformShaderCompilerAdapter, PreparedBeslShader, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
 };
 use crate::bemx::{self, import::ImportedMaterial, material_texture_parameter_name, material_texture_slot};
 use crate::resources::image::Image;

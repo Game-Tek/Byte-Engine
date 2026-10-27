@@ -6,8 +6,8 @@ mod reflection;
 use std::collections::HashSet;
 
 pub use opacity::OpacityEvaluation;
-pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, SetUsage, TextureView};
-pub(crate) use reflection::{collect_bindings, collect_set_nodes};
+pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, SetUsage, TextureView};
+pub(crate) use reflection::{FNV1A_OFFSET_BASIS, collect_bindings, collect_set_nodes, fnv1a};
 
 /// Reflects the descriptor set layouts that layout layers declare, without a shader that lists them.
 ///
@@ -780,5 +780,42 @@ mod tests {
 
 		assert_eq!(evaluate("1.0"), OpacityEvaluation::Opaque);
 		assert_eq!(evaluate("0.5"), OpacityEvaluation::NonOpaque);
+	}
+
+	#[test]
+	fn reflected_ray_payloads_are_equal_exactly_when_their_layouts_are() {
+		/// Reflects the payload of a linked shader.
+		fn payload(source: &str) -> Option<RayPayload> {
+			let program = besl::compile_to_besl(source, None).expect("Expected the shader to link");
+			let evaluation = ProgramEvaluation::from_program(&program).expect("Expected the shader to reflect");
+			evaluation.ray_payload().cloned()
+		}
+		/// Returns a closest hit whose payload declares `members`.
+		fn closest_hit(members: &str) -> String {
+			format!("SurfaceHit: struct {{ {members} }} main: fn (payload: SurfaceHit) -> SurfaceHit {{ return payload; }}")
+		}
+
+		let ray_generation = payload(
+			r#"
+			SurfaceHit: struct { albedo: vec3f, distance: f32, }
+			scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+			surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;
+			main: fn () -> void {
+				let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0);
+				surfaces[0] = invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
+			}
+			"#,
+		)
+		.expect("Expected the payload that `invoke` passes");
+		let matching = payload(&closest_hit("albedo: vec3f, distance: f32,")).expect("Expected the closest hit's payload");
+		let reordered = payload(&closest_hit("distance: f32, albedo: vec3f,")).expect("Expected the closest hit's payload");
+		let retyped = payload(&closest_hit("albedo: vec3f, distance: f16,")).expect("Expected the closest hit's payload");
+
+		assert_eq!(ray_generation, matching);
+		assert_eq!(ray_generation.name, "SurfaceHit");
+		assert_eq!(ray_generation.size, 16);
+		assert_ne!(ray_generation.layout_hash, reordered.layout_hash);
+		assert_ne!(ray_generation.layout_hash, retyped.layout_hash);
+		assert_eq!(payload("main: fn () -> void {}"), None);
 	}
 }

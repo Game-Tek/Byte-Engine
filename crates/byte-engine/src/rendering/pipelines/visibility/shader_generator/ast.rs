@@ -135,6 +135,27 @@ pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstruc
 	statements
 }
 
+/// Statements that rebuild a ray tracing hit's surface before a closest-hit shader's material body runs.
+///
+/// Like [`material_evaluation_prefix_statements`], they interpolate texture coordinates and build the tangent frame
+/// only for a material that reads them.
+pub(super) fn material_hit_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
+	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE, "material_hit_prefix");
+	if features.needs_uv() {
+		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE, "material_hit_uv"));
+	}
+	if features.needs_tangent_frame() {
+		statements.extend(parse_besl_statements(MATERIAL_HIT_TANGENT_SOURCE, "material_hit_tangent"));
+	}
+	statements.extend(parse_besl_statements(MATERIAL_HIT_DEFAULTS_SOURCE, "material_hit_defaults"));
+	statements
+}
+
+/// Statements that write a closest-hit shader's payload after its material body runs, ending with its `return`.
+pub(super) fn material_hit_suffix_statements() -> Vec<Node<'static>> {
+	parse_besl_statements(MATERIAL_HIT_SUFFIX_SOURCE, "material_hit_suffix")
+}
+
 /// Statements that light the material outputs after the material body runs.
 ///
 /// The code of every feature `visibility_features` leaves out is removed, so the shader declares none of its bindings.

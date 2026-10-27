@@ -1,0 +1,103 @@
+// Traces one of the frame's surfel rays against the scene's top level.
+//
+// A surfel's guide steers most of its rays once it is a few frames old: a ray picks one of the guide's equal-area
+// cells in proportion to the light the cell held lately, then a uniform direction inside it. The rest follow the
+// cosine-weighted distribution, so every direction keeps being sampled. Each ray carries the weight that turns the
+// mixture back into a cosine-weighted average of its light, and says which of the two drew it, because only the
+// cosine-weighted rays count toward the hit fraction.
+//
+// A miss writes its result at once, without light: the integrate pass brings back the environment's light from its
+// direction. A hit keeps what the shade pass needs to rebuild it, and its sort key, which counts it among the hits on
+// its material.
+// Next, the sort orders the hits by material, so the shade pass runs each material's closest-hit shader for a run of
+// hits side by side.
+
+main: fn (input: StageInput) -> void {
+	let ray: u32 = input.thread_id.x;
+	if (ray >= surfel_pool.rays) {
+		return;
+	}
+	let ray_record: u32 = surfel_rays[ray];
+	let slot: u32 = ray_record & SURFEL_RAY_SLOT_MASK;
+	let sample: u32 = ray_record >> SURFEL_RAY_SLOT_BITS;
+	let surfel: SurfelRecord = surfel_records[slot];
+	let normal: vec3f = decode_surfel_normal(surfel.normal);
+	let seed: u32 = surfel_hash_combine(surfel_hash_combine(slot, surfel_parameters.frame_index), sample);
+	let jitter_seed: u32 = surfel_hash(seed);
+	let jitter: vec2f = vec2f(surfel_unit(jitter_seed), surfel_unit(surfel_hash(jitter_seed)));
+
+	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
+	let mass: f32 = surfel_irradiance[slot].guide_mass;
+	let share: f32 = 0.0;
+	if (mass > 0.000001) {
+		share = SURFEL_GUIDE_SHARE * clamp(f32(surfel_states[slot].frames) / SURFEL_GUIDE_FRAMES, 0.0, 1.0);
+	}
+	let point: vec2f = vec2f(0.0, 0.0);
+	let local: vec3f = vec3f(0.0, 0.0, 1.0);
+	let guided: u32 = 0;
+	if (surfel_unit(seed) < share) {
+		guided = 1;
+		// The cell whose run of the guide's cumulative weights holds the target.
+		let target: f32 = surfel_unit(surfel_hash(surfel_hash(jitter_seed))) * mass;
+		let cell: u32 = SURFEL_GUIDE_CELLS - 1;
+		for (let candidate: u32 = 0; candidate < SURFEL_GUIDE_CELLS; candidate = candidate + 1) {
+			let weight: f32 = max(0.0, f32(surfel_guides[guide + candidate]));
+			if (target < weight) {
+				cell = candidate;
+				break;
+			}
+			target = target - weight;
+		}
+		point = vec2f(
+			(f32(cell % SURFEL_GUIDE_SIDE) + jitter.x) / f32(SURFEL_GUIDE_SIDE),
+			(f32(cell / SURFEL_GUIDE_SIDE) + jitter.y) / f32(SURFEL_GUIDE_SIDE)
+		);
+		local = surfel_square_to_hemisphere(point);
+	} else {
+		let radius: f32 = sqrt(jitter.x);
+		let angle: f32 = 6.28318530718 * jitter.y;
+		local = vec3f(radius * cos(angle), radius * sin(angle), sqrt(max(0.0, 1.0 - jitter.x)));
+		point = surfel_hemisphere_to_square(local);
+	}
+	// Each guide cell spans 2π / 64 steradians, so a direction in a cell has the cell's share of the guide over that.
+	let cosine_density: f32 = max(local.z, 0.0) / 3.14159265359;
+	let guide_density: f32 = 0.0;
+	if (share > 0.0) {
+		let cell_weight: f32 = max(0.0, f32(surfel_guides[guide + surfel_square_cell(point, SURFEL_GUIDE_SIDE)]));
+		guide_density = cell_weight / mass * f32(SURFEL_GUIDE_CELLS) / 6.28318530718;
+	}
+	let density: f32 = (1.0 - share) * cosine_density + share * guide_density;
+	let weight: f32 = 0.0;
+	if (density > 0.000001) {
+		weight = cosine_density / density;
+	}
+
+	let direction: vec3f = surfel_to_world(surfel_basis(normal), normal, local);
+	let origin: vec3f = surfel.position + normal * surfel_ray_offset(surfel.radius);
+	let hit: Hit = intersect(scene_structure, 255, origin, direction, 0.0, SURFEL_RAY_LENGTH);
+	let packed_point: u32 = surfel_pack_square(point);
+	if (hit.distance < 0.0) {
+		surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), -1.0, packed_point, weight, guided);
+		surfel_hit_keys[ray] = NO_SURFEL;
+		return;
+	}
+	// The shade pass fills in the light; the rest of the result is known now.
+	surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), hit.distance, packed_point, weight, guided);
+
+	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.
+	let geometry: vec2u = ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
+	let material: u32 = meshes.meshes[geometry.x].material_index;
+	let rank: u32 = atomic_add(surfel_hit_sort.counts[material], 1);
+	surfel_hit_keys[ray] = (material << SURFEL_HIT_RANK_BITS) | rank;
+	surfel_hits[ray] = SurfelHit(
+		origin,
+		hit.distance,
+		hit.barycentrics,
+		encode_surfel_normal(direction),
+		hit.record,
+		hit.custom_index,
+		hit.geometry_index,
+		hit.primitive_index,
+		0
+	);
+}

@@ -1,10 +1,18 @@
 use dispatch2::DispatchData;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSArray, NSString};
 use objc2_metal::MTL4Compiler as _;
+use objc2_metal::MTLComputePipelineState as _;
 #[cfg(debug_assertions)]
 use objc2_metal::MTLLibrary as _;
+use objc2_metal::MTLVisibleFunctionTable as _;
 
 use super::*;
+
+/// The Metal Shading Language version source shaders compile at: 4.1, which macOS 27 introduced.
+///
+/// objc2-metal names versions only up to 4.0, so the value is built the way Metal encodes one: the major version in the
+/// high 16 bits and the minor version in the low 16.
+const LANGUAGE_VERSION: mtl::MTLLanguageVersion = mtl::MTLLanguageVersion((4 << 16) + 1);
 
 /// Updates the CAMetalLayer's drawable size to match the view's backing size, but only when
 /// the size has actually changed. Calling `setDrawableSize` unconditionally invalidates the
@@ -364,12 +372,19 @@ pub(crate) struct Shader {
 	pub(crate) library: Retained<ProtocolObject<dyn mtl::MTLLibrary>>,
 	pub(crate) entry_point: String,
 	pub(crate) threadgroup_size: Option<Extent>,
+	/// The machine code of a closest-hit shader, once for each set of specialization constants a pipeline used it
+	/// with. Ray tracing pipelines link these instead of compiling the shader again, so building a pipeline with one
+	/// more hit group compiles only that group.
+	pub(crate) binary_functions: Vec<(Box<[crate::pipelines::SpecializationMapEntry]>, BinaryFunction)>,
 }
+
+/// A visible function compiled to machine code, which any ray tracing pipeline of the device can link.
+pub(crate) type BinaryFunction = Retained<ProtocolObject<dyn mtl::MTL4BinaryFunction>>;
 
 /// The `Pipeline` struct owns one compiled Metal pipeline and the resource layout its shaders declare.
 ///
-/// A [`Factory`] can build it away from the render thread; pass it to [`Frame::intern_raster_pipeline`] or
-/// [`Frame::intern_compute_pipeline`] to get a handle for recording.
+/// A [`Factory`] can build it away from the render thread; pass it to [`Frame::intern_raster_pipeline`],
+/// [`Frame::intern_compute_pipeline`], or [`Frame::intern_ray_tracing_pipeline`] to get a handle for recording.
 #[derive(Clone)]
 pub struct Pipeline {
 	pub(crate) pipeline: PipelineState,
@@ -380,11 +395,11 @@ pub struct Pipeline {
 unsafe impl Send for Pipeline {}
 
 impl Pipeline {
-	/// Returns the threadgroup size a compute or ray-generation shader declared, or `None` for raster pipelines.
+	/// Returns the threadgroup size a compute shader declared, or `None` for other pipelines.
 	pub(crate) fn compute_threadgroup_size(&self) -> Option<Extent> {
 		match &self.pipeline {
 			PipelineState::Compute { threadgroup_size, .. } => *threadgroup_size,
-			PipelineState::Raster(_) => None,
+			PipelineState::Raster(_) | PipelineState::RayTracing { .. } => None,
 		}
 	}
 
@@ -395,7 +410,7 @@ impl Pipeline {
 	pub(crate) fn raster(&self) -> &RasterState {
 		match &self.pipeline {
 			PipelineState::Raster(raster) => raster,
-			PipelineState::Compute { .. } => unreachable!(
+			PipelineState::Compute { .. } | PipelineState::RayTracing { .. } => unreachable!(
 				"Metal draw state is missing. The most likely cause is that a draw read its pipeline before binding a raster pipeline."
 			),
 		}
@@ -406,12 +421,75 @@ impl Pipeline {
 #[derive(Clone)]
 pub(crate) enum PipelineState {
 	Raster(RasterState),
-	/// Metal has no ray-tracing pipeline state: a ray-generation function is a compute function that resolves hits
-	/// through the bound acceleration structure, so ray-tracing pipelines dispatch compute state too.
 	Compute {
 		state: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>,
 		threadgroup_size: Option<Extent>,
 	},
+	/// Metal has no ray tracing pipeline state: the ray generation shader is a compute kernel that calls each hit's
+	/// closest hit through a visible function table, which a shader binding table fills from `hit_groups`.
+	RayTracing {
+		state: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>,
+		/// The closest hit of each hit group, as the function a table entry of this pipeline can call.
+		hit_groups: Box<[Retained<ProtocolObject<dyn mtl::MTLFunctionHandle>>]>,
+	},
+}
+
+/// The `ShaderBindingTable` struct keeps the records of a shader binding table as the visible function table a trace
+/// binds, so a ray generation kernel runs a hit's closest hit by indexing the table with the hit's record.
+pub(crate) struct ShaderBindingTable {
+	pub(crate) name: Option<String>,
+	/// The pipeline the last write was for and the table it filled, or `None` before the first write.
+	///
+	/// Each write fills a new table, and a recording keeps the table its traces bind until they complete, so traces
+	/// recorded before a write keep their records.
+	pub(crate) written: Option<(
+		graphics_hardware_interface::PipelineHandle,
+		Retained<ProtocolObject<dyn mtl::MTLVisibleFunctionTable>>,
+	)>,
+}
+
+/// Fills a new visible function table of `pipeline` whose entry `i` calls the closest hit of hit group
+/// `hit_groups[i]`.
+///
+/// # Panics
+///
+/// Panics when `pipeline` isn't a ray tracing pipeline, or when an entry names a hit group the pipeline doesn't have.
+pub(crate) fn build_shader_binding_table(
+	pipeline: &Pipeline,
+	hit_groups: &[u32],
+	label: Option<&str>,
+) -> Retained<ProtocolObject<dyn mtl::MTLVisibleFunctionTable>> {
+	let PipelineState::RayTracing {
+		state,
+		hit_groups: functions,
+	} = &pipeline.pipeline
+	else {
+		panic!(
+			"Metal shader binding table write failed because the pipeline isn't a ray tracing pipeline. The most likely cause is that a raster or compute pipeline handle was passed to write_shader_binding_table. Pass the handle of the ray tracing pipeline the table's traces bind."
+		);
+	};
+	let descriptor = mtl::MTLVisibleFunctionTableDescriptor::new();
+	// Metal doesn't define a table without entries, so a write without records still makes one, which no hit indexes.
+	// SAFETY: The count is at least one, and every entry the loop below fills is below it.
+	unsafe { descriptor.setFunctionCount(hit_groups.len().max(1)) };
+	let table = state.newVisibleFunctionTableWithDescriptor(&descriptor).expect(
+		"Metal shader binding table creation failed. The most likely cause is that the device ran out of memory for function tables. Release unused shader binding tables, or write fewer records.",
+	);
+	for (record, &group) in hit_groups.iter().enumerate() {
+		let function = functions.get(group as usize).unwrap_or_else(|| {
+			panic!(
+				"Metal shader binding table write failed because record {record} names hit group {group}, and the pipeline has {} hit groups. The most likely cause is that the records were made for another version of the pipeline, with more hit groups. Write the table for the pipeline whose hit groups the records name.",
+				functions.len(),
+			)
+		});
+		// SAFETY: Every closest hit the pipeline links has the signature the table's entries share, and `record` is
+		// below the table's function count.
+		unsafe { table.setFunction_atIndex(Some(function), record) };
+	}
+	if let Some(label) = label {
+		table.setLabel(Some(&NSString::from_str(label)));
+	}
+	table
 }
 
 /// The `RasterState` struct keeps the render encoder state a raster pipeline applies before its draws.
@@ -470,24 +548,84 @@ fn build_pipeline_layout(
 				Some((stages, _)) => *stages |= *stage,
 				None => set.bindings.push((*stage, binding)),
 			}
-
-			for (resource_index, descriptor) in shader_set.used_resources() {
-				match set
-					.resources
-					.iter_mut()
-					.find(|resource| resource.resource_index == resource_index)
-				{
-					Some(resource) => resource.stages |= *stage,
-					None => set.resources.push(PipelineResource {
-						resource_index,
-						descriptor,
-						stages: *stage,
-					}),
-				}
-			}
+			add_used_resources(set, shader_set, *stage);
 		}
 	}
 
+	finish_pipeline_layout(sets, push_constant_ranges)
+}
+
+/// Builds the private Metal pipeline layout of a ray tracing pipeline.
+///
+/// The ray generation kernel takes every set its shader declares at consecutive buffer indices, whether it uses the
+/// set or not, because it hands each set's address to the closest hits it calls. A closest hit can therefore only
+/// declare sets the kernel takes, at the same positions.
+///
+/// # Panics
+///
+/// Panics when a closest-hit shader declares a set the ray generation shader doesn't declare at the same position.
+fn build_ray_tracing_layout(shaders: &[Shader], builder: &crate::pipelines::ray_tracing::Builder) -> PipelineLayout {
+	let ray_generation = &shaders[builder.ray_generation.handle.0 as usize];
+	let mut sets: Vec<PipelineSet> = ray_generation
+		.descriptor_sets
+		.iter()
+		.enumerate()
+		.map(|(index, shader_set)| {
+			let binding = command_buffer::ARGUMENT_BUFFER_BINDING_BASE + index as u32;
+			let mut set = PipelineSet {
+				layout: shader_set.layout().clone(),
+				resources: Vec::new(),
+				bindings: SmallVec::from_elem((crate::Stages::RAYGEN, binding), 1),
+				usage: 0,
+			};
+			add_used_resources(&mut set, shader_set, crate::Stages::RAYGEN);
+			set
+		})
+		.collect();
+
+	for hit_group in builder.hit_groups {
+		let closest_hit = &shaders[hit_group.handle.0 as usize];
+		for (index, shader_set) in closest_hit.descriptor_sets.iter().enumerate() {
+			let set = sets
+				.get_mut(index)
+				.filter(|set| set.layout.identity() == shader_set.layout().identity())
+				.unwrap_or_else(|| {
+					panic!(
+						"Metal ray tracing pipeline creation failed because closest-hit shader {:?} declares descriptor set {index} as layout `{}`, which the ray generation shader doesn't declare at that position. The most likely cause is that the closest-hit shader declares its sets in another order than the ray generation shader, or declares a set the ray generation shader leaves out. Declare the ray generation shader's first sets in the closest-hit shader, in the same order.",
+						closest_hit.name,
+						shader_set.layout().name(),
+					)
+				});
+			add_used_resources(set, shader_set, crate::Stages::CLOSEST_HIT);
+		}
+	}
+
+	finish_pipeline_layout(sets, builder.push_constant_ranges)
+}
+
+/// Adds the resources `shader_set` uses to the pipeline set `set`, as used from `stage`.
+fn add_used_resources(set: &mut PipelineSet, shader_set: &crate::shader::ShaderDescriptorSet, stage: crate::Stages) {
+	for (resource_index, descriptor) in shader_set.used_resources() {
+		match set
+			.resources
+			.iter_mut()
+			.find(|resource| resource.resource_index == resource_index)
+		{
+			Some(resource) => resource.stages |= stage,
+			None => set.resources.push(PipelineResource {
+				resource_index,
+				descriptor,
+				stages: stage,
+			}),
+		}
+	}
+}
+
+/// Orders each set's resources, names the way the pipeline uses each set, and sizes the push constant storage.
+fn finish_pipeline_layout(
+	mut sets: Vec<PipelineSet>,
+	push_constant_ranges: &[crate::pipelines::PushConstantRange],
+) -> PipelineLayout {
 	for set in &mut sets {
 		set.resources.sort_by_key(|resource| resource.resource_index);
 		// The layout already fixes each resource's access, so the resources and their stages name the usage.
@@ -514,6 +652,7 @@ impl crate::device::Device for Factory {
 	type Allocator = std::alloc::Global;
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = ComputePipeline;
+	type RayTracingPipeline = RayTracingPipeline;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&std::alloc::Global
@@ -566,9 +705,11 @@ impl crate::device::Device for Factory {
 				)
 				.then(|| utils::parse_threadgroup_size_metadata(source))
 				.flatten();
+				let options = mtl::MTLCompileOptions::new();
+				options.setLanguageVersion(LANGUAGE_VERSION);
 				let library = self
 					.device
-					.newLibraryWithSource_options_error(&NSString::from_str(source), Some(&mtl::MTLCompileOptions::new()))
+					.newLibraryWithSource_options_error(&NSString::from_str(source), Some(&options))
 					.map_err(|error| eprintln!("Metal shader compilation failed: {}", error.localizedDescription()))?;
 				(library, entry_point, threadgroup_size)
 			}
@@ -587,6 +728,7 @@ impl crate::device::Device for Factory {
 			library,
 			entry_point: entry_point.to_owned(),
 			threadgroup_size,
+			binary_functions: Vec::new(),
 		});
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
 	}
@@ -710,35 +852,122 @@ impl crate::device::Device for Factory {
 			),
 		}
 	}
+
+	/// Links a ray tracing pipeline from this factory's shaders: the ray generation kernel, with the binary function
+	/// of each hit group's closest hit.
+	///
+	/// The factory compiles a closest hit only the first time a pipeline uses it with a set of specialization
+	/// constants, so building the pipeline again with one more hit group compiles that group and links the rest.
+	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		let ray_generation = &self.shaders[builder.ray_generation.handle.0 as usize];
+		assert!(
+			ray_generation.stage == crate::Stages::RAYGEN,
+			"Metal ray tracing pipeline creation failed because its ray generation shader {:?} is a {:?} shader. The most likely cause is that the shaders were passed to ray_tracing::Builder::new in the wrong order. Pass the ray generation shader first and closest-hit shaders as the hit groups.",
+			ray_generation.name,
+			ray_generation.stage,
+		);
+		assert!(
+			!builder.hit_groups.is_empty(),
+			"Metal ray tracing pipeline creation failed because the pipeline has no hit group. The most likely cause is that it was built before any closest-hit shader was ready. Pass at least one closest-hit shader, such as a default one for surfaces whose own shader isn't ready.",
+		);
+		let ray_generation_function =
+			build_metal4_function_descriptor(ray_generation, builder.ray_generation.specialization_map);
+		let layout = build_ray_tracing_layout(&self.shaders, &builder);
+		let functions: Vec<BinaryFunction> = builder
+			.hit_groups
+			.iter()
+			.map(|hit_group| self.closest_hit_function(hit_group))
+			.collect();
+
+		// Hit groups that share a shader and its constants share one function, which the pipeline links once.
+		let mut linked = Vec::<&ProtocolObject<dyn mtl::MTL4BinaryFunction>>::with_capacity(functions.len());
+		for function in &functions {
+			if !linked.iter().any(|linked| std::ptr::eq(*linked, &**function)) {
+				linked.push(function);
+			}
+		}
+		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
+		descriptor.setLabel(name.map(NSString::from_str).as_deref());
+		descriptor.setComputeFunctionDescriptor(Some(&ray_generation_function));
+		descriptor.setSupportBinaryLinking(true);
+		let linking = mtl::MTL4PipelineStageDynamicLinkingDescriptor::new();
+		linking.setBinaryLinkedFunctions(Some(&NSArray::from_slice(&linked)));
+		// The kernel calls closest hits, and closest hits call nothing.
+		linking.setMaxCallStackDepth(1);
+		let state = self
+			.compiler
+			.newComputePipelineStateWithDescriptor_dynamicLinkingDescriptor_compilerTaskOptions_error(
+				&descriptor,
+				Some(&linking),
+				None,
+			)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Metal ray tracing pipeline linking failed: {}. The most likely cause is that the ray generation shader calls a function that isn't one of the pipeline's closest hits. Call closest hits only through the visible function table the ray generation shader takes at buffer {}.",
+					error.localizedDescription(),
+					command_buffer::SHADER_BINDING_TABLE_BINDING_INDEX,
+				)
+			});
+		let hit_groups = functions
+			.iter()
+			.map(|function| {
+				state.functionHandleWithBinaryFunction(function).expect(
+					"Metal ray tracing pipeline linking returned no handle for a closest hit it links. The most likely cause is a fault in the Metal compiler. Update macOS, and report the pipeline if the fault persists.",
+				)
+			})
+			.collect();
+
+		Pipeline {
+			pipeline: PipelineState::RayTracing { state, hit_groups },
+			layout,
+		}
+	}
 }
 
 impl Factory {
-	/// Compiles a ray-tracing pipeline into the compute state Metal dispatches for its ray-generation shader.
+	/// Returns the binary function of a hit group's closest-hit shader with the group's specialization constants,
+	/// compiling it the first time a pipeline of this factory uses that combination.
 	///
-	/// Metal resolves hit and miss behaviour inside the ray-generation function through the bound acceleration
-	/// structure, so only that shader becomes pipeline state. Every shader still contributes to the resource layout.
-	pub(crate) fn create_ray_tracing_pipeline(&self, builder: crate::pipelines::ray_tracing::Builder) -> Pipeline {
-		let raygen = builder
-			.shaders
+	/// A closest hit takes tens of milliseconds to compile and microseconds to link, so pipelines rebuilt as materials
+	/// load compile only the closest hits they did not use before.
+	fn closest_hit_function(&mut self, hit_group: &crate::pipelines::ShaderParameter) -> BinaryFunction {
+		let index = hit_group.handle.0 as usize;
+		let shader = &self.shaders[index];
+		assert!(
+			shader.stage == crate::Stages::CLOSEST_HIT,
+			"Metal ray tracing pipeline creation failed because hit group shader {:?} is a {:?} shader. The most likely cause is that a shader of another stage was passed as a hit group. Pass only closest-hit shaders as hit groups.",
+			shader.name,
+			shader.stage,
+		);
+		if let Some((_, function)) = shader
+			.binary_functions
 			.iter()
-			.find(|shader_parameter| matches!(shader_parameter.stage, crate::ShaderTypes::RayGen))
-			.expect(
-				"Metal ray tracing pipeline creation requires a ray generation shader. The most likely cause is that ray_tracing::Builder received only hit or miss shaders.",
-			);
-		let shader = &self.shaders[raygen.handle.0 as usize];
-		let function = build_metal4_function_descriptor(shader, raygen.specialization_map);
-		let name = shader
-			.name
-			.as_deref()
-			.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
-
-		Pipeline {
-			pipeline: PipelineState::Compute {
-				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
-				threadgroup_size: shader.threadgroup_size,
-			},
-			layout: build_pipeline_layout(&self.shaders, builder.shaders, builder.push_constant_ranges),
+			.find(|(constants, _)| **constants == *hit_group.specialization_map)
+		{
+			return function.clone();
 		}
+
+		let descriptor = mtl::MTL4BinaryFunctionDescriptor::new();
+		// Metal identifies a binary function by its name, and generated shaders all name their entry point the same,
+		// so the name adds the shader and the specialization.
+		let name = format!("{}.{index}.{}", shader.entry_point, shader.binary_functions.len());
+		descriptor.setName(&NSString::from_str(&name));
+		descriptor.setFunctionDescriptor(&build_metal4_function_descriptor(shader, hit_group.specialization_map));
+		let function = self
+			.compiler
+			.newBinaryFunctionWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Metal closest-hit compilation failed for shader {:?}: {}. The most likely cause is that the shader's function isn't declared [[visible]]. Declare the closest-hit function [[visible]] in its source.",
+					shader.name,
+					error.localizedDescription(),
+				)
+			});
+		self.shaders[index]
+			.binary_functions
+			.push((hit_group.specialization_map.into(), function.clone()));
+		function
 	}
 }
 

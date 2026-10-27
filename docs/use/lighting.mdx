@@ -289,6 +289,65 @@ let environment = Environment::new("sky.environment.bead").with_illuminance(15_0
 A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one about 1,000 to
 10,000. Without `with_illuminance`, the map's own values are used unchanged.
 
+## Light with ray-traced global illumination
+
+Light that bounces off other surfaces, indirect diffuse light, comes from
+screen-space global illumination (SSGI) by default, which sees only what's on
+the screen. Turn on surfel global illumination (surfel GI) when bounce light
+from surfaces off the screen matters, such as a hall lit by sunlight that falls
+through a window behind the camera.
+
+Surfel GI traces rays, so it lights the scene only on Metal, with a GPU that
+supports ray tracing. Elsewhere, and while its pipelines compile, SSGI lights
+the scene instead.
+
+1. Build surfel GI into the bake. Add it to the project's `config.json`:
+
+   ```json
+   {
+     "render": {
+       "surfel-gi": { "enabled": true }
+     }
+   }
+   ```
+
+2. Bake again with `beld bake --force`, so every material also gets the shader
+   that rays run where they hit it. See
+   [Leave render features out of the bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
+
+3. Start the application. It reads the same `config.json`, so surfel GI is on
+   from the first frame. To size it for your scene, set the most surfels and
+   rays at startup:
+
+   ```bash
+   cargo run -- --render.surfel-gi.surfel-capacity=65536 --render.surfel-gi.ray-budget=32768
+   ```
+
+   More surfels cover larger or more detailed views, and more rays a frame let
+   the light settle sooner after it changes, at a higher GPU cost. The
+   [parameters reference](/docs/reference/parameters#visibility-pipeline) lists
+   the values each accepts.
+
+4. Check the result with the `VisibilityPipelineManager.surfels` and
+   `VisibilityPipelineManager.surfel-coverage` debug views, which show each
+   surfel and how well surfels cover the screen. See
+   [Show a debug view](/docs/use/debug-views).
+
+To switch back to SSGI while the application runs, set
+`render.surfel-gi.enabled` to `false`:
+
+```rust
+app.configuration().update("render.surfel-gi.enabled", "false");
+```
+
+<Callout type="info" title="Surfel GI limits">
+	Rays pass through foliage, glass, and skinned meshes such as characters, so
+	these don't block bounce light. Surfels stay where they spawn, so the light on
+	moving objects lags behind them. Surfels also gather the environment's light,
+	so a change to the environment takes a few frames to reach indirect light, and
+	normal maps don't shape the light that comes from the sky.
+</Callout>
+
 ## Add height fog
 
 Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,

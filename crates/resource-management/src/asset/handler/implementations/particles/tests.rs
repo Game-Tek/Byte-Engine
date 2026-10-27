@@ -69,6 +69,7 @@ impl ShaderCompiler for LinkingCompiler {
 					interface: ShaderInterface {
 						workgroup_size: None,
 						sets: Vec::new(),
+						ray_payload: None,
 					},
 					artifact: ShaderArtifact::Spirv,
 				},

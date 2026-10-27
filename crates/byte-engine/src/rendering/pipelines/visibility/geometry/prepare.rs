@@ -51,6 +51,8 @@ pub(super) struct PreparedStreams {
 	pub(super) vertex_indices: Range<usize>,
 	pub(super) primitive_indices: Range<usize>,
 	pub(super) meshlets: Range<usize>,
+	/// Present when the pipeline keeps flat triangle lists for ray tracing.
+	pub(super) flat_triangles: Option<Range<usize>>,
 }
 
 /// The `PreparedPrimitive` struct is one primitive's record plus the material it needs resolved on the render thread.
@@ -77,8 +79,12 @@ fn take_range(cursor: &mut usize, size: usize) -> Range<usize> {
 }
 
 impl PreparedMesh {
-	/// Builds transfer-ready geometry from a generated mesh.
-	pub(crate) async fn generated(generator: &dyn MeshGenerator, upload_staging: Arc<UploadStagingArena>) -> Option<Self> {
+	/// Builds transfer-ready geometry from a generated mesh, with its flat triangle list when `flat_triangles` is set.
+	pub(crate) async fn generated(
+		generator: &dyn MeshGenerator,
+		upload_staging: Arc<UploadStagingArena>,
+		flat_triangles: bool,
+	) -> Option<Self> {
 		let positions = generator.positions();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
@@ -105,6 +111,8 @@ impl PreparedMesh {
 			vertex_indices: take_range(&mut cursor, vertex_indices.len() * VERTEX_INDEX_STRIDE),
 			primitive_indices: take_range(&mut cursor, primitive_indices.len() * 3),
 			meshlets: take_range(&mut cursor, meshlets.len() * std::mem::size_of::<ShaderMeshletData>()),
+			// A generated mesh is one primitive whose triangle list is already flat.
+			flat_triangles: flat_triangles.then(|| take_range(&mut cursor, indices.len() * VERTEX_INDEX_STRIDE)),
 		};
 		let mut staging = allocate_staging(&upload_staging, cursor).await?;
 		let backing = staging.bytes_mut();
@@ -130,6 +138,10 @@ impl PreparedMesh {
 		backing[streams.vertex_indices.clone()].copy_from_slice(bytemuck::cast_slice(&vertex_indices));
 		backing[streams.primitive_indices.clone()].copy_from_slice(bytemuck::cast_slice(&primitive_indices));
 		backing[streams.meshlets.clone()].copy_from_slice(bytemuck::cast_slice(&meshlets));
+		if let Some(range) = &streams.flat_triangles {
+			backing[range.clone()].copy_from_slice(bytemuck::cast_slice(&indices));
+		}
+		let flat_triangle_count = streams.flat_triangles.as_ref().map_or(0, |_| (indices.len() / 3) as u32);
 
 		Some(Self {
 			staging,
@@ -139,6 +151,8 @@ impl PreparedMesh {
 				primitive: MeshPrimitive {
 					lods: MeshLods::single(meshlets.len() as u32),
 					bounding_sphere: enclosing_sphere(&meshlets),
+					vertex_count: positions.len() as u32,
+					flat_triangle_count,
 					..MeshPrimitive::default()
 				},
 				skinning: None,
@@ -149,16 +163,22 @@ impl PreparedMesh {
 				triangles: primitive_indices.len() as u32,
 				meshlets: meshlets.len() as u32,
 				skinning_vertices: 0,
+				flat_triangles: flat_triangle_count,
 			},
 			skeleton_node_count: 0,
 		})
 	}
 
-	/// Loads a baked mesh resource and converts it into the runtime geometry formats.
-	pub(crate) async fn resource(mut resource: Reference<Mesh>, upload_staging: Arc<UploadStagingArena>) -> Option<Self> {
+	/// Loads a baked mesh resource and converts it into the runtime geometry formats, with flat triangle lists when
+	/// `flat_triangles` is set.
+	pub(crate) async fn resource(
+		mut resource: Reference<Mesh>,
+		upload_staging: Arc<UploadStagingArena>,
+		flat_triangles: bool,
+	) -> Option<Self> {
 		let mesh = resource.resource();
 		let source = ResourceStreams::new(mesh)?;
-		let layout = source.layout(mesh)?;
+		let mut layout = source.layout(mesh, flat_triangles)?;
 		let skeleton_node_count = mesh
 			.skeleton
 			.as_ref()
@@ -183,7 +203,7 @@ impl PreparedMesh {
 				None
 			})?;
 		let meshlet_bytes = loaded.stream("Meshlets").expect("requested meshlet stream").buffer();
-		let (primitives, meshlets) =
+		let (mut primitives, meshlets) =
 			build_resource_primitives(resource.resource(), meshlet_bytes, &skins, layout.counts, &layout.source)?;
 
 		// Converted streams live after every loaded source stream, so their ranges are rebased into `output`.
@@ -208,6 +228,20 @@ impl PreparedMesh {
 			}
 		}
 		output[rebase(&layout.streams.meshlets)].copy_from_slice(bytemuck::cast_slice(&meshlets));
+		if let Some(range) = layout.streams.flat_triangles.clone() {
+			let triangles = flatten_full_detail_triangles(
+				&mut primitives,
+				&meshlets,
+				source_bytes[layout.source.vertex_indices.clone()]
+					.as_chunks::<VERTEX_INDEX_STRIDE>()
+					.0,
+				source_bytes[layout.source.primitive_indices.clone()].as_chunks::<3>().0,
+				output[rebase(&range)].as_chunks_mut::<6>().0,
+			);
+			// The range was sized for every level; only full detail is copied.
+			layout.streams.flat_triangles = Some(range.start..range.start + triangles as usize * 6);
+			layout.counts.flat_triangles = triangles;
+		}
 
 		Some(Self {
 			staging,
@@ -326,8 +360,9 @@ impl ResourceStreams {
 		})
 	}
 
-	/// Validates stream strides and computes where every stream lands in the staging lease.
-	fn layout(&self, mesh: &Mesh) -> Option<ResourceLayout> {
+	/// Validates stream strides and computes where every stream lands in the staging lease, with room for the flat
+	/// triangle lists when `flat_triangles` is set.
+	fn layout(&self, mesh: &Mesh, flat_triangles: bool) -> Option<ResourceLayout> {
 		let uvs_are_f32 = match mesh
 			.vertex_components
 			.iter()
@@ -372,6 +407,8 @@ impl ResourceStreams {
 			source.uvs.clone()
 		};
 		let meshlets = take_range(&mut cursor, meshlet_count * std::mem::size_of::<ShaderMeshletData>());
+		// Full detail is one level of each primitive, so every level's triangles bound it.
+		let flat_triangles = flat_triangles.then(|| take_range(&mut cursor, meshlet_index_count / 3 * 6));
 
 		Some(ResourceLayout {
 			streams: PreparedStreams {
@@ -381,6 +418,7 @@ impl ResourceStreams {
 				vertex_indices: source.vertex_indices.clone(),
 				primitive_indices: source.primitive_indices.clone(),
 				meshlets,
+				flat_triangles,
 			},
 			source,
 			uvs_are_f32,
@@ -391,6 +429,8 @@ impl ResourceStreams {
 				triangles: (meshlet_index_count / 3) as u32,
 				meshlets: meshlet_count as u32,
 				skinning_vertices: skinning_vertices as u32,
+				// Counted once the triangles are flattened.
+				flat_triangles: 0,
 			},
 		})
 	}
@@ -558,6 +598,10 @@ fn build_resource_primitives(
 				vertex_offset: counts.vertices,
 				primitive_offset: counts.primitive_indices,
 				triangle_offset: counts.triangles,
+				vertex_count: primitive.vertex_count,
+				// Set when the triangles are flattened.
+				flat_triangle_offset: 0,
+				flat_triangle_count: 0,
 				skinning_source_vertex_offset: primitive.skin.map(|_| counts.skinning_vertices),
 				skinning_vertex_count: primitive.skin.map_or(0, |_| primitive.vertex_count),
 				skin: primitive.skin.map(|skin_index| skins[skin_index as usize].clone()),
@@ -580,6 +624,44 @@ fn build_resource_primitives(
 		return None;
 	}
 	Some((primitives, meshlets))
+}
+
+/// Writes the full-detail triangles of every unskinned primitive to `flat`, each as three indices relative to its
+/// primitive's first vertex, and returns how many it wrote.
+///
+/// A meshlet triangle names its corners among its meshlet's vertex indices, which name the primitive's vertices, so
+/// each corner takes both steps. `vertex_indices` and `triangles` are the mesh's whole streams, as little-endian bytes
+/// that need no alignment, and `meshlets` the runtime meshlets, whose offsets are relative to their primitive. Skinned
+/// primitives get no triangles, because rays never hit them. Each primitive records where its triangles start in
+/// `flat` and how many there are.
+fn flatten_full_detail_triangles(
+	primitives: &mut [PreparedPrimitive],
+	meshlets: &[ShaderMeshletData],
+	vertex_indices: &[[u8; VERTEX_INDEX_STRIDE]],
+	triangles: &[[u8; 3]],
+	flat: &mut [[u8; 6]],
+) -> u32 {
+	let mut written = 0;
+	for prepared in primitives {
+		let primitive = &mut prepared.primitive;
+		primitive.flat_triangle_offset = written;
+		if primitive.skin.is_some() {
+			continue;
+		}
+		let full_detail = &meshlets[primitive.meshlet_offset as usize..][..primitive.lods.levels()[0].meshlet_count as usize];
+		for meshlet in full_detail {
+			let meshlet_vertices = &vertex_indices[(primitive.primitive_offset + meshlet.primitive_offset) as usize..];
+			let meshlet_triangles =
+				&triangles[(primitive.triangle_offset + meshlet.triangle_offset) as usize..][..meshlet.triangle_count as usize];
+			for triangle in meshlet_triangles {
+				let corners = triangle.map(|corner| u16::from_le_bytes(meshlet_vertices[corner as usize]));
+				flat[written as usize] = bytemuck::cast(corners.map(u16::to_le));
+				written += 1;
+			}
+		}
+		primitive.flat_triangle_count = written - primitive.flat_triangle_offset;
+	}
+	written
 }
 
 /// Decodes one packed meshlet record into the runtime record at the given mesh-relative offsets, without assuming the
@@ -769,6 +851,67 @@ mod tests {
 		}
 		assert_eq!(joints.len(), vertices * 8);
 		assert_eq!(weights.len(), vertices * 16);
+	}
+
+	#[test]
+	fn flat_triangles_index_the_full_detail_vertices_of_unskinned_primitives() {
+		let meshlet = |primitive_offset, triangle_offset| ShaderMeshletData {
+			primitive_offset,
+			triangle_offset,
+			primitive_count: 3,
+			triangle_count: 1,
+			..bytemuck::Zeroable::zeroed()
+		};
+		let primitive = |lods: &[u32], meshlet_offset, primitive_offset, triangle_offset, skinned: bool| PreparedPrimitive {
+			material_id: String::new(),
+			primitive: MeshPrimitive {
+				lods: MeshLods::from_resource(
+					&lods
+						.iter()
+						.map(|&meshlet_count| resource_management::resources::mesh::PrimitiveLod {
+							meshlet_count,
+							error: 0.0,
+						})
+						.collect::<Vec<_>>(),
+				),
+				meshlet_offset,
+				primitive_offset,
+				triangle_offset,
+				skin: skinned.then(|| Arc::new(SkinBinding { entries: Vec::new() })),
+				..MeshPrimitive::default()
+			},
+			skinning: None,
+		};
+		// The first primitive has two full-detail meshlets and a coarser level, the second is skinned, and the third
+		// follows it. Each meshlet's offsets are relative to its primitive.
+		let mut primitives = [
+			primitive(&[2, 1], 0, 0, 0, false),
+			primitive(&[1], 3, 9, 3, true),
+			primitive(&[1], 4, 12, 4, false),
+		];
+		let meshlets = [meshlet(0, 0), meshlet(3, 1), meshlet(6, 2), meshlet(0, 0), meshlet(0, 0)];
+		let vertex_indices = [5u16, 6, 7, 1, 2, 3, 0, 0, 0, 9, 9, 9, 4, 0, 8].map(u16::to_le_bytes);
+		let triangles = [[2, 0, 1], [0, 2, 1], [0, 1, 2], [0, 1, 2], [1, 2, 0]];
+		let mut flat = [[0u8; 6]; 5];
+
+		let written = flatten_full_detail_triangles(&mut primitives, &meshlets, &vertex_indices, &triangles, &mut flat);
+
+		assert_eq!(written, 3);
+		let flat: Vec<[u16; 3]> = flat[..3]
+			.iter()
+			.map(|bytes| std::array::from_fn(|corner| u16::from_le_bytes([bytes[corner * 2], bytes[corner * 2 + 1]])))
+			.collect();
+		assert_eq!(flat, [[7, 5, 6], [1, 3, 2], [0, 8, 4]]);
+		let ranges: Vec<_> = primitives
+			.iter()
+			.map(|prepared| {
+				(
+					prepared.primitive.flat_triangle_offset,
+					prepared.primitive.flat_triangle_count,
+				)
+			})
+			.collect();
+		assert_eq!(ranges, [(0, 2), (2, 0), (2, 1)]);
 	}
 
 	#[test]

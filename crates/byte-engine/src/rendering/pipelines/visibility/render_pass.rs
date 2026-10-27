@@ -1,6 +1,7 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI, and material evaluation, which also traces
-//! screen-space reflections. GTAO and SSGI each run only while their settings enable them.
+//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel resolve, and material evaluation,
+//! which also traces screen-space reflections. GTAO runs only while its settings enable it, and SSGI and surfel GI only
+//! in frames they light; see [`IndirectDiffuseSource`].
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
@@ -15,6 +16,7 @@ mod reflections;
 mod shadows;
 mod ssgi;
 mod sun_visibility;
+mod surfel_gi;
 mod visibility;
 
 use ghi::context::{Context as _, ContextCreate as _};
@@ -150,6 +152,12 @@ pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
+pub(super) use self::surfel_gi::SURFEL_GI_PIPELINES;
+use self::surfel_gi::SurfelResolvePass;
+pub(crate) use self::surfel_gi::{
+	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
+	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing,
+};
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -157,6 +165,7 @@ pub(crate) use self::{
 	occlusion::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH},
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
+use super::acceleration_structures::AccelerationStructureWork;
 use super::features::VisibilityFeatures;
 use super::layout::{MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS};
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
@@ -166,6 +175,19 @@ use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, Sink, View};
+
+/// The `FrameWork` struct is the work one sink records for the whole frame, before any sink samples its results.
+///
+/// The visibility pipeline manager hands it to the first sink it records; see [`VisibilityRenderPass::prepare`].
+#[derive(Clone, Copy)]
+pub(crate) struct FrameWork<'a> {
+	/// Deforms the frame's skinned meshes.
+	pub(crate) skinning: &'a SkinningPass,
+	/// Draws the shadow maps every sink samples.
+	pub(crate) shadows: &'a ShadowMaps,
+	/// Builds the acceleration structures surfel GI traces, in frames it lights.
+	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
+}
 
 /// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
 /// stages, so the inspector reports `stage.<name>` next to the pass's `scene.VisibilityPipelineManager` time.
@@ -187,8 +209,16 @@ pub(crate) struct StageCounters {
 	material_prepasses: ghi::CounterHandle,
 	cascade_fit: ghi::CounterHandle,
 	depth_pyramid: ghi::CounterHandle,
-	/// The sun visibility, GTAO, and SSGI dispatches, recorded interleaved so the GPU can overlap them. One counter
-	/// covers them all, because a precise timestamp between stages would serialize them again.
+	/// The bottom-level builds and the top-level build of the scene's acceleration structures.
+	acceleration_structures: ghi::CounterHandle,
+	/// The surfel economy, count, scan, and scatter that list the frame's surfels in the grid.
+	surfel_grid: ghi::CounterHandle,
+	/// The surfel rays' trace, the hit sort, and the shade pass.
+	surfel_trace: ghi::CounterHandle,
+	/// The update of every live surfel's estimate and record.
+	surfel_integrate: ghi::CounterHandle,
+	/// The sun visibility, GTAO, and SSGI or surfel resolve dispatches, recorded interleaved so the GPU can overlap
+	/// them. One counter covers them all, because a precise timestamp between stages would serialize them again.
 	screen_space: ghi::CounterHandle,
 	/// Opaque material evaluation.
 	material_evaluation: ghi::CounterHandle,
@@ -211,6 +241,10 @@ impl StageCounters {
 			material_prepasses: builder.create_gpu_counter("material-prepasses"),
 			cascade_fit: builder.create_gpu_counter("cascade-fit"),
 			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
+			acceleration_structures: builder.create_gpu_counter("acceleration-structures"),
+			surfel_grid: builder.create_gpu_counter("surfel-grid"),
+			surfel_trace: builder.create_gpu_counter("surfel-trace"),
+			surfel_integrate: builder.create_gpu_counter("surfel-integrate"),
 			screen_space: builder.create_gpu_counter("screen-space"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
@@ -234,6 +268,34 @@ pub(crate) struct SinkTargets {
 	pub(crate) radiance_history: ghi::DynamicImageHandle,
 }
 
+/// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
+/// that pass and the next frame knows which history it left.
+///
+/// Both write the images opaque material evaluation reads indirect diffuse light from. The visibility pipeline manager
+/// picks one each frame, or none, and the environment alone lights indirect diffuse light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IndirectDiffuseSource {
+	/// SSGI traces the depth pyramid at half resolution. Material evaluation also writes the diffuse light its next
+	/// frame's rays read.
+	ScreenSpace,
+	/// Surfel GI gathers ray-traced bounce light into surfels on the surfaces the camera sees.
+	Surfels,
+}
+
+impl IndirectDiffuseSource {
+	/// Returns the value opaque material evaluation's `indirect_diffuse` push constant takes when this source lit the
+	/// frame, which is never zero.
+	///
+	/// Material evaluation adds the environment's diffuse light itself under SSGI, whose light holds only what its rays
+	/// hit, and not under surfel GI, whose light holds the environment's light its rays reached.
+	pub(crate) fn push_constant(self) -> u32 {
+		match self {
+			Self::ScreenSpace => 1,
+			Self::Surfels => 2,
+		}
+	}
+}
+
 /// The `SinkHistory` struct describes what the previous frame's history images hold for one sink.
 ///
 /// Temporal passes use it to reproject into those images. The visibility pipeline manager builds it from the sink
@@ -244,8 +306,8 @@ pub(crate) struct SinkHistory {
 	pub(crate) view: View,
 	/// The exposure the recorded light was multiplied by.
 	pub(crate) exposure: f32,
-	/// Whether SSGI ran, so its history and the diffuse radiance history hold this sink's data.
-	pub(crate) ssgi: bool,
+	/// The source that lit the recorded frame's indirect diffuse light, so only SSGI's own frames give SSGI history.
+	pub(crate) indirect_diffuse: Option<IndirectDiffuseSource>,
 }
 
 /// The `VisibilityRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
@@ -262,6 +324,8 @@ pub(crate) struct VisibilityRenderPass {
 	gtao: Option<GtaoPass>,
 	/// Absent when the project left SSGI out of its shaders.
 	ssgi: Option<SsgiPass>,
+	/// Absent when the frame has no surfel pool to light this sink from.
+	surfel_resolve: Option<SurfelResolvePass>,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
 	stage_counters: StageCounters,
@@ -276,7 +340,7 @@ impl VisibilityRenderPass {
 	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
 	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
-	/// pipelines.
+	/// pipelines. `surfel_gi` tells whether the frame has a [`SurfelPool`] that surfel GI can light this sink from.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -287,6 +351,7 @@ impl VisibilityRenderPass {
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
+		surfel_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 	) -> Self {
 		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
@@ -348,6 +413,15 @@ impl VisibilityRenderPass {
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				targets.ssgi,
+			)
+		});
+		let surfel_resolve = surfel_gi.then(|| {
+			SurfelResolvePass::new(
+				context,
+				depth_pyramid.depth_pyramid,
+				depth_pyramid.view_data,
+				targets.ssgi,
+				&debug_views,
 			)
 		});
 		let light_clusters = LightClusterPass::new(
@@ -454,6 +528,7 @@ impl VisibilityRenderPass {
 			),
 			depth_pyramid,
 			ssgi,
+			surfel_resolve,
 			reflections,
 			material_evaluation: MaterialEvaluationPass {
 				base_descriptor_set,
@@ -475,24 +550,26 @@ impl VisibilityRenderPass {
 	/// Prepares one opaque visibility layer, the scene `background`, and one nearest-surface transparent layer.
 	///
 	/// Returns `None` while any fixed pipeline is still compiling. `frame_work` is the work one sink records for the
-	/// whole frame: deforming skinned meshes and drawing the shadow maps every sink samples. The visibility pipeline
-	/// manager passes it only to the first sink, whose camera the shadow views were made for, so that sink also fits the
-	/// cascades to its surfaces. `history` describes how this pass recorded the sink in the previous frame at the same
+	/// whole frame. The visibility pipeline manager passes it only to the first sink, whose camera the shadow views were
+	/// made for, so that sink also fits the cascades to its surfaces. `history` describes how this pass recorded the sink in the previous frame at the same
 	/// extent, or is `None` when the previous frame's images do not hold this sink's data. `exposure` is the shared
-	/// lighting exposure uploaded for every sink in this frame. `gtao_settings`, `ssgi_settings`, and
-	/// `contact_shadow_settings` are the runtime controls the visibility pipeline manager holds.
+	/// lighting exposure uploaded for every sink in this frame. `indirect_diffuse` is the source the visibility pipeline
+	/// manager picked to light this frame's indirect diffuse light, and `surfels` the frame's surfel work when it picked
+	/// surfel GI; the sink that records the frame-wide work also records the surfel grid. `gtao_settings` and
+	/// `contact_shadow_settings` are the runtime controls the manager holds.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		frame_work: Option<(&'a SkinningPass, &'a ShadowMaps)>,
+		frame_work: Option<FrameWork<'a>>,
 		dispatches: PhaseDispatches,
 		render_info: &'a RenderInfo,
 		shadow_work: &ShadowWork,
 		history: Option<SinkHistory>,
 		exposure: f32,
+		indirect_diffuse: Option<IndirectDiffuseSource>,
+		surfels: Option<SurfelFrame>,
 		gtao_settings: GtaoSettings,
-		ssgi_settings: SsgiSettings,
 		contact_shadow_settings: ContactShadowSettings,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
 		frame_allocator: &'a bumpalo::Bump,
@@ -505,7 +582,11 @@ impl VisibilityRenderPass {
 			None => &[],
 		};
 		let (skinning, shadows) = match frame_work {
-			Some((skinning, shadow_maps)) => (
+			Some(FrameWork {
+				skinning,
+				shadows: shadow_maps,
+				..
+			}) => (
 				Some((skinning, pipeline_manager.pipeline(skinning.pipeline)?)),
 				Some(shadow_maps.prepare(
 					frame,
@@ -544,7 +625,8 @@ impl VisibilityRenderPass {
 			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
-		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| ssgi_settings.enabled) {
+		let lit_by_ssgi = indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace);
+		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| lit_by_ssgi) {
 			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
@@ -559,15 +641,32 @@ impl VisibilityRenderPass {
 			sun_visibility_pipeline,
 		);
 		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
-		// SSGI history exists only if the pass also ran last frame.
-		let ssgi_history = history.filter(|history| history.ssgi);
+		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
+		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
+		let debug_views = self.debug_views.shown();
+		let lit_by_surfels = indirect_diffuse == Some(IndirectDiffuseSource::Surfels);
+		let surfel_resolve = match (&self.surfel_resolve, &surfels) {
+			(Some(resolve), Some(surfels)) if lit_by_surfels => Some(resolve.prepare(frame, sink, surfels, debug_views)),
+			_ => None,
+		};
+		// The grid serves every sink, so the sink that records the frame-wide work builds it before any resolve.
+		let surfel_grid = surfels.filter(|_| frame_work.is_some() && surfel_resolve.is_some());
+		// The acceleration structures build with the grid, so the frame that builds them traces them too.
+		let acceleration_structures = frame_work
+			.and_then(|work| work.acceleration_structures)
+			.filter(|_| surfel_grid.is_some());
 		self.reflections.prepare(frame, history);
 		let screen_space_lighting = ScreenSpaceLighting {
 			gtao: gtao.is_some(),
 			ssgi: ssgi.is_some(),
+			// SSGI and the surfel resolve write the same indirect diffuse images.
+			indirect_diffuse: match (&ssgi, &surfel_resolve) {
+				(Some(_), _) => Some(IndirectDiffuseSource::ScreenSpace),
+				(None, Some(_)) => Some(IndirectDiffuseSource::Surfels),
+				(None, None) => None,
+			},
 		};
-		let debug_views = self.debug_views.shown();
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_evaluations,
 			&render_info.opaque_evaluation_mask,
@@ -609,6 +708,28 @@ impl VisibilityRenderPass {
 			}
 			// Both material evaluation layers read the clusters, and nothing before them does.
 			c.counter(counters.light_clusters, &light_clusters);
+			// The frame-wide surfel work reads nothing the raster below writes, so recording it first lets the GPU
+			// overlap the two.
+			if let Some(work) = &acceleration_structures {
+				c.counter(counters.acceleration_structures, |c| {
+					use ghi::command_buffer::CommandBufferRecording as _;
+
+					// The top level may place the bottom levels this recording builds, so they record first.
+					c.build_bottom_level_acceleration_structures(work.builds);
+					c.build_top_level_acceleration_structure(work.top_level, work.instances);
+				});
+			}
+			// The surfel grid serves every sink's resolve and the rays' hits, which read the cells around them. The
+			// estimate update folds the rays into the records the resolves read.
+			if let Some(surfels) = &surfel_grid {
+				c.counter(counters.surfel_grid, |c| {
+					record_compute_stages(c, Some("Surfel Grid"), &surfels.grid)
+				});
+				c.counter(counters.surfel_trace, |c| surfels.record_rays(c));
+				c.counter(counters.surfel_integrate, |c| {
+					record_compute_stages(c, None, &[surfels.integrate])
+				});
+			}
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
 			// pass draws what was unoccluded last frame, and the late pass draws what that depth does not hide.
@@ -650,6 +771,9 @@ impl VisibilityRenderPass {
 				if let Some(ssgi) = &ssgi {
 					record_compute_stages(c, None, &[ssgi.trace]);
 				}
+				if let Some(surfels) = &surfel_resolve {
+					record_compute_stages(c, None, &[surfels.resolve]);
+				}
 				if let Some(sun_visibility) = &sun_visibility {
 					record_compute_stages(c, None, &[sun_visibility.resolve]);
 				}
@@ -658,6 +782,9 @@ impl VisibilityRenderPass {
 				}
 				if let Some(ssgi) = &ssgi {
 					record_compute_stages(c, None, &[ssgi.temporal]);
+				}
+				if let Some(surfels) = &surfel_resolve {
+					record_compute_stages(c, None, &[surfels.allocate]);
 				}
 				if let Some(gtao) = &gtao {
 					record_compute_stages(c, None, &[gtao.upscale]);

@@ -1,6 +1,6 @@
 //! Ground-truth ambient occlusion computed at half resolution from the linear depth pyramid, then denoised and upscaled.
 //!
-//! Material evaluation combines the result with the hit fraction of [`super::ssgi::SsgiPass`] when both run, and
+//! Material evaluation combines the result with the hit fraction of the indirect diffuse source when both run, and
 //! darkens environment diffuse and specular light by it. Turn it off with `render.gtao.enabled`.
 
 use ghi::context::{Context as _, ContextCreate as _};
@@ -23,7 +23,8 @@ const MAX_RADIAL_RAYS: u32 = 32;
 /// The `GtaoSettings` struct defines the runtime quality and world-space search controls for GTAO.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GtaoSettings {
-	/// Whether the pass runs. Without it, material evaluation takes occlusion from SSGI alone, or applies none.
+	/// Whether the pass runs. Without it, material evaluation takes occlusion from the indirect diffuse source alone, or
+	/// applies none.
 	pub(crate) enabled: bool,
 	pub(crate) radius: f32,
 	pub(crate) samples_per_ray: u32,

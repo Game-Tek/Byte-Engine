@@ -86,15 +86,38 @@ impl ExecutableProgram {
 		descriptors: &mut DescriptorBindings<'_>,
 		config: &ExecutionConfig,
 	) -> Result<(), VmError> {
+		self.run_entry(descriptors, &mut ExecutionState::new(config), CollectiveBehavior::Ignore)
+	}
+
+	/// Runs `main` as one ray generation invocation of a trace. Its `invoke` calls run the trace's hit groups.
+	pub(super) fn run_ray_generation(
+		&self,
+		descriptors: &mut DescriptorBindings<'_>,
+		config: &ExecutionConfig,
+		trace: TraceContext<'_>,
+	) -> Result<(), VmError> {
 		let mut state = ExecutionState::new(config);
+		state.trace = Some(trace);
+		// A ray generation invocation has no peers, so collectives are errors instead of no-ops.
+		self.run_entry(descriptors, &mut state, CollectiveBehavior::Reject)
+	}
+
+	/// Runs the parameterless `main` of one invocation to completion.
+	fn run_entry(
+		&self,
+		descriptors: &mut DescriptorBindings<'_>,
+		state: &mut ExecutionState<'_>,
+		collective_behavior: CollectiveBehavior,
+	) -> Result<(), VmError> {
+		self.reject_closest_hit_entry()?;
 		state.enter_call()?;
 		let mut frame = self.create_frame(descriptors, self.main_function)?;
-		let outcome = self.execute_frame(&mut frame, descriptors, &mut state, CollectiveBehavior::Ignore);
+		let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
 		descriptors.release_execution_frame(frame);
 		state.leave_call();
 		let FrameOutcome::Complete(return_value) = outcome? else {
 			unreachable!(
-				"Unexpected suspended main frame. The most likely cause is that ignored shader collectives returned a scheduler-visible outcome."
+				"Unexpected suspended main frame. The most likely cause is that ignored or rejected shader collectives returned a scheduler-visible outcome."
 			)
 		};
 		if return_value.is_some() {
@@ -103,6 +126,16 @@ impl ExecutableProgram {
 			});
 		}
 		Ok(())
+	}
+
+	/// Rejects running a closest hit as an entry point. Its `main` takes the payload that an `invoke` call passes.
+	fn reject_closest_hit_entry(&self) -> Result<(), VmError> {
+		match self.closest_hit_payload {
+			Some(_) => Err(VmError::UnsupportedMainSignature {
+				message: "A closest hit runs only through `invoke`".to_string(),
+			}),
+			None => Ok(()),
+		}
 	}
 
 	/// Executes every invocation in one task or compute workgroup with synchronized collectives and shared bound state.
@@ -116,6 +149,7 @@ impl ExecutableProgram {
 		if configs.is_empty() {
 			return Ok(());
 		}
+		self.reject_closest_hit_entry()?;
 		let subgroup_size = configs[0].subgroup_size();
 		if subgroup_size == 0 || subgroup_size > 128 {
 			return Err(VmError::InvalidSubgroupSize { size: subgroup_size });
@@ -534,7 +568,7 @@ impl ExecutableProgram {
 			}
 			Instruction::Numeric(instruction) => Self::execute_numeric_instruction(instruction, registers)?,
 			Instruction::Local(instruction) => {
-				Self::execute_local_instruction(instruction, registers, &mut frame.locals, state.config)?
+				Self::execute_local_instruction(instruction, registers, &mut frame.locals, state)?
 			}
 			Instruction::Workgroup(instruction) => {
 				Self::execute_workgroup_instruction(instruction, registers, descriptors, state.config)?
@@ -547,6 +581,9 @@ impl ExecutableProgram {
 			Instruction::Image(instruction) => return Self::execute_image_instruction(instruction, registers, descriptors),
 			Instruction::Control(instruction) => {
 				return self.execute_control_instruction(instruction, registers, descriptors, state, collective_behavior);
+			}
+			Instruction::RayTracing(instruction) => {
+				Self::execute_ray_tracing_instruction(instruction, registers, descriptors, state)?
 			}
 			Instruction::SubgroupBallot { register, predicate } => {
 				return Self::execute_subgroup_ballot(*register, *predicate, registers, collective_behavior);
@@ -759,7 +796,7 @@ impl ExecutableProgram {
 		instruction: &LocalInstruction,
 		registers: &mut [Option<Value>],
 		locals: &mut [Option<Value>],
-		config: &ExecutionConfig,
+		state: &ExecutionState<'_>,
 	) -> Result<(), VmError> {
 		match instruction {
 			LocalInstruction::LoadLocal { register, local } => {
@@ -772,7 +809,7 @@ impl ExecutableProgram {
 			LocalInstruction::StoreLocal { local, register } => {
 				locals[*local] = Some(register_ref(registers, *register)?.clone());
 			}
-			LocalInstruction::LoadBuiltin { register, builtin } => registers[*register] = Some(builtin.value(config)),
+			LocalInstruction::LoadBuiltin { register, builtin } => registers[*register] = Some(builtin.value(state)?),
 			LocalInstruction::SubgroupMask {
 				register,
 				operator,
@@ -1390,6 +1427,77 @@ impl ExecutableProgram {
 		Ok(InstructionProgress::Advance)
 	}
 
+	/// Executes ray queries and `invoke` calls.
+	fn execute_ray_tracing_instruction(
+		instruction: &RayTracingInstruction,
+		registers: &mut [Option<Value>],
+		descriptors: &mut DescriptorBindings<'_>,
+		state: &mut ExecutionState<'_>,
+	) -> Result<(), VmError> {
+		match instruction {
+			RayTracingInstruction::Intersect {
+				register,
+				slot,
+				ray,
+				hit_type,
+			} => {
+				let ray = read_ray(registers, ray)?;
+				let hit = descriptors.acceleration_structure(*slot)?.intersect(&ray);
+				registers[*register] = Some(hit.to_value(hit_type));
+			}
+			RayTracingInstruction::TraceOcclusion { register, slot, ray } => {
+				let ray = read_ray(registers, ray)?;
+				let occluded = descriptors.acceleration_structure(*slot)?.occludes(&ray);
+				registers[*register] = Some(Value::Bool(occluded));
+			}
+			RayTracingInstruction::Invoke {
+				register, hit, payload, ..
+			} => {
+				let payload = Self::invoke(*hit, *payload, registers, descriptors, state)?;
+				registers[*register] = Some(payload);
+			}
+		}
+		Ok(())
+	}
+
+	/// Runs the closest hit that the trace's shader binding table names for a hit's record, with the payload in the
+	/// `payload` register, and returns the payload it returns. A miss runs nothing and returns the payload unchanged.
+	fn invoke(
+		hit: usize,
+		payload: usize,
+		registers: &[Option<Value>],
+		descriptors: &mut DescriptorBindings<'_>,
+		state: &mut ExecutionState<'_>,
+	) -> Result<Value, VmError> {
+		// Closest hits share the state of the invocation that runs them, so a set hit marks a closest hit.
+		let Some(trace) = state.trace.filter(|_| state.hit.is_none()) else {
+			return Err(VmError::InvokeOutsideRayGeneration);
+		};
+		let hit = RayHit::from_value(register_ref(registers, hit)?)?;
+		if hit.is_miss() {
+			return Ok(register_ref(registers, payload)?.clone());
+		}
+		let hit_group = trace.records.get(hit.record as usize).ok_or(VmError::RecordOutOfRange {
+			record: hit.record,
+			count: trace.records.len(),
+		})?;
+		// `RayTracingPipeline::trace_rays` checked that every record names one of its hit groups.
+		let closest_hit = &trace.hit_groups[*hit_group as usize];
+		state.hit = Some(hit);
+		let returned = closest_hit.execute_function(
+			closest_hit.main_function,
+			&[payload],
+			registers,
+			descriptors,
+			state,
+			CollectiveBehavior::Reject,
+		);
+		state.hit = None;
+		// Compilation makes a closest hit's main return its payload on every path, and ray tracing invocations can't
+		// discard, so the closest hit always returns a value.
+		Ok(returned?.expect("A closest hit's main returns its payload"))
+	}
+
 	/// Executes control-flow, discard, call, and return instructions.
 	fn execute_control_instruction(
 		&self,
@@ -1421,6 +1529,10 @@ impl ExecutableProgram {
 				Ok(InstructionProgress::JumpTo(target))
 			}
 			ControlInstruction::Discard => {
+				// Only fragment shaders discard, and a ray tracing invocation is never one.
+				if state.trace.is_some() {
+					return Err(VmError::DiscardInRayTracing);
+				}
 				state.discarded = true;
 				Ok(InstructionProgress::Complete(None))
 			}
@@ -1461,16 +1573,50 @@ impl ExecutableProgram {
 }
 
 impl InvocationBuiltin {
-	/// Reads this builtin from the invocation coordinates of `config`.
-	fn value(self, config: &ExecutionConfig) -> Value {
-		match self {
+	/// Reads this builtin from the invocation coordinates of the state's config, or from the launch point or hit of a
+	/// ray tracing invocation. Launch values exist only in ray generation invocations, and hit values only in the
+	/// closest hits they invoke.
+	fn value(self, state: &ExecutionState<'_>) -> Result<Value, VmError> {
+		let config = state.config;
+		let unavailable = || VmError::RayTracingInputUnavailable { name: self.name() };
+		let launch = || state.trace.filter(|_| state.hit.is_none()).ok_or_else(unavailable);
+		let hit = || state.hit.ok_or_else(unavailable);
+		Ok(match self {
 			InvocationBuiltin::ThreadIdx => Value::U32(config.thread_idx()),
 			InvocationBuiltin::ThreadPosition => Value::U32(config.thread_position()),
 			InvocationBuiltin::ThreadId => Value::Vec2U(config.thread_id()),
 			InvocationBuiltin::ThreadgroupPosition => Value::U32(config.threadgroup_position()),
 			InvocationBuiltin::SubgroupLaneIndex => Value::U32(config.thread_idx() % config.subgroup_size()),
-		}
+			InvocationBuiltin::LaunchIndex => Value::Vec3U(launch()?.launch_index),
+			InvocationBuiltin::LaunchSize => Value::Vec3U(launch()?.launch_size),
+			InvocationBuiltin::HitDistance => Value::F32(hit()?.distance),
+			InvocationBuiltin::HitCustomIndex => Value::U32(hit()?.custom_index),
+			InvocationBuiltin::HitGeometryIndex => Value::U32(hit()?.geometry_index),
+			InvocationBuiltin::HitPrimitiveIndex => Value::U32(hit()?.primitive_index),
+			InvocationBuiltin::HitBarycentrics => Value::Vec2F(hit()?.barycentrics),
+			InvocationBuiltin::RayOrigin => Value::Vec3F(hit()?.origin),
+			InvocationBuiltin::RayDirection => Value::Vec3F(hit()?.direction),
+		})
 	}
+}
+
+/// Reads a ray query's operands from their registers and checks its interval.
+fn read_ray(registers: &[Option<Value>], operands: &RayOperands) -> Result<Ray, VmError> {
+	let f32_operand = |register| match register_ref(registers, register)? {
+		&Value::F32(value) => Ok(value),
+		value => Err(type_mismatch(&ValueType::F32, &value.value_type())),
+	};
+	let vec3f_operand = |register| match register_ref(registers, register)? {
+		&Value::Vec3F(value) => Ok(value),
+		value => Err(type_mismatch(&ValueType::Vec3F, &value.value_type())),
+	};
+	Ray::new(
+		expect_u32(register_ref(registers, operands.mask)?)?,
+		vec3f_operand(operands.origin)?,
+		vec3f_operand(operands.direction)?,
+		f32_operand(operands.t_min)?,
+		f32_operand(operands.t_max)?,
+	)
 }
 
 impl SubgroupMaskOperator {

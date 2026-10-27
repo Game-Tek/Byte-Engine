@@ -7,8 +7,8 @@ use utils::Extent;
 
 use super::super::layout::{ActiveEvaluationMask, MAX_MATERIALS};
 use super::super::scene::MaterialEvaluation;
-use super::Pipelines;
 use super::visibility::VisibilityPhase;
+use super::{IndirectDiffuseSource, Pipelines};
 use crate::rendering::render_pass::RenderPassFunction;
 
 /// Threads of the one workgroup that scans every evaluation slot's count into offsets. `material-offset.besl` and its
@@ -89,14 +89,17 @@ impl MaterialPrepasses {
 pub(super) struct ScreenSpaceLighting {
 	/// GTAO wrote the ambient occlusion map.
 	pub(super) gtao: bool,
-	/// SSGI wrote the indirect diffuse map, and material evaluation must write the diffuse radiance its next frame reads.
+	/// SSGI lit the frame, so material evaluation must write the diffuse radiance its next frame's rays read.
 	pub(super) ssgi: bool,
+	/// The source that wrote the indirect diffuse images, if one did.
+	pub(super) indirect_diffuse: Option<IndirectDiffuseSource>,
 }
 
 /// The `MaterialEvaluationPass` struct shades every evaluation slot's pixel list into the lit target.
 ///
-/// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history while SSGI runs, and
-/// the lit color into this frame's copy of the radiance history. The next frame's SSGI and reflection rays read them.
+/// The opaque phase also writes diffuse-only radiance into this frame's copy of the diffuse radiance history while SSGI
+/// lights the frame, and the lit color into this frame's copy of the radiance history. The next frame's SSGI and
+/// reflection rays read them.
 pub(super) struct MaterialEvaluationPass {
 	pub(super) base_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) visibility_descriptor_set: ghi::DescriptorSetHandle,
@@ -120,7 +123,14 @@ impl MaterialEvaluationPass {
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
-		let ScreenSpaceLighting { gtao, ssgi } = screen_space_lighting;
+		// The push constant's GTAO and SSGI flags, and its indirect diffuse source.
+		let flags = [
+			u32::from(screen_space_lighting.gtao),
+			u32::from(screen_space_lighting.ssgi),
+			screen_space_lighting
+				.indirect_diffuse
+				.map_or(0, IndirectDiffuseSource::push_constant),
+		];
 
 		move |c| {
 			use ghi::command_buffer::{
@@ -144,7 +154,8 @@ impl MaterialEvaluationPass {
 					c.start_region(|label| label.write_str(&evaluation.name));
 					let c = c.bind_compute_pipeline(evaluation.pipeline);
 					c.bind_descriptor_sets(&descriptor_sets);
-					c.write_push_constant(0, [evaluation.index, u32::from(gtao), u32::from(ssgi), debug_views]);
+					let [gtao, ssgi, indirect_diffuse] = flags;
+					c.write_push_constant(0, [evaluation.index, gtao, ssgi, indirect_diffuse, debug_views]);
 					c.indirect_dispatch(evaluation_dispatches, evaluation.index as usize);
 					c.end_region();
 				}

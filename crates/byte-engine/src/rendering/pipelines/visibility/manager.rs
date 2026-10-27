@@ -17,8 +17,10 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
+use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
 use super::features::{
-	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SSGI_ENABLED_PARAMETER, VisibilityFeatures,
+	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SSGI_ENABLED_PARAMETER,
+	SURFEL_GI_ENABLED_PARAMETER, VisibilityFeatures,
 };
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::layout::{
@@ -30,9 +32,12 @@ use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, Visi
 use super::lod::{LodSettings, LodView};
 use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
+use super::ray_tracing::SurfelShading;
 use super::render_pass::{
-	ContactShadowSettings, GtaoSettings, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, SunCascades,
-	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
+	ContactShadowSettings, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, FrameWork, GtaoSettings, IndirectDiffuseSource,
+	MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP, ShadowMaps, ShadowWork, SinkHistory, SinkTargets,
+	SsgiSettings, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing, VisibilityRenderPass,
+	create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -85,6 +90,12 @@ pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitt
 /// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
 /// side. See [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
 pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
+/// The startup parameter, inside the `render` subtree, that sets how many surfels surfel GI keeps alive at once. See
+/// [`VisibilityPipelineSettings::with_surfel_capacity`].
+pub const SURFEL_CAPACITY_PARAMETER: &str = "surfel-gi.surfel-capacity";
+/// The startup parameter, inside the `render` subtree, that sets how many rays surfels trace each frame. See
+/// [`VisibilityPipelineSettings::with_surfel_ray_budget`].
+pub const SURFEL_RAY_BUDGET_PARAMETER: &str = "surfel-gi.ray-budget";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
@@ -96,6 +107,8 @@ pub struct VisibilityPipelineSettings {
 	cascade_splits: CascadeSplits,
 	cascade_fitting: CascadeFitting,
 	directional_shadow_map_resolution: u32,
+	surfel_capacity: u32,
+	surfel_ray_budget: u32,
 	features: VisibilityFeatures,
 }
 
@@ -108,6 +121,8 @@ impl Default for VisibilityPipelineSettings {
 			cascade_splits: CascadeSplits::default(),
 			cascade_fitting: CascadeFitting::default(),
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
+			surfel_capacity: DEFAULT_SURFEL_CAPACITY,
+			surfel_ray_budget: DEFAULT_SURFEL_RAY_BUDGET,
 			features: VisibilityFeatures::default(),
 		}
 	}
@@ -169,6 +184,16 @@ impl VisibilityPipelineSettings {
 		if let Some(resolution) = parse(&parameters, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER) {
 			settings = settings
 				.with_directional_shadow_map_resolution(resolution)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		if let Some(capacity) = parse(&parameters, SURFEL_CAPACITY_PARAMETER) {
+			settings = settings
+				.with_surfel_capacity(capacity)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		if let Some(rays) = parse(&parameters, SURFEL_RAY_BUDGET_PARAMETER) {
+			settings = settings
+				.with_surfel_ray_budget(rays)
 				.unwrap_or_else(|reason| panic!("{reason}"));
 		}
 		settings.with_features(VisibilityFeatures::from_parameters(parameters))
@@ -272,6 +297,51 @@ impl VisibilityPipelineSettings {
 		self.shadow_update_texels
 	}
 
+	/// Sets how many surfels surfel GI keeps alive at once.
+	///
+	/// More surfels cover more of what the camera sees in finer detail, and take more memory. A project that leaves
+	/// surfel GI out of its bake creates no surfel buffers.
+	///
+	/// # Errors
+	///
+	/// Returns an error unless `capacity` is a power of two from 1,024 through 16,777,216.
+	pub fn with_surfel_capacity(mut self, capacity: u32) -> Result<Self, String> {
+		if !capacity.is_power_of_two() || !SURFEL_CAPACITY_RANGE.contains(&capacity) {
+			return Err(format!(
+				"Surfel capacity was not set. The most likely cause is that {capacity} is not a power of two from {} through {}. Set `{RENDER_PARAMETERS}.{SURFEL_CAPACITY_PARAMETER}` to a power of two in that range, such as {DEFAULT_SURFEL_CAPACITY}.",
+				SURFEL_CAPACITY_RANGE.start(),
+				SURFEL_CAPACITY_RANGE.end(),
+			));
+		}
+		self.surfel_capacity = capacity;
+		Ok(self)
+	}
+
+	pub fn surfel_capacity(&self) -> u32 {
+		self.surfel_capacity
+	}
+
+	/// Sets how many rays surfels trace each frame, which the surfels that need light most share.
+	///
+	/// A larger budget converges faster after the camera or the lighting changes, at the cost of more trace time.
+	///
+	/// # Errors
+	///
+	/// Returns an error unless `rays` is a multiple of 1,024 from 1,024 through 1,048,576.
+	pub fn with_surfel_ray_budget(mut self, rays: u32) -> Result<Self, String> {
+		if rays == 0 || !rays.is_multiple_of(SURFEL_RAY_BUDGET_STEP) || rays > MAX_SURFEL_RAY_BUDGET {
+			return Err(format!(
+				"Surfel ray budget was not set. The most likely cause is that {rays} is not a multiple of {SURFEL_RAY_BUDGET_STEP} from {SURFEL_RAY_BUDGET_STEP} through {MAX_SURFEL_RAY_BUDGET}. Set `{RENDER_PARAMETERS}.{SURFEL_RAY_BUDGET_PARAMETER}` to a multiple of {SURFEL_RAY_BUDGET_STEP} in that range, such as {DEFAULT_SURFEL_RAY_BUDGET}."
+			));
+		}
+		self.surfel_ray_budget = rays;
+		Ok(self)
+	}
+
+	pub fn surfel_ray_budget(&self) -> u32 {
+		self.surfel_ray_budget
+	}
+
 	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
 	/// configuration cannot turn it on.
 	///
@@ -279,6 +349,11 @@ impl VisibilityPipelineSettings {
 	pub fn with_features(mut self, features: VisibilityFeatures) -> Self {
 		self.features = features;
 		self
+	}
+
+	/// Returns the optional features built into this project's shaders; see [`Self::with_features`].
+	pub fn features(&self) -> VisibilityFeatures {
+		self.features
 	}
 
 	pub fn shadow_map_budget_mib(&self) -> u32 {
@@ -467,6 +542,39 @@ fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	enabled && built_in
 }
 
+/// The frames between two logs of the surfel pool's counts.
+const SURFEL_LOG_INTERVAL: u64 = 256;
+
+/// The debug views of a sink that surfel GI can light: material evaluation's, then the surfel resolve's, which the
+/// resolve numbers from 6.
+const SURFEL_DEBUG_VIEW_NAMES: [&str; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2] = {
+	let material = super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES;
+	let mut names = [""; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2];
+	let mut index = 0;
+	while index < material.len() {
+		names[index] = material[index];
+		index += 1;
+	}
+	names[index] = "surfels";
+	names[index + 1] = "surfel-coverage";
+	names
+};
+
+/// Chooses the source that lights this frame's indirect diffuse light, or `None` when the environment lights it alone.
+///
+/// `ssgi` and `surfel_gi` tell whether each is built in and enabled. Surfel GI takes the place of SSGI on a device that
+/// traces rays, `ray_tracing`; elsewhere SSGI keeps lighting frames, so turning surfel GI on never takes away the light
+/// SSGI gives.
+fn indirect_diffuse_source(ssgi: bool, surfel_gi: bool, ray_tracing: bool) -> Option<IndirectDiffuseSource> {
+	if surfel_gi && ray_tracing {
+		Some(IndirectDiffuseSource::Surfels)
+	} else if ssgi {
+		Some(IndirectDiffuseSource::ScreenSpace)
+	} else {
+		None
+	}
+}
+
 /// The `TransformSamples` struct keeps the two most recent transforms of one renderable and which step the latest
 /// arrived in.
 struct TransformSamples {
@@ -599,6 +707,23 @@ pub struct VisibilityPipelineManager {
 	gtao_settings: GtaoSettings,
 	ssgi_configuration: crate::configuration::ConfigurationPort,
 	ssgi_settings: SsgiSettings,
+	surfel_gi_configuration: crate::configuration::ConfigurationPort,
+	surfel_gi_settings: SurfelGiSettings,
+	/// Whether the device traces rays, which surfel GI needs to light a frame.
+	ray_tracing: bool,
+	/// The surfels that surfel GI lights every sink from. Absent when the project left surfel GI out of its shaders or
+	/// the device doesn't trace rays.
+	surfel_pool: Option<SurfelPool>,
+	/// The acceleration structures surfel GI traces rays through. Absent without a surfel pool.
+	acceleration_structures: Option<SceneAccelerationStructures>,
+	/// The ray tracing pipeline that shades surfel hits with each material's closest-hit shader. Absent without
+	/// acceleration structures.
+	surfel_shading: Option<SurfelShading>,
+	/// The primitives the frame draws, as the acceleration structures place them. Kept across frames for its
+	/// allocation.
+	traced_primitives: Vec<TracedPrimitive>,
+	/// Whether the warning that surfel GI can't light frames on this device was reported while it stays enabled.
+	reported_surfel_gi_fallback: bool,
 	contact_shadow_configuration: crate::configuration::ConfigurationPort,
 	contact_shadow_settings: ContactShadowSettings,
 	lod_configuration: crate::configuration::ConfigurationPort,
@@ -608,8 +733,11 @@ pub struct VisibilityPipelineManager {
 	recorded_sinks: SmallVec<[Sink; 4]>,
 	/// The exposure the previous frame's light was multiplied by. Every recorded sink shares it.
 	recorded_exposure: f32,
-	/// Whether the previous frame's recorded sinks ran SSGI, so their SSGI images hold history.
-	recorded_ssgi: bool,
+	/// The exposure the surfel pool's light was stored at by the last frame surfel GI lit.
+	surfel_exposure: f32,
+	/// The source that lit the previous frame's indirect diffuse light in every recorded sink, which decides whose
+	/// history their images hold.
+	recorded_indirect_diffuse: Option<IndirectDiffuseSource>,
 	/// Whether the light-count and shadow-budget warnings were reported while their limit stays exceeded.
 	reported_limits: [bool; 2],
 	pub(crate) scene: VisibilityScene,
@@ -628,6 +756,7 @@ impl VisibilityPipelineManager {
 		pipeline_manager: PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		ssgi_configuration: crate::configuration::ConfigurationPort,
+		surfel_gi_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
@@ -658,6 +787,20 @@ impl VisibilityPipelineManager {
 		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
 		let mesh_dispatch_work = MeshDispatchWorkBuffer::new(context, descriptor_set);
 		let shadow_maps = ShadowMaps::new(context, &pipeline_manager, settings.directional_shadow_map_resolution);
+		let ray_tracing = context.supports_ray_tracing();
+		let surfel_pool = (settings.features.surfel_gi && ray_tracing).then(|| {
+			SurfelPool::new(
+				context,
+				&pipeline_manager,
+				settings.surfel_capacity,
+				settings.surfel_ray_budget,
+				environment,
+			)
+		});
+		let acceleration_structures = surfel_pool
+			.as_ref()
+			.and_then(|_| SceneAccelerationStructures::new(context, &geometry));
+		let surfel_shading = acceleration_structures.as_ref().map(|_| SurfelShading::new(context));
 		let scene = set_layouts::SCENE.binder(descriptor_set);
 		context.write(&[
 			scene.buffer("views", views_buffer),
@@ -724,13 +867,22 @@ impl VisibilityPipelineManager {
 			gtao_settings: GtaoSettings::default(),
 			ssgi_configuration,
 			ssgi_settings: SsgiSettings::default(),
+			surfel_gi_configuration,
+			surfel_gi_settings: SurfelGiSettings::new(settings.surfel_capacity, settings.surfel_ray_budget),
+			ray_tracing,
+			surfel_pool,
+			acceleration_structures,
+			surfel_shading,
+			traced_primitives: Vec::new(),
+			reported_surfel_gi_fallback: false,
 			contact_shadow_configuration,
 			contact_shadow_settings: ContactShadowSettings::default(),
 			lod_configuration,
 			lod_settings: LodSettings::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
-			recorded_ssgi: false,
+			surfel_exposure: 1.0,
+			recorded_indirect_diffuse: None,
 			reported_limits: [false; 2],
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
@@ -830,7 +982,7 @@ impl VisibilityPipelineManager {
 		let source = renderable.source().clone();
 		let (mesh_key, resident) = self.loader.request_mesh(source);
 		if let Some(mesh) = resident {
-			self.add_renderable(handle, &mesh);
+			self.add_renderable(handle, mesh_key, &mesh);
 		} else {
 			self.pending_renderables.push(PendingRenderable { handle, mesh_key });
 		}
@@ -894,6 +1046,10 @@ impl VisibilityPipelineManager {
 						.descriptor_writes(sink_state.render_pass.material_evaluation_descriptor_set()),
 				);
 			}
+			// Surfel rays that miss see the same environment.
+			if let Some(pool) = &self.surfel_pool {
+				frame.write(&pool.environment_writes(self.environment.bound));
+			}
 		}
 	}
 
@@ -953,8 +1109,12 @@ impl VisibilityPipelineManager {
 			coverage,
 			texture_slots: textures,
 			parameters,
+			hit_group,
 			..
 		} = material;
+		if let Some(shading) = &mut self.surfel_shading {
+			shading.set_material(index, hit_group.as_ref());
+		}
 		let material_data = &mut self.materials[index as usize];
 		if material_data.set_textures(textures.iter().copied()) {
 			warn!(
@@ -1051,13 +1211,16 @@ impl VisibilityPipelineManager {
 			if renderable.mesh_key != key {
 				return true;
 			}
-			self.add_renderable(renderable.handle, mesh);
+			self.add_renderable(renderable.handle, key, mesh);
 			false
 		});
 		self.pending_renderables = pending;
 	}
 
-	fn add_renderable(&mut self, handle: Handle, mesh: &MeshData) {
+	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData) {
+		if let Some(structures) = &mut self.acceleration_structures {
+			structures.register_mesh(key, mesh);
+		}
 		let model = self
 			.renderable_transforms
 			.get(&handle)
@@ -1065,7 +1228,7 @@ impl VisibilityPipelineManager {
 			.get_matrix()
 			.into();
 		let availability = self.availability.get_or_insert(Availability::Renderable(handle), true);
-		for primitive in &mesh.primitives {
+		for (index, primitive) in mesh.primitives.iter().enumerate() {
 			let material = self
 				.availability
 				.get_or_insert(Availability::Material(primitive.material_index), false);
@@ -1074,6 +1237,8 @@ impl VisibilityPipelineManager {
 				.expect("Visibility renderable dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.");
 			self.scene.add_render_entity(RenderEntity {
 				handle,
+				mesh: key,
+				primitive: index as u32,
 				availability,
 				shader_mesh: ShaderMesh {
 					model,
@@ -1104,8 +1269,8 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO, SSGI, contact-shadow, and detail level controls before any sink records this frame's
-	/// commands.
+	/// Applies queued GTAO, SSGI, surfel GI, contact-shadow, and detail level controls before any sink records this
+	/// frame's commands.
 	fn apply_runtime_settings(&mut self) {
 		self.lod_configuration
 			.drain(&mut self.lod_settings, LodSettings::with_parameter);
@@ -1113,16 +1278,33 @@ impl VisibilityPipelineManager {
 			.drain(&mut self.gtao_settings, GtaoSettings::with_parameter);
 		self.ssgi_configuration
 			.drain(&mut self.ssgi_settings, SsgiSettings::with_parameter);
+		self.surfel_gi_configuration
+			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::with_parameter);
 		self.contact_shadow_configuration
 			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
 		let features = self.settings.features;
 		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
 		self.ssgi_settings.enabled = built_in_or_off(self.ssgi_settings.enabled, features.ssgi, SSGI_ENABLED_PARAMETER);
+		self.surfel_gi_settings.enabled = built_in_or_off(
+			self.surfel_gi_settings.enabled,
+			features.surfel_gi,
+			SURFEL_GI_ENABLED_PARAMETER,
+		);
 		self.contact_shadow_settings.enabled = built_in_or_off(
 			self.contact_shadow_settings.enabled,
 			features.contact_shadows,
 			CONTACT_SHADOWS_ENABLED_PARAMETER,
+		);
+		crate::rendering::warn_once(
+			&mut self.reported_surfel_gi_fallback,
+			self.surfel_gi_settings.enabled && !self.ray_tracing,
+			|| {
+				format!(
+					"Surfel GI can't light frames on this device. The most likely cause is that the device doesn't trace rays: only the Metal backend does, and only when `{RENDER_PARAMETERS}.ghi.features.ray-tracing` is on. SSGI lights indirect diffuse light while it is enabled; run on a Mac with Apple silicon, or set `{RENDER_PARAMETERS}.ghi.features.ray-tracing` to `true` in `config.json` and restart. See {}.",
+					crate::online_docs_url("reference/parameters#graphics-device")
+				)
+			},
 		);
 	}
 
@@ -1136,6 +1318,8 @@ impl VisibilityPipelineManager {
 			render_info.posed_uv_copies.clear();
 		}
 		self.skinning_frame.clear();
+		self.traced_primitives.clear();
+		let traces_rays = self.acceleration_structures.is_some();
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
 		// Every admitted entity pushes exactly one instance, so this counts the instances so far.
 		let mut active_index = 0;
@@ -1210,6 +1394,15 @@ impl VisibilityPipelineManager {
 				}
 			}
 			mesh_data[active_index] = shader_mesh;
+			if traces_rays {
+				self.traced_primitives.push(TracedPrimitive {
+					renderable: entity.handle,
+					mesh: entity.mesh,
+					primitive: entity.primitive,
+					record: active_index as u32,
+					model: shader_mesh.model,
+				});
+			}
 			render_info.push_active_instance(
 				Instance {
 					shader_mesh_index: active_index as u32,
@@ -1462,11 +1655,83 @@ impl PipelineManager for VisibilityPipelineManager {
 			draws: shadow_draws,
 		};
 
-		let frame_work = (&self.skinning_pass, &self.shadow_maps);
+		let indirect_diffuse =
+			indirect_diffuse_source(self.ssgi_settings.enabled, self.surfel_gi_settings.enabled, self.ray_tracing);
+		let loaded_materials = &self.loaded_materials;
+		let alpha_mode = |material: u32| {
+			loaded_materials
+				.get(material as usize)
+				.and_then(Option::as_ref)
+				.map_or(&AlphaMode::Blend, |material| &material.alpha_mode)
+		};
+		// Surfel rays trace once the shading pipeline published, with the material hit groups it has. The meshes the
+		// frame draws for the first time get their hit records before the table is written from them, so it holds
+		// every record an instance of the frame reports.
+		let surfel_tracing = match (indirect_diffuse, &mut self.acceleration_structures, &mut self.surfel_shading) {
+			(Some(IndirectDiffuseSource::Surfels), Some(structures), Some(shading)) => {
+				let record_materials = structures.admit(frame, &self.traced_primitives, alpha_mode);
+				shading
+					.prepare(frame, &self.pipeline_manager, record_materials)
+					.map(|(pipeline, table)| SurfelTracing {
+						scene: self.scene.descriptor_set,
+						ray_traced_scene: structures.descriptor_set(),
+						pipeline,
+						table,
+					})
+			}
+			_ => None,
+		};
+		let suns = self.scene.surfel_suns().collect::<SmallVec<[SurfelSun; 4]>>();
+		let surfels = match (indirect_diffuse, &self.surfel_pool, sinks.first(), surfel_tracing) {
+			(Some(IndirectDiffuseSource::Surfels), Some(pool), Some(sink), Some(tracing)) => pool.prepare(
+				frame,
+				&self.pipeline_manager,
+				sink,
+				SurfelLight {
+					exposure,
+					previous_exposure: self.surfel_exposure,
+					environment_intensity: self.environment.intensity(),
+					suns: &suns,
+				},
+				tracing,
+			),
+			_ => None,
+		};
+		// Until its pipelines compile, surfel GI can't light a frame, and the frame is lit as if it were off.
+		let indirect_diffuse = match (indirect_diffuse, surfels) {
+			(Some(IndirectDiffuseSource::Surfels), None) => {
+				indirect_diffuse_source(self.ssgi_settings.enabled, false, self.ray_tracing)
+			}
+			(source, _) => source,
+		};
+		if let Some(pool) = self.surfel_pool.as_ref().filter(|_| surfels.is_some())
+			&& frame.key().frame_index().is_multiple_of(SURFEL_LOG_INTERVAL)
+		{
+			let counts = pool.counts(frame);
+			log::debug!(
+				"Surfel GI keeps {} surfels alive in {} cell entries; the last grid recycled {} and the frame before it spawned {}. They wanted {} rays and traced {}.",
+				counts.last_alive,
+				counts.cell_entries,
+				counts.last_recycled,
+				counts.last_spawned,
+				counts.rays_wanted,
+				counts.rays,
+			);
+		}
+		// The acceleration structures build with the surfel grid, so only a frame that surfel GI lights builds them.
+		let acceleration_structures = match (surfels, &mut self.acceleration_structures) {
+			(Some(_), Some(structures)) => Some(structures.prepare(frame, &mut self.traced_primitives, frame_allocator)),
+			_ => None,
+		};
+		let frame_work = FrameWork {
+			skinning: &self.skinning_pass,
+			shadows: &self.shadow_maps,
+			acceleration_structures,
+		};
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
 		let recorded_exposure = self.recorded_exposure;
-		let recorded_ssgi = self.recorded_ssgi;
+		let recorded_indirect_diffuse = self.recorded_indirect_diffuse;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let mut frame_work_recorded = false;
 		let commands = sinks
@@ -1487,7 +1752,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					.map(|previous| SinkHistory {
 						view: previous.view(),
 						exposure: recorded_exposure,
-						ssgi: recorded_ssgi,
+						indirect_diffuse: recorded_indirect_diffuse,
 					});
 				let command = render_pass.prepare(
 					frame,
@@ -1498,8 +1763,9 @@ impl PipelineManager for VisibilityPipelineManager {
 					&shadow_work,
 					history,
 					exposure,
+					indirect_diffuse,
+					surfels,
 					self.gtao_settings,
-					self.ssgi_settings,
 					self.contact_shadow_settings,
 					background,
 					frame_allocator,
@@ -1511,12 +1777,20 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect();
 		if frame_work_recorded {
 			self.shadow_states = shadow_states;
+			// The frame-wide work stored the surfels' light at this frame's exposure.
+			if surfels.is_some() {
+				self.surfel_exposure = exposure;
+			}
+		}
+		// The sink that records the frame-wide work records the builds the acceleration structures picked, if any.
+		if let Some(structures) = &mut self.acceleration_structures {
+			structures.commit(frame_work_recorded);
 		}
 		// The frame-wide work records the UV copies of new posed ranges with the skinning dispatches.
 		self.posed_uv_copies_recorded = frame_work_recorded;
 		self.recorded_sinks = recorded_sinks;
 		self.recorded_exposure = exposure;
-		self.recorded_ssgi = self.ssgi_settings.enabled;
+		self.recorded_indirect_diffuse = indirect_diffuse;
 		commands
 	}
 
@@ -1549,7 +1823,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
-		let debug_views = render_pass_builder.debug_views(&super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES);
+		let surfel_gi = self.surfel_pool.is_some();
+		let debug_views = render_pass_builder.debug_views(if surfel_gi {
+			&SURFEL_DEBUG_VIEW_NAMES
+		} else {
+			&super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES
+		});
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1570,6 +1849,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			&self.shadow_maps,
 			stage_counters,
 			self.settings.features,
+			surfel_gi,
 			debug_views,
 		);
 		context.write(
@@ -1680,5 +1960,68 @@ mod tests {
 			)
 		);
 		assert_eq!(resolve_ies_profile(&analytic_light, &profiles), (1.0, None));
+	}
+
+	#[test]
+	fn surfel_gi_takes_the_place_of_ssgi_only_on_a_device_that_traces_rays() {
+		use IndirectDiffuseSource::{ScreenSpace, Surfels};
+
+		// (SSGI, surfel GI, ray tracing) and the source that lights the frame.
+		let cases = [
+			((true, true, true), Some(Surfels)),
+			((false, true, true), Some(Surfels)),
+			((true, true, false), Some(ScreenSpace)),
+			((true, false, true), Some(ScreenSpace)),
+			((false, true, false), None),
+			((false, false, true), None),
+		];
+		for ((ssgi, surfel_gi, ray_tracing), source) in cases {
+			assert_eq!(
+				indirect_diffuse_source(ssgi, surfel_gi, ray_tracing),
+				source,
+				"SSGI {ssgi}, surfel GI {surfel_gi}, ray tracing {ray_tracing}"
+			);
+		}
+	}
+
+	#[test]
+	fn surfel_capacity_is_a_power_of_two_in_range() {
+		let settings = VisibilityPipelineSettings::default();
+		assert_eq!(settings.surfel_capacity(), 32_768);
+
+		for capacity in [1_024, 65_536, 16_777_216] {
+			assert_eq!(settings.with_surfel_capacity(capacity).unwrap().surfel_capacity(), capacity);
+		}
+		for capacity in [0, 512, 3_000, 49_152, 33_554_432] {
+			let reason = settings.with_surfel_capacity(capacity).unwrap_err();
+			assert!(reason.contains(&format!("{capacity} is not a power of two")), "{reason}");
+		}
+	}
+
+	#[test]
+	fn surfel_ray_budget_is_a_multiple_of_1024_in_range() {
+		let settings = VisibilityPipelineSettings::default();
+		assert_eq!(settings.surfel_ray_budget(), 16_384);
+
+		for rays in [1_024, 24_576, 1_048_576] {
+			assert_eq!(settings.with_surfel_ray_budget(rays).unwrap().surfel_ray_budget(), rays);
+		}
+		for rays in [0, 1_000, 16_385, 1_049_600] {
+			let reason = settings.with_surfel_ray_budget(rays).unwrap_err();
+			assert!(reason.contains(&format!("{rays} is not a multiple of 1024")), "{reason}");
+		}
+	}
+
+	#[test]
+	fn surfel_sizes_are_read_from_the_render_parameters() {
+		let settings = VisibilityPipelineSettings::from_parameters(
+			&[
+				crate::application::Parameter::new(SURFEL_CAPACITY_PARAMETER, "131072"),
+				crate::application::Parameter::new(SURFEL_RAY_BUDGET_PARAMETER, "32768"),
+			][..],
+		);
+
+		assert_eq!(settings.surfel_capacity(), 131_072);
+		assert_eq!(settings.surfel_ray_budget(), 32_768);
 	}
 }

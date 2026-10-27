@@ -1,0 +1,49 @@
+// Turns one tile's spawn request into a surfel: takes a free slot and writes the new surfel's record and state.
+//
+// A slot comes from the free stack while it holds one, then from the slots no surfel has used yet. A full pool spawns
+// nothing. The new surfel starts with its parent's light, when the resolve found a mature parent that faces the same
+// way, so it does not flash dark while it fades in. The next frame's grid lists it.
+
+main: fn (input: StageInput) -> void {
+	let tile: u32 = input.thread_id.x;
+	if (tile >= surfel_resolve_parameters.spawn_tile_count || surfel_spawns[tile].requested == 0) {
+		return;
+	}
+	let capacity: u32 = surfel_parameters.surfel_capacity;
+	let slot: u32 = NO_SURFEL;
+	let top: u32 = atomic_sub(surfel_pool.free_count, 1);
+	if (top != 0 && top <= capacity) {
+		slot = surfel_free[top - 1];
+	} else {
+		// The stack was empty: undo the take, and use a slot no surfel has used yet.
+		atomic_add(surfel_pool.free_count, 1);
+		let unused: u32 = atomic_add(surfel_pool.high_water, 1);
+		if (unused >= capacity) {
+			atomic_sub(surfel_pool.high_water, 1);
+			return;
+		}
+		slot = unused;
+	}
+
+	let request: SurfelSpawn = surfel_spawns[tile];
+	let irradiance: vec4f16 = vec4f16(vec4f(0.0, 0.0, 0.0, 0.0));
+	if (request.parent != NO_SURFEL) {
+		irradiance = surfel_records[request.parent].irradiance;
+	}
+	surfel_records[slot] = SurfelRecord(request.position, surfel_radius(request.position), request.normal, 0.0, irradiance);
+	// The estimate starts from the same light, and its first rays replace it. The guide and the radial depth start
+	// empty, so the first rays follow the cosine-weighted distribution and nothing hides the new surfel's light.
+	let start: vec4f = vec4f(irradiance);
+	surfel_irradiance[slot] = SurfelIrradiance(start, start, vec4f(0.0, 0.0, 0.0, 0.0), 1.0, 1.0, 0.0, 0.0);
+	for (let cell: u32 = 0; cell < SURFEL_GUIDE_CELLS; cell = cell + 1) {
+		surfel_guides[slot * SURFEL_GUIDE_CELLS + cell] = f16(0.0);
+	}
+	for (let cell: u32 = 0; cell < SURFEL_DEPTH_CELLS; cell = cell + 1) {
+		surfel_depths[slot * SURFEL_DEPTH_CELLS + cell] = vec4f(0.0, 0.0, 0.0, 0.0);
+	}
+	surfel_states[slot].life = 1;
+	surfel_states[slot].frames = 0;
+	atomic_store(surfel_states[slot].touched, 0);
+	surfel_states[slot].cell = NO_SURFEL;
+	atomic_add(surfel_pool.spawned, 1);
+}

@@ -261,8 +261,6 @@ impl Device {
 			synchronizers: Vec::new(),
 			synchronizer_masters: Vec::new(),
 			last_frame_synchronizers: [None; crate::MAX_FRAMES_IN_FLIGHT],
-			top_level_acceleration_structures: Vec::new(),
-			bottom_level_acceleration_structures: Vec::new(),
 			allocations: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(),
@@ -625,12 +623,7 @@ impl Device {
 			ShaderTypes::Compute => "cs_6_9",
 			ShaderTypes::Task => "as_6_9",
 			ShaderTypes::Mesh => "ms_6_9",
-			ShaderTypes::RayGen
-			| ShaderTypes::Miss
-			| ShaderTypes::ClosestHit
-			| ShaderTypes::AnyHit
-			| ShaderTypes::Intersection
-			| ShaderTypes::Callable => "lib_6_9",
+			ShaderTypes::RayGen | ShaderTypes::ClosestHit => "lib_6_9",
 		}
 	}
 

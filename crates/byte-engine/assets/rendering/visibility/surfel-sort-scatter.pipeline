@@ -1,0 +1,1 @@
+{"name":"Surfel Sort Scatter","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-sort-scatter.besl"}}

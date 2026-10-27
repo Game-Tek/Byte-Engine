@@ -126,7 +126,15 @@ impl Generator {
 		shader_generation_settings: &ShaderGenerationSettings,
 		program: &besl::NodeReference,
 	) -> Result<String, String> {
-		match PlatformShaderLanguage::current_platform() {
+		let language = PlatformShaderLanguage::current_platform();
+		super::validate_stage(
+			language,
+			shader_generation_settings.stage,
+			&shader_generation_settings.name,
+			program,
+		)?;
+
+		match language {
 			#[cfg(target_os = "linux")]
 			PlatformShaderLanguage::Glsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
@@ -321,6 +329,33 @@ mod tests {
 			.generate(&settings, &root)
 			.await
 			.expect("Expected arrays and unsigned extrema to compile for the platform shader language");
+	}
+
+	/// Verifies lowering reports the stage rule a shader breaks, instead of the backend's generic failure.
+	#[test]
+	fn lowering_reports_the_stage_rule_a_shader_breaks() {
+		let root = besl::compile_to_besl(
+			r#"
+			scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+			out_color: output<vec4f, 0>;
+
+			main: fn () -> void {
+				let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0);
+				out_color = vec4f(hit.distance, 0.0, 0.0, 1.0);
+			}
+			"#,
+			None,
+		)
+		.expect("Expected the fragment fixture to link");
+		let settings = ShaderGenerationSettings::fragment().name("traced_fragment".to_string());
+
+		let Err(error) = Generator::new().lower(&settings, &root) else {
+			panic!("Expected a fragment shader that calls `intersect` to fail lowering");
+		};
+		assert!(
+			error.contains("Fragment shader `traced_fragment` calls `intersect`"),
+			"{error}"
+		);
 	}
 }
 

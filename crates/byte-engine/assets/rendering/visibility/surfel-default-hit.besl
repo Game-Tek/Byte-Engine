@@ -1,0 +1,11 @@
+// The closest hit of hit group 0, which every hit record runs until its material's own hit group is in the published
+// ray tracing pipeline. It reports a black occluder: the ray stops there, but no light comes back from it.
+
+main: fn (input: StageInput, payload: HitSurface) -> HitSurface {
+	let hit_surface: HitSurface = payload;
+	hit_surface.albedo = vec3f16(0.0, 0.0, 0.0);
+	hit_surface.front_face = 1;
+	hit_surface.emission = vec3f(0.0, 0.0, 0.0);
+	hit_surface.normal = vec3f16(normalize(vec3f(0.0, 0.0, 0.0) - input.ray_direction));
+	return hit_surface;
+}

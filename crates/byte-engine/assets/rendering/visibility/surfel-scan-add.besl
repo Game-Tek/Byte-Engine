@@ -1,0 +1,15 @@
+// The last pass of the surfel scan: adds each group's exclusive offset to its elements, which finishes the scan.
+//
+// Next, the scatter lists each surfel in the cells it overlaps, from the offsets this pass leaves.
+
+main: fn (input: StageInput) -> void {
+	let group: u32 = input.threadgroup_position;
+	if (group == 0) {
+		return;
+	}
+	let offset: u32 = surfel_scan_partials[group];
+	let first: u32 = group * SURFEL_SCAN_GROUP_ELEMENTS + input.thread_idx * 4;
+	for (let i: u32 = 0; i < 4; i = i + 1) {
+		surfel_scan[first + i] = surfel_scan[first + i] + offset;
+	}
+}

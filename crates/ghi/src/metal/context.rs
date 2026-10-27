@@ -53,8 +53,16 @@ pub struct Context {
 	pub(crate) allocations: Vec<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
 	pub(crate) descriptor_sets: DescriptorSets,
 	pub(crate) meshes: Vec<Mesh>,
-	pub(crate) acceleration_structures: Vec<AccelerationStructure>,
+	pub(crate) acceleration_structures: acceleration_structures::AccelerationStructures,
+	/// Bottom-level builds that executed, each waiting for its submission to complete so it can compact.
+	pub(crate) pending_compactions: Vec<acceleration_structures::PendingCompaction>,
+	/// Compactions the next internal submission copies.
+	pub(crate) compaction_copies: Vec<acceleration_structures::CompactionCopy>,
+	/// One acceleration-structure scratch arena per in-flight frame, followed by the transient arena for detached
+	/// recordings.
+	pub(crate) scratch_arenas: Vec<acceleration_structures::ScratchArena>,
 	pub(crate) pipelines: Vec<Pipeline>,
+	pub(crate) shader_binding_tables: Vec<ShaderBindingTable>,
 	pub(crate) command_buffers: Vec<StoredCommandBuffer>,
 	pub(crate) synchronizers: ResourceCollection<
 		Synchronizer,
@@ -142,7 +150,7 @@ mod tests {
 			&[0; 6],
 			&[crate::pipelines::VertexElement::new("POSITION", crate::DataTypes::Float3, 0)],
 		);
-		if context.device.supportsRaytracing() {
+		if crate::context::Context::supports_ray_tracing(&context) {
 			context.create_top_level_acceleration_structure(None, 4);
 		}
 
@@ -154,8 +162,10 @@ mod tests {
 		assert!(
 			context
 				.acceleration_structures
-				.iter()
-				.all(|structure| structure.structure.heap().is_some())
+				.top_levels
+				.values()
+				.flat_map(|top_level| &top_level.copies)
+				.all(|copy| copy.structure.heap().is_some())
 		);
 	}
 

@@ -43,29 +43,12 @@ pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
 	)
 }
 
-/// Reads one checked-in rendering shader together with the layout layers its sidecar lists, as one source.
+/// Reads one checked-in rendering shader and the layout layers its sidecar lists, as each layer's name and source in
+/// stacking order, then the shader's own source.
 ///
-/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`. The result holds each
-/// layer's declarations, lowest layer first, and then the shader's own, which is the order baking links them in. A
-/// shader without layers returns its own source. Tests read shaders through this function so they follow the sidecar
-/// and never name a shader's layers themselves.
-///
-/// The layers are also stacked with [`besl::stack_layers`], so a shader that redeclares a layer's name fails here as
-/// it does when baked. Each source is read once and kept for the rest of the test run.
-pub(crate) fn asset_source(asset: &str) -> &'static str {
-	use std::{
-		collections::HashMap,
-		sync::{LazyLock, Mutex},
-	};
-
+/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`.
+fn asset_parts(asset: &str) -> (Vec<(String, String)>, String) {
 	use resource_management::asset::{ResourceId, parse_json};
-
-	static SOURCES: LazyLock<Mutex<HashMap<String, &'static str>>> = LazyLock::new(Default::default);
-
-	let mut sources = SOURCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-	if let Some(source) = sources.get(asset) {
-		return source;
-	}
 
 	let read = |path: &str| {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,7 +64,7 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 
 	let sidecar = parse_json(&read(&format!("{asset}.bead")))
 		.expect("Failed to parse a shader sidecar. The most likely cause is invalid JSON in a `.besl.bead` file.");
-	let layers: Vec<(String, String)> = sidecar
+	let layers = sidecar
 		.get("layouts")
 		.and_then(|layouts| layouts.as_array())
 		.into_iter()
@@ -92,14 +75,33 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 			(layer, source)
 		})
 		.collect();
-	let shader = read(asset);
+	(layers, read(asset))
+}
 
-	let module = besl::parse(&shader)
-		.unwrap_or_else(|error| panic!("Failed to parse {asset}: {error:?}. The most likely cause is invalid BESL syntax."));
-	if let Err(error) = besl::stack_layers(module, layers.iter().map(|(layer, source)| (layer.as_str(), source.as_str()))) {
-		panic!("Failed to stack {asset} on its layout layers: {error:?}");
+/// Reads one checked-in rendering shader together with the layout layers its sidecar lists, as one source.
+///
+/// `asset` is the shader's path under `assets/rendering`, such as `bloom/extract.besl`. The result holds each
+/// layer's declarations, lowest layer first, and then the shader's own, which is the order baking links them in. A
+/// shader without layers returns its own source. Tests read shaders through this function so they follow the sidecar
+/// and never name a shader's layers themselves.
+///
+/// The layers are also stacked with [`besl::stack_layers`], so a shader that redeclares a layer's name fails here as
+/// it does when baked. Each source is read once and kept for the rest of the test run.
+pub(crate) fn asset_source(asset: &str) -> &'static str {
+	use std::{
+		collections::HashMap,
+		sync::{LazyLock, Mutex},
+	};
+
+	static SOURCES: LazyLock<Mutex<HashMap<String, &'static str>>> = LazyLock::new(Default::default);
+
+	let mut sources = SOURCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+	if let Some(source) = sources.get(asset) {
+		return source;
 	}
 
+	stacked_asset(asset);
+	let (layers, shader) = asset_parts(asset);
 	// One text holds the same declarations in the order the stacked tree has them, so callers keep passing a source.
 	let mut source: String = layers.iter().flat_map(|(_, layer)| [layer.as_str(), "\n"]).collect();
 	source.push_str(&shader);
@@ -107,6 +109,22 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 	let source: &'static str = source.leak();
 	sources.insert(asset.to_string(), source);
 	source
+}
+
+/// Parses one checked-in rendering shader and stacks it on the layout layers its sidecar lists, as baking does.
+///
+/// Unlike [`asset_source`], the result keeps each layer's descriptors in the layer's own set, which ray tracing
+/// shaders need: a closest hit may only read the sets of the layers it shares with its ray generation shader. Next,
+/// pass the result to [`besl::lex`]. The sources are kept for the rest of the test run.
+pub(crate) fn stacked_asset(asset: &str) -> besl::parser::Node<'static> {
+	let (layers, shader) = asset_parts(asset);
+	let layers: Vec<(&'static str, &'static str)> = layers
+		.into_iter()
+		.map(|(layer, source)| (&*layer.leak(), &*source.leak()))
+		.collect();
+	let module = besl::parse(shader.leak())
+		.unwrap_or_else(|error| panic!("Failed to parse {asset}: {error:?}. The most likely cause is invalid BESL syntax."));
+	besl::stack_layers(module, layers).unwrap_or_else(|error| panic!("Failed to stack {asset} on its layout layers: {error:?}"))
 }
 
 /// Links one checked-in BESL shader through the frontend production baking uses.

@@ -530,6 +530,7 @@ mod debug_tests {
 							interface: ShaderInterface {
 								workgroup_size: None,
 								sets: Vec::new(),
+								ray_payload: None,
 							},
 							artifact: ShaderArtifact::Spirv,
 						},
@@ -570,6 +571,7 @@ mod debug_tests {
 							interface: ShaderInterface {
 								workgroup_size: None,
 								sets: Vec::new(),
+								ray_payload: None,
 							},
 							artifact: ShaderArtifact::Spirv,
 						},

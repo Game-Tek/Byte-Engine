@@ -1,0 +1,52 @@
+// The first pass of the surfel scan: each workgroup scans 1024 consecutive elements and records their total.
+//
+// The elements are every cell's surfel count, then every slot's wanted rays, then a zero that becomes the grand total.
+// Reading a cell's count also resets it for the next frame's count pass and hands it to the scatter as the cell's
+// fill. Next, the partial pass scans the group totals, and the add pass offsets each group by the totals before it.
+
+// Each thread's running total while the workgroup scans them.
+thread_totals: workgroup<u32, 256>;
+
+// Returns scan element `index`, resetting a cell's count as it reads it.
+scan_element: fn (index: u32) -> u32 {
+	if (index < SURFEL_CELL_COUNT) {
+		let count: u32 = atomic_exchange(surfel_cells.counts[index], 0);
+		atomic_store(surfel_cells.fill[index], count);
+		return count;
+	}
+	let slot: u32 = index - SURFEL_CELL_COUNT;
+	if (slot < surfel_parameters.surfel_capacity) {
+		return surfel_ray_wants[slot];
+	}
+	return 0;
+}
+
+main: fn (input: StageInput) -> void {
+	let thread: u32 = input.thread_idx;
+	let first: u32 = input.threadgroup_position * SURFEL_SCAN_GROUP_ELEMENTS + thread * 4;
+	let values: vec4u = vec4u(scan_element(first), scan_element(first + 1), scan_element(first + 2), scan_element(first + 3));
+	let thread_total: u32 = values.x + values.y + values.z + values.w;
+	thread_totals[thread] = thread_total;
+	workgroup_barrier();
+
+	// An inclusive scan of the thread totals: after the step of distance d, each total covers the 2d threads ending at
+	// it. Every thread reads before any thread writes, so each step needs two barriers.
+	for (let distance: u32 = 1; distance < SURFEL_SCAN_WORKGROUP_SIZE; distance = distance * 2) {
+		let earlier: u32 = 0;
+		if (thread >= distance) {
+			earlier = thread_totals[thread - distance];
+		}
+		workgroup_barrier();
+		thread_totals[thread] = thread_totals[thread] + earlier;
+		workgroup_barrier();
+	}
+
+	let offset: u32 = thread_totals[thread] - thread_total;
+	surfel_scan[first] = offset;
+	surfel_scan[first + 1] = offset + values.x;
+	surfel_scan[first + 2] = offset + values.x + values.y;
+	surfel_scan[first + 3] = offset + values.x + values.y + values.z;
+	if (thread == SURFEL_SCAN_WORKGROUP_SIZE - 1) {
+		surfel_scan_partials[input.threadgroup_position] = thread_totals[thread];
+	}
+}

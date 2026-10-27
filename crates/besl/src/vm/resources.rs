@@ -8,6 +8,7 @@ enum DescriptorBinding<'a> {
 	Buffer(&'a mut Buffer),
 	Texture { texture: &'a mut Texture, sampler: Sampler },
 	Image(&'a mut Texture),
+	AccelerationStructure(&'a AccelerationStructure),
 }
 
 impl DescriptorBinding<'_> {
@@ -16,6 +17,7 @@ impl DescriptorBinding<'_> {
 			Self::Buffer(_) => "buffer",
 			Self::Texture { .. } => "texture",
 			Self::Image(_) => "image",
+			Self::AccelerationStructure(_) => "acceleration structure",
 		}
 	}
 
@@ -381,6 +383,12 @@ impl<'a> DescriptorBindings<'a> {
 		self.bind_descriptor(slot, DescriptorBinding::Image(image));
 	}
 
+	/// Binds the scene that `intersect` and `trace_occlusion` test rays against, at an `AccelerationStructure`
+	/// descriptor's slot.
+	pub fn bind_acceleration_structure(&mut self, slot: ResourceSlot, scene: &'a AccelerationStructure) {
+		self.bind_descriptor(slot, DescriptorBinding::AccelerationStructure(scene));
+	}
+
 	pub fn bind_push_constant(&mut self, push_constant: &'a mut Buffer) {
 		self.push_constant = Some(push_constant);
 	}
@@ -455,6 +463,14 @@ impl<'a> DescriptorBindings<'a> {
 		match descriptor {
 			DescriptorBinding::Image(image) => Ok(&mut **image),
 			descriptor => Err(descriptor.type_mismatch(slot, "image")),
+		}
+	}
+
+	/// Returns the scene bound at `slot`. The scene outlives the bindings, so the reference doesn't borrow them.
+	pub(super) fn acceleration_structure(&mut self, slot: ResourceSlot) -> Result<&'a AccelerationStructure, VmError> {
+		match self.descriptor_mut(slot)? {
+			DescriptorBinding::AccelerationStructure(scene) => Ok(*scene),
+			descriptor => Err(descriptor.type_mismatch(slot, "acceleration structure")),
 		}
 	}
 

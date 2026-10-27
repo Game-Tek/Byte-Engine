@@ -1,0 +1,229 @@
+---
+title: Ray tracing
+description: Keep ray tracing pipelines cheap to rebuild and the hits they shade coherent when you change how the GHI traces rays.
+icon: Sparkles
+---
+
+Read this page before you change ray tracing pipelines, shader binding tables,
+or `trace_rays` in the graphics hardware interface (GHI), or the Metal Shading
+Language (MSL) that the shader compiler generates for them. It explains how the
+Metal backend builds ray tracing from compute pipelines and visible function
+tables, why the API has the shape it has, and which rules a change must keep.
+The [GHI reference](/docs/reference/ghi#ray-tracing) defines what the API
+accepts, and the [BESL compilation note](/docs/develop/besl/compilation#generate-ray-tracing-shaders)
+describes the MSL that the shader compiler generates to follow these rules.
+
+<Callout type="info" title="Change the rules on purpose">
+	The rules on this page are the contract between the GHI and the shaders it
+	links. If a change needs to break one, treat it as a design change: update
+	this page and the shader compiler in the same change, and explain why.
+</Callout>
+
+## How Metal runs a trace
+
+Metal has no ray tracing pipeline object, so the GHI builds one from objects
+that Metal has.
+
+| GHI object | Metal object |
+| --- | --- |
+| Ray generation shader | A compute kernel. |
+| Closest-hit shader | A `[[visible]]` function, compiled once to an `MTL4BinaryFunction`. |
+| Ray tracing pipeline | The kernel's compute pipeline state, linked with the binary function of every hit group. |
+| Shader binding table | A visible function table of that pipeline state. Entry *i* calls the closest hit of the hit group that record *i* names. |
+| Trace | A compute dispatch over the launch size. |
+
+A trace runs in three steps:
+
+1. `trace_rays` binds the table at buffer 14 and dispatches the kernel, one
+   thread for each point of the launch size.
+2. The kernel intersects its ray with an inline intersector tagged
+   `intersection_function_buffer`. Only that tag makes the result report
+   `function_id`, which is the instance's hit group offset plus the geometry
+   index: the hit's record. Every triangle is opaque, so no geometry calls an
+   intersection function, and the default, empty function buffer is enough.
+3. The kernel calls the table entry of the record, which runs the closest hit
+   of its hit group. The closest hit fills the payload that the kernel passes
+   it.
+
+In MSL, the two sides of that contract look like this:
+
+```cpp
+kernel void ray_generation(
+	uint index [[thread_position_in_grid]],
+	visible_function_table<ClosestHit> hits [[buffer(14)]],
+	constant Rays& rays [[buffer(16)]],
+	constant Materials& materials [[buffer(17)]]) {
+	intersector<instancing, triangle_data, intersection_function_buffer> trace;
+	const ray probe(rays.origins[index].xyz, float3(0.0, 0.0, 1.0), 0.0, 100.0);
+	const auto result = trace.intersect(probe, rays.scene, intersection_function_buffer_arguments());
+	Payload payload = {};
+	if (result.type != intersection_type::none) {
+		const HitAttributes hit = { result.function_id, result.user_instance_id, result.geometry_id, result.primitive_id };
+		const SetAddresses sets = { { &rays, &materials } };
+		hits[result.function_id](payload, hit, sets);
+	}
+	rays.payloads[index] = payload;
+}
+
+[[visible]] void closest_hit(thread Payload& payload, thread const HitAttributes& hit, thread const SetAddresses& sets) {
+	constant Materials& materials = *static_cast<constant Materials*>(sets.sets[1]);
+	payload.value = materials.values[hit.record];
+}
+```
+
+## Rules for the argument table
+
+| Buffer | Holds |
+| --- | --- |
+| 14 | The shader binding table's visible function table |
+| 15 | The push constant |
+| 16 + *i* | Descriptor set *i* of the ray generation shader |
+
+- **The kernel takes every set its shader declares.** A compute or raster
+  pipeline leaves out a set when its shader uses no resource of it. A ray
+  tracing pipeline can't, because the kernel passes each set's address to the
+  closest hits it calls, and a closest hit can read a set that the kernel never
+  reads.
+- **A closest hit's sets are a prefix of the kernel's.** A closest hit declares
+  the kernel's first sets, in the same order, or fewer. It finds set *i* at
+  position *i* of the addresses the kernel passes, so pipeline creation matches
+  each of its sets with the kernel's set at the same position by layout, and
+  rejects any other.
+- **Closest hits reach resources only through the addresses the kernel
+  passes.** A visible function has no argument table of its own, so it can't
+  read buffer 15, 16, or any other slot. It reads the push constant the same
+  way, through an address the kernel passes.
+
+## Rules for pipelines
+
+- **A closest hit compiles once.** A factory compiles a closest hit to a binary
+  function the first time a pipeline uses its shader with a set of
+  specialization constants, and keeps the function with the shader. Later
+  pipelines of that factory link the function without compiling it again.
+  Rebuild a pipeline with the factory that built it, because another factory
+  compiles every closest hit again.
+- **Binary function names are unique.** Metal identifies a binary function by
+  its name, and generated closest hits share an entry point name, so the GHI
+  names each one after its entry point, the shader's index, and the index of the
+  specialization, such as `closest_hit.3.0`.
+- **Each function links once.** Hit groups that share a shader and its
+  constants share one binary function, which the pipeline links once.
+- **The call stack is one call deep.** Only the kernel calls closest hits, and
+  closest hits call nothing, so the pipeline's maximum call stack depth is 1.
+  A closest hit that called another visible function would need a deeper
+  stack in every pipeline that links it.
+- **A pipeline that gains a hit group links again from scratch.** Metal can
+  extend a pipeline state with more binary functions, but linking 200 closest
+  hits takes 0.68 ms cold and 0.2 ms from Metal's cache. A full link costs
+  little, and it keeps each pipeline independent of the one it replaces.
+
+## Rules for shader binding tables
+
+- **A write fills a new table.** Recordings that traced with the old table may
+  not have run yet, so a write never changes a table in place. The GHI keeps the
+  new table with the pipeline it was written for. Each recording that traces
+  retains the table it binds and keeps it resident until the recording
+  completes. Filling a table entry costs about 0.25 µs, so rewriting every
+  record when the pipeline changes costs little.
+- **A table works only with the pipeline it was written for.** Metal creates a
+  visible function table from one pipeline state, and fills it with that
+  state's function handles, so `trace_rays` rejects a table that was written for
+  another pipeline than the one bound.
+- **Metal checks neither records nor payloads.** A record past the end of the
+  table can fault the GPU, and a closest hit that takes another payload type
+  links and corrupts the payload. The application keeps every record below the
+  table's record count, and the shader compiler keeps payload types in
+  agreement.
+
+## Rules for launches
+
+- **The grid is exact.** `trace_rays` dispatches the launch size with
+  `dispatchThreads`, so Metal runs partial threadgroups at the edges instead of
+  padding threads. A ray generation shader doesn't compare its launch index with
+  the launch size.
+- **Threadgroups follow the shape of the launch.** A launch over a line runs in
+  groups of 64 × 1, and any other launch in groups of 8 × 8, both clamped to the
+  pipeline's maximum threads per threadgroup. Square groups keep neighboring
+  launch indices together, and those usually trace neighboring rays.
+- **A launch without width records nothing.** A launch size with a width of 0
+  dispatches nothing. A height or a depth of 0 counts as 1.
+
+## Rules for acceleration structure builds
+
+- **A timestamp after a bottom-level build ends the encoder.** Metal 4 writes a
+  timestamp inside a compute encoder without waiting for the encoder's
+  acceleration structure stage, so a counter around builds would read nothing,
+  and a later counter would get their time. When an encoder recorded a
+  bottom-level build, a compaction, or a compacted size query since its last
+  timestamp, the next timestamp ends the encoder and is written from the command
+  buffer, which waits for everything the encoder recorded. Bottom-level builds
+  happen while meshes load, so the extra encoder split costs little.
+- **A top-level build doesn't end the encoder.** Every frame builds its
+  top-level structures, and splitting the encoder after them cost Sponza 0.16 ms
+  a frame on an Apple M4. The build runs alongside the work recorded after it,
+  so a counter around it reads close to nothing, and the first pass that reads
+  the structure waits for it.
+
+## Why hits are sorted before they're shaded
+
+Measurements on an Apple M4 with macOS 27.2 decided the shape of the API.
+
+| Measurement | Result |
+| --- | --- |
+| 16,384 rays over 25 hit groups, with closest hits of 8 statements | 72 µs when each ray calls a random hit group, 11 µs when each run of 32 rays calls one |
+| The same rays, with closest hits of 48 statements | 402 µs against 25 µs |
+| A visible function table against a `switch` inlined into the kernel | 1.1 to 1.4 times the cost |
+| Sorting 16,384 hits by hit group with a counting sort | About 9 µs |
+| Compiling a closest hit the size of a material's | About 26 ms cold, and 14 µs from Metal's cache |
+| Linking 200 closest hits | 0.68 ms cold, and 0.2 ms from Metal's cache |
+
+Calls through the table cost little. Divergence costs a lot: the M4 runs
+threads in lockstep groups of 32, and when the threads of one group call
+different hit groups, it runs those calls one after another. Sorting hits by hit
+group first costs about 9 µs, so a trace that sorts its hits and then shades
+them takes 17.5 µs and 37 µs in the two cases, instead of 72 µs and 402 µs.
+
+So the API separates tracing from shading:
+
+- A compute pass traces rays with the inline intersector and writes each hit
+  with its record. The pass resolves a ray that misses by itself, so pipelines
+  have no miss stage.
+- A counting sort orders the hits by hit group.
+- `trace_rays` launches a kernel that rebuilds each sorted hit and calls its
+  closest hit. The API has no call that traces and shades a ray in one step,
+  because that call would shade hits in ray order.
+
+## Other backends
+
+Vulkan and Direct3D 12 report no ray tracing support, and their ray tracing
+calls panic. The API maps to both of them: a hit's record is the instance's hit
+group offset plus the geometry index there too, a shader binding table becomes
+their hit group records, and the kernel's call through the table becomes a call
+through a hit object, or a callable shader that the record selects.
+
+## Tests that guard the rules
+
+These GPU scenarios in `crates/ghi/tests/rendering/ray_tracing.rs` run on Metal
+only.
+
+| Test | Guards |
+| --- | --- |
+| `invoke_runs_the_hit_group_of_the_record_the_intersector_reports` | A hit runs the hit group its record names, across instances and geometries. Two hit groups share a shader with different constants, and two closest hits share a function name. |
+| `closest_hit_reads_sets_the_ray_generation_shader_does_not_use` | The kernel takes every set its shader declares, and closest hits reach them through the addresses it passes. |
+| `trace_rays_launches_exactly_the_requested_grid` | The grid is exact for a line, a rectangle, a box, and a launch without width. |
+| `rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group` | A rebuilt pipeline runs its new hit group, and a trace recorded before a table write keeps its records. |
+| `counters_time_bottom_level_builds` | A counter around bottom-level builds measures them, even when earlier work left the encoder open. |
+
+Run them with the other GHI rendering scenarios:
+
+```bash
+cargo nextest run --ignore-default-filter -p byte-engine-ghi --test rendering
+```
+
+The measurements in the table come from the spikes in
+`crates/ghi/src/metal/ray_tracing_spikes.rs`. Run them again after you change
+how closest hits compile, link, or get called:
+
+```bash
+cargo nextest run -p byte-engine-ghi --run-ignored only ray_tracing_spikes --no-capture
+```

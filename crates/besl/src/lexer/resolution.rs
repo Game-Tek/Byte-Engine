@@ -3,6 +3,8 @@ use std::{collections::HashMap, fmt::Write as _};
 use super::*;
 use crate::parser;
 
+const DECLARATION_ORDER_DOCS_PATH: &str = "reference/besl/language#declaration-order";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DescendantSearch {
 	Any,
@@ -117,6 +119,7 @@ pub(super) fn resolve_descriptor_type(
 		"StorageImage" => Ok(BindingTypes::Image {
 			format: format.unwrap_or("unknown").to_string(),
 		}),
+		"AccelerationStructure" => Ok(BindingTypes::AccelerationStructure),
 		struct_name => {
 			let r#struct = resolve_type(chain, struct_name)?;
 			let members = match r#struct.borrow().node() {
@@ -190,7 +193,7 @@ pub(super) fn resolve_type_name(chain: &[NodeReference], type_name: &parser::Typ
 
 /// Resolves a bare name through the lexical scope chain.
 pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
-	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
+	get_reference(chain, name).ok_or_else(|| LexError::UndeclaredName { name: name.to_string() })
 }
 
 /// Resolves the name after `.` in `left.name` to a member of `left`'s type.
@@ -198,25 +201,39 @@ pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<Node
 /// Member names form their own namespace, so a local, binding, or field named `name` elsewhere in scope never
 /// shadows the member.
 pub(super) fn resolve_accessed_member(left: &NodeReference, name: &str) -> Result<NodeReference, LexError> {
-	let undeclared = || LexError::AccessingUndeclaredMember { name: name.to_string() };
+	// A member its owner lacks is a misspelling, never a declaration that comes too late, so it reports its own error
+	// rather than an undeclared name, which `explain_declaration_order` would match against later declarations.
+	let missing = |owner: Option<&str>| {
+		LexError::invalid(match owner {
+			Some(owner) => format!(
+				"`{name}` isn't a member of `{owner}`. The most likely cause is a misspelled member name. Use one of the members of `{owner}`."
+			),
+			None => format!(
+				"Member `{name}` is read from a value without members. The most likely cause is `.{name}` after a texture, an image, or another resource that holds no members. Read members only from structs, buffer descriptors, and the `push_constant` block."
+			),
+		})
+	};
 
 	// Buffer bindings and push constants declare their members on themselves rather than on a value type.
 	if let Some(source) = expression_source(left) {
-		match source.borrow().node() {
+		let source = source.borrow();
+		match source.node() {
 			Nodes::Binding {
 				r#type: BindingTypes::Buffer { members },
 				..
 			}
-			| Nodes::PushConstant { members } => return find_named_child(members, name).ok_or_else(undeclared),
+			| Nodes::PushConstant { members } => {
+				return find_named_child(members, name).ok_or_else(|| missing(source.get_name()));
+			}
 			_ => {}
 		}
 	}
 
-	let r#type = infer_expression_type(left).ok_or_else(undeclared)?;
+	let r#type = infer_expression_type(left).ok_or_else(|| missing(None))?;
 	let r#type = r#type.borrow();
 	match r#type.node() {
-		Nodes::Struct { fields, .. } => find_named_child(fields, name).ok_or_else(undeclared),
-		_ => Err(undeclared()),
+		Nodes::Struct { fields, .. } => find_named_child(fields, name).ok_or_else(|| missing(r#type.get_name())),
+		_ => Err(missing(r#type.get_name())),
 	}
 }
 
@@ -723,7 +740,7 @@ thread_local! {
 }
 
 /// Returns the built-in type named `name` from the shared registry.
-fn builtin_type(name: &str) -> Option<NodeReference> {
+pub(super) fn builtin_type(name: &str) -> Option<NodeReference> {
 	BUILTIN_REGISTRY.with(|root| match root.node() {
 		Nodes::Scope { children, .. } => find_named_child(children, name),
 		_ => None,
@@ -826,16 +843,54 @@ pub(super) fn resolve_call_target(
 	}
 
 	// Calls may name an intrinsic or a type constructor, so this fallback accepts any declaration, not only types.
-	if let Some(r#type) = get_reference(chain, name) {
-		let mismatched_intrinsic_with_known_types =
-			matches!(r#type.borrow().node(), Nodes::Intrinsic { .. }) && parameters.iter().all(expression_has_reliable_type);
-		// Resource expressions do not always expose a value type during linking, so keep the established fallback only when
-		// overload matching lacked enough information. Fully known intrinsic arguments must match their declared types.
-		if !mismatched_intrinsic_with_known_types {
-			return Ok(r#type);
-		}
+	let r#type = resolve_member(chain, name)?;
+	let mismatched_intrinsic_with_known_types =
+		matches!(r#type.borrow().node(), Nodes::Intrinsic { .. }) && parameters.iter().all(expression_has_reliable_type);
+	// Resource expressions do not always expose a value type during linking, so keep the established fallback only when
+	// overload matching lacked enough information. Fully known intrinsic arguments must match their declared types.
+	if mismatched_intrinsic_with_known_types {
+		return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 	}
-	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
+	Ok(r#type)
+}
+
+/// Reports a use of a declaration that comes after its user, which fails to link as an undeclared name or an undefined
+/// type because each declaration can only use the declarations before it.
+///
+/// `declarations` starts with the declaration whose linking failed with `error` and goes on with the declarations
+/// after it in the same scope. When one of those declares the undeclared name, or is a struct named as the undefined
+/// type, the result names both declarations and says how to fix the order. Every other error passes through unchanged.
+/// Scopes call this only after a failure, so linking a valid program never pays for it.
+pub(super) fn explain_declaration_order(error: LexError, declarations: &[parser::Node]) -> LexError {
+	let (name, struct_only) = match &error {
+		LexError::UndeclaredName { name } => (name, false),
+		LexError::ReferenceToUndefinedType { type_name } => (type_name, true),
+		_ => return error,
+	};
+	let [user, later @ ..] = declarations else {
+		return error;
+	};
+	let Some(user) = user.name() else {
+		return error;
+	};
+	// A type can only name a struct, while a bare name or a call can name any declaration.
+	let used = later.iter().find_map(|declaration| find_declaration(declaration, name));
+	if !used.is_some_and(|used| !struct_only || matches!(used.node(), parser::Nodes::Struct { .. })) {
+		return error;
+	}
+	LexError::invalid(format!(
+		"`{user}` uses `{name}`, which is declared after it. The most likely cause is that `{name}` is written below `{user}`, but a declaration can only use the declarations before it. Move `{name}` above `{user}`. See {}.",
+		crate::online_docs_url(DECLARATION_ORDER_DOCS_PATH)
+	))
+}
+
+/// Returns the declaration that occupies `name` in its scope, where a lookup by name would find it: `declaration`
+/// itself, or one that a scope `declaration` holds.
+fn find_declaration<'d, 'a>(declaration: &'d parser::Node<'a>, name: &str) -> Option<&'d parser::Node<'a>> {
+	match declaration.node() {
+		parser::Nodes::Scope { children, .. } => children.iter().find_map(|child| find_declaration(child, name)),
+		_ => (declaration.name() == Some(name)).then_some(declaration),
+	}
 }
 
 /// Reports whether overload resolution can trust the expression's linked value type.

@@ -450,6 +450,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	let every_feature = VisibilityFeatures {
 		gtao: true,
 		ssgi: true,
+		surfel_gi: true,
 		contact_shadows: true,
 		debug_views: true,
 	};
@@ -464,6 +465,21 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 			"Material evaluation reached `{binding}` without its feature. The most likely cause is a read outside the material evaluation suffix block that reads the feature's push-constant member."
 		);
 	}
+
+	// Surfel GI writes the images material evaluation reads indirect diffuse light from, but no surfel ray reads the
+	// diffuse light material evaluation writes for SSGI's.
+	let surfels_alone = VisibilityFeatures {
+		ssgi: false,
+		..every_feature
+	};
+	assert!(
+		reaches(surfels_alone, "ssgi_history"),
+		"Material evaluation should read indirect diffuse light while surfel GI is built in."
+	);
+	assert!(
+		!reaches(surfels_alone, "diffuse_radiance_map"),
+		"Material evaluation wrote diffuse radiance without SSGI. The most likely cause is a write that reads `indirect_diffuse` instead of `ssgi`."
+	);
 }
 
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.
@@ -492,6 +508,76 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 			.generate(&settings, &root)
 			.await
 			.expect("generated material evaluation program should compile for the platform shader language");
+	}
+}
+
+/// Builds the baking generator for a project that builds surfel GI in, which generates hit shaders.
+fn hit_generator() -> VisibilityShaderGenerator {
+	material_generator_with(VisibilityFeatures {
+		surfel_gi: true,
+		..Default::default()
+	})
+}
+
+/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, a
+/// tangent frame, static and dynamic parameters, and emission.
+#[test]
+fn material_hit_shaders_produce_valid_besl() {
+	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+		let graph = graph(source);
+		let shader = hit_generator()
+			.generate_hit(&graph, &parameters)
+			.expect("test graph should generate a hit shader")
+			.expect("a project with surfel GI should build hit shaders");
+		besl::lex(shader).expect("generated hit program should link");
+	}
+}
+
+/// A project that leaves surfel GI out traces no rays, so its materials get no hit shaders.
+#[test]
+fn materials_get_hit_shaders_only_with_surfel_gi() {
+	let graph = graph(TEXTURED_GRAPH);
+	let parameters = textured_parameters();
+	let without = material_generator_with(VisibilityFeatures {
+		surfel_gi: false,
+		..Default::default()
+	});
+
+	assert!(
+		without
+			.generate_hit(&graph, &parameters)
+			.expect("graph should generate")
+			.is_none()
+	);
+	assert!(
+		hit_generator()
+			.generate_hit(&graph, &parameters)
+			.expect("graph should generate")
+			.is_some()
+	);
+}
+
+/// Verifies a material's hit shader lowers to a closest hit in the running platform's shader language.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn material_hit_shaders_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+		let graph = graph(source);
+		let shader = hit_generator()
+			.generate_hit(&graph, &parameters)
+			.expect("test graph should generate a hit shader")
+			.expect("a project with surfel GI should build hit shaders");
+		let root = besl::lex(shader).expect("generated hit program should link");
+
+		let settings = ShaderGenerationSettings::closest_hit().name("material_hit".to_string());
+
+		PlatformShaderCompiler::new()
+			.generate(&settings, &root)
+			.await
+			.expect("generated hit program should compile for the platform shader language");
 	}
 }
 

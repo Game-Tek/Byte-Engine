@@ -157,6 +157,28 @@ impl Generator {
 				}
 				string.push(')');
 			}
+			// Ray tracing stage values are kernel parameters, or members of the hit a closest hit shades. See
+			// `ray_tracing.rs`.
+			"launch_index" => string.push_str(LAUNCH_INDEX_ARGUMENT),
+			"launch_size" => string.push_str(LAUNCH_SIZE_ARGUMENT),
+			"hit_distance"
+			| "hit_custom_index"
+			| "hit_geometry_index"
+			| "hit_primitive_index"
+			| "hit_barycentrics"
+			| "ray_origin"
+			| "ray_direction" => self.emit_hit_value(string, name),
+			// The helper runs the closest hit of the hit's record through the kernel's shader binding table, and passes it
+			// the addresses of the kernel's resources.
+			"invoke" => {
+				string.push_str("_besl_invoke(");
+				string.push_str(HITS_ARGUMENT);
+				self.emit_separator(string);
+				string.push_str(CONTEXT_ARGUMENT);
+				self.emit_separator(string);
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			// Every other intrinsic with a body emits its expansion.
 			_ if has_body => {
 				for element in elements {
@@ -331,6 +353,8 @@ impl Generator {
 					// These call the helpers that `generate_msl_header_block` declares.
 					"atomic_compare_exchange" => "_besl_atomic_compare_exchange",
 					"find_lsb" => "_besl_find_lsb",
+					"intersect" => "_besl_intersect",
+					"trace_occlusion" => "_besl_trace_occlusion",
 					"subgroup_ballot" => "_besl_subgroup_ballot",
 					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",
 					"subgroup_ballot_find_lsb" => "_besl_subgroup_ballot_find_lsb",

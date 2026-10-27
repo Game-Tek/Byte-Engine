@@ -10,7 +10,8 @@
 //! The result stores pre-exposed hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation
 //! lights the missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
 //! fraction is also the surface's ambient occlusion, which darkens environment specular light. Turn the pass off with
-//! `render.ssgi.enabled`.
+//! `render.ssgi.enabled`. Surfel GI takes its place on a device that traces rays; see
+//! [`super::IndirectDiffuseSource`].
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -29,8 +30,8 @@ pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] 
 /// The `SsgiSettings` struct holds the runtime SSGI controls the visibility pipeline manager applies to every sink.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SsgiSettings {
-	/// Whether the pass runs. Without it, indirect diffuse light comes from the environment alone, and material
-	/// evaluation takes occlusion from GTAO alone, or applies none.
+	/// Whether SSGI may light frames. It doesn't light the frames surfel GI lights. Without either, indirect diffuse
+	/// light comes from the environment alone, and material evaluation takes occlusion from GTAO alone, or applies none.
 	pub(crate) enabled: bool,
 }
 

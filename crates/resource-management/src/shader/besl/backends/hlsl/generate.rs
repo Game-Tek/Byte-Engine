@@ -23,6 +23,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_no_ray_tracing(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
 		if order.iter().any(Self::has_unsupported_hlsl_atomic_context) {
 			return Err(());
@@ -473,6 +474,9 @@ impl Generator {
 						}
 						let _ = write!(string, " : register(s{register_index}, space0);{break_char}");
 					}
+					besl::BindingTypes::AccelerationStructure => {
+						unreachable!("HLSL generation rejects ray tracing programs before it emits their bindings")
+					}
 				}
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
@@ -505,6 +509,9 @@ impl Generator {
 			),
 			Stages::Task { .. } => ("amplification", "// Requires: Amplification shader support\n"),
 			Stages::Mesh { .. } => ("mesh", "// Requires: Mesh shader support\n"),
+			Stages::RayGeneration | Stages::ClosestHit => {
+				unreachable!("`validate_no_ray_tracing` rejects ray tracing stages before HLSL emits a header.")
+			}
 		};
 		let _ = write!(
 			hlsl_block,

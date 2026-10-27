@@ -1,8 +1,10 @@
-//! Turns BEMX material graphs into visibility material-evaluation compute shaders.
+//! Turns BEMX material graphs into visibility material-evaluation compute shaders, and into the closest-hit shaders
+//! that report a material's surface to surfel GI's rays.
 //!
 //! [`visibility_shader_scope`] declares the buffers, images, structs, and BESL helper functions every visibility
 //! shader can reference. [`VisibilityShaderGenerator`] writes the statements that compute a graph's surface, see
-//! [`material`], and wraps them with the pixel reconstruction prefix and the lighting suffix from [`sources`].
+//! [`material`], and wraps them with the pixel reconstruction prefix and the lighting suffix from [`sources`], or with
+//! the hit reconstruction prefix and the payload suffix.
 
 mod ast;
 mod material;
@@ -62,6 +64,14 @@ const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 4] = [
 	layer!("visibility/layouts/material-evaluation.besl"),
 ];
 
+/// The layout layers every material closest-hit shader builds on: the scene records, then the scene and ray-traced
+/// scene sets, which the surfel shade pass lists first so its hit shaders' sets are a prefix of its own.
+pub(super) const MATERIAL_HIT_LAYERS: [(&str, &str); 3] = [
+	layer!("visibility/layouts/scene-records.besl"),
+	layer!("visibility/layouts/scene.besl"),
+	layer!("visibility/layouts/ray-traced-scene.besl"),
+];
+
 /// The `VisibilityShaderGenerator` struct turns BEMX material graphs into visibility material-evaluation shaders.
 ///
 /// Install it on the material, FBX, and glTF asset handlers so every baked material targets this pipeline. Build it
@@ -71,6 +81,7 @@ pub struct VisibilityShaderGenerator {
 	// Parsed once at construction so each material build only clones it.
 	common: Node<'static>,
 	scope: Node<'static>,
+	hit_scope: Node<'static>,
 	features: VisibilityFeatures,
 }
 
@@ -89,6 +100,7 @@ impl VisibilityShaderGenerator {
 		Self {
 			common: common_shader_scope(),
 			scope: visibility_shader_scope(),
+			hit_scope: material_hit_scope(),
 			features,
 		}
 	}
@@ -135,6 +147,87 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		Ok(root)
 	}
+
+	/// Builds the closest-hit shader that reports `graph`'s surface to the rays that hit it, when surfel GI is built in.
+	///
+	/// Its `main` takes the hit as its stage input and the `HitSurface` payload, and returns the payload with the
+	/// surface's diffuse albedo, emission, and normal. Static parameters are the same specialization constants as in
+	/// material evaluation, so a material's hit group specializes the shader with its variant's values.
+	fn generate_hit<'a>(
+		&self,
+		graph: &'a bemx::Graph,
+		parameters: &'a [MaterialParameter],
+	) -> Result<Option<Node<'a>>, String> {
+		if !self.features.surfel_gi {
+			return Ok(None);
+		}
+		let (body, features) = material::material_hit_body(graph, parameters).map_err(|error| error.to_string())?;
+
+		let mut statements = material_hit_prefix_statements(features);
+		statements.extend(body);
+		statements.extend(material_hit_suffix_statements());
+		let main = Node::function(
+			"main",
+			vec![
+				Node::parameter("input", "StageInput"),
+				Node::parameter("payload", "HitSurface"),
+			],
+			"HitSurface",
+			statements,
+		);
+
+		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_HIT_LAYERS).map_err(|error| {
+			format!(
+				"Failed to stack a material's hit shader on the ray-traced scene layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
+			)
+		})?;
+		let declarations = (0u32..)
+			.zip(parameters)
+			.filter_map(|(index, parameter)| match parameter.kind {
+				ParameterKind::Value(r#type) => Some(Node::specialization(
+					&parameter.name,
+					bemx::besl::type_name(r#type),
+					material_variable_specialization_id(index),
+				)),
+				_ => None,
+			})
+			.collect();
+		root.add(declarations);
+		root.add(vec![self.hit_scope.clone()]);
+
+		Ok(Some(root))
+	}
+}
+
+/// Returns the intrinsic that samples a material texture with explicit derivatives, which both material evaluation and
+/// closest-hit shaders read textures through.
+fn sample_texture_intrinsic<'a>() -> Node<'a> {
+	Node::intrinsic_with_parameters(
+		"sample_texture_2d_array_grad",
+		vec![
+			Node::parameter("texture_array", "Texture2D"),
+			Node::parameter("texture_index", "u32"),
+			Node::parameter("uv", "vec2f"),
+			Node::parameter("uv_derivative_x", "vec2f"),
+			Node::parameter("uv_derivative_y", "vec2f"),
+		],
+		Node::sentence(vec![Node::member_expression("textures")]),
+		"vec4f",
+	)
+}
+
+/// Builds the scope of the helpers a material's closest-hit shader calls, which read only the scene sets.
+fn material_hit_scope<'a>() -> Node<'a> {
+	let mut children = vec![sample_texture_intrinsic()];
+	children.extend(
+		[
+			(U16_TO_U32_SOURCE, "u16_to_u32"),
+			(DECODE_F16_VEC2_SOURCE, "decode_f16_vec2"),
+			(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+		]
+		.map(|(source, name)| parse_besl_function(source, name)),
+	);
+	Node::scope("VisibilityHit", children)
 }
 
 /// Builds the scope that gives material programs the helpers of the visibility lighting contract.
@@ -152,31 +245,22 @@ pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 				Node::member("raw_ddy", "vec3f"),
 			],
 		),
-		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` and
-		// `ssgi` are nonzero when those passes wrote their images this frame. `debug_views` packs the debug views to
-		// write, as `DebugViews::shown` does. The phase is the `transparent` specialization instead, so each phase's
-		// pipeline compiles only its own path.
+		// `evaluation_index` selects the pixel list this dispatch shades; every pixel reads its own material. `gtao` is
+		// nonzero when GTAO wrote its image this frame. `indirect_diffuse` names the source that wrote the indirect
+		// diffuse images, as `IndirectDiffuseSource::push_constant` numbers it, or is zero when none did. `ssgi` is
+		// nonzero when SSGI lit the frame, so its next frame's rays need this frame's diffuse light. `debug_views` packs the debug views to write, as `DebugViews::shown` does. The phase is the
+		// `transparent` specialization instead, so each phase's pipeline compiles only its own path.
 		Node::push_constant(vec![
 			Node::member("evaluation_index", "u32"),
 			Node::member("gtao", "u32"),
 			Node::member("ssgi", "u32"),
+			Node::member("indirect_diffuse", "u32"),
 			Node::member("debug_views", "u32"),
 		]),
 	];
 
 	// Texture operations that differ by API stay typed intrinsics; every other helper is authored once in BESL.
-	let sample_texture = Node::intrinsic_with_parameters(
-		"sample_texture_2d_array_grad",
-		vec![
-			Node::parameter("texture_array", "Texture2D"),
-			Node::parameter("texture_index", "u32"),
-			Node::parameter("uv", "vec2f"),
-			Node::parameter("uv_derivative_x", "vec2f"),
-			Node::parameter("uv_derivative_y", "vec2f"),
-		],
-		Node::sentence(vec![Node::member_expression("textures")]),
-		"vec4f",
-	);
+	let sample_texture = sample_texture_intrinsic();
 	// Helpers are listed in dependency order: each one only calls helpers declared above it.
 	let helpers = [
 		(U16_TO_U32_SOURCE, "u16_to_u32"),

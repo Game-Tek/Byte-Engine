@@ -283,4 +283,7 @@ pub enum DescriptorLayout {
 	Texture,
 	Image,
 	PushConstant(BufferLayout),
+	/// A top-level acceleration structure, bound with
+	/// [`DescriptorBindings::bind_acceleration_structure`](super::DescriptorBindings::bind_acceleration_structure).
+	AccelerationStructure,
 }

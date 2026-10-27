@@ -1,0 +1,35 @@
+// The per-sink set of the surfel resolve and allocate passes: the sink's camera, its tiles' spawn requests, and the
+// images material evaluation reads indirect diffuse light from. List it after `surfel-gi.besl`.
+
+SurfelResolveParameters: struct {
+	// Maps the sink camera's view-space positions and directions to world space.
+	view_to_world: mat4f,
+	// Which debug views to write; see `debug_view_slot`.
+	debug_views: u32,
+	// Spawn tiles per row: one per resolve workgroup.
+	spawn_tiles_per_row: u32,
+	// The spawn tiles of the sink that its request buffer holds.
+	spawn_tile_count: u32,
+	// The chance per frame that one resolve pixel one meter from the camera asks for a surfel. It scales with view
+	// depth, so distant surfaces, which take fewer pixels, still spawn.
+	spawn_probability: f32,
+}
+
+// One tile's spawn request.
+SurfelSpawn: struct {
+	position: vec3f,
+	// The normal, packed by `encode_surfel_normal`.
+	normal: u32,
+	// The surfel the new one copies its light from, or NO_SURFEL.
+	parent: u32,
+	// Nonzero when the tile asks for a surfel this frame.
+	requested: u32,
+}
+
+surfel_resolve_parameters: descriptor<{ type: SurfelResolveParameters, binding: 1150, access: read }>;
+surfel_spawns: descriptor<{ type: SurfelSpawn[], binding: 1151, access: read_write }>;
+// The half-resolution light material evaluation upsamples, named `SSGI History` like SSGI's.
+history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1152, access: write }>;
+// The half-resolution view-space normals material evaluation upsamples with, named `SSGI Normals` like SSGI's.
+normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1153, access: write }>;
+debug_view_targets: descriptor<{ type: StorageImage, binding: 1154, access: write, count: 15 }>;

@@ -1,0 +1,1 @@
+{"name":"Surfel Allocate","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-allocate.besl"}}

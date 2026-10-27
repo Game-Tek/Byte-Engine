@@ -1,0 +1,6 @@
+{
+	"$schema": "../../schemas/besl.bead.schema.json",
+	"stage": "Compute",
+	"workgroup": [256, 1, 1],
+	"layouts": ["layouts/surfel-gi.besl"]
+}

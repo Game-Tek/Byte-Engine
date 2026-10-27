@@ -358,6 +358,19 @@ impl EffectAnalysis {
 				| "atomic_load"
 				| "texture_size"
 				| "image_size"
+				// Ray queries only read the scene. `invoke` runs a closest hit, which may write resources, so it stays
+				// impure.
+				| "intersect"
+				| "trace_occlusion"
+				| "launch_index"
+				| "launch_size"
+				| "hit_distance"
+				| "hit_custom_index"
+				| "hit_geometry_index"
+				| "hit_primitive_index"
+				| "hit_barycentrics"
+				| "ray_origin"
+				| "ray_direction"
 		)
 	}
 }

@@ -5,6 +5,7 @@ impl crate::device::Device for Device {
 	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
+	type RayTracingPipeline = crate::vulkan::factory::RayTracingPipeline;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&std::alloc::Global
@@ -56,6 +57,10 @@ impl crate::device::Device for Device {
 			&self.shaders,
 			builder,
 		)
+	}
+
+	fn create_ray_tracing_pipeline(&mut self, _: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		crate::rt::unsupported("Vulkan")
 	}
 }
 

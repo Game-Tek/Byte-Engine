@@ -26,7 +26,6 @@ impl Context {
 			retired_materializations: std::array::from_fn(|_| Vec::with_capacity(128)),
 			free_materialization_handles: Vec::with_capacity(128),
 			descriptor_sequence_epochs: [0; MAX_FRAMES_IN_FLIGHT],
-			acceleration_structures: Vec::new(),
 			shaders: Vec::with_capacity(1024),
 			pipelines: Vec::with_capacity(1024),
 			meshes: Vec::new(),

@@ -117,7 +117,9 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 			besl::Nodes::Binding { r#type, .. } => match r#type {
 				besl::BindingTypes::Buffer { members } => members.iter().for_each(&mut visit),
 				besl::BindingTypes::BufferArray { element, .. } => visit(element),
-				besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
+				besl::BindingTypes::Image { .. }
+				| besl::BindingTypes::CombinedImageSampler { .. }
+				| besl::BindingTypes::AccelerationStructure => {}
 			},
 			besl::Nodes::Const { r#type, value, .. } => {
 				visit(r#type);

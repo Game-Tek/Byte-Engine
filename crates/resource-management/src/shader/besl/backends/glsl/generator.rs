@@ -57,6 +57,7 @@ impl Generator {
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_no_ray_tracing(&shader_compilation_settings.stage, &order)?;
 		let requirements = intrinsic_requirements(&order);
 		let uses_subgroup_intrinsics = requirements.uses_subgroup_intrinsics;
 		// Reachable code needs native 16-bit floating-point arithmetic when it declares or converts to an f16 type.
@@ -99,6 +100,9 @@ impl Generator {
 				"GLSL task shader lowering is unsupported. The most likely cause is that a task BESL shader was sent to the deferred GLSL backend."
 			),
 			Stages::Mesh { .. } => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
+			Stages::RayGeneration | Stages::ClosestHit => {
+				unreachable!("`validate_no_ray_tracing` rejects ray tracing stages before GLSL emits a header.")
+			}
 		}
 
 		glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
@@ -747,6 +751,9 @@ impl NodeEmitter for Generator {
 						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
 						_ => "uniform sampler2D",
 					},
+					besl::BindingTypes::AccelerationStructure => {
+						unreachable!("GLSL generation rejects ray tracing programs before it emits their bindings")
+					}
 				};
 
 				let _ = write!(string, "layout(set=0,binding={slot}");
@@ -791,7 +798,9 @@ impl NodeEmitter for Generator {
 						}
 						string.push('}');
 					}
-					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {
+					besl::BindingTypes::Image { .. }
+					| besl::BindingTypes::CombinedImageSampler { .. }
+					| besl::BindingTypes::AccelerationStructure => {
 						Self::identifier(name).push_to(string);
 					}
 				}

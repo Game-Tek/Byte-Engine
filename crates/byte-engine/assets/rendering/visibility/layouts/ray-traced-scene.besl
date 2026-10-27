@@ -1,0 +1,34 @@
+// The ray-traced scene set: the top-level acceleration structure the frame's rays trace, the full-detail triangles of
+// the primitives they hit, and the table that leads a hit to the frame's records. The first sink's frame writes it in
+// a frame that surfel GI lights; `rendering/pipelines/visibility/acceleration_structures.rs` fills it. List it after
+// `scene.besl`: material closest-hit shaders list the three layers, and the surfel trace and shade passes list them
+// first.
+
+// The spread angle, in radians, of the cone each traced ray stands for. A few rays sample each surfel's hemisphere a
+// frame, so each stands for a wide cone, and its hits read the coarse texture levels that cone covers.
+HIT_CONE_SPREAD: const f32 = 0.31;
+
+// What a closest-hit shader reports about the surface a ray hit: the payload of every ray tracing pipeline whose
+// shaders list this layer.
+HitSurface: struct {
+	// The diffuse albedo: the base color times one minus the metalness. Zero on the back of a single-sided surface.
+	albedo: vec3f16,
+	// One when the ray hit the front of the surface, or either side of a double-sided one, and zero otherwise.
+	front_face: u32,
+	// The emitted radiance, in nits. Zero on the back of a single-sided surface.
+	emission: vec3f,
+	// The shading normal, turned toward the side the ray came from.
+	normal: vec3f16,
+}
+
+// For each geometry of each instance the frame places, at the instance's custom index plus the geometry's index: the
+// frame's mesh record of the primitive the geometry holds, then the geometry's first triangle in
+// `flat_triangle_indices`.
+RayTracingGeometries: struct {
+	geometries: vec2u[1024],
+}
+
+scene_structure: descriptor<{ type: AccelerationStructure, binding: 1140, access: read }>;
+// Each full-detail triangle of a primitive that rays hit, as three vertex indices from the primitive's first vertex.
+flat_triangle_indices: descriptor<{ type: u16[], binding: 1141, access: read, memory: device }>;
+ray_tracing_geometries: descriptor<{ type: RayTracingGeometries, binding: 1142, access: read, memory: device }>;

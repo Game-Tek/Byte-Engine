@@ -32,6 +32,7 @@ These are the built-in value types available to authored BESL:
 | Half vectors | `vec2f16`, `vec3f16`, `vec4f16` | Two, three, or four half-precision values. |
 | Float vectors | `vec2f`, `vec3f`, `vec4f` | Two, three, or four single-precision values. |
 | Matrices | `mat4f`, `mat4x3f` | Four-by-four and four-column-by-three-row single-precision matrices. |
+| Ray hits | `Hit` | What a ray found, from [`intersect`](/docs/reference/besl/intrinsics#hits). |
 
 User-declared structs and fixed-size arrays are also types. Resource handle
 types are listed with [descriptors](/docs/reference/besl/interface#descriptors).
@@ -39,7 +40,8 @@ types are listed with [descriptors](/docs/reference/besl/interface#descriptors).
 ## Structs
 
 Declare a struct with `Name: struct`. Write each member as `name: Type` and
-separate members with commas. You can add a trailing comma.
+separate members with commas. You can add a trailing comma. A struct can't
+take the name of a [built-in type](#built-in-types), such as `Hit` or `vec3f`.
 
 ```rust
 Light: struct {
@@ -216,6 +218,24 @@ main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
 Anonymous `interface` and `output` types are valid only in `main` parameters and
 its return type. Separate their fields with commas. You can add a trailing
 comma, but you can't use semicolons as field separators.
+
+## Declaration order
+
+Each declaration can use only the declarations before it:
+
+- A function can call only the functions declared before it, and read only the
+  constants, descriptors, `push_constant` block, and other module-level values
+  declared before it.
+- A struct that a declaration uses as a type must be declared before that
+  declaration. This includes a struct's fields, a constant's or descriptor's
+  type, and a function's parameters, return type, and locals.
+
+The declarations of [layout layers](/docs/reference/besl/interface#layout-layers)
+come before the shader's own, in the order the layers are listed. `main` is the
+exception: it can use every declaration in the shader and its layers, wherever
+you declare it.
+
+A declaration that uses one declared after it doesn't link.
 
 ## Variables and expressions
 

@@ -1,0 +1,372 @@
+---
+title: Surfel GI
+description: Understand how the visibility pipeline gathers ray-traced bounce light in surfels, and the rules a change to its stages must keep.
+icon: Sun
+---
+
+Read this page before you change surfel global illumination (GI): its stages,
+its buffers, the hit shaders materials bake for it, or how it shares the
+indirect diffuse images with SSGI. What an application can rely on is specified
+under [surfel GI](/docs/reference/rendering#surfel-gi) in the rendering
+reference, and the GHI's side of ray tracing is in the
+[ray tracing design note](/docs/develop/rendering/ray-tracing).
+
+Surfel GI follows [webgiya](https://github.com/jure/webgiya) by Jure Triglav,
+which builds on "Global Illumination Based on Surfels" by Henrik Halén, Andreas
+Brinck, Kyle Hayward, and Xiangshun Bei. The shaders that adapt webgiya's carry
+its MIT notice, and `THIRD_PARTY_NOTICES.md` lists them.
+
+## The frame's stages
+
+The first sink records the frame-wide stages after its light clusters and
+before it draws the scene, so the GPU can run them alongside the raster passes,
+which write nothing they read. It records them all or nothing: a frame either
+records every one of them or none, because each stage leaves buffers in the
+state the next one expects. Every sink that surfel GI
+lights then records its own two stages inside `screen-space`.
+
+| Stage | Pass | What it does |
+| --- | --- | --- |
+| `acceleration-structures` | Builds | Builds the bottom levels that fit this frame's budget, then the top level from this frame's instances. |
+| `surfel-grid` | `surfel-count` | Ages each surfel, recycles the dead ones, counts the cells each live surfel overlaps, and asks for its rays. |
+| | `surfel-scan-groups`, `-partials`, `-add` | One exclusive scan over every cell count and every surfel's wanted rays, which also grants the frame's rays. |
+| | `surfel-scatter` | Lists each surfel in its cells, counting each cell's fill down to zero, and writes a record for each granted ray. |
+| `surfel-trace` | `surfel-trace` | Draws each granted ray's direction from its surfel's guide or the cosine-weighted distribution, and traces it with the inline intersector. A miss writes its result. A hit is kept, with its sort key. |
+| | `surfel-sort-scan`, `-scatter` | A counting sort that orders the hits by the material they hit. |
+| | `surfel-shade` | A ray tracing pipeline: one invocation per sorted hit runs the hit's closest-hit shader with `invoke`, lights the surface it reports, and votes for the surfel whose light reaches it most. |
+| `surfel-integrate` | `surfel-integrate` | Folds each surfel's ray results into its estimate, its guide, and its radial depth, measures how far its radial depth is clear, and rewrites its record. |
+| `screen-space` | `surfel-resolve` | Lights each half-resolution pixel from the surfels of its cell that can see it, into the images SSGI writes, and votes on spawns and despawns. |
+| | `surfel-allocate` | Turns each tile's spawn request into a surfel. |
+
+`render_pass/surfel_gi.rs` creates the buffers and the stages, and
+`ray_tracing.rs` keeps the shade pass's pipeline and its shader binding table
+current.
+
+## Rays take turns within a fixed budget
+
+Each surfel asks for its rays in `surfel-count`, and the scan places every
+surfel's wanted rays after the cell counts, in slot order. The budget grants a
+window of `render.surfel-gi.ray-budget` wanted rays that starts where the last
+frame's window ended and wraps around, so when surfels ask for more rays than
+the budget, each surfel's rays still get their turn. The scatter, the trace, and
+the integrate pass all find a ray's place in the window with the same formula:
+the ray's index among the wanted rays, minus the window's start, wrapped around
+the wanted rays.
+
+The trace, the hit sort's scatter, and the shade pass dispatch one thread per
+ray of the budget, and threads past the frame's rays or hits return. A fixed
+dispatch needs no indirect arguments, and once surfels fill the budget, which
+they do in steady state, few threads idle.
+
+## Each surfel takes at most 32 cell entries
+
+The cell lists keep `SURFEL_LISTING_LIMIT` entries, 32, for each pool slot.
+`surfel-count` and `surfel-scatter` both stop listing a surfel once it has that
+many, and both visit its cells in the same order: its finer cascade first, then
+by z, y, and x. So a full pool's lists always fit, every count the scan reads
+matches the entries the scatter writes, and the readers need no clamp. Each
+pass keeps its own copy of the walk: one shared through a layout function, and
+one that returns at the limit, both measured about 0.02 ms slower in
+`surfel-grid` on Sponza at 1024 × 1024 on an Apple M4.
+
+Run through the grid's own arithmetic, 4 million random surfels overlap 15
+cells on average and 21 in cascade 0, and 0.8% of them overlap more than 32. A
+search near the corners of cascade 0, where the grid lists surfels in cascade 1
+too, found surfels that overlap 75. Those past the limit lose the cells the grid
+visits last, along one edge of their disc, and pixels there see less coverage,
+so they spawn surfels sooner. The limit costs 128 bytes a slot, 4 MiB at the
+default capacity.
+
+It replaced a shared budget of 8 entries a slot, which the lists outgrew once
+the pool was about half full. The scatter dropped the entries past the budget
+while the counts still promised them, so the cells the scan reaches last, those
+of the outer cascades, lost their lists while their counts still held back
+spawns and charged rent.
+
+## Hits sort by material before they're shaded
+
+The shade pass runs each hit's closest-hit shader through a visible function
+table, and rays that call different shaders side by side cost several times
+more than rays that call one; the [ray tracing design note](/docs/develop/rendering/ray-tracing#why-hits-are-sorted-before-theyre-shaded)
+has the measurements. So the trace keys each hit by the material slot it hit,
+which the geometry table and the frame's mesh record name, and the counting sort
+orders the hits by that key. Materials that share a closest-hit shader still
+sort into separate runs, which keeps the key independent of the published
+pipeline.
+
+## Hit groups keep their numbers
+
+Each material whose bake built a closest-hit shader gets a hit group: the
+shader with the specialization constants of the material's variant. Materials
+with the same shader and constants share the group. Groups keep the number they
+first got, so a pipeline built again with more groups runs every older group as
+before, and group 0 runs `surfel-default-hit.besl`, a black occluder, for every
+record whose material's group the published pipeline doesn't have yet.
+
+`SurfelShading` requests the pipeline again once the last request settled and
+groups arrived since, so a burst of materials makes a few requests instead of
+one each. The published pipeline keeps shading until the next one publishes,
+and a request that fails leaves its new groups running the default shader. The
+shader binding table maps each hit record, one per geometry of each bottom
+level, to its material's group, and is written again when the pipeline, the
+records, or a material's group changes. The frame admits the meshes it draws
+for the first time, which gives their geometries records, before it writes the
+table, so the table holds the records of every instance the frame places.
+
+## Light is stored pre-exposed
+
+Every surfel's estimate and record hold pre-exposed light, as the lit image
+does: multiplied by the exposure of the frame that stored it. Half floats can't
+hold physical daylight, and the multiscale mean estimator's constants, such as
+its firefly margin of 0.1, are tuned for light around one. The integrate pass
+rescales each estimate by the ratio of this frame's exposure to the exposure the
+pool last stored its light at, which the pipeline manager keeps for the pool, and
+the shade pass divides the light it reads from last frame's records by that
+same previous exposure.
+
+## Surfels gather the sky
+
+A ray that misses brings back the environment's light from its direction, as in
+webgiya, so each surfel's light holds the sky it sees through every opening,
+from the directions it sees it. The miss reads the environment's specular level
+for roughness 2/7, whose blur keeps a small bright patch of sky from making the
+estimate noisy, as webgiya's blurred level does. A hit reads the same light from
+the surfels around it, so sky light that falls through an opening and off a wall
+reaches surfels that see no sky. Under surfel GI, material evaluation adds no
+environment light of its own, and each surfel's hit fraction only dims the
+environment's reflections. The sky's light comes at the surfels' detail, without
+normal maps, and follows a change to the environment as fast as the estimate
+converges.
+
+An earlier design left the sky to material evaluation: it added the
+environment's irradiance around each pixel's normal times one minus the
+surfels' hit fraction. That lost which part of the sky a surface sees, so a
+wall that sees sky only high up through a roof got the light of a hemisphere
+centered on the horizon. It also hung the whole sky on one number per surfel,
+and in a dim gallery that number's error set neighbors visibly apart.
+
+A pixel no surfel covers yet takes the environment's irradiance from the
+resolve, as material evaluation lights it without surfel GI, until a surfel
+spawns there. A hit where no surfel lies yet, such as a surface off the screen,
+gets the suns alone: the sky it would see is unknown, and counting all of it
+would leak light into closed rooms.
+
+## The estimate keeps converging
+
+The multiscale mean estimator moves its long mean toward each frame's average
+only as fast as its catch-up allows, and while the long and short means agree
+within a deviation, the catch-up falls to 1/256 of its variance-based blend:
+at most 1/8192 a frame. A surfel's first 32 frames average evenly, and with
+four rays a frame they leave an error about as large as all the sky light a dim
+room gets, which the estimator alone would keep for thousands of frames. So the long
+mean also moves at least as fast as an even average of the frames the estimate
+holds, which stop growing at 200. An error that small then halves within about
+a hundred frames, and a change the estimator notices still catches up at once.
+
+## Rays follow each surfel's guide
+
+Each surfel keeps a guide: 8 × 8 cells over its hemisphere, each holding the
+light its rays found in that direction lately, times the direction's cosine.
+The cells come from the concentric map of the unit square onto the disk, lifted
+onto the hemisphere so that equal areas of the square cover equal solid angles.
+A cell's density is then a constant, so the trace draws a cell by its share of
+the guide and a uniform point inside it, and knows the direction's density
+without a table.
+
+Once a surfel is 16 frames old, the trace draws half of its rays from the guide
+and the other half from the cosine-weighted distribution, so directions the
+guide holds dark keep being sampled. Each ray's weight, the cosine-weighted
+density over the mixture's density, turns the mixture back into the
+cosine-weighted average the estimate expects. Webgiya steers 90% of the rays;
+here half stay with the cosine-weighted distribution, which bounds every ray's
+weight at 2 and leaves half the rays for the hit fraction, which counts only
+them.
+
+A miss brings back the environment's light from its direction, so the guide
+learns where the sky shines through, and guided rays keep finding those
+openings. The integrate pass moves the four cells around each ray's direction
+toward the light the ray found, and keeps the guide's sum, `guide_mass`, which
+the trace draws against.
+
+## The hit fraction counts cosine rays
+
+The weights keep the light's average right, but they vary: about 0.07 in the
+guide's strongest cells and 2 outside them. A hit fraction weighed by them
+scatters around its true value even when every ray hits. Material evaluation
+dims reflections by one minus the hit fraction, clamped at zero, so in an
+enclosed room the scatter's low half let the environment's reflection through.
+In Sponza's south gallery, the lit image's surfel-sized patches followed
+max(0, 1 − A), with a correlation of 0.71 to 0.90 over five runs, and not the
+diffuse light.
+
+So each ray's result says whether the guide drew it, and the hit fraction
+averages only the rays drawn from the cosine-weighted distribution, each
+counting once. In an enclosed room every one of them hits, and the fraction is
+exactly one. The light still counts every ray with its weight.
+
+The hit fraction stays unbiased. In Veach's multiple importance sampling, any
+weights that sum to one wherever the integrand isn't zero, and that are zero
+wherever their distribution can't draw, give an unbiased estimate. The hit
+fraction's integrand is the visibility times cos θ / π, which is zero wherever
+the cosine-weighted density is, so a weight of one on that distribution and zero
+on the guide qualifies. The trace picks each ray's distribution independently of
+where the ray goes, so given the picks, the cosine-weighted rays are plain
+cosine-weighted samples: Veach's multi-sample model, whose variance is never
+larger than the one-sample model's (Sbert, Havran, and Szirmay-Kalos, 2016).
+Dividing by the cosine-weighted rays a frame traced, rather than by how many it
+expected, keeps an enclosed room's fraction exactly one. A frame whose rays all
+came from the guide, one frame in 16 with four rays, leaves the fraction as it
+was; the picks don't depend on what the rays find, so skipping those frames
+biases nothing.
+
+Dividing the weighted hit fraction by the sum of the weights, Hesterberg's
+weighted average (1995), would also read one when every ray hits. With four rays
+a frame, though, its bias follows the guide, and the estimator's average over
+frames doesn't remove it.
+
+In the same gallery, the hit fraction now reads exactly one, and the lit image
+follows the diffuse light. Its 32 × 32-pixel blocks changed by 73–88% of their
+light between two captures 230 frames apart, and now change by 12%; the
+gallery reads a sixth as bright, because the reflection it no longer gets was
+most of its light.
+
+## Radial depth hides surfels behind walls
+
+A surfel's disc reaches every pixel near its center, including pixels on the
+other side of a thin wall. So each surfel also keeps its radial depth: 4 × 4
+cells over the same map, each holding the first four moments of how far its
+rays went there, up to twice its radius. The resolve weighs each surfel's light
+by the pixel's visibility from it, the Hamburger four-moment bound of moment
+shadow mapping, as webgiya runs it. A cell no ray reached yet holds zero and
+hides nothing. When every surfel around a pixel hides it, the pixel takes no
+light, sky included, and a hit fraction of one, which also hides the
+environment's reflections there.
+
+Radial depth doesn't share the guide's map. The resolve maps a direction to its
+cells for every pixel and surfel pair, so radial depth uses the hemisphere's
+octahedral projection, which needs no trigonometry, and the integrate pass maps
+each ray's direction to both. The resolve also skips the four-moment solve for a
+pixel well nearer than a cell's mean distance, which Cantelli's inequality shows
+the surfel sees, because the bound the solve finds can't exceed Cantelli's.
+
+Most of the test's cost comes before the solve: turning each pixel's direction
+into the surfel's frame, mapping it to cells, and reading them. So the integrate
+pass also stores each surfel's clearance, the distance below which every cell a
+ray reached clears a point alone, and the resolve sees a pixel nearer than that
+without any of the test. A cell clears a point by Cantelli's inequality, or when
+the point lies below the lower root of the cell's second orthogonal polynomial,
+where some distribution with the cell's moments lies entirely beyond the point,
+so the four-moment bound finds no shadow. Cantelli's bound alone clears little,
+because one cell whose distances spread sinks it; the root clears up to about
+the nearest surface a cell's rays hit. A blend of cells clears whatever all of
+its cells clear, because its distribution mixes theirs.
+
+Pixels on a surfel's own plane lie just below the point its rays leave from, so
+they read the cells along its horizon. The shade pass weighs the surfels around
+each hit by the same test, so light that reached one side of a wall doesn't
+bounce off the other side; it reads at most 16 surfels a hit. On Sponza at
+1024 × 1024 on an Apple M4, the test at hits adds about 0.04 ms to
+`surfel-trace`, and the gallery's light stays within the spread between
+captures of one build.
+
+## Hits keep the surfels that light them
+
+Pixels vote only for the surfels the camera sees, so a surfel off the screen
+would age out even while it lights what other surfels' rays hit, such as a
+ceiling lit through a doorway. The shade pass votes for the surfel whose light
+reaches each hit most, which keeps the surfels the bounce light depends on
+alive.
+
+## Rules a change must keep
+
+- **The frame-wide stages leave their counts at zero.** The scan resets each
+  cell count as it reads it, the scatter counts each cell's fill down to zero,
+  and the hit sort's scan resets the hit counts. A stage that skips this breaks
+  the next frame.
+- **Each surfel takes at most `SURFEL_LISTING_LIMIT` entries.** `surfel-count`
+  and `surfel-scatter` visit a surfel's cells in the same order and stop at the
+  same limit, and the cell entries hold the limit's entries for every pool slot.
+  The resolve and the shade pass read their cell's range without a clamp, so a
+  pass that lists a surfel in more cells, or entries sized below the capacity
+  times the limit, reads and writes past the buffer. The limit in
+  `render_pass/surfel_gi.rs` equals the one in `layouts/surfel-gi.besl`.
+- **The ray window formula is the same everywhere.** `surfel-scatter`,
+  `surfel-trace`, and `surfel-integrate` must agree on which ray is which.
+- **A sort key fits 32 bits.** The material slot sits above 20 bits of rank, so
+  the material limit stays at most 4,096 and the ray budget at most 2<sup>20</sup>.
+  `SURFEL_HIT_KEYS` in `layouts/surfel-gi.besl` equals `MAX_MATERIALS`.
+- **Records reach the table before their instances.**
+  `SceneAccelerationStructures::admit` gives the meshes a frame draws for the
+  first time their records and returns the record list the shader binding
+  table is written from; `prepare` places the instances after. The shade pass's
+  `invoke` calls the table entry a hit's record names without a bounds check, so
+  a table written before admission lets a new mesh's hits run past its end.
+- **Closest hits list a prefix of the shade pass's layers.** Material hit
+  shaders and the default hit list the scene records, the scene, and the
+  ray-traced scene layers; the shade pass lists those, then the surfel GI layer.
+  `HitSurface`, the payload, stays declared once, in the ray-traced scene layer.
+- **A new surfel's estimate starts over.** The allocation sets its count to zero,
+  so its first frame of rays replaces the light it took from its parent, and
+  clears its guide and radial depth, so a recycled slot keeps nothing of the
+  surfel it held before.
+- **The guide's mass is the sum of its cells.** The integrate pass adds each
+  cell's change as the cell stores it, after rounding to a half float, so the
+  trace's draw never runs past the last cell.
+- **The trace and the integrate pass agree on directions.** The trace writes the
+  point of the square each ray left toward, and the integrate pass learns the
+  guide and the radial depth at that point.
+- **Each ray says which distribution drew it.** The trace sets `guided` in every
+  ray's result, and the integrate pass counts only the rays without it toward
+  the hit fraction, once each. Counting a guided ray, or any ray by its weight,
+  scatters an enclosed room's hit fraction below one and lets the environment's
+  reflections in.
+- **The clearance stays within every cell's own tests.** `surfel_moment_clearance`
+  reads a cell through `surfel_normalized_moments`, as `surfel_moment_visibility`
+  does, and returns at most the distance where its Cantelli early out or its
+  solve's zero-shadow branch stops holding. A clearance past either would light
+  pixels behind a wall.
+- **Votes only grow between the count pass's reads.** The resolve and the shade
+  pass vote with `atomic_max`, and the resolve skips a vote it finds already
+  cast as high. A pass that lowers a vote in between would make that skip drop
+  votes.
+- **The sky reaches a pixel once.** Surfel light holds the environment's
+  light, so under surfel GI material evaluation adds none, which the
+  `indirect_diffuse` push constant tells it with the value
+  `IndirectDiffuseSource::push_constant` gives surfel GI, and the shade pass
+  adds none at hits. The resolve writes the environment's light for a pixel no
+  surfel covers. A pass that adds the environment again counts the sky twice.
+- **A bake without surfel GI carries none of its assets.**
+  `VisibilityFeatures::excludes` leaves out the stems in `SURFEL_GI_PIPELINES`
+  and `SURFEL_SHADING_SHADERS`, so a new `surfel-*` pipeline goes in the first
+  and a new shader the pipeline manager assembles a pipeline from goes in the
+  second. A stem left out of both is baked for every project, and a platform
+  whose shading language has no ray tracing rejects a ray tracing shader.
+- **Host records match their layers.** Every struct the host sizes buffers
+  with has a stride test.
+
+## Tests that guard the rules
+
+| Test | Guards |
+| --- | --- |
+| `surfel_grid_lists_every_cell_a_surfel_overlaps_and_leaves_counts_zero` | The grid lists every overlapped cell, never a free slot, and leaves the counts at zero. |
+| `surfel_grid_lists_each_surfel_in_at_most_32_cells` | A full pool of surfels that each overlap 40 to 76 cells takes exactly 32 entries a surfel, and every entry holds a surfel its cell's count promised. |
+| `surfel_scan_grants_rays_round_robin_within_the_budget` | The window of granted rays starts where the last one ended and wraps, and each ray record names its surfel and sample. |
+| `surfel_sort_orders_hits_by_hit_group` | Hits come out in material order and trace order within a material, misses stay out, and the counts end at zero. |
+| `surfel_integrate_estimates_bounce_and_occluded_fraction` | A first estimate is the pre-exposed average of the rays, with misses bringing the environment's light, and their hit fraction. |
+| `surfel_integrate_blends_young_surfels_by_count` | A young estimate averages its frames evenly. |
+| `surfel_integrate_clamps_fireflies` | A settled estimate clamps a bright sample near its short-window mean. |
+| `surfel_integrate_keeps_converging_after_it_settles` | A settled estimate's error on steady but noisy light, too small for the catch-up to notice, halves within 100 frames. |
+| `surfel_integrate_counts_only_cosine_rays_toward_the_hit_fraction` | The hit fraction counts each cosine-weighted ray once and no guided ray, while the light keeps every ray's weight. |
+| `surfel_integrate_keeps_the_hit_fraction_when_the_guide_drew_every_ray` | A frame whose rays all came from the guide moves the light and leaves the hit fraction. |
+| `surfel_guide_stays_normalized_after_an_update` | A guide learns light where hits found it, and its mass stays the sum of its cells. |
+| `surfel_radial_depth_blends_nearer_hits_faster` | Radial depth follows a nearer hit five times faster than a farther one, and counts a miss as twice the radius. |
+| `surfel_clearance_stops_short_of_the_nearest_wall` | A surfel whose rays all leave its reach is clear almost to its reach, and one nearer hit brings its clearance just below the hit. |
+| `surfel_hemisphere_map_round_trips_and_keeps_solid_angle` | The map's inverse undoes it, and equal areas of the square cover equal solid angles. |
+| `surfel_resolve_blends_the_light_of_the_surfels_around_each_pixel` | A pixel blends its surfels' light by their weights, a surfel that hasn't faded in adds none, and a pixel no surfel lights takes the environment's light. |
+| `surfel_resolve_occlusion_hides_a_surfel_behind_a_wall` | A pixel takes no light from a surfel whose radial depth hides it, and a pixel every surfel hides takes neither light nor sky. |
+| `surfel_shade_occlusion_hides_a_surfel_behind_a_wall` | A ray's hit takes the light of a surfel that sees it and none from a surfel whose radial depth puts a wall between them. |
+| `surfel_allocate_spawns_from_the_free_stack_until_it_is_empty` | Spawns take free slots first, and a new surfel's estimate starts over from its parent's light. |
+| `hit_groups_keep_their_numbers_as_shaders_arrive`, `records_run_their_material_group_only_once_the_pipeline_has_it` | Hit groups keep their numbers, and a record runs the default group until the published pipeline has its material's. |
+| `surfel_gi_parameter_leaves_out_every_surfel_asset` | A bake without surfel GI leaves out every `surfel-*` pipeline and shader in the engine's assets, the shade pass's ray tracing shaders included, and a bake with it keeps them. |
+| `surfel_ray_tracing_shaders_lower_to_the_platform_shader_language` | The shade pass and the default hit lower to MSL with each layer in its own set. |
+| `material_hit_shaders_lower_to_the_platform_shader_language` | Material hit shaders lower to MSL closest hits. |

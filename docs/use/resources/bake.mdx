@@ -128,6 +128,12 @@ its code and skips its pipelines:
 The application reads the same file at startup and doesn't create the left-out
 passes. Turning a left-out feature on at runtime logs a warning instead.
 
+Ray-traced surfel global illumination works the other way around: BELD leaves
+it out unless `config.json` sets `render.surfel-gi.enabled` to `true`. With it
+in, BELD also bakes a closest-hit shader for every material, which surfel rays
+run where they hit the material, and the `surfel-*` pipelines and shaders. See
+[Light with ray-traced global illumination](/docs/use/lighting#light-with-ray-traced-global-illumination).
+
 A missing file keeps every feature. The application also loads every other value
 in `config.json` as a startup parameter, so `{"render": {"debug": true}}` sets
 `render.debug`. Environment variables and command-line arguments still override

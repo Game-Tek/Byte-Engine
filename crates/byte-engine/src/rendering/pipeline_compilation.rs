@@ -39,6 +39,41 @@ impl SpecializedComputePipelineRequest {
 	}
 }
 
+/// The `RayTracingPipelineRequest` struct describes a ray tracing pipeline by everything it compiles from: its ray
+/// generation shader, and the closest-hit shader and specialization constants of each hit group, in group order.
+///
+/// Pass it to [`PipelineManagerClient::request_ray_tracing_pipeline`]. A request with more hit groups is another
+/// pipeline, so keep tracing with the published one until the new one publishes. Each compilation server's factory
+/// compiles a closest hit once per set of constants, so a request that only adds groups compiles only the new ones.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct RayTracingPipelineRequest {
+	ray_generation: String,
+	hit_groups: Vec<HitGroupShader>,
+}
+
+impl RayTracingPipelineRequest {
+	/// Creates a request from the ray generation shader's resource ID and the closest hit of each hit group, in group
+	/// order.
+	pub(crate) fn new(ray_generation: impl Into<String>, hit_groups: Vec<HitGroupShader>) -> Self {
+		Self {
+			ray_generation: ray_generation.into(),
+			hit_groups,
+		}
+	}
+}
+
+/// The `HitGroupShader` struct names one hit group of a ray tracing pipeline: a closest-hit shader and the constants that
+/// specialize it.
+///
+/// Materials that share both share the hit group, so a pipeline links each such shader once. List them in a
+/// [`RayTracingPipelineRequest`].
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct HitGroupShader {
+	/// The closest-hit shader's resource ID.
+	pub(crate) shader_id: String,
+	pub(crate) specialization: Vec<ghi::pipelines::SpecializationMapEntry>,
+}
+
 /// The `PipelineState` enum reports the published state of a pipeline request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PipelineState {
@@ -96,6 +131,13 @@ impl PipelineManagerClient {
 	/// Equal requests return the same [`PipelineRef`] and compile once.
 	pub(crate) fn request_specialized_compute_pipeline(&self, request: SpecializedComputePipelineRequest) -> PipelineRef {
 		self.request(PipelineRequestKind::SpecializedCompute(request))
+	}
+
+	/// Requests a ray tracing pipeline without waiting for shader loading or compilation.
+	///
+	/// Equal requests return the same [`PipelineRef`] and compile once.
+	pub(crate) fn request_ray_tracing_pipeline(&self, request: RayTracingPipelineRequest) -> PipelineRef {
+		self.request(PipelineRequestKind::RayTracing(request))
 	}
 
 	/// Returns the state published for a pipeline without draining worker results.
@@ -233,6 +275,7 @@ impl PipelineManagerServer {
 				PipelineRequestKind::SpecializedCompute(request) => {
 					self.compile_specialized_compute_pipeline(&resources, request).await
 				}
+				PipelineRequestKind::RayTracing(request) => self.compile_ray_tracing_pipeline(&resources, request).await,
 			};
 			if self.completions.send(PipelineCompletion { key, revision, result }).is_err() {
 				break;
@@ -349,6 +392,68 @@ impl PipelineManagerServer {
 		})
 	}
 
+	/// Creates a detached ray tracing pipeline from its ray generation shader and the closest hit of each hit group.
+	async fn compile_ray_tracing_pipeline(
+		&mut self,
+		resources: &resource_management::ResourceManager,
+		request: RayTracingPipelineRequest,
+	) -> Result<DetachedPipeline, String> {
+		use ghi::Device as _;
+
+		let RayTracingPipelineRequest {
+			ray_generation,
+			hit_groups,
+		} = request;
+		// Shader reads are independent of mutable GHI state, so every shader is prepared before any is adopted.
+		let shader_ids =
+			std::iter::once(ray_generation.as_str()).chain(hit_groups.iter().map(|group| group.shader_id.as_str()));
+		let prepared = utils::r#async::try_join_all(shader_ids.map(|id| shared_shader(&self.shared, resources, id))).await?;
+		let (prepared_ray_generation, prepared_hits) = prepared
+			.split_first()
+			.expect("The prepared shaders start with the ray generation shader.");
+		let wrong_stage = |id: &str, stage: &str| {
+			format!(
+				"Ray tracing pipeline shader '{id}' is not a {stage} shader. The most likely cause is that the shader's `.besl.bead` file names another stage. Set its `stage` to `{stage}`."
+			)
+		};
+		if !matches!(prepared_ray_generation.stage, ghi::ShaderTypes::RayGen) {
+			return Err(wrong_stage(&ray_generation, "RayGeneration"));
+		}
+		if let Some(hit) = prepared_hits
+			.iter()
+			.find(|hit| !matches!(hit.stage, ghi::ShaderTypes::ClosestHit))
+		{
+			return Err(wrong_stage(&hit.id, "ClosestHit"));
+		}
+		check_ray_payloads(
+			(&ray_generation, prepared_ray_generation.ray_payload.as_ref()),
+			prepared_hits.iter().map(|hit| (hit.id.as_str(), hit.ray_payload.as_ref())),
+		)?;
+
+		let (ray_generation_handle, _) = self.adopt_shader(prepared_ray_generation)?;
+		let hit_handles = prepared_hits
+			.iter()
+			.map(|hit| self.adopt_shader(hit).map(|(handle, _)| handle))
+			.collect::<Result<Vec<_>, _>>()?;
+		let hit_parameters = prepared_hits
+			.iter()
+			.zip(&hit_handles)
+			.zip(&hit_groups)
+			.map(|((hit, handle), group)| hit.parameter(handle).with_specialization_map(&group.specialization))
+			.collect::<Vec<_>>();
+		let builder = ghi::pipelines::ray_tracing::Builder::new(
+			&[],
+			prepared_ray_generation.parameter(&ray_generation_handle),
+			&hit_parameters,
+		)
+		.name(&ray_generation);
+
+		Ok(DetachedPipeline::RayTracing {
+			pipeline: self.factory.create_ray_tracing_pipeline(builder),
+			sets: prepared_ray_generation.sets.clone(),
+		})
+	}
+
 	/// Creates a detached compute pipeline from a prepared shader, failing with `missing_workgroup` when the shader
 	/// has no workgroup size.
 	fn compile_compute(
@@ -412,6 +517,36 @@ impl PipelineManagerServer {
 	}
 }
 
+/// Fails with an error that names the first closest-hit shader in `hits` whose payload differs from the payload the
+/// `ray_generation` shader passes. Each shader comes as its id and its reflected payload.
+///
+/// Metal links a closest-hit shader that takes another payload without an error, and the two shaders then read each
+/// other's bytes as their own, so the reflected layouts are the only guard.
+fn check_ray_payloads<'a>(
+	ray_generation: (&str, Option<&RayPayload>),
+	hits: impl IntoIterator<Item = (&'a str, Option<&'a RayPayload>)>,
+) -> Result<(), String> {
+	let layout = |payload: Option<&RayPayload>| payload.map(|payload| payload.layout_hash);
+	let Some((hit, payload)) = hits
+		.into_iter()
+		.find(|(_, payload)| layout(*payload) != layout(ray_generation.1))
+	else {
+		return Ok(());
+	};
+	let name = |payload: Option<&RayPayload>| {
+		payload.map_or_else(
+			|| "no payload".to_owned(),
+			|payload| format!("the payload `{}`", payload.name),
+		)
+	};
+	Err(format!(
+		"Closest-hit shader '{hit}' takes {}, but ray generation shader '{}' passes {}. The most likely cause is that the shaders declare their payload structs apart, or were baked against different versions of the layer that declares it. Declare the payload once, in a layout layer both shaders list, and rebake them.",
+		name(payload),
+		ray_generation.0,
+		name(ray_generation.1)
+	))
+}
+
 /// The `PreparedShader` struct keeps resource-owned shader inputs ready for ordered GHI adoption.
 ///
 /// It is immutable once prepared, so every compilation server shares one copy through [`shared_shader`].
@@ -426,6 +561,8 @@ struct PreparedShader {
 	/// The hash of the shader's bytes, which names them to GHI so its pipeline cache can know the shader across runs
 	/// without reading the bytes.
 	hash: u64,
+	/// The payload the shader passes through ray tracing, or `None` for a shader outside ray tracing pipelines.
+	ray_payload: Option<RayPayload>,
 }
 
 impl PreparedShader {
@@ -493,10 +630,6 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 		resource_management::types::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
 		resource_management::types::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
 		resource_management::types::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-		resource_management::types::ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-		resource_management::types::ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-		resource_management::types::ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-		resource_management::types::ShaderTypes::Callable => ghi::ShaderTypes::Callable,
 	}
 }
 
@@ -548,6 +681,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.workgroup_size
 		.map(|(width, height, depth)| utils::Extent::new(width, height, depth));
 	let sets = resource.interface.sets.iter().map(SetLayout::new).collect();
+	let ray_payload = resource.interface.ray_payload.clone();
 	let hash = shader.hash();
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
@@ -562,6 +696,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		sets,
 		backing,
 		hash,
+		ray_payload,
 	})
 }
 
@@ -734,6 +869,32 @@ mod tests {
 		assert!(matches!(client.get(reference), PipelineState::Pending));
 	}
 
+	#[test]
+	fn ray_tracing_shaders_must_pass_one_payload_layout() {
+		let payload = |name: &str, layout_hash: u64| RayPayload {
+			name: name.to_owned(),
+			size: 32,
+			layout_hash,
+		};
+		let surface = payload("HitSurface", 1);
+		let reordered = payload("HitSurface", 2);
+
+		assert!(
+			check_ray_payloads(
+				("shade", Some(&surface)),
+				[("stone", Some(&surface)), ("default", Some(&surface))]
+			)
+			.is_ok()
+		);
+		let error = check_ray_payloads(
+			("shade", Some(&surface)),
+			[("stone", Some(&surface)), ("glass", Some(&reordered))],
+		)
+		.expect_err("a closest-hit shader with another payload layout");
+		assert!(error.contains("'glass'") && !error.contains("'stone'"), "{error}");
+		assert!(check_ray_payloads(("shade", Some(&surface)), [("legacy", None)]).is_err());
+	}
+
 	#[cfg(debug_assertions)]
 	#[test]
 	fn shader_updates_rebuild_every_specialized_pipeline_that_reads_the_shader() {
@@ -831,6 +992,12 @@ impl PipelineManager {
 					entry.state = PipelineState::Ready(frame.intern_raster_pipeline(pipeline));
 					entry.published_revision = completion.revision;
 				}
+				Ok(DetachedPipeline::RayTracing { pipeline, sets }) => {
+					entry.compute = None;
+					entry.sets = Some(sets);
+					entry.state = PipelineState::Ready(frame.intern_ray_tracing_pipeline(pipeline));
+					entry.published_revision = completion.revision;
+				}
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
 					if !matches!(entry.state, PipelineState::Ready(_)) {
@@ -871,6 +1038,7 @@ struct PipelineRequest {
 enum PipelineRequestKind {
 	Resource { id: String },
 	SpecializedCompute(SpecializedComputePipelineRequest),
+	RayTracing(RayTracingPipelineRequest),
 }
 
 impl PipelineRequestKind {
@@ -880,6 +1048,9 @@ impl PipelineRequestKind {
 		match self {
 			Self::Resource { id: pipeline_id } => pipeline_id == id,
 			Self::SpecializedCompute(request) => request.shader_id == id,
+			Self::RayTracing(request) => {
+				request.ray_generation == id || request.hit_groups.iter().any(|group| group.shader_id == id)
+			}
 		}
 	}
 }
@@ -900,10 +1071,16 @@ enum DetachedPipeline {
 		pipeline: ghi::factory::RasterPipeline,
 		sets: Arc<[SetLayout]>,
 	},
+	RayTracing {
+		pipeline: ghi::factory::RayTracingPipeline,
+		/// The ray generation shader's sets, which every closest hit's sets are a prefix of.
+		sets: Arc<[SetLayout]>,
+	},
 }
 
 use std::sync::Arc;
 
+use resource_management::shader::besl::evaluation::RayPayload;
 use utils::{
 	hash::HashMap,
 	sync::{Mutex, RwLock},

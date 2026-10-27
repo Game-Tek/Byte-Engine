@@ -1,4 +1,3 @@
-use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_vertex_format};
 use super::*;
 use crate::device::Device as _;
 
@@ -13,6 +12,17 @@ impl crate::context::Context for Context {
 	fn supports_bc_texture_compression(&self) -> bool {
 		// self.device.supportsBCTextureCompression()
 		true
+	}
+
+	fn supports_ray_tracing(&self) -> bool {
+		self.settings.ray_tracing && self.device.supportsRaytracing()
+	}
+
+	fn bottom_level_acceleration_structure_size(
+		&self,
+		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+	) -> usize {
+		self.acceleration_structures.bottom_level(handle).structure.size()
 	}
 
 	/// Creates a borrowed queue wrapper for queue-local submission.
@@ -107,67 +117,6 @@ impl crate::context::Context for Context {
 				}
 			}
 		}
-	}
-
-	fn write_instance(
-		&mut self,
-		instances_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		instance_index: usize,
-		transform: [[f32; 4]; 3],
-		custom_index: u16,
-		mask: u8,
-		sbt_record_offset: usize,
-		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) {
-		let structure = &self.acceleration_structures[acceleration_structure.0 as usize];
-		// A Metal instance record names its bottom-level structure by GPU resource handle, so the structure must be
-		// resident while the build reads the record; the build command marks it.
-		let acceleration_structure_id = structure.structure.gpuResourceID();
-		let buffer = self.buffers.get_single(instances_buffer_handle).expect(
-			"Metal acceleration structure instance buffer is missing. The most likely cause is that its handle came from another context.",
-		);
-		let offset = instance_index * INSTANCE_DESCRIPTOR_SIZE;
-
-		assert!(
-			offset + INSTANCE_DESCRIPTOR_SIZE <= buffer.size,
-			"Metal acceleration structure instance is out of bounds. The most likely cause is that the instance buffer was created for fewer instances. instance_index={instance_index}, instance_capacity={}",
-			buffer.size / INSTANCE_DESCRIPTOR_SIZE,
-		);
-
-		// GHI transforms are row-major 3x4 matrices; Metal reads them as four packed float3 columns.
-		let columns = std::array::from_fn(|column| mtl::MTLPackedFloat3 {
-			x: transform[0][column],
-			y: transform[1][column],
-			z: transform[2][column],
-		});
-		let descriptor = mtl::MTLIndirectAccelerationStructureInstanceDescriptor {
-			transformationMatrix: mtl::MTLPackedFloat4x3 { columns },
-			options: mtl::MTLAccelerationStructureInstanceOptions::empty(),
-			mask: mask as u32,
-			intersectionFunctionTableOffset: sbt_record_offset as u32,
-			userID: custom_index as u32,
-			accelerationStructureID: acceleration_structure_id,
-		};
-
-		// SAFETY: The write stays inside the shared instance buffer, whose bounds were checked above.
-		unsafe {
-			buffer
-				.pointer
-				.add(offset)
-				.cast::<mtl::MTLIndirectAccelerationStructureInstanceDescriptor>()
-				.write_unaligned(descriptor);
-		}
-	}
-
-	fn write_sbt_entry(
-		&mut self,
-		_sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		_sbt_record_offset: usize,
-		_pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		_shader_handle: graphics_hardware_interface::ShaderHandle,
-	) {
-		// Metal has no shader binding table: a ray-tracing pipeline dispatches its ray-generation function directly
-		// and resolves hits through the acceleration structure, so binding-table records carry no backend state.
 	}
 
 	fn bind_to_window(
@@ -502,8 +451,34 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
+		self.assert_ray_tracing("create a ray tracing pipeline");
 		let pipeline = self.factory.create_ray_tracing_pipeline(builder);
 		self.intern_pipeline(pipeline)
+	}
+
+	fn create_shader_binding_table(&mut self, name: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
+		self.assert_ray_tracing("create a shader binding table");
+		self.shader_binding_tables.push(ShaderBindingTable {
+			name: crate::debug_name(name),
+			written: None,
+		});
+		graphics_hardware_interface::ShaderBindingTableHandle((self.shader_binding_tables.len() - 1) as u64)
+	}
+
+	/// Fills a new visible function table instead of the one the table holds, because recordings that already bound
+	/// the old one may not have executed yet.
+	fn write_shader_binding_table(
+		&mut self,
+		table: graphics_hardware_interface::ShaderBindingTableHandle,
+		pipeline: graphics_hardware_interface::PipelineHandle,
+		hit_groups: &[u32],
+	) {
+		let shader_binding_table = self.shader_binding_tables.get_mut(table.0 as usize).expect(
+			"Metal shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables through the context that created them.",
+		);
+		let label = shader_binding_table.name.as_deref().filter(|_| self.settings.debug_labels);
+		let functions = build_shader_binding_table(&self.pipelines[pipeline.0 as usize], hit_groups, label);
+		shader_binding_table.written = Some((pipeline, functions));
 	}
 
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(
@@ -570,20 +545,12 @@ impl crate::context::ContextCreate for Context {
 		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
 	}
 
-	fn create_acceleration_structure_instance_buffer(
+	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		max_instance_count: u32,
-	) -> graphics_hardware_interface::BaseBufferHandle {
-		// Instance records are written by the host and read by the acceleration-structure build, so they live in
-		// shared storage rather than behind a staging copy the caller would have to synchronize.
-		let buffer = self.create_buffer_resource(
-			name,
-			max_instance_count as usize * INSTANCE_DESCRIPTOR_SIZE,
-			crate::Uses::AccelerationStructureBuild,
-			crate::DeviceAccesses::HostToDevice,
-		);
-		self.buffers.add(buffer).0
+		geometries: &[crate::rt::TriangleGeometry],
+	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
+		self.create_bottom_level(name, geometries)
 	}
 
 	fn create_top_level_acceleration_structure(
@@ -591,40 +558,18 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> crate::TopLevelAccelerationStructureHandle {
-		let sizing = mtl::MTLInstanceAccelerationStructureDescriptor::descriptor();
-		sizing.setInstanceCount(max_instance_count as usize);
-		sizing.setInstanceDescriptorType(mtl::MTLAccelerationStructureInstanceDescriptorType::Indirect);
-
-		crate::TopLevelAccelerationStructureHandle(self.create_acceleration_structure(name, &sizing))
+		self.create_top_level(name, max_instance_count)
 	}
 
-	fn create_bottom_level_acceleration_structure(
+	fn destroy_bottom_level_acceleration_structure(
 		&mut self,
-		description: &graphics_hardware_interface::BottomLevelAccelerationStructure,
-	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		let geometry: Retained<mtl::MTLAccelerationStructureGeometryDescriptor> = match description.description {
-			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::Mesh {
-				vertex_position_encoding,
-				triangle_count,
-				index_format,
-				..
-			} => {
-				let geometry = mtl::MTLAccelerationStructureTriangleGeometryDescriptor::descriptor();
-				geometry.setVertexFormat(to_vertex_format(vertex_position_encoding));
-				geometry.setIndexType(utils::to_index_type(index_format));
-				geometry.setTriangleCount(triangle_count as usize);
-				Retained::into_super(geometry)
-			}
-			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => {
-				let geometry = mtl::MTLAccelerationStructureBoundingBoxGeometryDescriptor::descriptor();
-				geometry.setBoundingBoxCount(transform_count as usize);
-				Retained::into_super(geometry)
-			}
-		};
-		let sizing = mtl::MTLPrimitiveAccelerationStructureDescriptor::descriptor();
-		sizing.setGeometryDescriptors(Some(&NSArray::from_retained_slice(&[geometry])));
+		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+	) {
+		self.destroy_bottom_level(handle);
+	}
 
-		graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.create_acceleration_structure(None, &sizing))
+	fn destroy_top_level_acceleration_structure(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
+		self.destroy_top_level(handle);
 	}
 
 	/// Creates one synchronizer per frame sequence, so each frame waits only for the frame that last used its sequence.

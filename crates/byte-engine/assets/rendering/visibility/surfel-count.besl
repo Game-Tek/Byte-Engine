@@ -1,0 +1,93 @@
+// Runs the surfel economy for one pool slot and counts the grid cells the surviving surfel overlaps, up to
+// SURFEL_LISTING_LIMIT of them.
+//
+// A surfel ages one frame each frame no pixel kept it alive, and faster while its cell is crowded. One that reaches
+// SURFEL_TTL, or that a despawn vote killed, returns its slot to the free stack here, so this frame's grid never
+// lists it. Rent reads the cell counts the grid scanned last frame, which this frame's scan has not replaced yet. Each
+// surviving surfel also asks for this frame's rays. Next, the scan turns the counts into list offsets and grants the
+// rays.
+
+// Adds rent for a cell that lists `count` surfels: one frame per 10 surfels past SURFEL_CROWDED_CELL, and the square
+// of that excess over 32 once the cell holds twice as many.
+surfel_rent: fn (count: u32) -> u32 {
+	if (count <= SURFEL_CROWDED_CELL) {
+		return 0;
+	}
+	let excess: u32 = count - SURFEL_CROWDED_CELL;
+	let rent: u32 = excess / 10;
+	if (count > SURFEL_CROWDED_CELL * 2) {
+		rent = rent + excess * excess / 32;
+	}
+	return rent;
+}
+
+main: fn (input: StageInput) -> void {
+	let slot: u32 = input.thread_id.x;
+	if (slot >= surfel_parameters.surfel_capacity) {
+		return;
+	}
+	surfel_ray_wants[slot] = 0;
+	let life: u32 = surfel_states[slot].life;
+	if (life == 0) {
+		return;
+	}
+
+	// The strongest vote since the last frame, which also resets it for the next one.
+	let income: u32 = atomic_exchange(surfel_states[slot].touched, 0);
+	let cell: u32 = surfel_states[slot].cell;
+	let age_step: u32 = 1;
+	if (cell != NO_SURFEL) {
+		age_step = age_step + surfel_rent(surfel_scan[cell + 1] - surfel_scan[cell]);
+	}
+	// A vote stops a surfel from aging, but never makes it younger.
+	let age: u32 = life - 1;
+	if (age_step > income) {
+		age = age + (age_step - income);
+	}
+	if (income == SURFEL_KILL || age >= SURFEL_TTL) {
+		surfel_states[slot].life = 0;
+		let top: u32 = atomic_add(surfel_pool.free_count, 1);
+		surfel_free[top] = slot;
+		atomic_add(surfel_pool.recycled, 1);
+		return;
+	}
+	surfel_states[slot].life = age + 1;
+	let frames: u32 = min(surfel_states[slot].frames + 1, 1000000);
+	surfel_states[slot].frames = frames;
+	atomic_add(surfel_pool.alive, 1);
+
+	// A young surfel traces many rays to settle quickly. A settled one traces a few, and more while its light changes
+	// faster than its estimate follows.
+	let rays: u32 = SURFEL_RAYS;
+	if (frames <= SURFEL_YOUNG_FRAMES) {
+		rays = SURFEL_YOUNG_RAYS;
+	} else if (surfel_irradiance[slot].inconsistency > SURFEL_UNSETTLED_INCONSISTENCY) {
+		rays = SURFEL_RAYS + SURFEL_UNSETTLED_RAYS;
+	}
+	surfel_ray_wants[slot] = rays;
+
+	let record: SurfelRecord = surfel_records[slot];
+	let normal: vec3f = decode_surfel_normal(record.normal);
+	let radius: f32 = surfel_radius(record.position);
+	let cascades: vec2u = surfel_cascades(record.position);
+	let cascade_count: u32 = if (cascades.x == cascades.y) { 1 } else { 2 };
+	// The scatter visits the cells in the same order and stops at the same limit, so it lists the surfel in exactly the
+	// cells counted here.
+	let listed: u32 = 0;
+	for (let pass: u32 = 0; pass < cascade_count; pass = pass + 1) {
+		let cascade: u32 = if (pass == 0) { cascades.x } else { cascades.y };
+		let range: SurfelCellRange = surfel_cell_range(record.position, radius, cascade);
+		for (let z: u32 = u32(range.first.z); z <= u32(range.last.z); z = z + 1) {
+			for (let y: u32 = u32(range.first.y); y <= u32(range.last.y); y = y + 1) {
+				for (let x: u32 = u32(range.first.x); x <= u32(range.last.x); x = x + 1) {
+					let cell_coordinates: vec3f = vec3f(f32(x), f32(y), f32(z));
+					let reached: bool = surfel_reaches_cell(record.position, normal, radius, cell_coordinates, cascade);
+					if (reached && listed < SURFEL_LISTING_LIMIT) {
+						atomic_add(surfel_cells.counts[surfel_cell_index(cell_coordinates, cascade)], 1);
+						listed = listed + 1;
+					}
+				}
+			}
+		}
+	}
+}

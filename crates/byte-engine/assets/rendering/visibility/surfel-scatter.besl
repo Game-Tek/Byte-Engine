@@ -1,0 +1,58 @@
+// Lists one live surfel in every grid cell it overlaps, at the slots the scan reserved.
+//
+// Each cell's list fills from its end: taking a slot counts down the fill the scan's group pass set, so the scatter
+// needs no counter of its own. It visits the same cells as the count pass, up to the same SURFEL_LISTING_LIMIT, and
+// drops an entry only when floating-point rounding lets a cell gain a surfel the count missed. Each surfel takes at
+// most SURFEL_LISTING_LIMIT entries, so the lists always fit the entries the pool keeps.
+// It also records the cell of each surfel's center, which the surfel's rent reads next frame, and writes the record of
+// each of the surfel's rays the budget granted, at the ray's place in the frame's window of wanted rays.
+
+main: fn (input: StageInput) -> void {
+	let slot: u32 = input.thread_id.x;
+	if (slot >= surfel_parameters.surfel_capacity || surfel_states[slot].life == 0) {
+		return;
+	}
+	let record: SurfelRecord = surfel_records[slot];
+	surfel_states[slot].cell = surfel_cell_of(record.position);
+
+	// The slot's wanted rays follow every cell entry in the scan. A ray is granted when it lies within the window of
+	// the frame's rays that starts at the cursor and wraps around the wanted rays.
+	let wanted: u32 = surfel_ray_wants[slot];
+	let first_ray: u32 = surfel_scan[SURFEL_CELL_COUNT + slot] - surfel_pool.cell_entries;
+	for (let sample: u32 = 0; sample < wanted; sample = sample + 1) {
+		let ray: u32 = (first_ray + sample + surfel_pool.rays_wanted - surfel_pool.ray_cursor) % surfel_pool.rays_wanted;
+		if (ray < surfel_pool.rays) {
+			surfel_rays[ray] = slot | (sample << SURFEL_RAY_SLOT_BITS);
+		}
+	}
+
+	let normal: vec3f = decode_surfel_normal(record.normal);
+	let radius: f32 = surfel_radius(record.position);
+	let cascades: vec2u = surfel_cascades(record.position);
+	let cascade_count: u32 = if (cascades.x == cascades.y) { 1 } else { 2 };
+	let listed: u32 = 0;
+	for (let pass: u32 = 0; pass < cascade_count; pass = pass + 1) {
+		let cascade: u32 = if (pass == 0) { cascades.x } else { cascades.y };
+		let range: SurfelCellRange = surfel_cell_range(record.position, radius, cascade);
+		for (let z: u32 = u32(range.first.z); z <= u32(range.last.z); z = z + 1) {
+			for (let y: u32 = u32(range.first.y); y <= u32(range.last.y); y = y + 1) {
+				for (let x: u32 = u32(range.first.x); x <= u32(range.last.x); x = x + 1) {
+					let cell_coordinates: vec3f = vec3f(f32(x), f32(y), f32(z));
+					let reached: bool = surfel_reaches_cell(record.position, normal, radius, cell_coordinates, cascade);
+					if (reached && listed < SURFEL_LISTING_LIMIT) {
+						listed = listed + 1;
+						let cell: u32 = surfel_cell_index(cell_coordinates, cascade);
+						let start: u32 = surfel_scan[cell];
+						let count: u32 = surfel_scan[cell + 1] - start;
+						// The fill before this surfel took its slot: one past the slot, from the end of the list.
+						let remaining: u32 = atomic_sub(surfel_cells.fill[cell], 1);
+						let entry: u32 = start + remaining - 1;
+						if (remaining != 0 && remaining <= count) {
+							surfel_cell_entries[entry] = slot;
+						}
+					}
+				}
+			}
+		}
+	}
+}

@@ -63,6 +63,73 @@ vertex. On Metal a vertex is written as one value, so write each
 Locations range from `0` through `255`. Don't repeat a location within one
 explicit input or output list.
 
+## Ray tracing entry points
+
+A ray tracing pipeline pairs one ray generation shader with closest-hit
+shaders, one for each hit group. The ray generation shader runs once for each
+point of a launch grid. It finds hits with
+[`intersect`](/docs/reference/besl/intrinsics#ray-queries) and shades each one
+with [`invoke`](/docs/reference/besl/intrinsics#ray-generation-stage), which
+runs the closest-hit shader of the hit's record and returns the payload that
+shader returns:
+
+```rust
+SurfaceHit: struct {
+	albedo: vec3f,
+	distance: f32,
+}
+
+scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;
+
+main: fn (input: StageInput) -> void {
+	let origin: vec3f = vec3f(f32(input.launch_index.x), 0.0, 0.0);
+	let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0);
+	let surface: SurfaceHit = invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
+	surfaces[input.launch_index.x] = surface;
+}
+```
+
+A closest-hit shader takes the payload as its last parameter, after an
+optional `StageInput` parameter, and returns a value of the same type:
+
+```rust
+main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
+	let surface: SurfaceHit = payload;
+	surface.albedo = vec3f(0.5, 0.5, 0.5);
+	surface.distance = input.hit_distance;
+	return surface;
+}
+```
+
+The payload is a struct with at least one member. Each member is a scalar or a
+vector of `u16`, `u32`, `i32`, `f16`, or `f32`, so a payload can't hold a
+`bool`, a `u8`, an array, a matrix, an atomic, or another struct. Every
+`invoke` call in a shader passes the same payload type.
+
+The shaders of one pipeline follow these rules:
+
+- Every closest-hit shader takes the payload type that the ray generation
+  shader passes to `invoke`: a struct with the same name and the same members
+  in the same order. Declare it once, in a layout layer that every shader of
+  the pipeline lists. A pipeline whose shaders disagree on the payload is an
+  error.
+- A closest-hit shader declares no descriptors of its own, so its descriptor
+  sets are those of the layers it lists. They must be the first sets of the ray
+  generation shader, in the same order, or fewer: list the layers that declare
+  descriptors in the order the ray generation shader lists them, and leave out
+  only the last ones. A closest-hit shader can use descriptors of those layers
+  that the ray generation shader doesn't use.
+- Every shader of the pipeline reads the same push constant block, so declare
+  the block in a shared layer too.
+- A closest-hit shader doesn't call `invoke`, `intersect`, or
+  `trace_occlusion`, so it never runs another closest-hit shader.
+- Ray tracing shaders don't use workgroup storage, `workgroup_barrier`,
+  subgroup intrinsics, or `discard`.
+
+How a pipeline maps records to hit groups, and how instances give hits their
+records, is in the [GHI reference](/docs/reference/ghi#ray-tracing).
+
 ## Stage input values
 
 Add a `StageInput` parameter when a shader needs values supplied by its stage.
@@ -106,6 +173,23 @@ main: fn (input: StageInput) -> void {
 
 These values are available only in the compute stage. Pass a value to a helper
 function when code outside `main` needs it.
+
+Ray generation shaders read the point of the launch grid they run for, and
+closest-hit shaders read the hit they shade:
+
+| `StageInput` field | Type | Stage | Value |
+| --- | --- | --- | --- |
+| `launch_index` | `vec3u` | Ray generation | The point of the launch grid the invocation runs for. Each component is below the matching component of `launch_size`. |
+| `launch_size` | `vec3u` | Ray generation | The launch size of the trace, with a height or depth of 0 read as 1. |
+| `hit_distance` | `f32` | Closest hit | The `distance` of the [hit](/docs/reference/besl/intrinsics#hits) that `invoke` passes. |
+| `hit_custom_index` | `u32` | Closest hit | The hit's `custom_index`. |
+| `hit_geometry_index` | `u32` | Closest hit | The hit's `geometry_index`. |
+| `hit_primitive_index` | `u32` | Closest hit | The hit's `primitive_index`. |
+| `hit_barycentrics` | `vec2f` | Closest hit | The hit's `barycentrics`. |
+| `ray_origin` | `vec3f` | Closest hit | The hit's `origin`. |
+| `ray_direction` | `vec3f` | Closest hit | The hit's `direction`. |
+
+Each value is available only in the stage the table names.
 
 ## Task payload and workgroup storage
 
@@ -211,16 +295,20 @@ these resource types:
 | `TextureCubeArray` | Combined cube-array texture and sampler | Sample cube textures from an array. |
 | `StorageImage` | Storage image | Load or store an image whose format remains backend-defined. |
 | `StorageImage<FORMAT>` | Typed storage image | Load or store an image with an explicit backend image format, such as `r8`, `r32f`, `r32ui`, or `rgba16f`. |
+| `AccelerationStructure` | Top-level acceleration structure | Test rays against a scene with the [ray queries](/docs/reference/besl/intrinsics#ray-queries). |
 
 Set `access` to `read`, `write`, or `read_write`. The access must include every
-operation the shader performs on the resource.
+operation the shader performs on the resource. An `AccelerationStructure`
+descriptor takes only `read`.
 
 For a buffer, set `memory` to `constant` for small, read-only values shared
 by a dispatch or draw. Use `device` for large buffers, data that varies between
 shader threads, and every writable buffer. If you omit the memory class, a buffer
-uses `device`. Image and texture descriptors can't declare a memory class.
+uses `device`. Image, texture, and acceleration structure descriptors can't
+declare a memory class.
 
 Set `count` to a positive integer to declare an array of independent resources.
+An `AccelerationStructure` descriptor can't declare a count.
 
 Write `ElementType[]` to bind one storage buffer whose element count comes from
 the bound resource. Index it directly in a function, without a wrapper struct:
@@ -287,7 +375,8 @@ index_image: descriptor<{ type: StorageImage<r32ui>, binding: 6, access: read }>
 ## Standalone stage metadata
 
 Standalone `.besl` assets require an adjacent `.besl.bead` file. Set `stage` to
-`Vertex`, `Fragment`, `Compute`, `Task`, or `Mesh`.
+`Vertex`, `Fragment`, `Compute`, `Task`, `Mesh`, `RayGeneration`, or
+`ClosestHit`.
 
 Compute, task, and mesh stages can set `workgroup` with up to three positive
 dimensions. Omitted dimensions default to `1`, and omitting `workgroup` uses
@@ -315,7 +404,8 @@ Mesh stages require positive `maximum_vertices` and `maximum_primitives` values:
 { "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }
 ```
 
-`Vertex` and `Fragment` stages don't accept `workgroup` or mesh limits.
+`Vertex`, `Fragment`, `RayGeneration`, and `ClosestHit` stages don't accept
+`workgroup` or mesh limits.
 
 ## Layout layers
 
@@ -406,11 +496,16 @@ The normal generators support these stage and output-language combinations:
 | Compute | Supported | Supported | Supported |
 | Task | Not supported | Supported as an amplification shader | Supported as an object stage |
 | Mesh | Supported through `GL_EXT_mesh_shader` | Supported | Supported |
+| RayGeneration | Not supported | Not supported | Supported as a compute kernel |
+| ClosestHit | Not supported | Not supported | Supported as a visible function |
 
 The generated language support doesn't guarantee that a device exposes the
 required shader stage or extension. Half-precision and subgroup operations also
 require their target capabilities. BESL validates subgroup intrinsics for
 compute stages only. See [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
+The [ray queries](/docs/reference/besl/intrinsics#ray-queries) follow the ray
+tracing stages: the MSL generator supports them, and the GLSL and HLSL
+generators reject them.
 
 Next, use [BESL intrinsics](/docs/reference/besl/intrinsics) to read and update
 the values declared by the interface.

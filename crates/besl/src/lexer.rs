@@ -313,10 +313,10 @@ mod tests {
 	}
 
 	/// Compiles invalid source and returns the plain-language linker diagnostic.
-	fn atomic_link_error(source: &str) -> String {
-		match crate::compile_to_besl(source, None).expect_err("invalid atomic source should fail while linking") {
+	fn link_error(source: &str) -> String {
+		match crate::compile_to_besl(source, None).expect_err("invalid source should fail while linking") {
 			crate::CompilationError::Lex(LexError::Invalid { message }) => message,
-			error => panic!("Expected a detailed atomic linker error, found {error:?}"),
+			error => panic!("Expected a detailed linker error, found {error:?}"),
 		}
 	}
 
@@ -325,10 +325,7 @@ mod tests {
 		for return_type in ["vec4f[16]", "u32[5]", "vec2u[2]"] {
 			let source =
 				format!("make: fn (values: {return_type}) -> {return_type} {{ return values; }} main: fn () -> void {{}}");
-			let message = match crate::compile_to_besl(&source, None).expect_err("a large array return should fail to link") {
-				crate::CompilationError::Lex(LexError::Invalid { message }) => message,
-				error => panic!("Expected a detailed return-type error, found {error:?}"),
-			};
+			let message = link_error(&source);
 
 			assert!(
 				message.contains("can't return an array"),
@@ -368,7 +365,7 @@ mod tests {
 						main: fn () -> void {{ {statement} }}
 					"#
 				);
-				let message = atomic_link_error(&source);
+				let message = link_error(&source);
 				assert!(
 					message.contains("requires a read-write buffer"),
 					"Unexpected `{operation}` error: {message}"
@@ -410,7 +407,7 @@ mod tests {
 			counters: descriptor<{ type: Counters, binding: 3, access: read }>;
 			main: fn () -> void { atomic_store(counters.value, 1); }
 		"#;
-		let message = atomic_link_error(source);
+		let message = link_error(source);
 		assert!(
 			message.contains("requires a writable buffer"),
 			"Unexpected atomic store error: {message}"
@@ -440,7 +437,7 @@ mod tests {
 					main: fn () -> void {{}}
 				"#
 			);
-			let message = atomic_link_error(&source);
+			let message = link_error(&source);
 			assert!(
 				message.contains("must come directly from a buffer or workgroup"),
 				"Unexpected `{operation}` target error: {message}"
@@ -468,7 +465,7 @@ mod tests {
 				main: fn () -> void { atomic_load(copy()); }
 			"#,
 		] {
-			let message = atomic_link_error(source);
+			let message = link_error(source);
 			assert!(
 				message.contains("must come directly from a buffer or workgroup"),
 				"Unexpected target error: {message}"
@@ -601,6 +598,19 @@ Foo: struct {
 	}
 
 	#[test]
+	fn lex_rejects_structs_named_after_built_in_types() {
+		for name in ["Hit", "vec3f"] {
+			let source = format!("{name}: struct {{ value: u32 }}");
+			let node = crate::parse(&source).expect("Failed to parse");
+
+			let Err(LexError::Invalid { message }) = lex_with_root(Node::root(), node) else {
+				panic!("a struct named `{name}` should be rejected");
+			};
+			assert!(message.contains("built-in type"), "{message}");
+		}
+	}
+
+	#[test]
 	fn lex_rejects_functions_used_as_values() {
 		let source = "main: fn () -> void { normalize(vec3f(main)); }";
 		let node = crate::parse(source).expect("Failed to parse");
@@ -658,6 +668,70 @@ main: fn () -> void {
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected error");
+	}
+
+	#[test]
+	fn declarations_use_only_the_declarations_before_them() {
+		let link = |declarations: &[&str]| crate::compile_to_besl(&declarations.join("\n"), None);
+		let data = "Data: struct { count: u32, }\ndata: descriptor<{ type: Data, binding: 0, access: read }>;";
+
+		// Each case holds a declaration, the declarations it uses, and how the error starts when they come after it.
+		let cases = [
+			(
+				"caller: fn () -> f32 { return helper(); }",
+				"helper: fn () -> f32 { return 1.0; }",
+				"`caller` uses `helper`, which is declared after it.",
+			),
+			(
+				"scaled: fn () -> f32 { return SCALE * 2.0; }",
+				"SCALE: const f32 = 0.5;",
+				"`scaled` uses `SCALE`, which is declared after it.",
+			),
+			(
+				"Light: struct { falloff: Falloff, }",
+				"Falloff: struct { radius: f32, }",
+				"`Light` uses `Falloff`, which is declared after it.",
+			),
+			(
+				"lights: descriptor<{ type: Light[], binding: 0, access: read }>;",
+				"Light: struct { radius: f32, }",
+				"`lights` uses `Light`, which is declared after it.",
+			),
+			(
+				"total: fn () -> u32 { return data.count; }",
+				data,
+				"`total` uses `data`, which is declared after it.",
+			),
+			(
+				"index: fn () -> u32 { return push_constant.index; }",
+				"push_constant: push_constant { index: u32 }",
+				"`index` uses `push_constant`, which is declared after it.",
+			),
+		];
+		for (user, used, expected) in cases {
+			link(&[used, user]).unwrap_or_else(|error| panic!("`{user}` should link after `{used}`: {error:?}"));
+			let message = link_error(&[user, used].join("\n"));
+			assert!(message.starts_with(expected), "{message}");
+		}
+		let (caller, helper, _) = cases[0];
+		assert!(link_error(&[caller, helper].join("\n")).contains("Move `helper` above `caller`."));
+
+		// `main` links after every other declaration.
+		link(&["main: fn () -> f32 { return caller(); }", helper, caller]).expect("`main` should use later declarations");
+
+		// A name that nothing declares is undeclared, not out of order.
+		assert!(matches!(
+			link(&[caller]),
+			Err(crate::CompilationError::Lex(LexError::UndeclaredName { name })) if name == "helper"
+		));
+		// A type names only structs, so a later function by its name isn't one the type uses.
+		assert!(matches!(
+			link(&["make: fn () -> helper {}", helper]),
+			Err(crate::CompilationError::Lex(LexError::ReferenceToUndefinedType { type_name })) if type_name == "helper"
+		));
+		// A member its owner lacks is misspelled, even when a later declaration has the member's name.
+		let message = link_error(&[data, "total: fn () -> u32 { return data.helper; }", helper].join("\n"));
+		assert!(message.starts_with("`helper` isn't a member of `data`."), "{message}");
 	}
 
 	#[test]
@@ -1149,10 +1223,7 @@ main: fn () -> void {
 		] {
 			let error = crate::compile_to_besl(source, None).expect_err("an undeclared bare name should fail to link");
 			assert!(
-				matches!(
-					error,
-					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
-				),
+				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
 			);
 		}
@@ -1167,10 +1238,7 @@ main: fn () -> void {
 		] {
 			let error = crate::compile_to_besl(source, None).expect_err("a bare resource member should fail to link");
 			assert!(
-				matches!(
-					error,
-					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
-				),
+				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
 			);
 		}
@@ -1185,10 +1253,7 @@ main: fn () -> void {
 		] {
 			let error = crate::compile_to_besl(source, None).expect_err("another function's local should not be visible");
 			assert!(
-				matches!(
-					error,
-					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
-				),
+				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
 			);
 		}

@@ -185,12 +185,15 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 	};
 	assert_eq!(*name, "root");
 
+	// Each declaration links against the ones before it, so it can only use the declarations before it.
 	let mut lexer = Lexer::new(root.clone());
-	for child in children {
-		for declaration in super::entry::normalize_entry(child, &root)? {
+	for index in 0..children.len() {
+		for declaration in super::entry::normalize_entry(&mut children[index], &root)? {
 			root.borrow_mut().add_child(declaration.into());
 		}
-		let child = lexer.lex(child)?;
+		let child = lexer
+			.lex(&children[index])
+			.map_err(|error| super::resolution::explain_declaration_order(error, &children[index..]))?;
 		root.borrow_mut().add_child(child);
 	}
 
@@ -238,6 +241,26 @@ impl Node {
 		let array_texture_2d = primitive_type("ArrayTexture2D");
 		let atomic_u32 = primitive_type("atomicu32");
 		let atomic_i32 = primitive_type("atomici32");
+		let acceleration_structure = primitive_type("AccelerationStructure");
+		// A hit is a plain struct, so shaders can store its members and rebuild it with its constructor, which takes the
+		// members in `HIT_MEMBERS` order.
+		let hit: NodeReference = Node::r#struct(
+			crate::HIT_STRUCT,
+			crate::HIT_MEMBERS
+				.iter()
+				.map(|(name, r#type)| {
+					let r#type = match *r#type {
+						"u32" => &u32_t,
+						"f32" => &f32_t,
+						"vec2f" => &vec2f32,
+						"vec3f" => &vec3f32,
+						r#type => unreachable!("`HIT_MEMBERS` lists a `{type}` member, which the root scope doesn't declare"),
+					};
+					Node::member(name, r#type.clone()).into()
+				})
+				.collect(),
+		)
+		.into();
 
 		let mut builtins = vec![
 			void.clone(),
@@ -269,6 +292,8 @@ impl Node {
 			array_texture_2d.clone(),
 			atomic_u32.clone(),
 			atomic_i32.clone(),
+			acceleration_structure.clone(),
+			hit.clone(),
 			// Vertex invocation indices are implicit BESL values. Their placeholder locations are
 			// never exposed as vertex attributes; backends and the VM map them to dedicated built-ins.
 			Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 1).into(),
@@ -434,7 +459,7 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"set_mesh_triangle",
-				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32)],
+				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
 				void.clone(),
 			),
 			builtin_intrinsic(
@@ -589,6 +614,38 @@ impl Node {
 		// Invocation builtins take no arguments and read the invocation's coordinates.
 		for name in ["thread_idx", "subgroup_lane_index", "threadgroup_position", "thread_position"] {
 			builtins.push(builtin_intrinsic(name, vec![], u32_t.clone()));
+		}
+		// Ray queries share one signature and differ in what they report. `invoke` isn't registered here: its payload
+		// type comes from the program, so the lexer instantiates it per program.
+		for (name, r#return) in [("intersect", hit), ("trace_occlusion", bool_t)] {
+			builtins.push(builtin_intrinsic(
+				name,
+				vec![
+					("scene", acceleration_structure.clone()),
+					("mask", u32_t.clone()),
+					("origin", vec3f32.clone()),
+					("direction", vec3f32.clone()),
+					("t_min", f32_t.clone()),
+					("t_max", f32_t.clone()),
+				],
+				r#return,
+			));
+		}
+		// Ray tracing invocation builtins read the launch point of a ray generation shader or the hit a closest-hit
+		// shader shades.
+		let ray_tracing_builtins = [
+			("launch_index", &vec3u32),
+			("launch_size", &vec3u32),
+			("hit_distance", &f32_t),
+			("hit_custom_index", &u32_t),
+			("hit_geometry_index", &u32_t),
+			("hit_primitive_index", &u32_t),
+			("hit_barycentrics", &vec2f32),
+			("ray_origin", &vec3f32),
+			("ray_direction", &vec3f32),
+		];
+		for (name, r#return) in ray_tracing_builtins {
+			builtins.push(builtin_intrinsic(name, vec![], r#return.clone()));
 		}
 		builtins.extend(atomic_intrinsics(atomic_u32, u32_t, void.clone()));
 		builtins.extend(atomic_intrinsics(atomic_i32, i32_t, void));
@@ -1019,6 +1076,9 @@ pub enum BindingTypes {
 	Image {
 		format: String,
 	},
+	/// A top-level acceleration structure that the ray queries `intersect` and `trace_occlusion` test rays against. It
+	/// is read-only and binds one structure.
+	AccelerationStructure,
 }
 
 /// The `BufferMemoryClass` enum selects the memory region that best matches a buffer's shader access pattern.
@@ -1639,7 +1699,8 @@ pub enum LexError {
 		message: String,
 	},
 	FunctionCallParametersDoNotMatchFunctionParameters,
-	AccessingUndeclaredMember {
+	/// A bare name or a call that no declaration before it declares.
+	UndeclaredName {
 		name: String,
 	},
 	ReferenceToUndefinedType {
@@ -1654,7 +1715,7 @@ impl LexError {
 	}
 }
 
-fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#return: NodeReference) -> NodeReference {
+pub(super) fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#return: NodeReference) -> NodeReference {
 	let parameters = parameters
 		.into_iter()
 		.map(|(name, r#type)| {

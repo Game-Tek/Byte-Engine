@@ -14,6 +14,8 @@ where
 	type Allocator: Allocator;
 	type RasterPipeline;
 	type ComputePipeline;
+	/// A backend without ray tracing names an uninhabited type, so none of its pipelines can exist.
+	type RayTracingPipeline;
 
 	/// Returns the allocator used for device-owned host memory.
 	fn allocator(&self) -> &Self::Allocator;
@@ -40,6 +42,13 @@ where
 
 	/// Creates a compute pipeline from a builder.
 	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline;
+
+	/// Creates a ray tracing pipeline from a builder.
+	///
+	/// Check [`crate::context::Context::supports_ray_tracing`] first. A factory compiles each closest-hit shader once
+	/// for each set of specialization constants, so creating the pipeline again with more hit groups compiles only
+	/// the new ones. Next, intern the pipeline in the frame that renders with it.
+	fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline;
 }
 
 /// The `Features` struct selects optional GPU features during device creation.

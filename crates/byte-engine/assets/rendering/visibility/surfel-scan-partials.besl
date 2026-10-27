@@ -1,0 +1,66 @@
+// The second pass of the surfel scan: one workgroup turns the group totals into an exclusive scan.
+//
+// It also closes the frame's surfel counts: it moves the counts of the frame's economy and of the previous frame's
+// spawns into the totals the host reads back, records the grid's entry and ray totals, and resets the counts. Last, it
+// grants the frame's rays: the budget covers a window of the wanted rays that starts where last frame's window ended,
+// so every surfel's rays take turns when they want more than the budget.
+
+// Each thread's running total while the workgroup scans them.
+thread_totals: workgroup<u32, 256>;
+
+main: fn (input: StageInput) -> void {
+	let thread: u32 = input.thread_idx;
+	let element_count: u32 = SURFEL_CELL_COUNT + surfel_parameters.surfel_capacity + 1;
+	let group_count: u32 = (element_count + SURFEL_SCAN_GROUP_ELEMENTS - 1) / SURFEL_SCAN_GROUP_ELEMENTS;
+	// Each thread scans a run of consecutive group totals by itself.
+	let run: u32 = (group_count + SURFEL_SCAN_WORKGROUP_SIZE - 1) / SURFEL_SCAN_WORKGROUP_SIZE;
+	let first: u32 = min(thread * run, group_count);
+	let end: u32 = min(first + run, group_count);
+	let thread_total: u32 = 0;
+	for (let group: u32 = first; group < end; group = group + 1) {
+		thread_total = thread_total + surfel_scan_partials[group];
+	}
+	thread_totals[thread] = thread_total;
+	workgroup_barrier();
+
+	// An inclusive scan of the thread totals, as in the group pass.
+	for (let distance: u32 = 1; distance < SURFEL_SCAN_WORKGROUP_SIZE; distance = distance * 2) {
+		let earlier: u32 = 0;
+		if (thread >= distance) {
+			earlier = thread_totals[thread - distance];
+		}
+		workgroup_barrier();
+		thread_totals[thread] = thread_totals[thread] + earlier;
+		workgroup_barrier();
+	}
+
+	let offset: u32 = thread_totals[thread] - thread_total;
+	for (let group: u32 = first; group < end; group = group + 1) {
+		let total: u32 = surfel_scan_partials[group];
+		surfel_scan_partials[group] = offset;
+		offset = offset + total;
+	}
+	workgroup_barrier();
+
+	if (thread == 0) {
+		// The group pass left each element's offset inside its group; adding its group's offset finishes it.
+		let cells_end: u32 = SURFEL_CELL_COUNT;
+		let rays_end: u32 = SURFEL_CELL_COUNT + surfel_parameters.surfel_capacity;
+		let cell_entries: u32 = surfel_scan[cells_end] + surfel_scan_partials[cells_end / SURFEL_SCAN_GROUP_ELEMENTS];
+		let rays_wanted: u32 = surfel_scan[rays_end] + surfel_scan_partials[rays_end / SURFEL_SCAN_GROUP_ELEMENTS]
+			- cell_entries;
+		surfel_pool.cell_entries = cell_entries;
+		// Last frame's window ended at its cursor plus its rays. Surfels come and go between frames, so the window
+		// lands near the rays that waited longest rather than exactly on them.
+		let cursor: u32 = surfel_pool.ray_cursor + surfel_pool.rays;
+		surfel_pool.rays_wanted = rays_wanted;
+		surfel_pool.rays = min(rays_wanted, surfel_parameters.ray_budget);
+		surfel_pool.ray_cursor = 0;
+		if (rays_wanted != 0) {
+			surfel_pool.ray_cursor = cursor % rays_wanted;
+		}
+		surfel_pool.last_alive = atomic_exchange(surfel_pool.alive, 0);
+		surfel_pool.last_recycled = atomic_exchange(surfel_pool.recycled, 0);
+		surfel_pool.last_spawned = atomic_exchange(surfel_pool.spawned, 0);
+	}
+}

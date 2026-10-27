@@ -13,13 +13,6 @@ pub(crate) struct Mesh {
 	pub(crate) index_count: u32,
 }
 
-/// The `AccelerationStructure` struct owns one Metal acceleration structure and the scratch size its builds need.
-pub(crate) struct AccelerationStructure {
-	pub(crate) structure: Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>,
-	/// The scratch bytes Metal requires to build this structure.
-	pub(crate) build_scratch_size: usize,
-}
-
 /// The `Task` struct defers replacing one frame-local image with a new extent until the frame sequence that uses
 /// it has completed its previous submission.
 ///
@@ -55,8 +48,10 @@ pub(crate) enum Descriptor {
 	Swapchain {
 		handle: crate::swapchain::SwapchainHandle,
 	},
-	AccelerationStructure {
+	/// The copy of a top-level structure that the set's frame sequence builds.
+	TopLevelAccelerationStructure {
 		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
+		copy: u8,
 	},
 }
 
@@ -73,7 +68,7 @@ impl Descriptor {
 			),
 			Descriptor::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
 			Descriptor::Sampler { .. } => kind == ResourceKind::Sampler,
-			Descriptor::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
+			Descriptor::TopLevelAccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
 		}
 	}
 
@@ -84,7 +79,7 @@ impl Descriptor {
 			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
 			Descriptor::Sampler { .. } => None,
 			Descriptor::Swapchain { handle } => Some(PrivateHandles::Swapchain(handle)),
-			Descriptor::AccelerationStructure { .. } => None,
+			Descriptor::TopLevelAccelerationStructure { .. } => None,
 		}
 	}
 }

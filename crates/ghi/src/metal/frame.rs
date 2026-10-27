@@ -52,6 +52,15 @@ impl<'a> Frame<'a> {
 		self.device.intern_pipeline(pipeline)
 	}
 
+	/// Interns a ray tracing pipeline a [`Factory`] linked, so this frame's recordings can trace with it.
+	///
+	/// Next, write a shader binding table for the new handle with
+	/// [`crate::context::ContextCreate::write_shader_binding_table`]: a table keeps working only with the pipeline its
+	/// last write named.
+	pub fn intern_ray_tracing_pipeline(&mut self, pipeline: RayTracingPipeline) -> graphics_hardware_interface::PipelineHandle {
+		self.device.intern_pipeline(pipeline)
+	}
+
 	/// Interns an image another context exported, so this frame's recordings can use it.
 	pub fn intern_image(&mut self, image: DetachedImage) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
@@ -78,11 +87,13 @@ impl<'a> Frame<'a> {
 
 		let mut native_commands = SmallVec::<[queue::NativeCommand; 4]>::new();
 		let mut submitted_readbacks = SmallVec::<[graphics_hardware_interface::TextureCopyHandle; 8]>::new();
+		let mut submitted_builds = SmallVec::<[acceleration_structures::RecordedBuilds; 4]>::new();
 		for command_buffer in command_buffers {
 			let super::FinishedCommandBuffer {
 				queue_handle,
 				command_buffer,
 				texture_readbacks,
+				builds,
 			} = command_buffer;
 
 			assert_eq!(
@@ -91,6 +102,7 @@ impl<'a> Frame<'a> {
 			);
 			native_commands.push(command_buffer);
 			submitted_readbacks.extend(texture_readbacks);
+			submitted_builds.push(builds);
 		}
 
 		let rendered = !native_commands.is_empty();
@@ -98,6 +110,13 @@ impl<'a> Frame<'a> {
 			let submitted = self.device.queues[self.queue_handle.0 as usize].submit_batch(self.queue_handle, native_commands);
 			for handle in &submitted_readbacks {
 				self.device.texture_readbacks.mark_submitted(*handle, Some(synchronizer));
+			}
+			for builds in submitted_builds {
+				builds.submit(
+					&self.device.acceleration_structures,
+					synchronizer,
+					&mut self.device.pending_compactions,
+				);
 			}
 			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
 		}

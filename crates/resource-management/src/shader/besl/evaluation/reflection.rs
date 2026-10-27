@@ -58,6 +58,35 @@ pub enum BindingKind {
 		view: TextureView,
 	},
 	StorageImage,
+	/// A top-level acceleration structure that ray queries test rays against. Shaders only read it.
+	AccelerationStructure,
+}
+
+/// The `RayPayload` struct identifies the payload a ray tracing pipeline passes from its ray generation shader's
+/// `invoke` calls to its closest-hit shaders. Pipeline assembly compares the payloads of a pipeline's shaders and
+/// rejects a mismatch, because Metal links shaders whose payloads differ without an error.
+#[derive(
+	Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub struct RayPayload {
+	/// The name of the payload struct.
+	pub name: String,
+	/// The bytes one payload occupies in the active backend's storage layout.
+	pub size: u32,
+	/// An FNV-1a hash of the payload's name and its members' names and types, in declaration order. Two shaders pass the
+	/// same payload exactly when their hashes are equal.
+	pub layout_hash: u64,
+}
+
+/// The FNV-1a offset basis, which starts a hash of no bytes.
+pub(crate) const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Folds `bytes` into an FNV-1a `hash`. The result is stable across processes and builds, so baked assets can store it.
+pub(crate) fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
+	const PRIME: u64 = 0x0000_0100_0000_01b3;
+	bytes
+		.iter()
+		.fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(PRIME))
 }
 
 /// The `TextureView` enum identifies the texture shape required by a BESL sampled-image binding.
@@ -315,6 +344,7 @@ pub struct ProgramEvaluation {
 	bindings: Vec<BindingUsage>,
 	sets: Vec<SetUsage>,
 	opacity: OpacityEvaluation,
+	ray_payload: Option<RayPayload>,
 }
 
 impl ProgramEvaluation {
@@ -330,6 +360,7 @@ impl ProgramEvaluation {
 			bindings: collect_bindings(program)?,
 			sets: collect_sets(program)?,
 			opacity: evaluate_opacity(&main),
+			ray_payload: reflect_ray_payload(&main)?,
 		})
 	}
 
@@ -362,8 +393,14 @@ impl ProgramEvaluation {
 		let sets = collect_sets(main_function_node)?;
 
 		let opacity = evaluate_opacity(main_function_node);
+		let ray_payload = reflect_ray_payload(main_function_node)?;
 
-		Ok(Self { bindings, sets, opacity })
+		Ok(Self {
+			bindings,
+			sets,
+			opacity,
+			ray_payload,
+		})
 	}
 
 	pub fn bindings(&self) -> &[BindingUsage] {
@@ -383,6 +420,71 @@ impl ProgramEvaluation {
 	pub fn opacity(&self) -> OpacityEvaluation {
 		self.opacity
 	}
+
+	/// Returns the payload the program passes through ray tracing: the one a closest-hit `main` takes, or the one its
+	/// `invoke` calls pass. Next, persist it in [`crate::resources::material::ShaderInterface`].
+	pub fn ray_payload(&self) -> Option<&RayPayload> {
+		self.ray_payload.as_ref()
+	}
+}
+
+/// Reflects the payload a program passes through ray tracing, or `None` for a program that neither is a closest hit
+/// nor calls `invoke`.
+fn reflect_ray_payload(main: &besl::NodeReference) -> Result<Option<RayPayload>, String> {
+	// Entry normalization leaves a closest hit's payload as the only parameter of `main`.
+	let closest_hit_payload = match main.borrow().node() {
+		besl::Nodes::Function { params, .. } => params.iter().find_map(|parameter| match parameter.borrow().node() {
+			besl::Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
+			_ => None,
+		}),
+		_ => None,
+	};
+	// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
+	let payload_type = closest_hit_payload.or_else(|| {
+		crate::shader::besl::graph::dependency_order(main)
+			.iter()
+			.find_map(|node| match node.borrow().node() {
+				besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
+					match intrinsic.borrow().node() {
+						besl::Nodes::Intrinsic { name, r#return, .. } if name == "invoke" => Some(r#return.clone()),
+						_ => None,
+					}
+				}
+				_ => None,
+			})
+	});
+	payload_type
+		.map(|payload_type| describe_ray_payload(&payload_type))
+		.transpose()
+}
+
+/// Describes one payload struct, which the lexer checked holds only scalar and vector members.
+fn describe_ray_payload(payload_type: &besl::NodeReference) -> Result<RayPayload, String> {
+	let payload = payload_type.borrow();
+	let besl::Nodes::Struct { name, fields, .. } = payload.node() else {
+		return Err(
+			"Invalid ray tracing payload. The most likely cause is a payload type that isn't a struct, which the BESL lexer should have rejected. Declare the payload as a struct of scalars and vectors."
+				.to_string(),
+		);
+	};
+	let mut layout_hash = fnv1a(FNV1A_OFFSET_BASIS, name.as_bytes());
+	for field in fields {
+		let field = field.borrow();
+		let besl::Nodes::Member { name, r#type, .. } = field.node() else {
+			continue;
+		};
+		// Separators keep one name from running into the next.
+		layout_hash = fnv1a(layout_hash, &[0]);
+		layout_hash = fnv1a(layout_hash, name.as_bytes());
+		layout_hash = fnv1a(layout_hash, &[0]);
+		layout_hash = fnv1a(layout_hash, r#type.borrow().get_name().unwrap_or("unknown").as_bytes());
+	}
+	Ok(RayPayload {
+		name: name.clone(),
+		size: reflected_array_buffer_stride(payload_type)
+			.map_err(|error| format!("Failed to reflect ray tracing payload '{name}'. {error}"))?,
+		layout_hash,
+	})
 }
 
 /// Collects sorted binding metadata while sharing repeated references and rejecting distinct slot aliases.
@@ -564,6 +666,7 @@ fn reflect_binding(node: &besl::NodeReference) -> Result<BindingUsage, String> {
 			None,
 		),
 		besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
+		besl::BindingTypes::AccelerationStructure => (BindingKind::AccelerationStructure, None),
 	};
 
 	Ok(BindingUsage {

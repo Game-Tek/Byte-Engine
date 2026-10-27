@@ -15,8 +15,6 @@ pub enum Layouts {
 	Read,
 	/// The resource will be used as a read/write storage.
 	General,
-	/// The resource will be used as a shader binding table.
-	ShaderBindingTable,
 	/// Indirect.
 	Indirect,
 }
@@ -82,17 +80,11 @@ bitflags::bitflags! {
 		const InputAttachment = 1 << 15;
 		/// Resource will be used as a depth stencil.
 		const DepthStencil = 1 << 7;
-		/// Resource will be used as an acceleration structure.
-		const AccelerationStructure = 1 << 8;
 		/// Resource will be used as a transfer source.
 		const TransferSource = 1 << 9;
 		/// Resource will be used as a transfer destination.
 		const TransferDestination = 1 << 10;
-		/// Resource will be used as a shader binding table.
-		const ShaderBindingTable = 1 << 11;
-		/// The resource is acceleration-structure build scratch storage.
-		const AccelerationStructureBuildScratch = 1 << 12;
-
+		/// The buffer holds geometry that acceleration structures are built from.
 		const AccelerationStructureBuild = 1 << 13;
 
 		const Clear = 1 << 14;
@@ -133,14 +125,6 @@ bitflags::bitflags! {
 		const RAYGEN = 1 << 11;
 		/// The closest hit stage.
 		const CLOSEST_HIT = 1 << 12;
-		/// The any hit stage.
-		const ANY_HIT = 1 << 13;
-		/// The intersection stage.
-		const INTERSECTION = 1 << 14;
-		/// The miss stage.
-		const MISS = 1 << 15;
-		/// The callable stage.
-		const CALLABLE = 1 << 16;
 		/// The acceleration structure build stage.
 		const ACCELERATION_STRUCTURE_BUILD = 1 << 17;
 		/// The last or bottom stage.
@@ -596,12 +580,10 @@ pub enum ShaderTypes {
 	Compute,
 	Task,
 	Mesh,
+	/// The shader a ray tracing pipeline launches.
 	RayGen,
+	/// The shader a ray tracing pipeline's hit group runs on a hit.
 	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
 }
 
 impl From<ShaderTypes> for Stages {
@@ -614,10 +596,6 @@ impl From<ShaderTypes> for Stages {
 			ShaderTypes::Mesh => Self::MESH,
 			ShaderTypes::RayGen => Self::RAYGEN,
 			ShaderTypes::ClosestHit => Self::CLOSEST_HIT,
-			ShaderTypes::AnyHit => Self::ANY_HIT,
-			ShaderTypes::Intersection => Self::INTERSECTION,
-			ShaderTypes::Miss => Self::MISS,
-			ShaderTypes::Callable => Self::CALLABLE,
 		}
 	}
 }
@@ -726,6 +704,7 @@ impl BufferImageCopyDescriptor {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
 	pub(super) offset: usize,
@@ -804,6 +783,7 @@ impl From<BaseBufferHandle> for BufferDescriptor {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct BufferStridedRange {
 	pub(super) buffer_offset: BufferDescriptor,
 	pub(super) stride: usize,

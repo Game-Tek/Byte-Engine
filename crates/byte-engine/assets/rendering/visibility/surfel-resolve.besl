@@ -1,0 +1,341 @@
+// Gathers the light of the surfels around each half-resolution pixel, and lets each 8x8 tile vote on which surfels
+// to spawn, keep, and kill.
+//
+// Each pixel rebuilds its surface from the linear depth pyramid, reads up to SURFEL_LOOKUP_LIMIT surfels of its grid
+// cell, and blends their light by how close they lie, how well they face it, and how far they faded in. It writes the
+// blend to `SSGI History` and its normal to `SSGI Normals`, the images SSGI writes, so material evaluation reads either
+// source the same way. While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most
+// one spawn, at its least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the
+// allocate pass turns the spawn requests into surfels.
+
+// Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
+tile_depth: workgroup<f32, 144>;
+// The least covered spawn candidate: its quantized coverage above its lane, or NO_SURFEL without a candidate.
+spawn_vote: workgroup<atomicu32>;
+// The most covered despawn candidate: its quantized coverage above its lane, or zero without a candidate.
+despawn_vote: workgroup<atomicu32>;
+
+SURFEL_RESOLVE_WORKGROUP_WIDTH: const u32 = 8;
+SURFEL_RESOLVE_WORKGROUP_SIZE: const u32 = 64;
+// Normal reconstruction reads two texels on each side of the center, so the tile adds two texels on every side.
+SURFEL_RESOLVE_TILE_RADIUS: const u32 = 2;
+SURFEL_RESOLVE_TILE_WIDTH: const u32 = 12;
+SURFEL_RESOLVE_TILE_SIZE: const u32 = 144;
+// Matches the finite-difference degeneracy test of the SSGI trace and GTAO.
+SURFEL_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
+// A pixel spawns only while its coverage, its second-largest weight, and its cell's surfel count stay below these.
+SURFEL_SPAWN_COVERAGE: const f32 = 0.1;
+SURFEL_SPAWN_SECOND_WEIGHT: const f32 = 0.4;
+// A surfel keeps a same-cell pixel's surfels alive while they face it this much, as a cosine.
+SURFEL_KEEP_ALIVE_FACING: const f32 = 0.8;
+// A spawn copies the light of a surfel at least this old that faces its pixel this much.
+SURFEL_PARENT_FRAMES: const u32 = 8;
+SURFEL_PARENT_FACING: const f32 = 0.9;
+// The debug views after the six of material evaluation, in the pipeline manager's declaration.
+SURFELS_VIEW: const u32 = 6;
+SURFEL_COVERAGE_VIEW: const u32 = 7;
+
+// Reads the depth `offset` texels away from `pixel`, or zero when that texel is outside the image.
+// Keep in sync with `neighbor_depth` in `ssgi-trace.besl`.
+neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -> f32 {
+	let x: f32 = f32(pixel.x) + offset_x;
+	let y: f32 = f32(pixel.y) + offset_y;
+	if (x < 0.0 || y < 0.0 || x >= f32(extent.x) || y >= f32(extent.y)) {
+		return 0.0;
+	}
+	return fetch(depth_pyramid, vec2u(u32(x), u32(y))).x;
+}
+
+// Returns the view-space tangent along one screen axis from the side whose neighbors best extend the center's surface.
+// Keep in sync with `axis_tangent` in `ssgi-trace.besl`, which explains the choice.
+axis_tangent: fn (
+	pixel: vec2f,
+	axis: vec2f,
+	center_position: vec3f,
+	positive_z: f32,
+	negative_z: f32,
+	positive_far_z: f32,
+	negative_far_z: f32
+) -> vec3f {
+	let positive_error: f32 = side_error(center_position.z, positive_z, positive_far_z);
+	let negative_error: f32 = side_error(center_position.z, negative_z, negative_far_z);
+	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
+		return view_position(pixel + axis, positive_z) - center_position;
+	}
+	if (negative_z != 0.0) {
+		return center_position - view_position(pixel - axis, negative_z);
+	}
+	return vec3f(0.0, 0.0, 0.0);
+}
+
+// Returns `axis_tangent` with neighbor depths read from the workgroup's tile. Keep in sync with `tile_axis_tangent` in
+// `ssgi-trace.besl`.
+tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
+	return axis_tangent(
+		pixel,
+		axis,
+		center_position,
+		tile_depth[center_index + stride],
+		tile_depth[center_index - stride],
+		tile_depth[center_index + 2 * stride],
+		tile_depth[center_index - 2 * stride]
+	);
+}
+
+// Turns two screen-axis tangents into a camera-facing view-space normal, or zero when they are degenerate. Keep in
+// sync with `tangent_normal` in `ssgi-trace.besl`.
+tangent_normal: fn (dx: vec3f, dy: vec3f, center_position: vec3f) -> vec3f {
+	let unnormalized: vec3f = cross(dx, dy);
+	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
+	let tangent_product: f32 = dot(dx, dx) * dot(dy, dy);
+	if (tangent_product == 0.0 || normal_length_sq <= tangent_product * SURFEL_NORMAL_SIN_SQ_EPSILON) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+	let normal: vec3f = unnormalized * inversesqrt(normal_length_sq);
+	if (dot(normal, center_position) > 0.0) {
+		return vec3f(0.0, 0.0, 0.0) - normal;
+	}
+	return normal;
+}
+
+// Encodes a unit normal as an octahedral pair for the two-channel normal image, or zero for a zero normal. Keep in sync
+// with `encode_stored_normal` in `ssgi-trace.besl`, whose readers decode both.
+encode_stored_normal: fn (normal: vec3f) -> vec4f {
+	let length_l1: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
+	if (length_l1 == 0.0) {
+		return vec4f(0.0, 0.0, 0.0, 0.0);
+	}
+	let projected: vec2f = vec2f(normal.x, normal.y) * (1.0 / length_l1);
+	if (normal.z < 0.0) {
+		projected = vec2f(
+			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
+			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
+		);
+	}
+	return vec4f(projected.x, projected.y, 0.0, 0.0);
+}
+
+// Transforms a view-space point or direction (w = 0) of the sink's camera to world space.
+to_world: fn (view: vec3f, w: f32) -> vec3f {
+	let world: vec4f = surfel_resolve_parameters.view_to_world * vec4f(view.x, view.y, view.z, w);
+	return vec3f(world.x, world.y, world.z);
+}
+
+// Returns a color that tells neighboring surfels apart in the surfels debug view.
+surfel_color: fn (slot: u32) -> vec3f {
+	let hash: u32 = surfel_hash(slot);
+	return vec3f(f32(hash & 255) / 255.0, f32((hash >> 8) & 255) / 255.0, f32((hash >> 16) & 255) / 255.0);
+}
+
+// Writes `color` to the full-resolution pixels a half-resolution `pixel` covers in the debug view at `slot`.
+write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
+	let x: u32 = pixel.x * 2;
+	let y: u32 = pixel.y * 2;
+	write(debug_view_targets[slot - 1], vec2u(x, y), color);
+	write(debug_view_targets[slot - 1], vec2u(x + 1, y), color);
+	write(debug_view_targets[slot - 1], vec2u(x, y + 1), color);
+	write(debug_view_targets[slot - 1], vec2u(x + 1, y + 1), color);
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let lane: u32 = input.thread_idx;
+	let extent: vec2u = image_size(history_output);
+	let local: vec2u = vec2u(lane % SURFEL_RESOLVE_WORKGROUP_WIDTH, lane / SURFEL_RESOLVE_WORKGROUP_WIDTH);
+	let workgroup_origin: vec2u = pixel - local;
+	if (lane == 0) {
+		atomic_store(spawn_vote, NO_SURFEL);
+		atomic_store(despawn_vote, 0);
+	}
+	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
+	for (
+		let tile_index: u32 = lane;
+		tile_index < SURFEL_RESOLVE_TILE_SIZE;
+		tile_index = tile_index + SURFEL_RESOLVE_WORKGROUP_SIZE
+	) {
+		tile_depth[tile_index] = neighbor_depth(
+			workgroup_origin,
+			f32(tile_index % SURFEL_RESOLVE_TILE_WIDTH) - f32(SURFEL_RESOLVE_TILE_RADIUS),
+			f32(tile_index / SURFEL_RESOLVE_TILE_WIDTH) - f32(SURFEL_RESOLVE_TILE_RADIUS),
+			extent
+		);
+	}
+	workgroup_barrier();
+
+	let in_image: bool = pixel.x < extent.x && pixel.y < extent.y;
+	let center_index: u32 = (local.y + SURFEL_RESOLVE_TILE_RADIUS) * SURFEL_RESOLVE_TILE_WIDTH + local.x + SURFEL_RESOLVE_TILE_RADIUS;
+	let center_z: f32 = tile_depth[center_index];
+	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+	let view_normal: vec3f = vec3f(0.0, 0.0, 0.0);
+	let world_position: vec3f = vec3f(0.0, 0.0, 0.0);
+	if (center_z != 0.0) {
+		let center_position: vec3f = view_position(pixel_f, center_z);
+		view_normal = tangent_normal(
+			tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+			tile_axis_tangent(center_index, SURFEL_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+			center_position
+		);
+		world_position = to_world(center_position, 1.0);
+	}
+	let surface: bool = in_image && dot(view_normal, view_normal) != 0.0;
+	let normal: vec3f = to_world(view_normal, 0.0);
+
+	// The blend of the surfels' light, and their trust in it. The trust of the surfels the pixel lies hidden from, by
+	// their radial depth, adds up apart.
+	let light: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let light_weight: f32 = 0.0;
+	let hidden_weight: f32 = 0.0;
+	// The pixel's coverage with the lookup radius and with the surfels' own radius, and its two largest weights.
+	let coverage: f32 = 0.0;
+	let scoring_coverage: f32 = 0.0;
+	let largest: f32 = 0.0;
+	let second: f32 = 0.0;
+	let heaviest: u32 = NO_SURFEL;
+	let best_light_weight: f32 = 0.0;
+	let best_surfel: u32 = NO_SURFEL;
+	let parent: u32 = NO_SURFEL;
+	let parent_weight: f32 = 0.0;
+	let cell_count: u32 = 0;
+	if (surface) {
+		let cell: u32 = surfel_cell_of(world_position);
+		let start: u32 = surfel_scan[cell];
+		cell_count = surfel_scan[cell + 1] - start;
+		let end: u32 = start + min(cell_count, SURFEL_LOOKUP_LIMIT);
+		for (let entry: u32 = start; entry < end; entry = entry + 1) {
+			let surfel: u32 = surfel_cell_entries[entry];
+			let record: SurfelRecord = surfel_records[surfel];
+			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
+			let distance: f32 = surfel_distance(world_position - record.position, surfel_normal);
+			let facing: f32 = max(0.0, dot(surfel_normal, normal));
+			let weight: f32 = (1.0 - smoothstep(0.0, record.radius * SURFEL_LOOKUP_SCALE, distance)) * facing;
+			coverage = coverage + weight;
+			scoring_coverage = scoring_coverage + (1.0 - smoothstep(0.0, record.radius, distance)) * facing;
+			if (weight > largest) {
+				second = largest;
+				largest = weight;
+				heaviest = surfel;
+			} else if (weight > second) {
+				second = weight;
+			}
+			let trusted: f32 = weight * record.weight;
+			let visible: f32 = trusted;
+			if (trusted > 0.0) {
+				visible = trusted * surfel_occlusion(surfel, record, surfel_normal, world_position);
+			}
+			light = light + vec4f(record.irradiance) * visible;
+			light_weight = light_weight + visible;
+			hidden_weight = hidden_weight + trusted - visible;
+			if (visible > best_light_weight) {
+				best_light_weight = visible;
+				best_surfel = surfel;
+			}
+			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. Votes only grow during the
+			// resolve, so a pixel that finds the vote already cast skips the read-modify-write, which every pixel of
+			// the tile would otherwise queue on the same surfel.
+			if (
+				cell_count <= SURFEL_CROWDED_CELL
+				&& facing > SURFEL_KEEP_ALIVE_FACING
+				&& surfel_states[surfel].cell == cell
+				&& atomic_load(surfel_states[surfel].touched) < 5
+			) {
+				atomic_max(surfel_states[surfel].touched, 5);
+			}
+			// The state read comes last, so the surfels that don't reach the pixel skip it.
+			if (
+				weight > parent_weight
+				&& facing > SURFEL_PARENT_FACING
+				&& surfel_states[surfel].frames >= SURFEL_PARENT_FRAMES
+			) {
+				parent = surfel;
+				parent_weight = weight;
+			}
+		}
+		// The surfel that dominates a pixel earns importance, and any surfel that contributes stays alive. The higher of
+		// the two votes is the one that counts, and, as above, a vote already cast as high is skipped.
+		if (best_surfel != NO_SURFEL) {
+			let dominance: f32 = best_light_weight / (light_weight + 0.00001);
+			let vote: u32 = 0;
+			if (dominance > 0.5) {
+				vote = u32(50.0 + 50.0 * dominance);
+			} else if (best_light_weight > 0.05) {
+				vote = 2;
+			}
+			if (vote != 0 && atomic_load(surfel_states[best_surfel].touched) < vote) {
+				atomic_max(surfel_states[best_surfel].touched, vote);
+			}
+		}
+
+		// A sparsely covered pixel may ask for a surfel, more likely the farther it lies.
+		let random: f32 = surfel_unit(
+			surfel_hash_combine(surfel_hash_combine(pixel.x, surfel_hash(pixel.y)), surfel_parameters.frame_index)
+		);
+		if (
+			second < SURFEL_SPAWN_SECOND_WEIGHT
+			&& scoring_coverage < SURFEL_SPAWN_COVERAGE
+			&& cell_count < SURFEL_CROWDED_CELL
+			&& random < surfel_resolve_parameters.spawn_probability * center_z
+		) {
+			atomic_min(spawn_vote, (u32(min(coverage, 15.99) * 4194304.0) << 6) | lane);
+		}
+		// A crowded pixel may kill its heaviest surfel. Filling cells lower the bar.
+		let fullness: f32 = smoothstep(f32(SURFEL_CROWDED_CELL) * 0.75, f32(SURFEL_CROWDED_CELL), f32(cell_count));
+		if (scoring_coverage > mix(3.5, 3.0, fullness) && second > mix(0.9, 0.8, fullness)) {
+			atomic_max(despawn_vote, (u32(min(scoring_coverage, 63.99) * 1048576.0) << 6) | lane);
+		}
+	}
+
+	if (in_image) {
+		let history: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		if (light_weight > 0.00001) {
+			history = light * (1.0 / light_weight);
+		} else if (hidden_weight > 0.00001) {
+			// Every surfel that would light the pixel lies behind something, so none of their light, sky included,
+			// reaches it.
+			history = vec4f(0.0, 0.0, 0.0, 1.0);
+		} else if (surface) {
+			// No surfel covers the pixel yet. Until one spawns, it takes the environment's light as if nothing hid the
+			// sky, as material evaluation would light it without surfel GI.
+			let sky: vec4f = texture_lod(surfel_environment_irradiance, normal, 0.0);
+			let scale: f32 = surfel_parameters.environment_intensity * surfel_parameters.exposure;
+			history = vec4f(sky.x * scale, sky.y * scale, sky.z * scale, 0.0);
+		}
+		write(history_output, pixel, history);
+		write(normal_output, pixel, encode_stored_normal(view_normal));
+		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFELS_VIEW) != 0) {
+			let color: vec3f = vec3f(0.0, 0.0, 0.0);
+			if (heaviest != NO_SURFEL) {
+				color = surfel_color(heaviest) * (0.25 + 0.75 * largest);
+			}
+			write_debug_view(
+				debug_view_slot(surfel_resolve_parameters.debug_views, SURFELS_VIEW),
+				pixel,
+				vec4f(color.x, color.y, color.z, 1.0)
+			);
+		}
+		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW) != 0) {
+			// Green up to full coverage, then red as more surfels overlap.
+			write_debug_view(
+				debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW),
+				pixel,
+				vec4f(clamp((coverage - 1.0) / 3.0, 0.0, 1.0), clamp(coverage, 0.0, 1.0), 0.0, 1.0)
+			);
+		}
+	}
+	workgroup_barrier();
+
+	let tile: u32 = (workgroup_origin.y / SURFEL_RESOLVE_WORKGROUP_WIDTH) * surfel_resolve_parameters.spawn_tiles_per_row
+		+ workgroup_origin.x / SURFEL_RESOLVE_WORKGROUP_WIDTH;
+	// A sink with more tiles than its request buffer holds asks for surfels only in the tiles that fit.
+	if (tile < surfel_resolve_parameters.spawn_tile_count) {
+		let spawn: u32 = atomic_load(spawn_vote);
+		if (spawn != NO_SURFEL && (spawn & 63) == lane) {
+			surfel_spawns[tile] = SurfelSpawn(world_position, encode_surfel_normal(normal), parent, 1);
+		} else if (spawn == NO_SURFEL && lane == 0) {
+			surfel_spawns[tile].requested = 0;
+		}
+	}
+	let despawn: u32 = atomic_load(despawn_vote);
+	if (despawn != 0 && (despawn & 63) == lane) {
+		atomic_max(surfel_states[heaviest].touched, SURFEL_KILL);
+	}
+}

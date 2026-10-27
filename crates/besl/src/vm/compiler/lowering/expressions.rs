@@ -187,6 +187,12 @@ impl<'a> Compiler<'a> {
 									found: "buffer".to_string(),
 								});
 							}
+							BindingTypes::AccelerationStructure => {
+								return Err(VmError::TypeMismatch {
+									expected: expected_type.name().to_string(),
+									found: "acceleration structure".to_string(),
+								});
+							}
 						};
 						(ResourceSlot::new(*slot), layout)
 					};

@@ -63,6 +63,25 @@ pub const INSTANCE_INDEX_BUILTIN: &str = "instance_index";
 /// Names the collision-free semantic output used for a structural vertex `position` field.
 pub const STRUCTURAL_POSITION_OUTPUT: &str = "_besl_interface_position";
 
+/// Names the built-in struct that `intersect` returns and `invoke` takes.
+pub const HIT_STRUCT: &str = "Hit";
+
+/// The members of the built-in [`HIT_STRUCT`], as name and type pairs in declaration order.
+///
+/// The lexer declares the struct from this list, and backends that declare the struct themselves, such as the MSL
+/// generator, read it too, so both agree on the layout. Shaders rebuild a hit with its constructor, which takes the
+/// members in this order.
+pub const HIT_MEMBERS: [(&str, &str); 8] = [
+	("record", "u32"),
+	("distance", "f32"),
+	("custom_index", "u32"),
+	("geometry_index", "u32"),
+	("primitive_index", "u32"),
+	("barycentrics", "vec2f"),
+	("origin", "vec3f"),
+	("direction", "vec3f"),
+];
+
 /// Reports whether an emitted output name carries the native vertex position.
 ///
 /// Structural entry points use a reserved symbol so `return { position }` can read a local
@@ -128,14 +147,6 @@ pub fn stack_layers<'a>(
 	mut module: parser::Node<'a>,
 	layers: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<parser::Node<'a>, CompilationError> {
-	/// Returns the name a top-level declaration occupies. Push constant blocks share one reserved name.
-	fn declared_name<'a>(node: &parser::Node<'a>) -> Option<&'a str> {
-		match node.node() {
-			parser::Nodes::PushConstant { .. } => Some("push_constant"),
-			_ => node.name(),
-		}
-	}
-
 	let invalid = |message: String| CompilationError::Lex(lexer::LexError::invalid(message));
 
 	// Every layer declaration in stacking order, and the name and layer of each one that has a name.
@@ -158,7 +169,7 @@ pub fn stack_layers<'a>(
 			// The resources one layer declares form one descriptor set layout, named after the layer.
 			declaration.set_layout(layer);
 
-			if let Some(name) = declared_name(&declaration) {
+			if let Some(name) = declaration.name() {
 				if name == "main" {
 					return Err(invalid(format!(
 						"Layout layer `{layer}` declares `main`. The most likely cause is that a shader was listed as a layer; a layer holds only shared declarations."
@@ -184,7 +195,7 @@ pub fn stack_layers<'a>(
 		));
 	};
 
-	for name in children.iter().filter_map(declared_name) {
+	for name in children.iter().filter_map(parser::Node::name) {
 		if let Some((_, owner)) = declared.iter().find(|(declared, _)| *declared == name) {
 			return Err(invalid(format!(
 				"The shader redeclares `{name}`, which layout layer `{owner}` already declares. The most likely cause is a declaration left in the shader after it moved to the layer; delete the shader's copy."

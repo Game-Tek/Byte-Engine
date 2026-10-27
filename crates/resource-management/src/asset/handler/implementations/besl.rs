@@ -211,6 +211,8 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSett
 	Ok(match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
 		"Fragment" => ShaderGenerationSettings::fragment(),
+		"RayGeneration" => ShaderGenerationSettings::ray_generation(),
+		"ClosestHit" => ShaderGenerationSettings::closest_hit(),
 		"Compute" => ShaderGenerationSettings::compute(workgroup()?),
 		"Task" => ShaderGenerationSettings::task(
 			workgroup()?,
@@ -228,7 +230,7 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSett
 		}
 		stage => {
 			return Err(format!(
-				"Unsupported BESL shader stage '{stage}'. The most likely cause is that `stage` is not `Vertex`, `Fragment`, `Compute`, `Task`, or `Mesh`."
+				"Unsupported BESL shader stage '{stage}'. The most likely cause is a misspelled stage name. Set `stage` to `Vertex`, `Fragment`, `Compute`, `Task`, `Mesh`, `RayGeneration`, or `ClosestHit`."
 			));
 		}
 	})
@@ -371,13 +373,22 @@ fn prepare_shader(
 		"Missing BESL main function. The most likely cause is that the shader does not declare `main`.".to_string()
 	})?;
 
-	let sets = ProgramEvaluation::from_program(&program)?
+	let evaluation = ProgramEvaluation::from_program(&program)?;
+	let ray_payload = evaluation.ray_payload().cloned();
+	let sets = evaluation
 		.into_sets()
 		.into_iter()
 		.map(|set| SetInterface::new(set, name))
 		.collect();
 
-	Ok((program, ShaderInterface { workgroup_size, sets }))
+	Ok((
+		program,
+		ShaderInterface {
+			workgroup_size,
+			sets,
+			ray_payload,
+		},
+	))
 }
 
 /// The `PreparedBeslShader` struct holds a linked and lowered BESL shader whose platform compilation has not run yet.
@@ -602,6 +613,7 @@ mod tests {
 								"passes/resolve.besl",
 								vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
 							)],
+							ray_payload: None,
 						},
 						artifact: ShaderArtifact::Spirv,
 					},
@@ -791,10 +803,15 @@ mod tests {
 
 	#[test]
 	fn shader_settings_default_workgroups_and_require_stage_specific_mesh_limits() {
-		for (stage, expected) in [("Vertex", ShaderTypes::Vertex), ("Fragment", ShaderTypes::Fragment)] {
+		for (stage, expected) in [
+			("Vertex", ShaderTypes::Vertex),
+			("Fragment", ShaderTypes::Fragment),
+			("RayGeneration", ShaderTypes::RayGen),
+			("ClosestHit", ShaderTypes::ClosestHit),
+		] {
 			let spec = crate::asset::parse_json(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
 
-			let settings = parse_shader_settings(Some(&spec)).expect("a raster sidecar should parse");
+			let settings = parse_shader_settings(Some(&spec)).expect("a sidecar without a workgroup should parse");
 
 			assert_eq!(ShaderTypes::from(settings.stage), expected);
 			assert_eq!(settings.stage.local_size(), None);

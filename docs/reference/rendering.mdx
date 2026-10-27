@@ -246,13 +246,90 @@ reading the tangent or bitangent makes the pipeline build the tangent frame for
 that material, and sampling a texture or reading texture coordinates makes it
 reconstruct the UV.
 
+### Indirect diffuse light
+
+One source lights the indirect diffuse light of a frame's opaque surfaces:
+
+| Source | Lights the frame when |
+| --- | --- |
+| Surfel GI | `render.surfel-gi.enabled` is `true` at startup and at runtime, the device traces rays, and the surfel GI pipelines have compiled, the one that shades its rays included. |
+| SSGI | Surfel GI doesn't light the frame, and `render.ssgi.enabled` is `true` at startup and at runtime. |
+| None | Neither does. The environment alone lights indirect diffuse light, darkened by GTAO when it runs. |
+
+| Rule | Value |
+| --- | --- |
+| Images | The source writes `SSGI History` and `SSGI Normals`, which material evaluation reads. Material evaluation writes `Diffuse Radiance History`, which SSGI rays read in the next frame, only in a frame that SSGI lights. |
+| SSGI history | SSGI reads its history only after a frame it lit at the same sink size. Its first frame after a frame it didn't light starts without history. |
+| Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI it adds none: the surfels' light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
+| Surfels | At most `render.surfel-gi.surfel-capacity` surfels live at once, and they trace at most `render.surfel-gi.ray-budget` rays a frame. |
+| Baked shaders | Material shaders keep the indirect diffuse read while either source is built in, and the diffuse radiance write while SSGI is. |
+
+### Surfel GI
+
+Surfel GI keeps surfels: small world-space discs on the surfaces the camera
+sees. A grid around the first sink's camera lists the surfels that overlap each
+of its cells, and every sink that surfel GI lights reads the surfels listed
+around each of its pixels.
+
+| Term | Definition |
+| --- | --- |
+| Surfel | A disc with a world-space position, a normal, and a radius, held in one slot of a pool of `render.surfel-gi.surfel-capacity` slots. |
+| Radius | 0.24 meters, times the surfel's distance from the first sink's camera divided by 3.2 meters when that ratio is above one. |
+| Grid | 8 cascades of 32 × 32 × 32 cells, centered on the first sink's camera and snapped to whole cells of cascade 0. A cell of cascade `c` measures 0.2 × 2<sup>c</sup> meters, and a position falls in the finest cascade that covers it. |
+| Cell list | The surfels whose disc, stretched to twice its radius along its normal, overlaps the cell. A surfel near a cascade boundary is listed in both cascades. A surfel is listed in at most 32 cells: the first 32 it overlaps, those of the finer cascade first, then ordered by z, then y, then x. |
+| Coverage | The sum, over the surfels listed in a pixel's cell, of a weight that falls smoothly from one at the surfel's center to zero at 1.25 times its radius, times the cosine between the surfel's and the pixel's normals. |
+
+| Rule | Value |
+| --- | --- |
+| Spawn | Each 16 × 16-pixel tile of each sink spawns at most one surfel a frame, at its least covered pixel. A pixel is a candidate when its coverage is below 0.1, its second-largest weight below 0.4, its cell lists fewer than 32 surfels, and a random draw passes with a probability that grows with its view depth. The new surfel takes the pixel's position and normal. |
+| Votes | A pixel votes 5 for every surfel of its own cell that faces it within 37 degrees while the cell lists at most 32 surfels, and 2 for the surfel with the largest weight in its blend when that weight is above 0.05; when that weight is more than half of the blend's, the pixel votes 50 plus 50 times that share instead. A ray's hit votes for the surfel around it whose light reaches it most: 50 times that light's pre-exposed luminance, at most 50, when the luminance is above 0.01. A surfel keeps the strongest vote it got since the last frame. |
+| Despawn | Each tile kills at most one surfel a frame: the heaviest at its most covered pixel, when that pixel's coverage passes 3.5 and its second-largest weight passes 0.9. Both thresholds fall to 3.0 and 0.8 as the cell fills toward 32 surfels. |
+| Aging | Each frame, a surfel ages by one frame plus its cell's rent, less its vote, and never gets younger. The rent is one frame for every 10 surfels the cell lists beyond 32, plus the square of those extra surfels over 32 once the cell lists more than 64. |
+| Recycle | A surfel 500 frames old goes back to the pool. |
+| Rays | Each frame, a surfel asks for 4 rays, 32 in its first 4 frames, and 16 while its estimate's inconsistency is above 0.3. When the surfels ask for more rays than `render.surfel-gi.ray-budget`, the frame traces a window of the asked rays that starts where the last frame's window ended, so the surfels take turns. |
+| Ray paths | A ray leaves from 0.01 times the surfel's radius above its center, but at least 0.5 millimeters and at most 1 centimeter, and reaches 10 kilometers. Its direction is random around the surfel's normal: from the surfel's guide for a share of the rays that grows from 0 to 0.5 over the surfel's first 16 frames once the guide holds light, and from the cosine-weighted distribution otherwise. |
+| Guide | Each surfel splits its hemisphere into 8 × 8 cells of equal solid angle, through the concentric map of the unit square onto the disk and the disk's equal-area lift onto the hemisphere. Each ray moves the four cells around its direction, by their bilinear shares, 2% of the way toward the pre-exposed luminance of the light it brought back times the cosine of its direction. A guided ray picks a cell in proportion to the cell's share of the guide, then a uniformly random direction inside the cell. |
+| Radial depth | Each surfel splits its hemisphere into 4 × 4 cells of its octahedral projection, turned 45 degrees to fill the unit square, each holding the first four moments of the distance its rays went there. A ray counts its distance up to twice the surfel's radius, and a miss counts as twice the radius. It moves its cell 5% of the way toward its own moments when it ends nearer than the cell's mean, and 1% otherwise; a cell no ray reached yet takes the first ray's moments. |
+| Hit surfaces | A ray hits the [ray-traced scene](#ray-traced-scene). The hit's material reports its diffuse albedo, the base color times one minus the metalness, and its emission, with texture levels that cover a cone widening by 0.31 radians along the ray. A material reports black until its closest-hit shader has compiled, and when its bake has none. The back of a single-sided surface reports black. |
+| Ray light | A miss brings back the environment's light from its direction: the environment's specular level prefiltered for roughness 2/7, times the environment's intensity. A hit brings back its emission, plus its albedo times what reaches it: each of the first four suns that it faces and that no geometry hides, and the light of the surfels around it as they were the frame before, each weighted by its visibility from the hit. A hit that no surfel around it sees gets the suns alone. |
+| Estimate | Each surfel estimates the average light its rays bring back, as irradiance over π, and the fraction of its cosine-weighted rays that hit, with the multiscale mean estimator. Toward the light, each ray counts with the cosine-weighted density of its direction over the density it was drawn from. Toward the hit fraction, each ray drawn from the cosine-weighted distribution counts once, and a ray drawn from the guide doesn't count; a frame whose rays all came from the guide leaves the hit fraction as it was. Its first 32 frames of rays weigh evenly. Afterward, a frame's average counts at most 0.1 plus eight deviations above the recent mean, in pre-exposed units, and the estimate moves toward it at the estimator's rate, but at least by one over one plus the frames it holds, which stop growing at 200. |
+| Trust | A surfel's weight in lookups grows from zero to one over its first 4 frames, times the frames of rays its estimate holds over 32, up to one. |
+| Visibility | A point's visibility from a surfel, for a pixel or a ray's hit, bounds the share of the surfel's rays toward the point that end before it: the Hamburger four-moment bound of moment shadow mapping on the radial depth around the direction toward the point, read bilinearly between cells, with its shadow strengthened 1.2 times. Visibilities up to a bleed then count as zero, and the rest stretch over zero to one. The bleed is 0.2, plus 0.15 times the deviation of the cell's distances over their root mean square, plus 0.25 times that ratio times one minus the cosine between the direction and the surfel's normal. A point is fully visible when Cantelli's inequality puts at most 0.1% of the blended distances before it. It's also fully visible when every cell a ray reached would leave it fully visible alone, by that rule or because the four-moment bound finds no shadow at its distance. A point below a surfel's plane takes the direction on its horizon. |
+| Pixel light | A pixel takes the blend of its surfels' light and hit fractions, each weighted by its weight and its visibility. A pixel hidden from every surfel that would light it takes no light and a hit fraction of one. A pixel no surfel covers takes the environment's irradiance around its normal, times the environment's intensity, and a hit fraction of zero. |
+| Limits | The grid lists each surfel in at most 32 cells, a pixel reads at most 64 surfels of its cell, and a ray's hit at most 16. A full pool spawns nothing until a slot is recycled. A sink spawns in at most 129,600 tiles, the tiles of a 7,680 × 4,320 sink; in a larger sink, the tiles past them spawn nothing. |
+
+The first sink records the frame-wide surfel stages, `surfel-grid`,
+`surfel-trace`, and `surfel-integrate`, after its light clusters and before it
+draws the scene; every sink that surfel GI lights resolves and spawns its
+surfels inside its `screen-space` stage.
+
+### Ray-traced scene
+
+The rays surfel GI traces hit the scene as the first sink's frame places it,
+with these exceptions:
+
+| Rule | Value |
+| --- | --- |
+| Geometry | Each mesh's opaque, unskinned primitives at full detail. Masked and blended primitives are left out, so rays pass through foliage and glass, and so are skinned primitives, so rays pass through the shapes skinning deforms. A mesh without such primitives has no geometry. |
+| Instances | Every renderable the frame draws whose mesh has geometry, once that geometry is built. |
+| Builds | A mesh's geometry is built once, from the first frame that draws one of its renderables, in the order meshes arrive: at most 262,144 triangles of builds a frame, and at least one mesh a frame. A frame that doesn't record the frame-wide work builds nothing, and its meshes wait for the next frame. A mesh's geometry lasts as long as the mesh stays resident. |
+| Placement | Every frame that surfel GI lights places the instances at their transforms in that frame. |
+
+The first sink records the builds and the placement in the
+`acceleration-structures` stage, before `surfel-grid`. The stage's time covers
+the builds. The placement runs alongside the stages after it, so its time shows
+in the first stage that traces rays.
+
 ### Stages and targets
 
 Each sink records these stages in order, and each reports a `stage.<name>`
 metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
-`light-clusters`, `visibility-early`, `occlusion-pyramid`, `visibility-late`,
+`light-clusters`, `acceleration-structures`, `surfel-grid`, `surfel-trace`,
+`surfel-integrate`, `visibility-early`, `occlusion-pyramid`, `visibility-late`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
-`material-evaluation`, `background`, and `transparent`.
+`material-evaluation`, `background`, and `transparent`. Only the first sink
+records the ray tracing and surfel stages, and only in a frame that surfel GI
+lights.
 
 | Target | Content |
 | --- | --- |

@@ -1,0 +1,42 @@
+// The first pass of the hit sort: one workgroup turns the frame's hit counts per material into the offset where each
+// material's run of sorted hits starts, and resets the counts for the next frame's trace.
+//
+// It also records the frame's hit count, which bounds the shade pass. Next, the scatter places each hit in its run.
+
+// Each thread's running total while the workgroup scans them.
+thread_totals: workgroup<u32, 256>;
+
+main: fn (input: StageInput) -> void {
+	let thread: u32 = input.thread_idx;
+	// SURFEL_HIT_KEYS counts, four per thread.
+	let first: u32 = thread * 4;
+	let values: vec4u = vec4u(
+		atomic_exchange(surfel_hit_sort.counts[first], 0),
+		atomic_exchange(surfel_hit_sort.counts[first + 1], 0),
+		atomic_exchange(surfel_hit_sort.counts[first + 2], 0),
+		atomic_exchange(surfel_hit_sort.counts[first + 3], 0)
+	);
+	let thread_total: u32 = values.x + values.y + values.z + values.w;
+	thread_totals[thread] = thread_total;
+	workgroup_barrier();
+
+	// An inclusive scan of the thread totals, as in the surfel scan's group pass.
+	for (let distance: u32 = 1; distance < SURFEL_SCAN_WORKGROUP_SIZE; distance = distance * 2) {
+		let earlier: u32 = 0;
+		if (thread >= distance) {
+			earlier = thread_totals[thread - distance];
+		}
+		workgroup_barrier();
+		thread_totals[thread] = thread_totals[thread] + earlier;
+		workgroup_barrier();
+	}
+
+	let offset: u32 = thread_totals[thread] - thread_total;
+	surfel_hit_sort.offsets[first] = offset;
+	surfel_hit_sort.offsets[first + 1] = offset + values.x;
+	surfel_hit_sort.offsets[first + 2] = offset + values.x + values.y;
+	surfel_hit_sort.offsets[first + 3] = offset + values.x + values.y + values.z;
+	if (thread == SURFEL_SCAN_WORKGROUP_SIZE - 1) {
+		surfel_hit_sort.hit_count = thread_totals[thread];
+	}
+}

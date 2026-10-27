@@ -183,6 +183,36 @@ pub enum VmError {
 	UninitializedLocal {
 		local: usize,
 	},
+	InvalidRayInterval {
+		t_min: String,
+		t_max: String,
+	},
+	InvokeOutsideRayGeneration,
+	RecordOutOfRange {
+		record: u32,
+		count: usize,
+	},
+	HitGroupOutOfRange {
+		record: usize,
+		hit_group: u32,
+		count: usize,
+	},
+	PayloadMismatch {
+		hit_group: usize,
+		expected: String,
+		found: String,
+	},
+	NotAClosestHitShader {
+		hit_group: usize,
+	},
+	NotARayGenerationShader,
+	RayTracingInputUnavailable {
+		name: &'static str,
+	},
+	RayTracingInClosestHit {
+		hit_group: usize,
+	},
+	DiscardInRayTracing,
 }
 
 impl std::fmt::Display for VmError {
@@ -202,7 +232,7 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::UnsupportedMainSignature { message } => write!(
 				f,
-				"Unsupported main signature: {}. The most likely cause is that the VM only accepts `main: fn () -> void` right now.",
+				"Unsupported main signature: {}. The most likely cause is that the VM accepts `main: fn () -> void`, and a closest hit's `main: fn (payload: P) -> P`, which runs only through `invoke`.",
 				message
 			),
 			VmError::UnsupportedType { type_name } => write!(
@@ -452,6 +482,54 @@ impl std::fmt::Display for VmError {
 				f,
 				"Uninitialized local {}. The most likely cause is that the BESL program read a local variable before assigning a value to it.",
 				local
+			),
+			VmError::InvalidRayInterval { t_min, t_max } => write!(
+				f,
+				"Ray query interval from {t_min} to {t_max} is invalid. The most likely cause is a negative or NaN `t_min`, or a `t_max` below `t_min`, for which the GPU result is undefined. Pass a `t_min` of zero or more and a `t_max` of `t_min` or more."
+			),
+			VmError::InvokeOutsideRayGeneration => write!(
+				f,
+				"`invoke` ran outside a ray generation shader. The most likely cause is a compute or closest-hit shader that calls `invoke`, which only a ray generation shader traced with `RayTracingPipeline::trace_rays` can call. Move the call to the pipeline's ray generation shader."
+			),
+			VmError::RecordOutOfRange { record, count } => write!(
+				f,
+				"Hit record {record} is outside the shader binding table's {count} records. The most likely cause is an instance hit group offset or geometry index that reaches past the table, which the GPU doesn't check. Write a record for every geometry the scene's instances reach, or lower the instance's hit group offset."
+			),
+			VmError::HitGroupOutOfRange {
+				record,
+				hit_group,
+				count,
+			} => write!(
+				f,
+				"Shader binding table record {record} names hit group {hit_group}, but the pipeline has {count}. The most likely cause is a table written for another pipeline. Name only hit groups below {count}."
+			),
+			VmError::PayloadMismatch {
+				hit_group,
+				expected,
+				found,
+			} => write!(
+				f,
+				"Hit group {hit_group} takes payload `{found}`, but the ray generation shader passes `{expected}` to `invoke`. The most likely cause is a payload struct whose name, members, or member order differs between the shaders. Declare the payload once, in a layout layer that every shader of the pipeline lists."
+			),
+			VmError::NotAClosestHitShader { hit_group } => write!(
+				f,
+				"Hit group {hit_group} isn't a closest-hit shader. The most likely cause is a program whose `main` doesn't take and return a payload. Give the hit group a `main` of the form `main: fn (input: StageInput, payload: P) -> P`."
+			),
+			VmError::NotARayGenerationShader => write!(
+				f,
+				"The ray generation program is a closest-hit shader. The most likely cause is that the programs passed to `RayTracingPipeline::new` are swapped. Pass the program whose `main` takes no payload first."
+			),
+			VmError::RayTracingInputUnavailable { name } => write!(
+				f,
+				"`{name}` has no value in this invocation. The most likely cause is a shader that reads a ray tracing input in another stage. Read launch values only in ray generation shaders, and hit values only in the closest hits that `invoke` runs."
+			),
+			VmError::RayTracingInClosestHit { hit_group } => write!(
+				f,
+				"The closest hit of hit group {hit_group} calls `invoke`, `intersect`, or `trace_occlusion`. The most likely cause is a closest hit that traces rays itself, which closest-hit shaders can't do. Return what the hit needs in the payload, and trace those rays from the ray generation shader."
+			),
+			VmError::DiscardInRayTracing => write!(
+				f,
+				"`discard` ran in a ray tracing shader. The most likely cause is `discard` in a ray generation or closest-hit shader, which only fragment shaders can run. Remove `discard`, and return the payload unchanged to leave a hit unshaded."
 			),
 		}
 	}

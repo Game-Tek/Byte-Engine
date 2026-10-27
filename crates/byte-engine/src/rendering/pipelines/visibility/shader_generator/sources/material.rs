@@ -261,15 +261,20 @@ sample_ies_profile: fn (
 pub(crate) const MATERIAL_EVALUATION_SUFFIX_SOURCE: &str = r#"
 material_evaluation_suffix: fn () -> void {
 	// The fraction of the hemisphere around the normal that nearby geometry leaves open to the environment. GTAO and
-	// SSGI each estimate it from the opaque depth buffer, so a transparent surface has neither, and either may be off.
+	// the indirect diffuse source each estimate it for opaque surfaces, so a transparent surface has neither, and
+	// either may be off.
 	let environment_visibility: f32 = 1.0;
-	// Light from SSGI rays that hit on-screen geometry, already weighted by the fraction of rays that hit.
+	// The indirect diffuse source's light: what SSGI's rays hit, already weighted by the fraction of rays that hit, or
+	// everything surfel GI's rays reached, the environment included.
 	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
+	// Whether the pixel adds the environment's diffuse light itself, which surfel GI's light already holds.
+	let adds_environment_diffuse: bool = true;
 	if (!transparent) {
-		if (push_constant.ssgi != 0) {
-			// SSGI works in view space at half resolution. The pixel's own surface picks the history texels that lie
-			// on it. Alpha is the fraction of rays that hit, so the rest reach the environment.
-			// The surface in SSGI's view space, made here so neither stays live through the material body.
+		if (push_constant.indirect_diffuse != 0) {
+			// SSGI and surfel GI both store their light in view space at half resolution. The pixel's own surface picks
+			// the history texels that lie on it. Alpha is the fraction of rays that hit, so the rest reach the
+			// environment.
+			// The surface in view space, made here so neither stays live through the material body.
 			let view_space_surface_position: vec3f = views.views[0].view * vec4f(
 				world_space_vertex_position.x,
 				world_space_vertex_position.y,
@@ -288,12 +293,16 @@ material_evaluation_suffix: fn () -> void {
 				view_space_surface_position,
 				view_space_normal
 			);
-			// SSGI carries pre-exposed light through its half-float images. Undo that scale before combining it
+			// Both sources carry pre-exposed light through half-float images. Undo that scale before combining it
 			// with physical lighting, so the final exposure below applies exactly once.
 			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)
 				/ lighting_data.exposure;
 			// Filter rounding can push the hit fraction past one. The clamp keeps the base of the specular fit's pow nonnegative.
 			environment_visibility = clamp(1.0 - screen_space_indirect.w, 0.0, 1.0);
+		}
+		// The value 2 means surfel GI lit the frame, and its rays gathered the environment's light where they missed.
+		if (push_constant.indirect_diffuse == 2) {
+			adds_environment_diffuse = false;
 		}
 		if (push_constant.gtao != 0) {
 			// Both passes estimate the same visibility, so multiplying them would darken an occluder they both see
@@ -303,8 +312,11 @@ material_evaluation_suffix: fn () -> void {
 		}
 	}
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
-	let indirect_diffuse_radiance: vec3f = screen_space_irradiance
-		+ sample_environment_irradiance(vec3f(normal)) * (lighting_data.environment_intensity * environment_visibility);
+	let indirect_diffuse_radiance: vec3f = screen_space_irradiance;
+	if (adds_environment_diffuse) {
+		indirect_diffuse_radiance = indirect_diffuse_radiance
+			+ sample_environment_irradiance(vec3f(normal)) * (lighting_data.environment_intensity * environment_visibility);
+	}
 	// The irradiance debug view sums every light's irradiance onto the indirect one; nothing else reads the sum, so a
 	// bake without debug views drops it with the gated additions below.
 	let total_irradiance: vec3f = indirect_diffuse_radiance;
@@ -533,7 +545,7 @@ material_evaluation_suffix: fn () -> void {
 	// exposure changes, and the material consumer removes that scale before combining it with physical lighting.
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// It is written before the reflection trace, which cannot change it, so the diffuse sum does not stay live through
-	// the ray march. Only SSGI reads the diffuse light, so it is not written while SSGI is off.
+	// the ray march. Only SSGI reads the diffuse light, so it is written only in frames that SSGI lights.
 	if (!transparent) {
 		if (push_constant.ssgi != 0) {
 			let diffuse_radiance: vec3f = diffuse * lighting_data.exposure;

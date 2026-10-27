@@ -179,6 +179,10 @@ pub(super) struct ExecutionState<'a> {
 	remaining_instructions: usize,
 	call_depth: usize,
 	pub(super) discarded: bool,
+	/// The trace that a ray generation invocation belongs to. The closest hits it invokes share it.
+	pub(super) trace: Option<TraceContext<'a>>,
+	/// The hit that the running closest hit shades, while an `invoke` call runs one.
+	pub(super) hit: Option<RayHit>,
 }
 
 impl<'a> ExecutionState<'a> {
@@ -188,6 +192,8 @@ impl<'a> ExecutionState<'a> {
 			remaining_instructions: config.instruction_limit(),
 			call_depth: 0,
 			discarded: false,
+			trace: None,
+			hit: None,
 		}
 	}
 
@@ -221,6 +227,10 @@ pub struct ExecutableProgram {
 	pub(super) descriptor_layouts: HashMap<ResourceSlot, DescriptorLayout>,
 	pub(super) functions: Vec<ExecutableFunction>,
 	pub(super) main_function: usize,
+	/// The payload of a closest hit, whose `main` takes and returns it. `None` for every other program.
+	pub(super) closest_hit_payload: Option<ValueType>,
+	/// The payload that the program's `invoke` calls pass, if it calls `invoke`.
+	pub(super) invoke_payload: Option<ValueType>,
 }
 
 /// The `ExecutableFunction` struct isolates one compiled BESL call target for bounded VM execution.
@@ -313,6 +323,7 @@ impl ExecutableProgram {
 			Some(DescriptorLayout::Texture) => None,
 			Some(DescriptorLayout::Image) => None,
 			Some(DescriptorLayout::PushConstant(_)) => None,
+			Some(DescriptorLayout::AccelerationStructure) => None,
 			None => None,
 		}
 	}

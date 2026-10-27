@@ -143,9 +143,6 @@ impl Context {
 		};
 		match (left, right) {
 			(Descriptor::Buffer { buffer: left, .. }, Descriptor::Buffer { buffer: right, .. }) => left == right,
-			(Descriptor::AccelerationStructure { handle: left }, Descriptor::AccelerationStructure { handle: right }) => {
-				left == right
-			}
 			_ => image(left).is_some_and(|left| image(right) == Some(left)),
 		}
 	}
@@ -332,9 +329,7 @@ impl Context {
 				layer,
 			},
 			WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
-			WriteData::AccelerationStructure { handle } => Descriptor::AccelerationStructure {
-				handle: TopLevelAccelerationStructureHandle(handle.0),
-			},
+			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("Vulkan"),
 			WriteData::Swapchain(handle) => {
 				let swapchain = &self.swapchains[handle.0 as usize];
 				Descriptor::Image {
@@ -564,21 +559,6 @@ impl Context {
 				}
 				Descriptor::Sampler { sampler } => {
 					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
-				}
-				Descriptor::AccelerationStructure { handle } => {
-					let acceleration_structure = &self.acceleration_structures[handle.0 as usize];
-					let address = unsafe {
-						self.acceleration_structure.get_acceleration_structure_device_address(
-							&vk::AccelerationStructureDeviceAddressInfoKHR::default()
-								.acceleration_structure(acceleration_structure.acceleration_structure),
-						)
-					};
-					address_writes.push((
-						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-						vk::DeviceAddressRangeEXT::default().address(address).size(0),
-						resource_offset.unwrap(),
-						resource.resource_stride as u64,
-					));
 				}
 			}
 			if !matches!(descriptor, Descriptor::Sampler { .. }) {

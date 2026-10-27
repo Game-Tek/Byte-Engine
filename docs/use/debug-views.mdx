@@ -6,7 +6,8 @@ icon: Eye
 
 Use a debug view when you want to see one of the values a render pass or scene pipeline computes, instead of the
 final image. Material evaluation shows its normals, albedo, roughness, metalness, occlusion, and the irradiance
-every light and the environment deliver; motion blur shows its velocity and blur length. A pass you write can declare its own; see
+every light and the environment deliver; surfel global illumination shows its surfels and how well they cover the
+screen; motion blur shows its velocity and blur length. A pass you write can declare its own; see
 [Debug views](/docs/develop/rendering/debug-views) in the Contribute section.
 
 Debug views exist in debug builds. A release build leaves them out unless the project's `config.json` sets

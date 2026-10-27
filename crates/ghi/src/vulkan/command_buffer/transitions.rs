@@ -79,7 +79,6 @@ impl TransitionStateUpdates {
 pub(super) struct PlannedTransitions {
 	pub(super) image_barriers: Vec<vk::ImageMemoryBarrier2<'static>>,
 	pub(super) buffer_barriers: Vec<vk::BufferMemoryBarrier2<'static>>,
-	pub(super) memory_barriers: Vec<vk::MemoryBarrier2<'static>>,
 	pub(super) updates: TransitionStateUpdates,
 }
 

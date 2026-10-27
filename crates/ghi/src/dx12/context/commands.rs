@@ -4,5 +4,4 @@ mod compute;
 mod descriptors;
 mod pipelines;
 mod raster;
-mod ray_tracing;
 mod submission;

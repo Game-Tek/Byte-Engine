@@ -90,6 +90,11 @@ pub enum Stages {
 		local_size: Extent,
 	},
 	Fragment,
+	/// The shader a ray tracing pipeline launches once for each point of a grid. It finds hits with `intersect` and
+	/// shades them with `invoke`.
+	RayGeneration,
+	/// The shader a ray tracing pipeline's hit group runs when `invoke` shades a hit. It takes and returns the payload.
+	ClosestHit,
 }
 
 impl Stages {
@@ -99,8 +104,13 @@ impl Stages {
 			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
 				Some(local_size)
 			}
-			Stages::Vertex | Stages::Fragment => None,
+			Stages::Vertex | Stages::Fragment | Stages::RayGeneration | Stages::ClosestHit => None,
 		}
+	}
+
+	/// Reports whether the stage belongs to a ray tracing pipeline.
+	pub(crate) fn is_ray_tracing(self) -> bool {
+		matches!(self, Stages::RayGeneration | Stages::ClosestHit)
 	}
 
 	/// Reports whether the stage reads interpolated inputs, so backends mark integer inputs as flat.
@@ -221,6 +231,26 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 			)
 	});
 	ordered
+}
+
+/// Rejects a ray tracing stage, or a program that tests rays against an acceleration structure, for backends that
+/// don't lower ray tracing. A program reaches an `AccelerationStructure` descriptor only through a ray query, so a
+/// reachable one marks it.
+///
+/// [`crate::shader::besl::backends::validate_stage`] reports the same programs with a descriptive error first; this
+/// check keeps a backend called directly from emitting code it can't lower.
+pub(crate) fn validate_no_ray_tracing(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+	let traces_rays = stage.is_ray_tracing()
+		|| order.iter().any(|node| {
+			matches!(
+				node.borrow().node(),
+				besl::Nodes::Binding {
+					r#type: besl::BindingTypes::AccelerationStructure,
+					..
+				}
+			)
+		});
+	if traces_rays { Err(()) } else { Ok(()) }
 }
 
 /// Rejects shared storage in stages that do not have workgroup execution semantics.
@@ -513,6 +543,17 @@ impl Settings {
 
 	pub fn vertex() -> Settings {
 		Self::from_stage(Stages::Vertex)
+	}
+
+	/// Returns the settings of a ray generation shader. Next, generate the closest hits its pipeline runs with
+	/// [`Self::closest_hit`].
+	pub fn ray_generation() -> Settings {
+		Self::from_stage(Stages::RayGeneration)
+	}
+
+	/// Returns the settings of a closest-hit shader, which a ray generation shader runs through `invoke`.
+	pub fn closest_hit() -> Settings {
+		Self::from_stage(Stages::ClosestHit)
 	}
 
 	fn from_stage(stage: Stages) -> Self {

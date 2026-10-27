@@ -9,7 +9,7 @@ use ::utils::hash::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
-use objc2_foundation::{NSArray, NSRange};
+use objc2_foundation::NSRange;
 use objc2_metal as mtl;
 use objc2_metal::MTL4CommandBuffer as _;
 use objc2_metal::MTL4CounterHeap as _;
@@ -28,10 +28,13 @@ use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 
+pub(crate) mod acceleration_structures;
 mod allocator;
 mod io;
 mod pipeline;
 pub mod queue;
+#[cfg(test)]
+mod ray_tracing_spikes;
 mod resources;
 mod state;
 mod synchronization;
@@ -125,7 +128,7 @@ pub(crate) mod utils {
 	pub(crate) fn texture_usage_from_uses(uses: Uses) -> mtl::MTLTextureUsage {
 		let mut usage = mtl::MTLTextureUsage::empty();
 
-		if uses.intersects(Uses::Image | Uses::Storage | Uses::ShaderBindingTable) {
+		if uses.intersects(Uses::Image | Uses::Storage) {
 			usage |= mtl::MTLTextureUsage::ShaderRead;
 		}
 
@@ -343,7 +346,7 @@ pub(crate) use state::{
 pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::QueueHandle) {
 	use crate::device::Device as _;
 
-	let features = crate::device::Features::new().debug_labels(true);
+	let features = crate::device::Features::new().debug_labels(true).ray_tracing(true);
 	let mut instance = Instance::new(features)
 		.expect("Failed to create a Metal test instance. The most likely cause is that no Metal device is available.");
 	let mut queue_handle = None;
@@ -1034,6 +1037,6 @@ pub mod instance;
 pub use self::command_buffer::*;
 pub use self::context::*;
 pub use self::device::Device;
-pub use self::factory::{ComputePipeline, DetachedImage, Factory, SharedBuffer};
+pub use self::factory::{ComputePipeline, DetachedImage, Factory, RayTracingPipeline, SharedBuffer};
 pub use self::frame::*;
 pub use self::instance::*;

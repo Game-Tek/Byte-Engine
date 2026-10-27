@@ -32,6 +32,8 @@ impl GraphicsDevice {
 	/// - `debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `debug`.
 	/// - `ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
+	/// - `ghi.features.ray-tracing`: Requests ray tracing from the device, which surfel GI needs. Defaults to
+	///   `surfel-gi.enabled`.
 	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
 	pub fn new(parameters: impl Parameters) -> Self {
@@ -50,6 +52,11 @@ impl GraphicsDevice {
 			.debug_log_function(log_graphics_error)
 			.geometry_shader(false)
 			.mesh_shading(flag("ghi.features.mesh-shading", true))
+			// Surfel GI is the only feature that traces rays, so a project without it doesn't ask the device for them.
+			.ray_tracing(flag(
+				"ghi.features.ray-tracing",
+				flag(crate::rendering::pipelines::visibility::SURFEL_GI_ENABLED_PARAMETER, false),
+			))
 			.pipeline_cache(parameters.get_parameter("pipeline-cache.path").is_some());
 
 		let mut instance = match ghi::implementation::Instance::new(features) {

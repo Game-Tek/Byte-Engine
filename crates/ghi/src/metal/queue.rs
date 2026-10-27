@@ -495,10 +495,11 @@ impl Drop for Execution<'_> {
 		let Some(frame) = self.frame.as_mut() else {
 			return;
 		};
-		for command_buffer in &self.command_buffers {
+		for command_buffer in &mut self.command_buffers {
 			for &handle in &command_buffer.texture_readbacks {
 				frame.device().texture_readbacks.abandon_recorded(handle);
 			}
+			std::mem::take(&mut command_buffer.builds).abandon(&frame.device().acceleration_structures);
 		}
 	}
 }

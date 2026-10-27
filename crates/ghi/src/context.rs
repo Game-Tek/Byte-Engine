@@ -2,14 +2,14 @@ use utils::Extent;
 
 use crate::synchronizer::SynchronizerHandle as PrivateSynchronizerHandle;
 use crate::{
-	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
-	CommandBufferHandle, CounterHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats,
-	ImageHandle, MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
-	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
+	CounterHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
+	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
 	buffer::BufferContents,
 	descriptors, image,
 	pipelines::VertexElement,
-	sampler,
+	rt, sampler,
 	shader::{self, Sources},
 	window,
 };
@@ -319,6 +319,18 @@ pub trait Context: ContextCreate {
 	/// Check this value before you create BC-compressed images or samplers.
 	fn supports_bc_texture_compression(&self) -> bool;
 
+	/// Returns whether this context can build acceleration structures and trace rays through them.
+	///
+	/// It is `true` when the device was created with [`crate::device::Features::ray_tracing`] and the GPU supports ray
+	/// tracing. Check it before you create acceleration structures, and use a technique without rays when it is
+	/// `false`. Next, create structures with [`ContextCreate::create_bottom_level_acceleration_structure`].
+	fn supports_ray_tracing(&self) -> bool;
+
+	/// Returns the bytes a bottom-level acceleration structure occupies.
+	///
+	/// The size drops to the structure's compacted size a few frames after its build completes.
+	fn bottom_level_acceleration_structure_size(&self, handle: BottomLevelAccelerationStructureHandle) -> usize;
+
 	/// Loads the pipelines an earlier run compiled, so creating them again skips shader compilation.
 	///
 	/// Pass the bytes saved from [`Self::pipeline_cache_data`], before creating pipelines. The device keeps `data` as
@@ -399,30 +411,6 @@ pub trait Context: ContextCreate {
 	///
 	/// Rendering only binds complete retained sets; resource overrides are not recorded per draw.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
-
-	/// Writes one top-level acceleration-structure instance into an instance buffer.
-	///
-	/// The instance buffer has one copy, so write it only while no submitted build reads it, for example before
-	/// the first frame or after waiting for the frame that built from it.
-	fn write_instance(
-		&mut self,
-		instances_buffer_handle: BaseBufferHandle,
-		instance_index: usize,
-		transform: [[f32; 4]; 3],
-		custom_index: u16,
-		mask: u8,
-		sbt_record_offset: usize,
-		acceleration_structure: BottomLevelAccelerationStructureHandle,
-	);
-
-	/// Writes one shader binding table entry for the provided pipeline shader.
-	fn write_sbt_entry(
-		&mut self,
-		sbt_buffer_handle: BaseBufferHandle,
-		sbt_record_offset: usize,
-		pipeline_handle: PipelineHandle,
-		shader_handle: ShaderHandle,
-	);
 
 	/// Associates a swapchain with a window.
 	///
@@ -548,8 +536,31 @@ pub trait ContextCreate {
 	/// Creates a compute pipeline.
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> PipelineHandle;
 
-	/// Creates a ray-tracing pipeline.
+	/// Creates a ray tracing pipeline.
+	///
+	/// Check [`Context::supports_ray_tracing`] first. Next, map hit records to the pipeline's hit groups with
+	/// [`Self::create_shader_binding_table`] and [`Self::write_shader_binding_table`].
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
+
+	/// Creates a shader binding table that holds no records.
+	///
+	/// Next, give it records with [`Self::write_shader_binding_table`]. Panics when the context does not
+	/// [`Context::supports_ray_tracing`].
+	fn create_shader_binding_table(&mut self, name: Option<&str>) -> ShaderBindingTableHandle;
+
+	/// Replaces the records of `table` with one record per entry of `hit_groups`, for `pipeline`: record `i` runs the
+	/// hit group numbered `hit_groups[i]`.
+	///
+	/// A hit's record is its instance's hit group offset plus its geometry index, so give each mesh a run of records
+	/// that starts at the offset its instances carry. Traces recorded after the write use the new records, and traces
+	/// recorded before it keep theirs. A trace uses the table only with the pipeline its last write named, so write
+	/// it again for another pipeline, such as one created again with more hit groups. Next, trace with
+	/// [`crate::command_buffer::BoundRayTracingPipelineMode::trace_rays`].
+	///
+	/// # Panics
+	///
+	/// Panics when `pipeline` is not a ray tracing pipeline or has no hit group that an entry names.
+	fn write_shader_binding_table(&mut self, table: ShaderBindingTableHandle, pipeline: PipelineHandle, hit_groups: &[u32]);
 
 	/// Creates a zero-initialized static buffer from a builder.
 	///
@@ -592,25 +603,43 @@ pub trait ContextCreate {
 	/// Devices can limit their sampler count. Reuse samplers when possible.
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
 
-	/// Creates a buffer that stores top-level acceleration-structure instances.
-	fn create_acceleration_structure_instance_buffer(
+	/// Creates a bottom-level acceleration structure that holds `geometries`, numbered in the order given.
+	///
+	/// Use one for each mesh, with one geometry for each of its opaque primitives. The structure stays available to
+	/// every trace until you destroy it. Build it once with
+	/// [`crate::command_buffer::CommandBufferRecording::build_bottom_level_acceleration_structures`]; after that build
+	/// completes, it compacts itself and keeps its handle. Then place it in a top-level structure with
+	/// [`crate::rt::Instance`]. Panics when the context does not [`Context::supports_ray_tracing`].
+	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		max_instance_count: u32,
-	) -> BaseBufferHandle;
+		geometries: &[rt::TriangleGeometry],
+	) -> BottomLevelAccelerationStructureHandle;
 
-	/// Creates a top-level acceleration structure for ray tracing.
+	/// Creates a top-level acceleration structure that holds up to `max_instance_count` instances.
+	///
+	/// It has one copy per frame in flight. Each frame builds its own copy with
+	/// [`crate::command_buffer::CommandBufferRecording::build_top_level_acceleration_structure`], and the descriptor sets
+	/// that frame binds read it; bind the structure with [`crate::descriptors::DescriptorWrite::acceleration_structure`].
+	/// Panics when the context does not [`Context::supports_ray_tracing`].
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> TopLevelAccelerationStructureHandle;
 
-	/// Creates a bottom-level acceleration structure from geometry descriptions.
-	fn create_bottom_level_acceleration_structure(
-		&mut self,
-		description: &BottomLevelAccelerationStructure,
-	) -> BottomLevelAccelerationStructureHandle;
+	/// Destroys a bottom-level acceleration structure.
+	///
+	/// The handle stops working at once, while the structure stays valid until every frame recorded before this call
+	/// completes, so top-level structures those frames built can still reach it. Build again every top-level copy that
+	/// holds an instance of it before a later frame traces that copy.
+	fn destroy_bottom_level_acceleration_structure(&mut self, handle: BottomLevelAccelerationStructureHandle);
+
+	/// Destroys a top-level acceleration structure and all its copies.
+	///
+	/// The handle stops working at once, while the copies stay valid until every frame recorded before this call
+	/// completes.
+	fn destroy_top_level_acceleration_structure(&mut self, handle: TopLevelAccelerationStructureHandle);
 
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
@@ -691,6 +720,19 @@ macro_rules! delegate_context_create_to_device {
 			self.device.create_ray_tracing_pipeline(builder)
 		}
 
+		fn create_shader_binding_table(&mut self, name: Option<&str>) -> $crate::ShaderBindingTableHandle {
+			self.device.create_shader_binding_table(name)
+		}
+
+		fn write_shader_binding_table(
+			&mut self,
+			table: $crate::ShaderBindingTableHandle,
+			pipeline: $crate::PipelineHandle,
+			hit_groups: &[u32],
+		) {
+			self.device.write_shader_binding_table(table, pipeline, hit_groups)
+		}
+
 		fn build_buffer<T: ?Sized + $crate::buffer::BufferContents>(
 			&mut self,
 			builder: $crate::buffer::Builder,
@@ -718,13 +760,12 @@ macro_rules! delegate_context_create_to_device {
 			self.device.build_sampler(builder)
 		}
 
-		fn create_acceleration_structure_instance_buffer(
+		fn create_bottom_level_acceleration_structure(
 			&mut self,
 			name: Option<&str>,
-			max_instance_count: u32,
-		) -> $crate::BaseBufferHandle {
-			self.device
-				.create_acceleration_structure_instance_buffer(name, max_instance_count)
+			geometries: &[$crate::rt::TriangleGeometry],
+		) -> $crate::BottomLevelAccelerationStructureHandle {
+			self.device.create_bottom_level_acceleration_structure(name, geometries)
 		}
 
 		fn create_top_level_acceleration_structure(
@@ -736,11 +777,12 @@ macro_rules! delegate_context_create_to_device {
 				.create_top_level_acceleration_structure(name, max_instance_count)
 		}
 
-		fn create_bottom_level_acceleration_structure(
-			&mut self,
-			description: &$crate::BottomLevelAccelerationStructure,
-		) -> $crate::BottomLevelAccelerationStructureHandle {
-			self.device.create_bottom_level_acceleration_structure(description)
+		fn destroy_bottom_level_acceleration_structure(&mut self, handle: $crate::BottomLevelAccelerationStructureHandle) {
+			self.device.destroy_bottom_level_acceleration_structure(handle)
+		}
+
+		fn destroy_top_level_acceleration_structure(&mut self, handle: $crate::TopLevelAccelerationStructureHandle) {
+			self.device.destroy_top_level_acceleration_structure(handle)
 		}
 
 		fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> $crate::SynchronizerHandle {

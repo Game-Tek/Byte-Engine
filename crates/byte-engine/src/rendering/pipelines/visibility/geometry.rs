@@ -1,4 +1,5 @@
-//! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet records, and skinning sources.
+//! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet records, skinning sources, and,
+//! for ray tracing, flat triangle lists.
 //!
 //! [`PreparedMesh`] is built on a loader lane without touching GPU state. [`GeometryBuffers::append_mesh`] then
 //! places its vertices in a free vertex range and its other streams after every resident mesh's, and returns the
@@ -97,6 +98,8 @@ pub(crate) struct GeometryCounts {
 	pub(crate) triangles: u32,
 	pub(crate) meshlets: u32,
 	pub(crate) skinning_vertices: u32,
+	/// Full-detail triangles of the primitives rays can hit; see [`GeometryHandles::flat_triangle_indices`].
+	pub(crate) flat_triangles: u32,
 }
 
 impl GeometryCounts {
@@ -118,6 +121,8 @@ impl GeometryCounts {
 				capacity.skinning_vertices,
 				"skinning vertex",
 			)?,
+			// A primitive's full detail is one of its levels, so the triangle capacity bounds the flat lists too.
+			flat_triangles: checked_capacity(self.flat_triangles, mesh.flat_triangles, capacity.triangles, "flat triangle")?,
 		})
 	}
 }
@@ -156,6 +161,8 @@ pub(crate) struct MeshData {
 	/// Base triangle in the primitive-index buffer, stored as index / 3.
 	pub(crate) triangle_offset: u32,
 	pub(crate) meshlet_offset: u32,
+	/// Base triangle in [`GeometryHandles::flat_triangle_indices`].
+	pub(crate) flat_triangle_offset: u32,
 }
 
 /// The `MeshPrimitive` struct locates one primitive's geometry, material slot, and optional skin inside its mesh.
@@ -173,6 +180,11 @@ pub(crate) struct MeshPrimitive {
 	pub(crate) vertex_offset: u32,
 	pub(crate) primitive_offset: u32,
 	pub(crate) triangle_offset: u32,
+	pub(crate) vertex_count: u32,
+	/// The primitive's full-detail triangles in [`GeometryHandles::flat_triangle_indices`], relative to the mesh's
+	/// first. Zero triangles when the pipeline keeps no flat lists, or for a skinned primitive, which rays never hit.
+	pub(crate) flat_triangle_offset: u32,
+	pub(crate) flat_triangle_count: u32,
 	/// First vertex in the compact bind-pose skinning buffers, once resident.
 	pub(crate) skinning_source_vertex_offset: Option<u32>,
 	pub(crate) skinning_vertex_count: u32,
@@ -196,6 +208,9 @@ pub(crate) struct GeometryHandles {
 	/// Triangles as indices into `vertex_indices`.
 	pub(crate) primitive_indices: ghi::BufferHandle<[[u8; 3]]>,
 	pub(crate) meshlets: ghi::BufferHandle<[ShaderMeshletData]>,
+	/// Each primitive's full-detail triangles as three indices relative to its first vertex, the form acceleration
+	/// structures and hit shaders read. Present only when the pipeline traces rays.
+	pub(crate) flat_triangle_indices: Option<ghi::BufferHandle<[[u16; 3]]>>,
 	/// Bind-pose attributes packed only for primitives that participate in GPU skinning.
 	pub(crate) skinning_rest_positions: ghi::BufferHandle<[[f32; 3]]>,
 	pub(crate) skinning_rest_normals: ghi::BufferHandle<[[f32; 3]]>,
@@ -215,11 +230,13 @@ pub(crate) struct GeometryBuffers {
 }
 
 impl GeometryHandles {
-	/// Creates every geometry stream with the element count `capacity` gives it.
+	/// Creates every geometry stream with the element count `capacity` gives it, and the flat triangle lists when
+	/// `ray_tracing` is set.
 	///
 	/// `capacity` comes from [`super::VisibilityPipelineSettings::geometry_capacity`], which only holds validated values.
-	/// Next, hand the handles to [`GeometryBuffers::import`] so the loader can append meshes.
-	pub(crate) fn new(context: &mut ghi::implementation::Context, capacity: GeometryCapacity) -> Self {
+	/// Set `ray_tracing` when surfel GI is built in and the device traces rays. Next, hand the handles to
+	/// [`GeometryBuffers::import`] so the loader can append meshes.
+	pub(crate) fn new(context: &mut ghi::implementation::Context, capacity: GeometryCapacity, ray_tracing: bool) -> Self {
 		debug_assert!(capacity.validate().is_ok());
 		let geometry = ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage;
 		let indices = ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage;
@@ -245,6 +262,8 @@ impl GeometryHandles {
 			vertex_indices: context.build_buffer(build("Visibility Index Buffer", indices, vertex_indices)),
 			primitive_indices: context.build_buffer(build("Visibility Primitive Indices Buffer", indices, triangles)),
 			meshlets: context.build_buffer(build("Visibility Meshlets Data", storage, meshlets)),
+			flat_triangle_indices: ray_tracing
+				.then(|| context.build_buffer(build("Visibility Flat Triangle Indices", indices, triangles))),
 			skinning_rest_positions: context.build_buffer(build("Visibility Skinning Rest Positions", storage, skinning)),
 			skinning_rest_normals: context.build_buffer(build("Visibility Skinning Rest Normals", storage, skinning)),
 			skinning_joints: context.build_buffer(build("Visibility Skinning Joints", storage, skinning)),
@@ -274,6 +293,7 @@ impl GeometryBuffers {
 				vertex_indices: import(render, loader, handles.vertex_indices),
 				primitive_indices: import(render, loader, handles.primitive_indices),
 				meshlets: import(render, loader, handles.meshlets),
+				flat_triangle_indices: handles.flat_triangle_indices.map(|buffer| import(render, loader, buffer)),
 				skinning_rest_positions: import(render, loader, handles.skinning_rest_positions),
 				skinning_rest_normals: import(render, loader, handles.skinning_rest_normals),
 				skinning_joints: import(render, loader, handles.skinning_joints),
@@ -353,6 +373,13 @@ impl GeometryBuffers {
 				base.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
 		]);
+		if let (Some(source), Some(destination)) = (&streams.flat_triangles, self.handles.flat_triangle_indices) {
+			copies.push(copy(
+				source,
+				destination.into(),
+				base.flat_triangles as usize * std::mem::size_of::<[u16; 3]>(),
+			));
+		}
 
 		let primitives = prepared
 			.primitives
@@ -400,6 +427,7 @@ impl GeometryBuffers {
 			primitive_offset: base.primitive_indices,
 			triangle_offset: base.triangles,
 			meshlet_offset: base.meshlets,
+			flat_triangle_offset: base.flat_triangles,
 		};
 		self.counts = next_counts;
 		Some((mesh, copies))

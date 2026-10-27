@@ -1,6 +1,6 @@
 use utils::hash::{HashMap, HashSet};
 
-use super::{any_code_node, is_intrinsic_call};
+use super::{RAY_TRACING_STAGE_INTRINSICS, any_code_node};
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
@@ -23,6 +23,8 @@ pub struct Generator {
 	pub(crate) raster_stage_context: Option<RasterStageContext>,
 	pub(crate) task_stage_context: Option<TaskStageContext>,
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
+	/// Set while emitting a ray generation or closest-hit shader.
+	pub(crate) ray_tracing_stage_context: Option<RayTracingStageContext>,
 	/// Set while emitting a struct that a raster entry point returns. Metal rejects packed vectors in stage
 	/// interfaces, so its members keep native vector types.
 	pub(crate) in_stage_interface_struct: bool,
@@ -45,7 +47,15 @@ pub(crate) struct HiddenContext {
 	pub(crate) requires_resources: bool,
 	/// The function reads the subgroup lane index, directly or through a callee.
 	pub(crate) uses_simd_lane_id: bool,
+	/// The function reads a ray tracing stage value or calls `invoke`, directly or through a callee.
+	pub(crate) uses_ray_tracing_inputs: bool,
 }
+
+/// The Metal buffer index of a ray generation kernel's shader binding table: the visible function table that holds
+/// the closest hit of each record.
+///
+/// The Metal GHI backend binds the table at the same index.
+pub(crate) const SHADER_BINDING_TABLE_BINDING_INDEX: u32 = 14;
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 
@@ -127,6 +137,19 @@ pub(crate) struct ComputeStageContext {
 	pub(crate) workgroups: Vec<StageWorkgroup>,
 }
 
+/// The `RayTracingStageContext` struct carries what a ray tracing stage forwards to the helpers that need it: the
+/// launch point or the hit it runs for, the closest hits a ray generation shader invokes, and the resources it reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RayTracingStageContext {
+	/// Whether the stage is a closest hit, which reads a hit, instead of a ray generation shader, which reads its
+	/// launch point.
+	pub(crate) closest_hit: bool,
+	pub(crate) has_push_constant: bool,
+	/// Whether a ray generation shader calls `invoke`, so its helpers receive the shader binding table and the
+	/// addresses the closest hits read.
+	pub(crate) invokes: bool,
+}
+
 /// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RasterStageContext {
@@ -165,6 +188,7 @@ impl Generator {
 			raster_stage_context: None,
 			task_stage_context: None,
 			mesh_stage_context: None,
+			ray_tracing_stage_context: None,
 			in_stage_interface_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
@@ -204,7 +228,8 @@ pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<
 	contexts
 }
 
-/// Detects whether a function's reachable AST needs backend resource parameters or the subgroup lane index.
+/// Detects whether a function's reachable AST needs backend resource parameters, the subgroup lane index, or a ray
+/// tracing stage's values.
 ///
 /// Callees are analyzed once and their results reused through `contexts`, so a call graph costs one walk per
 /// function instead of one walk per call site.
@@ -300,21 +325,36 @@ fn analyze_hidden_context(
 	}
 
 	let requires_resources = node_requires_resource_context(function, &mut HashSet::default(), contexts);
-	// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
-	let uses_simd_lane_id = any_code_node(function, false, &mut |node| {
-		if is_intrinsic_call(node, "subgroup_lane_index") {
-			return true;
-		}
+	// The lane index and the ray tracing stage values are kernel builtins, so every caller on the path to their use
+	// must forward them. One walk finds both, and stops once it has.
+	let mut uses_simd_lane_id = false;
+	let mut uses_ray_tracing_inputs = false;
+	any_code_node(function, false, &mut |node| {
 		let callee = match node.borrow().node() {
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => function.get(),
-			_ => return false,
+			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
+				match intrinsic.borrow().get_name() {
+					Some("subgroup_lane_index") => uses_simd_lane_id = true,
+					Some(name) if RAY_TRACING_STAGE_INTRINSICS.contains(&name) => uses_ray_tracing_inputs = true,
+					_ => {}
+				}
+				None
+			}
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Some(function.get()),
+			_ => None,
 		};
-		matches!(callee.borrow().node(), besl::Nodes::Function { .. })
-			&& analyze_hidden_context(&callee, contexts).uses_simd_lane_id
+		if let Some(callee) = callee
+			&& matches!(callee.borrow().node(), besl::Nodes::Function { .. })
+		{
+			let callee = analyze_hidden_context(&callee, contexts);
+			uses_simd_lane_id |= callee.uses_simd_lane_id;
+			uses_ray_tracing_inputs |= callee.uses_ray_tracing_inputs;
+		}
+		uses_simd_lane_id && uses_ray_tracing_inputs
 	});
 	let context = HiddenContext {
 		requires_resources,
 		uses_simd_lane_id,
+		uses_ray_tracing_inputs,
 	};
 	contexts.insert(function.clone(), context);
 	context

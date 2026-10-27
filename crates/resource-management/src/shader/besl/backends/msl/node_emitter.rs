@@ -152,7 +152,10 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		match source.borrow().node() {
 			// Outside a stage context, a binding keeps its plain name.
 			besl::Nodes::Binding { .. }
-				if self.raster_stage_context.is_some() || self.in_compute_body || self.mesh_stage_context.is_some() =>
+				if self.raster_stage_context.is_some()
+					|| self.in_compute_body
+					|| self.mesh_stage_context.is_some()
+					|| self.ray_tracing_stage_context.is_some() =>
 			{
 				self.emit_binding_reference(string, name);
 				return true;

@@ -37,8 +37,9 @@ impl Context {
 		// Detached recordings have no completion point that could recycle pages, so they start from empty pages and
 		// release the upload submissions that finished since the last one.
 		if frame_key.is_none() {
-			// The transient arena follows the frames' retained arenas.
+			// The transient arenas follow the frames' retained arenas.
 			self.upload_arenas[self.frames as usize].discard();
+			self.scratch_arenas[self.frames as usize].discard();
 			self.retire_completed_internal_uploads();
 		}
 		// Same-queue uploads stay asynchronous; a queue switch waits for outstanding uploads on another queue because

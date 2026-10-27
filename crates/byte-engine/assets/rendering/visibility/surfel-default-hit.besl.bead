@@ -1,0 +1,5 @@
+{
+	"$schema": "../../schemas/besl.bead.schema.json",
+	"stage": "ClosestHit",
+	"layouts": ["layouts/scene-records.besl", "layouts/scene.besl", "layouts/ray-traced-scene.besl"]
+}

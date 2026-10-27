@@ -94,6 +94,22 @@ layout!(
 		"visibility/layouts/sun-visibility.besl"
 	]
 );
+layout!(
+	/// The frame-wide surfel GI set: the surfel pool, its grid, and the settings every surfel stage shares.
+	SURFEL_GI,
+	["visibility/layouts/surfel-gi.besl"]
+);
+layout!(
+	/// The per-sink set of the surfel resolve and allocation: their settings, spawn requests, and output images.
+	SURFEL_RESOLVE,
+	["visibility/layouts/surfel-resolve.besl"]
+);
+layout!(
+	/// The set the frame's rays trace the scene through: the top-level acceleration structure, the flat triangles, and
+	/// the geometry table. See [`super::acceleration_structures`].
+	RAY_TRACED_SCENE,
+	["visibility/layouts/ray-traced-scene.besl"]
+);
 
 #[cfg(test)]
 mod tests {
@@ -131,6 +147,7 @@ mod tests {
 			size_of::<ReflectionShaderParameters>()
 		);
 		assert_eq!(stride(&MATERIAL_EVALUATION, "ssgi_view"), size_of::<ScreenViewData>());
+		assert_eq!(stride(&RAY_TRACED_SCENE, "ray_tracing_geometries"), size_of::<[u32; 2]>());
 	}
 
 	#[test]
@@ -159,6 +176,9 @@ mod tests {
 			&SSGI_TEMPORAL,
 			&CONTACT_SHADOWS,
 			&SUN_VISIBILITY,
+			&SURFEL_GI,
+			&SURFEL_RESOLVE,
+			&RAY_TRACED_SCENE,
 		] {
 			assert!(!layout.interface().bindings.is_empty());
 		}

@@ -3,8 +3,8 @@ use std::{cell::RefCell, fmt::Write as _};
 pub use Generator as MSLTranspiler;
 
 use super::{
-	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, is_intrinsic_call, resource_accessor,
-	runtime_buffer_element,
+	IntrinsicRequirements, RAY_TRACING_STAGE_INTRINSICS, ResourceAccessorKind, any_code_node, intrinsic_requirements,
+	resource_accessor, runtime_buffer_element,
 };
 
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
@@ -21,6 +21,7 @@ mod facade;
 mod generate;
 mod node_emitter;
 mod raster;
+mod ray_tracing;
 mod reserved;
 
 pub(crate) use bindings::*;
@@ -29,6 +30,7 @@ pub(crate) use facade::*;
 pub use facade::{ComputeBindingMode, Generator};
 pub(crate) use generate::*;
 pub(crate) use raster::*;
+pub(crate) use ray_tracing::*;
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1720,6 +1722,166 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "set0.image_texture.sample(set0.image_texture_sampler, in_uv)");
 
 		compile_natively(&shader, "besl-sample-intrinsic").await;
+	}
+
+	/// The layout layers that the ray tracing fixtures list, in the order every shader of their pipeline lists them:
+	/// the payload, the scene and the results the ray generation shader writes, the albedos that only closest hits
+	/// read, and the push constant.
+	const RAY_TRACING_LAYERS: [(&str, &str); 4] = [
+		("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
+		(
+			"scene",
+			"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;",
+		),
+		(
+			"materials",
+			"albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>;",
+		),
+		("constants", "push_constant: push_constant { scale: f32, }"),
+	];
+
+	/// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
+	const RAY_GENERATION_FIXTURE: &str = r#"
+		shade: fn (hit: Hit) -> SurfaceHit {
+			return invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
+		}
+
+		main: fn (input: StageInput) -> void {
+			let origin: vec3f = vec3f(f32(input.launch_index.x) * push_constant.scale, 0.0, 0.0);
+			let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
+			let surface: SurfaceHit = shade(hit);
+			if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
+				surface.distance = surface.distance + f32(input.launch_size.x);
+			}
+			surfaces[input.launch_index.x] = surface;
+		}
+	"#;
+
+	/// Reports a hit's albedo from a set the ray generation shader doesn't read, through a helper that reads the hit.
+	const CLOSEST_HIT_FIXTURE: &str = r#"
+		albedo_of: fn (geometry: u32) -> vec3f {
+			let albedo: vec4f = albedos[geometry];
+			return vec3f(albedo.x, albedo.y, albedo.z) * hit_distance();
+		}
+
+		main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
+			let surface: SurfaceHit = payload;
+			let weights: vec2f = input.hit_barycentrics;
+			surface.albedo = albedo_of(input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
+			surface.distance = input.hit_distance * push_constant.scale + input.ray_direction.z;
+			return surface;
+		}
+	"#;
+
+	/// Runs baked ray tracing shaders on the GPU and in the VM. It needs GHI, which the `gpu-processing` feature brings.
+	#[cfg(all(feature = "gpu-processing", target_os = "macos"))]
+	mod gpu_ray_tracing;
+
+	/// Stacks [`RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
+	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
+		let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
+		let program = besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
+			.expect("Expected the ray tracing fixture to link");
+		Generator::new()
+			.minified(true)
+			.generate_program(settings, &program)
+			.expect("Expected ray tracing MSL generation")
+	}
+
+	/// Verifies a ray generation shader lowers to a kernel that runs closest hits through its shader binding table and
+	/// passes them every set and the push constant its layers declare, and that the kernel compiles.
+	#[compio::test]
+	async fn generated_ray_generation_stage_compiles_with_metal() {
+		let shader = lower_ray_tracing_fixture(RAY_GENERATION_FIXTURE, &ShaderGenerationSettings::ray_generation());
+
+		assert_string_contains!(shader, "#include <metal_raytracing>");
+		// The kernel takes the materials set though it reads none of it, because closest hits read it.
+		assert_string_contains!(
+			shader,
+			"kernel void besl_main(uint3 _besl_launch_index [[thread_position_in_grid]],uint3 _besl_launch_size [[threads_per_grid]],visible_function_table<_besl_closest_hit> _besl_hits [[buffer(14)]],constant PushConstant& push_constant [[buffer(15)]],constant _set0& set0 [[buffer(16)]],constant _set1& set1 [[buffer(17)]]){"
+		);
+		assert_string_contains!(
+			shader,
+			"const _besl_ray_context _besl_context={&push_constant,{&set0,&set1}};"
+		);
+		// The helper that calls `invoke` receives the table and the addresses closest hits read.
+		assert_string_contains!(
+			shader,
+			"SurfaceHit shade(Hit hit,uint3 _besl_launch_index,uint3 _besl_launch_size,visible_function_table<_besl_closest_hit> _besl_hits,thread const _besl_ray_context& _besl_context,constant PushConstant& push_constant,constant _set0& set0,constant _set1& set1)"
+		);
+		assert_string_contains!(shader, "return _besl_invoke(_besl_hits,_besl_context,hit,SurfaceHit{");
+		assert_string_contains!(shader, "_besl_trace_occlusion(set0.scene,255,");
+
+		compile_natively(&shader, "besl-ray-generation").await;
+	}
+
+	/// Verifies a closest hit lowers to a visible function that reads its sets and push constant through the addresses
+	/// the kernel passes, forwards the hit to its helpers, and compiles.
+	#[compio::test]
+	async fn generated_closest_hit_stage_compiles_with_metal() {
+		let shader = lower_ray_tracing_fixture(CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
+
+		assert_string_contains!(
+			shader,
+			"[[visible]] void besl_main(thread SurfaceHit& _besl_payload,thread const Hit& _besl_hit,thread const _besl_ray_context& _besl_context){"
+		);
+		assert_string_contains!(
+			shader,
+			"constant _set1& set1=*static_cast<constant _set1*>(_besl_context.sets[1]);"
+		);
+		assert_string_contains!(
+			shader,
+			"_besl_payload=_besl_closest_hit_main(_besl_payload,_besl_hit,push_constant,set0,set1);"
+		);
+		// Hit values read the hit's members, and packed vectors unpack to the native vectors stage values are.
+		assert_string_contains!(shader, "float2 weights=float2(_besl_hit.barycentrics);");
+		assert_string_contains!(
+			shader,
+			"(_besl_hit.besl_distance*push_constant.scale)+float3(_besl_hit.direction).z"
+		);
+		assert_string_contains!(
+			shader,
+			"albedo_of(_besl_hit.geometry_index,_besl_hit,push_constant,set0,set1)"
+		);
+		assert!(
+			!shader.contains("kernel "),
+			"a closest hit should lower to a visible function, not a kernel"
+		);
+
+		compile_natively(&shader, "besl-closest-hit").await;
+	}
+
+	/// Verifies compute shaders run ray queries and rebuild hits, and that the result compiles.
+	#[compio::test]
+	async fn ray_queries_compile_in_compute_shaders() {
+		let shader = lower_fixture(
+			r#"
+			scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
+			hits: descriptor<{ type: Hit[], binding: 1, access: write }>;
+			occluded: descriptor<{ type: u32[], binding: 2, access: write }>;
+
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let origin: vec3f = vec3f(f32(item), 0.0, 0.0);
+				let hit: Hit = intersect(scene, 1, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0);
+				hits[item] = Hit(hit.record, hit.distance, hit.custom_index, hit.geometry_index, hit.primitive_index, hit.barycentrics, hit.origin, hit.direction);
+				occluded[item] = 0;
+				if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, hit.distance)) {
+					occluded[item] = 1;
+				}
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(64)),
+		);
+
+		assert_string_contains!(
+			shader,
+			"struct Hit{uint record;float besl_distance;uint custom_index;uint geometry_index;uint primitive_index;packed_float2 barycentrics;packed_float3 origin;packed_float3 direction;};"
+		);
+		assert_string_contains!(shader, "Hit hit=_besl_intersect(set0.scene,1,origin,");
+		assert_string_contains!(shader, "set0.hits[item]=Hit{hit.record,hit.besl_distance,");
+
+		compile_natively(&shader, "besl-compute-ray-queries").await;
 	}
 
 	/// Verifies a fragment entry that returns an authored output struct returns that struct from the Metal entry point.

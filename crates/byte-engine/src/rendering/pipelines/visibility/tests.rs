@@ -63,11 +63,12 @@ const TILE_WORKGROUP_SIZE: usize = 64;
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls.
 fn asset_program(source: &str) -> besl::NodeReference {
-	let program = besl::lex(
-		besl::parse(source)
-			.expect("Failed to parse a visibility shader asset. The most likely cause is invalid checked-in BESL source."),
-	)
-	.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
+	let mut root = besl::parse(source)
+		.expect("Failed to parse a visibility shader asset. The most likely cause is invalid checked-in BESL source.");
+	// Baking gives every standalone shader the common helpers, such as `debug_view_slot`.
+	root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+	let program = besl::lex(root)
+		.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
 	program
 		.get_main()
 		.expect("Missing visibility shader main. The most likely cause is that a checked-in BESL asset is incomplete.");
@@ -2906,6 +2907,8 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 
 	let mesh = || Settings::mesh(64, 126, Extent::line(128));
 	let tile = || Settings::compute(Extent::square(8));
+	// The surfel passes that run one thread per pool slot or scan element.
+	let surfel_slots = || Settings::compute(Extent::line(256));
 	for (name, source, settings) in [
 		(
 			"meshlet_task",
@@ -2964,8 +2967,62 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			asset_source!("directional-shadow-cascade-fit.besl"),
 			Settings::compute(Extent::line(4)),
 		),
+		("surfel_count", asset_source!("surfel-count.besl"), surfel_slots()),
+		("surfel_scan_groups", asset_source!("surfel-scan-groups.besl"), surfel_slots()),
+		(
+			"surfel_scan_partials",
+			asset_source!("surfel-scan-partials.besl"),
+			surfel_slots(),
+		),
+		("surfel_scan_add", asset_source!("surfel-scan-add.besl"), surfel_slots()),
+		("surfel_scatter", asset_source!("surfel-scatter.besl"), surfel_slots()),
+		(
+			"surfel_trace",
+			asset_source!("surfel-trace.besl"),
+			Settings::compute(Extent::line(64)),
+		),
+		("surfel_sort_scan", asset_source!("surfel-sort-scan.besl"), surfel_slots()),
+		(
+			"surfel_sort_scatter",
+			asset_source!("surfel-sort-scatter.besl"),
+			surfel_slots(),
+		),
+		("surfel_integrate", asset_source!("surfel-integrate.besl"), surfel_slots()),
+		("surfel_resolve", asset_source!("surfel-resolve.besl"), tile()),
+		(
+			"surfel_allocate",
+			asset_source!("surfel-allocate.besl"),
+			Settings::compute(Extent::line(64)),
+		),
 	] {
-		let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
+		let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
+		// Baking gives every standalone shader the common helpers, such as `debug_view_slot`.
+		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
+		let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		PlatformShaderCompiler::new()
+			.generate(&settings.name(name.to_string()), &root)
+			.await
+			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
+	}
+}
+
+/// Verifies the surfel shade pass and the default hit lower to the running platform's shader language with each layer
+/// in its own set, as the bake stacks them, so the closest hit's sets are the first of the shade pass's.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn surfel_ray_tracing_shaders_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings as Settings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	for (name, asset, settings) in [
+		("surfel_shade", "visibility/surfel-shade.besl", Settings::ray_generation()),
+		(
+			"surfel_default_hit",
+			"visibility/surfel-default-hit.besl",
+			Settings::closest_hit(),
+		),
+	] {
+		let root = besl::lex(crate::rendering::shader_vm_test::stacked_asset(asset))
 			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
 			.generate(&settings.name(name.to_string()), &root)
@@ -3663,3 +3720,5 @@ main: fn (input: StageInput) -> void {{
 		assert!((moments[2] - 0.25).abs() < 0.06, "{moments:?}");
 	}
 }
+
+mod surfel_gi;

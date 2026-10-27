@@ -84,6 +84,22 @@ impl<'a> Compiler<'a> {
 		Ok(slot)
 	}
 
+	/// Resolves the `AccelerationStructure` descriptor that a ray query tests rays against.
+	pub(super) fn resolve_acceleration_structure_slot(&mut self, expression: &NodeReference) -> Result<ResourceSlot, VmError> {
+		let binding = extract_binding_reference(expression)?;
+		let slot = match accessible_binding(binding.borrow().node(), RequiredAccess::Read)? {
+			(slot, BindingTypes::AccelerationStructure) => slot,
+			(slot, _) => {
+				return Err(VmError::UnsupportedDescriptor {
+					slot,
+					message: "Only acceleration structure descriptors can be traced".to_string(),
+				});
+			}
+		};
+		self.claim_descriptor_layout(slot, DescriptorLayout::AccelerationStructure, "layout")?;
+		Ok(slot)
+	}
+
 	/// Resolves `array_texture[layer]` without treating the layer as a descriptor-array index.
 	pub(super) fn resolve_array_texture_layer_access(
 		&mut self,

@@ -204,5 +204,102 @@ Vertex and primitive counts must stay within `maximum_vertices` and
 `maximum_primitives` in the shader's
 [stage metadata](/docs/reference/besl/interface#standalone-stage-metadata).
 
+## Ray queries
+
+Compute and ray generation shaders test rays against the scene that an
+[`AccelerationStructure` descriptor](/docs/reference/besl/interface#descriptors)
+binds. A ray starts at `origin` and runs along `direction`, both in world
+space. The ray parameter `t` measures how far along the ray a point lies, in
+units of the length of `direction`, so `direction` doesn't need unit length.
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `intersect` | `intersect(AccelerationStructure scene, u32 mask, vec3f origin, vec3f direction, f32 t_min, f32 t_max) -> Hit` | Returns the nearest [hit](#hits) along the ray with a `t` from `t_min` through `t_max`, or a miss. |
+| `trace_occlusion` | `trace_occlusion(AccelerationStructure scene, u32 mask, vec3f origin, vec3f direction, f32 t_min, f32 t_max) -> bool` | Reports whether any triangle lies along the ray with a `t` from `t_min` through `t_max`. It stops at the first triangle it finds, so it costs less than `intersect`. |
+
+Both calls follow these rules:
+
+- Only instances whose 8-bit mask shares a set bit with the low 8 bits of
+  `mask` take part. Pass `255` to test every instance.
+- Every triangle is opaque, and rays hit both of its faces.
+- `t_min` must be zero or more, and `t_max` must be `t_min` or more. With any
+  other interval, the result on the GPU is undefined, and the VM reports an
+  error.
+- When two or more triangles are nearest, `intersect` may report any of them on
+  the GPU. The VM reports the first in instance, geometry, and triangle order.
+
+### Hits
+
+`Hit` is a built-in struct that describes what `intersect` found:
+
+| Member | Type | Value |
+| --- | --- | --- |
+| `record` | `u32` | The hit's record: the hit group offset of the instance plus the geometry's index in its bottom-level structure. |
+| `distance` | `f32` | The `t` of the hit. Negative for a miss. |
+| `custom_index` | `u32` | The custom index of the instance. |
+| `geometry_index` | `u32` | The index of the geometry in its bottom-level structure. |
+| `primitive_index` | `u32` | The index of the triangle in its geometry. |
+| `barycentrics` | `vec2f` | The weights of the triangle's second and third vertices at the hit point. The first vertex weighs `1.0 - x - y`. |
+| `origin` | `vec3f` | The `origin` of the ray. |
+| `direction` | `vec3f` | The `direction` of the ray. |
+
+A miss has a `distance` of `-1.0`, the `origin` and `direction` of its ray, and
+zero in every other member.
+
+A hit is a plain value. Store its members in a buffer, and rebuild it later
+with the constructor, which takes the members in table order:
+
+```rust
+let hit: Hit = Hit(record, distance, custom_index, geometry_index, primitive_index, barycentrics, origin, direction);
+```
+
+This is how a hit crosses passes, such as a sort that orders hits by hit group
+before a ray generation shader shades them with [`invoke`](#ray-generation-stage).
+How instances, geometries, and hit group offsets combine into records is in the
+[GHI reference](/docs/reference/ghi#ray-tracing).
+
+## Ray generation stage
+
+Read the launch values from the `StageInput` parameter described under
+[stage input values](/docs/reference/besl/interface#stage-input-values), or with
+the equivalent zero-argument calls in helper functions.
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `launch_index` | `launch_index() -> vec3u` | Returns the point of the launch grid the invocation runs for. |
+| `launch_size` | `launch_size() -> vec3u` | Returns the launch size of the trace, with a height or depth of 0 read as 1. |
+| `invoke` | `invoke(Hit hit, P payload) -> P` | Runs the closest-hit shader of the hit group that the shader binding table names for `hit.record`, and returns the payload that shader returns. For a miss, runs nothing and returns `payload`. |
+
+`P` is the pipeline's payload struct, described under
+[ray tracing entry points](/docs/reference/besl/interface#ray-tracing-entry-points).
+`invoke` follows these rules:
+
+- A hit whose `distance` is negative, or not a number, is a miss.
+- The closest-hit shader reads the members of `hit` as its
+  [stage input values](/docs/reference/besl/interface#stage-input-values), and
+  `payload` as its payload parameter.
+- The `record` of a hit must be below the record count of the shader binding
+  table that the trace uses. With a larger record, the result on the GPU is
+  undefined, and the VM reports an error.
+
+Ray generation shaders also use the [ray queries](#ray-queries).
+
+## Closest-hit stage
+
+Read the hit from the `StageInput` parameter described under
+[stage input values](/docs/reference/besl/interface#stage-input-values), or with
+the equivalent zero-argument calls in helper functions. Each call returns a
+member of the hit that `invoke` passes.
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `hit_distance` | `hit_distance() -> f32` | Returns the hit's `distance`. |
+| `hit_custom_index` | `hit_custom_index() -> u32` | Returns the hit's `custom_index`. |
+| `hit_geometry_index` | `hit_geometry_index() -> u32` | Returns the hit's `geometry_index`. |
+| `hit_primitive_index` | `hit_primitive_index() -> u32` | Returns the hit's `primitive_index`. |
+| `hit_barycentrics` | `hit_barycentrics() -> vec2f` | Returns the hit's `barycentrics`. |
+| `ray_origin` | `ray_origin() -> vec3f` | Returns the hit's `origin`. |
+| `ray_direction` | `ray_direction() -> vec3f` | Returns the hit's `direction`. |
+
 Which parts of a program Byte Engine can optimize, reflect, and execute is
 described in [Compilation and reflection](/docs/develop/besl/compilation).

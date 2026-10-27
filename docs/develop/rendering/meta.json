@@ -5,6 +5,7 @@
 		"loading",
 		"lighting",
 		"visibility",
+		"ray-tracing",
 		"shader-variants",
 		"debug-views"
 	]

@@ -26,8 +26,31 @@ executes the program in the VM. The language itself is specified in the
    `compile_to_besl` combines parsing and linking and can link the source to a
    supplied parent scope.
 5. The optimizer removes semantically dead portable code.
-6. Reflection evaluates the reachable graph, and the active generator emits
-   GLSL, HLSL, or MSL. Tests can compile the same graph for VM execution.
+6. Reflection evaluates the reachable graph, the
+   [stage rules](#generate-ray-tracing-shaders) check the program against its
+   stage and the output language, and the active generator emits GLSL, HLSL, or
+   MSL. Tests can compile the same graph for VM execution.
+
+`lex` recognizes a closest-hit shader by its signature: a `main` whose only
+parameter besides `StageInput` comes last and has the type that `main` returns.
+It keeps that payload parameter, checks that its type can be a
+[payload](/docs/reference/besl/interface#ray-tracing-entry-points), and leaves
+every other `main` as before. `invoke` isn't a registered intrinsic, because its
+signature depends on the payload: the first `invoke` call of a program
+instantiates it for the payload type it passes, and every later call must pass
+the same type.
+
+`lex` links each scope's declarations in order, each against the ones before
+it, after moving the scope's `main` last, which is the
+[declaration order rule](/docs/reference/besl/language#declaration-order).
+When a declaration fails on an undeclared name that a later declaration of the
+same scope declares, or on an undefined type that a later struct declares, the
+scope reports the use as out of order instead, naming both declarations. The
+check runs only after a failure, so linking a valid program does no extra
+work. A member that its owner lacks reports its own error rather than an
+undeclared name, so a later declaration with the member's name never reads as
+the cause. `declarations_use_only_the_declarations_before_them` guards the
+rule and the errors.
 
 Standalone `.besl` assets use this path during baking and take their stage
 settings and layout layers from the adjacent
@@ -83,7 +106,7 @@ locals and unreachable statements it removed.
 The resource-management shader layer reflects descriptors into stable metadata:
 
 - authored name and flat slot;
-- buffer, sampled-texture, or storage-image kind;
+- buffer, sampled-texture, storage-image, or acceleration-structure kind;
 - texture view shape and resource count;
 - storage-buffer stride for the active layout target; and
 - read and write usage.
@@ -95,6 +118,15 @@ shader declares itself. Each set holds its layer's whole layout and marks the
 descriptors that code reachable from `main` uses. Two sets with the same
 descriptors have the same identity, whichever shader they were reflected from.
 
+Reflection also describes the ray tracing payload, which baking persists in
+`ShaderInterface::ray_payload`: the payload that a closest-hit `main` takes, or
+the one that a program's `invoke` calls pass. It records the payload's name, its
+size in the active backend's storage layout, and a 64-bit Fowler–Noll–Vo 1a
+hash of its name and its members' names and types in declaration order. Ray tracing
+pipeline assembly compares the hashes of a pipeline's shaders, because Metal
+links visible functions whose payloads differ without an error. Keep the hash
+input in declaration order, so that reordering a payload's members changes it.
+
 It rejects distinct bindings that alias one flat slot. Reflection also classifies
 the reachable output as `Opaque`, `NonOpaque`, or `Unknown` for material
 decisions. Raw backend code can make that classification unknown because its
@@ -102,6 +134,86 @@ effects aren't visible to the semantic evaluator.
 
 Express resources and outputs in BESL whenever possible. Reachable declarations
 let Byte Engine validate, reflect, optimize, and test the program consistently.
+
+## Generate ray tracing shaders
+
+Only the MSL generator lowers ray tracing. It follows the contract between the
+Metal GHI backend and the shaders it links, which the
+[ray tracing design note](/docs/develop/rendering/ray-tracing) defines: a ray
+generation shader becomes a compute kernel, and a closest-hit shader becomes a
+`[[visible]]` function that the kernel calls through the visible function table
+at buffer 14.
+
+Before any generator runs, `platform::Generator::lower` checks the program with
+`validate_stage`, in
+`crates/resource-management/src/shader/besl/backends/stage_rules.rs`. It
+checks the `main` signature of ray tracing stages, that a closest hit declares
+no descriptors of its own, which stages call `intersect`, `trace_occlusion`,
+`invoke`, and the launch and hit values, and that ray tracing stages use no
+workgroup storage, barriers, subgroup intrinsics, compute invocation values, or
+`discard`. For GLSL and HLSL, it rejects ray tracing stages and every ray
+tracing call. Each error names the stage, the shader, and the rule, and links
+the reference section that states the rule. The GLSL and HLSL generators also
+refuse ray tracing stages and acceleration structures themselves, for callers
+that skip `lower`.
+
+| BESL | Generated MSL |
+| --- | --- |
+| `Hit` | A struct with the members in reference order. Its vectors are packed, as in every struct a buffer holds, so a hit has one 52-byte layout in buffers and in calls. `distance` is a reserved name in MSL, so that member is `besl_distance`. |
+| `intersect` | `_besl_intersect`: an `intersector<instancing, triangle_data, intersection_function_buffer>` with the default, empty function buffer, because only that tag reports `function_id`, the hit's record. A miss returns the hit that the reference specifies for one, with a `distance` of `-1.0`. |
+| `trace_occlusion` | `_besl_trace_occlusion`: an `intersector<instancing>` that accepts the first intersection and reports no triangle data. |
+| `invoke(hit, payload)` | `_besl_invoke`, which calls the table entry of `hit.record` when the hit's distance is zero or more. For a negative distance or one that isn't a number, it returns the payload unchanged. |
+| `launch_index`, `launch_size` | The kernel's `[[thread_position_in_grid]]` and `[[threads_per_grid]]`. The GHI dispatches the exact launch size, so the kernel checks no bounds. |
+| Hit values | Members of the `Hit` that the closest hit receives. Packed vectors convert to `float2` and `float3`. |
+
+Both intersectors force opacity and assume triangles, because every geometry is
+opaque. Each helper is emitted only into shaders that call it.
+
+A kernel and the closest hits it calls agree on two declarations, which every
+ray tracing shader emits:
+
+- `_besl_ray_context` holds the addresses of the push constant and of each
+  descriptor set, as `constant void*`. The kernel fills it from its own
+  parameters, and a closest hit casts each address back to its set's struct.
+- `_besl_closest_hit` is the type of every closest hit:
+  `void(thread P&, thread const Hit&, thread const _besl_ray_context&)`, where
+  `P` is the payload. A closest hit's `besl_main` unpacks its push constant and
+  sets from the context, calls the shader's `main` with the payload and the
+  hit, and stores the payload it returns.
+
+A change to this lowering must keep these rules:
+
+- **A ray generation kernel takes every set and the push constant its program
+  declares**, used or not, because a closest hit can read what the kernel
+  doesn't. Every other stage takes only the sets that its reachable code uses.
+- **A closest hit takes every set its program declares too**, so a closest hit
+  that reads a later set still finds it at its position in the context.
+- **Hidden values reach helpers as trailing parameters.** A helper function
+  that reads a launch or hit value or a resource takes the hit in a closest hit,
+  and the launch index and size in a ray generation shader, plus the function
+  table and the context when the shader calls `invoke`. The push constant and
+  every set follow.
+- **The kernel builds the context only when it calls `invoke`.**
+- **Only shaders that use ray tracing include `<metal_raytracing>`:** a ray
+  tracing stage, a ray query, or a `Hit` or an acceleration structure that the
+  shader or one of its sets declares. Other shaders generate the same MSL as
+  before.
+- **The prelude declares `Hit` once.** The lexer rejects a struct named after a
+  built-in type, so a `Hit` in the program is always the built-in one, and the
+  generator skips it.
+
+These tests guard the lowering. The Metal compile tests and the GPU test run on
+macOS only, and the GPU test also needs the `gpu-processing` feature, which
+workspace runs enable.
+
+| Test | Guards |
+| --- | --- |
+| `generated_ray_generation_stage_compiles_with_metal` | The kernel's parameters, the context it builds, the hidden parameters of a helper that calls `invoke`, and that Metal compiles the kernel. |
+| `generated_closest_hit_stage_compiles_with_metal` | The visible entry point, how it unpacks its sets, hit values in `main` and in helpers, and that Metal compiles it. |
+| `ray_queries_compile_in_compute_shaders` | `intersect`, `trace_occlusion`, and `Hit` construction in a compute kernel. |
+| `generated_ray_tracing_shaders_match_the_vm` | Baked shaders write on the GPU what the VM writes: both hit groups, a mask that skips an instance, misses, occlusion, and a direction twice the unit length. |
+| `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules, and their rejection of GLSL and HLSL. |
+| `lowering_reports_the_stage_rule_a_shader_breaks` | `lower` checks the stage rules before a generator runs. |
 
 ## Execute BESL in the VM
 
@@ -120,12 +232,52 @@ The VM supports:
 - invocation coordinates, configurable subgroup collectives, workgroup shared
   storage, and barriers through the workgroup scheduler; and
 - task payloads and output counts plus captured mesh counts, positions,
-  triangles, and render-target array indices.
+  triangles, and render-target array indices; and
+- ray queries against a scene, and ray tracing pipelines whose ray generation
+  program runs closest-hit programs through `invoke`.
 
 Compile a linked graph with `ExecutableProgram`, bind its resources through
 `DescriptorBindings`, and call `run_main`, `run_main_with_config`, or
 `run_workgroup`. `ExecutionConfig` sets instruction and call-depth limits,
 invocation coordinates, subgroup size, and task or mesh output limits.
+
+### Trace rays in the VM
+
+Build a scene from `BottomLevelStructure` triangle lists placed by `Instance`
+values, pass the instances to `AccelerationStructure::new`, and bind the scene
+with `DescriptorBindings::bind_acceleration_structure`. A compute program then
+runs its ray queries through `run_main`. For a pipeline, pass a ray generation
+program and one closest-hit program per hit group to `RayTracingPipeline::new`,
+and call `trace_rays` with the shader binding table's records and the launch
+size. Record `i` runs hit group `records[i]`, as `write_shader_binding_table`
+records do on the GPU.
+
+The VM trades speed for results you can predict. A change must keep these rules,
+which `crates/besl/tests/ray_tracing.rs` guards:
+
+- Ray queries test every triangle, in instance, geometry, and triangle order,
+  with the Möller–Trumbore test. There's no hierarchy, so keep VM scenes small.
+- A ray moves into each instance's object space through the inverse of the
+  instance's affine transform, which keeps the ray's distance and the
+  barycentrics of each point, as a world-space test would.
+- Every triangle is opaque and both faces hit. Both ends of the ray's interval
+  belong to it.
+- Of equally near hits, the first in test order wins, where the GPU may report
+  any of them.
+- Where the reference leaves the GPU result undefined, the VM returns an error
+  instead: an invalid ray interval, or a record past the end of the shader
+  binding table.
+- `invoke` runs only in a ray generation invocation. `RayTracingPipeline::new`
+  rejects a hit group that isn't a closest hit, a closest hit that calls
+  `invoke`, `intersect`, or `trace_occlusion`, and a closest hit whose payload
+  type differs from the one the ray generation program passes.
+- Launch values exist only in a ray generation invocation, and hit values only in
+  the closest hit it invokes. Ray tracing invocations have no peers, so
+  workgroup barriers and subgroup collectives are errors in them, and so is
+  `discard`, which only fragment shaders run.
+- A closest hit reads the descriptor bindings of the ray generation program that
+  invokes it. The VM doesn't model descriptor sets, so it doesn't check that a
+  closest hit's sets are the first sets of the ray generation shader.
 
 ## Rust API
 

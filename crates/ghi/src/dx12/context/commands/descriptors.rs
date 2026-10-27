@@ -299,16 +299,7 @@ impl Device {
 						state: DescriptorAliasState::Texture(state),
 					});
 				}
-				WriteData::AccelerationStructure { handle } => {
-					let resource = self
-						.top_level_acceleration_structures
-						.get(handle.0 as usize)
-						.and_then(|acceleration_structure| acceleration_structure.resource.clone())
-						.expect(
-							"Missing DX12 acceleration-structure descriptor resource. The most likely cause is that native acceleration-structure allocation failed before binding.",
-						);
-					self.retain_command_buffer_resource(command_buffer_handle, &resource);
-				}
+				WriteData::AccelerationStructure { .. } => crate::rt::unsupported("DX12"),
 				_ => {}
 			}
 		}
@@ -776,9 +767,7 @@ impl Device {
 			let handle = self.descriptor_gpu_handle(heap, heap_type, 0);
 			unsafe {
 				match pipeline_kind {
-					PipelineKind::Compute | PipelineKind::RayTracing => {
-						command_list.SetComputeRootDescriptorTable(root_parameter_index, handle)
-					}
+					PipelineKind::Compute => command_list.SetComputeRootDescriptorTable(root_parameter_index, handle),
 					PipelineKind::Raster => command_list.SetGraphicsRootDescriptorTable(root_parameter_index, handle),
 				}
 			}
@@ -848,7 +837,7 @@ impl Device {
 
 		let destination_offset = offset / 4;
 		let word_count = byte_count / 4;
-		let compute_root = matches!(pipeline_kind, PipelineKind::Compute | PipelineKind::RayTracing);
+		let compute_root = matches!(pipeline_kind, PipelineKind::Compute);
 		unsafe {
 			if compute_root {
 				command_list.SetComputeRoot32BitConstants(

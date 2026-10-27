@@ -1,0 +1,99 @@
+// Shades the frame's surfel hits, one invocation per hit in material order: runs the closest-hit shader of the
+// material each hit landed on, then lights the surface it reports.
+//
+// A hit's surface reflects the suns that reach it and the light the surfels around it gathered last frame, the sky they
+// see included, and adds what it emits. The result goes to the hit's ray, which the integrate pass then folds into its
+// surfel's estimate. The surfel that lights a hit most earns importance, which keeps it alive while it serves rays
+// even off the screen.
+
+// How far along its normal a shadow ray leaves a hit, in meters.
+SURFEL_HIT_OFFSET: const f32 = 0.002;
+// The most surfels a hit reads from its cell for the light gathered there.
+SURFEL_HIT_LOOKUP_LIMIT: const u32 = 16;
+// The importance a surfel earns for a hit it lights with pre-exposed light of luminance one, and the most it earns.
+SURFEL_HIT_IMPORTANCE: const f32 = 50.0;
+
+main: fn (input: StageInput) -> void {
+	let index: u32 = input.launch_index.x;
+	if (index >= surfel_hit_sort.hit_count) {
+		return;
+	}
+	let ray: u32 = surfel_sorted_hits[index];
+	let stored: SurfelHit = surfel_hits[ray];
+	let direction: vec3f = decode_surfel_normal(stored.direction);
+	let hit: Hit = Hit(
+		stored.record,
+		stored.distance,
+		stored.custom_index,
+		stored.geometry_index,
+		stored.primitive_index,
+		stored.barycentrics,
+		stored.origin,
+		direction
+	);
+	let surface: HitSurface = invoke(
+		hit,
+		HitSurface(vec3f16(0.0, 0.0, 0.0), 0, vec3f(0.0, 0.0, 0.0), vec3f16(0.0, 0.0, 1.0))
+	);
+	let radiance: vec3f = surface.emission;
+	let albedo: vec3f = vec3f(surface.albedo);
+	// The back of a single-sided surface and a black one reflect nothing, so they need no light.
+	if (surface.front_face != 0 && albedo.x + albedo.y + albedo.z > 0.0) {
+		let position: vec3f = stored.origin + direction * stored.distance;
+		let normal: vec3f = normalize(vec3f(surface.normal));
+		let shadow_origin: vec3f = position + normal * SURFEL_HIT_OFFSET;
+		// The light reaching the hit as irradiance over π, which the albedo turns into reflected radiance.
+		let light: vec3f = vec3f(0.0, 0.0, 0.0);
+		for (let sun: u32 = 0; sun < surfel_parameters.sun_count; sun = sun + 1) {
+			let toward_sun: vec3f = surfel_parameters.suns[sun].direction;
+			let cosine: f32 = dot(normal, toward_sun);
+			if (cosine > 0.0) {
+				if (!trace_occlusion(scene_structure, 255, shadow_origin, toward_sun, 0.0, SURFEL_RAY_LENGTH)) {
+					light = light + surfel_parameters.suns[sun].illuminance * (cosine / 3.14159265359);
+				}
+			}
+		}
+
+		// The surfels around the hit hold the light that reached them last frame, pre-exposed, from the sky and from
+		// other surfaces. A hit where no surfel lies yet gets none, as in webgiya, rather than sky that walls may hide.
+		// Radial depth hides a surfel on the other side of a wall from the hit, as it does from a pixel, so light doesn't
+		// bounce through walls.
+		let cell: u32 = surfel_cell_of(position);
+		let start: u32 = surfel_scan[cell];
+		let end: u32 = start + min(surfel_scan[cell + 1] - start, SURFEL_HIT_LOOKUP_LIMIT);
+		let gathered: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let gathered_weight: f32 = 0.0;
+		let best_contribution: f32 = 0.0;
+		let best_surfel: u32 = NO_SURFEL;
+		for (let entry: u32 = start; entry < end; entry = entry + 1) {
+			let surfel: u32 = surfel_cell_entries[entry];
+			let record: SurfelRecord = surfel_records[surfel];
+			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
+			let distance: f32 = surfel_distance(position - record.position, surfel_normal);
+			let weight: f32 = (1.0 - smoothstep(0.0, record.radius * SURFEL_LOOKUP_SCALE, distance))
+				* max(0.0, dot(surfel_normal, normal))
+				* record.weight;
+			if (weight > 0.0) {
+				weight = weight * surfel_occlusion(surfel, record, surfel_normal, position);
+			}
+			let contribution: vec4f = vec4f(record.irradiance) * weight;
+			gathered = gathered + contribution;
+			gathered_weight = gathered_weight + weight;
+			let luminance: f32 = contribution.x * 0.2126 + contribution.y * 0.7152 + contribution.z * 0.0722;
+			if (luminance > best_contribution) {
+				best_contribution = luminance;
+				best_surfel = surfel;
+			}
+		}
+		if (best_surfel != NO_SURFEL && best_contribution > 0.01) {
+			atomic_max(surfel_states[best_surfel].touched, u32(min(best_contribution * SURFEL_HIT_IMPORTANCE, SURFEL_HIT_IMPORTANCE)));
+		}
+		if (gathered_weight > 0.00001) {
+			let blended: vec4f = gathered * (1.0 / gathered_weight);
+			light = light + vec3f(blended.x, blended.y, blended.z) * (1.0 / surfel_parameters.previous_exposure);
+		}
+		radiance = radiance + albedo * light;
+	}
+	// The trace wrote the rest of the ray's result.
+	surfel_ray_results[ray].radiance = radiance;
+}

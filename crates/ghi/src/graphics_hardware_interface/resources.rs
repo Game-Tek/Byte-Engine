@@ -3,7 +3,7 @@
 use utils::{Extent, RGBA};
 
 use super::*;
-use crate::{DataTypes, Encodings, Formats, Layouts};
+use crate::{Formats, Layouts};
 
 /// The `DispatchExtent` struct converts invocation dimensions into workgroup counts.
 pub struct DispatchExtent {
@@ -41,22 +41,6 @@ impl DispatchExtent {
 	pub fn get_workgroup_extent(&self) -> Extent {
 		self.workgroup_extent
 	}
-}
-
-pub enum BottomLevelAccelerationStructureDescriptions {
-	Mesh {
-		vertex_count: u32,
-		vertex_position_encoding: Encodings,
-		triangle_count: u32,
-		index_format: DataTypes,
-	},
-	AABB {
-		transform_count: u32,
-	},
-}
-
-pub struct BottomLevelAccelerationStructure {
-	pub description: BottomLevelAccelerationStructureDescriptions,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

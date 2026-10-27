@@ -2,10 +2,12 @@ use super::resolution::*;
 use super::*;
 use crate::parser;
 
+mod ray_tracing;
 mod yielding;
 
 const ATOMIC_INTRINSICS_DOCS_PATH: &str = "reference/besl/intrinsics#buffer-and-workgroup-atomics";
 const ARRAY_DOCS_PATH: &str = "reference/besl/language#pass-and-return-arrays";
+const STRUCTS_DOCS_PATH: &str = "reference/besl/language#structs";
 
 #[derive(Clone, Copy)]
 enum AtomicAccessRequirement {
@@ -121,7 +123,7 @@ fn binding_memory_class(
 		(false, None) => BufferMemoryClass::Constant,
 		(false, Some(_)) => {
 			return Err(LexError::invalid(format!(
-				"Descriptor {name} declares a buffer memory class for a non-buffer resource. The most likely cause is that constant or device was attached to an image or texture descriptor."
+				"Descriptor {name} declares a buffer memory class for a non-buffer resource. The most likely cause is that constant or device was attached to an image, texture, or acceleration structure descriptor."
 			)));
 		}
 	};
@@ -148,6 +150,9 @@ pub(super) struct Lexer {
 	loop_depth: usize,
 	/// Numbers inlined intrinsic locals and hoisted temporaries.
 	next_generated_id: usize,
+	/// The `invoke` intrinsic instantiated for the program's payload type, once a call to `invoke` has been linked. See
+	/// [`Lexer::lex_invoke`].
+	invoke: Option<NodeReference>,
 }
 
 impl Lexer {
@@ -158,6 +163,7 @@ impl Lexer {
 			hoisted: None,
 			loop_depth: 0,
 			next_generated_id: 0,
+			invoke: None,
 		}
 	}
 
@@ -282,11 +288,14 @@ impl Lexer {
 		Ok((scrutinee, r#type, domain, arms))
 	}
 
-	/// Lexes the children of `this` in its scope and appends each one to it as it is linked.
+	/// Lexes the children of `this` in its scope and appends each one to it as it is linked, so each child sees only the
+	/// children before it.
 	fn lex_children(&mut self, this: &NodeReference, children: &[parser::Node]) -> Result<(), LexError> {
 		self.in_scope(this, |lexer| {
-			for child in children {
-				let child = lexer.lex(child)?;
+			for (index, child) in children.iter().enumerate() {
+				let child = lexer
+					.lex(child)
+					.map_err(|error| explain_declaration_order(error, &children[index..]))?;
 				this.borrow_mut().add_child(child);
 			}
 			Ok(())
@@ -306,6 +315,14 @@ impl Lexer {
 				this
 			}
 			parser::Nodes::Struct { name, fields } => {
+				// Every use of a built-in type's name resolves to the built-in, so a struct that takes one would be
+				// declared and never used.
+				if builtin_type(name).is_some_and(|builtin| matches!(builtin.borrow().node(), Nodes::Struct { .. })) {
+					return Err(LexError::invalid(format!(
+						"Struct `{name}` has the name of a built-in type. The most likely cause is a struct declared with a name that BESL already gives a type, such as `Hit` or `vec3f`. Rename the struct, or delete it and use the built-in type. See {}.",
+						crate::online_docs_url(STRUCTS_DOCS_PATH)
+					)));
+				}
 				if let Some(n) = get_reference(&self.scopes, name) {
 					// If the type already exists, return it.
 					return Ok(n);
@@ -420,6 +437,7 @@ impl Lexer {
 					this.borrow_mut().add_children(statements);
 					Ok::<_, LexError>(())
 				})?;
+				ray_tracing::validate_entry_payload(&this)?;
 
 				this
 			}
@@ -510,6 +528,9 @@ impl Lexer {
 			} => {
 				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
+				if r#type == BindingTypes::AccelerationStructure {
+					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
+				}
 
 				binding_in_declared_layout(
 					Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count),
@@ -616,6 +637,10 @@ impl Lexer {
 					}),
 					parser::Expressions::Call { name, parameters } => {
 						let parameters = self.lex_arguments(name, parameters)?;
+						// `invoke` takes and returns the program's payload type, so it has no registered signature.
+						if matches!(name, parser::TypeName::Named(name) if *name == ray_tracing::INVOKE_INTRINSIC) {
+							return Ok(self.lex_invoke(parameters)?.into());
+						}
 						let function = resolve_call_target(&self.scopes, name, &parameters)?;
 						let callee = function.borrow();
 						match callee.node() {

@@ -392,20 +392,16 @@ impl SetInterface {
 
 /// Hashes a layout's bindings with FNV-1a, which is stable across processes and builds.
 fn layout_identity(bindings: &[Binding]) -> u64 {
-	const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-	const PRIME: u64 = 0x0000_0100_0000_01b3;
+	use crate::shader::besl::evaluation::{FNV1A_OFFSET_BASIS, fnv1a};
 
-	let mut hash = OFFSET_BASIS;
-	let mut write = |bytes: &[u8]| {
-		for byte in bytes {
-			hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
-		}
-	};
+	let mut hash = FNV1A_OFFSET_BASIS;
+	let mut write = |bytes: &[u8]| hash = fnv1a(hash, bytes);
 
 	for binding in bindings {
 		let (kind, view) = match binding.kind {
 			BindingKind::StorageBuffer => (0u8, 0u8),
 			BindingKind::StorageImage => (1, 0),
+			BindingKind::AccelerationStructure => (3, 0),
 			BindingKind::CombinedImageSampler { view } => (
 				2,
 				match view {
@@ -437,6 +433,10 @@ pub struct ShaderInterface {
 	/// The descriptor set layouts the shader declares: one per layout layer it lists that declares descriptors, in
 	/// listing order, then its own.
 	pub sets: Vec<SetInterface>,
+	/// The payload the shader passes through ray tracing: the one a closest-hit shader takes, or the one a ray
+	/// generation shader's `invoke` calls pass. `None` for every other shader. Ray tracing pipeline assembly requires
+	/// every shader of a pipeline to pass the same payload.
+	pub ray_payload: Option<crate::shader::besl::evaluation::RayPayload>,
 }
 
 impl ShaderInterface {

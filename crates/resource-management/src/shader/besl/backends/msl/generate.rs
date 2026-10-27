@@ -20,7 +20,7 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes(main_function_node, "MSL");
-		self.collect_argument_sets(main_function_node)?;
+		self.collect_argument_sets(main_function_node, shader_compilation_settings.stage.is_ray_tracing())?;
 		self.generate_order(shader_compilation_settings, main_function_node, &order)
 	}
 
@@ -28,7 +28,9 @@ impl Generator {
 	///
 	/// Code reachable from `main` is emitted. Each layout with a binding that code uses becomes one argument buffer
 	/// that declares the layout's every binding, so every shader that shares the layout reads one native set. A layout
-	/// `main` never reaches takes no argument buffer.
+	/// `main` never reaches takes no argument buffer, except in a ray tracing stage, which takes every layout the
+	/// program declares. A ray generation shader also takes the push constant the program declares: it passes the
+	/// addresses of both to the closest hits it runs, which can read what the kernel doesn't.
 	pub fn generate_program(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
@@ -37,21 +39,24 @@ impl Generator {
 		let main = program.get_main().ok_or(())?;
 		let mut order = ordered_shader_nodes(&main, "MSL");
 		Self::append_declared_bindings(program, &mut order);
-		self.collect_argument_sets(program)?;
+		if matches!(shader_compilation_settings.stage, Stages::RayGeneration) {
+			Self::append_declared_push_constant(program, &mut order);
+		}
+		self.collect_argument_sets(program, shader_compilation_settings.stage.is_ray_tracing())?;
 		self.generate_order(shader_compilation_settings, &main, &order)
 	}
 
 	/// Records the descriptor sets the shader takes as argument buffers: every layout `program` declares that code
-	/// reachable from `main` uses.
+	/// reachable from `main` uses, or every layout it declares when `keep_unused` is set, as ray tracing stages need.
 	///
 	/// The sets come from the same reflection that produces the shader's persisted interface, in the same order, so
-	/// set `n` here is the `n`th used set there.
-	fn collect_argument_sets(&mut self, program: &besl::NodeReference) -> Result<(), ()> {
+	/// set `n` here is the `n`th used set there, or the `n`th declared set with `keep_unused`.
+	fn collect_argument_sets(&mut self, program: &besl::NodeReference, keep_unused: bool) -> Result<(), ()> {
 		let sets = crate::shader::besl::evaluation::collect_set_nodes(program).map_err(|_| ())?;
 
 		self.argument_sets.clear();
 		self.binding_sets.clear();
-		for set in sets.into_iter().filter(|set| set.used != 0) {
+		for set in sets.into_iter().filter(|set| keep_unused || set.used != 0) {
 			// Every argument ID of the set must fit, so emission never wraps one.
 			let mut ids = 0u32;
 			for node in &set.nodes {
@@ -90,7 +95,9 @@ impl Generator {
 					besl::BindingTypes::BufferArray { element, .. } => {
 						Self::append_storage_type_declarations(element, order);
 					}
-					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
+					besl::BindingTypes::Image { .. }
+					| besl::BindingTypes::CombinedImageSampler { .. }
+					| besl::BindingTypes::AccelerationStructure => {}
 				}
 				if !order.contains(program) {
 					order.push(program.clone());
@@ -99,6 +106,28 @@ impl Generator {
 			besl::Nodes::Scope { children, .. } => {
 				for child in children {
 					Self::append_declared_bindings(child, order);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	/// Appends the push constant block `program` declares, and the structs its members use, when code reachable from
+	/// `main` doesn't reach it.
+	fn append_declared_push_constant(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
+		let program_borrow = program.borrow();
+		match program_borrow.node() {
+			besl::Nodes::PushConstant { members } => {
+				for member in members {
+					Self::append_storage_type_declarations(member, order);
+				}
+				if !order.contains(program) {
+					order.push(program.clone());
+				}
+			}
+			besl::Nodes::Scope { children, .. } => {
+				for child in children {
+					Self::append_declared_push_constant(child, order);
 				}
 			}
 			_ => {}
@@ -154,7 +183,13 @@ impl Generator {
 			};
 		let mut string = String::with_capacity(2048 + downsample_helper_capacity);
 
-		self.generate_msl_header_block(&mut string, shader_compilation_settings, &intrinsic_requirements);
+		let uses_ray_tracing = self.uses_ray_tracing(shader_compilation_settings.stage, order, &intrinsic_requirements);
+		self.generate_msl_header_block(
+			&mut string,
+			shader_compilation_settings,
+			&intrinsic_requirements,
+			uses_ray_tracing,
+		);
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(order) => {
@@ -185,6 +220,8 @@ impl Generator {
 				maximum_primitives,
 				intrinsic_requirements.uses_render_target_array_index,
 			),
+			Stages::RayGeneration => self.generate_ray_generation_shader(&mut string, order, main_function_node),
+			Stages::ClosestHit => self.generate_closest_hit_shader(&mut string, order, main_function_node)?,
 			_ => {
 				for node in order {
 					self.emit_node_string(&mut string, node);
@@ -222,7 +259,9 @@ impl Generator {
 						}
 					}
 				}
-				besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
+				besl::BindingTypes::Image { .. }
+				| besl::BindingTypes::CombinedImageSampler { .. }
+				| besl::BindingTypes::AccelerationStructure => {}
 			}
 		}
 	}

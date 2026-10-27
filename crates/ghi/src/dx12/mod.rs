@@ -2310,54 +2310,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn acceleration_structure_instances_write_dx12_layout() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let instance_buffer = device.create_acceleration_structure_instance_buffer(Some("instances"), 1);
-		let bottom_level = device.create_bottom_level_acceleration_structure(&crate::BottomLevelAccelerationStructure {
-			description: crate::BottomLevelAccelerationStructureDescriptions::AABB { transform_count: 1 },
-		});
-		let transform = [[1.0, 0.0, 0.0, 4.0], [0.0, 1.0, 0.0, 5.0], [0.0, 0.0, 1.0, 6.0]];
-
-		device.write_instance(instance_buffer, usize::MAX, transform, 7, 0xff, 3, bottom_level);
-		let unchanged = device
-			.buffer_bytes(
-				instance_buffer,
-				std::mem::size_of::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
-			)
-			.expect("Instance buffer bytes should be available.");
-		assert!(unchanged.iter().all(|byte| *byte == 0));
-		assert_eq!(device.acceleration_structure_instance_write_count(), 0);
-
-		device.write_instance(instance_buffer, 0, transform, 7, 0xff, 3, bottom_level);
-
-		let bytes = device
-			.buffer_bytes(
-				instance_buffer,
-				std::mem::size_of::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
-			)
-			.expect("Instance buffer bytes should be available.");
-		// The buffer shadow is byte-aligned storage, so copy the descriptor without imposing native alignment on the slice.
-		let instance = unsafe {
-			std::ptr::read_unaligned(
-				bytes
-					.as_ptr()
-					.cast::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
-			)
-		};
-
-		assert_eq!(device.acceleration_structure_instance_write_count(), 1);
-		assert_eq!(
-			instance.Transform,
-			[1.0, 0.0, 0.0, 4.0, 0.0, 1.0, 0.0, 5.0, 0.0, 0.0, 1.0, 6.0]
-		);
-		assert_eq!(instance._bitfield1, 0xff00_0007);
-		assert_eq!(instance._bitfield2, 0x0400_0003);
-		assert_ne!(instance.AccelerationStructure, 0);
-	}
-
-	#[test]
 	fn texture3d_creation_uses_depth_instead_of_array_size() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
@@ -2524,10 +2476,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::Uses::Vertex,
 			crate::Uses::Index,
 			crate::Uses::Indirect,
-			crate::Uses::AccelerationStructure,
 			crate::Uses::AccelerationStructureBuild,
-			crate::Uses::AccelerationStructureBuildScratch,
-			crate::Uses::ShaderBindingTable,
 			crate::Uses::TransferSource,
 			crate::Uses::Clear,
 		];

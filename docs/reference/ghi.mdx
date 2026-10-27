@@ -1,6 +1,6 @@
 ---
 title: Graphics hardware interface
-description: Look up the GHI's objects and their lifecycle rules, its resource kinds and enumerations, the plain-data layout rules, what each backend supports today, and its limits.
+description: Look up the GHI's objects and their lifecycle rules, its resource kinds and enumerations, the plain-data layout rules, its ray-tracing structures and pipelines, what each backend supports today, and its limits.
 icon: Computer
 ---
 
@@ -20,7 +20,7 @@ and renderer share a device is in the
 | Context | Owns the GPU resources created through it. | May move between threads but belongs to one thread at a time. Contexts that submit to the same native queue share one lock. |
 | Queue | Submits frames and standalone command buffers. | Selected by workload: raster, ray tracing, compute, transfer, video, or I/O. |
 | Frame | A per-frame view of a queue's context. | At most 3 frames in flight. A frame key carries the frame index and the sequence index, the frame index modulo the frames in flight. |
-| Command buffer recording | Records passes, copies, clears, blits, and transfers, then executes with a synchronizer. | Counters are started once per frame and measure whole passes. Unordered groups don't nest. |
+| Command buffer recording | Records passes, copies, clears, blits, and transfers, then executes with a synchronizer. | Counters are started once per frame and measure whole passes, bottom-level acceleration structure builds included. A top-level build runs alongside the passes after it, and its time shows in the first pass that reads the structure. Unordered groups don't nest. |
 | Synchronizer | One native primitive per frame sequence. | Waited, polled without blocking, or signaled by an execution. |
 | Swapchain | Bound to a window with a presentation mode and an image count. | Acquiring an image may block until the previous submission of that sequence allows reuse, and returns nothing when no image is available. |
 | Window and input | A per-process application object creates windows and polls events. | Every window is dropped before the application. |
@@ -42,7 +42,8 @@ the pipeline's declared ranges.
 | Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |
 | Descriptor set layout | At most 64 resources with distinct slots. Equal layouts have equal identities and are interchangeable. |
 | Raster pipeline | Clockwise front faces, back-face culling, solid fill, and depth writes by default. |
-| Acceleration structure | Mesh geometry with 16-bit or 32-bit indices, or axis-aligned boxes. |
+| Acceleration structure | Triangle geometry with 16-bit or 32-bit indices. See [Ray tracing](#ray-tracing). |
+| Ray tracing pipeline and shader binding table | A ray generation shader and its hit groups, and the records that map hits to them. See [Ray tracing](#ray-tracing). |
 | Counter | At most 512 per frame. Its duration is that of the most recently completed frame. |
 | Texture readback | The base mip of one layer of a color image with the transfer-source use, in a format other than RGB8, RGB16, or depth. The handle is consumed by the read. |
 
@@ -50,11 +51,11 @@ the pipeline's declared ranges.
 
 | Enumeration | Values |
 | --- | --- |
-| Layouts | Undefined, render target, transfer, present, read, general, shader binding table, indirect |
-| Uses | Vertex, index, uniform, storage, indirect, image, render target, depth stencil, acceleration structure, transfer source, transfer destination, shader binding table, acceleration structure build scratch, acceleration structure build, clear, input attachment |
+| Layouts | Undefined, render target, transfer, present, read, general, indirect |
+| Uses | Vertex, index, uniform, storage, indirect, image, render target, depth stencil, transfer source, transfer destination, acceleration structure build, clear, input attachment |
 | Device accesses | CPU read, CPU write, GPU read, GPU write, and the combinations device only, host only, host to device, and device to host |
 | Data types | Float through float4, u8, u16, u32, int through int4, uint through uint4 |
-| Shader types | Vertex, fragment, compute, task, mesh, ray generation, closest hit, any hit, intersection, miss, callable |
+| Shader types | Vertex, fragment, compute, task, mesh, ray generation, closest hit |
 | Filtering, reduction, addressing | Closest or linear; weighted average, minimum, or maximum; repeat, mirror, clamp, or border |
 | Presentation modes | Immediate, FIFO, mailbox |
 | Clear values | None, a color, four integers, or a depth |
@@ -92,11 +93,89 @@ buffers and image regions.
 Both supported backends can cancel a request. A request can be pending,
 complete, cancelled, or failed.
 
+## Ray tracing
+
+A context supports ray tracing when its device was created with the ray
+tracing feature and the GPU supports it. Only Metal supports it; Vulkan and
+Direct3D 12 report no support. Rays find hits in a top-level structure, whose
+instances place bottom-level structures in the world. A ray tracing pipeline
+launches a ray generation shader over a grid, and that shader runs the hit
+group of each hit's record, as a shader binding table maps it.
+
+| Object | Definition | Rules |
+| --- | --- | --- |
+| Triangle geometry | Indexed triangles: a range of vertex positions, each three 32-bit floats at a fixed stride, and 16-bit or 32-bit indices that start at a buffer offset. | Both buffers have the acceleration structure build use. Positions start at a multiple of 4 bytes, with a stride of at least 12 bytes in steps of 4. Indices start at a multiple of their size, and each names a vertex of the position range. The vertex count is the size of the position range divided by its stride. Every triangle is opaque. |
+| Bottom-level structure | One or more triangle geometries, numbered from 0 in the order given at creation. | Built once. Its size is known from creation and shrinks when it compacts. |
+| Instance | One placement of a bottom-level structure. | See [Instances](#instances). |
+| Top-level structure | The instances rays traverse, up to the count given at creation. | One copy per frame in flight. |
+| Ray tracing pipeline | A ray generation shader and one or more hit groups, numbered from 0 in the order given at creation. A hit group is one closest-hit shader. | See [Pipelines](#pipelines). |
+| Shader binding table | Records numbered from 0, each naming a hit group of one ray tracing pipeline. | See [Shader binding tables](#shader-binding-tables). |
+
+### Instances
+
+| Field | Definition |
+| --- | --- |
+| Transform | Three rows of four 32-bit floats that map object space to world space. A world position is the matrix times the object position extended with a fourth component of 1. |
+| Custom index | A 24-bit value that hits report. |
+| Mask | 8 bits. A ray hits the instance only when the ray's mask and this mask share a bit. |
+| Hit group offset | A 24-bit value that a hit adds to its geometry index to give its record. |
+| Bottom-level structure | The structure the instance places. Its build is recorded before the top-level build that reads the instance, in the same recording or an earlier one. |
+
+### Hits
+
+A ray reports the nearest triangle it hits within its interval.
+
+| Value | Definition |
+| --- | --- |
+| Record | The instance's hit group offset plus the geometry index. A shader binding table maps it to a hit group. |
+| Custom index | The instance's custom index. |
+| Geometry index | The index of the hit geometry in its bottom-level structure. |
+| Primitive index | The index of the hit triangle in its geometry. |
+
+### Lifetime
+
+| Event | Effect |
+| --- | --- |
+| Creation | The structure stays available to every trace until it's destroyed, whether or not a command names it. |
+| Bottom-level build | Takes effect when its recording executes. A recording dropped before it executes builds nothing, and the structure can be built again. The GHI provides the scratch memory of every build. |
+| Compaction | Starts when a bottom-level build completes and ends within a few frames. The structure keeps its handle and reports the same hits, and its size drops to the compacted size. |
+| Top-level build | Recorded in a frame from the instances the build receives. It writes that frame's copy, which the descriptor sets the frame binds read. A copy keeps what its last build wrote. |
+| Destruction | Invalidates the handle at once. The structure stays valid until every frame recorded before the destruction completes. A top-level copy built with an instance of a destroyed bottom-level structure is built again before a later frame traces it. |
+
+### Pipelines
+
+| Rule | Definition |
+| --- | --- |
+| Shaders | One ray generation shader, and one closest-hit shader for each hit group. Each shader takes its own specialization constants, so two hit groups can share a shader with different constants. |
+| Descriptor sets | The ray generation shader binds every set it declares, whether it uses the set or not. A closest-hit shader declares the first sets the ray generation shader declares, in the same order, or fewer, and can use resources of those sets that the ray generation shader doesn't. |
+| Push constants | Shared by the ray generation shader and every closest-hit shader. |
+| Payload | Each closest-hit shader takes the payload the ray generation shader passes it. The GHI doesn't check that their payload types agree. |
+| Calls | Only the ray generation shader runs hit groups. |
+| Invocations | Ray tracing shaders share no workgroup memory, don't synchronize with each other, and use no subgroup operations. |
+
+### Shader binding tables
+
+| Event | Effect |
+| --- | --- |
+| Creation | The table holds no records. |
+| Write | Replaces the table's records for one pipeline, with one record for each entry of a list of hit group numbers: record *i* runs the hit group that entry *i* names. Traces recorded after the write use the new records, and traces recorded before it keep the records they were recorded with. |
+| Trace | Uses the table with the pipeline its last write named. Every record a hit reports is below the table's record count. |
+
+### Launches
+
+A trace launches the ray generation shader over an extent.
+
+| Value | Definition |
+| --- | --- |
+| Launch size | The extent of the trace: a width, a height, and a depth. A height or a depth of 0 counts as 1, so a launch over a line or a rectangle can leave the dimensions it doesn't use at 0. |
+| Invocations | One for each point of the launch size: the width times the height times the depth. A launch size with a width of 0 runs none. |
+| Launch index | The point an invocation runs for. Each component is below the launch size's. |
+
 ## Backends
 
 | Requirement | Metal | Vulkan | Direct3D 12 |
 | --- | --- | --- | --- |
-| Platform | macOS 26 and Metal 4, with no older fallback | Vulkan 1.4 with the descriptor heap, swapchain maintenance, and shader atomic float extensions, and compute subgroups of 1 to 128 lanes | Feature level 12.2, Shader Model 6.9, enhanced barriers, root signature 1.2, native 16-bit operations, 64-bit atomics, the Agility SDK 1.619.5, DXC 1.9.2607, and DirectStorage |
+| Platform | macOS 27 and Metal 4, with shaders in MSL 4.1 and no older fallback | Vulkan 1.4 with the descriptor heap, swapchain maintenance, and shader atomic float extensions, and compute subgroups of 1 to 128 lanes | Feature level 12.2, Shader Model 6.9, enhanced barriers, root signature 1.2, native 16-bit operations, 64-bit atomics, the Agility SDK 1.619.5, DXC 1.9.2607, and DirectStorage |
 | Frames in flight by default | 3 | 2 | 2 |
 | Swapchain images | 2 or 3 | Up to 8 | 2 to 8 |
 | Presented time | Reported | Not reported | Not reported |
@@ -106,17 +185,17 @@ complete, cancelled, or failed.
 | --- | --- | --- | --- |
 | Validation, GPU validation, API dump | Not used | Validation layers, GPU-assisted validation, API dump layer | Debug layer and GPU-based validation; no dump |
 | Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Labels on uploads |
-| Ray tracing | Queue creation checks device support | Requires the ray tracing extensions | Guaranteed by the feature level |
+| Ray tracing | Supported when the GPU supports it | Not supported; contexts report no support | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
 | Sparse resources | No effect on any backend | | |
 
 | Gap | Backend |
 | --- | --- |
-| Frame capture, shader binding tables, pipeline statistics counters | Metal |
-| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets | Vulkan |
+| Frame capture, pipeline statistics counters | Metal |
+| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets, ray tracing | Vulkan |
 | The loader-context contract, so Linux builds fail until it lands | Vulkan |
-| The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views | Direct3D 12 |
+| The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views; ray tracing | Direct3D 12 |
 | Destroying images, buffers, and shaders | All |
 
 ## Limits
@@ -130,6 +209,9 @@ complete, cancelled, or failed.
 | Push constants | Within the pipeline's declared ranges, at offsets and sizes that are multiples of 4 on Vulkan and Direct3D 12 |
 | Metal argument table buffer slots | 31; vertex buffers below slot 15 |
 | Direct3D 12 constant buffer view | 64 KiB, 256-byte aligned |
+| Instance custom index, hit group offset, and hit record | Below 2^24 |
+| Instance mask | 8 bits |
+| Instances per top-level structure | The count given at creation |
 
 ## Errors
 
@@ -139,3 +221,4 @@ complete, cancelled, or failed.
 | Shader creation | GLSL compilation failed, or SPIR-V wasn't aligned to four bytes. |
 | Texture transfer | Unsupported source, format, subresource, layout, or handle; a missing transfer-source use; an allocation or mapping failure. |
 | Resource I/O | An empty batch; unsupported compression; an invalid path, handle, range, state, or layout; queue creation, file open, or execution failure; cancellation. |
+| Ray tracing | A structure created without ray tracing support; a bottom-level structure without geometry, or a top-level structure for zero instances; geometry whose buffers lack the acceleration structure build use, whose ranges pass a buffer's end, or whose offsets, stride, or index format break the triangle geometry rules; a destroyed handle; a second bottom-level build of a structure, unless the recording that held the first was dropped before it executed; a top-level build outside a frame, with more instances than the structure holds, or with an instance whose bottom-level structure has no recorded build; a custom index or hit group offset of 2^24 or more; a ray tracing pipeline without a ray generation shader or a hit group, with a shader of another stage, or with a closest-hit shader that declares a set the ray generation shader doesn't declare at the same position; a shader binding table write that names a hit group the pipeline doesn't have; a trace with a table that was never written, or that was written for another pipeline than the one bound. |

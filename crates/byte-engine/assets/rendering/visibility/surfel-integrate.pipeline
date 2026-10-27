@@ -1,0 +1,1 @@
+{"name":"Surfel Integrate","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-integrate.besl"}}

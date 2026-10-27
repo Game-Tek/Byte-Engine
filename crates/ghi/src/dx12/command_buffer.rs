@@ -9,7 +9,6 @@ use crate::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
-	rt::{BindingTables, BottomLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuild},
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -162,23 +161,16 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.device.unordered_group = None;
 	}
 
-	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
-		self.device.record_top_level_acceleration_structure_build(
-			self.command_buffer,
-			_acceleration_structure_build,
-			self.sequence_index(),
-		);
+	fn build_top_level_acceleration_structure(
+		&mut self,
+		_: crate::TopLevelAccelerationStructureHandle,
+		_: &[crate::rt::Instance],
+	) {
+		crate::rt::unsupported("DX12")
 	}
 
-	fn build_bottom_level_acceleration_structures(
-		&mut self,
-		_acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
-	) {
-		self.device.record_bottom_level_acceleration_structure_builds(
-			self.command_buffer,
-			_acceleration_structure_builds,
-			self.sequence_index(),
-		);
+	fn build_bottom_level_acceleration_structures(&mut self, _: &[crate::BottomLevelAccelerationStructureHandle]) {
+		crate::rt::unsupported("DX12")
 	}
 
 	fn start_render_pass(
@@ -500,16 +492,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 }
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32) {
-		self.refresh_descriptor_tables_if_dirty();
-		self.device.trace_rays_native(
-			self.command_buffer,
-			self.bound_pipeline,
-			binding_tables,
-			x,
-			y,
-			z,
-			self.sequence_index(),
-		);
+	fn trace_rays(&mut self, _: crate::ShaderBindingTableHandle, _: Extent) {
+		crate::rt::unsupported("DX12")
 	}
 }

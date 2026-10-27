@@ -7,79 +7,7 @@ fn subresource_layers(aspect_mask: vk::ImageAspectFlags, mip_level: u32, layer_c
 		.layer_count(layer_count)
 }
 
-/// Geometry and instance data read by an acceleration-structure build, per the vkCmdBuildAccelerationStructuresKHR rules.
-fn acceleration_structure_input(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::SHADER_READ)
-}
-
-fn acceleration_structure_scratch(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(
-		handle,
-		vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-	)
-}
-
-fn acceleration_structure_destination(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-}
-
-/// A bottom-level structure that a top-level build reads through its instances.
-fn acceleration_structure_source(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
-}
-
-fn acceleration_structure_build_access(handle: Handles, access: vk::AccessFlags2) -> VulkanConsumption {
-	vulkan_consumption(handle, vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR, access)
-}
-
 impl CommandBufferRecording<'_> {
-	fn buffer_descriptor_address(&self, descriptor: &crate::BufferDescriptor) -> vk::DeviceAddress {
-		self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer))
-			.device_address
-			+ descriptor.offset as u64
-	}
-
-	fn acceleration_structure_build_info(
-		&self,
-		ty: vk::AccelerationStructureTypeKHR,
-		destination: &AccelerationStructure,
-		scratch_buffer: &crate::BufferDescriptor,
-	) -> vk::AccelerationStructureBuildGeometryInfoKHR<'static> {
-		vk::AccelerationStructureBuildGeometryInfoKHR::default()
-			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-			.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-			.ty(ty)
-			.dst_acceleration_structure(destination.acceleration_structure)
-			.scratch_data(vk::DeviceOrHostAddressKHR {
-				device_address: self.buffer_descriptor_address(scratch_buffer),
-			})
-	}
-
-	fn record_acceleration_structure_builds(
-		&self,
-		builds: &[(
-			vk::AccelerationStructureBuildGeometryInfoKHR,
-			Vec<vk::AccelerationStructureGeometryKHR>,
-			Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
-		)],
-	) {
-		let infos = builds
-			.iter()
-			.map(|(info, geometries, _)| info.geometries(geometries))
-			.collect::<Vec<_>>();
-		let build_range_infos = builds
-			.iter()
-			.map(|(_, _, ranges)| Some(ranges.as_slice()))
-			.collect::<Vec<_>>();
-		unsafe {
-			self.device.acceleration_structure.cmd_build_acceleration_structures(
-				self.get_command_buffer().command_buffer,
-				&infos,
-				&build_range_infos,
-			)
-		}
-	}
-
 	fn record_buffer_to_image_copy(&self, buffer: vk::Buffer, image: vk::Image, region: vk::BufferImageCopy2) {
 		let regions = [region];
 		let copy = vk::CopyBufferToImageInfo2::default()
@@ -191,126 +119,16 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self
 	}
 
-	fn build_top_level_acceleration_structure(&mut self, build: &crate::rt::TopLevelAccelerationStructureBuild) {
-		let crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
-			instances_buffer,
-			instance_count,
-		} = build.description;
-		let top_level_handle =
-			Handles::TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle(build.acceleration_structure.0));
-		// Instances reference bottom-level structures by address, so wait for every build still pending a write.
-		let pending_bottom_level_builds = self
-			.states
-			.iter()
-			.filter(|(handle, state)| {
-				matches!(handle, Handles::BottomLevelAccelerationStructure(_))
-					&& TransitionState::access_includes_write(state.access)
-			})
-			.map(|(handle, _)| *handle)
-			.collect::<SmallVec<[Handles; 16]>>();
-		let consumptions = [
-			acceleration_structure_input(self.buffer_resource(instances_buffer)),
-			acceleration_structure_scratch(self.buffer_resource(build.scratch_buffer.buffer)),
-			acceleration_structure_destination(top_level_handle),
-		]
-		.into_iter()
-		.chain(pending_bottom_level_builds.into_iter().map(acceleration_structure_source));
-		self.vulkan_consume_resources(consumptions).apply(self);
-
-		let geometry = vk::AccelerationStructureGeometryKHR::default()
-			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-			.geometry(vk::AccelerationStructureGeometryDataKHR {
-				instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-					.array_of_pointers(false)
-					.data(vk::DeviceOrHostAddressConstKHR {
-						device_address: self.device.get_buffer_address(instances_buffer),
-					}),
-			})
-			.flags(vk::GeometryFlagsKHR::OPAQUE);
-		let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(instance_count);
-		let info = self.acceleration_structure_build_info(
-			vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-			&self.device.acceleration_structures[build.acceleration_structure.0 as usize],
-			&build.scratch_buffer,
-		);
-		self.record_acceleration_structure_builds(&[(info, vec![geometry], vec![range])]);
+	fn build_top_level_acceleration_structure(
+		&mut self,
+		_: crate::TopLevelAccelerationStructureHandle,
+		_: &[crate::rt::Instance],
+	) {
+		crate::rt::unsupported("Vulkan")
 	}
 
-	fn build_bottom_level_acceleration_structures(&mut self, builds: &[crate::rt::BottomLevelAccelerationStructureBuild]) {
-		if builds.is_empty() {
-			return;
-		}
-
-		let mut consumptions = SmallVec::<[VulkanConsumption; 16]>::new();
-		for build in builds {
-			consumptions.push(acceleration_structure_destination(Handles::BottomLevelAccelerationStructure(
-				BottomLevelAccelerationStructureHandle(build.acceleration_structure.0),
-			)));
-			consumptions.push(acceleration_structure_scratch(
-				self.buffer_resource(build.scratch_buffer.buffer),
-			));
-			if let crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-				vertex_buffer,
-				index_buffer,
-				..
-			} = &build.description
-			{
-				for input in [vertex_buffer.buffer_offset.buffer, index_buffer.buffer_offset.buffer] {
-					consumptions.push(acceleration_structure_input(self.buffer_resource(input)));
-				}
-			}
-		}
-		self.vulkan_consume_resources(consumptions).apply(self);
-
-		let build_infos = builds
-			.iter()
-			.map(|build| {
-				let (geometries, ranges) = match &build.description {
-					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => (Vec::new(), Vec::new()),
-					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-						vertex_buffer,
-						index_buffer,
-						vertex_position_encoding,
-						index_format,
-						triangle_count,
-						vertex_count,
-					} => {
-						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-							.vertex_data(vk::DeviceOrHostAddressConstKHR {
-								device_address: self.buffer_descriptor_address(&vertex_buffer.buffer_offset),
-							})
-							.index_data(vk::DeviceOrHostAddressConstKHR {
-								device_address: self.buffer_descriptor_address(&index_buffer.buffer_offset),
-							})
-							.max_vertex(vertex_count - 1)
-							.vertex_format(match vertex_position_encoding {
-								crate::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
-								_ => panic!("Invalid vertex position encoding"),
-							})
-							.index_type(match index_format {
-								crate::DataTypes::U8 => vk::IndexType::UINT8_EXT,
-								crate::DataTypes::U16 => vk::IndexType::UINT16,
-								crate::DataTypes::U32 => vk::IndexType::UINT32,
-								_ => panic!("Invalid index format"),
-							})
-							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
-						let geometry = vk::AccelerationStructureGeometryKHR::default()
-							.flags(vk::GeometryFlagsKHR::OPAQUE)
-							.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-							.geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
-						let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(*triangle_count);
-						(vec![geometry], vec![range])
-					}
-				};
-				let info = self.acceleration_structure_build_info(
-					vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-					&self.device.acceleration_structures[build.acceleration_structure.0 as usize],
-					&build.scratch_buffer,
-				);
-				(info, geometries, ranges)
-			})
-			.collect::<Vec<_>>();
-		self.record_acceleration_structure_builds(&build_infos);
+	fn build_bottom_level_acceleration_structures(&mut self, _: &[crate::BottomLevelAccelerationStructureHandle]) {
+		crate::rt::unsupported("Vulkan")
 	}
 
 	fn blit_image(

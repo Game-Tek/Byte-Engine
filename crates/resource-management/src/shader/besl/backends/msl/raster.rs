@@ -91,7 +91,7 @@ impl Generator {
 	}
 
 	/// Emits every helper function's prototype, then every body, so helpers can call each other in any order.
-	fn emit_functions(&mut self, string: &mut String, functions: &[&besl::NodeReference]) {
+	pub(crate) fn emit_functions(&mut self, string: &mut String, functions: &[&besl::NodeReference]) {
 		for node in functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}

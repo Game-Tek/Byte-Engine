@@ -7,7 +7,8 @@
     { "$ref": "#/$defs/raster" },
     { "$ref": "#/$defs/compute" },
     { "$ref": "#/$defs/task" },
-    { "$ref": "#/$defs/mesh" }
+    { "$ref": "#/$defs/mesh" },
+    { "$ref": "#/$defs/rayTracing" }
   ],
   "$defs": {
     "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
@@ -42,6 +43,12 @@
     "raster": {
       "type": "object",
       "properties": { "$schema": { "type": "string" }, "stage": { "enum": ["Vertex", "Fragment"] }, "layouts": { "$ref": "#/$defs/layouts" } },
+      "required": ["stage"],
+      "additionalProperties": false
+    },
+    "rayTracing": {
+      "type": "object",
+      "properties": { "$schema": { "type": "string" }, "stage": { "enum": ["RayGeneration", "ClosestHit"] }, "layouts": { "$ref": "#/$defs/layouts" } },
       "required": ["stage"],
       "additionalProperties": false
     },

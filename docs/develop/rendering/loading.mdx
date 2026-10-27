@@ -95,7 +95,11 @@ already happened once or that this design exists to avoid.
   a resource with several parents loads once. To load a changed resource again,
   call `LoaderClient::reload`. The resources it depends on stay resident.
 - **The loader owns all GPU work of loading.** Lanes do CPU work and file I/O
-  only. They never touch a context.
+  only. They never touch a context. The one exception is the bottom-level
+  acceleration structure that ray tracing needs for each mesh: the copy queue
+  can't build it, so the visibility pipeline builds it on the render context,
+  a frame's budget of triangles at a time, once a frame draws the mesh.
+  `todo.md` tracks moving these builds to the loading timeline.
 - **Lanes only append to shared buffers.** A lane writes only ranges that no
   frame reads yet, and publishes a range only after its copy finished.
 - **Samplers belong to pipelines.** A pipeline creates its few samplers at setup.

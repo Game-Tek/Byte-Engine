@@ -3,6 +3,20 @@ use crate::parser;
 
 const INTERFACE_SYMBOL_PREFIX: &str = "_besl_interface_";
 const OUTPUT_SYMBOL_PREFIX: &str = "_besl_output_";
+const RAY_TRACING_ENTRY_DOCS_PATH: &str = "reference/besl/interface#ray-tracing-entry-points";
+
+/// The `StageInput` fields of ray tracing stages. Each reads the zero-argument intrinsic of the same name.
+const RAY_TRACING_STAGE_INPUTS: [&str; 9] = [
+	"launch_index",
+	"launch_size",
+	"hit_distance",
+	"hit_custom_index",
+	"hit_geometry_index",
+	"hit_primitive_index",
+	"hit_barycentrics",
+	"ray_origin",
+	"ray_direction",
+];
 
 /// The `EntryContext` struct keeps contextual source names available while structural entry syntax is erased.
 struct EntryContext<'tree, 'source> {
@@ -37,25 +51,55 @@ pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeRefere
 		)
 	});
 	let has_structural_return = matches!(return_type, parser::TypeName::Record { .. });
+	let payload = payload_parameter(params, return_type);
 	if !has_structural_parameter && !has_structural_return {
 		return Ok(Vec::new());
 	}
 
 	let mut declarations = Vec::new();
-	let mut context = normalize_parameters(params, root, &mut declarations)?;
-	context.return_fields = normalize_return_type(return_type, root, &mut declarations)?;
+	let mut context = normalize_parameters(params, payload, root, &mut declarations)?;
+	// A closest hit returns its payload as a plain value, which needs no output declarations.
+	if payload.is_none() {
+		context.return_fields = normalize_return_type(return_type, root, &mut declarations)?;
+	}
 
 	let old_statements = std::mem::take(statements);
 	*statements = rewrite_statements(old_statements, &context, true)?;
+	// A closest hit keeps its payload parameter and return type: they are its native signature on every backend.
+	let payload = payload.map(|index| params.remove(index));
 	params.clear();
-	*return_type = parser::TypeName::Named("void");
+	params.extend(payload);
+	if params.is_empty() {
+		*return_type = parser::TypeName::Named("void");
+	}
 
 	Ok(declarations)
+}
+
+/// Returns the index of the payload parameter when `main` is a closest hit: its only parameter with a named type other
+/// than `StageInput` comes last, and `main` returns that type. Every other `main` has no payload.
+fn payload_parameter(params: &[parser::Node<'_>], return_type: &parser::TypeName<'_>) -> Option<usize> {
+	let mut values = params
+		.iter()
+		.enumerate()
+		.filter_map(|(index, parameter)| match parameter.node() {
+			parser::Nodes::Parameter {
+				r#type: parser::TypeName::Named(r#type),
+				..
+			} if *r#type != "StageInput" => Some((index, *r#type)),
+			_ => None,
+		});
+	let (index, payload_type) = values.next()?;
+	let is_payload = values.next().is_none()
+		&& index + 1 == params.len()
+		&& matches!(return_type, parser::TypeName::Named(returned) if *returned == payload_type);
+	is_payload.then_some(index)
 }
 
 /// Converts structural parameters into flat input declarations and their rewrite lookup tables.
 fn normalize_parameters<'tree, 'source>(
 	params: &'tree [parser::Node<'source>],
+	payload: Option<usize>,
 	root: &NodeReference,
 	declarations: &mut Vec<Node>,
 ) -> Result<EntryContext<'tree, 'source>, LexError> {
@@ -68,6 +112,10 @@ fn normalize_parameters<'tree, 'source>(
 		let parser::Nodes::Parameter { name, r#type } = parameter.node() else {
 			return Err(entry_error("Entry-point parameters must be named values"));
 		};
+		// The payload stays a parameter. Lexing checks its type.
+		if payload == Some(index) {
+			continue;
+		}
 		if params[..index].iter().any(
 			|previous| matches!(previous.node(), parser::Nodes::Parameter { name: previous_name, .. } if previous_name == name),
 		) {
@@ -78,6 +126,15 @@ fn normalize_parameters<'tree, 'source>(
 				if context.stage_input_parameter.replace(*name).is_some() {
 					return Err(entry_error("main can declare only one StageInput parameter"));
 				}
+			}
+			parser::TypeName::Record {
+				role: parser::RecordRole::Interface,
+				..
+			} if payload.is_some() => {
+				return Err(LexError::invalid(format!(
+					"Closest-hit main declares interface parameter `{name}`. The most likely cause is a closest-hit shader written like a raster stage, but a closest hit reads what it hit from `StageInput`. Remove `{name}`, and read members such as `hit_barycentrics` from a `StageInput` parameter. See {docs}.",
+					docs = crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH)
+				)));
 			}
 			parser::TypeName::Record {
 				role: parser::RecordRole::Interface,
@@ -370,7 +427,10 @@ fn contextual_access<'a>(
 			"thread_idx" => Ok(Some(parser::Node::call("thread_idx", Vec::new()))),
 			"threadgroup_position" => Ok(Some(parser::Node::call("threadgroup_position", Vec::new()))),
 			"subgroup_lane_index" => Ok(Some(parser::Node::call("subgroup_lane_index", Vec::new()))),
-			field => Err(entry_error(&format!("StageInput does not define `{field}`"))),
+			field => match RAY_TRACING_STAGE_INPUTS.iter().find(|input| **input == field) {
+				Some(input) => Ok(Some(parser::Node::call(input, Vec::new()))),
+				None => Err(entry_error(&format!("StageInput does not define `{field}`"))),
+			},
 		};
 	}
 	let Some((interface_parameter, fields)) = &context.interface_parameter else {

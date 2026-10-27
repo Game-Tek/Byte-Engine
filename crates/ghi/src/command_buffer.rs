@@ -4,8 +4,8 @@ use utils::Extent;
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
 	BufferImageCopyDescriptor, ClearValue, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle,
-	DynamicImageHandle, FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle,
-	TextureCopyHandle, TextureTransferError, rt,
+	DynamicImageHandle, FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, ShaderBindingTableHandle,
+	SynchronizerHandle, TextureCopyHandle, TextureTransferError, rt,
 };
 
 /// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
@@ -80,12 +80,23 @@ pub trait CommandBufferRecording: Sized {
 	/// Returns the frame key that scoped this command-buffer recording.
 	fn frame_key(&self) -> FrameKey;
 
-	/// Records a build for one top-level acceleration structure.
-	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &rt::TopLevelAccelerationStructureBuild);
-	/// Records builds for one or more bottom-level acceleration structures.
-	fn build_bottom_level_acceleration_structures(
+	/// Records the builds of bottom-level acceleration structures, which may run at the same time.
+	///
+	/// Each structure is built once, from the geometry it was created with. A build takes effect when this recording
+	/// executes; when the recording is dropped instead, the structure stays unbuilt and you can build it again. The GHI
+	/// provides the scratch memory. Next, place the structures in a frame's top-level structure with
+	/// [`Self::build_top_level_acceleration_structure`].
+	fn build_bottom_level_acceleration_structures(&mut self, structures: &[crate::BottomLevelAccelerationStructureHandle]);
+
+	/// Records the build of this frame's copy of a top-level acceleration structure from `instances`.
+	///
+	/// Only a frame's recordings build top-level structures. Record the builds of the bottom-level structures the
+	/// instances place before this one, in this recording or an earlier one. The descriptor sets this frame binds read
+	/// the copy this build writes, and the copy keeps it until a later frame of the same sequence builds it again.
+	fn build_top_level_acceleration_structure(
 		&mut self,
-		acceleration_structure_builds: &[rt::BottomLevelAccelerationStructureBuild],
+		structure: crate::TopLevelAccelerationStructureHandle,
+		instances: &[rt::Instance],
 	);
 
 	/// Starts a render pass on the GPU.
@@ -161,7 +172,10 @@ pub trait CommandBufferRecording: Sized {
 pub trait CommonCommandBufferMode {
 	/// Binds a compute pipeline so subsequent commands can dispatch compute work.
 	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode;
-	/// Binds a ray-tracing pipeline so subsequent commands can trace rays.
+	/// Binds a ray tracing pipeline so subsequent commands can trace rays with it.
+	///
+	/// Next, bind the descriptor sets its ray generation shader declares, then call
+	/// [`BoundRayTracingPipelineMode::trace_rays`].
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
 	/// Starts a named GPU debug region.
@@ -276,8 +290,12 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: impl Into<IndirectDispatchBuffer<N>>, entry_index: usize);
 }
 
-/// The `BoundRayTracingPipelineMode` trait provides ray dispatch for a bound ray-tracing pipeline.
+/// The `BoundRayTracingPipelineMode` trait launches the ray generation shader of a bound ray tracing pipeline.
 pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
-	/// Traces rays using the currently bound ray-tracing pipeline.
-	fn trace_rays(&mut self, binding_tables: rt::BindingTables, x: u32, y: u32, z: u32);
+	/// Runs the bound pipeline's ray generation shader once for each point of `extent`, with `table` mapping the
+	/// records of the hits it finds to the pipeline's hit groups.
+	///
+	/// No invocation runs beyond `extent`, and an extent with a zero dimension runs none. `table` must have been
+	/// written for the bound pipeline with [`crate::context::ContextCreate::write_shader_binding_table`].
+	fn trace_rays(&mut self, table: ShaderBindingTableHandle, extent: Extent);
 }

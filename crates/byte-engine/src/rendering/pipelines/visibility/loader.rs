@@ -30,7 +30,7 @@ use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
 	spawn as spawn_lanes,
 };
-use crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest;
+use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest};
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
 use crate::rendering::resource_loading::load_texture;
 use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
@@ -96,6 +96,8 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) texture_slots: Vec<Option<u32>>,
 	/// The material's dynamic parameters with their default values, in the order its program reads them.
 	pub(crate) parameters: Arc<[DynamicParameter]>,
+	/// The hit group rays that hit the material run, when its bake built a closest-hit shader.
+	pub(crate) hit_group: Option<HitGroupShader>,
 }
 
 /// The `DynamicParameter` struct is one value parameter of a material that the application can change at runtime.
@@ -165,6 +167,10 @@ pub(crate) struct VisibilityLoader {
 	/// Requests each material's specialized material-evaluation pipeline.
 	pipeline_manager: PipelineManagerClient,
 	geometry: Mutex<GeometryBuffers>,
+	/// Whether meshes keep flat triangle lists for ray tracing; see [`GeometryHandles::flat_triangle_indices`].
+	flat_triangles: bool,
+	/// Whether a material without a closest-hit shader was reported while the pipeline traces rays.
+	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
 	texture_slots: Mutex<HashMap<String, u32>>,
 }
@@ -405,6 +411,8 @@ pub(crate) fn spawn(
 		resource_manager,
 		pipeline_manager: pipeline_manager.clone(),
 		geometry: Mutex::new(GeometryBuffers::import(geometry, render, loader)),
+		flat_triangles: geometry.flat_triangle_indices.is_some(),
+		reported_missing_hit_shader: std::sync::atomic::AtomicBool::new(false),
 		material_slots: Mutex::new(HashMap::default()),
 		texture_slots: Mutex::new(HashMap::default()),
 	};
@@ -510,13 +518,13 @@ impl VisibilityLoader {
 						mesh.material(primitive).id().as_ref().to_string(),
 					));
 				}
-				PreparedMesh::resource(resource, staging).await
+				PreparedMesh::resource(resource, staging, self.flat_triangles).await
 			}
 			MeshSource::Generated(generator) => {
 				lane.request(VisibilityLoadRequest::Material(
 					generator.material().unwrap_or(GENERATED_MESH_MATERIAL).to_string(),
 				));
-				PreparedMesh::generated(generator.as_ref(), staging).await
+				PreparedMesh::generated(generator.as_ref(), staging, self.flat_triangles).await
 			}
 		}
 		.ok_or_else(|| {
@@ -594,6 +602,7 @@ impl VisibilityLoader {
 			})
 			.collect();
 		let specialization = specialization_entries(alpha_mode, &variant.variables);
+		let variable_specialization = variable_specialization_entries(&variant.variables).collect::<Vec<_>>();
 		let parameters = dynamic_parameters(&variant.variables);
 		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
@@ -601,11 +610,34 @@ impl VisibilityLoader {
 				"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
 			)));
 		}
-		let Some(shader_id) = material.shaders().first().map(|shader| shader.id().to_string()) else {
+		// A material bakes its evaluation shader, then a closest-hit shader when the project traces rays.
+		let shader_of = |stage| {
+			material
+				.shaders()
+				.iter()
+				.find(|shader| shader.resource().stage == stage)
+				.map(|shader| shader.id().to_string())
+		};
+		let Some(shader_id) = shader_of(resource_management::types::ShaderTypes::Compute) else {
 			return Err(LoadError(format!(
 				"Visibility material shader is missing for {id}. The most likely cause is that the material was baked without a compute shader."
 			)));
 		};
+		let hit_group = shader_of(resource_management::types::ShaderTypes::ClosestHit).map(|shader_id| HitGroupShader {
+			shader_id,
+			specialization: variable_specialization,
+		});
+		if self.flat_triangles
+			&& hit_group.is_none()
+			&& !self
+				.reported_missing_hit_shader
+				.swap(true, std::sync::atomic::Ordering::Relaxed)
+		{
+			log::warn!(
+				"Material {id} has no closest-hit shader, so the rays surfel GI traces see it as a black occluder. The most likely cause is that its resources were baked before surfel GI was built in. Bake them again with `render.surfel-gi.enabled` set to `true` in `config.json`. See {}.",
+				crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
+			);
+		}
 		for texture in texture_ids.iter().flatten() {
 			lane.request(VisibilityLoadRequest::Texture(texture.clone()));
 		}
@@ -614,13 +646,14 @@ impl VisibilityLoader {
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
 			))
 		})?;
-		// Material evaluation pushes four u32s: the evaluation index, the GTAO and SSGI flags, and the debug views.
+		// Material evaluation pushes five u32s: the evaluation index, the GTAO, SSGI, and indirect diffuse flags, and the
+		// debug views.
 		let pipeline = self
 			.pipeline_manager
 			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
 				shader_id,
 				specialization,
-				vec![ghi::pipelines::PushConstantRange::new(0, 16)],
+				vec![ghi::pipelines::PushConstantRange::new(0, 20)],
 			));
 		Ok(VisibilityResident::Material(ResidentMaterial {
 			id,
@@ -631,6 +664,7 @@ impl VisibilityLoader {
 			coverage: material.coverage,
 			texture_slots,
 			parameters,
+			hit_group,
 		}))
 	}
 
@@ -824,7 +858,19 @@ fn specialization_entries(
 	use ghi::pipelines::SpecializationMapEntry;
 
 	let transparent = SpecializationMapEntry::new(TRANSPARENT_SPECIALIZATION_ID, matches!(alpha_mode, AlphaMode::Blend));
-	let variables = (0u32..).zip(variables).filter_map(|(index, variable)| {
+	std::iter::once(transparent)
+		.chain(variable_specialization_entries(variables))
+		.collect()
+}
+
+/// Returns the specialization constants of a variant's static values, at the IDs of their variables, which material
+/// evaluation and closest-hit shaders both declare.
+fn variable_specialization_entries(
+	variables: &[resource_management::resources::material::VariantVariable],
+) -> impl Iterator<Item = ghi::pipelines::SpecializationMapEntry> + '_ {
+	use ghi::pipelines::SpecializationMapEntry;
+
+	(0u32..).zip(variables).filter_map(|(index, variable)| {
 		let id = material_variable_specialization_id(index);
 		if variable.dynamic {
 			return None;
@@ -835,8 +881,7 @@ fn specialization_entries(
 			Value::Vector4(value) => SpecializationMapEntry::new(id, ghi::pod::Vec4f::from(*value)).into(),
 			Value::Image(_) => None,
 		}
-	});
-	std::iter::once(transparent).chain(variables).collect()
+	})
 }
 
 /// Returns a variant's dynamic parameters with the values it gives them, in declaration order.

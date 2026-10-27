@@ -29,6 +29,9 @@ pub mod hlsl;
 pub mod msl;
 pub mod platform;
 pub mod spirv;
+mod stage_rules;
+
+pub(crate) use stage_rules::validate_stage;
 
 #[cfg(test)]
 const RUNTIME_ARRAY_FRAGMENT: &str = r#"
@@ -353,6 +356,21 @@ const SUBGROUP_INTRINSICS: [&str; 9] = [
 	"subgroup_shuffle_xor_f32",
 ];
 
+/// The BESL calls that read a ray tracing stage's own values: the launch point of a ray generation shader, the hit a
+/// closest-hit shader shades, and `invoke`, which a ray generation shader calls through its shader binding table.
+const RAY_TRACING_STAGE_INTRINSICS: [&str; 10] = [
+	"launch_index",
+	"launch_size",
+	"hit_distance",
+	"hit_custom_index",
+	"hit_geometry_index",
+	"hit_primitive_index",
+	"hit_barycentrics",
+	"ray_origin",
+	"ray_direction",
+	"invoke",
+];
+
 /// The `IntrinsicRequirements` struct records which intrinsics a shader calls, so each backend declares only the
 /// helpers, extensions, and builtins the shader needs. Build it with [`intrinsic_requirements`].
 #[derive(Default)]
@@ -368,6 +386,9 @@ pub(crate) struct IntrinsicRequirements {
 	pub(crate) uses_downsample_min: bool,
 	pub(crate) uses_downsample_max: bool,
 	pub(crate) uses_render_target_array_index: bool,
+	pub(crate) uses_intersect: bool,
+	pub(crate) uses_trace_occlusion: bool,
+	pub(crate) uses_invoke: bool,
 }
 
 /// Records the intrinsics that the code of every node in `order` calls, walking each body once.
@@ -395,6 +416,9 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 					"downsample_min" => requirements.uses_downsample_min = true,
 					"downsample_max" => requirements.uses_downsample_max = true,
 					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
+					"intersect" => requirements.uses_intersect = true,
+					"trace_occlusion" => requirements.uses_trace_occlusion = true,
+					"invoke" => requirements.uses_invoke = true,
 					_ => {}
 				}
 			}

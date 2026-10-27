@@ -24,51 +24,6 @@ fn chain_tails<H: HandleLike>(collection: &[H::Item]) -> Vec<H> {
 }
 
 impl Context {
-	/// Creates an acceleration structure sized for `build_info` and returns its index.
-	fn create_acceleration_structure(
-		&mut self,
-		name: Option<&str>,
-		build_info: &vk::AccelerationStructureBuildGeometryInfoKHR,
-		primitive_count: u32,
-	) -> u64 {
-		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-		unsafe {
-			self.acceleration_structure.get_acceleration_structure_build_sizes(
-				vk::AccelerationStructureBuildTypeKHR::DEVICE,
-				build_info,
-				Some(&[primitive_count]),
-				&mut size_info,
-			);
-		}
-
-		let (buffer, ..) = self.create_dedicated_buffer(
-			None,
-			size_info.acceleration_structure_size as usize,
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			crate::DeviceAccesses::GpuWrite,
-		);
-
-		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
-			.buffer(buffer.resource)
-			.size(size_info.acceleration_structure_size)
-			.offset(0)
-			.ty(build_info.ty);
-		let acceleration_structure = unsafe {
-			self.acceleration_structure
-				.create_acceleration_structure(&create_info, None)
-				.expect("No acceleration structure")
-		};
-		self.set_name(acceleration_structure, name);
-
-		self.acceleration_structures.push(AccelerationStructure {
-			acceleration_structure,
-			buffer: buffer.resource,
-		});
-		(self.acceleration_structures.len() - 1) as u64
-	}
-}
-
-impl Context {
 	/// Queues the upload of a new dynamic-buffer copy's zeroed staging bytes.
 	///
 	/// A frame uploads a copy only when it writes it, so without this a copy no frame wrote yet would expose
@@ -93,6 +48,18 @@ impl crate::context::Context for Context {
 
 	fn supports_bc_texture_compression(&self) -> bool {
 		true
+	}
+
+	fn supports_ray_tracing(&self) -> bool {
+		// The Vulkan backend has no port of the acceleration structure API yet.
+		false
+	}
+
+	fn bottom_level_acceleration_structure_size(
+		&self,
+		_: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+	) -> usize {
+		crate::rt::unsupported("Vulkan")
 	}
 
 	fn load_pipeline_cache(&self, data: Vec<u8>) {
@@ -279,60 +246,6 @@ impl crate::context::Context for Context {
 				key.descriptor_sets.iter().any(|(handle, ..)| changed_sets.contains(handle))
 			});
 		}
-	}
-
-	fn write_instance(
-		&mut self,
-		instances_buffer: graphics_hardware_interface::BaseBufferHandle,
-		instance_index: usize,
-		transform: [[f32; 4]; 3],
-		custom_index: u16,
-		mask: u8,
-		sbt_record_offset: usize,
-		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) {
-		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
-		let address = unsafe {
-			self.device
-				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
-		};
-
-		let instance = vk::AccelerationStructureInstanceKHR {
-			transform: vk::TransformMatrixKHR {
-				matrix: std::array::from_fn(|i| transform[i / 4][i % 4]),
-			},
-			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
-			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-				sbt_record_offset as u32,
-				vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8,
-			),
-			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
-		};
-
-		let instance_buffer = self.buffers.get_single(instances_buffer).unwrap();
-		let instances = unsafe {
-			std::slice::from_raw_parts_mut(
-				instance_buffer.pointer.0 as *mut vk::AccelerationStructureInstanceKHR,
-				instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-			)
-		};
-		instances[instance_index] = instance;
-	}
-
-	fn write_sbt_entry(
-		&mut self,
-		sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		sbt_record_offset: usize,
-		pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		shader_handle: graphics_hardware_interface::ShaderHandle,
-	) {
-		let shader_group_handle = &self.pipelines[pipeline_handle.0 as usize].shader_handles[&shader_handle];
-		let buffer = self
-			.buffers
-			.resource(self.buffers.get_single(sbt_buffer_handle).unwrap().staging.unwrap());
-
-		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer.0, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
-			.copy_from_slice(shader_group_handle);
 	}
 
 	fn bind_to_window(
@@ -684,7 +597,7 @@ impl crate::context::ContextCreate for Context {
 			&self.shaders,
 			builder,
 		);
-		self.add_pipeline(pipeline, layout, HashMap::default())
+		self.add_pipeline(pipeline, layout)
 	}
 
 	fn create_compute_pipeline(
@@ -698,87 +611,27 @@ impl crate::context::ContextCreate for Context {
 			&self.shaders,
 			builder,
 		);
-		self.add_pipeline(pipeline.pipeline, pipeline.layout, HashMap::default())
+		self.add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
-		builder: crate::pipelines::ray_tracing::Builder,
+		_: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let shaders = builder.shaders;
-		let pipeline_layout = pipelines::shader_pipeline_layout(
-			&self.shaders,
-			shaders,
-			builder.push_constant_ranges,
-			&self.device.descriptor_heap_properties,
-		);
-		let groups = shaders
-			.iter()
-			.enumerate()
-			.filter_map(|(i, shader)| {
-				use vk::RayTracingShaderGroupTypeKHR as Group;
+		crate::rt::unsupported("Vulkan")
+	}
 
-				use crate::ShaderTypes;
+	fn create_shader_binding_table(&mut self, _: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
+		crate::rt::unsupported("Vulkan")
+	}
 
-				let (i, unused) = (i as u32, vk::SHADER_UNUSED_KHR);
-				let group = vk::RayTracingShaderGroupCreateInfoKHR::default()
-					.general_shader(unused)
-					.closest_hit_shader(unused)
-					.any_hit_shader(unused)
-					.intersection_shader(unused);
-				Some(match shader.stage {
-					ShaderTypes::RayGen | ShaderTypes::Miss | ShaderTypes::Callable => {
-						group.ty(Group::GENERAL).general_shader(i)
-					}
-					ShaderTypes::ClosestHit => group.ty(Group::TRIANGLES_HIT_GROUP).closest_hit_shader(i),
-					ShaderTypes::AnyHit => group.ty(Group::TRIANGLES_HIT_GROUP).any_hit_shader(i),
-					ShaderTypes::Intersection => group.ty(Group::PROCEDURAL_HIT_GROUP).intersection_shader(i),
-					_ => return None,
-				})
-			})
-			.collect::<SmallVec<[_; 8]>>();
-
-		let pipeline = pipelines::with_shader_stages(&self.shaders, shaders, &pipeline_layout, |stages, identified_stages| {
-			let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-				.layout(vk::PipelineLayout::null())
-				.groups(&groups)
-				.max_pipeline_ray_recursion_depth(1);
-			let compiled = stages.map(|stages| create_info.stages(stages));
-			let identified = identified_stages.map(|stages| create_info.stages(stages));
-			crate::vulkan::pipeline_binaries::create_pipeline(
-				self.device.pipeline_binaries.as_deref(),
-				compiled.as_ref(),
-				identified.as_ref(),
-				|create_info| {
-					unsafe {
-						self.ray_tracing_pipeline.create_ray_tracing_pipelines(
-							vk::DeferredOperationKHR::null(),
-							vk::PipelineCache::null(),
-							std::slice::from_ref(create_info),
-							None,
-						)
-					}
-					.map(|pipelines| pipelines[0])
-					.map_err(|(_, result)| result)
-				},
-			)
-		})
-		.expect(
-			"Vulkan ray tracing pipeline creation failed. The most likely cause is an invalid shader resource mapping or shader group.",
-		);
-		let handle_buffer = unsafe {
-			self.ray_tracing_pipeline
-				.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len())
-		}
-		.expect("Could not get ray tracing shader group handles");
-
-		let shader_handles = shaders
-			.iter()
-			.enumerate()
-			.map(|(i, shader)| (*shader.handle, handle_buffer[i * 32..(i + 1) * 32].try_into().unwrap()))
-			.collect();
-
-		self.add_pipeline(pipeline, pipeline_layout, shader_handles)
+	fn write_shader_binding_table(
+		&mut self,
+		_: graphics_hardware_interface::ShaderBindingTableHandle,
+		_: graphics_hardware_interface::PipelineHandle,
+		_: &[u32],
+	) {
+		crate::rt::unsupported("Vulkan")
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
@@ -849,108 +702,34 @@ impl crate::context::ContextCreate for Context {
 		handle
 	}
 
-	fn create_acceleration_structure_instance_buffer(
+	fn create_bottom_level_acceleration_structure(
 		&mut self,
-		name: Option<&str>,
-		max_instance_count: u32,
-	) -> graphics_hardware_interface::BaseBufferHandle {
-		let access = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
-		let (buffer, allocation, device_address, pointer) = self.create_dedicated_buffer(
-			name,
-			max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			access,
-		);
-
-		self.buffers
-			.add(Buffer {
-				staging: None,
-				buffer: buffer.resource,
-				size: buffer.size,
-				device_address,
-				pointer: crate::vulkan::MappedMemoryPointer(pointer),
-				allocation: Some(allocation),
-				uses: crate::Uses::empty(),
-				access,
-				imported: false,
-			})
-			.0
+		_: Option<&str>,
+		_: &[crate::rt::TriangleGeometry],
+	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
+		crate::rt::unsupported("Vulkan")
 	}
 
 	fn create_top_level_acceleration_structure(
 		&mut self,
-		name: Option<&str>,
-		max_instance_count: u32,
+		_: Option<&str>,
+		_: u32,
 	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
-		let geometries = [vk::AccelerationStructureGeometryKHR::default()
-			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-			.geometry(vk::AccelerationStructureGeometryDataKHR {
-				instances: vk::AccelerationStructureGeometryInstancesDataKHR::default(),
-			})];
-		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-			.geometries(&geometries);
-
-		graphics_hardware_interface::TopLevelAccelerationStructureHandle(self.create_acceleration_structure(
-			name,
-			&build_info,
-			max_instance_count,
-		))
+		crate::rt::unsupported("Vulkan")
 	}
 
-	fn create_bottom_level_acceleration_structure(
+	fn destroy_bottom_level_acceleration_structure(
 		&mut self,
-		description: &graphics_hardware_interface::BottomLevelAccelerationStructure,
-	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		let (geometry, primitive_count) = match &description.description {
-			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::Mesh {
-				vertex_count,
-				vertex_position_encoding,
-				triangle_count,
-				index_format,
-			} => (
-				vk::AccelerationStructureGeometryKHR::default()
-					.flags(vk::GeometryFlagsKHR::OPAQUE)
-					.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-							.vertex_format(match vertex_position_encoding {
-								crate::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
-								_ => panic!("Invalid vertex position format"),
-							})
-							.max_vertex(*vertex_count - 1)
-							.index_type(match index_format {
-								crate::DataTypes::U8 => vk::IndexType::UINT8_EXT,
-								crate::DataTypes::U16 => vk::IndexType::UINT16,
-								crate::DataTypes::U32 => vk::IndexType::UINT32,
-								_ => panic!("Invalid index format"),
-							}),
-					}),
-				*triangle_count,
-			),
-			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => (
-				vk::AccelerationStructureGeometryKHR::default()
-					.flags(vk::GeometryFlagsKHR::OPAQUE)
-					.geometry_type(vk::GeometryTypeKHR::AABBS)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						aabbs: vk::AccelerationStructureGeometryAabbsDataKHR::default(),
-					}),
-				*transform_count,
-			),
-		};
+		_: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+	) {
+		crate::rt::unsupported("Vulkan")
+	}
 
-		let geometries = [geometry];
-		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-			.geometries(&geometries);
-
-		graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.create_acceleration_structure(
-			None,
-			&build_info,
-			primitive_count,
-		))
+	fn destroy_top_level_acceleration_structure(
+		&mut self,
+		_: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
+	) {
+		crate::rt::unsupported("Vulkan")
 	}
 
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(

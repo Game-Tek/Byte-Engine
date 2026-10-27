@@ -72,8 +72,14 @@ impl Context {
 			allocations: Vec::new(),
 			descriptor_sets: ResourceCollection::default(),
 			meshes: Vec::new(),
-			acceleration_structures: Vec::new(),
+			acceleration_structures: Default::default(),
+			pending_compactions: Vec::new(),
+			compaction_copies: Vec::new(),
+			scratch_arenas: (0..=MAX_FRAMES_IN_FLIGHT)
+				.map(|_| acceleration_structures::ScratchArena::new(settings.debug_labels))
+				.collect(),
 			pipelines: Vec::new(),
+			shader_binding_tables: Vec::new(),
 			command_buffers: Vec::new(),
 			synchronizers,
 			internal_upload_synchronizer,
@@ -342,7 +348,15 @@ impl Context {
 			}),
 			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { handle } => {
-				Some(Descriptor::AccelerationStructure { handle })
+				let copies = self.acceleration_structures.top_level(handle).copies.len();
+				assert!(
+					resource_frame_index < copies,
+					"The top-level acceleration structure has no copy for frame sequence {resource_frame_index}. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
+				);
+				Some(Descriptor::TopLevelAccelerationStructure {
+					handle,
+					copy: resource_frame_index as u8,
+				})
 			}
 			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
 				handle: crate::swapchain::SwapchainHandle(swapchain_handle.0),

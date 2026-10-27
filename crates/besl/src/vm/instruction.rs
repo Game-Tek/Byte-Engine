@@ -15,6 +15,7 @@ pub(super) enum Instruction {
 	Texture(TextureInstruction),
 	Image(ImageInstruction),
 	Control(ControlInstruction),
+	RayTracing(RayTracingInstruction),
 	/// Builds a ballot mask from every subgroup lane's `predicate`. Under workgroup scheduling it suspends the lane
 	/// until the whole subgroup arrives.
 	SubgroupBallot {
@@ -59,6 +60,7 @@ instruction_groups!(
 	TextureInstruction => Texture,
 	ImageInstruction => Image,
 	ControlInstruction => Control,
+	RayTracingInstruction => RayTracing,
 );
 
 /// The `ValueInstruction` enum groups the instructions that load literals and resource handles, or build and take
@@ -439,8 +441,46 @@ pub(super) enum ControlInstruction {
 	},
 }
 
-/// The `InvocationBuiltin` enum names the per-invocation coordinates a shader can read from its
-/// [`ExecutionConfig`](super::ExecutionConfig).
+/// The `RayTracingInstruction` enum groups the ray queries and the `invoke` calls of ray tracing shaders.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum RayTracingInstruction {
+	/// Writes the nearest hit along a ray through the acceleration structure at `slot`, or a miss, as a `Hit` value of
+	/// `hit_type`.
+	Intersect {
+		register: usize,
+		slot: ResourceSlot,
+		ray: RayOperands,
+		hit_type: ValueType,
+	},
+	/// Writes whether any triangle lies along a ray through the acceleration structure at `slot`.
+	TraceOcclusion {
+		register: usize,
+		slot: ResourceSlot,
+		ray: RayOperands,
+	},
+	/// Runs the closest hit of the `hit` register's record with the `payload` register, and writes the payload it
+	/// returns. A miss writes the payload unchanged. `payload_type` is the payload struct, which pipeline creation
+	/// matches against the closest hits.
+	Invoke {
+		register: usize,
+		hit: usize,
+		payload: usize,
+		payload_type: ValueType,
+	},
+}
+
+/// The `RayOperands` struct names the registers that hold a ray query's mask, ray, and interval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RayOperands {
+	pub(super) mask: usize,
+	pub(super) origin: usize,
+	pub(super) direction: usize,
+	pub(super) t_min: usize,
+	pub(super) t_max: usize,
+}
+
+/// The `InvocationBuiltin` enum names the per-invocation values a shader can read: coordinates from its
+/// [`ExecutionConfig`](super::ExecutionConfig), and the launch point or hit of a ray tracing invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InvocationBuiltin {
 	ThreadIdx,
@@ -448,6 +488,58 @@ pub(super) enum InvocationBuiltin {
 	ThreadId,
 	ThreadgroupPosition,
 	SubgroupLaneIndex,
+	LaunchIndex,
+	LaunchSize,
+	HitDistance,
+	HitCustomIndex,
+	HitGeometryIndex,
+	HitPrimitiveIndex,
+	HitBarycentrics,
+	RayOrigin,
+	RayDirection,
+}
+
+impl InvocationBuiltin {
+	/// Names this builtin the way BESL source calls it.
+	pub(super) const fn name(self) -> &'static str {
+		match self {
+			InvocationBuiltin::ThreadIdx => "thread_idx",
+			InvocationBuiltin::ThreadPosition => "thread_position",
+			InvocationBuiltin::ThreadId => "thread_id",
+			InvocationBuiltin::ThreadgroupPosition => "threadgroup_position",
+			InvocationBuiltin::SubgroupLaneIndex => "subgroup_lane_index",
+			InvocationBuiltin::LaunchIndex => "launch_index",
+			InvocationBuiltin::LaunchSize => "launch_size",
+			InvocationBuiltin::HitDistance => "hit_distance",
+			InvocationBuiltin::HitCustomIndex => "hit_custom_index",
+			InvocationBuiltin::HitGeometryIndex => "hit_geometry_index",
+			InvocationBuiltin::HitPrimitiveIndex => "hit_primitive_index",
+			InvocationBuiltin::HitBarycentrics => "hit_barycentrics",
+			InvocationBuiltin::RayOrigin => "ray_origin",
+			InvocationBuiltin::RayDirection => "ray_direction",
+		}
+	}
+
+	/// Returns the builtin that a zero-argument intrinsic call named `name` reads, if it reads one.
+	pub(super) fn from_name(name: &str) -> Option<Self> {
+		const ALL: [InvocationBuiltin; 14] = [
+			InvocationBuiltin::ThreadIdx,
+			InvocationBuiltin::ThreadPosition,
+			InvocationBuiltin::ThreadId,
+			InvocationBuiltin::ThreadgroupPosition,
+			InvocationBuiltin::SubgroupLaneIndex,
+			InvocationBuiltin::LaunchIndex,
+			InvocationBuiltin::LaunchSize,
+			InvocationBuiltin::HitDistance,
+			InvocationBuiltin::HitCustomIndex,
+			InvocationBuiltin::HitGeometryIndex,
+			InvocationBuiltin::HitPrimitiveIndex,
+			InvocationBuiltin::HitBarycentrics,
+			InvocationBuiltin::RayOrigin,
+			InvocationBuiltin::RayDirection,
+		];
+		ALL.into_iter().find(|builtin| builtin.name() == name)
+	}
 }
 
 /// The `SubgroupMaskOperator` enum names the scalar reductions of a subgroup ballot mask.

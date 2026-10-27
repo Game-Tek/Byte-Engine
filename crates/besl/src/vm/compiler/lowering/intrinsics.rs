@@ -27,6 +27,13 @@ impl<'a> Compiler<'a> {
 			});
 		}
 
+		if let Some(builtin) = InvocationBuiltin::from_name(&name) {
+			require_argument_count(arguments, 0)?;
+			let register = self.allocate_register();
+			self.emit(LocalInstruction::LoadBuiltin { register, builtin });
+			return Ok(register);
+		}
+
 		match name.as_str() {
 			"sample" => {
 				require_argument_count(arguments, 2)?;
@@ -701,18 +708,40 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"thread_idx" | "thread_position" | "thread_id" | "threadgroup_position" | "subgroup_lane_index" => {
-				require_argument_count(arguments, 0)?;
-				let builtin = match name.as_str() {
-					"thread_idx" => InvocationBuiltin::ThreadIdx,
-					"thread_position" => InvocationBuiltin::ThreadPosition,
-					"thread_id" => InvocationBuiltin::ThreadId,
-					"threadgroup_position" => InvocationBuiltin::ThreadgroupPosition,
-					"subgroup_lane_index" => InvocationBuiltin::SubgroupLaneIndex,
-					_ => unreachable!("Expected an invocation builtin intrinsic"),
+			"intersect" | "trace_occlusion" => {
+				require_argument_count(arguments, 6)?;
+				let slot = self.resolve_acceleration_structure_slot(&arguments[0])?;
+				let ray = RayOperands {
+					mask: self.compile_value_expression(&arguments[1], &ValueType::U32)?,
+					origin: self.compile_value_expression(&arguments[2], &ValueType::Vec3F)?,
+					direction: self.compile_value_expression(&arguments[3], &ValueType::Vec3F)?,
+					t_min: self.compile_value_expression(&arguments[4], &ValueType::F32)?,
+					t_max: self.compile_value_expression(&arguments[5], &ValueType::F32)?,
 				};
 				let register = self.allocate_register();
-				self.emit(LocalInstruction::LoadBuiltin { register, builtin });
+				self.emit(match name.as_str() {
+					"intersect" => RayTracingInstruction::Intersect {
+						register,
+						slot,
+						ray,
+						hit_type: return_type,
+					},
+					_ => RayTracingInstruction::TraceOcclusion { register, slot, ray },
+				});
+				Ok(register)
+			}
+			"invoke" => {
+				require_argument_count(arguments, 2)?;
+				let hit_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				let hit = self.compile_value_expression(&arguments[0], &hit_type)?;
+				let payload = self.compile_value_expression(&arguments[1], &return_type)?;
+				let register = self.allocate_register();
+				self.emit(RayTracingInstruction::Invoke {
+					register,
+					hit,
+					payload,
+					payload_type: return_type,
+				});
 				Ok(register)
 			}
 			"subgroup_ballot" => {

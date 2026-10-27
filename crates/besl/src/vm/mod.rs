@@ -9,6 +9,7 @@ mod execution;
 mod instruction;
 mod layout;
 mod program;
+mod ray_tracing;
 mod resources;
 mod texture;
 mod value;
@@ -24,6 +25,8 @@ pub use layout::{
 use layout::{PUSH_CONSTANT_SLOT, dynamic_resource_slot};
 use program::{ExecutableFunction, ExecutionFrame, ExecutionState};
 pub use program::{ExecutableProgram, ExecutionConfig, SpecializationValues};
+pub use ray_tracing::{AccelerationStructure, BottomLevelStructure, Instance, RayTracingPipeline};
+use ray_tracing::{Ray, RayHit, TraceContext};
 pub use resources::{DescriptorBindings, MeshOutputs, TaskOutputs, WorkgroupState};
 pub use texture::{Sampler, SamplerReductionMode, Texture};
 pub use value::Value;

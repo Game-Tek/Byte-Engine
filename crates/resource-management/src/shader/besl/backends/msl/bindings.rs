@@ -1,5 +1,9 @@
 use super::*;
 
+/// The Metal type of an `AccelerationStructure` descriptor: a top-level structure whose instances hold the scene's
+/// geometry. Metal binds it through a buffer index or an argument buffer member.
+pub(crate) const ACCELERATION_STRUCTURE_TYPE: &str = "raytracing::instance_acceleration_structure";
+
 /// Selects the Metal texture element type and access for a storage image.
 pub(crate) fn storage_image_type(format: &str, read: bool, write: bool) -> (&'static str, &'static str) {
 	let element_type = match format {
@@ -149,6 +153,10 @@ impl Generator {
 				self.emit_indentation(string, 1);
 				let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
 				emit_suffix(string, secondary_id);
+			}
+			besl::BindingTypes::AccelerationStructure => {
+				let _ = write!(string, "{ACCELERATION_STRUCTURE_TYPE} {}", Self::identifier(name));
+				emit_suffix(string, primary_id);
 			}
 		}
 	}
@@ -475,6 +483,14 @@ impl Generator {
 				self.emit_separator(string);
 				let _ = write!(string, "sampler {name}_sampler [[sampler({index})]]");
 			}
+			besl::BindingTypes::AccelerationStructure => {
+				self.emit_separator(string);
+				let _ = write!(
+					string,
+					"{ACCELERATION_STRUCTURE_TYPE} {} [[buffer({index})]]",
+					Self::identifier(name)
+				);
+			}
 		}
 	}
 
@@ -494,7 +510,8 @@ impl Generator {
 	///
 	/// Metal has no module-level resources, push constants, workgroup storage, or stage builtins, so every helper that
 	/// reaches them receives them as extra parameters. Declarations and calls walk the same list, so they always agree.
-	/// Stage entry points write their own parameter lists, so `main` receives a context here only in a mesh stage.
+	/// Stage entry points write their own parameter lists, so `main` receives a context here only in a mesh stage and in
+	/// a closest hit, whose `main` runs inside the visible entry point.
 	/// Call it from [`crate::shader::generator::NodeEmitter::emit_function_extra_parameters`], from
 	/// [`Self::emit_function_prototype`], and from
 	/// [`crate::shader::generator::NodeEmitter::emit_function_call_extra_arguments`].
@@ -524,7 +541,33 @@ impl Generator {
 			let _ = write!(string, "{name}");
 		};
 
-		if is_main {
+		if let Some(ray_tracing) = self.ray_tracing_stage_context {
+			// A helper that reads no stage value and no resource takes no context.
+			let context = self.hidden_context(function);
+			if !is_main && !context.uses_ray_tracing_inputs && !context.requires_resources {
+				return;
+			}
+			if ray_tracing.closest_hit {
+				push(string, format_args!("thread const {}& ", besl::HIT_STRUCT), &HIT_ARGUMENT);
+			} else {
+				push(string, format_args!("uint3 "), &LAUNCH_INDEX_ARGUMENT);
+				push(string, format_args!("uint3 "), &LAUNCH_SIZE_ARGUMENT);
+				if ray_tracing.invokes {
+					push(
+						string,
+						format_args!("visible_function_table<{CLOSEST_HIT_TYPE}> "),
+						&HITS_ARGUMENT,
+					);
+					push(string, format_args!("thread const {CONTEXT_STRUCT}& "), &CONTEXT_ARGUMENT);
+				}
+			}
+			if ray_tracing.has_push_constant {
+				push(string, format_args!("constant PushConstant& "), &"push_constant");
+			}
+			for set in 0..self.argument_sets.len() {
+				push(string, format_args!("constant _set{set}& "), &SetArgument(set));
+			}
+		} else if is_main {
 			let Some(mesh) = &self.mesh_stage_context else {
 				return;
 			};

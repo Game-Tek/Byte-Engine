@@ -230,6 +230,8 @@ impl Generator {
 				params,
 				..
 			} => self.emit_function_node(string, this_node, name, statements, return_type, params),
+			// The ray tracing prelude declares `Hit` before the helpers that return it.
+			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => self.emit_struct_node(string, name, fields, template),
@@ -323,7 +325,7 @@ impl Generator {
 				count,
 				..
 			} => {
-				if self.in_compute_body || self.mesh_stage_context.is_some() {
+				if self.in_compute_body || self.mesh_stage_context.is_some() || self.ray_tracing_stage_context.is_some() {
 					self.emit_binding_reference(string, name);
 					return;
 				}
@@ -378,6 +380,13 @@ impl Generator {
 							" [[texture({index})]];{break_char}sampler {name}_sampler [[sampler({index})]];{break_char}"
 						);
 					}
+					besl::BindingTypes::AccelerationStructure => {
+						let _ = write!(
+							string,
+							"{ACCELERATION_STRUCTURE_TYPE} {} [[buffer({index})]];{break_char}",
+							Self::identifier(name)
+						);
+					}
 				}
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
@@ -409,14 +418,24 @@ impl Generator {
 		}
 	}
 
+	/// Emits the includes, the helpers the shader's intrinsics need, and the stage and layout comments every generated
+	/// shader starts with. Set `uses_ray_tracing` to include Metal's ray tracing library and declare what ray queries and
+	/// ray tracing stages share; see [`Self::uses_ray_tracing`].
 	pub(crate) fn generate_msl_header_block(
 		&self,
 		msl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
 		requirements: &IntrinsicRequirements,
+		uses_ray_tracing: bool,
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
+		if uses_ray_tracing {
+			msl_block.push_str("#include <metal_raytracing>\n");
+		}
 		msl_block.push_str("using namespace metal;\n");
+		if uses_ray_tracing {
+			self.emit_ray_tracing_prelude(msl_block, compilation_settings.stage, requirements);
+		}
 		if requirements.uses_downsample_min || requirements.uses_downsample_max {
 			// Metal executes min/max sampler reduction only on Apple10 GPUs and falls back to averaging elsewhere,
 			// which would blend a near and a far surface into a depth that exists in neither. Gathering the four
@@ -512,6 +531,8 @@ impl Generator {
 			Stages::Compute { .. } => msl_block.push_str("// #pragma shader_stage(compute)\n"),
 			Stages::Task { .. } => msl_block.push_str("// #pragma shader_stage(object)\n"),
 			Stages::Mesh { .. } => msl_block.push_str("// #pragma shader_stage(mesh)\n"),
+			Stages::RayGeneration => msl_block.push_str("// #pragma shader_stage(ray_generation)\n"),
+			Stages::ClosestHit => msl_block.push_str("// #pragma shader_stage(closest_hit)\n"),
 		}
 
 		if let Some(local_size) = compilation_settings.stage.local_size() {

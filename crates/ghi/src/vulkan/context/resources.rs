@@ -308,12 +308,8 @@ impl Context {
 			&& !device_accesses.contains(DeviceAccesses::CpuRead)
 			&& device_accesses.intersects(DeviceAccesses::DeviceOnly);
 		// All buffers are guaranteed to be accessible by device address.
-		let mut usage =
+		let usage =
 			uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | transfer_usage(false, staged);
-		// Acceleration structure build input usage causes validation errors when ray tracing is disabled.
-		if !self.settings.ray_tracing {
-			usage &= !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
-		}
 
 		if !staged {
 			return self.create_bound_buffer(name, size, usage, device_accesses, device_accesses, resource_uses);

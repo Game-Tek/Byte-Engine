@@ -34,6 +34,7 @@ fn is_keyword(name: &str) -> bool {
 			| "stage_in" | "patch"
 			// Namespaces and enumerations the generated source names without a `metal::` qualifier.
 			| "metal" | "std" | "access" | "component" | "topology" | "mem_flags" | "memory_order" | "memory_order_relaxed"
+			| "raytracing"
 	)
 }
 
@@ -195,5 +196,17 @@ fn is_backend_name(name: &str) -> bool {
 			| "_besl_subgroup_shuffle_xor_f32"
 			| "_besl_triangle_index"
 			| "_besl_triangle"
+			| "_besl_intersect"
+			| "_besl_trace_occlusion"
+			| "_besl_invoke"
+			| "_besl_ray_context"
+			| "_besl_closest_hit"
+			| "_besl_closest_hit_main"
+			| "_besl_launch_index"
+			| "_besl_launch_size"
+			| "_besl_hits"
+			| "_besl_context"
+			| "_besl_hit"
+			| "_besl_payload"
 	)
 }

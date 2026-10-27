@@ -1,0 +1,696 @@
+// The frame-wide surfel GI set: the pool of surfels, the grid that lists them per cell, and the settings every surfel
+// stage shares. The first sink's frame writes it; every sink that surfel GI lights reads it.
+//
+// Surfel GI follows webgiya by Jure Triglav (MIT License, Copyright (c) 2026 Jure Triglav), which builds on "Global
+// Illumination Based on Surfels" by Henrik Halén, Andreas Brinck, Kyle Hayward, and Xiangshun Bei (SIGGRAPH 2021).
+// See THIRD_PARTY_NOTICES.md.
+
+// The grid has SURFEL_CASCADES cascades of SURFEL_GRID_SIDE cells per side around the first sink's camera. A cell of
+// cascade c measures SURFEL_CELL_SIZE × 2^c meters, and a position falls in the finest cascade that covers it.
+SURFEL_GRID_SIDE: const u32 = 32;
+SURFEL_CASCADES: const u32 = 8;
+// SURFEL_CASCADES × SURFEL_GRID_SIDE³.
+SURFEL_CELL_COUNT: const u32 = 262144;
+SURFEL_CELL_SIZE: const f32 = 0.2;
+// A surfel's radius close to the camera. Beyond half a cascade-zero grid, it grows with distance like the cells do.
+SURFEL_BASE_RADIUS: const f32 = 0.24;
+// Lookups weigh a surfel out to this multiple of its radius, so neighboring discs overlap smoothly.
+SURFEL_LOOKUP_SCALE: const f32 = 1.25;
+// Distance along a surfel's normal counts this much more, so a disc reaches only surfaces close to its own plane.
+SURFEL_NORMAL_SQUISH: const f32 = 2.0;
+// Frames a surfel lives without a keep-alive vote.
+SURFEL_TTL: const u32 = 500;
+// The vote that kills a surfel at once.
+SURFEL_KILL: const u32 = 255;
+// A cell that lists more surfels than this charges them rent, and stops keeping its own surfels alive.
+SURFEL_CROWDED_CELL: const u32 = 32;
+// The most surfels one pixel reads from its cell.
+SURFEL_LOOKUP_LIMIT: const u32 = 64;
+// The most cells the grid lists one surfel in: the first it overlaps, those of the finer cascade first, then by z,
+// y, and x. The cell lists hold this many entries for each pool slot, so they never overflow.
+SURFEL_LISTING_LIMIT: const u32 = 32;
+// Elements one workgroup of the scan covers: 256 threads with 4 elements each.
+SURFEL_SCAN_GROUP_ELEMENTS: const u32 = 1024;
+SURFEL_SCAN_WORKGROUP_SIZE: const u32 = 256;
+NO_SURFEL: const u32 = 4294967295;
+// The rays a settled surfel traces each frame, and a young one, for its first SURFEL_YOUNG_FRAMES frames.
+SURFEL_RAYS: const u32 = 4;
+SURFEL_YOUNG_RAYS: const u32 = 32;
+SURFEL_YOUNG_FRAMES: const u32 = 4;
+// A surfel whose light keeps changing past this inconsistency traces SURFEL_UNSETTLED_RAYS more.
+SURFEL_UNSETTLED_INCONSISTENCY: const f32 = 0.3;
+SURFEL_UNSETTLED_RAYS: const u32 = 12;
+// A ray record names its surfel's slot in its low SURFEL_RAY_SLOT_BITS bits, and the ray's index among the surfel's rays
+// above them.
+SURFEL_RAY_SLOT_BITS: const u32 = 24;
+SURFEL_RAY_SLOT_MASK: const u32 = 16777215;
+// How far a surfel's ray reaches, in meters.
+SURFEL_RAY_LENGTH: const f32 = 10000.0;
+// The material slots hits sort by: the visibility pipeline's material limit.
+SURFEL_HIT_KEYS: const u32 = 1024;
+// A hit's sort key holds its rank among the hits on its material in the low SURFEL_HIT_RANK_BITS bits, which fit the
+// largest ray budget, and the material's slot above them.
+SURFEL_HIT_RANK_BITS: const u32 = 20;
+SURFEL_HIT_RANK_MASK: const u32 = 1048575;
+// Each surfel's guide splits its hemisphere into 8 × 8 cells of equal solid angle, each holding the light its rays
+// found there lately.
+SURFEL_GUIDE_SIDE: const u32 = 8;
+SURFEL_GUIDE_CELLS: const u32 = 64;
+// The share of a surfel's rays its guide steers once the surfel is SURFEL_GUIDE_FRAMES frames old; the rest follow
+// the cosine-weighted distribution. Webgiya steers 0.9, but here every ray also counts toward the hit fraction, whose
+// misses and dark hits the guide samples least, and a share of 0.5 keeps each ray's weight at most 2, so those rays
+// can't make it spike.
+SURFEL_GUIDE_SHARE: const f32 = 0.5;
+SURFEL_GUIDE_FRAMES: const f32 = 16.0;
+// How much of a guide cell each ray that passes it replaces.
+SURFEL_GUIDE_RATE: const f32 = 0.02;
+// Each surfel's radial depth splits its hemisphere into 4 × 4 cells of its octahedral projection, each holding the
+// first four moments of how far its rays went there, up to twice the surfel's radius.
+SURFEL_DEPTH_SIDE: const u32 = 4;
+SURFEL_DEPTH_CELLS: const u32 = 16;
+// How much of a depth cell a ray replaces: more when it ends nearer than the cell's mean, so walls show up quickly.
+SURFEL_DEPTH_NEARER_RATE: const f32 = 0.05;
+SURFEL_DEPTH_FARTHER_RATE: const f32 = 0.01;
+// How strongly radial depth shadows, and how much light bleed the occlusion test removes: at least
+// SURFEL_OCCLUSION_BLEED, more where a cell's depths spread, and more at grazing angles where they spread.
+SURFEL_OCCLUSION_STRENGTH: const f32 = 1.2;
+SURFEL_OCCLUSION_BLEED: const f32 = 0.2;
+SURFEL_OCCLUSION_SPREAD_BLEED: const f32 = 0.15;
+SURFEL_OCCLUSION_GRAZING_BLEED: const f32 = 0.25;
+// The occlusion test skips its moment solve for a point that at most this share of a cell's depths can lie before.
+SURFEL_OCCLUSION_SKIP: const f32 = 0.001;
+// The deviations below a cell's mean depth where that share holds by Cantelli's inequality: the square root of
+// (1 - SURFEL_OCCLUSION_SKIP) / SURFEL_OCCLUSION_SKIP.
+SURFEL_OCCLUSION_SKIP_DEVIATIONS: const f32 = 31.6070878;
+
+// One sun that lights what surfel rays hit.
+SurfelSun: struct {
+	// The unit direction toward the sun.
+	direction: vec3f,
+	// The illuminance the sun gives a surface that faces it, in lux.
+	illuminance: vec3f,
+}
+
+// The settings of one frame's surfel stages, uploaded by the CPU as `SurfelGiParameters`.
+SurfelGiParameters: struct {
+	// The grid's center: the first sink's camera position, snapped to whole cells of cascade 0.
+	grid_origin: vec3f,
+	// The pool's slot count, a power of two.
+	surfel_capacity: u32,
+	camera_position: vec3f,
+	// The most rays surfels trace this frame.
+	ray_budget: u32,
+	frame_index: u32,
+	// Surfel light is stored pre-exposed, like the lit image, so daylight fits half-float storage.
+	exposure: f32,
+	previous_exposure: f32,
+	environment_intensity: f32,
+	// The suns that light what the rays hit, at most four.
+	sun_count: u32,
+	suns: SurfelSun[4],
+}
+
+// One surfel as lookups read it. A spawn writes its position and normal, and every frame rewrites the rest.
+SurfelRecord: struct {
+	position: vec3f,
+	// The radius the grid lists the surfel with; lookups weigh it out to SURFEL_LOOKUP_SCALE times this.
+	radius: f32,
+	// The normal, in two octahedral 16-bit coordinates.
+	normal: u32,
+	// How much a lookup trusts the surfel's light: zero when it spawns, growing with its age and sample count.
+	weight: f32,
+	// Pre-exposed bounce light in RGB, as irradiance over π, and the fraction of rays that hit geometry in alpha.
+	irradiance: vec4f16,
+}
+
+// One surfel's estimate of the light its rays gather, which the multiscale mean estimator (MSME) updates. Every
+// channel holds pre-exposed bounce light in RGB, as irradiance over π, and the fraction of rays that hit in alpha.
+SurfelIrradiance: struct {
+	// The long-window mean, which lookups read.
+	mean: vec4f,
+	// The short-window mean, which follows changes quickly.
+	short_mean: vec4f,
+	// The variance of the samples around the short mean.
+	variance: vec4f,
+	// How fast the long mean may follow: lower while the samples are noisy for their mean.
+	blend: f32,
+	// How far the short mean strays from the long one, in deviations.
+	inconsistency: f32,
+	// The frames of rays the estimate holds, up to 200.
+	count: f32,
+	// The sum of the surfel's guide cells.
+	guide_mass: f32,
+}
+
+// What one of the frame's rays brings back to its surfel.
+SurfelRayResult: struct {
+	// The radiance the ray found, in nits: zero for a miss, whose environment light the integrate pass looks up.
+	radiance: vec3f,
+	// How far the ray went before it hit, or -1 for a miss.
+	distance: f32,
+	// Where the ray left in the surfel's hemisphere, as a point of the equal-area square in two 16-bit coordinates.
+	direction: u32,
+	// The ray's weight in the surfel's average light: the cosine-weighted density over the density it was drawn from.
+	weight: f32,
+	// 1 when the surfel's guide drew the ray, 0 when the cosine-weighted distribution did. Only the latter count toward
+	// the hit fraction.
+	guided: u32,
+}
+
+// One ray's hit, as the shade pass rebuilds it for `invoke`.
+SurfelHit: struct {
+	origin: vec3f,
+	distance: f32,
+	barycentrics: vec2f,
+	// The ray's unit direction, in two octahedral 16-bit coordinates.
+	direction: u32,
+	record: u32,
+	custom_index: u32,
+	geometry_index: u32,
+	primitive_index: u32,
+	_padding: u32,
+}
+
+// The counting sort that orders the frame's hits by the material they hit.
+SurfelHitSort: struct {
+	// The hits on each material slot, counted while the trace runs.
+	counts: atomicu32[1024],
+	// Where each material's run of sorted hits starts.
+	offsets: u32[1024],
+	// The frame's hits, which the shade pass runs one invocation for each of.
+	hit_count: u32,
+}
+
+// The lifecycle of one pool slot.
+SurfelState: struct {
+	// Zero for a free slot. Otherwise one plus the surfel's age: frames it went without a keep-alive vote, plus rent.
+	life: u32,
+	// Frames since the surfel spawned.
+	frames: u32,
+	// The strongest vote cast since the grid last read it: keep-alive and importance up to 100, or SURFEL_KILL.
+	touched: atomicu32,
+	// The cell the surfel's center lay in when the grid last listed it, which its rent reads; NO_SURFEL before that.
+	cell: u32,
+}
+
+// The pool's allocator and its counts. `alive`, `recycled`, and `spawned` count the frame in progress; the scan's
+// partial pass moves them into the `last_` totals, which the host reads back.
+SurfelPool: struct {
+	// Slots on the free stack.
+	free_count: atomicu32,
+	// Slots ever used: the next slot no surfel has used yet.
+	high_water: atomicu32,
+	alive: atomicu32,
+	recycled: atomicu32,
+	spawned: atomicu32,
+	last_alive: u32,
+	last_recycled: u32,
+	last_spawned: u32,
+	// The entries the grid listed in its last frame.
+	cell_entries: u32,
+	// The rays surfels wanted in the last frame, and the first of them the ray budget granted.
+	rays_wanted: u32,
+	ray_cursor: u32,
+	rays: u32,
+}
+
+// Each cell's surfel count while the grid counts them, and what remains of it while the scatter fills the cell's list.
+SurfelCells: struct {
+	counts: atomicu32[262144],
+	fill: atomicu32[262144],
+}
+
+surfel_parameters: descriptor<{ type: SurfelGiParameters, binding: 1120, access: read }>;
+surfel_records: descriptor<{ type: SurfelRecord[], binding: 1121, access: read_write }>;
+surfel_states: descriptor<{ type: SurfelState[], binding: 1122, access: read_write }>;
+// The free stack: its first `free_count` entries are free slots.
+surfel_free: descriptor<{ type: u32[], binding: 1123, access: read_write }>;
+surfel_pool: descriptor<{ type: SurfelPool, binding: 1124, access: read_write }>;
+surfel_cells: descriptor<{ type: SurfelCells, binding: 1125, access: read_write }>;
+// The exclusive scan of every cell's count, then of every slot's wanted rays, then the grand total: entry c is where
+// cell c's list starts, and entry SURFEL_CELL_COUNT + s where slot s's rays start after the cells' entries.
+surfel_scan: descriptor<{ type: u32[], binding: 1126, access: read_write }>;
+// Each scan workgroup's total, which the partial pass turns into an exclusive scan.
+surfel_scan_partials: descriptor<{ type: u32[], binding: 1127, access: read_write }>;
+// The cell lists, each a run of slots, SURFEL_LISTING_LIMIT entries for each pool slot.
+surfel_cell_entries: descriptor<{ type: u32[], binding: 1128, access: read_write }>;
+// The rays each slot wants this frame.
+surfel_ray_wants: descriptor<{ type: u32[], binding: 1129, access: read_write }>;
+surfel_irradiance: descriptor<{ type: SurfelIrradiance[], binding: 1130, access: read_write }>;
+// Each ray the budget granted this frame, as a ray record.
+surfel_rays: descriptor<{ type: u32[], binding: 1131, access: read_write }>;
+surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 1132, access: read_write }>;
+// Each ray's hit, at the ray's index. Only rays that hit write theirs.
+surfel_hits: descriptor<{ type: SurfelHit[], binding: 1133, access: read_write }>;
+// Each ray's sort key, or NO_SURFEL for a miss.
+surfel_hit_keys: descriptor<{ type: u32[], binding: 1134, access: read_write }>;
+surfel_hit_sort: descriptor<{ type: SurfelHitSort, binding: 1135, access: read_write }>;
+// The index of each ray that hit, in the order of the materials they hit.
+surfel_sorted_hits: descriptor<{ type: u32[], binding: 1136, access: read_write }>;
+// The environment's irradiance, which lights the pixels no surfel covers yet.
+surfel_environment_irradiance: descriptor<{ type: TextureCube, binding: 1137, access: read }>;
+// Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.
+surfel_guides: descriptor<{ type: f16[], binding: 1138, access: read_write }>;
+// Each surfel's radial depth cells, SURFEL_DEPTH_CELLS per slot: the mean distance and its square, cube, and fourth
+// power. A cell no ray reached holds zero.
+surfel_depths: descriptor<{ type: vec4f[], binding: 1139, access: read_write }>;
+// Each surfel's clearance: how far from where its rays leave every direction of its radial depth is clear, so the
+// resolve skips the occlusion test for a pixel nearer than it. The integrate pass measures it every frame.
+surfel_clearances: descriptor<{ type: f32[], binding: 1143, access: read_write }>;
+// The environment's roughness-prefiltered specular levels, whose light the rays that miss bring back.
+surfel_environment_radiance: descriptor<{ type: TextureCube, binding: 1144, access: read }>;
+
+// Returns the cascade-zero cell that holds `relative`, a position relative to the grid origin. The coordinates are
+// whole numbers, which stay exact in 32-bit floats.
+surfel_cascade_zero_cell: fn (relative: vec3f) -> vec3f {
+	return vec3f(
+		floor(relative.x / SURFEL_CELL_SIZE),
+		floor(relative.y / SURFEL_CELL_SIZE),
+		floor(relative.z / SURFEL_CELL_SIZE)
+	);
+}
+
+// Returns how far out the cascade-zero cell `cell` lies, as a continuous cascade: cascade c reaches 16 × 2^c cells
+// from the origin.
+surfel_cascade_level: fn (cell: vec3f) -> f32 {
+	let reach: f32 = max(abs(cell.x + 0.5), max(abs(cell.y + 0.5), abs(cell.z + 0.5)));
+	return log2(reach / (f32(SURFEL_GRID_SIDE) * 0.5));
+}
+
+// Rounds a continuous cascade up to the cascade that covers it.
+surfel_cascade: fn (level: f32) -> u32 {
+	// ceil(x) is -floor(-x).
+	let rounded: f32 = 0.0 - floor(0.0 - max(level, 0.0));
+	return u32(clamp(rounded, 0.0, f32(SURFEL_CASCADES - 1)));
+}
+
+// Returns the coordinates, inside `cascade`, of the cell that holds the cascade-zero cell `cell`, clamped to the grid.
+surfel_cell_in_cascade: fn (cell: vec3f, cascade: u32) -> vec3f {
+	let scale: f32 = f32(1 << cascade);
+	let half_side: f32 = f32(SURFEL_GRID_SIDE) * 0.5;
+	let last: f32 = f32(SURFEL_GRID_SIDE - 1);
+	return vec3f(
+		clamp(floor(cell.x / scale) + half_side, 0.0, last),
+		clamp(floor(cell.y / scale) + half_side, 0.0, last),
+		clamp(floor(cell.z / scale) + half_side, 0.0, last)
+	);
+}
+
+// Returns the index of the cell at `cell` inside `cascade` in the grid's tables.
+surfel_cell_index: fn (cell: vec3f, cascade: u32) -> u32 {
+	let side: u32 = SURFEL_GRID_SIDE;
+	return u32(cell.x) + u32(cell.y) * side + u32(cell.z) * side * side + cascade * side * side * side;
+}
+
+// Returns the index of the cell that holds the world-space `position`.
+surfel_cell_of: fn (position: vec3f) -> u32 {
+	let cell: vec3f = surfel_cascade_zero_cell(position - surfel_parameters.grid_origin);
+	let cascade: u32 = surfel_cascade(surfel_cascade_level(cell));
+	return surfel_cell_index(surfel_cell_in_cascade(cell, cascade), cascade);
+}
+
+// Returns the radius of a surfel at the world-space `position`: the base radius near the camera, then growing with
+// distance like the cells of the cascades do.
+surfel_radius: fn (position: vec3f) -> f32 {
+	let distance: f32 = length(position - surfel_parameters.camera_position);
+	return SURFEL_BASE_RADIUS * max(1.0, distance / (SURFEL_CELL_SIZE * f32(SURFEL_GRID_SIDE) * 0.5));
+}
+
+// Returns a disc's distance to `offset`, the vector from its center: the length, stretched by the part along its
+// `normal`.
+surfel_distance: fn (offset: vec3f, normal: vec3f) -> f32 {
+	return length(offset) * (1.0 + abs(dot(offset, normal)) * SURFEL_NORMAL_SQUISH);
+}
+
+// Reports whether a surfel's disc reaches the cell at `cell` inside `cascade`: the cell's nearest point must lie within
+// `radius`.
+surfel_reaches_cell: fn (position: vec3f, normal: vec3f, radius: f32, cell: vec3f, cascade: u32) -> bool {
+	let scale: f32 = f32(1 << cascade);
+	let half_side: f32 = f32(SURFEL_GRID_SIDE) * 0.5;
+	let half_extent: f32 = SURFEL_CELL_SIZE * 0.5 * scale;
+	let center: vec3f = surfel_parameters.grid_origin
+		+ vec3f(cell.x + 0.5 - half_side, cell.y + 0.5 - half_side, cell.z + 0.5 - half_side) * (SURFEL_CELL_SIZE * scale);
+	let local: vec3f = position - center;
+	let outside: vec3f = vec3f(
+		local.x - clamp(local.x, 0.0 - half_extent, half_extent),
+		local.y - clamp(local.y, 0.0 - half_extent, half_extent),
+		local.z - clamp(local.z, 0.0 - half_extent, half_extent)
+	);
+	return surfel_distance(outside, normal) < radius;
+}
+
+// The cells of one cascade that a surfel's bounding cube covers, from `first` through `last` on each axis.
+SurfelCellRange: struct {
+	first: vec3f,
+	last: vec3f,
+}
+
+// Returns the cells of `cascade` that the cube of half side `radius` around `position` covers.
+surfel_cell_range: fn (position: vec3f, radius: f32, cascade: u32) -> SurfelCellRange {
+	let relative: vec3f = position - surfel_parameters.grid_origin;
+	let extent: vec3f = vec3f(radius, radius, radius);
+	return SurfelCellRange(
+		surfel_cell_in_cascade(surfel_cascade_zero_cell(relative - extent), cascade),
+		surfel_cell_in_cascade(surfel_cascade_zero_cell(relative + extent), cascade)
+	);
+}
+
+// Returns the one or two cascades a surfel at `position` is listed in: the cascade of its center, and the next or
+// previous one when it lies within a fifth of a cascade of the boundary. The second is the first when there is one.
+surfel_cascades: fn (position: vec3f) -> vec2u {
+	let level: f32 = surfel_cascade_level(surfel_cascade_zero_cell(position - surfel_parameters.grid_origin));
+	return vec2u(surfel_cascade(level - 0.2), surfel_cascade(level + 0.2));
+}
+
+// Packs a unit normal into two octahedral 16-bit coordinates.
+encode_surfel_normal: fn (normal: vec3f) -> u32 {
+	let length_l1: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
+	let projected: vec2f = vec2f(normal.x / length_l1, normal.y / length_l1);
+	if (normal.z < 0.0) {
+		// The lower hemisphere folds into the corners. `step` picks the positive direction at zero.
+		projected = vec2f(
+			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
+			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
+		);
+	}
+	let x: u32 = u32(clamp(projected.x * 0.5 + 0.5, 0.0, 1.0) * 65535.0 + 0.5);
+	let y: u32 = u32(clamp(projected.y * 0.5 + 0.5, 0.0, 1.0) * 65535.0 + 0.5);
+	return x | (y << 16);
+}
+
+// Unpacks a normal that `encode_surfel_normal` packed.
+decode_surfel_normal: fn (encoded: u32) -> vec3f {
+	let x: f32 = f32(encoded & 65535) / 65535.0 * 2.0 - 1.0;
+	let y: f32 = f32(encoded >> 16) / 65535.0 * 2.0 - 1.0;
+	let z: f32 = 1.0 - abs(x) - abs(y);
+	if (z < 0.0) {
+		return normalize(vec3f((1.0 - abs(y)) * (step(0.0, x) * 2.0 - 1.0), (1.0 - abs(x)) * (step(0.0, y) * 2.0 - 1.0), z));
+	}
+	return normalize(vec3f(x, y, z));
+}
+
+// Returns the ray offset of a surfel of `radius`: how far along its normal its rays start, so they leave its surface.
+surfel_ray_offset: fn (radius: f32) -> f32 {
+	return clamp(radius * 0.01, 0.0005, 0.01);
+}
+
+// The tangent and bitangent that make a surfel's hemisphere frame with its normal, in which the normal is z.
+SurfelBasis: struct {
+	tangent: vec3f,
+	bitangent: vec3f,
+}
+
+// Returns the hemisphere frame around `normal`, without a branch on the normal's direction (Duff et al., "Building an
+// Orthonormal Basis, Revisited", 2017).
+surfel_basis: fn (normal: vec3f) -> SurfelBasis {
+	let sign: f32 = step(0.0, normal.z) * 2.0 - 1.0;
+	let a: f32 = 0.0 - 1.0 / (sign + normal.z);
+	let b: f32 = normal.x * normal.y * a;
+	return SurfelBasis(
+		vec3f(1.0 + sign * normal.x * normal.x * a, sign * b, (0.0 - sign) * normal.x),
+		vec3f(b, sign + normal.y * normal.y * a, 0.0 - normal.y)
+	);
+}
+
+// Returns the direction around `normal` that `local` names in the frame of `basis`.
+surfel_to_world: fn (basis: SurfelBasis, normal: vec3f, local: vec3f) -> vec3f {
+	return basis.tangent * local.x + basis.bitangent * local.y + normal * local.z;
+}
+
+// Returns `direction` in the frame of `basis` around `normal`.
+surfel_to_local: fn (basis: SurfelBasis, normal: vec3f, direction: vec3f) -> vec3f {
+	return vec3f(dot(direction, basis.tangent), dot(direction, basis.bitangent), dot(direction, normal));
+}
+
+// Maps a point of the unit square to a direction of the hemisphere around z, so equal areas map to equal solid angles:
+// Shirley and Chiu's concentric map onto the unit disk, then the disk's equal-area lift onto the hemisphere.
+surfel_square_to_hemisphere: fn (point: vec2f) -> vec3f {
+	let a: f32 = point.x * 2.0 - 1.0;
+	let b: f32 = point.y * 2.0 - 1.0;
+	let radius: f32 = 0.0;
+	let angle: f32 = 0.0;
+	if (a * a > b * b) {
+		radius = a;
+		angle = 0.785398163397 * (b / a);
+	} else if (b != 0.0) {
+		radius = b;
+		angle = 1.57079632679 - 0.785398163397 * (a / b);
+	}
+	let squared: f32 = radius * radius;
+	let lift: f32 = radius * sqrt(max(0.0, 2.0 - squared));
+	return vec3f(lift * cos(angle), lift * sin(angle), 1.0 - squared);
+}
+
+// Returns the point of the unit square that `surfel_square_to_hemisphere` maps to `direction`, a unit vector with z at
+// least zero.
+surfel_hemisphere_to_square: fn (direction: vec3f) -> vec2f {
+	let radius: f32 = sqrt(clamp(1.0 - direction.z, 0.0, 1.0));
+	let quarter: f32 = 0.785398163397;
+	let angle: f32 = atan2(direction.y, direction.x);
+	// The concentric map's four sectors, each a quarter turn around the disk.
+	let a: f32 = 0.0;
+	let b: f32 = 0.0;
+	if (angle >= 0.0 - quarter && angle < quarter) {
+		a = radius;
+		b = radius * angle / quarter;
+	} else if (angle >= quarter && angle < 3.0 * quarter) {
+		b = radius;
+		a = radius * (2.0 - angle / quarter);
+	} else if (angle >= 0.0 - 3.0 * quarter && angle < 0.0 - quarter) {
+		b = 0.0 - radius;
+		a = b * (2.0 - (angle + 4.0 * quarter) / quarter);
+	} else {
+		// The left sector straddles the angle's wrap at a half turn.
+		a = 0.0 - radius;
+		let unwrapped: f32 = angle - 4.0 * quarter;
+		if (angle < 0.0) {
+			unwrapped = angle + 4.0 * quarter;
+		}
+		b = a * unwrapped / quarter;
+	}
+	return vec2f(clamp(a * 0.5 + 0.5, 0.0, 1.0), clamp(b * 0.5 + 0.5, 0.0, 1.0));
+}
+
+// Maps a direction of the hemisphere around z, of any length, to the unit square: the hemisphere's octahedral
+// projection, turned 45 degrees to fill the square, as webgiya maps radial depth. It needs no trigonometry, which
+// matters in the resolve, where it runs for every pixel and surfel pair; radial depth needs no equal areas.
+surfel_hemisphere_to_depth_square: fn (direction: vec3f) -> vec2f {
+	let scale: f32 = 1.0 / (abs(direction.x) + abs(direction.y) + max(direction.z, 0.0));
+	let x: f32 = direction.x * scale;
+	let y: f32 = direction.y * scale;
+	return vec2f(clamp((x + y) * 0.5 + 0.5, 0.0, 1.0), clamp((x - y) * 0.5 + 0.5, 0.0, 1.0));
+}
+
+// Returns the cell of a `side` × `side` grid over the unit square that holds `point`, row by row.
+surfel_square_cell: fn (point: vec2f, side: u32) -> u32 {
+	let column: u32 = min(u32(point.x * f32(side)), side - 1);
+	let row: u32 = min(u32(point.y * f32(side)), side - 1);
+	return row * side + column;
+}
+
+// Packs a point of the unit square into two 16-bit coordinates.
+surfel_pack_square: fn (point: vec2f) -> u32 {
+	let x: u32 = u32(clamp(point.x, 0.0, 1.0) * 65535.0 + 0.5);
+	let y: u32 = u32(clamp(point.y, 0.0, 1.0) * 65535.0 + 0.5);
+	return x | (y << 16);
+}
+
+// Unpacks a point that `surfel_pack_square` packed.
+surfel_unpack_square: fn (packed: u32) -> vec2f {
+	return vec2f(f32(packed & 65535) / 65535.0, f32(packed >> 16) / 65535.0);
+}
+
+// The moments of a radial depth cell as the occlusion test reads them: divided by powers of their root mean square
+// distance, `scale`, which keeps the solve well conditioned at any scale, and biased a little toward a fixed
+// distribution, which keeps the moment matrix positive definite, as "Moment Shadow Mapping" recommends.
+SurfelMoments: struct {
+	b1: f32,
+	b2: f32,
+	b3: f32,
+	b4: f32,
+	scale: f32,
+}
+
+// Returns `moments` as the occlusion test reads them.
+surfel_normalized_moments: fn (moments: vec4f) -> SurfelMoments {
+	let scale: f32 = max(0.0001, sqrt(max(0.0, moments.y)));
+	let inverse: f32 = 1.0 / scale;
+	let bias: f32 = 0.000002;
+	return SurfelMoments(
+		max(0.0, moments.x) * inverse * (1.0 - bias) + 0.5 * bias,
+		max(0.0, moments.y) * inverse * inverse * (1.0 - bias) + 0.5 * bias,
+		max(0.0, moments.z) * inverse * inverse * inverse * (1.0 - bias) + 0.5 * bias,
+		max(0.0, moments.w) * inverse * inverse * inverse * inverse * (1.0 - bias) + 0.5 * bias,
+		scale
+	);
+}
+
+// Returns the distance below which `surfel_moment_visibility` finds a point fully visible through a radial depth cell
+// holding `moments`, a little nearer, so rounding never crosses it. Two bounds hold there: Cantelli's inequality, which
+// the visibility's early out tests, and the lower root of the cell's second orthogonal polynomial, below which some
+// distribution with the cell's moments lies entirely beyond the point, so the four-moment bound finds no shadow. A
+// blend of cells, whose distribution mixes theirs, clears what all of its cells clear.
+surfel_moment_clearance: fn (moments: vec4f) -> f32 {
+	let normalized: SurfelMoments = surfel_normalized_moments(moments);
+	let b1: f32 = normalized.b1;
+	let b2: f32 = normalized.b2;
+	let b3: f32 = normalized.b3;
+	let variance: f32 = max(0.0, b2 - b1 * b1);
+	let clearance: f32 = b1 - sqrt(variance) * SURFEL_OCCLUSION_SKIP_DEVIATIONS;
+	// The polynomial is variance·z² - (b3 - b1·b2)·z + (b1·b3 - b2²). Below a spread of about 1% of the distances,
+	// rounding swamps its coefficients, and Cantelli's bound is close to the cell's distance anyway.
+	if (variance > 0.0001) {
+		let linear: f32 = b3 - b1 * b2;
+		let constant: f32 = b1 * b3 - b2 * b2;
+		let discriminant: f32 = max(0.0, linear * linear - 4.0 * variance * constant);
+		clearance = max(clearance, (linear - sqrt(discriminant)) / (2.0 * variance));
+	}
+	return clearance * normalized.scale * 0.999;
+}
+
+// Returns how visible a point `distance` meters along a direction is from a surfel, by `moments`, the radial depth of
+// the direction, which leaves the surfel's hemisphere at `cosine` to its normal.
+//
+// It is the Hamburger four-moment test of "Moment Shadow Mapping" by Christoph Peters and Reinhard Klein (2015), as
+// webgiya runs it: the moments bound how much of the cell's depth distribution lies nearer than the point, which is the
+// share of the surfel's view the point hides behind.
+surfel_moment_visibility: fn (moments: vec4f, distance: f32, cosine: f32) -> f32 {
+	// A cell no ray reached hides nothing.
+	if (moments.w == 0.0) {
+		return 1.0;
+	}
+	let normalized: SurfelMoments = surfel_normalized_moments(moments);
+	let z: f32 = max(distance, 0.0001) / normalized.scale;
+	let b1: f32 = normalized.b1;
+	let b2: f32 = normalized.b2;
+	// A point well nearer than the cell's mean depth is visible: by Cantelli's inequality, no distribution with these
+	// first two moments puts more than SURFEL_OCCLUSION_SKIP of its mass before the point, and the four-moment bound
+	// below never exceeds that, so the solve would hide at most a few thousandths of the light.
+	let variance: f32 = max(0.0, b2 - b1 * b1);
+	if (z < b1 && variance < SURFEL_OCCLUSION_SKIP * (variance + (b1 - z) * (b1 - z))) {
+		return 1.0;
+	}
+	let b3: f32 = normalized.b3;
+	let b4: f32 = normalized.b4;
+	let spread: f32 = clamp(sqrt(variance), 0.0, 1.0);
+	let bleed: f32 = clamp(
+		SURFEL_OCCLUSION_BLEED
+			+ SURFEL_OCCLUSION_SPREAD_BLEED * spread
+			+ SURFEL_OCCLUSION_GRAZING_BLEED * (1.0 - clamp(cosine, 0.0, 1.0)) * spread,
+		0.0,
+		0.99
+	);
+
+	// Solve the moment matrix [1 b1 b2; b1 b2 b3; b2 b3 b4] c = (1, z, z²) by LDLᵀ for the quadratic whose roots, with
+	// z, carry the distribution that hides the most.
+	let epsilon: f32 = 0.000001;
+	let d1: f32 = max(epsilon, b2 - b1 * b1);
+	let l21: f32 = (b3 - b2 * b1) / d1;
+	let d2: f32 = max(epsilon, b4 - b2 * b2 - l21 * l21 * d1);
+	let y1: f32 = z - b1;
+	let y2: f32 = z * z - b2 - l21 * y1;
+	let c2: f32 = y2 / d2;
+	let c1: f32 = y1 / d1 - l21 * c2;
+	let c0: f32 = 1.0 - b1 * c1 - b2 * c2;
+
+	let shadow: f32 = 0.0;
+	// Without a quadratic, or when its roots meet, the two-moment Chebyshev bound stands in.
+	let chebyshev: f32 = 0.0;
+	if (z > b1) {
+		chebyshev = 1.0 - d1 / (d1 + (z - b1) * (z - b1));
+	}
+	if (abs(c2) < epsilon) {
+		shadow = chebyshev;
+	} else {
+		let root: f32 = sqrt(max(0.0, c1 * c1 - 4.0 * c2 * c0));
+		let near: f32 = (0.0 - c1 - root) / (2.0 * c2);
+		let far: f32 = (0.0 - c1 + root) / (2.0 * c2);
+		if (near > far) {
+			let swap: f32 = near;
+			near = far;
+			far = swap;
+		}
+		if (abs(far - near) < epsilon) {
+			shadow = chebyshev;
+		} else if (z <= near) {
+			shadow = 0.0;
+		} else if (z <= far) {
+			shadow = (z * far - b1 * (z + far) + b2) / ((far - near) * max(epsilon, z - near));
+		} else {
+			shadow = 1.0 - (near * far - b1 * (near + far) + b2) / max(epsilon, (z - near) * (z - far));
+		}
+	}
+	shadow = clamp(clamp(shadow, 0.0, 1.0) * SURFEL_OCCLUSION_STRENGTH, 0.0, 1.0);
+	// Removing the bleed maps visibilities up to it to zero and stretches the rest back over [0, 1].
+	return clamp((1.0 - shadow - bleed) / (1.0 - bleed), 0.0, 1.0);
+}
+
+// Returns how visible `position` is from the surfel in `slot`, whose record is `record` and whose normal is `normal`, by
+// its radial depth around the direction toward `position`, blended bilinearly between cells.
+surfel_occlusion: fn (slot: u32, record: SurfelRecord, normal: vec3f, position: vec3f) -> f32 {
+	// Distances count from where the surfel's rays leave, as its radial depth does.
+	let offset: vec3f = position - (record.position + normal * surfel_ray_offset(record.radius));
+	let distance: f32 = length(offset);
+	// Every direction is clear that near, so no wall can stand between the surfel and the point.
+	if (distance <= 0.0001 || distance < surfel_clearances[slot]) {
+		return 1.0;
+	}
+	let local: vec3f = surfel_to_local(surfel_basis(normal), normal, offset * (1.0 / distance));
+	// A point below the surfel's plane takes the cell of the nearest direction on its horizon.
+	let horizon: vec3f = vec3f(local.x, local.y, max(local.z, 0.0));
+	let length_squared: f32 = dot(horizon, horizon);
+	if (length_squared <= 0.00000001) {
+		return 1.0;
+	}
+	let direction: vec3f = horizon * inversesqrt(length_squared);
+	let position_in_cells: vec2f = surfel_hemisphere_to_depth_square(direction) * f32(SURFEL_DEPTH_SIDE) - vec2f(0.5, 0.5);
+	let first_x: f32 = floor(position_in_cells.x);
+	let first_y: f32 = floor(position_in_cells.y);
+	let fraction_x: f32 = position_in_cells.x - first_x;
+	let fraction_y: f32 = position_in_cells.y - first_y;
+	let last: f32 = f32(SURFEL_DEPTH_SIDE - 1);
+	let moments: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total: f32 = 0.0;
+	for (let corner: u32 = 0; corner < 4; corner = corner + 1) {
+		let x: u32 = u32(clamp(first_x + f32(corner & 1), 0.0, last));
+		let y: u32 = u32(clamp(first_y + f32(corner >> 1), 0.0, last));
+		let cell: vec4f = surfel_depths[slot * SURFEL_DEPTH_CELLS + y * SURFEL_DEPTH_SIDE + x];
+		// Cells no ray reached yet take no part.
+		if (cell.w != 0.0) {
+			let share: f32 = (1.0 - fraction_x + (2.0 * fraction_x - 1.0) * f32(corner & 1))
+				* (1.0 - fraction_y + (2.0 * fraction_y - 1.0) * f32(corner >> 1));
+			moments = moments + cell * share;
+			total = total + share;
+		}
+	}
+	if (total < 0.00000001) {
+		return 1.0;
+	}
+	return surfel_moment_visibility(moments * (1.0 / total), distance, direction.z);
+}
+
+// Returns a well-mixed 32-bit hash of `value` (Bob Jenkins' one-at-a-time finalizer, as webgiya uses it).
+surfel_hash: fn (value: u32) -> u32 {
+	let x: u32 = value;
+	x = x + (x << 10);
+	x = x ^ (x >> 6);
+	x = x + (x << 3);
+	x = x ^ (x >> 11);
+	x = x + (x << 15);
+	return x;
+}
+
+// Combines two values into one hash (a linear congruential step with Matsumoto tempering, as webgiya uses it).
+surfel_hash_combine: fn (x: u32, y: u32) -> u32 {
+	let seed: u32 = (x * 1664525 + y + 1013904223) * 1664525;
+	seed = seed ^ (seed >> 11);
+	seed = seed ^ ((seed << 7) & 2636928640);
+	seed = seed ^ ((seed << 15) & 4022730752);
+	seed = seed ^ (seed >> 18);
+	return seed;
+}
+
+// Maps a hash to a uniform number in [0, 1).
+surfel_unit: fn (hash: u32) -> f32 {
+	return f32(hash >> 8) / 16777216.0;
+}

@@ -17,6 +17,7 @@
 //!
 //! Application wiring lives in [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
 
+mod acceleration_structures;
 mod features;
 mod geometry;
 mod layout;
@@ -26,6 +27,7 @@ mod manager;
 mod material_parameters;
 mod mesh_dispatch;
 mod ranges;
+mod ray_tracing;
 mod render_pass;
 mod scene;
 mod set_layouts;
@@ -37,13 +39,13 @@ mod skinning;
 #[cfg(test)]
 mod tests;
 
-pub use features::{GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, VisibilityFeatures};
+pub use features::{GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SURFEL_GI_ENABLED_PARAMETER, VisibilityFeatures};
 pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
 	DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER,
 	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, SHADOW_MAP_BUDGET_PARAMETER,
-	VisibilityPipelineManager, VisibilityPipelineSettings,
+	SURFEL_CAPACITY_PARAMETER, SURFEL_RAY_BUDGET_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 };
 pub use shader_generator::VisibilityShaderGenerator;

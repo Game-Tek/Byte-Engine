@@ -11,8 +11,8 @@
 
 use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
 use ghi::{
-	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, Formats, Layouts, QueueHandle, ShaderTypes,
-	UseCases, Uses,
+	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Formats, Layouts, QueueHandle, ShaderTypes, UseCases,
+	Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -21,10 +21,7 @@ use ghi::{
 	frame::Frame as _,
 	pipelines::{self, PushConstantRange, ShaderParameter, VertexElement, raster::AttachmentDescriptor},
 	queue::{FrameRequest, Queue as _, QueueExecution as _},
-	rt::{
-		BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
-		TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
-	},
+	rt,
 	shader::{CompiledShaderSource, ShaderSource},
 	*,
 };
@@ -78,6 +75,17 @@ fn create_default_device_setup_with_features(
 /// The setup locals drop in reverse order, so the context goes before the device and the instance.
 fn run(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
 	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
+	scenario(&mut context, queue_handle);
+}
+
+/// Runs one ray tracing scenario on a fresh validated device setup that enables ray tracing.
+fn run_with_ray_tracing(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	let (_instance, _device, mut context, queue_handle) =
+		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));
+	assert!(
+		context.supports_ray_tracing(),
+		"The test device cannot trace rays. The most likely cause is a GPU without ray tracing support. Run the ray tracing tests on a GPU that supports it."
+	);
 	scenario(&mut context, queue_handle);
 }
 
@@ -242,14 +250,75 @@ fn round_trip_texture3d_lut() {
 }
 
 #[test]
-#[cfg_attr(
-	not(target_os = "macos"),
-	ignore = "ray tracing is implemented for the Metal backend; the other backends are still in progress"
-)]
-fn render_with_ray_tracing() {
-	let (_instance, _device, mut device, queue_handle) =
-		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));
-	ray_tracing::ray_tracing(&mut device, queue_handle);
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn traced_structures_stay_resident_without_rebuilds() {
+	run_with_ray_tracing(ray_tracing::traced_structures_stay_resident_without_rebuilds);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn counters_time_bottom_level_builds() {
+	run_with_ray_tracing(ray_tracing::counters_time_bottom_level_builds);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn top_level_structures_have_a_copy_per_frame() {
+	run_with_ray_tracing(ray_tracing::top_level_structures_have_a_copy_per_frame);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn instances_report_custom_indices_beyond_16_bits() {
+	run_with_ray_tracing(ray_tracing::instances_report_custom_indices_beyond_16_bits);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn bottom_level_structures_hold_several_geometries() {
+	run_with_ray_tracing(ray_tracing::bottom_level_structures_hold_several_geometries);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn compacted_structures_trace_like_the_original() {
+	run_with_ray_tracing(ray_tracing::compacted_structures_trace_like_the_original);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn destroyed_structures_stay_valid_for_frames_in_flight() {
+	run_with_ray_tracing(ray_tracing::destroyed_structures_stay_valid_for_frames_in_flight);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn stale_structure_handles_are_rejected() {
+	run_with_ray_tracing(ray_tracing::stale_structure_handles_are_rejected);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports() {
+	run_with_ray_tracing(ray_tracing::invoke_runs_the_hit_group_of_the_record_the_intersector_reports);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use() {
+	run_with_ray_tracing(ray_tracing::closest_hit_reads_sets_the_ray_generation_shader_does_not_use);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn trace_rays_launches_exactly_the_requested_grid() {
+	run_with_ray_tracing(ray_tracing::trace_rays_launches_exactly_the_requested_grid);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group() {
+	run_with_ray_tracing(ray_tracing::rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group);
 }
 
 #[test]

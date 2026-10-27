@@ -126,9 +126,8 @@ impl CommandBufferRecording<'_> {
 			let address = self.descriptor_set_argument_buffer(set_handle);
 			for &(stages, binding) in &set.bindings {
 				if compute {
-					// A ray-tracing pipeline runs only its ray-generation function on Metal, so the dispatch binds the
-					// sets of that stage and leaves the hit and miss stages, which have no Metal function, unbound. A
-					// compute pipeline's sets only name the compute stage, so one filter serves both kinds.
+					// A ray tracing pipeline binds its sets for its ray generation kernel, which hands their addresses
+					// to the closest-hit functions it calls, so every set binding of either kind names a stage here.
 					if stages.intersects(crate::Stages::COMPUTE | crate::Stages::RAYGEN) {
 						self.set_stage_buffer_address(ArgumentTableStage::Compute, binding, address);
 					}
@@ -263,8 +262,8 @@ impl CommandBufferRecording<'_> {
 						let image = self.swapchain_surface(handle).expect(MISSING_SURFACE).image;
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}
-					Descriptor::AccelerationStructure { handle } => {
-						synchronization::MetalResourceUse::acceleration_structure(handle.0 as usize, stages, access)
+					Descriptor::TopLevelAccelerationStructure { handle, copy } => {
+						synchronization::MetalResourceUse::top_level(handle, copy, stages, access)
 					}
 					Descriptor::Sampler { .. } => continue,
 				};
@@ -298,9 +297,13 @@ impl CommandBufferRecording<'_> {
 		}
 
 		match (&state.encoder, &device.pipelines[pipeline_handle.0 as usize].pipeline) {
+			// A ray tracing pipeline is its ray generation kernel; its trace binds the closest hits the kernel calls.
 			(
 				ActiveEncoder::Compute(encoder),
 				PipelineState::Compute {
+					state: pipeline_state, ..
+				}
+				| PipelineState::RayTracing {
 					state: pipeline_state, ..
 				},
 			) => {
@@ -318,7 +321,7 @@ impl CommandBufferRecording<'_> {
 			(ActiveEncoder::Compute(_), PipelineState::Raster(_)) => panic!(
 				"Cannot dispatch a raster Metal pipeline. The most likely cause is that a raster pipeline handle was passed to bind_compute_pipeline."
 			),
-			(ActiveEncoder::Render(_), PipelineState::Compute { .. }) => panic!(
+			(ActiveEncoder::Render(_), PipelineState::Compute { .. } | PipelineState::RayTracing { .. }) => panic!(
 				"Cannot draw with a non-raster Metal pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
 			),
 		}

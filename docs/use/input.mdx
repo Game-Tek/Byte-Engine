@@ -169,9 +169,11 @@ While deciding capture, ask the UI engine what's under the pointer with
 last evaluated frame's clipped rectangles, and neither allocates nor runs
 layout.
 
-Set decorative and full-screen transparent containers to
-`Container::hit_testable(false)` so uncovered areas pass through. Their children
-can remain interactive. The retained query uses rectangular bounds. It doesn't
+Containers let the pointer through unless you turn on `hit_testable(true)`, so
+uncovered areas of decorative and full-screen containers pass through to the
+game. Turn it on only for the surfaces that take input, such as buttons and
+panels that should keep clicks from reaching the scene. The retained query uses
+rectangular bounds. It doesn't
 perform alpha or rounded-corner hit testing.
 
 Subscribe to `app.messages().channel::<ghi::window::Event>()` before creating a

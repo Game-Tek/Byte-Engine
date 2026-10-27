@@ -432,7 +432,7 @@ mod tests {
 		engine.mount(async move |ctx| {
 			let mut root = ctx
 				.element("root")
-				.container(|c| c.width(1920.into()).height(1080.into()).hit_testable(false))
+				.container(|c| c.width(1920.into()).height(1080.into()))
 				.await;
 			let mut row = root
 				.element("row")
@@ -440,7 +440,7 @@ mod tests {
 				.await;
 			let _button = row
 				.element("button")
-				.container(|c| c.width(96.into()).height(32.into()))
+				.container(|c| c.width(96.into()).height(32.into()).hit_testable(true))
 				.await;
 			// Parked off-screen with collapsed petals, as a menu is before it opens.
 			let mut dial = row
@@ -450,7 +450,6 @@ mod tests {
 						.absolute_position(2000, 2000)
 						.size(236.into())
 						.clip(false)
-						.hit_testable(false)
 						.opacity(0.0)
 				})
 				.await;
@@ -463,6 +462,7 @@ mod tests {
 							c.absolute_position(0, 0)
 								.size(236.into())
 								.clip(false)
+								.hit_testable(true)
 								.sector(Sector::new(middle, 0.0, 0.4).inset(3.0))
 						})
 						.await,
@@ -498,8 +498,8 @@ mod tests {
 			.map(|element| (element.id, element.position, element.size, element.sector))
 			.collect();
 		let at = |x: f32, y: f32| hits.query(UiPoint::new(x / 960.0 - 1.0, 1.0 - y / 540.0));
-		// The button is the second retained surface, after its row; nothing sits above the dial.
-		let button = hits.elements.get(1).map(|element| element.id);
+		// The button is the first retained surface, since its row takes no pointer input; nothing sits above the dial.
+		let button = hits.elements.first().map(|element| element.id);
 		assert_eq!(at(48.0, 16.0).map(|id| id.get()), button, "the button; {ids:?}");
 		assert_eq!(at(1648.0, 16.0), None, "above the dial; {ids:?}");
 		let mut found = std::vec::Vec::new();
@@ -518,13 +518,14 @@ mod tests {
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			// A quarter ring in a 100 by 100 square at the origin, sweeping from right to down.
 			let _wedge = root
 				.element("wedge")
 				.container(|c| {
 					c.absolute_position(0, 0)
 						.size(100.into())
+						.hit_testable(true)
 						.sector(Sector::new(0.0, std::f32::consts::FRAC_PI_2, 0.5).inset(6.0))
 				})
 				.await;
@@ -559,10 +560,15 @@ mod tests {
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let _source = root
 				.element("source")
-				.container(|c| c.absolute_position(20, 30).width(80.into()).height(40.into()))
+				.container(|c| {
+					c.absolute_position(20, 30)
+						.width(80.into())
+						.height(40.into())
+						.hit_testable(true)
+				})
 				.await;
 			loop {
 				ctx.render().await;

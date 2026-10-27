@@ -373,6 +373,7 @@ mod tests {
 		signed_area,
 	};
 	use crate::ui::{
+		EdgeFeather,
 		components::{curve::CurveSegment, path::FillRule},
 		render_pass::{
 			UI_KIND_PATH, UI_KIND_PATH_BLUR, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives,
@@ -418,6 +419,7 @@ mod tests {
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
 				sector: None,
+				fade: EdgeFeather::none(),
 				radius: 8.0,
 				path: Some(shape(2, square(0.0, 0.0, 10.0))),
 				shadow: None,
@@ -470,6 +472,7 @@ mod tests {
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
 				sector: None,
+				fade: EdgeFeather::none(),
 				radius: 0.0,
 				path: Some(shape(2, square(0.0, 0.0, 10.0))),
 				shadow: Some(UiShapeShadow {

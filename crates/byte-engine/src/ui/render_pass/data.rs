@@ -67,6 +67,8 @@ pub(super) struct UiDrawElement {
 	pub(super) sector: Option<Sector>,
 	pub(super) layer_kind: LayerKind,
 	pub(super) stroke_width: f32,
+	/// The layer's own feather, which fades its paint inward from the element's edges.
+	pub(super) fade: EdgeFeather,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +83,8 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
 	pub(super) sector: Option<Sector>,
+	/// The backdrop layer's own feather, which fades the blur inward from the element's edges. Paths and shadows have none.
+	pub(super) fade: EdgeFeather,
 	pub(super) radius: f32,
 	/// A path outline instead of the rectangle or sector; the path geometry pass builds its primitive.
 	pub(super) path: Option<UiPathShape>,
@@ -408,8 +412,8 @@ pub(super) const UI_CURVE_CAP_END: u32 = 2;
 ///
 /// | Kind | `bounds` | `a` | `b` | `data0` | `data1` |
 /// | --- | --- | --- | --- | --- | --- |
-/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | corner radius, corner exponent, stroke width, blur resolution mix | | |
-/// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | |
+/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | corner radius, corner exponent, stroke width, blur resolution mix | | edge fade mask index |
+/// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | edge fade mask index |
 /// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
 /// | Image | clipped quad | texture rectangle | | texture slot | |
 /// | Slug glyph, path | clipped quad | origin x, origin y, pixels per outline unit on x and y | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
@@ -1055,6 +1059,26 @@ pub(super) fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip
 	})
 }
 
+/// Resolves the mask that fades a layer's own paint inward from its element's box, following the element's corners.
+///
+/// The fragment shader reads it through the primitive's `data1` and never turns by it, so it carries no turn and
+/// equal fades share one table entry.
+pub(super) fn layer_fade_mask(
+	position: [f32; 2],
+	size: [f32; 2],
+	fade: EdgeFeather,
+	corner_radius: f32,
+	corner_exponent: f32,
+) -> Option<DrawClipMask> {
+	(!fade.is_none()).then_some(DrawClipMask {
+		position,
+		size,
+		edges: [fade.top, fade.right, fade.bottom, fade.left],
+		corner: [corner_radius, corner_exponent],
+		rotation: Rotation::IDENTITY,
+	})
+}
+
 pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Option<Rotation>) -> Option<DrawClipMask> {
 	// A turned element without a mask still needs a table entry to carry its turn.
 	(mask.is_some() || rotation.is_some()).then(|| DrawClipMask {
@@ -1155,6 +1179,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						corner_radius: element.corner_radius,
 						corner_exponent: element.corner_exponent,
 						sector: Some(sector),
+						fade: EdgeFeather::none(),
 						radius: 0.0,
 						path: None,
 						shadow: Some(UiShapeShadow {
@@ -1179,6 +1204,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				sector: element.sector,
 				layer_kind: layer.kind,
 				stroke_width,
+				// A shadow's own softness is its sigma, and fading it at the box's edge would cut an outer shadow off.
+				fade: match layer.kind {
+					LayerKind::Shadow(_) => EdgeFeather::none(),
+					_ => layer.feather,
+				},
 			});
 		}
 
@@ -1203,6 +1233,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
 				sector: element.sector,
+				fade: layer.feather,
 				radius,
 				path: None,
 				shadow: None,
@@ -1308,6 +1339,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						corner_radius: 0.0,
 						corner_exponent: 2.0,
 						sector: None,
+						fade: EdgeFeather::none(),
 						radius: 0.0,
 						path: Some(shape.clone()),
 						shadow: Some(UiShapeShadow {
@@ -1337,6 +1369,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						corner_radius: 0.0,
 						corner_exponent: 2.0,
 						sector: None,
+						fade: EdgeFeather::none(),
 						radius,
 						path: Some(shape.clone()),
 						shadow: None,

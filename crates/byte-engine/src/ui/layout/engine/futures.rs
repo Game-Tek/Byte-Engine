@@ -355,7 +355,7 @@ mod frame_wait_tests {
 	fn selecting_surface() -> Engine<(u32, u32)> {
 		let mut engine = Engine::with_context((0, 0));
 		engine.mount(async move |ctx| {
-			let mut surface = ctx.element("surface").container(|c| c).await;
+			let mut surface = ctx.element("surface").container(|c| c.hit_testable(true)).await;
 			loop {
 				let dragged = utils::r#async::select_biased! {
 					_ = surface.on(Events::Dragged) => true,
@@ -386,7 +386,7 @@ mod frame_wait_tests {
 	fn a_frame_wait_after_idle_frames_still_waits_for_the_next_frame() {
 		let mut engine = Engine::with_context(0);
 		engine.mount(async move |ctx| {
-			let mut surface = ctx.element("surface").container(|c| c).await;
+			let mut surface = ctx.element("surface").container(|c| c.hit_testable(true)).await;
 			loop {
 				// The frame wait loses once and is abandoned while the task idles on events alone.
 				utils::r#async::select_biased! {
@@ -417,7 +417,7 @@ mod frame_wait_tests {
 	fn a_frame_wait_its_task_stopped_polling_stops_requesting_frames() {
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut surface = ctx.element("surface").container(|c| c).await;
+			let mut surface = ctx.element("surface").container(|c| c.hit_testable(true)).await;
 			// The frame wait loses the selection, and the task then waits for events alone.
 			utils::r#async::select_biased! {
 				_ = surface.on(Events::Grabbed) => {},

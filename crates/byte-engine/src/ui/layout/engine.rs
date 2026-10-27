@@ -1473,7 +1473,7 @@ mod tests {
 
 	use super::*;
 	use crate::ui::{
-		Depth,
+		Anchor, Depth, Position,
 		components::curve::CurveSegment,
 		flow::{self, Location3},
 		layout::{
@@ -1493,9 +1493,9 @@ mod tests {
 	fn drag_observer() -> Engine<Vec<Option<DragCapture>>> {
 		let mut engine = Engine::with_context(Vec::new());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			root.element("source")
-				.container(|c| c.absolute_position(0, 0).size(20.into()))
+				.container(|c| c.absolute_position(0, 0).size(20.into()).hit_testable(true))
 				.await;
 			loop {
 				let drag = ctx.drag().await;
@@ -1580,18 +1580,18 @@ mod tests {
 	fn drag_board() -> Engine<DragLog> {
 		let mut engine = Engine::with_context(DragLog::default());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut target = root
 				.element("target")
-				.container(|c| c.absolute_position(0, 0).size(50.into()))
+				.container(|c| c.absolute_position(0, 0).size(50.into()).hit_testable(true))
 				.await;
 			let inner = target
 				.element("inner")
-				.container(|c| c.absolute_position(30, 30).size(20.into()))
+				.container(|c| c.absolute_position(30, 30).size(20.into()).hit_testable(true))
 				.await;
 			let mut source = root
 				.element("source")
-				.container(|c| c.absolute_position(0, 0).size(20.into()))
+				.container(|c| c.absolute_position(0, 0).size(20.into()).hit_testable(true))
 				.await;
 			let ids = (target.id(), inner.id(), source.id());
 			ctx.with(|log| log.ids = Some(ids)).await;
@@ -1838,7 +1838,7 @@ mod tests {
 	fn transformed_element_damages_old_and_new_bounds_only() {
 		let mut engine = Engine::with_context(0.0f32);
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			// Enough untouched siblings that the moved subtree is a small share of the tree.
 			for slot in 0..12 {
 				root.element(("static", slot as usize))
@@ -2136,7 +2136,7 @@ mod tests {
 
 		engine.mount(async move |ctx| {
 			let mut parent = ctx.element("parent").container(|c| c).await;
-			parent.element("child").container(|c| c).await;
+			parent.element("child").container(|c| c.hit_testable(true)).await;
 			let event = parent.on(Events::Scrolled).await;
 			let value = event.delta;
 			ctx.with(|received| *received = value).await;
@@ -2222,7 +2222,9 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			ctx.element("root").container(|c| c.size(Sizing::Relative(1, 1))).await;
+			ctx.element("root")
+				.container(|c| c.size(Sizing::Relative(1, 1)).hit_testable(true))
+				.await;
 		});
 		let mut first_hits = crate::ui::intersection::HitTest::default();
 		engine
@@ -2385,14 +2387,14 @@ mod tests {
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut parent = root
 				.element("parent")
 				.container(|c| c.absolute_position(10, 10).size(40.into()))
 				.await;
 			let _child = parent
 				.element("child")
-				.container(|c| c.absolute_position(25, 25).size(40.into()))
+				.container(|c| c.absolute_position(25, 25).size(40.into()).hit_testable(true))
 				.await;
 			let _decoration = root
 				.element("decoration")
@@ -2419,6 +2421,106 @@ mod tests {
 	}
 
 	#[test]
+	fn every_root_is_laid_out_from_the_viewport_and_later_roots_paint_over_earlier_ones() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(Vec::new());
+		engine.mount(async move |ctx| {
+			let corner = ctx
+				.element("corner")
+				.container(|c| c.size(20.into()).hit_testable(true))
+				.await;
+			let placed = ctx
+				.element("placed")
+				.container(|c| c.absolute_position(70, 80).size(20.into()).hit_testable(true))
+				.await;
+			// Overlaps the corner root, and is declared after it.
+			let cover = ctx
+				.element("cover")
+				.container(|c| c.absolute_position(10, 10).size(20.into()).hit_testable(true))
+				.await;
+			ctx.with(|ids: &mut Vec<Id>| ids.extend([corner.id(), placed.id(), cover.id()]))
+				.await;
+			loop {
+				ctx.render().await;
+			}
+		});
+		// Another mount's elements are roots of the same viewport.
+		engine.mount(async move |ctx| {
+			let other = ctx
+				.element("other")
+				.container(|c| c.absolute_position(100, 100).size(20.into()).hit_testable(true))
+				.await;
+			ctx.with(|ids: &mut Vec<Id>| ids.push(other.id())).await;
+			loop {
+				ctx.render().await;
+			}
+		});
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let &[corner, placed, cover, other] = engine.ctx().as_slice() else {
+			panic!("expected four roots");
+		};
+
+		assert_eq!(engine.hit(window(5.0, 5.0)), Some(corner));
+		assert_eq!(engine.hit(window(25.0, 25.0)), Some(cover));
+		assert_eq!(engine.hit(window(15.0, 15.0)), Some(cover));
+		assert_eq!(engine.hit(window(75.0, 85.0)), Some(placed));
+		assert_eq!(engine.hit(window(110.0, 110.0)), Some(other));
+		assert_eq!(engine.hit(window(50.0, 50.0)), None);
+	}
+
+	#[test]
+	fn anchored_positions_follow_the_parent_box_and_the_evaluation_size() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(Vec::new());
+		engine.mount(async move |ctx| {
+			let corner = ctx
+				.element("corner")
+				.container(|c| {
+					c.position(Position::anchored(Anchor::End(8.0), Anchor::End(8.0)))
+						.size(20.into())
+						.hit_testable(true)
+				})
+				.await;
+			let mut panel = ctx
+				.element("panel")
+				.container(|c| c.absolute_position(0, 0).size(60.into()))
+				.await;
+			let centered = panel
+				.element("centered")
+				.container(|c| {
+					c.position(Position::anchored(Anchor::Center(0.0), Anchor::Center(5.0)))
+						.size(20.into())
+						.hit_testable(true)
+				})
+				.await;
+			ctx.with(|ids: &mut Vec<Id>| ids.extend([corner.id(), centered.id()])).await;
+			loop {
+				ctx.render().await;
+			}
+		});
+		// Converts layout units to normalized window coordinates for a square viewport of `extent` units.
+		let at = |x: f32, y: f32, extent: f32| UiPoint::new(x / extent * 2.0 - 1.0, 1.0 - y / extent * 2.0);
+
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let &[corner, centered] = engine.ctx().as_slice() else {
+			panic!("expected two anchored containers");
+		};
+		// 128 - 8 - 20 puts the corner container at 100 through 120 on both axes.
+		assert_eq!(engine.hit(at(101.0, 101.0, 128.0)), Some(corner));
+		assert_eq!(engine.hit(at(119.0, 119.0, 128.0)), Some(corner));
+		assert_eq!(engine.hit(at(121.0, 121.0, 128.0)), None);
+		// Centered in the 60 unit panel at 20 through 40, then moved down 5.
+		assert_eq!(engine.hit(at(21.0, 26.0, 128.0)), Some(centered));
+		assert_eq!(engine.hit(at(39.0, 44.0, 128.0)), Some(centered));
+		assert_eq!(engine.hit(at(30.0, 23.0, 128.0)), None);
+
+		// A larger evaluation size moves the root anchored to the end with it.
+		let _ = engine.evaluate(Size::new(200, 200), &frame_allocator);
+		assert_eq!(engine.hit(at(110.0, 110.0, 200.0)), None);
+		assert_eq!(engine.hit(at(173.0, 173.0, 200.0)), Some(corner));
+	}
+
+	#[test]
 	fn clipping_prunes_descendants_from_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(0);
@@ -2428,7 +2530,7 @@ mod tests {
 			let mut parent = root.element("parent").container(|c| c.size(50.into())).await;
 			let mut child = parent
 				.element("child")
-				.container(|c| c.size(20.into()).absolute_position(70, 0))
+				.container(|c| c.size(20.into()).absolute_position(70, 0).hit_testable(true))
 				.await;
 
 			loop {
@@ -2455,7 +2557,7 @@ mod tests {
 			let mut parent = root.element("parent").container(|c| c.size(50.into()).clip(false)).await;
 			let mut child = parent
 				.element("child")
-				.container(|c| c.size(20.into()).absolute_position(70, 0))
+				.container(|c| c.size(20.into()).absolute_position(70, 0).hit_testable(true))
 				.await;
 
 			loop {
@@ -2505,7 +2607,12 @@ mod tests {
 			let mut root = ctx.element("root").container(|c| c.size(50.into())).await;
 			let mut toast = root
 				.element("toast")
-				.container(|c| c.size(20.into()).depth(Depth::absolute(1)).absolute_position(70, 0))
+				.container(|c| {
+					c.size(20.into())
+						.depth(Depth::absolute(1))
+						.absolute_position(70, 0)
+						.hit_testable(true)
+				})
 				.await;
 
 			loop {
@@ -2713,7 +2820,7 @@ mod tests {
 			let value = frame
 				.element("modal")
 				.mount(async move |ctx| {
-					let mut button = ctx.element("button").container(|c| c).await;
+					let mut button = ctx.element("button").container(|c| c.hit_testable(true)).await;
 					button.on(Events::Actuated).await;
 					42
 				})
@@ -3102,7 +3209,7 @@ mod tests {
 		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
-			let mut button = ctx.element("button").container(|c| c.opacity(0.0)).await;
+			let mut button = ctx.element("button").container(|c| c.opacity(0.0).hit_testable(true)).await;
 
 			loop {
 				button.on(Events::Actuated).await;
@@ -3404,7 +3511,7 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			root.element("plain")
 				.curve(|c| {
 					c.size(10.into())
@@ -3472,10 +3579,10 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(std::vec::Vec::new());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut target = root
 				.element("target")
-				.container(|c| c.absolute_position(0, 0).size(50.into()))
+				.container(|c| c.absolute_position(0, 0).size(50.into()).hit_testable(true))
 				.await;
 			// Wait for one click, start and abandon a second wait, then look away for frames.
 			let _ = target.on(Events::Actuated).await;
@@ -3531,10 +3638,10 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut source = root
 				.element("source")
-				.container(|c| c.absolute_position(0, 0).size(20.into()))
+				.container(|c| c.absolute_position(0, 0).size(20.into()).hit_testable(true))
 				.await;
 			// A dial parked out of the way until the press moves it under the pointer's path, holding a
 			// sector petal that grows open over the frames after the press.
@@ -3545,7 +3652,6 @@ mod tests {
 						.absolute_position(500, 500)
 						.size(100.into())
 						.clip(false)
-						.hit_testable(false)
 				})
 				.await;
 			let mut target = dial
@@ -3556,9 +3662,14 @@ mod tests {
 							.absolute_position(0, 0)
 							.size(100.into())
 							.clip(false)
+							.hit_testable(true)
 							.sector(crate::ui::Sector::new(0.0, 0.0, 0.3))
 					} else {
-						target.absolute_position(50, 50).size(50.into()).clip(false)
+						target
+							.absolute_position(50, 50)
+							.size(50.into())
+							.clip(false)
+							.hit_testable(true)
 					}
 				})
 				.await;
@@ -3632,15 +3743,21 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut panel = root
 				.element("panel")
 				.container(|c| c.absolute_position(0, 0).width(100.into()).height(50.into()).flow(flow::row))
 				.await;
 			hover_log(&mut panel, "panel").await;
-			let mut left = panel.element("left").container(|c| c.size(50.into())).await;
+			let mut left = panel
+				.element("left")
+				.container(|c| c.size(50.into()).hit_testable(true))
+				.await;
 			hover_log(&mut left, "left").await;
-			let mut right = panel.element("right").container(|c| c.size(50.into())).await;
+			let mut right = panel
+				.element("right")
+				.container(|c| c.size(50.into()).hit_testable(true))
+				.await;
 			hover_log(&mut right, "right").await;
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
@@ -3674,14 +3791,24 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut target = root
 				.element("target")
-				.container(|c| c.absolute_position(50, 0).width(50.into()).height(100.into()))
+				.container(|c| {
+					c.absolute_position(50, 0)
+						.width(50.into())
+						.height(100.into())
+						.hit_testable(true)
+				})
 				.await;
 			hover_log(&mut target, "target").await;
 			root.element("card")
-				.container(|c| c.absolute_position(0, 0).size(40.into()).depth(Depth::absolute(1)))
+				.container(|c| {
+					c.absolute_position(0, 0)
+						.size(40.into())
+						.depth(Depth::absolute(1))
+						.hit_testable(true)
+				})
 				.await;
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
@@ -3712,19 +3839,23 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut canvas = root
 				.element("canvas")
 				.container(|c| {
 					c.absolute_position(0, 0)
-						.hit_testable(false)
 						.clip(false)
 						.transform(Transform::identity().origin(UiPoint::zero()).translate(-30.0, 0.0))
 				})
 				.await;
 			canvas
 				.element("node")
-				.container(|c| c.absolute_position(-20, -10).width(80.into()).height(40.into()))
+				.container(|c| {
+					c.absolute_position(-20, -10)
+						.width(80.into())
+						.height(40.into())
+						.hit_testable(true)
+				})
 				.await;
 		});
 		engine.evaluate(Size::new(100, 100), &allocator);
@@ -3744,10 +3875,15 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut frame = root
 				.element("frame")
-				.container(|c| c.absolute_position(0, 0).size(100.into()).flow(flow::center))
+				.container(|c| {
+					c.absolute_position(0, 0)
+						.size(100.into())
+						.flow(flow::center)
+						.hit_testable(true)
+				})
 				.await;
 			frame
 				.element("decorative")
@@ -3762,7 +3898,6 @@ mod tests {
 				.container(|c| {
 					c.absolute_position(100, 0)
 						.size(50.into())
-						.hit_testable(false)
 						.clip(false)
 						.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0))
 				})
@@ -3814,7 +3949,7 @@ mod tests {
 			frame
 				.element("background")
 				.component(async move |ctx| {
-					let mut background = ctx.element("button").container(|c| c).await;
+					let mut background = ctx.element("button").container(|c| c.hit_testable(true)).await;
 					background.on(Events::Actuated).await;
 					ctx.with(|(_, background_hits)| *background_hits += 1).await;
 				})
@@ -3822,7 +3957,10 @@ mod tests {
 			frame
 				.element("modal")
 				.mount(async move |ctx| {
-					let mut backdrop = ctx.element("backdrop").container(|c| c.depth(Depth::absolute(1))).await;
+					let mut backdrop = ctx
+						.element("backdrop")
+						.container(|c| c.depth(Depth::absolute(1)).hit_testable(true))
+						.await;
 					backdrop.on(Events::Actuated).await;
 					ctx.with(|(hits, _)| *hits += 1).await;
 				})

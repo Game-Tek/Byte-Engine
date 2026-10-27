@@ -204,6 +204,16 @@ mask_coverage: fn (index: u32, pixel: vec2f) -> f32 {
 	return coverage * clamp(0.5 - field_distance, 0.0, 1.0);
 }
 
+// Coverage left by a layer's own edge fade. Rectangle and sector layers and their backdrop blurs keep the fade's
+// index into `masks` in `data1`; zero is no fade. Every other kind uses `data1` for something else.
+fade_coverage: fn (index: u32, pixel: vec2f) -> f32 {
+	let kind: u32 = primitives[index].kind;
+	if (kind == 0 || kind == 1 || kind == 6 || kind == 7) {
+		return mask_coverage(primitives[index].data1, pixel);
+	}
+	return 1.0;
+}
+
 cube_root: fn (value: f32) -> f32 {
 	let root: f32 = pow(abs(value), 0.33333334);
 	if (value < 0.0) {
@@ -745,6 +755,7 @@ main: fn(pipeline_input: interface {
 		pipeline_input.curve_to
 	);
 	let mask: f32 = mask_coverage(primitives[pipeline_input.primitive].mask, pipeline_input.pixel_position)
+		* fade_coverage(pipeline_input.primitive, pipeline_input.pixel_position)
 		* turned_edge_coverage(pipeline_input.primitive, pipeline_input.pixel_position);
 	let color_attachment: vec4f = vec4f(shaded.x, shaded.y, shaded.z, clamp(shaded.w * mask, 0.0, 1.0));
 

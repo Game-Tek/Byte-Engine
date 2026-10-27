@@ -32,6 +32,7 @@ fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
 		sector: None,
+		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Fill,
 		stroke_width: 0.0,
 	}
@@ -101,6 +102,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
 			sector: None,
+			fade: EdgeFeather::none(),
 			radius: 8.0,
 			path: None,
 			shadow: None,

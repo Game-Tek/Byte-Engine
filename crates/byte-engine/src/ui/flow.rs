@@ -225,6 +225,21 @@ pub fn centered_row(input: FlowInput) -> FlowOutput {
 	FlowOutput::new(offset, Offset(input.cursor.0 + input.child_size.0, input.cursor.1))
 }
 
+/// Places children in a row, each centered vertically in the parent, with a fixed gap after each child.
+pub fn centered_row_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
+	// Keep the callable type independent of the caller's numeric type.
+	fn with_gap(gap: f32) -> impl FlowFunction {
+		move |input| {
+			let output = centered_row(input);
+			FlowOutput::new(
+				output.child_offset(),
+				Offset(output.next_cursor().0 + gap, output.next_cursor().1),
+			)
+		}
+	}
+	with_gap(gap.into() as f32)
+}
+
 pub fn centered_column(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
@@ -259,6 +274,7 @@ pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -
 		center.type_id(),
 		row_with_gap(0.0).type_id(),
 		column_with_gap(0.0).type_id(),
+		centered_row_with_gap(0.0).type_id(),
 	]
 	.contains(&kind);
 	// The gap is the only captured input in built-in flows. Zero sizes and cursor

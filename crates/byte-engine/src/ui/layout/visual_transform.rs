@@ -146,20 +146,19 @@ mod tests {
 			let allocator = bumpalo::Bump::new();
 			let mut engine = Engine::new();
 			engine.mount(async move |ctx| {
-				let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+				let mut root = ctx.element("root").container(|c| c).await;
 				let mut parent = root
 					.element("parent")
 					.container(|c| {
 						c.absolute_position(20, 30)
 							.width(80.into())
 							.height(60.into())
-							.hit_testable(false)
 							.transform(Transform::identity().origin(origin).scale(0.5).translate(10.0, 5.0))
 					})
 					.await;
 				parent
 					.element("child")
-					.container(|c| c.width(20.into()).height(10.into()))
+					.container(|c| c.width(20.into()).height(10.into()).hit_testable(true))
 					.await;
 			});
 			let mut hits = HitTest::default();
@@ -182,7 +181,7 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut root = ctx.element("root").container(|c| c).await;
 			let mut parent = root
 				.element("parent")
 				.container(|c| {

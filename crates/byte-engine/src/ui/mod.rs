@@ -56,7 +56,7 @@ pub use drag::{DragCapture, DragDrop};
 pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{
-	Depth, Geometry, Position, Sizing,
+	Anchor, Depth, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
 	engine::{
 		ElementKind, Engine, EvaluationContext, MountedComponentFuture, PointerState, Properties, Render, RenderRevision,

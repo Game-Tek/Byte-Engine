@@ -74,7 +74,7 @@ pub enum Primitives {
 impl Primitives {
 	/// Reports whether pointer hit testing can find this element.
 	///
-	/// Containers opt out with [`crate::ui::Properties::hit_testable`], editable text is always a target, and curves
+	/// Containers opt in with [`crate::ui::Properties::hit_testable`], editable text is always a target, and curves
 	/// are one once they have a hit width.
 	pub(crate) fn hit_testable(&self) -> bool {
 		match self {

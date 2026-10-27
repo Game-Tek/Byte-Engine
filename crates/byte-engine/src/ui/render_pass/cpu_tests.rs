@@ -76,6 +76,7 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
 		sector: None,
+		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Fill,
 		stroke_width: 0.0,
 	};
@@ -170,6 +171,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				corner_radius: 4.0,
 				corner_exponent: 2.0,
 				sector: None,
+				fade: EdgeFeather::none(),
 				radius,
 				path: None,
 				shadow: None,
@@ -259,7 +261,7 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	let mut engine = Engine::new();
 	engine.mount(async move |ctx| {
-		let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+		let mut root = ctx.element("root").container(|c| c).await;
 		let mut viewport = root
 			.element("viewport")
 			.container(|c| c.absolute_position(100, 100).width(400.into()).height(300.into()))
@@ -270,20 +272,13 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 				c.absolute_position(0, 0)
 					.width(400.into())
 					.height(300.into())
-					.hit_testable(false)
 					.clip(false)
 					.transform(Transform::identity().origin(UiPoint::zero()))
 			})
 			.await;
 		let mut wires = content
 			.element("wires")
-			.container(|c| {
-				c.absolute_position(0, 0)
-					.width(400.into())
-					.height(300.into())
-					.hit_testable(false)
-					.clip(false)
-			})
+			.container(|c| c.absolute_position(0, 0).width(400.into()).height(300.into()).clip(false))
 			.await;
 		wires
 			.element("wire-1")
@@ -366,12 +361,11 @@ fn root_transform_preserves_viewport_units() {
 	engine.mount(async move |ctx| {
 		let mut root = ctx
 			.element("root")
-			.container(|c| {
-				c.style(ConcreteStyle::new())
-					.transform(Transform::identity().origin(UiPoint::zero()).translate(10., 20.).scale(2.))
-			})
+			.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).translate(10., 20.).scale(2.)))
 			.await;
-		root.element("child").container(|c| c.size(10.into())).await;
+		root.element("child")
+			.container(|c| c.size(10.into()).style(ConcreteStyle::default()))
+			.await;
 	});
 	let arena = bumpalo::Bump::new();
 	engine.evaluate(Size::new(100, 100), &arena);
@@ -410,7 +404,12 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 	engine.mount(async move |ctx| {
 		let mut frame = ctx
 			.element("frame")
-			.container(|c| c.size(40.into()).clip(false).flow(crate::ui::flow::center))
+			.container(|c| {
+				c.size(40.into())
+					.clip(false)
+					.flow(crate::ui::flow::center)
+					.style(ConcreteStyle::default())
+			})
 			.await;
 		let square = || {
 			let mut square = CurvePath::new(40.into(), 40.into());
@@ -496,6 +495,7 @@ fn shadow_element(shadow: crate::ui::Shadow) -> UiDrawElement {
 		corner_radius: 4.0,
 		corner_exponent: 2.0,
 		sector: None,
+		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Shadow(shadow),
 		stroke_width: 0.0,
 	}
@@ -576,6 +576,7 @@ fn sector_shadow(sigma: f32) -> UiBlurDrawElement {
 		color: [0.0, 0.0, 0.0, 0.5],
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
+		fade: EdgeFeather::none(),
 		sector: Some(Sector {
 			start: 0.0,
 			sweep: std::f32::consts::PI,

@@ -165,13 +165,7 @@ async fn cell<C: 'static>(
 ) -> EvaluationContext<C> {
 	parent
 		.element(key)
-		.container(|c| {
-			c.width(width.into())
-				.height(height.into())
-				.flow(flow::centered_row)
-				.hit_testable(false)
-				.style(ConcreteStyle::new())
-		})
+		.container(|c| c.width(width.into()).height(height.into()).flow(flow::centered_row))
 		.await
 		.text(content, text)
 		.await
@@ -265,14 +259,13 @@ mod settings {
 	async fn screen(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(|c| c.flow(flow::row).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.container(|c| c.flow(flow::row).style(fill(0.05, 0.06, 0.08, 1.0)))
 			.await;
 		let mut sidebar = root
 			.element("sidebar")
 			.container(|c| {
 				c.width(280.0.into())
 					.flow(flow::column_with_gap(4))
-					.hit_testable(false)
 					.style(panel(0.08, 0.09, 0.11))
 			})
 			.await;
@@ -289,21 +282,11 @@ mod settings {
 
 		let mut content = root
 			.element("content")
-			.container(|c| {
-				c.width(Sizing::Relative(3, 4))
-					.flow(flow::column_with_gap(16))
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.width(Sizing::Relative(3, 4)).flow(flow::column_with_gap(16)))
 			.await;
 		let mut header = content
 			.element("header")
-			.container(|c| {
-				c.height(72.0.into())
-					.flow(flow::centered_row)
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.height(72.0.into()).flow(flow::centered_row))
 			.await;
 		let mut title = cell(&mut header, ("cell", 2usize), 1000.0, 72.0, CATEGORIES[0], |t| {
 			t.font_size(32.0).style(text_color())
@@ -339,6 +322,7 @@ mod settings {
 					.width(264.0.into())
 					.height(44.0.into())
 					.corner_radius(8.0)
+					.hit_testable(true)
 					.flow(flow::centered_row);
 				style(c, index == 0)
 			})
@@ -377,18 +361,14 @@ mod settings {
 				c.height(LIST_HEIGHT.into())
 					.corner_radius(12.0)
 					.flow(flow::column)
+					.hit_testable(true)
 					.style(panel(0.07, 0.08, 0.1))
 			})
 			.await;
 		ctx.with(|c| c.list.set(Some(viewport.id()))).await;
 		let mut rows = viewport
 			.element("rows")
-			.container(|c| {
-				c.height((ROW_HEIGHT * OPTIONS.len() as f32).into())
-					.flow(flow::column)
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.height((ROW_HEIGHT * OPTIONS.len() as f32).into()).flow(flow::column))
 			.await;
 		for index in 0..OPTIONS.len() {
 			let label = OPTIONS[(index + category * 5) % OPTIONS.len()];
@@ -424,10 +404,12 @@ mod settings {
 		let mut row = ctx
 			.element("row")
 			.container(|c| {
-				c.height(ROW_HEIGHT.into())
-					.flow(flow::centered_row)
-					.hit_testable(false)
-					.style(fill(1.0, 1.0, 1.0, if index.is_multiple_of(2) { 0.02 } else { 0.0 }))
+				c.height(ROW_HEIGHT.into()).flow(flow::centered_row).style(fill(
+					1.0,
+					1.0,
+					1.0,
+					if index.is_multiple_of(2) { 0.02 } else { 0.0 },
+				))
 			})
 			.await;
 		cell(&mut row, ("cell", 3usize), 900.0, ROW_HEIGHT, label, |t| {
@@ -447,6 +429,7 @@ mod settings {
 					.height(28.0.into())
 					.corner_radius(14.0)
 					.flow(flow::centered_row)
+					.hit_testable(true)
 					.style(track_style(on))
 			})
 			.await;
@@ -455,7 +438,6 @@ mod settings {
 			.container(|c| {
 				c.size(22.0.into())
 					.corner_radius(11.0)
-					.hit_testable(false)
 					.transform(knob_offset(on))
 					.style(fill(0.96, 0.97, 0.98, 1.0))
 			})
@@ -481,6 +463,7 @@ mod settings {
 					.height(44.0.into())
 					.corner_radius(8.0)
 					.flow(flow::center)
+					.hit_testable(true)
 					.style(panel(0.16, 0.18, 0.22))
 			})
 			.await;
@@ -500,7 +483,13 @@ mod settings {
 		ctx.with(|c| c.dialog_open.set(true)).await;
 		let mut backdrop = ctx
 			.element("backdrop")
-			.container(|c| c.depth(Depth::absolute(1)).flow(flow::center).style(fill(0.0, 0.0, 0.0, 0.0)))
+			.container(|c| {
+				c.depth(Depth::absolute(1))
+					.flow(flow::center)
+					// Takes the pointer, so the menu under the modal can't be clicked.
+					.hit_testable(true)
+					.style(fill(0.0, 0.0, 0.0, 0.0))
+			})
 			.await;
 		let mut dialog = backdrop
 			.element("dialog")
@@ -528,13 +517,7 @@ mod settings {
 		.await;
 		let mut buttons = dialog
 			.element("buttons")
-			.container(|c| {
-				c.width(416.0.into())
-					.height(56.0.into())
-					.flow(flow::row_with_gap(16))
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.width(416.0.into()).height(56.0.into()).flow(flow::row_with_gap(16)))
 			.await;
 		async fn choice(
 			buttons: &mut EvaluationContext<Model>,
@@ -549,6 +532,7 @@ mod settings {
 						.height(48.0.into())
 						.corner_radius(10.0)
 						.flow(flow::center)
+						.hit_testable(true)
 						.style(style)
 				})
 				.await;
@@ -752,19 +736,12 @@ mod hud {
 					.height(14.0.into())
 					.corner_radius(7.0)
 					.flow(flow::row)
-					.hit_testable(false)
 					.style(fill(0.0, 0.0, 0.0, 0.5))
 			})
 			.await;
 		track
 			.element("fill")
-			.container(|c| {
-				c.width(240.0.into())
-					.height(14.0.into())
-					.corner_radius(7.0)
-					.hit_testable(false)
-					.style(color)
-			})
+			.container(|c| c.width(240.0.into()).height(14.0.into()).corner_radius(7.0).style(color))
 			.await
 	}
 
@@ -785,7 +762,6 @@ mod hud {
 					.height(height.into())
 					.corner_radius(12.0)
 					.flow(flow)
-					.hit_testable(false)
 					.style(style)
 			})
 			.await
@@ -794,10 +770,7 @@ mod hud {
 	// Keep the HUD as one component, as games write it: build every widget, then present game state each frame.
 	#[allow(clippy::too_many_lines)]
 	async fn hud(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx
-			.element("root")
-			.container(|c| c.hit_testable(false).style(ConcreteStyle::new()))
-			.await;
+		let mut root = ctx.element("root").container(|c| c).await;
 
 		let mut player = anchored(
 			&mut root,
@@ -810,22 +783,11 @@ mod hud {
 		.await;
 		player
 			.element("portrait")
-			.container(|c| {
-				c.size(96.0.into())
-					.corner_radius(10.0)
-					.hit_testable(false)
-					.style(panel(0.3, 0.22, 0.18))
-			})
+			.container(|c| c.size(96.0.into()).corner_radius(10.0).style(panel(0.3, 0.22, 0.18)))
 			.await;
 		let mut vitals = player
 			.element("vitals")
-			.container(|c| {
-				c.width(240.0.into())
-					.height(112.0.into())
-					.flow(flow::column_with_gap(4))
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.width(240.0.into()).height(112.0.into()).flow(flow::column_with_gap(4)))
 			.await;
 		cell(&mut vitals, ("cell", 7usize), 240.0, 28.0, "Kestrel", |t| {
 			t.font_size(20.0).style(text_color())
@@ -885,7 +847,6 @@ mod hud {
 					.container(|c| {
 						c.size(10.0.into())
 							.corner_radius(5.0)
-							.hit_testable(false)
 							.transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
 							.style(if enemy {
 								fill(0.95, 0.3, 0.3, 1.0)
@@ -912,11 +873,11 @@ mod hud {
 			let mut slot = abilities
 				.element(("slot", index))
 				.container(|c| {
-					c.size(SLOT_SIZE.into())
-						.corner_radius(10.0)
-						.flow(flow::center)
-						.hit_testable(false)
-						.style(panel(0.12 + index as f32 * 0.04, 0.14, 0.2))
+					c.size(SLOT_SIZE.into()).corner_radius(10.0).flow(flow::center).style(panel(
+						0.12 + index as f32 * 0.04,
+						0.14,
+						0.2,
+					))
 				})
 				.await;
 			slot.element("key")
@@ -928,12 +889,7 @@ mod hud {
 				.await;
 			let overlay = slot
 				.element("cooldown")
-				.container(|c| {
-					c.width(SLOT_SIZE.into())
-						.height(0.0.into())
-						.hit_testable(false)
-						.style(fill(0.0, 0.0, 0.0, 0.6))
-				})
+				.container(|c| c.width(SLOT_SIZE.into()).height(0.0.into()).style(fill(0.0, 0.0, 0.0, 0.6)))
 				.await;
 			let seconds = slot
 				.element("seconds")
@@ -1129,7 +1085,7 @@ mod leaderboard {
 	async fn host(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(|c| c.flow(flow::center).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.container(|c| c.flow(flow::center).style(fill(0.05, 0.06, 0.08, 1.0)))
 			.await;
 		loop {
 			if ctx.with(|c| c.visible.get()).await {
@@ -1149,18 +1105,12 @@ mod leaderboard {
 					.height((BODY_HEIGHT + 48.0).into())
 					.corner_radius(12.0)
 					.flow(flow::column)
-					.hit_testable(false)
 					.style(panel(0.07, 0.08, 0.1))
 			})
 			.await;
 		let mut header = table
 			.element("header")
-			.container(|c| {
-				c.height(48.0.into())
-					.flow(flow::row)
-					.hit_testable(false)
-					.style(fill(1.0, 1.0, 1.0, 0.06))
-			})
+			.container(|c| c.height(48.0.into()).flow(flow::row).style(fill(1.0, 1.0, 1.0, 0.06)))
 			.await;
 		const COLUMNS: [(&str, f32); 4] = [("#", 80.0), ("Player", 560.0), ("Score", 280.0), ("Status", 280.0)];
 		for (title, width) in COLUMNS {
@@ -1172,7 +1122,7 @@ mod leaderboard {
 		// Rows share the body as their pointer target; the pointer's height picks the row.
 		let mut body = table
 			.element("body")
-			.container(|c| c.height(BODY_HEIGHT.into()).flow(flow::column).style(ConcreteStyle::new()))
+			.container(|c| c.height(BODY_HEIGHT.into()).flow(flow::column).hit_testable(true))
 			.await;
 		ctx.with(|c| c.body.set(Some(body.id()))).await;
 
@@ -1181,12 +1131,7 @@ mod leaderboard {
 		for index in 0..rows {
 			let mut row = body
 				.element(("row", index))
-				.container(|c| {
-					c.height(ROW_HEIGHT.into())
-						.flow(flow::row)
-						.hit_testable(false)
-						.style(row_style(index, false))
-				})
+				.container(|c| c.height(ROW_HEIGHT.into()).flow(flow::row).style(row_style(index, false)))
 				.await;
 			cell(&mut row, ("cell", 21usize), COLUMNS[0].1, ROW_HEIGHT, index + 1, row_text).await;
 			cell(
@@ -1362,10 +1307,7 @@ mod board {
 
 	/// Cards are flow children of their column; a grabbed card is lifted to the root and follows the pointer.
 	async fn board(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx
-			.element("root")
-			.container(|c| c.hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
-			.await;
+		let mut root = ctx.element("root").container(|c| c.style(fill(0.05, 0.06, 0.08, 1.0))).await;
 		let root_id = root.id();
 		let mut columns = Vec::with_capacity(COLUMNS.len());
 		for index in 0..COLUMNS.len() {
@@ -1377,6 +1319,7 @@ mod board {
 						.height(760.0.into())
 						.corner_radius(10.0)
 						.flow(flow::column_with_gap(CARD_GAP))
+						.hit_testable(true)
 						.style(panel(0.08, 0.09, 0.1))
 				})
 				.await;
@@ -1403,6 +1346,7 @@ mod board {
 						.height(CARD_HEIGHT.into())
 						.corner_radius(8.0)
 						.transform(placed_at(CARD_INSET, 0.0))
+						.hit_testable(true)
 						.style(panel(0.16, 0.18, 0.22))
 				})
 				.await;
@@ -1556,7 +1500,7 @@ mod sign_in {
 	async fn form(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(|c| c.flow(flow::center).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.container(|c| c.flow(flow::center).style(fill(0.05, 0.06, 0.08, 1.0)))
 			.await;
 		let mut form = root
 			.element("form")
@@ -1565,7 +1509,6 @@ mod sign_in {
 					.height(440.0.into())
 					.corner_radius(16.0)
 					.flow(flow::centered_column)
-					.hit_testable(false)
 					.style(panel(0.09, 0.1, 0.12))
 			})
 			.await;
@@ -1594,13 +1537,7 @@ mod sign_in {
 		field(&mut form, "password", "••••••••••").await;
 		let mut remember = form
 			.element("remember")
-			.container(|c| {
-				c.width(440.0.into())
-					.height(48.0.into())
-					.flow(flow::centered_row)
-					.hit_testable(false)
-					.style(ConcreteStyle::new())
-			})
+			.container(|c| c.width(440.0.into()).height(48.0.into()).flow(flow::centered_row))
 			.await;
 		remember
 			.element("check")
@@ -1693,10 +1630,7 @@ mod tooltip {
 	}
 
 	async fn screen(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx
-			.element("root")
-			.container(|c| c.size(Sizing::Relative(1, 1)).hit_testable(false))
-			.await;
+		let mut root = ctx.element("root").container(|c| c.size(Sizing::Relative(1, 1))).await;
 		for index in 0..CARDS {
 			let mut card = root
 				.element(("card", index))

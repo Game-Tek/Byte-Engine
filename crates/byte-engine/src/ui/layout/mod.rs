@@ -12,7 +12,10 @@ use super::{
 	flow::{self, FlowInput, FlowOutput, Location, Location3, Offset, Size},
 };
 use crate::ui::{
-	components::{container::Sector, curve::CurveSegment},
+	components::{
+		container::{Container, Sector},
+		curve::CurveSegment,
+	},
 	font::TextSystem,
 	primitive::Primitives,
 	style::{ConcreteStyle, EdgeFeather},
@@ -130,13 +133,19 @@ pub struct IdedElement {
 }
 
 impl IdedElement {
-	/// Makes a node with the default look: one white fill layer, no transform, and full opacity.
+	/// Makes a node with the default look: no transform, full opacity, and one white fill layer, except for a
+	/// container, which paints nothing until it is styled, so a container that only arranges its children needs no
+	/// setup.
 	pub(crate) fn new(id: Id, serial: u32, revision: u64, primitive: Primitives) -> Self {
+		let style = match primitive {
+			Primitives::Container(_) => ConcreteStyle::new(),
+			_ => ConcreteStyle::default(),
+		};
 		Self {
 			id,
 			serial,
 			revision,
-			style: ConcreteStyle::default(),
+			style,
 			transform: Transform::default(),
 			opacity: 1.0,
 			primitive,
@@ -239,8 +248,14 @@ fn layout_elements<'a>(
 				let child_size = measure_element(child, available, text, &mut measurements[child_index]);
 				let anchored = matches!(child_container.map(|value| value.position), Some(Position::Absolute { .. }));
 				let flow_output = match child_container.map(|value| value.position) {
-					// Absolute positions are offsets from the parent's top-left corner.
-					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(origin.x() + x, origin.y() + y), cursor),
+					// Absolute positions are anchored to the parent's box.
+					Some(Position::Absolute { x, y }) => FlowOutput::new(
+						Offset::new(
+							origin.x() + x.offset(size.x(), child_size.x()),
+							origin.y() + y.offset(size.y(), child_size.y()),
+						),
+						cursor,
+					),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
 					_ => container.flow.call(FlowInput::new(size, cursor, child_size)),
 				};
@@ -306,31 +321,63 @@ fn layout_elements<'a>(
 		siblings.truncate(start);
 	}
 
-	let root = tree
-		.parents
-		.iter()
-		.position(Option::is_none)
-		.expect("Root container not found");
-	let root_size = measure_element(&tree.elements[root], available_space, text_system, &mut measurements[root]);
+	// The viewport parents every root: each element declared directly in a mount, and each one whose parent was
+	// removed without it. It offers the evaluation size and has no flow, so roots overlap from its corner.
+	let mut roots = Vec::new_in(frame_allocator);
+	roots.extend((0..tree.elements.len()).filter(|&index| tree.parents[index].is_none()));
 	let mut slots = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
 	slots.resize(tree.elements.len(), 0);
-	place(
-		tree,
-		root,
-		root_size,
-		available_space,
-		Offset::new(0.0, 0.0),
-		false,
-		text_system,
-		measurements,
-		&mut slots,
-		&mut elements,
-	);
+	// Roots are placed apart from `place`'s child loop, which stays as small as the hot recursion needs.
+	for &root in &roots {
+		let element = &tree.elements[root];
+		let size = measure_element(element, available_space, text_system, &mut measurements[root]);
+		let (offset, anchored) = match &element.primitive {
+			Primitives::Container(Container {
+				position: Position::Absolute { x, y },
+				..
+			}) => (
+				Offset::new(
+					x.offset(available_space.x(), size.x()),
+					y.offset(available_space.y(), size.y()),
+				),
+				true,
+			),
+			_ => (Offset::new(0.0, 0.0), false),
+		};
+		place(
+			tree,
+			root,
+			size,
+			available_space,
+			offset,
+			anchored,
+			text_system,
+			measurements,
+			&mut slots,
+			&mut elements,
+		);
+	}
 
 	let mut next = 0;
 	let mut siblings = Vec::new_in(frame_allocator);
 	let mut layers = Vec::new_in(frame_allocator);
-	rank(tree, root, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
+	// Roots order among themselves like siblings: by relative depth, then in tree order.
+	for &root in &roots {
+		match &tree.elements[root].primitive {
+			Primitives::Container(container) => match container.depth {
+				Depth::Relative(depth) => siblings.push((depth, root)),
+				Depth::Absolute(depth) => layers.push((depth, root)),
+			},
+			_ => siblings.push((1, root)),
+		}
+	}
+	if !siblings.is_sorted_by_key(|&(depth, _)| depth) {
+		siblings.sort_by_key(|&(depth, _)| depth);
+	}
+	for sibling in 0..siblings.len() {
+		let root = siblings[sibling].1;
+		rank(tree, root, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
+	}
 	// Absolute-depth layers leave their parent and paint above all ordinary content, lowest first and
 	// in tree order among equals. A layer found inside another one is ranked after it, which keeps it
 	// above the layer that opened it.
@@ -347,10 +394,14 @@ pub enum Depth {
 	Absolute(i32),
 }
 
+/// The `Position` enum lets a container leave its parent's flow and sit at a fixed spot in the parent's box, such as a
+/// badge in a card's corner or a heads-up display pinned to the window's bottom-right corner.
+///
+/// Set it with [`Properties::position`](crate::ui::Properties::position).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Position {
 	Flow,
-	Absolute { x: f32, y: f32 },
+	Absolute { x: Anchor, y: Anchor },
 }
 
 impl Position {
@@ -358,10 +409,41 @@ impl Position {
 		Self::Flow
 	}
 
+	/// Places the container at an offset from its parent's top-left corner.
 	pub fn absolute(x: impl Into<f64>, y: impl Into<f64>) -> Self {
-		Self::Absolute {
-			x: x.into() as f32,
-			y: y.into() as f32,
+		Self::anchored(Anchor::Start(x.into() as f32), Anchor::Start(y.into() as f32))
+	}
+
+	/// Places the container against its parent's box with one [`Anchor`] per axis, so it follows the parent's size.
+	pub fn anchored(x: Anchor, y: Anchor) -> Self {
+		Self::Absolute { x, y }
+	}
+}
+
+/// The `Anchor` enum picks which part of the parent's box an absolutely positioned container measures from on one
+/// axis, so it can stay against an edge or centered however the parent resizes.
+///
+/// Each variant pairs a point of the parent's box with the same point of the container's box and holds a distance in
+/// layout units. Use it with [`Position::anchored`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Anchor {
+	/// From the parent's left or top edge to the container's; a positive distance moves right or down.
+	Start(f32),
+	/// From the parent's center to the container's; a positive distance moves right or down.
+	Center(f32),
+	/// From the parent's right or bottom edge to the container's; a positive distance moves left or up, into the parent.
+	End(f32),
+}
+
+impl Anchor {
+	/// Resolves this anchor to the container's offset from the parent's start edge on one axis.
+	#[inline]
+	pub(crate) fn offset(self, parent: f32, child: f32) -> f32 {
+		let finite = |distance: f32| if distance.is_finite() { distance } else { 0.0 };
+		match self {
+			Self::Start(distance) => finite(distance),
+			Self::Center(distance) => (parent - child) * 0.5 + finite(distance),
+			Self::End(distance) => parent - child - finite(distance),
 		}
 	}
 }

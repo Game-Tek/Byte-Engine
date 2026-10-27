@@ -26,7 +26,7 @@ Every element kind accepts these properties:
 
 | Property | Type | Default | Notes |
 | --- | --- | --- | --- |
-| Style | One layer, an array of layers, or a style | One white fill layer | Replaces all layers. A single layer can also be pushed on top. |
+| Style | One layer, an array of layers, or a style | None for a container; one white fill layer for every other kind | Replaces all layers. A single layer can also be pushed on top. A container paints nothing until it has a layer. |
 | Transform | A transform | Identity | |
 | Opacity | Number | 1 | Clamped to `[0, 1]`; a non-finite value counts as 1. Multiplies through ancestors. |
 
@@ -42,9 +42,9 @@ already exists keeps its properties until an edit changes them.
 | Corner exponent | Number | 2 | Superellipse exponent, clamped to `[1, 8]`; non-finite or below 1 counts as 2. |
 | Sector | Optional sector | None | Described after this table. |
 | Depth | Relative or absolute integer | Relative 1 | |
-| Position | Flow, or absolute x and y | Flow | An absolute position is an offset from the parent's top left and doesn't advance the flow cursor. |
+| Position | Flow, or an absolute anchor per axis | Flow | An absolute position places the container against its parent's box and doesn't advance the flow cursor. See [Absolute positions](#absolute-positions). |
 | Clip | Boolean | True | |
-| Hit testable | Boolean | True | Children keep their own policy. |
+| Hit testable | Boolean | False | Turn it on for a container that takes pointer input, such as a button, a drag source, or a drop target. Pointer input passes through a container that's off to whatever is under it. Children keep their own policy. |
 | Flow | A flow function | Grid | See [Flows](#flows). |
 
 A sector turns the container into an annular sector centered in it, with the
@@ -124,7 +124,7 @@ shadows aren't drawn; outer shadows are.
 | --- | --- |
 | Relative | A numerator over a denominator of the available space. Full is 1 over 1 and the default. |
 | Absolute | A number of layout units, whatever the available space. |
-| Available space | The parent's resolved size for a flow child; the evaluation size for the root and for an absolute-depth container. |
+| Available space | The parent's resolved size for a flow child; the evaluation size for a root and for an absolute-depth container. |
 | Fit to content | None. A container's size never depends on its children. |
 | Minimum and maximum | None. |
 | Transforms | Never change a measured size or a flow placement. |
@@ -142,8 +142,15 @@ own position, and returns the child's offset and the next cursor.
 | Row with a gap | The cursor | Moved right by the width plus the gap |
 | Column with a gap | The cursor | Moved down by the height plus the gap |
 | Centered row | Centered vertically in the parent | Moved right by the width |
+| Centered row with a gap | Centered vertically in the parent | Moved right by the width plus the gap |
 | Centered column | Centered horizontally in the parent | Moved down by the height |
 | Center | Centered both ways | Unchanged, so every child is centered |
+
+A root is an element with no parent: one declared directly in a mount, or one
+whose parent was removed without it. Every root is laid out, as a child of the
+viewport that has no flow and the evaluation size. A root with an absolute
+position is anchored to the viewport; any other root sits at the viewport's
+top-left corner, so roots can overlap and never move each other.
 
 Flow-placed children are clamped to non-negative coordinates; absolutely
 positioned children aren't. An absolute-depth container is placed after the
@@ -151,13 +158,32 @@ ordinary children without advancing the cursor, and is measured against the
 evaluation size. A custom flow replays placement on every edit other than a
 transform; the built-in flows reuse unchanged placement.
 
+### Absolute positions
+
+An absolute position names one anchor for each axis. Each anchor pairs a point
+on the parent's box with the same point on the container's box, then moves the
+container by a distance in layout units:
+
+| Anchor | Pairs | A positive distance moves the container |
+| --- | --- | --- |
+| Start | The parent's left or top edge with the container's left or top edge | Right or down |
+| Center | The parent's center with the container's center | Right or down |
+| End | The parent's right or bottom edge with the container's right or bottom edge | Left or up, into the parent |
+
+The parent's box is its laid-out size; a root's parent box is the viewport at
+the evaluation size, so a root anchored to the end or the center follows the
+evaluation size. A non-finite distance counts as 0. An absolute position given
+as a plain x and y is a start anchor on both axes.
+
 ## Depth
 
 Depth decides what paints over what, and what a pointer hits first. It's local
 to each container. A relative depth orders a child among its siblings: a
 container paints first, then its children from the lowest depth to the highest,
 and children at the same depth in the order they were declared. A child that
-isn't a container counts as relative depth 1.
+isn't a container counts as relative depth 1. Roots order among themselves the
+same way, as siblings under the viewport, so of two roots at the same depth the
+one declared later paints over the other.
 
 A container and everything inside it paint as one block. No depth set inside a
 component can put one of its elements over or under another component, so a
@@ -177,9 +203,9 @@ inherited transform scale.
 | --- | --- |
 | Clip | A clipping container clips its descendants to its rectangle inset by its widest stroke, intersected with the inherited clip. Clip off makes descendants inherit the ancestor's clip and mask. |
 | Fully clipped element | Dropped from rendering and from hit testing. |
-| Mask | Made when a layer has a feather, or when the corner radius exceeds the border. It carries the inset geometry, the feather, the radius minus the border, and the corner exponent. Otherwise the parent's mask is inherited. |
+| Mask | Made for a clipping container's descendants when a layer has a feather, or when the corner radius exceeds the border. It carries the inset geometry, the first feather, the radius minus the border, and the corner exponent. Otherwise the parent's mask is inherited. |
 | Rotation | Clips and masks are unrotated; the rotation applies at draw time. |
-| Feather | Widths per edge in layout units. Negative or non-finite widths count as 0. |
+| Feather | Widths per edge in layout units. Negative or non-finite widths count as 0. A container layer with a feather fades its own paint from fully transparent at the box's edge to fully opaque that far inside it, following the corner radius and corner exponent, on top of any inherited mask. |
 | Backdrop blur | A radius clamped to `[0, 64]`; the standard deviation is 1.69 times the square root of the radius. Only the first fill layer with a positive radius blurs, it doesn't paint, and it draws after the element's other layers. |
 
 ## Style layers
@@ -194,6 +220,8 @@ before the fill it sits under. A style with no layers is invisible.
 | Feather | Edge widths | None |
 | Backdrop blur radius | Number | 0 |
 
+A container's fill, stroke, and backdrop blur layers fade by their own feather;
+a shadow layer ignores it, and so does every layer of a curve, a path, or text.
 A stroke with a non-finite or non-positive width is skipped. Containers stroke
 inward and curves stroke outward. A gradient runs between two points in the
 element's own units; pixels before the first point take the start color and
@@ -264,7 +292,7 @@ kind can hold focus.
 
 | Rule | Value |
 | --- | --- |
-| Hit-testable elements | Containers unless turned off, editable text always, curves with a hit width. Never images or paths. |
+| Hit-testable elements | Containers turned on, editable text always, curves with a hit width. Never images or paths. |
 | Opacity | Doesn't affect hits, even at 0. |
 | Bounds | Half-open: the left and top edges hit, the right and bottom don't. |
 | Sector | The point must also fall inside the sector. |
@@ -349,7 +377,7 @@ intersected with the clip, and the rotated bounds of turned elements.
 
 | Limit | Per frame | Past the limit |
 | --- | --- | --- |
-| Distinct clip and feather-mask combinations | 4,096 | The rest of the frame is skipped and reported once in the log. |
+| Distinct clip, feather-mask, and layer-fade combinations | 4,096 | The rest of the frame is skipped and reported once in the log. |
 | Distinct images shown at once | 31 | Further images are skipped and reported once in the log. An image the UI stops showing frees its slot. |
 | Primitives | 131,072. A rectangle layer, glyph, image, or backdrop blur is one primitive; a curve is a few per segment. | The rest of the frame is skipped and reported once in the log. |
 | Distinct glyphs | A few thousand | Further glyphs are skipped and reported once in the log. |

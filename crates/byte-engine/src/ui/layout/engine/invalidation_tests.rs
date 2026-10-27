@@ -11,12 +11,16 @@ fn scene(stage: usize) -> Engine<usize> {
 	let mut engine = Engine::with_context(stage);
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.flow(flow::row).clip(false)).await;
+		// The changing surfaces take the pointer, so the hit comparison covers them.
 		let mut panel = root
 			.element("panel")
-			.container(|c| c.size(40.into()).flow(flow::column))
+			.container(|c| c.size(40.into()).flow(flow::column).hit_testable(true))
 			.await;
 		let mut label = panel.element("label").text("Small", |t| t).await;
-		let mut sibling = root.element("sibling").container(|c| c.size(20.into())).await;
+		let mut sibling = root
+			.element("sibling")
+			.container(|c| c.size(20.into()).hit_testable(true))
+			.await;
 		let mut applied = 0;
 		loop {
 			let target = ctx.with(|c| *c).await;
@@ -285,7 +289,9 @@ fn text_scene(stage: usize) -> Engine<usize> {
 		let mut root = ctx.element("root").container(|c| c.flow(flow::row).clip(false)).await;
 		let mut label = root.element("label").text("ab", |t| t).await;
 		let mut field = root.element("field").text_field("ab", |f| f).await;
-		root.element("target").container(|c| c.size(20.into())).await;
+		root.element("target")
+			.container(|c| c.size(20.into()).hit_testable(true))
+			.await;
 		let mut applied = 0;
 		loop {
 			let target = ctx.with(|c| *c).await;
@@ -474,9 +480,9 @@ fn custom_flow_changes_across_resizes_refresh_geometry() {
 fn input_updates_appearance_before_the_next_hit_geometry() {
 	let mut engine = Engine::new();
 	engine.mount(async move |ctx| {
-		let mut root = ctx.element("root").container(|c| c.size(30.into())).await;
+		let mut root = ctx.element("root").container(|c| c.size(30.into()).hit_testable(true)).await;
 		root.element("child")
-			.container(|c| c.size(20.into()).position(Position::absolute(40, 0)))
+			.container(|c| c.size(20.into()).position(Position::absolute(40, 0)).hit_testable(true))
 			.await;
 		root.on(Events::Actuated).await;
 		root.update_container(|c| c.opacity(0.25).clip(false)).await;
@@ -539,13 +545,14 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 			let (camera, nested) = ctx.with(|c| *c).await;
 			let mut applied = (camera, nested);
 			let mut root = ctx.element("root").container(|c| c.flow(counted as fn(_) -> _)).await;
+			// The transformed surfaces take the pointer, so the hit comparison covers them.
 			let mut canvas = root
 				.element("canvas")
-				.container(|c| c.size(100.into()).clip(false).transform(camera))
+				.container(|c| c.size(100.into()).clip(false).transform(camera).hit_testable(true))
 				.await;
 			let mut child = canvas
 				.element("child")
-				.container(|c| c.size(30.into()).flow(flow::column).transform(nested))
+				.container(|c| c.size(30.into()).flow(flow::column).transform(nested).hit_testable(true))
 				.await;
 			child.element("label").text("Local label", |t| t).await;
 			child
@@ -556,7 +563,9 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 						.hit_width(6.0)
 				})
 				.await;
-			root.element("toolbar").container(|c| c.size(40.into())).await;
+			root.element("toolbar")
+				.container(|c| c.size(40.into()).hit_testable(true))
+				.await;
 			loop {
 				let (camera, nested) = ctx.with(|c| *c).await;
 				if camera != applied.0 {
@@ -646,6 +655,7 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 				.element("root")
 				.container(|c| c.flow(flow::row).clip(true).corner_radius(6.0))
 				.await;
+			// Every surface below the root takes the pointer, so the hit comparison covers each clip and layer.
 			let mut moved = root
 				.element("moved")
 				.container(|c| {
@@ -654,23 +664,37 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 						.clip(true)
 						.corner_radius(10.0)
 						.transform(outer)
+						.hit_testable(true)
 				})
 				.await;
 			let mut nested = moved
 				.element("nested")
-				.container(|c| c.size(50.into()).clip(true).corner_radius(4.0).opacity(0.5).transform(inner))
+				.container(|c| {
+					c.size(50.into())
+						.clip(true)
+						.corner_radius(4.0)
+						.opacity(0.5)
+						.transform(inner)
+						.hit_testable(true)
+				})
 				.await;
-			nested.element("leaf").container(|c| c.size(80.into())).await;
+			nested
+				.element("leaf")
+				.container(|c| c.size(80.into()).hit_testable(true))
+				.await;
 			nested.element("label").text("Inside", |t| t).await;
 			moved
 				.element("overlay")
-				.container(|c| c.size(30.into()).depth(Depth::Absolute(3)))
+				.container(|c| c.size(30.into()).depth(Depth::Absolute(3)).hit_testable(true))
 				.await;
 			let mut sibling = root
 				.element("sibling")
-				.container(|c| c.size(60.into()).clip(true).corner_radius(8.0))
+				.container(|c| c.size(60.into()).clip(true).corner_radius(8.0).hit_testable(true))
 				.await;
-			sibling.element("sibling_leaf").container(|c| c.size(90.into())).await;
+			sibling
+				.element("sibling_leaf")
+				.container(|c| c.size(90.into()).hit_testable(true))
+				.await;
 			loop {
 				let (outer, inner) = ctx.with(|c| *c).await;
 				if outer != applied.0 {

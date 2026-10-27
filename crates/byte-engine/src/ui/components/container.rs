@@ -125,7 +125,7 @@ impl Default for Container {
 			depth: Depth::default(),
 			position: Position::default(),
 			clip: true,
-			hit_testable: true,
+			hit_testable: false,
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
 		}
 	}

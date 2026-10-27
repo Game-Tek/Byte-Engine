@@ -37,15 +37,83 @@ Pass components as async closures or async functions that take
 The layout layer stays small by design.
 Containers own sizing, positioning, flow, clipping, style, and visual data.
 Flow functions such as row, column, grid, and centered variants place children.
+Elements you declare directly in a mount are laid out from the window's top-left
+corner: give each one an absolute position, or it sits at the corner. To keep one
+against another edge or centered, anchor it as described in [Pin an element to an
+edge or the center](#pin-an-element-to-an-edge-or-the-center). They don't
+flow after each other, so each mount, such as a heads-up display and a pause menu, places
+its own elements. When two overlap, the one declared later paints on top.
 Transforms are best treated as animation and presentation state, while position and sizing describe stable layout.
 A transform applies to the whole subtree: a scaled container scales its
 descendants' rectangles, hit bounds, clipping, curve points, stroke widths, and
 font sizes together, so one transform on a content layer zooms a canvas.
 
+## Pin an element to an edge or the center
+
+To keep an element in a corner or centered however its parent resizes, anchor
+it instead of computing its position from the parent's size. Pick an `Anchor`
+for each axis: `Start` measures from the left or top edge, `Center` from the
+center, and `End` from the right or bottom edge, with the distance moving the
+element into the parent.
+
+```rust
+use byte_engine::ui::{Anchor, Position};
+
+// 48 units from the window's bottom-right corner, at any window size.
+let mut status = root
+	.element("status")
+	.container(|c| {
+		c.position(Position::anchored(Anchor::End(48.0), Anchor::End(48.0)))
+			.width(272.into())
+			.height(92.into())
+	})
+	.await;
+
+// Centered on the window.
+root.element("crosshair")
+	.container(|c| {
+		c.position(Position::anchored(Anchor::Center(0.0), Anchor::Center(0.0)))
+			.width(12.into())
+			.height(12.into())
+	})
+	.await;
+```
+
+An element declared directly in a mount anchors to the window, so pass the
+window's size to `Engine::evaluate` and the anchored elements follow every
+resize. Inside a container, the anchor measures from that container's box.
+
+## Fade a layer's edges
+
+To soften a panel so it fades into the scene instead of ending at a hard edge,
+give its layer a feather. The layer fades from transparent at the element's edge
+to its full color that many layout units inside it, on each edge you set.
+
+```rust
+use byte_engine::ui::ConcreteLayer;
+use byte_engine::utils::RGBA;
+
+// A dark band that fades out over its left 114 units.
+panel.update_container(|c| {
+	c.style([ConcreteLayer::default()
+		.color(RGBA::new(0.0, 0.0, 0.0, 0.55).into())
+		.feather_edges(0.0, 0.0, 0.0, 114.0)])
+})
+.await;
+```
+
+A feather fades a container's fill, stroke, and backdrop blur layers. When the
+container clips, its first feathered layer also fades its children, so content
+scrolled toward a faded edge fades with the background.
+
 ## Handle events and focus
 
 UI events are futures that your component can await.
 A component can wait for pointer-style events, keys, text edits, timers, or render ticks.
+Containers ignore the pointer until you turn on `hit_testable(true)`, so turn it
+on for each container that takes clicks, hovers, drags, or drops, such as a
+button or a drop target. Everything else, such as a panel, a label's frame, or
+a heads-up display, lets the pointer through to what's under it.
 Text input is app-owned: a text field emits edit deltas such as inserted and deleted characters, and application state decides how to apply them. Write the result back with `update_text`.
 
 Components request and release focus explicitly. Send key and text-edit events to
@@ -60,7 +128,9 @@ your component runs, in the order you awaited them. The next layout sees the
 change, and so do components that run after yours in the same evaluation.
 
 Declarations and edits take a setup function that sets properties in place,
-such as `|c| c.width(240.into()).clip(false)`. The setters write into the
+such as `|c| c.width(240.into()).clip(false)`. A new container paints nothing
+until you give it a style, so a container that only arranges its children
+needs no setup for its look. The setters write into the
 element where the engine stores it, so nothing is built, copied, or sent on the
 way. Setup runs only when the declaration creates the element. An element that
 already exists keeps its properties until you edit it. A plain function over

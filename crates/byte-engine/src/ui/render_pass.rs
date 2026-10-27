@@ -10,7 +10,7 @@ use utils::{Extent, RGBA, hash::HashMap};
 
 use super::{
 	layout::{ClipMask, Geometry, engine},
-	style::{Color, LayerKind, SHADOW_EXTENT_SIGMAS, Shadow},
+	style::{Color, EdgeFeather, LayerKind, SHADOW_EXTENT_SIGMAS, Shadow},
 	transform::Rotation,
 };
 use crate::{
@@ -1116,7 +1116,7 @@ mod tests {
 			context::{Context, ElementContext},
 			engine::Engine,
 		},
-		style::{ConcreteLayer, ConcreteStyle, LayerKind},
+		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, LayerKind},
 	};
 
 	static UI_BLUR_DOWNSAMPLE_BESL: std::sync::LazyLock<&str> =
@@ -2297,6 +2297,7 @@ mod tests {
 			corner_radius,
 			corner_exponent,
 			sector: None,
+			fade: EdgeFeather::none(),
 			layer_kind: LayerKind::Fill,
 			stroke_width: 0.0,
 		}
@@ -2389,6 +2390,7 @@ mod tests {
 				corner_radius: 8.0,
 				corner_exponent: 2.0,
 				sector: None,
+				fade: EdgeFeather::none(),
 				radius: 18.0,
 				path: None,
 				shadow: None,
@@ -2446,6 +2448,7 @@ mod tests {
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
 				sector: None,
+				fade: EdgeFeather::none(),
 				radius: 8.0,
 				path: None,
 				shadow: None,
@@ -3382,6 +3385,58 @@ mod tests {
 			},
 			&mut [],
 		)[3]
+	}
+
+	/// Verifies a container layer's feather fades that layer's own fill from its edges inward, and leaves its shadow whole.
+	#[test]
+	fn layer_feather_fades_its_own_fill_from_the_edges() {
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			ctx.element("panel")
+				.container(|c| {
+					c.absolute_position(10, 10).size(80.into()).style(ConcreteStyle::from_layers([
+						ConcreteLayer::default()
+							.shadow(crate::ui::Shadow::new([0.0, 0.0], 0.0).spread(4.0))
+							.feather(EdgeFeather::all(10.0)),
+						ConcreteLayer::default().feather(EdgeFeather::edges(10.0, 0.0, 0.0, 20.0)),
+					]))
+				})
+				.await;
+		});
+		let arena = bumpalo::Bump::new();
+		engine.evaluate(Size::new(100, 100), &arena);
+		let mut draw_list = UiDrawList::default();
+		update_from_render(engine.render(), &mut draw_list);
+		let mut masks = UiMaskTable::default();
+		let geometry = build_ui_primitives_uncached(&draw_list, Extent::square(100), &arena, Vec::new(), &mut masks);
+		let mut fragment = UiFragmentVm::new(&geometry.primitives, masks.entries(), None);
+		// The frame's clear quad comes first and is a rectangle too, so the layers are found from the end.
+		let index = |kind: u32| {
+			geometry
+				.primitives
+				.iter()
+				.rposition(|primitive| primitive.kind == kind)
+				.expect("expected the panel's layer") as u32
+		};
+		let mut alpha = |kind: u32, pixel_position: [f32; 2]| {
+			fragment.run(
+				UiVaryings {
+					primitive: index(kind),
+					pixel_position,
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3]
+		};
+
+		// The fill spans 10 to 90; its left edge fades over 20 units and its top over 10.
+		assert!((alpha(UI_KIND_RECT, [50.0, 50.0]) - 1.0).abs() < 0.001);
+		assert!((alpha(UI_KIND_RECT, [20.0, 50.0]) - 0.5).abs() < 0.001);
+		assert!((alpha(UI_KIND_RECT, [50.0, 15.0]) - 0.5).abs() < 0.001);
+		assert!(alpha(UI_KIND_RECT, [11.0, 50.0]) < 0.05);
+		// Edges without a width stay whole.
+		assert!((alpha(UI_KIND_RECT, [89.5, 50.0]) - 1.0).abs() < 0.001);
+		assert!((alpha(UI_KIND_SHADOW, [8.0, 50.0]) - 1.0).abs() < 0.05);
 	}
 
 	/// Verifies the sector field covers the ring inside its sweep and nothing else.

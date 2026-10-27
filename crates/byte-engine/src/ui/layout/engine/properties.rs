@@ -290,8 +290,9 @@ impl Properties<'_, Container> {
 		self
 	}
 
-	/// Selects whether this surface participates in pointer hit testing.
-	/// Disable this for decorative roots; children retain their own policy.
+	/// Selects whether this surface takes pointer input: clicks, hovers, drags, and drops. Containers start with it
+	/// off, so the pointer passes through them; turn it on for a button, a drag source, or a drop target. Children
+	/// keep their own policy.
 	pub fn hit_testable(self, enabled: bool) -> Self {
 		self.target.hit_testable = enabled;
 		self
@@ -314,8 +315,8 @@ impl Properties<'_, Container> {
 	}
 
 	/// Places this container at an offset from its parent's top-left corner
-	/// instead of in the parent's flow. A container with [`Depth::absolute`]
-	/// is placed from the viewport's corner instead.
+	/// instead of in the parent's flow. To pin it to another edge or the
+	/// center, pass [`Position::anchored`] to [`Self::position`].
 	pub fn absolute_position(self, x: impl Into<f64>, y: impl Into<f64>) -> Self {
 		self.position(Position::absolute(x, y))
 	}

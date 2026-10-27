@@ -173,6 +173,12 @@ pub(super) fn build_ui_primitives<'a>(
 					break;
 				}
 				primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
+				// The draw list gives a path blur no fade, so its bands in `data1` stay.
+				if let Some(fade) =
+					layer_fade_mask(blur.position, blur.size, blur.fade, blur.corner_radius, blur.corner_exponent)
+				{
+					primitive.data1 = masks.index(None, Some(fade), sx, sy);
+				}
 				// The blur reads the layer below it, so the primitives so far are drawn first.
 				blur_step(
 					&mut output.steps,
@@ -236,6 +242,16 @@ pub(super) fn build_ui_primitives<'a>(
 					}
 					// Mask indices belong to this frame's table, so a retained primitive gets its own each frame.
 					primitive.mask = masks.index(None, element.clip_mask, sx, sy);
+					// The draw list gives a shadow no fade, so its offset in `data1` stays.
+					if let Some(fade) = layer_fade_mask(
+						element.position,
+						element.size,
+						element.fade,
+						element.corner_radius,
+						element.corner_exponent,
+					) {
+						primitive.data1 = masks.index(None, Some(fade), sx, sy);
+					}
 					output.primitives.push(primitive);
 				}
 			}

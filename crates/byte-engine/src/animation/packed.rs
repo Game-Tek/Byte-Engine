@@ -143,7 +143,15 @@ impl<'a> PackedAnimation<'a> {
 	#[inline]
 	fn sample_track(
 		self,
-		&[_, translation, translation_offset, rotation, rotation_offset, scale, scale_offset]: &[u32; TRACK_WORDS],
+		&[
+			_,
+			translation,
+			translation_offset,
+			rotation,
+			rotation_offset,
+			scale,
+			scale_offset,
+		]: &[u32; TRACK_WORDS],
 		local: &mut LocalTransform,
 		place: &mut impl FnMut(u32) -> KeySpan,
 	) {
@@ -416,7 +424,11 @@ mod tests {
 					translation: math::Vector::new(node as f32, 0.5, 0.0),
 					..LocalTransform::identity()
 				};
-				test_node(Some(&format!("node-{node}")), node.checked_sub(1).map(|parent| parent as u32), rest)
+				test_node(
+					Some(&format!("node-{node}")),
+					node.checked_sub(1).map(|parent| parent as u32),
+					rest,
+				)
 			})
 			.collect();
 		Skeleton { nodes }

@@ -40,7 +40,9 @@ const CHARACTER_NODE_COUNT: usize = 64;
 fn characters(bencher: Bencher, benchmark: AnimationGraphBenchmark, character_count: usize) {
 	let mut fixture = AnimationGraphBenchmarkFixture::new(benchmark, CHARACTER_NODE_COUNT);
 	let mut state = fixture.prepare_characters(character_count);
-	bencher.counter(ItemsCount::new(character_count)).bench_local(|| state.advance());
+	bencher
+		.counter(ItemsCount::new(character_count))
+		.bench_local(|| state.advance());
 }
 
 #[divan::bench(args = [1, 64, 1024])]

@@ -411,15 +411,15 @@ impl AnimationLoadWorker {
 mod binding;
 mod player;
 
-pub(super) use binding::GraphBinding;
 use binding::ClipBinding;
+pub(super) use binding::GraphBinding;
 
 #[doc(hidden)]
 pub mod benchmarks;
 
 pub use player::{
-	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, LookChainSettings, LookTarget,
-	RootMotionRotation, RootMotionSettings, RootMotionTranslation,
+	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, LookChainSettings, LookTarget, RootMotionRotation,
+	RootMotionSettings, RootMotionTranslation,
 };
 
 #[cfg(test)]

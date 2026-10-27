@@ -428,7 +428,9 @@ fn closest_triangle_weights(points: [[f32; 2]; 3], value: [f32; 2]) -> ([f32; 3]
 fn triangle_weights(indices: [usize; 3], weights: [f32; 3]) -> BlendWeights {
 	let clamped = weights.map(|weight| weight.clamp(0.0, 1.0));
 	let sum = clamped.iter().sum::<f32>();
-	BlendWeights::from_samples(std::array::from_fn::<_, 3, _>(|corner| (indices[corner], clamped[corner] / sum)))
+	BlendWeights::from_samples(std::array::from_fn::<_, 3, _>(|corner| {
+		(indices[corner], clamped[corner] / sum)
+	}))
 }
 
 fn subtract2(left: [f32; 2], right: [f32; 2]) -> [f32; 2] {

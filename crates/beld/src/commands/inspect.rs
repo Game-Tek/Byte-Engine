@@ -13,7 +13,7 @@ use crate::commands::shared::{insert_trace_json, read_resource_trace};
 use crate::{
 	OutputFormat, Payload,
 	commands::shared::{
-		attach_trace, log_failure, open_read_only_storage, payload_format, print_human_value, read_payload, write_json,
+		attach_trace, log_failure, open_read_only_storage, payload_format, print_human, read_payload, write_json,
 	},
 };
 
@@ -70,7 +70,7 @@ pub async fn inspect(destination_path: String, id: String, format: OutputFormat,
 	};
 
 	match format {
-		OutputFormat::Human => print_human_value(&output, 0),
+		OutputFormat::Human => print_human(&output),
 		OutputFormat::JSON => write_json(
 			&mut std::io::stdout().lock(),
 			&ResourceDocument {
@@ -93,7 +93,7 @@ pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem],
 	insert_trace_json(&mut output, trace);
 
 	match format {
-		OutputFormat::Human => print_human_value(&output, 0),
+		OutputFormat::Human => print_human(&output),
 		OutputFormat::JSON => write_json(&mut std::io::stdout().lock(), &output)?,
 	}
 

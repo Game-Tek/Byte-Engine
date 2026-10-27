@@ -15,7 +15,7 @@ page specifies its command line. To use it, follow
 | --- | --- | --- |
 | `-s`, `--source <path>` | `assets` | The source asset directory. |
 | `-d`, `--destination <path>` | `resources` | The resource store directory. |
-| `--color auto`, `always`, or `never` | `auto` | Terminal color. |
+| `--color auto`, `always`, or `never` | `auto` | Terminal color; see [Color](#color). |
 | `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
 | `-V`, `--version`; `-h`, `--help` | | |
 
@@ -244,7 +244,8 @@ skeleton, and variant; flipbooks, pipelines, and particle systems print an
 unsupported marker.
 
 Logs go to standard error, so standard output carries only the command's
-output.
+output. Whether either stream is a terminal changes only how the output looks;
+see [Terminals](#terminals).
 
 ## Payloads
 
@@ -287,6 +288,70 @@ level it belongs to, or the image's own format.
 | `BC5`, `BC5SNORM`, `BC7`, and `BC7SRGB` texels | No element; the stream falls back to `base64`. |
 | 8-bit audio samples | Unsigned integers from 0 to 255, centered on 128. |
 | 16-, 24-, and 32-bit audio samples | Signed integers of that width. |
+
+## Terminals
+
+BELD checks standard output and standard error separately. Whether a stream is
+a terminal changes only how its text looks. The output format, the content,
+and the exit code stay the same.
+
+| Stream | When it's a terminal |
+| --- | --- |
+| Standard output | `--color auto` colors the human output, and `query` fits its human output to the terminal width; see [Width](#width). |
+| Standard error | `--color auto` colors log messages, and `bake` shows a progress line; see [Progress](#progress). |
+
+### Color
+
+`--color` sets color for each stream separately.
+
+| Value | A stream has color |
+| --- | --- |
+| `auto` | When the stream is a terminal and `TERM` is set and isn't `dumb`, unless an environment variable in the next table decides. |
+| `always` | Always. |
+| `never` | Never. |
+
+| Environment variable | Effect on `auto`, in order of precedence |
+| --- | --- |
+| `NO_COLOR` set to any value but the empty string | No color. |
+| `CLICOLOR_FORCE` set to any value but `0` or the empty string | Color, even when the stream isn't a terminal. |
+| `CLICOLOR=0` | No color. |
+| `CLICOLOR` set to any other value, or `CI` set | Color on a terminal even when `TERM` is unset or `dumb`. |
+
+| Output | Colored parts |
+| --- | --- |
+| Help and argument errors | Headings, usage, literals, placeholders, and errors. |
+| Log messages | The level name. |
+| `query`, human | The header line in cyan, group lines in bold, a `stale` resource's line in yellow, and a `failed` bake's line in red. |
+| `inspect` and `bake --dry-run`, human | Keys in cyan. |
+
+JSON output and `list` output never have color.
+
+### Width
+
+When standard output is a terminal, `query`'s human output narrows the `id`
+column so each resource line fits the terminal width.
+
+| Rule | Effect |
+| --- | --- |
+| Shortened ID | Keeps its first and last characters, with `…` in place of the middle. |
+| Narrowest column | 16 characters. A line that still doesn't fit wraps. |
+| Other lines | The header, group lines, `--limit` lines, and the totals line keep their full text. |
+
+When standard output isn't a terminal, no line is shortened.
+
+### Progress
+
+When standard error is a terminal, `bake`, including `--dry-run`, shows one
+progress line at the bottom of standard error while assets bake.
+
+| Rule | Effect |
+| --- | --- |
+| Line | `[done/total]`, the number of assets processed and requested; then `N failed` once an asset fails; then the IDs baking now. The line is cut to the terminal width. |
+| Log messages | Print above the line. The messages that each asset started baking or is up to date aren't written; failures are. |
+| End | The line is removed before the summary message. |
+
+When standard error isn't a terminal, `bake` logs a message when each asset
+starts baking and when it's up to date, and shows no progress line.
 
 ## Handlers
 

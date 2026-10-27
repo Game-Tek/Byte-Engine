@@ -7,17 +7,21 @@ mod tests;
 
 use std::{borrow::Cow, fmt::Write as _};
 
+use clap::builder::styling::{AnsiColor, Style};
 use serde_json::{Map, Value as Json};
 
 #[cfg(debug_assertions)]
 use super::shared::resource_trace_json;
 use super::{
-	catalog::{self, Catalog, Field, FieldKind, SHOWN_FIELDS, Value, share},
+	catalog::{self, Catalog, Field, FieldKind, SHOWN_FIELDS, Status, Value, share},
 	filter::Filter,
 	shared::{log_failure, plural, queryable_properties_json, write_json},
 	view::{Group, Sort, view},
 };
-use crate::OutputFormat;
+use crate::{
+	OutputFormat,
+	terminal::{self, paint},
+};
 
 /// Prints the resources in the store at `destination_path` that match every term, grouped by `group` and ordered by
 /// `sort`, which defaults to `stored`.
@@ -41,14 +45,18 @@ pub async fn query(
 			log::error!("{error}");
 			2
 		})?;
+	let stdout = std::io::stdout();
+	let (color, width) = (terminal::has_color(&stdout), terminal::width(&stdout));
 	write_query(
-		&mut std::io::stdout().lock(),
+		&mut stdout.lock(),
 		&mut catalog,
 		&filter,
 		group.as_ref(),
 		&sort,
 		limit,
 		format,
+		color,
+		width,
 	)
 }
 
@@ -74,6 +82,9 @@ fn parse_selection(
 }
 
 /// Writes the matching resources in `format`, listing at most `limit` resources in each group.
+///
+/// The human format has color when `color` is set, and fits a terminal `width` columns wide when it is given.
+#[allow(clippy::too_many_arguments)]
 fn write_query(
 	output: &mut impl std::io::Write,
 	catalog: &mut Catalog,
@@ -82,6 +93,8 @@ fn write_query(
 	sort: &Sort,
 	limit: Option<usize>,
 	format: OutputFormat,
+	color: bool,
+	width: Option<usize>,
 ) -> Result<(), i32> {
 	let groups = view(catalog, filter, group, sort);
 	// The fields the command names, once each and in order: the output adds those it doesn't always show.
@@ -96,7 +109,7 @@ fn write_query(
 	match format {
 		OutputFormat::JSON => write_json(output, &query_json(catalog, &groups, group.is_some(), &named, limit)),
 		OutputFormat::Human => {
-			let table = query_table(catalog, &groups, group.is_some(), &named, limit);
+			let table = query_table(catalog, &groups, group.is_some(), &named, limit, color, width);
 			output.write_all(table.as_bytes()).map_err(|error| {
 				log::error!(
 					"Failed to write the query output. The most likely cause is that standard output was closed, for example by a pipe that exited early. Error: {error}"
@@ -189,8 +202,18 @@ fn totals(groups: &[Group]) -> (usize, u64, u64) {
 	})
 }
 
-/// Lays the matching resources out as a text table with a header line, group lines, and a totals line.
-fn query_table(catalog: &Catalog, groups: &[Group], grouped: bool, named: &[Field], limit: usize) -> String {
+/// Lays the matching resources out as a text table with a header line, group lines, and a totals line, narrowed and
+/// colored as `write_query` describes.
+#[allow(clippy::too_many_arguments)]
+fn query_table(
+	catalog: &Catalog,
+	groups: &[Group],
+	grouped: bool,
+	named: &[Field],
+	limit: usize,
+	color: bool,
+	width: Option<usize>,
+) -> String {
 	let columns = SHOWN_FIELDS
 		.iter()
 		.chain(named.iter().filter(|field| !SHOWN_FIELDS.contains(field)))
@@ -205,25 +228,41 @@ fn query_table(catalog: &Catalog, groups: &[Group], grouped: bool, named: &[Fiel
 				.rows
 				.iter()
 				.take(limit)
-				.map(|&row| columns.iter().map(|field| catalog.cell(row, field)).collect::<Vec<_>>())
+				.map(|&row| {
+					let cells = columns.iter().map(|field| catalog.cell(row, field)).collect::<Vec<_>>();
+					(row, cells)
+				})
 				.collect::<Vec<_>>()
 		})
 		.collect::<Vec<_>>();
 	let header = columns.iter().map(|field| field.name()).collect::<Vec<_>>();
-	let widths = (0..columns.len())
+	let mut widths = (0..columns.len())
 		.map(|column| {
 			std::iter::once(&header)
-				.chain(listed.iter().flatten())
+				.chain(listed.iter().flatten().map(|(_, cells)| cells))
 				.map(|cells| cells[column].chars().count())
 				.max()
 				.unwrap_or(0)
 		})
 		.collect::<Vec<_>>();
+	// On a terminal, the `id` column, always the first, gives up what a line needs to fit, down to 16 characters.
+	if let Some(width) = width {
+		let line_width = indent.len() + widths.iter().sum::<usize>() + 2 * (widths.len() - 1);
+		let narrowest = widths[0].min(16);
+		widths[0] = widths[0].saturating_sub(line_width.saturating_sub(width)).max(narrowest);
+	}
+
+	let header_style = paint(AnsiColor::Cyan.on_default(), color);
+	let group_style = paint(Style::new().bold(), color);
+	let stale_style = paint(AnsiColor::Yellow.on_default(), color);
+	let failed_style = paint(AnsiColor::Red.on_default(), color);
 
 	let mut table = String::new();
-	let line = |table: &mut String, cells: &[Cow<'_, str>]| {
+	let line = |table: &mut String, cells: &[Cow<'_, str>], style: Style| {
 		table.push_str(indent);
+		let _ = write!(table, "{}", style.render());
 		for (column, cell) in cells.iter().enumerate() {
+			let cell = if column == 0 { shorten(cell, widths[0]) } else { Cow::Borrowed(cell.as_ref()) };
 			// Numbers line up on their last digit.
 			let numeric = matches!(
 				columns[column].kind(),
@@ -237,7 +276,7 @@ fn query_table(catalog: &Catalog, groups: &[Group], grouped: bool, named: &[Fiel
 			};
 		}
 		table.truncate(table.trim_end().len());
-		table.push('\n');
+		let _ = writeln!(table, "{}", style.render_reset());
 	};
 
 	let store_stored = catalog.stored_total();
@@ -251,13 +290,24 @@ fn query_table(catalog: &Catalog, groups: &[Group], grouped: bool, named: &[Fiel
 		)
 	};
 
-	line(&mut table, &header);
+	line(&mut table, &header, header_style);
 	for (group, rows) in groups.iter().zip(&listed) {
 		if let Some(name) = &group.name {
-			let _ = writeln!(table, "{name} · {}", summary(group.rows.len(), group.size, group.stored));
+			let _ = writeln!(
+				table,
+				"{}{name} · {}{}",
+				group_style.render(),
+				summary(group.rows.len(), group.size, group.stored),
+				group_style.render_reset()
+			);
 		}
-		for cells in rows {
-			line(&mut table, cells);
+		for (row, cells) in rows {
+			let style = match catalog.rows[*row].status {
+				Status::Stale => stale_style,
+				Status::Failed => failed_style,
+				Status::Current | Status::Unknown => Style::new(),
+			};
+			line(&mut table, cells, style);
 		}
 		let left_out = group.rows.len() - rows.len();
 		if left_out > 0 {
@@ -267,4 +317,18 @@ fn query_table(catalog: &Catalog, groups: &[Group], grouped: bool, named: &[Fiel
 	let (count, size, stored) = totals(groups);
 	let _ = writeln!(table, "{}", summary(count, size, stored));
 	table
+}
+
+/// Returns `text` cut to `width` characters by replacing its middle with `…`, keeping its first and last characters.
+fn shorten(text: &str, width: usize) -> Cow<'_, str> {
+	let length = text.chars().count();
+	if length <= width || width == 0 {
+		return Cow::Borrowed(text);
+	}
+	// The ellipsis takes one column; the end keeps the smaller half of the rest.
+	let tail = (width - 1) / 2;
+	let head = width - 1 - tail;
+	let head_end = text.char_indices().nth(head).map_or(text.len(), |(index, _)| index);
+	let tail_start = text.char_indices().nth(length - tail).map_or(text.len(), |(index, _)| index);
+	Cow::Owned(format!("{}…{}", &text[..head_end], &text[tail_start..]))
 }

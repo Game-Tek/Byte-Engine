@@ -1,7 +1,15 @@
 use serde_json::{Value as Json, json};
 
+use resource_management::types::Formats;
+
 use super::{parse_selection, write_query};
-use crate::{OutputFormat, commands::catalog::tests::catalog};
+use crate::{
+	OutputFormat,
+	commands::catalog::{
+		Catalog,
+		tests::{catalog, files_usage, image},
+	},
+};
 
 /// Runs a query over the fixture catalog and returns what it prints.
 fn run(terms: &[&str], group: Option<&str>, sort: Option<&str>, limit: Option<usize>, format: OutputFormat) -> String {
@@ -9,7 +17,26 @@ fn run(terms: &[&str], group: Option<&str>, sort: Option<&str>, limit: Option<us
 	let terms = terms.iter().map(|term| term.to_string()).collect::<Vec<_>>();
 	let (filter, group, sort) = parse_selection(&catalog, &terms, group, sort, false).unwrap();
 	let mut output = Vec::new();
-	write_query(&mut output, &mut catalog, &filter, group.as_ref(), &sort, limit, format).unwrap();
+	write_query(&mut output, &mut catalog, &filter, group.as_ref(), &sort, limit, format, false, None).unwrap();
+	String::from_utf8(output).unwrap()
+}
+
+/// Prints every resource of `catalog` as a human table for a terminal with `color` and `width`.
+fn run_on_terminal(mut catalog: Catalog, color: bool, width: Option<usize>) -> String {
+	let (filter, group, sort) = parse_selection(&catalog, &[], None, None, false).unwrap();
+	let mut output = Vec::new();
+	write_query(
+		&mut output,
+		&mut catalog,
+		&filter,
+		group.as_ref(),
+		&sort,
+		None,
+		OutputFormat::Human,
+		color,
+		width,
+	)
+	.unwrap();
 	String::from_utf8(output).unwrap()
 }
 
@@ -106,4 +133,65 @@ fn unknown_fields_in_terms_groups_and_sorts_are_rejected() {
 	assert!(parse_selection(&catalog, &terms(&[]), Some("bogus"), None, false).is_err());
 	assert!(parse_selection(&catalog, &terms(&[]), None, Some("model."), false).is_err());
 	assert!(parse_selection(&catalog, &terms(&["stored>1MiB"]), Some("class"), Some("model.format"), true).is_ok());
+}
+
+#[test]
+fn a_narrow_terminal_shortens_ids_in_the_middle_so_resource_lines_fit() {
+	let full = run_on_terminal(catalog(Vec::new()), false, None);
+	let full_lines = full.lines().collect::<Vec<_>>();
+	// Between the header and the totals line, every line is a resource line.
+	let widest = full_lines[1..full_lines.len() - 1].iter().map(|line| line.chars().count()).max().unwrap();
+	let width = widest - 2;
+	let table = run_on_terminal(catalog(Vec::new()), false, Some(width));
+	let lines = table.lines().collect::<Vec<_>>();
+
+	// The longest ID, `crate.glb#images/0`, loses its middle and keeps both ends.
+	let crate_line = lines.iter().find(|line| line.starts_with("crate.")).unwrap();
+	assert!(crate_line.starts_with("crate.gl…mages/0 "), "{table}");
+	for line in &lines[1..lines.len() - 1] {
+		assert!(line.chars().count() <= width, "{table}");
+	}
+	// The totals line keeps its full text.
+	assert_eq!(lines.last(), full_lines.last(), "{table}");
+}
+
+#[test]
+fn the_id_column_never_gets_narrower_than_16_characters() {
+	let table = run_on_terminal(catalog(Vec::new()), false, Some(1));
+
+	for id in table.lines().skip(1).filter_map(|line| line.split_whitespace().next()) {
+		if id.contains('…') {
+			assert_eq!(id.chars().count(), 16, "{table}");
+		}
+	}
+	assert!(table.contains("hero.glb…mages/0"), "{table}");
+	// An ID that already fits stays whole.
+	assert!(table.contains("music.wav "), "{table}");
+}
+
+#[test]
+fn color_marks_the_header_and_stale_lines_and_no_color_writes_no_escape_codes() {
+	let stale_catalog = || {
+		Catalog::new(
+			vec![
+				image("fresh.png", Formats::RGBA8, 1, 4096, 4096),
+				image("old.png", Formats::RGBA8, 2, 1024, 1024),
+			],
+			Some(vec![Vec::new(), vec!["old.png".to_string()]]),
+			Vec::new(),
+			files_usage(),
+			0,
+		)
+	};
+
+	let table = run_on_terminal(stale_catalog(), true, None);
+	let lines = table.lines().collect::<Vec<_>>();
+	// Cyan for the header, yellow for the stale resource, and no style for the current one.
+	assert!(lines[0].starts_with("\x1b[36mid"), "{table:?}");
+	assert!(lines[1].starts_with("fresh.png"), "{table:?}");
+	assert!(lines[2].starts_with("\x1b[33mold.png"), "{table:?}");
+	assert!(lines[2].ends_with("\x1b[0m"), "{table:?}");
+
+	let plain = run_on_terminal(stale_catalog(), false, None);
+	assert!(!plain.contains('\x1b'), "{plain:?}");
 }

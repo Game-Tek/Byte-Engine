@@ -12,7 +12,12 @@ use serde_json::Value;
 #[cfg(debug_assertions)]
 use serde_json::json;
 
-use crate::{OutputFormat, Payload};
+use clap::builder::styling::{AnsiColor, Style};
+
+use crate::{
+	OutputFormat, Payload,
+	terminal::{has_color, paint},
+};
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
@@ -71,11 +76,18 @@ pub(super) fn queryable_properties_json(properties: &[resource_management::Query
 	Value::Object(properties)
 }
 
-pub(super) fn print_human_value(value: &Value, indent: usize) {
+/// Prints `value` to standard output in the human layout: `key: value` lines, nested objects indented by two spaces,
+/// and arrays as dashed items, with keys in cyan when standard output has color.
+pub(super) fn print_human(value: &Value) {
+	let keys = paint(AnsiColor::Cyan.on_default(), has_color(&std::io::stdout()));
+	print_human_value(value, 0, keys);
+}
+
+fn print_human_value(value: &Value, indent: usize, keys: Style) {
 	match value {
 		Value::Object(object) => {
 			for (key, value) in object {
-				print_human_field(key, value, indent);
+				print_human_field(key, value, indent, keys);
 			}
 		}
 		_ => {
@@ -86,43 +98,44 @@ pub(super) fn print_human_value(value: &Value, indent: usize) {
 	}
 }
 
-pub(super) fn print_human_field(key: &str, value: &Value, indent: usize) {
+fn print_human_field(key: &str, value: &Value, indent: usize, keys: Style) {
 	print_indent(indent);
+	print!("{}{key}{}:", keys.render(), keys.render_reset());
 	match value {
-		Value::Object(object) if object.is_empty() => println!("{}: {{}}", key),
+		Value::Object(object) if object.is_empty() => println!(" {{}}"),
 		Value::Object(_) => {
-			println!("{}:", key);
-			print_human_value(value, indent + 2);
+			println!();
+			print_human_value(value, indent + 2, keys);
 		}
-		Value::Array(values) if values.is_empty() => println!("{}: []", key),
+		Value::Array(values) if values.is_empty() => println!(" []"),
 		Value::Array(values) => {
-			println!("{}:", key);
+			println!();
 			for value in values {
-				print_human_array_value(value, indent + 2);
+				print_human_array_value(value, indent + 2, keys);
 			}
 		}
 		_ => {
-			print!("{}: ", key);
+			print!(" ");
 			print_human_inline(value);
 			println!();
 		}
 	}
 }
 
-fn print_human_array_value(value: &Value, indent: usize) {
+fn print_human_array_value(value: &Value, indent: usize, keys: Style) {
 	print_indent(indent);
 	match value {
 		Value::Object(object) if object.is_empty() => println!("- {{}}"),
 		Value::Object(object) => {
 			println!("-");
 			for (key, value) in object {
-				print_human_field(key, value, indent + 2);
+				print_human_field(key, value, indent + 2, keys);
 			}
 		}
 		Value::Array(values) => {
 			println!("-");
 			for value in values {
-				print_human_array_value(value, indent + 2);
+				print_human_array_value(value, indent + 2, keys);
 			}
 		}
 		_ => {

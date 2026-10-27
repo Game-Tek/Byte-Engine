@@ -7,10 +7,12 @@
 #![allow(clippy::too_many_lines)]
 
 mod commands;
+mod terminal;
 mod utils;
 
 pub use commands::{bake, bake_dry_run, browse, clear, delete, inspect, list, query, wipe};
 pub use resource_management::r#async::Executor;
+pub use terminal::init_logging;
 
 /// Selects the representation written by commands that return structured output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]

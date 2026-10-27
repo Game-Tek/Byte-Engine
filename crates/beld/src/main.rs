@@ -7,9 +7,15 @@ fn main() -> ExitCode {
 }
 
 fn run_cli() -> Result<(), i32> {
-	let _ = simple_logger::SimpleLogger::new().env().init();
-
 	let color = parse_color_choice(std::env::args());
+	// BELD's own output reads the choice from here, separately for each stream.
+	anstream::ColorChoice::write_global(match color {
+		clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
+		clap::ColorChoice::Always => anstream::ColorChoice::Always,
+		clap::ColorChoice::Never => anstream::ColorChoice::Never,
+	});
+	beld::init_logging();
+
 	let matches = Cli::command().color(color).get_matches();
 
 	let cli = Cli::from_arg_matches(&matches).map_err(|error| {

@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, time::Instant};
+use std::{cell::RefCell, num::NonZeroUsize, time::Instant};
 
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::{
@@ -15,7 +15,8 @@ use utils::r#async::StreamExt;
 
 use crate::{
 	OutputFormat, Payload,
-	commands::shared::{attach_trace, offload_file_operation, payload_format, print_human_value, read_payload, write_json},
+	commands::shared::{attach_trace, offload_file_operation, payload_format, print_human, read_payload, write_json},
+	terminal,
 	utils::get_asset_manager,
 };
 
@@ -24,7 +25,8 @@ use crate::{
 /// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
 /// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
 /// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
-/// assets only left-out features use.
+/// assets only left-out features use. On a terminal, a progress line shows on standard error; install the logger with
+/// [`crate::init_logging`] so log messages print above it.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]
@@ -152,7 +154,7 @@ pub async fn bake_dry_run(
 	match format {
 		OutputFormat::Human => {
 			let resources = resources.into_iter().map(|(_, json, _)| json).collect();
-			print_human_value(&json!({ "resources": Value::Array(resources), "failed": failed }), 0);
+			print_human(&json!({ "resources": Value::Array(resources), "failed": failed }));
 		}
 		OutputFormat::JSON => {
 			let payloads = resources
@@ -200,8 +202,10 @@ async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i
 	})
 }
 
-/// Bakes every ID that is stale, up to 16 at once within `memory_budget`, logs each outcome, and returns the IDs that
+/// Bakes every ID that is stale, up to 16 at once within `memory_budget`, reports progress, and returns the IDs that
 /// failed with their errors.
+///
+/// When standard error is a terminal, a progress line replaces the message for each asset that starts or is current.
 async fn bake_ids(
 	asset_manager: &mut AssetManager,
 	ids: Vec<String>,
@@ -215,22 +219,42 @@ async fn bake_ids(
 	);
 
 	let resource_count = ids.len();
-
+	let progress = terminal::width(&std::io::stderr()).map(|width| {
+		RefCell::new(Progress {
+			width,
+			total: resource_count,
+			done: 0,
+			failed: 0,
+			baking: Vec::with_capacity(16),
+			line: String::new(),
+		})
+	});
 	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
-	let tasks = ids.into_iter().map(async |id| {
-		log::info!("Baking resource '{}'", id);
+	let tasks = ids.iter().map(async |id| {
+		// Every bake borrows `progress` only between awaits, and they all run on this thread.
+		match &progress {
+			Some(progress) => progress.borrow_mut().start(id),
+			None => log::info!("Baking resource '{}'", id),
+		}
 
-		match asset_manager.bake_if_stale(&id).await {
+		let result = asset_manager.bake_if_stale(id).await;
+		if let Some(progress) = &progress {
+			progress.borrow_mut().finish(id, result.is_err());
+		}
+
+		match result {
 			Ok(_) => {
 				// A current resource is reused rather than baked, so report the outcome both paths share.
-				log::info!("Resource '{}' is up to date", id);
+				if progress.is_none() {
+					log::info!("Resource '{}' is up to date", id);
+				}
 
 				None
 			}
 			Err(e) => {
 				log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
 
-				Some((id, e))
+				Some((id.clone(), e))
 			}
 		}
 	});
@@ -243,6 +267,10 @@ async fn bake_ids(
 		.collect::<Vec<_>>()
 		.await;
 
+	if progress.is_some() {
+		terminal::show_status("");
+	}
+
 	log::info!(
 		"Processed {} assets in {:?}: {} succeeded, {} failed",
 		resource_count,
@@ -252,4 +280,53 @@ async fn bake_ids(
 	);
 
 	failures
+}
+
+/// The `Progress` struct holds what a bake's progress line shows, so each finished asset redraws it without
+/// allocating.
+struct Progress<'a> {
+	width: usize,
+	total: usize,
+	done: usize,
+	failed: usize,
+	/// The IDs baking now, in the order they started.
+	baking: Vec<&'a str>,
+	/// The text of the line, reused for every draw.
+	line: String,
+}
+
+impl<'a> Progress<'a> {
+	/// Adds `id` to the IDs baking now.
+	fn start(&mut self, id: &'a str) {
+		self.baking.push(id);
+		self.draw();
+	}
+
+	/// Counts `id` as processed, and as failed when `failed` is set.
+	fn finish(&mut self, id: &str, failed: bool) {
+		self.baking.retain(|baking| !std::ptr::eq(*baking, id));
+		self.done += 1;
+		self.failed += usize::from(failed);
+		self.draw();
+	}
+
+	/// Writes the line, `[done/total]`, the failures, then the IDs baking now, cut to fit the terminal, and shows it.
+	fn draw(&mut self) {
+		use std::fmt::Write as _;
+
+		self.line.clear();
+		let _ = write!(self.line, "[{}/{}]", self.done, self.total);
+		if self.failed > 0 {
+			let _ = write!(self.line, " {} failed", self.failed);
+		}
+		for (index, id) in self.baking.iter().enumerate() {
+			self.line.push_str(if index == 0 { " · " } else { ", " });
+			self.line.push_str(id);
+		}
+		// The last column stays empty, because a terminal wraps a line that fills it, and a wrapped line can't be erased.
+		if let Some((end, _)) = self.line.char_indices().nth(self.width.saturating_sub(1)) {
+			self.line.truncate(end);
+		}
+		terminal::show_status(&self.line);
+	}
 }

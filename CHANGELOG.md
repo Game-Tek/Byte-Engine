@@ -2,9 +2,7 @@
 
 ## Unreleased
 
-- You can build your own version of BELD, such as one that rejects every resource over 1 MB. The steps of a bake are public in `beld::pipeline`: `open_asset_storage`, `open_resource_storage`, `default_asset_manager`, `select_ids`, and `bake_ids`, which returns a `BakeReport` of the IDs that baked and the ones that failed. The new Build a custom BELD page shows how to compose them.
-  - A `ResourceValidator` registered with `AssetManager::add_resource_validator` checks every resource a bake stores, generated dependencies included, before it's written. It sees the resource's ID, class, payload size, streams, and indexed properties. A rejection stores nothing, records the validator's message in the resource trace, and fails the bake with `LoadErrors::ValidationFailed`.
-  - BELD's library functions take `&Path` instead of `String` and return a `BeldError`, which holds the message and the exit code, instead of logging and returning an `i32`. The `beld` binary logs the message and exits with the code as before.
+- You can build your own version of BELD, such as one that rejects every resource over 1 MB. `beld::pipeline` exposes the bake steps, and a `ResourceValidator` registered with `AssetManager::add_resource_validator` checks every resource a bake stores, generated dependencies included. A rejected resource isn't stored and fails its bake with `LoadErrors::ValidationFailed`. The new Build a custom BELD page shows how.
 
 - Gameplay tasks can run work at a fixed rate of simulation time instead of every tick. `Tasks::every(period)` returns a `gameplay::Interval`, whose `next` resolves at each deadline with the simulation time since the previous fire. Deadlines stay one period apart from the interval's start, a wait that loses a `select!` keeps its deadline, and a task that was busy past several deadlines fires once instead of catching up in a burst. `Interval::phase` delays every deadline, to spread the intervals of many entities across ticks, and `Interval::set_period` changes the rate. The new Gameplay tasks reference page specifies every task wait.
 

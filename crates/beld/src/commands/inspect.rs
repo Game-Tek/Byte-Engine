@@ -1,5 +1,3 @@
-use std::path::Path;
-
 #[cfg(debug_assertions)]
 use resource_management::ResourceTraceItem;
 use resource_management::{
@@ -13,7 +11,7 @@ use serde_json::{Value, json};
 #[cfg(debug_assertions)]
 use crate::commands::shared::{insert_trace_json, read_resource_trace};
 use crate::{
-	BeldError, OutputFormat, Payload,
+	OutputFormat, Payload,
 	commands::shared::{attach_trace, open_read_only_storage, payload_format, print_human_value, read_payload, write_json},
 };
 
@@ -22,7 +20,7 @@ use crate::{
 /// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Call [`crate::query`] when you
 /// need to find resources by class or indexed properties first, or [`crate::bake_dry_run`] to see what a bake would
 /// produce without a store.
-pub async fn inspect(destination_path: &Path, id: String, format: OutputFormat, payload: Payload) -> Result<(), BeldError> {
+pub async fn inspect(destination_path: String, id: String, format: OutputFormat, payload: Payload) -> Result<(), i32> {
 	let payload = payload_format(payload, format)?;
 	let storage_backend = open_read_only_storage(destination_path, "inspect").await?;
 	let resource = read_resource(&storage_backend, &id).await;
@@ -34,13 +32,17 @@ pub async fn inspect(destination_path: &Path, id: String, format: OutputFormat, 
 				return print_trace_only_inspection(&id, &trace, format);
 			}
 		}
-		return Err(BeldError::new(format!(
-			"Failed to inspect resource '{id}'. The most likely cause is that no baked resource exists for the given ID or UID. Run `beld list` to see the stored IDs, or `beld bake {id}` to bake it."
-		)));
+		log::error!(
+			"Failed to inspect resource '{}'. The most likely cause is that no baked resource exists for the given ID or UID.",
+			id
+		);
+		return Err(1);
 	};
 
-	let inspection =
-		resource_management::inspect::inspect_resource(&resource).map_err(|error| BeldError::new(error.to_string()))?;
+	let inspection = resource_management::inspect::inspect_resource(&resource).map_err(|error| {
+		log::error!("{}", error);
+		1
+	})?;
 
 	if inspection.unsupported_resource_section {
 		log::warn!(
@@ -56,9 +58,10 @@ pub async fn inspect(destination_path: &Path, id: String, format: OutputFormat, 
 		None => None,
 	};
 	let payload = match (payload, &payload_bytes) {
-		(Some(payload), Some(bytes)) => {
-			Some(inspect_payload(&resource, bytes, payload).map_err(|error| BeldError::new(error.to_string()))?)
-		}
+		(Some(payload), Some(bytes)) => Some(inspect_payload(&resource, bytes, payload).map_err(|error| {
+			log::error!("{}", error);
+			1
+		})?),
 		_ => None,
 	};
 
@@ -78,11 +81,7 @@ pub async fn inspect(destination_path: &Path, id: String, format: OutputFormat, 
 
 /// Prints diagnostics for an ID whose resource bake failed completely.
 #[cfg(debug_assertions)]
-pub(super) fn print_trace_only_inspection(
-	id: &str,
-	trace: &[ResourceTraceItem],
-	format: OutputFormat,
-) -> Result<(), BeldError> {
+pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem], format: OutputFormat) -> Result<(), i32> {
 	let mut output = json!({
 		"id": id,
 		"resource": Value::Null,

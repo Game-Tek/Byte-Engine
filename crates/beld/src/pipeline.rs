@@ -2,14 +2,12 @@
 //!
 //! [`crate::bake`] runs these steps in order. A custom tool runs the same steps and adds its own between them, such as
 //! a [`ResourceValidator`](resource_management::asset::validation::ResourceValidator) that enforces a size limit:
+//! open storage with [`open_asset_storage`] and [`open_resource_storage`], build the manager with
+//! [`default_asset_manager`], register extra rules on it, then call [`bake_ids`].
 //!
-//! 1. [`open_asset_storage`] and [`open_resource_storage`] open the source and destination directories.
-//! 2. [`default_asset_manager`] builds the manager with the engine's asset handlers. Register extra handlers or
-//!    validators on it, and set its memory budget.
-//! 3. [`select_ids`] chooses what to bake.
-//! 4. [`bake_ids`] bakes them and returns a [`BakeReport`].
+//! Each step logs its failure and returns BELD's exit code, like the commands.
 
-use std::{num::NonZeroUsize, path::Path, time::Instant};
+use std::{path::PathBuf, time::Instant};
 
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::{
@@ -18,35 +16,31 @@ use resource_management::{
 };
 use utils::r#async::StreamExt;
 
-use crate::{BeldError, commands::shared::offload_file_operation};
+use crate::commands::shared::offload_file_operation;
 
-/// The number of root bakes [`bake_ids`] keeps in flight at once.
-const BAKE_CONCURRENCY: usize = 16;
-
-/// Opens the source asset directory a bake reads from, creating it when it is missing.
+/// Opens the source asset directory a bake reads from.
 ///
-/// Next, open the destination with [`open_resource_storage`] and pass both to [`default_asset_manager`].
-pub async fn open_asset_storage(source_path: &Path) -> Result<FileStorageBackend, BeldError> {
-	FileStorageBackend::open(source_path.to_path_buf()).await.map_err(|error| {
-		BeldError::new(format!(
-			"Failed to open assets directory '{}'. The most likely cause is that the directory cannot be created or accessed. Check the path and its permissions. Error: {error}",
+/// Next, open the destination with [`open_resource_storage`].
+pub async fn open_asset_storage(source_path: PathBuf) -> Result<FileStorageBackend, i32> {
+	FileStorageBackend::open(source_path.clone()).await.map_err(|error| {
+		log::error!(
+			"Failed to open assets directory '{}'. The most likely cause is that the directory cannot be created or accessed. Error: {error}",
 			source_path.display()
-		))
+		);
+		1
 	})
 }
 
 /// Opens or creates the resource store a bake writes to.
 ///
-/// `storage_mode` only applies to a new store; an existing store keeps its persisted mode. `texture_compression`
-/// selects native transport compression for baked textures, and `None` keeps the store's setting.
+/// `storage_mode` only applies to a new store; an existing store keeps its persisted mode.
 ///
-/// Next, pass the store to [`default_asset_manager`].
+/// Next, pass both stores to [`default_asset_manager`].
 pub async fn open_resource_storage(
-	destination_path: &Path,
+	destination_path: PathBuf,
 	storage_mode: Option<ResourceStorageMode>,
 	texture_compression: Option<ResourceGpuCompressionPolicy>,
-) -> Result<ReDBStorageBackend, BeldError> {
-	let destination_path = destination_path.to_path_buf();
+) -> Result<ReDBStorageBackend, i32> {
 	offload_file_operation(move || match texture_compression {
 		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
 			destination_path,
@@ -58,7 +52,10 @@ pub async fn open_resource_storage(
 		},
 	})
 	.await
-	.map_err(|error| BeldError::new(format!("Failed to bake resources. {error}")))
+	.map_err(|error| {
+		log::error!("Failed to bake resources. {error}");
+		1
+	})
 }
 
 /// Creates the asset manager BELD bakes with, registering the same handlers as the engine's debug runtime.
@@ -66,8 +63,8 @@ pub async fn open_resource_storage(
 /// Material shaders are generated for the visibility renderer with the project's `features`. Tests bake with the CPU
 /// texture backends so they do not depend on a GPU.
 ///
-/// Next, register any extra handlers with [`AssetManager::add_asset_handler`] and project rules with
-/// [`AssetManager::add_resource_validator`], set [`AssetManager::set_bake_memory_budget`], then call [`select_ids`].
+/// Next, register project rules with [`AssetManager::add_resource_validator`], set
+/// [`AssetManager::set_bake_memory_budget`], and call [`bake_ids`].
 pub fn default_asset_manager<AS, RS>(
 	storage_backend: AS,
 	resource_storage_backend: RS,
@@ -92,106 +89,47 @@ where
 	asset_manager
 }
 
-/// Returns `ids`, or every discoverable asset the project's `features` use when `ids` is empty.
-///
-/// Explicitly requested IDs are returned unchanged; only discovery skips the engine assets that left-out features use.
-///
-/// Next, pass the IDs to [`bake_ids`].
-pub async fn select_ids(
-	asset_manager: &AssetManager,
-	ids: Vec<String>,
-	features: VisibilityFeatures,
-) -> Result<Vec<String>, BeldError> {
-	if !ids.is_empty() {
-		return Ok(ids);
-	}
-
-	let mut ids = asset_manager.discover().await.map_err(|error| {
-		BeldError::new(format!(
-			"Failed to discover assets. The most likely cause is an unreadable file below the source directory. Check its permissions. Error: {error}"
-		))
-	})?;
-	ids.retain(|id| !features.excludes(id));
-	Ok(ids)
-}
-
-/// The `BakeReport` struct tells the caller of [`bake_ids`] which assets baked and which failed, so it can decide what
-/// to do next, such as exit with an error or publish the resources that baked.
-#[derive(Clone, Debug, Default)]
-pub struct BakeReport {
-	/// The IDs whose resource is now current, whether it was baked or reused.
-	pub succeeded: Vec<String>,
-	/// The IDs that failed, with the reason each one failed.
-	pub failed: Vec<(String, LoadMessages)>,
-}
-
-/// Bakes every stale ID in `ids`, up to 16 at once, and reports which succeeded and which failed.
-///
-/// Each outcome is logged as it completes. Set [`AssetManager::set_bake_memory_budget`] before the call to bound how
-/// much memory concurrent bakes retain.
-///
-/// Next, check [`BakeReport::failed`], then read the destination with [`crate::list`] or [`crate::inspect`].
-pub async fn bake_ids(asset_manager: &AssetManager, ids: Vec<String>) -> BakeReport {
+/// Bakes every ID that is stale, up to 16 at once, logs each outcome, and returns the IDs that failed with their
+/// errors.
+pub async fn bake_ids(asset_manager: &AssetManager, ids: Vec<String>) -> Vec<(String, LoadMessages)> {
 	let resource_count = ids.len();
 
-	// Every bake borrows the same manager; the futures only run inside the stream below, while it is still alive.
+	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
 	let tasks = ids.into_iter().map(async |id| {
 		log::info!("Baking resource '{}'", id);
 
 		match asset_manager.bake_if_stale(&id).await {
-			Ok(()) => {
+			Ok(_) => {
 				// A current resource is reused rather than baked, so report the outcome both paths share.
 				log::info!("Resource '{}' is up to date", id);
 
-				Ok(id)
+				None
 			}
-			Err(error) => {
-				log::error!("Failed to bake '{}'. Error: {:#?}", id, error);
+			Err(e) => {
+				log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
 
-				Err((id, error))
+				Some((id, e))
 			}
 		}
 	});
 
 	let bake_start = Instant::now();
 
-	let mut report = BakeReport {
-		succeeded: Vec::with_capacity(resource_count),
-		failed: Vec::new(),
-	};
-	let mut outcomes = utils::r#async::stream::iter(tasks).buffer_unordered(BAKE_CONCURRENCY);
-	while let Some(outcome) = outcomes.next().await {
-		match outcome {
-			Ok(id) => report.succeeded.push(id),
-			Err(failure) => report.failed.push(failure),
-		}
-	}
+	let failures = utils::r#async::stream::iter(tasks)
+		.buffer_unordered(16)
+		.filter_map(async |failure| failure)
+		.collect::<Vec<_>>()
+		.await;
 
 	log::info!(
 		"Processed {} assets in {:?}: {} succeeded, {} failed",
 		resource_count,
 		bake_start.elapsed(),
-		report.succeeded.len(),
-		report.failed.len()
+		resource_count - failures.len(),
+		failures.len()
 	);
 
-	report
-}
-
-/// Returns the configured bake budget, or half of the available system memory, and never less than a quarter of the
-/// installed memory.
-///
-/// The floor matters on macOS, where the available figure subtracts compressed pages and reaches zero under memory
-/// pressure. A zero budget pauses every independent bake while any other bake retains memory, which serializes the
-/// whole run. The budget is soft, so the floor only bounds how much work starts at once.
-///
-/// Pass the result to [`AssetManager::set_bake_memory_budget`].
-pub fn default_bake_memory_budget() -> NonZeroUsize {
-	let mut system = sysinfo::System::new();
-	system.refresh_memory();
-	let available_bytes = system.available_memory().max(system.total_memory() / 2);
-	let budget_bytes = usize::try_from(available_bytes / 2).unwrap_or(usize::MAX);
-	NonZeroUsize::new(budget_bytes).unwrap_or(NonZeroUsize::MIN)
+	failures
 }
 
 #[cfg(test)]
@@ -200,15 +138,15 @@ mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use resource_management::{
-		ReferenceModel,
-		asset::validation::{ResourceCandidate, ResourceValidator, ValidationError},
+		ProcessedAsset, ReferenceModel,
+		asset::validation::ResourceValidator,
 		asset::{ResourceId, storage_backend::FileStorageBackend},
 		r#async::Executor,
 		resource::storage_backend::{ReadStorageBackend, redb::ReDBStorageBackend},
 		resources::mesh::MeshModel,
 	};
 
-	use super::{VisibilityFeatures, bake_ids, default_asset_manager, open_asset_storage};
+	use super::{VisibilityFeatures, bake_ids, default_asset_manager};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
@@ -282,23 +220,17 @@ mod tests {
 		});
 	}
 
-	/// The `MaxPayloadSize` struct rejects resources whose payload is larger than a byte limit, like a project rule.
+	/// Rejects resources whose payload is larger than a byte limit, like a project rule.
 	struct MaxPayloadSize(usize);
 
 	impl ResourceValidator for MaxPayloadSize {
-		fn validate(&self, candidate: &ResourceCandidate<'_>) -> Result<(), ValidationError> {
-			if candidate.payload_size() <= self.0 {
+		fn validate(&self, _: &ProcessedAsset, payload_size: usize) -> Result<(), String> {
+			if payload_size <= self.0 {
 				return Ok(());
 			}
-
-			Err(ValidationError::new(
-				format!(
-					"The payload is {} bytes, over the {}-byte limit.",
-					candidate.payload_size(),
-					self.0
-				),
-				"The most likely cause is an oversized source asset.",
-				"Reduce the source asset's size.",
+			Err(format!(
+				"The payload is {payload_size} bytes, over the {}-byte limit.",
+				self.0
 			))
 		}
 	}
@@ -310,13 +242,15 @@ mod tests {
 		wav.extend_from_slice(b"RIFF");
 		wav.extend_from_slice(&(36 + data_size).to_le_bytes());
 		wav.extend_from_slice(b"WAVEfmt ");
-		wav.extend_from_slice(&16u32.to_le_bytes());
-		wav.extend_from_slice(&1u16.to_le_bytes());
-		wav.extend_from_slice(&2u16.to_le_bytes());
-		wav.extend_from_slice(&48_000u32.to_le_bytes());
-		wav.extend_from_slice(&192_000u32.to_le_bytes());
-		wav.extend_from_slice(&4u16.to_le_bytes());
-		wav.extend_from_slice(&16u16.to_le_bytes());
+		for field in [
+			16u32.to_le_bytes(),
+			[1, 0, 2, 0],
+			48_000u32.to_le_bytes(),
+			192_000u32.to_le_bytes(),
+			[4, 0, 16, 0],
+		] {
+			wav.extend_from_slice(&field);
+		}
 		wav.extend_from_slice(b"data");
 		wav.extend_from_slice(&data_size.to_le_bytes());
 		wav.resize(44 + data_size as usize, 0);
@@ -326,8 +260,7 @@ mod tests {
 	/// Confirms that a pipeline composed with a validator bakes small assets and rejects large ones without storing them.
 	#[test]
 	fn a_composed_pipeline_rejects_resources_over_its_validator_limit() {
-		let executor =
-			Executor::new().expect("Async runtime could not start. The most likely cause is unavailable platform I/O support.");
+		let executor = Executor::new().unwrap();
 		let root = std::env::temp_dir().join(format!(
 			"beld-validation-test-{}-{}",
 			std::process::id(),
@@ -340,20 +273,18 @@ mod tests {
 		std::fs::write(assets_path.join("large.wav"), silent_wav(1024)).unwrap();
 
 		executor.block_on(async {
-			let assets = open_asset_storage(&assets_path).await.unwrap();
 			let mut asset_manager = default_asset_manager(
-				assets,
+				FileStorageBackend::new(assets_path),
 				ReDBStorageBackend::new(resources_path.clone()),
 				VisibilityFeatures::default(),
 			);
 			asset_manager.add_resource_validator(MaxPayloadSize(1024));
 
-			let report = bake_ids(&asset_manager, vec!["small.wav".to_string(), "large.wav".to_string()]).await;
+			let failures = bake_ids(&asset_manager, vec!["small.wav".to_string(), "large.wav".to_string()]).await;
 			drop(asset_manager);
 
-			assert_eq!(report.succeeded, ["small.wav"]);
-			assert_eq!(report.failed.len(), 1);
-			assert_eq!(report.failed[0].0, "large.wav");
+			assert_eq!(failures.len(), 1);
+			assert_eq!(failures[0].0, "large.wav");
 
 			let resource_storage = ReDBStorageBackend::new(resources_path);
 			assert!(resource_storage.read(ResourceId::new("small.wav")).await.is_some());

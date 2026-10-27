@@ -72,23 +72,15 @@ The trace is an in-memory development tool: release builds don't expose it, and 
 
 ## Validate resources
 
-A `ResourceValidator` lets a project reject resources that break its own rules, such as a payload size limit.
-Register validators with `AssetManager::add_resource_validator`; the asset manager keeps them next to its handlers.
+A `ResourceValidator`, registered with `AssetManager::add_resource_validator`, lets a project reject resources that break its own rules, such as a size limit.
+`BakeContext` runs the validators on every store path before it publishes a resource, so a rejected resource is never stored:
 
-The validators run inside `BakeContext`, before a resource is published to resource storage, so a rejected resource is never stored.
-A change must keep these rules:
-
-- Every store path validates before it publishes. `store_resource` and `store_resource_owned` validate the decoded payload size before any CPU compression, so a rejected payload is never written.
-  `commit_resource` validates the size its transaction reserved, which is the decoded size because transactions store bytes uncompressed.
-  A streamed handler has already written that payload into the reservation, because its metadata exists only after processing.
-  A rejected transaction is dropped, which deletes the staged file or returns the packed range, so the payload is never published.
-- A validator sees `ResourceCandidate`: metadata and payload size, never payload bytes. Streamed writes don't hold their payload in memory, so passing bytes would force them to buffer it.
+- `store_resource` and `store_resource_owned` validate the decoded payload size before writing anything.
+- `commit_resource` validates after a streamed handler wrote its payload into the transaction, because the metadata exists only after processing. A rejected transaction is dropped, which discards the payload.
+- A validator sees the `ProcessedAsset` and the payload size, never the payload bytes, so streamed writes don't buffer.
 - A rejection records an error in the resource trace and fails the bake with `LoadErrors::ValidationFailed`.
-  A rejected dependency fails its parent, the same as any other dependency failure.
-- Resources reused as current aren't validated again. Callers that add a rule to an existing store use `AssetManager::rebuild_resources_baked_before`.
 
-`validators_reject_oversized_resources_on_every_store_path_without_writing_them`, `a_rejected_dependency_fails_its_parent`, and `a_rejection_is_recorded_in_the_resource_trace` in `manager.rs` guard these rules.
-`a_composed_pipeline_rejects_resources_over_its_validator_limit` in BELD's `pipeline.rs` guards a real handler's path.
+`validators_reject_oversized_resources_on_every_store_path_without_storing_them` in `manager.rs` guards these rules.
 
 ## Processing
 

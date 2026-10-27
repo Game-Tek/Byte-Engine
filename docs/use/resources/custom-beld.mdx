@@ -4,114 +4,79 @@ description: Build your own bake tool from BELD's pipeline steps and add project
 icon: Wrench
 ---
 
-Build your own version of BELD when your pipeline needs a step that the `beld`
-command doesn't have, such as rejecting every resource larger than 1 MB.
-Your tool runs the same steps as `beld bake` and adds its own between them.
+Build your own version of BELD when your pipeline needs a rule that `beld bake`
+doesn't have, such as rejecting every resource larger than 1 MB.
 
-## Create the tool
+## Write a rule
 
-Create a binary crate and add BELD, the engine, and its resource management
-crate as dependencies:
-
-```toml
-[dependencies]
-beld = { path = "../Byte-Engine/crates/beld" }
-byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
-resource-management = { package = "byte-engine-resource-management", path = "../Byte-Engine/crates/resource-management" }
-```
-
-## Write a resource rule
-
-A rule is a type that implements `ResourceValidator`. The bake calls it for
-every resource it's about to store, including the textures and shaders an asset
-generates. Return an error to reject the resource. The error has three parts:
-what happened, the most likely cause, and how to fix it.
+A rule implements `ResourceValidator`. The bake calls it for every resource it's
+about to store, including the textures and shaders an asset generates. Return a
+message to reject the resource: what happened, the most likely cause, and the fix.
 
 ```rust
-use resource_management::asset::validation::{ResourceCandidate, ResourceValidator, ValidationError};
+use resource_management::{ProcessedAsset, asset::validation::ResourceValidator};
 
-/// Rejects resources whose payload is larger than a byte limit.
 struct MaxPayloadSize(usize);
 
 impl ResourceValidator for MaxPayloadSize {
-	fn validate(&self, candidate: &ResourceCandidate<'_>) -> Result<(), ValidationError> {
-		if candidate.payload_size() <= self.0 {
+	fn validate(&self, resource: &ProcessedAsset, payload_size: usize) -> Result<(), String> {
+		if payload_size <= self.0 {
 			return Ok(());
 		}
-
-		Err(ValidationError::new(
-			format!("The payload is {} bytes, over the {}-byte limit.", candidate.payload_size(), self.0),
-			"The most likely cause is a source asset larger than the project allows.",
-			"Reduce the source asset's resolution or length.",
+		Err(format!(
+			"'{}' is {payload_size} bytes, over the {}-byte limit. The most likely cause is an oversized source asset. Reduce its resolution or length.",
+			resource.id(),
+			self.0
 		))
 	}
 }
 ```
 
-A rule sees the resource's ID, class, payload size, streams, and indexed
-properties. It doesn't see the payload bytes.
-
 ## Compose the bake
 
-Call the steps in `beld::pipeline` in order, and register your rule on the
-asset manager before the bake starts:
+Add `beld`, `byte-engine`, and `byte-engine-resource-management` as
+dependencies. Then run the steps in `beld::pipeline` and register your rule
+before the bake starts:
 
 ```rust
-use std::path::Path;
+use std::num::NonZeroUsize;
 
-use beld::{BeldError, pipeline};
+use beld::pipeline;
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 
-async fn bake(source: &Path, destination: &Path) -> Result<(), BeldError> {
+async fn bake() -> Result<(), i32> {
 	let features = VisibilityFeatures::default();
-	let assets = pipeline::open_asset_storage(source).await?;
-	let resources = pipeline::open_resource_storage(destination, None, None).await?;
+	let assets = pipeline::open_asset_storage("assets".into()).await?;
+	let resources = pipeline::open_resource_storage("resources".into(), None, None).await?;
 
 	let mut asset_manager = pipeline::default_asset_manager(assets, resources, features);
 	asset_manager.add_resource_validator(MaxPayloadSize(1024 * 1024));
-	asset_manager.set_bake_memory_budget(pipeline::default_bake_memory_budget());
+	asset_manager.set_bake_memory_budget(NonZeroUsize::new(1 << 30).unwrap());
 
-	let ids = pipeline::select_ids(&asset_manager, Vec::new(), features).await?;
-	let report = pipeline::bake_ids(&asset_manager, ids).await;
-
-	if report.failed.is_empty() {
-		Ok(())
-	} else {
-		Err(BeldError::new(format!(
-			"Failed to bake {} assets. The most likely cause is an asset that breaks a project rule. Fix the assets logged above.",
-			report.failed.len()
-		)))
-	}
+	let ids = asset_manager.discover().await.map_err(|_| 1)?;
+	let failures = pipeline::bake_ids(&asset_manager, ids).await;
+	if failures.is_empty() { Ok(()) } else { Err(1) }
 }
 
 fn main() -> std::process::ExitCode {
 	let executor = beld::Executor::new().expect("Failed to start the asynchronous runtime.");
-
-	match executor.block_on(bake(Path::new("assets"), Path::new("resources"))) {
+	match executor.block_on(bake()) {
 		Ok(()) => std::process::ExitCode::SUCCESS,
-		Err(error) => {
-			eprintln!("{error}");
-			std::process::ExitCode::from(error.exit_code())
-		}
+		Err(code) => std::process::ExitCode::from(code as u8),
 	}
 }
 ```
 
-When a rule rejects a resource, the bake stores nothing for it and the asset
-that needed it fails too. `BakeReport::failed` lists each failed asset with its
-reason, and `beld inspect` prints the rule's message from the asset's trace in
-debug builds.
+A rejected resource isn't stored, and every asset that needed it fails. Each
+failure is logged, and `beld inspect` prints the rule's message from the asset's
+trace in debug builds. Resources already current in the store are reused
+without a check; call `asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now())`
+before `bake_ids` to check them all.
 
-A rule only checks resources that the bake writes. Resources already current in
-the store are reused without a check. To check every resource against a new
-rule, call `asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now())`
-before `bake_ids`, the same way `beld bake --force` does.
-
-Next, run your tool where you ran `beld bake`, and [check the baked output](/docs/use/resources/bake#check-the-baked-output).
+Next, [check the baked output](/docs/use/resources/bake#check-the-baked-output).
 
 ## Rust API
 
-- `beld::pipeline`: `open_asset_storage`, `open_resource_storage`, `default_asset_manager`, `select_ids`, `bake_ids`, `BakeReport`, `default_bake_memory_budget`
-- `beld::BeldError`
-- `resource_management::asset::validation`: `ResourceValidator`, `ResourceCandidate`, `ValidationError`
+- `beld::pipeline`: `open_asset_storage`, `open_resource_storage`, `default_asset_manager`, `bake_ids`
+- `resource_management::asset::validation::ResourceValidator`
 - `AssetManager::add_resource_validator`

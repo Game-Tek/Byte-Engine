@@ -44,9 +44,9 @@ mod tests {
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
 		assert_eq!(parse_query_property("name=hero"), Ok(("name", "hero")));
 		assert_eq!(parse_query_property("expression=a=b"), Ok(("expression", "a=b")));
-		for invalid in ["name", "=value", "name="] {
-			assert_eq!(parse_query_property(invalid).map_err(|error| error.exit_code()), Err(1));
-		}
+		assert_eq!(parse_query_property("name"), Err(1));
+		assert_eq!(parse_query_property("=value"), Err(1));
+		assert_eq!(parse_query_property("name="), Err(1));
 	}
 
 	#[test]
@@ -55,11 +55,8 @@ mod tests {
 		let encoded = encode_query_cursor(&cursor);
 
 		assert_eq!(decode_query_cursor(&encoded), Ok(cursor));
-		assert_eq!(decode_query_cursor("not-hex").map_err(|error| error.exit_code()), Err(1));
-		assert_eq!(
-			decode_query_cursor(&utils::hex::encode(br#"{"wrong":true}"#)).map_err(|error| error.exit_code()),
-			Err(1)
-		);
+		assert_eq!(decode_query_cursor("not-hex"), Err(1));
+		assert_eq!(decode_query_cursor(&utils::hex::encode(br#"{"wrong":true}"#)), Err(1));
 	}
 
 	#[cfg(debug_assertions)]
@@ -78,7 +75,7 @@ mod tests {
 
 		let executor = resource_management::r#async::Executor::new().unwrap();
 
-		assert_eq!(executor.block_on(list(&root)).map_err(|error| error.exit_code()), Err(1));
+		assert_eq!(executor.block_on(list(root.to_string_lossy().into_owned())), Err(1));
 		assert_eq!(std::fs::read(&signature_path).unwrap(), b"stale-signature");
 		assert_eq!(std::fs::read(&sentinel_path).unwrap(), b"retain-me");
 
@@ -194,18 +191,16 @@ mod tests {
 		let executor = resource_management::r#async::Executor::new().unwrap();
 
 		assert_eq!(
-			executor
-				.block_on(bake(
-					&assets_path,
-					&resources_path,
-					Vec::new(),
-					None,
-					None,
-					std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
-					false,
-					VisibilityFeatures::default(),
-				))
-				.map_err(|error| error.exit_code()),
+			executor.block_on(bake(
+				assets_path.to_string_lossy().into_owned(),
+				resources_path.to_string_lossy().into_owned(),
+				Vec::new(),
+				None,
+				None,
+				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
+				false,
+				VisibilityFeatures::default(),
+			)),
 			Err(1)
 		);
 
@@ -250,7 +245,7 @@ mod tests {
 
 		assert_eq!(
 			executor.block_on(inspect(
-				&resources_path,
+				resources_path.to_string_lossy().into_owned(),
 				"broken.png".to_string(),
 				OutputFormat::JSON,
 				crate::Payload::None,
@@ -259,7 +254,7 @@ mod tests {
 		);
 		assert_eq!(
 			executor.block_on(inspect(
-				&resources_path,
+				resources_path.to_string_lossy().into_owned(),
 				"successful.audio".to_string(),
 				OutputFormat::JSON,
 				crate::Payload::None,
@@ -268,7 +263,7 @@ mod tests {
 		);
 		assert_eq!(
 			executor.block_on(query(
-				&resources_path,
+				resources_path.to_string_lossy().into_owned(),
 				"Audio".to_string(),
 				Vec::new(),
 				None,

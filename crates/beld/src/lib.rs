@@ -8,11 +8,9 @@
 #![allow(clippy::too_many_lines)]
 
 mod commands;
-mod error;
 pub mod pipeline;
 
 pub use commands::{bake, bake_dry_run, clear, delete, inspect, list, query, wipe};
-pub use error::BeldError;
 pub use resource_management::r#async::Executor;
 
 /// Selects the representation written by commands that return structured output.

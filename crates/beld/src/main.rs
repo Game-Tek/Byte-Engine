@@ -2,11 +2,11 @@
 fn main() -> ExitCode {
 	match run_cli() {
 		Ok(()) => ExitCode::SUCCESS,
-		Err(code) => ExitCode::from(code),
+		Err(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
 	}
 }
 
-fn run_cli() -> Result<(), u8> {
+fn run_cli() -> Result<(), i32> {
 	let _ = simple_logger::SimpleLogger::new().env().init();
 
 	let color = parse_color_choice(std::env::args());
@@ -14,38 +14,33 @@ fn run_cli() -> Result<(), u8> {
 
 	let cli = Cli::from_arg_matches(&matches).map_err(|error| {
 		let _ = error.print();
-		2u8
+		2
 	})?;
 
 	let executor = resource_management::r#async::Executor::new().map_err(|error| {
 		log::error!(
 			"Failed to start BELD asynchronous resource access. The most likely cause is that the platform I/O driver could not be initialized. Error: {error}"
 		);
-		1u8
+		1
 	})?;
 
-	executor.block_on(run(cli)).map_err(|error| {
-		log::error!("{error}");
-		error.exit_code()
-	})
+	executor.block_on(run(cli))
 }
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
-async fn run(cli: Cli) -> Result<(), BeldError> {
-	let source = Path::new(&cli.source);
-	let destination = Path::new(&cli.destination);
+async fn run(cli: Cli) -> Result<(), i32> {
 	match cli.command {
-		Commands::Wipe {} => beld::wipe(destination).await,
-		Commands::Clear {} => beld::clear(destination).await,
-		Commands::List {} => beld::list(destination).await,
+		Commands::Wipe {} => beld::wipe(cli.destination).await,
+		Commands::Clear {} => beld::clear(cli.destination).await,
+		Commands::List {} => beld::list(cli.destination).await,
 		Commands::Query {
 			class,
 			properties,
 			limit,
 			cursor,
 			format,
-		} => beld::query(destination, class, properties, limit, cursor, format).await,
-		Commands::Inspect { id, format, payload } => beld::inspect(destination, id, format, payload).await,
+		} => beld::query(cli.destination, class, properties, limit, cursor, format).await,
+		Commands::Inspect { id, format, payload } => beld::inspect(cli.destination, id, format, payload).await,
 		Commands::Bake {
 			ids,
 			memory_budget,
@@ -56,12 +51,14 @@ async fn run(cli: Cli) -> Result<(), BeldError> {
 			format,
 			payload,
 		} => {
-			let configuration = read_configuration_file(Path::new(&config))
-				.map_err(|error| BeldError::new(format!("Failed to read the project configuration. {error}")))?;
+			let configuration = read_configuration_file(std::path::Path::new(&config)).map_err(|error| {
+				log::error!("Failed to read the project configuration. {error}");
+				1
+			})?;
 			let features = VisibilityFeatures::from_parameters(configuration.as_slice().scope("render"));
 			if dry_run {
 				return beld::bake_dry_run(
-					source,
+					cli.source,
 					ids,
 					bake_memory_budget(memory_budget),
 					features,
@@ -72,8 +69,8 @@ async fn run(cli: Cli) -> Result<(), BeldError> {
 				.await;
 			}
 			beld::bake(
-				source,
-				destination,
+				cli.source,
+				cli.destination,
 				ids,
 				cli.storage_mode.map(Into::into),
 				texture_compression.map(Into::into),
@@ -83,7 +80,7 @@ async fn run(cli: Cli) -> Result<(), BeldError> {
 			)
 			.await
 		}
-		Commands::Delete { ids } => beld::delete(destination, ids).await,
+		Commands::Delete { ids } => beld::delete(cli.destination, ids).await,
 	}
 }
 
@@ -98,9 +95,20 @@ fn parse_memory_budget_mib(value: &str) -> Result<NonZeroUsize, String> {
 		.ok_or_else(invalid)
 }
 
-/// Returns the configured bake budget, or BELD's default budget for this system.
+/// Returns the configured bake budget, or half of the available system memory, and never less than a quarter of the
+/// installed memory.
+///
+/// The floor matters on macOS, where the available figure subtracts compressed pages and reaches zero under memory
+/// pressure. A zero budget pauses every independent bake while any other bake retains memory, which serializes the
+/// whole run. The budget is soft, so the floor only bounds how much work starts at once.
 fn bake_memory_budget(configured: Option<NonZeroUsize>) -> NonZeroUsize {
-	configured.unwrap_or_else(beld::pipeline::default_bake_memory_budget)
+	configured.unwrap_or_else(|| {
+		let mut system = sysinfo::System::new();
+		system.refresh_memory();
+		let available_bytes = system.available_memory().max(system.total_memory() / 2);
+		let budget_bytes = usize::try_from(available_bytes / 2).unwrap_or(usize::MAX);
+		NonZeroUsize::new(budget_bytes).unwrap_or(NonZeroUsize::MIN)
+	})
 }
 
 /// Reads `--color` before the full parse so help and parser errors use the selected color mode.
@@ -270,9 +278,9 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 	}
 }
 
-use std::{num::NonZeroUsize, path::Path, process::ExitCode};
+use std::{num::NonZeroUsize, process::ExitCode};
 
-use beld::{BeldError, OutputFormat, Payload};
+use beld::{OutputFormat, Payload};
 use byte_engine::application::parameters::{Parameters as _, read_configuration_file};
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use clap::{

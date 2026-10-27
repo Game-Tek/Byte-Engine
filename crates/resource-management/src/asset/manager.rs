@@ -813,7 +813,6 @@ pub mod tests {
 	use crate::asset::ResourceTraceLevel;
 	use crate::{
 		Model, ProcessedAsset,
-		asset::validation::ValidationError,
 		asset::{handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::{self, BoxedFuture},
 		resource::{ReadStorageBackend, storage_backend::MemoryStorageBackend},
@@ -1662,63 +1661,44 @@ pub mod tests {
 	struct MaxPayloadSize(usize);
 
 	impl ResourceValidator for MaxPayloadSize {
-		fn validate(&self, candidate: &crate::asset::validation::ResourceCandidate<'_>) -> Result<(), ValidationError> {
-			if candidate.payload_size() <= self.0 {
+		fn validate(&self, _: &ProcessedAsset, payload_size: usize) -> Result<(), String> {
+			if payload_size <= self.0 {
 				return Ok(());
 			}
-
-			Err(ValidationError::new(
-				format!(
-					"The payload is {} bytes, over the {}-byte limit.",
-					candidate.payload_size(),
-					self.0
-				),
-				"The most likely cause is an oversized source asset.",
-				"Reduce the source asset's size.",
+			Err(format!(
+				"The payload is {payload_size} bytes, over the {}-byte limit.",
+				self.0
 			))
 		}
 	}
 
-	fn validated_asset_manager(limit: usize) -> (AssetManager, MemoryStorageBackend) {
-		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), resource_storage.clone());
+	#[r#async::test]
+	async fn validators_reject_oversized_resources_on_every_store_path_without_storing_them() {
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), resource_storage_backend.clone());
 		asset_manager.add_asset_handler(PayloadAssetHandler);
-		asset_manager.add_resource_validator(MaxPayloadSize(limit));
-		(asset_manager, resource_storage)
-	}
+		asset_manager.add_resource_validator(MaxPayloadSize(1024));
 
-	#[r#async::test]
-	async fn validators_reject_oversized_resources_on_every_store_path_without_writing_them() {
-		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
+		for path in ["slice", "owned", "stream"] {
+			let accepted = format!("1024.{path}.payload");
+			asset_manager
+				.bake(&accepted)
+				.await
+				.expect("a payload at the limit should bake");
+			assert!(resource_storage_backend.get_resource(ResourceId::new(&accepted)).is_some());
 
-		for id in ["2048.slice.payload", "2048.owned.payload", "2048.stream.payload"] {
+			let rejected = format!("2048.{path}.payload");
 			assert_eq!(
-				asset_manager.bake(id).await,
+				asset_manager.bake(&rejected).await,
 				Err(LoadMessages::FailedToBake {
-					asset: id.to_string(),
+					asset: rejected.clone(),
 					error: LoadErrors::ValidationFailed,
-				}),
-				"{id} should be rejected"
+				})
 			);
+			assert!(resource_storage_backend.get_resource(ResourceId::new(&rejected)).is_none());
 		}
 
-		assert!(resource_storage_backend.get_resources().is_empty());
-	}
-
-	#[r#async::test]
-	async fn validators_accept_resources_that_pass_every_rule() {
-		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
-
-		for id in ["1024.slice.payload", "1024.owned.payload", "1024.stream.payload"] {
-			asset_manager.bake(id).await.expect("a payload at the limit should bake");
-			assert!(resource_storage_backend.get_resource(ResourceId::new(id)).is_some());
-		}
-	}
-
-	#[r#async::test]
-	async fn a_rejected_dependency_fails_its_parent() {
-		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
-
+		// A rejected dependency fails the resource that needs it.
 		assert_eq!(
 			asset_manager.bake("parent.payload").await,
 			Err(LoadMessages::FailedToBake {
@@ -1726,30 +1706,11 @@ pub mod tests {
 				error: LoadErrors::FailedToProcess,
 			})
 		);
-		assert!(resource_storage_backend.get_resources().is_empty());
-	}
 
-	#[cfg(debug_assertions)]
-	#[r#async::test]
-	async fn a_rejection_is_recorded_in_the_resource_trace() {
-		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
-
-		let _ = asset_manager.bake("2048.slice.payload").await;
-
-		let items = asset_manager.resource_trace().items("2048.slice.payload");
-
-		assert_eq!(items.len(), 1);
-		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+		#[cfg(debug_assertions)]
 		assert_eq!(
-			items[0].message(),
-			"Rejected resource '2048.slice.payload'. The payload is 2048 bytes, over the 1024-byte limit. The most likely cause is an oversized source asset. Reduce the source asset's size."
-		);
-		assert_eq!(
-			resource_storage_backend
-				.read_trace(ResourceId::new("2048.slice.payload"))
-				.await
-				.unwrap(),
-			items
+			asset_manager.resource_trace().items("2048.slice.payload")[0].message(),
+			"Rejected resource '2048.slice.payload'. The payload is 2048 bytes, over the 1024-byte limit."
 		);
 	}
 }

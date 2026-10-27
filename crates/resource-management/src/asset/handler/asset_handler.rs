@@ -413,13 +413,15 @@ impl<'a> BakeContext<'a> {
 
 	/// Runs the project validators on a resource before it is stored, and records a rejection in this bake's trace.
 	fn validate(&self, resource: &ProcessedAsset, payload_size: usize) -> Result<(), LoadErrors> {
-		let candidate = ResourceCandidate::new(resource, payload_size);
+		for validator in &self.asset_manager.resource_validators {
+			if let Err(message) = validator.validate(resource, payload_size) {
+				self.error(format_args!("Rejected resource '{}'. {message}", resource.id()));
 
-		validate_resource(&self.asset_manager.resource_validators, &candidate).map_err(|error| {
-			self.error(format_args!("Rejected resource '{}'. {error}", resource.id()));
+				return Err(LoadErrors::ValidationFailed);
+			}
+		}
 
-			LoadErrors::ValidationFailed
-		})
+		Ok(())
 	}
 
 	/// Rejects a primary store whose resource ID differs from the requested asset.
@@ -486,7 +488,6 @@ use crate::asset::{
 	bake_memory::BakeAllocator,
 	manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},
-	validation::{ResourceCandidate, validate_resource},
 };
 use crate::{
 	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture,

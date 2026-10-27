@@ -1,22 +1,18 @@
-use std::{num::NonZeroUsize, time::Instant};
+use std::{num::NonZeroUsize, path::Path};
 
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use resource_management::{
-	asset::{FileStorageBackend, ResourceId, manager::AssetManager, manager::LoadMessages},
+	asset::{ResourceId, manager::AssetManager, manager::LoadMessages},
 	inspect::{ResourceDocument, inspect_payload, inspect_resource},
-	resource::{
-		MemoryStorageBackend, ReDBStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
-		ResourceStorageSettings,
-	},
+	resource::{MemoryStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use utils::r#async::StreamExt;
 
 use crate::{
-	OutputFormat, Payload,
-	commands::shared::{attach_trace, offload_file_operation, payload_format, print_human_value, read_payload, write_json},
-	utils::get_asset_manager,
+	BeldError, OutputFormat, Payload,
+	commands::shared::{attach_trace, payload_format, print_human_value, read_payload, write_json},
+	pipeline::{bake_ids, default_asset_manager, open_asset_storage, open_resource_storage, select_ids},
 };
 
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
@@ -26,64 +22,36 @@ use crate::{
 /// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
 /// assets only left-out features use.
 ///
+/// To add steps of your own, such as resource validators, compose the functions in [`crate::pipeline`] instead.
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake(
-	source_path: String,
-	destination_path: String,
+	source_path: &Path,
+	destination_path: &Path,
 	ids: Vec<String>,
 	storage_mode: Option<ResourceStorageMode>,
 	texture_compression: Option<ResourceGpuCompressionPolicy>,
 	memory_budget: NonZeroUsize,
 	force: bool,
 	features: VisibilityFeatures,
-) -> Result<(), i32> {
+) -> Result<(), BeldError> {
 	let asset_storage_backend = open_asset_storage(source_path).await?;
-	let destination_path = std::path::PathBuf::from(destination_path);
-	let resource_storage_backend = offload_file_operation(move || match texture_compression {
-		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
-			destination_path,
-			ResourceStorageSettings::new(storage_mode.unwrap_or_default()).image_compression(compression),
-		),
-		None => match storage_mode {
-			Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode),
-			None => Ok(ReDBStorageBackend::new_writable(destination_path)),
-		},
-	})
-	.await
-	.map_err(|error| {
-		log::error!("Failed to bake resources. {error}");
-		1
-	})?;
-
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, features);
+	let resource_storage_backend = open_resource_storage(destination_path, storage_mode, texture_compression).await?;
+	let mut asset_manager = default_asset_manager(asset_storage_backend, resource_storage_backend, features);
+	set_memory_budget(&mut asset_manager, memory_budget);
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
 	if force {
 		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
 	}
 
-	let ids = if ids.is_empty() {
-		let mut ids = asset_manager.discover().await.map_err(|error| {
-			log::error!("Failed to discover assets. {error}");
-			1
-		})?;
-		// Explicitly requested IDs still bake; only discovery skips what the project left out.
-		ids.retain(|id| !features.excludes(id));
-		ids
-	} else {
-		ids
-	};
-
+	let ids = select_ids(&asset_manager, ids, features).await?;
 	if ids.is_empty() {
 		log::info!("No supported assets found to bake.");
-
 		return Ok(());
 	}
 
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
-
-	if failures.is_empty() { Ok(()) } else { Err(1) }
+	failures_to_error(&bake_ids(&asset_manager, ids).await.failed)
 }
 
 /// Bakes `ids` and every resource they depend on into memory, and writes everything produced as one document to
@@ -93,26 +61,28 @@ pub async fn bake(
 /// failed. Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Without `ids` nothing
 /// bakes, because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
 pub async fn bake_dry_run(
-	source_path: String,
+	source_path: &Path,
 	ids: Vec<String>,
 	memory_budget: NonZeroUsize,
 	features: VisibilityFeatures,
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
-) -> Result<(), i32> {
+) -> Result<(), BeldError> {
 	let payload = payload_format(payload, format)?;
 
 	let asset_storage_backend = open_asset_storage(source_path).await?;
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let mut asset_manager = default_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
+	set_memory_budget(&mut asset_manager, memory_budget);
+	let failures = bake_ids(&asset_manager, ids).await.failed;
 	drop(asset_manager);
 
 	let mut resource_ids = resource_storage_backend.list().await.map_err(|error| {
-		log::error!("Failed to list the baked resources. The most likely cause is an internal storage error. Error: {error}");
-		1
+		BeldError::new(format!(
+			"Failed to list the baked resources. The most likely cause is an internal storage error. Run the dry run again. Error: {error}"
+		))
 	})?;
 	resource_ids.sort_unstable();
 
@@ -122,10 +92,7 @@ pub async fn bake_dry_run(
 		let Some((resource, reader)) = resource_storage_backend.read(ResourceId::new(id)).await else {
 			continue;
 		};
-		let mut inspection = inspect_resource(&resource).map_err(|error| {
-			log::error!("{}", error);
-			1
-		})?;
+		let mut inspection = inspect_resource(&resource).map_err(|error| BeldError::new(error.to_string()))?;
 		attach_trace(&mut inspection.json, &resource_storage_backend, id).await?;
 		let payload_bytes = match payload {
 			Some(_) => Some(read_payload(&resource, reader).await?),
@@ -154,10 +121,7 @@ pub async fn bake_dry_run(
 					_ => Ok(None),
 				})
 				.collect::<Result<Vec<_>, _>>()
-				.map_err(|error| {
-					log::error!("{}", error);
-					1
-				})?;
+				.map_err(|error| BeldError::new(error.to_string()))?;
 			let resources = resources
 				.iter()
 				.zip(&payloads)
@@ -170,7 +134,7 @@ pub async fn bake_dry_run(
 		}
 	}
 
-	if failures.is_empty() { Ok(()) } else { Err(1) }
+	failures_to_error(&failures)
 }
 
 /// The JSON document of a dry run. It is written straight to the output, so payload streams never become a JSON tree.
@@ -180,68 +144,23 @@ struct DryRunDocument<'a> {
 	failed: Vec<Value>,
 }
 
-/// Opens the source asset directory a bake reads from.
-async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i32> {
-	let source_path = std::path::PathBuf::from(source_path);
-	FileStorageBackend::open(source_path.clone()).await.map_err(|error| {
-		log::error!(
-			"Failed to open assets directory '{}'. The most likely cause is that the directory cannot be created or accessed. Error: {error}",
-			source_path.display()
-		);
-		1
-	})
-}
-
-/// Bakes every ID that is stale, up to 16 at once within `memory_budget`, logs each outcome, and returns the IDs that
-/// failed with their errors.
-async fn bake_ids(
-	asset_manager: &mut AssetManager,
-	ids: Vec<String>,
-	memory_budget: NonZeroUsize,
-) -> Vec<(String, LoadMessages)> {
+/// Sets the bake memory budget and logs it, so a run's log shows what bounded its concurrency.
+fn set_memory_budget(asset_manager: &mut AssetManager, memory_budget: NonZeroUsize) {
 	asset_manager.set_bake_memory_budget(memory_budget);
-	let asset_manager = &*asset_manager;
 	log::info!(
 		"Using a {} soft memory budget for concurrent asset bakes.",
 		utils::ByteSize::from(memory_budget.get())
 	);
+}
 
-	let resource_count = ids.len();
+/// Turns the failures of a bake, which [`bake_ids`] already logged one by one, into the command's result.
+fn failures_to_error(failures: &[(String, LoadMessages)]) -> Result<(), BeldError> {
+	if failures.is_empty() {
+		return Ok(());
+	}
 
-	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
-	let tasks = ids.into_iter().map(async |id| {
-		log::info!("Baking resource '{}'", id);
-
-		match asset_manager.bake_if_stale(&id).await {
-			Ok(_) => {
-				// A current resource is reused rather than baked, so report the outcome both paths share.
-				log::info!("Resource '{}' is up to date", id);
-
-				None
-			}
-			Err(e) => {
-				log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-
-				Some((id, e))
-			}
-		}
-	});
-
-	let bake_start = Instant::now();
-
-	let failures = utils::r#async::stream::iter(tasks)
-		.buffer_unordered(16)
-		.filter_map(async |failure| failure)
-		.collect::<Vec<_>>()
-		.await;
-
-	log::info!(
-		"Processed {} assets in {:?}: {} succeeded, {} failed",
-		resource_count,
-		bake_start.elapsed(),
-		resource_count - failures.len(),
+	Err(BeldError::new(format!(
+		"Failed to bake {} assets. The most likely cause is invalid source data; each failure is logged above. Fix the logged assets, or run `beld inspect <id>` to read a failed asset's trace.",
 		failures.len()
-	);
-
-	failures
+	)))
 }

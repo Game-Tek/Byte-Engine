@@ -190,6 +190,16 @@ impl ProcessedAsset {
 		&self.resource
 	}
 
+	/// Returns the named ranges in the payload, when the handler attached any with [`Self::with_streams`].
+	pub fn streams(&self) -> Option<&[StreamDescription]> {
+		self.streams.as_deref()
+	}
+
+	/// Returns the indexed properties that resource queries match against.
+	pub fn queryable_properties(&self) -> &[QueryableProperty] {
+		&self.queryable_properties
+	}
+
 	/// Returns whether whole-resource storage may apply CPU compression.
 	pub fn compression_policy(&self) -> resource::ResourceCompressionPolicy {
 		self.compression

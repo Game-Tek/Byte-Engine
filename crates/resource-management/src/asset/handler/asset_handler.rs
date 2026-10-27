@@ -48,6 +48,8 @@ pub enum LoadErrors {
 	FailedToStore,
 	PrimaryResourceIdMismatch,
 	PrimaryResourceNotStored,
+	/// A [`ResourceValidator`](crate::asset::validation::ResourceValidator) rejected a resource before it was stored.
+	ValidationFailed,
 }
 
 impl LoadErrors {
@@ -61,6 +63,7 @@ impl LoadErrors {
 			Self::FailedToStore => "The baked resource could not be stored.",
 			Self::PrimaryResourceIdMismatch => "The asset handler stored the primary resource under a different ID.",
 			Self::PrimaryResourceNotStored => "The asset handler did not store the primary resource.",
+			Self::ValidationFailed => "A project resource validator rejected the baked resource.",
 		}
 	}
 
@@ -77,6 +80,9 @@ impl LoadErrors {
 			Self::FailedToStore => "Check that the resource destination is writable, then retry.",
 			Self::PrimaryResourceIdMismatch => "Store the primary resource under the requested asset ID.",
 			Self::PrimaryResourceNotStored => "Make the asset handler store its primary resource before returning.",
+			Self::ValidationFailed => {
+				"Change the source asset so the resource passes the validator named in the resource trace."
+			}
 		}
 	}
 }
@@ -328,6 +334,18 @@ impl<'a> BakeContext<'a> {
 		transaction: resource::ResourceTransaction<'_>,
 		resource: ProcessedAsset,
 	) -> Result<SerializableResource, LoadErrors> {
+		// Incremental transactions store bytes uncompressed, so the reserved size is the decoded payload size.
+		// Dropping a rejected transaction returns its reserved storage.
+		self.validate(&resource, transaction.expected_size())?;
+		self.commit_validated(transaction, resource).await
+	}
+
+	/// Commits a resource that already passed the project validators.
+	async fn commit_validated(
+		&self,
+		transaction: resource::ResourceTransaction<'_>,
+		resource: ProcessedAsset,
+	) -> Result<SerializableResource, LoadErrors> {
 		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 		let stored = transaction
 			.commit(resource, self.allocator)
@@ -357,6 +375,8 @@ impl<'a> BakeContext<'a> {
 	///
 	/// Generated dependencies use this path too; parent resources reference the returned metadata.
 	pub async fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
+		self.validate(&resource, data.len())?;
+
 		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 
 		let stored = self
@@ -375,6 +395,9 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 		data: T,
 	) -> Result<SerializableResource, LoadErrors> {
+		// Validate the decoded size before CPU compression changes what the transaction reserves.
+		self.validate(&resource, data.buf_len())?;
+
 		let id = ResourceId::new(resource.id());
 		let storage = self.asset_manager.resource_storage_backend.as_ref();
 		let transaction =
@@ -384,7 +407,18 @@ impl<'a> BakeContext<'a> {
 			.await
 			.map_err(|_| LoadErrors::FailedToStore)?;
 
-		self.commit_resource(transaction, resource).await
+		self.commit_validated(transaction, resource).await
+	}
+
+	/// Runs the project validators on a resource before it is stored, and records a rejection in this bake's trace.
+	fn validate(&self, resource: &ProcessedAsset, payload_size: usize) -> Result<(), LoadErrors> {
+		let candidate = ResourceCandidate::new(resource, payload_size);
+
+		validate_resource(&self.asset_manager.resource_validators, &candidate).map_err(|error| {
+			self.error(format_args!("Rejected resource '{}'. {error}", resource.id()));
+
+			LoadErrors::ValidationFailed
+		})
 	}
 
 	/// Rejects a primary store whose resource ID differs from the requested asset.
@@ -451,6 +485,7 @@ use crate::asset::{
 	bake_memory::BakeAllocator,
 	manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},
+	validation::{ResourceCandidate, validate_resource},
 };
 use crate::{
 	Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture,

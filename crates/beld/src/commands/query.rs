@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use resource_management::resource::{
 	ReDBStorageBackend, ReadStorageBackend,
 	storage_backend::{Query, QueryCursor},
@@ -6,7 +8,7 @@ use resource_management::resource::{
 #[cfg(debug_assertions)]
 use crate::commands::shared::{insert_trace_json, print_human_trace, read_resource_trace};
 use crate::{
-	OutputFormat,
+	BeldError, OutputFormat,
 	commands::shared::{
 		decode_query_cursor, encode_query_cursor, open_read_only_storage, print_queryable_value, queryable_properties_json,
 	},
@@ -16,13 +18,13 @@ use crate::{
 ///
 /// Pass a returned ID to [`crate::inspect`] when you need the full resource metadata.
 pub async fn query(
-	destination_path: String,
+	destination_path: &Path,
 	class: String,
 	properties: Vec<String>,
 	limit: Option<usize>,
 	cursor: Option<String>,
 	format: OutputFormat,
-) -> Result<(), i32> {
+) -> Result<(), BeldError> {
 	let storage_backend = open_read_only_storage(destination_path, "query").await?;
 	let mut query = Query::new(&class);
 
@@ -39,10 +41,10 @@ pub async fn query(
 		query = query.cursor(decode_query_cursor(&cursor)?);
 	}
 
-	let page = storage_backend.query(query).await.map_err(|error| {
-		log::error!("{error}");
-		1
-	})?;
+	let page = storage_backend
+		.query(query)
+		.await
+		.map_err(|error| BeldError::new(error.to_string()))?;
 
 	match format {
 		OutputFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
@@ -53,21 +55,17 @@ pub async fn query(
 }
 
 /// Parses one `name=value` property filter from the command line.
-pub(super) fn parse_query_property(property: &str) -> Result<(&str, &str), i32> {
+pub(super) fn parse_query_property(property: &str) -> Result<(&str, &str), BeldError> {
 	let Some((name, value)) = property.split_once('=') else {
-		log::error!(
-			"Invalid query property '{}'. The most likely cause is that the filter is not in `property=value` form.",
-			property
-		);
-		return Err(1);
+		return Err(BeldError::new(format!(
+			"Invalid query property '{property}'. The most likely cause is that the filter is not in `property=value` form. Write it as `name=value`."
+		)));
 	};
 
 	if name.is_empty() || value.is_empty() {
-		log::error!(
-			"Invalid query property '{}'. The most likely cause is an empty property name or value.",
-			property
-		);
-		return Err(1);
+		return Err(BeldError::new(format!(
+			"Invalid query property '{property}'. The most likely cause is an empty property name or value. Write both halves, as in `name=value`."
+		)));
 	}
 
 	Ok((name, value))
@@ -81,7 +79,7 @@ async fn print_human_query_page(
 		resource_management::resource::resource_handler::MultiResourceReader,
 	)],
 	cursor: Option<&QueryCursor>,
-) -> Result<(), i32> {
+) -> Result<(), BeldError> {
 	if items.is_empty() {
 		log::info!("No resources found.");
 	}
@@ -112,7 +110,7 @@ async fn print_json_query_page(
 		resource_management::resource::resource_handler::MultiResourceReader,
 	)],
 	cursor: Option<&QueryCursor>,
-) -> Result<(), i32> {
+) -> Result<(), BeldError> {
 	let mut resources = Vec::with_capacity(items.len());
 	for (resource, _) in items {
 		let mut value = serde_json::json!({
@@ -134,11 +132,9 @@ async fn print_json_query_page(
 	println!(
 		"{}",
 		serde_json::to_string_pretty(&output).map_err(|error| {
-			log::error!(
-				"Failed to print query JSON. The most likely cause is an invalid JSON value. Error: {}",
-				error
-			);
-			1
+			BeldError::new(format!(
+				"Failed to print query JSON. The most likely cause is an invalid JSON value in a stored resource. Bake the resources again. Error: {error}"
+			))
 		})?
 	);
 

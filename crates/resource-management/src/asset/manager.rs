@@ -12,6 +12,8 @@ pub struct AssetManager {
 /// The `AssetManagerState` struct keeps shared bake state independent from the worker runtimes that execute requests.
 pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn DynAssetHandler>>,
+	/// The project rules every resource must pass before it is stored.
+	pub(in crate::asset) resource_validators: Vec<Box<dyn ResourceValidator>>,
 	/// The image pipeline every handler that produces images shares.
 	pub(in crate::asset) image_processor: ImageProcessor,
 	storage_backend: Box<dyn DynStorageBackend>,
@@ -84,6 +86,7 @@ impl AssetManager {
 		Self {
 			state: Arc::new(AssetManagerState {
 				asset_handlers: Vec::with_capacity(8),
+				resource_validators: Vec::new(),
 				image_processor: ImageProcessor::default(),
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
@@ -136,6 +139,21 @@ impl AssetManager {
 			.expect("Asset handlers must be registered before the asset manager starts processing requests.")
 			.asset_handlers
 			.push(Box::new(asset_handler));
+	}
+
+	/// Registers a project rule that every baked resource must pass before it is stored.
+	///
+	/// Validators run in registration order for each resource a bake stores, including generated dependencies. The
+	/// first rejection fails that bake with [`LoadErrors::ValidationFailed`] and nothing is written for the resource.
+	/// Register validators before calling [`Self::bake`] or sharing the manager.
+	///
+	/// Next, call [`Self::bake_if_stale`] for each root, or [`Self::rebuild_resources_baked_before`] first when
+	/// resources stored before the rule existed must be checked again.
+	pub fn add_resource_validator<T: ResourceValidator + 'static>(&mut self, validator: T) {
+		Arc::get_mut(&mut self.state)
+			.expect("Resource validators must be registered before the asset manager starts processing requests.")
+			.resource_validators
+			.push(Box::new(validator));
 	}
 
 	/// Replaces the image processor every handler that produces images bakes with.
@@ -795,6 +813,7 @@ pub mod tests {
 	use crate::asset::ResourceTraceLevel;
 	use crate::{
 		Model, ProcessedAsset,
+		asset::validation::ValidationError,
 		asset::{handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::{self, BoxedFuture},
 		resource::{ReadStorageBackend, storage_backend::MemoryStorageBackend},
@@ -1601,6 +1620,138 @@ pub mod tests {
 		);
 		assert!(resource_storage_backend.get_resources().is_empty());
 	}
+
+	/// The `PayloadAssetHandler` struct stores a payload whose size and store path the asset ID selects.
+	///
+	/// `<size>.slice.payload` stores borrowed bytes, `<size>.owned.payload` stores an owned buffer,
+	/// `<size>.stream.payload` writes through a transaction, and `parent.payload` depends on `2048.slice.payload`.
+	struct PayloadAssetHandler;
+
+	impl AssetHandler for PayloadAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "payload"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			let base = id.get_base();
+			let mut parts = base.as_ref().split('.');
+			let size_or_parent = parts.next().unwrap_or_default();
+
+			if size_or_parent == "parent" {
+				context.bake_dependency::<TestResource>("2048.slice.payload").await?;
+
+				return context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await;
+			}
+
+			let data = vec![0u8; size_or_parent.parse().expect("the fixture ID should start with a byte count")];
+			let resource = ProcessedAsset::new(id, TestResource {});
+
+			match parts.next() {
+				Some("slice") => context.store_primary(resource, &data).await,
+				Some("owned") => context.store_primary_owned(resource, data).await,
+				_ => {
+					let mut transaction = context.begin_resource(id, data.len()).await?;
+					transaction.write_all(&data).await.map_err(|_| LoadErrors::FailedToStore)?;
+					context.commit_primary(transaction, resource).await
+				}
+			}
+		}
+	}
+
+	/// The `MaxPayloadSize` struct rejects resources whose payload is larger than a byte limit, like a project rule.
+	struct MaxPayloadSize(usize);
+
+	impl ResourceValidator for MaxPayloadSize {
+		fn validate(&self, candidate: &crate::asset::validation::ResourceCandidate<'_>) -> Result<(), ValidationError> {
+			if candidate.payload_size() <= self.0 {
+				return Ok(());
+			}
+
+			Err(ValidationError::new(
+				format!(
+					"The payload is {} bytes, over the {}-byte limit.",
+					candidate.payload_size(),
+					self.0
+				),
+				"The most likely cause is an oversized source asset.",
+				"Reduce the source asset's size.",
+			))
+		}
+	}
+
+	fn validated_asset_manager(limit: usize) -> (AssetManager, MemoryStorageBackend) {
+		let resource_storage = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), resource_storage.clone());
+		asset_manager.add_asset_handler(PayloadAssetHandler);
+		asset_manager.add_resource_validator(MaxPayloadSize(limit));
+		(asset_manager, resource_storage)
+	}
+
+	#[r#async::test]
+	async fn validators_reject_oversized_resources_on_every_store_path_without_writing_them() {
+		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
+
+		for id in ["2048.slice.payload", "2048.owned.payload", "2048.stream.payload"] {
+			assert_eq!(
+				asset_manager.bake(id).await,
+				Err(LoadMessages::FailedToBake {
+					asset: id.to_string(),
+					error: LoadErrors::ValidationFailed,
+				}),
+				"{id} should be rejected"
+			);
+		}
+
+		assert!(resource_storage_backend.get_resources().is_empty());
+	}
+
+	#[r#async::test]
+	async fn validators_accept_resources_that_pass_every_rule() {
+		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
+
+		for id in ["1024.slice.payload", "1024.owned.payload", "1024.stream.payload"] {
+			asset_manager.bake(id).await.expect("a payload at the limit should bake");
+			assert!(resource_storage_backend.get_resource(ResourceId::new(id)).is_some());
+		}
+	}
+
+	#[r#async::test]
+	async fn a_rejected_dependency_fails_its_parent() {
+		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
+
+		assert_eq!(
+			asset_manager.bake("parent.payload").await,
+			Err(LoadMessages::FailedToBake {
+				asset: "parent.payload".to_string(),
+				error: LoadErrors::FailedToProcess,
+			})
+		);
+		assert!(resource_storage_backend.get_resources().is_empty());
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn a_rejection_is_recorded_in_the_resource_trace() {
+		let (asset_manager, resource_storage_backend) = validated_asset_manager(1024);
+
+		let _ = asset_manager.bake("2048.slice.payload").await;
+
+		let items = asset_manager.resource_trace().items("2048.slice.payload");
+
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+		assert_eq!(
+			items[0].message(),
+			"Rejected resource '2048.slice.payload'. The payload is 2048 bytes, over the 1024-byte limit. The most likely cause is an oversized source asset. Reduce the source asset's size."
+		);
+		assert_eq!(
+			resource_storage_backend
+				.read_trace(ResourceId::new("2048.slice.payload"))
+				.await
+				.unwrap(),
+			items
+		);
+	}
 }
 
 use std::{
@@ -1620,6 +1771,7 @@ use super::{
 	StorageBackend,
 	bake_memory::{BakeAllocator, BakeMemoryBudget, BakeMemoryScope},
 	handler::{AssetHandler, BakeContext, TrackingStorageBackend},
+	validation::ResourceValidator,
 };
 use crate::{
 	Model, ProcessedAsset, ReferenceModel,

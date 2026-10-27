@@ -70,6 +70,24 @@ Read the trace through `AssetManager::resource_trace` or, after installing the a
 Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
 The trace is an in-memory development tool: release builds don't expose it, and trace items are never stored as production resources.
 
+## Validate resources
+
+A `ResourceValidator` lets a project reject resources that break its own rules, such as a payload size limit.
+Register validators with `AssetManager::add_resource_validator`; the asset manager keeps them next to its handlers.
+
+The validators run inside `BakeContext`, before a resource reaches resource storage, so a rejected resource is never written.
+A change must keep these rules:
+
+- Every store path validates before it writes. `store_resource` and `store_resource_owned` validate the decoded payload size before any CPU compression.
+  `commit_resource` validates the size its transaction reserved, which is the decoded size because transactions store bytes uncompressed; a rejected transaction is dropped, which returns its reservation.
+- A validator sees `ResourceCandidate`: metadata and payload size, never payload bytes. Streamed writes don't hold their payload in memory, so passing bytes would force them to buffer it.
+- A rejection records an error in the resource trace and fails the bake with `LoadErrors::ValidationFailed`.
+  A rejected dependency fails its parent, the same as any other dependency failure.
+- Resources reused as current aren't validated again. Callers that add a rule to an existing store use `AssetManager::rebuild_resources_baked_before`.
+
+`validators_reject_oversized_resources_on_every_store_path_without_writing_them`, `a_rejected_dependency_fails_its_parent`, and `a_rejection_is_recorded_in_the_resource_trace` in `manager.rs` guard these rules.
+`a_composed_pipeline_rejects_resources_over_its_validator_limit` in BELD's `pipeline.rs` guards a real handler's path.
+
 ## Processing
 
 Asset processing turns source data into engine data.

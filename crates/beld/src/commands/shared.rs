@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use resource_management::inspect::PayloadFormat;
 use resource_management::{
 	QueryableValue, SerializableResource,
@@ -11,21 +13,18 @@ use resource_management::{
 use resource_management::{ResourceTraceItem, ResourceTraceLevel};
 use serde_json::{Value, json};
 
-use crate::{OutputFormat, Payload};
+use crate::{BeldError, OutputFormat, Payload};
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
 pub(super) async fn read_resource_trace(
 	storage_backend: &impl ReadStorageBackend,
 	id: &str,
-) -> Result<Vec<ResourceTraceItem>, i32> {
+) -> Result<Vec<ResourceTraceItem>, BeldError> {
 	storage_backend.read_trace(ResourceId::new(id)).await.map_err(|error| {
-		log::error!(
-			"Failed to read the resource trace for '{}'. The most likely cause is an unreadable resources database. Error: {}",
-			id,
-			error
-		);
-		1
+		BeldError::new(format!(
+			"Failed to read the resource trace for '{id}'. The most likely cause is an unreadable resources database. Run `beld bake` to rebuild it. Error: {error}"
+		))
 	})
 }
 
@@ -94,23 +93,15 @@ pub(super) fn encode_query_cursor(cursor: &QueryCursor) -> String {
 }
 
 /// Decodes a query cursor produced by [`encode_query_cursor`].
-pub(super) fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
-	let bytes = utils::hex::decode(cursor).ok_or_else(|| {
-		log::error!(
-			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result.",
-			cursor
-		);
-		1
-	})?;
+pub(super) fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, BeldError> {
+	let invalid = || {
+		format!(
+			"Invalid query cursor '{cursor}'. The most likely cause is that the cursor was not copied from a previous query result. Copy the `cursor` value a previous query printed."
+		)
+	};
+	let bytes = utils::hex::decode(cursor).ok_or_else(|| BeldError::new(invalid()))?;
 
-	serde_json::from_slice(&bytes).map_err(|error| {
-		log::error!(
-			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result. Error: {}",
-			cursor,
-			error
-		);
-		1
-	})
+	serde_json::from_slice(&bytes).map_err(|error| BeldError::new(format!("{} Error: {error}", invalid())))
 }
 
 pub(super) fn print_human_value(value: &Value, indent: usize) {
@@ -192,7 +183,7 @@ fn print_indent(indent: usize) {
 }
 
 /// Runs filesystem work that Compio does not support without blocking its runtime thread.
-pub(super) async fn offload_file_operation<T, F>(operation: F) -> T
+pub(crate) async fn offload_file_operation<T, F>(operation: F) -> T
 where
 	T: Send + 'static,
 	F: FnOnce() -> T + Send + 'static,
@@ -207,28 +198,28 @@ where
 }
 
 /// Opens a BELD read command without allowing signature synchronization to replace persisted resources.
-pub(super) async fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
-	let storage = offload_file_operation(move || ReDBStorageBackend::open_read_only(destination_path.into())).await;
+pub(super) async fn open_read_only_storage(destination_path: &Path, operation: &str) -> Result<ReDBStorageBackend, BeldError> {
+	let destination_path = destination_path.to_path_buf();
+	let storage = offload_file_operation(move || ReDBStorageBackend::open_read_only(destination_path)).await;
 
 	storage.map_err(|error| {
-		log::error!(
-			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
-			operation,
-			error
-		);
-		1
+		BeldError::new(format!(
+			"Failed to {operation} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {error}"
+		))
 	})
 }
 
 /// Reads a resource's whole decoded payload so its streams can be printed.
-pub(super) async fn read_payload(resource: &SerializableResource, mut reader: MultiResourceReader) -> Result<Box<[u8]>, i32> {
+pub(super) async fn read_payload(
+	resource: &SerializableResource,
+	mut reader: MultiResourceReader,
+) -> Result<Box<[u8]>, BeldError> {
 	if reader.encoding() == ResourcePayloadEncoding::MetalIoLz4 {
-		log::error!(
+		return Err(BeldError::new(format!(
 			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See {}.",
 			resource.id(),
 			utils::online_docs_url("api/beld#payloads")
-		);
-		return Err(1);
+		)));
 	}
 	if resource.size() == 0 {
 		return Ok(Box::new([]));
@@ -247,35 +238,35 @@ pub(super) async fn read_payload(resource: &SerializableResource, mut reader: Mu
 		.await
 	{
 		Ok(ReadTargets::Box(bytes)) if bytes.len() == resource.size() => Ok(bytes),
-		_ => {
-			log::error!(
-				"Failed to read the payload of resource '{}'. The most likely cause is a missing or truncated payload file, so the resource should be baked again.",
-				resource.id()
-			);
-			Err(1)
-		}
+		_ => Err(BeldError::new(format!(
+			"Failed to read the payload of resource '{}'. The most likely cause is a missing or truncated payload file. Bake the resource again with `beld bake --force`.",
+			resource.id()
+		))),
 	}
 }
 
 /// Returns how to print payload streams, or exit code 2 for a payload in the human format, which has no form for
 /// stream data.
-pub(super) fn payload_format(payload: Payload, format: OutputFormat) -> Result<Option<PayloadFormat>, i32> {
+pub(super) fn payload_format(payload: Payload, format: OutputFormat) -> Result<Option<PayloadFormat>, BeldError> {
 	let payload = match payload {
 		Payload::None => return Ok(None),
 		Payload::Typed => PayloadFormat::Typed,
 		Payload::Base64 => PayloadFormat::Base64,
 	};
 	if format == OutputFormat::Human {
-		log::error!(
-			"Invalid payload output. `--payload` needs `--format json`, because the human format has no form for stream data."
-		);
-		return Err(2);
+		return Err(BeldError::invalid_arguments(
+			"Invalid payload output. The human format has no form for stream data. Add `--format json` to print payloads.",
+		));
 	}
 	Ok(Some(payload))
 }
 
 /// Adds a resource's development trace to its JSON in debug builds; release builds store no traces.
-pub(super) async fn attach_trace(value: &mut Value, storage_backend: &impl ReadStorageBackend, id: &str) -> Result<(), i32> {
+pub(super) async fn attach_trace(
+	value: &mut Value,
+	storage_backend: &impl ReadStorageBackend,
+	id: &str,
+) -> Result<(), BeldError> {
 	#[cfg(debug_assertions)]
 	insert_trace_json(value, &read_resource_trace(storage_backend, id).await?);
 	#[cfg(not(debug_assertions))]
@@ -284,15 +275,13 @@ pub(super) async fn attach_trace(value: &mut Value, storage_backend: &impl ReadS
 }
 
 /// Writes one JSON document, pretty-printed and followed by a newline, to `output`.
-pub(super) fn write_json(output: &mut impl std::io::Write, value: &impl serde::Serialize) -> Result<(), i32> {
+pub(super) fn write_json(output: &mut impl std::io::Write, value: &impl serde::Serialize) -> Result<(), BeldError> {
 	let result = serde_json::to_writer_pretty(&mut *output, value)
 		.map_err(std::io::Error::from)
 		.and_then(|()| writeln!(output));
 	result.map_err(|error| {
-		log::error!(
-			"Failed to write JSON output. The most likely cause is that standard output was closed, for example by a pipe that exited early. Error: {}",
-			error
-		);
-		1
+		BeldError::new(format!(
+			"Failed to write JSON output. The most likely cause is that standard output was closed, for example by a pipe that exited early. Keep the reading process open until BELD exits. Error: {error}"
+		))
 	})
 }

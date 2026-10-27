@@ -42,7 +42,7 @@ fn wipe_clears_the_selected_backend_without_changing_its_storage_mode() {
 				.unwrap();
 		}
 
-		beld::wipe(path.to_string_lossy().into_owned()).await.unwrap();
+		beld::wipe(&path).await.unwrap();
 
 		{
 			let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();

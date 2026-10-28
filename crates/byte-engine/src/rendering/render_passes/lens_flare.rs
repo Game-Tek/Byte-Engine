@@ -263,7 +263,7 @@ impl RenderPass for LensFlarePass {
 				command_buffer.region(
 					|label| label.write_str("Lens Flare"),
 					|command_buffer| {
-						extract_pass.record(command_buffer, half_extent);
+						extract_pass.record(command_buffer, super::bloom::block_lanes(half_extent));
 						downsample_pass.record(command_buffer, quarter_extent);
 						features_pass.record(command_buffer, quarter_extent);
 						composite_pass.record(command_buffer, extent);

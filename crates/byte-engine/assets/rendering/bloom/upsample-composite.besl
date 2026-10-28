@@ -1,0 +1,148 @@
+// Climbs the bloom pyramid's last level and adds it onto the HDR scene in one dispatch. Each lane writes a 2x2 block of
+// pixels, so a 16x16 workgroup covers 32x32 of them. The workgroup first builds the 18x18 top-level texels its pixels
+// read into workgroup memory with the same climb the upsample pass makes: the level below blurred with a 3x3 tent,
+// spread `filter.x` lower-level texels wide and weighted by `filter.y`, plus the same-resolution level from the
+// downsample chain. Its pixels then filter that block bilinearly, scale it by `prefilter.z`, and add it to the scene.
+// The top level never touches memory, and the pyramid saves a dispatch and the barrier in front of it. The scene passes
+// through untouched at zero intensity, and the result stays scene-linear for the tone mapper that follows. The sum is
+// held to the half-float range: a scene texel already near it would otherwise overflow to infinity on store. The climb
+// lives in `layouts/climb.besl`, which binds both levels.
+
+scene_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+result_texture: descriptor<{ type: StorageImage, binding: 3, access: write }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 4, access: read, memory: constant }>;
+
+// The top-level texels under one workgroup's pixels: one under each lane's 2x2 block, plus the one-texel ring that
+// bilinear filtering reaches.
+shared_top_level: workgroup<vec4f, 324>;
+
+HALF_FLOAT_MAX: const f32 = 65504.0;
+BLOOM_WORKGROUP_WIDTH: const u32 = 16;
+// Pixels each lane writes along each axis; one top-level texel lies under each lane's block.
+BLOOM_LANE_WIDTH: const u32 = 2;
+BLOOM_REGION_WIDTH: const u32 = 18;
+// The region's last row and column, the ring's far side.
+BLOOM_REGION_LAST: const u32 = 17;
+// The last region cell whose right or bottom neighbor is still inside the region.
+BLOOM_REGION_LAST_CELL: const u32 = 16;
+// The ring around the lanes' own texels: eighteen along the top and the bottom, sixteen down each side.
+BLOOM_RING_TEXELS: const u32 = 68;
+
+// Returns the top-level texel under region coordinate `region`, which starts one texel before `origin`, clamped to
+// the level like a clamp-addressed sampler. Coordinates are unsigned, so the lower clamp happens before subtracting
+// the ring.
+region_coordinate: fn (origin: u32, region: u32, extent: u32) -> u32 {
+	return min(max(origin + region, 1) - 1, extent - 1);
+}
+
+// Builds the top-level texel at region cell `cell`. Every lane builds one, so the tent's taps fold into four bilinear
+// reads wherever the radius allows.
+climb: fn (region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
+	let texel: vec2u = vec2u(
+		region_coordinate(region_origin.x, cell.x, top_size.x),
+		region_coordinate(region_origin.y, cell.y, top_size.y)
+	);
+	let uv: vec2f = level_uv(texel, top_size);
+	let climbed: vec3f = same_level(uv) + folded_tent(uv, bloom_parameters.filter[0].x) * bloom_parameters.filter[0].y;
+	return vec4f(climbed.x, climbed.y, climbed.z, 0.0);
+}
+
+// Filters the region bilinearly under pixel `pixel` and adds the glow, scaled by `intensity`, onto its scene color.
+composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: vec2f, region_origin: vec2u, intensity: f32) -> vec4f {
+	// The pixel's center in top-level texels, measured from the region's first texel center, as a sampler would place
+	// it before filtering.
+	let position: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / result_size * top_size
+		- vec2f(f32(region_origin.x), f32(region_origin.y))
+		+ vec2f(0.5, 0.5);
+	let cell_x: f32 = floor(position.x);
+	let cell_y: f32 = floor(position.y);
+	let fraction_x: f32 = position.x - cell_x;
+	let fraction_y: f32 = position.y - cell_y;
+	let index: u32 = min(u32(cell_y), BLOOM_REGION_LAST_CELL) * BLOOM_REGION_WIDTH + min(u32(cell_x), BLOOM_REGION_LAST_CELL);
+	let top: vec4f = shared_top_level[index] * (1.0 - fraction_x) + shared_top_level[index + 1] * fraction_x;
+	let bottom: vec4f = shared_top_level[index + BLOOM_REGION_WIDTH] * (1.0 - fraction_x)
+		+ shared_top_level[index + BLOOM_REGION_WIDTH + 1] * fraction_x;
+	let bloom: vec4f = top * (1.0 - fraction_y) + bottom * fraction_y;
+	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) + vec3f(bloom.x, bloom.y, bloom.z) * intensity;
+	return vec4f(
+		min(final_color.x, HALF_FLOAT_MAX),
+		min(final_color.y, HALF_FLOAT_MAX),
+		min(final_color.z, HALF_FLOAT_MAX),
+		1.0
+	);
+}
+
+// Writes the 2x2 block of pixels whose first is `base`, skipping those past the right or bottom edge of a `size` image.
+write_block: fn (base: vec2u, size: vec2u, top_left: vec4f, top_right: vec4f, bottom_left: vec4f, bottom_right: vec4f) -> void {
+	write(result_texture, base, top_left);
+	if (base.x + 1 < size.x) {
+		write(result_texture, base + vec2u(1, 0), top_right);
+	}
+	if (base.y + 1 < size.y) {
+		write(result_texture, base + vec2u(0, 1), bottom_left);
+		if (base.x + 1 < size.x) {
+			write(result_texture, base + vec2u(1, 1), bottom_right);
+		}
+	}
+}
+
+main: fn(input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
+	let base: vec2u = input.thread_id * vec2u(BLOOM_LANE_WIDTH, BLOOM_LANE_WIDTH);
+	let result_size: vec2u = image_size(result_texture);
+	// The block's second column and row, held inside the image so reads past an odd edge stay in bounds.
+	let right: u32 = min(base.x + 1, result_size.x - 1);
+	let below: u32 = min(base.y + 1, result_size.y - 1);
+	let intensity: f32 = bloom_parameters.prefilter[0].z;
+	if (intensity <= 0.0) {
+		guard_image_bounds(result_texture, base);
+		write_block(
+			base,
+			result_size,
+			fetch(scene_texture, base),
+			fetch(scene_texture, vec2u(right, base.y)),
+			fetch(scene_texture, vec2u(base.x, below)),
+			fetch(scene_texture, vec2u(right, below))
+		);
+		return;
+	}
+
+	// Each lane builds the top-level texel under its own block, one in from the ring, and the first 68 lanes also build
+	// one ring texel. The lane's own climb is issued first, so its reads are in flight while the ring lanes start theirs.
+	let top_size: vec2u = texture_size(high_resolution_texture);
+	let lane_position: vec2u = input.thread_id % vec2u(BLOOM_WORKGROUP_WIDTH, BLOOM_WORKGROUP_WIDTH);
+	// The top-level texel under the workgroup's first pixel; the region starts one texel before it.
+	let region_origin: vec2u = input.thread_id - lane_position;
+	let own_cell: vec2u = lane_position + vec2u(1, 1);
+	let own: vec4f = climb(region_origin, own_cell, top_size);
+	if (lane < BLOOM_RING_TEXELS) {
+		let ring_cell: vec2u = vec2u(BLOOM_REGION_LAST, lane - 51);
+		if (lane < 18) {
+			ring_cell = vec2u(lane, 0);
+		} else if (lane < 36) {
+			ring_cell = vec2u(lane - 18, BLOOM_REGION_LAST);
+		} else if (lane < 52) {
+			ring_cell = vec2u(0, lane - 35);
+		}
+		shared_top_level[ring_cell.y * BLOOM_REGION_WIDTH + ring_cell.x] = climb(region_origin, ring_cell, top_size);
+	}
+	shared_top_level[own_cell.y * BLOOM_REGION_WIDTH + own_cell.x] = own;
+	workgroup_barrier();
+
+	// Partial edge workgroups must take part in building the region before returning.
+	guard_image_bounds(result_texture, base);
+	let result_extent: vec2f = vec2f(f32(result_size.x), f32(result_size.y));
+	let top_extent: vec2f = vec2f(f32(top_size.x), f32(top_size.y));
+	let top_left: vec4f = fetch(scene_texture, base);
+	let top_right: vec4f = fetch(scene_texture, vec2u(right, base.y));
+	let bottom_left: vec4f = fetch(scene_texture, vec2u(base.x, below));
+	let bottom_right: vec4f = fetch(scene_texture, vec2u(right, below));
+	write_block(
+		base,
+		result_size,
+		composite_pixel(base, top_left, result_extent, top_extent, region_origin, intensity),
+		composite_pixel(vec2u(right, base.y), top_right, result_extent, top_extent, region_origin, intensity),
+		composite_pixel(vec2u(base.x, below), bottom_left, result_extent, top_extent, region_origin, intensity),
+		composite_pixel(vec2u(right, below), bottom_right, result_extent, top_extent, region_origin, intensity)
+	);
+}

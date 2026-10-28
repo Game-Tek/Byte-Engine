@@ -9,43 +9,79 @@
 // those texels unfiltered instead of through the sampler: a half-float scene overflows to infinity on strong
 // highlights, and a sampler blending an infinite texel with its neighbors yields NaN before the shader can
 // clamp it. NaN at any level smears into a black block the size of the pyramid's coarsest texel.
+//
+// Each lane filters a 2x2 block of destination texels, so an 8x8 workgroup covers a 16x16 tile. A wider tile shares
+// more of the blocks under its filters, and each lane keeps ten block reads in flight instead of three.
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 
+// The 2x2 block averages under one workgroup's filters. Every tap of the 13-tap filter is one block, and neighboring
+// destination texels share most of them, so each block is averaged once and read from here. The even blocks start on
+// the destination grid, one under each destination texel of the 16x16 tile plus a ring of one around it; the odd
+// blocks start one scene texel later, on the corners between them.
+shared_even_blocks: workgroup<vec4f, 324>;
+shared_odd_blocks: workgroup<vec4f, 289>;
+
 BLOOM_LUMA_WEIGHTS: const vec3f = vec3f(0.2126, 0.7152, 0.0722);
+BLOOM_WORKGROUP_WIDTH: const u32 = 8;
+BLOOM_WORKGROUP_LANES: const u32 = 64;
+// Destination texels each lane filters along each axis.
+BLOOM_LANE_WIDTH: const u32 = 2;
+BLOOM_EVEN_WIDTH: const u32 = 18;
+BLOOM_ODD_WIDTH: const u32 = 17;
+// The even ring around the tile's 16x16 blocks: eighteen along the top and the bottom, sixteen down each side.
+BLOOM_EVEN_RING_BLOCKS: const u32 = 68;
+// The even ring's last block coordinate, one past the tile's own blocks.
+BLOOM_EVEN_RING_LAST: const u32 = 17;
+// Every block no lane owns: the even ring, then the odd blocks' left column and top row, seventeen and sixteen.
+BLOOM_RING_BLOCKS: const u32 = 101;
 // The filter reaches two texels before the block under the destination texel.
 BLOOM_TAP_REACH: const u32 = 2;
 
 // Reads one scene texel, holding each channel between zero and `max_brightness`.
-fetch_clamped: fn (texel_x: u32, texel_y: u32, max_brightness: f32) -> vec3f {
-	let sampled: vec4f = fetch(source_texture, vec2u(texel_x, texel_y));
-	return vec3f(
+fetch_clamped: fn (texel: vec2u, max_brightness: f32) -> vec4f {
+	let sampled: vec4f = fetch(source_texture, texel);
+	return vec4f(
 		min(max(sampled.x, 0.0), max_brightness),
 		min(max(sampled.y, 0.0), max_brightness),
-		min(max(sampled.z, 0.0), max_brightness)
+		min(max(sampled.z, 0.0), max_brightness),
+		0.0
 	);
 }
 
-// Returns the texel `offset - BLOOM_TAP_REACH` texels from `base` along one axis, clamped to the image like a
-// clamp-addressed sampler. Offsets are unsigned, so the lower clamp happens before subtracting the reach.
-tap_coordinate: fn (base: u32, offset: u32, extent: u32) -> u32 {
-	return min(max(base + offset, BLOOM_TAP_REACH) - BLOOM_TAP_REACH, extent - 1);
+// Returns the scene texel under tile coordinate `tile`, whose tile starts `BLOOM_TAP_REACH` texels before `origin`,
+// clamped to the image like a clamp-addressed sampler. Coordinates are unsigned, so the lower clamp happens before
+// subtracting the reach.
+tile_coordinate: fn (origin: u32, tile: u32, extent: u32) -> u32 {
+	return min(max(origin + tile, BLOOM_TAP_REACH) - BLOOM_TAP_REACH, extent - 1);
 }
 
-// Averages the 2x2 block whose top-left texel is `offset_x`, `offset_y` tap steps from the filter's top-left
-// corner, which is what one bilinear tap on that block's center corner would read.
-block: fn (base: vec2u, extent: vec2u, offset_x: u32, offset_y: u32, max_brightness: f32) -> vec3f {
-	let left: u32 = tap_coordinate(base.x, offset_x, extent.x);
-	let right: u32 = tap_coordinate(base.x, offset_x + 1, extent.x);
-	let top: u32 = tap_coordinate(base.y, offset_y, extent.y);
-	let bottom: u32 = tap_coordinate(base.y, offset_y + 1, extent.y);
-	let summed: vec3f = fetch_clamped(left, top, max_brightness)
-		+ fetch_clamped(right, top, max_brightness)
-		+ fetch_clamped(left, bottom, max_brightness)
-		+ fetch_clamped(right, bottom, max_brightness);
+// Averages the 2x2 block of scene texels whose top-left texel is `tile` texels into the tile that starts
+// `BLOOM_TAP_REACH` texels before `origin`, which is what one bilinear tap on that block's center corner would read.
+block: fn (origin: vec2u, tile: vec2u, extent: vec2u, max_brightness: f32) -> vec4f {
+	let left: u32 = tile_coordinate(origin.x, tile.x, extent.x);
+	let right: u32 = tile_coordinate(origin.x, tile.x + 1, extent.x);
+	let top: u32 = tile_coordinate(origin.y, tile.y, extent.y);
+	let bottom: u32 = tile_coordinate(origin.y, tile.y + 1, extent.y);
+	let summed: vec4f = fetch_clamped(vec2u(left, top), max_brightness)
+		+ fetch_clamped(vec2u(right, top), max_brightness)
+		+ fetch_clamped(vec2u(left, bottom), max_brightness)
+		+ fetch_clamped(vec2u(right, bottom), max_brightness);
 	return summed * 0.25;
+}
+
+// Reads one even block, `x`, `y` blocks into the shared grid.
+even: fn (x: u32, y: u32) -> vec3f {
+	let average: vec4f = shared_even_blocks[y * BLOOM_EVEN_WIDTH + x];
+	return vec3f(average.x, average.y, average.z);
+}
+
+// Reads one odd block, `x`, `y` blocks into the shared grid.
+odd: fn (x: u32, y: u32) -> vec3f {
+	let average: vec4f = shared_odd_blocks[y * BLOOM_ODD_WIDTH + x];
+	return vec3f(average.x, average.y, average.z);
 }
 
 // Weights a group of four blocks by the inverse of their brightness, so a single bright block is held back
@@ -59,50 +95,133 @@ karis_average: fn (a: vec3f, b: vec3f, c: vec3f, d: vec3f) -> vec3f {
 	return weighted * (1.0 / (weight_a + weight_b + weight_c + weight_d));
 }
 
-main: fn(input: StageInput) -> void {
-	let coord: vec2u = input.thread_id;
-	guard_image_bounds(result_texture, coord);
-	let source_size: vec2u = texture_size(source_texture);
-	// The top-left texel of the source block under this destination texel.
-	let base: vec2u = vec2u(coord.x * 2, coord.y * 2);
-	let ceiling: f32 = bloom_parameters.prefilter[0].w;
+// Returns the tile coordinate of ring block `index`: the even ring's top row, bottom row, left column, and right column,
+// then the odd blocks' left column and top row.
+ring_tile: fn (index: u32) -> vec2u {
+	if (index < 18) {
+		return vec2u(index * 2, 0);
+	}
+	if (index < 36) {
+		return vec2u((index - 18) * 2, BLOOM_EVEN_RING_LAST * 2);
+	}
+	if (index < 52) {
+		return vec2u(0, (index - 35) * 2);
+	}
+	if (index < 68) {
+		return vec2u(BLOOM_EVEN_RING_LAST * 2, (index - 51) * 2);
+	}
+	if (index < 85) {
+		return vec2u(1, (index - 68) * 2 + 1);
+	}
+	return vec2u((index - 84) * 2 + 1, 1);
+}
 
-	// Tap layout in source texels, with `e` the block under the destination texel. Even offsets are the outer
-	// taps two texels apart; odd offsets are the inner taps one texel apart.
-	//   a . b . c
-	//   . j . k .
-	//   d . e . f
-	//   . l . m .
-	//   g . h . i
-	let a: vec3f = block(base, source_size, 0, 0, ceiling);
-	let b: vec3f = block(base, source_size, 2, 0, ceiling);
-	let c: vec3f = block(base, source_size, 4, 0, ceiling);
-	let d: vec3f = block(base, source_size, 0, 2, ceiling);
-	let e: vec3f = block(base, source_size, 2, 2, ceiling);
-	let f: vec3f = block(base, source_size, 4, 2, ceiling);
-	let g: vec3f = block(base, source_size, 0, 4, ceiling);
-	let h: vec3f = block(base, source_size, 2, 4, ceiling);
-	let i: vec3f = block(base, source_size, 4, 4, ceiling);
-	let j: vec3f = block(base, source_size, 1, 1, ceiling);
-	let k: vec3f = block(base, source_size, 3, 1, ceiling);
-	let l: vec3f = block(base, source_size, 1, 3, ceiling);
-	let m: vec3f = block(base, source_size, 3, 3, ceiling);
+// Stores ring block `index`, whose tile coordinate is `tile`, into the even or odd grid.
+store_ring: fn (index: u32, tile: vec2u, average: vec4f) -> void {
+	if (index < BLOOM_EVEN_RING_BLOCKS) {
+		shared_even_blocks[(tile.y / 2) * BLOOM_EVEN_WIDTH + tile.x / 2] = average;
+	} else {
+		shared_odd_blocks[(tile.y / 2) * BLOOM_ODD_WIDTH + tile.x / 2] = average;
+	}
+}
 
+// Filters destination texel `local`, counted from the tile's first, and keeps only the light above `threshold`, fading in
+// over `soft_knee` of it.
+//
+// Tap layout in source texels, with `e` the block under the destination texel. Even offsets are the outer taps two
+// texels apart, the even blocks around this texel's own; odd offsets are the inner taps one texel apart, the odd blocks
+// on its corners.
+//   a . b . c
+//   . j . k .
+//   d . e . f
+//   . l . m .
+//   g . h . i
+filtered: fn (local: vec2u, threshold: f32, soft_knee: f32) -> vec4f {
+	let a: vec3f = even(local.x, local.y);
+	let b: vec3f = even(local.x + 1, local.y);
+	let c: vec3f = even(local.x + 2, local.y);
+	let d: vec3f = even(local.x, local.y + 1);
+	let e: vec3f = even(local.x + 1, local.y + 1);
+	let f: vec3f = even(local.x + 2, local.y + 1);
+	let g: vec3f = even(local.x, local.y + 2);
+	let h: vec3f = even(local.x + 1, local.y + 2);
+	let i: vec3f = even(local.x + 2, local.y + 2);
+	let j: vec3f = odd(local.x, local.y);
+	let k: vec3f = odd(local.x + 1, local.y);
+	let l: vec3f = odd(local.x, local.y + 1);
+	let m: vec3f = odd(local.x + 1, local.y + 1);
 	// The inner group carries half the weight and each of the four outer groups an eighth.
 	let averaged: vec3f = karis_average(j, k, l, m) * 0.5
 		+ karis_average(a, b, d, e) * 0.125
 		+ karis_average(b, c, e, f) * 0.125
 		+ karis_average(d, e, g, h) * 0.125
 		+ karis_average(e, f, h, i) * 0.125;
-
 	let brightness: f32 = max(max(averaged.x, averaged.y), averaged.z);
-	let threshold: f32 = bloom_parameters.prefilter[0].x;
-	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
 	let knee: f32 = max(threshold * soft_knee, 0.00001);
 	let soft: f32 = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
 	soft = (soft * soft) / (4.0 * knee + 0.00001);
 	let contribution: f32 = max(soft, brightness - threshold);
 	contribution = contribution / max(brightness, 0.00001);
 	let bloom_color: vec3f = averaged * contribution;
-	write(result_texture, coord, vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0));
+	return vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0);
+}
+
+main: fn(input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
+	let source_size: vec2u = texture_size(source_texture);
+	let ceiling: f32 = bloom_parameters.prefilter[0].w;
+	let threshold: f32 = bloom_parameters.prefilter[0].x;
+	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
+	let lane_position: vec2u = input.thread_id % vec2u(BLOOM_WORKGROUP_WIDTH, BLOOM_WORKGROUP_WIDTH);
+	// This lane's first destination texel, counted from the tile's first.
+	let local: vec2u = lane_position * vec2u(BLOOM_LANE_WIDTH, BLOOM_LANE_WIDTH);
+	let destination_origin: vec2u = (input.thread_id - lane_position) * vec2u(BLOOM_LANE_WIDTH, BLOOM_LANE_WIDTH);
+	// The scene texel under the tile's first destination texel.
+	let source_origin: vec2u = destination_origin * vec2u(2, 2);
+	let base: vec2u = destination_origin + local;
+
+	// Each lane averages the four even blocks under its own destination texels and the four odd blocks at their
+	// bottom-right corners, plus one or two of the 101 blocks nobody owns. Even block `b` starts `2b` texels into the
+	// tile and odd block `q` starts `2q + 1`, so a lane's own blocks sit one block in from the ring. The reads are
+	// issued before any store, so they are in flight together; only the first 37 lanes take a second ring block.
+	let own: vec2u = local + vec2u(1, 1);
+	let own_tile: vec2u = own * vec2u(2, 2);
+	let ring_first: vec2u = ring_tile(lane);
+	let even_00: vec4f = block(source_origin, own_tile, source_size, ceiling);
+	let even_10: vec4f = block(source_origin, own_tile + vec2u(2, 0), source_size, ceiling);
+	let even_01: vec4f = block(source_origin, own_tile + vec2u(0, 2), source_size, ceiling);
+	let even_11: vec4f = block(source_origin, own_tile + vec2u(2, 2), source_size, ceiling);
+	let odd_00: vec4f = block(source_origin, own_tile + vec2u(1, 1), source_size, ceiling);
+	let odd_10: vec4f = block(source_origin, own_tile + vec2u(3, 1), source_size, ceiling);
+	let odd_01: vec4f = block(source_origin, own_tile + vec2u(1, 3), source_size, ceiling);
+	let odd_11: vec4f = block(source_origin, own_tile + vec2u(3, 3), source_size, ceiling);
+	let ring_first_average: vec4f = block(source_origin, ring_first, source_size, ceiling);
+	if (lane + BLOOM_WORKGROUP_LANES < BLOOM_RING_BLOCKS) {
+		let ring_second: vec2u = ring_tile(lane + BLOOM_WORKGROUP_LANES);
+		store_ring(lane + BLOOM_WORKGROUP_LANES, ring_second, block(source_origin, ring_second, source_size, ceiling));
+	}
+	shared_even_blocks[own.y * BLOOM_EVEN_WIDTH + own.x] = even_00;
+	shared_even_blocks[own.y * BLOOM_EVEN_WIDTH + own.x + 1] = even_10;
+	shared_even_blocks[(own.y + 1) * BLOOM_EVEN_WIDTH + own.x] = even_01;
+	shared_even_blocks[(own.y + 1) * BLOOM_EVEN_WIDTH + own.x + 1] = even_11;
+	shared_odd_blocks[own.y * BLOOM_ODD_WIDTH + own.x] = odd_00;
+	shared_odd_blocks[own.y * BLOOM_ODD_WIDTH + own.x + 1] = odd_10;
+	shared_odd_blocks[(own.y + 1) * BLOOM_ODD_WIDTH + own.x] = odd_01;
+	shared_odd_blocks[(own.y + 1) * BLOOM_ODD_WIDTH + own.x + 1] = odd_11;
+	store_ring(lane, ring_first, ring_first_average);
+	workgroup_barrier();
+
+	// Partial edge workgroups must take part in the cooperative load before returning.
+	guard_image_bounds(result_texture, base);
+	let result_size: vec2u = image_size(result_texture);
+	write(result_texture, base, filtered(local, threshold, soft_knee));
+	if (base.x + 1 < result_size.x) {
+		write(result_texture, base + vec2u(1, 0), filtered(local + vec2u(1, 0), threshold, soft_knee));
+	}
+	if (base.y + 1 < result_size.y) {
+		write(result_texture, base + vec2u(0, 1), filtered(local + vec2u(0, 1), threshold, soft_knee));
+		if (base.x + 1 < result_size.x) {
+			write(result_texture, base + vec2u(1, 1), filtered(local + vec2u(1, 1), threshold, soft_knee));
+		}
+	}
 }

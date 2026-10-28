@@ -91,6 +91,8 @@ impl std::fmt::Display for RecordRole {
 pub struct TypeField<'a> {
 	pub name: &'a str,
 	pub type_name: TypeName<'a>,
+	/// Whether the field was written `primitive<T>`: a fragment input its mesh stage writes once per primitive.
+	pub per_primitive: bool,
 }
 
 /// The `RecordField` struct pairs a record-literal field name with its value expression.
@@ -119,7 +121,11 @@ impl std::fmt::Display for TypeName<'_> {
 					} else {
 						f.write_str(", ")?;
 					}
-					write!(f, "{}: {}", field.name, field.type_name)?;
+					if field.per_primitive {
+						write!(f, "{}: primitive<{}>", field.name, field.type_name)?;
+					} else {
+						write!(f, "{}: {}", field.name, field.type_name)?;
+					}
 				}
 				f.write_str(if fields.is_empty() { "}" } else { " }" })
 			}

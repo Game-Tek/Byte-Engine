@@ -1,24 +1,9 @@
 use super::*;
 impl Generator {
 	pub(crate) fn emit_object_payload_struct(&self, string: &mut String) {
-		if self.task_payloads.is_empty() {
-			return;
+		if !self.task_payloads.is_empty() {
+			self.emit_task_payload_struct(string, "ObjectPayload", &self.task_payloads);
 		}
-
-		let formatting = ShaderFormatting::new(self.minified);
-		self.emit_named_struct_start(string, "ObjectPayload");
-		for payload in &self.task_payloads {
-			let payload = payload.borrow();
-			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
-				continue;
-			};
-
-			formatting.push_indentation(string, 1);
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			let _ = write!(string, " {}[{count}]", Self::identifier(name));
-			formatting.push_statement_end(string);
-		}
-		self.emit_struct_declaration_end(string);
 	}
 
 	/// Emits the fixed vertex output and the authored per-vertex and per-primitive mesh outputs.
@@ -72,35 +57,14 @@ impl Generator {
 		}
 	}
 
-	/// Finds a lane-guarded BESL mesh-count statement that HLSL must execute uniformly.
-	pub(crate) fn mesh_output_count_arguments(
-		statements: &[besl::NodeReference],
-	) -> Option<(besl::NodeReference, besl::NodeReference)> {
-		let [statement] = statements else {
-			return None;
-		};
-		let statement = statement.borrow();
-		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
-			intrinsic, arguments, ..
-		}) = statement.node()
-		else {
-			return None;
-		};
-		let intrinsic = intrinsic.borrow();
-		let besl::Nodes::Intrinsic { name, .. } = intrinsic.node() else {
-			return None;
-		};
-		let [vertices, primitives] = arguments.as_slice() else {
-			return None;
-		};
-		(name == "set_mesh_output_counts").then(|| (vertices.clone(), primitives.clone()))
-	}
-
 	/// Emits raster stage I/O as mutable entry-point parameters because HLSL semantic globals are immutable.
 	pub(crate) fn emit_raster_entry_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
 		for input in &self.raster_inputs {
 			let input = input.borrow();
-			let besl::Nodes::Input { name, location, format } = input.node() else {
+			let besl::Nodes::Input {
+				name, location, format, ..
+			} = input.node()
+			else {
 				continue;
 			};
 			if has_previous_parameter {

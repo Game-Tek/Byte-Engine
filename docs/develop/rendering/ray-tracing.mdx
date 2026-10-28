@@ -4,14 +4,17 @@ description: Keep ray tracing pipelines cheap to rebuild and the hits they shade
 icon: Sparkles
 ---
 
-Read this page before you change ray tracing pipelines, shader binding tables,
-or `trace_rays` in the graphics hardware interface (GHI), or the Metal Shading
-Language (MSL) that the shader compiler generates for them. It explains how the
-Metal backend builds ray tracing from compute pipelines and visible function
-tables, why the API has the shape it has, and which rules a change must keep.
-The [GHI reference](/docs/reference/ghi#ray-tracing) defines what the API
-accepts, and the [BESL compilation note](/docs/develop/besl/compilation#generate-ray-tracing-shaders)
-describes the MSL that the shader compiler generates to follow these rules.
+Read this page before you change acceleration structures, ray tracing
+pipelines, shader binding tables, or `trace_rays` in the graphics hardware
+interface (GHI), or the Metal Shading Language (MSL) and GLSL that the shader
+compiler generates for them. It explains how the Metal backend builds ray
+tracing from compute pipelines and visible function tables, how the Vulkan
+backend builds it from callable shaders and pipeline libraries, why the API has
+the shape it has, and which rules a change must keep. The
+[GHI reference](/docs/reference/ghi#ray-tracing) defines what the API accepts,
+and the [BESL compilation note](/docs/develop/besl/compilation#generate-ray-tracing-shaders)
+describes the MSL and GLSL that the shader compiler generates to follow these
+rules.
 
 <Callout type="info" title="Change the rules on purpose">
 	The rules on this page are the contract between the GHI and the shaders it
@@ -164,6 +167,148 @@ kernel void ray_generation(
   so a counter around it reads close to nothing, and the first pass that reads
   the structure waits for it.
 
+## How Vulkan runs a trace
+
+A GHI trace shades hits that the ray generation shader already found, so the
+Vulkan backend uses only the part of a ray tracing pipeline that runs a shader
+the ray generation shader picks: callable shaders. Rays are found with ray
+queries, in compute passes and in the ray generation shader alike.
+
+| GHI object | Vulkan object |
+| --- | --- |
+| Ray generation shader | A `raygen` shader, compiled once to a pipeline library. |
+| Closest-hit shader | A `callable` shader, compiled once to a pipeline library. |
+| Ray tracing pipeline | A ray tracing pipeline linked from the libraries of its ray generation shader and of every hit group, with no stages of its own. |
+| Shader binding table | A buffer that holds the ray generation record, then the callable region. Record *i* of the callable region holds the group handle of the closest hit of the hit group that record *i* names. |
+| Trace | `vkCmdTraceRaysKHR` over the launch size, with empty miss and hit regions. |
+| Bottom-level structure | A range of a shared storage buffer, compacted once its build completes. |
+| Top-level structure | One structure and one CPU-written instance buffer for each frame in flight. |
+
+A trace runs in three steps:
+
+1. `trace_rays` launches the ray generation shader, one invocation for each
+   point of the launch size.
+2. The shader finds its hit with a ray query. The query reports the instance's
+   shader binding table offset, which is its hit group offset, and the geometry
+   index, and their sum is the hit's record.
+3. The shader writes the payload and the hit into its callable data and calls
+   `executeCallableEXT(record, 0)`, which runs the callable at that record of
+   the callable region. The closest hit reads the hit and updates the payload
+   in place.
+
+In GLSL, the two sides of that contract look like this:
+
+```glsl
+// raygen
+struct Call { Payload payload; HitAttributes hit; };
+layout(location = 0) callableDataEXT Call call;
+void main() {
+	rayQueryEXT query;
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xFF, origins[gl_LaunchIDEXT.x].xyz, 0.0, vec3(0.0, 0.0, 1.0), 100.0);
+	while (rayQueryProceedEXT(query)) {}
+	Payload payload = Payload(0u, 0u);
+	if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+		uint geometry = uint(rayQueryGetIntersectionGeometryIndexEXT(query, true));
+		uint record = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) + geometry;
+		call.payload = payload;
+		call.hit = HitAttributes(record, geometry);
+		executeCallableEXT(record, 0);
+		payload = call.payload;
+	}
+	payloads[gl_LaunchIDEXT.x] = payload;
+}
+
+// callable
+layout(location = 0) callableDataInEXT Call call;
+void main() {
+	call.payload.value = values[call.hit.record];
+}
+```
+
+Closest hits read resources through the same descriptor bindings as the ray
+generation shader, because every stage of a Vulkan pipeline reaches one set of
+bindings, so the backend passes no addresses.
+
+## Rules for Vulkan pipelines
+
+- **Closest hits are callable shaders.** No shader calls `traceRayEXT`, so a
+  pipeline has no miss, hit, intersection, or any-hit stage, its maximum
+  recursion depth is 0, and its payload and hit attribute sizes are 0. The
+  closest-hit stage maps to `VK_SHADER_STAGE_CALLABLE_BIT_KHR`.
+- **A shader compiles once.** A factory, or a context that creates pipelines
+  itself, compiles a ray generation or closest-hit shader to a pipeline library
+  the first time a pipeline uses it with a set of specialization constants, and
+  keeps the library. A pipeline is only linked from libraries. Rebuild a
+  pipeline with the factory that built it, because another factory compiles
+  every shader again.
+- **The layout reserves every resource of the ray generation shader's sets.**
+  A library compiles the heap offset of each resource it uses into its
+  descriptor mappings. So the pipeline's layout reserves room for every
+  resource the ray generation shader's sets declare, used or not, in slot
+  order. A resource keeps its offset whichever closest hits a pipeline links,
+  and a library fits every later version of its pipeline. A resource that no
+  shader of the pipeline uses needs no descriptor.
+- **A closest hit's sets are a prefix of the ray generation shader's.**
+  Pipeline creation checks it as Metal does, so a pipeline that works on one
+  backend works on the other.
+- **The stack covers one call.** Only the ray generation shader calls closest
+  hits, and closest hits call nothing, so the pipeline leaves its stack size
+  dynamic and sets it to the ray generation shader's stack plus the largest
+  closest hit's whenever it binds. The size Vulkan computes by default reserves
+  room for two closest hits.
+- **Libraries live as long as the pipelines linked from them.** The cache that
+  compiled a library and every pipeline linked from it hold it, and the last of
+  them to go destroys it.
+
+## Rules for Vulkan shader binding tables
+
+- **A write fills a new buffer.** Recordings that traced with the old records
+  may not have run yet, so a write never changes a buffer in place. The buffer
+  it replaces is destroyed once the frames recorded before the write complete.
+- **Regions follow the device's alignments.** The ray generation region holds
+  one record at the buffer's first address that's a multiple of
+  `shaderGroupBaseAlignment`. The callable region starts at the next such
+  address, with its records `shaderGroupHandleSize` bytes apart, rounded up to
+  `shaderGroupHandleAlignment`.
+- **Vulkan checks no records either.** A record past the end of the callable
+  region runs whatever its address holds. The application keeps every record
+  below the table's record count, as on Metal.
+
+## Rules for Vulkan acceleration structures
+
+- **Structures share storage.** Every structure lives at a 256-byte aligned
+  range of a device-local block of 32 MiB, or of its own size when it's
+  larger. A scene of thousands of meshes makes a few allocations instead of one
+  each, and a small structure takes no page of its own.
+- **One call's bottom-level builds are one command.** A call to
+  `build_bottom_level_acceleration_structures` records one
+  `vkCmdBuildAccelerationStructuresKHR` for all its structures, which run at
+  the same time, each with a scratch range of its own. After one barrier, it
+  queries the size each structure compacts to.
+- **Scratch belongs to the frame sequence.** Each sequence has a scratch arena
+  that grows to the most its frames needed, and rewinds once the sequence's
+  previous frame completes. The builds of one frame take separate ranges, so
+  they need no barrier between them. A recording outside frames gets a buffer
+  of its own, which the context destroys once the recording's synchronizer
+  signals.
+- **Compaction takes effect when its copy executes.** When a frame that built
+  structures completes, the context reads their compacted sizes, creates a
+  smaller structure for each one that shrinks, and the next recording copies
+  them. A structure takes its compacted storage when that recording executes,
+  and a dropped recording hands its copies to the next one. Instances
+  name structures by address, so the replaced storage stays until every
+  top-level copy was built again after the replacement.
+- **A top-level copy is built once a frame at most.** The CPU writes a build's
+  instance records into memory of the copy as it records the build, so a
+  second build in the same frame would overwrite records the first one hasn't
+  read yet, and is rejected.
+- **Acceleration structures are ordered with global memory barriers.** A
+  top-level build reads the bottom-level structures its instances name by
+  address, which the resource tracker can't see, so the tracker follows every
+  bottom-level structure as one resource, and each top-level copy as one. The
+  barriers on them are memory barriers, which the tracker folds into one for
+  each batch of accesses.
+
 ## Why hits are sorted before they're shaded
 
 Measurements on an Apple M4 with macOS 27.2 decided the shape of the API.
@@ -183,6 +328,18 @@ different hit groups, it runs those calls one after another. Sorting hits by hit
 group first costs about 9 µs, so a trace that sorts its hits and then shades
 them takes 17.5 µs and 37 µs in the two cases, instead of 72 µs and 402 µs.
 
+Divergence costs less on Vulkan with an NVIDIA GeForce RTX 3060 and driver
+615.71, which doesn't reorder invocations, but sorting still saves about a third
+of the shading time:
+
+| Measurement | Result |
+| --- | --- |
+| 16,384 calls over 25 hit groups, with closest hits of 8 statements | 13.3 µs in random order, 9.2 µs sorted by hit group |
+| The same calls, with closest hits of 48 statements | 52.2 µs against 32.8 µs |
+| Building a pipeline with 200 closest hits of 48 statements, which compiles each one | 2.38 s |
+| Building the same pipeline again, which links the 201 libraries | 1.47 ms |
+| Building it again with one more hit group | 12.9 ms |
+
 So the API separates tracing from shading:
 
 - A compute pass traces rays with the inline intersector and writes each hit
@@ -193,18 +350,29 @@ So the API separates tracing from shading:
   closest hit. The API has no call that traces and shades a ray in one step,
   because that call would shade hits in ray order.
 
+## Why Vulkan calls closest hits as callable shaders
+
+The GHI shades a hit that a compute pass found and sorted, so the call that
+runs its closest hit has only the hit's values to start from.
+`VK_EXT_ray_tracing_invocation_reorder`'s hit objects can run a closest-hit
+shader with built-in hit values and reorder invocations, but they're made only
+by a trace or from a live ray query, never from stored values, so shading a
+sorted hit through one would trace its ray again. A callable shader that the
+record selects needs nothing but the record, works on every driver that has
+ray tracing pipelines, and takes the hit as callable data.
+
 ## Other backends
 
-Vulkan and Direct3D 12 report no ray tracing support, and their ray tracing
-calls panic. The API maps to both of them: a hit's record is the instance's hit
+Direct3D 12 reports no ray tracing support, and its ray tracing calls panic.
+The API maps to it as it maps to Vulkan: a hit's record is the instance's hit
 group offset plus the geometry index there too, a shader binding table becomes
-their hit group records, and the kernel's call through the table becomes a call
-through a hit object, or a callable shader that the record selects.
+its callable records, and the kernel's call through the table becomes a call of
+the callable shader that the record selects.
 
 ## Tests that guard the rules
 
 These GPU scenarios in `crates/ghi/tests/rendering/ray_tracing.rs` run on Metal
-only.
+and Vulkan, with each shader in MSL and GLSL.
 
 | Test | Guards |
 | --- | --- |
@@ -213,6 +381,9 @@ only.
 | `trace_rays_launches_exactly_the_requested_grid` | The grid is exact for a line, a rectangle, a box, and a launch without width. |
 | `rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group` | A rebuilt pipeline runs its new hit group, and a trace recorded before a table write keeps its records. |
 | `counters_time_bottom_level_builds` | A counter around bottom-level builds measures them, even when earlier work left the encoder open. |
+| `compacted_structures_trace_like_the_original` | A bottom-level structure compacts within a few frames, keeps its handle, and reports the same hits. |
+| `top_level_structures_have_a_copy_per_frame` | Each frame in flight builds and traces its own copy of a top-level structure. |
+| `destroyed_structures_stay_valid_for_frames_in_flight` | A destroyed structure stays valid for the frames recorded before its destruction. |
 
 Run them with the other GHI rendering scenarios:
 
@@ -220,10 +391,17 @@ Run them with the other GHI rendering scenarios:
 cargo nextest run --ignore-default-filter -p byte-engine-ghi --test rendering
 ```
 
-The measurements in the table come from the spikes in
-`crates/ghi/src/metal/ray_tracing_spikes.rs`. Run them again after you change
-how closest hits compile, link, or get called:
+The Metal measurements come from the spikes in
+`crates/ghi/src/metal/ray_tracing_spikes.rs`, and the Vulkan ones from those in
+`crates/ghi/tests/rendering/ray_tracing_spikes.rs`. Run them again after you
+change how closest hits compile, link, or get called. On macOS:
 
 ```bash
 cargo nextest run -p byte-engine-ghi --run-ignored only ray_tracing_spikes --no-capture
+```
+
+On Linux:
+
+```bash
+cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter --run-ignored only ray_tracing_spikes --no-capture
 ```

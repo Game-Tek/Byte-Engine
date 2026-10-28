@@ -52,6 +52,11 @@ pub struct Context {
 	pub(super) descriptor_heaps: Option<DescriptorHeaps>,
 	pub(super) descriptor_materializations: Vec<Option<DescriptorMaterialization>>,
 	materialization_indices: HashMap<MaterializationKey, DescriptorMaterializationHandle>,
+	/// The index that merges the descriptors of one resource while a large layout materializes, kept empty between
+	/// materializations so it keeps its memory.
+	descriptor_merge_index: HashMap<(super::Handles, crate::Layouts), usize>,
+	/// The vectors recordings plan barriers in. A recording takes them and hands them back when it drops.
+	pub(super) planning_storage: crate::vulkan::command_buffer::PlanningStorage,
 	retired_materializations: [Vec<DescriptorMaterializationHandle>; MAX_FRAMES_IN_FLIGHT],
 	free_materialization_handles: Vec<DescriptorMaterializationHandle>,
 	descriptor_sequence_epochs: [u64; MAX_FRAMES_IN_FLIGHT],
@@ -95,6 +100,12 @@ pub struct Context {
 	pub(crate) image_groups: crate::image_group::ImageGroups,
 	/// The memory allocations backing each image group's members, indexed by group.
 	pub(super) image_group_heaps: Vec<smallvec::SmallVec<[graphics_hardware_interface::AllocationHandle; 2]>>,
+
+	/// Behind a pointer, so the context state every command reads stays as compact as it is without ray tracing.
+	pub(crate) acceleration_structures: Box<crate::vulkan::acceleration_structures::AccelerationStructures>,
+	pub(crate) shader_binding_tables: Vec<crate::vulkan::ray_tracing::ShaderBindingTable>,
+	/// The ray tracing libraries this context compiled for the ray tracing pipelines it creates itself.
+	pub(crate) ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
 }
 
 /// Accepts deferred descriptor work only while both its payload and post-write version remain current.
@@ -114,10 +125,12 @@ fn descriptor_task_is_current(
 		.is_some_and(|current| current.descriptor == descriptor_write.descriptor && current.frame_offset == frame_offset)
 }
 
+mod acceleration_structures;
 mod descriptors;
 mod drop;
 mod pipelines;
-pub(crate) use pipelines::{build_compute_pipeline, build_raster_pipeline};
+mod ray_tracing;
+pub(crate) use pipelines::{build_compute_pipeline, build_raster_pipeline, with_shader_stages};
 pub(crate) use resources::unbacked_image;
 mod resources;
 mod runtime;

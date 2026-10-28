@@ -30,9 +30,9 @@ pub(crate) fn validate_stage(
 		return Ok(());
 	};
 
-	if stage.is_ray_tracing() && !language.is_msl() {
+	if stage.is_ray_tracing() && !lowers_ray_tracing(language) {
 		return Err(format!(
-			"{stage} shader `{name}` can't be generated as {language}. The most likely cause is a ray tracing shader baked for Vulkan or DX12, whose shader generators don't lower ray tracing yet. Bake ray tracing shaders only for Metal, and leave them out of bakes for other platforms. See {docs}.",
+			"{stage} shader `{name}` can't be generated as {language}. The most likely cause is a ray tracing shader baked for DX12, whose shader generator doesn't lower ray tracing yet. Bake ray tracing shaders only for Metal and Vulkan, and leave them out of bakes for DX12. See {docs}.",
 			stage = stage_name(stage),
 			language = language_name(language),
 			docs = crate::online_docs_url(STAGE_SUPPORT_DOCS_PATH),
@@ -136,9 +136,9 @@ fn code_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, n
 fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, call: &str) -> Option<String> {
 	let stage_name = stage_name(stage);
 	let traces_rays = matches!(call, "intersect" | "trace_occlusion" | "invoke");
-	if traces_rays && !language.is_msl() {
+	if traces_rays && !lowers_ray_tracing(language) {
 		return Some(format!(
-			"Shader `{name}` calls `{call}`, which can't be generated as {language}. The most likely cause is a ray query or `invoke` in a shader baked for Vulkan or DX12, whose shader generators don't lower ray tracing yet. Bake shaders that trace rays only for Metal, and leave them out of bakes for other platforms. See {docs}.",
+			"Shader `{name}` calls `{call}`, which can't be generated as {language}. The most likely cause is a ray query or `invoke` in a shader baked for DX12, whose shader generator doesn't lower ray tracing yet. Bake shaders that trace rays only for Metal and Vulkan, and leave them out of bakes for DX12. See {docs}.",
 			language = language_name(language),
 			docs = crate::online_docs_url(STAGE_SUPPORT_DOCS_PATH),
 		));
@@ -177,6 +177,12 @@ fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, c
 		}
 		_ => None,
 	}
+}
+
+/// Reports whether the generator of `language` lowers ray tracing stages and ray queries: MSL for Metal and GLSL for
+/// Vulkan do, HLSL for DX12 doesn't yet.
+fn lowers_ray_tracing(language: PlatformShaderLanguage) -> bool {
+	!matches!(language, PlatformShaderLanguage::Hlsl)
 }
 
 /// Returns the name a `.besl.bead` file gives `stage`.
@@ -259,9 +265,15 @@ mod tests {
 				"main: fn () -> void { let blocked: bool = trace_occlusion(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 100.0); }",
 			),
 		];
-		for (stage, source) in shaders {
-			if let Err(error) = validate(PlatformShaderLanguage::Msl, stage, source) {
-				panic!("Expected the {} shader to be accepted, got: {error}", stage_name(stage));
+		for language in [PlatformShaderLanguage::Msl, PlatformShaderLanguage::Glsl] {
+			for (stage, source) in shaders {
+				if let Err(error) = validate(language, stage, source) {
+					panic!(
+						"Expected the {} shader to be accepted as {}, got: {error}",
+						stage_name(stage),
+						language_name(language)
+					);
+				}
 			}
 		}
 	}
@@ -347,25 +359,24 @@ mod tests {
 	}
 
 	#[test]
-	fn ray_tracing_is_rejected_for_glsl_and_hlsl() {
-		for (language, name) in [(PlatformShaderLanguage::Glsl, "GLSL"), (PlatformShaderLanguage::Hlsl, "HLSL")] {
-			let error = validate(language, Stages::RayGeneration, "main: fn () -> void {}")
-				.expect_err("Expected a ray generation shader to be rejected");
-			assert!(error.contains(&format!("can't be generated as {name}")), "{error}");
+	fn ray_tracing_is_rejected_for_hlsl() {
+		let language = PlatformShaderLanguage::Hlsl;
+		let error = validate(language, Stages::RayGeneration, "main: fn () -> void {}")
+			.expect_err("Expected a ray generation shader to be rejected");
+		assert!(error.contains("can't be generated as HLSL"), "{error}");
 
-			let compute = Stages::Compute {
-				local_size: utils::Extent::line(1),
-			};
-			let error = validate(
-				language,
-				compute,
-				"main: fn () -> void { let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
-			)
-			.expect_err("Expected a ray query to be rejected");
-			assert!(
-				error.contains(&format!("calls `intersect`, which can't be generated as {name}")),
-				"{error}"
-			);
-		}
+		let compute = Stages::Compute {
+			local_size: utils::Extent::line(1),
+		};
+		let error = validate(
+			language,
+			compute,
+			"main: fn () -> void { let hit: Hit = intersect(scene, 255, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), 0.0, 1.0); }",
+		)
+		.expect_err("Expected a ray query to be rejected");
+		assert!(
+			error.contains("calls `intersect`, which can't be generated as HLSL"),
+			"{error}"
+		);
 	}
 }

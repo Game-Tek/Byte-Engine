@@ -27,13 +27,7 @@ impl crate::device::Device for Device {
 		stage: crate::ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<crate::ShaderHandle, ()> {
-		let shader = crate::vulkan::Shader::new(
-			shader_source_type,
-			stage,
-			// This backend still derives its native layouts from flat slots.
-			crate::shader::flatten_used_resources(descriptor_sets),
-			self.pipeline_binaries.as_deref(),
-		)?;
+		let shader = crate::vulkan::Shader::new(shader_source_type, stage, descriptor_sets, self.pipeline_binaries.as_deref())?;
 		self.shaders.push(shader);
 		Ok(crate::ShaderHandle(self.shaders.len() as u64 - 1))
 	}
@@ -59,8 +53,21 @@ impl crate::device::Device for Device {
 		)
 	}
 
-	fn create_ray_tracing_pipeline(&mut self, _: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
-		crate::rt::unsupported("Vulkan")
+	/// Links a ray tracing pipeline on the calling thread, compiling only the shaders this factory didn't compile for
+	/// an earlier version of it.
+	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
+		let ray_tracing = self.ray_tracing.as_deref().expect(
+			"Vulkan ray tracing pipeline creation failed. The most likely cause is that the device was created without the ray tracing feature, or that its GPU does not support ray tracing. Check Context::supports_ray_tracing first, and request Features::ray_tracing when you create the device.",
+		);
+		crate::vulkan::ray_tracing::build_ray_tracing_pipeline(
+			&self.device,
+			ray_tracing,
+			&self.descriptor_heap_properties,
+			self.pipeline_binaries.as_deref(),
+			&self.shaders,
+			&mut self.ray_tracing_libraries,
+			builder,
+		)
 	}
 }
 

@@ -137,12 +137,15 @@ let Byte Engine validate, reflect, optimize, and test the program consistently.
 
 ## Generate ray tracing shaders
 
-Only the MSL generator lowers ray tracing. It follows the contract between the
-Metal GHI backend and the shaders it links, which the
-[ray tracing design note](/docs/develop/rendering/ray-tracing) defines: a ray
-generation shader becomes a compute kernel, and a closest-hit shader becomes a
-`[[visible]]` function that the kernel calls through the visible function table
-at buffer 14.
+The MSL and GLSL generators lower ray tracing. Each follows the contract
+between its GHI backend and the shaders it links, which the
+[ray tracing design note](/docs/develop/rendering/ray-tracing) defines. For
+Metal, a ray generation shader becomes a compute kernel, and a closest-hit
+shader becomes a `[[visible]]` function that the kernel calls through the
+visible function table at buffer 14. For Vulkan, a ray generation shader
+becomes a `raygen` shader, and a closest-hit shader becomes a `callable` shader
+that the ray generation shader calls through the shader binding table's
+callable region.
 
 Before any generator runs, `platform::Generator::lower` checks the program with
 `validate_stage`, in
@@ -151,11 +154,11 @@ checks the `main` signature of ray tracing stages, that a closest hit declares
 no descriptors of its own, which stages call `intersect`, `trace_occlusion`,
 `invoke`, and the launch and hit values, and that ray tracing stages use no
 workgroup storage, barriers, subgroup intrinsics, compute invocation values, or
-`discard`. For GLSL and HLSL, it rejects ray tracing stages and every ray
-tracing call. Each error names the stage, the shader, and the rule, and links
-the reference section that states the rule. The GLSL and HLSL generators also
-refuse ray tracing stages and acceleration structures themselves, for callers
-that skip `lower`.
+`discard`. For HLSL, it rejects ray tracing stages and every ray tracing
+call. Each error names the stage, the shader, and the rule, and links the
+reference section that states the rule. The HLSL generator also refuses ray
+tracing stages and acceleration structures itself, for callers that skip
+`lower`.
 
 | BESL | Generated MSL |
 | --- | --- |
@@ -202,18 +205,86 @@ A change to this lowering must keep these rules:
   built-in type, so a `Hit` in the program is always the built-in one, and the
   generator skips it.
 
-These tests guard the lowering. The Metal compile tests and the GPU test run on
-macOS only, and the GPU test also needs the `gpu-processing` feature, which
-workspace runs enable.
+### Lower ray tracing to GLSL
+
+| BESL | Generated GLSL |
+| --- | --- |
+| `RayGeneration`, `ClosestHit` | `#version 460`, with `#pragma shader_stage(raygen)` or `#pragma shader_stage(callable)` and `GL_EXT_ray_tracing`. |
+| `Hit` | A struct with the members in reference order. `distance` is reserved in GLSL, so that member is `besl_distance`. |
+| `AccelerationStructure` | `uniform accelerationStructureEXT` at its binding, with `GL_EXT_ray_query`. |
+| `intersect` | `_besl_intersect`: a ray query with `gl_RayFlagsOpaqueEXT`. A hit's record is the committed intersection's instance shader binding table offset plus its geometry index. A miss returns the hit that the reference specifies for one. |
+| `trace_occlusion` | `_besl_trace_occlusion`: a ray query with `gl_RayFlagsOpaqueEXT` and `gl_RayFlagsTerminateOnFirstHitEXT`, which reports whether it committed any triangle. |
+| `invoke(hit, payload)` | `_besl_invoke`, which writes the payload and the hit into the callable data and calls `executeCallableEXT(hit.record, 0)` when the hit's distance is zero or more. For a negative distance or one that isn't a number, it returns the payload unchanged. |
+| `launch_index`, `launch_size` | `gl_LaunchIDEXT` and `gl_LaunchSizeEXT`. |
+| Hit values | Members of the hit in the callable data, `_besl_call_data.hit`. |
+
+A ray generation shader and the closest hits it calls agree on one
+declaration, which both emit right after the payload's struct:
+`struct _besl_call { P payload; Hit hit; }`, as the ray generation shader's
+`callableDataEXT` and the closest hit's `callableDataInEXT`, both at location 0.
+A closest hit's `main` becomes `_besl_closest_hit_main`, which takes and returns
+the payload, and the shader's `main` passes it the callable data's payload and
+stores the result back. Every stage of a Vulkan pipeline reaches the same
+descriptor bindings, so the GLSL lowering passes no addresses and adds no hidden
+parameters. Shaders that use no ray tracing keep `#version 450` and generate the
+same GLSL as before.
+
+These tests guard the lowering. The Metal compile tests run on macOS only, and
+the glslang compile tests on Linux only. The GPU test runs on both, with a GPU
+that traces rays, and needs the `gpu-processing` feature, which workspace runs
+enable.
 
 | Test | Guards |
 | --- | --- |
 | `generated_ray_generation_stage_compiles_with_metal` | The kernel's parameters, the context it builds, the hidden parameters of a helper that calls `invoke`, and that Metal compiles the kernel. |
 | `generated_closest_hit_stage_compiles_with_metal` | The visible entry point, how it unpacks its sets, hit values in `main` and in helpers, and that Metal compiles it. |
 | `ray_queries_compile_in_compute_shaders` | `intersect`, `trace_occlusion`, and `Hit` construction in a compute kernel. |
-| `generated_ray_tracing_shaders_match_the_vm` | Baked shaders write on the GPU what the VM writes: both hit groups, a mask that skips an instance, misses, occlusion, and a direction twice the unit length. |
-| `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules, and their rejection of GLSL and HLSL. |
+| `generated_ray_tracing_shaders_match_the_vm` | Baked shaders write on the GPU what the VM writes: both hit groups, a mask that skips an instance, misses, occlusion, and a direction twice the unit length. It runs on Metal and on Vulkan. |
+| `generated_ray_generation_stage_compiles_with_glslang`, `generated_closest_hit_stage_compiles_with_glslang`, `ray_queries_compile_in_compute_shaders` | The GLSL stages, callable data, and ray query helpers, and that glslang compiles them. |
+| `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules in MSL and GLSL, and their rejection of HLSL. |
 | `lowering_reports_the_stage_rule_a_shader_breaks` | `lower` checks the stage rules before a generator runs. |
+
+## Generate task and mesh shaders
+
+BESL lets one invocation set a task workgroup's mesh grid and keep running, the
+way Metal runs task stages. SPIR-V and DXIL instead require every invocation to
+make that call once, in uniform control flow, and SPIR-V ends a task invocation
+at its call. So the GLSL and HLSL generators reshape the task stage. The mesh
+counts need no reshaping: BESL requires every invocation to set them, as SPIR-V
+and DXIL do, and the MSL generator sets Metal's counts from one thread itself.
+The GLSL lowering lives in
+`crates/resource-management/src/shader/besl/backends/glsl/generator/mesh_shading.rs`:
+
+| BESL | Generated GLSL |
+| --- | --- |
+| `task_payload` arrays | Members of one `_BeslTaskPayload` struct, in declaration order, held by the one `taskPayloadSharedEXT` variable that GLSL allows. A mesh stage declares the same struct for the arrays it declares. |
+| `set_task_mesh_output_count(count)` | A store to the workgroup variable `_besl_task_mesh_count`. |
+| A task stage's `main` | `_besl_task_main`. The entry point clears the count on invocation zero, runs `_besl_task_main`, and after a barrier calls `EmitMeshTasksEXT` with the count, so every invocation reaches the call, including one that returned early. |
+| `set_mesh_output_counts(v, p)` | `SetMeshOutputsEXT(v, p)`. |
+| An interface field of type `primitive<T>` | A `perprimitiveEXT` input, `flat` too for integers, and `GL_EXT_mesh_shader` in the fragment shader. |
+
+A change to this lowering must keep these rules:
+
+- **The task entry point emits the grid after BESL's `main` returns**, from
+  every invocation. An early `return` in `main` returns from
+  `_besl_task_main`, not from the entry point.
+- **A task workgroup that sets no count emits no mesh workgroups**, because the
+  entry point clears the count before `main` runs.
+- **The payload struct lists the arrays in declaration order in both stages**,
+  so the task and mesh stages agree on its layout.
+- **A fragment input is per-primitive exactly when the mesh output it reads
+  is.** Vulkan validation rejects a pipeline whose two stages disagree, with
+  `VUID-RuntimeSpirv-OpVariable-08746`. Metal and DXIL link by location and
+  need no marker, so the MSL and HLSL generators ignore `primitive<T>`.
+
+| Test | Guards |
+| --- | --- |
+| `generated_task_stage_emits_the_mesh_grid_after_main_returns` | The task stage's payload struct, workgroup storage, a count set from a helper, and the entry point that emits the grid, and that glslang compiles it. |
+| `generated_mesh_stage_reads_the_task_payload` | The mesh stage reads the payload through the same struct. |
+| `primitive_fragment_inputs_are_declared_per_primitive` | `primitive<T>` fields become `perprimitiveEXT` inputs with the mesh shader extension. |
+| `primitive_interface_fields_lower_to_per_primitive_inputs`, `structural_entry_rejects_invalid_record_shapes` | The lexer marks `primitive<T>` inputs, keeps their locations, and rejects `primitive<T>` in returned records. |
+| `generated_task_mesh_and_fragment_shaders_draw_the_kept_items` | Baked task, mesh, and fragment shaders draw the image the BESL contract specifies: payload compaction through workgroup atomics, a workgroup that returns early, buffers and a push constant in both stages, and per-primitive and per-vertex values. It runs with validation, on macOS and Linux. |
+| `visibility_assets_lower_to_the_platform_shader_language` | Every stage of the visibility pipeline compiles for the platform, the meshlet task and mesh stages included. |
 
 ## Execute BESL in the VM
 

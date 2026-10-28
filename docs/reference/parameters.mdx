@@ -67,7 +67,7 @@ Booleans here are lenient.
 | `render.debug.extended` | `false` | GPU-assisted validation. |
 | `render.debug.labels` | The value of `render.debug` | Object labels and command debug groups. |
 | `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
-| `render.ghi.features.ray-tracing` | The value of `render.surfel-gi.enabled` | Requests ray tracing from the device. Only the Metal backend traces rays; elsewhere the device reports none. |
+| `render.ghi.features.ray-tracing` | The value of `render.surfel-gi.enabled` | Requests ray tracing from the device. The Metal and Vulkan backends trace rays on a GPU that supports it; elsewhere the device reports none. |
 | `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
 
 ## Renderer and loader

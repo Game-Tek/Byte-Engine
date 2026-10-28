@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use colored::Colorize;
 
 pub struct LineError<'a> {
@@ -14,6 +16,7 @@ pub struct Line<'a> {
 
 /// Returns the compiler errors reported in `glslc` output.
 pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_string: &'a str) -> Error<'a> {
+	let mut unlocated = Vec::new();
 	// Collect (error_line_number, error) pairs
 	let errors = error_string
 		.lines()
@@ -22,13 +25,19 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 			// `glslc` can include additional `:` characters (for example a trailing `:`).
 			// Split only the fixed prefix fields and keep the remainder as the message.
 			let split = error.splitn(5, ':').map(|e| e.trim()).collect::<Vec<_>>();
-			if split.len() != 5 {
+			// Link errors name no line, so they have no number to parse and are kept as the compiler wrote them.
+			let line_number = (split.len() == 5)
+				.then(|| split[1].parse::<usize>().ok()?.checked_sub(1))
+				.flatten();
+			let Some(line_number) = line_number else {
+				unlocated.push(error);
 				return None;
-			}
-
-			Some((split[1], (split[3].trim_matches('\''), split[4].trim_end_matches(':').trim())))
+			};
+			Some((
+				line_number,
+				(split[3].trim_matches('\''), split[4].trim_end_matches(':').trim()),
+			))
 		})
-		.map(|(error_line_number_string, error)| (error_line_number_string.trim().parse::<usize>().unwrap() - 1, error))
 		.collect::<Vec<_>>();
 
 	// Collect errors by line number
@@ -47,7 +56,7 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 
 	errors.sort_by_key(|(line_number_a, _)| *line_number_a);
 
-	errors
+	let lines = errors
 		.into_iter()
 		.map(|(line_number, errors)| Line {
 			line_number,
@@ -61,10 +70,16 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 				})
 				.collect(),
 		})
-		.collect()
+		.collect();
+	Error { lines, unlocated }
 }
 
-pub type Error<'a> = Vec<Line<'a>>;
+/// The `Error` struct holds the errors `glslc` reported for one shader: those that name a line of it, grouped by
+/// line, and those that name none, such as link errors, as the compiler wrote them.
+pub struct Error<'a> {
+	pub lines: Vec<Line<'a>>,
+	pub unlocated: Vec<&'a str>,
+}
 
 pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 	let max_error_line_number = error_lines.iter().map(|error_line| error_line.line_number).max().unwrap_or(0);
@@ -93,45 +108,52 @@ pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 	error_string
 }
 
-pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> String {
-	let mut source_code_lines = source_code.lines();
+/// Formats each error that names a line with the source lines around it and its message on that line, then each error
+/// that names none.
+pub fn pretty_format_glslang_errors(error: &Error, source_code: &str) -> String {
+	// How many lines to show before and after each error line.
+	const WINDOW: usize = 2;
+	let source_lines = source_code.lines().collect::<Vec<_>>();
 
 	let mut error_string = String::new();
-
-	for error_line in error_lines {
-		// How many lines to show before and after the error line
-		let window_size = 2i32;
-
-		let error_line_index = error_line.line_number;
+	for error_line in &error.lines {
 		let line_errors = error_line.errors.iter().map(|e| e.error).collect::<Vec<_>>().join(", ");
-
-		let lines = (-window_size..window_size)
-			.filter_map(|delta| {
-				let line_index = error_line_index as i32 + delta;
-				source_code_lines.nth(line_index as usize).map(|e| (e, line_index == 0))
-			})
-			.map(|(line, is_error_line)| {
-				if is_error_line {
-					format!(
-						"{}| {} {} {}",
-						error_line_index + 1,
-						line.bold(),
-						"←".red().bold(),
-						line_errors.red()
-					)
-				} else {
-					format!("{}| {}", error_line_index + 1, line.dimmed())
-				}
-			});
-
-		error_string.push_str(&format!("{}\n", lines.collect::<Vec<_>>().join("\n")));
+		let first = error_line.line_number.saturating_sub(WINDOW);
+		let window = source_lines.iter().enumerate().skip(first).take(2 * WINDOW + 1);
+		for (index, line) in window {
+			if index == error_line.line_number {
+				let _ = writeln!(
+					error_string,
+					"{}| {} {} {}",
+					index + 1,
+					line.bold(),
+					"←".red().bold(),
+					line_errors.red()
+				);
+			} else {
+				let _ = writeln!(error_string, "{}| {}", index + 1, line.dimmed());
+			}
+		}
+		// The compiler can report a line past the end of the source, such as a missing closing brace.
+		if error_line.line_number >= source_lines.len() {
+			let _ = writeln!(error_string, "{}| {}", error_line.line_number + 1, line_errors.red());
+		}
+	}
+	for message in &error.unlocated {
+		let _ = writeln!(error_string, "{}", message.red());
 	}
 
 	error_string
 }
 
+/// Formats `glslc` output for `shader_name`, or returns it unchanged when it holds no error the formatter recognizes,
+/// so no message is lost.
 pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str, source_code: &str) -> String {
-	pretty_format_glslang_errors(&process_glslc_error(shader_name, source_code, error_string), source_code)
+	let error = process_glslc_error(shader_name, source_code, error_string);
+	if error.lines.is_empty() && error.unlocated.is_empty() {
+		return error_string.to_string();
+	}
+	pretty_format_glslang_errors(&error, source_code)
 }
 
 #[cfg(test)]
@@ -148,7 +170,7 @@ shaders/fragment.besl:3: error: 'geometry_smith' : no matching overloaded functi
 shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
 		let source_code = "#version 450\nlayout(local_size_x = 1) in;\nvoid main() {}\n";
 
-		let error = process_glslc_error(shader_name, source_code, error_string);
+		let error = process_glslc_error(shader_name, source_code, error_string).lines;
 
 		assert_eq!(error.len(), 1);
 		assert_eq!(error[0].line_number, 2);
@@ -160,13 +182,49 @@ shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
 		println!("{}", pretty_format_glsl_error_lines(&error));
 	}
 
+	/// Verifies each error shows the source line glslang reported, the lines around it, and the error text.
+	#[test]
+	fn glslang_errors_show_their_line_and_message() {
+		colored::control::set_override(false);
+		let source_code = "#version 450\nlayout(local_size_x = 1) in;\nvoid broken() {\n\tx = 1;\n}\nvoid main() {}\n";
+		let error_string = "shader:4: error: 'x' : undeclared identifier\n1 error generated.\n";
+
+		let formatted = pretty_format_glslang_error_string(error_string, "shader", source_code);
+
+		assert_eq!(
+			formatted,
+			"2| layout(local_size_x = 1) in;\n3| void broken() {\n4| \tx = 1; ← undeclared identifier\n5| }\n6| void main() {}\n"
+		);
+	}
+
+	/// Verifies an error that names no line of the shader, such as a link error, keeps the compiler's text, also next
+	/// to errors that name a line.
+	#[test]
+	fn glslang_errors_without_a_line_are_kept() {
+		colored::control::set_override(false);
+		let link_error = "shader: error: Linking compute stage: Missing entry point: Each stage requires one entry point";
+
+		assert_eq!(
+			pretty_format_glslang_error_string(&format!("{link_error}\n"), "shader", "#version 450\n"),
+			format!("{link_error}\n")
+		);
+		assert_eq!(
+			pretty_format_glslang_error_string(
+				&format!("shader:1: error: 'version' : bad profile\n{link_error}\n"),
+				"shader",
+				"#version 450\n"
+			),
+			format!("1| #version 450 ← bad profile\n{link_error}\n")
+		);
+	}
+
 	#[test]
 	fn test_other_glsl_error() {
 		let shader_name = "shader";
 		let error_string = "2 compilation errors:\nshader:145: error: '>=' : can't read from writeonly object:\nshader:147: error: 'initializer' : can't read from writeonly object:\n";
 		let source_code = "";
 
-		let error = process_glslc_error(shader_name, source_code, error_string);
+		let error = process_glslc_error(shader_name, source_code, error_string).lines;
 
 		assert_eq!(error.len(), 2);
 		assert_eq!(error[0].line_number, 144);

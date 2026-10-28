@@ -23,6 +23,8 @@ impl Context {
 			descriptor_heaps: None,
 			descriptor_materializations: Vec::with_capacity(512),
 			materialization_indices: HashMap::with_capacity_and_hasher(512, Default::default()),
+			descriptor_merge_index: HashMap::default(),
+			planning_storage: Default::default(),
 			retired_materializations: std::array::from_fn(|_| Vec::with_capacity(128)),
 			free_materialization_handles: Vec::with_capacity(128),
 			descriptor_sequence_epochs: [0; MAX_FRAMES_IN_FLIGHT],
@@ -51,6 +53,9 @@ impl Context {
 			completed_frame: None,
 			image_groups: crate::image_group::ImageGroups::default(),
 			image_group_heaps: Vec::new(),
+			acceleration_structures: Default::default(),
+			shader_binding_tables: Vec::new(),
+			ray_tracing_libraries: Default::default(),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
@@ -110,12 +115,23 @@ impl Context {
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> crate::vulkan::CommandBufferRecording<'_> {
-		let pending_syncs = self.take_pending_syncs();
-		CommandBufferRecording::new(self, command_buffer_handle, None, pending_syncs)
+		let work = self.take_implicit_work();
+		CommandBufferRecording::new(self, command_buffer_handle, None, work)
 	}
 
-	/// Drains the staging uploads queued by CPU writes, as buffer copies and image uploads.
-	pub(crate) fn take_pending_syncs(&mut self) -> (Vec<BufferCopy>, Vec<ImageCopy>) {
+	/// Returns whether the fence of the private synchronizer `handle` signaled, without blocking. A fence that is no
+	/// longer armed was waited for and reset, so its work completed.
+	pub(crate) fn private_synchronizer_signaled(&self, handle: crate::synchronizer::SynchronizerHandle) -> bool {
+		let synchronizer = &self.synchronizers[handle.0 as usize];
+		!synchronizer.armed
+			|| unsafe { self.device.get_fence_status(synchronizer.fence) }.expect(
+				"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
+			)
+	}
+
+	/// Drains the work the next recording records before its own commands: the staging uploads queued by CPU writes,
+	/// as buffer copies and image uploads, and the acceleration structure compactions that are ready.
+	pub(crate) fn take_implicit_work(&mut self) -> crate::vulkan::command_buffer::ImplicitWork {
 		let buffers = &self.buffers;
 		let buffer_copies = self
 			.pending_buffer_syncs
@@ -130,7 +146,11 @@ impl Context {
 			.drain()
 			.map(|(dst_texture, region)| ImageCopy { dst_texture, region })
 			.collect();
-		(buffer_copies, image_copies)
+		crate::vulkan::command_buffer::ImplicitWork {
+			buffer_copies,
+			image_copies,
+			compactions: std::mem::take(&mut self.acceleration_structures.ready_compactions),
+		}
 	}
 
 	pub(super) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
@@ -343,6 +363,9 @@ impl Context {
 		self.release_retired_descriptor_materializations(sequence_index);
 		// Build lazy resources before the frame may need them.
 		self.process_tasks(sequence_index);
+		// The sequence's previous frame completed, so its builds no longer read the scratch it handed them.
+		self.acceleration_structures.scratch[sequence_index as usize].reset();
+		self.advance_acceleration_structures();
 		self.expect_shared_buffer_writes();
 		// Tasks processed after the fence can retire prior-frame snapshots immediately.
 		self.release_retired_descriptor_materializations(sequence_index);
@@ -589,7 +612,8 @@ impl Context {
 				Tasks::DeleteVulkanImage { .. }
 				| Tasks::DeleteVulkanImageView { .. }
 				| Tasks::DeleteVulkanBuffer { .. }
-				| Tasks::FreeAllocation { .. } => {
+				| Tasks::FreeAllocation { .. }
+				| Tasks::DeleteAccelerationStructure { .. } => {
 					self.run_destruction_task(&task.task);
 				}
 				Tasks::UpdateDescriptor {

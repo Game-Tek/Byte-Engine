@@ -19,8 +19,22 @@ impl Context {
 				layouts.push(layout);
 				graphics_hardware_interface::PipelineLayoutHandle(layouts.len() as u64 - 1)
 			});
-		self.pipelines.push(Pipeline { pipeline, layout });
+		self.pipelines.push(Pipeline {
+			pipeline,
+			layout,
+			ray_tracing: None,
+		});
 		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
+	}
+
+	/// Adds a linked ray tracing pipeline and returns the handle commands bind it with.
+	pub(crate) fn add_ray_tracing_pipeline(
+		&mut self,
+		pipeline: crate::vulkan::ray_tracing::RayTracingPipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		let handle = self.add_pipeline(pipeline.pipeline, pipeline.layout);
+		self.pipelines[handle.0 as usize].ray_tracing = Some(Box::new(pipeline.state));
+		handle
 	}
 }
 
@@ -60,7 +74,7 @@ pub(super) type StageList<T> = SmallVec<[T; 4]>;
 /// # Panics
 ///
 /// Panics when the pipeline has to be compiled and a shader that keeps no code was lent none.
-pub(super) fn with_shader_stages(
+pub(crate) fn with_shader_stages(
 	shaders: &[Shader],
 	parameters: &[crate::pipelines::ShaderParameter],
 	layout: &PipelineLayout,
@@ -297,7 +311,7 @@ pub(crate) fn build_raster_pipeline(
 	let pipeline = with_shader_stages(shaders, builder.shaders, &layout, |stages, identified_stages| {
 		let compiled = stages.map(|stages| pipeline_create_info.stages(stages));
 		let identified = identified_stages.map(|stages| pipeline_create_info.stages(stages));
-		create_pipeline(pipeline_binaries, compiled.as_ref(), identified.as_ref(), |create_info| {
+		create_pipeline(pipeline_binaries, vk::PipelineCreateFlags2::empty(), compiled.as_ref(), identified.as_ref(), |create_info| {
 			unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
 				.map(|pipelines| pipelines[0])
 				.map_err(|(_, result)| result)
@@ -326,7 +340,7 @@ pub(crate) fn build_compute_pipeline(
 		let create_info = vk::ComputePipelineCreateInfo::default().layout(vk::PipelineLayout::null());
 		let compiled = stages.map(|stages| create_info.stage(stages[0]));
 		let identified = identified_stages.map(|stages| create_info.stage(stages[0]));
-		create_pipeline(pipeline_binaries, compiled.as_ref(), identified.as_ref(), |create_info| {
+		create_pipeline(pipeline_binaries, vk::PipelineCreateFlags2::empty(), compiled.as_ref(), identified.as_ref(), |create_info| {
 			unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
 				.map(|pipelines| pipelines[0])
 				.map_err(|(_, result)| result)

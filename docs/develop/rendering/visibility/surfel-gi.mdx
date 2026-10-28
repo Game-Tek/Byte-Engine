@@ -368,5 +368,6 @@ alive.
 | `surfel_allocate_spawns_from_the_free_stack_until_it_is_empty` | Spawns take free slots first, and a new surfel's estimate starts over from its parent's light. |
 | `hit_groups_keep_their_numbers_as_shaders_arrive`, `records_run_their_material_group_only_once_the_pipeline_has_it` | Hit groups keep their numbers, and a record runs the default group until the published pipeline has its material's. |
 | `surfel_gi_parameter_leaves_out_every_surfel_asset` | A bake without surfel GI leaves out every `surfel-*` pipeline and shader in the engine's assets, the shade pass's ray tracing shaders included, and a bake with it keeps them. |
-| `surfel_ray_tracing_shaders_lower_to_the_platform_shader_language` | The shade pass and the default hit lower to MSL with each layer in its own set. |
-| `material_hit_shaders_lower_to_the_platform_shader_language` | Material hit shaders lower to MSL closest hits. |
+| `surfel_ray_tracing_shaders_lower_to_the_platform_shader_language` | The shade pass and the default hit lower to MSL with each layer in its own set, and to GLSL `raygen` and `callable` shaders, and compile. |
+| `material_hit_shaders_lower_to_the_platform_shader_language` | Material hit shaders lower to MSL closest hits and GLSL callable shaders, and compile. |
+| `visibility_assets_lower_to_the_platform_shader_language` | Every surfel pass and visibility stage compiles for the platform, the ray queries of `surfel-trace` and the meshlet task and mesh stages included. |

@@ -6,14 +6,76 @@
 //! picks, with an inline intersector whose report the scenario reads back. The pipeline scenarios use [`Shading`]: a ray
 //! generation shader, launched with `trace_rays`, that traces the same rays and invokes the closest hit of each hit's
 //! record.
+//!
+//! Every shader comes in MSL and GLSL. On Metal a closest hit is a visible function the kernel calls through the
+//! shader binding table; on Vulkan it is a callable shader, and the ray generation shader calls the table entry of the
+//! hit's record with `executeCallableEXT`.
 
 use super::*;
+
+/// Creates a shader from its GLSL and MSL sources, compiled for the backend under test.
+pub(super) fn native_shader(
+	device: &mut impl ghi::context::Context,
+	name: &str,
+	stage: ShaderTypes,
+	(glsl, msl, msl_entry_point): (&str, &str, &str),
+	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
+) -> ShaderHandle {
+	let compiled = ghi::shader::compile(
+		name,
+		ShaderSource::PlatformNative {
+			glsl,
+			msl,
+			msl_entry_point,
+			hlsl: "",
+			hlsl_entry_point: "",
+		},
+	)
+	.unwrap_or_else(|error| panic!("Failed to compile shader {name:?}: {error}"));
+	device
+		.create_shader(Some(name), compiled.as_source(), stage, sets)
+		.unwrap_or_else(|_| panic!("Failed to create shader {name:?}. The most likely cause is invalid native shader source."))
+}
 
 /// The `u32` words the probe kernel writes for each ray: whether it hit, the bits of the hit distance, the instance's
 /// custom index, the instance's index, the geometry index, the primitive index, the hit record, and padding.
 type ProbeWords = [u32; 8];
 
-/// The probe kernel. Each thread traces one ray along +z from its origin and writes what the intersector reports.
+/// The probe kernel in GLSL. Each invocation traces one ray along +z from its origin with a ray query and writes what
+/// it reports. The record is the instance's shader binding table offset plus the geometry index.
+const PROBE_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(compute)
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std430) readonly buffer Origins { vec4 origins[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer Hits { uint hits[]; };
+void main() {
+	uint index = gl_GlobalInvocationID.x;
+	rayQueryEXT query;
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xFF, origins[index].xyz, 0.0, vec3(0.0, 0.0, 1.0), 100.0);
+	while (rayQueryProceedEXT(query)) {}
+	bool hit = rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	uint base = index * 8u;
+	hits[base + 0u] = hit ? 1u : 0u;
+	hits[base + 1u] = floatBitsToUint(-1.0);
+	hits[base + 7u] = 0u;
+	// A query that committed no intersection reports no values.
+	if (hit) {
+		uint geometry = uint(rayQueryGetIntersectionGeometryIndexEXT(query, true));
+		hits[base + 1u] = floatBitsToUint(rayQueryGetIntersectionTEXT(query, true));
+		hits[base + 2u] = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));
+		hits[base + 3u] = uint(rayQueryGetIntersectionInstanceIdEXT(query, true));
+		hits[base + 4u] = geometry;
+		hits[base + 5u] = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true));
+		hits[base + 6u] = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) + geometry;
+	}
+}
+"#;
+
+/// The probe kernel in MSL. Each thread traces one ray along +z from its origin and writes what the intersector
+/// reports.
 ///
 /// Only an intersector tagged `intersection_function_buffer` reports the hit record (`function_id`). Opaque geometry
 /// calls no intersection function, so the default, empty function buffer is enough.
@@ -122,17 +184,13 @@ impl Tracer {
 				),
 			],
 		);
-		let shader = device
-			.create_shader(
-				Some("Ray Probe"),
-				ghi::shader::Sources::MTL {
-					source: PROBE_SHADER,
-					entry_point: "probe_main",
-				},
-				ShaderTypes::Compute,
-				[ghi::ShaderDescriptorSet::new(layout.clone())],
-			)
-			.expect("Failed to create the ray probe shader. The most likely cause is invalid MSL in the probe kernel.");
+		let shader = native_shader(
+			device,
+			"Ray Probe",
+			ShaderTypes::Compute,
+			(PROBE_GLSL, PROBE_SHADER, "probe_main"),
+			[ghi::ShaderDescriptorSet::new(layout.clone())],
+		);
 		let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 			&[],
 			ShaderParameter::new(&shader, ShaderTypes::Compute),
@@ -208,7 +266,7 @@ impl Tracer {
 						recording
 							.bind_compute_pipeline(self.pipeline)
 							.bind_descriptor_sets(&[rays.set])
-							.dispatch(DispatchExtent::new(Extent::line(rays.count), Extent::line(rays.count)));
+							.dispatch(DispatchExtent::new(Extent::line(rays.count), Extent::line(1)));
 					}
 				});
 				[]
@@ -652,6 +710,118 @@ struct Materials { device const uint* values [[id(0)]]; };
 	};
 }
 
+/// Declarations every GLSL shader of the pipeline scenarios repeats, so the ray generation shader and the closest hits
+/// agree on the callable data a closest hit runs with: the payload it fills and the hit it runs for.
+macro_rules! glsl_pipeline_prelude {
+	($stage:literal) => {
+		concat!(
+			"#version 460\n#pragma shader_stage(",
+			$stage,
+			")\n",
+			r#"
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_ray_query : require
+struct Payload { uint group; uint value; };
+struct HitAttributes { uint record; uint custom_index; uint geometry; uint primitive; };
+struct Call { Payload payload; HitAttributes hit; };
+"#
+		)
+	};
+}
+
+/// The ray generation shader of the hit group scenarios in GLSL. Each invocation traces one ray along +z from its
+/// origin with a ray query, calls the closest hit of the record the query reports through the shader binding table's
+/// callable region, and writes the payload. The materials set its closest hits read is the binding at slot 3, which
+/// it doesn't declare.
+const RAY_GENERATION_GLSL: &str = concat!(
+	glsl_pipeline_prelude!("raygen"),
+	r#"
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std430) readonly buffer Origins { vec4 origins[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer Payloads { Payload payloads[]; };
+layout(location = 0) callableDataEXT Call call;
+void main() {
+	uint index = gl_LaunchIDEXT.x;
+	rayQueryEXT query;
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xFF, origins[index].xyz, 0.0, vec3(0.0, 0.0, 1.0), 100.0);
+	while (rayQueryProceedEXT(query)) {}
+	Payload payload = Payload(0xffffffffu, 0u);
+	if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+		uint geometry = uint(rayQueryGetIntersectionGeometryIndexEXT(query, true));
+		uint record = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) + geometry;
+		call.payload = payload;
+		call.hit = HitAttributes(
+			record,
+			uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true)),
+			geometry,
+			uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true)));
+		executeCallableEXT(record, 0);
+		payload = call.payload;
+	}
+	payloads[index] = payload;
+}
+"#
+);
+
+/// A GLSL closest hit that reports its specialization constant 0 and the hit's record.
+const TAGGED_HIT_GLSL: &str = concat!(
+	glsl_pipeline_prelude!("callable"),
+	r#"
+layout(constant_id = 0) const uint tag = 0u;
+layout(location = 0) callableDataInEXT Call call;
+void main() {
+	call.payload.group = tag;
+	call.payload.value = call.hit.record;
+}
+"#
+);
+
+/// A GLSL closest hit that reports 30 and the hit's record.
+const OTHER_HIT_GLSL: &str = concat!(
+	glsl_pipeline_prelude!("callable"),
+	r#"
+layout(location = 0) callableDataInEXT Call call;
+void main() {
+	call.payload.group = 30u;
+	call.payload.value = call.hit.record;
+}
+"#
+);
+
+/// A GLSL closest hit that reports 40 and the material value of the hit's record, from the set the ray generation
+/// shader binds without using.
+const MATERIAL_HIT_GLSL: &str = concat!(
+	glsl_pipeline_prelude!("callable"),
+	r#"
+layout(set = 0, binding = 3, std430) readonly buffer Materials { uint values[]; };
+layout(location = 0) callableDataInEXT Call call;
+void main() {
+	call.payload.group = 40u;
+	call.payload.value = values[call.hit.record];
+}
+"#
+);
+
+/// A GLSL ray generation shader that counts its invocations, writes each one's launch index at its own position, and
+/// reports the launch size.
+const LAUNCH_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(raygen)
+#extension GL_EXT_ray_tracing : require
+layout(set = 0, binding = 0, std430) buffer Count { uint count; };
+layout(set = 0, binding = 1, std430) writeonly buffer Size { uvec4 size; };
+layout(set = 0, binding = 2, std430) writeonly buffer Points { uvec4 points[]; };
+void main() {
+	atomicAdd(count, 1u);
+	uvec3 index = gl_LaunchIDEXT;
+	uvec3 launch = gl_LaunchSizeEXT;
+	points[index.x + launch.x * (index.y + launch.y * index.z)] = uvec4(index, 1u);
+	if (all(equal(index, uvec3(0u)))) {
+		size = uvec4(launch, 0u);
+	}
+}
+"#;
+
 /// The ray generation kernel of the hit group scenarios. Each thread traces one ray along +z from its origin with an
 /// inline intersector, runs the closest hit of the record the intersector reports through the shader binding table at
 /// buffer 14, and writes the payload. It binds the materials set at buffer 17 for its closest hits without using it.
@@ -794,28 +964,26 @@ impl Shading {
 				),
 			],
 		);
+		// Slots are unique across the sets of a pipeline, so the materials take slot 3. Metal numbers a set's resources
+		// densely, so this is still its argument 0 there.
 		let materials_layout = ghi::DescriptorSetLayout::new(
 			"Materials",
 			[ghi::ShaderResourceDescriptor::single(
-				ghi::ResourceSlot::new(0),
+				ghi::ResourceSlot::new(3),
 				ghi::ResourceKind::StorageBuffer,
 				ghi::AccessPolicies::READ,
 			)],
 		);
-		let ray_generation = device
-			.create_shader(
-				Some("Ray Generation"),
-				ghi::shader::Sources::MTL {
-					source: RAY_GENERATION,
-					entry_point: "ray_generation",
-				},
-				ShaderTypes::RayGen,
-				[
-					ghi::ShaderDescriptorSet::new(rays_layout.clone()),
-					ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
-				],
-			)
-			.expect("Failed to create the ray generation shader. The most likely cause is invalid MSL in the kernel.");
+		let ray_generation = native_shader(
+			device,
+			"Ray Generation",
+			ShaderTypes::RayGen,
+			(RAY_GENERATION_GLSL, RAY_GENERATION, "ray_generation"),
+			[
+				ghi::ShaderDescriptorSet::new(rays_layout.clone()),
+				ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
+			],
+		);
 		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 		Self {
 			rays_layout,
@@ -827,13 +995,13 @@ impl Shading {
 		}
 	}
 
-	/// Creates a closest-hit shader from `source`. A shader that reads materials declares both of the kernel's sets
-	/// and uses only the second; any other declares none.
+	/// Creates a closest-hit shader from its GLSL and MSL `sources`. A shader that reads materials declares both of the
+	/// kernel's sets and uses only the second; any other declares none.
 	fn closest_hit(
 		&self,
 		device: &mut impl ghi::context::Context,
 		name: &str,
-		source: &str,
+		sources: (&str, &str),
 		reads_materials: bool,
 	) -> ShaderHandle {
 		let sets = if reads_materials {
@@ -844,17 +1012,13 @@ impl Shading {
 		} else {
 			Vec::new()
 		};
-		device
-			.create_shader(
-				Some(name),
-				ghi::shader::Sources::MTL {
-					source,
-					entry_point: "closest_hit",
-				},
-				ShaderTypes::ClosestHit,
-				sets,
-			)
-			.expect("Failed to create a closest-hit shader. The most likely cause is invalid MSL in the shader.")
+		native_shader(
+			device,
+			name,
+			ShaderTypes::ClosestHit,
+			(sources.0, sources.1, "closest_hit"),
+			sets,
+		)
 	}
 
 	/// Creates a ray tracing pipeline that launches the fixture's kernel with `hit_groups`.
@@ -905,7 +1069,7 @@ impl Shading {
 			ghi::DescriptorWrite::acceleration_structure(rays_set, ghi::ResourceSlot::new(0), structure),
 			ghi::DescriptorWrite::buffer(rays_set, ghi::ResourceSlot::new(1), origin_buffer.into()),
 			ghi::DescriptorWrite::buffer(rays_set, ghi::ResourceSlot::new(2), payloads.into()),
-			ghi::DescriptorWrite::buffer(materials_set, ghi::ResourceSlot::new(0), material_buffer.into()),
+			ghi::DescriptorWrite::buffer(materials_set, ghi::ResourceSlot::new(3), material_buffer.into()),
 		]);
 		ShadedRays {
 			sets: [rays_set, materials_set],
@@ -962,8 +1126,8 @@ pub(super) fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", TAGGED_HIT, false);
-	let other = shading.closest_hit(device, "Other Hit", OTHER_HIT, false);
+	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT), false);
+	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let twenty = [pipelines::SpecializationMapEntry::new(0, 20u32)];
 	let pipeline = shading.pipeline(
@@ -1017,7 +1181,7 @@ pub(super) fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let material = shading.closest_hit(device, "Material Hit", MATERIAL_HIT, true);
+	let material = shading.closest_hit(device, "Material Hit", (MATERIAL_HIT_GLSL, MATERIAL_HIT), true);
 	let pipeline = shading.pipeline(device, &[ShaderParameter::new(&material, ShaderTypes::ClosestHit)]);
 	let bottom_level = geometry_per_triangle(device, &[0.0, 4.0, 8.0]);
 	let top_level = device.create_top_level_acceleration_structure(None, 1);
@@ -1066,28 +1230,20 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 			),
 		],
 	);
-	let launch = device
-		.create_shader(
-			Some("Launch"),
-			ghi::shader::Sources::MTL {
-				source: LAUNCH,
-				entry_point: "launch",
-			},
-			ShaderTypes::RayGen,
-			[ghi::ShaderDescriptorSet::new(layout.clone())],
-		)
-		.expect("Failed to create the launch shader. The most likely cause is invalid MSL in the kernel.");
-	let hit = device
-		.create_shader(
-			None,
-			ghi::shader::Sources::MTL {
-				source: TAGGED_HIT,
-				entry_point: "closest_hit",
-			},
-			ShaderTypes::ClosestHit,
-			[],
-		)
-		.expect("Failed to create the closest-hit shader. The most likely cause is invalid MSL in the shader.");
+	let launch = native_shader(
+		device,
+		"Launch",
+		ShaderTypes::RayGen,
+		(LAUNCH_GLSL, LAUNCH, "launch"),
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
+	);
+	let hit = native_shader(
+		device,
+		"Tagged Hit",
+		ShaderTypes::ClosestHit,
+		(TAGGED_HIT_GLSL, TAGGED_HIT, "closest_hit"),
+		[],
+	);
 	let tag = [pipelines::SpecializationMapEntry::new(0, 0u32)];
 	let pipeline = device.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
 		&[],
@@ -1180,8 +1336,8 @@ pub(super) fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group(
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", TAGGED_HIT, false);
-	let other = shading.closest_hit(device, "Other Hit", OTHER_HIT, false);
+	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT), false);
+	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let first = shading.pipeline(
 		device,

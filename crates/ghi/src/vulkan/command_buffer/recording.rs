@@ -8,13 +8,15 @@ impl CommandBufferRecording<'_> {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
-	/// Begins recording, then records the pending buffer and image uploads the caller drained from the context.
+	/// Begins recording, then records the implicit work the caller drained from the context, with
+	/// [`Context::take_implicit_work`] or none.
 	pub(crate) fn new(
 		device: &'_ mut Context,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<FrameKey>,
-		(buffer_copies, image_copies): (Vec<BufferCopy>, Vec<ImageCopy>),
+		work: ImplicitWork,
 	) -> CommandBufferRecording<'_> {
+		let storage = std::mem::take(&mut device.planning_storage);
 		let mut recording = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
@@ -36,13 +38,17 @@ impl CommandBufferRecording<'_> {
 			active_render_extent: Extent::rectangle(0, 0),
 			texture_readbacks: SmallVec::new(),
 			readbacks_finalized: false,
+			builds: None,
+			consumptions: storage.consumptions,
+			transition_updates: std::cell::Cell::new(storage.updates),
 
 			device,
 		};
 
 		recording.begin();
-		recording.sync_buffers(buffer_copies.into_iter());
-		recording.sync_textures(image_copies.into_iter());
+		recording.sync_buffers(work.buffer_copies.into_iter());
+		recording.sync_textures(work.image_copies.into_iter());
+		recording.record_compactions(work.compactions);
 		recording
 	}
 
@@ -59,6 +65,13 @@ impl CommandBufferRecording<'_> {
 		self.consume_last_resources();
 		self.end_recording();
 		self.readbacks_finalized = true;
+		if let (Some(frame_key), Some(builds)) = (self.frame_key, self.builds.take()) {
+			// The frame's fence covers every submission of the frame, so its builds complete with the frame.
+			self.device.submit_recorded_builds(
+				builds,
+				crate::vulkan::acceleration_structures::Completion::Frame(frame_key.frame_index),
+			);
+		}
 
 		(
 			self.command_buffer,
@@ -162,7 +175,7 @@ impl CommandBufferRecording<'_> {
 		&mut self,
 		additional_transitions: impl IntoIterator<Item = Consumption>,
 	) -> TransitionStateUpdates {
-		let mut consumptions = SmallVec::<[Consumption; 128]>::new();
+		let mut consumptions = std::mem::take(&mut self.consumptions);
 		let include_read_only = !self.descriptor_resources_initialized;
 		if let Some(materialization) = self.ensure_descriptor_materialization() {
 			for resource in &self.device.descriptor_materialization(materialization).resources {
@@ -175,18 +188,11 @@ impl CommandBufferRecording<'_> {
 				if !include_read_only && !writes {
 					continue;
 				}
-				let (handle, layout) = match resource.descriptor {
-					Descriptor::Buffer { buffer, .. } => (Handles::Buffer(buffer), crate::Layouts::General),
-					Descriptor::Image { image, layout, .. } | Descriptor::CombinedImageSampler { image, layout, .. } => {
-						(Handles::Image(image), layout)
-					}
-					Descriptor::Sampler { .. } => continue,
-				};
 				consumptions.push(Consumption {
-					handle,
+					handle: resource.handle,
 					stages: resource.stages,
 					access: resource.access,
-					layout,
+					layout: resource.layout,
 				});
 			}
 		}
@@ -199,10 +205,14 @@ impl CommandBufferRecording<'_> {
 			group.extend(consumptions.iter().map(|consumption| consumption.handle));
 		}
 		// An empty batch records no barrier and changes no state, which is the common case for draws after the first.
-		if consumptions.is_empty() {
-			return TransitionStateUpdates::default();
-		}
-		self.consume_resources(consumptions)
+		// It still returns the recycled vectors, so applying it hands them back.
+		let updates = if consumptions.is_empty() {
+			self.transition_updates.take()
+		} else {
+			self.consume_resources(consumptions.drain(..))
+		};
+		self.consumptions = consumptions;
+		updates
 	}
 
 	/// Gives an image-group member new contents. Returns `false` when `image` belongs to no group.
@@ -257,7 +267,11 @@ impl CommandBufferRecording<'_> {
 			VulkanConsumption {
 				handle: consumption.handle,
 				stages: to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format),
-				access: to_access_flags(consumption.access, consumption.stages, consumption.layout, format),
+				access: if matches!(consumption.handle, Handles::AccelerationStructure(_)) {
+					acceleration_structure_access(consumption.access)
+				} else {
+					to_access_flags(consumption.access, consumption.stages, consumption.layout, format)
+				},
 				layout: format.map_or(vk::ImageLayout::UNDEFINED, |format| {
 					texture_format_and_resource_use_to_image_layout(format, consumption.layout, Some(consumption.access))
 				}),
@@ -277,6 +291,7 @@ impl CommandBufferRecording<'_> {
 			&self.states,
 			&self.buffer_states,
 			consumptions,
+			self.transition_updates.take(),
 			|handle| {
 				let image = self.get_image(handle);
 				Some((image.image, image.format))
@@ -284,7 +299,8 @@ impl CommandBufferRecording<'_> {
 			|handle| Some(self.get_buffer(handle).buffer),
 		);
 
-		let has_barriers = !planned.image_barriers.is_empty() || !planned.buffer_barriers.is_empty();
+		let has_barriers =
+			!planned.image_barriers.is_empty() || !planned.buffer_barriers.is_empty() || planned.memory_barrier.is_some();
 
 		assert!(
 			!self.active_rendering || !has_barriers,
@@ -298,6 +314,7 @@ impl CommandBufferRecording<'_> {
 			let dependency_info = vk::DependencyInfo::default()
 				.image_memory_barriers(&planned.image_barriers)
 				.buffer_memory_barriers(&planned.buffer_barriers)
+				.memory_barriers(planned.memory_barrier.as_slice())
 				.dependency_flags(vk::DependencyFlags::BY_REGION);
 			unsafe {
 				self.device
@@ -407,14 +424,22 @@ impl CommandBufferRecording<'_> {
 		merged
 	}
 
+	/// Plans the barriers that `consumptions` need after `states` and `buffer_states`, and the states they leave.
+	///
+	/// The states go into `updates`, whose emptied vectors the recording passes back in so that planning reuses
+	/// their memory.
 	pub(super) fn plan_vulkan_resource_transitions(
 		states: &HashMap<Handles, TransitionState>,
 		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
+		updates: TransitionStateUpdates,
 		mut resolve_image: impl FnMut(ImageHandle) -> Option<(vk::Image, vk::Format)>,
 		mut resolve_buffer: impl FnMut(BufferHandle) -> Option<vk::Buffer>,
 	) -> PlannedTransitions {
-		let mut planned = PlannedTransitions::default();
+		let mut planned = PlannedTransitions {
+			updates,
+			..Default::default()
+		};
 
 		for consumption in Self::merge_repeated_consumptions(consumptions) {
 			let handle = consumption.handle;
@@ -555,6 +580,13 @@ impl CommandBufferRecording<'_> {
 					planned
 						.buffer_barriers
 						.push(buffer_barrier(src_stage, src_access, buffer, range));
+				}
+				Handles::AccelerationStructure(_) => {
+					let barrier = planned.memory_barrier.get_or_insert_default();
+					barrier.src_stage_mask |= src_stage;
+					barrier.src_access_mask |= src_access;
+					barrier.dst_stage_mask |= dst_stage;
+					barrier.dst_access_mask |= dst_access;
 				}
 			}
 

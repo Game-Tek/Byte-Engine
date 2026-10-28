@@ -308,8 +308,9 @@ impl Context {
 			&& !device_accesses.contains(DeviceAccesses::CpuRead)
 			&& device_accesses.intersects(DeviceAccesses::DeviceOnly);
 		// All buffers are guaranteed to be accessible by device address.
-		let usage =
-			uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | transfer_usage(false, staged);
+		let usage = uses_to_vk_usage_flags(resource_uses, self.device.ray_tracing.is_some())
+			| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+			| transfer_usage(false, staged);
 
 		if !staged {
 			return self.create_bound_buffer(name, size, usage, device_accesses, device_accesses, resource_uses);
@@ -721,6 +722,17 @@ impl Context {
 		self.tasks.push(Task::after_frame(task, self.last_started_frame.unwrap_or(0)));
 	}
 
+	/// Destroys a buffer that [`Self::create_dedicated_buffer`] made, and frees its memory, once the frames recorded
+	/// before this call complete.
+	pub(crate) fn retire_dedicated_buffer(
+		&mut self,
+		buffer: vk::Buffer,
+		allocation: graphics_hardware_interface::AllocationHandle,
+	) {
+		self.defer_destruction(Tasks::DeleteVulkanBuffer { handle: buffer });
+		self.defer_destruction(Tasks::FreeAllocation { handle: allocation });
+	}
+
 	/// Retires a buffer's Vulkan object and memory, leaving its entry empty so it is never destroyed twice.
 	pub(crate) fn retire_buffer_storage(&mut self, handle: BufferHandle) {
 		let buffer = self.buffers.resource_mut(handle);
@@ -775,6 +787,14 @@ impl Context {
 					if !memory.is_null() {
 						self.device.free_memory(memory, None);
 					}
+				}
+				Tasks::DeleteAccelerationStructure { handle, storage } => {
+					if let Some(ray_tracing) = &self.device.ray_tracing {
+						ray_tracing
+							.acceleration_structure
+							.destroy_acceleration_structure(handle, None);
+					}
+					self.acceleration_structures.storage.free(storage);
 				}
 				_ => return false,
 			}

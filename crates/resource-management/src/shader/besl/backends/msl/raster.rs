@@ -125,7 +125,10 @@ impl Generator {
 
 		for input in inputs {
 			let input = input.borrow();
-			let besl::Nodes::Input { name, location, format } = input.node() else {
+			let besl::Nodes::Input {
+				name, location, format, ..
+			} = input.node()
+			else {
 				continue;
 			};
 			if crate::shader::generator::is_vertex_builtin_input(name) {
@@ -149,7 +152,10 @@ impl Generator {
 
 		for input in inputs {
 			let input = input.borrow();
-			let besl::Nodes::Input { name, location, format } = input.node() else {
+			let besl::Nodes::Input {
+				name, location, format, ..
+			} = input.node()
+			else {
 				continue;
 			};
 			if name == "front_facing" {

@@ -3,12 +3,13 @@ use smallvec::SmallVec;
 use utils::{Extent, hash::HashMap};
 
 use super::{
-	Buffer, BufferHandle, BufferRange, BufferTransitionState, CommandBufferInternal, Consumption, Context, Descriptor,
-	DescriptorMaterializationHandle, Handles, Image, ImageHandle, Swapchain, TextureReadbackStorage, TransitionState,
+	AccelerationStructureMemory, Buffer, BufferHandle, BufferRange, BufferTransitionState, CommandBufferInternal, Consumption,
+	Context, DescriptorMaterializationHandle, Handles, Image, ImageHandle, Swapchain, TextureReadbackStorage, TransitionState,
 	VulkanConsumption,
 	utils::{
-		extent_into_vk_extent, image_aspect_mask, texture_format_and_resource_use_to_image_layout, to_access_flags,
-		to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation,
+		acceleration_structure_access, extent_into_vk_extent, image_aspect_mask,
+		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
+		to_pipeline_stage_flags, to_store_operation,
 	},
 };
 use crate::{FrameKey, HandleLike as _, Size, context::Context as _, graphics_hardware_interface};
@@ -49,14 +50,32 @@ pub struct CommandBufferRecording<'a> {
 	active_render_extent: Extent,
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	readbacks_finalized: bool,
+	/// The acceleration structure work the recording holds until it executes or is dropped. The first build or
+	/// compaction makes it, so recordings without any stay as small as they were.
+	builds: Option<Box<crate::vulkan::acceleration_structures::RecordedBuilds>>,
+	/// The descriptor consumptions of the batch being planned, kept between batches so collecting them doesn't
+	/// allocate on every draw. It comes from, and returns to, the context's [`PlanningStorage`].
+	consumptions: Vec<Consumption>,
+	/// The emptied vectors of the last applied [`TransitionStateUpdates`], which the next batch plans into. Planning
+	/// borrows the recording immutably, so the vectors move in and out of a cell.
+	transition_updates: std::cell::Cell<TransitionStateUpdates>,
 }
 
 impl Drop for CommandBufferRecording<'_> {
 	fn drop(&mut self) {
+		// The next recording plans into the vectors this one grew.
+		self.device.planning_storage = PlanningStorage {
+			consumptions: std::mem::take(&mut self.consumptions),
+			updates: self.transition_updates.take(),
+		};
 		if !self.readbacks_finalized {
 			for handle in std::mem::take(&mut self.texture_readbacks) {
 				self.device.cancel_texture_readback(handle);
 			}
+		}
+		// A recording that executed handed its builds to the context already, so only a dropped one has any left.
+		if let Some(builds) = self.builds.take() {
+			self.device.abandon_recorded_builds(builds);
 		}
 	}
 }
@@ -65,7 +84,7 @@ mod operations;
 mod recording;
 mod transitions;
 
-pub(crate) use transitions::{BufferCopy, ImageCopy};
+pub(crate) use transitions::{BufferCopy, ImageCopy, ImplicitWork, PlanningStorage};
 use transitions::{PlannedTransitions, TransitionStateUpdates, buffer_image_height, buffer_row_length};
 
 #[cfg(test)]
@@ -132,6 +151,7 @@ mod tests {
 			&states.iter().copied().collect(),
 			buffer_states,
 			consumptions,
+			TransitionStateUpdates::default(),
 			|_| Some(image.expect("Unexpected image lookup.")),
 			|_| Some(buffer.expect("Unexpected buffer lookup.")),
 		)

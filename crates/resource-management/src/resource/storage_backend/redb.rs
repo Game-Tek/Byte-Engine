@@ -984,6 +984,16 @@ pub enum ResourceGpuCompressionPolicy {
 }
 
 impl ResourceGpuCompressionPolicy {
+	/// Returns the GPU image compression this build can store and load: Metal I/O LZ4 on macOS with GPU processing,
+	/// and none elsewhere. [`ResourceStorageSettings`] rejects any other choice the build can't serve.
+	pub fn native() -> Self {
+		if cfg!(all(target_os = "macos", feature = "gpu-processing")) {
+			Self::MetalIoLz4
+		} else {
+			Self::Disabled
+		}
+	}
+
 	fn as_bytes(self) -> &'static [u8] {
 		match self {
 			Self::Disabled => b"none",

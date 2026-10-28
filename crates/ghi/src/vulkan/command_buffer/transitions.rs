@@ -54,23 +54,45 @@ pub(super) fn buffer_image_height(format: crate::Formats, source_row_count: usiz
 	}
 }
 
+/// The `ImplicitWork` struct is what a recording records before any command of its own: the staging uploads CPU
+/// writes queued, and the acceleration structure compactions the context queued.
+#[derive(Default)]
+pub(crate) struct ImplicitWork {
+	pub(crate) buffer_copies: Vec<BufferCopy>,
+	pub(crate) image_copies: Vec<ImageCopy>,
+	pub(crate) compactions: Vec<crate::vulkan::acceleration_structures::CompactionCopy>,
+}
+
+/// The `PlanningStorage` struct holds the emptied vectors recordings plan their barriers in. The context keeps it
+/// between recordings, so planning allocates only until some recording has planned a batch as large.
+#[derive(Default)]
+pub(crate) struct PlanningStorage {
+	pub(super) consumptions: Vec<Consumption>,
+	pub(super) updates: TransitionStateUpdates,
+}
+
 /// The `TransitionStateUpdates` struct carries planner state changes without allocating a boxed callback.
+///
+/// Every batch of consumptions returns one, and every draw may plan a batch, so it holds its states in vectors that
+/// move as a few words. Applying it hands the emptied vectors back to the recording, whose next batch plans into
+/// them.
 #[derive(Default)]
 pub(super) struct TransitionStateUpdates {
-	pub(super) states: SmallVec<[(Handles, TransitionState); 64]>,
-	pub(super) buffer_states: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
+	pub(super) states: Vec<(Handles, TransitionState)>,
+	pub(super) buffer_states: Vec<(Handles, Vec<BufferTransitionState>)>,
 	/// Swapchain indices and the stages at which their acquired image is first used.
 	pub(super) acquire_waits: SmallVec<[(usize, vk::PipelineStageFlags2); 2]>,
 }
 
 impl TransitionStateUpdates {
-	pub(super) fn apply(self, recording: &mut CommandBufferRecording<'_>) {
-		recording.states.extend(self.states);
-		recording.buffer_states.extend(self.buffer_states);
+	pub(super) fn apply(mut self, recording: &mut CommandBufferRecording<'_>) {
+		recording.states.extend(self.states.drain(..));
+		recording.buffer_states.extend(self.buffer_states.drain(..));
 		let sequence_index = recording.sequence_index as usize;
-		for (swapchain_index, stage) in self.acquire_waits {
+		for (swapchain_index, stage) in self.acquire_waits.drain(..) {
 			recording.device.swapchains[swapchain_index].acquire_wait_stages[sequence_index] |= stage;
 		}
+		recording.transition_updates.set(self);
 	}
 }
 
@@ -79,6 +101,10 @@ impl TransitionStateUpdates {
 pub(super) struct PlannedTransitions {
 	pub(super) image_barriers: Vec<vk::ImageMemoryBarrier2<'static>>,
 	pub(super) buffer_barriers: Vec<vk::BufferMemoryBarrier2<'static>>,
+	/// The global barrier that orders acceleration structure accesses, which have no buffer range or image of their own
+	/// to name. A global barrier covers all memory, so one barrier with the union of every such transition's masks
+	/// orders everything the separate ones would.
+	pub(super) memory_barrier: Option<vk::MemoryBarrier2<'static>>,
 	pub(super) updates: TransitionStateUpdates,
 }
 

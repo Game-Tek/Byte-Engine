@@ -487,7 +487,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 /// Linking only proves the BESL is well formed. The generated program reaches the GPU through a platform
 /// backend, and defects that BESL accepts — an array local the backend must place in C position, or a local
 /// that shadows a binding of the same name — surface only when the platform compiler runs.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
@@ -558,7 +558,7 @@ fn materials_get_hit_shaders_only_with_surfel_gi() {
 }
 
 /// Verifies a material's hit shader lowers to a closest hit in the running platform's shader language.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_hit_shaders_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;

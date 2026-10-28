@@ -7,6 +7,8 @@ impl Drop for Context {
 		unsafe {
 			// Retired storage is no longer referenced by any live resource, so the loops below would leak it.
 			self.destroy_retired_resources();
+			self.destroy_acceleration_structures();
+			self.destroy_shader_binding_tables();
 			for frame in self.command_buffers.iter().flat_map(|command_buffer| &command_buffer.frames) {
 				self.device.destroy_command_pool(frame.command_pool, None);
 			}

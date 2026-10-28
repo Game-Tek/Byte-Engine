@@ -96,8 +96,8 @@ complete, cancelled, or failed.
 ## Ray tracing
 
 A context supports ray tracing when its device was created with the ray
-tracing feature and the GPU supports it. Only Metal supports it; Vulkan and
-Direct3D 12 report no support. Rays find hits in a top-level structure, whose
+tracing feature and the GPU supports it. Metal and Vulkan support it; Direct3D
+12 reports no support. Rays find hits in a top-level structure, whose
 instances place bottom-level structures in the world. A ray tracing pipeline
 launches a ray generation shader over a grid, and that shader runs the hit
 group of each hit's record, as a shader binding table maps it.
@@ -185,7 +185,7 @@ A trace launches the ray generation shader over an extent.
 | --- | --- | --- | --- |
 | Validation, GPU validation, API dump | Not used | Validation layers, GPU-assisted validation, API dump layer | Debug layer and GPU-based validation; no dump |
 | Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Labels on uploads |
-| Ray tracing | Supported when the GPU supports it | Not supported; contexts report no support | Not supported; contexts report no support |
+| Ray tracing | Supported when the GPU supports it | Supported when the GPU has the acceleration structure, ray query, ray tracing pipeline, and pipeline library extensions | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
 | Sparse resources | No effect on any backend | | |
@@ -193,8 +193,7 @@ A trace launches the ray generation shader over an extent.
 | Gap | Backend |
 | --- | --- |
 | Frame capture, pipeline statistics counters | Metal |
-| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets, ray tracing | Vulkan |
-| The loader-context contract, so Linux builds fail until it lands | Vulkan |
+| Native resource I/O, timed present, shrinking the frames in flight, per-layout native descriptor sets | Vulkan |
 | The loader-context contract and the current trait signatures, so Windows builds fail until they land; pipelines compile when interned; swapchain texture transfers; cubemap storage views; ray tracing | Direct3D 12 |
 | Destroying images, buffers, and shaders | All |
 
@@ -221,4 +220,4 @@ A trace launches the ray generation shader over an extent.
 | Shader creation | GLSL compilation failed, or SPIR-V wasn't aligned to four bytes. |
 | Texture transfer | Unsupported source, format, subresource, layout, or handle; a missing transfer-source use; an allocation or mapping failure. |
 | Resource I/O | An empty batch; unsupported compression; an invalid path, handle, range, state, or layout; queue creation, file open, or execution failure; cancellation. |
-| Ray tracing | A structure created without ray tracing support; a bottom-level structure without geometry, or a top-level structure for zero instances; geometry whose buffers lack the acceleration structure build use, whose ranges pass a buffer's end, or whose offsets, stride, or index format break the triangle geometry rules; a destroyed handle; a second bottom-level build of a structure, unless the recording that held the first was dropped before it executed; a top-level build outside a frame, with more instances than the structure holds, or with an instance whose bottom-level structure has no recorded build; a custom index or hit group offset of 2^24 or more; a ray tracing pipeline without a ray generation shader or a hit group, with a shader of another stage, or with a closest-hit shader that declares a set the ray generation shader doesn't declare at the same position; a shader binding table write that names a hit group the pipeline doesn't have; a trace with a table that was never written, or that was written for another pipeline than the one bound. |
+| Ray tracing | A structure created without ray tracing support; a bottom-level structure without geometry, or a top-level structure for zero instances; geometry whose buffers lack the acceleration structure build use, whose ranges pass a buffer's end, or whose offsets, stride, or index format break the triangle geometry rules; a destroyed handle; a second bottom-level build of a structure, unless the recording that held the first was dropped before it executed; a top-level build outside a frame, with more instances than the structure holds, or with an instance whose bottom-level structure has no recorded build; on Vulkan, a second build of one top-level copy in a frame, or a trace that launches more invocations than the device allows; a custom index or hit group offset of 2^24 or more; a ray tracing pipeline without a ray generation shader or a hit group, with a shader of another stage, or with a closest-hit shader that declares a set the ray generation shader doesn't declare at the same position; a shader binding table write that names a hit group the pipeline doesn't have; a trace with a table that was never written, or that was written for another pipeline than the one bound. |

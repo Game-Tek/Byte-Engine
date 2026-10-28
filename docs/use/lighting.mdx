@@ -297,9 +297,9 @@ the screen. Turn on surfel global illumination (surfel GI) when bounce light
 from surfaces off the screen matters, such as a hall lit by sunlight that falls
 through a window behind the camera.
 
-Surfel GI traces rays, so it lights the scene only on Metal, with a GPU that
-supports ray tracing. Elsewhere, and while its pipelines compile, SSGI lights
-the scene instead.
+Surfel GI traces rays, so it lights the scene only on Metal and Vulkan, with a
+GPU that supports ray tracing. Elsewhere, and while its pipelines compile, SSGI
+lights the scene instead.
 
 1. Build surfel GI into the bake. Add it to the project's `config.json`:
 

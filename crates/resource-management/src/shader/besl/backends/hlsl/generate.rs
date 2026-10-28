@@ -289,7 +289,9 @@ impl Generator {
 			besl::Nodes::Parameter { name, r#type } => {
 				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
 			}
-			besl::Nodes::Input { name, location, format } => {
+			besl::Nodes::Input {
+				name, location, format, ..
+			} => {
 				if matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 					return;
 				}
@@ -357,21 +359,7 @@ impl Generator {
 				condition,
 				statements,
 				else_branch,
-			} => {
-				if matches!(self.stage, Stages::Mesh { .. })
-					&& else_branch.is_none()
-					&& let Some((vertices, primitives)) = Self::mesh_output_count_arguments(statements)
-				{
-					// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
-					string.push_str("SetMeshOutputCounts(");
-					self.emit_node_string(string, &vertices);
-					self.emit_separator(string);
-					self.emit_node_string(string, &primitives);
-					string.push(')');
-				} else {
-					self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
-				}
-			}
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
 			besl::Nodes::Match {
 				scrutinee,
 				r#type,

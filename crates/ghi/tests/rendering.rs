@@ -39,6 +39,9 @@ mod image_groups;
 mod raster;
 #[path = "rendering/ray_tracing.rs"]
 mod ray_tracing;
+#[cfg(target_os = "linux")]
+#[path = "rendering/ray_tracing_spikes.rs"]
+mod ray_tracing_spikes;
 #[path = "rendering/resources.rs"]
 mod resources;
 
@@ -80,8 +83,12 @@ fn run(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
 
 /// Runs one ray tracing scenario on a fresh validated device setup that enables ray tracing.
 fn run_with_ray_tracing(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
-	let (_instance, _device, mut context, queue_handle) =
-		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));
+	run_ray_traced(ghi::device::Features::new().validation(true), scenario);
+}
+
+/// Runs `scenario` on a fresh device setup with `features` and ray tracing, which the GPU must support.
+fn run_ray_traced(features: ghi::device::Features, scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features.ray_tracing(true));
 	assert!(
 		context.supports_ray_tracing(),
 		"The test device cannot trace rays. The most likely cause is a GPU without ray tracing support. Run the ray tracing tests on a GPU that supports it."
@@ -250,75 +257,96 @@ fn round_trip_texture3d_lut() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn traced_structures_stay_resident_without_rebuilds() {
 	run_with_ray_tracing(ray_tracing::traced_structures_stay_resident_without_rebuilds);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn counters_time_bottom_level_builds() {
 	run_with_ray_tracing(ray_tracing::counters_time_bottom_level_builds);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn top_level_structures_have_a_copy_per_frame() {
 	run_with_ray_tracing(ray_tracing::top_level_structures_have_a_copy_per_frame);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn instances_report_custom_indices_beyond_16_bits() {
 	run_with_ray_tracing(ray_tracing::instances_report_custom_indices_beyond_16_bits);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn bottom_level_structures_hold_several_geometries() {
 	run_with_ray_tracing(ray_tracing::bottom_level_structures_hold_several_geometries);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn compacted_structures_trace_like_the_original() {
 	run_with_ray_tracing(ray_tracing::compacted_structures_trace_like_the_original);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn destroyed_structures_stay_valid_for_frames_in_flight() {
 	run_with_ray_tracing(ray_tracing::destroyed_structures_stay_valid_for_frames_in_flight);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn stale_structure_handles_are_rejected() {
 	run_with_ray_tracing(ray_tracing::stale_structure_handles_are_rejected);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports() {
 	run_with_ray_tracing(ray_tracing::invoke_runs_the_hit_group_of_the_record_the_intersector_reports);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use() {
 	run_with_ray_tracing(ray_tracing::closest_hit_reads_sets_the_ray_generation_shader_does_not_use);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn trace_rays_launches_exactly_the_requested_grid() {
 	run_with_ray_tracing(ray_tracing::trace_rays_launches_exactly_the_requested_grid);
 }
 
 #[test]
-#[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
+#[cfg_attr(target_os = "windows", ignore = "the DX12 backend doesn't trace rays")]
 fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group() {
 	run_with_ray_tracing(ray_tracing::rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group);
+}
+
+/// Runs one measurement spike on a device that traces rays, without validation, which would add its own time to
+/// every pipeline creation.
+#[cfg(target_os = "linux")]
+fn run_spike(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	run_ray_traced(ghi::device::Features::new(), scenario);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "Measurement spike; run it explicitly."]
+fn ray_tracing_spikes_building_a_pipeline_again_compiles_only_the_new_hit_group() {
+	run_spike(ray_tracing_spikes::building_a_pipeline_again_compiles_only_the_new_hit_group);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "Measurement spike; run it explicitly."]
+fn ray_tracing_spikes_sorted_closest_hit_calls_against_random_ones() {
+	run_spike(ray_tracing_spikes::sorted_closest_hit_calls_against_random_ones);
 }
 
 #[test]

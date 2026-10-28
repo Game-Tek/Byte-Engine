@@ -245,11 +245,13 @@ impl Drop for Binaries<'_> {
 /// pipeline has to be compiled, which tells the caller to come back with the code.
 ///
 /// Neither create info may carry a `VkPipelineCreateFlags2CreateInfo`; this function adds one with the
-/// descriptor-heap flag every pipeline of this backend needs. `create` calls the creation function of the pipeline's
-/// kind and may run twice, because a pipeline whose stored binaries the driver rejects is compiled from its shaders
-/// instead. A pipeline compiled from shaders has its binaries stored for the next creation and the next run.
+/// descriptor-heap flag every pipeline of this backend needs, and `flags`, such as the flag that makes a ray tracing
+/// library. `create` calls the creation function of the pipeline's kind and may run twice, because a pipeline whose
+/// stored binaries the driver rejects is compiled from its shaders instead. A pipeline compiled from shaders has its
+/// binaries stored for the next creation and the next run.
 pub(crate) fn create_pipeline<T>(
 	binaries: Option<&PipelineBinaries>,
+	flags: vk::PipelineCreateFlags2,
 	compiled: Option<&T>,
 	identified: Option<&T>,
 	create: impl Fn(&T) -> Result<vk::Pipeline, vk::Result>,
@@ -259,7 +261,7 @@ where
 	for<'a> vk::PipelineCreateFlags2CreateInfo<'a>: vk::Extends<T>,
 	for<'a> vk::PipelineBinaryInfoKHR<'a>: vk::Extends<T>,
 {
-	let heap_flags = vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT;
+	let heap_flags = vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT | flags;
 	let compile = |extra_flags| {
 		let compiled = compiled.ok_or(vk::Result::PIPELINE_COMPILE_REQUIRED)?;
 		let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(heap_flags | extra_flags);
@@ -292,9 +294,12 @@ where
 	};
 
 	if let Some(stored) = binaries.stored_binaries(&key) {
+		// A pipeline created from binaries compiles nothing, and Vulkan rejects the lookup's flag that forbids compiling.
+		let mut binary_flags = vk::PipelineCreateFlags2CreateInfo::default().flags(heap_flags);
 		let mut binary_info = vk::PipelineBinaryInfoKHR::default().pipeline_binaries(&stored.handles);
-		// SAFETY: As above, and `binary_info` and the handles it points at outlive the creation call.
-		if let Ok(pipeline) = create(&unsafe { chained(&keyed, &mut binary_info) }) {
+		// SAFETY: As above, and both structures and the handles `binary_info` points at outlive the creation call.
+		let from_binaries = unsafe { chained(&chained(lookup, &mut binary_flags), &mut binary_info) };
+		if let Ok(pipeline) = create(&from_binaries) {
 			return Ok(pipeline);
 		}
 	}

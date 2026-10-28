@@ -201,6 +201,38 @@ mod tests {
 		assert_eq!(io_location(&fragment, "_besl_output_color"), 0);
 	}
 
+	/// Verifies `primitive<T>` interface fields become per-primitive fragment inputs of type `T`, and keep the
+	/// locations sorted field names give, so they still link to the mesh stage's outputs.
+	#[test]
+	fn primitive_interface_fields_lower_to_per_primitive_inputs() {
+		let fragment = crate::compile_to_besl(
+			r#"
+				main: fn (pipeline_input: interface { uv: vec2f, instance_index: primitive<u32> }) -> output { color: vec4f } {
+					return { color: vec4f(pipeline_input.uv.x, f32(pipeline_input.instance_index), 0.0, 1.0) };
+				}
+			"#,
+			None,
+		)
+		.expect("a fragment with a per-primitive input should link");
+
+		let input = |name: &str| {
+			let node = fragment.borrow().get_child(name).expect("the interface field should exist");
+			let node = node.borrow();
+			let Nodes::Input {
+				format,
+				location,
+				per_primitive,
+				..
+			} = node.node()
+			else {
+				panic!("the interface field should be a fragment input");
+			};
+			(format.borrow().get_name().map(str::to_owned), *location, *per_primitive)
+		};
+		assert_eq!(input("_besl_interface_instance_index"), (Some("u32".to_owned()), 0, true));
+		assert_eq!(input("_besl_interface_uv"), (Some("vec2f".to_owned()), 1, false));
+	}
+
 	#[test]
 	fn structural_entry_rejects_invalid_record_shapes() {
 		for (source, expected) in [
@@ -216,6 +248,12 @@ mod tests {
 					return { color: input.position };
 				}"#,
 				"cannot be an interface parameter",
+			),
+			(
+				r#"main: fn () -> interface { position: vec4f, instance_index: primitive<u32> } {
+					return { position: vec4f(0.0, 0.0, 0.0, 1.0), instance_index: 0 };
+				}"#,
+				"`primitive<T>` marks a fragment input",
 			),
 		] {
 			let error = crate::compile_to_besl(source, None).expect_err("invalid structural entry should fail while linking");

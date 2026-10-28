@@ -133,17 +133,22 @@ impl Context {
 		}
 	}
 
-	/// Compares the native resource and image layout consumed by two materialized descriptors.
-	pub(crate) fn descriptors_consume_same_resource(left: Descriptor, right: Descriptor) -> bool {
-		let image = |descriptor: Descriptor| match descriptor {
+	/// Returns the resource a materialized descriptor makes commands access, and the layout an image is accessed in.
+	///
+	/// Descriptors that return the same value merge into one consumption. A sampler returns `None`, because it touches
+	/// no memory the resource tracker follows.
+	fn consumed_resource(descriptor: Descriptor) -> Option<(super::super::Handles, crate::Layouts)> {
+		use super::super::Handles;
+		match descriptor {
+			Descriptor::Buffer { buffer, .. } => Some((Handles::Buffer(buffer), crate::Layouts::General)),
 			Descriptor::Image { image, layout, .. } | Descriptor::CombinedImageSampler { image, layout, .. } => {
-				Some((image, layout))
+				Some((Handles::Image(image), layout))
 			}
-			_ => None,
-		};
-		match (left, right) {
-			(Descriptor::Buffer { buffer: left, .. }, Descriptor::Buffer { buffer: right, .. }) => left == right,
-			_ => image(left).is_some_and(|left| image(right) == Some(left)),
+			Descriptor::AccelerationStructure { handle, copy } => Some((
+				Handles::AccelerationStructure(super::super::AccelerationStructureMemory::top_level(handle, copy)),
+				crate::Layouts::General,
+			)),
+			Descriptor::Sampler { .. } => None,
 		}
 	}
 
@@ -329,7 +334,11 @@ impl Context {
 				layer,
 			},
 			WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
-			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("Vulkan"),
+			// Each frame traces the copy it builds.
+			WriteData::AccelerationStructure { handle } => Descriptor::AccelerationStructure {
+				handle,
+				copy: resource_sequence as u8,
+			},
 			WriteData::Swapchain(handle) => {
 				let swapchain = &self.swapchains[handle.0 as usize];
 				Descriptor::Image {
@@ -482,6 +491,15 @@ impl Context {
 		let mut image_writes = Vec::<(vk::DescriptorType, vk::ImageViewCreateInfo, vk::ImageLayout, u32, u64)>::new();
 		let mut sampler_writes = Vec::<(graphics_hardware_interface::SamplerHandle, u32, u64)>::new();
 		let mut materialized_resources = SmallVec::<[ResolvedPipelineDescriptor; 128]>::new();
+		// Descriptors of one resource merge into one consumption. A table of bindless textures can name thousands of
+		// distinct resources, so once a layout has named more than a few, earlier ones are found through an index
+		// instead of a scan. A table that repeats a placeholder stays on the scan, which finds it at once. The index
+		// keeps its memory on the context between materializations.
+		const SCANNED: usize = 16;
+		let descriptor_count = resolved.len();
+		let mut merged_indices = std::mem::take(&mut self.descriptor_merge_index);
+		merged_indices.clear();
+		let mut indexed = false;
 		for (resource, array_element, descriptor) in resolved {
 			let resource_offset = resource
 				.resource_heap_offset
@@ -560,23 +578,62 @@ impl Context {
 				Descriptor::Sampler { sampler } => {
 					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
 				}
+				Descriptor::AccelerationStructure { handle, copy } => {
+					let top_level = self.acceleration_structures.top_level(handle);
+					let copy = top_level.copies.get(copy as usize).expect(
+						"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
+					);
+					// Descriptors name a structure by its address; the range's size only has to be valid.
+					address_writes.push((
+						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+						vk::DeviceAddressRangeEXT::default()
+							.address(copy.address)
+							.size(copy.storage.size),
+						resource_offset.unwrap(),
+						resource.resource_stride as u64,
+					));
+				}
 			}
-			if !matches!(descriptor, Descriptor::Sampler { .. }) {
-				if let Some(existing) = materialized_resources
-					.iter_mut()
-					.find(|existing| Self::descriptors_consume_same_resource(existing.descriptor, descriptor))
-				{
-					existing.stages |= resource.stages;
-					existing.access |= resource.descriptor.access();
+			if let Some((handle, layout)) = Self::consumed_resource(descriptor) {
+				if !indexed && materialized_resources.len() > SCANNED {
+					merged_indices.reserve(descriptor_count);
+					merged_indices.extend(
+						materialized_resources
+							.iter()
+							.enumerate()
+							.map(|(index, existing)| ((existing.handle, existing.layout), index)),
+					);
+					indexed = true;
+				}
+				let existing = if indexed {
+					match merged_indices.entry((handle, layout)) {
+						std::collections::hash_map::Entry::Occupied(entry) => Some(*entry.get()),
+						std::collections::hash_map::Entry::Vacant(entry) => {
+							entry.insert(materialized_resources.len());
+							None
+						}
+					}
 				} else {
-					materialized_resources.push(ResolvedPipelineDescriptor {
-						descriptor,
+					materialized_resources
+						.iter()
+						.position(|existing| (existing.handle, existing.layout) == (handle, layout))
+				};
+				match existing {
+					Some(index) => {
+						let existing = &mut materialized_resources[index];
+						existing.stages |= resource.stages;
+						existing.access |= resource.descriptor.access();
+					}
+					None => materialized_resources.push(ResolvedPipelineDescriptor {
+						handle,
+						layout,
 						stages: resource.stages,
 						access: resource.descriptor.access(),
-					});
+					}),
 				}
 			}
 		}
+		self.descriptor_merge_index = merged_indices;
 
 		let heaps = self.descriptor_heaps.as_ref().unwrap();
 		if !address_writes.is_empty() {

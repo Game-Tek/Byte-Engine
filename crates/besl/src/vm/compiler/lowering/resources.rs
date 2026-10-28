@@ -254,7 +254,9 @@ impl<'a> Compiler<'a> {
 		};
 
 		let (slot, value_type) = match source.borrow().node() {
-			Nodes::Input { name, format, location } => {
+			Nodes::Input {
+				name, format, location, ..
+			} => {
 				if name != &input_name {
 					return Err(VmError::UnsupportedExpression {
 						message: format!("Only direct input reads are supported for `{}`", input_name),

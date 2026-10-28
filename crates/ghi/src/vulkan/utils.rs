@@ -10,10 +10,11 @@ fn fold_flags<G: Copy, V: Copy + Default + std::ops::BitOr<Output = V>>(table: &
 		.fold(V::default(), |flags, &(_, vulkan)| flags | vulkan)
 }
 
-pub(super) fn uses_to_vk_usage_flags(usage: Uses) -> vk::BufferUsageFlags {
+/// Returns the Vulkan usage of a buffer with `usage`. `ray_tracing` tells whether the device traces rays.
+pub(super) fn uses_to_vk_usage_flags(usage: Uses, ray_tracing: bool) -> vk::BufferUsageFlags {
 	use vk::BufferUsageFlags as Flags;
 
-	fold_flags(
+	let flags = fold_flags(
 		&[
 			(Uses::Vertex, Flags::VERTEX_BUFFER),
 			(Uses::Index, Flags::INDEX_BUFFER),
@@ -22,10 +23,15 @@ pub(super) fn uses_to_vk_usage_flags(usage: Uses) -> vk::BufferUsageFlags {
 			(Uses::TransferSource, Flags::TRANSFER_SRC),
 			(Uses::TransferDestination, Flags::TRANSFER_DST),
 			(Uses::Indirect, Flags::INDIRECT_BUFFER),
-			// Vulkan builds no acceleration structures, so Uses::AccelerationStructureBuild adds no usage.
 		],
 		|uses| usage.contains(uses),
-	)
+	);
+	// The build input usage belongs to `VK_KHR_acceleration_structure`, which only a device that traces rays enables.
+	if ray_tracing && usage.contains(Uses::AccelerationStructureBuild) {
+		flags | Flags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+	} else {
+		flags
+	}
 }
 
 pub(super) fn to_clear_value(clear: graphics_hardware_interface::ClearValue) -> vk::ClearValue {
@@ -217,6 +223,7 @@ pub(super) fn to_pipeline_stage_flags(
 		&[
 			(Stages::VERTEX, Flags::VERTEX_ATTRIBUTE_INPUT | Flags::VERTEX_SHADER),
 			(Stages::INDEX, Flags::VERTEX_ATTRIBUTE_INPUT | Flags::INDEX_INPUT),
+			(Stages::TASK, Flags::TASK_SHADER_EXT),
 			(Stages::MESH, Flags::MESH_SHADER_EXT),
 			(Stages::FRAGMENT, fragment),
 			(Stages::COMPUTE, compute),
@@ -226,12 +233,18 @@ pub(super) fn to_pipeline_stage_flags(
 			(Stages::PRESENTATION, Flags::ALL_COMMANDS),
 			(Stages::RAYGEN, Flags::RAY_TRACING_SHADER_KHR),
 			(Stages::CLOSEST_HIT, Flags::RAY_TRACING_SHADER_KHR),
-			(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_BUILD_KHR),
 			(Stages::LAST, Flags::BOTTOM_OF_PIPE),
 		],
 		|stage| stages.contains(stage),
 	)
 }
+
+/// The shader stages whose reads and writes are plain shader accesses in every layout. Each access table holds them in
+/// one entry, so the per-draw mapping tests them at once.
+const SHADER_STAGES: Stages = Stages::TASK
+	.union(Stages::MESH)
+	.union(Stages::RAYGEN)
+	.union(Stages::CLOSEST_HIT);
 
 pub(super) fn to_access_flags(
 	accesses: crate::AccessPolicies,
@@ -263,8 +276,7 @@ pub(super) fn to_access_flags(
 				(Stages::TRANSFER, Flags::TRANSFER_READ),
 				(Stages::FRAGMENT, fragment),
 				(Stages::COMPUTE, compute),
-				(Stages::RAYGEN, Flags::ACCELERATION_STRUCTURE_READ_KHR),
-				(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_READ_KHR),
+				(SHADER_STAGES, Flags::SHADER_READ),
 			],
 			|stage| stages.intersects(stage),
 		);
@@ -281,14 +293,28 @@ pub(super) fn to_access_flags(
 				(Stages::TRANSFER, Flags::TRANSFER_WRITE),
 				(Stages::COMPUTE, Flags::SHADER_WRITE),
 				(Stages::FRAGMENT, fragment),
-				(Stages::RAYGEN, Flags::SHADER_WRITE),
-				(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_WRITE_KHR),
+				(SHADER_STAGES, Flags::SHADER_WRITE),
 			],
 			|stage| stages.intersects(stage),
 		);
 	}
 
 	access_flags
+}
+
+/// Returns the Vulkan accesses of `accesses` to an acceleration structure, which Vulkan names apart from other memory
+/// in every stage: shaders that trace rays through it, and builds and copies.
+pub(super) fn acceleration_structure_access(accesses: crate::AccessPolicies) -> vk::AccessFlags2 {
+	fold_flags(
+		&[
+			(crate::AccessPolicies::READ, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR),
+			(
+				crate::AccessPolicies::WRITE,
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+			),
+		],
+		|access| accesses.contains(access),
+	)
 }
 
 /// A depth of 0 or 1 is one slice, so such extents make 2D images; descriptor views make the same distinction.
@@ -356,7 +382,9 @@ impl From<Stages> for vk::ShaderStageFlags {
 				(Stages::MESH, Self::MESH_EXT),
 				(Stages::TASK, Self::TASK_EXT),
 				(Stages::RAYGEN, Self::RAYGEN_KHR),
-				(Stages::CLOSEST_HIT, Self::CLOSEST_HIT_KHR),
+				// The ray generation shader calls a hit's closest hit through the shader binding table, which on Vulkan
+				// makes it a callable shader. See `ray_tracing.rs`.
+				(Stages::CLOSEST_HIT, Self::CALLABLE_KHR),
 			],
 			|stage| stages.intersects(stage),
 		)
@@ -516,6 +544,34 @@ mod tests {
 			.map(|entry| (entry.constant_id, entry.offset, entry.size))
 			.collect::<Vec<_>>();
 		assert_eq!(layout, vec![(0, 0, 4), (1, 4, 4), (2, 8, 4), (3, 12, 4)]);
+	}
+
+	/// Verifies a task or mesh shader's reads and writes make barriers wait at its stage and make the access visible to
+	/// it, as every other shader stage's do. The visibility pipeline's task stage reads buffers and the depth pyramid
+	/// that earlier passes write, and writes the meshlets it found unoccluded.
+	#[test]
+	fn task_and_mesh_shader_accesses_name_their_stage() {
+		for (stage, vulkan_stage) in [
+			(Stages::TASK, vk::PipelineStageFlags2::TASK_SHADER_EXT),
+			(Stages::MESH, vk::PipelineStageFlags2::MESH_SHADER_EXT),
+		] {
+			for layout in [Layouts::General, Layouts::Read] {
+				assert_eq!(to_pipeline_stage_flags(stage, Some(layout), None), vulkan_stage);
+			}
+			assert_eq!(
+				to_access_flags(crate::AccessPolicies::READ, stage, Layouts::Read, Some(crate::Formats::R32F)),
+				vk::AccessFlags2::SHADER_READ
+			);
+			assert_eq!(
+				to_access_flags(
+					crate::AccessPolicies::READ | crate::AccessPolicies::WRITE,
+					stage,
+					Layouts::General,
+					None
+				),
+				vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE
+			);
+		}
 	}
 
 	#[test]

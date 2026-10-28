@@ -458,6 +458,16 @@ impl ShaderDescriptorSet {
 /// The Vulkan and DX12 backends derive their native layouts from this flat interface, and treat descriptor sets as
 /// groups of flat slots. Slots are unique across the sets a pipeline declares, so the list names each resource once.
 #[cfg(not(target_os = "macos"))]
+/// Returns every resource that `descriptor_sets` declare, used or not, ordered by slot.
+pub(crate) fn flatten_declared_resources(descriptor_sets: &[ShaderDescriptorSet]) -> Vec<ShaderResourceDescriptor> {
+	let mut resources = descriptor_sets
+		.iter()
+		.flat_map(|set| set.layout().resources().iter().copied())
+		.collect::<Vec<_>>();
+	resources.sort_by_key(|resource| resource.slot());
+	resources
+}
+
 pub(crate) fn flatten_used_resources(
 	descriptor_sets: impl IntoIterator<Item = ShaderDescriptorSet>,
 ) -> Vec<ShaderResourceDescriptor> {

@@ -1,5 +1,6 @@
 use super::*;
 
+mod acceleration_structures;
 mod compute;
 mod raster;
 mod ray_tracing;

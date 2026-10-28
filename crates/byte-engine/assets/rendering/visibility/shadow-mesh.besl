@@ -25,9 +25,7 @@ main: fn() -> void {
 	let meshlet: Meshlet = meshlets[meshlet_index];
 	let primitive_index: u32 = thread_idx();
 
-	if (primitive_index == 0) {
-		set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
-	}
+	set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
 
 	if (primitive_index < meshlet.primitive_count) {
 		let relative_vertex_index: u32 =

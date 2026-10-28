@@ -60,6 +60,23 @@ vertex. On Metal a vertex is written as one value, so write each
 `vertex_output` element in the statements right next to the
 `set_mesh_vertex_position` call with the same index.
 
+A fragment shader reads the element of an `output` array through an interface
+field of type `primitive<T>`, where `T` is the array's element type:
+
+```rust
+main: fn (
+	pipeline_input: interface { instance_index: primitive<u32>, uv: vec2f16 },
+) -> output { instance_id: u32 } {
+	return { instance_id: pipeline_input.instance_index };
+}
+```
+
+Declare every field that a mesh `output` array writes as `primitive<T>`, and
+every field that a `vertex_output` array or a vertex stage writes as `T`. A
+`primitive<T>` field holds a `T` and takes its location from its name like any
+other field. Only an interface parameter takes `primitive<T>`. A returned record
+with a `primitive<T>` field is an error.
+
 Locations range from `0` through `255`. Don't repeat a location within one
 explicit input or output list.
 
@@ -494,18 +511,18 @@ The normal generators support these stage and output-language combinations:
 | Vertex | Supported | Supported | Supported |
 | Fragment | Supported | Supported | Supported |
 | Compute | Supported | Supported | Supported |
-| Task | Not supported | Supported as an amplification shader | Supported as an object stage |
+| Task | Supported through `GL_EXT_mesh_shader` | Supported as an amplification shader | Supported as an object stage |
 | Mesh | Supported through `GL_EXT_mesh_shader` | Supported | Supported |
-| RayGeneration | Not supported | Not supported | Supported as a compute kernel |
-| ClosestHit | Not supported | Not supported | Supported as a visible function |
+| RayGeneration | Supported as a `raygen` shader | Not supported | Supported as a compute kernel |
+| ClosestHit | Supported as a `callable` shader | Not supported | Supported as a visible function |
 
 The generated language support doesn't guarantee that a device exposes the
 required shader stage or extension. Half-precision and subgroup operations also
 require their target capabilities. BESL validates subgroup intrinsics for
 compute stages only. See [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
 The [ray queries](/docs/reference/besl/intrinsics#ray-queries) follow the ray
-tracing stages: the MSL generator supports them, and the GLSL and HLSL
-generators reject them.
+tracing stages: the MSL and GLSL generators support them, and the HLSL
+generator rejects them.
 
 Next, use [BESL intrinsics](/docs/reference/besl/intrinsics) to read and update
 the values declared by the interface.

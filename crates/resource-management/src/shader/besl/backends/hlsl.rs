@@ -847,9 +847,7 @@ mod tests {
 			main: fn () -> void {
 				let lane: u32 = thread_idx();
 				let meshlet_index: u32 = meshlet_indices[threadgroup_position()];
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
+				set_mesh_output_counts(3, 1);
 				if (lane < 3) {
 					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
 				}

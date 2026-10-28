@@ -170,13 +170,13 @@ impl<'a> Frame<'a> {
 		// Explicit transfer command buffers must not consume frame-global pending uploads. Those uploads belong to the
 		// normal render recording path, and stealing them here makes helper transfer submissions write render-frame
 		// resources such as dynamic view buffers.
-		let pending_syncs = if include_implicit_sync {
-			self.device.take_pending_syncs()
+		let work = if include_implicit_sync {
+			self.device.take_implicit_work()
 		} else {
-			(Vec::new(), Vec::new())
+			Default::default()
 		};
 
-		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), pending_syncs)
+		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), work)
 	}
 
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {

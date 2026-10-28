@@ -38,23 +38,9 @@ impl Generator {
 	}
 
 	pub(crate) fn emit_object_payload_struct(&mut self, string: &mut String, payloads: &[&besl::NodeReference]) {
-		if payloads.is_empty() {
-			return;
+		if !payloads.is_empty() {
+			self.emit_task_payload_struct(string, "ObjectPayload", payloads.iter().copied());
 		}
-
-		self.emit_named_struct_start(string, "ObjectPayload");
-		for payload in payloads {
-			let payload = payload.borrow();
-			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
-				continue;
-			};
-
-			self.emit_indentation(string, 1);
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			let _ = write!(string, " {}[{count}]", Self::identifier(name));
-			self.emit_statement_end(string);
-		}
-		self.emit_struct_declaration_end(string);
 	}
 
 	/// Emits one argument-buffer struct per descriptor set, named `_set<n>`.

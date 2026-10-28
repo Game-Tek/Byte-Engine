@@ -33,6 +33,140 @@ mod stage_rules;
 
 pub(crate) use stage_rules::validate_stage;
 
+/// The layout layers that the ray tracing fixtures list, in the order every shader of their pipeline lists them:
+/// the payload, the scene and the results the ray generation shader writes, the albedos that only closest hits
+/// read, and the push constant.
+#[cfg(test)]
+const RAY_TRACING_LAYERS: [(&str, &str); 4] = [
+	("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
+	(
+		"scene",
+		"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;",
+	),
+	(
+		"materials",
+		"albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>;",
+	),
+	("constants", "push_constant: push_constant { scale: f32, }"),
+];
+
+/// Stacks the ray tracing fixture layers under `source` and links the program.
+#[cfg(test)]
+fn link_ray_tracing_fixture(source: &str) -> besl::NodeReference {
+	let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
+	besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
+		.expect("Expected the ray tracing fixture to link")
+}
+
+/// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
+#[cfg(test)]
+const RAY_GENERATION_FIXTURE: &str = r#"
+	shade: fn (hit: Hit) -> SurfaceHit {
+		return invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
+	}
+
+	main: fn (input: StageInput) -> void {
+		let origin: vec3f = vec3f(f32(input.launch_index.x) * push_constant.scale, 0.0, 0.0);
+		let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
+		let surface: SurfaceHit = shade(hit);
+		if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
+			surface.distance = surface.distance + f32(input.launch_size.x);
+		}
+		surfaces[input.launch_index.x] = surface;
+	}
+"#;
+
+/// Reports a hit's albedo from a set the ray generation shader doesn't read, through a helper that reads the hit.
+#[cfg(test)]
+const CLOSEST_HIT_FIXTURE: &str = r#"
+	albedo_of: fn (geometry: u32) -> vec3f {
+		let albedo: vec4f = albedos[geometry];
+		return vec3f(albedo.x, albedo.y, albedo.z) * hit_distance();
+	}
+
+	main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
+		let surface: SurfaceHit = payload;
+		let weights: vec2f = input.hit_barycentrics;
+		surface.albedo = albedo_of(input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
+		surface.distance = input.hit_distance * push_constant.scale + input.ray_direction.z;
+		return surface;
+	}
+"#;
+
+/// Compacts the visible meshlets of one task workgroup into its payload through workgroup atomics, and sets the mesh
+/// grid from a helper on one lane.
+#[cfg(test)]
+const TASK_PAYLOAD_FIXTURE: &str = r#"
+	Meshlets: struct {
+		values: u32[32],
+	}
+	meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
+	visible_meshlets: task_payload<u32, 32>;
+	visible_count: workgroup<atomicu32>;
+	push_constant: push_constant {
+		base_meshlet: u32,
+	}
+
+	dispatch_visible_meshlets: fn () -> void {
+		let position: u32 = thread_position();
+		let lane: u32 = thread_idx();
+		if (lane == 0) {
+			atomic_store(visible_count, 0);
+		}
+		workgroup_barrier();
+		if (position < 32) {
+			let payload_index: u32 = atomic_add(visible_count, 1);
+			visible_meshlets[payload_index] = meshlets.values[push_constant.base_meshlet + position];
+		}
+		workgroup_barrier();
+		if (lane == 0) {
+			set_task_mesh_output_count(atomic_load(visible_count));
+		}
+	}
+
+	main: fn () -> void {
+		dispatch_visible_meshlets();
+	}
+"#;
+
+/// Reads the meshlet its workgroup draws from the task payload, sets its counts, and writes one triangle with
+/// per-primitive outputs.
+#[cfg(test)]
+const MESH_PAYLOAD_FIXTURE: &str = r#"
+	visible_meshlets: task_payload<u32, 32>;
+	out_instance_index: output<u32, 0, 126>;
+	out_primitive_index: output<u32, 1, 126>;
+
+	main: fn () -> void {
+		let lane: u32 = thread_idx();
+		let meshlet_index: u32 = visible_meshlets[threadgroup_position()];
+		set_mesh_output_counts(3, 1);
+		if (lane < 3) {
+			set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+		}
+		if (lane < 1) {
+			set_mesh_triangle(0, vec3u(0, 1, 2));
+			out_primitive_index[0] = meshlet_index;
+			set_mesh_primitive_render_target_array_index(0, 2);
+			out_instance_index[0] = meshlet_index;
+		}
+	}
+"#;
+
+/// Runs baked ray tracing shaders on the GPU and in the VM. It needs GHI, which the `gpu-processing` feature brings, and
+/// a backend whose generator lowers ray tracing.
+#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
+mod gpu_ray_tracing;
+
+/// Draws with baked task, mesh, and fragment shaders on the GPU. It needs GHI, which the `gpu-processing` feature
+/// brings, and a backend whose generator lowers task and mesh stages.
+#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
+mod gpu_mesh_shading;
+
+/// Bakes programs and creates what runs them for the GPU tests.
+#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
+mod gpu_harness;
+
 #[cfg(test)]
 const RUNTIME_ARRAY_FRAGMENT: &str = r#"
 	Instance: struct { position: vec3f, sprite_id: u32 }
@@ -370,6 +504,55 @@ const RAY_TRACING_STAGE_INTRINSICS: [&str; 10] = [
 	"ray_direction",
 	"invoke",
 ];
+
+/// Reports whether `node` declares ray tracing, the `Hit` struct or an acceleration structure binding, which a shader
+/// that declares either needs its backend's ray tracing support for.
+pub(crate) fn declares_ray_tracing(node: &besl::NodeReference) -> bool {
+	match node.borrow().node() {
+		besl::Nodes::Struct { name, .. } => name == besl::HIT_STRUCT,
+		besl::Nodes::Binding {
+			r#type: besl::BindingTypes::AccelerationStructure,
+			..
+		} => true,
+		_ => false,
+	}
+}
+
+/// Returns the `Hit` member that the closest-hit stage value `name`, such as `hit_distance`, reads.
+pub(crate) fn hit_member(name: &str) -> &'static str {
+	match name {
+		"hit_distance" => "distance",
+		"hit_custom_index" => "custom_index",
+		"hit_geometry_index" => "geometry_index",
+		"hit_primitive_index" => "primitive_index",
+		"hit_barycentrics" => "barycentrics",
+		"ray_origin" => "origin",
+		"ray_direction" => "direction",
+		_ => unreachable!("`{name}` isn't a hit value. Add it to `hit_member` with the `Hit` member it reads."),
+	}
+}
+
+/// Returns the payload type that the `invoke` calls in `order` pass, or `None` when no code calls `invoke`.
+///
+/// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
+pub(crate) fn invoke_payload(order: &[besl::NodeReference]) -> Option<besl::NodeReference> {
+	let mut payload = None;
+	for node in order {
+		any_code_node(node, false, &mut |node| {
+			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
+				&& let besl::Nodes::Intrinsic { name, r#return, .. } = intrinsic.borrow().node()
+				&& name == "invoke"
+			{
+				payload = Some(r#return.clone());
+			}
+			payload.is_some()
+		});
+		if payload.is_some() {
+			break;
+		}
+	}
+	payload
+}
 
 /// The `IntrinsicRequirements` struct records which intrinsics a shader calls, so each backend declares only the
 /// helpers, extensions, and builtins the shader needs. Build it with [`intrinsic_requirements`].

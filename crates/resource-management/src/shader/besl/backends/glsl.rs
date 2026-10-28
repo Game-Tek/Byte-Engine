@@ -397,6 +397,76 @@ mod tests {
 		assert_string_contains!(shader, "gl_MeshPrimitivesEXT[0].gl_Layer = int(3);");
 	}
 
+	/// Verifies a task shader runs BESL's `main` as a function of its own, then emits the mesh grid from every
+	/// invocation, and keeps its payload arrays in the one payload variable GLSL allows.
+	/// A grid emitted inside `main` or from one lane still compiles, so the lowering is asserted as well as compiled.
+	#[test]
+	fn generated_task_stage_emits_the_mesh_grid_after_main_returns() {
+		let shader = lower_fixture(
+			super::super::TASK_PAYLOAD_FIXTURE,
+			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+		);
+
+		assert_string_contains!(shader, "#pragma shader_stage(task)\n");
+		assert_string_contains!(shader, "#extension GL_EXT_mesh_shader:require");
+		assert_string_contains!(shader, "layout(local_size_x=32,local_size_y=1,local_size_z=1) in;");
+		assert_string_contains!(shader, "struct _BeslTaskPayload{uint32_t visible_meshlets[32];};");
+		assert_string_contains!(shader, "taskPayloadSharedEXT _BeslTaskPayload _besl_task_payload;");
+		assert_string_contains!(shader, "shared uint32_t visible_count;");
+		assert_string_contains!(shader, "uint32_t position=uint(gl_GlobalInvocationID.x);");
+		assert_string_contains!(shader, "_besl_task_payload.visible_meshlets[payload_index]=");
+		// The helper sets the count, so the count is declared before every function.
+		assert_string_contains!(shader, "_besl_task_mesh_count=atomicAdd(visible_count,0u)");
+		assert_string_contains!(
+			shader,
+			"void main(){if(gl_LocalInvocationIndex==0u){_besl_task_mesh_count=0u;}barrier();_besl_task_main();barrier();EmitMeshTasksEXT(_besl_task_mesh_count,1u,1u);}"
+		);
+
+		compile(&shader, "besl-task-payload");
+	}
+
+	/// Verifies a mesh shader reads the task payload through the struct the task stage declares.
+	#[test]
+	fn generated_mesh_stage_reads_the_task_payload() {
+		let shader = lower_fixture(
+			super::super::MESH_PAYLOAD_FIXTURE,
+			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		);
+
+		assert_string_contains!(shader, "struct _BeslTaskPayload{uint32_t visible_meshlets[32];};");
+		assert_string_contains!(shader, "taskPayloadSharedEXT _BeslTaskPayload _besl_task_payload;");
+		assert_string_contains!(
+			shader,
+			"uint32_t meshlet_index=_besl_task_payload.visible_meshlets[uint(gl_WorkGroupID.x)];"
+		);
+		assert_string_contains!(shader, "SetMeshOutputsEXT(3,1);");
+
+		compile(&shader, "besl-mesh-payload");
+	}
+
+	/// Verifies fragment inputs a mesh stage writes once per primitive are declared per-primitive, which Vulkan needs to
+	/// link them, with the mesh shader extension that declares the qualifier.
+	#[test]
+	fn primitive_fragment_inputs_are_declared_per_primitive() {
+		let shader = lower_fixture(
+			r#"
+			main: fn (pipeline_input: interface { instance_index: primitive<u32>, uv: vec2f }) -> output { color: vec4f } {
+				return { color: vec4f(pipeline_input.uv.x, f32(pipeline_input.instance_index), 0.0, 1.0) };
+			}
+			"#,
+			&ShaderGenerationSettings::fragment(),
+		);
+
+		assert_string_contains!(shader, "#extension GL_EXT_mesh_shader:require");
+		assert_string_contains!(
+			shader,
+			"layout(location=0)flat perprimitiveEXT in uint32_t _besl_interface_instance_index;"
+		);
+		assert_string_contains!(shader, "layout(location=1)in vec2 _besl_interface_uv;");
+
+		compile(&shader, "besl-primitive-fragment-inputs");
+	}
+
 	#[test]
 	fn else_chains_lower_to_glsl() {
 		let shader = lower_fixture(
@@ -523,6 +593,83 @@ mod tests {
 		// GLSL does not narrow float literals to float16_t, so a literal branch beside an f16 branch is cast.
 		assert_string_contains!(shader, "((!flag)?bodies[item].weight:float16_t(1.0))");
 		compile(&shader, "besl-prefix-operators-and-if-values");
+	}
+
+	/// Stacks the ray tracing fixture layers under `source` and lowers the program to minified GLSL for `settings`.
+	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
+		let program = super::super::link_ray_tracing_fixture(source);
+		generate(settings, &program.get_main().expect("Expected the fixture's main function"))
+	}
+
+	/// Verifies a ray generation shader lowers to a `raygen` shader that finds hits with ray queries, runs closest hits
+	/// through the shader binding table's callable records, and compiles.
+	#[test]
+	fn generated_ray_generation_stage_compiles_with_glslang() {
+		let shader = lower_ray_tracing_fixture(
+			super::super::RAY_GENERATION_FIXTURE,
+			&ShaderGenerationSettings::ray_generation(),
+		);
+
+		assert_string_contains!(shader, "#version 460 core\n#pragma shader_stage(raygen)\n");
+		assert_string_contains!(shader, "#extension GL_EXT_ray_tracing:require");
+		assert_string_contains!(shader, "#extension GL_EXT_ray_query:require");
+		assert_string_contains!(shader, "layout(set=0,binding=0) uniform accelerationStructureEXT scene;");
+		// The callable data carries the payload and the hit, and `invoke` calls the hit's record.
+		assert_string_contains!(shader, "struct _besl_call{SurfaceHit payload;Hit hit;};");
+		assert_string_contains!(shader, "layout(location=0) callableDataEXT _besl_call _besl_call_data;");
+		assert_string_contains!(shader, "executeCallableEXT(hit.record,0)");
+		assert_string_contains!(shader, "return _besl_invoke(hit,SurfaceHit(");
+		assert_string_contains!(shader, "_besl_trace_occlusion(scene,255,");
+		assert_string_contains!(shader, "gl_LaunchIDEXT.x");
+		assert_string_contains!(shader, "gl_LaunchSizeEXT.x");
+
+		compile(&shader, "besl-ray-generation");
+	}
+
+	/// Verifies a closest hit lowers to a `callable` shader that reads the hit from the callable data, in `main` and
+	/// in helpers, and returns the payload through it.
+	#[test]
+	fn generated_closest_hit_stage_compiles_with_glslang() {
+		let shader = lower_ray_tracing_fixture(super::super::CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
+
+		assert_string_contains!(shader, "#pragma shader_stage(callable)");
+		assert_string_contains!(shader, "layout(location=0) callableDataInEXT _besl_call _besl_call_data;");
+		assert_string_contains!(shader, "_besl_call_data.hit.besl_distance");
+		assert_string_contains!(shader, "_besl_call_data.hit.barycentrics");
+		assert_string_contains!(shader, "SurfaceHit _besl_closest_hit_main(SurfaceHit payload)");
+		assert_string_contains!(
+			shader,
+			"void main(){_besl_call_data.payload=_besl_closest_hit_main(_besl_call_data.payload);}"
+		);
+
+		compile(&shader, "besl-closest-hit");
+	}
+
+	/// Verifies a compute shader runs `intersect` and `trace_occlusion` as ray queries and builds a `Hit`.
+	#[test]
+	fn ray_queries_compile_in_compute_shaders() {
+		let shader = lower_ray_tracing_fixture(
+			r#"
+			main: fn (input: StageInput) -> void {
+				let origin: vec3f = vec3f(f32(input.thread_id.x), 0.0, 0.0);
+				let hit: Hit = intersect(scene, 1, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0);
+				let rebuilt: Hit = Hit(hit.record, hit.distance, 0, 0, 0, vec2f(0.0, 0.0), origin, vec3f(0.0, 0.0, 1.0));
+				let surface: SurfaceHit = SurfaceHit(vec3f(rebuilt.barycentrics.x, 0.0, 0.0), rebuilt.distance);
+				if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 10.0)) {
+					surface.distance = 0.0;
+				}
+				surfaces[input.thread_id.x] = surface;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(64)),
+		);
+
+		assert_string_contains!(shader, "#version 460 core\n#pragma shader_stage(compute)\n");
+		assert_string_does_not_contain!(shader, "GL_EXT_ray_tracing");
+		assert_string_contains!(shader, "Hit hit=_besl_intersect(scene,1,origin,");
+		assert_string_contains!(shader, "rebuilt.besl_distance");
+
+		compile(&shader, "besl-ray-queries");
 	}
 
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.

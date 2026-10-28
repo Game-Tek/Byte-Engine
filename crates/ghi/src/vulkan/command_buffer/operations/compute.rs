@@ -12,7 +12,8 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		&mut self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl crate::command_buffer::BoundRayTracingPipelineMode {
-		self.record_pipeline_bind(vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline_handle)
+		self.bind_ray_tracing_pipeline_internal(pipeline_handle);
+		self
 	}
 
 	fn start_region(&mut self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {

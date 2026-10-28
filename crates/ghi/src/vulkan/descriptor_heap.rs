@@ -150,13 +150,15 @@ fn reserve_descriptor_range(cursor: &mut u64, count: u32, representation: Option
 }
 
 /// Builds a descriptor-heap layout by merging every shader stage's flat resource interface.
+///
+/// An entry without stages reserves heap room for its resources and gives them no descriptor: they keep their heap
+/// offsets, but the layout's resources leave out every resource no stage uses.
 pub(crate) fn build_pipeline_layout(
 	stage_resources: &[(crate::Stages, &[ShaderResourceDescriptor])],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> PipelineLayout {
 	let mut merged = Vec::<(ShaderResourceDescriptor, crate::Stages)>::new();
-
 	for (stage, resources) in stage_resources {
 		for descriptor in canonicalize_stage_resources(resources) {
 			if let Some((existing, existing_stages)) =
@@ -201,6 +203,8 @@ pub(crate) fn build_pipeline_layout(
 				sampler_stride,
 			}
 		})
+		// Reserved resources took their offsets above. No stage reads them, so they need no descriptor.
+		.filter(|resource| !resource.stages.is_empty())
 		.collect::<Vec<_>>();
 
 	let push_constant_size = push_constant_ranges

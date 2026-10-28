@@ -268,7 +268,9 @@ impl Generator {
 			besl::Nodes::Parameter { name, r#type } => {
 				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
 			}
-			besl::Nodes::Input { name, location, format } => {
+			besl::Nodes::Input {
+				name, location, format, ..
+			} => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				// TODO: Map interpolation qualifiers to Metal (flat/linear).

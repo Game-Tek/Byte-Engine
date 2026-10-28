@@ -6,6 +6,20 @@ use crate::shader::generator::{
 	ordered_shader_nodes,
 };
 
+pub(super) mod mesh_shading;
+pub(super) mod ray_tracing;
+
+/// The `Features` struct holds what a shader's reachable code needs of GLSL beyond the core language, which picks its
+/// version, extensions, and prelude.
+struct Features {
+	f16: bool,
+	subgroups: bool,
+	ray_queries: bool,
+	ray_tracing: bool,
+	/// Fragment inputs that a mesh stage writes once per primitive.
+	primitive_inputs: bool,
+}
+
 /// The `Generator` struct exists to produce GLSL source for Vulkan-backed shader pipelines.
 ///
 /// # Parameters
@@ -16,6 +30,8 @@ pub struct Generator {
 	/// The stage being generated, which decides interpolation qualifiers and workgroup storage support.
 	stage: Stages,
 	match_break_depth: Option<usize>,
+	/// The program's `task_payload` arrays, in declaration order, which become the members of one payload struct.
+	task_payloads: Vec<besl::NodeReference>,
 }
 
 impl Generator {
@@ -25,6 +41,7 @@ impl Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			stage: Stages::Vertex,
 			match_break_depth: None,
+			task_payloads: Vec::new(),
 		}
 	}
 
@@ -56,30 +73,104 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		self.task_payloads = order
+			.iter()
+			.filter(|node| matches!(node.borrow().node(), besl::Nodes::TaskPayload { .. }))
+			.cloned()
+			.collect();
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
-		crate::shader::generator::validate_no_ray_tracing(&shader_compilation_settings.stage, &order)?;
 		let requirements = intrinsic_requirements(&order);
-		let uses_subgroup_intrinsics = requirements.uses_subgroup_intrinsics;
-		// Reachable code needs native 16-bit floating-point arithmetic when it declares or converts to an f16 type.
-		let uses_f16_types = order.iter().any(|node| {
-			matches!(node.borrow().node(), besl::Nodes::Struct { name, .. } if matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"))
-		}) || requirements.uses_f16;
-		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
+		let ray_queries = Self::uses_ray_queries(&order, &requirements);
+		let features = Features {
+			// Reachable code needs native 16-bit floating-point arithmetic when it declares or converts to an f16 type.
+			f16: requirements.uses_f16
+				|| order.iter().any(|node| {
+					matches!(node.borrow().node(), besl::Nodes::Struct { name, .. } if matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+				}),
+			subgroups: requirements.uses_subgroup_intrinsics,
+			ray_queries,
+			ray_tracing: Self::uses_ray_tracing(self.stage, &order, ray_queries),
+			primitive_inputs: order
+				.iter()
+				.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { per_primitive: true, .. })),
+		};
+		if features.subgroups && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
 			return Err(());
 		}
 
-		self.generate_glsl_header_block(
-			&mut string,
-			shader_compilation_settings,
-			uses_subgroup_intrinsics,
-			uses_f16_types,
-		);
+		self.generate_glsl_header_block(&mut string, shader_compilation_settings, &features);
+		if features.ray_tracing {
+			self.emit_ray_tracing_prelude(&mut string, &requirements);
+		}
 
+		// Ray tracing stages exchange the payload as callable data, which is declared right after the payload's struct.
+		let payload = match self.stage {
+			Stages::RayGeneration => super::super::invoke_payload(&order),
+			Stages::ClosestHit => match main_function_node.borrow().node() {
+				besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+				_ => None,
+			},
+			_ => None,
+		};
+		let payload = payload.and_then(|payload| payload.borrow().get_name().map(str::to_owned));
 		for node in order {
+			if node == *main_function_node {
+				self.emit_entry_point(&mut string, &node)?;
+				continue;
+			}
 			self.emit_node(&mut string, &node);
+			if let besl::Nodes::Struct { name, .. } = node.borrow().node()
+				&& payload.as_deref() == Some(name.as_str())
+			{
+				self.emit_call_data(&mut string, name);
+			}
 		}
 
 		Ok(string)
+	}
+
+	/// Emits `main`, as GLSL's `main` for most stages. A closest hit and a task stage run it as a function of their
+	/// own, which their entry point calls.
+	fn emit_entry_point(&mut self, string: &mut String, main: &besl::NodeReference) -> Result<(), ()> {
+		match self.stage {
+			Stages::ClosestHit => self.emit_closest_hit_entry_point(string, main),
+			Stages::Task { .. } => self.emit_task_entry_point(string, main),
+			_ => {
+				self.emit_node(string, main);
+				Ok(())
+			}
+		}
+	}
+
+	/// Emits the function `main` under `name`, after checking it takes `parameters` parameters. The backend owns the
+	/// name, so it is written as it is rather than escaped like a user name.
+	fn emit_main_as(
+		&mut self,
+		string: &mut String,
+		main: &besl::NodeReference,
+		name: &str,
+		parameters: usize,
+	) -> Result<(), ()> {
+		let node = main.borrow();
+		let besl::Nodes::Function {
+			params,
+			return_type,
+			statements,
+			..
+		} = node.node()
+		else {
+			return Err(());
+		};
+		if params.len() != parameters {
+			return Err(());
+		}
+		Self::emit_type_name(string, return_type.borrow().get_name().ok_or(())?);
+		let _ = write!(string, " {name}(");
+		self.emit_function_parameters(string, params);
+		ShaderFormatting::new(self.minified).push_block_start(string);
+		self.emit_function_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+		Ok(())
 	}
 
 	/// Emits the GLSL version, stage, extension, and layout declarations.
@@ -87,27 +178,29 @@ impl Generator {
 		&self,
 		glsl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
-		uses_subgroup_intrinsics: bool,
-		uses_f16_types: bool,
+		features: &Features,
 	) {
-		glsl_block.push_str("#version 450 core\n");
+		// Ray tracing and ray queries need GLSL 4.60. Other shaders keep 4.50, so their SPIR-V stays as it was.
+		glsl_block.push_str(if features.ray_tracing {
+			"#version 460 core\n"
+		} else {
+			"#version 450 core\n"
+		});
 
 		match compilation_settings.stage {
 			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => glsl_block.push_str("#pragma shader_stage(compute)\n"),
-			Stages::Task { .. } => panic!(
-				"GLSL task shader lowering is unsupported. The most likely cause is that a task BESL shader was sent to the deferred GLSL backend."
-			),
+			Stages::Task { .. } => glsl_block.push_str("#pragma shader_stage(task)\n"),
 			Stages::Mesh { .. } => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
-			Stages::RayGeneration | Stages::ClosestHit => {
-				unreachable!("`validate_no_ray_tracing` rejects ray tracing stages before GLSL emits a header.")
-			}
+			Stages::RayGeneration => glsl_block.push_str("#pragma shader_stage(raygen)\n"),
+			// The ray generation shader calls a hit's closest hit through the shader binding table, so it is callable.
+			Stages::ClosestHit => glsl_block.push_str("#pragma shader_stage(callable)\n"),
 		}
 
 		glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
 		glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types:require\n");
-		if uses_f16_types {
+		if features.f16 {
 			glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_float16:require\n");
 		}
 		glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier:require\n");
@@ -115,9 +208,19 @@ impl Generator {
 		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
 		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
+		if compilation_settings.stage.is_ray_tracing() {
+			glsl_block.push_str("#extension GL_EXT_ray_tracing:require\n");
+		}
+		if features.ray_queries {
+			glsl_block.push_str("#extension GL_EXT_ray_query:require\n");
+		}
+		// Inputs that a mesh stage writes once per primitive need the extension even in a fragment shader.
+		if matches!(compilation_settings.stage, Stages::Task { .. } | Stages::Mesh { .. }) || features.primitive_inputs {
+			glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
+		}
 
 		match compilation_settings.stage {
-			Stages::Compute { .. } if uses_subgroup_intrinsics => {
+			Stages::Compute { .. } if features.subgroups => {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:require\n");
@@ -127,7 +230,6 @@ impl Generator {
 				maximum_primitives,
 				..
 			} => {
-				glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
 				let _ = writeln!(
 					glsl_block,
 					"layout(triangles,max_vertices={maximum_vertices},max_primitives={maximum_primitives}) out;"
@@ -136,7 +238,7 @@ impl Generator {
 			_ => {}
 		}
 
-		if let Stages::Compute { local_size } | Stages::Mesh { local_size, .. } = compilation_settings.stage {
+		if let Some(local_size) = compilation_settings.stage.local_size() {
 			let _ = writeln!(
 				glsl_block,
 				"layout(local_size_x={},local_size_y={},local_size_z={}) in;",
@@ -144,6 +246,10 @@ impl Generator {
 				local_size.height(),
 				local_size.depth()
 			);
+		}
+		// `set_task_mesh_output_count` stores the grid size here for the task entry point, from any function.
+		if matches!(compilation_settings.stage, Stages::Task { .. }) {
+			let _ = writeln!(glsl_block, "shared uint {};", mesh_shading::TASK_MESH_COUNT);
 		}
 
 		// BESL matrices are always row major in uniform and storage buffers.
@@ -154,7 +260,7 @@ impl Generator {
 			"bool _besl_is_finite(float value){return !isnan(value)&&!isinf(value);}\n\
 			 bool _besl_is_normal(float value){return _besl_is_finite(value)&&abs(value)>=1.1754943508222875e-38;}\n",
 		);
-		if uses_f16_types {
+		if features.f16 {
 			glsl_block.push_str(
 				"bool _besl_is_finite(float16_t value){return !isnan(value)&&!isinf(value);}\n\
 				 bool _besl_is_normal(float16_t value){return _besl_is_finite(value)&&abs(value)>=float16_t(0.00006103515625);}\n",
@@ -271,6 +377,23 @@ impl NodeEmitter for Generator {
 			.iter()
 			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
 		match name.as_str() {
+			// Ray tracing stage values are built-in variables, or members of the hit a closest hit shades. See
+			// `ray_tracing.rs`.
+			"launch_index" => string.push_str("gl_LaunchIDEXT"),
+			"launch_size" => string.push_str("gl_LaunchSizeEXT"),
+			"hit_distance"
+			| "hit_custom_index"
+			| "hit_geometry_index"
+			| "hit_primitive_index"
+			| "hit_barycentrics"
+			| "ray_origin"
+			| "ray_direction" => Self::emit_hit_value(string, name),
+			// These call the helpers the ray tracing prelude and the callable data declare.
+			"intersect" | "trace_occlusion" | "invoke" => {
+				let _ = write!(string, "_besl_{name}(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			// Texture lowerings bypass intrinsic bodies.
 			"sample" => self.emit_sample(string, arguments),
 			"sample_texture_2d_array_grad" => {
@@ -487,6 +610,7 @@ impl NodeEmitter for Generator {
 				string.push(')');
 			}
 			"thread_id" => string.push_str("uvec2(gl_GlobalInvocationID.xy)"),
+			"thread_position" => string.push_str("uint(gl_GlobalInvocationID.x)"),
 			"thread_idx" => string.push_str("uint(gl_LocalInvocationIndex)"),
 			"subgroup_lane_index" => string.push_str("gl_SubgroupInvocationID"),
 			"threadgroup_position" => string.push_str("uint(gl_WorkGroupID.x)"),
@@ -503,6 +627,11 @@ impl NodeEmitter for Generator {
 				string.push(')');
 			}
 			"workgroup_barrier" => string.push_str("barrier()"),
+			// The task entry point emits the mesh grid from this count once `main` returns. See `mesh_shading.rs`.
+			"set_task_mesh_output_count" => {
+				let _ = write!(string, "{}=", mesh_shading::TASK_MESH_COUNT);
+				self.emit_node(string, &arguments[0]);
+			}
 			"set_mesh_vertex_position" => {
 				string.push_str("gl_MeshVerticesEXT[");
 				self.emit_node(string, &arguments[0]);
@@ -563,6 +692,11 @@ impl NodeEmitter for Generator {
 			} if self.stage.interpolates_outputs() && name == output_name && besl::is_position_output(name) => {
 				string.push_str("gl_Position");
 			}
+			// Every task payload array is a member of the one payload variable.
+			besl::Nodes::TaskPayload { .. } => {
+				let _ = write!(string, "{}.", mesh_shading::TASK_PAYLOAD);
+				Self::identifier(name).push_to(string);
+			}
 			_ => return false,
 		}
 		true
@@ -610,6 +744,8 @@ impl NodeEmitter for Generator {
 				params,
 				..
 			} => self.emit_function_node(string, this_node, name, statements, return_type, params),
+			// The ray tracing prelude declares `Hit` before the helpers that return it.
+			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => self.emit_struct_node(string, name, fields, template),
@@ -643,7 +779,12 @@ impl NodeEmitter for Generator {
 			besl::Nodes::Parameter { name, r#type } => {
 				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
 			}
-			besl::Nodes::Input { name, location, format } => {
+			besl::Nodes::Input {
+				name,
+				location,
+				format,
+				per_primitive,
+			} => {
 				if crate::shader::generator::is_vertex_builtin_input(name) {
 					return;
 				}
@@ -651,12 +792,14 @@ impl NodeEmitter for Generator {
 				let besl_type = format.get_name().unwrap();
 				let _ = write!(
 					string,
-					"layout(location={location}){space_char}{}in {} {};{break_char}",
+					"layout(location={location}){space_char}{}{}in {} {};{break_char}",
 					if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 						"flat "
 					} else {
 						""
 					},
+					// Vulkan links a per-primitive mesh output only to an input declared per-primitive too.
+					if *per_primitive { "perprimitiveEXT " } else { "" },
 					Self::type_from_besl(besl_type),
 					Self::identifier(name)
 				);
@@ -693,7 +836,9 @@ impl NodeEmitter for Generator {
 				}
 				let _ = write!(string, ";{break_char}");
 			}
-			besl::Nodes::Workgroup { name, format, count } if matches!(self.stage, Stages::Compute { .. }) => {
+			besl::Nodes::Workgroup { name, format, count }
+				if matches!(self.stage, Stages::Compute { .. } | Stages::Task { .. }) =>
+			{
 				let _ = write!(
 					string,
 					"shared {} {}",
@@ -705,11 +850,14 @@ impl NodeEmitter for Generator {
 				}
 				let _ = write!(string, ";{break_char}");
 			}
-			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {
-				panic!(
-					"GLSL task storage lowering is unsupported. The most likely cause is that a task or mesh BESL shader was sent to the deferred GLSL backend."
-				)
+			// The first payload array declares the payload struct, which holds all of them.
+			besl::Nodes::TaskPayload { .. } => {
+				if self.task_payloads.first() == Some(this_node) {
+					self.emit_task_payload(string);
+				}
 			}
+			// Stage validation admits workgroup storage only in compute and task stages.
+			besl::Nodes::Workgroup { .. } => unreachable!("Expected workgroup storage only in compute and task stages"),
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional {
 				condition,
@@ -751,9 +899,7 @@ impl NodeEmitter for Generator {
 						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
 						_ => "uniform sampler2D",
 					},
-					besl::BindingTypes::AccelerationStructure => {
-						unreachable!("GLSL generation rejects ray tracing programs before it emits their bindings")
-					}
+					besl::BindingTypes::AccelerationStructure => "uniform accelerationStructureEXT",
 				};
 
 				let _ = write!(string, "layout(set=0,binding={slot}");
@@ -765,9 +911,9 @@ impl NodeEmitter for Generator {
 					}
 					_ => {}
 				}
-				// Sampled images take no access qualifier.
+				// Sampled images and acceleration structures take no access qualifier.
 				let access = match r#type {
-					besl::BindingTypes::CombinedImageSampler { .. } => "",
+					besl::BindingTypes::CombinedImageSampler { .. } | besl::BindingTypes::AccelerationStructure => "",
 					_ if *read && !*write => "readonly ",
 					_ if *write && !*read => "writeonly ",
 					_ => "",

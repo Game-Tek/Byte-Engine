@@ -24,7 +24,33 @@ pub struct Device {
 	descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 	/// The application-owned pipeline cache, shared with every context and factory of the device.
 	pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
+	/// `None` unless the device traces rays. See [`RayTracing`].
+	ray_tracing: Option<std::sync::Arc<RayTracing>>,
 	shaders: Vec<crate::vulkan::Shader>,
+	/// The closest hits and ray generation shaders this factory compiled for its ray tracing pipelines, so a pipeline
+	/// built again with more hit groups compiles only the new ones.
+	ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
+}
+
+/// The `RayTracing` struct exists so a device that traces rays can build acceleration structures and ray tracing
+/// pipelines: it holds the functions of the extensions that do it and the limits they impose.
+///
+/// A device has one when it was created with [`crate::device::Features::ray_tracing`] and the GPU supports
+/// `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`, `VK_KHR_ray_tracing_pipeline`, and `VK_KHR_pipeline_library`.
+/// Contexts build structures with it, and contexts and factories link pipelines with it.
+pub(crate) struct RayTracing {
+	pub(crate) acceleration_structure: ash::khr::acceleration_structure::Device,
+	pub(crate) pipeline: ash::khr::ray_tracing_pipeline::Device,
+	/// The bytes of one shader group handle, which is one shader binding table record.
+	pub(crate) shader_group_handle_size: u32,
+	/// The alignment of each record inside a shader binding table region.
+	pub(crate) shader_group_handle_alignment: u32,
+	/// The alignment of the start of each shader binding table region.
+	pub(crate) shader_group_base_alignment: u32,
+	/// The most invocations one trace may launch.
+	pub(crate) max_ray_dispatch_invocation_count: u32,
+	/// The alignment of each build's scratch memory.
+	pub(crate) scratch_alignment: u64,
 }
 
 /// The `DebugDataRef` struct lets a device read the validation error counter that its [`Instance`] owns.
@@ -71,6 +97,9 @@ pub struct InnerDevice {
 	/// `None` unless the device was created with [`crate::device::Features::pipeline_cache`] and the driver supports
 	/// `VK_KHR_pipeline_binary`.
 	pub(super) pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
+	/// `None` unless the device traces rays. See [`RayTracing`]. It sits behind a pointer, so the device state every
+	/// command reads stays as compact as it is without ray tracing.
+	pub(crate) ray_tracing: Option<std::sync::Arc<RayTracing>>,
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -93,6 +122,8 @@ impl Drop for Device {
 		};
 		// Callers must drop all contexts and factories before the primary device.
 		inner.wait();
+		// Ray tracing libraries are pipelines of the device, so they go before it.
+		self.ray_tracing_libraries.clear();
 		unsafe { self.device.destroy_device(None) };
 	}
 }

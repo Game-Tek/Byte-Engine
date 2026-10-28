@@ -2,13 +2,13 @@ use std::borrow::Cow;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::Extent;
-use ::utils::hash::HashMap;
 use ash::vk;
 
 use crate::buffer::BufferHandle;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 
+pub(crate) mod acceleration_structures;
 pub mod buffer;
 pub mod command_buffer;
 pub mod context;
@@ -22,6 +22,7 @@ pub mod instance;
 pub mod io;
 pub(crate) mod pipeline_binaries;
 pub mod queue;
+pub(crate) mod ray_tracing;
 pub mod swapchain;
 pub mod synchronizer;
 
@@ -61,6 +62,11 @@ pub(super) enum Descriptor {
 	Sampler {
 		sampler: graphics_hardware_interface::SamplerHandle,
 	},
+	/// The copy of a top-level acceleration structure that frame sequence `copy` builds and traces.
+	AccelerationStructure {
+		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
+		copy: u8,
+	},
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +74,31 @@ pub(super) enum Handles {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
 	VkBuffer(vk::Buffer),
+	/// Acceleration structure memory, whose accesses Vulkan names apart from shader reads and which global memory
+	/// barriers order.
+	AccelerationStructure(AccelerationStructureMemory),
+}
+
+/// The `AccelerationStructureMemory` struct names the acceleration structure memory that the resource tracker follows.
+///
+/// It packs what it names into one word, like the payload of every other [`Handles`] variant. Every draw hashes and
+/// compares handles, and those stay branch-free only while all variants share one shape.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct AccelerationStructureMemory(u64);
+
+impl AccelerationStructureMemory {
+	/// Every bottom-level acceleration structure at once: builds and compactions write it, and top-level builds read it.
+	///
+	/// A top-level build reads the bottom levels its instances name by address, which the tracker cannot see, so the
+	/// structures share one state. Their barriers are global memory barriers, which cost the same for one structure as
+	/// for all of them.
+	pub(super) const BOTTOM_LEVELS: Self = Self(u64::MAX);
+
+	/// Names the copy of the top-level acceleration structure `handle` that frame sequence `copy` builds and traces.
+	pub(super) fn top_level(handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle, copy: u8) -> Self {
+		debug_assert!((copy as usize) < MAX_FRAMES_IN_FLIGHT);
+		Self(handle.0 * MAX_FRAMES_IN_FLIGHT as u64 + copy as u64)
+	}
 }
 
 #[derive(Clone, PartialEq)]
@@ -136,7 +167,11 @@ pub(crate) struct Shader {
 	/// `None` without a pipeline cache or without `VK_EXT_shader_module_identifier`.
 	identifier: Option<pipeline_binaries::Key>,
 	stage: crate::Stages,
+	/// The resources the shader uses, across its sets, as one list ordered by slot.
 	shader_resource_descriptors: Vec<crate::shader::ShaderResourceDescriptor>,
+	/// The sets the shader declares, in the order its source declares them. Ray tracing pipelines reserve every
+	/// resource of the ray generation shader's sets, and check that each closest hit declares a prefix of them.
+	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
 }
 
 /// The `ShaderCode` enum is SPIR-V a shader keeps, in whichever buffer avoided a copy.
@@ -181,9 +216,10 @@ impl Shader {
 	pub(crate) fn new(
 		source: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 		pipeline_binaries: Option<&pipeline_binaries::PipelineBinaries>,
 	) -> Result<Self, ()> {
+		let descriptor_sets = descriptor_sets.into_iter().collect::<Box<[_]>>();
 		let (code, identifier) = match source {
 			crate::shader::Sources::SPIRV(bytes) => {
 				let code = match bytes {
@@ -212,15 +248,18 @@ impl Shader {
 			code,
 			identifier,
 			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			// This backend still derives its native layouts from flat slots.
+			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets.iter().cloned()),
+			descriptor_sets,
 		})
 	}
 }
 
-#[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
+	/// What traces need of a ray tracing pipeline, and `None` for other pipelines.
+	ray_tracing: Option<Box<ray_tracing::RayTracingPipelineState>>,
 }
 
 /// The `MappedMemoryPointer` struct lets context-owned Vulkan mappings move with their context.
@@ -356,10 +395,13 @@ pub(crate) struct MaterializationKey {
 	swapchain_images: smallvec::SmallVec<[(graphics_hardware_interface::SwapchainHandle, u8); 4]>,
 }
 
-/// The `ResolvedPipelineDescriptor` struct retains the concrete resource used by one immutable descriptor snapshot.
+/// The `ResolvedPipelineDescriptor` struct retains a resource that one immutable descriptor snapshot makes commands
+/// access, decoded once, so every draw that binds the snapshot consumes it as it is.
 #[derive(Clone, Copy)]
 pub(crate) struct ResolvedPipelineDescriptor {
-	descriptor: Descriptor,
+	handle: Handles,
+	/// The layout an image is accessed in, and [`crate::Layouts::General`] for other resources.
+	layout: crate::Layouts,
 	stages: crate::Stages,
 	access: crate::AccessPolicies,
 }
@@ -567,6 +609,12 @@ pub(crate) enum Tasks {
 	DeleteVulkanBuffer { handle: vk::Buffer },
 	/// Frees device memory once the frame recorded in [`Task`] has completed.
 	FreeAllocation { handle: crate::AllocationHandle },
+	/// Destroys an acceleration structure and returns its storage to the heap once the frame recorded in [`Task`] has
+	/// completed.
+	DeleteAccelerationStructure {
+		handle: vk::AccelerationStructureKHR,
+		storage: acceleration_structures::StorageRange,
+	},
 	/// Resize an image.
 	ResizeImage {
 		handle: ImageHandle,

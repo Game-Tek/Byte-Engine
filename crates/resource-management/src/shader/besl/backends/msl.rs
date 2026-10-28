@@ -4,7 +4,7 @@ pub use Generator as MSLTranspiler;
 
 use super::{
 	IntrinsicRequirements, RAY_TRACING_STAGE_INTRINSICS, ResourceAccessorKind, any_code_node, intrinsic_requirements,
-	resource_accessor, runtime_buffer_element,
+	invoke_payload, resource_accessor, runtime_buffer_element,
 };
 
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
@@ -723,39 +723,6 @@ mod tests {
 		compile_natively(&shader, "besl-local-array").await;
 	}
 
-	const TASK_PAYLOAD_FIXTURE_SOURCE: &str = r#"
-		Meshlets: struct {
-			values: u32[32],
-		}
-		meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
-		visible_meshlets: task_payload<u32, 32>;
-		visible_count: workgroup<atomicu32>;
-		push_constant: push_constant {
-			base_meshlet: u32,
-		}
-
-		dispatch_visible_meshlets: fn () -> void {
-			let position: u32 = thread_position();
-			let lane: u32 = thread_idx();
-			if (lane == 0) {
-				atomic_store(visible_count, 0);
-			}
-			workgroup_barrier();
-			if (position < 32) {
-				let payload_index: u32 = atomic_add(visible_count, 1);
-				visible_meshlets[payload_index] = meshlets.values[push_constant.base_meshlet + position];
-			}
-			workgroup_barrier();
-			if (lane == 0) {
-				set_task_mesh_output_count(atomic_load(visible_count));
-			}
-		}
-
-		main: fn () -> void {
-			dispatch_visible_meshlets();
-		}
-	"#;
-
 	const COMPUTE_WORKGROUP_FIXTURE_SOURCE: &str = r#"
 		scratch: workgroup<f32, 64>;
 
@@ -768,27 +735,6 @@ mod tests {
 			store_scratch(f32(thread_idx()));
 			let value: f32 = scratch[thread_idx()];
 			value;
-		}
-	"#;
-
-	const MESH_PAYLOAD_FIXTURE_SOURCE: &str = r#"
-		visible_meshlets: task_payload<u32, 32>;
-		out_instance_index: output<u32, 0, 126>;
-		out_primitive_index: output<u32, 1, 126>;
-
-		main: fn () -> void {
-			let lane: u32 = thread_idx();
-			let meshlet_index: u32 = visible_meshlets[threadgroup_position()];
-			set_mesh_output_counts(3, 1);
-			if (lane < 3) {
-				set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
-			}
-			if (lane < 1) {
-				set_mesh_triangle(0, vec3u(0, 1, 2));
-				out_primitive_index[0] = meshlet_index;
-				set_mesh_primitive_render_target_array_index(0, 2);
-				out_instance_index[0] = meshlet_index;
-			}
 		}
 	"#;
 
@@ -861,7 +807,7 @@ mod tests {
 	#[test]
 	fn mesh_stage_consumes_the_same_authored_task_payload() {
 		let shader = lower_fixture(
-			MESH_PAYLOAD_FIXTURE_SOURCE,
+			super::super::MESH_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
 		);
 		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
@@ -927,11 +873,11 @@ mod tests {
 	#[compio::test]
 	async fn generated_task_and_mesh_payload_stages_compile_with_metal() {
 		let task = lower_fixture(
-			TASK_PAYLOAD_FIXTURE_SOURCE,
+			super::super::TASK_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
 		);
 		let mesh = lower_fixture(
-			MESH_PAYLOAD_FIXTURE_SOURCE,
+			super::super::MESH_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
 		);
 		// The runtime reads the threadgroup size from this marker when it builds the pipeline.
@@ -1724,64 +1670,9 @@ struct PrimitiveOutput {
 		compile_natively(&shader, "besl-sample-intrinsic").await;
 	}
 
-	/// The layout layers that the ray tracing fixtures list, in the order every shader of their pipeline lists them:
-	/// the payload, the scene and the results the ray generation shader writes, the albedos that only closest hits
-	/// read, and the push constant.
-	const RAY_TRACING_LAYERS: [(&str, &str); 4] = [
-		("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
-		(
-			"scene",
-			"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;",
-		),
-		(
-			"materials",
-			"albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>;",
-		),
-		("constants", "push_constant: push_constant { scale: f32, }"),
-	];
-
-	/// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
-	const RAY_GENERATION_FIXTURE: &str = r#"
-		shade: fn (hit: Hit) -> SurfaceHit {
-			return invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
-		}
-
-		main: fn (input: StageInput) -> void {
-			let origin: vec3f = vec3f(f32(input.launch_index.x) * push_constant.scale, 0.0, 0.0);
-			let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
-			let surface: SurfaceHit = shade(hit);
-			if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
-				surface.distance = surface.distance + f32(input.launch_size.x);
-			}
-			surfaces[input.launch_index.x] = surface;
-		}
-	"#;
-
-	/// Reports a hit's albedo from a set the ray generation shader doesn't read, through a helper that reads the hit.
-	const CLOSEST_HIT_FIXTURE: &str = r#"
-		albedo_of: fn (geometry: u32) -> vec3f {
-			let albedo: vec4f = albedos[geometry];
-			return vec3f(albedo.x, albedo.y, albedo.z) * hit_distance();
-		}
-
-		main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
-			let surface: SurfaceHit = payload;
-			let weights: vec2f = input.hit_barycentrics;
-			surface.albedo = albedo_of(input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
-			surface.distance = input.hit_distance * push_constant.scale + input.ray_direction.z;
-			return surface;
-		}
-	"#;
-
-	/// Runs baked ray tracing shaders on the GPU and in the VM. It needs GHI, which the `gpu-processing` feature brings.
-	#[cfg(all(feature = "gpu-processing", target_os = "macos"))]
-	mod gpu_ray_tracing;
-
-	/// Stacks [`RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
+	/// Stacks [`super::super::RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
-		let program = besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
-			.expect("Expected the ray tracing fixture to link");
+		let program = super::super::link_ray_tracing_fixture(source);
 		Generator::new()
 			.minified(true)
 			.generate_program(settings, &program)
@@ -1792,7 +1683,10 @@ struct PrimitiveOutput {
 	/// passes them every set and the push constant its layers declare, and that the kernel compiles.
 	#[compio::test]
 	async fn generated_ray_generation_stage_compiles_with_metal() {
-		let shader = lower_ray_tracing_fixture(RAY_GENERATION_FIXTURE, &ShaderGenerationSettings::ray_generation());
+		let shader = lower_ray_tracing_fixture(
+			super::super::RAY_GENERATION_FIXTURE,
+			&ShaderGenerationSettings::ray_generation(),
+		);
 
 		assert_string_contains!(shader, "#include <metal_raytracing>");
 		// The kernel takes the materials set though it reads none of it, because closest hits read it.
@@ -1819,7 +1713,7 @@ struct PrimitiveOutput {
 	/// the kernel passes, forwards the hit to its helpers, and compiles.
 	#[compio::test]
 	async fn generated_closest_hit_stage_compiles_with_metal() {
-		let shader = lower_ray_tracing_fixture(CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
+		let shader = lower_ray_tracing_fixture(super::super::CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
 
 		assert_string_contains!(
 			shader,

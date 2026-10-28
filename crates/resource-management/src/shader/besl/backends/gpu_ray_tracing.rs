@@ -1,8 +1,9 @@
 //! Runs baked ray tracing shaders on the GPU and in the BESL VM, and compares what they write.
 //!
-//! The shaders are baked as asset bakes bake them, with the platform generator's lowering and the Metal compiler, and
-//! GHI runs the baked libraries. The VM runs the same linked programs, so a lowering that changes what a shader
-//! computes shows up as a difference between the two.
+//! The shaders are baked as asset bakes bake them, with the platform generator's lowering and the platform's shader
+//! compiler: MSL and the Metal compiler on macOS, GLSL and glslang on Linux. GHI runs the baked shaders. The VM runs
+//! the same linked programs, so a lowering that changes what a shader computes shows up as a difference between the
+//! two.
 
 use std::sync::Arc;
 
@@ -19,11 +20,9 @@ use ghi::{
 	queue::{FrameRequest, Queue as _, QueueExecution as _},
 };
 
-use super::{CLOSEST_HIT_FIXTURE, RAY_TRACING_LAYERS};
-use crate::shader::{
-	besl::backends::{msl::MSL_ENTRY_POINT, platform},
-	generator::ShaderGenerationSettings,
-};
+use super::gpu_harness::{bake, create_baked_shader, gpu_context, upload};
+use super::{CLOSEST_HIT_FIXTURE, link_ray_tracing_fixture as link};
+use crate::shader::generator::ShaderGenerationSettings;
 
 /// Traces two rows of four rays from x = 0, 10, 20, and 30 at the push constant's scale of 10, along +z at twice the
 /// unit length, so a hit's distance is half the depth it lies at. The first row's mask takes every instance, and the
@@ -149,25 +148,6 @@ fn bottom_levels() -> [Vec<Vec<[[f32; 3]; 3]>>; 2] {
 /// Returns the transform that moves a structure `depth_offset` along +z.
 fn transform(depth_offset: f32) -> [[f32; 4]; 3] {
 	[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, depth_offset]]
-}
-
-/// Stacks the fixture layers under `source` and links the program.
-fn link(source: &str) -> besl::NodeReference {
-	let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
-	besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
-		.expect("Expected the ray tracing fixture to link")
-}
-
-/// Bakes `program` for the current platform, as asset bakes do, and returns the Metal library.
-async fn bake(program: &besl::NodeReference, settings: ShaderGenerationSettings) -> Box<[u8]> {
-	let name = settings.name.clone();
-	platform::Generator::new()
-		.lower(&settings, program)
-		.unwrap_or_else(|error| panic!("Expected {name} to lower. {error}"))
-		.compile()
-		.await
-		.unwrap_or_else(|error| panic!("Expected {name} to compile. {error}"))
-		.binary
 }
 
 /// Asserts that every ray's surface in `found` matches `expected` within [`TOLERANCE`].
@@ -302,24 +282,10 @@ fn trace_in_the_vm(ray_generation: &besl::NodeReference, hit_groups: &[besl::Nod
 
 /// Traces the fixture's rays with the baked shaders on a new GPU device and returns each ray's surface.
 fn trace_on_the_gpu(ray_generation: &[u8], hit_groups: &[&[u8]]) -> Vec<Surface> {
-	let features = ghi::device::Features::new().validation(true).ray_tracing(true);
-	// The context drops before the device, and the device before the instance.
-	let mut instance = ghi::implementation::Instance::new(features)
-		.expect("Failed to create the GHI instance. The most likely cause is that no Metal device is available.");
-	let mut queue_handle = None;
-	let device = instance
-		.create_device(
-			features,
-			&mut [(
-				ghi::QueueSelection::new(ghi::WorkloadTypes::COMPUTE | ghi::WorkloadTypes::TRANSFER),
-				&mut queue_handle,
-			)],
-		)
-		.expect("Failed to create the GHI device. The most likely cause is a GPU without compute queue support.");
-	let mut context = device
-		.create_context()
-		.expect("Failed to create the GHI context. The most likely cause is unavailable command support.");
-	let queue_handle = queue_handle.expect("GHI device creation must fill the requested queue handle.");
+	let (_instance, _device, mut context, queue_handle) = gpu_context(
+		ghi::device::Features::new().validation(true).ray_tracing(true),
+		ghi::WorkloadTypes::COMPUTE | ghi::WorkloadTypes::TRANSFER,
+	);
 	trace_with(&mut context, queue_handle, ray_generation, hit_groups)
 }
 
@@ -360,31 +326,34 @@ fn trace_with(
 		)],
 	);
 	// Every shader takes both sets; each marks only the resources it reads or writes as used.
-	let ray_generation = create_shader(
+	let ray_generation = create_baked_shader(
 		context,
 		"Matched Ray Generation",
 		ray_generation,
 		ghi::ShaderTypes::RayGen,
+		None,
 		[
 			ghi::ShaderDescriptorSet::new(scene_layout.clone()),
 			ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
 		],
 	);
-	let material_hit = create_shader(
+	let material_hit = create_baked_shader(
 		context,
 		"Matched Material Hit",
 		hit_groups[0],
 		ghi::ShaderTypes::ClosestHit,
+		None,
 		[
 			ghi::ShaderDescriptorSet::with_used(scene_layout.clone(), 0),
 			ghi::ShaderDescriptorSet::new(materials_layout.clone()),
 		],
 	);
-	let instance_hit = create_shader(
+	let instance_hit = create_baked_shader(
 		context,
 		"Matched Instance Hit",
 		hit_groups[1],
 		ghi::ShaderTypes::ClosestHit,
+		None,
 		[
 			ghi::ShaderDescriptorSet::with_used(scene_layout.clone(), 0),
 			ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
@@ -470,52 +439,16 @@ fn trace_with(
 	context.get_buffer_slice(surfaces).to_vec()
 }
 
-/// Creates a shader from a baked Metal library, whose entry point every generated shader names alike.
-fn create_shader(
-	context: &mut impl ghi::context::Context,
-	name: &str,
-	binary: &[u8],
-	stage: ghi::ShaderTypes,
-	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
-) -> ghi::ShaderHandle {
-	context
-		.create_shader(
-			Some(name),
-			ghi::shader::Sources::MTLB {
-				binary,
-				entry_point: MSL_ENTRY_POINT,
-				threadgroup_size: None,
-			},
-			stage,
-			sets,
-		)
-		.unwrap_or_else(|()| {
-			panic!("Failed to create shader {name}. The most likely cause is a Metal library without `{MSL_ENTRY_POINT}`.")
-		})
-}
-
 /// Uploads `triangles` as one geometry: packed positions, three per triangle, and 16-bit indices.
 fn triangle_geometry(context: &mut impl ghi::context::Context, triangles: &[[[f32; 3]; 3]]) -> ghi::rt::TriangleGeometry {
 	let positions = triangles.concat();
 	let indices = (0..positions.len() as u16).collect::<Vec<_>>();
-	let position_buffer = geometry_buffer(context, &positions);
-	let index_buffer = geometry_buffer(context, &indices);
+	let position_buffer = upload(context, ghi::Uses::AccelerationStructureBuild, &positions);
+	let index_buffer = upload(context, ghi::Uses::AccelerationStructureBuild, &indices);
 	ghi::rt::TriangleGeometry {
 		positions: ghi::BufferStridedRange::new(position_buffer.into(), 0, 12, positions.len() * 12),
 		indices: index_buffer.into(),
 		index_format: ghi::DataTypes::U16,
 		triangle_count: triangles.len() as u32,
 	}
-}
-
-/// Copies `values` into a new buffer that acceleration structure builds read.
-fn geometry_buffer<T: bytemuck::Pod>(context: &mut impl ghi::context::Context, values: &[T]) -> ghi::BufferHandle<[T]> {
-	let buffer = context.build_buffer::<[T]>(
-		ghi::buffer::Builder::new(ghi::Uses::AccelerationStructureBuild)
-			.length(values.len())
-			.device_accesses(ghi::DeviceAccesses::HostToDevice),
-	);
-	context.get_mut_buffer_slice(buffer).copy_from_slice(values);
-	context.sync_buffer(buffer);
-	buffer
 }

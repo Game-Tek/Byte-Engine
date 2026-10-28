@@ -4,6 +4,7 @@ use crate::parser;
 const INTERFACE_SYMBOL_PREFIX: &str = "_besl_interface_";
 const OUTPUT_SYMBOL_PREFIX: &str = "_besl_output_";
 const RAY_TRACING_ENTRY_DOCS_PATH: &str = "reference/besl/interface#ray-tracing-entry-points";
+const RASTER_ENTRY_DOCS_PATH: &str = "reference/besl/interface#raster-entry-points";
 
 /// The `StageInput` fields of ray tracing stages. Each reads the zero-argument intrinsic of the same name.
 const RAY_TRACING_STAGE_INPUTS: [&str; 9] = [
@@ -150,12 +151,14 @@ fn normalize_parameters<'tree, 'source>(
 					));
 				}
 				for field in fields {
-					let symbol = interface_symbol(field.name);
-					declarations.push(Node::input(
-						&symbol,
-						resolve_entry_field_type(root, &field.type_name)?,
-						interface_location(fields, field.name, false)?,
-					));
+					declarations.push(Node {
+						node: Nodes::Input {
+							name: interface_symbol(field.name),
+							format: resolve_entry_field_type(root, &field.type_name)?,
+							location: interface_location(fields, field.name, false)?,
+							per_primitive: field.per_primitive,
+						},
+					});
 				}
 				context.interface_parameter = Some((*name, fields.as_slice()));
 			}
@@ -191,6 +194,14 @@ fn normalize_return_type<'tree, 'source>(
 	};
 
 	validate_unique_type_fields(fields, "entry-point return")?;
+	if let Some(field) = fields.iter().find(|field| field.per_primitive) {
+		return Err(LexError::invalid(format!(
+			"main returns `{name}: primitive<{type_name}>`. The most likely cause is a `primitive<T>` field written in a stage's outputs, but `primitive<T>` marks a fragment input, which a mesh stage writes with an `output` array. Declare `{name}` as `{type_name}` here. See {docs}.",
+			name = field.name,
+			type_name = field.type_name,
+			docs = crate::online_docs_url(RASTER_ENTRY_DOCS_PATH)
+		)));
+	}
 	for (attachment, field) in fields.iter().enumerate() {
 		let location = match role {
 			parser::RecordRole::Interface if field.name == "position" => 0,

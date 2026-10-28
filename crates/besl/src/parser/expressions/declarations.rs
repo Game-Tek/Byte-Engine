@@ -508,9 +508,22 @@ fn parse_record_type<'i, 'a: 'i>(
 		let name = iterator.next_identifier().map_err(|_| invalid())?;
 		iterator.next_str(":").map_err(|_| invalid())?;
 		let base_type = iterator.next_identifier().map_err(|_| invalid())?;
-		let (type_name, next) = parse_type_name(iterator, base_type)?;
+		// `primitive<T>` marks a value of type `T` that the mesh stage writes once per primitive.
+		let per_primitive = base_type == "primitive" && iterator.clone().next().copied() == Some("<");
+		let (type_name, next) = if per_primitive {
+			iterator.next_str("<").map_err(|_| invalid())?;
+			let element = iterator.next_identifier().map_err(|_| invalid())?;
+			iterator.next_str(">").map_err(|_| invalid())?;
+			(TypeName::Named(element), iterator)
+		} else {
+			parse_type_name(iterator, base_type)?
+		};
 		iterator = next;
-		fields.push(TypeField { name, type_name });
+		fields.push(TypeField {
+			name,
+			type_name,
+			per_primitive,
+		});
 		match iterator.clone().next().copied() {
 			Some(",") => {
 				iterator.next();

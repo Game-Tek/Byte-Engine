@@ -188,6 +188,9 @@ and Intel GPUs do.
 
 The emitted count must not exceed `maximum_mesh_threadgroups` in the shader's
 [stage metadata](/docs/reference/besl/interface#standalone-stage-metadata).
+Every task workgroup sets its count, from one invocation or from several with
+the same count. The mesh workgroups launch once every invocation of the task
+workgroup has finished, so an invocation can return after the count is set.
 
 ## Mesh stage
 
@@ -203,6 +206,9 @@ The emitted count must not exceed `maximum_mesh_threadgroups` in the shader's
 Vertex and primitive counts must stay within `maximum_vertices` and
 `maximum_primitives` in the shader's
 [stage metadata](/docs/reference/besl/interface#standalone-stage-metadata).
+Call `set_mesh_output_counts` from every invocation of the workgroup, once,
+before writing any vertex, triangle, or output. The counts must be the same in
+every invocation.
 
 ## Ray queries
 

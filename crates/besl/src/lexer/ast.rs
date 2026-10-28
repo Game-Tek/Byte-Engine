@@ -901,6 +901,7 @@ impl Node {
 				name: name.to_string(),
 				format,
 				location,
+				per_primitive: false,
 			},
 		}
 	}
@@ -1205,6 +1206,9 @@ pub enum Nodes {
 		name: String,
 		format: NodeReference,
 		location: u8,
+		/// Whether a fragment input reads the value its mesh stage writes once per primitive, from an `output` array,
+		/// instead of a value interpolated across the triangle. Vulkan links the two only when both declare it.
+		per_primitive: bool,
 	},
 	Output {
 		name: String,
@@ -1487,9 +1491,14 @@ impl std::fmt::Debug for Node {
 			Nodes::Parameter { name, r#type } => {
 				write!(f, "Parameter {{ name: {name}, type: {:?} }}", r#type.borrow().get_name())
 			}
-			Nodes::Input { name, format, location } => write!(
+			Nodes::Input {
+				name,
+				format,
+				location,
+				per_primitive,
+			} => write!(
 				f,
-				"Input {{ name: {name}, format: {:?}, location: {location} }}",
+				"Input {{ name: {name}, format: {:?}, location: {location}, per_primitive: {per_primitive} }}",
 				format.borrow().get_name()
 			),
 			Nodes::Output {

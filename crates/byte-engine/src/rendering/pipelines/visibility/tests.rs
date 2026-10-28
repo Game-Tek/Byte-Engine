@@ -2898,7 +2898,7 @@ fn contact_shadows_trace_each_sun_into_its_own_channel() {
 /// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.
 ///
 /// Each entry's settings mirror the asset's `.bead` file.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn visibility_assets_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings as Settings;
@@ -3008,7 +3008,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 
 /// Verifies the surfel shade pass and the default hit lower to the running platform's shader language with each layer
 /// in its own set, as the bake stacks them, so the closest hit's sets are the first of the shade pass's.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn surfel_ray_tracing_shaders_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings as Settings;

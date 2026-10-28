@@ -14,8 +14,10 @@ impl Device {
 			device: inner.device.clone(),
 			descriptor_heap_properties: inner.descriptor_heap_properties,
 			pipeline_binaries: inner.pipeline_binaries.clone(),
+			ray_tracing: inner.ray_tracing.clone(),
 			inner: Some(inner),
 			shaders: Vec::new(),
+			ray_tracing_libraries: Default::default(),
 		})
 	}
 
@@ -23,13 +25,16 @@ impl Device {
 		device: ash::Device,
 		descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 		pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
+		ray_tracing: Option<std::sync::Arc<RayTracing>>,
 	) -> Self {
 		Self {
 			inner: None,
 			device,
 			descriptor_heap_properties,
 			pipeline_binaries,
+			ray_tracing,
 			shaders: Vec::with_capacity(64),
+			ray_tracing_libraries: Default::default(),
 		}
 	}
 }
@@ -62,10 +67,15 @@ impl InnerDevice {
 		}
 
 		// Prefer the best-scoring suitable device. When none is suitable, report why the best-scoring one was rejected.
+		// Ray tracing is optional, so a GPU without it is still suitable.
+		let required = crate::device::Features {
+			ray_tracing: false,
+			..settings
+		};
 		let (physical_device, suitability) = physical_devices
 			.into_iter()
 			.map(|physical_device| {
-				let suitability = Self::check_physical_device(vk_instance, physical_device, &settings);
+				let suitability = Self::check_physical_device(vk_instance, physical_device, &required);
 				(physical_device, suitability)
 			})
 			.max_by_key(|&(physical_device, suitability)| {
@@ -183,9 +193,25 @@ impl InnerDevice {
 			})
 			.collect::<Vec<_>>();
 
+		// Ray tracing is optional: a GPU without its extensions and features still creates the device, which then
+		// reports no ray tracing.
+		let settings = crate::device::Features {
+			ray_tracing: settings.ray_tracing && Self::check_physical_device(vk_instance, physical_device, &settings).is_ok(),
+			..settings
+		};
+
 		let mut descriptor_heap_properties = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
+		let mut ray_tracing_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+		let mut acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
 		let mut physical_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut descriptor_heap_properties);
+		if settings.ray_tracing {
+			physical_device_properties = physical_device_properties
+				.push(&mut ray_tracing_pipeline_properties)
+				.push(&mut acceleration_structure_properties);
+		}
 		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
+		// Counters convert ticks with the device period.
+		let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
 		let available_device_extensions = available_device_extensions(vk_instance, physical_device)?;
 		let mut device_extension_names = required_device_extensions(&settings)
@@ -258,8 +284,7 @@ impl InnerDevice {
 		let supports_formatless_storage_write =
 			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
 
-		// Counters convert ticks with the device period, and trust only the bits every used family writes.
-		let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
+		// Counters trust only the timestamp bits every used family writes.
 		let timestamp_valid_bits = queue_families
 			.iter()
 			.map(|&family| queue_family_properties[family as usize].timestamp_valid_bits)
@@ -281,6 +306,19 @@ impl InnerDevice {
 			pipeline_binaries: pipeline_binary_properties
 				.and_then(|_| PipelineBinaries::new(vk_instance, &device, shader_identifiers))
 				.map(std::sync::Arc::new),
+			ray_tracing: settings.ray_tracing.then(|| {
+				std::sync::Arc::new(RayTracing {
+					acceleration_structure: ash::khr::acceleration_structure::Device::load(vk_instance, &device),
+					pipeline: ash::khr::ray_tracing_pipeline::Device::load(vk_instance, &device),
+					shader_group_handle_size: ray_tracing_pipeline_properties.shader_group_handle_size,
+					shader_group_handle_alignment: ray_tracing_pipeline_properties.shader_group_handle_alignment,
+					shader_group_base_alignment: ray_tracing_pipeline_properties.shader_group_base_alignment,
+					max_ray_dispatch_invocation_count: ray_tracing_pipeline_properties.max_ray_dispatch_invocation_count,
+					scratch_alignment: u64::from(
+						acceleration_structure_properties.min_acceleration_structure_scratch_offset_alignment,
+					),
+				})
+			}),
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
@@ -431,6 +469,16 @@ fn supports_shader_module_identifiers(
 	features.shader_module_identifier == vk::TRUE
 }
 
+/// The extensions a device that traces rays enables: acceleration structures, inline ray queries, ray tracing
+/// pipelines, and the libraries those pipelines are linked from, so each closest hit compiles once.
+const RAY_TRACING_EXTENSIONS: [&std::ffi::CStr; 5] = [
+	ash::khr::acceleration_structure::NAME,
+	ash::khr::deferred_host_operations::NAME,
+	ash::khr::ray_query::NAME,
+	ash::khr::ray_tracing_pipeline::NAME,
+	ash::khr::pipeline_library::NAME,
+];
+
 fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {
 	available_extensions
 		.iter()
@@ -463,6 +511,12 @@ fn required_device_extensions(settings: &crate::device::Features) -> Vec<(&'stat
 		extensions.push(extension!(ash::ext::mesh_shader::NAME, "VK_EXT_mesh_shader"));
 	}
 
+	// Device creation enables ray tracing only when `check_physical_device` finds these, so their error is never
+	// reported.
+	if settings.ray_tracing {
+		extensions.extend(RAY_TRACING_EXTENSIONS.map(|name| extension!(name, "for ray tracing")));
+	}
+
 	extensions
 }
 
@@ -473,10 +527,14 @@ struct DeviceFeatures {
 	vulkan_11: vk::PhysicalDeviceVulkan11Features<'static>,
 	vulkan_12: vk::PhysicalDeviceVulkan12Features<'static>,
 	vulkan_13: vk::PhysicalDeviceVulkan13Features<'static>,
+	vulkan_14: vk::PhysicalDeviceVulkan14Features<'static>,
 	descriptor_heap: vk::PhysicalDeviceDescriptorHeapFeaturesEXT<'static>,
 	swapchain_maintenance1: vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT<'static>,
 	shader_atomic_float: vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT<'static>,
 	mesh_shader: vk::PhysicalDeviceMeshShaderFeaturesEXT<'static>,
+	acceleration_structure: vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'static>,
+	ray_query: vk::PhysicalDeviceRayQueryFeaturesKHR<'static>,
+	ray_tracing_pipeline: vk::PhysicalDeviceRayTracingPipelineFeaturesKHR<'static>,
 }
 
 impl DeviceFeatures {
@@ -487,12 +545,20 @@ impl DeviceFeatures {
 			.push(&mut self.vulkan_11)
 			.push(&mut self.vulkan_12)
 			.push(&mut self.vulkan_13)
+			.push(&mut self.vulkan_14)
 			.push(&mut self.descriptor_heap)
 			.push(&mut self.swapchain_maintenance1)
 			.push(&mut self.shader_atomic_float);
 
 		if settings.mesh_shading {
 			chain = chain.push(&mut self.mesh_shader);
+		}
+
+		if settings.ray_tracing {
+			chain = chain
+				.push(&mut self.acceleration_structure)
+				.push(&mut self.ray_query)
+				.push(&mut self.ray_tracing_pipeline);
 		}
 
 		chain
@@ -556,6 +622,8 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_13.synchronization2),
 		feature!(vulkan_13.dynamic_rendering),
 		feature!(vulkan_13.maintenance4),
+		// Pipelines take each shader's SPIR-V inline instead of from a shader module.
+		feature!(vulkan_14.maintenance5),
 		feature!(descriptor_heap.descriptor_heap),
 		feature!(swapchain_maintenance1.swapchain_maintenance1),
 		feature!(shader_atomic_float.shader_buffer_float32_atomics),
@@ -567,6 +635,14 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 
 	if settings.mesh_shading {
 		features.extend([feature!(mesh_shader.task_shader), feature!(mesh_shader.mesh_shader)]);
+	}
+
+	if settings.ray_tracing {
+		features.extend([
+			feature!(acceleration_structure.acceleration_structure),
+			feature!(ray_query.ray_query),
+			feature!(ray_tracing_pipeline.ray_tracing_pipeline),
+		]);
 	}
 
 	features

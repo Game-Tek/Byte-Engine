@@ -266,6 +266,7 @@ impl<'builder> From<PlanarGraphState<'builder>> for AnimationGraphState<'builder
 
 /// The `LinearStateId` struct identifies a blend state on a line, so only a scalar position can be requested for it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
 pub struct LinearStateId(AnimationStateId);
 
 impl LinearStateId {
@@ -293,6 +294,7 @@ impl From<LinearStateId> for AnimationRequest {
 
 /// The `PlanarStateId` struct identifies a blend state on a plane, so only a 2D position can be requested for it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
 pub struct PlanarStateId(AnimationStateId);
 
 impl PlanarStateId {

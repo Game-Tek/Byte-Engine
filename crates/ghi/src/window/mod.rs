@@ -15,11 +15,16 @@ pub use self::window::Window;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The `WindowId` struct identifies the window an [`Event`] targets.
-pub struct WindowId(u64);
+#[repr(transparent)]
+pub struct WindowId(std::num::NonZeroU64);
+
+const _: () = assert!(size_of::<Option<WindowId>>() == size_of::<u64>());
 
 impl WindowId {
 	pub(crate) fn from_raw(raw: u64) -> Self {
-		Self(raw)
+		Self(std::num::NonZeroU64::new(raw).expect(
+			"Window identity is zero. The platform did not supply a valid window. Create a window before identifying it.",
+		))
 	}
 }
 

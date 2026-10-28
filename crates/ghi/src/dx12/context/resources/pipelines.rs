@@ -3,7 +3,7 @@ use super::super::*;
 impl Device {
 	pub(crate) fn pipeline_has_native_state(&self, pipeline: PipelineHandle) -> Option<bool> {
 		self.pipelines
-			.get(pipeline.0 as usize)
+			.get(pipeline.index() as usize)
 			.map(|pipeline| pipeline.pipeline_state.is_some())
 	}
 

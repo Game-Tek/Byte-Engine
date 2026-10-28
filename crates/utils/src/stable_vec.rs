@@ -1,14 +1,18 @@
 use std::{
 	alloc::{Allocator, Global},
 	cell::UnsafeCell,
+	num::NonZeroU32,
 	ops::Range,
 };
 
 /// The `StableVecHandle` struct provides generation-aware access to a live [`StableVec`] slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Keep the dense index in the first word when the generation provides the niche.
+#[repr(C)]
 pub struct StableVecHandle {
 	index: u32,
-	generation: u32,
+	// The nonzero generation keeps optional handles compact without decoding the hot slot index.
+	generation: NonZeroU32,
 }
 
 impl StableVecHandle {
@@ -17,24 +21,31 @@ impl StableVecHandle {
 	}
 
 	pub fn generation(self) -> u32 {
-		self.generation
+		self.generation.get()
 	}
 
-	fn new(index: usize, generation: u32) -> Self {
-		let index = u32::try_from(index).expect(
-			"StableVec handle index exceeds u32::MAX. The most likely cause is that this StableVec grew beyond handle capacity.",
+	/// Checks that a slot can also be encoded in the compact free list.
+	fn new(index: usize, generation: NonZeroU32) -> Self {
+		let index = u32::try_from(index)
+			.expect("StableVec handle space is exhausted. The vector exceeded u32::MAX slots. Use fewer stored values.");
+		assert!(
+			index < u32::MAX,
+			"StableVec handle space is exhausted. The vector reached u32::MAX slots. Use fewer stored values."
 		);
 
 		Self { index, generation }
 	}
 }
 
+const _: () = assert!(size_of::<Option<StableVecHandle>>() == size_of::<StableVecHandle>());
+
 struct Entry<T> {
 	/// The slot's value. It is in a cell so that [`StableVec::slots_mut_unchecked`] can hand out the values of
 	/// different slots to different threads.
 	value: UnsafeCell<Option<T>>,
-	generation: u32,
-	next_free: Option<usize>,
+	generation: NonZeroU32,
+	// Slot indices already fit the handle's 32-bit index.
+	next_free: Option<NonZeroU32>,
 }
 
 impl<T> Entry<T> {
@@ -116,7 +127,7 @@ impl<'a, T> Iterator for SlotsMut<'a, T> {
 #[derive(Clone)]
 pub struct StableVec<T, A: Allocator = Global> {
 	entries: Vec<Entry<T>, A>,
-	first_free: Option<usize>,
+	first_free: Option<NonZeroU32>,
 	len: usize,
 }
 
@@ -181,30 +192,35 @@ impl<T, A: Allocator> StableVec<T, A> {
 	/// Stores a value in the first available slot and returns its handle.
 	pub fn push(&mut self, value: T) -> StableVecHandle {
 		if let Some(index) = self.first_free {
-			let entry = &mut self.entries[index];
+			let entry = &mut self.entries[index.get() as usize - 1];
 			self.first_free = entry.next_free;
 			entry.next_free = None;
 			*entry.value_mut() = Some(value);
 			self.len += 1;
 
-			return StableVecHandle::new(index, entry.generation);
+			return StableVecHandle {
+				index: index.get() - 1,
+				generation: entry.generation,
+			};
 		}
 
 		let index = self.entries.len();
+		let handle = StableVecHandle::new(index, NonZeroU32::MIN);
 		self.entries.push(Entry {
 			value: UnsafeCell::new(Some(value)),
-			generation: 0,
+			generation: NonZeroU32::MIN,
 			next_free: None,
 		});
 		self.len += 1;
 
-		StableVecHandle::new(index, 0)
+		handle
 	}
 
 	/// Replaces the value for a live handle and returns the previous value.
 	pub fn insert(&mut self, handle: StableVecHandle, value: T) -> Option<T> {
 		let entry = self.valid_entry_mut(handle)?;
-		entry.value_mut().replace(value)
+		let current = entry.value_mut().as_mut()?;
+		Some(std::mem::replace(current, value))
 	}
 
 	pub fn get(&self, handle: StableVecHandle) -> Option<&T> {
@@ -231,14 +247,16 @@ impl<T, A: Allocator> StableVec<T, A> {
 
 	/// Removes a value addressed by a live handle without shifting any remaining slots.
 	pub fn remove(&mut self, handle: StableVecHandle) -> Option<T> {
-		let index = handle.index();
 		let first_free = self.first_free;
 		let entry = self.valid_entry_mut(handle)?;
 		let value = entry.value_mut().take()?;
 
-		entry.generation = entry.generation.wrapping_add(1);
-		entry.next_free = first_free;
-		self.first_free = Some(index);
+		// Retire the slot at the last generation instead of reissuing a stale handle after wraparound.
+		if let Some(generation) = entry.generation.checked_add(1) {
+			entry.generation = generation;
+			entry.next_free = first_free;
+			self.first_free = NonZeroU32::new(handle.index + 1);
+		}
 		self.len -= 1;
 
 		Some(value)
@@ -371,6 +389,29 @@ mod tests {
 	use super::{StableVec, StableVecHandle};
 
 	#[test]
+	fn scattered_slot_reuse_preserves_live_handles_and_rejects_removed_ones() {
+		let mut values = StableVec::new();
+		let handles: Vec<_> = (0..1025).map(|value| values.push(value)).collect();
+		for &handle in handles.iter().step_by(3) {
+			assert_eq!(values.remove(handle), Some(handle.index()));
+		}
+		let replacements: Vec<_> = (0..handles.iter().step_by(3).count())
+			.map(|value| (values.push(value + 1025), value + 1025))
+			.collect();
+		for (replacement, value) in replacements {
+			assert_eq!(values.get(replacement), Some(&value));
+		}
+		for &removed in handles.iter().step_by(3) {
+			assert_eq!(values.get(removed), None);
+		}
+		assert_eq!(values.len(), handles.len());
+		assert_eq!(values.slots_len(), handles.len());
+		for (index, &handle) in handles.iter().enumerate().filter(|(index, _)| index % 3 != 0) {
+			assert_eq!(values.get(handle), Some(&index));
+		}
+	}
+
+	#[test]
 	fn push_reuses_removed_slots_with_new_generation() {
 		let mut values = StableVec::new();
 
@@ -428,7 +469,7 @@ mod tests {
 	fn stale_foreign_generation_is_rejected() {
 		let mut values = StableVec::new();
 		let handle = values.push("first");
-		let stale = StableVecHandle::new(handle.index(), handle.generation().wrapping_add(1));
+		let stale = StableVecHandle::new(handle.index(), handle.generation.checked_add(1).unwrap());
 
 		assert_eq!(values.get(stale), None);
 		assert_eq!(values.remove(stale), None);

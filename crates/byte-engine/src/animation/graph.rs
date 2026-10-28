@@ -55,9 +55,11 @@ pub const ANIMATION_POOL_EVENT_CAPACITY: usize = ANIMATION_LOAD_QUEUE_CAPACITY;
 /// The `AnimationStateId` struct identifies one client-requestable state inside its originating [`AnimationGraph`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AnimationStateId {
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	index: usize,
 }
+
+const _: () = assert!(size_of::<Option<AnimationStateId>>() == size_of::<AnimationStateId>());
 
 /// The `AnimationPlayback` enum selects whether a state clip repeats or stops at its final pose.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,7 +263,7 @@ fn select_route(
 /// players have resolved them against its canonical skeleton, so players that
 /// share a graph share that work too.
 pub struct AnimationGraph {
-	id: u64,
+	id: std::num::NonZeroU64,
 	states: Vec<AnimationGraphStateData>,
 	spaces: Box<[AnimationSpaceData]>,
 	/// Targets every state can route to after its own routes, with how long each blends in.
@@ -276,7 +278,7 @@ pub struct AnimationGraph {
 impl AnimationGraph {
 	/// Returns the number that tells this graph from every other, which its state IDs and the animators that play it
 	/// carry.
-	pub const fn id(&self) -> u64 {
+	pub const fn id(&self) -> std::num::NonZeroU64 {
 		self.id
 	}
 
@@ -287,7 +289,8 @@ impl AnimationGraph {
 		// Each `RandomState` gets fresh keys from the standard library, so every
 		// builder gets a distinct 64-bit identity without an engine-owned counter.
 		// The identity only guards against mixing state IDs from different graphs.
-		let graph = std::hash::RandomState::new().hash_one(0u64);
+		let graph =
+			std::num::NonZeroU64::new(std::hash::RandomState::new().hash_one(0u64)).unwrap_or(std::num::NonZeroU64::MIN);
 		AnimationGraphBuilder {
 			graph,
 			data: RefCell::new(Some(AnimationGraphBuilderData {
@@ -443,7 +446,7 @@ impl AnimationGraph {
 ///
 /// Start one with [`AnimationGraph::builder`], then name states with [`Self::state`].
 pub struct AnimationGraphBuilder {
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	data: RefCell<Option<AnimationGraphBuilderData>>,
 }
 
@@ -489,7 +492,7 @@ impl AnimationGraphBuilderData {
 	/// Appends a state with no routes and returns its ID in `graph`.
 	fn push_state(
 		&mut self,
-		graph: u64,
+		graph: std::num::NonZeroU64,
 		name: String,
 		motion: StateMotion,
 		space: Option<usize>,
@@ -539,7 +542,7 @@ impl AnimationGraphBuilderData {
 
 /// The `AnimationGraphStateBuilder` struct assigns a clip to a named graph state.
 pub struct AnimationGraphStateBuilder<'builder> {
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	data: &'builder RefCell<Option<AnimationGraphBuilderData>>,
 	name: String,
 	/// The space the state joins, set when it was named through [`AnimationGraphSpace::state`].
@@ -556,7 +559,7 @@ pub struct AnimationGraphStateBuilder<'builder> {
 /// with [`Self::any_state_to`].
 #[derive(Clone, Copy)]
 pub struct AnimationGraphSpace<'builder> {
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	data: &'builder RefCell<Option<AnimationGraphBuilderData>>,
 	index: usize,
 }

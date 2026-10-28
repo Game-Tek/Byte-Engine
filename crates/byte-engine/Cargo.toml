@@ -111,7 +111,7 @@ bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
 exr = { version = "1.74.2", default-features = false, optional = true }
 flate2 = { version = "1.1.9", optional = true }
 png = { version = "0.18.1", optional = true }
-facet = "0.50.0-rc.7"
+facet = { version = "0.50.0-rc.7", features = ["nonzero"] }
 facet-json = "0.50.0-rc.7"
 serde_json = { version = "1.0.140", features = ["raw_value"] }
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }

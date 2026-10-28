@@ -291,11 +291,11 @@ impl<T> TextureReadbackRegistry<T> {
 	}
 
 	fn handle(index: u32, generation: u32) -> TextureCopyHandle {
-		TextureCopyHandle((u64::from(generation) << 32) | u64::from(index))
+		TextureCopyHandle::from_bits((u64::from(generation) << 32) | u64::from(index))
 	}
 
 	fn parts(handle: TextureCopyHandle) -> (u32, u32) {
-		(handle.0 as u32, (handle.0 >> 32) as u32)
+		(handle.bits() as u32, (handle.bits() >> 32) as u32)
 	}
 }
 

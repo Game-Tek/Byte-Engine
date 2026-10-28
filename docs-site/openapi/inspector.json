@@ -870,7 +870,7 @@
 				"properties": {
 					"target": {
 						"type": "integer",
-						"minimum": 0,
+						"minimum": 1,
 						"maximum": 4294967295,
 						"description": "Stable numeric handle used by targeted inspector messages."
 					},
@@ -1008,7 +1008,7 @@
 					},
 					"target": {
 						"type": "integer",
-						"minimum": 0,
+						"minimum": 1,
 						"maximum": 4294967295,
 						"description": "Entity handle returned by `GET /entities`."
 					},
@@ -1028,7 +1028,7 @@
 					},
 					"target": {
 						"type": "integer",
-						"minimum": 0,
+						"minimum": 1,
 						"maximum": 4294967295,
 						"description": "Entity handle returned by `GET /entities`."
 					},
@@ -1048,7 +1048,7 @@
 					},
 					"target": {
 						"type": "integer",
-						"minimum": 0,
+						"minimum": 1,
 						"maximum": 4294967295,
 						"description": "Action handle returned by `GET /entities?name=<action>`."
 					},

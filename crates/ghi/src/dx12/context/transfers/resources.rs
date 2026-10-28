@@ -58,8 +58,8 @@ impl Device {
 
 	pub(crate) fn buffer_index(buffer_handle: BaseBufferHandle) -> (usize, bool) {
 		(
-			(buffer_handle.0 & !DYNAMIC_BUFFER_HANDLE_FLAG) as usize,
-			buffer_handle.0 & DYNAMIC_BUFFER_HANDLE_FLAG != 0,
+			(buffer_handle.index() & !DYNAMIC_BUFFER_HANDLE_FLAG) as usize,
+			buffer_handle.index() & DYNAMIC_BUFFER_HANDLE_FLAG != 0,
 		)
 	}
 

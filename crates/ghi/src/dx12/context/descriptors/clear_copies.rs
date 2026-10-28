@@ -8,7 +8,7 @@ impl Device {
 		destination: D3D12_CPU_DESCRIPTOR_HANDLE,
 		source: D3D12_CPU_DESCRIPTOR_HANDLE,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		command_buffer
@@ -37,7 +37,7 @@ impl Device {
 		);
 		let gpu = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
 		self.queue_clear_descriptor_copy(command_buffer_handle, destination, source);
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return false;
 		};
 		command_buffer.prepared_clear_descriptors.push(PreparedClearDescriptor {
@@ -54,7 +54,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
 	) -> Option<PreparedClearDescriptor> {
-		let command_buffer = self.command_buffers.get_mut(command_buffer_handle.0 as usize)?;
+		let command_buffer = self.command_buffers.get_mut(command_buffer_handle.index() as usize)?;
 		let resource = Self::native_resource_key(resource);
 		let index = command_buffer
 			.prepared_clear_descriptors
@@ -65,7 +65,7 @@ impl Device {
 
 	/// Copies queued clear descriptors, combining adjacent source and destination slots into one native call.
 	pub(crate) fn flush_pending_clear_descriptor_copies(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		let copies = &mut command_buffer.pending_clear_descriptor_copies;

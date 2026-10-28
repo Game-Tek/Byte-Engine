@@ -102,7 +102,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let end = (offset as usize).checked_add(size).expect(
 			"Invalid Vulkan push-data range. The most likely cause is that the offset and data size overflow addressable memory.",
 		);
-		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
+		let layout = &self.device.pipeline_layouts[layout_handle.index() as usize];
 
 		assert!(
 			offset.is_multiple_of(4) && size.is_multiple_of(4) && end <= layout.push_constant_size as usize,
@@ -139,7 +139,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		let command_buffer = self.prepare_draw();
-		let mesh = &self.device.meshes[mesh_handle.0 as usize];
+		let mesh = &self.device.meshes[mesh_handle.index() as usize];
 		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
 		unsafe {
 			self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);

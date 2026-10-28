@@ -29,7 +29,7 @@ impl Device {
 			"Invalid DX12 image sequence. The most likely cause is that the frame predates a frames-in-flight change."
 		);
 		let Some((current_extent, format, is_3d, array_layers, dynamic)) =
-			self.images.get(image_handle.0.0 as usize).map(|image| {
+			self.images.get(image_handle.0.index() as usize).map(|image| {
 				(
 					image.extent,
 					image.format,
@@ -42,7 +42,7 @@ impl Device {
 			return;
 		};
 		let array_layers = new_array_layers.unwrap_or(array_layers);
-		if current_extent == extent && self.images[image_handle.0.0 as usize].array_layers == array_layers {
+		if current_extent == extent && self.images[image_handle.0.index() as usize].array_layers == array_layers {
 			return;
 		}
 		Self::validate_image_dimension(extent, is_3d, array_layers, false);
@@ -58,7 +58,7 @@ impl Device {
 		}
 
 		let data_size = utils::texture_copy_size(format, extent);
-		let image = &mut self.images[image_handle.0.0 as usize];
+		let image = &mut self.images[image_handle.0.index() as usize];
 		image.extent = extent;
 		image.array_layers = array_layers;
 		if let Some(size) = data_size {
@@ -116,7 +116,7 @@ impl Device {
 		let members = requests
 			.iter()
 			.map(|request| {
-				let index = request.image.0 as usize;
+				let index = request.image.index() as usize;
 				let image = &self.images[index];
 				let desc = Self::image_resource_desc(
 					request.extent,
@@ -225,11 +225,12 @@ impl Device {
 			image.extent = request.extent;
 			image.data = utils::texture_copy_size(format, request.extent).map(|size| vec![0u8; size]);
 			image.resource = Some(resource);
-			self.pending_texture_syncs.retain(|(pending, ..)| pending.0 as usize != index);
+			self.pending_texture_syncs
+				.retain(|(pending, ..)| pending.index() as usize != index);
 		}
 
 		// The queues are idle and the previous members were released above, so their heaps can go now.
-		self.image_group_heaps[group.0 as usize] = heaps;
+		self.image_group_heaps[group.index() as usize] = heaps;
 		self.invalidate_descriptor_materializations();
 		self.image_groups.commit(group, requests, placement);
 	}
@@ -250,7 +251,7 @@ impl Device {
 
 	/// Replaces one sequence's native image after that sequence's fence has made its old resource safe to retire.
 	fn resize_image_resource_for_sequence(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
-		let image_index = image_handle.0.0 as usize;
+		let image_index = image_handle.0.index() as usize;
 		let Some(image) = self.images.get(image_index) else {
 			return;
 		};

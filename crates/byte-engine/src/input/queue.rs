@@ -14,33 +14,37 @@
 use std::alloc::Allocator;
 
 use super::collector::SinkHandle;
-use super::{DeviceHandle, SeatHandle, TriggerHandle, Value};
+use super::{DeviceHandle, SeatHandle, Value};
 
 /// Identifies one physical control for a device and seat.
-pub(super) type Source = (SeatHandle, DeviceHandle, TriggerHandle);
+pub(super) type Source = (u32, u32, u32);
 
 /// The `Record` struct keeps a control value and the sink that captured it together.
 #[derive(Copy, Clone, Debug)]
+// Dense indices stay inside the queue and gesture evaluator; public events encode handles at the boundary.
 pub(super) struct Record {
-	pub(super) seat: SeatHandle,
-	pub(super) device: DeviceHandle,
-	pub(super) trigger: TriggerHandle,
+	pub(super) seat: u32,
+	pub(super) device: u32,
+	pub(super) trigger: u32,
 	pub(super) value: Value,
 	/// The increasing arrival number within the queue; zero marks an empty retained cell.
 	pub(super) sequence: u64,
 	/// An impulse: the record is a one-time sample, not the state of a held control.
 	pub(super) transient: bool,
+	/// A repeated down sample cannot start a second interaction, regardless of later capture.
+	repeated: bool,
 	owner: Option<SinkHandle>,
 }
 
 impl Record {
 	const EMPTY: Self = Self {
-		seat: SeatHandle(0),
-		device: DeviceHandle(0),
-		trigger: TriggerHandle(0),
+		seat: 0,
+		device: 0,
+		trigger: 0,
 		value: Value::Bool(false),
 		sequence: 0,
 		transient: false,
+		repeated: false,
 		owner: None,
 	};
 
@@ -95,7 +99,10 @@ impl<A: Allocator + Clone> Queue<A> {
 		if (seats, devices, triggers) == (self.seats, self.devices, self.triggers) {
 			return;
 		}
-		let cells = seats as usize * devices as usize * triggers as usize;
+		let cells = (seats as usize)
+			.checked_mul(devices as usize)
+			.and_then(|rows| rows.checked_mul(triggers as usize))
+			.expect("Input state grid capacity exceeded. The source counts exceed addressable memory. Register fewer seats, devices, or triggers.");
 		let mut table = Vec::with_capacity_in(cells, self.retained.allocator().clone());
 		table.resize(cells, Record::EMPTY);
 		let previous = std::mem::replace(&mut self.retained, table);
@@ -107,7 +114,7 @@ impl<A: Allocator + Clone> Queue<A> {
 	}
 
 	fn cell(&self, (seat, device, trigger): &Source) -> usize {
-		((seat.0 as usize * self.devices as usize) + device.0 as usize) * self.triggers as usize + trigger.0 as usize
+		((*seat as usize * self.devices as usize) + *device as usize) * self.triggers as usize + *trigger as usize
 	}
 
 	fn retained(&self, source: &Source) -> Option<&Record> {
@@ -115,30 +122,31 @@ impl<A: Allocator + Clone> Queue<A> {
 	}
 
 	/// Appends a record, inheriting the sink that captured the press it continues.
-	pub(super) fn push(
-		&mut self,
-		seat: SeatHandle,
-		device: DeviceHandle,
-		trigger: TriggerHandle,
-		value: Value,
-		transient: bool,
-	) {
+	pub(super) fn push(&mut self, seat: SeatHandle, device: DeviceHandle, trigger: u32, value: Value, transient: bool) {
+		// Decode opaque identities once; queued records and gesture rules use dense indices.
+		let (seat, device) = (seat.index(), device.index());
 		debug_assert!(
-			device.0 < self.devices && trigger.0 < self.triggers,
+			device < self.devices && trigger < self.triggers,
 			"Input record names an unknown device or trigger. The most likely cause is a handle from another collector."
 		);
-		if seat.0 >= self.seats {
-			self.rebuild(seat.0 + 1, self.devices, self.triggers);
+		if seat >= self.seats {
+			self.rebuild(seat + 1, self.devices, self.triggers);
 		}
 		let source = (seat, device, trigger);
 		// A release and platform repeats belong to the sink that took the press,
 		// even when they arrive on a later tick. Impulses and analog values never claim.
-		let owner = if transient || !matches!(value, Value::Bool(_)) {
+		let previous = if transient || !matches!(value, Value::Bool(_)) {
 			None
 		} else {
 			self.record_at(self.records.len(), &source)
-				.filter(|record| record.claims())
-				.and_then(|record| record.owner)
+		};
+		// A previous down sample supplies both the owner and repeat classification; inspect it only once.
+		let (repeated, owner) = match previous {
+			Some(previous) if matches!(previous.value, Value::Bool(true)) => (
+				matches!(value, Value::Bool(true)),
+				previous.owner.filter(|_| !previous.transient),
+			),
+			_ => (false, None),
 		};
 		self.sequence += 1;
 		self.records.push(Record {
@@ -148,6 +156,7 @@ impl<A: Allocator + Clone> Queue<A> {
 			value,
 			sequence: self.sequence,
 			transient,
+			repeated,
 			owner,
 		});
 	}
@@ -184,20 +193,16 @@ impl<A: Allocator + Clone> Queue<A> {
 		&self.records
 	}
 
-	/// Returns the record at `index` when `sink` may act on it.
+	/// Borrows the record at `index` when `sink` may act on it.
 	///
 	/// A record captured by another sink is hidden. A repeated `true` on a held
 	/// control is a platform key repeat, not a new press, and is hidden from everyone.
-	pub(super) fn pending(&self, sink: SinkHandle, index: usize) -> Option<Record> {
-		let record = self.records[index];
+	pub(super) fn pending(&self, sink: SinkHandle, index: usize) -> Option<&Record> {
+		let record = &self.records[index];
 		if record.owner.is_some_and(|owner| owner != sink) {
 			return None;
 		}
-		if record.claims()
-			&& self
-				.record_at(index, &record.source())
-				.is_some_and(|previous| previous.value == Value::Bool(true))
-		{
+		if record.repeated {
 			return None;
 		}
 		Some(record)
@@ -240,23 +245,26 @@ impl<A: Allocator + Clone> Queue<A> {
 	///
 	/// Reading at a position instead of the queue end keeps a click's snapshot at
 	/// the pointer position recorded before the click, not after it.
-	pub(super) fn visible(&self, sink: SinkHandle, position: usize, source: &Source) -> Option<Record> {
+	pub(super) fn visible(&self, sink: SinkHandle, position: usize, source: &Source) -> Option<&Record> {
 		self.record_at(position, source)
 			.filter(|record| record.owner.is_none_or(|owner| owner == sink))
-			.copied()
 	}
 
-	/// Returns a control's latest record, queued or retained.
-	pub(super) fn latest(&self, source: &Source) -> Option<Record> {
-		self.record_at(self.records.len(), source).copied()
+	/// Borrows a control's latest record, queued or retained.
+	pub(super) fn latest(&self, source: &Source) -> Option<&Record> {
+		if source.0 >= self.seats || source.1 >= self.devices || source.2 >= self.triggers {
+			return None;
+		}
+		self.record_at(self.records.len(), source)
 	}
 
 	/// Discards queued and retained records for a seat, releasing any capture.
 	pub(super) fn reset_seat(&mut self, seat: SeatHandle) {
+		let seat = seat.index();
 		self.records.retain(|record| record.seat != seat);
-		if seat.0 < self.seats {
+		if seat < self.seats {
 			let block = self.devices as usize * self.triggers as usize;
-			let start = seat.0 as usize * block;
+			let start = seat as usize * block;
 			self.retained[start..start + block].fill(Record::EMPTY);
 		}
 	}

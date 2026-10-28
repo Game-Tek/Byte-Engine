@@ -335,6 +335,12 @@ fn message_response(inspector: &DefaultInspector, body: &mut Body) -> Response<B
 			"Inspector message request is invalid. The most likely cause is an empty `type`.",
 		);
 	}
+	if request.target == 0 {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Inspector message target is invalid. Zero is reserved for absent entities. Use a target returned by the entities endpoint.",
+		);
+	}
 	match inspector.post_message(&request.message_type, Handle::from_id(request.target), request.payload.get()) {
 		Ok(()) => response(StatusCode::NO_CONTENT, Body::empty()),
 		Err(error) => response(StatusCode::BAD_REQUEST, error),
@@ -1270,6 +1276,18 @@ mod tests {
 		let (_, body) = split_response(&response);
 		let row: serde_json::Value = serde_json::from_str(std::str::from_utf8(body).unwrap().trim()).unwrap();
 		assert_eq!(row["tick"], 1);
+	}
+
+	#[test]
+	fn server_rejects_zero_entity_targets() {
+		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		let body = format!(
+			r#"{{"type":"{TRANSFORMATION_UPDATE_MESSAGE_TYPE}","target":0,"payload":{{"position":[4.0,5.0,6.0],"scale":[1.0,1.0,1.0],"orientation":[0.0,0.0,0.0,1.0]}}}}"#
+		);
+		let response = server.request("POST", "/messages", &body);
+		assert!(response.starts_with(b"HTTP/1.1 400"));
+		assert!(transforms.read().is_none());
 	}
 
 	#[test]

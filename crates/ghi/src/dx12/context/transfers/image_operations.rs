@@ -12,8 +12,8 @@ impl Device {
 		source_sequence_index: u8,
 		destination_sequence_index: u8,
 	) {
-		let source_index = source_image.0 as usize;
-		let destination_index = destination_image.0 as usize;
+		let source_index = source_image.index() as usize;
+		let destination_index = destination_image.index() as usize;
 		if source_index == destination_index || source_index >= self.images.len() || destination_index >= self.images.len() {
 			return;
 		}
@@ -57,10 +57,10 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
-		let Some(source) = self.images.get(source_image.0 as usize) else {
+		let Some(source) = self.images.get(source_image.index() as usize) else {
 			return;
 		};
-		let Some(destination) = self.images.get(destination_image.0 as usize) else {
+		let Some(destination) = self.images.get(destination_image.index() as usize) else {
 			return;
 		};
 		if source.extent != destination.extent || source.is_3d != destination.is_3d || source.format != destination.format {
@@ -108,7 +108,7 @@ impl Device {
 		transform: Option<[f32; 16]>,
 		sequence_index: u8,
 	) {
-		let Some(mesh) = self.meshes.get(mesh_handle.0 as usize) else {
+		let Some(mesh) = self.meshes.get(mesh_handle.index() as usize) else {
 			return;
 		};
 		if mesh.vertex_count < 3 || mesh.vertices.len() < 3 * 7 * std::mem::size_of::<f32>() {
@@ -116,7 +116,7 @@ impl Device {
 		}
 
 		let vertices = mesh.vertices.as_slice();
-		let Some(image) = self.images.get_mut(image_handle.0 as usize) else {
+		let Some(image) = self.images.get_mut(image_handle.index() as usize) else {
 			return;
 		};
 		let staging = if let Some(frame_data) = image.frame_data.as_mut() {

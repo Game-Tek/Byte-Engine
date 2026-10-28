@@ -109,10 +109,10 @@ impl Context {
 	/// Panics when the handle names no image of this context, an image with one representation per frame, a
 	/// swapchain image, or an image-group member, whose memory belongs to this context's group heap.
 	pub fn export_image(&mut self, image: graphics_hardware_interface::ImageHandle) -> DetachedImage {
-		let handle = crate::vulkan::ImageHandle(image.0.index());
+		let handle = crate::vulkan::ImageHandle::from_index(image.0.index());
 		let exportable = self
 			.images
-			.get(handle.0 as usize)
+			.get(handle.index() as usize)
 			.is_some_and(|stored| stored.owns_image && stored.next.is_none() && !stored.image.is_null());
 		assert!(
 			exportable,
@@ -124,7 +124,7 @@ impl Context {
 		);
 
 		// The slot stays, emptied, so the handle can never name a different image later.
-		let stored = &mut self.images[handle.0 as usize];
+		let stored = &mut self.images[handle.index() as usize];
 		let emptied = Image {
 			owns_image: false,
 			..super::context::unbacked_image(stored.format_, stored.uses, stored.extent, stored.access)
@@ -163,7 +163,7 @@ impl Context {
 		stored.allocation = self.adopt_allocation(resources.memory, std::ptr::null_mut());
 		stored.staging_allocation = self.adopt_allocation(resources.staging_memory, staging_pointer);
 
-		let handle = crate::vulkan::ImageHandle(self.images.len() as u64);
+		let handle = crate::vulkan::ImageHandle::from_index(self.images.len() as u64);
 		self.images.push(stored);
 		// The exporting context's stages mean nothing here. A transfer write is the last thing a loader does to an
 		// image and a stage every queue has, so the first use here orders itself after it.
@@ -181,7 +181,8 @@ impl Context {
 			);
 		}
 
-		let handle = graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(handle.0));
+		let handle =
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(handle.index()));
 		self.set_object_debug_name(resources.name.as_deref(), handle.into());
 		handle
 	}
@@ -191,7 +192,7 @@ impl Context {
 		let Some(allocation) = allocation else {
 			return vk::DeviceMemory::null();
 		};
-		let allocation = &mut self.allocations[allocation.0 as usize];
+		let allocation = &mut self.allocations[allocation.index() as usize];
 		allocation.pointer = MappedMemoryPointer(std::ptr::null_mut());
 		std::mem::replace(&mut allocation.memory, vk::DeviceMemory::null())
 	}
@@ -209,7 +210,7 @@ impl Context {
 			memory,
 			pointer: MappedMemoryPointer(pointer),
 		});
-		Some(graphics_hardware_interface::AllocationHandle(
+		Some(graphics_hardware_interface::AllocationHandle::from_index(
 			self.allocations.len() as u64 - 1,
 		))
 	}
@@ -228,7 +229,7 @@ impl Context {
 		let shared = self.buffers.get_unique(master).expect(
 			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic buffer.",
 		);
-		let handle = BufferHandle(master.index());
+		let handle = BufferHandle::from_index(master.index());
 		let mut shared_buffers = self.shared_buffers.borrow_mut();
 		if !shared_buffers.contains(&handle) {
 			shared_buffers.push(handle);

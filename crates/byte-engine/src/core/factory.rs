@@ -94,7 +94,7 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	/// Consumers read the resulting [`CreateMessage`] from listeners created by
 	/// [`Self::listener`]. Pass the returned handle to [`Self::derive`] when a
 	/// second factory publishes another representation of the same entity.
-	#[inline]
+	#[inline(always)]
 	pub fn create(&self, data: T) -> Handle {
 		let handle = Handle::new();
 		self.derive(handle, data);
@@ -105,18 +105,14 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	///
 	/// Returns an array of [`Handle`]s corresponding to the created entities.
 	pub fn create_array<const N: usize>(&self, data: [T; N]) -> [Handle; N] {
-		let mut handles = [Handle(0); N];
-		for (i, d) in data.into_iter().enumerate() {
-			handles[i] = self.create(d);
-		}
-		handles
+		data.map(|data| self.create(data))
 	}
 
 	/// Publishes a value with an existing stable handle.
 	///
 	/// Use this after [`Self::create`] when another system-specific representation
 	/// must retain the original entity identity.
-	#[inline]
+	#[inline(always)]
 	pub fn derive(&self, handle: Handle, data: T) {
 		if let Some((observer, observed)) = &self.observation {
 			observer.observe_entity(handle, *observed);
@@ -182,22 +178,42 @@ impl<T: Clone> TargetedMessage for CreateMessage<T> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 /// The `Handle` struct identifies one creation stream entry across consuming
 /// systems.
-pub struct Handle(u32);
+///
+/// Get one from [`Factory::create`], then use [`Factory::derive`] to share its identity across representations.
+/// Allocation terminates the process if the nonzero 32-bit identity space is exhausted.
+#[repr(transparent)]
+pub struct Handle(std::num::NonZeroU32);
+
+const _: () = assert!(size_of::<Option<Handle>>() == size_of::<u32>());
 
 impl Handle {
 	/// Allocates an identity shared by factory creations and message-backed components.
 	pub(crate) fn new() -> Self {
-		Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+		// Identity exhaustion is terminal: issuing another identity could reuse a live entity's ID.
+		let id = std::num::NonZeroU32::new(COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
+			.unwrap_or_else(|| Self::exhausted());
+		Self(id)
+	}
+
+	/// Stops the process when no unique identity remains.
+	#[cold]
+	fn exhausted() -> ! {
+		eprintln!("Factory identity allocation failed. The process exhausted its 32-bit identities. Restart the application.");
+		std::process::abort();
 	}
 
 	/// Returns the process-local numeric identity used by inspection and diagnostics.
 	pub fn id(self) -> u32 {
-		self.0
+		self.0.get()
 	}
 
 	/// Restores an identity supplied by a trusted engine protocol adapter.
 	pub(crate) fn from_id(id: u32) -> Self {
-		Self(id)
+		Self(
+			std::num::NonZeroU32::new(id).expect(
+				"Entity identity is invalid. Zero is reserved for absent entities. Use an identity returned by a factory.",
+			),
+		)
 	}
 }
 
@@ -205,6 +221,20 @@ impl Handle {
 mod tests {
 	use super::Factory;
 	use crate::core::{listener::Listener, message_bus::MessageBus};
+
+	#[test]
+	fn array_creation_preserves_message_order() {
+		let factory = Factory::new();
+		let mut listener = factory.listener();
+		assert_eq!(factory.create_array([]), []);
+		let handles = factory.create_array([10, 20, 30]);
+		let messages = listener.to_vec();
+		assert_eq!(messages.iter().map(|message| message.handle()).collect::<Vec<_>>(), handles);
+		assert_eq!(
+			messages.iter().map(|message| *message.data()).collect::<Vec<_>>(),
+			[10, 20, 30]
+		);
+	}
 
 	#[test]
 	fn create_assigns_distinct_handles_and_broadcasts_in_creation_order() {

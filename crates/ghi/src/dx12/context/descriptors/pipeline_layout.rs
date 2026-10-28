@@ -51,7 +51,7 @@ impl Device {
 	pub(crate) fn build_pipeline_resources(&self, shaders: &[pipelines::ShaderParameter]) -> Vec<PipelineResource> {
 		let mut descriptors = shaders
 			.iter()
-			.flat_map(|parameter| self.shaders[parameter.handle.0 as usize].resources.iter().copied())
+			.flat_map(|parameter| self.shaders[parameter.handle.index() as usize].resources.iter().copied())
 			.collect::<Vec<_>>();
 		descriptors.sort_by_key(|descriptor| descriptor.slot());
 
@@ -337,7 +337,7 @@ impl Device {
 		let native_layout = self.create_native_pipeline_layout(key.clone()).expect(
 			"Failed to create DX12 pipeline layout. The most likely cause is an invalid root signature or a removed device.",
 		);
-		let handle = PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
+		let handle = PipelineLayoutHandle::from_index(self.pipeline_layouts.len() as u64);
 		self.pipeline_layouts.push(native_layout);
 		self.pipeline_layout_indices.insert(key, handle);
 		handle

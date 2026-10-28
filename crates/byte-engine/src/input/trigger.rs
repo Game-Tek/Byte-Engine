@@ -109,7 +109,25 @@ impl Default for TriggerDescription<Quaternion> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, facet::Facet)]
 /// The `TriggerHandle` struct identifies a trigger registered with an
 /// [`InputCollector`](crate::input::InputCollector).
-pub struct TriggerHandle(pub(super) u32);
+#[repr(transparent)]
+pub struct TriggerHandle(pub(super) std::num::NonZeroU32);
+
+impl TriggerHandle {
+	/// Encodes a bounded registration index as a nonzero identity.
+	pub(super) fn from_index(index: u32) -> Self {
+		assert!(
+			index < super::HANDLE_TAG.get(),
+			"Input handle capacity exceeded. A local index exhausted its 31-bit space. Reuse existing input declarations."
+		);
+		Self(super::HANDLE_TAG | index)
+	}
+
+	pub(super) const fn index(self) -> u32 {
+		self.0.get() ^ super::HANDLE_TAG.get()
+	}
+}
+
+const _: () = assert!(size_of::<Option<TriggerHandle>>() == size_of::<u32>());
 
 use math::Quaternion;
 use utils::RGBA;

@@ -147,9 +147,10 @@ pub struct Skeleton {
 #[derive(Clone, Debug)]
 /// The `SkeletonPoseMap` struct preserves a reusable source-to-target node mapping for compatible animation-pack rigs.
 pub struct SkeletonPoseMap {
-	target_by_source: Vec<Option<usize>>,
-	direct_target_by_source: Vec<Option<usize>>,
-	target_rest_pose: Vec<LocalTransform>,
+	// One-based indices let missing mappings share the index word. These maps are immutable after binding.
+	target_by_source: Box<[Option<std::num::NonZeroUsize>]>,
+	direct_target_by_source: Box<[Option<std::num::NonZeroUsize>]>,
+	target_rest_pose: Box<[LocalTransform]>,
 }
 
 impl SkeletonPoseMap {
@@ -164,7 +165,7 @@ impl SkeletonPoseMap {
 			target_by_name
 				.entry(name)
 				.and_modify(|target| *target = None)
-				.or_insert(Some(index));
+				.or_insert(std::num::NonZeroUsize::new(index + 1));
 		}
 		let target_by_source: Vec<_> = source
 			.nodes
@@ -178,30 +179,37 @@ impl SkeletonPoseMap {
 		// Direct sampling starts from the final rest pose, so only the final source
 		// writer for each target may apply animated channels.
 		let mut direct_target_by_source = target_by_source.clone();
-		let mut final_source_by_target = vec![None; target.nodes.len()];
+		// A node index cannot reach usize::MAX, so the scratch table needs only one word per target.
+		let mut final_source_by_target = vec![usize::MAX; target.nodes.len()];
 		for (source, target) in target_by_source.iter().enumerate() {
-			if let Some(target) = target
-				&& let Some(previous) = final_source_by_target[*target].replace(source)
-			{
+			let Some(target) = target else {
+				continue;
+			};
+			let previous = std::mem::replace(&mut final_source_by_target[target.get() - 1], source);
+			if previous != usize::MAX {
 				direct_target_by_source[previous] = None;
 			}
 		}
 		let mut target_rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
 		for (source, target) in source.nodes.iter().zip(&target_by_source) {
 			if let Some(target) = target {
-				target_rest_pose[*target] = source.rest_local;
+				target_rest_pose[target.get() - 1] = source.rest_local;
 			}
 		}
 		Self {
-			target_by_source,
-			direct_target_by_source,
-			target_rest_pose,
+			target_by_source: target_by_source.into_boxed_slice(),
+			direct_target_by_source: direct_target_by_source.into_boxed_slice(),
+			target_rest_pose: target_rest_pose.into_boxed_slice(),
 		}
 	}
 
 	/// Returns the target node mapped from one source node.
 	pub fn target_node(&self, source_node: usize) -> Option<usize> {
-		self.target_by_source.get(source_node).copied().flatten()
+		self.target_by_source
+			.get(source_node)
+			.copied()
+			.flatten()
+			.map(|target| target.get() - 1)
 	}
 
 	/// Returns the target node written by direct mapped sampling for one source node.
@@ -209,7 +217,11 @@ impl SkeletonPoseMap {
 	/// When multiple source nodes map to one target, only the last source node
 	/// writes that target. This matches [`Self::write_target_local_pose`].
 	pub fn direct_target_node(&self, source_node: usize) -> Option<usize> {
-		self.direct_target_by_source.get(source_node).copied().flatten()
+		self.direct_target_by_source
+			.get(source_node)
+			.copied()
+			.flatten()
+			.map(|target| target.get() - 1)
 	}
 
 	/// Returns the complete target rest pose after compatible source rest transforms replace matching target nodes.
@@ -238,7 +250,7 @@ impl SkeletonPoseMap {
 		output.extend_from_slice(&self.target_rest_pose);
 		for (source, target) in source_pose.iter().zip(&self.target_by_source) {
 			if let Some(target) = target {
-				output[*target] = *source;
+				output[target.get() - 1] = *source;
 			}
 		}
 		Ok(())

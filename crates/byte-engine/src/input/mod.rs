@@ -1,3 +1,6 @@
+//! Input identities are opaque and zero is invalid. Seats, device classes, devices, triggers, and actions
+//! use 31-bit registration indices. Reuse declarations across ticks.
+//!
 //! Device-independent input actions, collected once and pulled by layered sinks.
 //!
 //! Input runs in two steps. Every source event, whether a window key, a mouse
@@ -63,6 +66,7 @@ use self::action::InputValue;
 /// The [`Types`] enum identifies the value representation accepted by input
 /// triggers and actions.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+// Match Value's discriminator order so runtime type checks need no remapping table.
 pub enum Types {
 	/// A boolean value.
 	Boolean,
@@ -72,14 +76,14 @@ pub enum Types {
 	Float,
 	/// An integer value.
 	Int,
+	/// An RGBA color value.
+	Rgba,
 	/// A two-channel input value.
 	Vector2,
 	/// A three-channel input value.
 	Vector3,
 	/// A quaternion.
 	Quaternion,
-	/// An RGBA color value.
-	Rgba,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, facet::Facet)]
@@ -482,3 +486,7 @@ impl crate::core::targeted_message::TargetedMessage for ActionEvent {
 
 #[cfg(test)]
 mod tests;
+
+// A tag preserves the index bits while proving construction nonzero without checked addition.
+const HANDLE_TAG: std::num::NonZeroU32 = std::num::NonZeroU32::new(1 << 31)
+	.expect("Input identity tag is invalid. Zero cannot mark an identity. Use a nonzero tag bit.");

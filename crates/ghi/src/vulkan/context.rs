@@ -146,9 +146,9 @@ mod descriptor_task_tests {
 
 	fn buffer_write(buffer: u64) -> crate::descriptors::DescriptorWrite {
 		crate::descriptors::DescriptorWrite::buffer(
-			graphics_hardware_interface::DescriptorSetHandle(0),
+			graphics_hardware_interface::DescriptorSetHandle::from_index(0),
 			crate::shader::ResourceSlot::new(3),
-			graphics_hardware_interface::BaseBufferHandle(buffer),
+			graphics_hardware_interface::BaseBufferHandle::from_index(buffer),
 		)
 	}
 

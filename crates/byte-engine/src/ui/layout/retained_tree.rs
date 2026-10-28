@@ -236,7 +236,8 @@ pub(super) struct RetainedTree {
 	/// Dense links follow `elements`; only external identity lookup needs hashing.
 	/// Spare child lists keep their capacity after a scope closes.
 	pub(super) children: Vec<Vec<usize>>,
-	pub(super) parents: Vec<Option<usize>>,
+	// usize::MAX marks a root; vector indices cannot reach it. Parent lookup keeps the sentinel private.
+	pub(super) parents: Vec<usize>,
 	/// The path each declared element or component scope was declared in, by its own path.
 	///
 	/// Scope removal follows these links, so a visually reparented element still belongs to the context that
@@ -364,7 +365,7 @@ impl RetainedTree {
 			.push(IdedElement::new(id, serial, self.revisions.any, primitive));
 
 		let index = self.elements.len() - 1;
-		self.parents.push(parent_index);
+		self.parents.push(parent_index.unwrap_or(usize::MAX));
 		if index == self.children.len() {
 			self.children.push(Vec::new());
 		}
@@ -393,20 +394,26 @@ impl RetainedTree {
 			);
 			return;
 		}
-		if self.parents[child_index] == Some(parent_index) {
+		if self.parent(child_index) == Some(parent_index) {
 			return;
 		}
-		if let Some(previous) = self.parents[child_index] {
+		if let Some(previous) = self.parent(child_index) {
 			self.children[previous].retain(|&sibling| sibling != child_index);
 		}
-		self.parents[child_index] = Some(parent_index);
+		self.parents[child_index] = parent_index;
 		self.children[parent_index].push(child_index);
 		self.revisions.advance();
 	}
 
+	/// Returns an element's parent index, or `None` for a root.
+	pub(super) fn parent(&self, index: usize) -> Option<usize> {
+		let parent = self.parents[index];
+		(parent != usize::MAX).then_some(parent)
+	}
+
 	/// Walks from the element at `index` up through its visual ancestors, starting with the element itself.
 	pub(super) fn lineage(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
-		std::iter::successors(Some(index), |&index| self.parents[index])
+		std::iter::successors(Some(index), |&index| self.parent(index))
 	}
 
 	/// Walks from `id` up through the ids of its visual ancestors, starting with `id` itself.
@@ -414,7 +421,7 @@ impl RetainedTree {
 	/// Events bubble along this chain, and hover changes compare two of them. An id the tree does not hold yields
 	/// only itself.
 	pub(super) fn ancestors(&self, id: Id) -> impl Iterator<Item = Id> + '_ {
-		let parent = self.element_indices.get(&id).and_then(|&index| self.parents[index]);
+		let parent = self.element_indices.get(&id).and_then(|&index| self.parent(index));
 		std::iter::once(id).chain(
 			parent
 				.into_iter()
@@ -595,7 +602,8 @@ impl RetainedTree {
 				children[old].clear();
 				continue;
 			};
-			parents[new] = parents[old].and_then(live);
+			let parent = parents[old];
+			parents[new] = if parent == usize::MAX { usize::MAX } else { remap[parent] };
 			children[old].retain_mut(|child| match live(*child) {
 				Some(new) => {
 					*child = new;

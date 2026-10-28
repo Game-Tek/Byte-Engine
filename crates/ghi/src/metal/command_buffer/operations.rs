@@ -14,7 +14,7 @@ impl CommandBufferRecording<'_> {
 			&& self
 				.device
 				.swapchains
-				.get(swapchain.0 as usize)
+				.get(swapchain.index() as usize)
 				.is_some_and(|swapchain| !swapchain.uses.contains(crate::Uses::TransferSource))
 		{
 			return Err(crate::TextureTransferError::MissingTransferSource);
@@ -306,7 +306,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			self.command_buffer.retain_allocation(&*bottom_level.structure);
 
 			let encoder = self.ensure_compute_encoder().clone();
-			let slot = crate::slots::Slots::<BottomLevel>::index(handle.0);
+			let slot = crate::slots::Slots::<BottomLevel>::index(handle.bits());
 			self.consume_resources(uses.into_iter().chain([synchronization::MetalResourceUse::bottom_level(
 				slot,
 				crate::AccessPolicies::WRITE,
@@ -337,7 +337,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let bottom_level = acceleration_structures.bottom_level(handle);
 			let encoder = self.ensure_compute_encoder().clone();
 			self.consume_resources([synchronization::MetalResourceUse::bottom_level(
-				crate::slots::Slots::<BottomLevel>::index(handle.0),
+				crate::slots::Slots::<BottomLevel>::index(handle.bits()),
 				crate::AccessPolicies::READ,
 			)]);
 			let size_offset = offset + index * size_bytes;
@@ -965,7 +965,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		self.note_command();
 		self.prepare_draw("draw_mesh", []);
-		let mesh = &self.device.meshes[mesh_handle.0 as usize];
+		let mesh = &self.device.meshes[mesh_handle.index() as usize];
 
 		assert!(
 			mesh.vertex_buffers.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
@@ -1097,7 +1097,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let bound_pipeline = self
 			.bound_pipeline
 			.expect("No pipeline bound. The most likely cause is that dispatch_meshes was called before bind_raster_pipeline.");
-		let raster = self.device.pipelines[bound_pipeline.0 as usize].raster();
+		let raster = self.device.pipelines[bound_pipeline.index() as usize].raster();
 		let mesh_threadgroup_size = raster.mesh_threadgroup_size.expect(
 			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
 		);
@@ -1159,7 +1159,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that indirect_dispatch was called before bind_compute_pipeline.",
 		);
-		let threadgroup_extent = self.device.pipelines[bound_pipeline.0 as usize]
+		let threadgroup_extent = self.device.pipelines[bound_pipeline.index() as usize]
 			.compute_threadgroup_size()
 			.unwrap_or(Extent::line(128));
 
@@ -1183,7 +1183,7 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 		);
 		// The tables outlive the recording, so the records do not borrow it.
 		let tables = self.device.shader_binding_tables;
-		let shader_binding_table = tables.get(table.0 as usize).expect(
+		let shader_binding_table = tables.get(table.index() as usize).expect(
 			"Metal trace_rays failed because the shader binding table handle names no table of this context. The most likely cause is that the handle came from another context. Trace with tables the recording's context created.",
 		);
 		let Some((written_for, functions)) = &shader_binding_table.written else {
@@ -1197,7 +1197,7 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 			"Metal trace_rays failed because shader binding table {:?} was last written for pipeline {written_for:?}, and pipeline {bound_pipeline:?} is bound. The most likely cause is that the pipeline was created again, with more hit groups, and the table wasn't written for the new one. Write the table for the bound pipeline before tracing with it.",
 			shader_binding_table.name,
 		);
-		let PipelineState::RayTracing { state, .. } = &self.device.pipelines[bound_pipeline.0 as usize].pipeline else {
+		let PipelineState::RayTracing { state, .. } = &self.device.pipelines[bound_pipeline.index() as usize].pipeline else {
 			unreachable!(
 				"Metal trace_rays found a table written for a pipeline that isn't a ray tracing pipeline. The most likely cause is that table writes stopped checking the pipeline kind. Restore the check in build_shader_binding_table."
 			);

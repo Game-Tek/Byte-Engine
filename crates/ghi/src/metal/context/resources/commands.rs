@@ -10,7 +10,7 @@ impl Context {
 			queue_handle,
 			name: crate::debug_name(name),
 		});
-		graphics_hardware_interface::CommandBufferHandle((self.command_buffers.len() - 1) as u64)
+		graphics_hardware_interface::CommandBufferHandle::from_index((self.command_buffers.len() - 1) as u64)
 	}
 
 	/// Creates a recording that belongs to no frame, for transfers submitted outside the render loop.
@@ -29,7 +29,7 @@ impl Context {
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> super::super::CommandBufferRecording<'a> {
 		let (queue_handle, command_buffer_name) = {
-			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
+			let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
 			let name = self.settings.debug_labels.then(|| command_buffer.name.clone()).flatten();
 			(command_buffer.queue_handle, name)
 		};

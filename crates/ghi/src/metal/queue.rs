@@ -368,7 +368,7 @@ impl SubmittedBatch {
 				"Metal 4 commit feedback failed. The most likely cause is that Metal returned invalid feedback data or the feedback handler encountered an unexpected failure.",
 			)),
 		};
-		let queue = &mut queues[self.queue_handle.0 as usize];
+		let queue = &mut queues[self.queue_handle.index() as usize];
 		for command in &mut self.commands {
 			// Completed accesses cannot race later commands, so the queue's hazard history drops them. Frames overlap,
 			// so the queue is rarely idle, and without this the history would keep every access ever made.

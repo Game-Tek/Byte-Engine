@@ -4,7 +4,7 @@
 /// Facet serializes it as `position: [x, y, z]`, `scale: [x, y, z]`, and
 /// `orientation: [x, y, z, w]`. Deserialization rejects unknown fields,
 /// non-finite components, and invalid orientations.
-#[derive(Debug, Clone, facet::Facet)]
+#[derive(Debug, Clone, PartialEq, facet::Facet)]
 #[facet(opaque, proxy = SerializableTransform)]
 pub struct Transform {
 	position: Point,

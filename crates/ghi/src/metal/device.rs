@@ -28,7 +28,7 @@ impl<A: Allocator> Device<A> {
 			let queue = device.newMTL4CommandQueue().ok_or(
 				"Metal 4 command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
 			)?;
-			let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
+			let handle = graphics_hardware_interface::QueueHandle::from_index(created_queues.len() as u64);
 
 			created_queues.push(queue::StoredQueue::new(queue));
 

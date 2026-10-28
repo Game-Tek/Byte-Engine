@@ -157,7 +157,7 @@ impl<'a> CommandBufferRecording<'a> {
 		self.start_region(|label| label.write_str("Present Resolve"));
 		for (present_key, drawable) in present_drawables {
 			let Some(image) =
-				self.device.swapchains[present_key.swapchain.0 as usize].images[present_key.sequence_index as usize]
+				self.device.swapchains[present_key.swapchain.index() as usize].images[present_key.sequence_index as usize]
 			else {
 				continue;
 			};
@@ -200,7 +200,7 @@ impl<'a> CommandBufferRecording<'a> {
 		// Acquire one reusable native command from the selected queue's context-local pool.
 		let mut command_buffer = context
 			.queues
-			.get_mut(queue_handle.0 as usize)
+			.get_mut(queue_handle.index() as usize)
 			.expect("Metal command queue is missing. The most likely cause is that the queue handle came from another context.")
 			.acquire_native_command(label, context.settings.debug_labels);
 
@@ -219,7 +219,7 @@ impl<'a> CommandBufferRecording<'a> {
 		};
 		let commit = RecordingCommit {
 			queue_handle,
-			queue: &mut context.queues[queue_handle.0 as usize],
+			queue: &mut context.queues[queue_handle.index() as usize],
 			synchronizers: &mut context.synchronizers,
 			texture_readbacks: &mut context.texture_readbacks,
 			descriptor_sets: &mut context.descriptor_sets,
@@ -597,11 +597,10 @@ impl<'a> CommandBufferRecording<'a> {
 				.flat_map(|binding| binding.tables.iter())
 				.flat_map(|&table| tables[table as usize].uses.members());
 			for member in descriptor_members.chain(additional_uses.iter().filter_map(|resource_use| resource_use.member)) {
-				commit
-					.image_groups
-					.assert_initialized(graphics_hardware_interface::BaseImageHandle(member.0), || {
-						device.images.resource(member).name.clone()
-					});
+				commit.image_groups.assert_initialized(
+					graphics_hardware_interface::BaseImageHandle::from_index(member.index()),
+					|| device.images.resource(member).name.clone(),
+				);
 			}
 		}
 		let barrier = match binding {
@@ -730,7 +729,9 @@ impl<'a> CommandBufferRecording<'a> {
 				);
 				Some(self.image_surface(self.device.images.nth_handle(image, frame_index)?))
 			}
-			ImageOrSwapchain::Swapchain(swapchain) => self.swapchain_surface(crate::swapchain::SwapchainHandle(swapchain.0)),
+			ImageOrSwapchain::Swapchain(swapchain) => {
+				self.swapchain_surface(crate::swapchain::SwapchainHandle::from_index(swapchain.index()))
+			}
 		}
 	}
 
@@ -738,7 +739,7 @@ impl<'a> CommandBufferRecording<'a> {
 	///
 	/// The surface reports the swapchain's uses. Returns `None` in the same cases as [`Self::surface`].
 	pub(super) fn swapchain_surface(&self, handle: crate::swapchain::SwapchainHandle) -> Option<Surface> {
-		let swapchain = self.device.swapchains.get(handle.0 as usize)?;
+		let swapchain = self.device.swapchains.get(handle.index() as usize)?;
 		let image = swapchain.images[self.sequence_index as usize]?;
 		Some(Surface {
 			uses: swapchain.uses,
@@ -797,7 +798,9 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(super) fn bind_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut Self {
 		if self.bound_pipeline != Some(pipeline_handle) {
 			self.bound_pipeline = Some(pipeline_handle);
-			let push_constant_size = self.device.pipelines[pipeline_handle.0 as usize].layout.push_constant_size;
+			let push_constant_size = self.device.pipelines[pipeline_handle.index() as usize]
+				.layout
+				.push_constant_size;
 			self.push_constant_data.clear();
 			self.push_constant_data.resize(push_constant_size, 0);
 			if let Some(state) = &mut self.encoder {
@@ -879,7 +882,7 @@ impl<'a> CommandBufferRecording<'a> {
 		match state.encoder {
 			ActiveEncoder::Compute(_) => stages.push(ArgumentTableStage::Compute),
 			ActiveEncoder::Render(_) => {
-				let raster = self.device.pipelines[pipeline_handle.0 as usize].raster();
+				let raster = self.device.pipelines[pipeline_handle.index() as usize].raster();
 				if raster.mesh_threadgroup_size.is_some() {
 					if raster.object_threadgroup_size.is_some() {
 						stages.push(ArgumentTableStage::Object);
@@ -931,7 +934,7 @@ fn retain_tracked_use(
 		// The commands that use bottom-level structures retain the ones they name, since the key spans all of them.
 		synchronization::MetalResourceKey::BottomLevelAccelerationStructures => {}
 		synchronization::MetalResourceKey::TopLevelAccelerationStructure { handle, copy } => {
-			let handle = graphics_hardware_interface::TopLevelAccelerationStructureHandle(handle);
+			let handle = graphics_hardware_interface::TopLevelAccelerationStructureHandle::from_bits(handle);
 			command_buffer.retain_allocation(&**device.acceleration_structures.top_level_copy(handle, copy));
 		}
 		synchronization::MetalResourceKey::SwapchainDrawable(_) => {}

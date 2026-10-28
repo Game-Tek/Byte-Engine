@@ -202,7 +202,7 @@ impl MessageObserver {
 				if word == 0 {
 					continue;
 				}
-				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32);
+				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32 + 1);
 				let types = if entity_state(word) == OVERFLOW_STATE {
 					side.get(&handle.id())
 						.map(|types| types.iter().map(|&index| inner.type_name(index)).collect())
@@ -240,13 +240,13 @@ impl MessageObserver {
 	/// Adds one semantic factory representation to the entity catalog.
 	pub(crate) fn observe_entity(&self, handle: Handle, observed: ObservedType) {
 		let inner = &*self.inner;
-		inner.catalog(inner.entry(handle.id()), handle, observed);
+		inner.catalog(inner.entry(handle.id() - 1), handle, observed);
 	}
 
 	/// Removes a terminally deleted handle from the current entity catalog.
 	pub(crate) fn forget_entity(&self, handle: Handle) {
 		let inner = &*self.inner;
-		if let Some(entry) = inner.entry_if_present(handle.id())
+		if let Some(entry) = inner.entry_if_present(handle.id() - 1)
 			&& entity_state(entry.swap(0, Ordering::AcqRel)) == OVERFLOW_STATE
 		{
 			inner.side.lock().remove(&handle.id());

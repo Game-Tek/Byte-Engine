@@ -122,7 +122,7 @@ impl Context {
 			build_scratch_size,
 			build_state: Cell::new(BuildState::Unbuilt),
 		});
-		crate::BottomLevelAccelerationStructureHandle(handle)
+		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
 	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
@@ -160,14 +160,14 @@ impl Context {
 			max_instance_count,
 			build_scratch_size,
 		});
-		crate::TopLevelAccelerationStructureHandle(handle)
+		crate::TopLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
 	/// Destroys the bottom-level structure `handle` names.
 	///
 	/// The queues keep its storage until the recordings that began before this call complete.
 	pub(crate) fn destroy_bottom_level(&mut self, handle: crate::BottomLevelAccelerationStructureHandle) {
-		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.0).unwrap_or_else(|| {
+		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.bits()).unwrap_or_else(|| {
 			panic!(
 				"The bottom-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
 			)
@@ -180,7 +180,7 @@ impl Context {
 	/// Recordings retained the copies they built, and descriptor sets pin the copies they bind, so the queues keep
 	/// each copy as long as a frame recorded before this call may read it.
 	pub(crate) fn destroy_top_level(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
-		self.acceleration_structures.top_levels.remove(handle.0).unwrap_or_else(|| {
+		self.acceleration_structures.top_levels.remove(handle.bits()).unwrap_or_else(|| {
 			panic!(
 				"The top-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
 			)
@@ -203,8 +203,10 @@ impl Context {
 		let completed = pending_compactions
 			.extract_if(.., |pending| {
 				// A destroyed structure has nothing left to compact.
-				acceleration_structures.bottom_levels.get(pending.build.handle.0).is_none()
-					|| synchronizers.resource_mut(pending.synchronizer).poll(queues)
+				acceleration_structures
+					.bottom_levels
+					.get(pending.build.handle.bits())
+					.is_none() || synchronizers.resource_mut(pending.synchronizer).poll(queues)
 			})
 			.collect::<SmallVec<[_; 4]>>();
 		for pending in completed {
@@ -220,7 +222,7 @@ impl Context {
 	/// The copy runs in the next internal submission, which every later recording follows.
 	fn compact(&mut self, pending: PendingCompaction) {
 		let handle = pending.build.handle;
-		let Some(bottom_level) = self.acceleration_structures.bottom_levels.get(handle.0) else {
+		let Some(bottom_level) = self.acceleration_structures.bottom_levels.get(handle.bits()) else {
 			return;
 		};
 		let size = pending.compacted_size();
@@ -236,7 +238,7 @@ impl Context {
 		pin_everywhere(&mut self.queues, &compacted);
 		let source = self.acceleration_structures.replace_bottom_level(handle, compacted.clone());
 		self.compaction_copies.push(CompactionCopy {
-			slot: crate::slots::Slots::<BottomLevel>::index(handle.0),
+			slot: crate::slots::Slots::<BottomLevel>::index(handle.bits()),
 			source,
 			destination: compacted,
 		});

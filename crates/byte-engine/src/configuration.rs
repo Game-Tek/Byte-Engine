@@ -21,7 +21,10 @@ const CONFIGURATION_PORT_CAPACITY: usize = 64;
 /// The `ConfigurationEventId` struct identifies one configuration update from submission through application.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct ConfigurationEventId(u64);
+#[repr(transparent)]
+pub struct ConfigurationEventId(std::num::NonZeroU64);
+
+const _: () = assert!(size_of::<Option<ConfigurationEventId>>() == size_of::<u64>());
 
 /// The `ConfigurationValue` enum carries the small set of values shared by configuration adapters and systems.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -232,8 +235,14 @@ impl Configuration {
 		let value = value.into();
 		let (id, route) = {
 			let mut state = self.state.lock();
-			let id = ConfigurationEventId(state.next_event_id);
-			state.next_event_id += 1;
+			let next = state.next_event_id.checked_add(1).expect(
+				"Configuration event identities are exhausted. The process issued u64::MAX updates. Restart the application.",
+			);
+			let id = ConfigurationEventId(
+				std::num::NonZeroU64::new(state.next_event_id)
+					.expect("Configuration event identity is invalid. The counter returned zero. Restart the application."),
+			);
+			state.next_event_id = next;
 
 			let route = state
 				.routes

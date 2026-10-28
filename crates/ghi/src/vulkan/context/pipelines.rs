@@ -17,10 +17,10 @@ impl Context {
 			.entry(PipelineLayoutKey::new(&layout))
 			.or_insert_with(|| {
 				layouts.push(layout);
-				graphics_hardware_interface::PipelineLayoutHandle(layouts.len() as u64 - 1)
+				graphics_hardware_interface::PipelineLayoutHandle::from_index(layouts.len() as u64 - 1)
 			});
 		self.pipelines.push(Pipeline { pipeline, layout });
-		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
+		graphics_hardware_interface::PipelineHandle::from_index(self.pipelines.len() as u64 - 1)
 	}
 }
 
@@ -34,7 +34,7 @@ pub(super) fn shader_pipeline_layout(
 	let stage_resources = parameters
 		.iter()
 		.map(|parameter| {
-			let shader = &shaders[parameter.handle.0 as usize];
+			let shader = &shaders[parameter.handle.index() as usize];
 			(shader.stage, shader.shader_resource_descriptors.as_slice())
 		})
 		.collect::<StageList<_>>();
@@ -69,7 +69,7 @@ pub(super) fn with_shader_stages(
 		Option<&[vk::PipelineShaderStageCreateInfo<'_>]>,
 	) -> Result<vk::Pipeline, vk::Result>,
 ) -> Result<vk::Pipeline, vk::Result> {
-	let shaders = parameters.iter().map(|parameter| &shaders[parameter.handle.0 as usize]);
+	let shaders = parameters.iter().map(|parameter| &shaders[parameter.handle.index() as usize]);
 
 	let mappings = shaders
 		.clone()

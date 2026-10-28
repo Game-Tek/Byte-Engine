@@ -151,7 +151,7 @@ impl crate::context::Context for Context {
 
 		let extent = update_layer_extent(&layer, &window_os_handles.view);
 
-		let handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
+		let handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
 
 		self.swapchains.push(Swapchain {
 			layer,
@@ -189,7 +189,7 @@ impl crate::context::Context for Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		interval: Option<std::time::Duration>,
 	) {
-		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+		self.swapchains[swapchain_handle.index() as usize].present_interval = interval;
 	}
 
 	/// Waits for Metal work, copies one transfer result, and releases its native staging buffer.
@@ -336,7 +336,7 @@ impl crate::context::ContextCreate for Context {
 			buffer.setLabel(Some(&NSString::from_str(&format!("Allocation {}", self.allocations.len()))));
 		}
 		self.allocations.push(buffer);
-		graphics_hardware_interface::AllocationHandle((self.allocations.len() - 1) as u64)
+		graphics_hardware_interface::AllocationHandle::from_index((self.allocations.len() - 1) as u64)
 	}
 
 	fn add_mesh_from_vertices_and_indices(
@@ -410,7 +410,7 @@ impl crate::context::ContextCreate for Context {
 			index_count,
 		});
 
-		graphics_hardware_interface::MeshHandle((self.meshes.len() - 1) as u64)
+		graphics_hardware_interface::MeshHandle::from_index((self.meshes.len() - 1) as u64)
 	}
 
 	fn create_shader(
@@ -462,7 +462,7 @@ impl crate::context::ContextCreate for Context {
 			name: crate::debug_name(name),
 			written: None,
 		});
-		graphics_hardware_interface::ShaderBindingTableHandle((self.shader_binding_tables.len() - 1) as u64)
+		graphics_hardware_interface::ShaderBindingTableHandle::from_index((self.shader_binding_tables.len() - 1) as u64)
 	}
 
 	/// Fills a new visible function table instead of the one the table holds, because recordings that already bound
@@ -473,11 +473,11 @@ impl crate::context::ContextCreate for Context {
 		pipeline: graphics_hardware_interface::PipelineHandle,
 		hit_groups: &[u32],
 	) {
-		let shader_binding_table = self.shader_binding_tables.get_mut(table.0 as usize).expect(
+		let shader_binding_table = self.shader_binding_tables.get_mut(table.index() as usize).expect(
 			"Metal shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables through the context that created them.",
 		);
 		let label = shader_binding_table.name.as_deref().filter(|_| self.settings.debug_labels);
-		let functions = build_shader_binding_table(&self.pipelines[pipeline.0 as usize], hit_groups, label);
+		let functions = build_shader_binding_table(&self.pipelines[pipeline.index() as usize], hit_groups, label);
 		shader_binding_table.written = Some((pipeline, functions));
 	}
 
@@ -542,7 +542,7 @@ impl crate::context::ContextCreate for Context {
 	fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
 		self.samplers
 			.push(build_sampler(&self.device, &builder, self.settings.debug_labels));
-		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
+		graphics_hardware_interface::SamplerHandle::from_index((self.samplers.len() - 1) as u64)
 	}
 
 	fn create_bottom_level_acceleration_structure(

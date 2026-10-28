@@ -1079,7 +1079,7 @@ mod tests {
 
 	#[test]
 	fn state_transitions_suppress_baselines_and_noise_but_emit_each_meaningful_delta() {
-		let device = DeviceHandle(7);
+		let device = DeviceHandle::from_index(7);
 		let mut previous = GamepadState::default();
 		let mut initialized = false;
 		let baseline = GamepadState {

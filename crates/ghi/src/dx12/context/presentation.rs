@@ -21,7 +21,7 @@ impl Device {
 			.find(|(_, queue)| queue.workloads.intersects(WorkloadTypes::RASTER))
 			.or_else(|| self.queues.first().map(|queue| (0, queue)))
 			.expect("Failed to create a DXGI swapchain. The most likely cause is that no graphics queue was created.");
-		let queue_handle = QueueHandle(queue_index as u64);
+		let queue_handle = QueueHandle::from_index(queue_index as u64);
 
 		let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.unwrap_or_else(|_| {
 			panic!("Failed to create a DXGI factory. The most likely cause is that the DXGI runtime is unavailable.");
@@ -75,7 +75,7 @@ impl Device {
 			next_present_slot: None,
 		});
 
-		SwapchainHandle((self.swapchains.len() - 1) as u64)
+		SwapchainHandle::from_index((self.swapchains.len() - 1) as u64)
 	}
 
 	pub fn create_factory(&mut self) -> Option<crate::dx12::factory::Factory> {
@@ -84,7 +84,7 @@ impl Device {
 
 	/// Returns one logical proxy whose dynamic storage resolves to the active frame sequence.
 	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
 		let requested_uses = swapchain.proxy_uses | uses;
 		// A storage proxy is copied into the native backbuffer before Present. Other proxy uses should not
 		// require optional typed-UAV support or unrelated render/copy capabilities from the BGRA format.
@@ -104,13 +104,13 @@ impl Device {
 					.device_accesses(DeviceAccesses::DeviceOnly)
 					.use_case(crate::UseCases::DYNAMIC),
 			);
-			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 			// One dynamic logical image already resolves to distinct native resources for each frame sequence.
 			swapchain.image = Some(image);
 			swapchain.proxy_resource_uses = resource_uses;
 			self.invalidate_descriptor_materializations();
 		}
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.proxy_uses = requested_uses;
 		(
 			swapchain.image.expect(
@@ -159,7 +159,7 @@ impl Device {
 	}
 
 	pub(crate) fn create_synchronizer_internal(&mut self, signaled: bool) -> crate::synchronizer::SynchronizerHandle {
-		let handle = crate::synchronizer::SynchronizerHandle(self.synchronizers.len() as u64);
+		let handle = crate::synchronizer::SynchronizerHandle::from_index(self.synchronizers.len() as u64);
 		let initial_value = if signaled { 1 } else { 0 };
 		let fence = unsafe { self.device.CreateFence(initial_value, D3D12_FENCE_FLAGS(0)) }
 			.expect("Failed to create a D3D12 fence. The most likely cause is that the device does not support fences.");
@@ -173,12 +173,12 @@ impl Device {
 	}
 
 	pub fn create_synchronizer(&mut self, _name: Option<&str>, signaled: bool) -> SynchronizerHandle {
-		let master = SynchronizerHandle(self.synchronizers.len() as u64);
+		let master = SynchronizerHandle::from_index(self.synchronizers.len() as u64);
 		let mut previous: Option<crate::synchronizer::SynchronizerHandle> = None;
 		for _ in 0..self.frames {
 			let handle = self.create_synchronizer_internal(signaled);
 			if let Some(previous) = previous {
-				self.synchronizers[previous.0 as usize].next = Some(handle);
+				self.synchronizers[previous.index() as usize].next = Some(handle);
 			}
 			previous = Some(handle);
 		}
@@ -235,7 +235,7 @@ impl Device {
 		sequence_index: u8,
 		swapchain_handle: SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
 		crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
 		assert!(
@@ -245,7 +245,7 @@ impl Device {
 		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
 		let extent = self.swapchain_extent(swapchain_handle, sequence_index);
 		let image_index = self.next_swapchain_image_index(swapchain_handle);
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.acquired_image_indices[sequence_index as usize] = image_index;
 		swapchain.acquired_sequences[sequence_index as usize] = true;
 		Some(crate::frame::SwapchainAcquisition {
@@ -412,7 +412,7 @@ impl Device {
 		&self,
 		synchronizer_handle: SynchronizerHandle,
 	) -> SmallVec<[crate::synchronizer::SynchronizerHandle; crate::MAX_FRAMES_IN_FLIGHT]> {
-		crate::synchronizer::SynchronizerHandle(synchronizer_handle.0).get_all(&self.synchronizers)
+		crate::synchronizer::SynchronizerHandle::from_index(synchronizer_handle.index()).get_all(&self.synchronizers)
 	}
 
 	/// Returns only the fence chain visible to the current frames-in-flight topology.
@@ -435,7 +435,7 @@ impl Device {
 	}
 
 	pub(crate) fn wait_for_private_synchronizer(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
+		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
 			return;
 		};
 		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
@@ -447,7 +447,7 @@ impl Device {
 		synchronizer_handle: crate::synchronizer::SynchronizerHandle,
 		value: u64,
 	) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
+		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
 			return;
 		};
 		if unsafe { synchronizer.fence.GetCompletedValue() } >= value {
@@ -476,7 +476,7 @@ impl Device {
 
 	pub(crate) fn synchronizer_value(&self, synchronizer_handle: SynchronizerHandle) -> Option<u64> {
 		self.synchronizers
-			.get(synchronizer_handle.0 as usize)
+			.get(synchronizer_handle.index() as usize)
 			.map(|synchronizer| synchronizer.value)
 	}
 
@@ -491,7 +491,7 @@ impl Device {
 				present_key.sequence_index, sequence_index,
 				"Invalid DX12 present sequence. The most likely cause is that a present key was reused by a different frame."
 			);
-			let swapchain = self.swapchains.get(present_key.swapchain.0 as usize).expect(
+			let swapchain = self.swapchains.get(present_key.swapchain.index() as usize).expect(
 				"Invalid DX12 swapchain handle. The most likely cause is that the present key came from another device.",
 			);
 			assert_eq!(
@@ -525,7 +525,7 @@ impl Device {
 		for &present_key in presented {
 			let uses_storage_proxy = self
 				.swapchains
-				.get(present_key.swapchain.0 as usize)
+				.get(present_key.swapchain.index() as usize)
 				.is_some_and(|swapchain| swapchain.proxy_uses.intersects(Uses::Storage));
 			assert!(
 				!uses_storage_proxy || prepared.contains(&present_key),
@@ -562,7 +562,7 @@ impl Device {
 		self.validate_queue_submission_state();
 		let command_buffer = self
 			.command_buffers
-			.get_mut(command_buffer_handle.0 as usize)
+			.get_mut(command_buffer_handle.index() as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		command_buffer.activate_sequence(sequence_index);
 		let (lifecycle, last_submission) = (command_buffer.lifecycle, command_buffer.last_submission);
@@ -578,7 +578,7 @@ impl Device {
 		}
 		self.discard_command_buffer_recording(command_buffer_handle);
 
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		// One deref selects the active frame, so its fields can be borrowed independently below.
@@ -620,7 +620,7 @@ impl Device {
 	) {
 		let command_buffer = self
 			.command_buffers
-			.get_mut(command_buffer_handle.0 as usize)
+			.get_mut(command_buffer_handle.index() as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		command_buffer.frame_synchronizer = Some(synchronizer_handle);
 	}
@@ -628,14 +628,14 @@ impl Device {
 	/// Returns the native list that a command buffer records into, or `None` when the handle or its list is missing.
 	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<&ID3D12GraphicsCommandList7> {
 		self.command_buffers
-			.get(command_buffer_handle.0 as usize)?
+			.get(command_buffer_handle.index() as usize)?
 			.command_list
 			.as_ref()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.
 	pub(crate) fn mark_command_buffer_work(&mut self, command_buffer_handle: CommandBufferHandle) {
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.recorded_work = true;
 		}
 	}

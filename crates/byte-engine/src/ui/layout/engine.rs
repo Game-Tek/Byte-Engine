@@ -374,7 +374,7 @@ impl<C: 'static> Engine<C> {
 					self.placement_indices[element.index] = offset;
 				}
 				for index in 0..tree.elements.len() {
-					if tree.parents[index].is_none() {
+					if tree.parent(index).is_none() {
 						update_visual_subtree(
 							index,
 							&tree,

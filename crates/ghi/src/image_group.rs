@@ -171,7 +171,7 @@ impl ImageGroups {
 			placement: Placement::default(),
 			live: Vec::new(),
 		});
-		ImageGroupHandle(self.groups.len() as u64 - 1)
+		ImageGroupHandle::from_index(self.groups.len() as u64 - 1)
 	}
 
 	/// Checks that an image builder describes an image that can share memory.
@@ -199,7 +199,7 @@ impl ImageGroups {
 	}
 
 	pub(crate) fn add_member(&mut self, group: ImageGroupHandle, image: BaseImageHandle) {
-		let group_index = group.0 as usize;
+		let group_index = group.index() as usize;
 		let members = &mut self.group_mut(group).members;
 		members.push(image);
 		let member = members.len() - 1;
@@ -208,13 +208,13 @@ impl ImageGroups {
 
 	pub(crate) fn group(&self, group: ImageGroupHandle) -> &ImageGroup {
 		self.groups
-			.get(group.0 as usize)
+			.get(group.index() as usize)
 			.expect("Image group does not exist. The most likely cause is a group handle created by a different context.")
 	}
 
 	fn group_mut(&mut self, group: ImageGroupHandle) -> &mut ImageGroup {
 		self.groups
-			.get_mut(group.0 as usize)
+			.get_mut(group.index() as usize)
 			.expect("Image group does not exist. The most likely cause is a group handle created by a different context.")
 	}
 
@@ -232,7 +232,7 @@ impl ImageGroups {
 	pub(crate) fn member(&self, image: BaseImageHandle) -> Option<(ImageGroupHandle, usize)> {
 		self.membership
 			.get(&image)
-			.map(|&(group, member)| (ImageGroupHandle(group as u64), member))
+			.map(|&(group, member)| (ImageGroupHandle::from_index(group as u64), member))
 	}
 
 	/// Orders `requests` like the group's members, or returns `None` when the group is already placed from them.
@@ -395,7 +395,7 @@ mod tests {
 	fn groups_with_two_sharing_members() -> (ImageGroups, ImageGroupHandle, [BaseImageHandle; 2]) {
 		let mut groups = ImageGroups::default();
 		let group = groups.create(Some("Test"));
-		let images = [BaseImageHandle(1), BaseImageHandle(2)];
+		let images = [BaseImageHandle::from_index(1), BaseImageHandle::from_index(2)];
 		for image in images {
 			groups.add_member(group, image);
 		}
@@ -419,7 +419,7 @@ mod tests {
 
 		assert_eq!(groups.initialize(first).unwrap().as_slice(), [second]);
 		groups.assert_initialized(first, || None);
-		assert_eq!(groups.initialize(BaseImageHandle(3)), None);
+		assert_eq!(groups.initialize(BaseImageHandle::from_index(3)), None);
 	}
 
 	#[test]

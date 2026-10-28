@@ -521,7 +521,7 @@ fn build_pipeline_layout(
 	for parameter in parameters {
 		let Shader {
 			stage, descriptor_sets, ..
-		} = &shaders[parameter.handle.0 as usize];
+		} = &shaders[parameter.handle.index() as usize];
 
 		// A layout the shader uses no resource of has no argument buffer in its source, so it takes no index.
 		let used_sets = descriptor_sets.iter().filter(|set| set.used() != 0);
@@ -565,7 +565,7 @@ fn build_pipeline_layout(
 ///
 /// Panics when a closest-hit shader declares a set the ray generation shader doesn't declare at the same position.
 fn build_ray_tracing_layout(shaders: &[Shader], builder: &crate::pipelines::ray_tracing::Builder) -> PipelineLayout {
-	let ray_generation = &shaders[builder.ray_generation.handle.0 as usize];
+	let ray_generation = &shaders[builder.ray_generation.handle.index() as usize];
 	let mut sets: Vec<PipelineSet> = ray_generation
 		.descriptor_sets
 		.iter()
@@ -584,7 +584,7 @@ fn build_ray_tracing_layout(shaders: &[Shader], builder: &crate::pipelines::ray_
 		.collect();
 
 	for hit_group in builder.hit_groups {
-		let closest_hit = &shaders[hit_group.handle.0 as usize];
+		let closest_hit = &shaders[hit_group.handle.index() as usize];
 		for (index, shader_set) in closest_hit.descriptor_sets.iter().enumerate() {
 			let set = sets
 				.get_mut(index)
@@ -730,7 +730,9 @@ impl crate::device::Device for Factory {
 			threadgroup_size,
 			binary_functions: Vec::new(),
 		});
-		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
+		Ok(graphics_hardware_interface::ShaderHandle::from_index(
+			(self.shaders.len() - 1) as u64,
+		))
 	}
 
 	/// Compiles a raster pipeline from this factory's shaders, as a vertex or a mesh pipeline.
@@ -742,7 +744,7 @@ impl crate::device::Device for Factory {
 		let mut object_threadgroup_size = None;
 		let mut mesh_threadgroup_size = None;
 		for shader_parameter in builder.shaders.iter() {
-			let shader = &self.shaders[shader_parameter.handle.0 as usize];
+			let shader = &self.shaders[shader_parameter.handle.index() as usize];
 			let function = Some(build_metal4_function_descriptor(shader, shader_parameter.specialization_map));
 			match shader_parameter.stage {
 				crate::ShaderTypes::Task => {
@@ -832,7 +834,7 @@ impl crate::device::Device for Factory {
 
 	/// Compiles a compute pipeline from one of this factory's compute shaders.
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		let shader = &self.shaders[builder.shader.handle.0 as usize];
+		let shader = &self.shaders[builder.shader.handle.index() as usize];
 		assert!(
 			shader.stage == crate::Stages::COMPUTE,
 			"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
@@ -859,7 +861,7 @@ impl crate::device::Device for Factory {
 	/// The factory compiles a closest hit only the first time a pipeline uses it with a set of specialization
 	/// constants, so building the pipeline again with one more hit group compiles that group and links the rest.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
-		let ray_generation = &self.shaders[builder.ray_generation.handle.0 as usize];
+		let ray_generation = &self.shaders[builder.ray_generation.handle.index() as usize];
 		assert!(
 			ray_generation.stage == crate::Stages::RAYGEN,
 			"Metal ray tracing pipeline creation failed because its ray generation shader {:?} is a {:?} shader. The most likely cause is that the shaders were passed to ray_tracing::Builder::new in the wrong order. Pass the ray generation shader first and closest-hit shaders as the hit groups.",
@@ -932,7 +934,7 @@ impl Factory {
 	/// A closest hit takes tens of milliseconds to compile and microseconds to link, so pipelines rebuilt as materials
 	/// load compile only the closest hits they did not use before.
 	fn closest_hit_function(&mut self, hit_group: &crate::pipelines::ShaderParameter) -> BinaryFunction {
-		let index = hit_group.handle.0 as usize;
+		let index = hit_group.handle.index() as usize;
 		let shader = &self.shaders[index];
 		assert!(
 			shader.stage == crate::Stages::CLOSEST_HIT,

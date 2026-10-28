@@ -6,7 +6,7 @@
 //! with [`AvailabilityGraph::add_dependency`], then retain the returned
 //! [`AvailabilityHandle`] for constant-time readiness checks.
 
-use std::hash::Hash;
+use std::{hash::Hash, num::NonZeroU32};
 
 use crate::hash::HashMap;
 
@@ -21,10 +21,15 @@ const READY: u8 = 1 << 2;
 /// [`AvailabilityGraph::is_ready`]. A removed node invalidates its old handle,
 /// even when a later insertion reuses the same storage slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// Keep the dense index in the first word when the generation provides the niche.
+#[repr(C)]
 pub struct AvailabilityHandle {
 	index: u32,
-	generation: u32,
+	// Generations start at one, leaving zero for absent handles without decoding the hot node index.
+	generation: NonZeroU32,
 }
+
+const _: () = assert!(size_of::<Option<AvailabilityHandle>>() == size_of::<AvailabilityHandle>());
 
 /// Reports why an availability graph relationship could not be changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,9 +324,12 @@ impl<K: Eq + Hash> AvailabilityGraph<K> {
 		node.first_dependency = self.first_free_node;
 		node.first_dependent = NONE;
 		node.unready_dependencies = 0;
-		node.generation = node.generation.wrapping_add(1);
 		node.flags = 0;
-		self.first_free_node = index;
+		// Retire a slot at the last generation so no stale handle can become live again after wraparound.
+		if let Some(generation) = node.generation.checked_add(1) {
+			node.generation = generation;
+			self.first_free_node = index;
+		}
 		Ok(true)
 	}
 
@@ -332,21 +340,33 @@ impl<K: Eq + Hash> AvailabilityGraph<K> {
 			let generation = self.nodes[index as usize].generation;
 			self.first_free_node = self.nodes[index as usize].first_dependency;
 			self.nodes[index as usize] = Node::new(generation, available);
-			return AvailabilityHandle { index, generation };
+			return AvailabilityHandle {
+				index,
+				generation: NonZeroU32::new(generation)
+					.expect("Availability generation is invalid. A live node has generation zero. Recreate the graph."),
+			};
 		}
 
 		let index = u32::try_from(self.nodes.len()).expect(
 			"Availability node capacity exceeded. The most likely cause is that more than u32::MAX nodes were inserted.",
 		);
-		self.nodes.push(Node::new(0, available));
+		assert!(
+			index != NONE,
+			"Availability node capacity exceeded. The graph reached u32::MAX nodes. Use fewer registered nodes."
+		);
+		let handle = AvailabilityHandle {
+			index,
+			generation: NonZeroU32::MIN,
+		};
+		self.nodes.push(Node::new(1, available));
 		self.visit_epochs.push(0);
-		AvailabilityHandle { index, generation: 0 }
+		handle
 	}
 
 	fn live_node_index(&self, handle: AvailabilityHandle) -> Option<usize> {
 		let index = handle.index as usize;
 		let node = self.nodes.get(index)?;
-		(node.is_live() && node.generation == handle.generation).then_some(index)
+		(node.is_live() && node.generation == handle.generation.get()).then_some(index)
 	}
 
 	/// Adds one edge to both intrusive adjacency lists.

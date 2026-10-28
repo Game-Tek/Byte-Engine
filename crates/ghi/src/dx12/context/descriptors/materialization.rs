@@ -2,11 +2,11 @@ use super::super::*;
 
 impl Device {
 	pub fn create_descriptor_set(&mut self, _name: Option<&str>) -> DescriptorSetHandle {
-		let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+		let handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
 		let mut previous: Option<DescriptorSetHandle> = None;
 
 		for sequence_index in 0..self.frames {
-			let frame_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+			let frame_handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
 			self.descriptor_sets.push(DescriptorSet {
 				next: None,
 				sequence_index,
@@ -15,7 +15,8 @@ impl Device {
 			});
 
 			if let Some(previous) = previous {
-				self.descriptor_sets[previous.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(frame_handle.0));
+				self.descriptor_sets[previous.index() as usize].next =
+					Some(crate::descriptors::DescriptorSetHandle::from_index(frame_handle.index()));
 			}
 			previous = Some(frame_handle);
 		}
@@ -34,12 +35,12 @@ impl Device {
 				continue;
 			}
 
-			let mut tail = DescriptorSetHandle(root_index as u64);
+			let mut tail = DescriptorSetHandle::from_index(root_index as u64);
 			let mut chain_length = 1u8;
-			while let Some(next) = self.descriptor_sets[tail.0 as usize].next {
-				let next = DescriptorSetHandle(next.0);
+			while let Some(next) = self.descriptor_sets[tail.index() as usize].next {
+				let next = DescriptorSetHandle::from_index(next.index());
 				assert!(
-					next.0 < original_set_count as u64,
+					next.index() < original_set_count as u64,
 					"Invalid DX12 descriptor-set chain. The most likely cause is that a frame-local next handle points outside retained descriptor storage."
 				);
 				tail = next;
@@ -53,16 +54,17 @@ impl Device {
 			}
 
 			while chain_length < frames {
-				let inherited_version = self.descriptor_sets[tail.0 as usize].version;
-				let inherited_descriptors = self.descriptor_sets[tail.0 as usize].descriptors.clone();
-				let next = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+				let inherited_version = self.descriptor_sets[tail.index() as usize].version;
+				let inherited_descriptors = self.descriptor_sets[tail.index() as usize].descriptors.clone();
+				let next = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
 				self.descriptor_sets.push(DescriptorSet {
 					next: None,
 					sequence_index: chain_length,
 					version: inherited_version,
 					descriptors: inherited_descriptors,
 				});
-				self.descriptor_sets[tail.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(next.0));
+				self.descriptor_sets[tail.index() as usize].next =
+					Some(crate::descriptors::DescriptorSetHandle::from_index(next.index()));
 				tail = next;
 				chain_length += 1;
 			}
@@ -90,7 +92,7 @@ impl Device {
 			.iter()
 			.map(|set_handle| {
 				self.descriptor_sets
-					.get(set_handle.0 as usize)
+					.get(set_handle.index() as usize)
 					.map(|set| set.version)
 					.unwrap_or(0)
 			})
@@ -109,7 +111,7 @@ impl Device {
 
 		let (cbv_srv_uav_descriptor_count, sampler_descriptor_count) = self
 			.pipeline_layouts
-			.get(layout_handle.0 as usize)
+			.get(layout_handle.index() as usize)
 			.map(|layout| (layout.key.cbv_srv_uav_descriptor_count, layout.key.sampler_descriptor_count))?;
 		let cbv_srv_uav_heap = (cbv_srv_uav_descriptor_count != 0)
 			.then(|| {
@@ -126,7 +128,7 @@ impl Device {
 		if sampler_descriptor_count != 0 && sampler_heap.is_none() {
 			return None;
 		}
-		let layout = &self.pipeline_layouts.get(layout_handle.0 as usize)?.key;
+		let layout = &self.pipeline_layouts.get(layout_handle.index() as usize)?.key;
 		if let Some(heap) = cbv_srv_uav_heap.as_ref() {
 			self.initialize_descriptor_heap_defaults(layout, false, heap, 0);
 		}
@@ -139,7 +141,7 @@ impl Device {
 			for set_handle in &key.descriptor_sets {
 				let Some(descriptors) = self
 					.descriptor_sets
-					.get(set_handle.0 as usize)
+					.get(set_handle.index() as usize)
 					.and_then(|set| set.descriptors.get(&resource.descriptor.slot()))
 				else {
 					continue;

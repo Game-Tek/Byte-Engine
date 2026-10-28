@@ -107,7 +107,8 @@ impl<'a> Frame<'a> {
 
 		let rendered = !native_commands.is_empty();
 		if rendered {
-			let submitted = self.device.queues[self.queue_handle.0 as usize].submit_batch(self.queue_handle, native_commands);
+			let submitted =
+				self.device.queues[self.queue_handle.index() as usize].submit_batch(self.queue_handle, native_commands);
 			for handle in &submitted_readbacks {
 				self.device.texture_readbacks.mark_submitted(*handle, Some(synchronizer));
 			}
@@ -126,7 +127,7 @@ impl<'a> Frame<'a> {
 			None if rendered => return,
 			// An empty command still gives a frame that submitted nothing a completion point.
 			None => {
-				let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
+				let stored_queue = &mut self.device.queues[self.queue_handle.index() as usize];
 				let command = stored_queue.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels);
 				stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect())
 			}
@@ -143,7 +144,7 @@ impl<'a> Frame<'a> {
 		let present_drawables = present_keys
 			.iter()
 			.filter_map(|&present_key| {
-				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+				let swapchain = &self.device.swapchains[present_key.swapchain.index() as usize];
 				// A swapchain acquired at a zero extent has no image, so nothing was rendered for it.
 				swapchain.images[sequence_index]?;
 				// `nextDrawable` blocks until the display releases a drawable, which with display sync is usually the
@@ -169,7 +170,7 @@ impl<'a> Frame<'a> {
 		recording.resolve_swapchain_images(&present_drawables);
 		let mut command = recording.into_finished().command_buffer;
 
-		let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
+		let stored_queue = &mut self.device.queues[self.queue_handle.index() as usize];
 		for (_, drawable) in &present_drawables {
 			command.retain_drawable(drawable);
 			stored_queue.queue.waitForDrawable(drawable.as_ref());
@@ -179,7 +180,7 @@ impl<'a> Frame<'a> {
 			stored_queue.resource_tracker.forget_drawable(drawable.texture().as_ref());
 			let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 			stored_queue.queue.signalDrawable(drawable);
-			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+			let swapchain = &self.device.swapchains[present_key.swapchain.index() as usize];
 			record_presented_time(drawable, swapchain.last_presented_time.clone());
 			match swapchain.present_interval {
 				// Metal schedules the drawable for the first refresh after the interval since the previous present.

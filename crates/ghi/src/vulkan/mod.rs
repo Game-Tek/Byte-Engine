@@ -344,8 +344,10 @@ impl DescriptorHeapArena {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct DescriptorMaterializationHandle(u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+	pub(crate) struct DescriptorMaterializationHandle;
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MaterializationKey {

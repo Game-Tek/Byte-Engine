@@ -8,7 +8,7 @@ impl Device {
 	) -> Result<(), crate::TextureTransferError> {
 		let image = self
 			.images
-			.get(image_handle.0.0 as usize)
+			.get(image_handle.0.index() as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		Self::dxgi_format(image.format)
@@ -30,7 +30,7 @@ impl Device {
 			.record_image_readback_internal(command_buffer_handle, image_handle, true, sequence_index)?
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
 		let handle = self.texture_readbacks.insert(readback);
-		self.command_buffers[command_buffer_handle.0 as usize]
+		self.command_buffers[command_buffer_handle.index() as usize]
 			.recorded_readbacks
 			.push(handle);
 		Ok(handle)
@@ -50,7 +50,7 @@ impl Device {
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
 		let image = self
 			.images
-			.get(image_handle.0.0 as usize)
+			.get(image_handle.0.index() as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		let layout = crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		let extent = image.extent;
@@ -138,7 +138,7 @@ impl Device {
 
 	/// Releases every unsubmitted readback associated with one discarded command-list recording.
 	pub(crate) fn abandon_texture_readbacks_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let command_buffer_index = command_buffer_handle.0 as usize;
+		let command_buffer_index = command_buffer_handle.index() as usize;
 		let mut handles = std::mem::take(&mut self.command_buffers[command_buffer_index].recorded_readbacks);
 		for handle in handles.drain(..) {
 			self.texture_readbacks.abandon_recorded(handle);
@@ -157,7 +157,7 @@ impl Device {
 			let Some((synchronizer_handle, completion_value)) = readback.completion else {
 				continue;
 			};
-			let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
+			let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
 				continue;
 			};
 			// SAFETY: The synchronizer registry owns the live fence queried here.
@@ -245,7 +245,7 @@ impl Device {
 
 	pub(crate) fn write_image_data_for_sequence(&mut self, image_handle: ImageHandle, data: &[RGBAu8], sequence_index: u8) {
 		// Writes CPU-side image data for formats with staging storage.
-		let image = &mut self.images[image_handle.0.0 as usize];
+		let image = &mut self.images[image_handle.0.index() as usize];
 		let staging = if let Some(frame_data) = image.frame_data.as_mut() {
 			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
 			frame_data.get_mut(index)
@@ -272,7 +272,7 @@ impl Device {
 		clear: crate::ClearValue,
 		sequence_index: u8,
 	) {
-		let Some(image) = self.images.get_mut(image_handle.0 as usize) else {
+		let Some(image) = self.images.get_mut(image_handle.index() as usize) else {
 			return;
 		};
 		let staging = if let Some(frame_data) = image.frame_data.as_mut() {

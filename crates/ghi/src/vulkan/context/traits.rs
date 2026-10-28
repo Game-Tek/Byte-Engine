@@ -108,16 +108,17 @@ impl crate::context::Context for Context {
 		);
 
 		for image_handle in chain_tails::<ImageHandle>(&self.images) {
-			let builder = self.images[image_handle.0 as usize].builder();
+			let builder = self.images[image_handle.index() as usize].builder();
 			self.create_image_internal(Some(image_handle), &builder);
 		}
 
 		for synchronizer_handle in chain_tails::<SynchronizerHandle>(&self.synchronizers) {
 			let root = synchronizer_handle.root(&self.synchronizers);
-			let name = self.get_object_debug_name(graphics_hardware_interface::SynchronizerHandle(root.0).into());
-			let signaled = self.synchronizers[synchronizer_handle.0 as usize].signaled;
+			let name =
+				self.get_object_debug_name(graphics_hardware_interface::SynchronizerHandle::from_index(root.index()).into());
+			let signaled = self.synchronizers[synchronizer_handle.index() as usize].signaled;
 			let new_synchronizer = self.create_synchronizer_internal(name.as_deref(), signaled);
-			self.synchronizers[synchronizer_handle.0 as usize].next = Some(new_synchronizer);
+			self.synchronizers[synchronizer_handle.index() as usize].next = Some(new_synchronizer);
 		}
 
 		for i in 0..self.command_buffers.len() {
@@ -159,14 +160,14 @@ impl crate::context::Context for Context {
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		let handle = BufferHandle(buffer_handle.into().0);
+		let handle = BufferHandle::from_index(buffer_handle.into().index());
 		if self.buffers.resource(handle).staging.is_some() {
 			self.pending_buffer_syncs.insert(handle);
 		}
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
-		let texture = &self.images[texture_handle.0.0 as usize];
+		let texture = &self.images[texture_handle.0.index() as usize];
 
 		assert!(
 			texture.staging_buffer.is_some(),
@@ -184,16 +185,16 @@ impl crate::context::Context for Context {
 	}
 
 	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle(image_handle.0.0);
+		let image_handle = ImageHandle::from_index(image_handle.0.index());
 		assert!(
-			self.images[image_handle.0 as usize].staging_buffer.is_some(),
+			self.images[image_handle.index() as usize].staging_buffer.is_some(),
 			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
 		);
 		self.pending_image_syncs.insert((image_handle, None));
 	}
 
 	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handle = ImageHandle(image_handle.0.0);
+		let handle = ImageHandle::from_index(image_handle.0.index());
 		let texture = handle.access(&self.images);
 		f(unsafe { std::slice::from_raw_parts_mut(texture.pointer.unwrap().0, texture.size) });
 		self.pending_image_syncs.insert((handle, None));
@@ -216,7 +217,7 @@ impl crate::context::Context for Context {
 			};
 			let descriptor_set = self
 				.descriptor_sets
-				.get_mut(descriptor_write.descriptor_set.0 as usize)
+				.get_mut(descriptor_write.descriptor_set.index() as usize)
 				.expect(
 					"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context.",
 				);
@@ -299,9 +300,10 @@ impl crate::context::Context for Context {
 			vk::SwapchainKHR::null(),
 		);
 
-		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
+		let swapchain_handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
 
-		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
+		// Only the live prefixes are accessed; inactive entries retain an out-of-range index.
+		let mut acquire_synchronizers = [SynchronizerHandle::from_index(u64::MAX - 1); MAX_FRAMES_IN_FLIGHT];
 		for synchronizer in &mut acquire_synchronizers[..self.frames as usize] {
 			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
 		}
@@ -317,7 +319,7 @@ impl crate::context::Context for Context {
 			"Vulkan swapchain returned more images than the backend tracks. The most likely cause is a surface whose minimum image count exceeds MAX_SWAPCHAIN_IMAGES."
 		);
 
-		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		let mut submit_synchronizers = [SynchronizerHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES];
 		for synchronizer in &mut submit_synchronizers[..vk_images.len()] {
 			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
 		}
@@ -327,7 +329,7 @@ impl crate::context::Context for Context {
 		} else {
 			uses
 		};
-		let mut native_images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		let mut native_images = [ImageHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES];
 		for (i, &vk_image) in vk_images.iter().enumerate() {
 			let previous = i.checked_sub(1).map(|previous| native_images[previous]);
 			native_images[i] =
@@ -394,7 +396,7 @@ impl crate::context::Context for Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		interval: Option<std::time::Duration>,
 	) {
-		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+		self.swapchains[swapchain_handle.index() as usize].present_interval = interval;
 	}
 
 	/// Waits for the transfer's submission, copies one mapped transfer result, and releases its dedicated staging resources.
@@ -446,7 +448,7 @@ impl crate::context::Context for Context {
 		size: usize,
 	) {
 		let master_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
-		if self.buffers.resource(BufferHandle(master_handle.0)).size >= size {
+		if self.buffers.resource(BufferHandle::from_index(master_handle.index())).size >= size {
 			return;
 		}
 
@@ -491,7 +493,7 @@ impl crate::context::Context for Context {
 	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
 	fn poll_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) -> bool {
 		self.get_syncronizer_handles(synchronizer).into_iter().all(|handle| {
-			let synchronizer = &self.synchronizers[handle.0 as usize];
+			let synchronizer = &self.synchronizers[handle.index() as usize];
 			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
 			!synchronizer.armed
 				|| unsafe { self.device.get_fence_status(synchronizer.fence) }.expect(
@@ -545,7 +547,7 @@ impl crate::context::ContextCreate for Context {
 			index_count,
 			vertex_size: vertex_layout.iter().map(|element| element.format.size()).sum(),
 		});
-		graphics_hardware_interface::MeshHandle(self.meshes.len() as u64 - 1)
+		graphics_hardware_interface::MeshHandle::from_index(self.meshes.len() as u64 - 1)
 	}
 
 	/// Creates a shader.
@@ -565,7 +567,9 @@ impl crate::context::ContextCreate for Context {
 			self.device.pipeline_binaries.as_deref(),
 		)?;
 		self.shaders.push(shader);
-		Ok(graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64 - 1))
+		Ok(graphics_hardware_interface::ShaderHandle::from_index(
+			self.shaders.len() as u64 - 1,
+		))
 	}
 
 	/// Creates a retained group of flat slots. This backend materializes native descriptors per pipeline, so it does
@@ -575,7 +579,7 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		_layout: &crate::shader::DescriptorSetLayout,
 	) -> graphics_hardware_interface::DescriptorSetHandle {
-		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+		let handle = graphics_hardware_interface::DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
 		self.descriptor_sets.push(DescriptorSet {
 			next: None,
 			version: 0,
@@ -649,8 +653,9 @@ impl crate::context::ContextCreate for Context {
 			previous = self.create_image_internal(Some(previous), &builder);
 		}
 
-		let handle =
-			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
+		let handle = graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+			root_image_handle.index(),
+		));
 		self.set_object_debug_name(builder.name, handle.into());
 		// A member built without an extent has no memory until its group is placed.
 		if let Some(group) = builder.group {
@@ -688,7 +693,7 @@ impl crate::context::ContextCreate for Context {
 			crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
 		};
 
-		let handle = graphics_hardware_interface::SamplerHandle(self.samplers.len() as u64);
+		let handle = graphics_hardware_interface::SamplerHandle::from_index(self.samplers.len() as u64);
 		self.samplers.push(Sampler {
 			mag_filter: filtering_mode,
 			min_filter: filtering_mode,
@@ -744,7 +749,7 @@ impl crate::context::ContextCreate for Context {
 			builder.device_accesses,
 		);
 		graphics_hardware_interface::BufferHandle(
-			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
+			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.index()),
 			std::marker::PhantomData,
 		)
 	}
@@ -769,7 +774,7 @@ impl crate::context::ContextCreate for Context {
 		}
 
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
-			graphics_hardware_interface::BaseBufferHandle::new(root.0),
+			graphics_hardware_interface::BaseBufferHandle::new(root.index()),
 			std::marker::PhantomData,
 		);
 		self.set_object_debug_name(
@@ -784,13 +789,13 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
-		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
+		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle::from_index(self.synchronizers.len() as u64);
 
 		let mut previous: Option<SynchronizerHandle> = None;
 		for _ in 0..self.frames {
 			let handle = self.create_synchronizer_internal(name, signaled);
 			if let Some(previous) = previous {
-				self.synchronizers[previous.0 as usize].next = Some(handle);
+				self.synchronizers[previous.index() as usize].next = Some(handle);
 			}
 			previous = Some(handle);
 		}

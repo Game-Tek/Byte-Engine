@@ -116,7 +116,7 @@ impl Context {
 		slot: crate::shader::ResourceSlot,
 	) -> Option<&'a HashMap<u32, crate::vulkan::descriptor_set::RetainedDescriptor>> {
 		sets.iter()
-			.find_map(|set| self.descriptor_sets[set.0 as usize].descriptors.get(&slot))
+			.find_map(|set| self.descriptor_sets[set.index() as usize].descriptors.get(&slot))
 	}
 
 	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
@@ -155,7 +155,7 @@ impl Context {
 	) {
 		for set in sets {
 			assert!(
-				(set.0 as usize) < self.descriptor_sets.len(),
+				(set.index() as usize) < self.descriptor_sets.len(),
 				"Invalid Vulkan descriptor set. The most likely cause is that a bound handle came from another context.",
 			);
 		}
@@ -164,7 +164,7 @@ impl Context {
 			let descriptor = resource.descriptor;
 			for set in sets {
 				assert!(
-					self.descriptor_sets[set.0 as usize]
+					self.descriptor_sets[set.index() as usize]
 						.descriptors
 						.keys()
 						.all(|slot| crate::vulkan::resource_accepts_retained_slot_key(descriptor, *slot)),
@@ -175,7 +175,7 @@ impl Context {
 			let owners = sets
 				.iter()
 				.filter(|set| {
-					self.descriptor_sets[set.0 as usize]
+					self.descriptor_sets[set.index() as usize]
 						.descriptors
 						.contains_key(&descriptor.slot())
 				})
@@ -215,8 +215,8 @@ impl Context {
 		sequence_index: u8,
 	) -> Option<(graphics_hardware_interface::SwapchainHandle, u8)> {
 		self.swapchains.iter().enumerate().find_map(|(index, swapchain)| {
-			(swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0).then_some((
-				graphics_hardware_interface::SwapchainHandle(index as u64),
+			(swapchain.images[0].index() == handle.index() || swapchain.native_images[0].index() == handle.index()).then_some((
+				graphics_hardware_interface::SwapchainHandle::from_index(index as u64),
 				swapchain.acquired_image_indices[sequence_index as usize],
 			))
 		})
@@ -228,11 +228,11 @@ impl Context {
 		sets: &[graphics_hardware_interface::DescriptorSetHandle],
 		sequence_index: u8,
 	) -> MaterializationKey {
-		let layout = &self.pipeline_layouts[layout_handle.0 as usize];
+		let layout = &self.pipeline_layouts[layout_handle.index() as usize];
 		let mut descriptor_sets = sets
 			.iter()
 			.map(|set| {
-				let descriptor_set = &self.descriptor_sets[set.0 as usize];
+				let descriptor_set = &self.descriptor_sets[set.index() as usize];
 				(
 					*set,
 					descriptor_set.version,
@@ -240,7 +240,7 @@ impl Context {
 				)
 			})
 			.collect::<SmallVec<[_; 4]>>();
-		descriptor_sets.sort_unstable_by_key(|(set, ..)| set.0);
+		descriptor_sets.sort_unstable_by_key(|(set, ..)| set.index());
 		let mut resource_epochs = SmallVec::<[_; MAX_FRAMES_IN_FLIGHT]>::new();
 		let mut swapchain_images = SmallVec::<[_; 4]>::new();
 		for resource in &layout.resources {
@@ -254,7 +254,7 @@ impl Context {
 					WriteData::Buffer { .. } => None,
 					WriteData::Swapchain(handle) => Some((
 						handle,
-						self.swapchains[handle.0 as usize].acquired_image_indices[target_sequence as usize],
+						self.swapchains[handle.index() as usize].acquired_image_indices[target_sequence as usize],
 					)),
 					WriteData::Image { handle, .. }
 					| WriteData::CombinedImageSampler {
@@ -276,7 +276,7 @@ impl Context {
 		}
 		resource_epochs.sort_unstable_by_key(|(sequence, _)| *sequence);
 		resource_epochs.dedup();
-		swapchain_images.sort_unstable_by_key(|(handle, image)| (handle.0, *image));
+		swapchain_images.sort_unstable_by_key(|(handle, image)| (handle.index(), *image));
 		swapchain_images.dedup();
 
 		MaterializationKey {
@@ -331,7 +331,7 @@ impl Context {
 			WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
 			WriteData::AccelerationStructure { .. } => crate::rt::unsupported("Vulkan"),
 			WriteData::Swapchain(handle) => {
-				let swapchain = &self.swapchains[handle.0 as usize];
+				let swapchain = &self.swapchains[handle.index() as usize];
 				Descriptor::Image {
 					image: swapchain.images[swapchain.acquired_image_indices[resource_sequence] as usize],
 					layout: crate::Layouts::General,
@@ -438,7 +438,7 @@ impl Context {
 			return *handle;
 		}
 
-		let layout = self.pipeline_layouts[layout_handle.0 as usize].clone();
+		let layout = self.pipeline_layouts[layout_handle.index() as usize].clone();
 		self.validate_descriptor_sets(&layout, sets);
 		let mut resolved = Vec::<(PipelineResourceDescriptor, u32, Descriptor)>::new();
 		for resource in &layout.resources {
@@ -513,7 +513,7 @@ impl Context {
 					layout: image_layout,
 					mip_level,
 				} => {
-					let image = &self.images[image.0 as usize];
+					let image = &self.images[image.index() as usize];
 					let descriptor_type = crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap();
 					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
 					let (base_mip_level, level_count) = match mip_level {
@@ -541,7 +541,7 @@ impl Context {
 					layout: image_layout,
 					layer,
 				} => {
-					let image = &self.images[image.0 as usize];
+					let image = &self.images[image.index() as usize];
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
 						self.descriptor_image_view_create_info(
@@ -635,14 +635,14 @@ impl Context {
 				.iter()
 				.map(|(handle, ..)| {
 					vk::SamplerReductionModeCreateInfo::default()
-						.reduction_mode(self.samplers[handle.0 as usize].reduction_mode)
+						.reduction_mode(self.samplers[handle.index() as usize].reduction_mode)
 				})
 				.collect::<Box<[_]>>();
 			let samplers = sampler_writes
 				.iter()
 				.zip(&reductions)
 				.map(|((handle, ..), reduction)| {
-					let mut sampler = self.samplers[handle.0 as usize].create_info();
+					let mut sampler = self.samplers[handle.index() as usize].create_info();
 					sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
 					sampler
 				})
@@ -671,18 +671,20 @@ impl Context {
 		let handle = self
 			.free_materialization_handles
 			.pop()
-			.unwrap_or(DescriptorMaterializationHandle(self.descriptor_materializations.len() as u64));
-		if handle.0 as usize == self.descriptor_materializations.len() {
+			.unwrap_or(DescriptorMaterializationHandle::from_index(
+				self.descriptor_materializations.len() as u64,
+			));
+		if handle.index() as usize == self.descriptor_materializations.len() {
 			self.descriptor_materializations.push(Some(materialization));
 		} else {
-			self.descriptor_materializations[handle.0 as usize] = Some(materialization);
+			self.descriptor_materializations[handle.index() as usize] = Some(materialization);
 		}
 		self.materialization_indices.insert(key, handle);
 		handle
 	}
 
 	pub(crate) fn descriptor_materialization(&self, handle: DescriptorMaterializationHandle) -> &DescriptorMaterialization {
-		self.descriptor_materializations[handle.0 as usize].as_ref().expect(
+		self.descriptor_materializations[handle.index() as usize].as_ref().expect(
 			"Retired Vulkan descriptor materialization was reused. The most likely cause is that a command buffer outlived its frame sequence fence.",
 		)
 	}

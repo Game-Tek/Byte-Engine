@@ -32,7 +32,7 @@ use crate::{
 /// `world.set(request).on(handle)` and read the root motion the system posts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Animator {
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	root_motion: Option<RootMotionSettings<'static>>,
 	look_chain: Option<LookChainSettings<'static>>,
 }
@@ -65,7 +65,10 @@ impl Animator {
 ///
 /// Get one from [`AnimationSystem::register`], then pass it to [`Animator::new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct AnimationGraphId(u64);
+#[repr(transparent)]
+pub struct AnimationGraphId(std::num::NonZeroU64);
+
+const _: () = assert!(size_of::<Option<AnimationGraphId>>() == size_of::<u64>());
 
 /// The `RootMotionUpdate` struct carries the root motion a step extracted for one animator, for the code that owns
 /// the entity to move it by. The system never moves an entity itself.

@@ -129,7 +129,7 @@ impl Drop for Device {
 	fn drop(&mut self) {
 		// Device teardown owns every remaining recording, so abandon speculative state before enforcing the queue-idle precondition.
 		for index in (0..self.command_buffers.len()).rev() {
-			let command_buffer_handle = CommandBufferHandle(index as u64);
+			let command_buffer_handle = CommandBufferHandle::from_index(index as u64);
 			let frame_count = self.command_buffers[index].frames.len();
 			for sequence_index in (0..frame_count).rev() {
 				self.command_buffers[index].activate_sequence(sequence_index as u8);
@@ -1237,7 +1237,7 @@ impl crate::context::Context for Device {
 	}
 
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {
-		self.swapchains[swapchain.0 as usize].present_interval = interval;
+		self.swapchains[swapchain.index() as usize].present_interval = interval;
 	}
 
 	fn get_image_data(
@@ -1271,7 +1271,7 @@ impl crate::context::Context for Device {
 	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool {
 		let complete = self.synchronizer_handles(synchronizer).into_iter().all(|handle| {
 			self.synchronizers
-				.get(handle.0 as usize)
+				.get(handle.index() as usize)
 				.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
 		});
 		if complete {
@@ -1282,7 +1282,7 @@ impl crate::context::Context for Device {
 
 	fn wait(&mut self) {
 		for index in 0..self.synchronizers.len() {
-			self.wait_for_private_synchronizer(crate::synchronizer::SynchronizerHandle(index as u64));
+			self.wait_for_private_synchronizer(crate::synchronizer::SynchronizerHandle::from_index(index as u64));
 		}
 	}
 }

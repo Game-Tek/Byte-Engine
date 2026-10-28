@@ -36,7 +36,7 @@ impl<'a> Frame<'a> {
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	) {
-		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames
+		let command_buffer = self.device.command_buffers[command_buffer_handle.index() as usize].frames
 			[self.frame_key.sequence_index as usize]
 			.clone();
 		// The submission signals the frame sequence's own synchronizer.
@@ -81,8 +81,9 @@ impl<'a> Frame<'a> {
 			.command_buffer_infos(&command_buffer_infos)
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores);
-		let execution_completion_fence =
-			synchronizer.map_or(vk::Fence::null(), |handle| self.device.synchronizers[handle.0 as usize].fence);
+		let execution_completion_fence = synchronizer.map_or(vk::Fence::null(), |handle| {
+			self.device.synchronizers[handle.index() as usize].fence
+		});
 		let vk_queue = self.device.device.vk_queues[command_buffer.vk_queue_index]
 			.lock()
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
@@ -108,7 +109,7 @@ impl<'a> Frame<'a> {
 			match unsafe { self.device.swapchain.queue_present(*vk_queue, &present_info) } {
 				Ok(false) => {}
 				Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-					self.device.swapchains[presentation.swapchain.0 as usize].needs_recreation = true;
+					self.device.swapchains[presentation.swapchain.index() as usize].needs_recreation = true;
 				}
 				Err(error) => panic!(
 					"Failed to present a Vulkan swapchain image ({error:?}). The most likely cause is that the surface or the device was lost."
@@ -118,7 +119,7 @@ impl<'a> Frame<'a> {
 		// The queue lock borrows the context, so release it before marking the fence as pending.
 		drop(vk_queue);
 		if let Some(handle) = synchronizer {
-			self.device.synchronizers[handle.0 as usize].armed = true;
+			self.device.synchronizers[handle.index() as usize].armed = true;
 		}
 
 		self.device.states.extend(states);
@@ -129,7 +130,8 @@ impl<'a> Frame<'a> {
 		&mut self,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let index = self.device.get_syncronizer_handles(synchronizer_handle)[self.frame_key.sequence_index as usize].0 as usize;
+		let index =
+			self.device.get_syncronizer_handles(synchronizer_handle)[self.frame_key.sequence_index as usize].index() as usize;
 		let fence = self.device.synchronizers[index].fence;
 		{
 			let queue = self.device.device.vk_queues[self.device.queues[0].vk_queue_index]
@@ -147,14 +149,14 @@ impl<'a> Frame<'a> {
 	}
 
 	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		let handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
+		let handles = ImageHandle::from_index(image_handle.index()).get_all(&self.device.images);
 		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
 	/// Returns the public handle of the image selected for this frame.
 	fn get_current_image(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> crate::ImageHandle {
 		crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-			self.get_current_image_handle(image_handle).0,
+			self.get_current_image_handle(image_handle).index(),
 		))
 	}
 
@@ -180,7 +182,7 @@ impl<'a> Frame<'a> {
 	}
 
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
-		&self.device.swapchains[swapchain_handle.0 as usize]
+		&self.device.swapchains[swapchain_handle.index() as usize]
 	}
 }
 
@@ -227,7 +229,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		region: crate::image::Region,
 	) {
 		let handle = self.get_current_image_handle(image_handle);
-		let image = &self.device.images[handle.0 as usize];
+		let image = &self.device.images[handle.index() as usize];
 		region.validate(image.extent, image.format_, image.layers.map_or(1, |layers| layers.get()));
 		assert!(
 			image.staging_buffer.is_some(),
@@ -259,7 +261,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		extent: Extent,
 		array_layers: std::num::NonZeroU32,
 	) {
-		let image = &self.device.images[ImageHandle(image_handle.index()).0 as usize];
+		let image = &self.device.images[image_handle.index() as usize];
 		crate::image::assert_resizable_layers(image.cube_array_compatible, array_layers);
 		self.resize_image_storage(image_handle, extent, Some(array_layers));
 	}
@@ -321,11 +323,11 @@ impl Frame<'_> {
 	) {
 		self.device.image_groups.assert_resizable(image_handle);
 		let current_frame = self.frame_key.sequence_index;
-		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
+		let image_handles = ImageHandle::from_index(image_handle.index()).get_all(&self.device.images);
 		// Every earlier resize queued its size for the other copies after resizing this one, so matching copies
 		// mean no resize toward a different size is still pending.
 		if image_handles.iter().all(|handle| {
-			let image = &self.device.images[handle.0 as usize];
+			let image = &self.device.images[handle.index() as usize];
 			image.extent == extent && array_layers.is_none_or(|layers| image.layers == Some(layers))
 		}) {
 			return;

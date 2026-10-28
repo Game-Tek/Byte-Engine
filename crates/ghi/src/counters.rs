@@ -64,7 +64,7 @@ impl Counters {
 
 	/// Registers one counter and returns its handle.
 	pub(crate) fn create(&mut self) -> CounterHandle {
-		let handle = CounterHandle(self.samples.len() as u64);
+		let handle = CounterHandle::from_index(self.samples.len() as u64);
 		self.samples.push(None);
 		handle
 	}
@@ -76,7 +76,7 @@ impl Counters {
 		assert!(
 			sequence.spans.iter().all(|span| span.counter != counter),
 			"Counter {} started twice in one frame. The most likely cause is that start_counter was called again before end_counter.",
-			counter.0,
+			counter.index(),
 		);
 		let start = sequence.allocate();
 		sequence.spans.push(Span {
@@ -98,13 +98,13 @@ impl Counters {
 			.unwrap_or_else(|| {
 				panic!(
 					"Counter {} ended without a start. The most likely cause is that end_counter was called before start_counter in this frame.",
-					counter.0,
+					counter.index(),
 				)
 			});
 		assert!(
 			sequence.spans[index].end.is_none(),
 			"Counter {} ended twice in one frame. The most likely cause is that end_counter was called again after the counter already ended.",
-			counter.0,
+			counter.index(),
 		);
 		let end = sequence.allocate();
 		sequence.spans[index].end = Some(end);
@@ -137,7 +137,7 @@ impl Counters {
 			let start = ticks(Self::pool_slot(sequence_index, span.start));
 			let end = ticks(Self::pool_slot(sequence_index, end));
 			if let (Some(start), Some(end)) = (start, end) {
-				self.samples[span.counter.0 as usize] = Some(elapsed(start, end));
+				self.samples[span.counter.index() as usize] = Some(elapsed(start, end));
 			}
 		}
 		sequence.next_slot = 0;
@@ -146,14 +146,14 @@ impl Counters {
 	/// Returns the duration `counter` measured in the most recently resolved frame.
 	pub(crate) fn duration(&self, counter: CounterHandle) -> Option<Duration> {
 		self.validate(counter);
-		self.samples[counter.0 as usize]
+		self.samples[counter.index() as usize]
 	}
 
 	fn validate(&self, counter: CounterHandle) {
 		assert!(
-			(counter.0 as usize) < self.samples.len(),
+			(counter.index() as usize) < self.samples.len(),
 			"Invalid counter handle {}. The most likely cause is that the handle came from another context.",
-			counter.0,
+			counter.index(),
 		);
 	}
 
@@ -292,7 +292,7 @@ mod tests {
 	#[should_panic(expected = "Invalid counter handle")]
 	fn a_handle_from_another_context_is_rejected() {
 		let counters = Counters::new();
-		counters.duration(CounterHandle(0));
+		counters.duration(CounterHandle::from_index(0));
 	}
 
 	#[test]

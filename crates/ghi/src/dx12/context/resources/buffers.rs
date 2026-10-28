@@ -8,7 +8,7 @@ impl Device {
 			builder.device_accesses,
 			BufferStorage::Static,
 		);
-		BufferHandle(BaseBufferHandle(handle), std::marker::PhantomData)
+		BufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
 	}
 
 	pub fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
@@ -18,7 +18,7 @@ impl Device {
 			builder.device_accesses,
 			BufferStorage::Dynamic,
 		);
-		DynamicBufferHandle(BaseBufferHandle(handle), std::marker::PhantomData)
+		DynamicBufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
 	}
 
 	pub fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {

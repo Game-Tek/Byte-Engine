@@ -19,7 +19,7 @@ pub(super) mod tests {
 	#[test]
 	#[should_panic(expected = "Render-pass attachments use different layer counts")]
 	fn render_pass_rejects_mixed_attachment_layer_counts() {
-		let target = BaseImageHandle(1);
+		let target = BaseImageHandle::from_index(1);
 		let single = AttachmentInformation::new(
 			target,
 			Layouts::RenderTarget,

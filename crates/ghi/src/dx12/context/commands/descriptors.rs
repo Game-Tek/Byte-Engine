@@ -182,7 +182,7 @@ impl Device {
 	fn descriptor_command_list_for_recording(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
 		let command_buffer = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		assert!(
 			command_buffer.lifecycle == CommandBufferLifecycle::Recording && command_buffer.is_open,
@@ -205,25 +205,26 @@ impl Device {
 			return;
 		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(pipeline) = self.pipelines.get(pipeline_handle.index() as usize) else {
 			return;
 		};
 		let pipeline_kind = pipeline.kind;
 		let Some(layout) = self
 			.pipeline_layouts
-			.get(pipeline.layout.0 as usize)
+			.get(pipeline.layout.index() as usize)
 			.map(|layout| &layout.key)
 		else {
 			return;
 		};
 
-		let mut retained = std::mem::take(&mut self.command_buffers[command_buffer_handle.0 as usize].descriptor_sync_scratch);
+		let mut retained =
+			std::mem::take(&mut self.command_buffers[command_buffer_handle.index() as usize].descriptor_sync_scratch);
 		for resource in &layout.resources {
 			for &set_handle in sets {
 				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
 					continue;
 				};
-				let Some(descriptors) = self.descriptor_sets[set_handle.0 as usize]
+				let Some(descriptors) = self.descriptor_sets[set_handle.index() as usize]
 					.descriptors
 					.get(&resource.descriptor.slot())
 				else {
@@ -303,7 +304,7 @@ impl Device {
 				_ => {}
 			}
 		}
-		self.command_buffers[command_buffer_handle.0 as usize].descriptor_sync_scratch = retained;
+		self.command_buffers[command_buffer_handle.index() as usize].descriptor_sync_scratch = retained;
 
 		let mut barriers = EnhancedBarrierBatch::default();
 		for requirement in requirements.entries {
@@ -353,7 +354,7 @@ impl Device {
 	fn descriptor_image_alias_key(&self, handle: crate::BaseImageHandle, sequence_index: u8) -> DescriptorAliasKey {
 		let dynamic = self
 			.images
-			.get(handle.0 as usize)
+			.get(handle.index() as usize)
 			.is_some_and(|image| image.frame_resources.is_some());
 		DescriptorAliasKey::Image(handle, if dynamic { sequence_index } else { 0 })
 	}
@@ -365,8 +366,8 @@ impl Device {
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) -> SmallVec<[DescriptorAliasUse; 32]> {
-		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize].key;
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize].key;
 		let pipeline_kind = pipeline.kind;
 		let capacity_hint = layout
 			.resources
@@ -380,7 +381,7 @@ impl Device {
 				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
 					continue;
 				};
-				let Some(descriptors) = self.descriptor_sets[set_handle.0 as usize]
+				let Some(descriptors) = self.descriptor_sets[set_handle.index() as usize]
 					.descriptors
 					.get(&resource.descriptor.slot())
 				else {
@@ -530,7 +531,7 @@ impl Device {
 	) {
 		let image = self
 			.images
-			.get(image_handle.0 as usize)
+			.get(image_handle.index() as usize)
 			.expect("Invalid DX12 image descriptor. The most likely cause is that the retained image handle is stale.");
 		assert!(
 			image.extent.width() != 0 && image.extent.height() != 0 && (!image.is_3d || image.extent.depth() != 0),
@@ -603,15 +604,15 @@ impl Device {
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
-		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize].key;
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize].key;
 		let sequence_sets = sets
 			.iter()
 			.map(|&set| self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set))
 			.collect::<SmallVec<[DescriptorSetHandle; 8]>>();
 
 		for &set_handle in &sequence_sets {
-			let set = &self.descriptor_sets[set_handle.0 as usize];
+			let set = &self.descriptor_sets[set_handle.index() as usize];
 			for &slot in set.descriptors.keys() {
 				// Pipeline resources are sorted and non-overlapping, so only the insertion point and its predecessor can match.
 				let slot_index = slot.index();
@@ -642,7 +643,7 @@ impl Device {
 			let owners = sequence_sets
 				.iter()
 				.filter_map(|set_handle| {
-					self.descriptor_sets[set_handle.0 as usize]
+					self.descriptor_sets[set_handle.index() as usize]
 						.descriptors
 						.get(&resource.descriptor.slot())
 				})
@@ -690,7 +691,7 @@ impl Device {
 			return;
 		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(pipeline) = self.pipelines.get(pipeline_handle.index() as usize) else {
 			return;
 		};
 		let layout_handle = pipeline.layout;
@@ -723,7 +724,7 @@ impl Device {
 			.map(|heap| heap.native.as_raw() as usize);
 		let heaps_changed = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.is_none_or(|command_buffer| {
 				command_buffer.bound_cbv_srv_uav_heap != cbv_srv_uav_identity
 					|| command_buffer.bound_sampler_heap != sampler_identity
@@ -733,7 +734,7 @@ impl Device {
 			unsafe {
 				command_list.SetDescriptorHeaps(&heaps[..heap_count]);
 			}
-			if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 				command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
 				command_buffer.bound_sampler_heap = sampler_identity;
 			}
@@ -741,7 +742,7 @@ impl Device {
 		}
 		let Some((resource_table_root, sampler_table_root)) = self
 			.pipeline_layouts
-			.get(layout_handle.0 as usize)
+			.get(layout_handle.index() as usize)
 			.map(|layout| (layout.resource_table_root, layout.sampler_table_root))
 		else {
 			return;
@@ -801,12 +802,12 @@ impl Device {
 		};
 		let Some((pipeline_kind, layout_handle)) = self
 			.pipelines
-			.get(pipeline_handle.0 as usize)
+			.get(pipeline_handle.index() as usize)
 			.map(|pipeline| (pipeline.kind, pipeline.layout))
 		else {
 			return;
 		};
-		let Some(layout) = self.pipeline_layouts.get(layout_handle.0 as usize) else {
+		let Some(layout) = self.pipeline_layouts.get(layout_handle.index() as usize) else {
 			return;
 		};
 		let Some(root_parameter_index) = layout.push_constant_root else {

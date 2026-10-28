@@ -5,7 +5,7 @@ impl Device {
 	pub(crate) fn discard_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
 		let lifecycle = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.map(|command_buffer| command_buffer.lifecycle);
 		if !matches!(
 			lifecycle,
@@ -17,7 +17,7 @@ impl Device {
 		// A discarded recording never executes its uploads, so make their staging data available to the next recording.
 		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
 		self.rollback_command_buffer_resource_states(command_buffer_handle);
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.lifecycle = CommandBufferLifecycle::Idle;
 		}
 	}
@@ -30,7 +30,7 @@ impl Device {
 	) {
 		let command_buffer = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		assert_eq!(
 			command_buffer.queue_handle, queue_handle,
@@ -63,7 +63,7 @@ impl Device {
 
 	/// Commits resource states after the command list has entered the native queue.
 	pub(crate) fn commit_command_buffer_resource_states(&mut self, command_buffer_handle: CommandBufferHandle) {
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.original_buffer_states.clear();
 			command_buffer.original_image_states.clear();
 		}
@@ -72,12 +72,12 @@ impl Device {
 
 	/// Restores resource states when recorded barriers will never execute.
 	pub(crate) fn rollback_command_buffer_resource_states(&mut self, command_buffer_handle: CommandBufferHandle) {
-		self.command_buffers[command_buffer_handle.0 as usize]
+		self.command_buffers[command_buffer_handle.index() as usize]
 			.present_resources
 			.clear();
 		let (buffer_states, image_states) = self
 			.command_buffers
-			.get_mut(command_buffer_handle.0 as usize)
+			.get_mut(command_buffer_handle.index() as usize)
 			.map(|command_buffer| {
 				(
 					std::mem::take(&mut command_buffer.original_buffer_states),
@@ -108,7 +108,7 @@ impl Device {
 			return;
 		};
 		let original = self.buffer_states.get(&key).copied();
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		if command_buffer
@@ -126,7 +126,7 @@ impl Device {
 			return;
 		};
 		let original = self.image_states.get(&key).copied();
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		if command_buffer
@@ -196,7 +196,7 @@ impl Device {
 		let earlier_states = std::iter::once(key)
 			.chain(overwritten.into_iter().flatten().filter_map(|other| {
 				self.images
-					.get(other.0 as usize)?
+					.get(other.index() as usize)?
 					.resource
 					.as_ref()
 					.map(Self::native_resource_key)

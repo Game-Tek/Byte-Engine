@@ -215,7 +215,7 @@ impl ResourceIoQueue {
 
 	/// Resolves a file index against this queue before any native request is enqueued.
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&OpenFile, ResourceIoError> {
-		let index = usize::try_from(region.file.index).map_err(|_| ResourceIoError::InvalidFileHandle)?;
+		let index = usize::try_from(region.file.index()).map_err(|_| ResourceIoError::InvalidFileHandle)?;
 		self.files.get(index).ok_or(ResourceIoError::InvalidFileHandle)
 	}
 
@@ -386,7 +386,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			handle,
 			compression: descriptor.compression,
 		});
-		Ok(ResourceIoFileHandle { index })
+		Ok(ResourceIoFileHandle::from_index(index))
 	}
 
 	/// Submits requests whose destinations are static default-heap resources tracked in the common state.
@@ -894,7 +894,7 @@ mod tests {
 
 	#[test]
 	fn compressed_sources_require_a_nonempty_stored_block() {
-		let file = ResourceIoFileHandle { index: 0 };
+		let file = ResourceIoFileHandle::from_index(0);
 		let missing = ResourceIoFileRegion::new(file, 0);
 		let empty = ResourceIoFileRegion::new(file, 0).stored_range(20, 0);
 		let valid = ResourceIoFileRegion::new(file, 64).stored_range(20, 12);
@@ -942,7 +942,7 @@ mod tests {
 		let layout = context
 			.resource_io_image_source_layout(crate::Formats::RGBA8UNORM, utils::Extent::rectangle(2, 2))
 			.expect("DX12 validation image should expose a source layout");
-		let file = ResourceIoFileHandle { index: 0 };
+		let file = ResourceIoFileHandle::from_index(0);
 		let valid = ResourceIoImageLoad::new(
 			ResourceIoFileRegion::new(file, 0),
 			image,

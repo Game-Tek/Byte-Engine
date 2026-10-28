@@ -233,16 +233,18 @@ impl DescriptorWrite {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct DescriptorSetHandle(pub(crate) u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+	pub(crate) struct DescriptorSetHandle;
+}
 
 impl crate::PrivateHandle for DescriptorSetHandle {
 	fn new(i: u64) -> Self {
-		Self(i)
+		Self::from_index(i)
 	}
 
 	fn index(&self) -> u64 {
-		self.0
+		DescriptorSetHandle::index(*self)
 	}
 }
 
@@ -261,11 +263,11 @@ impl HandleLike for DescriptorSetHandle {
 	type Item = DescriptorSet;
 
 	fn build(value: u64) -> Self {
-		DescriptorSetHandle(value)
+		DescriptorSetHandle::from_index(value)
 	}
 
 	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a DescriptorSet {
-		&collection[self.0 as usize]
+		&collection[self.index() as usize]
 	}
 }
 

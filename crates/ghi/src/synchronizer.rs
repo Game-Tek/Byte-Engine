@@ -2,8 +2,10 @@
 use crate::{HandleLike, Next, Synchronizer};
 use crate::{PrivateHandle, PrivateHandles};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SynchronizerHandle(pub(crate) u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+	pub(crate) struct SynchronizerHandle;
+}
 
 impl From<SynchronizerHandle> for PrivateHandles {
 	fn from(val: SynchronizerHandle) -> Self {
@@ -13,11 +15,11 @@ impl From<SynchronizerHandle> for PrivateHandles {
 
 impl PrivateHandle for SynchronizerHandle {
 	fn new(i: u64) -> Self {
-		Self(i)
+		Self::from_index(i)
 	}
 
 	fn index(&self) -> u64 {
-		self.0
+		SynchronizerHandle::index(*self)
 	}
 }
 
@@ -27,11 +29,11 @@ impl HandleLike for SynchronizerHandle {
 	type Item = Synchronizer;
 
 	fn build(value: u64) -> Self {
-		SynchronizerHandle(value)
+		SynchronizerHandle::from_index(value)
 	}
 
 	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Synchronizer {
-		&collection[self.0 as usize]
+		&collection[self.index() as usize]
 	}
 }
 

@@ -48,7 +48,7 @@ impl Device {
 	}
 
 	pub(crate) fn copy_buffer_to_image(&mut self, copy: &crate::BufferImageCopyDescriptor, sequence_index: u8) {
-		let Some(image) = self.images.get(copy.destination_image.0 as usize) else {
+		let Some(image) = self.images.get(copy.destination_image.index() as usize) else {
 			return;
 		};
 		let Some((row_bytes, row_count, compact_bytes_per_image)) = utils::texture_copy_layout(image.format, image.extent)
@@ -115,7 +115,7 @@ impl Device {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(copy.destination_image, sequence_index);
-		let Some(image) = self.images.get(copy.destination_image.0 as usize) else {
+		let Some(image) = self.images.get(copy.destination_image.index() as usize) else {
 			return;
 		};
 		if copy.destination_mip_level >= image.mip_levels {
@@ -196,7 +196,7 @@ impl Device {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
+		let Some(image) = self.images.get(image_handle.0.index() as usize) else {
 			return;
 		};
 		let (Some(destination), Some((source_row_pitch, row_count, _))) =
@@ -246,7 +246,7 @@ impl Device {
 
 			pending.swap_remove(index);
 			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index, region) {
-				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 					command_buffer
 						.recorded_texture_syncs
 						.push((image_handle, sequence_index, region));
@@ -262,7 +262,7 @@ impl Device {
 	pub(crate) fn requeue_recorded_texture_syncs_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
 		let mut recorded = self
 			.command_buffers
-			.get_mut(command_buffer_handle.0 as usize)
+			.get_mut(command_buffer_handle.index() as usize)
 			.map(|command_buffer| std::mem::take(&mut command_buffer.recorded_texture_syncs))
 			.unwrap_or_default();
 		for upload in recorded.drain(..) {
@@ -270,7 +270,7 @@ impl Device {
 				self.pending_texture_syncs.push(upload);
 			}
 		}
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.recorded_texture_syncs = recorded;
 		}
 	}
@@ -294,7 +294,7 @@ impl Device {
 			return false;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let image_index = image_handle.0.0 as usize;
+		let image_index = image_handle.0.index() as usize;
 		let Some(image) = self.images.get(image_index) else {
 			return false;
 		};
@@ -345,7 +345,10 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.as_ref() else {
+		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
+			.command_list
+			.as_ref()
+		else {
 			return;
 		};
 
@@ -369,7 +372,10 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.as_ref() else {
+		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
+			.command_list
+			.as_ref()
+		else {
 			return;
 		};
 
@@ -394,7 +400,7 @@ impl Device {
 		destination_mip_level: u32,
 		region: Option<crate::image::Region>,
 	) -> bool {
-		let format = self.images[image_handle.0 as usize].format;
+		let format = self.images[image_handle.index() as usize].format;
 		let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
 		let origin = region.map_or([0, 0], |region| region.offset);
 		let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);

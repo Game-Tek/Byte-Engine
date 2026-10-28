@@ -252,7 +252,7 @@ impl InnerDevice {
 			.map(|&(family, index)| std::sync::Mutex::new(unsafe { device.get_device_queue(family, index) }))
 			.collect::<std::sync::Arc<[_]>>();
 		for ((_, queue_handle), index) in queues.iter_mut().zip(0u64..) {
-			**queue_handle = Some(graphics_hardware_interface::QueueHandle(index));
+			**queue_handle = Some(graphics_hardware_interface::QueueHandle::from_index(index));
 		}
 
 		let supports_formatless_storage_write =

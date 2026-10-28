@@ -45,7 +45,7 @@ impl Device {
 		&self,
 		image_handle: crate::BaseImageHandle,
 	) -> Option<ResourceIoImageDestination> {
-		let image = self.images.get(image_handle.0 as usize)?;
+		let image = self.images.get(image_handle.index() as usize)?;
 		if image.frame_resources.is_some() {
 			return None;
 		}

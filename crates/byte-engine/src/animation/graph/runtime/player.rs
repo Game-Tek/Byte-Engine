@@ -411,7 +411,7 @@ pub struct AnimationGraphPose<'a> {
 pub struct AnimationGraphPlayer {
 	/// The ID of the graph the player plays. The player keeps no graph: whoever owns it, usually the animation
 	/// system, lends it to every call that evaluates.
-	graph: u64,
+	graph: std::num::NonZeroU64,
 	/// Retained until the initial clip supplies the canonical skeleton that resolves the node name.
 	root_motion: Option<RootMotionSettings<'static>>,
 	/// Retained like `root_motion`, until the canonical skeleton resolves the chain's nodes.

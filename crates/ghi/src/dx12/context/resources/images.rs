@@ -19,7 +19,7 @@ impl Device {
 		texture_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> &mut [u8] {
-		let image = &mut self.images[texture_handle.0 as usize];
+		let image = &mut self.images[texture_handle.index() as usize];
 		let data = if let Some(frame_data) = image.frame_data.as_mut() {
 			let requested_index = usize::from(sequence_index);
 			let index = if requested_index < frame_data.len() {
@@ -37,7 +37,7 @@ impl Device {
 
 	pub fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {
 		// Writes into CPU-side staging storage when available.
-		let Some(image) = self.images.get_mut(texture_handle.0.0 as usize) else {
+		let Some(image) = self.images.get_mut(texture_handle.0.index() as usize) else {
 			return;
 		};
 
@@ -66,7 +66,7 @@ impl Device {
 		sequence_index: u8,
 		region: crate::image::Region,
 	) {
-		let image = &self.images[image_handle.0 as usize];
+		let image = &self.images[image_handle.index() as usize];
 		region.validate(image.extent, image.format, image.array_layers);
 		self.pending_texture_syncs.push((image_handle, sequence_index, Some(region)));
 	}
@@ -140,7 +140,7 @@ impl Device {
 			optimized_clear_value,
 		});
 
-		let handle = crate::BaseImageHandle((self.images.len() - 1) as u64);
+		let handle = crate::BaseImageHandle::from_index((self.images.len() - 1) as u64);
 		// A member built without an extent has no resource until its group is placed.
 		if let Some(group) = builder.group {
 			self.image_groups.add_member(group, handle);
@@ -157,7 +157,7 @@ impl Device {
 
 	pub(crate) fn image_resource_state(&self, image: ImageHandle) -> Option<(Extent, bool)> {
 		self.images
-			.get(image.0.0 as usize)
+			.get(image.0.index() as usize)
 			.map(|image| (image.extent, image.resource.is_some()))
 	}
 
@@ -170,7 +170,7 @@ impl Device {
 	}
 
 	pub(crate) fn image_frame_resource_state(&self, image: ImageHandle, sequence_index: u8) -> Option<bool> {
-		self.images.get(image.0.0 as usize).map(|image| {
+		self.images.get(image.0.index() as usize).map(|image| {
 			image
 				.frame_resources
 				.as_ref()
@@ -189,7 +189,7 @@ impl Device {
 		image: ImageHandle,
 		sequence_index: u8,
 	) -> Option<TextureBarrierState> {
-		let image = self.images.get(image.0.0 as usize)?;
+		let image = self.images.get(image.0.index() as usize)?;
 		let resource = if let Some(resources) = image.frame_resources.as_ref() {
 			resources.get(sequence_index as usize)?.as_ref()?
 		} else {
@@ -210,7 +210,7 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
 		let (extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = {
-			let image = self.images.get(image_handle.0 as usize)?;
+			let image = self.images.get(image_handle.index() as usize)?;
 			(
 				image.extent,
 				image.is_3d,
@@ -225,7 +225,7 @@ impl Device {
 		if !dynamic {
 			let resource = self
 				.images
-				.get(image_handle.0 as usize)
+				.get(image_handle.index() as usize)
 				.and_then(|image| image.resource.clone());
 			if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
 				self.retain_command_buffer_resource(command_buffer, resource);
@@ -236,7 +236,7 @@ impl Device {
 		let frame_index = sequence_index as usize;
 		let needs_resource = self
 			.images
-			.get(image_handle.0 as usize)
+			.get(image_handle.index() as usize)
 			.and_then(|image| image.frame_resources.as_ref())
 			.and_then(|resources| resources.get(frame_index))
 			.and_then(Clone::clone)
@@ -248,7 +248,7 @@ impl Device {
 			if let Some(resource) = resource.as_ref() {
 				self.materialize_image_attachment_views(resource, format, uses, array_layers);
 			}
-			let image = self.images.get_mut(image_handle.0 as usize)?;
+			let image = self.images.get_mut(image_handle.index() as usize)?;
 			if let Some(resources) = image.frame_resources.as_mut() {
 				if resources.len() <= frame_index {
 					resources.resize(frame_index + 1, None);
@@ -259,7 +259,7 @@ impl Device {
 
 		let resource = self
 			.images
-			.get(image_handle.0 as usize)
+			.get(image_handle.index() as usize)
 			.and_then(|image| image.frame_resources.as_ref())
 			.and_then(|resources| resources.get(frame_index))
 			.and_then(Clone::clone);
@@ -274,7 +274,7 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let image = self.images.get(image_handle.0 as usize)?;
+		let image = self.images.get(image_handle.index() as usize)?;
 		if let Some(resources) = image.frame_resources.as_ref() {
 			return resources
 				.get(sequence_index as usize)
@@ -328,7 +328,7 @@ impl Device {
 
 	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {
 		self.images
-			.get(image.0.0 as usize)
+			.get(image.0.index() as usize)
 			.and_then(|image_data| image_data.resource.as_ref())
 			.map(|resource| {
 				self.image_states

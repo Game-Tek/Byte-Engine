@@ -141,7 +141,7 @@ fn register_funky(collector: &mut InputCollector) -> DeviceClassHandle {
 fn trigger_queries_reject_unknown_handles_and_malformed_paths() {
 	let fixture = Fixture::new();
 	for reference in [
-		TriggerReference::Handle(crate::input::TriggerHandle(u32::MAX)),
+		TriggerReference::Handle(crate::input::TriggerHandle::from_index(i32::MAX as u32)),
 		TriggerReference::Name(""),
 		TriggerReference::Name("Keyboard"),
 		TriggerReference::Name("Keyboard."),
@@ -326,6 +326,12 @@ fn source_events_expose_every_queued_record_until_every_sink_pulled() {
 	fixture.record("Mouse.Position", Axis2::new(0.5, 0.5));
 	let events: Vec<_> = fixture.collector.source_events().collect();
 	assert_eq!(events.len(), 2);
+	assert_eq!(events[0].seat_handle, SeatHandle::stub());
+	assert_eq!(events[0].device_handle, fixture.mouse);
+	assert_eq!(
+		Some(events[0].trigger_handle),
+		fixture.collector.trigger(TriggerReference::Name("Mouse.LeftButton"))
+	);
 	assert_eq!(events[0].value, Value::Bool(true));
 	assert_eq!(events[1].value, Value::Vector2(Axis2::new(0.5, 0.5)));
 	assert!(events[0].sequence < events[1].sequence);
@@ -347,7 +353,7 @@ fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_
 	// and retained press must disappear while another seat keeps its input.
 	fixture.record("Mouse.Position", Axis2::new(0.5, 0.5));
 	fixture.collector.record(
-		SeatHandle(1),
+		SeatHandle::from_index(1),
 		fixture.mouse,
 		TriggerReference::Name("Mouse.LeftButton"),
 		true.into(),
@@ -360,7 +366,7 @@ fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_
 	let resolved = fixture.pull(&mut sink, handles(button));
 	assert_eq!(resolved.len(), 2);
 	let published = sink.published();
-	assert_eq!(published[0].seat_handle(), SeatHandle(1));
+	assert_eq!(published[0].seat_handle(), SeatHandle::from_index(1));
 	assert_eq!(published[1].seat_handle(), SeatHandle::stub());
 	assert!(published.iter().all(|event| event.value() == Value::Bool(true)));
 	assert_eq!(fixture.value("Mouse.Position"), Value::Vector2(Axis2::zero()));
@@ -453,7 +459,7 @@ fn cancelling_a_sinks_action_neutralizes_it_and_requires_a_fresh_press() {
 	// The held action keeps repeating without new input.
 	assert_eq!(fixture.pull(&mut game, handles(movement)).len(), 1);
 
-	game.sink.cancel_action(SeatHandle::stub(), ActionHandle(0));
+	game.sink.cancel_action(SeatHandle::stub(), ActionHandle::from_index(0));
 	let cancelled = game.published();
 	let last = cancelled.last().expect("the cancelled action publishes its neutral value");
 	assert!(last.is_cancelled());
@@ -649,9 +655,9 @@ fn cancelling_a_seat_preserves_other_seats_values_for_the_same_action() {
 	let second = fixture.collector.create_device(&fixture.keyboard_class);
 	let third = fixture.collector.create_device(&fixture.keyboard_class);
 	let sources = [
-		(SeatHandle(0), fixture.keyboard),
-		(SeatHandle(0), second),
-		(SeatHandle(1), third),
+		(SeatHandle::from_index(0), fixture.keyboard),
+		(SeatHandle::from_index(0), second),
+		(SeatHandle::from_index(1), third),
 	];
 	for (seat, device) in sources {
 		fixture
@@ -660,17 +666,17 @@ fn cancelling_a_seat_preserves_other_seats_values_for_the_same_action() {
 	}
 	fixture.pull(&mut sink, pass);
 	let _ = sink.published();
-	sink.sink.cancel_seat(SeatHandle(0));
-	sink.sink.cancel_seat(SeatHandle(0));
+	sink.sink.cancel_seat(SeatHandle::from_index(0));
+	sink.sink.cancel_seat(SeatHandle::from_index(0));
 	assert_eq!(sink.published().iter().filter(|event| event.is_cancelled()).count(), 2);
 	for (seat, device) in sources {
 		assert_eq!(
-			sink.sink.action_state(seat, ActionHandle(0), device),
-			Value::Bool(seat == SeatHandle(1))
+			sink.sink.action_state(seat, ActionHandle::from_index(0), device),
+			Value::Bool(seat == SeatHandle::from_index(1))
 		);
 	}
 	assert_eq!(fixture.pull(&mut sink, pass).len(), 1);
-	assert_eq!(sink.published()[0].seat_handle(), SeatHandle(1));
+	assert_eq!(sink.published()[0].seat_handle(), SeatHandle::from_index(1));
 }
 
 #[test]
@@ -754,7 +760,7 @@ fn snapshot_bindings_sample_each_press_in_queue_order() {
 	// Motion alone stays silent, and another seat cannot sample this seat's value.
 	fixture.record("Mouse.Position", Axis2::new(7.0, 8.0));
 	fixture.collector.record(
-		SeatHandle(42),
+		SeatHandle::from_index(42),
 		fixture.mouse,
 		TriggerReference::Name("Mouse.LeftButton"),
 		Value::Bool(true),
@@ -901,8 +907,8 @@ fn cancelling_a_drag_at_the_origin_does_not_end_or_restart_it() {
 	fixture.record("Mouse.LeftButton", true);
 	fixture.pull(&mut sink, |_| true);
 	sink.published();
-	sink.sink.cancel_action(SeatHandle::stub(), ActionHandle(0));
-	sink.sink.cancel_action(SeatHandle::stub(), ActionHandle(0));
+	sink.sink.cancel_action(SeatHandle::stub(), ActionHandle::from_index(0));
+	sink.sink.cancel_action(SeatHandle::stub(), ActionHandle::from_index(0));
 	let cancelled = sink.published();
 	assert_eq!(cancelled.len(), 1);
 	assert_eq!(cancelled[0].phase(), Cancelled);
@@ -926,7 +932,7 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 		Types::Vector2,
 	));
 	let other = fixture.collector.create_device(&fixture.mouse_class);
-	let other_seat = SeatHandle(12);
+	let other_seat = SeatHandle::from_index(12);
 	// A value from another seat or device cannot supply a start position.
 	for (seat, device) in [(SeatHandle::stub(), other), (other_seat, fixture.mouse)] {
 		fixture.collector.record(
@@ -980,4 +986,68 @@ fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
 			.collect::<Vec<_>>(),
 		[Updated, Ended, Updated, Ended]
 	);
+}
+
+#[test]
+fn reflected_input_identities_reject_zero_and_round_trip_registered_seats() {
+	assert!(facet_json::from_str::<SeatHandle>("0").is_err());
+	assert!(facet_json::from_str::<DeviceHandle>("0").is_err());
+	assert!(facet_json::from_str::<crate::input::TriggerHandle>("0").is_err());
+	let seat = SeatHandle::stub();
+	let json = facet_json::to_string(&seat).expect("serialize seat");
+	assert_eq!(facet_json::from_str::<SeatHandle>(&json).expect("parse seat"), seat);
+}
+
+#[test]
+fn unknown_seats_cannot_alias_retained_controls() {
+	let mut collector = InputCollector::new();
+	let class = collector.register_device_class("Bounds");
+	let triggers: Vec<_> = (0..4)
+		.map(|i| {
+			collector.register_trigger(
+				&class,
+				&format!("Key{i}"),
+				crate::input::trigger::TriggerDescription::<bool>::default(),
+			)
+		})
+		.collect();
+	let device = collector.create_device(&class);
+	let mut sink = InputSink::new(collector.add_sink(), DefaultChannel::new());
+	collector.record(
+		SeatHandle::stub(),
+		device,
+		TriggerReference::Handle(triggers[0]),
+		Value::Bool(true),
+	);
+	sink.pull(&mut collector, |_| Capture::Passed);
+	sink.pull(&mut collector, |_| Capture::Passed);
+	assert_eq!(
+		collector.value(SeatHandle::stub(), device, TriggerReference::Handle(triggers[0])),
+		Ok(Value::Bool(true))
+	);
+	assert_eq!(
+		collector.value(SeatHandle::from_index(1 << 30), device, TriggerReference::Handle(triggers[0])),
+		Ok(Value::Bool(false))
+	);
+}
+
+#[test]
+fn repeated_actions_keep_the_registered_identity() {
+	let mut fixture = Fixture::new();
+	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
+	let action = sink.create_action(
+		&fixture.collector,
+		Types::Boolean,
+		&[ActionBindingDescription::new("Keyboard.Up")],
+		TickPolicy::WhileActive,
+	);
+	fixture.record("Keyboard.Up", true);
+	for _ in 0..3 {
+		let mut identities = Vec::new();
+		sink.pull(&mut fixture.collector, |resolved| {
+			identities.push(resolved.action);
+			Capture::Passed
+		});
+		assert_eq!(identities, [action]);
+	}
 }

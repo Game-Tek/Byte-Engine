@@ -151,7 +151,7 @@ impl Device {
 	pub(crate) fn invalidate_clear_uav_descriptors_for_resources(&mut self, resources: &[usize]) {
 		// Preserve queued writes before their retained source slots can be recycled for replacement resources.
 		for command_buffer_index in 0..self.command_buffers.len() {
-			self.flush_pending_clear_descriptor_copies(CommandBufferHandle(command_buffer_index as u64));
+			self.flush_pending_clear_descriptor_copies(CommandBufferHandle::from_index(command_buffer_index as u64));
 		}
 		for resource in resources {
 			let Some(descriptor) = self.retained_clear_uav_descriptors.remove(resource) else {
@@ -177,7 +177,7 @@ impl Device {
 		} else {
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 		};
-		let command_buffer_index = command_buffer_handle.0 as usize;
+		let command_buffer_index = command_buffer_handle.index() as usize;
 		let (current_capacity, current_used) = {
 			let command_buffer = self.command_buffers.get(command_buffer_index)?;
 			let arena = if sampler_heap {
@@ -221,7 +221,7 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
-		let Some(command_buffer) = self.command_buffers.get(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get(command_buffer_handle.index() as usize) else {
 			return;
 		};
 
@@ -261,7 +261,7 @@ impl Device {
 		unsafe {
 			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
 		}
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
 			command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
 			command_buffer.bound_sampler_heap = sampler_identity;
 		}
@@ -286,7 +286,7 @@ impl Device {
 
 	/// Retains a descriptor heap until the command buffer's previous submission has completed.
 	pub(crate) fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &DescriptorHeap) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		let identity = heap.native.as_raw();
@@ -306,7 +306,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		let identity = resource.as_raw() as usize;
@@ -322,7 +322,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		resource: ID3D12Resource,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
 			return;
 		};
 		command_buffer.retained_resources.push(resource);

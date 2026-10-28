@@ -83,7 +83,7 @@ pub(super) fn inherited_visual_state(
 	tree: &RetainedTree,
 	states: &[VisualState],
 ) -> VisualState {
-	let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
+	let mut inherited = tree.parent(index).map(|parent| states[parent]).unwrap_or_default();
 	let node = &tree.elements[index];
 	let primitive = &node.primitive;
 	// Transforms compose through absolute-depth layers even though clipping restarts there.
@@ -137,7 +137,8 @@ pub(super) fn effective_opacity(index: usize, tree: &RetainedTree, states: &mut 
 	if let Some(opacity) = states[index].opacity {
 		return opacity;
 	}
-	let parent = tree.parents[index]
+	let parent = tree
+		.parent(index)
 		.map(|parent| effective_opacity(parent, tree, states))
 		.unwrap_or(1.0);
 	let local = sanitize_opacity(tree.elements[index].opacity);
@@ -366,7 +367,7 @@ pub(super) fn update_visual_subtree(
 		}
 		dirty.push(index);
 		let local = placement[offset];
-		let parent = tree.parents[index].map_or_else(Affine2::identity, |parent| resolved[parent]);
+		let parent = tree.parent(index).map_or_else(Affine2::identity, |parent| resolved[parent]);
 		let transform = parent.compose(Affine2::from_transform(tree.elements[index].transform, &local));
 		let (position, size) = transform.transform_rect(&local);
 		elements[offset].position = position;

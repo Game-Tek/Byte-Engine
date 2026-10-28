@@ -7,18 +7,23 @@ use std::f32::consts::PI;
 
 use super::gesture::TriggerMapping;
 use super::queue::Record;
-use super::{Axis2, Axis3, Function, TriggerHandle, Types, Value};
+use super::{Axis2, Axis3, Function, Types, Value};
 
 /// Resolves one action value from the record driving `mapping` and the visible control state.
-pub(super) fn resolve_value(
+pub(super) fn resolve_value<'records>(
 	kind: Types,
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
-	read: &impl Fn(TriggerHandle) -> Option<Record>,
+	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Value> {
 	// A gated binding converts the source value visible at the button's place in the queue.
-	let record = if mapping.gated() { read(mapping.source)? } else { *record };
+	// A source event already supplies the visible sample; button events still need their snapshot lookup.
+	let record = if mapping.gated() && mapping.source != record.trigger {
+		read(mapping.source)?
+	} else {
+		record
+	};
 	match kind {
 		Types::Boolean => match record.value {
 			Value::Bool(value) => Some(Value::Bool(value)),
@@ -29,19 +34,19 @@ pub(super) fn resolve_value(
 			Value::Unicode(value) => Some(Value::Unicode(value)),
 			_ => unsupported_conversion(),
 		},
-		Types::Float => resolve_float(mappings, mapping, &record, read).map(Value::Float),
-		Types::Vector2 => resolve_vector2(mappings, &record, read).map(Value::Vector2),
-		Types::Vector3 => resolve_vector3(mappings, mapping, &record, read).map(Value::Vector3),
+		Types::Float => resolve_float(mappings, mapping, record, read).map(Value::Float),
+		Types::Vector2 => resolve_vector2(mappings, record, read).map(Value::Vector2),
+		Types::Vector3 => resolve_vector3(mappings, mapping, record, read).map(Value::Vector3),
 		_ => unsupported_conversion(),
 	}
 }
 
 /// Resolves a scalar, giving the most recently pressed boolean binding priority.
-fn resolve_float(
+fn resolve_float<'records>(
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
-	read: &impl Fn(TriggerHandle) -> Option<Record>,
+	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<f32> {
 	match record.value {
 		Value::Bool(record_value) => {
@@ -73,10 +78,10 @@ fn value_as_float(value: Value, record_value: bool) -> f32 {
 }
 
 /// Combines active directional bindings or converts a recorded vector.
-fn resolve_vector2(
+fn resolve_vector2<'records>(
 	mappings: &[TriggerMapping],
 	record: &Record,
-	read: &impl Fn(TriggerHandle) -> Option<Record>,
+	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Axis2> {
 	match record.value {
 		Value::Bool(_) => {
@@ -94,11 +99,11 @@ fn resolve_vector2(
 }
 
 /// Combines directional bindings or applies the configured spherical projection.
-fn resolve_vector3(
+fn resolve_vector3<'records>(
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
-	read: &impl Fn(TriggerHandle) -> Option<Record>,
+	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Axis3> {
 	match record.value {
 		Value::Bool(_) => {
@@ -127,10 +132,10 @@ fn resolve_vector3(
 }
 
 /// Borrows active bindings directly; vector sums and scalar priority need no scratch storage.
-fn active_boolean_mappings<'a>(
+fn active_boolean_mappings<'a, 'records: 'a>(
 	mappings: &'a [TriggerMapping],
-	read: &'a impl Fn(TriggerHandle) -> Option<Record>,
-) -> impl Iterator<Item = (&'a TriggerMapping, Record)> + 'a {
+	read: &'a impl Fn(u32) -> Option<&'records Record>,
+) -> impl Iterator<Item = (&'a TriggerMapping, &'records Record)> + 'a {
 	mappings.iter().filter_map(|mapping| {
 		let record = read(mapping.source)?;
 		(record.value == Value::Bool(true)).then_some((mapping, record))

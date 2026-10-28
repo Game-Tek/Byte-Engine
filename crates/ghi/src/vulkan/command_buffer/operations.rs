@@ -30,7 +30,7 @@ impl CommandBufferRecording<'_> {
 		bind_point: vk::PipelineBindPoint,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut Self {
-		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let pipeline = &self.device.pipelines[pipeline_handle.index() as usize];
 		unsafe {
 			self.device
 				.cmd_bind_pipeline(self.get_command_buffer().command_buffer, bind_point, pipeline.pipeline);

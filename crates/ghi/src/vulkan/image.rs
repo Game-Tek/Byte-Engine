@@ -63,10 +63,10 @@ impl HandleLike for ImageHandle {
 	type Item = Image;
 
 	fn build(value: u64) -> Self {
-		Self(value)
+		Self::from_index(value)
 	}
 
 	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item {
-		&collection[self.0 as usize]
+		&collection[self.index() as usize]
 	}
 }

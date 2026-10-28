@@ -85,7 +85,10 @@ impl App {
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
 	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, _features: Features) -> Result<Window, String> {
 		let id = WindowId::from_raw(self.next_window);
-		self.next_window += 1;
+		self.next_window = self
+			.next_window
+			.checked_add(1)
+			.expect("Window identities are exhausted. The application created u64::MAX windows. Restart the application.");
 
 		let qh = self.event_queue.handle();
 

@@ -214,7 +214,10 @@ impl MetalResourceUse {
 		access: crate::AccessPolicies,
 	) -> Self {
 		Self::new(
-			MetalResourceKey::TopLevelAccelerationStructure { handle: handle.0, copy },
+			MetalResourceKey::TopLevelAccelerationStructure {
+				handle: handle.bits(),
+				copy,
+			},
 			MetalResourceRegion::Whole,
 			stages,
 			access,
@@ -1168,7 +1171,7 @@ mod tests {
 	use super::*;
 
 	fn buffer(access: crate::AccessPolicies, stages: mtl::MTLStages) -> MetalResourceUse {
-		MetalResourceUse::buffer(BufferHandle(1), 0, 64, stages, access)
+		MetalResourceUse::buffer(BufferHandle::from_index(1), 0, 64, stages, access)
 	}
 
 	/// Plans one command that binds no descriptor table, consolidating its uses as a recording does.
@@ -1243,7 +1246,13 @@ mod tests {
 		let scope = MetalEncoderScope::Encoder(1);
 		let mut descriptors = descriptor_table(&[
 			buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-			MetalResourceUse::buffer(BufferHandle(2), 0, 64, mtl::MTLStages::Dispatch, crate::AccessPolicies::READ),
+			MetalResourceUse::buffer(
+				BufferHandle::from_index(2),
+				0,
+				64,
+				mtl::MTLStages::Dispatch,
+				crate::AccessPolicies::READ,
+			),
 		]);
 		consume(
 			&mut tracker,
@@ -1317,7 +1326,7 @@ mod tests {
 	}
 
 	fn second_buffer(access: crate::AccessPolicies, stages: mtl::MTLStages) -> MetalResourceUse {
-		MetalResourceUse::buffer(BufferHandle(2), 0, 64, stages, access)
+		MetalResourceUse::buffer(BufferHandle::from_index(2), 0, 64, stages, access)
 	}
 
 	#[test]
@@ -1458,7 +1467,7 @@ mod tests {
 			&mut tracker,
 			MetalEncoderScope::Queue,
 			[MetalResourceUse::buffer(
-				BufferHandle(1),
+				BufferHandle::from_index(1),
 				0,
 				64,
 				mtl::MTLStages::Blit,
@@ -1469,7 +1478,7 @@ mod tests {
 			&mut tracker,
 			MetalEncoderScope::Encoder(1),
 			[MetalResourceUse::buffer(
-				BufferHandle(1),
+				BufferHandle::from_index(1),
 				128,
 				64,
 				mtl::MTLStages::Dispatch,
@@ -1608,7 +1617,7 @@ mod tests {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
 		let range = |start: usize, end: usize, stages, access| {
-			MetalResourceUse::buffer(BufferHandle(1), start, end - start, stages, access)
+			MetalResourceUse::buffer(BufferHandle::from_index(1), start, end - start, stages, access)
 		};
 		consume(
 			&mut tracker,
@@ -1638,7 +1647,7 @@ mod tests {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
 		let mut descriptors = descriptor_table(&[MetalResourceUse::buffer(
-			BufferHandle(1),
+			BufferHandle::from_index(1),
 			0,
 			64,
 			mtl::MTLStages::Fragment,
@@ -1649,7 +1658,7 @@ mod tests {
 			scope,
 			&mut descriptors,
 			&[MetalResourceUse::buffer(
-				BufferHandle(1),
+				BufferHandle::from_index(1),
 				0,
 				128,
 				mtl::MTLStages::Vertex,
@@ -1660,7 +1669,7 @@ mod tests {
 			&mut tracker,
 			scope,
 			[MetalResourceUse::buffer(
-				BufferHandle(1),
+				BufferHandle::from_index(1),
 				0,
 				128,
 				mtl::MTLStages::Blit,
@@ -1697,7 +1706,13 @@ mod tests {
 		let scope = MetalEncoderScope::Encoder(1);
 		let mut descriptors = descriptor_table(&[
 			buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-			MetalResourceUse::buffer(BufferHandle(2), 0, 64, mtl::MTLStages::Dispatch, crate::AccessPolicies::READ),
+			MetalResourceUse::buffer(
+				BufferHandle::from_index(2),
+				0,
+				64,
+				mtl::MTLStages::Dispatch,
+				crate::AccessPolicies::READ,
+			),
 		]);
 		consume_descriptors(&mut tracker, scope, &mut descriptors, &[]);
 
@@ -1711,7 +1726,8 @@ mod tests {
 	fn descriptor_reads_in_each_encoder_wait_for_an_earlier_write() {
 		let mut tracker = MetalResourceTracker::default();
 		// Reading one mip level leaves the whole-image write in the history, so every encoder must wait for it.
-		let image = |mip_level, stages, access| MetalResourceUse::image(ImageHandle(1), mip_level, None, stages, access);
+		let image =
+			|mip_level, stages, access| MetalResourceUse::image(ImageHandle::from_index(1), mip_level, None, stages, access);
 		let mut descriptors = descriptor_table(&[image(Some(0), mtl::MTLStages::Fragment, crate::AccessPolicies::READ)]);
 		consume(
 			&mut tracker,

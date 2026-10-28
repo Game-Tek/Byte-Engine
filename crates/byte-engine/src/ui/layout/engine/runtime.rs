@@ -238,12 +238,21 @@ pub(super) type TaskId = StableVecHandle;
 ///
 /// Scope paths can repeat between live mounts, so ownership uses this identity instead,
 /// which an engine never hands out twice.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ScopeId(u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(super) struct ScopeId(std::num::NonZeroU64);
+
+impl Default for ScopeId {
+	fn default() -> Self {
+		Self::ROOT
+	}
+}
+
+const _: () = assert!(size_of::<Option<ScopeId>>() == size_of::<u64>());
 
 impl ScopeId {
 	/// The scope of the root component, which is never removed.
-	pub(super) const ROOT: Self = Self(0);
+	pub(super) const ROOT: Self = Self(std::num::NonZeroU64::MIN);
 }
 
 pub(super) fn sanitize_opacity(opacity: f32) -> f32 {
@@ -256,7 +265,7 @@ pub struct Runtime {
 	spare_tasks: Vec<UiTask>,
 	/// Reused by [`Self::end_tasks`] to collect the tasks it ends.
 	ending: Vec<TaskId>,
-	next_scope: u64,
+	next_scope: std::num::NonZeroU64,
 	/// Shared with every [`TaskWaker`] so a wake from any thread schedules its task.
 	pub(super) wakes: Arc<WakeQueue>,
 	/// Numbers task polls so a wait can tell whether the current poll registered it.
@@ -341,7 +350,10 @@ impl Runtime {
 
 	/// Returns an identity for a newly mounted scope.
 	pub(super) fn next_scope(&mut self) -> ScopeId {
-		self.next_scope += 1;
+		self.next_scope = self
+			.next_scope
+			.checked_add(1)
+			.expect("UI scope identities are exhausted. The engine mounted u64::MAX scopes. Restart the application.");
 		ScopeId(self.next_scope)
 	}
 

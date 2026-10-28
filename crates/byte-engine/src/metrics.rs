@@ -41,7 +41,29 @@ const ABSENT: u64 = u64::MAX;
 
 /// The `MetricId` struct names one registered metric so the hot paths index arrays instead of comparing names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MetricId(u16);
+#[repr(transparent)]
+pub struct MetricId(std::num::NonZeroU16);
+
+impl MetricId {
+	/// Reserves zero for absent metrics while keeping accumulator arrays zero-based.
+	fn from_index(index: usize) -> Self {
+		assert!(
+			index < METRIC_CAPACITY,
+			"Metric identity is invalid. The index exceeds METRIC_CAPACITY. Register fewer distinct metrics."
+		);
+		Self(
+			std::num::NonZeroU16::MIN
+				.checked_add(index as u16)
+				.expect("Metric identity is invalid. The index exceeds u16. Register fewer distinct metrics."),
+		)
+	}
+
+	fn index(self) -> usize {
+		self.0.get() as usize - 1
+	}
+}
+
+const _: () = assert!(size_of::<Option<MetricId>>() == size_of::<u16>());
 
 /// The `MetricKind` enum separates the clock a metric came from, since CPU and GPU times of one tick do not add up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -72,7 +94,7 @@ pub struct TickSample {
 impl TickSample {
 	/// Returns the value `metric` measured this tick, when it did.
 	pub fn value(&self, metric: MetricId) -> Option<Duration> {
-		let value = self.values[metric.0 as usize];
+		let value = self.values[metric.index()];
 		(value != ABSENT).then(|| Duration::from_nanos(value))
 	}
 }
@@ -157,7 +179,7 @@ impl Metrics {
 			.iter()
 			.position(|registration| &*registration.name == name)
 		{
-			return (inner.registrations[index].kind == kind).then_some(MetricId(index as u16));
+			return (inner.registrations[index].kind == kind).then_some(MetricId::from_index(index));
 		}
 		if inner.registrations.len() >= METRIC_CAPACITY {
 			log::warn!(
@@ -166,12 +188,12 @@ impl Metrics {
 			return None;
 		}
 		inner.registrations.push(Registration { name: name.into(), kind });
-		Some(MetricId((inner.registrations.len() - 1) as u16))
+		Some(MetricId::from_index(inner.registrations.len() - 1))
 	}
 
 	/// Adds CPU time to `metric` for the tick in progress. Any thread may call it.
 	pub fn add_cpu(&self, metric: MetricId, duration: Duration) {
-		self.cpu_accumulators[metric.0 as usize].fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+		self.cpu_accumulators[metric.index()].fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
 	}
 
 	/// Stores the GPU time `metric` measured in renderer frame `frame`, which an earlier tick submitted.
@@ -180,7 +202,7 @@ impl Metrics {
 	pub fn set_gpu(&self, frame: u64, metric: MetricId, duration: Duration) {
 		let mut inner = self.inner.lock();
 		if let Some(sample) = inner.ring.iter_mut().rev().find(|sample| sample.frame == Some(frame)) {
-			sample.values[metric.0 as usize] = duration.as_nanos() as u64;
+			sample.values[metric.index()] = duration.as_nanos() as u64;
 		}
 	}
 

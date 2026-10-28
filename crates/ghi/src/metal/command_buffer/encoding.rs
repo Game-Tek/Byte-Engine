@@ -113,7 +113,7 @@ impl CommandBufferRecording<'_> {
 	) -> AppliedDescriptorBinding {
 		// The pipelines outlive the recording, so the layout does not borrow it.
 		let pipelines = self.device.pipelines;
-		let layout = &pipelines[pipeline_handle.0 as usize].layout;
+		let layout = &pipelines[pipeline_handle.index() as usize].layout;
 		let resolved = self.resolve_pipeline_sets(layout);
 		// Validation scans every resource the pipeline uses, so only debug builds pay for it.
 		if cfg!(debug_assertions) {
@@ -296,7 +296,7 @@ impl CommandBufferRecording<'_> {
 			return;
 		}
 
-		match (&state.encoder, &device.pipelines[pipeline_handle.0 as usize].pipeline) {
+		match (&state.encoder, &device.pipelines[pipeline_handle.index() as usize].pipeline) {
 			// A ray tracing pipeline is its ray generation kernel; its trace binds the closest hits the kernel calls.
 			(
 				ActiveEncoder::Compute(encoder),

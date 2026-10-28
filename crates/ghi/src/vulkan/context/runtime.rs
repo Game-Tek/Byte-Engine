@@ -62,7 +62,8 @@ impl Context {
 		name: Option<&str>,
 		queue_handle: graphics_hardware_interface::QueueHandle,
 	) -> graphics_hardware_interface::CommandBufferHandle {
-		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
+		let command_buffer_handle =
+			graphics_hardware_interface::CommandBufferHandle::from_index(self.command_buffers.len() as u64);
 		let frames = (0..self.frames)
 			.map(|_| self.create_command_buffer_frame(queue_handle, vk::CommandPoolCreateFlags::TRANSIENT, name))
 			.collect();
@@ -77,7 +78,7 @@ impl Context {
 		flags: vk::CommandPoolCreateFlags,
 		name: Option<&str>,
 	) -> CommandBufferInternal {
-		let queue = &self.queues[queue_handle.0 as usize];
+		let queue = &self.queues[queue_handle.index() as usize];
 		let command_pool_create_info = vk::CommandPoolCreateInfo::default()
 			.flags(flags)
 			.queue_family_index(queue.queue_family_index);
@@ -147,7 +148,7 @@ impl Context {
 
 	/// Immediately destroys the views of a swapchain image wrapper whose Vulkan image is being replaced.
 	fn destroy_swapchain_image_views(&mut self, handle: ImageHandle) {
-		for view in std::mem::take(&mut self.images[handle.0 as usize].image_views) {
+		for view in std::mem::take(&mut self.images[handle.index() as usize].image_views) {
 			unsafe { self.device.destroy_image_view(view, None) };
 		}
 	}
@@ -160,7 +161,7 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		capabilities: &vk::SurfaceCapabilitiesKHR,
 	) -> bool {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
 		let extent = InnerDevice::swapchain_extent(capabilities, swapchain.extent);
 		if extent.width == 0 || extent.height == 0 {
 			return false;
@@ -205,7 +206,7 @@ impl Context {
 		);
 
 		let proxy_extent = Extent::rectangle(extent.width, extent.height);
-		let proxy = image::Builder::new(self.images[images[0].0 as usize].format_, proxy_uses)
+		let proxy = image::Builder::new(self.images[images[0].index() as usize].format_, proxy_uses)
 			.name("Swapchain Proxy Image")
 			.extent(proxy_extent);
 
@@ -214,8 +215,8 @@ impl Context {
 				let native = native_images[index];
 				self.destroy_swapchain_image_views(native);
 				let mut image = self.swapchain_image(vk_image, crate::Formats::BGRAsRGB, native_uses, native_image_usage);
-				image.next = self.images[native.0 as usize].next;
-				self.images[native.0 as usize] = image;
+				image.next = self.images[native.index() as usize].next;
+				self.images[native.index() as usize] = image;
 
 				if uses_proxy_images {
 					self.resize_image_internal(images[index], proxy_extent, None, 0);
@@ -242,7 +243,7 @@ impl Context {
 
 		// Surplus images from a larger previous swapchain are never indexed again, but their views must not leak.
 		for &native in &native_images[vk_images.len()..old_image_count] {
-			self.images[native.0 as usize].image = vk::Image::null();
+			self.images[native.index() as usize].image = vk::Image::null();
 			self.destroy_swapchain_image_views(native);
 			self.states.remove(&crate::vulkan::Handles::Image(native));
 		}
@@ -252,7 +253,7 @@ impl Context {
 			self.bump_descriptor_sequence_epoch(sequence_index);
 		}
 
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.swapchain = new_swapchain;
 		swapchain.extent = extent;
 		swapchain.native_images = native_images;
@@ -296,7 +297,7 @@ impl Context {
 		const WAIT_WARNING_THRESHOLD_MS: u64 = 8;
 
 		let sequence_index = (index % u64::from(self.frames)) as u8;
-		let synchronizer_index = self.get_syncronizer_handles(synchronizer_handle)[sequence_index as usize].0 as usize;
+		let synchronizer_index = self.get_syncronizer_handles(synchronizer_handle)[sequence_index as usize].index() as usize;
 		let synchronizer = &self.synchronizers[synchronizer_index];
 
 		// Waits in short slices so that a stalled fence gets reported instead of hanging silently.
@@ -361,11 +362,11 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
 		// Vulkan has no timed present in the extensions we enable, so the cap paces acquisition instead.
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
 
 		let capabilities = self.query_swapchain_capabilities(swapchain_handle);
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
 		let extent_changed = capabilities.current_extent.width != u32::MAX && capabilities.current_extent != swapchain.extent;
 		if (swapchain.needs_recreation || extent_changed) && !self.recreate_swapchain(swapchain_handle, &capabilities) {
 			return None;
@@ -377,7 +378,7 @@ impl Context {
 				Ok((index, suboptimal)) => {
 					// The acquired image is still presentable, so rebuild on the next acquire instead of discarding it.
 					if suboptimal {
-						self.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+						self.swapchains[swapchain_handle.index() as usize].needs_recreation = true;
 					}
 					break index;
 				}
@@ -389,7 +390,7 @@ impl Context {
 					}
 				}
 				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-					self.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+					self.swapchains[swapchain_handle.index() as usize].needs_recreation = true;
 					return None;
 				}
 				Err(error) => panic!(
@@ -398,7 +399,7 @@ impl Context {
 			}
 		};
 
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
 		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
 		let native_image = swapchain.native_images[index as usize];
@@ -430,7 +431,7 @@ impl Context {
 		&self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> vk::SurfaceCapabilitiesKHR {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
 		self.device
 			.query_swapchain_surface_capabilities(swapchain.surface, swapchain.vk_present_mode)
 	}
@@ -441,9 +442,9 @@ impl Context {
 		sequence_index: u8,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Result<(u32, bool), vk::Result> {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.index() as usize];
 		let synchronizer_handle = swapchain.acquire_synchronizers[sequence_index as usize];
-		let synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
+		let synchronizer = &self.synchronizers[synchronizer_handle.index() as usize];
 
 		// Only one image can be held at a time when the swapchain has no spare images, so poll instead of blocking in the driver.
 		let use_vulkan_timeout = swapchain.max_image_count > swapchain.min_image_count;
@@ -476,7 +477,7 @@ impl Context {
 		};
 
 		// A failed acquire never signals the fence, so a later wait on it must be skipped.
-		self.synchronizers[synchronizer_handle.0 as usize].armed = result.is_ok();
+		self.synchronizers[synchronizer_handle.index() as usize].armed = result.is_ok();
 		result
 	}
 
@@ -488,9 +489,9 @@ impl Context {
 		self.swapchains.iter().find_map(|swapchain| {
 			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
-			if swapchain.images[0].0 == handle.0.0 {
+			if swapchain.images[0].index() == handle.0.index() {
 				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].0 == handle.0.0 {
+			} else if swapchain.native_images[0].index() == handle.0.index() {
 				Some(swapchain.native_images[acquired_image_index])
 			} else {
 				None
@@ -506,7 +507,7 @@ impl Context {
 	) -> ImageHandle {
 		let frame_index = frame_index_with_offset(sequence_index, frame_offset, self.frames as usize);
 		self.get_swapchain_image_for_sequence(handle, frame_index).unwrap_or_else(|| {
-			let handle = ImageHandle(handle.0.0);
+			let handle = ImageHandle::from_index(handle.0.index());
 			// Public image handles name the first image of their chain, so no root search is needed.
 			debug_assert!(handle.root(&self.images) == handle);
 			self.image_handle_for_sequence(handle, frame_index)
@@ -559,7 +560,7 @@ impl Context {
 			"Missing Vulkan descriptor heaps. The most likely cause is that snapshot retirement ran before context initialization completed.",
 		);
 		for handle in retired.drain(..) {
-			let Some(materialization) = self.descriptor_materializations[handle.0 as usize].take() else {
+			let Some(materialization) = self.descriptor_materializations[handle.index() as usize].take() else {
 				continue;
 			};
 			heaps
@@ -598,7 +599,7 @@ impl Context {
 				} => {
 					let current = self
 						.descriptor_sets
-						.get_mut(descriptor_write.descriptor_set.0 as usize)
+						.get_mut(descriptor_write.descriptor_set.index() as usize)
 						.is_some_and(|set| {
 							if !descriptor_task_is_current(set, *descriptor_write, *expected_set_version) {
 								return false;
@@ -640,12 +641,12 @@ impl Context {
 		&self,
 		synchroizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> SmallVec<[SynchronizerHandle; MAX_FRAMES_IN_FLIGHT]> {
-		SynchronizerHandle(synchroizer_handle.0).get_all(&self.synchronizers)
+		SynchronizerHandle::from_index(synchroizer_handle.index()).get_all(&self.synchronizers)
 	}
 
 	/// Waits for one sequence's fence, when a submission armed it.
 	pub(super) fn wait_for_private_synchronizer(&self, handle: SynchronizerHandle) {
-		let synchronizer = &self.synchronizers[handle.0 as usize];
+		let synchronizer = &self.synchronizers[handle.index() as usize];
 		// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
 		if synchronizer.armed {
 			unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX) }.expect(

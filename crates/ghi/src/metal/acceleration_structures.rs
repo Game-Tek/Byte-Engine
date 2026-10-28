@@ -90,13 +90,15 @@ impl AccelerationStructures {
 	/// Returns the bottom-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn bottom_level(&self, handle: BottomLevelAccelerationStructureHandle) -> &BottomLevel {
 		self.bottom_levels
-			.get(handle.0)
+			.get(handle.bits())
 			.unwrap_or_else(|| stale_handle("bottom-level"))
 	}
 
 	/// Returns the top-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
-		self.top_levels.get(handle.0).unwrap_or_else(|| stale_handle("top-level"))
+		self.top_levels
+			.get(handle.bits())
+			.unwrap_or_else(|| stale_handle("top-level"))
 	}
 
 	/// Returns copy `copy` of the top-level structure `handle` names, or panics when it was destroyed.
@@ -119,7 +121,7 @@ impl AccelerationStructures {
 	) -> Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>> {
 		let bottom_level = self
 			.bottom_levels
-			.get_mut(handle.0)
+			.get_mut(handle.bits())
 			.unwrap_or_else(|| stale_handle("bottom-level"));
 		bottom_level.resource_id = compacted.gpuResourceID();
 		let source = std::mem::replace(&mut bottom_level.structure, compacted);
@@ -199,14 +201,14 @@ impl RecordedBuilds {
 	) {
 		for build in self.bottom_levels {
 			// A structure destroyed after its build was recorded still builds; its compaction finds the handle stale.
-			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.0) {
+			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.bits()) {
 				debug_assert_eq!(bottom_level.build_state.get(), BuildState::Recorded);
 				bottom_level.build_state.set(BuildState::Built);
 			}
 			pending.push(PendingCompaction { build, synchronizer });
 		}
 		for (handle, copy, epoch) in self.top_levels {
-			if let Some(top_level) = structures.top_levels.get(handle.0) {
+			if let Some(top_level) = structures.top_levels.get(handle.bits()) {
 				top_level.copies[copy as usize].built_epoch.set(Some(epoch));
 			}
 		}
@@ -217,7 +219,7 @@ impl RecordedBuilds {
 	/// Top-level copies keep what their last executed build wrote, so they need nothing.
 	pub(crate) fn abandon(self, structures: &AccelerationStructures) {
 		for build in self.bottom_levels {
-			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.0) {
+			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.bits()) {
 				bottom_level.build_state.set(BuildState::Unbuilt);
 			}
 		}

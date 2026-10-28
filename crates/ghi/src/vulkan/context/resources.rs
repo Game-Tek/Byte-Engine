@@ -36,7 +36,7 @@ pub(crate) fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: 
 impl Context {
 	fn allocation(&self, allocation_handle: graphics_hardware_interface::AllocationHandle) -> &Allocation {
 		self.allocations
-			.get(allocation_handle.0 as usize)
+			.get(allocation_handle.index() as usize)
 			.expect("No allocation with that handle.")
 	}
 
@@ -119,11 +119,11 @@ impl Context {
 		image_usage_flags: vk::ImageUsageFlags,
 		previous: Option<ImageHandle>,
 	) -> ImageHandle {
-		let root_handle = ImageHandle(self.images.len() as u64);
+		let root_handle = ImageHandle::from_index(self.images.len() as u64);
 		let root_image = self.swapchain_image(vk_image, format, uses, image_usage_flags);
 
 		if let Some(previous) = previous {
-			self.images[previous.0 as usize].next = Some(root_handle);
+			self.images[previous.index() as usize].next = Some(root_handle);
 		}
 		self.images.push(root_image);
 
@@ -215,7 +215,7 @@ impl Context {
 				.cast::<u8>()
 		});
 
-		let allocation_handle = graphics_hardware_interface::AllocationHandle(self.allocations.len() as u64);
+		let allocation_handle = graphics_hardware_interface::AllocationHandle::from_index(self.allocations.len() as u64);
 		self.allocations.push(Allocation {
 			memory,
 			pointer: crate::vulkan::MappedMemoryPointer(mapped_memory.unwrap_or(std::ptr::null_mut())),
@@ -533,9 +533,9 @@ impl Context {
 		let textures = requests
 			.iter()
 			.map(|request| {
-				let handle = ImageHandle(request.image.0);
+				let handle = ImageHandle::from_index(request.image.index());
 				let name = self.get_object_debug_name(graphics_hardware_interface::ImageHandle(request.image).into());
-				let image = &self.images[handle.0 as usize];
+				let image = &self.images[handle.index() as usize];
 				let texture = self.create_vulkan_texture(
 					name.as_deref(),
 					request.extent,
@@ -600,7 +600,7 @@ impl Context {
 					.bind_image_memory(texture.resource, self.allocation(heaps[slot.heap]).memory, slot.offset)
 					.expect("Failed to bind an image-group member to its heap. The most likely cause is an offset that breaks the member's alignment.")
 			};
-			let previous = self.images[handle.0 as usize].clone();
+			let previous = self.images[handle.index() as usize].clone();
 			let (full_image_view, image_views, layer_suffix_views) = self.create_image_views(
 				name.as_deref(),
 				texture.resource,
@@ -610,7 +610,7 @@ impl Context {
 				previous.mip_levels,
 				previous.layers,
 			);
-			self.images[handle.0 as usize] = Image {
+			self.images[handle.index() as usize] = Image {
 				image: texture.resource,
 				full_image_view,
 				image_views,
@@ -629,7 +629,7 @@ impl Context {
 		}
 
 		// In-flight frames may still use members bound to the previous heaps, so free those heaps once the frames finish.
-		let previous_heaps = std::mem::replace(&mut self.image_group_heaps[group.0 as usize], heaps);
+		let previous_heaps = std::mem::replace(&mut self.image_group_heaps[group.index() as usize], heaps);
 		for heap in previous_heaps {
 			self.defer_destruction(Tasks::FreeAllocation { handle: heap });
 		}
@@ -645,11 +645,11 @@ impl Context {
 		previous: Option<ImageHandle>,
 		builder: &crate::image::Builder,
 	) -> ImageHandle {
-		let texture_handle = ImageHandle(self.images.len() as u64);
+		let texture_handle = ImageHandle::from_index(self.images.len() as u64);
 		let image = self.build_image_internal(None, builder);
 
 		if let Some(previous) = previous {
-			self.images[previous.0 as usize].next = Some(texture_handle);
+			self.images[previous.index() as usize].next = Some(texture_handle);
 		}
 		self.images.push(image);
 
@@ -657,7 +657,7 @@ impl Context {
 	}
 
 	pub(crate) fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
-		let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
+		let synchronizer_handle = SynchronizerHandle::from_index(self.synchronizers.len() as u64);
 		self.synchronizers.push(Synchronizer {
 			next: None,
 			signaled,
@@ -684,10 +684,11 @@ impl Context {
 
 		let root_handle = image_handle.root(&self.images);
 		let name = self.get_object_debug_name(
-			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_handle.0)).into(),
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_handle.index()))
+				.into(),
 		);
 
-		let image = self.images[image_handle.0 as usize].clone();
+		let image = self.images[image_handle.index() as usize].clone();
 		let builder = crate::image::Builder {
 			name: name.as_deref(),
 			extent,
@@ -696,7 +697,7 @@ impl Context {
 		};
 		let new_image = self.build_image_internal(image.next, &builder);
 
-		self.images[image_handle.0 as usize] = new_image;
+		self.images[image_handle.index() as usize] = new_image;
 		self.retire_image_storage(&image);
 
 		if let Some(state) = self.states.get_mut(&crate::vulkan::Handles::Image(image_handle)) {
@@ -769,7 +770,7 @@ impl Context {
 				Tasks::DeleteVulkanImageView { handle } => self.device.destroy_image_view(handle, None),
 				Tasks::DeleteVulkanBuffer { handle } => self.device.destroy_buffer(handle, None),
 				Tasks::FreeAllocation { handle } => {
-					let allocation = &mut self.allocations[handle.0 as usize];
+					let allocation = &mut self.allocations[handle.index() as usize];
 					let memory = std::mem::replace(&mut allocation.memory, vk::DeviceMemory::null());
 					allocation.pointer = crate::vulkan::MappedMemoryPointer(std::ptr::null_mut());
 					if !memory.is_null() {

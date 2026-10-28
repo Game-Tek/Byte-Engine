@@ -87,7 +87,8 @@ pub fn blend_local_poses(
 /// The `BlendSpace1D` struct stores validated scalar sample positions for allocation-free weight evaluation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlendSpace1D {
-	positions: Vec<f32>,
+	// Positions are validated once and never grow during playback.
+	positions: Box<[f32]>,
 }
 
 impl BlendSpace1D {
@@ -106,7 +107,9 @@ impl BlendSpace1D {
 		if positions.windows(2).any(|pair| pair[0] >= pair[1]) {
 			return Err(BlendSpaceError::SamplesNotStrictlyAscending);
 		}
-		Ok(Self { positions })
+		Ok(Self {
+			positions: positions.into_boxed_slice(),
+		})
 	}
 
 	/// Returns the number of samples.
@@ -142,9 +145,9 @@ impl BlendSpace1D {
 /// The `BlendSpace2D` struct stores validated points and triangles for allocation-free directional blending.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlendSpace2D {
-	positions: Vec<[f32; 2]>,
+	positions: Box<[[f32; 2]]>,
 	/// Sample indices ordered around each non-degenerate triangle.
-	triangles: Vec<[usize; 3]>,
+	triangles: Box<[[usize; 3]]>,
 }
 
 impl BlendSpace2D {
@@ -179,7 +182,10 @@ impl BlendSpace2D {
 				});
 			}
 		}
-		Ok(Self { positions, triangles })
+		Ok(Self {
+			positions: positions.into_boxed_slice(),
+			triangles: triangles.into_boxed_slice(),
+		})
 	}
 
 	/// Returns the number of samples.

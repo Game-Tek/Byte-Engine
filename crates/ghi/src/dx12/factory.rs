@@ -140,7 +140,7 @@ impl crate::device::Device for Factory {
 			resources: crate::shader::flatten_used_resources(descriptor_sets),
 		});
 
-		Ok(ShaderHandle((self.shaders.len() - 1) as u64))
+		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
 	}
 
 	fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> Self::RasterPipeline {

@@ -146,20 +146,22 @@ impl Device {
 			min_lod: builder.min_lod,
 			max_lod: builder.max_lod,
 		});
-		SamplerHandle((self.samplers.len() - 1) as u64)
+		SamplerHandle::from_index((self.samplers.len() - 1) as u64)
 	}
 
 	/// Applies retained flat-slot descriptor writes to every frame-local set.
 	pub fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
 		for write in descriptor_set_writes {
-			let mut current = Some(DescriptorSetHandle(write.descriptor_set.0));
+			let mut current = Some(DescriptorSetHandle::from_index(write.descriptor_set.index()));
 			while let Some(set_handle) = current {
 				let retained = RetainedDescriptor {
 					descriptor: write.descriptor,
 					frame_offset: write.frame_offset.unwrap_or(0),
 				};
-				let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
-				let next = descriptor_set.next.map(|handle| DescriptorSetHandle(handle.0));
+				let descriptor_set = &mut self.descriptor_sets[set_handle.index() as usize];
+				let next = descriptor_set
+					.next
+					.map(|handle| DescriptorSetHandle::from_index(handle.index()));
 				let previous = descriptor_set
 					.descriptors
 					.entry(write.slot)

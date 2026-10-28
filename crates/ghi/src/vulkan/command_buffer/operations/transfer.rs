@@ -41,7 +41,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
 		match source {
 			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => {
-				if self.device.images.get(handle.0 as usize).is_none() {
+				if self.device.images.get(handle.index() as usize).is_none() {
 					return Err(crate::TextureTransferError::InvalidSource);
 				}
 				let source_handle = self.get_internal_base_image_handle(handle);
@@ -51,7 +51,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				let swapchain = self
 					.device
 					.swapchains
-					.get(handle.0 as usize)
+					.get(handle.index() as usize)
 					.ok_or(crate::TextureTransferError::InvalidSource)?;
 				let image_index = usize::from(swapchain.acquired_image_indices[self.sequence_index as usize]);
 				let source_handle = *swapchain
@@ -72,7 +72,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
 		let handle = graphics_hardware_interface::BaseImageHandle::from(image);
-		if self.device.images.get(handle.0 as usize).is_none() {
+		if self.device.images.get(handle.index() as usize).is_none() {
 			return Err(crate::TextureTransferError::InvalidSource);
 		}
 		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
@@ -444,7 +444,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer.command_buffer)];
 		let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&command_buffer_infos);
 		let synchronizer_handle = self.device.get_syncronizer_handles(synchronizer)[self.sequence_index as usize];
-		let synchronizer = &self.device.synchronizers[synchronizer_handle.0 as usize];
+		let synchronizer = &self.device.synchronizers[synchronizer_handle.index() as usize];
 
 		unsafe {
 			self.device.reset_fences(&[synchronizer.fence]).expect(
@@ -457,7 +457,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
-		self.device.synchronizers[synchronizer_handle.0 as usize].armed = true;
+		self.device.synchronizers[synchronizer_handle.index() as usize].armed = true;
 
 		for handle in &self.texture_readbacks {
 			self.device
@@ -484,7 +484,7 @@ impl CommandBufferRecording<'_> {
 		let image = self
 			.device
 			.images
-			.get(source_handle.0 as usize)
+			.get(source_handle.index() as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		let format = image.format_;
 		let extent = extent.unwrap_or(image.extent);

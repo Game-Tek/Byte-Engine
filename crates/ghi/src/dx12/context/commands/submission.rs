@@ -9,7 +9,7 @@ impl Device {
 	) {
 		let command_buffer = self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
 		let (queue_handle, sequence_index) = (command_buffer.queue_handle, command_buffer.sequence_index);
 		if let Some(frame_synchronizer) = command_buffer.frame_synchronizer {
@@ -67,7 +67,7 @@ impl Device {
 	) -> SmallVec<[TextureCopyHandle; 4]> {
 		// Validate the entire execution before closing any list so a rejected batch leaves every recording recoverable.
 		for &handle in command_buffer_handles {
-			let command_buffer = self.command_buffers.get(handle.0 as usize).expect(
+			let command_buffer = self.command_buffers.get(handle.index() as usize).expect(
 				"Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.",
 			);
 			assert_eq!(
@@ -93,7 +93,7 @@ impl Device {
 		let mut readback_candidates = SmallVec::<[TextureCopyHandle; 4]>::new();
 		let mut submitted_readbacks = SmallVec::<[TextureCopyHandle; 4]>::new();
 		for &handle in command_buffer_handles {
-			let command_buffer_index = handle.0 as usize;
+			let command_buffer_index = handle.index() as usize;
 			let command_list = self.command_buffers[command_buffer_index].command_list.clone().unwrap();
 			if self.command_buffers[command_buffer_index].is_open {
 				if unsafe { command_list.Close() }.is_err() {
@@ -121,13 +121,13 @@ impl Device {
 		if !native_lists.is_empty() {
 			let queue = self
 				.queues
-				.get(queue_handle.0 as usize)
+				.get(queue_handle.index() as usize)
 				.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
 			// SAFETY: All command-list interfaces stay alive through this synchronous queue call.
 			unsafe { queue.queue.ExecuteCommandLists(&native_lists) };
 			// Until a terminal signal succeeds, keep submitted resources permanently retained if unwinding interrupts finalization.
 			for &handle in command_buffer_handles {
-				self.command_buffers[handle.0 as usize].lifecycle = CommandBufferLifecycle::Poisoned;
+				self.command_buffers[handle.index() as usize].lifecycle = CommandBufferLifecycle::Poisoned;
 			}
 			self.counters.native_command_list_execute_count = self
 				.counters
@@ -142,8 +142,8 @@ impl Device {
 		}
 
 		for &handle in command_buffer_handles {
-			self.command_buffers[handle.0 as usize].recorded_readbacks.clear();
-			self.command_buffers[handle.0 as usize].recorded_texture_syncs.clear();
+			self.command_buffers[handle.index() as usize].recorded_readbacks.clear();
+			self.command_buffers[handle.index() as usize].recorded_texture_syncs.clear();
 			self.commit_command_buffer_resource_states(handle);
 		}
 		submitted_readbacks
@@ -168,7 +168,7 @@ impl Device {
 			),
 		};
 		for &handle in command_buffer_handles {
-			let command_buffer = &mut self.command_buffers[handle.0 as usize];
+			let command_buffer = &mut self.command_buffers[handle.index() as usize];
 			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
 			command_buffer.lifecycle = CommandBufferLifecycle::Submitted;
 		}
@@ -183,7 +183,7 @@ impl Device {
 	pub(crate) fn finish_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
 		assert_eq!(
 			self.command_buffers
-				.get(command_buffer_handle.0 as usize)
+				.get(command_buffer_handle.index() as usize)
 				.map(|command_buffer| command_buffer.lifecycle),
 			Some(CommandBufferLifecycle::Recording),
 			"DX12 command buffer is not recording. The most likely cause is that the recording was finished more than once."
@@ -192,7 +192,7 @@ impl Device {
 			self.transition_present_resources(command_buffer_handle, &command_list);
 		}
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
-		self.command_buffers[command_buffer_handle.0 as usize].lifecycle = CommandBufferLifecycle::Scheduled;
+		self.command_buffers[command_buffer_handle.index() as usize].lifecycle = CommandBufferLifecycle::Scheduled;
 	}
 
 	pub(crate) fn record_present_preparation(
@@ -209,7 +209,7 @@ impl Device {
 		for present_key in present_keys {
 			let Some((source_image, proxy_uses)) = self
 				.swapchains
-				.get(present_key.swapchain.0 as usize)
+				.get(present_key.swapchain.index() as usize)
 				.and_then(|swapchain| swapchain.image.map(|image| (image, swapchain.proxy_uses)))
 			else {
 				continue;
@@ -272,7 +272,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		command_list: &ID3D12GraphicsCommandList7,
 	) {
-		let command_buffer_index = command_buffer_handle.0 as usize;
+		let command_buffer_index = command_buffer_handle.index() as usize;
 		let mut resources = std::mem::take(&mut self.command_buffers[command_buffer_index].present_resources);
 		let mut barriers = EnhancedBarrierBatch::default();
 		let mut transition_count = 0;
@@ -297,8 +297,8 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<windows::core::Result<(crate::synchronizer::SynchronizerHandle, u64)>> {
 		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index)?;
-		let queue = self.queues.get(queue_handle.0 as usize)?.queue.clone();
-		let synchronizer = self.synchronizers.get(synchronizer_handle.0 as usize)?;
+		let queue = self.queues.get(queue_handle.index() as usize)?.queue.clone();
+		let synchronizer = self.synchronizers.get(synchronizer_handle.index() as usize)?;
 		let fence = synchronizer.fence.clone();
 		let current_value = synchronizer.value;
 		let last_signal_queue = synchronizer.last_signal_queue;
@@ -314,8 +314,8 @@ impl Device {
 		if let Err(error) = unsafe { queue.Signal(&fence, next_value) } {
 			return Some(Err(error));
 		}
-		self.synchronizers[synchronizer_handle.0 as usize].value = next_value;
-		self.synchronizers[synchronizer_handle.0 as usize].last_signal_queue = Some(queue_handle);
+		self.synchronizers[synchronizer_handle.index() as usize].value = next_value;
+		self.synchronizers[synchronizer_handle.index() as usize].last_signal_queue = Some(queue_handle);
 		Some(Ok((synchronizer_handle, next_value)))
 	}
 
@@ -323,12 +323,12 @@ impl Device {
 	pub(crate) fn queue_wait_for_synchronizer(&self, queue_handle: QueueHandle, synchronizer_handle: SynchronizerHandle) {
 		let queue = self
 			.queues
-			.get(queue_handle.0 as usize)
+			.get(queue_handle.index() as usize)
 			.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
 		for handle in self.synchronizer_handles(synchronizer_handle) {
 			let synchronizer = self
 				.synchronizers
-				.get(handle.0 as usize)
+				.get(handle.index() as usize)
 				.expect("Invalid DX12 synchronizer handle. The most likely cause is that the handle came from another device.");
 			unsafe { queue.queue.Wait(&synchronizer.fence, synchronizer.value) }.expect(
 				"Failed to queue a DX12 fence wait. The most likely cause is that the queue or fence was invalid or the device was removed.",

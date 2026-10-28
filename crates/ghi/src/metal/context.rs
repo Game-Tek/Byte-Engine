@@ -156,7 +156,7 @@ mod tests {
 
 		assert!(context.buffers.iter().all(|buffer| buffer.buffer.heap().is_some()));
 		assert!(context.images.iter().all(|image| image.texture.heap().is_some()));
-		let mesh = &context.meshes[mesh.0 as usize];
+		let mesh = &context.meshes[mesh.index() as usize];
 		assert!(mesh.index_buffer.heap().is_some());
 		assert!(mesh.vertex_buffers.iter().flatten().all(|buffer| buffer.heap().is_some()));
 		assert!(
@@ -259,7 +259,7 @@ mod tests {
 				.extent(extent),
 		);
 		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle(0));
+		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
 		let mut recording = context.create_command_buffer_recording(command_buffer);
 
 		let first = recording.transfer_texture(image.into()).expect(
@@ -291,12 +291,12 @@ mod tests {
 		assert_eq!(context.texture_readbacks.values().count(), 0);
 
 		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle(0));
+		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
 		let mut recording = context.create_command_buffer_recording(command_buffer);
 		let third = recording.transfer_texture(image.into()).expect(
 			"Third Metal texture transfer failed. The most likely cause is that the test image lacks transfer-source support.",
 		);
-		assert!(third.0 > second.0);
+		assert!(third.bits() > second.bits());
 		recording.execute(synchronizer);
 		context.get_image_data(third).expect(
 			"Third Metal texture mapping failed. The most likely cause is that its transfer command did not complete successfully.",
@@ -311,7 +311,7 @@ mod tests {
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(Extent::square(1)),
 		);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle(0));
+		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
 		let mut recording = context.create_command_buffer_recording(command_buffer);
 		let handle = recording
 			.transfer_texture(image.into())

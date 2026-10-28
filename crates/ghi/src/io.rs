@@ -230,10 +230,10 @@ impl<'a> ResourceIoFileDescriptor<'a> {
 	}
 }
 
-/// The `ResourceIoFileHandle` struct identifies a file opened on one resource-I/O queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ResourceIoFileHandle {
-	pub(crate) index: u64,
+crate::handle::index_handle! {
+	/// The `ResourceIoFileHandle` struct identifies a file opened on one resource-I/O queue.
+	#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+	pub struct ResourceIoFileHandle;
 }
 
 /// The `ResourceIoFileRegion` struct selects bytes from an opened source file.

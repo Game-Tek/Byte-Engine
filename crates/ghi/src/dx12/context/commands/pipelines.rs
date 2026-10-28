@@ -10,11 +10,11 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(pipeline) = self.pipelines.get(pipeline_handle.index() as usize) else {
 			return;
 		};
 
-		if let Some(layout) = self.pipeline_layouts.get(pipeline.layout.0 as usize) {
+		if let Some(layout) = self.pipeline_layouts.get(pipeline.layout.index() as usize) {
 			unsafe {
 				match pipeline.kind {
 					PipelineKind::Compute => command_list.SetComputeRootSignature(&layout.root_signature),

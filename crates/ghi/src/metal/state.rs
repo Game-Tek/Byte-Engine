@@ -196,10 +196,10 @@ impl DescriptorSet {
 				pin(allocation(&*image.texture));
 				self.words[word] = resource_id(image.texture.gpuResourceID());
 				// A combined image sampler's samplers follow its textures.
-				self.words[word + count as usize] = resource_id(resources.samplers[sampler.0 as usize].gpuResourceID());
+				self.words[word + count as usize] = resource_id(resources.samplers[sampler.index() as usize].gpuResourceID());
 			}
 			Some(Descriptor::Sampler { sampler }) => {
-				self.words[word] = resource_id(resources.samplers[sampler.0 as usize].gpuResourceID());
+				self.words[word] = resource_id(resources.samplers[sampler.index() as usize].gpuResourceID());
 			}
 			Some(Descriptor::TopLevelAccelerationStructure { handle, copy }) => {
 				let structure = resources.acceleration_structures.top_level_copy(handle, copy);
@@ -209,7 +209,7 @@ impl DescriptorSet {
 			// Each frame sequence renders into its own swapchain image. A sequence has none until it acquires the
 			// swapchain, which encodes the entry again.
 			Some(Descriptor::Swapchain { handle }) => {
-				self.words[word] = match resources.swapchains[handle.0 as usize].images[self.sequence as usize] {
+				self.words[word] = match resources.swapchains[handle.index() as usize].images[self.sequence as usize] {
 					Some(image) => {
 						let image = resources.images.resource(image);
 						pin(allocation(&*image.texture));

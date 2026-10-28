@@ -339,12 +339,12 @@ impl Context {
 				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
 				Some(Descriptor::CombinedImageSampler {
 					image: handle,
-					sampler: SamplerHandle(sampler_handle.0),
+					sampler: SamplerHandle::from_index(sampler_handle.index()),
 					layout,
 				})
 			}
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
-				sampler: SamplerHandle(handle.0),
+				sampler: SamplerHandle::from_index(handle.index()),
 			}),
 			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { handle } => {
@@ -359,7 +359,7 @@ impl Context {
 				})
 			}
 			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
-				handle: crate::swapchain::SwapchainHandle(swapchain_handle.0),
+				handle: crate::swapchain::SwapchainHandle::from_index(swapchain_handle.index()),
 			}),
 		}
 	}
@@ -447,7 +447,7 @@ impl Context {
 		let (members, requirements): (Vec<_>, Vec<_>) = requests
 			.iter()
 			.map(|request| {
-				let handle = ImageHandle(request.image.0);
+				let handle = ImageHandle::from_index(request.image.index());
 				let description = ImageDescription {
 					extent: request.extent,
 					..self.images.resource(handle).description

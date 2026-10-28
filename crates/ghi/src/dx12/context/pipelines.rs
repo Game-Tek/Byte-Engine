@@ -16,7 +16,7 @@ impl Device {
 			has_mesh_shader,
 		});
 
-		PipelineHandle((self.pipelines.len() - 1) as u64)
+		PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
 	}
 
 	pub(crate) fn create_graphics_pipeline_state(
@@ -217,7 +217,7 @@ impl Device {
 	/// Returns the root signature of a pipeline layout, or `None` for an unknown layout handle.
 	fn root_signature(&self, layout: PipelineLayoutHandle) -> Option<ID3D12RootSignature> {
 		self.pipeline_layouts
-			.get(layout.0 as usize)
+			.get(layout.index() as usize)
 			.map(|layout| layout.root_signature.clone())
 	}
 
@@ -336,7 +336,7 @@ impl Device {
 
 	/// Returns a shader's DXIL, recompiling its HLSL when the parameter carries specialization constants.
 	fn shader_dxil(&mut self, parameter: &pipelines::ShaderParameter) -> Option<Vec<u8>> {
-		let shader = self.shaders.get(parameter.handle.0 as usize)?;
+		let shader = self.shaders.get(parameter.handle.index() as usize)?;
 		if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
 				let dxil = self
@@ -422,7 +422,7 @@ impl Device {
 			pipeline_state,
 			has_mesh_shader: false,
 		});
-		PipelineHandle((self.pipelines.len() - 1) as u64)
+		PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
 	}
 
 	pub(crate) fn create_compute_pipeline_state(

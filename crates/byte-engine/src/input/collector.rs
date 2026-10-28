@@ -149,7 +149,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// Unknown triggers and values of the wrong [`Types`](super::Types) are
 	/// dropped with a warning. Next, let each [`InputSink`](super::InputSink) pull.
 	pub fn record(&mut self, seat: SeatHandle, device: DeviceHandle, reference: TriggerReference, value: Value) {
-		let Some((trigger_handle, trigger)) = self.registry.resolve(&reference) else {
+		let Some((trigger_index, trigger)) = self.registry.resolve(&reference) else {
 			warn!("Input trigger is unknown. The most likely cause is an unregistered trigger name or handle.");
 			return;
 		};
@@ -160,11 +160,17 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			);
 			return;
 		}
-		if device.0 >= self.registry.device_count() {
+		if seat.0.get() & super::HANDLE_TAG.get() == 0 {
+			warn!(
+				"Input seat identity is unknown. The identity belongs to another input namespace. Use a seat supplied by this input system."
+			);
+			return;
+		}
+		if device.index() >= self.registry.device_count() {
 			warn!("Input device is unknown. The most likely cause is a device handle from another collector.");
 			return;
 		}
-		self.queue.push(seat, device, trigger_handle, value, trigger.transient);
+		self.queue.push(seat, device, trigger_index, value, trigger.transient);
 	}
 
 	/// Iterates over the queued source events in arrival order without allocating.
@@ -174,9 +180,9 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// samples from this stream.
 	pub fn source_events(&self) -> impl ExactSizeIterator<Item = SourceEvent> + '_ {
 		self.queue.records().iter().map(|record| SourceEvent {
-			seat_handle: record.seat,
-			device_handle: record.device,
-			trigger_handle: record.trigger,
+			seat_handle: SeatHandle(super::HANDLE_TAG | record.seat),
+			device_handle: DeviceHandle(super::HANDLE_TAG | record.device),
+			trigger_handle: TriggerHandle(super::HANDLE_TAG | record.trigger),
 			value: record.value,
 			sequence: record.sequence,
 		})
@@ -193,10 +199,10 @@ impl<A: Allocator + Clone> InputCollector<A> {
 
 	/// Returns a control's latest value, or its default before the first record.
 	pub fn value(&self, seat: SeatHandle, device: DeviceHandle, reference: TriggerReference) -> Result<Value, ()> {
-		let (trigger_handle, trigger) = self.registry.resolve(&reference).ok_or(())?;
+		let (trigger_index, trigger) = self.registry.resolve(&reference).ok_or(())?;
 		Ok(self
 			.queue
-			.latest(&(seat, device, trigger_handle))
+			.latest(&(seat.index(), device.index(), trigger_index))
 			.map_or(trigger.default, |record| record.value))
 	}
 
@@ -216,7 +222,9 @@ impl<A: Allocator + Clone> InputCollector<A> {
 
 	/// Resolves a control's handle, for recording without a name lookup each time.
 	pub fn trigger(&self, reference: TriggerReference) -> Option<TriggerHandle> {
-		self.registry.resolve(&reference).map(|(handle, _)| handle)
+		self.registry
+			.resolve(&reference)
+			.map(|(index, _)| TriggerHandle(super::HANDLE_TAG | index))
 	}
 
 	/// Resolves one binding's names into handles for a sink's action.

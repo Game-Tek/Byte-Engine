@@ -14,18 +14,18 @@ impl Device {
 	}
 
 	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> DynamicImageHandle {
-		DynamicImageHandle(BaseImageHandle(0))
+		DynamicImageHandle(BaseImageHandle::from_index(0))
 	}
 
 	pub fn create_image_group(&mut self, _name: Option<&str>) -> ImageGroupHandle {
-		ImageGroupHandle(0)
+		ImageGroupHandle::from_index(0)
 	}
 
 	pub fn build_sampler(&mut self, _builder: sampler::Builder) -> SamplerHandle {
-		SamplerHandle(0)
+		SamplerHandle::from_index(0)
 	}
 
 	pub fn build_buffer(&mut self, _builder: buffer::Builder) -> BaseBufferHandle {
-		BaseBufferHandle(0)
+		BaseBufferHandle::from_index(0)
 	}
 }

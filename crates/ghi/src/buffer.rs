@@ -175,8 +175,10 @@ impl<'a> Builder<'a> {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub(crate) struct BufferHandle(pub(crate) u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+	pub(crate) struct BufferHandle;
+}
 
 impl From<BufferHandle> for PrivateHandles {
 	fn from(val: BufferHandle) -> Self {
@@ -186,11 +188,11 @@ impl From<BufferHandle> for PrivateHandles {
 
 impl PrivateHandle for BufferHandle {
 	fn new(i: u64) -> Self {
-		BufferHandle(i)
+		BufferHandle::from_index(i)
 	}
 
 	fn index(&self) -> u64 {
-		self.0
+		BufferHandle::index(*self)
 	}
 }
 

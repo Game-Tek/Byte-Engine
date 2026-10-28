@@ -12,7 +12,7 @@ impl Device {
 				break;
 			};
 			handles.push(handle);
-			current = set.next.map(|handle| DescriptorSetHandle(handle.0));
+			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.0));
 		}
 
 		handles
@@ -49,15 +49,15 @@ impl Device {
 		let mut current = Some(descriptor_set);
 		for _ in 0..sequence_index {
 			let handle = current?;
-			let set = self.descriptor_sets.get(handle.0 as usize)?;
-			current = set.next.map(|handle| DescriptorSetHandle(handle.0));
+			let set = self.descriptor_sets.get(handle.index() as usize)?;
+			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.index()));
 		}
 		current.or(Some(descriptor_set))
 	}
 
 	pub(crate) fn descriptor_set_sequence_index(&self, descriptor_set: DescriptorSetHandle) -> usize {
 		self.descriptor_sets
-			.get(descriptor_set.0 as usize)
+			.get(descriptor_set.index() as usize)
 			.map(|set| usize::from(set.sequence_index))
 			.unwrap_or(0)
 	}
@@ -126,7 +126,7 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> Option<&mut [u8]> {
-		let image = self.images.get_mut(image_handle.0 as usize)?;
+		let image = self.images.get_mut(image_handle.index() as usize)?;
 		if let Some(frame_data) = image.frame_data.as_mut() {
 			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
 			frame_data.get_mut(index).map(Vec::as_mut_slice)
@@ -149,7 +149,7 @@ impl Device {
 			WriteData::CombinedImageSampler { image_handle, .. } => image_handle,
 			_ => return,
 		};
-		let Some(image) = self.images.get(image_handle.0 as usize) else {
+		let Some(image) = self.images.get(image_handle.index() as usize) else {
 			return;
 		};
 		if image.frame_resources.is_none() {
@@ -384,7 +384,7 @@ impl Device {
 		);
 		let image = self
 			.images
-			.get(image_handle.0 as usize)
+			.get(image_handle.index() as usize)
 			.expect("Invalid DX12 descriptor image handle. The most likely cause is that the retained image handle is stale.");
 		let format = Self::dxgi_shader_resource_format(image.format).unwrap_or_else(|| {
 			panic!(
@@ -448,7 +448,7 @@ impl Device {
 			max_lod: 0.0,
 		};
 		let sampler = sampler_handle
-			.and_then(|handle| self.samplers.get(handle.0 as usize))
+			.and_then(|handle| self.samplers.get(handle.index() as usize))
 			.unwrap_or(&fallback_sampler);
 		let filter = Self::sampler_filter(sampler);
 		let address_mode = Self::sampler_address_mode(sampler.addressing_mode);

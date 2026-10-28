@@ -83,7 +83,7 @@ impl ResourceIoQueue {
 	}
 
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&ProtocolObject<dyn MTLIOFileHandle>, ResourceIoError> {
-		let index = usize::try_from(region.file.index).map_err(|_| ResourceIoError::InvalidFileHandle)?;
+		let index = usize::try_from(region.file.index()).map_err(|_| ResourceIoError::InvalidFileHandle)?;
 		self.files
 			.get(index)
 			.map(|file| &**file)
@@ -214,7 +214,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 
 		let handle_index = self.files.len() as u64;
 		self.files.push(handle);
-		Ok(ResourceIoFileHandle { index: handle_index })
+		Ok(ResourceIoFileHandle::from_index(handle_index))
 	}
 
 	/// Submits one independently completing Metal I/O command buffer.
@@ -427,7 +427,7 @@ mod tests {
 	/// Transfers one test image through the public per-invocation readback API.
 	fn read_image(context: &mut context::Context, image: crate::ImageHandle) -> Vec<u8> {
 		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, crate::QueueHandle(0));
+		let command_buffer = context.create_command_buffer(None, crate::QueueHandle::from_index(0));
 		let mut recording = context.create_command_buffer_recording(command_buffer);
 		let copy = recording.transfer_texture(image.into()).expect(
 			"Metal test texture transfer failed. The most likely cause is that the image lacks transfer-source support.",

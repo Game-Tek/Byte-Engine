@@ -41,10 +41,13 @@ impl Device {
 			self.counters.end(sequence_index, counter)
 		};
 		// Every recording of one frame submits to the frame's queue, so its frequency converts the frame's slots.
-		let queue_handle = self.command_buffers[command_buffer_handle.0 as usize].queue_handle;
-		self.counter_frequencies[sequence_index as usize] = self.queues[queue_handle.0 as usize].timestamp_frequency;
+		let queue_handle = self.command_buffers[command_buffer_handle.index() as usize].queue_handle;
+		self.counter_frequencies[sequence_index as usize] = self.queues[queue_handle.index() as usize].timestamp_frequency;
 		let heap = self.ensure_counter_storage().heap.clone();
-		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.clone() else {
+		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
+			.command_list
+			.clone()
+		else {
 			return;
 		};
 		// SAFETY: The heap outlives the list, and the slot comes from the counters, which stay below the heap's count.
@@ -60,7 +63,10 @@ impl Device {
 		let Some(storage) = self.counter_storage.as_ref() else {
 			return;
 		};
-		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.clone() else {
+		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
+			.command_list
+			.clone()
+		else {
 			return;
 		};
 		// SAFETY: The heap and the readback buffer outlive the list, and the slot range lies inside both.

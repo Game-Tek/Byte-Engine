@@ -66,7 +66,7 @@ impl Device {
 				workloads: selection.r#type,
 				timestamp_frequency,
 			});
-			**handle = Some(QueueHandle(index));
+			**handle = Some(QueueHandle::from_index(index));
 		}
 
 		Ok(Self::from_native_parts(
@@ -417,7 +417,7 @@ impl Device {
 				);
 				for _ in handles.len()..frames as usize {
 					let next = self.create_synchronizer_internal(false);
-					self.synchronizers[tail.0 as usize].next = Some(next);
+					self.synchronizers[tail.index() as usize].next = Some(next);
 					tail = next;
 				}
 			}
@@ -497,8 +497,11 @@ impl Device {
 			for (image_index, image) in self.images.iter().enumerate() {
 				if image.frame_data.is_some() {
 					for sequence_index in previous_frames..frames {
-						self.pending_texture_syncs
-							.push((crate::BaseImageHandle(image_index as u64), sequence_index, None));
+						self.pending_texture_syncs.push((
+							crate::BaseImageHandle::from_index(image_index as u64),
+							sequence_index,
+							None,
+						));
 					}
 				}
 			}
@@ -536,7 +539,7 @@ impl Device {
 		_resource_device_accesses: DeviceAccesses,
 	) -> AllocationHandle {
 		self.allocations.push(vec![0u8; size]);
-		AllocationHandle((self.allocations.len() - 1) as u64)
+		AllocationHandle::from_index((self.allocations.len() - 1) as u64)
 	}
 
 	pub fn add_mesh_from_vertices_and_indices(
@@ -572,7 +575,7 @@ impl Device {
 			vertex_resource,
 			index_resource,
 		});
-		MeshHandle((self.meshes.len() - 1) as u64)
+		MeshHandle::from_index((self.meshes.len() - 1) as u64)
 	}
 
 	pub fn create_shader(
@@ -612,7 +615,7 @@ impl Device {
 		});
 
 		// DX12 consumes native bytecode for PSO creation, while SPIR-V is retained as portable metadata.
-		Ok(ShaderHandle((self.shaders.len() - 1) as u64))
+		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
 	}
 
 	/// Selects the Shader Model 6.9 DXC profile for a DX12 shader stage.

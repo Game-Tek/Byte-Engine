@@ -3,7 +3,7 @@ use super::*;
 impl Device {
 	/// Resizes a swapchain only after every native queue is idle, then updates its frame-local proxy through deferred tasks.
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle, sequence_index: u8) -> Extent {
-		let Some(swapchain) = self.swapchains.get(swapchain_handle.0 as usize) else {
+		let Some(swapchain) = self.swapchains.get(swapchain_handle.index() as usize) else {
 			return Extent::rectangle(0, 0);
 		};
 		let extent = Self::query_window_extent(&swapchain.handles, swapchain.extent);
@@ -16,7 +16,7 @@ impl Device {
 				"Failed to reset DX12 command lists before resizing a swapchain. The most likely cause is that a completed command list became invalid.",
 			);
 			self.process_all_tasks_after_idle();
-			let retired_backbuffers = self.swapchains[swapchain_handle.0 as usize]
+			let retired_backbuffers = self.swapchains[swapchain_handle.index() as usize]
 				.backbuffers
 				.iter()
 				.flatten()
@@ -26,8 +26,8 @@ impl Device {
 			for &key in &retired_backbuffers {
 				self.image_states.remove(&key);
 			}
-			let proxy = self.swapchains[swapchain_handle.0 as usize].image;
-			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			let proxy = self.swapchains[swapchain_handle.index() as usize].image;
+			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 			// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
 			swapchain.backbuffers = std::array::from_fn(|_| None);
 			swapchain.acquired_sequences = [false; 8];
@@ -58,7 +58,7 @@ impl Device {
 	}
 
 	pub(crate) fn next_swapchain_image_index(&mut self, swapchain_handle: SwapchainHandle) -> u8 {
-		let Some(swapchain) = self.swapchains.get_mut(swapchain_handle.0 as usize) else {
+		let Some(swapchain) = self.swapchains.get_mut(swapchain_handle.index() as usize) else {
 			return 0;
 		};
 
@@ -69,7 +69,7 @@ impl Device {
 	}
 
 	pub(crate) fn present_swapchain(&mut self, present_key: PresentKey) {
-		let swapchain_index = present_key.swapchain.0 as usize;
+		let swapchain_index = present_key.swapchain.index() as usize;
 		if swapchain_index >= self.swapchains.len() {
 			return;
 		}

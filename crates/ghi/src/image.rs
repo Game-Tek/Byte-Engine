@@ -167,8 +167,10 @@ impl<'a> Builder<'a> {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub(crate) struct ImageHandle(pub(crate) u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+	pub(crate) struct ImageHandle;
+}
 
 impl From<ImageHandle> for PrivateHandles {
 	fn from(val: ImageHandle) -> Self {
@@ -178,11 +180,11 @@ impl From<ImageHandle> for PrivateHandles {
 
 impl PrivateHandle for ImageHandle {
 	fn new(i: u64) -> Self {
-		Self(i)
+		Self::from_index(i)
 	}
 
 	fn index(&self) -> u64 {
-		self.0
+		ImageHandle::index(*self)
 	}
 }
 

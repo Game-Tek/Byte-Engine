@@ -324,7 +324,7 @@ fn layout_elements<'a>(
 	// The viewport parents every root: each element declared directly in a mount, and each one whose parent was
 	// removed without it. It offers the evaluation size and has no flow, so roots overlap from its corner.
 	let mut roots = Vec::new_in(frame_allocator);
-	roots.extend((0..tree.elements.len()).filter(|&index| tree.parents[index].is_none()));
+	roots.extend((0..tree.elements.len()).filter(|&index| tree.parent(index).is_none()));
 	let mut slots = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
 	slots.resize(tree.elements.len(), 0);
 	// Roots are placed apart from `place`'s child loop, which stays as small as the hot recursion needs.
@@ -645,7 +645,7 @@ mod tests {
 		allocator: &'a bumpalo::Bump,
 	) -> Vec<LayoutElement, &'a bumpalo::Bump> {
 		let mut tree = super::retained_tree::RetainedTree::new();
-		tree.parents.resize(elements.len(), None);
+		tree.parents.resize(elements.len(), usize::MAX);
 		tree.children.resize_with(elements.len(), Vec::new);
 		let index = |id: Id| {
 			elements
@@ -655,7 +655,7 @@ mod tests {
 		};
 		for &(parent, child) in relations {
 			let (parent, child) = (index(parent), index(child));
-			tree.parents[child] = Some(parent);
+			tree.parents[child] = parent;
 			tree.children[parent].push(child);
 		}
 		tree.elements = elements;

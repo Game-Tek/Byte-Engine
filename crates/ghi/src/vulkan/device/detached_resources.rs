@@ -35,7 +35,7 @@ impl crate::device::Device for Device {
 			self.pipeline_binaries.as_deref(),
 		)?;
 		self.shaders.push(shader);
-		Ok(crate::ShaderHandle(self.shaders.len() as u64 - 1))
+		Ok(crate::ShaderHandle::from_index(self.shaders.len() as u64 - 1))
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {

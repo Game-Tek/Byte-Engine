@@ -15,7 +15,7 @@ impl Device {
 			ImageOrSwapchain::Swapchain(swapchain_handle) => {
 				let resource = self.swapchain_backbuffer_resource(swapchain_handle, sequence_index)?;
 				let resource_key = Self::native_resource_key(&resource);
-				let present_resources = &mut self.command_buffers[command_buffer_handle.0 as usize].present_resources;
+				let present_resources = &mut self.command_buffers[command_buffer_handle.index() as usize].present_resources;
 				// Multiple render passes can target one backbuffer, but it needs only one terminal PRESENT transition.
 				if present_resources
 					.iter()
@@ -34,7 +34,7 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
 		let (resource, newly_cached) = {
-			let swapchain = self.swapchains.get_mut(swapchain_handle.0 as usize)?;
+			let swapchain = self.swapchains.get_mut(swapchain_handle.index() as usize)?;
 			let sequence_index = usize::from(sequence_index);
 			assert!(
 				swapchain.acquired_sequences[sequence_index],
@@ -75,7 +75,7 @@ impl Device {
 			ImageOrSwapchain::Image(image) => {
 				let image_format = self
 					.images
-					.get(image.0 as usize)
+					.get(image.index() as usize)
 					.map(|image| image.format)
 					.unwrap_or(Formats::RGBA8UNORM);
 				if let Some(format) = attachment.format {
@@ -122,7 +122,7 @@ impl Device {
 			let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 				continue;
 			};
-			let Some(image) = self.images.get(image_handle.0 as usize) else {
+			let Some(image) = self.images.get(image_handle.index() as usize) else {
 				continue;
 			};
 			let Some(format) = image
@@ -165,7 +165,7 @@ impl Device {
 		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {
 			return;
 		};
-		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
+		let Some(image) = self.images.get(image_handle.0.index() as usize) else {
 			return;
 		};
 		let image_format = image.format;
@@ -195,7 +195,7 @@ impl Device {
 		let desc = Self::texture_uav_desc(format, extent, is_3d, array_layers);
 		if !self
 			.command_buffers
-			.get(command_buffer_handle.0 as usize)
+			.get(command_buffer_handle.index() as usize)
 			.is_some_and(|command_buffer| {
 				let resource = Self::native_resource_key(&destination);
 				command_buffer

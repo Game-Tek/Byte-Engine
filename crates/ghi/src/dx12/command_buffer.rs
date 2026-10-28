@@ -113,7 +113,7 @@ impl<'a> CommandBufferRecording<'a> {
 			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
 		}
 		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.index() as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
 		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
 		self

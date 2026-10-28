@@ -36,7 +36,7 @@ impl<A: Allocator + Clone> Registry<A> {
 			"Device-class handle space is exhausted. The most likely cause is registering classes continuously instead of reusing them."
 		);
 
-		let handle = DeviceClassHandle(self.device_classes.len() as u32);
+		let handle = DeviceClassHandle::from_index(self.device_classes.len() as u32);
 		self.device_classes.push(DeviceClass {
 			name: Box::clone_from_ref_in(name, self.device_classes.allocator().clone()),
 		});
@@ -58,7 +58,7 @@ impl<A: Allocator + Clone> Registry<A> {
 			"Default value type does not match input source type"
 		);
 		debug_assert!(
-			(device_class.0 as usize) < self.device_classes.len(),
+			(device_class.index() as usize) < self.device_classes.len(),
 			"Trigger device class is unknown. The most likely cause is using a handle from another input pipeline."
 		);
 		debug_assert!(
@@ -66,9 +66,9 @@ impl<A: Allocator + Clone> Registry<A> {
 			"Trigger handle space is exhausted. The most likely cause is registering triggers continuously instead of reusing them."
 		);
 
-		let handle = TriggerHandle(self.triggers.len() as u32);
+		let handle = TriggerHandle::from_index(self.triggers.len() as u32);
 		// Names resolve by one scan of `Class.Trigger` strings, without splitting the query.
-		let full_name = format!("{}.{name}", self.device_classes[device_class.0 as usize].name);
+		let full_name = format!("{}.{name}", self.device_classes[device_class.index() as usize].name);
 		self.triggers.push(Trigger {
 			device_class_handle: *device_class,
 			name: Box::clone_from_ref_in(full_name.as_str(), self.triggers.allocator().clone()),
@@ -81,7 +81,7 @@ impl<A: Allocator + Clone> Registry<A> {
 
 	pub(super) fn create_device(&mut self, device_class: &DeviceClassHandle) -> DeviceHandle {
 		debug_assert!(
-			(device_class.0 as usize) < self.device_classes.len(),
+			(device_class.index() as usize) < self.device_classes.len(),
 			"Device class is unknown. The most likely cause is using a handle from another input pipeline."
 		);
 		debug_assert!(
@@ -89,7 +89,7 @@ impl<A: Allocator + Clone> Registry<A> {
 			"Device handle space is exhausted. The most likely cause is creating devices without retiring old state."
 		);
 
-		let handle = DeviceHandle(self.devices.len() as u32);
+		let handle = DeviceHandle::from_index(self.devices.len() as u32);
 		self.devices.push(Device {
 			device_class_handle: *device_class,
 		});
@@ -100,25 +100,19 @@ impl<A: Allocator + Clone> Registry<A> {
 	pub(super) fn devices_by_class_name(&self, class_name: &str) -> Option<impl Iterator<Item = DeviceHandle> + '_> {
 		let class = self.class_by_name(class_name)?;
 
-		Some(
-			self.devices
-				.iter()
-				.enumerate()
-				.filter_map(move |(index, device)| (device.device_class_handle == class).then_some(DeviceHandle(index as u32))),
-		)
+		Some(self.devices.iter().enumerate().filter_map(move |(index, device)| {
+			(device.device_class_handle == class).then_some(DeviceHandle::from_index(index as u32))
+		}))
 	}
 
-	/// Resolves a trigger by handle or by its `DeviceClass.Trigger` name.
-	pub(super) fn resolve(&self, reference: &TriggerReference) -> Option<(TriggerHandle, &Trigger<A>)> {
-		let handle = match reference {
-			TriggerReference::Handle(handle) => *handle,
-			TriggerReference::Name(name) => {
-				let index = self.triggers.iter().position(|trigger| trigger.name.as_ref() == *name)?;
-				TriggerHandle(index as u32)
-			}
+	/// Resolves a trigger to its dense index, decoding a public handle only when supplied.
+	pub(super) fn resolve(&self, reference: &TriggerReference) -> Option<(u32, &Trigger<A>)> {
+		let index = match reference {
+			TriggerReference::Handle(handle) => handle.index(),
+			// Registration bounds the index, so name lookup needs no temporary opaque handle.
+			TriggerReference::Name(name) => self.triggers.iter().position(|trigger| trigger.name.as_ref() == *name)? as u32,
 		};
-
-		self.triggers.get(handle.0 as usize).map(|trigger| (handle, trigger))
+		self.triggers.get(index as usize).map(|trigger| (index, trigger))
 	}
 
 	/// Resolves one binding's value source and its optional gating button.
@@ -167,6 +161,6 @@ impl<A: Allocator + Clone> Registry<A> {
 		self.device_classes
 			.iter()
 			.position(|class| class.name.as_ref() == name)
-			.map(|index| DeviceClassHandle(index as u32))
+			.map(|index| DeviceClassHandle::from_index(index as u32))
 	}
 }

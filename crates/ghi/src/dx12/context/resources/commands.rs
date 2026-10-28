@@ -52,7 +52,7 @@ impl Device {
 
 	pub fn create_command_buffer(&mut self, _name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle {
 		assert!(
-			(queue_handle.0 as usize) < self.queues.len(),
+			(queue_handle.index() as usize) < self.queues.len(),
 			"Invalid DX12 queue handle. The most likely cause is that the command buffer references a queue from another device."
 		);
 		let frames = (0..self.frames)
@@ -64,7 +64,7 @@ impl Device {
 			active_sequence_index: 0,
 		});
 
-		CommandBufferHandle((self.command_buffers.len() - 1) as u64)
+		CommandBufferHandle::from_index((self.command_buffers.len() - 1) as u64)
 	}
 
 	/// Resizes every logical command buffer's frame-local native recording storage at an idle boundary.

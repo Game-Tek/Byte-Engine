@@ -10,13 +10,13 @@ use std::alloc::Allocator;
 
 use super::queue::Record;
 use super::resolve::resolve_value;
-use super::{ActionPhase, DeviceHandle, SeatHandle, TickPolicy, TriggerHandle, Types, Value, ValueMapping};
+use super::{ActionPhase, TickPolicy, Types, Value, ValueMapping};
 
-/// The `TriggerMapping` struct is one binding resolved to handles, with its gate decided up front.
+/// The `TriggerMapping` struct preserves a binding resolved to dense control indices, with its gate decided up front.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct TriggerMapping {
 	/// The control whose value the binding contributes.
-	pub(super) source: TriggerHandle,
+	pub(super) source: u32,
 	pub(super) gate: Gate,
 	pub(super) mapping: ValueMapping,
 }
@@ -27,11 +27,11 @@ pub(super) enum Gate {
 	/// The binding follows its own control.
 	None,
 	/// The binding samples its source when the button is pressed.
-	Press(TriggerHandle),
+	Press(u32),
 	/// The binding samples its source when the button is released.
-	Release(TriggerHandle),
+	Release(u32),
 	/// The binding follows its source from press through movement to release.
-	Drag(TriggerHandle),
+	Drag(u32),
 }
 
 impl TriggerMapping {
@@ -41,7 +41,7 @@ impl TriggerMapping {
 	}
 
 	/// Returns the controls whose records can drive this binding.
-	pub(super) fn controls(&self) -> impl Iterator<Item = TriggerHandle> {
+	pub(super) fn controls(&self) -> impl Iterator<Item = u32> {
 		let (source, button) = match self.gate {
 			Gate::None => (Some(self.source), None),
 			Gate::Press(button) | Gate::Release(button) => (None, Some(button)),
@@ -63,8 +63,8 @@ pub(super) enum Mode<A: Allocator> {
 
 /// The `DragState` struct preserves one binding's interaction across ticks.
 pub(super) struct DragState {
-	pub(super) seat: SeatHandle,
-	pub(super) device: DeviceHandle,
+	pub(super) seat: u32,
+	pub(super) device: u32,
 	binding: u32,
 	pub(super) value: Value,
 	pub(super) active: bool,
@@ -97,12 +97,12 @@ pub(super) fn mode_for<A: Allocator>(mappings: &[TriggerMapping], policy: TickPo
 /// state machine out of its record loop entirely. The loop measurably slows
 /// down when the drag path is merely present beside the direct path.
 #[inline]
-pub(super) fn resolve<const DRAGS: bool, A: Allocator>(
+pub(super) fn resolve<'records, const DRAGS: bool, A: Allocator>(
 	kind: Types,
 	mappings: &[TriggerMapping],
 	mode: &mut Mode<A>,
 	record: &Record,
-	read: impl Fn(TriggerHandle) -> Option<Record>,
+	read: impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	if DRAGS
 		&& let Mode::Drag(drags) = mode
@@ -124,14 +124,14 @@ pub(super) fn resolve<const DRAGS: bool, A: Allocator>(
 }
 
 /// Advances a drag from a fresh press with a visible source sample, movement while held, or release.
-// Keep the drag state machine out of callers that only handle ordinary input.
+// Keep the state machine separate so drag handling does not inflate the main record loop.
 #[inline(never)]
-fn resolve_drag<A: Allocator>(
+fn resolve_drag<'records, A: Allocator>(
 	kind: Types,
 	mappings: &[TriggerMapping],
 	drags: &mut Vec<DragState, A>,
 	record: &Record,
-	read: &impl Fn(TriggerHandle) -> Option<Record>,
+	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	for (binding, mapping, button) in mappings
 		.iter()
@@ -144,10 +144,12 @@ fn resolve_drag<A: Allocator>(
 		if !is_button && record.trigger != mapping.source {
 			continue;
 		}
-		let slot = drags
+		// Keep the matched state borrowed through resolution instead of indexing the vector again for each field.
+		let existing = drags
 			.iter()
-			.position(|drag| drag.seat == record.seat && drag.device == record.device && drag.binding == binding);
-		let active = slot.is_some_and(|slot| drags[slot].active);
+			.enumerate()
+			.find(|(_, drag)| drag.seat == record.seat && drag.device == record.device && drag.binding == binding);
+		let active = existing.is_some_and(|(_, drag)| drag.active);
 		let phase = match (is_button, record.value, active) {
 			(true, Value::Bool(true), false) => ActionPhase::Started,
 			(true, Value::Bool(false), true) => ActionPhase::Ended,
@@ -155,12 +157,12 @@ fn resolve_drag<A: Allocator>(
 			_ => continue,
 		};
 		let value = resolve_value(kind, mappings, mapping, record, read)
-			.or_else(|| slot.filter(|_| active).map(|slot| drags[slot].value));
+			.or_else(|| existing.filter(|_| active).map(|(_, drag)| drag.value));
 		let Some(value) = value else {
 			continue;
 		};
 		// Reuse the binding's slot across drags; only the first interaction grows storage.
-		let slot = slot.unwrap_or_else(|| {
+		let slot = existing.map(|(slot, _)| slot).unwrap_or_else(|| {
 			drags.push(DragState {
 				seat: record.seat,
 				device: record.device,
@@ -189,8 +191,8 @@ fn resolve_drag<A: Allocator>(
 /// Ends every active drag `interrupted` selects, yielding each one's seat and last value.
 pub(super) fn cancel_drags<'a>(
 	drags: &'a mut [DragState],
-	interrupted: impl Fn(SeatHandle, DeviceHandle) -> bool + 'a,
-) -> impl Iterator<Item = (SeatHandle, Value)> + 'a {
+	interrupted: impl Fn(u32, u32) -> bool + 'a,
+) -> impl Iterator<Item = (u32, Value)> + 'a {
 	drags
 		.iter_mut()
 		.filter(move |drag| drag.active && interrupted(drag.seat, drag.device))

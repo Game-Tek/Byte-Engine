@@ -122,12 +122,12 @@ impl<A: Allocator + Clone> InputSink<A> {
 		let allocator = self.actions.allocator().clone();
 		let mut mappings = Vec::with_capacity_in(bindings.len(), allocator.clone());
 		mappings.extend(bindings.iter().filter_map(|binding| collector.resolve_binding(binding)));
-		let handle = ActionHandle(self.actions.len() as u32);
+		let handle = ActionHandle::from_index(self.actions.len() as u32);
 		let mode = gesture::mode_for(&mappings, tick_policy, allocator.clone());
 		self.drags |= matches!(mode, Mode::Drag(_));
 		for mapping in &mappings {
 			for trigger in mapping.controls() {
-				let entry = (trigger.0, handle.0);
+				let entry = (trigger, handle.index());
 				if let Err(position) = self.interest.binary_search(&entry) {
 					self.interest.insert(position, entry);
 				}
@@ -150,11 +150,11 @@ impl<A: Allocator + Clone> InputSink<A> {
 
 	/// Returns the latest resolved value of one action for a seat and device.
 	pub fn action_state(&self, seat: SeatHandle, action: ActionHandle, device: DeviceHandle) -> Value {
-		let action = &self.actions[action.0 as usize];
+		let action = &self.actions[action.index() as usize];
 		action
 			.values
 			.iter()
-			.find(|held| held.seat == seat && held.device == device)
+			.find(|held| held.seat == seat.index() && held.device == device.index())
 			.map_or_else(|| action.r#type.default_value(), |held| held.value)
 	}
 
@@ -195,15 +195,15 @@ impl<A: Allocator + Clone> InputSink<A> {
 				continue;
 			};
 			let mut captured = false;
-			let first = self.interest.partition_point(|(trigger, _)| *trigger < record.trigger.0);
+			let first = self.interest.partition_point(|(trigger, _)| *trigger < record.trigger);
 			for &(_, id) in self.interest[first..]
 				.iter()
-				.take_while(|(trigger, _)| *trigger == record.trigger.0)
+				.take_while(|(trigger, _)| *trigger == record.trigger)
 			{
 				let action = &mut self.actions[id as usize];
 				let read = |trigger| queue.visible(sink, index + 1, &(record.seat, record.device, trigger));
 				let Some(resolution) =
-					gesture::resolve::<DRAGS, A>(action.r#type, &action.mappings, &mut action.mode, &record, read)
+					gesture::resolve::<DRAGS, A>(action.r#type, &action.mappings, &mut action.mode, record, read)
 				else {
 					continue;
 				};
@@ -211,7 +211,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 				action.store(record.seat, record.device, resolution.value, holds, tick);
 				action.publish(&self.channel, record.seat, resolution.value, resolution.phase);
 				let taken = decide(&ResolvedAction {
-					action: ActionHandle(id),
+					action: ActionHandle(super::HANDLE_TAG | id),
 					handle: action.handle,
 					value: resolution.value,
 					phase: resolution.phase,
@@ -247,21 +247,23 @@ impl<A: Allocator + Clone> InputSink<A> {
 	/// [`ActionEvent::is_cancelled`], stop repeating, and give their controls
 	/// back to later sinks once they are released.
 	pub fn cancel_action(&mut self, seat: SeatHandle, action: ActionHandle) {
-		self.actions[action.0 as usize].cancel(&self.channel, |owner, _| owner == seat);
+		self.actions[action.index() as usize].cancel(&self.channel, |owner, _| owner == seat.index());
 	}
 
 	/// Ends this sink's held interactions for one seat. Captured controls stay
 	/// with the sink until release, so another sink requires a fresh press.
 	pub fn cancel_seat(&mut self, seat: SeatHandle) {
 		for action in &mut self.actions {
-			action.cancel(&self.channel, |owner, _| owner == seat);
+			action.cancel(&self.channel, |owner, _| owner == seat.index());
 		}
 	}
 
 	/// Ends this sink's held interactions on a suspended or disconnected device.
 	pub fn cancel_device(&mut self, seat: SeatHandle, device: DeviceHandle) {
 		for action in &mut self.actions {
-			action.cancel(&self.channel, |owner, source| owner == seat && source == device);
+			action.cancel(&self.channel, |owner, source| {
+				owner == seat.index() && source == device.index()
+			});
 		}
 	}
 
@@ -277,13 +279,17 @@ impl<A: Allocator + Clone> InputSink<A> {
 			for held in action.values.iter().filter(|held| held.repeats(policy, self.tick)) {
 				// Repetition has no new record to capture.
 				decide(&ResolvedAction {
-					action: ActionHandle(id as u32),
+					action: ActionHandle(super::HANDLE_TAG | id as u32),
 					handle: action.handle,
 					value: held.value,
 					phase: ActionPhase::Updated,
 				});
 				if let Some(handle) = action.handle {
-					self.channel.send(ActionEvent::new(held.seat, handle, held.value));
+					self.channel.send(ActionEvent::new(
+						SeatHandle(super::HANDLE_TAG | held.seat),
+						handle,
+						held.value,
+					));
 				}
 			}
 		}
@@ -296,7 +302,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 			let action = message.into_data();
 
 			let index = self.create_action(collector, action.r#type, &action.bindings, action.tick_policy);
-			self.actions[index.0 as usize].handle = Some(handle);
+			self.actions[index.index() as usize].handle = Some(handle);
 		}
 	}
 }
@@ -307,14 +313,14 @@ struct SinkAction<A: Allocator> {
 	r#type: Types,
 	mappings: Box<[TriggerMapping], A>,
 	handle: Option<Handle>,
-	/// Values grow in the same allocator as the action and retain capacity between ticks.
+	/// Values retain capacity between ticks in the action's allocator.
 	values: Vec<Held, A>,
 }
 
 /// The `Held` struct is one device's last value of an action.
 struct Held {
-	seat: SeatHandle,
-	device: DeviceHandle,
+	seat: u32,
+	device: u32,
 	value: Value,
 	/// A retained control drove the value, so a tick policy may repeat it.
 	holding: bool,
@@ -331,7 +337,7 @@ impl Held {
 
 impl<A: Allocator> SinkAction<A> {
 	/// Stores a device's value beside its action.
-	fn store(&mut self, seat: SeatHandle, device: DeviceHandle, value: Value, holds: bool, tick: u32) {
+	fn store(&mut self, seat: u32, device: u32, value: Value, holds: bool, tick: u32) {
 		if let Some(held) = self.values.iter_mut().find(|held| held.seat == seat && held.device == device) {
 			held.value = value;
 			held.holding |= holds;
@@ -348,19 +354,24 @@ impl<A: Allocator> SinkAction<A> {
 	}
 
 	/// Publishes a declared action's value through the sink's channel.
-	fn publish(&self, channel: &DefaultChannel<ActionEvent>, seat: SeatHandle, value: Value, phase: ActionPhase) {
+	fn publish(&self, channel: &DefaultChannel<ActionEvent>, seat: u32, value: Value, phase: ActionPhase) {
 		if let Some(handle) = self.handle {
 			log::debug!(target: "byte_engine::input::actions", "Publishing input action: handle={handle:?}, seat={seat:?}, value={value:?}, phase={phase:?}");
-			channel.send(ActionEvent::with_phase(seat, handle, value, phase));
+			channel.send(ActionEvent::with_phase(
+				SeatHandle(super::HANDLE_TAG | seat),
+				handle,
+				value,
+				phase,
+			));
 		}
 	}
 
 	/// Neutralizes matching values and reports interrupted holds once.
-	fn cancel(&mut self, channel: &DefaultChannel<ActionEvent>, interrupted: impl Fn(SeatHandle, DeviceHandle) -> bool) {
+	fn cancel(&mut self, channel: &DefaultChannel<ActionEvent>, interrupted: impl Fn(u32, u32) -> bool) {
 		if let Mode::Drag(drags) = &mut self.mode {
 			for (seat, value) in gesture::cancel_drags(drags, &interrupted) {
 				if let Some(handle) = self.handle {
-					channel.send(ActionEvent::cancelled(seat, handle, value));
+					channel.send(ActionEvent::cancelled(SeatHandle(super::HANDLE_TAG | seat), handle, value));
 				}
 			}
 		}
@@ -371,7 +382,11 @@ impl<A: Allocator> SinkAction<A> {
 			if let Some(handle) = self.handle
 				&& active
 			{
-				channel.send(ActionEvent::cancelled(held.seat, handle, held.value));
+				channel.send(ActionEvent::cancelled(
+					SeatHandle(super::HANDLE_TAG | held.seat),
+					handle,
+					held.value,
+				));
 			}
 		}
 	}

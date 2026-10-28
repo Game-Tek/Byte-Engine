@@ -14,7 +14,7 @@ impl Context {
 		// Update the layer extent here so drawables taken at submission already have the frame's size.
 		// update_layer_extent only calls setDrawableSize when the size actually changed, avoiding unnecessary drawable
 		// pool invalidation.
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
 		swapchain.extent = extent;
 
@@ -30,7 +30,7 @@ impl Context {
 		};
 
 		let present_time = {
-			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 			let bits = swapchain.last_presented_time.load(std::sync::atomic::Ordering::Acquire);
 			// While nothing new reaches the screen, as when the window is minimized, the presented time stays the
 			// same. Reconverting it would jitter, and the frame clock would take each jitter for a new presentation.
@@ -51,17 +51,17 @@ impl Context {
 	///
 	/// Sequences above the context's frame count get no image, so they cost no memory until frames in flight grow.
 	fn update_swapchain_images(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, extent: Extent) {
-		let uses = self.swapchains[swapchain_handle.0 as usize].uses;
+		let uses = self.swapchains[swapchain_handle.index() as usize].uses;
 		let mut changed = false;
 		for sequence_index in 0..self.frames as usize {
-			match self.swapchains[swapchain_handle.0 as usize].images[sequence_index] {
+			match self.swapchains[swapchain_handle.index() as usize].images[sequence_index] {
 				Some(image) => changed |= self.resize_image_internal(image, extent, None),
 				None => {
 					let description = ImageDescription::new(
 						&image_builder::Builder::new(SWAPCHAIN_FORMAT, uses | Uses::BlitSource).extent(extent),
 					);
 					let image = self.create_image_resource(Some("Swapchain Image"), description);
-					self.swapchains[swapchain_handle.0 as usize].images[sequence_index] = Some(self.images.add(image).1);
+					self.swapchains[swapchain_handle.index() as usize].images[sequence_index] = Some(self.images.add(image).1);
 					changed = true;
 				}
 			}
@@ -69,8 +69,8 @@ impl Context {
 
 		if changed {
 			// Swapchain descriptors resolve to these images when encoded, so only a new backing invalidates them.
-			self.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(
-				swapchain_handle.0,
+			self.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle::from_index(
+				swapchain_handle.index(),
 			)));
 		}
 	}

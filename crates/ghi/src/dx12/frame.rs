@@ -31,7 +31,7 @@ impl<'a> Frame<'a> {
 			.shaders
 			.iter()
 			.filter_map(|shader| {
-				shader_handles.get(shader.handle.0 as usize).map(|handle| {
+				shader_handles.get(shader.handle.index() as usize).map(|handle| {
 					crate::pipelines::ShaderParameter::new(handle, shader.stage)
 						.with_specialization_map(&shader.specialization_map)
 				})
@@ -54,7 +54,7 @@ impl<'a> Frame<'a> {
 	pub fn intern_compute_pipeline(&mut self, pipeline: crate::implementation::ComputePipeline) -> crate::PipelineHandle {
 		let shader_handles = self.intern_factory_shaders(&pipeline.factory_shaders);
 		let shader_handle = shader_handles
-			.get(pipeline.shader.handle.0 as usize)
+			.get(pipeline.shader.handle.index() as usize)
 			.expect("Missing DX12 factory compute shader. The most likely cause is that the pipeline references a shader not created by the factory.");
 		let shader = crate::pipelines::ShaderParameter::new(shader_handle, pipeline.shader.stage)
 			.with_specialization_map(&pipeline.shader.specialization_map);

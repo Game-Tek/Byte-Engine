@@ -150,6 +150,6 @@ impl Context {
 	/// it with.
 	pub fn intern_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
 		self.pipelines.push(pipeline);
-		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
+		graphics_hardware_interface::PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
 	}
 }

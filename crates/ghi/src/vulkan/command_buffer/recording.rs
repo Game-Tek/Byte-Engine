@@ -87,15 +87,15 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(super) fn get_image(&self, image_handle: ImageHandle) -> &Image {
-		&self.device.images[image_handle.0 as usize]
+		&self.device.images[image_handle.index() as usize]
 	}
 
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
-		&self.device.swapchains[swapchain_handle.0 as usize]
+		&self.device.swapchains[swapchain_handle.index() as usize]
 	}
 
 	pub(crate) fn get_command_buffer(&self) -> &CommandBufferInternal {
-		&self.device.command_buffers[self.command_buffer.0 as usize].frames[self.sequence_index as usize]
+		&self.device.command_buffers[self.command_buffer.index() as usize].frames[self.sequence_index as usize]
 	}
 
 	/// Binds the context's long-lived heaps once for this command buffer.
@@ -124,7 +124,10 @@ impl CommandBufferRecording<'_> {
 		let layout_handle = self.bound_pipeline_layout.expect(
 			"No Vulkan pipeline layout is active. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
 		);
-		if self.device.pipeline_layouts[layout_handle.0 as usize].resources.is_empty() {
+		if self.device.pipeline_layouts[layout_handle.index() as usize]
+			.resources
+			.is_empty()
+		{
 			self.current_descriptor_materialization = None;
 			self.descriptor_materialization_dirty = false;
 			return None;
@@ -144,7 +147,7 @@ impl CommandBufferRecording<'_> {
 		let snapshot = self.device.descriptor_materialization(materialization);
 		let heap_offsets = [snapshot.resource_heap_offset, snapshot.sampler_heap_offset];
 		let push_info = vk::PushDataInfoEXT::default()
-			.offset(self.device.pipeline_layouts[layout_handle.0 as usize].heap_push_data_offset)
+			.offset(self.device.pipeline_layouts[layout_handle.index() as usize].heap_push_data_offset)
 			.data(vk::HostAddressRangeConstEXT::default().address(::utils::as_byte_slice(&heap_offsets)));
 		unsafe {
 			self.device
@@ -239,12 +242,12 @@ impl CommandBufferRecording<'_> {
 			let format = match consumption.handle {
 				Handles::Image(image_handle) => {
 					self.device.image_groups.assert_initialized(
-						graphics_hardware_interface::BaseImageHandle(image_handle.0),
+						graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
 						|| {
 							self.device.get_object_debug_name(
-								graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle(
-									image_handle.0,
-								))
+								graphics_hardware_interface::ImageHandle(
+									graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
+								)
 								.into(),
 							)
 						},
@@ -569,16 +572,13 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		if let Some(swapchain) = self
-			.device
-			.swapchains
-			.iter()
-			.find(|swapchain| swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0)
-		{
+		if let Some(swapchain) = self.device.swapchains.iter().find(|swapchain| {
+			swapchain.images[0].index() == handle.index() || swapchain.native_images[0].index() == handle.index()
+		}) {
 			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize];
 		}
 
-		let handles = ImageHandle(handle.0).get_all(&self.device.images);
+		let handles = ImageHandle::from_index(handle.index()).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 

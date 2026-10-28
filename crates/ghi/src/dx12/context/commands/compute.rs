@@ -7,7 +7,8 @@ impl Device {
 		pipeline_handle: Option<PipelineHandle>,
 		dispatch: DispatchExtent,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.0 as usize)) else {
+		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
+		else {
 			return;
 		};
 		if !matches!(pipeline.kind, PipelineKind::Compute) || pipeline.pipeline_state.is_none() {

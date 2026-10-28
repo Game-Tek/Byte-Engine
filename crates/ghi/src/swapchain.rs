@@ -23,8 +23,10 @@ pub(crate) fn pace_present(next_slot: &mut Option<Instant>, interval: Option<Dur
 	*next_slot = Some(slot + interval);
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct SwapchainHandle(pub(crate) u64);
+crate::handle::index_handle! {
+	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+	pub(crate) struct SwapchainHandle;
+}
 
 impl From<SwapchainHandle> for PrivateHandles {
 	fn from(val: SwapchainHandle) -> Self {
@@ -34,10 +36,10 @@ impl From<SwapchainHandle> for PrivateHandles {
 
 impl PrivateHandle for SwapchainHandle {
 	fn new(i: u64) -> Self {
-		Self(i)
+		Self::from_index(i)
 	}
 
 	fn index(&self) -> u64 {
-		self.0
+		SwapchainHandle::index(*self)
 	}
 }

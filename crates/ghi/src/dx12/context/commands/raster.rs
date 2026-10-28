@@ -195,7 +195,8 @@ impl Device {
 		y: u32,
 		z: u32,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.0 as usize)) else {
+		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
+		else {
 			return;
 		};
 		if !matches!(pipeline.kind, PipelineKind::Raster) || pipeline.pipeline_state.is_none() || !pipeline.has_mesh_shader {
@@ -220,7 +221,7 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
-		let Some(mesh) = self.meshes.get(mesh_handle.0 as usize) else {
+		let Some(mesh) = self.meshes.get(mesh_handle.index() as usize) else {
 			return;
 		};
 		let (Some(vertex_resource), Some(index_resource)) = (mesh.vertex_resource.clone(), mesh.index_resource.clone()) else {
@@ -434,7 +435,7 @@ impl Device {
 				let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 					continue;
 				};
-				let Some(image) = self.images.get(image_handle.0 as usize) else {
+				let Some(image) = self.images.get(image_handle.index() as usize) else {
 					continue;
 				};
 				let (first_layer, layer_count) = attachment.layer_selection();
@@ -456,7 +457,7 @@ impl Device {
 				continue;
 			};
 			let array_layers = image_handle
-				.and_then(|image_handle| self.images.get(image_handle.0 as usize))
+				.and_then(|image_handle| self.images.get(image_handle.index() as usize))
 				.map(|image| image.array_layers)
 				.unwrap_or(1);
 			let (first_layer, layer_count) = attachment.layer_selection();

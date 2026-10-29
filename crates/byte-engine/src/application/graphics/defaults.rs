@@ -161,6 +161,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
 	asset_manager.add_asset_handler(LevelAssetHandler);
+	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -218,10 +219,12 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 ///
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
-/// worker, or create an [`crate::audio::graph::AudioGraph`] through
-/// [`crate::audio::graph::AudioGraphFactory`].
+/// worker, create an [`crate::audio::graph::AudioGraph`] through
+/// [`crate::audio::graph::AudioGraphFactory`], or spawn a baked one by
+/// publishing an [`AudioGraphAsset`] on the world.
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	let mut audio_graphs_listener = AudioGraphFactory::in_scope(&application.world).listener();
+	let mut audio_graph_assets_listener = application.world.factory::<AudioGraphAsset>().listener();
 
 	let mut deletions_listener = application.world.channel::<DeleteMessage>().listener();
 
@@ -264,7 +267,23 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 						// any completion can be adopted for the same handle.
 						audio_system.remove_audio_graph(handle);
 
-						sample_loader_client.queue(handle, message.into_data(), audio_system.audio_graph_count());
+						sample_loader_client.queue(
+							handle,
+							AudioLoadSource::Compiled(message.into_data()),
+							audio_system.audio_graph_count(),
+						);
+					}
+
+					while let Some(message) = audio_graph_assets_listener.read() {
+						let handle = message.handle();
+
+						audio_system.remove_audio_graph(handle);
+
+						sample_loader_client.queue(
+							handle,
+							AudioLoadSource::Asset(message.into_data().id),
+							audio_system.audio_graph_count(),
+						);
 					}
 
 					while let Some(message) = deletions_listener.read() {
@@ -336,6 +355,7 @@ use resource_management::asset::FileStorageBackend;
 use resource_management::{
 	asset::{
 		handler::implementations::{
+			audio_graph::AudioGraphAssetHandler,
 			bema::{BEMAAssetHandler, ProgramGenerator},
 			besl::BESLShaderAssetHandler,
 			environment::EnvironmentMapAssetHandler,
@@ -369,10 +389,10 @@ use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatu
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},
-	audio::graph::AudioGraphFactory,
+	audio::graph::{AudioGraphAsset, AudioGraphFactory},
 	audio::{
 		audio_system::DefaultAudioSystem,
-		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
+		sample_loader::{AudioLoadSource, AudioSampleLoader, AudioSamplePoolConfig},
 	},
 	core::{listener::Listener as _, message::DeleteMessage},
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},

@@ -1,16 +1,19 @@
 //! Async sample loading and audio-thread completion delivery.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use resource_management::{
 	Reference,
 	resource::{ReadTargetsMut, resource_manager::ResourceManager},
-	resources::audio::Audio,
+	resources::{
+		audio::Audio,
+		audio_graph::{AudioGraph as BakedAudioGraph, AudioGraphNode},
+	},
 };
 
 use super::*;
 use crate::{
-	audio::graph::{AudioGraphRenderPlan, CompiledAudioGraph, PreparedAudioGraphRenderPlan},
+	audio::graph::{AudioGraph, CompiledAudioGraph, PreparedAudioGraphRenderPlan},
 	core::{EntityHandle, async_runtime, factory::Handle},
 };
 
@@ -20,8 +23,15 @@ use crate::{
 pub(super) struct AudioLoadRequest {
 	pub(super) handle: Handle,
 	pub(super) generation: u64,
-	pub(super) resource_id: String,
-	pub(super) render_plan: AudioGraphRenderPlan,
+	pub(super) source: AudioLoadSource,
+}
+
+/// The `AudioLoadSource` enum is what the audio worker asks the loader to play: a graph compiled where it was
+/// published, or the ID of a baked graph that the loader selects a path of.
+#[derive(Debug)]
+pub(crate) enum AudioLoadSource {
+	Compiled(CompiledAudioGraph),
+	Asset(Cow<'static, str>),
 }
 
 /// Carries a completed load back to the audio worker without exposing the
@@ -89,7 +99,7 @@ impl AudioSampleLoaderClient {
 	///
 	/// `active_graph_count` lets this bridge enforce one shared limit across
 	/// graphs that are loading and graphs that are already mixing.
-	pub(crate) fn queue(&mut self, handle: Handle, graph: CompiledAudioGraph, active_graph_count: usize) -> bool {
+	pub(crate) fn queue(&mut self, handle: Handle, source: AudioLoadSource, active_graph_count: usize) -> bool {
 		self.remove(handle);
 		if self.pending.len() + active_graph_count >= AUDIO_GRAPH_CAPACITY {
 			log::warn!(
@@ -101,7 +111,6 @@ impl AudioSampleLoaderClient {
 
 		let generation = self.next_generation;
 		self.next_generation = self.next_generation.wrapping_add(1);
-		let (resource_id, render_plan) = graph.into_parts();
 
 		self.pending.push(PendingAudioGraph {
 			handle,
@@ -111,8 +120,7 @@ impl AudioSampleLoaderClient {
 			request: Some(AudioLoadRequest {
 				handle,
 				generation,
-				resource_id,
-				render_plan,
+				source,
 			}),
 		});
 		true
@@ -263,6 +271,9 @@ pub(crate) struct AudioSampleLoader {
 	/// playback can lease resident PCM without reopening the resource.
 	/// The pool stays authoritative; a stale key only causes a miss.
 	resident_keys: HashMap<String, AudioSampleCacheKey>,
+	/// The expanded graph of each spawned asset ID. Keeping it keeps its
+	/// selector state, so every spawn of the ID advances the same selectors.
+	graphs: HashMap<String, AudioGraph>,
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::resource_manager::ResourceUpdateListener,
 }
@@ -288,6 +299,7 @@ impl AudioSampleLoader {
 				#[cfg(debug_assertions)]
 				resource_updates: resource_manager.resource_updates(),
 				resident_keys: HashMap::new(),
+				graphs: HashMap::new(),
 				resource_manager,
 				commands: command_receiver,
 				completions: completion_sender,
@@ -300,26 +312,7 @@ impl AudioSampleLoader {
 	/// Handles resource requests until the audio worker closes its channel.
 	pub(crate) async fn run(mut self) {
 		while let Ok(request) = self.commands.recv().await {
-			let completion = match self.load(&request.resource_id).await {
-				Ok(AudioSamplePoolLoad::Ready(sample)) => AudioLoadCompletion::Ready {
-					handle: request.handle,
-					generation: request.generation,
-					sample,
-					render_plan: request.render_plan.prepare(),
-				},
-				Ok(AudioSamplePoolLoad::WaitingForCapacity) => AudioLoadCompletion::WaitingForCapacity { request },
-				Err(error) => {
-					log::error!(
-						"Failed to load audio sample '{}'. The resource could not be prepared for playback: {}",
-						request.resource_id,
-						error
-					);
-					AudioLoadCompletion::Failed {
-						handle: request.handle,
-						generation: request.generation,
-					}
-				}
-			};
+			let completion = self.complete(request).await;
 
 			if self.completions.send(completion).await.is_err() {
 				break;
@@ -328,16 +321,82 @@ impl AudioSampleLoader {
 		}
 	}
 
-	/// Loads and converts one resource while its borrowed backing remains local
-	/// to this async task.
-	async fn load(&mut self, resource_id: &str) -> Result<AudioSamplePoolLoad, String> {
-		self.pool.release_returned(&self.releases);
+	/// Selects the path of an asset request, then leases the selected sample.
+	///
+	/// A request that waits for pool capacity comes back already compiled, so
+	/// retrying it doesn't advance the asset's selectors again.
+	async fn complete(&mut self, request: AudioLoadRequest) -> AudioLoadCompletion {
+		let AudioLoadRequest {
+			handle,
+			generation,
+			source,
+		} = request;
 
 		// Rebaked assets must resolve again so their new payload hash is seen.
 		#[cfg(debug_assertions)]
 		while let Some(update) = self.resource_updates.read() {
 			self.resident_keys.remove(update.id());
+			// An expanded graph holds copies of the graphs it nests, so any rebake may have changed it.
+			self.graphs.clear();
 		}
+
+		let graph = match source {
+			AudioLoadSource::Compiled(graph) => graph,
+			AudioLoadSource::Asset(id) => match self.select(&id).await {
+				Ok(graph) => graph,
+				Err(cause) => {
+					log::error!(
+						"Audio graph '{id}' was not played. {cause} See {}.",
+						crate::online_docs_url("reference/audio#audio-graph-files")
+					);
+					return AudioLoadCompletion::Failed { handle, generation };
+				}
+			},
+		};
+
+		match self.load(&graph.resource_id).await {
+			Ok(AudioSamplePoolLoad::Ready(sample)) => AudioLoadCompletion::Ready {
+				handle,
+				generation,
+				sample,
+				render_plan: graph.into_parts().1.prepare(),
+			},
+			Ok(AudioSamplePoolLoad::WaitingForCapacity) => AudioLoadCompletion::WaitingForCapacity {
+				request: AudioLoadRequest {
+					handle,
+					generation,
+					source: AudioLoadSource::Compiled(graph),
+				},
+			},
+			Err(error) => {
+				log::error!(
+					"Failed to load audio sample '{}'. The resource could not be prepared for playback: {}",
+					graph.resource_id,
+					error
+				);
+				AudioLoadCompletion::Failed { handle, generation }
+			}
+		}
+	}
+
+	/// Compiles the next selection of the baked graph `id`, loading and
+	/// expanding it on its first spawn.
+	async fn select(&mut self, id: &str) -> Result<CompiledAudioGraph, String> {
+		if !self.graphs.contains_key(id) {
+			let baked = request_graphs(&self.resource_manager, id).await?;
+			let graph = AudioGraph::expand(id, |id| baked.get(id))?;
+			self.graphs.insert(id.to_string(), graph);
+		}
+		let graph = self.graphs.get_mut(id).expect("the graph was just kept");
+		graph.select().map_err(|error| {
+			format!("The most likely cause is that its nested graphs expand into an invalid graph: {error} Change the files so the expanded graph follows the audio graph rules.")
+		})
+	}
+
+	/// Loads and converts one resource while its borrowed backing remains local
+	/// to this async task.
+	async fn load(&mut self, resource_id: &str) -> Result<AudioSamplePoolLoad, String> {
+		self.pool.release_returned(&self.releases);
 
 		// A miss means the pool evicted the sample; resolving below refreshes the key.
 		if let Some(sample) = self.resident_keys.get(resource_id).and_then(|key| self.pool.lease(key)) {
@@ -379,4 +438,31 @@ impl AudioSampleLoader {
 		let sample = self.pool.decode_and_insert(cache_key, metadata, layout, bytes)?;
 		Ok(AudioSamplePoolLoad::Ready(sample))
 	}
+}
+
+/// Requests the baked graph `id` and every graph it nests, directly or through other nested graphs.
+///
+/// Each graph is requested once, so graphs that nest each other still finish; expanding them reports the cycle.
+async fn request_graphs(resource_manager: &ResourceManager, id: &str) -> Result<HashMap<String, BakedAudioGraph>, String> {
+	let mut graphs = HashMap::new();
+	let mut pending = vec![id.to_string()];
+
+	while let Some(id) = pending.pop() {
+		if graphs.contains_key(&id) {
+			continue;
+		}
+		let graph: BakedAudioGraph = resource_manager
+			.request::<BakedAudioGraph>(&id)
+			.await
+			.map_err(|error| {
+				format!("The most likely cause is that '{id}' isn't baked or its ID is wrong ({error}). Check that the ID is the file's path under the assets directory, and bake it.")
+			})?
+			.into_resource();
+		pending.extend(graph.nodes.iter().filter_map(|node| match node {
+			AudioGraphNode::Graph { resource_id } => Some(resource_id.clone()),
+			_ => None,
+		}));
+		graphs.insert(id, graph);
+	}
+	Ok(graphs)
 }

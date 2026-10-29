@@ -1,9 +1,10 @@
-//! Inline-authored audio processing graphs.
+//! Audio processing graphs, authored in code or baked from `.audiograph` files.
 //!
 //! Build a graph with the functions in [`fns`], then publish it through
 //! [`crate::audio::graph::AudioGraphFactory`]. The
 //! default audio worker validates and compiles each graph before its sample
-//! resources cross to the audio thread.
+//! resources cross to the audio thread. To play a baked file instead, publish
+//! an [`AudioGraphAsset`] that names it.
 
 use std::fmt;
 
@@ -16,6 +17,7 @@ use crate::core::{
 	listener::DefaultListener,
 };
 
+mod asset;
 mod authoring;
 mod compiler;
 pub mod fns;
@@ -27,7 +29,7 @@ mod time;
 
 const INLINE_AUDIO_NODE_CAPACITY: usize = 8;
 const INLINE_SELECTOR_INPUT_CAPACITY: usize = 4;
-pub(crate) const MAX_AUDIO_GRAPH_NODES: usize = 64;
+pub(crate) const MAX_AUDIO_GRAPH_NODES: usize = resource_management::resources::audio_graph::MAX_NODES;
 const RANDOM_STATE_INCREMENT: u64 = 0x9E37_79B9_7F4A_7C15;
 pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CAPACITY]>;
 pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
@@ -35,6 +37,7 @@ pub(super) type SelectorInputs = SmallVec<[AudioNodeId; INLINE_SELECTOR_INPUT_CA
 pub(super) type SelectorCommits = SmallVec<[SelectorCommit; MAX_AUDIO_GRAPH_NODES]>;
 pub(super) type RuntimeCustomFunction = Box<dyn FnMut(AudioGraphTime, &mut [f32]) + Send>;
 
+pub use asset::AudioGraphAsset;
 pub use authoring::{AudioGraph, AudioGraphFactory};
 pub(crate) use nodes::{
 	AudioNode, AudioNodeId, CustomAudioFunction, NodeProperties, RandomNode, RoundRobinNode, SelectorCommit,

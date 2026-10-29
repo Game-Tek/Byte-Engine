@@ -89,6 +89,7 @@ pub struct ParentSpace;
 
 pub mod animation;
 pub mod audio;
+pub mod audio_graph;
 pub mod flipbook;
 pub mod image;
 pub mod level;

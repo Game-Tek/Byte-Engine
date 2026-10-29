@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/audiograph.schema.json",
+  "title": "Byte Engine audio graph",
+  "description": "One audio graph node, the graph's output, consumed by the .audiograph asset handler.",
+  "$ref": "#/$defs/function",
+  "properties": {
+    "$schema": { "type": "string" }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "node": {
+      "description": "An object with exactly one function field.",
+      "$ref": "#/$defs/function",
+      "unevaluatedProperties": false
+    },
+    "function": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["sample"],
+          "properties": { "sample": { "description": "Plays this Audio resource once.", "type": "string", "minLength": 1 } }
+        },
+        {
+          "required": ["graph"],
+          "properties": { "graph": { "description": "Expands this .audiograph file's graph in place.", "type": "string", "minLength": 1 } }
+        },
+        {
+          "required": ["round_robin"],
+          "properties": {
+            "round_robin": { "description": "Plays the next entry each time the graph is spawned.", "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/node" } }
+          }
+        },
+        {
+          "required": ["random"],
+          "properties": {
+            "random": { "description": "Plays a random entry each time the graph is spawned, never the same one twice in a row.", "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/node" } }
+          }
+        },
+        {
+          "required": ["loop"],
+          "properties": { "loop": { "description": "Repeats this node until the spawn is deleted.", "$ref": "#/$defs/node" } }
+        },
+        {
+          "required": ["gain", "input"],
+          "properties": {
+            "gain": { "description": "Multiplies the input's signal.", "type": "number", "minimum": 0 },
+            "input": { "$ref": "#/$defs/node" }
+          }
+        },
+        {
+          "required": ["varispeed", "input"],
+          "properties": {
+            "varispeed": { "description": "Changes the input's speed and pitch together.", "type": "number", "minimum": 0.25, "maximum": 4 },
+            "input": { "$ref": "#/$defs/node" }
+          }
+        },
+        {
+          "required": ["pitch_shift", "input"],
+          "properties": {
+            "pitch_shift": { "description": "Changes the input's pitch and keeps its duration.", "type": "number", "minimum": 0.5, "maximum": 2 },
+            "input": { "$ref": "#/$defs/node" }
+          }
+        }
+      ]
+    }
+  }
+}

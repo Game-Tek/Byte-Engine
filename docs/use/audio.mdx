@@ -1,0 +1,71 @@
+---
+title: Play sounds
+description: Describe a sound and its variations in an .audiograph file, then play and stop it from your application.
+icon: Sparkles
+---
+
+Use an `.audiograph` file to describe what a sound plays: which samples, how it picks between them, and how it
+changes their volume, speed, and pitch. Your application plays the file by its ID, so a sound designer can change it
+without touching code.
+
+## Describe a sound
+
+Add an `.audiograph` file to your assets next to the samples it plays. This footstep plays its three samples in turn
+at half volume, and slightly faster on the third step:
+
+```json5
+{
+	"$schema": "byte-engine/schemas/audiograph.schema.json",
+	gain: 0.5,
+	input: {
+		round_robin: [
+			{ sample: "audio/step-1.wav" },
+			{ sample: "audio/step-2.wav" },
+			{ varispeed: 1.1, input: { sample: "audio/step-3.wav" } },
+		],
+	},
+}
+```
+
+Use `random` instead of `round_robin` to pick a different sample each time, and wrap a node in `loop` to repeat it,
+such as for music or ambience. The [audio reference](/docs/reference/audio#audio-graph-files) lists every function and
+its limits.
+
+## Reuse a sound in another
+
+Name another `.audiograph` file with `graph` to play it as part of this one. This running sound plays the footstep
+louder and higher:
+
+```json5
+{
+	gain: 1.5,
+	input: { pitch_shift: 1.2, input: { graph: "sfx/footstep.audiograph" } },
+}
+```
+
+The nested file plays as if you had written its nodes in place, so it keeps its own turn order inside the running
+sound. Keep one `varispeed` and one `pitch_shift` on each path through both files.
+
+## Play and stop a sound
+
+Publish an `AudioGraphAsset` that names the file on the world. Each publication plays the sound once and advances its
+`round_robin` and `random` choices:
+
+```rust
+let step: Handle = app.world().create(AudioGraphAsset::new("sfx/footstep.audiograph")).into();
+```
+
+The first publication of a file loads it, so it starts a little later than the ones after it. To stop a sound, such
+as a loop, delete its handle:
+
+```rust
+app.world().channel::<DeleteMessage>().send(DeleteMessage::new(step));
+```
+
+To process samples with your own code, build the graph in Rust with the functions in `audio::graph::fns` and add a
+`custom` function, which a file can't hold.
+
+## Rust API
+
+- [`AudioGraphAsset`](/docs/api/latest/byte_engine/audio/graph/AudioGraphAsset)
+- [`audio::graph::fns`](/docs/api/latest/byte_engine/audio/graph/fns)

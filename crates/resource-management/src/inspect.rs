@@ -18,6 +18,7 @@ use crate::{
 	resources::{
 		animation::AnimationModel,
 		audio::Audio,
+		audio_graph::AudioGraph,
 		image::{IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_STREAM_PREFIX, Image},
 		lut::Lut,
 		material::{MaterialModel, Shader, VariantModel},
@@ -113,6 +114,7 @@ fn inspect_resource_section(resource: &SerializableResource) -> Result<(Value, b
 	let value = match resource.class() {
 		"Animation" => deserialize_resource::<AnimationModel>(resource)?,
 		"Audio" => deserialize_resource::<Audio>(resource)?,
+		"AudioGraph" => deserialize_resource::<AudioGraph>(resource)?,
 		"Image" => deserialize_resource::<Image>(resource)?,
 		"Lut" => deserialize_resource::<Lut>(resource)?,
 		"Material" => deserialize_resource::<MaterialModel>(resource)?,

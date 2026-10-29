@@ -6,6 +6,7 @@ pub(crate) use crate::asset::{
 	select_unfragmented_resource, store_imported_image, store_model, store_model_owned,
 };
 
+pub mod audio_graph;
 pub mod bema;
 pub mod besl;
 pub mod environment;
@@ -22,6 +23,7 @@ pub mod pipeline;
 pub mod png;
 pub mod wav;
 
+pub use audio_graph::*;
 pub use bema::*;
 pub use besl::*;
 pub use environment::*;

@@ -3,7 +3,7 @@
 mod sample_loading;
 mod sample_pool;
 
-pub(crate) use sample_loading::AudioSampleLoader;
+pub(crate) use sample_loading::{AudioLoadSource, AudioSampleLoader};
 use sample_pool::*;
 pub(crate) use sample_pool::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId};
 pub use sample_pool::{AudioSamplePoolConfig, DEFAULT_AUDIO_SAMPLE_POOL_BYTE_BUDGET};
@@ -14,7 +14,7 @@ mod tests {
 
 	use resource_management::{resources::audio::Audio, types::BitDepths};
 
-	use super::sample_loading::{AudioLoadCompletion, AudioLoadRequest, AudioSampleLoaderClient};
+	use super::sample_loading::{AudioLoadCompletion, AudioLoadRequest, AudioLoadSource, AudioSampleLoaderClient};
 	use super::{
 		AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleCacheKey, AudioSampleLayout, AudioSampleLease,
 		AudioSampleLeaseId, AudioSamplePool, AudioSamplePoolConfig, AudioSampleReleaseQueue, decode_into,
@@ -39,6 +39,10 @@ mod tests {
 			muted_drain_latency: 0,
 		}
 		.prepare()
+	}
+
+	fn compiled(graph: crate::audio::graph::AudioGraph) -> AudioLoadSource {
+		AudioLoadSource::Compiled(graph.compile().expect("a valid test graph"))
 	}
 
 	fn metadata(bit_depth: BitDepths, channel_count: u16, sample_count: u32) -> Audio {
@@ -304,14 +308,10 @@ mod tests {
 		let handle = factory.create(());
 		let _ = listener.read();
 
-		assert!(client.queue(handle, r#loop(sample("first.wav")).compile().expect("expected test value"), 0));
+		assert!(client.queue(handle, compiled(r#loop(sample("first.wav"))), 0));
 		let first_generation = client.pending[0].generation;
 
-		assert!(client.queue(
-			handle,
-			gain(sample("second.wav"), 0.25).compile().expect("expected test value"),
-			0
-		));
+		assert!(client.queue(handle, compiled(gain(sample("second.wav"), 0.25)), 0));
 		let second_generation = client.pending[0].generation;
 
 		assert_ne!(first_generation, second_generation);
@@ -359,7 +359,7 @@ mod tests {
 		let factory = Factory::new();
 		let handle = factory.create(());
 
-		assert!(client.queue(handle, sample("deleted.wav").compile().expect("expected test value"), 0));
+		assert!(client.queue(handle, compiled(sample("deleted.wav")), 0));
 		let generation = client.pending[0].generation;
 		client.remove(handle);
 		completion_sender
@@ -387,11 +387,7 @@ mod tests {
 		let factory = Factory::new();
 		let handle = factory.create(());
 
-		assert!(client.queue(
-			handle,
-			r#loop(sample("replacement.wav")).compile().expect("expected test value"),
-			0
-		));
+		assert!(client.queue(handle, compiled(r#loop(sample("replacement.wav"))), 0));
 
 		client.submit_requests();
 		let Some(request) = command_receiver.try_recv().expect("expected test value") else {
@@ -423,7 +419,7 @@ mod tests {
 		let factory = Factory::new();
 		let handle = factory.create(());
 
-		assert!(client.queue(handle, sample("racing.wav").compile().expect("expected test value"), 0));
+		assert!(client.queue(handle, compiled(sample("racing.wav")), 0));
 		client.submit_requests();
 		let Some(request) = command_receiver.try_recv().expect("expected test value") else {
 			panic!("expected submitted audio load");

@@ -1,13 +1,14 @@
 ---
 title: Audio
-description: Look up the output format, the sample formats Byte Engine accepts, the audio graph functions and their limits, playback timing, and the sample pool.
+description: Look up the output format, the sample formats Byte Engine accepts, the audio graph functions and files and their limits, playback timing, and the sample pool.
 icon: Sparkles
 ---
 
 Audio mixes procedural generators and audio graphs into the platform device.
 This page specifies what the device receives, which sample files bake, what an
-audio graph can express, and the capacities of the audio worker and the sample
-pool.
+audio graph and an `.audiograph` file can express, and the capacities of the
+audio worker and the sample pool. To play a file, follow
+[Play sounds](/docs/use/audio).
 
 ## Output
 
@@ -29,8 +30,14 @@ publishes a graph on the world; the graph compiles on the publishing thread
 and plays once its sample is resident. Deleting the graph's handle stops it.
 Publishing a new graph on an existing handle replaces the old one.
 
-The audio worker holds at most 64 graphs that are playing or loading; a graph
-past that limit is dropped and reported in the log.
+An audio graph asset is a baked [audio graph file](#audio-graph-files). An
+application spawns one by publishing its ID on the world; the audio worker
+loads the file and the files it names, chooses a path, and plays it like an
+audio graph. Deleting the handle stops it, and publishing on an existing handle
+replaces it.
+
+The audio worker holds at most 64 graphs that are playing or loading, spawned
+assets included; a graph past that limit is dropped and reported in the log.
 
 ## Sample formats
 
@@ -76,6 +83,57 @@ processors between it and the output in order. Adjacent gains combine into one.
 A selector's position advances only when the publication succeeds, and a
 nested selector advances only on the path that was chosen.
 
+## Audio graph files
+
+An `.audiograph` file is JSON5 that holds one node, the graph's output. For
+editor completion, point `"$schema"` at the engine's
+`schemas/audiograph.schema.json`, relative to your file; it's accepted only on
+the output node. Every node is an object with exactly one function field:
+
+| Field | Value | Node |
+| --- | --- | --- |
+| `sample` | A non-empty `Audio` resource ID | `sample` |
+| `graph` | A non-empty `.audiograph` resource ID | The named file's graph, expanded in place |
+| `round_robin` | An array of one or more nodes | `round_robin` |
+| `random` | An array of one or more nodes | `random` |
+| `loop` | A node | `loop` |
+| `gain` | A number | `gain`, applied to `input` |
+| `varispeed` | A number | `varispeed`, applied to `input` |
+| `pitch_shift` | A number | `pitch_shift`, applied to `input` |
+| `input` | A node | Required with `gain`, `varispeed`, and `pitch_shift`; rejected with any other function |
+
+Each function behaves as its [audio graph function](#audio-graph-functions)
+does, with the same parameter ranges and node removals. `custom` has no file
+form.
+
+Baking rejects a file when:
+
+- a node has another field, no function field, or more than one;
+- a value breaks its function's rule in the functions table;
+- a path holds more than one `varispeed` or more than one `pitch_shift`;
+- the graph has more than 64 nodes after removals;
+- a `graph` node names the file itself.
+
+### Nested graphs
+
+A `graph` node stands for the named file's graph, as if its nodes were written
+in its place. Expanding happens when the asset loads, so a nested file bakes and
+loads on its own. The expanded graph must meet every rule of a valid graph,
+including the 64-node limit and one `varispeed` and one `pitch_shift` per path.
+A chain of `graph` nodes that leads back to a file in the chain is rejected.
+
+Each expansion has its own selectors. A nested `round_robin` advances when the
+graph that contains it selects it, and not when its own file is spawned.
+
+### Spawning
+
+| Event | Result |
+| --- | --- |
+| First spawn of an ID | The audio worker loads the file and every file it names, expands them, and keeps the graph. |
+| Later spawns of the ID | Reuse the kept graph. Its selectors advance on every spawn of the ID, from any handle. |
+| A file can't load, or the expanded graph is invalid | The spawn plays nothing, and the cause is reported in the log. |
+| A resource is rebaked in a debug build | Kept graphs are dropped; the next spawn loads them again, and their selectors restart. |
+
 ## Playback timing
 
 Every graph playback has its own timeline that starts at zero when the graph
@@ -107,7 +165,7 @@ Decoded samples live in one arena sized by a byte budget.
 
 | Limit | Value |
 | --- | --- |
-| Nodes in a graph | 64 |
+| Nodes in a graph | 64, after nested graphs expand |
 | Graphs playing or loading | 64 |
 | Decoded sample channels | 1 or 2, mixed to 1 |
 | Master gain | None. Set gain per graph. |
@@ -117,3 +175,4 @@ Decoded samples live in one arena sized by a byte budget.
 - [`audio` module](/docs/api/latest/byte_engine/audio)
 - [`audio::graph`](/docs/api/latest/byte_engine/audio/graph)
 - [`audio::graph::fns`](/docs/api/latest/byte_engine/audio/graph/fns)
+- [`AudioGraphAsset`](/docs/api/latest/byte_engine/audio/graph/AudioGraphAsset)

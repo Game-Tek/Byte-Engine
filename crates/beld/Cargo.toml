@@ -27,7 +27,7 @@ simple_logger = { version = "5.0.0", features = ["stderr"] }
 log = "0.4.26"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-sysinfo = "0.37.2"
+sysinfo = "0.39.6"
 
 [lints]
 workspace = true

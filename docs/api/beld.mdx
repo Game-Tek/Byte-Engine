@@ -34,14 +34,22 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 | `delete <ids...>` | | Removes each resource. |
 | `clear`, `wipe` | | Removes every resource and payload, keeping the store's mode. |
 
-A bake discovers every supported file below the source directory, follows
-symbolic links with cycle detection, skips sidecars and unknown files, and
-leaves out the pipelines and shaders of render features the configuration
-turns off. Explicit IDs bake even when a render feature leaves them out. An
-[excluded asset](/docs/reference/assets#excluded-assets) never bakes: discovery
-skips it, and a bake of it or of an asset that needs it fails. Up to 16 assets bake at once, and each
-is skipped when its stored resource is current with every source file it was
-baked from.
+A bake without IDs discovers every supported file below the source directory,
+follows symbolic links with cycle detection, and skips sidecars and unknown
+files. It then selects what to bake from the discovered assets:
+
+| Rule | Effect |
+| --- | --- |
+| Render features | The pipelines and shaders of render features the configuration turns off are left out. Explicit IDs bake even when a render feature leaves them out. |
+| Excluded assets | An [excluded asset](/docs/reference/assets#excluded-assets) is left out, and a bake of it or of an asset that needs it fails. |
+| Roots | With [roots](#roots), only the assets whose ID matches a root pattern are selected. Every asset they need bakes as their dependency, so the bake adds no unreachable resource. Without roots, every discovered asset is selected. |
+| Conflicts | Before anything bakes, a discovered asset whose ID matches both a root pattern and an excluded pattern is an error. The bake exits with code 1 and names each such asset. |
+| Explicit IDs | Roots don't apply; the given IDs bake. |
+
+Up to 16 assets bake at once, and each is skipped when its stored resource is
+current with every source file it was baked from. A bake never deletes a
+resource, so resources that earlier bakes stored stay in the store, reachable
+or not.
 
 ## Dry runs
 
@@ -55,7 +63,7 @@ anything under the destination directory.
 | IDs | At least one ID is required; a dry run doesn't discover assets. |
 | `--force`, `--texture-compression` | Rejected with exit code 2. Every dry run bakes from scratch, and payloads stay uncompressed. |
 | `--destination`, `--storage-mode` | No effect. |
-| `--memory-budget-mib`, `--config` | Apply as in a normal bake. |
+| `--memory-budget-mib`, `--config` | Apply as in a normal bake. The roots don't apply, because a dry run bakes only its IDs. |
 | `--format`, `--payload` | Accepted on `bake` only with `--dry-run`. |
 | Exit code | The same as a normal bake of the same IDs. |
 
@@ -149,6 +157,7 @@ resources.
 | `resources.roots` | An array of glob patterns in the configuration. Each pattern matches the whole ID the way a filter glob does: `*` matches any run of characters, including `/` and `#`, `?` matches one character, and case is ignored. |
 | Root | A resource whose ID matches at least one pattern. |
 | Reachable | A root, or a resource that a reachable resource references. |
+| Bake | A `bake` without IDs bakes only the discovered assets that match a pattern, and what they need; see [Commands](#commands). |
 | No roots | Without `resources.roots`, or with an empty array, `is:unreachable` is an error. |
 | Patterns | A pattern that matches no resource has no effect. |
 
@@ -243,7 +252,7 @@ A failed bake has only `id`, `source`, and `status`.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | The configuration couldn't be read, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, at least one delete failed, or `browse` ran without an interactive terminal. |
+| 1 | The configuration couldn't be read, a root and an excluded pattern match the same asset, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, at least one delete failed, or `browse` ran without an interactive terminal. |
 | 2 | Invalid arguments, including a `query` filter term or field that doesn't parse, and `is:unreachable` without roots. |
 
 ## Output formats

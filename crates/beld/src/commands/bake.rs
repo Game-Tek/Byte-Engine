@@ -26,7 +26,9 @@ use crate::{
 /// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
 /// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
 /// assets only left-out features use. `excluded` are the project's `resources.exclude` patterns: discovery skips
-/// matching assets, and a bake of one, or of an asset that needs one, fails. On a terminal, a progress line shows on standard error; install the logger with
+/// matching assets, and a bake of one, or of an asset that needs one, fails. `roots` are its `resources.roots`
+/// patterns: when there are any, discovery keeps only matching assets, which bake with what they need. Roots don't
+/// apply to explicit `ids`. On a terminal, a progress line shows on standard error; install the logger with
 /// [`crate::init_logging`] so log messages print above it.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
@@ -41,6 +43,7 @@ pub async fn bake(
 	force: bool,
 	features: VisibilityFeatures,
 	excluded: Vec<Glob>,
+	roots: Vec<Glob>,
 ) -> Result<(), i32> {
 	let asset_storage_backend = open_asset_storage(source_path).await?;
 	let destination_path = std::path::PathBuf::from(destination_path);
@@ -75,7 +78,10 @@ pub async fn bake(
 		})?;
 		// Explicitly requested IDs still bake; only discovery skips what the project left out.
 		ids.retain(|id| !features.excludes(id));
-		ids
+		select_discovered(ids, &roots, |id| asset_manager.is_excluded(id)).map_err(|error| {
+			log::error!("{error}");
+			1
+		})?
 	} else {
 		ids
 	};
@@ -89,6 +95,35 @@ pub async fn bake(
 	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 
 	if failures.is_empty() { Ok(()) } else { Err(1) }
+}
+
+/// Returns the discovered assets a full bake starts from: those no excluded pattern matches and, when there are
+/// `roots`, that a root matches.
+///
+/// Returns an error naming every asset that matches both a root and an excluded pattern, because the project asks to
+/// bake and never bake it at once.
+fn select_discovered(
+	mut discovered: Vec<String>,
+	roots: &[Glob],
+	excluded: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, String> {
+	let is_root = |id: &str| roots.iter().any(|root| root.matches(id));
+
+	let conflicts = discovered
+		.iter()
+		.filter(|id| is_root(id) && excluded(id))
+		.map(|id| format!("'{id}'"))
+		.collect::<Vec<_>>();
+	if !conflicts.is_empty() {
+		return Err(format!(
+			"The bake stopped before baking anything, because these assets match both `resources.roots` and `resources.exclude`: {}. The most likely cause is that a root pattern and an exclude pattern overlap. Remove each of these assets from one of the two lists in the configuration. See {}.",
+			conflicts.join(", "),
+			utils::online_docs_url("api/beld#commands")
+		));
+	}
+
+	discovered.retain(|id| !excluded(id) && (roots.is_empty() || is_root(id)));
+	Ok(discovered)
 }
 
 /// Bakes `ids` and every resource they depend on into memory, and writes everything produced as one document to

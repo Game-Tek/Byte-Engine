@@ -26,7 +26,7 @@ baked, by BELD or by a development build of the application.
 | Rule | Effect |
 | --- | --- |
 | Match | A pattern matches the whole ID requested for a bake, ignoring case: `*` matches any run of characters, including `/` and `#`, and `?` matches one character. A source file's ID is its path below the source directory, so `textures/wip/*` matches every file under `textures/wip`. |
-| Discovery | A full bake skips every discovered asset that matches. |
+| Discovery | A full bake skips every discovered asset that matches. An asset that also matches a [root](/docs/api/beld#roots) pattern stops the bake before anything bakes. |
 | Requested ID | A bake request for a matching ID fails with an error that names the asset as excluded, whether BELD, an application, or another asset made it, and even when the store already has a resource for the ID. |
 | Dependency | An asset that needs an excluded asset fails to bake, with the same error for the excluded asset. |
 | Stored resources | Excluding an asset doesn't remove a resource baked before. A release build, which never bakes, still loads it. |

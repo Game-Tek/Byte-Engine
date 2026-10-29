@@ -132,13 +132,18 @@ impl AssetManager {
 
 	/// Sets the patterns of asset IDs that are never baked, usually the project's `resources.exclude`.
 	///
-	/// [`Self::discover`] skips matching assets, and every bake request for a matching ID fails with
-	/// [`LoadMessages::Excluded`], including a dependency of another asset. Configure it before calling
-	/// [`Self::bake`] or sharing the manager.
+	/// Every bake request for a matching ID fails with [`LoadMessages::Excluded`], including a dependency of another
+	/// asset. [`Self::discover`] still lists matching assets, so a caller can check them against its own selection
+	/// with [`Self::is_excluded`] before baking. Configure it before calling [`Self::bake`] or sharing the manager.
 	pub fn set_excluded_assets(&mut self, patterns: Vec<Glob>) {
 		Arc::get_mut(&mut self.state)
 			.expect("The excluded assets must be configured before the asset manager starts processing requests.")
 			.excluded = patterns;
+	}
+
+	/// Returns whether a pattern set with [`Self::set_excluded_assets`] matches the asset ID.
+	pub fn is_excluded(&self, id: &str) -> bool {
+		self.state.is_excluded(id)
 	}
 
 	/// Registers a handler for one family of source assets.
@@ -210,7 +215,7 @@ impl AssetManager {
 			.discover()
 			.await?
 			.into_iter()
-			.filter(|source| self.should_discover(source.id(), source.has_sidecar()) && !self.state.is_excluded(source.id()))
+			.filter(|source| self.should_discover(source.id(), source.has_sidecar()))
 			.map(crate::asset::AssetSource::into_id)
 			.collect::<Vec<_>>();
 
@@ -1145,7 +1150,7 @@ pub mod tests {
 	}
 
 	#[r#async::test]
-	async fn excluded_assets_are_not_discovered_and_never_bake() {
+	async fn excluded_assets_never_bake() {
 		let storage_backend = TestStorageBackend::new();
 		storage_backend.add_file("kept.test", b"");
 		storage_backend.add_file("wip/draft.test", b"");
@@ -1153,7 +1158,7 @@ pub mod tests {
 		let (mut asset_manager, resource_storage) = test_asset_manager(storage_backend);
 		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*")]);
 
-		assert_eq!(asset_manager.discover().await.unwrap(), ["kept.test"]);
+		assert!(asset_manager.is_excluded("wip/draft.test") && !asset_manager.is_excluded("kept.test"));
 		assert!(matches!(
 			asset_manager.bake("wip/draft.test").await,
 			Err(LoadMessages::Excluded { asset }) if asset == "wip/draft.test"

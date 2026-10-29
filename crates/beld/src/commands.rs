@@ -155,6 +155,84 @@ mod tests {
 		std::fs::remove_dir_all(engine_assets).unwrap();
 	}
 
+	/// Returns a one-sample, 16-bit mono WAV file.
+	fn wav() -> Vec<u8> {
+		let mut bytes = Vec::with_capacity(46);
+		bytes.extend_from_slice(b"RIFF");
+		bytes.extend_from_slice(&38u32.to_le_bytes());
+		bytes.extend_from_slice(b"WAVEfmt ");
+		bytes.extend_from_slice(&16u32.to_le_bytes());
+		bytes.extend_from_slice(&1u16.to_le_bytes());
+		bytes.extend_from_slice(&1u16.to_le_bytes());
+		bytes.extend_from_slice(&48_000u32.to_le_bytes());
+		bytes.extend_from_slice(&96_000u32.to_le_bytes());
+		bytes.extend_from_slice(&2u16.to_le_bytes());
+		bytes.extend_from_slice(&16u16.to_le_bytes());
+		bytes.extend_from_slice(b"data");
+		bytes.extend_from_slice(&2u32.to_le_bytes());
+		bytes.extend_from_slice(&0i16.to_le_bytes());
+		bytes
+	}
+
+	/// Bakes every discovered asset of a fresh `music.wav`, `voice.wav`, `unused.wav` source directory with `roots` and
+	/// `excluded`, and returns the exit code and the stored IDs.
+	fn bake_with(roots: &[&str], excluded: &[&str]) -> (Result<(), i32>, Vec<String>) {
+		let root = std::env::temp_dir().join(format!(
+			"beld-roots-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		let (assets_path, resources_path) = (root.join("assets"), root.join("resources"));
+		std::fs::create_dir_all(&assets_path).unwrap();
+		for name in ["music.wav", "voice.wav", "unused.wav"] {
+			std::fs::write(assets_path.join(name), wav()).unwrap();
+		}
+		let globs = |patterns: &[&str]| patterns.iter().map(|pattern| utils::Glob::new(pattern)).collect();
+		let executor = resource_management::r#async::Executor::new().unwrap();
+
+		let result = executor.block_on(super::bake(
+			assets_path.to_string_lossy().into_owned(),
+			resources_path.to_string_lossy().into_owned(),
+			Vec::new(),
+			None,
+			None,
+			std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
+			false,
+			VisibilityFeatures::default(),
+			globs(excluded),
+			globs(roots),
+		));
+		let mut ids = executor
+			.block_on(resource_management::resource::ReadStorageBackend::list(
+				&ReDBStorageBackend::new(resources_path),
+			))
+			.unwrap()
+			.into_iter()
+			.map(|resource| resource.id().to_string())
+			.collect::<Vec<_>>();
+		ids.sort_unstable();
+		std::fs::remove_dir_all(root).unwrap();
+		(result, ids)
+	}
+
+	#[test]
+	fn a_bake_with_roots_bakes_only_the_matching_assets() {
+		assert_eq!(
+			bake_with(&[], &[]),
+			(Ok(()), vec!["music.wav".into(), "unused.wav".into(), "voice.wav".into()])
+		);
+		assert_eq!(
+			bake_with(&["music.*", "VOICE.wav"], &[]),
+			(Ok(()), vec!["music.wav".into(), "voice.wav".into()])
+		);
+	}
+
+	#[test]
+	fn a_bake_stops_before_baking_when_a_root_is_excluded() {
+		assert_eq!(bake_with(&["*.wav"], &["voice.wav"]), (Err(1), Vec::new()));
+		assert_eq!(bake_with(&["music.wav"], &["voice.wav"]), (Ok(()), vec!["music.wav".into()]));
+	}
+
 	#[cfg(debug_assertions)]
 	#[test]
 	fn failed_and_successful_resource_traces_are_inspectable_and_queryable() {
@@ -179,6 +257,7 @@ mod tests {
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
 				VisibilityFeatures::default(),
+				Vec::new(),
 				Vec::new(),
 			)),
 			Err(1)

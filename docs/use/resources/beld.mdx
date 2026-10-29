@@ -239,9 +239,10 @@ and `is:dangling`.
    or removes them. Both read the store and the configuration, and neither
    changes anything.
 
-1. Delete the source files of the assets you don't need, then remove their
-   resources with `beld delete`. If you delete only the resource, the next
-   bake of the whole source directory produces it again.
+1. Remove their resources with `beld delete`. A bake with roots doesn't
+   produce them again, because it bakes only the roots and what they use.
+   Delete their source files too, or add them to `resources.exclude`, if you
+   don't need them anymore.
 
 BELD reads `config.json` from the working directory. Pass `--config <path>` to
 read another file. The

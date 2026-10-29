@@ -44,7 +44,7 @@ A value is text that the reader converts:
 | `trace` | Presence only; the value is ignored | Absent | Prints every tracing span and event at debug level or above to standard output. |
 | `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
 | `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
-| `resources.roots` | Array of glob patterns | None | The resources the application loads by ID. Read by BELD only, to find resources nothing needs; see [Roots](/docs/api/beld#roots). |
+| `resources.roots` | Array of glob patterns | None | The resources the application loads by ID. Read by BELD only: a full bake bakes only these and what they need, and `query` and `browse` find resources nothing needs. See [Roots](/docs/api/beld#roots). |
 | `resources.exclude` | Array of glob patterns | None | The assets that are never baked, by BELD or by a debug build. See [Excluded assets](/docs/reference/assets#excluded-assets). |
 | `assets-path` | Path | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. |
 | `max-frame-rate` | Positive frames per second; invalid is ignored | None, uncapped | The minimum interval between presented frames. |

@@ -90,6 +90,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				force,
 				features,
 				excluded,
+				patterns(&configuration, "resources.roots").map(Glob::new).collect(),
 			)
 			.await
 		}

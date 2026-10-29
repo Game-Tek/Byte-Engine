@@ -144,6 +144,31 @@ After you change a feature in `config.json`, run `beld bake --force`. Source
 file versions don't record the configuration, so a normal bake keeps the
 material shaders built with the old setting.
 
+## Bake only what your application uses
+
+Use `resources.roots` in your project's `config.json` to bake only the assets
+your application loads by ID, and everything they use. List them as glob
+patterns:
+
+```json
+{
+  "resources": {
+    "roots": ["scenes/*", "audio/music/*", "ui/fonts/*.ttf"]
+  }
+}
+```
+
+When you run `beld bake` without IDs, BELD bakes the discovered assets that
+match a root. A texture or material bakes only because a root uses it, so
+the bake doesn't add a resource that nothing uses. Resources from earlier
+bakes stay; to find and remove them, follow
+[Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
+
+If an asset matches both a root and a pattern in `resources.exclude`, BELD
+stops before it bakes anything and names the asset. Remove it from one of the
+two lists. The [Roots reference](/docs/api/beld#roots) specifies how roots
+select assets.
+
 ## Keep assets out of the bake
 
 Use `resources.exclude` in your project's `config.json` to keep work-in-progress

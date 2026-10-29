@@ -9,6 +9,7 @@ use std::{borrow::Cow, fmt::Write as _};
 
 use clap::builder::styling::{AnsiColor, Style};
 use serde_json::{Map, Value as Json};
+use utils::Glob;
 
 #[cfg(debug_assertions)]
 use super::shared::resource_trace_json;
@@ -33,7 +34,7 @@ use crate::{
 pub async fn query(
 	source_path: String,
 	destination_path: String,
-	roots: Vec<String>,
+	roots: Vec<Glob>,
 	terms: Vec<String>,
 	group: Option<String>,
 	sort: Option<String>,

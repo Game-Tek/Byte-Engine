@@ -13,6 +13,7 @@ use ratatui::{
 	DefaultTerminal,
 	crossterm::event::{self, Event, KeyEventKind},
 };
+use utils::Glob;
 
 use self::ui::{Exit, State};
 use super::{
@@ -25,7 +26,7 @@ use super::{
 ///
 /// `roots` are the project's `resources.roots` glob patterns, which decide what `is:unreachable` shows.
 /// The store is read once; `R` reads it again. The command never modifies the store.
-pub async fn browse(source_path: String, destination_path: String, roots: Vec<String>) -> Result<(), i32> {
+pub async fn browse(source_path: String, destination_path: String, roots: Vec<Glob>) -> Result<(), i32> {
 	if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
 		log::error!(
 			"`beld browse` needs an interactive terminal. The most likely cause is that its input or output is redirected to a pipe or a file. Run it directly in a terminal, or use `beld query --format json` in scripts."
@@ -69,7 +70,7 @@ async fn run(
 	state: &mut State,
 	source_path: &str,
 	destination_path: &str,
-	roots: &[String],
+	roots: &[Glob],
 ) -> std::io::Result<()> {
 	loop {
 		terminal.draw(|frame| state.draw(frame, catalog))?;

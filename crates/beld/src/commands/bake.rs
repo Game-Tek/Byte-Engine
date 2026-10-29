@@ -15,7 +15,7 @@ use utils::{Glob, r#async::StreamExt};
 
 use crate::{
 	OutputFormat, Payload,
-	commands::shared::{attach_trace, offload_file_operation, payload_format, print_human, read_payload, write_json},
+	commands::shared::{attach_trace, offload_file_operation, payload_format, plural, print_human, read_payload, write_json},
 	terminal,
 	utils::get_asset_manager,
 };
@@ -28,7 +28,8 @@ use crate::{
 /// assets only left-out features use. `excluded` are the project's `resources.exclude` patterns: discovery skips
 /// matching assets, and a bake of one, or of an asset that needs one, fails. `roots` are its `resources.roots`
 /// patterns: when there are any, discovery keeps only matching assets, which bake with what they need. Roots don't
-/// apply to explicit `ids`. On a terminal, a progress line shows on standard error; install the logger with
+/// apply to explicit `ids`. `prune` deletes every stored resource no root reaches once every asset baked; it needs
+/// roots, no `ids`, and a debug build, which records references. On a terminal, a progress line shows on standard error; install the logger with
 /// [`crate::init_logging`] so log messages print above it.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
@@ -44,8 +45,19 @@ pub async fn bake(
 	features: VisibilityFeatures,
 	excluded: Vec<Glob>,
 	roots: Vec<Glob>,
+	prune: bool,
 ) -> Result<(), i32> {
+	if prune {
+		check_prune(&ids, &roots).map_err(|error| {
+			log::error!("{error}");
+			2
+		})?;
+	}
+
 	let asset_storage_backend = open_asset_storage(source_path).await?;
+	// The prune reopens the store after the bake closes it.
+	#[cfg(debug_assertions)]
+	let prune_destination = destination_path.clone();
 	let destination_path = std::path::PathBuf::from(destination_path);
 	let resource_storage_backend = offload_file_operation(move || match texture_compression {
 		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
@@ -94,7 +106,55 @@ pub async fn bake(
 
 	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 
-	if failures.is_empty() { Ok(()) } else { Err(1) }
+	if !failures.is_empty() {
+		if prune {
+			log::error!(
+				"Pruning was skipped, so no resource was deleted. The most likely cause is that {} failed to bake, and a failed root would make the resources it uses look unreachable. Fix the failed assets and run `beld bake --prune` again.",
+				plural(failures.len(), "asset")
+			);
+		}
+		return Err(1);
+	}
+
+	// `check_prune` rejects pruning in release builds before anything bakes.
+	#[cfg(debug_assertions)]
+	if prune {
+		// The store must be closed for writing before the prune reads and then deletes from it.
+		drop(asset_manager);
+		return prune_unreachable(prune_destination, &roots).await;
+	}
+
+	Ok(())
+}
+
+/// Returns why `bake --prune` can't run with these `ids` and `roots`, if it can't.
+fn check_prune(ids: &[String], roots: &[Glob]) -> Result<(), String> {
+	if !cfg!(debug_assertions) {
+		return Err("`beld bake --prune` needs a debug build of BELD. The most likely cause is that this BELD is a release build, which records no references, so every resource would look unreachable. Run a debug build of BELD to prune.".to_string());
+	}
+	if !ids.is_empty() {
+		return Err("`beld bake --prune` can't take asset IDs. The most likely cause is that IDs were given with `--prune`, but pruning follows only a full bake. Run `beld bake --prune` without IDs.".to_string());
+	}
+	if roots.is_empty() {
+		return Err(format!(
+			"`beld bake --prune` needs roots. The most likely cause is that the configuration has no `resources.roots` patterns, so no resource is reachable and every one would be deleted. Add the IDs your application loads to `resources.roots` in `config.json`, or pass another file with `--config`. See {}.",
+			utils::online_docs_url("api/beld#pruning")
+		));
+	}
+	Ok(())
+}
+
+/// Deletes every resource in the store at `destination_path` that no root in `roots` reaches.
+#[cfg(debug_assertions)]
+async fn prune_unreachable(destination_path: String, roots: &[Glob]) -> Result<(), i32> {
+	let ids = super::catalog::unreachable_ids(&destination_path, roots)
+		.await
+		.map_err(|error| {
+			log::error!("Failed to prune the resource store. {error}");
+			1
+		})?;
+	log::info!("Pruning {} that no root reaches", plural(ids.len(), "resource"));
+	super::maintenance::delete(destination_path, ids).await
 }
 
 /// Returns the discovered assets a full bake starts from: those no excluded pattern matches and, when there are

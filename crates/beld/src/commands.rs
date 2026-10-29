@@ -174,24 +174,29 @@ mod tests {
 		bytes
 	}
 
-	/// Bakes every discovered asset of a fresh `music.wav`, `voice.wav`, `unused.wav` source directory with `roots` and
-	/// `excluded`, and returns the exit code and the stored IDs.
-	fn bake_with(roots: &[&str], excluded: &[&str]) -> (Result<(), i32>, Vec<String>) {
+	/// Creates a fresh source directory with `music.wav`, `voice.wav`, and `unused.wav`, and returns the test root.
+	fn sound_project() -> std::path::PathBuf {
 		let root = std::env::temp_dir().join(format!(
 			"beld-roots-test-{}-{}",
 			std::process::id(),
 			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 		));
-		let (assets_path, resources_path) = (root.join("assets"), root.join("resources"));
-		std::fs::create_dir_all(&assets_path).unwrap();
+		std::fs::create_dir_all(root.join("assets")).unwrap();
 		for name in ["music.wav", "voice.wav", "unused.wav"] {
-			std::fs::write(assets_path.join(name), wav()).unwrap();
+			std::fs::write(root.join("assets").join(name), wav()).unwrap();
 		}
+		root
+	}
+
+	/// Bakes every discovered asset of the project at `root` with `roots` and `excluded`, and returns the exit code
+	/// and the stored IDs.
+	fn bake_project(root: &std::path::Path, roots: &[&str], excluded: &[&str], prune: bool) -> (Result<(), i32>, Vec<String>) {
+		let resources_path = root.join("resources");
 		let globs = |patterns: &[&str]| patterns.iter().map(|pattern| utils::Glob::new(pattern)).collect();
 		let executor = resource_management::r#async::Executor::new().unwrap();
 
 		let result = executor.block_on(super::bake(
-			assets_path.to_string_lossy().into_owned(),
+			root.join("assets").to_string_lossy().into_owned(),
 			resources_path.to_string_lossy().into_owned(),
 			Vec::new(),
 			None,
@@ -201,6 +206,7 @@ mod tests {
 			VisibilityFeatures::default(),
 			globs(excluded),
 			globs(roots),
+			prune,
 		));
 		let mut ids = executor
 			.block_on(resource_management::resource::ReadStorageBackend::list(
@@ -211,8 +217,15 @@ mod tests {
 			.map(|resource| resource.id().to_string())
 			.collect::<Vec<_>>();
 		ids.sort_unstable();
-		std::fs::remove_dir_all(root).unwrap();
 		(result, ids)
+	}
+
+	/// Bakes a fresh project once with `roots` and `excluded`, and returns the exit code and the stored IDs.
+	fn bake_with(roots: &[&str], excluded: &[&str]) -> (Result<(), i32>, Vec<String>) {
+		let root = sound_project();
+		let baked = bake_project(&root, roots, excluded, false);
+		std::fs::remove_dir_all(root).unwrap();
+		baked
 	}
 
 	#[test]
@@ -225,6 +238,34 @@ mod tests {
 			bake_with(&["music.*", "VOICE.wav"], &[]),
 			(Ok(()), vec!["music.wav".into(), "voice.wav".into()])
 		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn a_pruning_bake_deletes_what_no_root_reaches_anymore() {
+		let root = sound_project();
+
+		assert_eq!(bake_project(&root, &["*.wav"], &[], false).1.len(), 3);
+		assert_eq!(
+			bake_project(&root, &["music.wav"], &[], false),
+			(Ok(()), vec!["music.wav".into(), "unused.wav".into(), "voice.wav".into()]),
+			"a bake without --prune deletes nothing"
+		);
+		assert_eq!(
+			bake_project(&root, &["music.wav"], &[], true),
+			(Ok(()), vec!["music.wav".into()])
+		);
+
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn a_pruning_bake_without_roots_is_rejected_before_baking() {
+		let root = sound_project();
+
+		assert_eq!(bake_project(&root, &[], &[], true), (Err(2), Vec::new()));
+
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]
@@ -259,6 +300,7 @@ mod tests {
 				VisibilityFeatures::default(),
 				Vec::new(),
 				Vec::new(),
+				false,
 			)),
 			Err(1)
 		);

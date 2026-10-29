@@ -26,7 +26,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags and the excluded assets are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
+| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Only the render feature flags and the excluded assets are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -47,9 +47,24 @@ files. It then selects what to bake from the discovered assets:
 | Explicit IDs | Roots don't apply; the given IDs bake. |
 
 Up to 16 assets bake at once, and each is skipped when its stored resource is
-current with every source file it was baked from. A bake never deletes a
-resource, so resources that earlier bakes stored stay in the store, reachable
-or not.
+current with every source file it was baked from. Without `--prune`, a bake
+never deletes a resource, so resources that earlier bakes stored stay in the
+store, reachable or not.
+
+### Pruning
+
+`bake --prune` deletes, after the bake, every stored resource that isn't
+[reachable](#roots) from a root. It deletes each one as `delete` does,
+with its payload, references, and trace.
+
+| Rule | Effect |
+| --- | --- |
+| Roots | Required. Without `resources.roots`, or with an empty array, `--prune` exits with code 2 before anything bakes. |
+| IDs, `--dry-run` | Rejected with exit code 2. Pruning follows only a full bake. |
+| Release builds | Rejected with exit code 2, because a release build records no references. |
+| Failed bakes | If any asset fails to bake, nothing is deleted and the bake exits with code 1. |
+| Reachability | Computed from the store after the bake, from the same roots the bake used. A failed bake's trace isn't a resource and stays. |
+| Output | Each deleted ID is logged at the info level, as `delete` logs it. |
 
 ## Dry runs
 
@@ -65,6 +80,7 @@ anything under the destination directory.
 | `--destination`, `--storage-mode` | No effect. |
 | `--memory-budget-mib`, `--config` | Apply as in a normal bake. The roots don't apply, because a dry run bakes only its IDs. |
 | `--format`, `--payload` | Accepted on `bake` only with `--dry-run`. |
+| `--prune` | Rejected with exit code 2. |
 | Exit code | The same as a normal bake of the same IDs. |
 
 ## Query
@@ -253,7 +269,7 @@ A failed bake has only `id`, `source`, and `status`.
 | --- | --- |
 | 0 | Success. |
 | 1 | The configuration couldn't be read, a root and an excluded pattern match the same asset, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, at least one delete failed, or `browse` ran without an interactive terminal. |
-| 2 | Invalid arguments, including a `query` filter term or field that doesn't parse, and `is:unreachable` without roots. |
+| 2 | Invalid arguments, including `bake --prune` without roots, with IDs, or in a release build, and a `query` filter term or field that doesn't parse, and `is:unreachable` without roots. |
 
 ## Output formats
 

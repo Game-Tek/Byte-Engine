@@ -60,6 +60,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			memory_budget,
 			texture_compression,
 			force,
+			prune,
 			dry_run,
 			format,
 			payload,
@@ -91,6 +92,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				features,
 				excluded,
 				patterns(&configuration, "resources.roots").map(Glob::new).collect(),
+				prune,
 			)
 			.await
 		}
@@ -107,9 +109,9 @@ fn read_configuration(path: &str) -> Result<Vec<Parameter>, i32> {
 }
 
 /// Returns the `resources.roots` glob patterns of the project configuration at `path`.
-fn read_roots(path: &str) -> Result<Vec<String>, i32> {
+fn read_roots(path: &str) -> Result<Vec<Glob>, i32> {
 	let configuration = read_configuration(path)?;
-	Ok(patterns(&configuration, "resources.roots").map(str::to_string).collect())
+	Ok(patterns(&configuration, "resources.roots").map(Glob::new).collect())
 }
 
 /// Returns the glob patterns of the array parameter `name`.
@@ -276,6 +278,11 @@ enum Commands {
 		/// Example: `beld bake --force`
 		#[arg(long)]
 		force: bool,
+		/// After a full bake, delete every stored resource that no root in `resources.roots` reaches.
+		/// Needs roots and a debug build, and deletes nothing when an asset fails to bake.
+		/// Example: `beld bake --prune`
+		#[arg(long, conflicts_with_all = ["ids", "dry_run"])]
+		prune: bool,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]

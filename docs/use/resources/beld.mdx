@@ -239,8 +239,10 @@ and `is:dangling`.
    or removes them. Both read the store and the configuration, and neither
    changes anything.
 
-1. Remove their resources with `beld delete`. A bake with roots doesn't
-   produce them again, because it bakes only the roots and what they use.
+1. Remove their resources with `beld delete`, or run `beld bake --prune` to
+   bake and delete every unreachable resource in one step. A bake with roots
+   doesn't produce them again, because it bakes only the roots and what they
+   use.
    Delete their source files too, or add them to `resources.exclude`, if you
    don't need them anymore.
 

@@ -276,7 +276,7 @@ impl Catalog {
 		resources: Vec<SerializableResource>,
 		stale: Option<Vec<Vec<String>>>,
 		references: Vec<(String, Vec<String>)>,
-		roots: &[String],
+		roots: &[Glob],
 		usage: StorageUsage,
 		read_at: u64,
 	) -> Catalog {
@@ -285,8 +285,6 @@ impl Catalog {
 		let mut references = references.into_iter().collect::<HashMap<_, _>>();
 		let mut properties = BTreeSet::new();
 		let mut stored_total = 0;
-		// Root patterns match like filter globs: the whole ID, ignoring case.
-		let roots = roots.iter().map(|pattern| Glob::new(pattern)).collect::<Vec<_>>();
 
 		let mut rows = Vec::with_capacity(resources.len());
 		for resource in resources {
@@ -516,7 +514,7 @@ impl Catalog {
 /// Returns the error message instead of logging it, so `browse` can show a failed reload in place.
 ///
 /// `roots` are the configured `resources.roots` glob patterns, which decide what is reachable.
-pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[String]) -> Result<Catalog, String> {
+pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[Glob]) -> Result<Catalog, String> {
 	let storage = open_read_only_storage(destination_path.to_string(), "read").await?;
 	let resources = storage.list().await?;
 	let usage = storage.usage()?;
@@ -533,6 +531,31 @@ pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[Str
 	#[cfg(debug_assertions)]
 	let catalog = catalog.with_traces(traces);
 	Ok(catalog)
+}
+
+/// Returns the IDs of the stored resources in the store at `destination_path` that no root in `roots` reaches.
+///
+/// Reads only the store, so every status is `unknown`. Debug builds only, because release builds read no references.
+#[cfg(debug_assertions)]
+pub(super) async fn unreachable_ids(destination_path: &str, roots: &[Glob]) -> Result<Vec<String>, String> {
+	let storage = open_read_only_storage(destination_path.to_string(), "prune").await?;
+	let (resources, references) = (storage.list().await?, storage.references()?);
+	drop(storage);
+
+	// Reachability needs only the resources and their references, so the usage scan is skipped.
+	let usage = StorageUsage {
+		database_size: 0,
+		payload_files: Vec::new(),
+		staging_files: (0, 0),
+		pack: None,
+	};
+	let catalog = Catalog::new(resources, None, references, roots, usage, 0);
+	Ok(catalog
+		.rows
+		.into_iter()
+		.filter(|row| row.resource.is_some() && !row.reachable)
+		.map(|row| row.id)
+		.collect())
 }
 
 /// Returns each resource's changed sources, or `None` when `source_path` isn't a readable directory.

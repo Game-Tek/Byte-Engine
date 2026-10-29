@@ -160,8 +160,18 @@ patterns:
 
 When you run `beld bake` without IDs, BELD bakes the discovered assets that
 match a root. A texture or material bakes only because a root uses it, so
-the bake doesn't add a resource that nothing uses. Resources from earlier
-bakes stay; to find and remove them, follow
+the bake doesn't add a resource that nothing uses.
+
+Resources from earlier bakes stay, such as a texture a material stopped
+using. To delete everything no root uses in the same run, add `--prune` and
+use a development build of BELD:
+
+```bash
+beld bake --prune
+```
+
+If any asset fails to bake, `--prune` deletes nothing. To review what it would
+delete first, follow
 [Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
 
 If an asset matches both a root and a pattern in `resources.exclude`, BELD

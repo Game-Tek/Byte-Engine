@@ -58,7 +58,7 @@ fn rooted_catalog(references: Vec<(String, Vec<String>)>, roots: &[&str]) -> Cat
 		audio("music.wav", 3, 8192),
 	];
 	let stale = Some(vec![Vec::new(); resources.len()]);
-	let roots = roots.iter().map(|root| root.to_string()).collect::<Vec<_>>();
+	let roots = roots.iter().map(|root| utils::Glob::new(root)).collect::<Vec<_>>();
 	Catalog::new(resources, stale, references, &roots, files_usage(), 0)
 }
 

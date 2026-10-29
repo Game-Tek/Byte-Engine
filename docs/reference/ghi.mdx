@@ -45,8 +45,25 @@ the pipeline's declared ranges.
 | Tile pipeline | A tile function, the formats of the one to eight color attachments it writes, and its 16 × 16 or 32 × 32 pixel tile. A tile pass is one render pass whose attachments share one size, and it runs the function once over every tile of them; its threadgroup storage sizes come from the shader. Only contexts that support tile functions create one. |
 | Acceleration structure | Triangle geometry with 16-bit or 32-bit indices. See [Ray tracing](#ray-tracing). |
 | Ray tracing pipeline and shader binding table | A ray generation shader and its hit groups, and the records that map hits to them. See [Ray tracing](#ray-tracing). |
-| Counter | At most 512 per frame. Its duration is that of the most recently completed frame. |
+| Counter | At most 512 per frame. Its duration is that of the most recently completed frame. See [Counters](#counters). |
 | Texture readback | The base mip of one layer of a color image with the transfer-source use, in a format other than RGB8, RGB16, or depth. The handle is consumed by the read. |
+
+## Counters
+
+A counter measures the GPU time between its start and its end in one frame.
+The counters feature decides whether counters write timestamps. It's off
+unless the instance or the device requests it. Counters are created the same
+way either way.
+
+| Rule | Counters on | Counters off |
+| --- | --- | --- |
+| Starting and ending a counter | Writes one GPU timestamp each | Writes nothing and adds no GPU work |
+| Recording rules | Only in a frame recording, one start and one end per counter per frame | The same rules apply, and break the same way |
+| Native timestamp storage | Created as the [backend](#backends) lists | Never created |
+| Duration | The most recently completed frame's time, or none when that frame didn't record and end the counter | Always none |
+
+Every backend must follow both columns. Only Metal has been built and tested
+with counters off; the Vulkan and Direct3D 12 paths aren't compiled yet.
 
 ## Enumerations
 
@@ -190,6 +207,7 @@ A trace launches the ray generation shader over an extent.
 | Tile functions | Always available | Not supported; contexts report no support | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
+| Counters | One timestamp counter heap per frame sequence | One timestamp query pool | One timestamp query heap and readback buffer, created by the first counter write |
 | Sparse resources | No effect on any backend | | |
 
 | Gap | Backend |

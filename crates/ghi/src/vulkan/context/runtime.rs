@@ -4,7 +4,13 @@ impl Context {
 	pub(crate) fn new(device: &Device) -> Result<Self, &'static str> {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let queues = std::mem::take(&mut device.queues);
-		let counter_query_pool = create_counter_query_pool(&device)?;
+		// Disabled counters hand out no slots, so the context needs no pool; destroying a null pool is a no-op.
+		let counters_enabled = device.settings.counters;
+		let counter_query_pool = if counters_enabled {
+			create_counter_query_pool(&device)?
+		} else {
+			vk::QueryPool::null()
+		};
 
 		Ok(Context {
 			device,
@@ -33,9 +39,13 @@ impl Context {
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
-			counters: crate::counters::Counters::new(),
+			counters: crate::counters::Counters::new(counters_enabled),
 			counter_query_pool,
-			counter_results: vec![[0; 2]; crate::counters::COUNTER_SLOTS_PER_FRAME as usize],
+			counter_results: if counters_enabled {
+				vec![[0; 2]; crate::counters::COUNTER_SLOTS_PER_FRAME as usize]
+			} else {
+				Vec::new()
+			},
 
 			// Every recording clones these maps, so they stay sized to the tracked resources rather than pre-sized.
 			states: HashMap::default(),

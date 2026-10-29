@@ -61,8 +61,8 @@ where
 
 /// The `Features` struct selects optional GPU features during device creation.
 ///
-/// Validation, API tracing, ray tracing, sparse resources, geometry shaders, and
-/// the application-owned pipeline cache are disabled by default. Mesh shading is
+/// Validation, API tracing, ray tracing, sparse resources, geometry shaders, GPU timing
+/// counters, and the application-owned pipeline cache are disabled by default. Mesh shading is
 /// enabled by default. When `gpu` is `None`, the backend selects an appropriate GPU.
 #[derive(Debug, Clone, Copy)]
 pub struct Features {
@@ -71,6 +71,8 @@ pub struct Features {
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
 	pub(crate) debug_labels: bool,
+	/// Whether GPU timing counters write timestamps; see [`Self::counters`]. Off by default.
+	pub(crate) counters: bool,
 	pub(crate) debug_log_function: Option<fn(&str)>,
 	pub(crate) gpu: Option<&'static str>,
 	pub(crate) sparse: bool,
@@ -93,6 +95,7 @@ impl Features {
 			api_dump: false,
 			ray_tracing: false,
 			debug_labels: false,
+			counters: false,
 			debug_log_function: None,
 			gpu: None,
 			sparse: false,
@@ -124,6 +127,18 @@ impl Features {
 
 	pub fn debug_labels(mut self, debug_labels: bool) -> Self {
 		self.debug_labels = debug_labels;
+		self
+	}
+
+	/// Makes GPU timing counters write timestamps. Off by default.
+	///
+	/// Every context still creates and accepts counters while this is off, but no timestamp is written, no native
+	/// timestamp storage is created, and [`crate::context::Context::counter_duration`] always returns `None`, so the
+	/// GPU does no timing work. Turn it on to profile frames; read the durations as
+	/// [`crate::context::ContextCreate::create_counter`] describes. An instance and a device that both receive
+	/// features enable counters when either one asks for them.
+	pub fn counters(mut self, counters: bool) -> Self {
+		self.counters = counters;
 		self
 	}
 

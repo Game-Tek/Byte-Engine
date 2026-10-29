@@ -64,8 +64,10 @@ pub struct Context {
 	pub(super) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 	pub(super) counters: crate::counters::Counters,
 	/// The timestamp query pool every frame sequence writes its counter slots into; see [`crate::counters::Counters`].
+	/// A null handle when counters are disabled, because no slot is ever written.
 	pub(super) counter_query_pool: vk::QueryPool,
-	/// Reused storage for one frame sequence's resolved timestamps and their availability.
+	/// Reused storage for one frame sequence's resolved timestamps and their availability. Empty when counters are
+	/// disabled.
 	pub(super) counter_results: Vec<[u64; 2]>,
 
 	pub(super) states: HashMap<super::Handles, TransitionState>,

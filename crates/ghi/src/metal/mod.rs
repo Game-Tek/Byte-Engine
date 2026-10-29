@@ -346,7 +346,7 @@ pub(crate) use state::{
 pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::QueueHandle) {
 	use crate::device::Device as _;
 
-	let features = crate::device::Features::new().debug_labels(true).ray_tracing(true);
+	let features = crate::device::Features::new().debug_labels(true).ray_tracing(true).counters(true);
 	let mut instance = Instance::new(features)
 		.expect("Failed to create a Metal test instance. The most likely cause is that no Metal device is available.");
 	let mut queue_handle = None;

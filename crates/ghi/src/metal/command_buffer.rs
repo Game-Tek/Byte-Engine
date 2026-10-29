@@ -199,7 +199,7 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) frames: u8,
 	pub(super) debug_labels: bool,
 	/// The context's timestamp heaps, one per frame sequence, which counter starts and ends write into.
-	pub(super) counter_heaps: &'a [Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>; MAX_FRAMES_IN_FLIGHT],
+	pub(super) counter_heaps: &'a [Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>],
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.

@@ -70,6 +70,11 @@ fn create_default_device_setup_with_features(
 	(instance, device, context, queue_handle.unwrap())
 }
 
+/// Creates a validated device setup whose counters write timestamps, for scenarios that read counter durations.
+fn create_counters_device_setup() -> (Instance, BackendDevice, BackendContext, QueueHandle) {
+	create_default_device_setup_with_features(ghi::device::Features::new().validation(true).counters(true))
+}
+
 /// Runs one rendering scenario on a fresh validated device setup.
 ///
 /// The setup locals drop in reverse order, so the context goes before the device and the instance.
@@ -90,26 +95,32 @@ fn run_with_ray_tracing(scenario: impl FnOnce(&mut BackendContext, QueueHandle))
 }
 
 #[test]
-fn counters_measure_completed_frames() {
+fn disabled_counters_report_no_duration() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	counters::disabled_counters_report_no_duration(&mut device, queue_handle);
+}
+
+#[test]
+fn counters_measure_completed_frames() {
+	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
 	counters::counters_measure_completed_frames(&mut device, queue_handle);
 }
 
 #[test]
 fn counters_measure_every_completed_frame() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
 	counters::counters_measure_every_completed_frame(&mut device, queue_handle);
 }
 
 #[test]
 fn nested_counters_resolve_when_the_outer_end_closes_the_frame() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
 	counters::nested_counters_resolve_when_the_outer_end_closes_the_frame(&mut device, queue_handle);
 }
 
 #[test]
 fn counters_ended_after_the_last_dispatch_resolve() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
 	counters::counters_ended_after_the_last_dispatch_resolve(&mut device, queue_handle);
 }
 
@@ -258,7 +269,10 @@ fn traced_structures_stay_resident_without_rebuilds() {
 #[test]
 #[cfg_attr(not(target_os = "macos"), ignore = "only the Metal backend traces rays")]
 fn counters_time_bottom_level_builds() {
-	run_with_ray_tracing(ray_tracing::counters_time_bottom_level_builds);
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(
+		ghi::device::Features::new().validation(true).ray_tracing(true).counters(true),
+	);
+	ray_tracing::counters_time_bottom_level_builds(&mut context, queue_handle);
 }
 
 #[test]

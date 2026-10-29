@@ -5,6 +5,16 @@
 //! owns the native timestamp pool; which counter wrote which slot, and the duration each counter measured, lives here.
 //! Clients reach this through [`crate::context::ContextCreate::create_counter`],
 //! [`crate::command_buffer::CommonCommandBufferMode::counter`], and [`crate::context::Context::counter_duration`].
+//!
+//! Counters are off unless the device was created with [`crate::device::Features::counters`]. While they are off,
+//! handles stay valid but no slot is handed out, so backends write no timestamps and every duration reads `None`.
+//! Every backend must keep that contract the same way:
+//! - Build [`Counters`] with the device's `counters` feature.
+//! - Create the native timestamp storage (a heap, query pool, or query heap) only when that feature is on, and
+//!   index it only with a slot [`Counters::start`] or [`Counters::end`] returned.
+//! - Write a timestamp only when `start` or `end` returns a slot; `None` means write nothing and add no GPU work.
+//! - Skip the native readback when [`Counters::written_slots`] is empty, but still call [`Counters::resolve`], so
+//!   earlier samples clear.
 
 use std::time::Duration;
 
@@ -52,13 +62,16 @@ impl SequenceSlots {
 pub(crate) struct Counters {
 	samples: Vec<Option<Duration>>,
 	sequences: [SequenceSlots; MAX_FRAMES_IN_FLIGHT],
+	/// Whether counters write timestamps; see [`crate::device::Features::counters`].
+	enabled: bool,
 }
 
 impl Counters {
-	pub(crate) fn new() -> Self {
+	pub(crate) fn new(enabled: bool) -> Self {
 		Self {
 			samples: Vec::new(),
 			sequences: std::array::from_fn(|_| SequenceSlots::default()),
+			enabled,
 		}
 	}
 
@@ -69,9 +82,13 @@ impl Counters {
 		handle
 	}
 
-	/// Returns the pool slot the start timestamp of `counter` goes into for the frame on `sequence_index`.
-	pub(crate) fn start(&mut self, sequence_index: u8, counter: CounterHandle) -> u32 {
+	/// Returns the pool slot the start timestamp of `counter` goes into for the frame on `sequence_index`, or `None`
+	/// when counters are disabled and the backend writes nothing.
+	pub(crate) fn start(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
 		self.validate(counter);
+		if !self.enabled {
+			return None;
+		}
 		let sequence = &mut self.sequences[sequence_index as usize];
 		assert!(
 			sequence.spans.iter().all(|span| span.counter != counter),
@@ -84,12 +101,16 @@ impl Counters {
 			start,
 			end: None,
 		});
-		Self::pool_slot(sequence_index, start)
+		Some(Self::pool_slot(sequence_index, start))
 	}
 
-	/// Returns the pool slot the end timestamp of `counter` goes into for the frame on `sequence_index`.
-	pub(crate) fn end(&mut self, sequence_index: u8, counter: CounterHandle) -> u32 {
+	/// Returns the pool slot the end timestamp of `counter` goes into for the frame on `sequence_index`, or `None`
+	/// when counters are disabled and the backend writes nothing.
+	pub(crate) fn end(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
 		self.validate(counter);
+		if !self.enabled {
+			return None;
+		}
 		let sequence = &mut self.sequences[sequence_index as usize];
 		let index = sequence
 			.spans
@@ -108,7 +129,7 @@ impl Counters {
 		);
 		let end = sequence.allocate();
 		sequence.spans[index].end = Some(end);
-		Self::pool_slot(sequence_index, end)
+		Some(Self::pool_slot(sequence_index, end))
 	}
 
 	/// Returns the pool slots the frame on `sequence_index` has written so far.
@@ -208,13 +229,13 @@ mod tests {
 
 	#[test]
 	fn counters_read_nothing_until_a_frame_resolves_them() {
-		let mut counters = Counters::new();
+		let mut counters = Counters::new(true);
 		let counter = counters.create();
 		assert_eq!(counters.duration(counter), None);
 
 		let start = counters.start(0, counter);
 		let end = counters.end(0, counter);
-		assert_eq!((start, end), (0, 1));
+		assert_eq!((start, end), (Some(0), Some(1)));
 		assert_eq!(counters.written_slots(0), 0..2);
 		assert_eq!(counters.duration(counter), None);
 
@@ -224,12 +245,24 @@ mod tests {
 	}
 
 	#[test]
-	fn sequences_own_disjoint_slot_ranges() {
-		let mut counters = Counters::new();
+	fn disabled_counters_write_no_slots_and_read_nothing() {
+		let mut counters = Counters::new(false);
 		let counter = counters.create();
-		assert_eq!(counters.start(2, counter), 2 * COUNTER_SLOTS_PER_FRAME);
-		assert_eq!(counters.end(2, counter), 2 * COUNTER_SLOTS_PER_FRAME + 1);
-		assert_eq!(counters.start(0, counter), 0);
+		assert_eq!(counters.start(0, counter), None);
+		assert_eq!(counters.end(0, counter), None);
+		assert_eq!(counters.written_slots(0), 0..0);
+
+		counters.resolve(0, |slot| Some(u64::from(slot)), tick_difference);
+		assert_eq!(counters.duration(counter), None);
+	}
+
+	#[test]
+	fn sequences_own_disjoint_slot_ranges() {
+		let mut counters = Counters::new(true);
+		let counter = counters.create();
+		assert_eq!(counters.start(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME));
+		assert_eq!(counters.end(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME + 1));
+		assert_eq!(counters.start(0, counter), Some(0));
 		assert_eq!(
 			counters.written_slots(2),
 			2 * COUNTER_SLOTS_PER_FRAME..2 * COUNTER_SLOTS_PER_FRAME + 2
@@ -238,7 +271,7 @@ mod tests {
 
 	#[test]
 	fn unfinished_and_unwritten_spans_resolve_to_nothing() {
-		let mut counters = Counters::new();
+		let mut counters = Counters::new(true);
 		let finished = counters.create();
 		let unfinished = counters.create();
 		let unwritten = counters.create();
@@ -260,7 +293,7 @@ mod tests {
 
 	#[test]
 	fn a_frame_without_counters_clears_earlier_samples() {
-		let mut counters = Counters::new();
+		let mut counters = Counters::new(true);
 		let counter = counters.create();
 		counters.start(1, counter);
 		counters.end(1, counter);
@@ -274,7 +307,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "started twice in one frame")]
 	fn starting_a_counter_twice_in_one_frame_fails() {
-		let mut counters = Counters::new();
+		let mut counters = Counters::new(true);
 		let counter = counters.create();
 		counters.start(0, counter);
 		counters.start(0, counter);
@@ -283,7 +316,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "ended without a start")]
 	fn ending_a_counter_that_never_started_fails() {
-		let mut counters = Counters::new();
+		let mut counters = Counters::new(true);
 		let counter = counters.create();
 		counters.end(0, counter);
 	}
@@ -291,7 +324,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "Invalid counter handle")]
 	fn a_handle_from_another_context_is_rejected() {
-		let counters = Counters::new();
+		let counters = Counters::new(true);
 		counters.duration(CounterHandle::from_index(0));
 	}
 

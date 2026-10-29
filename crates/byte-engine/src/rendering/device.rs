@@ -31,6 +31,8 @@ impl GraphicsDevice {
 	/// - `debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `debug`.
+	/// - `ghi.features.counters`: Makes GPU timing counters write timestamps, which the renderer's frame and pass
+	///   metrics read. Defaults to true on debug builds and false on release builds.
 	/// - `ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
 	/// - `ghi.features.ray-tracing`: Requests ray tracing from the device, which surfel GI needs. Defaults to
 	///   `surfel-gi.enabled`.
@@ -51,6 +53,7 @@ impl GraphicsDevice {
 			.debug_labels(flag("debug.labels", validation))
 			.debug_log_function(log_graphics_error)
 			.geometry_shader(false)
+			.counters(flag("ghi.features.counters", cfg!(debug_assertions)))
 			.mesh_shading(flag("ghi.features.mesh-shading", true))
 			// Surfel GI is the only feature that traces rays, so a project without it doesn't ask the device for them.
 			.ray_tracing(flag(

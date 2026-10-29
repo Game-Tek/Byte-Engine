@@ -263,7 +263,7 @@ impl Device {
 			last_frame_synchronizers: [None; crate::MAX_FRAMES_IN_FLIGHT],
 			allocations: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
-			counters: crate::counters::Counters::new(),
+			counters: crate::counters::Counters::new(settings.counters),
 			counter_storage: None,
 			counter_frequencies: [0; crate::MAX_FRAMES_IN_FLIGHT],
 			gpu_uploaded_images: HashSet::default(),

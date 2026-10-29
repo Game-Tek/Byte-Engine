@@ -499,7 +499,8 @@ pub trait Context: ContextCreate {
 	///
 	/// A frame completes when a later frame start reuses its sequence, which is the frame
 	/// [`crate::queue::QueueExecution::completed_frame`] reports. Returns `None` until a frame that recorded the
-	/// counter completes, and whenever the last completed frame did not record it or did not end it.
+	/// counter completes, and whenever the last completed frame did not record it or did not end it. Always returns
+	/// `None` on a device created without [`crate::device::Features::counters`].
 	fn counter_duration(&self, counter: CounterHandle) -> Option<std::time::Duration>;
 }
 
@@ -675,6 +676,10 @@ pub trait ContextCreate {
 	/// Bracket the frame work it measures with [`crate::command_buffer::CommonCommandBufferMode::counter`], once per
 	/// frame, then read the time with [`Context::counter_duration`] once that frame completes. A frame can record up
 	/// to 512 counters.
+	///
+	/// Every backend creates counters whether or not the device enabled [`crate::device::Features::counters`], so
+	/// callers create and record them the same way in every build. Without the feature, a counter takes no GPU
+	/// memory, its starts and ends write nothing, and its duration is always `None`.
 	fn create_counter(&mut self, name: Option<&str>) -> CounterHandle;
 }
 

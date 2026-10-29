@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- GPU timing counters are off unless the device requests them with the new `Features::counters`. While they're off, counters are still created and recorded under the same rules, but they write no timestamps, allocate no timestamp heap or query pool, and report no duration. The engine reads `render.ghi.features.counters`, which defaults to on in debug builds and off in release builds, so release builds no longer report `frame`, `scene`, `pass`, or `stage` GPU metrics unless it's set.
+  - Breaking: GHI clients that read `counter_duration` must create the device with `Features::counters(true)`. The Vulkan and Direct3D 12 paths weren't compiled.
+
 - The visibility buffer's triangle and instance images and the UI layer no longer take storage usage, so Metal keeps them losslessly compressed. Shader reflection reports a storage image that a shader only reads as a sampled image, `BindingKind::SampledImage`, which binds without storage usage: the GLSL generator declares it as a texture without a sampler, read with `texelFetch`, the HLSL generator as a `Texture2D` shader resource view, and MSL already read it as a read-only texture. The images render identically. On an Apple M4 rendering Sponza at 3840 × 1906, writing the visibility images takes 0.57 ms instead of 1.05 ms and a frame takes 20.64 ms instead of 21.19 ms; material evaluation, which reads them, is 0.09 ms faster.
   - Breaking: an image bound to a read-only storage-image descriptor needs `Uses::Image`, and shaders with one need a rebake. The Vulkan and Direct3D 12 paths weren't compiled.
 

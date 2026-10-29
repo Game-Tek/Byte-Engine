@@ -213,9 +213,14 @@ pub trait CommonCommandBufferMode {
 	///
 	/// Record each counter once per frame, in a frame recording. Measure whole passes: inside a render pass, Metal
 	/// samples after the fragment stage of the draws recorded so far, and tile-based GPUs may not separate draws.
+	///
+	/// On a device created without [`crate::device::Features::counters`], this writes nothing and adds no GPU work,
+	/// but still checks the same rules: a frame recording, and one start per counter per frame.
 	fn start_counter(&mut self, counter: CounterHandle);
 
 	/// Writes the GPU timestamp that ends `counter` for this frame.
+	///
+	/// Like [`Self::start_counter`], this writes nothing without [`crate::device::Features::counters`].
 	fn end_counter(&mut self, counter: CounterHandle);
 
 	/// Measures the GPU time the closure's commands take, from the last completed frame's point of view.

@@ -78,7 +78,8 @@ pub struct Context {
 	/// One timestamp heap per frame sequence, which the sequence's frames write their counter slots into; see
 	/// [`crate::counters::Counters`]. Metal forbids invalidating a heap the GPU still uses, and a completed sequence
 	/// shares no heap with the frames in flight, so each one can be invalidated as soon as its frame completes.
-	pub(crate) counter_heaps: [Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>; MAX_FRAMES_IN_FLIGHT],
+	/// Empty when counters are disabled.
+	pub(crate) counter_heaps: Vec<Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>>,
 	/// GPU timestamp ticks per second, which converts counter slots into durations.
 	pub(crate) timestamp_frequency: u64,
 

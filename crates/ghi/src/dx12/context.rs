@@ -44,6 +44,7 @@ pub struct Device {
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	counters: crate::counters::Counters,
 	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
+	/// Stays `None` when counters are disabled, because no counter writes.
 	counter_storage: Option<CounterStorage>,
 	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
 	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],

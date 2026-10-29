@@ -40,6 +40,10 @@ impl Device {
 		} else {
 			self.counters.end(sequence_index, counter)
 		};
+		// Disabled counters write nothing, so the storage is never created.
+		let Some(slot) = slot else {
+			return;
+		};
 		// Every recording of one frame submits to the frame's queue, so its frequency converts the frame's slots.
 		let queue_handle = self.command_buffers[command_buffer_handle.index() as usize].queue_handle;
 		self.counter_frequencies[sequence_index as usize] = self.queues[queue_handle.index() as usize].timestamp_frequency;

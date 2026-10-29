@@ -47,13 +47,14 @@ impl Context {
 				);
 				"Metal 4 compiler creation failed. The most likely cause is that Metal could not allocate a compiler for this device."
 			})?;
-		let mut counter_heaps = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-		for sequence_index in 0..MAX_FRAMES_IN_FLIGHT {
-			counter_heaps.push(create_counter_heap(device.as_ref(), settings.debug_labels, sequence_index)?);
-		}
-		let counter_heaps = counter_heaps
-			.try_into()
-			.unwrap_or_else(|_| unreachable!("One counter heap was created for every frame sequence."));
+		// Disabled counters hand out no slots, so no heap is ever indexed and none is created.
+		let counter_heaps = if settings.counters {
+			(0..MAX_FRAMES_IN_FLIGHT)
+				.map(|sequence_index| create_counter_heap(device.as_ref(), settings.debug_labels, sequence_index))
+				.collect::<Result<Vec<_>, _>>()?
+		} else {
+			Vec::new()
+		};
 		let timestamp_frequency = device.queryTimestampFrequency();
 		let frames = MAX_FRAMES_IN_FLIGHT as u8;
 		let mut synchronizers = ResourceCollection::with_capacity(32);
@@ -86,7 +87,7 @@ impl Context {
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
-			counters: crate::counters::Counters::new(),
+			counters: crate::counters::Counters::new(settings.counters),
 			counter_heaps,
 			timestamp_frequency,
 			resource_to_descriptor: HashMap::default(),

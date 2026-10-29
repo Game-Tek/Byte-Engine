@@ -201,6 +201,8 @@ impl Renderer {
 	/// GPU times of every frame, scene pipeline, post-scene pass, and the stages those create with
 	/// [`RenderPassBuilder::create_gpu_counter`] are reported to `metrics` once each frame completes, under `frame`,
 	/// `scene.<manager>`, `pass.<name>`, and `stage.<name>`, with `@<sink>` appended for sinks after the first.
+	/// They report only when `device` was created with `ghi.features.counters` on, which is the default on debug
+	/// builds only; see [`GraphicsDevice::new`](crate::rendering::GraphicsDevice::new).
 	///
 	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
 	pub fn new(

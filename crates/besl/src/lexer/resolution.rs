@@ -103,18 +103,25 @@ pub(super) fn resolve_descriptor_type(
 	}
 
 	match resource_type {
-		"Texture2D" => Ok(BindingTypes::CombinedImageSampler { format: String::new() }),
+		"Texture2D" => Ok(BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		}),
 		"Texture2DArray" => Ok(BindingTypes::CombinedImageSampler {
 			format: "ArrayTexture2D".to_string(),
+			sampler: None,
 		}),
 		"Texture3D" => Ok(BindingTypes::CombinedImageSampler {
 			format: "Texture3D".to_string(),
+			sampler: None,
 		}),
 		"TextureCube" => Ok(BindingTypes::CombinedImageSampler {
 			format: "TextureCube".to_string(),
+			sampler: None,
 		}),
 		"TextureCubeArray" => Ok(BindingTypes::CombinedImageSampler {
 			format: "TextureCubeArray".to_string(),
+			sampler: None,
 		}),
 		"StorageImage" => Ok(BindingTypes::Image {
 			format: format.unwrap_or("unknown").to_string(),
@@ -655,7 +662,7 @@ pub(super) fn is_array_texture_reference(expression: &NodeReference) -> bool {
 	matches!(
 		borrowed.node(),
 		Nodes::Binding {
-			r#type: BindingTypes::CombinedImageSampler { format },
+			r#type: BindingTypes::CombinedImageSampler { format, .. },
 			count: None,
 			..
 		} if format == "ArrayTexture2D"

@@ -771,7 +771,7 @@ impl NodeEmitter for Generator {
 							(false, false) => "uniform image2D",
 						}
 					}
-					besl::BindingTypes::CombinedImageSampler { format } => match format.as_str() {
+					besl::BindingTypes::CombinedImageSampler { format, .. } => match format.as_str() {
 						"Texture3D" => "uniform sampler3D",
 						"TextureCube" => "uniform samplerCube",
 						"TextureCubeArray" => "uniform samplerCubeArray",

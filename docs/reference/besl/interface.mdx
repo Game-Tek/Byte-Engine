@@ -334,8 +334,9 @@ gbuffers: descriptor<{ type: Texture2D, binding: 4, access: read, count: 4 }>;
 output_image: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write }>;
 ```
 
-The descriptor resource type selects the reflected binding kind. BESL supports
-these resource types:
+The descriptor resource type selects the reflected binding kind. A texture
+descriptor with a [`sampler`](#samplers) property fixes its sampler part, so it
+binds only an image. BESL supports these resource types:
 
 | Resource type | Binding | Use |
 | --- | --- | --- |
@@ -429,6 +430,62 @@ Counters: struct {
 counters: descriptor<{ type: Counters, binding: 5, access: read_write, memory: device }>;
 index_image: descriptor<{ type: StorageImage<r32ui>, binding: 6, access: read }>;
 ```
+
+## Samplers
+
+A sampler declaration fixes how a texture descriptor filters and combines the
+texels it reads. Declare a sampler with a name and its properties:
+
+```rust
+name: sampler<{
+	filter: FILTER,
+	mip_filter: FILTER,
+	reduction: REDUCTION,
+	address: ADDRESS,
+}>;
+```
+
+Every property is optional. You can write the properties in any order, and you
+can add a trailing comma.
+
+| Property | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `filter` | `nearest`, `linear` | `linear` | The texels a read combines within one level. `nearest` reads the texel under the coordinate. `linear` reads the 2 × 2 texel footprint around it. |
+| `mip_filter` | `nearest`, `linear` | `linear` | The levels a read combines. `nearest` reads the level nearest the requested level of detail (LOD). `linear` blends the two levels around it. |
+| `reduction` | `average`, `min`, `max` | `average` | How a read combines the texels of its footprint. `average` weights each texel by its distance from the coordinate. `min` and `max` return the smallest or largest texel. |
+| `address` | `clamp`, `repeat`, `mirror` | `clamp` | What a coordinate outside `[0, 1]` reads on every axis. `clamp` reads the edge texel, `repeat` wraps around, and `mirror` wraps around with every other repetition reversed. |
+
+A sampler reads every level of the image bound with it. It doesn't clamp the
+LOD.
+
+Attach a sampler to a texture descriptor with the `sampler` property:
+
+```rust
+farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
+occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: farthest_depth }>;
+```
+
+- Only `Texture2D`, `Texture2DArray`, `Texture3D`, `TextureCube`, and
+  `TextureCubeArray` descriptors take a `sampler`.
+- Declare a sampler before the descriptors that name it. Its name is unique
+  across a shader and its layers, like every other declaration.
+- A sampler isn't a binding. It takes no `binding` number, and several
+  descriptors can name the same sampler.
+- A descriptor with a `sampler` binds only an image. A texture descriptor
+  without one binds an image and a sampler.
+
+A sampler whose `reduction` is `min` or `max` has more rules:
+
+- It takes `mip_filter: nearest` and `address: clamp`.
+- Only `Texture2D` and `Texture2DArray` descriptors take it.
+- Its image has one channel. A read returns the reduced value in `x`, `0` in
+  `y` and `z`, and `1` in `w`.
+- Read it with `texture_lod`, `downsample_min`, or `downsample_max`. `sample`
+  can't read it. `gather` and `fetch` return texels without filtering or
+  reduction.
+- `downsample_min` reads only a texture whose sampler is `min`, and
+  `downsample_max` only one whose sampler is `max`.
+- A function can't take its texture as an argument.
 
 ## Standalone stage metadata
 

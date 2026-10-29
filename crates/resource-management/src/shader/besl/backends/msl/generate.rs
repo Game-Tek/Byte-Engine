@@ -67,7 +67,7 @@ impl Generator {
 				};
 				let count = count.map_or(1, |count| count.get());
 				let reserved = match r#type {
-					besl::BindingTypes::CombinedImageSampler { .. } => count.checked_mul(2).ok_or(())?,
+					besl::BindingTypes::CombinedImageSampler { sampler: None, .. } => count.checked_mul(2).ok_or(())?,
 					_ => count,
 				};
 				ids = ids.checked_add(reserved).ok_or(())?;
@@ -191,6 +191,7 @@ impl Generator {
 			&intrinsic_requirements,
 			uses_ray_tracing,
 		);
+		Self::emit_static_samplers(&mut string, order);
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(order) => {

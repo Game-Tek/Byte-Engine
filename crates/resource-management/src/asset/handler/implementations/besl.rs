@@ -1102,7 +1102,8 @@ mod tests {
 		assert_eq!(
 			interface.bindings[1].kind,
 			BindingKind::CombinedImageSampler {
-				view: TextureView::Texture2DArray
+				view: TextureView::Texture2DArray,
+				sampler: None,
 			}
 		);
 	}

@@ -135,6 +135,46 @@ effects aren't visible to the semantic evaluator.
 Express resources and outputs in BESL whenever possible. Reachable declarations
 let Byte Engine validate, reflect, optimize, and test the program consistently.
 
+## Lower static samplers
+
+A [sampler declaration](/docs/reference/besl/interface#samplers) isn't a node of
+the linked graph. The linker records each one as it reaches it, and puts its
+state, `besl::SamplerState`, on every texture binding that names it, in
+`BindingTypes::CombinedImageSampler`. Reflection carries the state into the
+persisted interface, so it's part of the layout identity. The renderer then
+declares the texture as a `ghi::ResourceKind::SampledImage` with a
+`ghi::sampler::StaticSampler`, and the application binds only the image.
+
+Each backend builds the sampler into the pipeline in its own way:
+
+- Vulkan embeds it in the descriptor-heap mapping of the texture's binding,
+  through `pEmbeddedSampler`, so the GLSL generator still declares a
+  `sampler2D`.
+- DX12 adds a static sampler to the root signature at `s{slot}`, the register
+  the HLSL generator already declares for every texture's sampler.
+- Metal compiles it into the shader: the MSL generator declares a program-scope
+  `constexpr sampler`, and leaves the sampler out of the argument buffer and
+  the kernel parameters.
+
+Only Apple10 GPUs reduce in a Metal sampler, and a baked shader doesn't know
+which GPU runs it. So the MSL generator gives a `min` or `max` sampler no
+reduction, and lowers each read through it, and each `downsample_min` or
+`downsample_max` call, to a helper that gathers or reads the four texels and
+reduces them. That emulation is why the reference limits a reducing sampler to
+one-channel 2D textures, clamp addressing, a nearest mip filter, and
+explicit-LOD reads in the function that names the texture: the helper can
+reproduce exactly those reads. A runtime `ghi::sampler::Builder` that asks for a
+min or max reduction on an older Metal GPU panics instead of averaging.
+
+Keep these rules when you change a backend:
+
+- A sampler the shader fixes takes no argument ID, binding, or register of its
+  own. The MSL argument-buffer layout and the GHI's `argument_bases` must agree
+  on that, or every binding after the texture shifts.
+- A sampler the shader fixes reads every level of its image: no LOD clamp.
+- The VM reads through the declared state in place of the sampler the test
+  binds, so VM tests of reducing shaders don't depend on their fixtures.
+
 ## Generate ray tracing shaders
 
 Only the MSL generator lowers ray tracing. It follows the contract between the

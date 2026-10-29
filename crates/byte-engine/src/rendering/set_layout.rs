@@ -176,6 +176,11 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)
 	}
 
+	/// Binds a texture whose sampler the shader fixes with a BESL `sampler` declaration, so the set takes only the image.
+	pub fn texture(&self, name: &str, image: impl Into<ghi::BaseImageHandle>) -> ghi::DescriptorWrite {
+		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::Read)
+	}
+
 	/// Binds a texture a shader samples through `sampler`.
 	pub fn sampled(
 		&self,
@@ -229,18 +234,49 @@ fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
 				.buffer_stride
 				.expect("Missing persisted storage-buffer stride. The most likely cause is a stale shader interface resource."),
 		),
-		BindingKind::CombinedImageSampler { view } => {
-			descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(match view {
+		BindingKind::CombinedImageSampler { view, sampler } => {
+			let view = match view {
 				TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
 				TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
 				TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
 				TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
 				TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
-			})
+			};
+			match sampler {
+				// The shader fixes the sampler, so the set holds only the image. Bind it with `SetBinder::texture`.
+				Some(sampler) => descriptor(ghi::ResourceKind::SampledImage)
+					.texture_view_type(view)
+					.static_sampler(static_sampler(sampler)),
+				None => descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(view),
+			}
 		}
 		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
 		BindingKind::SampledImage => descriptor(ghi::ResourceKind::SampledImage),
 		BindingKind::AccelerationStructure => descriptor(ghi::ResourceKind::AccelerationStructure),
+	}
+}
+
+/// Converts the sampler a BESL `sampler` declaration fixes into the one a pipeline builds into its layout.
+fn static_sampler(sampler: besl::SamplerState) -> ghi::sampler::StaticSampler {
+	use besl::sampler::{Address, Filter, Reduction};
+
+	let filter = |filter| match filter {
+		Filter::Nearest => ghi::FilteringModes::Closest,
+		Filter::Linear => ghi::FilteringModes::Linear,
+	};
+	ghi::sampler::StaticSampler {
+		filtering_mode: filter(sampler.filter),
+		mip_map_mode: filter(sampler.mip_filter),
+		reduction_mode: match sampler.reduction {
+			Reduction::Average => ghi::SamplingReductionModes::WeightedAverage,
+			Reduction::Min => ghi::SamplingReductionModes::Min,
+			Reduction::Max => ghi::SamplingReductionModes::Max,
+		},
+		addressing_mode: match sampler.address {
+			Address::Clamp => ghi::SamplerAddressingModes::Clamp,
+			Address::Repeat => ghi::SamplerAddressingModes::Repeat,
+			Address::Mirror => ghi::SamplerAddressingModes::Mirror,
+		},
 	}
 }
 
@@ -425,8 +461,12 @@ impl Resource {
 				count > 1 && images.iter().flatten().count() <= count as usize
 			}
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-			| (BindingKind::StorageImage | BindingKind::SampledImage, Self::Image(..))
-			| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..)) => count == 1,
+			// A texture whose sampler the shader fixes binds only its image.
+			| (
+				BindingKind::StorageImage | BindingKind::SampledImage | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
+				Self::Image(..),
+			)
+			| (BindingKind::CombinedImageSampler { sampler: None, .. }, Self::CombinedImageSampler(..)) => count == 1,
 			_ => false,
 		}
 	}
@@ -618,6 +658,7 @@ mod tests {
 				"source",
 				BindingKind::CombinedImageSampler {
 					view: TextureView::Texture2D,
+					sampler: None,
 				},
 				1,
 				true,

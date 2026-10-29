@@ -5,6 +5,7 @@ mod entry;
 mod lowering;
 mod matching;
 mod resolution;
+mod samplers;
 
 pub use ast::{
 	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
@@ -12,6 +13,7 @@ pub use ast::{
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use resolution::infer_expression_type;
+pub use samplers::binding_sampler;
 
 #[cfg(test)]
 mod tests {
@@ -23,7 +25,10 @@ mod tests {
 	fn binding_array_rejects_count_larger_than_flat_metadata() {
 		Node::binding_array(
 			"textures",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			0,
 			true,
 			false,
@@ -74,7 +79,7 @@ mod tests {
 				slot: 5,
 				read: true,
 				write: false,
-				r#type: BindingTypes::CombinedImageSampler { format },
+				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				..
 			} if format.is_empty()
 		));
@@ -88,7 +93,7 @@ mod tests {
 			texture_array.borrow().node(),
 			Nodes::Binding {
 				slot: 7,
-				r#type: BindingTypes::CombinedImageSampler { format },
+				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				count: Some(count),
 				..
 			} if format == "ArrayTexture2D" && count.get() == 16
@@ -99,7 +104,7 @@ mod tests {
 		assert!(matches!(
 			volume.borrow().node(),
 			Nodes::Binding {
-				r#type: BindingTypes::CombinedImageSampler { format },
+				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				..
 			} if format == "Texture3D"
 		));
@@ -267,6 +272,119 @@ mod tests {
 			assert!(
 				crate::compile_to_besl(&source, None).is_err(),
 				"{resource_type} should not become a runtime buffer element"
+			);
+		}
+	}
+
+	#[test]
+	fn texture_descriptors_take_the_state_of_the_sampler_they_name() {
+		let source = r#"
+			farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
+			pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
+			layers: descriptor<{ type: Texture2DArray, binding: 1, access: read, sampler: farthest_depth }>;
+			albedo: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+			main: fn () -> void {
+				let depth: f32 = texture_lod(pyramid, vec2f(0.5, 0.5), 1.0).x;
+				let layer_depth: f32 = downsample_min(pyramid, vec2f(0.5, 0.5), 0.0);
+				let color: vec4f = sample(albedo, vec2f(0.5, 0.5));
+				depth;
+				layer_depth;
+				color;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("sampled descriptors should lex");
+		let sampler = |name: &str| match root
+			.borrow()
+			.get_child(name)
+			.expect("descriptor should exist")
+			.borrow()
+			.node()
+		{
+			Nodes::Binding {
+				r#type: BindingTypes::CombinedImageSampler { sampler, .. },
+				..
+			} => *sampler,
+			_ => panic!("expected texture binding {name}"),
+		};
+		let farthest_depth = crate::SamplerState {
+			mip_filter: crate::sampler::Filter::Nearest,
+			reduction: crate::sampler::Reduction::Min,
+			..Default::default()
+		};
+		assert_eq!(sampler("pyramid"), Some(farthest_depth));
+		assert_eq!(sampler("layers"), Some(farthest_depth));
+		assert_eq!(sampler("albedo"), None);
+		assert!(
+			root.borrow().get_child("farthest_depth").is_none(),
+			"a sampler is part of the bindings that name it, not a declaration of its own"
+		);
+	}
+
+	#[test]
+	fn sampler_rules_reject_descriptors_and_reads_the_specification_forbids() {
+		let program = |declarations: &str, read: &str| {
+			format!(
+				"farthest_depth: sampler<{{ mip_filter: nearest, reduction: min }}>;\n{declarations}\nmain: fn () -> void {{ let value: f32 = {read}; value; }}"
+			)
+		};
+		for (source, expected) in [
+			(
+				program(
+					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_occluder }>;",
+					"0.0",
+				),
+				"isn't declared before it",
+			),
+			(
+				"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: late }>;\nlate: sampler<{}>;\nmain: fn () -> void {}".to_string(),
+				"isn't declared before it",
+			),
+			(
+				program(
+					"Data: struct { value: f32, }\ndata: descriptor<{ type: Data, binding: 0, access: read, sampler: farthest_depth }>;",
+					"data.value",
+				),
+				"only texture descriptors take a sampler",
+			),
+			(
+				"blended: sampler<{ reduction: max }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: blended }>;\nmain: fn () -> void {}".to_string(),
+				"blends levels",
+			),
+			(
+				program(
+					"cube: descriptor<{ type: TextureCube, binding: 0, access: read, sampler: farthest_depth }>;",
+					"0.0",
+				),
+				"isn't 2D",
+			),
+			(
+				"wrapped: sampler<{ mip_filter: nearest, reduction: min, address: repeat }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: wrapped }>;\nmain: fn () -> void {}".to_string(),
+				"doesn't clamp coordinates",
+			),
+			(
+				"farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;\nread: fn (texture: Texture2D) -> f32 { return texture_lod(texture, vec2f(0.5, 0.5), 0.0).x; }\nmain: fn () -> void { let value: f32 = read(pyramid); value; }".to_string(),
+				"Function `read` takes a texture whose sampler reduces",
+			),
+			(
+				program(
+					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;",
+					"sample(pyramid, vec2f(0.5, 0.5)).x",
+				),
+				"`sample` reads a texture whose sampler reduces",
+			),
+			(
+				program(
+					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;",
+					"downsample_max(pyramid, vec2f(0.5, 0.5), 0.0)",
+				),
+				"`downsample_max` reads a texture whose sampler reduces with `min`",
+			),
+		] {
+			let error = crate::compile_to_besl(&source, None).expect_err(&format!("source should be rejected: {source}"));
+			assert!(
+				matches!(&error, crate::CompilationError::Lex(LexError::Invalid { message }) if message.contains(expected)),
+				"expected an error containing `{expected}` for {source}, found {error:?}"
 			);
 		}
 	}
@@ -906,7 +1024,10 @@ main: fn () -> void {
 		root.add_child(
 			Node::binding(
 				"texture_sampler",
-				BindingTypes::CombinedImageSampler { format: String::new() },
+				BindingTypes::CombinedImageSampler {
+					format: String::new(),
+					sampler: None,
+				},
 				0,
 				true,
 				false,

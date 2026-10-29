@@ -204,13 +204,6 @@ impl crate::context::Context for Context {
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		let mut changed_sets = SmallVec::<[graphics_hardware_interface::DescriptorSetHandle; 8]>::new();
 		for &descriptor_write in descriptor_set_writes {
-			assert!(
-				!matches!(
-					descriptor_write.descriptor,
-					crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray
-				),
-				"Unsupported Vulkan descriptor write. The most likely cause is that a removed legacy descriptor constructor is still in use.",
-			);
 			let retained = crate::vulkan::descriptor_set::RetainedDescriptor {
 				descriptor: descriptor_write.descriptor,
 				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
@@ -670,36 +663,14 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {
-		let filtering_mode = match builder.filtering_mode {
-			crate::FilteringModes::Closest => vk::Filter::NEAREST,
-			crate::FilteringModes::Linear => vk::Filter::LINEAR,
-		};
-
-		let mip_map_filter = match builder.mip_map_mode {
-			crate::FilteringModes::Closest => vk::SamplerMipmapMode::NEAREST,
-			crate::FilteringModes::Linear => vk::SamplerMipmapMode::LINEAR,
-		};
-
-		let address_mode = match builder.addressing_mode {
-			crate::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
-			crate::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
-			crate::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
-			crate::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
-		};
-
-		let reduction_mode = match builder.reduction_mode {
-			crate::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
-			crate::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
-			crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
-		};
-
+		let filtering_mode = crate::vulkan::utils::filter(builder.filtering_mode);
 		let handle = graphics_hardware_interface::SamplerHandle::from_index(self.samplers.len() as u64);
 		self.samplers.push(Sampler {
 			mag_filter: filtering_mode,
 			min_filter: filtering_mode,
-			mipmap_mode: mip_map_filter,
-			address_mode,
-			reduction_mode,
+			mipmap_mode: crate::vulkan::utils::mipmap_mode(builder.mip_map_mode),
+			address_mode: crate::vulkan::utils::address_mode(builder.addressing_mode),
+			reduction_mode: crate::vulkan::utils::reduction_mode(builder.reduction_mode),
 			anisotropy: builder.anisotropy,
 			min_lod: builder.min_lod,
 			max_lod: builder.max_lod,

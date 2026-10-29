@@ -119,7 +119,7 @@ impl<'a> Compiler<'a> {
 		let is_layered_texture = matches!(
 			binding.borrow().node(),
 			Nodes::Binding {
-				r#type: BindingTypes::CombinedImageSampler { format },
+				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				count: None,
 				..
 			} if format == "ArrayTexture2D"

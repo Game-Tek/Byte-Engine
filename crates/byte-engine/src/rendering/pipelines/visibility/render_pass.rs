@@ -480,13 +480,6 @@ impl VisibilityRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		// Shadow lookups read the nearest occluder in the 2x2 texel footprint around a corner of the pyramid's base level.
-		let depth_pyramid_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::Max),
-		);
 		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
 		let depth_pyramid = DepthPyramidPass::new(
 			context,
@@ -549,11 +542,8 @@ impl VisibilityRenderPass {
 			evaluation.buffer("ssgi_view", depth_pyramid.view_data),
 			evaluation.sampled("sun_visibility", targets.sun_visibility.visibility, depth_sampler),
 			evaluation.sampled("depth_shadow_map", shadow_maps.directional, depth_sampler),
-			evaluation.sampled(
-				"directional_shadow_depth_pyramid",
-				shadow_maps.directional_depth_pyramid,
-				depth_pyramid_sampler,
-			),
+			// The layer fixes the pyramid's maximum sampler.
+			evaluation.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
 			dispatch.buffer("material_count_buffer", material_count),
 			dispatch.buffer("material_offset_buffer", material_offset),
 			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),

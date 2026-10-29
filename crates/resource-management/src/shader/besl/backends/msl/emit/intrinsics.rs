@@ -45,8 +45,12 @@ impl Generator {
 		self.emit_node_string(string, resource);
 	}
 
-	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
+	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index, unless
+	/// the shader fixes it, in which case every element reads through one `constexpr sampler`.
 	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
+		if emit_fixed_sampler_name(string, texture) {
+			return;
+		}
 		let Some((kind, resource, index)) = resource_accessor(texture) else {
 			self.emit_node_string(string, texture);
 			string.push_str("_sampler");
@@ -116,10 +120,12 @@ impl Generator {
 				string.push('[');
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("].sample(");
-				self.emit_intrinsic_resource_reference(string, &arguments[0]);
-				string.push_str("_sampler[");
-				self.emit_node_string(string, &arguments[1]);
-				string.push(']');
+				if !emit_fixed_sampler_name(string, &arguments[0]) {
+					self.emit_intrinsic_resource_reference(string, &arguments[0]);
+					string.push_str("_sampler[");
+					self.emit_node_string(string, &arguments[1]);
+					string.push(']');
+				}
 				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[2]);
 				string.push_str(", metal::gradient2d(");
@@ -127,6 +133,26 @@ impl Generator {
 				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[4]);
 				string.push_str("))");
+			}
+			// Metal reduces in a sampler only on Apple10 GPUs, so a min or max sampler reduces in shader code, through the
+			// downsample helpers. The texture has one channel, which a sampler expands to `(value, 0, 0, 1)`.
+			"texture_lod" if besl::lexer::binding_sampler(&arguments[0]).is_some_and(|sampler| sampler.reduces()) => {
+				let helper = match besl::lexer::binding_sampler(&arguments[0]).map(|sampler| sampler.reduction) {
+					Some(besl::sampler::Reduction::Min) => "_besl_downsample_min",
+					_ => "_besl_downsample_max",
+				};
+				let _ = write!(string, "float4({helper}(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", ");
+				match arguments.get(2) {
+					Some(lod) => self.emit_node_string(string, lod),
+					None => string.push_str("0.0"),
+				}
+				string.push_str("), 0.0, 0.0, 1.0)");
 			}
 			"texture_lod" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -418,5 +444,23 @@ impl Generator {
 				string.push(')');
 			}
 		}
+	}
+}
+
+/// Writes the program-scope name of the `constexpr sampler` the shader fixes for a texture argument, through the index
+/// or layer the argument selects, and returns whether the texture has one. See [`Generator::emit_static_samplers`].
+fn emit_fixed_sampler_name(string: &mut String, texture: &besl::NodeReference) -> bool {
+	match texture.borrow().node() {
+		besl::Nodes::Binding {
+			name,
+			r#type: besl::BindingTypes::CombinedImageSampler { sampler: Some(_), .. },
+			..
+		} => {
+			Generator::emit_static_sampler_name(string, name);
+			true
+		}
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => emit_fixed_sampler_name(string, source),
+		besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) => emit_fixed_sampler_name(string, left),
+		_ => false,
 	}
 }

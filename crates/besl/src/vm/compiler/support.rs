@@ -524,7 +524,7 @@ pub(super) fn resolve_texture_array_access(
 		slot,
 		read,
 		write,
-		r#type: BindingTypes::CombinedImageSampler { format },
+		r#type: BindingTypes::CombinedImageSampler { format, .. },
 		count: Some(count),
 		..
 	} = binding.node()

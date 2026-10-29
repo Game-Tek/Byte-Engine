@@ -188,6 +188,10 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 	// Each declaration links against the ones before it, so it can only use the declarations before it.
 	let mut lexer = Lexer::new(root.clone());
 	for index in 0..children.len() {
+		if let parser::Nodes::Sampler { name, state } = children[index].node() {
+			lexer.declare_sampler(name, *state);
+			continue;
+		}
 		for declaration in super::entry::normalize_entry(&mut children[index], &root)? {
 			root.borrow_mut().add_child(declaration.into());
 		}
@@ -1091,8 +1095,12 @@ pub enum BindingTypes {
 		element: NodeReference,
 		fixed: Option<FixedArray>,
 	},
+	/// A texture shaders sample. `format` names the texture shape, or is empty for a 2D texture.
 	CombinedImageSampler {
 		format: String,
+		/// The sampler state a `sampler` declaration fixes, or `None` when the application binds the sampler. See
+		/// [`crate::sampler`].
+		sampler: Option<crate::SamplerState>,
 	},
 	Image {
 		format: String,
@@ -1377,7 +1385,7 @@ impl Nodes {
 			| Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => type_is_indexable(r#type),
 			Nodes::Expression(Expressions::Member { source, .. }) => match source.borrow().node() {
 				Nodes::Binding {
-					r#type: BindingTypes::CombinedImageSampler { format },
+					r#type: BindingTypes::CombinedImageSampler { format, .. },
 					count: None,
 					..
 				} => format == "ArrayTexture2D",

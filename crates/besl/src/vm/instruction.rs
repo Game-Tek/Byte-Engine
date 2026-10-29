@@ -1,6 +1,6 @@
 //! Private instruction and operator types shared by lowering and execution.
 
-use super::{ResourceSlot, SamplerReductionMode, Value, ValueType};
+use super::{ResourceSlot, Sampler, Value, ValueType};
 
 /// The `Instruction` enum is one VM operation. Lowering pushes it and execution dispatches it by group, so each
 /// group handler can match its own sub-enum exhaustively.
@@ -365,7 +365,9 @@ pub(super) enum TextureInstruction {
 		uv: usize,
 		layer: Option<usize>,
 		lod: Option<usize>,
-		reduction_mode: Option<SamplerReductionMode>,
+		/// The sampler the shader fixes, through a `sampler` declaration or a downsample intrinsic, which replaces the
+		/// bound one. `None` reads through the bound sampler.
+		sampler: Option<Sampler>,
 	},
 	SampleTexture3D {
 		register: usize,

@@ -259,7 +259,7 @@ fn resource_accessor(node: &besl::NodeReference) -> Option<(ResourceAccessorKind
 fn resource_reference_kind(node: &besl::NodeReference) -> Option<ResourceAccessorKind> {
 	match node.borrow().node() {
 		besl::Nodes::Binding {
-			r#type: besl::BindingTypes::CombinedImageSampler { format },
+			r#type: besl::BindingTypes::CombinedImageSampler { format, .. },
 			count,
 			..
 		} => {
@@ -400,7 +400,9 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 	let mut requirements = IntrinsicRequirements::default();
 	for node in order {
 		any_code_node(node, false, &mut |node| {
-			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
+			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+				intrinsic, arguments, ..
+			}) = node.borrow().node()
 				&& let Some(name) = intrinsic.borrow().get_name()
 			{
 				match name {
@@ -416,6 +418,16 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 					name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
 					"downsample_min" => requirements.uses_downsample_min = true,
 					"downsample_max" => requirements.uses_downsample_max = true,
+					// A read through a min or max sampler reduces with the same helpers where the platform can't.
+					"texture_lod" => match arguments
+						.first()
+						.and_then(besl::lexer::binding_sampler)
+						.map(|sampler| sampler.reduction)
+					{
+						Some(besl::sampler::Reduction::Min) => requirements.uses_downsample_min = true,
+						Some(besl::sampler::Reduction::Max) => requirements.uses_downsample_max = true,
+						_ => {}
+					},
 					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
 					"intersect" => requirements.uses_intersect = true,
 					"trace_occlusion" => requirements.uses_trace_occlusion = true,

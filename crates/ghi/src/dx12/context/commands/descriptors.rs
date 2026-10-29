@@ -340,7 +340,6 @@ impl Device {
 			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
 			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
 			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
 		}
 	}
 

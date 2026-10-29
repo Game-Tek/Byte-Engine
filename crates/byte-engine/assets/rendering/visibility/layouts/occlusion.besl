@@ -7,6 +7,10 @@ OcclusionVisibility: struct {
 	words: u32[131072],
 }
 
+// Culling reads the farthest depth in the 2x2 texel footprint around a meshlet rectangle's center, from the one level it
+// picked.
+farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
+
 // Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
-occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read }>;
+occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read, sampler: farthest_depth }>;
 occlusion_visibility: descriptor<{ type: OcclusionVisibility, binding: 1070, access: read_write, memory: device }>;

@@ -18,9 +18,10 @@
 
 use super::expressions::{
 	execute_parsers, parse_const, parse_descriptor, parse_function, parse_macro, parse_member, parse_push_constant,
-	parse_shader_interface_declaration, parse_struct,
+	parse_sampler, parse_shader_interface_declaration, parse_struct,
 };
 use crate::lexer::BufferMemoryClass;
+use crate::sampler::SamplerState;
 
 /// The `ElseBranch` enum keeps `else if` chains distinct from plain `else` blocks,
 /// so later stages can lower each form by structure. See [`Nodes::Conditional`].
@@ -138,6 +139,7 @@ pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i [&'a str]) -> Result<Node<'a>, Parsi
 		parse_macro,
 		parse_const,
 		parse_descriptor,
+		parse_sampler,
 		parse_shader_interface_declaration,
 		parse_member,
 	];
@@ -282,6 +284,7 @@ impl<'a> Node<'a> {
 				write,
 				memory_class: Some(BufferMemoryClass::Device),
 				count: None,
+				sampler: None,
 				layout: None,
 			},
 		}
@@ -617,6 +620,7 @@ impl<'a> Node<'a> {
 			Nodes::Conditional { .. } | Nodes::Match { .. } | Nodes::ForLoop { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
 			Nodes::Descriptor { name, .. } => Some(name),
+			Nodes::Sampler { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Expression(_) => None,
 			Nodes::RawCode { .. } => None,
@@ -755,9 +759,16 @@ pub enum Nodes<'a> {
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroU32>,
+		/// The name of the [`Nodes::Sampler`] that fixes a texture's sampler, or `None` when the application binds one.
+		sampler: Option<&'a str>,
 		/// The layout layer that declares the resource, or `None` for the module's own layout. See
 		/// [`Node::set_layout`].
 		layout: Option<&'a str>,
+	},
+	/// A sampler declared in BESL source, which texture descriptors name in their `sampler` property.
+	Sampler {
+		name: &'a str,
+		state: SamplerState,
 	},
 	/// A constant selected when the application creates a pipeline.
 	Specialization {

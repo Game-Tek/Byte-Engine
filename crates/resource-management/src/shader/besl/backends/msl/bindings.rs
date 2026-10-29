@@ -101,7 +101,7 @@ impl Generator {
 		let descriptor_count = count.map(|count| count.get()).unwrap_or(1);
 		let (primary_id, secondary_id) = (*next_id, *next_id + descriptor_count);
 		*next_id += match r#type {
-			besl::BindingTypes::CombinedImageSampler { .. } => 2 * descriptor_count,
+			besl::BindingTypes::CombinedImageSampler { sampler: None, .. } => 2 * descriptor_count,
 			_ => descriptor_count,
 		};
 		let emit_suffix = |string: &mut String, argument_id: u32| {
@@ -136,7 +136,7 @@ impl Generator {
 				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}
-			besl::BindingTypes::CombinedImageSampler { format } => {
+			besl::BindingTypes::CombinedImageSampler { format, sampler } => {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
 					"TextureCube" => "texturecube<float>",
@@ -150,9 +150,12 @@ impl Generator {
 				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
 
-				self.emit_indentation(string, 1);
-				let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
-				emit_suffix(string, secondary_id);
+				// A sampler the shader fixes is a program-scope `constexpr sampler`, so the buffer holds only the texture.
+				if sampler.is_none() {
+					self.emit_indentation(string, 1);
+					let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
+					emit_suffix(string, secondary_id);
+				}
 			}
 			besl::BindingTypes::AccelerationStructure => {
 				let _ = write!(string, "{ACCELERATION_STRUCTURE_TYPE} {}", Self::identifier(name));
@@ -535,7 +538,7 @@ impl Generator {
 					Self::identifier(name)
 				);
 			}
-			besl::BindingTypes::CombinedImageSampler { format } => {
+			besl::BindingTypes::CombinedImageSampler { format, sampler } => {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
 					"TextureCube" => "texturecube<float>",
@@ -547,8 +550,11 @@ impl Generator {
 				self.emit_separator(string);
 				let name = Self::identifier(name);
 				let _ = write!(string, "{texture_type} {name} [[texture({index})]]");
-				self.emit_separator(string);
-				let _ = write!(string, "sampler {name}_sampler [[sampler({index})]]");
+				// A sampler the shader fixes is a program-scope `constexpr sampler`, not a kernel parameter.
+				if sampler.is_none() {
+					self.emit_separator(string);
+					let _ = write!(string, "sampler {name}_sampler [[sampler({index})]]");
+				}
 			}
 			besl::BindingTypes::AccelerationStructure => {
 				self.emit_separator(string);
@@ -559,6 +565,53 @@ impl Generator {
 				);
 			}
 		}
+	}
+
+	/// Declares, at program scope, the `constexpr sampler` of every texture in `order` whose sampler the shader fixes.
+	///
+	/// Metal compiles the sampler into the shader, so neither the argument buffer nor the kernel takes one. It reads
+	/// every level of the image. A min or max sampler declares no reduction: only Apple10 GPUs run one, so its reads
+	/// reduce in shader code instead.
+	pub(crate) fn emit_static_samplers(string: &mut String, order: &[besl::NodeReference]) {
+		use besl::sampler::{Address, Filter};
+
+		for node in order {
+			let node = node.borrow();
+			let besl::Nodes::Binding {
+				name,
+				r#type: besl::BindingTypes::CombinedImageSampler {
+					sampler: Some(sampler), ..
+				},
+				..
+			} = node.node()
+			else {
+				continue;
+			};
+			let filter = |filter| match filter {
+				Filter::Nearest => "nearest",
+				Filter::Linear => "linear",
+			};
+			let address = match sampler.address {
+				Address::Clamp => "clamp_to_edge",
+				Address::Repeat => "repeat",
+				Address::Mirror => "mirrored_repeat",
+			};
+			string.push_str("constexpr sampler ");
+			Self::emit_static_sampler_name(string, name);
+			let _ = writeln!(
+				string,
+				"(coord::normalized, filter::{}, mip_filter::{}, address::{address});",
+				filter(sampler.filter),
+				filter(sampler.mip_filter)
+			);
+		}
+	}
+
+	/// Writes the program-scope name of the `constexpr sampler` the shader fixes for the texture binding `name`.
+	pub(crate) fn emit_static_sampler_name(string: &mut String, name: &str) {
+		string.push_str("_besl_");
+		Self::identifier(name).push_to(string);
+		string.push_str("_sampler");
 	}
 
 	/// Qualifies a resource through the argument buffer of its descriptor set, or names it directly in a compute or

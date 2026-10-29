@@ -71,9 +71,40 @@ pub(super) fn with_shader_stages(
 ) -> Result<vk::Pipeline, vk::Result> {
 	let shaders = parameters.iter().map(|parameter| &shaders[parameter.handle.index() as usize]);
 
+	// The mappings point at the samplers each stage embeds, and those at their reductions, so all of them live until
+	// `create` returns.
+	let fixed = shaders
+		.clone()
+		.map(|shader| crate::vulkan::embedded_samplers(&shader.shader_resource_descriptors))
+		.collect::<StageList<_>>();
+	let reductions = fixed
+		.iter()
+		.map(|samplers| {
+			samplers
+				.iter()
+				.map(|(_, sampler)| vk::SamplerReductionModeCreateInfo::default().reduction_mode(sampler.reduction_mode))
+				.collect::<StageList<_>>()
+		})
+		.collect::<StageList<_>>();
+	let embedded = fixed
+		.iter()
+		.zip(&reductions)
+		.map(|(samplers, reductions)| {
+			samplers
+				.iter()
+				.zip(reductions)
+				.map(|((slot, sampler), reduction)| {
+					let mut info = sampler.create_info();
+					info.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
+					(*slot, info)
+				})
+				.collect::<StageList<_>>()
+		})
+		.collect::<StageList<_>>();
 	let mappings = shaders
 		.clone()
-		.map(|shader| crate::vulkan::build_shader_mappings(layout, &shader.shader_resource_descriptors))
+		.zip(&embedded)
+		.map(|(shader, embedded)| crate::vulkan::build_shader_mappings(layout, &shader.shader_resource_descriptors, embedded))
 		.collect::<StageList<_>>();
 	let specializations = parameters
 		.iter()

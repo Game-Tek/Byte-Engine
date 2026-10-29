@@ -28,7 +28,7 @@ pub use program::{ExecutableProgram, ExecutionConfig, SpecializationValues, Tile
 pub use ray_tracing::{AccelerationStructure, BottomLevelStructure, Instance, RayTracingPipeline};
 use ray_tracing::{Ray, RayHit, TraceContext};
 pub use resources::{DescriptorBindings, MeshOutputs, TaskOutputs, WorkgroupState};
-pub use texture::{Sampler, SamplerReductionMode, Texture};
+pub use texture::{Sampler, Texture};
 pub use value::Value;
 use value::*;
 

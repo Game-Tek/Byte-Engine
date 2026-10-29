@@ -7,27 +7,27 @@ impl<'a> Index<&str> for Node<'a> {
 	type Output = Node<'a>;
 
 	fn index(&self, index: &str) -> &Self::Output {
-		let child = match &self.node {
-			Nodes::Scope { children, .. } => children.iter().find(|child| {
-				matches!(
-					child.node(),
-					Nodes::Scope { .. }
-						| Nodes::Struct { .. }
-						| Nodes::Member { .. }
-						| Nodes::Function { .. }
-						| Nodes::Descriptor { .. }
-						| Nodes::Input { .. }
-						| Nodes::Output { .. }
-						| Nodes::TaskPayload { .. }
-						| Nodes::Workgroup { .. }
-						| Nodes::Const { .. }
-				) && child.name() == Some(index)
-			}),
-			Nodes::Struct { fields, .. } => fields
-				.iter()
-				.find(|field| matches!(field.node(), Nodes::Member { .. }) && field.name() == Some(index)),
-			_ => panic!("Cannot search  in these"),
-		};
+		let child =
+			match &self.node {
+				Nodes::Scope { children, .. } => {
+					children.iter().find(|child| {
+						matches!(
+							child.node(),
+							Nodes::Scope { .. }
+								| Nodes::Struct { .. } | Nodes::Member { .. }
+								| Nodes::Function { .. } | Nodes::Descriptor { .. }
+								| Nodes::Sampler { .. } | Nodes::Input { .. }
+								| Nodes::Output { .. } | Nodes::TaskPayload { .. }
+								| Nodes::Workgroup { .. }
+								| Nodes::Const { .. }
+						) && child.name() == Some(index)
+					})
+				}
+				Nodes::Struct { fields, .. } => fields
+					.iter()
+					.find(|field| matches!(field.node(), Nodes::Member { .. }) && field.name() == Some(index)),
+				_ => panic!("Cannot search  in these"),
+			};
 
 		child.unwrap_or_else(|| panic!("Not found"))
 	}

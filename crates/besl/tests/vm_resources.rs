@@ -1,6 +1,7 @@
+use besl::sampler::Reduction;
 use besl::vm::{
-	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, SamplerReductionMode, Texture, Value, VmError,
-	builtin_position_slot, output_slot,
+	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, Texture, Value, VmError, builtin_position_slot,
+	output_slot,
 };
 use besl::{BindingTypes, Node, compile_to_besl};
 
@@ -122,7 +123,10 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 	root.add_children(vec![
 		Node::binding(
 			"source",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			dynamic_resource_slot,
 			true,
 			false,
@@ -203,7 +207,7 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 	}
 	let mut output = Buffer::new(executable.output_layout(0).expect("Expected color output").clone());
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut sprites, Sampler::new(SamplerReductionMode::Max));
+	descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut sprites, Sampler::new(Reduction::Max));
 	descriptors.bind_buffer(instances_slot, &mut instances);
 	descriptors.bind_buffer(output_slot(0), &mut output);
 	executable

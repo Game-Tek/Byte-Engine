@@ -428,12 +428,12 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 	let mut write = |bytes: &[u8]| hash = fnv1a(hash, bytes);
 
 	for binding in bindings {
-		let (kind, view) = match binding.kind {
-			BindingKind::StorageBuffer => (0u8, 0u8),
-			BindingKind::StorageImage => (1, 0),
-			BindingKind::AccelerationStructure => (3, 0),
-			BindingKind::SampledImage => (4, 0),
-			BindingKind::CombinedImageSampler { view } => (
+		let (kind, view, sampler) = match binding.kind {
+			BindingKind::StorageBuffer => (0u8, 0u8, None),
+			BindingKind::StorageImage => (1, 0, None),
+			BindingKind::AccelerationStructure => (3, 0, None),
+			BindingKind::SampledImage => (4, 0, None),
+			BindingKind::CombinedImageSampler { view, sampler } => (
 				2,
 				match view {
 					TextureView::Texture2D => 0,
@@ -442,6 +442,7 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 					TextureView::TextureCubeArray => 3,
 					TextureView::Texture3D => 4,
 				},
+				sampler,
 			),
 		};
 
@@ -451,6 +452,16 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 		write(&binding.slot.to_le_bytes());
 		write(&binding.count.to_le_bytes());
 		write(&binding.buffer_stride.unwrap_or(0).to_le_bytes());
+		// A layout that fixes a texture's sampler binds differently from one that takes it from the application.
+		if let Some(sampler) = sampler {
+			write(&[
+				1,
+				sampler.filter as u8,
+				sampler.mip_filter as u8,
+				sampler.reduction as u8,
+				sampler.address as u8,
+			]);
+		}
 	}
 
 	hash

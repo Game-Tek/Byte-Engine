@@ -209,16 +209,6 @@ impl SunVisibilityPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		// Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one sample, and
-		// the fully-shadowed probe the farthest. Both read the 2x2 texel footprint around a corner of the base level.
-		let pyramid_sampler = |reduction_mode| {
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(reduction_mode)
-		};
-		let shadow_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Max));
-		let shadow_minimum_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Min));
 		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
 		let trace = set_layouts::CONTACT_SHADOWS.binder(trace_descriptor_set);
 		let resolve = set_layouts::SUN_VISIBILITY.binder(resolve_descriptor_set);
@@ -234,15 +224,11 @@ impl SunVisibilityPass {
 			resolve.buffer("screen_view", view_data),
 			resolve.buffer("sun_visibility_parameters", parameters),
 			resolve.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
-			resolve.sampled(
-				"directional_shadow_depth_pyramid",
-				shadow_maps.directional_depth_pyramid,
-				shadow_pyramid_sampler,
-			),
-			resolve.sampled(
+			// The layer fixes the pyramids' reducing samplers.
+			resolve.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
+			resolve.texture(
 				"directional_shadow_depth_minimum_pyramid",
 				shadow_maps.directional_depth_minimum_pyramid,
-				shadow_minimum_pyramid_sampler,
 			),
 			// The maximum pyramid once more, with the point sampler, for the blocker search's gathers.
 			resolve.sampled(

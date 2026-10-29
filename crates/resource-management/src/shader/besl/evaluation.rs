@@ -80,6 +80,7 @@ mod tests {
 					"texture",
 					BindingKind::CombinedImageSampler {
 						view: TextureView::Texture2D,
+						sampler: None,
 					},
 					1,
 					2,
@@ -553,6 +554,7 @@ mod tests {
 					"volumes",
 					besl::BindingTypes::CombinedImageSampler {
 						format: "Texture3D".to_string(),
+						sampler: None,
 					},
 					0,
 					true,
@@ -572,7 +574,48 @@ mod tests {
 		assert_eq!(
 			bindings[0].kind,
 			BindingKind::CombinedImageSampler {
-				view: TextureView::Texture3D
+				view: TextureView::Texture3D,
+				sampler: None,
+			}
+		);
+	}
+
+	#[test]
+	fn layer_reflection_carries_the_sampler_a_texture_declares() {
+		let sets = reflect_layers([(
+			"pyramids",
+			r#"
+				farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
+				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
+				albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			"#,
+		)])
+		.expect("Expected the sampled layer to reflect");
+
+		let kind = |name: &str| {
+			sets[0]
+				.bindings
+				.iter()
+				.find(|binding| binding.name == name)
+				.expect("Expected the layer binding")
+				.kind
+		};
+		assert_eq!(
+			kind("pyramid"),
+			BindingKind::CombinedImageSampler {
+				view: TextureView::Texture2D,
+				sampler: Some(besl::SamplerState {
+					mip_filter: besl::sampler::Filter::Nearest,
+					reduction: besl::sampler::Reduction::Min,
+					..Default::default()
+				}),
+			}
+		);
+		assert_eq!(
+			kind("albedo"),
+			BindingKind::CombinedImageSampler {
+				view: TextureView::Texture2D,
+				sampler: None,
 			}
 		);
 	}

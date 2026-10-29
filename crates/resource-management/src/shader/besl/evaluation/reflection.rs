@@ -54,8 +54,11 @@ pub(crate) struct ProgramSet {
 pub enum BindingKind {
 	/// A structured storage buffer. Read-only access does not change the descriptor category.
 	StorageBuffer,
+	/// A texture the shader samples. `sampler` holds the state a BESL `sampler` declaration fixes, in which case the
+	/// application binds only the image; `None` means the application binds a sampler with it.
 	CombinedImageSampler {
 		view: TextureView,
+		sampler: Option<besl::SamplerState>,
 	},
 	/// An image the shader writes, and may also read, without a sampler.
 	StorageImage,
@@ -657,7 +660,7 @@ fn reflect_binding(node: &besl::NodeReference) -> Result<BindingUsage, String> {
 					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}"))?,
 			),
 		),
-		besl::BindingTypes::CombinedImageSampler { format } => (
+		besl::BindingTypes::CombinedImageSampler { format, sampler } => (
 			BindingKind::CombinedImageSampler {
 				view: match format.as_str() {
 					"Texture3D" => TextureView::Texture3D,
@@ -666,6 +669,7 @@ fn reflect_binding(node: &besl::NodeReference) -> Result<BindingUsage, String> {
 					"ArrayTexture2D" => TextureView::Texture2DArray,
 					_ => TextureView::Texture2D,
 				},
+				sampler: *sampler,
 			},
 			None,
 		),

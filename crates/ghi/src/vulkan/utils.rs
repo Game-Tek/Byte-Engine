@@ -66,6 +66,37 @@ pub(super) fn texture_format_and_resource_use_to_image_layout(
 	}
 }
 
+pub(super) fn filter(mode: crate::FilteringModes) -> vk::Filter {
+	match mode {
+		crate::FilteringModes::Closest => vk::Filter::NEAREST,
+		crate::FilteringModes::Linear => vk::Filter::LINEAR,
+	}
+}
+
+pub(super) fn mipmap_mode(mode: crate::FilteringModes) -> vk::SamplerMipmapMode {
+	match mode {
+		crate::FilteringModes::Closest => vk::SamplerMipmapMode::NEAREST,
+		crate::FilteringModes::Linear => vk::SamplerMipmapMode::LINEAR,
+	}
+}
+
+pub(super) fn address_mode(mode: crate::SamplerAddressingModes) -> vk::SamplerAddressMode {
+	match mode {
+		crate::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
+		crate::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
+		crate::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+		crate::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
+	}
+}
+
+pub(super) fn reduction_mode(mode: crate::SamplingReductionModes) -> vk::SamplerReductionMode {
+	match mode {
+		crate::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
+		crate::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
+		crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
+	}
+}
+
 pub(super) fn to_load_operation(value: crate::LoadOp) -> vk::AttachmentLoadOp {
 	match value {
 		crate::LoadOp::Load => vk::AttachmentLoadOp::LOAD,

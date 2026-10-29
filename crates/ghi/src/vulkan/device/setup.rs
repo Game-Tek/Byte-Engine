@@ -550,6 +550,8 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_12.vulkan_memory_model_device_scope),
 		feature!(vulkan_12.timeline_semaphore),
 		feature!(vulkan_12.host_query_reset),
+		// Min and max samplers reduce in hardware, through runtime samplers and the samplers shaders fix.
+		feature!(vulkan_12.sampler_filter_minmax),
 		feature!(vulkan_13.pipeline_creation_cache_control),
 		feature!(vulkan_13.subgroup_size_control),
 		feature!(vulkan_13.compute_full_subgroups),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::sampler::{Address, Filter, Reduction, SamplerState};
 
 pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
@@ -61,6 +62,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 	let mut access = None;
 	let mut memory_class = None;
 	let mut count = None;
+	let mut sampler = None;
 
 	loop {
 		if iterator.clone().next().copied() == Some("}") {
@@ -85,6 +87,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 			"access" => access.is_some(),
 			"memory" => memory_class.is_some(),
 			"count" => count.is_some(),
+			"sampler" => sampler.is_some(),
 			_ => false,
 		};
 		if repeated {
@@ -176,6 +179,13 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 					))
 				})?);
 			}
+			"sampler" => {
+				sampler = Some(iterator.next_identifier().map_err(|_| {
+					syntax_error(format!(
+						"Expected a sampler name in descriptor {name}. The most likely cause is that the `sampler` property is empty or names a sampler inline instead of declaring it."
+					))
+				})?);
+			}
 			_ => {
 				return Err(syntax_error(format!(
 					"Unknown property `{key}` in descriptor {name}. The most likely cause is that the property name is misspelled."
@@ -231,11 +241,139 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 				write,
 				memory_class,
 				count,
+				sampler,
 				layout: None,
 			},
 		},
 		iterator,
 	))
+}
+
+/// Parses a named sampler, whose properties fix how the texture descriptors that name it filter and combine texels.
+pub(crate) fn parse_sampler<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("sampler")?;
+
+	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
+	iterator.next_str("<").map_err(|_| {
+		syntax_error(format!(
+			"Expected < after sampler in declaration {name}. The most likely cause is that the sampler properties are missing. Write `{name}: sampler<{{ filter: linear }}>;`."
+		))
+	})?;
+	iterator.next_str("{").map_err(|_| {
+		syntax_error(format!(
+			"Expected {{ after < in sampler {name}. The most likely cause is that the properties are not wrapped in braces. Write `{name}: sampler<{{ filter: linear }}>;`."
+		))
+	})?;
+
+	let mut state = SamplerState::default();
+	// The keys already set, so a repeated key is rejected instead of silently overriding the first.
+	let mut declared: [Option<&str>; 4] = [None; 4];
+
+	loop {
+		if iterator.clone().next().copied() == Some("}") {
+			iterator.next();
+			break;
+		}
+
+		let key = iterator.next_identifier().map_err(|_| {
+			syntax_error(format!(
+				"Expected a property name in sampler {name}. The most likely cause is that two properties are not separated by a comma."
+			))
+		})?;
+		iterator.next_str(":").map_err(|_| {
+			syntax_error(format!(
+				"Expected : after property `{key}` in sampler {name}. The most likely cause is that the property value is malformed."
+			))
+		})?;
+		let value = iterator.next().copied().ok_or_else(|| {
+			syntax_error(format!(
+				"Expected a value for property `{key}` in sampler {name}. The most likely cause is that the property is empty."
+			))
+		})?;
+		let invalid = |values: &str| {
+			syntax_error(format!(
+				"Invalid value `{value}` for property `{key}` in sampler {name}. The most likely cause is a misspelled value. Use one of {values}."
+			))
+		};
+
+		let index = match key {
+			"filter" => {
+				state.filter = filter(value).ok_or_else(|| invalid("`nearest` or `linear`"))?;
+				0
+			}
+			"mip_filter" => {
+				state.mip_filter = filter(value).ok_or_else(|| invalid("`nearest` or `linear`"))?;
+				1
+			}
+			"reduction" => {
+				state.reduction = match value {
+					"average" => Reduction::Average,
+					"min" => Reduction::Min,
+					"max" => Reduction::Max,
+					_ => return Err(invalid("`average`, `min`, or `max`")),
+				};
+				2
+			}
+			"address" => {
+				state.address = match value {
+					"clamp" => Address::Clamp,
+					"repeat" => Address::Repeat,
+					"mirror" => Address::Mirror,
+					_ => return Err(invalid("`clamp`, `repeat`, or `mirror`")),
+				};
+				3
+			}
+			_ => {
+				return Err(syntax_error(format!(
+					"Unknown property `{key}` in sampler {name}. The most likely cause is that the property name is misspelled. Use `filter`, `mip_filter`, `reduction`, or `address`."
+				)));
+			}
+		};
+		if declared[index].replace(key).is_some() {
+			return Err(syntax_error(format!(
+				"Duplicate `{key}` property in sampler {name}. The most likely cause is that the property was declared twice. Delete one of them."
+			)));
+		}
+
+		match iterator.next().copied() {
+			Some(",") => {}
+			Some("}") => break,
+			_ => {
+				return Err(syntax_error(format!(
+					"Expected , or }} after property `{key}` in sampler {name}. The most likely cause is that the next property is not separated by a comma."
+				)));
+			}
+		}
+	}
+
+	iterator.next_str(">").map_err(|_| {
+		syntax_error(format!(
+			"Expected > after sampler {name} properties. The most likely cause is that the sampler declaration is incomplete."
+		))
+	})?;
+	iterator.next_str(";").map_err(|_| {
+		syntax_error(format!(
+			"Expected ; after sampler {name}. The most likely cause is that the declaration terminator is missing."
+		))
+	})?;
+
+	Ok((
+		Node {
+			node: Nodes::Sampler { name, state },
+		},
+		iterator,
+	))
+}
+
+/// Reads a `filter` or `mip_filter` value.
+fn filter(value: &str) -> Option<Filter> {
+	match value {
+		"nearest" => Some(Filter::Nearest),
+		"linear" => Some(Filter::Linear),
+		_ => None,
+	}
 }
 
 /// Parses stage-interface storage declared directly in BESL source.

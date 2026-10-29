@@ -1306,7 +1306,7 @@ impl ExecutableProgram {
 				uv,
 				layer,
 				lod,
-				reduction_mode,
+				sampler: fixed,
 			} => {
 				let uv = register_ref(registers, *uv)?;
 				let &Value::Vec2F(uv) = uv else {
@@ -1317,7 +1317,7 @@ impl ExecutableProgram {
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
-				let sampler = reduction_mode.map(Sampler::new).unwrap_or(sampler);
+				let sampler = fixed.unwrap_or(sampler);
 				let lod = if let Some(lod) = lod {
 					let lod = register_ref(registers, *lod)?;
 					let &Value::F32(lod) = lod else {

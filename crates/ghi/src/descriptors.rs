@@ -20,8 +20,6 @@ pub(crate) enum WriteData {
 	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
-	StaticSamplers,
-	CombinedImageSamplerArray,
 }
 
 impl WriteData {

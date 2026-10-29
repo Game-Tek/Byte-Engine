@@ -361,7 +361,7 @@ impl Generator {
 						}
 						let _ = write!(string, " [[texture({index})]];{break_char}");
 					}
-					besl::BindingTypes::CombinedImageSampler { format } => {
+					besl::BindingTypes::CombinedImageSampler { format, sampler } => {
 						let texture_type = match format.as_str() {
 							"ArrayTexture2D" => "texture2d_array<float>",
 							"TextureCube" => "texturecube<float>",
@@ -375,10 +375,11 @@ impl Generator {
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
-						let _ = write!(
-							string,
-							" [[texture({index})]];{break_char}sampler {name}_sampler [[sampler({index})]];{break_char}"
-						);
+						let _ = write!(string, " [[texture({index})]];{break_char}");
+						// A sampler the shader fixes is a program-scope `constexpr sampler`, not a binding.
+						if sampler.is_none() {
+							let _ = write!(string, "sampler {name}_sampler [[sampler({index})]];{break_char}");
+						}
 					}
 					besl::BindingTypes::AccelerationStructure => {
 						let _ = write!(
@@ -437,21 +438,22 @@ impl Generator {
 			self.emit_ray_tracing_prelude(msl_block, compilation_settings.stage, requirements);
 		}
 		if requirements.uses_downsample_min || requirements.uses_downsample_max {
-			// Metal executes min/max sampler reduction only on Apple10 GPUs and falls back to averaging elsewhere,
-			// which would blend a near and a far surface into a depth that exists in neither. Gathering the four
-			// texels and reducing them here is exact on every GPU and costs the same single texture instruction.
-			// Metal gather has no explicit-LOD overload, so explicit pyramid levels use four reads instead.
+			// Metal executes min/max sampler reduction only on Apple10 GPUs, and a shader can't tell which GPU runs it,
+			// so `downsample_*` and reads through a min or max BESL sampler reduce here. Gathering the four texels and
+			// reducing them is exact on every GPU and costs the same single texture instruction. Metal gather has no
+			// explicit-LOD overload, so the other levels use four reads instead, at the level a nearest mip filter
+			// selects.
 			msl_block.push_str(
 			"inline float _besl_downsample_min(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
 			 \tfloat4 samples;\n\
 			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, int2(0), component::x); }\n\
-			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
+			 \telse { uint level = metal::min(uint(lod + 0.5), texture.get_num_mip_levels() - 1); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
 			 \treturn metal::min(metal::min(samples.x, samples.y), metal::min(samples.z, samples.w));\n\
 			 }\n\
 			 inline float _besl_downsample_max(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
 			 \tfloat4 samples;\n\
 			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, int2(0), component::x); }\n\
-			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
+			 \telse { uint level = metal::min(uint(lod + 0.5), texture.get_num_mip_levels() - 1); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
 			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
 			 }\n",
 		);
@@ -459,7 +461,7 @@ impl Generator {
 			"inline float _besl_downsample_max(texture2d_array<float> texture, sampler texture_sampler, float2 uv, uint layer, float lod) {\n\
 			 \tfloat4 samples;\n\
 			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, layer, int2(0), component::x); }\n\
-			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, layer, level).x, texture.read(b, layer, level).x, texture.read(c, layer, level).x, texture.read(d, layer, level).x); }\n\
+			 \telse { uint level = metal::min(uint(lod + 0.5), texture.get_num_mip_levels() - 1); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, layer, level).x, texture.read(b, layer, level).x, texture.read(c, layer, level).x, texture.read(d, layer, level).x); }\n\
 			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
 			 }\n",
 			);

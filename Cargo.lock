@@ -307,6 +307,8 @@ version = "0.2.0"
 dependencies = [
  "divan",
  "half",
+ "rkyv",
+ "serde",
 ]
 
 [[package]]

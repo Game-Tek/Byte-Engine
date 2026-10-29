@@ -80,3 +80,17 @@ crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub(crate) struct SamplerHandle;
 }
+
+/// The `StaticSampler` struct describes a sampler a shader fixes, so the application binds only the image it samples.
+///
+/// A shader declares one for a texture through a BESL `sampler` declaration. Attach it to the texture's
+/// [`crate::ShaderResourceDescriptor`] with [`crate::ShaderResourceDescriptor::static_sampler`], and each backend
+/// builds it into the pipeline: Vulkan embeds it in the descriptor mapping, DX12 adds it to the root signature, and
+/// Metal compiles it into the shader. It reads every level of the image, so it has no level-of-detail clamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StaticSampler {
+	pub filtering_mode: FilteringModes,
+	pub mip_map_mode: FilteringModes,
+	pub reduction_mode: SamplingReductionModes,
+	pub addressing_mode: SamplerAddressingModes,
+}

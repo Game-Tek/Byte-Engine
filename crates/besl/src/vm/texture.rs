@@ -1,6 +1,7 @@
 //! Deterministic CPU texture and sampler fixtures for VM resource operations.
 
 use super::*;
+use crate::sampler::{Filter, Reduction, SamplerState};
 
 /// The `Texture` struct provides deterministic CPU texels for shader sampling, image access, and atomic assertions.
 #[derive(Debug)]
@@ -51,28 +52,16 @@ impl Texel {
 	}
 }
 
-/// The `SamplerReductionMode` enum selects how the VM combines a linear sampler's neighboring texels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SamplerReductionMode {
-	/// Blends texels using their bilinear weights.
-	#[default]
-	WeightedAverage,
-	/// Selects the component-wise minimum across the sampler footprint.
-	Min,
-	/// Selects the component-wise maximum across the sampler footprint.
-	Max,
-}
-
 /// The `Sampler` struct supplies deterministic sampler state for combined texture bindings in VM tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sampler {
-	reduction_mode: SamplerReductionMode,
+	reduction_mode: Reduction,
 	nearest: bool,
 }
 
 impl Sampler {
 	/// Creates a linear clamp sampler with the requested reduction mode.
-	pub const fn new(reduction_mode: SamplerReductionMode) -> Self {
+	pub const fn new(reduction_mode: Reduction) -> Self {
 		Self {
 			reduction_mode,
 			nearest: false,
@@ -83,8 +72,19 @@ impl Sampler {
 	/// bind to read depth images by normalized position.
 	pub const fn nearest() -> Self {
 		Self {
-			reduction_mode: SamplerReductionMode::WeightedAverage,
+			reduction_mode: Reduction::Average,
 			nearest: true,
+		}
+	}
+}
+
+/// Samples with the filter and reduction a BESL `sampler` declaration fixes. The VM always clamps coordinates and
+/// reads one level, so it leaves the address and mip filter to the shader compiler, which rejects what it can't run.
+impl From<SamplerState> for Sampler {
+	fn from(state: SamplerState) -> Self {
+		Self {
+			reduction_mode: state.reduction,
+			nearest: state.filter == Filter::Nearest,
 		}
 	}
 }
@@ -213,13 +213,13 @@ impl Texture {
 			self.fetch_texel([x1, y1, 0])?,
 		];
 		let sampled = match sampler.reduction_mode {
-			SamplerReductionMode::WeightedAverage => {
+			Reduction::Average => {
 				let top = lerp_rgba(samples[0], samples[1], tx);
 				let bottom = lerp_rgba(samples[2], samples[3], tx);
 				lerp_rgba(top, bottom, ty)
 			}
-			SamplerReductionMode::Min => reduce_rgba(samples, f32::min),
-			SamplerReductionMode::Max => reduce_rgba(samples, f32::max),
+			Reduction::Min => reduce_rgba(samples, f32::min),
+			Reduction::Max => reduce_rgba(samples, f32::max),
 		};
 
 		Ok(Value::Vec4F(sampled))
@@ -267,13 +267,13 @@ impl Texture {
 			texture.fetch_texel([x1, y1, layer])?,
 		];
 		let sampled = match sampler.reduction_mode {
-			SamplerReductionMode::WeightedAverage => {
+			Reduction::Average => {
 				let top = lerp_rgba(samples[0], samples[1], tx);
 				let bottom = lerp_rgba(samples[2], samples[3], tx);
 				lerp_rgba(top, bottom, ty)
 			}
-			SamplerReductionMode::Min => reduce_rgba(samples, f32::min),
-			SamplerReductionMode::Max => reduce_rgba(samples, f32::max),
+			Reduction::Min => reduce_rgba(samples, f32::min),
+			Reduction::Max => reduce_rgba(samples, f32::max),
 		};
 		Ok(Value::Vec4F(sampled))
 	}

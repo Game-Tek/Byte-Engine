@@ -192,6 +192,8 @@ pub struct ShaderResourceDescriptor {
 	pub(crate) access: AccessPolicies,
 	pub(crate) texture_view_type: TextureViewTypes,
 	pub(crate) buffer_stride: u32,
+	/// The sampler the shader fixes for a [`ResourceKind::SampledImage`] it samples, or `None` when it only loads it.
+	pub(crate) sampler: Option<crate::sampler::StaticSampler>,
 }
 
 impl ShaderResourceDescriptor {
@@ -211,6 +213,7 @@ impl ShaderResourceDescriptor {
 			access,
 			texture_view_type: TextureViewTypes::Texture2D,
 			buffer_stride: 4,
+			sampler: None,
 		}
 	}
 
@@ -225,6 +228,17 @@ impl ShaderResourceDescriptor {
 
 	pub const fn buffer_stride(mut self, buffer_stride: u32) -> Self {
 		self.buffer_stride = buffer_stride;
+		self
+	}
+
+	/// Fixes the sampler a shader samples this [`ResourceKind::SampledImage`] through, so the descriptor set holds only
+	/// the image. Write the image with [`crate::DescriptorWrite::image`].
+	pub const fn static_sampler(mut self, sampler: crate::sampler::StaticSampler) -> Self {
+		assert!(
+			matches!(self.kind, ResourceKind::SampledImage),
+			"Invalid static sampler. The most likely cause is a fixed sampler attached to a resource that isn't a sampled image. Attach it to a `ResourceKind::SampledImage` resource."
+		);
+		self.sampler = Some(sampler);
 		self
 	}
 
@@ -250,6 +264,11 @@ impl ShaderResourceDescriptor {
 
 	pub const fn buffer_element_stride(self) -> u32 {
 		self.buffer_stride
+	}
+
+	/// Returns the sampler the shader fixes for this image, if it declares one. See [`Self::static_sampler`].
+	pub const fn sampler(self) -> Option<crate::sampler::StaticSampler> {
+		self.sampler
 	}
 }
 

@@ -20,8 +20,14 @@ name = "besl"
 name = "vm"
 harness = false
 
+[features]
+# Derives serde and rkyv for the types other crates persist, such as `SamplerState` in a baked shader interface.
+serialization = ["dep:serde", "dep:rkyv"]
+
 [dependencies]
 half = "2.7.1"
+rkyv = { version = "0.8.15", features = ["unaligned"], optional = true }
+serde = { version = "1.0.219", features = ["derive"], optional = true }
 
 [dev-dependencies]
 divan = "0.1.21"

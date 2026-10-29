@@ -18,6 +18,7 @@ use expressions::*;
 mod tests {
 	use super::*;
 	use crate::Operators;
+	use crate::sampler::{Address, Filter, Reduction, SamplerState};
 	use crate::tokenizer::tokenize;
 
 	#[test]
@@ -250,6 +251,72 @@ mod tests {
 			assert!(
 				parse(&tokenize(source)).is_err(),
 				"malformed descriptor should be rejected: {source}"
+			);
+		}
+	}
+
+	#[test]
+	fn sampler_declarations_parse_their_state_and_descriptors_name_them() {
+		let root = parse(&tokenize(
+			r#"
+				farthest_depth: sampler<{ reduction: min, mip_filter: nearest, }>;
+				tiled: sampler<{ filter: nearest, mip_filter: linear, reduction: average, address: repeat }>;
+				defaults: sampler<{}>;
+				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
+			"#,
+		))
+		.expect("sampler source should parse");
+
+		let state = |name: &str| match root[name].node() {
+			Nodes::Sampler { state, .. } => *state,
+			_ => panic!("expected sampler {name}"),
+		};
+		assert_eq!(
+			state("farthest_depth"),
+			SamplerState {
+				filter: Filter::Linear,
+				mip_filter: Filter::Nearest,
+				reduction: Reduction::Min,
+				address: Address::Clamp,
+			}
+		);
+		assert_eq!(
+			state("tiled"),
+			SamplerState {
+				filter: Filter::Nearest,
+				mip_filter: Filter::Linear,
+				reduction: Reduction::Average,
+				address: Address::Repeat,
+			}
+		);
+		assert_eq!(state("defaults"), SamplerState::default());
+		assert!(matches!(
+			root["pyramid"].node(),
+			Nodes::Descriptor {
+				sampler: Some("farthest_depth"),
+				..
+			}
+		));
+	}
+
+	#[test]
+	fn sampler_rejects_invalid_properties() {
+		for source in [
+			"pyramid: sampler<{ filter: bilinear }>;",
+			"pyramid: sampler<{ mip_filter: cubic }>;",
+			"pyramid: sampler<{ reduction: median }>;",
+			"pyramid: sampler<{ address: border }>;",
+			"pyramid: sampler<{ anisotropy: 16 }>;",
+			"pyramid: sampler<{ filter: linear, filter: nearest }>;",
+			"pyramid: sampler<{ filter: linear; reduction: min }>;",
+			"pyramid: sampler<{ filter: }>;",
+			"pyramid: sampler { filter: linear };",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: a, sampler: b }>;",
+		] {
+			assert!(
+				parse(&tokenize(source)).is_err(),
+				"malformed sampler should be rejected: {source}"
 			);
 		}
 	}

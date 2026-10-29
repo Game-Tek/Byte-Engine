@@ -76,10 +76,11 @@ lists the explicit conversion overloads registered as intrinsics.
 | Name | Signature | Explanation |
 | --- | --- | --- |
 | `sample` | `sample(Texture2D, vec2f uv) -> vec4f`; `sample(Texture2DArray[LAYER], vec2f uv) -> vec4f` | Samples a 2D texture or an indexed layer of one 2D-array texture with implicit derivatives. |
-| `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit level-of-detail (LOD) path. The two-argument overload uses the default level. |
+| `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit level-of-detail (LOD) path. The two-argument overload uses the default level. Through a `min` or `max` [sampler](/docs/reference/besl/interface#samplers), returns the reduced footprint. |
 | `texture_cube_array_lod` | `texture_cube_array_lod(TextureCubeArray, vec3f direction, u32 cube, f32 lod) -> vec4f` | Samples one cube and mip level from a cube array. |
-| `downsample_min` | `downsample_min(Texture2D, vec2f uv, f32 lod) -> f32` | Returns the minimum scalar value in the downsample footprint. |
-| `downsample_max` | `downsample_max(Texture2D, vec2f uv, f32 lod) -> f32`; `downsample_max(Texture2DArray, vec2f uv, u32 layer, f32 lod) -> f32` | Returns the maximum scalar value in the downsample footprint. |
+| `downsample_min` | `downsample_min(Texture2D, vec2f uv, f32 lod) -> f32` | Returns the minimum scalar value in the downsample footprint. A texture with a [sampler](/docs/reference/besl/interface#samplers) needs a `min` one. |
+| `downsample_max` | `downsample_max(Texture2D, vec2f uv, f32 lod) -> f32`; `downsample_max(Texture2DArray, vec2f uv, u32 layer, f32 lod) -> f32` | Returns the maximum scalar value in the downsample footprint. A texture with a [sampler](/docs/reference/besl/interface#samplers) needs a `max` one. |
+| `gather` | `gather(Texture2D, vec2f uv) -> vec4f`; `gather(Texture2DArray, vec2f uv, u32 layer) -> vec4f` | Returns the first channel of the four texels around the coordinate in level 0, without filtering or reduction. `x` and `y` hold the second row, left then right. `z` and `w` hold the first row, right then left. |
 | `fetch` | `fetch(Texture2D, vec2u coord) -> vec4f`; `fetch(Texture2DArray, vec2u coord, u32 layer) -> vec4f` | Fetches one texel by integer coordinate. |
 | `fetch_u32` | `fetch_u32(Texture2D, vec2u coord) -> u32` | Fetches one unsigned scalar texel. |
 | `texture_size` | `texture_size(Texture2D) -> vec2u`; `texture_size(Texture2DArray) -> vec2u` | Returns the texture width and height. |

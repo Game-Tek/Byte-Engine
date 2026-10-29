@@ -41,6 +41,7 @@ impl Device {
 			&& left.count() == right.count()
 			&& left.texture_view() == right.texture_view()
 			&& left.buffer_element_stride() == right.buffer_element_stride()
+			&& left.sampler() == right.sampler()
 	}
 
 	pub(crate) fn resource_ranges_overlap(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
@@ -217,6 +218,33 @@ impl Device {
 			push_constant_root = Some(root_parameter_index);
 		}
 
+		// A sampler the shader fixes sits at the register of the texture it belongs to, `s{slot}`, which the HLSL
+		// generator declares for every sampled texture. It reads every level, so it doesn't clamp the LOD.
+		let static_samplers = key
+			.resources
+			.iter()
+			.filter_map(|resource| Some((resource.descriptor, resource.descriptor.sampler()?)))
+			.flat_map(|(descriptor, sampler)| {
+				let address_mode = Self::sampler_address_mode(sampler.addressing_mode);
+				(0..descriptor.count()).map(move |element| D3D12_STATIC_SAMPLER_DESC1 {
+					Filter: Self::sampler_filter(sampler.filtering_mode, sampler.mip_map_mode, sampler.reduction_mode, false),
+					AddressU: address_mode,
+					AddressV: address_mode,
+					AddressW: address_mode,
+					MipLODBias: 0.0,
+					MaxAnisotropy: 1,
+					ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
+					BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+					MinLOD: 0.0,
+					MaxLOD: D3D12_FLOAT32_MAX,
+					ShaderRegister: descriptor.slot().index() + element,
+					RegisterSpace: 0,
+					ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+					Flags: D3D12_SAMPLER_FLAG_NONE,
+				})
+			})
+			.collect::<SmallVec<[D3D12_STATIC_SAMPLER_DESC1; 4]>>();
+
 		let desc = D3D12_ROOT_SIGNATURE_DESC2 {
 			NumParameters: parameters.len() as u32,
 			pParameters: if parameters.is_empty() {
@@ -224,8 +252,12 @@ impl Device {
 			} else {
 				parameters.as_ptr()
 			},
-			NumStaticSamplers: 0,
-			pStaticSamplers: std::ptr::null(),
+			NumStaticSamplers: static_samplers.len() as u32,
+			pStaticSamplers: if static_samplers.is_empty() {
+				std::ptr::null()
+			} else {
+				static_samplers.as_ptr()
+			},
 			Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 		};
 		let versioned_desc = D3D12_VERSIONED_ROOT_SIGNATURE_DESC {

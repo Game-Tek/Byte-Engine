@@ -1,4 +1,5 @@
 use super::*;
+use crate::sampler::{Address, Reduction};
 
 impl<'a> Compiler<'a> {
 	// Intrinsic names form one exhaustive VM dispatch table whose arms document the portable instruction semantics.
@@ -47,13 +48,14 @@ impl<'a> Compiler<'a> {
 				} else {
 					(self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None)
 				};
+				let sampler = fixed_sampler(&arguments[0], &name)?;
 				self.emit(TextureInstruction::SampleTexture {
 					register,
 					slot,
 					uv,
 					layer,
 					lod: None,
-					reduction_mode: None,
+					sampler,
 				});
 				Ok(register)
 			}
@@ -79,13 +81,14 @@ impl<'a> Compiler<'a> {
 					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 					let sample_register = self.allocate_register();
+					let sampler = fixed_sampler(&arguments[0], &name)?;
 					self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
 						slot,
 						uv,
 						layer: Some(layer),
 						lod: Some(lod),
-						reduction_mode: Some(SamplerReductionMode::Max),
+						sampler,
 					});
 					let register = self.allocate_register();
 					self.emit(ValueInstruction::Extract {
@@ -111,6 +114,7 @@ impl<'a> Compiler<'a> {
 					.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
 					.transpose()?;
 				let sample_register = self.allocate_register();
+				let sampler = fixed_sampler(&arguments[0], &name)?;
 				match coord_type {
 					ValueType::Vec2F => self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
@@ -118,11 +122,7 @@ impl<'a> Compiler<'a> {
 						uv: coord,
 						layer: None,
 						lod,
-						reduction_mode: match name.as_str() {
-							"downsample_min" => Some(SamplerReductionMode::Min),
-							"downsample_max" => Some(SamplerReductionMode::Max),
-							_ => None,
-						},
+						sampler,
 					}),
 					ValueType::Vec3F => self.emit(TextureInstruction::SampleTexture3D {
 						register: sample_register,
@@ -140,7 +140,7 @@ impl<'a> Compiler<'a> {
 					Ok(sample_register)
 				} else {
 					// Conservative downsampling is scalar because both production pyramids reduce depth.
-					// The instruction-level override keeps VM behavior independent of fixture sampler state.
+					// The fixed sampler keeps VM behavior independent of fixture sampler state.
 					let register = self.allocate_register();
 					self.emit(ValueInstruction::Extract {
 						register,
@@ -807,4 +807,24 @@ impl<'a> Compiler<'a> {
 			}),
 		}
 	}
+}
+
+/// Returns the sampler a texture read fixes: the one the texture's descriptor declares, or else the reduction a
+/// downsample intrinsic names. `None` reads through the sampler the application bound.
+fn fixed_sampler(texture: &NodeReference, intrinsic: &str) -> Result<Option<Sampler>, VmError> {
+	if let Some(state) = crate::lexer::binding_sampler(texture) {
+		if state.address != Address::Clamp {
+			return Err(VmError::UnsupportedExpression {
+				message: format!(
+					"`{intrinsic}` reads through a sampler whose address isn't `clamp`. The most likely cause is a VM test of a shader that wraps texture coordinates; the VM only clamps them. Use `address: clamp` in the tested sampler."
+				),
+			});
+		}
+		return Ok(Some(Sampler::from(state)));
+	}
+	Ok(match intrinsic {
+		"downsample_min" => Some(Sampler::new(Reduction::Min)),
+		"downsample_max" => Some(Sampler::new(Reduction::Max)),
+		_ => None,
+	})
 }

@@ -68,7 +68,9 @@ ssgi_normals: descriptor<{ type: Texture2D, binding: 1047, access: read }>;
 ssgi_view: descriptor<{ type: SsgiView, binding: 1048, access: read, memory: device }>;
 ao: descriptor<{ type: Texture2D, binding: 1051, access: read }>;
 depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1052, access: read }>;
-directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1053, access: read }>;
+// Shadow lookups read the nearest occluder in the 2x2 texel footprint around a corner of the pyramid's base level.
+nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max }>;
+directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1053, access: read, sampler: nearest_occluder }>;
 environment_irradiance: descriptor<{ type: TextureCube, binding: 1054, access: read }>;
 environment_specular: descriptor<{ type: TextureCube, binding: 1055, access: read }>;
 ssgi_history: descriptor<{ type: Texture2D, binding: 1056, access: read }>;

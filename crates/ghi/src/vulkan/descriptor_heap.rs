@@ -251,6 +251,8 @@ fn spirv_resource_mask(descriptor: ShaderResourceDescriptor) -> vk::SpirvResourc
 			vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER
 		}
 		ResourceKind::StorageBuffer => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
+		// The shader samples an image with a fixed sampler as a combined image sampler whose sampler is embedded.
+		ResourceKind::SampledImage if descriptor.sampler().is_some() => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
 		ResourceKind::SampledImage => vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
 		ResourceKind::CombinedImageSampler => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
 		ResourceKind::StorageImage if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
@@ -262,11 +264,28 @@ fn spirv_resource_mask(descriptor: ShaderResourceDescriptor) -> vk::SpirvResourc
 	}
 }
 
+/// Returns the sampler a pipeline stage embeds for each image its shader samples through a fixed sampler, by slot.
+///
+/// Keep the result, and the create infos built from it, alive until the pipeline is created, then pass the create
+/// infos to [`build_shader_mappings`].
+pub(crate) fn embedded_samplers(
+	shader_resources: &[ShaderResourceDescriptor],
+) -> smallvec::SmallVec<[(crate::shader::ResourceSlot, super::Sampler); 4]> {
+	shader_resources
+		.iter()
+		.filter_map(|descriptor| Some((descriptor.slot(), super::Sampler::fixed(descriptor.sampler()?))))
+		.collect()
+}
+
 /// Builds the set-zero binding mappings consumed by one pipeline shader stage.
-pub(crate) fn build_shader_mappings(
+///
+/// `embedded_samplers` holds the sampler create info of every image the stage samples through a fixed sampler, by
+/// slot, from [`embedded_samplers`]. The mappings point at them, so they must outlive the mappings.
+pub(crate) fn build_shader_mappings<'a>(
 	layout: &PipelineLayout,
 	shader_resources: &[ShaderResourceDescriptor],
-) -> smallvec::SmallVec<[vk::DescriptorSetAndBindingMappingEXT<'static>; 16]> {
+	embedded_samplers: &'a [(crate::shader::ResourceSlot, vk::SamplerCreateInfo<'a>)],
+) -> smallvec::SmallVec<[vk::DescriptorSetAndBindingMappingEXT<'a>; 16]> {
 	canonicalize_stage_resources(shader_resources)
 		.into_iter()
 		.map(|descriptor| {
@@ -293,6 +312,13 @@ pub(crate) fn build_shader_mappings(
 					.sampler_push_offset(layout.heap_push_data_offset + 4)
 					.sampler_heap_index_stride(1)
 					.sampler_heap_array_stride(resource.sampler_stride);
+			}
+			if descriptor.sampler().is_some() {
+				let (_, sampler) = embedded_samplers
+					.iter()
+					.find(|(slot, _)| *slot == descriptor.slot())
+					.expect("Missing Vulkan embedded sampler. The most likely cause is that the stage's fixed samplers were built from other resources than its mappings.");
+				push_index = push_index.embedded_sampler(sampler);
 			}
 
 			vk::DescriptorSetAndBindingMappingEXT::default()
@@ -337,7 +363,7 @@ mod tests {
 			resource(1033, ResourceKind::StorageBuffer, 1),
 		];
 		let layout = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.as_slice())], &[], &properties());
-		let mappings = build_shader_mappings(&layout, &resources);
+		let mappings = build_shader_mappings(&layout, &resources, &[]);
 
 		assert_eq!(layout.resources.len(), 2);
 		assert_eq!(mappings.len(), 2);

@@ -153,6 +153,9 @@ pub(super) struct Lexer {
 	/// The `invoke` intrinsic instantiated for the program's payload type, once a call to `invoke` has been linked. See
 	/// [`Lexer::lex_invoke`].
 	invoke: Option<NodeReference>,
+	/// The samplers declared so far, in source order, which later texture descriptors can name. See
+	/// [`Lexer::declare_sampler`].
+	samplers: Vec<(String, crate::SamplerState)>,
 }
 
 impl Lexer {
@@ -164,7 +167,14 @@ impl Lexer {
 			loop_depth: 0,
 			next_generated_id: 0,
 			invoke: None,
+			samplers: Vec::new(),
 		}
+	}
+
+	/// Records a top-level `sampler` declaration so the texture descriptors after it can name it. A sampler is no
+	/// node of its own: it becomes part of every binding that names it.
+	pub(super) fn declare_sampler(&mut self, name: &str, state: crate::SamplerState) {
+		self.samplers.push((name.to_string(), state));
 	}
 
 	/// Returns a new number for a generated local name.
@@ -505,6 +515,7 @@ impl Lexer {
 					},
 					parser::BindingResource::CombinedImageSampler { format } => BindingTypes::CombinedImageSampler {
 						format: format.to_string(),
+						sampler: None,
 					},
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
@@ -524,9 +535,11 @@ impl Lexer {
 				write,
 				memory_class,
 				count,
+				sampler,
 				layout,
 			} => {
 				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
+				let r#type = super::samplers::attach_sampler(name, r#type, *sampler, &self.samplers)?;
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
 				if r#type == BindingTypes::AccelerationStructure {
 					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
@@ -537,6 +550,13 @@ impl Lexer {
 					*layout,
 				)
 				.into()
+			}
+			// The program root records samplers before lexing its declarations, so one reaches here only from an inner
+			// scope.
+			parser::Nodes::Sampler { name, .. } => {
+				return Err(LexError::invalid(format!(
+					"Sampler `{name}` is declared inside a scope. The most likely cause is a sampler declared in a function or block. Declare it at the top level of the shader or layer."
+				)));
 			}
 			parser::Nodes::RawCode {
 				glsl,
@@ -648,6 +668,11 @@ impl Lexer {
 								if params.len() != parameters.len() {
 									return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 								}
+								if let Nodes::Function { name, .. } = callee.node() {
+									for parameter in &parameters {
+										super::samplers::validate_function_argument(name, parameter)?;
+									}
+								}
 								Node::expression(Expressions::FunctionCall {
 									function: function.clone().into(),
 									parameters,
@@ -658,6 +683,9 @@ impl Lexer {
 									&& let Some(target) = parameters.first()
 								{
 									validate_atomic_target(name, target, requirement)?;
+								}
+								if let Some(texture) = parameters.first() {
+									super::samplers::validate_sampled_read(name, texture)?;
 								}
 								let expansion_id = self.generated_id();
 								let elements = build_intrinsic(elements, &parameters, expansion_id)?;

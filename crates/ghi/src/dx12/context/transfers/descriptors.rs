@@ -450,7 +450,12 @@ impl Device {
 		let sampler = sampler_handle
 			.and_then(|handle| self.samplers.get(handle.index() as usize))
 			.unwrap_or(&fallback_sampler);
-		let filter = Self::sampler_filter(sampler);
+		let filter = Self::sampler_filter(
+			sampler.filtering_mode,
+			sampler.mip_map_mode,
+			sampler.reduction_mode,
+			sampler.anisotropy.is_some(),
+		);
 		let address_mode = Self::sampler_address_mode(sampler.addressing_mode);
 		let max_anisotropy = sampler.anisotropy.unwrap_or(1.0).clamp(1.0, 16.0).round() as u32;
 		let desc = D3D12_SAMPLER_DESC {
@@ -483,31 +488,42 @@ impl Device {
 		self.counters.descriptor_write_count += 1;
 	}
 
-	pub(crate) fn sampler_filter(sampler: &Sampler) -> D3D12_FILTER {
-		if sampler.anisotropy.is_some() {
-			return match sampler.reduction_mode {
+	/// Encodes the D3D12 filter of a sampler, for the sampler heap and for the static samplers of a root signature.
+	pub(crate) fn sampler_filter(
+		filtering_mode: FilteringModes,
+		mip_map_mode: FilteringModes,
+		reduction_mode: SamplingReductionModes,
+		anisotropic: bool,
+	) -> D3D12_FILTER {
+		if anisotropic {
+			return match reduction_mode {
 				SamplingReductionModes::WeightedAverage => D3D12_FILTER_ANISOTROPIC,
 				SamplingReductionModes::Min => D3D12_FILTER_MINIMUM_ANISOTROPIC,
 				SamplingReductionModes::Max => D3D12_FILTER_MAXIMUM_ANISOTROPIC,
 			};
 		}
 
-		let min = match sampler.filtering_mode {
+		let min = match filtering_mode {
 			FilteringModes::Closest => 0,
 			FilteringModes::Linear => 1,
 		};
 		let mag = min;
-		let mip = match sampler.mip_map_mode {
+		let mip = match mip_map_mode {
 			FilteringModes::Closest => 0,
 			FilteringModes::Linear => 1,
 		};
-		let reduction = match sampler.reduction_mode {
+		let reduction = match reduction_mode {
 			SamplingReductionModes::WeightedAverage => 0,
 			SamplingReductionModes::Min => 2,
 			SamplingReductionModes::Max => 3,
 		};
 
-		D3D12_FILTER(min | (mag << 2) | (mip << 4) | (reduction << 7))
+		D3D12_FILTER(
+			((min << D3D12_MIN_FILTER_SHIFT)
+				| (mag << D3D12_MAG_FILTER_SHIFT)
+				| (mip << D3D12_MIP_FILTER_SHIFT)
+				| (reduction << D3D12_FILTER_REDUCTION_TYPE_SHIFT)) as i32,
+		)
 	}
 
 	pub(crate) fn sampler_address_mode(addressing_mode: SamplerAddressingModes) -> D3D12_TEXTURE_ADDRESS_MODE {

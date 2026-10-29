@@ -2,9 +2,10 @@
 
 use super::{
 	Buffer, BufferLayout, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
-	SamplerReductionMode, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState,
-	builtin_instance_index_slot, builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
+	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, builtin_instance_index_slot,
+	builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
 };
+use crate::sampler::Reduction;
 use crate::{BindingTypes, Expressions, Node, Operators, compile_to_besl};
 
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
@@ -391,7 +392,10 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 	root.add_child(
 		Node::binding(
 			"texture",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			7,
 			true,
 			false,
@@ -438,7 +442,10 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 	root.add_child(
 		Node::binding(
 			"texture_sampler",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			9,
 			true,
 			false,
@@ -483,7 +490,10 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 	root.add_child(
 		Node::binding(
 			"texture_sampler",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			9,
 			true,
 			false,
@@ -517,9 +527,9 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 		read_f32s(&buffer, 4)
 	};
 
-	assert_eq!(sample(SamplerReductionMode::WeightedAverage), vec![4.0, 5.0, 5.0, 1.0]);
-	assert_eq!(sample(SamplerReductionMode::Min), vec![0.0, 2.0, 2.0, 1.0]);
-	assert_eq!(sample(SamplerReductionMode::Max), vec![8.0, 8.0, 8.0, 1.0]);
+	assert_eq!(sample(Reduction::Average), vec![4.0, 5.0, 5.0, 1.0]);
+	assert_eq!(sample(Reduction::Min), vec![0.0, 2.0, 2.0, 1.0]);
+	assert_eq!(sample(Reduction::Max), vec![8.0, 8.0, 8.0, 1.0]);
 }
 
 #[test]
@@ -534,7 +544,10 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 	root.add_child(
 		Node::binding(
 			"texture_sampler",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			9,
 			true,
 			false,
@@ -566,6 +579,44 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 }
 
 #[test]
+fn declared_samplers_replace_the_sampler_the_application_binds() {
+	let script = r#"
+	farthest: sampler<{ mip_filter: nearest, reduction: min }>;
+	nearest_texel: sampler<{ filter: nearest }>;
+	reduced: descriptor<{ type: Texture2D, binding: 8, access: read, sampler: farthest }>;
+	point: descriptor<{ type: Texture2D, binding: 9, access: read, sampler: nearest_texel }>;
+	main: fn () -> void {
+		buff.minimum = texture_lod(reduced, vec2f(0.5, 0.5), 0.0).x;
+		buff.texel = texture_lod(point, vec2f(0.75, 0.25), 0.0).x;
+	}
+	"#;
+	let root = buffer_root("buff", 10, &[("minimum", "f32"), ("texel", "f32")]);
+	let executable = compile_test_program(script, Some(root));
+	let buffer_slot = ResourceSlot::new(10);
+	let texels = [
+		([0, 0], [1.0, 0.0, 0.0, 1.0]),
+		([1, 0], [7.0, 0.0, 0.0, 1.0]),
+		([0, 1], [3.0, 0.0, 0.0, 1.0]),
+		([1, 1], [5.0, 0.0, 0.0, 1.0]),
+	];
+	let mut reduced = Texture::new(2, 2).expect("Expected texture allocation");
+	let mut point = Texture::new(2, 2).expect("Expected texture allocation");
+	write_texture(&mut reduced, &texels);
+	write_texture(&mut point, &texels);
+	let mut buffer = buffer_for_slot(&executable, buffer_slot);
+	let mut descriptors = DescriptorBindings::new();
+	// The bound samplers would average both reads; the declared ones take the minimum and the texel under the coordinate.
+	descriptors.bind_texture_with_sampler(ResourceSlot::new(8), &mut reduced, Sampler::new(Reduction::Average));
+	descriptors.bind_texture_with_sampler(ResourceSlot::new(9), &mut point, Sampler::new(Reduction::Average));
+	descriptors.bind_buffer(buffer_slot, &mut buffer);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected execution through declared samplers to succeed");
+
+	assert_eq!(read_f32s(&buffer, 2), vec![1.0, 7.0]);
+}
+
+#[test]
 fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
 	let script = r#"
 	main: fn () -> void {
@@ -577,7 +628,10 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 	root.add_child(
 		Node::binding(
 			"texture_sampler",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			9,
 			true,
 			false,
@@ -599,11 +653,7 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 	);
 	let mut buffer = buffer_for_slot(&executable, buffer_slot);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture_with_sampler(
-		texture_slot,
-		&mut texture,
-		Sampler::new(SamplerReductionMode::WeightedAverage),
-	);
+	descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(Reduction::Average));
 	descriptors.bind_buffer(buffer_slot, &mut buffer);
 	executable
 		.run_main(&mut descriptors)
@@ -633,7 +683,10 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 	root.add_child(
 		Node::binding(
 			"texture_sampler",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			9,
 			true,
 			false,
@@ -645,6 +698,7 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 			"array_sampler",
 			BindingTypes::CombinedImageSampler {
 				format: "ArrayTexture2D".to_string(),
+				sampler: None,
 			},
 			8,
 			true,
@@ -1672,7 +1726,10 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 	root.add_child(
 		Node::binding(
 			"source_texture",
-			BindingTypes::CombinedImageSampler { format: String::new() },
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			30,
 			true,
 			false,

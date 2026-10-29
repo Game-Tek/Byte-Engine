@@ -1183,7 +1183,10 @@ mod tests {
 		root.add_children(vec![
 			besl::Node::binding(
 				"depth_texture",
-				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				besl::BindingTypes::CombinedImageSampler {
+					format: String::new(),
+					sampler: None,
+				},
 				0,
 				true,
 				false,

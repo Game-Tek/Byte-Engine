@@ -89,7 +89,10 @@ mod tests {
 		root.add_child(
 			besl::Node::binding_array(
 				"textures",
-				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				besl::BindingTypes::CombinedImageSampler {
+					format: String::new(),
+					sampler: None,
+				},
 				9,
 				true,
 				false,
@@ -420,7 +423,10 @@ mod tests {
 	fn distinct_reachable_declaration_ranges_cannot_overlap() {
 		let array: besl::NodeReference = besl::Node::binding_array(
 			"array",
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			besl::BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			4,
 			true,
 			false,
@@ -440,7 +446,10 @@ mod tests {
 	fn metal_argument_ids_cannot_overflow() {
 		let binding: besl::NodeReference = besl::Node::binding_array(
 			"textures",
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			besl::BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			0,
 			true,
 			false,
@@ -626,6 +635,66 @@ mod tests {
 		assert_string_contains!(shader, "texture.read(a, level).x");
 
 		compile_natively(&shader, "besl-downsample-gather").await;
+	}
+
+	#[compio::test]
+	async fn fixed_samplers_are_constexpr_samplers_outside_the_argument_buffer() {
+		let source = r#"
+			nearest_texel: sampler<{ filter: nearest, mip_filter: nearest, address: repeat }>;
+			tiles: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_texel }>;
+			albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			result: descriptor<{ type: f32[], binding: 2, access: write }>;
+			main: fn () -> void {
+				result[0] = texture_lod(tiles, vec2f(0.5, 0.5), 1.0).x + texture_lod(albedo, vec2f(0.5, 0.5), 0.0).x;
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
+
+		assert_string_contains!(
+			shader,
+			"constexpr sampler _besl_tiles_sampler(coord::normalized, filter::nearest, mip_filter::nearest, address::repeat);"
+		);
+		// The fixed sampler takes no argument ID, so the next binding takes the ID after the texture.
+		assert_string_contains!(
+			shader,
+			"texture2d<float> tiles [[id(0)]];texture2d<float> albedo [[id(1)]];sampler albedo_sampler [[id(2)]];"
+		);
+		assert_string_contains!(shader, "set0.tiles.sample(_besl_tiles_sampler,");
+		assert_string_contains!(shader, "set0.albedo.sample(set0.albedo_sampler,");
+
+		compile_natively(&shader, "besl-fixed-samplers").await;
+	}
+
+	#[compio::test]
+	async fn reducing_samplers_reduce_in_shader_code() {
+		let source = r#"
+			farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
+			nearest_occluder: sampler<{ mip_filter: nearest, reduction: max }>;
+			pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
+			occluders: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: nearest_occluder }>;
+			result: descriptor<{ type: f32[], binding: 2, access: write }>;
+			main: fn () -> void {
+				result[0] = texture_lod(pyramid, vec2f(0.5, 0.5), 2.0).x;
+				result[1] = downsample_max(occluders, vec2f(0.5, 0.5), 0.0);
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
+
+		// No GPU older than Apple10 reduces in a sampler, so the constexpr sampler declares none.
+		assert_string_contains!(
+			shader,
+			"constexpr sampler _besl_pyramid_sampler(coord::normalized, filter::linear, mip_filter::nearest, address::clamp_to_edge);"
+		);
+		assert_string_does_not_contain!(shader, "reduction::");
+		assert_string_contains!(
+			shader,
+			"float4(_besl_downsample_min(set0.pyramid, _besl_pyramid_sampler, float2(0.5,0.5), 2.0), 0.0, 0.0, 1.0)"
+		);
+		assert_string_contains!(shader, "_besl_downsample_max(set0.occluders, _besl_occluders_sampler,");
+		// A nearest mip filter reads the level nearest the LOD, clamped to the image.
+		assert_string_contains!(shader, "uint(lod + 0.5), texture.get_num_mip_levels() - 1");
+
+		compile_natively(&shader, "besl-reducing-samplers").await;
 	}
 
 	#[compio::test]

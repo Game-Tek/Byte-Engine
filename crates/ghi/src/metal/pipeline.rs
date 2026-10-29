@@ -13,6 +13,8 @@ use super::*;
 /// objc2-metal names versions only up to 4.0, so the value is built the way Metal encodes one: the major version in the
 /// high 16 bits and the minor version in the low 16.
 const LANGUAGE_VERSION: mtl::MTLLanguageVersion = mtl::MTLLanguageVersion((4 << 16) + 1);
+/// The page that specifies samplers a shader fixes in BESL, which Metal builds on every GPU.
+const SAMPLERS_DOCS_PATH: &str = "reference/besl/interface#samplers";
 
 /// Updates the CAMetalLayer's drawable size to match the view's backing size, but only when
 /// the size has actually changed. Calling `setDrawableSize` unconditionally invalidates the
@@ -154,13 +156,21 @@ pub(crate) fn build_sampler(
 	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
-	// Shaders compiled for Metal reduce gathered texels in code, so a reduction sampler keeps its contract on devices
-	// that cannot execute sampler reductions and fall back to standard sampling here.
-	descriptor.setReductionMode(if device.supportsFamily(mtl::MTLGPUFamily::Apple10) {
-		utils::sampler_reduction_mode(builder.reduction_mode)
-	} else {
-		mtl::MTLSamplerReductionMode::WeightedAverage
-	});
+	// Only Apple10 GPUs reduce in a sampler. A shader that fixes its sampler in BESL reduces in shader code instead, so
+	// no device needs to fall back.
+	assert!(
+		builder.reduction_mode == crate::SamplingReductionModes::WeightedAverage
+			|| device.supportsFamily(mtl::MTLGPUFamily::Apple10),
+		"Unsupported sampler reduction {:?}. The most likely cause is a min or max sampler built at runtime on a GPU older than Apple10, which can't reduce in a sampler. Declare the sampler in the shader's BESL source with `reduction: {}`, which every GPU runs. See {}.",
+		builder.reduction_mode,
+		if builder.reduction_mode == crate::SamplingReductionModes::Min {
+			"min"
+		} else {
+			"max"
+		},
+		::utils::online_docs_url(SAMPLERS_DOCS_PATH),
+	);
+	descriptor.setReductionMode(utils::sampler_reduction_mode(builder.reduction_mode));
 	descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));

@@ -97,15 +97,6 @@ impl OcclusionCulling {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(OCCLUSION_PYRAMID_MIP_COUNT),
 		);
-		// Culling reads the farthest depth in the 2x2 texel footprint around the rectangle's center, from the one
-		// level it picked.
-		let min_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::Min)
-				.max_lod((OCCLUSION_PYRAMID_MIP_COUNT - 1) as f32),
-		);
 		// The seed fetches exact texels, so the sampler only completes the descriptor.
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -122,7 +113,8 @@ impl OcclusionCulling {
 		let base = set_layouts::HIZ_BASE.binder(base_set);
 		let tail = set_layouts::HIZ_TAIL.binder(tail_set);
 		let mut writes = smallvec::SmallVec::<[ghi::DescriptorWrite; 16]>::from_iter([
-			culling.sampled("occlusion_pyramid", pyramid, min_sampler),
+			// The layer fixes the pyramid's minimum sampler.
+			culling.texture("occlusion_pyramid", pyramid),
 			culling.buffer("occlusion_visibility", visibility),
 			base.sampled("source_depth", depth, point_sampler),
 			// The tail stage reduces the last level the base stage wrote.

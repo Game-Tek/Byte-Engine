@@ -28,7 +28,11 @@ depth_pyramid: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
 screen_view: descriptor<{ type: ScreenView, binding: 1037, access: read }>;
 sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 1038, access: read }>;
 depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 1039, access: read }>;
-directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, access: read }>;
-directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read }>;
+// Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one read, and the
+// fully-shadowed probe the farthest. Both read the 2x2 texel footprint around a corner of the base level.
+nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max }>;
+farthest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
+directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, access: read, sampler: nearest_occluder }>;
+directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read, sampler: farthest_occluder }>;
 // The maximum pyramid again, with a plain sampler: the blocker search gathers its cells four at a time.
 directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 1042, access: read }>;

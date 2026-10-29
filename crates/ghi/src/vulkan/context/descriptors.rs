@@ -129,7 +129,6 @@ impl Context {
 			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
 			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
 			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
 		}
 	}
 
@@ -338,9 +337,6 @@ impl Context {
 					mip_level: None,
 				}
 			}
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => unreachable!(
-				"Legacy Vulkan descriptor write reached materialization. The most likely cause is that write validation was bypassed."
-			),
 		}
 	}
 

@@ -439,7 +439,8 @@ mod tests {
 		assert!(matches!(
 			lut_texture.kind,
 			resource_management::shader::besl::evaluation::BindingKind::CombinedImageSampler {
-				view: resource_management::shader::besl::evaluation::TextureView::Texture3D
+				view: resource_management::shader::besl::evaluation::TextureView::Texture3D,
+				sampler: None,
 			}
 		));
 		let parameters = bindings

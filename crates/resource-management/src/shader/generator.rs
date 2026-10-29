@@ -1367,7 +1367,10 @@ pub mod tests {
 	pub fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
 		besl::Node::binding(
 			name,
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			besl::BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
 			slot,
 			read,
 			write,
@@ -1411,7 +1414,10 @@ pub mod tests {
 			.into(),
 			besl::Node::binding(
 				"texture",
-				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
+				besl::BindingTypes::CombinedImageSampler {
+					format: "".to_string(),
+					sampler: None,
+				},
 				2,
 				true,
 				false,

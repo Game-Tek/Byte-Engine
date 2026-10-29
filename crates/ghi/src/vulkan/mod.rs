@@ -389,6 +389,21 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
+	/// Builds the sampler a pipeline embeds for a shader's fixed sampler. It reads every level of the image.
+	pub(crate) fn fixed(sampler: crate::sampler::StaticSampler) -> Self {
+		let filter = utils::filter(sampler.filtering_mode);
+		Self {
+			mag_filter: filter,
+			min_filter: filter,
+			mipmap_mode: utils::mipmap_mode(sampler.mip_map_mode),
+			address_mode: utils::address_mode(sampler.addressing_mode),
+			reduction_mode: utils::reduction_mode(sampler.reduction_mode),
+			anisotropy: None,
+			min_lod: 0.0,
+			max_lod: vk::LOD_CLAMP_NONE,
+		}
+	}
+
 	pub(crate) fn create_info(&self) -> vk::SamplerCreateInfo<'static> {
 		vk::SamplerCreateInfo::default()
 			.mag_filter(self.mag_filter)

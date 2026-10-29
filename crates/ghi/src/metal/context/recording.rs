@@ -347,7 +347,6 @@ impl Context {
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
 				sampler: SamplerHandle::from_index(handle.index()),
 			}),
-			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { handle } => {
 				let copies = self.acceleration_structures.top_level(handle).copies.len();
 				assert!(

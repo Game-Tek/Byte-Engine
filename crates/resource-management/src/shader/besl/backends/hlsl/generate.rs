@@ -446,7 +446,7 @@ impl Generator {
 						}
 						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
 					}
-					besl::BindingTypes::CombinedImageSampler { format } => {
+					besl::BindingTypes::CombinedImageSampler { format, .. } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
 						let texture_type = match format.as_str() {
 							"Texture3D" => "Texture3D",

@@ -1,5 +1,6 @@
 source: descriptor<{ type: StorageImage, binding: 0, access: read }>;
-result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
 
 linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
 	let bounded: f32 = clamp(channel, 0.0, 1.0);
@@ -13,7 +14,10 @@ main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
 	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 
-	guard_image_bounds(source, coord);
+	let extent: vec2u = input.extent;
+	if (coord.x >= extent.x || coord.y >= extent.y) {
+		return;
+	}
 	source_color = image_load(source, coord);
 	write(result, coord, vec4f(
 		linear_srgb_channel_to_srgb(source_color.x),

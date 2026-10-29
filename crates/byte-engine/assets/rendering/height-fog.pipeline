@@ -1,1 +1,1 @@
-{"name":"Exponential Height Fog","kind":{"type":"compute","shader":"byte-engine/rendering/height-fog.besl"}}
+{"name":"Exponential Height Fog","kind":{"type":"tile","shader":"byte-engine/rendering/height-fog.besl"}}

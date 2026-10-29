@@ -1,5 +1,5 @@
 // Climbs the bloom pyramid's last level and adds it onto the HDR scene in one dispatch. Each lane writes a 2x2 block of
-// pixels, so a 16x16 workgroup covers 32x32 of them. The workgroup first builds the 18x18 top-level texels its pixels
+// pixels, so a tile's 16x16 lanes cover 32x32 of them. The tile first builds the 18x18 top-level texels its pixels
 // read into workgroup memory with the same climb the upsample pass makes: the level below blurred with a 3x3 tent,
 // spread `filter.x` lower-level texels wide and weighted by `filter.y`, plus the same-resolution level from the
 // downsample chain. Its pixels then filter that block bilinearly, scale it by `prefilter.z`, and add it to the scene.
@@ -9,10 +9,10 @@
 // lives in `layouts/climb.besl`, which binds both levels.
 
 scene_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
-result_texture: descriptor<{ type: StorageImage, binding: 3, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 4, access: read, memory: constant }>;
+result: output<vec4f, 0>;
 
-// The top-level texels under one workgroup's pixels: one under each lane's 2x2 block, plus the one-texel ring that
+// The top-level texels under one tile's pixels: one under each lane's 2x2 block, plus the one-texel ring that
 // bilinear filtering reaches.
 shared_top_level: workgroup<vec4f, 324>;
 
@@ -74,14 +74,14 @@ composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: v
 
 // Writes the 2x2 block of pixels whose first is `base`, skipping those past the right or bottom edge of a `size` image.
 write_block: fn (base: vec2u, size: vec2u, top_left: vec4f, top_right: vec4f, bottom_left: vec4f, bottom_right: vec4f) -> void {
-	write(result_texture, base, top_left);
+	write(result, base, top_left);
 	if (base.x + 1 < size.x) {
-		write(result_texture, base + vec2u(1, 0), top_right);
+		write(result, base + vec2u(1, 0), top_right);
 	}
 	if (base.y + 1 < size.y) {
-		write(result_texture, base + vec2u(0, 1), bottom_left);
+		write(result, base + vec2u(0, 1), bottom_left);
 		if (base.x + 1 < size.x) {
-			write(result_texture, base + vec2u(1, 1), bottom_right);
+			write(result, base + vec2u(1, 1), bottom_right);
 		}
 	}
 }
@@ -89,13 +89,15 @@ write_block: fn (base: vec2u, size: vec2u, top_left: vec4f, top_right: vec4f, bo
 main: fn(input: StageInput) -> void {
 	let lane: u32 = input.thread_idx;
 	let base: vec2u = input.thread_id * vec2u(BLOOM_LANE_WIDTH, BLOOM_LANE_WIDTH);
-	let result_size: vec2u = image_size(result_texture);
+	let result_size: vec2u = input.extent;
 	// The block's second column and row, held inside the image so reads past an odd edge stay in bounds.
 	let right: u32 = min(base.x + 1, result_size.x - 1);
 	let below: u32 = min(base.y + 1, result_size.y - 1);
 	let intensity: f32 = bloom_parameters.prefilter[0].z;
 	if (intensity <= 0.0) {
-		guard_image_bounds(result_texture, base);
+		if (base.x >= result_size.x || base.y >= result_size.y) {
+			return;
+		}
 		write_block(
 			base,
 			result_size,
@@ -111,7 +113,7 @@ main: fn(input: StageInput) -> void {
 	// one ring texel. The lane's own climb is issued first, so its reads are in flight while the ring lanes start theirs.
 	let top_size: vec2u = texture_size(high_resolution_texture);
 	let lane_position: vec2u = input.thread_id % vec2u(BLOOM_WORKGROUP_WIDTH, BLOOM_WORKGROUP_WIDTH);
-	// The top-level texel under the workgroup's first pixel; the region starts one texel before it.
+	// The top-level texel under the tile's first pixel; the region starts one texel before it.
 	let region_origin: vec2u = input.thread_id - lane_position;
 	let own_cell: vec2u = lane_position + vec2u(1, 1);
 	let own: vec4f = climb(region_origin, own_cell, top_size);
@@ -129,8 +131,10 @@ main: fn(input: StageInput) -> void {
 	shared_top_level[own_cell.y * BLOOM_REGION_WIDTH + own_cell.x] = own;
 	workgroup_barrier();
 
-	// Partial edge workgroups must take part in building the region before returning.
-	guard_image_bounds(result_texture, base);
+	// Partial edge tiles must take part in building the region before returning.
+	if (base.x >= result_size.x || base.y >= result_size.y) {
+		return;
+	}
 	let result_extent: vec2f = vec2f(f32(result_size.x), f32(result_size.y));
 	let top_extent: vec2f = vec2f(f32(top_size.x), f32(top_size.y));
 	let top_left: vec4f = fetch(scene_texture, base);

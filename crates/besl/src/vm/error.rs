@@ -209,6 +209,16 @@ pub enum VmError {
 	RayTracingInputUnavailable {
 		name: &'static str,
 	},
+	/// A tile value or an output write ran in an invocation that isn't part of a tile stage.
+	TileInputUnavailable {
+		name: &'static str,
+	},
+	/// A tile stage wrote an output outside the tile it runs in.
+	TileWriteOutsideTile {
+		pixel: [u32; 2],
+		tile: [u32; 2],
+		size: u32,
+	},
 	RayTracingInClosestHit {
 		hit_group: usize,
 	},
@@ -522,6 +532,15 @@ impl std::fmt::Display for VmError {
 			VmError::RayTracingInputUnavailable { name } => write!(
 				f,
 				"`{name}` has no value in this invocation. The most likely cause is a shader that reads a ray tracing input in another stage. Read launch values only in ray generation shaders, and hit values only in the closest hits that `invoke` runs."
+			),
+			VmError::TileInputUnavailable { name } => write!(
+				f,
+				"`{name}` has no value in this invocation. The most likely cause is a test that runs a tile shader without a tile. Run each invocation with `ExecutionConfig::with_tile`."
+			),
+			VmError::TileWriteOutsideTile { pixel, tile, size } => write!(
+				f,
+				"A tile shader wrote pixel ({}, {}) outside its {size}x{size} tile at ({}, {}). The most likely cause is a pixel computed from another tile's position or the wrong `workgroup` in the shader's `.besl.bead` file. Write only pixels of the tile that the invocation's workgroup covers, and size `workgroup` so the threads of one tile cover it.",
+				pixel[0], pixel[1], tile[0], tile[1]
 			),
 			VmError::RayTracingInClosestHit { hit_group } => write!(
 				f,

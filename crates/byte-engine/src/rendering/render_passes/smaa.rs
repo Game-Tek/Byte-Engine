@@ -7,7 +7,7 @@ use ghi::{
 
 use crate::rendering::{
 	RenderPass, Sink,
-	render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
+	render_pass::{RenderPassBuilder, RenderPassReturn, simple_tile},
 };
 
 const AREA_TEXTURE_WIDTH: u32 = 160;
@@ -66,8 +66,8 @@ fn create_lookup_texture(
 /// patterns, applies corner handling, and resolves into a separate `main` target.
 /// It intentionally excludes temporal reprojection and multisample modes.
 pub struct SmaaPass {
-	edge_pass: simple_compute::Pass,
-	resolve_pass: simple_compute::Pass,
+	edge_pass: simple_tile::Pass,
+	resolve_pass: simple_tile::Pass,
 }
 
 impl SmaaPass {
@@ -75,12 +75,14 @@ impl SmaaPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("SMAA Output"),
-		);
+		// Both passes write tile outputs. The builder gives `main`'s replacement the uses that needs, and the edges take
+		// them here.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("SMAA Output"));
 
+		let edge_uses = simple_tile::output_uses(&*render_pass_builder.context());
 		let edges = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image).name("SMAA Edges"),
+			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Image | edge_uses).name("SMAA Edges"),
 		);
 
 		let context = render_pass_builder.context();
@@ -102,34 +104,42 @@ impl SmaaPass {
 		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
-		let edge_pipeline = simple_compute::Pipeline::compile(
+		let edge_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("SMAA Edge Detection", "byte-engine/rendering/smaa/edge-detection.pipeline"),
+			simple_tile::Descriptor::new(
+				"SMAA Edge Detection",
+				"byte-engine/rendering/smaa/edge-detection.pipeline",
+				&[ghi::Formats::R8UNORM],
+			),
 		);
-		let resolve_pipeline = simple_compute::Pipeline::compile(
+		let resolve_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
+			simple_tile::Descriptor::new(
 				"SMAA Blend and Neighborhood",
 				"byte-engine/rendering/smaa/blend-weights.pipeline",
+				&[output.format()],
 			),
 		);
 
 		let edge_pass = edge_pipeline.bind(
 			"SMAA Edge Descriptor Set",
-			&[
-				simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("edges", edges),
-			],
+			&[simple_tile::Resource::combined_image_sampler(
+				"source",
+				source,
+				sampler,
+				ghi::Layouts::Read,
+			)],
+			&[simple_tile::Output::new("edges", ghi::BaseImageHandle::from(edges))],
 		);
 		let resolve_pass = resolve_pipeline.bind(
 			"SMAA Resolve Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("edges", edges, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("area_texture", area_texture, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("search_texture", search_texture, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result", output),
+				simple_tile::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("edges", edges, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("area_texture", area_texture, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("search_texture", search_texture, sampler, ghi::Layouts::Read),
 			],
+			&[simple_tile::Output::new("result", output)],
 		);
 
 		Self { edge_pass, resolve_pass }
@@ -168,67 +178,61 @@ impl RenderPass for SmaaPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ExecutionConfig, ResourceSlot, Texture, WorkgroupState};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, WorkgroupState, output_slot};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, texture_2d};
+	use crate::rendering::render_pass::simple_compute;
+	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, empty_image, rgba, texture_2d, tile_lanes};
 
 	const EDGE_SHADER: &str = include_str!("../../../assets/rendering/smaa/edge-detection.besl");
 	const RESOLVE_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
-	const SMAA_EDGE_WORKGROUP_WIDTH: u32 = 16;
-	const SMAA_RESOLVE_WORKGROUP_WIDTH: u32 = 16;
-	const SMAA_WORKGROUP_SIZE: usize = 128;
-	const SMAA_VM_INSTRUCTION_LIMIT: usize = 4_000_000;
-	const SMAA_VM_CALL_DEPTH_LIMIT: usize = 128;
-
-	/// Builds every invocation for one production SMAA workgroup layout.
-	fn workgroup_configs(origin: [u32; 2], workgroup_width: u32, subgroup_size: u32) -> [ExecutionConfig; SMAA_WORKGROUP_SIZE] {
-		std::array::from_fn(|lane| {
-			let lane = lane as u32;
-			ExecutionConfig::new(SMAA_VM_INSTRUCTION_LIMIT)
-				.with_call_depth_limit(SMAA_VM_CALL_DEPTH_LIMIT)
-				.with_subgroup_size(subgroup_size)
-				.with_thread_idx(lane)
-				.with_thread_id([origin[0] + lane % workgroup_width, origin[1] + lane / workgroup_width])
-		})
+	/// Builds every lane of the SMAA tile whose top-left pixel is `origin`, over outputs of `extent`.
+	fn tile_configs(origin: [u32; 2], extent: [u32; 2]) -> Vec<besl::vm::ExecutionConfig> {
+		tile_lanes(
+			[origin[0] / PIXEL_TILE, origin[1] / PIXEL_TILE],
+			PIXEL_TILE,
+			PIXEL_TILE,
+			extent,
+		)
 	}
 
-	/// Executes edge detection with its shared luma cache for one complete workgroup.
-	fn run_edge_workgroup(source: &mut Texture, result: &mut Texture, origin: [u32; 2]) {
+	/// Executes edge detection with its shared luma cache for one complete tile over outputs of `extent`.
+	fn run_edge_tile(source: &mut Texture, result: &mut Texture, origin: [u32; 2], extent: [u32; 2]) {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(EDGE_SHADER));
-		let configs = workgroup_configs(origin, SMAA_EDGE_WORKGROUP_WIDTH, 32);
+		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), source);
-		descriptors.bind_image(ResourceSlot::new(1), result);
+		descriptors.bind_image(output_slot(0), result);
 		descriptors.bind_workgroup_state(&mut workgroup);
-		program.run_workgroup(&mut descriptors, &configs).expect(
-			"Failed to execute the SMAA edge workgroup. The most likely cause is invalid shared-cache synchronization.",
-		);
+		program
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("Failed to execute the SMAA edge tile. The most likely cause is invalid shared-cache synchronization.");
 	}
 
-	/// Executes the fused reference-weight and neighborhood resolve workgroup.
-	fn run_resolve_workgroup(
+	/// Executes the fused reference-weight and neighborhood resolve for one tile over outputs of `extent`.
+	fn run_resolve_tile(
 		source: &mut Texture,
 		edges: &mut Texture,
 		area: &mut Texture,
 		search: &mut Texture,
 		result: &mut Texture,
 		origin: [u32; 2],
+		extent: [u32; 2],
 	) {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(RESOLVE_SHADER));
-		let configs = workgroup_configs(origin, SMAA_RESOLVE_WORKGROUP_WIDTH, 32);
+		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), source);
 		descriptors.bind_texture(ResourceSlot::new(1), edges);
 		descriptors.bind_texture(ResourceSlot::new(2), area);
 		descriptors.bind_texture(ResourceSlot::new(3), search);
-		descriptors.bind_image(ResourceSlot::new(4), result);
+		descriptors.bind_image(output_slot(0), result);
 		descriptors.bind_workgroup_state(&mut workgroup);
-		program.run_workgroup(&mut descriptors, &configs).expect(
-			"Failed to execute the fused SMAA workgroup. The most likely cause is invalid shared-cache synchronization.",
-		);
+		program
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("Failed to execute the fused SMAA tile. The most likely cause is invalid shared-cache synchronization.");
 	}
 
 	/// Builds one VM edge texel using the production R8 bit layout.
@@ -266,7 +270,7 @@ mod tests {
 		let constant = [[0.4, 0.4, 0.4, 1.0]; 5];
 		let mut source = texture_2d(5, 1, &constant);
 		let mut edges = empty_image(5, 1);
-		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
 		assert_rgba_close(rgba(&edges, [2, 0]), [0.0, 0.0, 0.0, 0.0], 0.0);
 
 		let colors = [
@@ -278,7 +282,7 @@ mod tests {
 		];
 		let mut source = texture_2d(5, 1, &colors);
 		let mut edges = empty_image(5, 1);
-		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
 		assert_rgba_close(rgba(&edges, [2, 0]), [1.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
 
 		let north_only = [
@@ -294,7 +298,7 @@ mod tests {
 		];
 		let mut source = texture_2d(3, 3, &north_only);
 		let mut edges = empty_image(3, 3);
-		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
 		assert_rgba_close(rgba(&edges, [1, 1]), [2.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
 
 		let both = [
@@ -310,7 +314,7 @@ mod tests {
 		];
 		let mut source = texture_2d(3, 3, &both);
 		let mut edges = empty_image(3, 3);
-		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
 		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 0.0, 0.0, 0.0], 0.0);
 	}
 
@@ -340,9 +344,8 @@ mod tests {
 		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
 		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
 		let mut result = empty_image(9, 9);
-		for origin in [[0, 0], [0, 8]] {
-			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
-		}
+		// One tile covers the whole 9x9 image.
+		run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [0, 0], [9, 9]);
 		let resolved = rgba(&result, [4, 4]);
 
 		assert!(
@@ -369,9 +372,8 @@ mod tests {
 		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
 		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
 		let mut result = empty_image(9, 9);
-		for origin in [[0, 0], [0, 8]] {
-			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
-		}
+		// One tile covers the whole 9x9 image.
+		run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, [0, 0], [9, 9]);
 		let resolved = rgba(&result, [4, 4]);
 
 		assert!(
@@ -394,8 +396,9 @@ mod tests {
 		let mut area = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut search = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut result = empty_image(17, 9);
-		for origin in [[0, 0], [16, 0], [0, 8], [16, 8]] {
-			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
+		// The second tile holds only the last column, so both partial tiles run.
+		for origin in [[0, 0], [16, 0]] {
+			run_resolve_tile(&mut source, &mut edges, &mut area, &mut search, &mut result, origin, [17, 9]);
 		}
 		for y in 0..9 {
 			for x in 0..17 {

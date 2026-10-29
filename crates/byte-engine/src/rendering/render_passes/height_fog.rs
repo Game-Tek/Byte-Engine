@@ -13,7 +13,7 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		DirectionalLight, ExponentialHeightFog, FogLayer, Sink, View,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::{blit::ImageBypassPass, sun::Sun},
 	},
 };
@@ -64,7 +64,7 @@ impl FogLayerShaderData {
 /// and before lens flare, bloom, and tone mapping, so light glows through the fog instead of over it. The pass reads
 /// the opaque scene depth, so transparent surfaces and particles take the fog of the surface behind them.
 pub struct ExponentialHeightFogRenderPass {
-	fog_pass: simple_compute::Pass,
+	fog_pass: simple_tile::Pass,
 	/// Forwards `main` unchanged while there is no fog or the fog shader is still compiling.
 	main_copy: ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<FogShaderData>,
@@ -89,17 +89,21 @@ impl ExponentialHeightFogRenderPass {
 		let source = render_pass_builder.read_from("main");
 		let depth = render_pass_builder.read_from("depth");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Exponential Height Fog"),
-		);
+		// The fog's tile output, which the builder gives the uses that needs.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Exponential Height Fog"));
 		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
 		let main_copy = render_pass_builder.take_main_copy().expect(
 			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
 		);
 
-		let pipeline = simple_compute::Pipeline::compile(
+		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Exponential Height Fog", "byte-engine/rendering/height-fog.pipeline"),
+			simple_tile::Descriptor::new(
+				"Exponential Height Fog",
+				"byte-engine/rendering/height-fog.pipeline",
+				&[output.format()],
+			),
 		);
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
@@ -112,11 +116,11 @@ impl ExponentialHeightFogRenderPass {
 		let fog_pass = pipeline.bind(
 			"Exponential Height Fog Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result", output),
-				simple_compute::Resource::buffer("parameters", parameters),
+				simple_tile::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("parameters", parameters),
 			],
+			&[simple_tile::Output::new("result", output)],
 		);
 
 		Self {
@@ -238,14 +242,14 @@ impl RenderPass for ExponentialHeightFogRenderPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
 	use math::{Point, UnitVector};
 	use maths_rs::Vec3f;
 
-	use super::simple_compute;
 	use crate::rendering::{
 		ExponentialHeightFog, FogLayer,
-		shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d},
+		render_pass::simple_compute,
+		shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d},
 	};
 
 	const HEIGHT_FOG_BESL: &str = include_str!("../../../assets/rendering/height-fog.besl");
@@ -326,9 +330,9 @@ mod tests {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut depth_texture);
 		descriptors.bind_texture(ResourceSlot::new(1), &mut scene);
-		descriptors.bind_image(ResourceSlot::new(2), &mut result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut descriptors, pixel);
+		run_pixel(&program, &mut descriptors, pixel, PIXEL_TILE, [width, height]);
 		drop(descriptors);
 		rgba(&result, pixel)
 	}

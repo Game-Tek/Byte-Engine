@@ -1,1 +1,1 @@
-{"name":"LUT Apply","kind":{"type":"compute","shader":"byte-engine/rendering/lut/apply.besl"}}
+{"name":"LUT Apply","kind":{"type":"tile","shader":"byte-engine/rendering/lut/apply.besl"}}

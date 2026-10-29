@@ -177,6 +177,22 @@ size. This relies on each compute subgroup holding consecutive local
 invocations, a power of two of at least four lanes, which Apple, AMD, NVIDIA,
 and Intel GPUs do.
 
+## Tile stage
+
+Tile shaders read `thread_id` and `thread_idx` like compute shaders, and
+synchronize `workgroup` storage with `workgroup_barrier`. Read the output size
+from the `StageInput` parameter described under
+[stage input values](/docs/reference/besl/interface#stage-input-values), or with
+`output_extent` in helper functions:
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `output_extent` | `output_extent() -> vec2u` | Returns the width and height of every output, in pixels. |
+| `write` | `write(output, vec2u pixel, vec4f value) -> void` | Stores `value` in an `output` declaration at `pixel`, a pixel of the invocation's own tile. |
+
+The [tile entry points](/docs/reference/besl/interface#tile-entry-points)
+specify the outputs and the rules a tile shader follows.
+
 ## Task stage
 
 | Name | Signature | Explanation |

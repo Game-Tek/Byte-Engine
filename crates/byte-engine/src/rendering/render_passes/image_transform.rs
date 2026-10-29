@@ -1,10 +1,11 @@
-//! One compute transform from the incoming `main` into its replacement, shared by tone mappers and display encoders.
+//! One tile transform from the incoming `main` into its replacement, shared by tone mappers and display encoders.
 
 use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		pipeline_compilation::TilePipelineRequest,
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::blit::ImageBypassPass,
 	},
 };
@@ -18,7 +19,7 @@ pub struct Configuration {
 	pub name: &'static str,
 	/// The label of the pass's GPU region and descriptor set.
 	pub label: &'static str,
-	/// The baked compute pipeline, which reads `source` and writes `result`.
+	/// The baked tile pipeline, which reads `source` and writes its `result` output.
 	pub pipeline_id: &'static str,
 	/// The render-target name of the replacement `main`, which screenshots can capture.
 	pub output_name: &'static str,
@@ -33,16 +34,23 @@ pub struct Configuration {
 /// hands it the swapchain directly when it is the final pass.
 pub struct ImageTransformPass {
 	name: &'static str,
-	pass: simple_compute::Pass,
+	pass: simple_tile::Pass,
 }
 
 impl Entity for ImageTransformPass {}
 
 impl ImageTransformPass {
-	/// Starts the transform and bypass shaders while window creation is still pending.
-	pub(crate) fn request_pipelines(manager: &crate::rendering::PipelineManagerClient, configuration: &Configuration) {
-		manager.request_pipeline(configuration.pipeline_id);
-		ImageBypassPass::request_pipeline(manager);
+	/// Starts the transform and bypass pipelines for outputs of `format` while window creation is still pending.
+	///
+	/// A transform is usually the final pass, which writes the swapchain, so pass the context's
+	/// [`ghi::context::Context::swapchain_format`]. A transform placed earlier requests its own format when it binds.
+	pub(crate) fn request_pipelines(
+		manager: &crate::rendering::PipelineManagerClient,
+		configuration: &Configuration,
+		format: ghi::Formats,
+	) {
+		manager.request_tile_pipeline(TilePipelineRequest::new(configuration.pipeline_id, vec![format]));
+		ImageBypassPass::request_forwarding_pipeline(manager, format);
 	}
 
 	/// Binds one sink's current `main` to a new display-color `main` written by the configured transform.
@@ -56,20 +64,18 @@ impl ImageTransformPass {
 				configuration.label
 			);
 		}
+		// The replacement is the transform's tile output, which the builder gives the uses that needs.
 		let destination = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
-				.name(configuration.output_name),
+			ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Image).name(configuration.output_name),
 		);
-		let pass = simple_compute::Pipeline::compile(
+		let pass = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(configuration.label, configuration.pipeline_id),
+			simple_tile::Descriptor::new(configuration.label, configuration.pipeline_id, &[destination.format()]),
 		)
 		.bind(
 			configuration.label,
-			&[
-				simple_compute::Resource::image("source", source),
-				simple_compute::Resource::image("result", destination),
-			],
+			&[simple_tile::Resource::image("source", source)],
+			&[simple_tile::Output::new("result", destination)],
 		);
 
 		Self {

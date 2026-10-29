@@ -70,6 +70,7 @@ impl ShaderCompiler for LinkingCompiler {
 						workgroup_size: None,
 						sets: Vec::new(),
 						ray_payload: None,
+						tile: None,
 					},
 					artifact: ShaderArtifact::Spirv,
 				},

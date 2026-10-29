@@ -4,7 +4,8 @@ source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 edges: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 area_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 search_texture: descriptor<{ type: Texture2D, binding: 3, access: read }>;
-result: descriptor<{ type: StorageImage, binding: 4, access: write }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
 
 // These values match the official SMAA 1x Ultra preset and lookup textures.
 SMAA_MAX_SEARCH_STEPS: const u32 = 32;
@@ -20,19 +21,19 @@ SMAA_PACKED_EDGE_MAX: const f16 = 3.0;
 SMAA_DIAGONAL_CONTINUATION: const f16 = 0.9;
 SMAA_ORTHOGONAL_CONTINUATION: const f16 = 0.8281;
 
-// A 16x8 output tile keeps the original two-dimensional locality. It needs one
+// A 16x16 output tile, one lane per pixel, keeps the original two-dimensional locality. It needs one
 // texel of right and bottom weight look-ahead. The shared cache replaces the
 // full-screen RGBA8 weight intermediate; each entry packs four quantized UNORM
 // bytes so resolve matches the former store/load.
 SMAA_RESOLVE_WORKGROUP_WIDTH: const u32 = 16;
-SMAA_RESOLVE_WORKGROUP_HEIGHT: const u32 = 8;
-SMAA_RESOLVE_WORKGROUP_THREADS: const u32 = 128;
+SMAA_RESOLVE_WORKGROUP_HEIGHT: const u32 = 16;
+SMAA_RESOLVE_WORKGROUP_THREADS: const u32 = 256;
 SMAA_WEIGHT_TILE_WIDTH: const u32 = 17;
-SMAA_WEIGHT_TILE_HEIGHT: const u32 = 9;
-SMAA_WEIGHT_TILE_SIZE: const u32 = 153;
+SMAA_WEIGHT_TILE_HEIGHT: const u32 = 17;
+SMAA_WEIGHT_TILE_SIZE: const u32 = 289;
 
 // Each lane cooperatively supplies final packed RGBA8 weights for a small tile.
-cached_weights: workgroup<u32, 153>;
+cached_weights: workgroup<u32, 289>;
 
 // Decodes the west and north binary flags stored in the low two bits of R8UNORM.
 unpack_edge_flags: fn(value: f32) -> vec2f16 {
@@ -425,7 +426,7 @@ clamp_tile_add: fn(origin: u32, offset: u32, extent: u32) -> u32 {
 
 main: fn(input: StageInput) -> void {
 	let coordinate: vec2u = input.thread_id;
-	let extent: vec2u = texture_size(edges);
+	let extent: vec2u = input.extent;
 	let workgroup_origin: vec2u = vec2u(
 		coordinate.x - coordinate.x % SMAA_RESOLVE_WORKGROUP_WIDTH,
 		coordinate.y - coordinate.y % SMAA_RESOLVE_WORKGROUP_HEIGHT
@@ -444,7 +445,9 @@ main: fn(input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	guard_image_bounds(result, coordinate);
+	if (coordinate.x >= extent.x || coordinate.y >= extent.y) {
+		return;
+	}
 	let local: vec2u = coordinate - workgroup_origin;
 	let center_weights: u32 = cached_weight_at(local);
 	let right: f16 = unpack_weight_component(cached_weight_at(local + vec2u(1, 0)), 24);

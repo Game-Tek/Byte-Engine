@@ -22,7 +22,7 @@ and renderer share a device is in the
 | Frame | A per-frame view of a queue's context. | At most 3 frames in flight. A frame key carries the frame index and the sequence index, the frame index modulo the frames in flight. |
 | Command buffer recording | Records passes, copies, clears, blits, and transfers, then executes with a synchronizer. | Counters are started once per frame and measure whole passes, bottom-level acceleration structure builds included. A top-level build runs alongside the passes after it, and its time shows in the first pass that reads the structure. Unordered groups don't nest. |
 | Synchronizer | One native primitive per frame sequence. | Waited, polled without blocking, or signaled by an execution. |
-| Swapchain | Bound to a window with a presentation mode and an image count. | Acquiring an image may block until the previous submission of that sequence allows reuse, and returns nothing when no image is available. |
+| Swapchain | Bound to a window with a presentation mode and an image count. | Acquiring an image may block until the previous submission of that sequence allows reuse, and returns nothing when no image is available. Its images store blue, green, red, and alpha in 8 bits each: as normalized integers on Metal and Direct3D 12, and encoded as sRGB on Vulkan. |
 | Window and input | A per-process application object creates windows and polls events. | Every window is dropped before the application. |
 
 A pipeline binds descriptor sets by their layout, in any order; a set for a
@@ -42,6 +42,7 @@ the pipeline's declared ranges.
 | Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |
 | Descriptor set layout | At most 64 resources with distinct slots. Equal layouts have equal identities and are interchangeable. |
 | Raster pipeline | Clockwise front faces, back-face culling, solid fill, and depth writes by default. |
+| Tile pipeline | A tile function, the formats of the one to eight color attachments it writes, and its 16 × 16 or 32 × 32 pixel tile. A tile pass is one render pass whose attachments share one size, and it runs the function once over every tile of them; its threadgroup storage sizes come from the shader. Only contexts that support tile functions create one. |
 | Acceleration structure | Triangle geometry with 16-bit or 32-bit indices. See [Ray tracing](#ray-tracing). |
 | Ray tracing pipeline and shader binding table | A ray generation shader and its hit groups, and the records that map hits to them. See [Ray tracing](#ray-tracing). |
 | Counter | At most 512 per frame. Its duration is that of the most recently completed frame. |
@@ -55,7 +56,7 @@ the pipeline's declared ranges.
 | Uses | Vertex, index, uniform, storage, indirect, image, render target, depth stencil, transfer source, transfer destination, acceleration structure build, clear, input attachment |
 | Device accesses | CPU read, CPU write, GPU read, GPU write, and the combinations device only, host only, host to device, and device to host |
 | Data types | Float through float4, u8, u16, u32, int through int4, uint through uint4 |
-| Shader types | Vertex, fragment, compute, task, mesh, ray generation, closest hit |
+| Shader types | Vertex, fragment, compute, tile, task, mesh, ray generation, closest hit |
 | Filtering, reduction, addressing | Closest or linear; weighted average, minimum, or maximum; repeat, mirror, clamp, or border |
 | Presentation modes | Immediate, FIFO, mailbox |
 | Clear values | None, a color, four integers, or a depth |
@@ -186,6 +187,7 @@ A trace launches the ray generation shader over an extent.
 | Validation, GPU validation, API dump | Not used | Validation layers, GPU-assisted validation, API dump layer | Debug layer and GPU-based validation; no dump |
 | Debug labels | Names on heaps, buffers, images, pipelines, and command buffers | Debug names | Labels on uploads |
 | Ray tracing | Supported when the GPU supports it | Not supported; contexts report no support | Not supported; contexts report no support |
+| Tile functions | Always available | Not supported; contexts report no support | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
 | Sparse resources | No effect on any backend | | |

@@ -399,7 +399,7 @@ impl Pipeline {
 	pub(crate) fn compute_threadgroup_size(&self) -> Option<Extent> {
 		match &self.pipeline {
 			PipelineState::Compute { threadgroup_size, .. } => *threadgroup_size,
-			PipelineState::Raster(_) | PipelineState::RayTracing { .. } => None,
+			PipelineState::Raster(_) | PipelineState::RayTracing { .. } | PipelineState::Tile(_) => None,
 		}
 	}
 
@@ -410,9 +410,17 @@ impl Pipeline {
 	pub(crate) fn raster(&self) -> &RasterState {
 		match &self.pipeline {
 			PipelineState::Raster(raster) => raster,
-			PipelineState::Compute { .. } | PipelineState::RayTracing { .. } => unreachable!(
+			PipelineState::Compute { .. } | PipelineState::RayTracing { .. } | PipelineState::Tile(_) => unreachable!(
 				"Metal draw state is missing. The most likely cause is that a draw read its pipeline before binding a raster pipeline."
 			),
+		}
+	}
+
+	/// Returns the tile state a tile pass applies, or `None` for other pipelines.
+	pub(crate) fn tile(&self) -> Option<&TileState> {
+		match &self.pipeline {
+			PipelineState::Tile(tile) => Some(tile),
+			_ => None,
 		}
 	}
 }
@@ -432,6 +440,22 @@ pub(crate) enum PipelineState {
 		/// The closest hit of each hit group, as the function a table entry of this pipeline can call.
 		hit_groups: Box<[Retained<ProtocolObject<dyn mtl::MTLFunctionHandle>>]>,
 	},
+	Tile(TileState),
+}
+
+/// The `TileState` struct keeps what a tile pass needs to run a tile pipeline: the render pipeline state, the tile
+/// the pass must use, and the threadgroup memory the pass reserves.
+#[derive(Clone)]
+pub(crate) struct TileState {
+	pub(crate) state: Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>,
+	/// Pixels along each edge of a tile, which the render pass takes as its tile size.
+	pub(crate) tile: u32,
+	/// The threads that run for each tile.
+	pub(crate) threads: Extent,
+	/// The bytes of each threadgroup argument, by index, each a multiple of 16.
+	pub(crate) threadgroup_memory: Box<[u32]>,
+	/// The pixel format of each color attachment, in attachment order.
+	pub(crate) outputs: Box<[crate::Formats]>,
 }
 
 /// The `ShaderBindingTable` struct keeps the records of a shader binding table as the visible function table a trace
@@ -701,7 +725,10 @@ impl crate::device::Device for Factory {
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = matches!(
 					stage,
-					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh | crate::ShaderTypes::Compute
+					crate::ShaderTypes::Task
+						| crate::ShaderTypes::Mesh
+						| crate::ShaderTypes::Compute
+						| crate::ShaderTypes::Tile
 				)
 				.then(|| utils::parse_threadgroup_size_metadata(source))
 				.flatten();
@@ -847,6 +874,70 @@ impl crate::device::Device for Factory {
 				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
 				threadgroup_size: shader.threadgroup_size,
 			},
+			layout: build_pipeline_layout(
+				&self.shaders,
+				std::slice::from_ref(&builder.shader),
+				builder.push_constant_ranges,
+			),
+		}
+	}
+
+	/// Compiles a tile pipeline from one of this factory's tile shaders, whose threadgroup size is the threads that
+	/// run for each tile.
+	///
+	/// The threadgroup doesn't have to cover the tile, so each thread can write several pixels of it.
+	fn create_tile_pipeline(&mut self, builder: crate::pipelines::tile::Builder) -> Self::RasterPipeline {
+		let shader = &self.shaders[builder.shader.handle.index() as usize];
+		assert!(
+			shader.stage == crate::Stages::TILE,
+			"Metal tile pipeline creation failed because shader {:?} is a {:?} shader. The most likely cause is that a compute or fragment shader was passed to tile::Builder. Pass a shader created with ShaderTypes::Tile.",
+			shader.name,
+			shader.stage,
+		);
+		let threads = shader.threadgroup_size.unwrap_or_else(|| {
+			panic!(
+				"Metal tile pipeline creation failed because shader {:?} has no threadgroup size. The most likely cause is an MTLB artifact created without its workgroup. Pass the shader's workgroup when creating it.",
+				shader.name,
+			)
+		});
+		assert!(
+			threads.width() <= builder.tile && threads.height() <= builder.tile && threads.depth() <= 1,
+			"Metal tile pipeline creation failed because shader {:?} runs {threads:?} threads per {tile} x {tile} tile. The most likely cause is a workgroup larger than the tile. Use a workgroup no larger than the tile.",
+			shader.name,
+			tile = builder.tile,
+		);
+		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
+		let name = builder.name.filter(|_| cfg!(debug_assertions) && self.settings.debug_labels);
+		let descriptor = mtl::MTL4TileRenderPipelineDescriptor::new();
+		descriptor.setLabel(name.map(NSString::from_str).as_deref());
+		descriptor.setTileFunctionDescriptor(Some(&function));
+		// The tile function runs fewer threads than the tile has pixels when each thread writes several of them.
+		descriptor.setThreadgroupSizeMatchesTileSize(false);
+		let color_attachments = descriptor.colorAttachments();
+		for (index, format) in builder.outputs.iter().enumerate() {
+			// SAFETY: Builders hold at most eight outputs, the attachments Metal's array has.
+			let attachment = unsafe { color_attachments.objectAtIndexedSubscript(index as _) };
+			attachment.setPixelFormat(utils::to_pixel_format(*format));
+		}
+		let state = self
+			.compiler
+			.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Metal tile pipeline creation failed for shader {:?}: {}. The most likely cause is a tile function whose outputs don't match the attachment formats, or one that declares threadgroup memory in its body. Match the outputs to the formats, and pass workgroup storage as threadgroup arguments.",
+					shader.name,
+					error.localizedDescription(),
+				)
+			});
+
+		Pipeline {
+			pipeline: PipelineState::Tile(TileState {
+				state,
+				tile: builder.tile,
+				threads,
+				threadgroup_memory: builder.threadgroup_memory.into(),
+				outputs: builder.outputs.into(),
+			}),
 			layout: build_pipeline_layout(
 				&self.shaders,
 				std::slice::from_ref(&builder.shader),

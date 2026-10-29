@@ -42,6 +42,9 @@ pub enum ShaderTypes {
 	Fragment,
 	/// A compute shader.
 	Compute,
+	/// A tile shader: compute-like, with color attachments as outputs. See
+	/// [`Stages::Tile`](crate::shader::generator::Stages::Tile).
+	Tile,
 	Task,
 	Mesh,
 	RayGen,
@@ -57,6 +60,7 @@ impl From<crate::shader::generator::Stages> for ShaderTypes {
 			Stages::Vertex => Self::Vertex,
 			Stages::Fragment => Self::Fragment,
 			Stages::Compute { .. } => Self::Compute,
+			Stages::Tile { .. } => Self::Tile,
 			Stages::Task { .. } => Self::Task,
 			Stages::Mesh { .. } => Self::Mesh,
 			Stages::RayGeneration => Self::RayGen,

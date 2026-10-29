@@ -84,6 +84,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.record_texture_transfer(source_handle, None, None)
 	}
 
+	#[allow(unreachable_code)]
+	fn start_tile_pass(
+		&mut self,
+		_: graphics_hardware_interface::PipelineHandle,
+		_: Extent,
+		_: &[graphics_hardware_interface::AttachmentInformation],
+	) -> &mut impl crate::command_buffer::BoundTilePipelineMode {
+		crate::pipelines::tile::unsupported("Vulkan");
+		self
+	}
+
 	fn start_render_pass(
 		&mut self,
 		extent: Extent,

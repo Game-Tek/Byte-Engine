@@ -31,7 +31,8 @@ FogParameters: struct {
 
 depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 scene_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
 parameters: descriptor<{ type: FogParameters, binding: 3, access: read, memory: constant }>;
 
 // Background pixels hold no surface, so they're fogged as if this far away. Rays that climb out of the fog stop
@@ -95,7 +96,10 @@ layer_optical_depth: fn (layer: FogLayer, direction: vec3f, distance: f32) -> f3
 
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
-	guard_image_bounds(result, pixel);
+	let extent: vec2u = input.extent;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
 	let scene: vec4f = fetch(scene_texture, pixel);
 	let depth: f32 = fetch(depth_texture, pixel).x;
 

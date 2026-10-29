@@ -512,6 +512,11 @@ impl Generator {
 			Stages::RayGeneration | Stages::ClosestHit => {
 				unreachable!("`validate_no_ray_tracing` rejects ray tracing stages before HLSL emits a header.")
 			}
+			Stages::Tile { .. } => {
+				unreachable!(
+					"A tile shader reaches HLSL already rewritten into a compute shader by `backends::tile::lower_for`."
+				)
+			}
 		};
 		let _ = write!(
 			hlsl_block,

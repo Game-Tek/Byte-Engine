@@ -3,7 +3,10 @@
 //! Backends report a failed lowering without saying why, so the rules a shader author can break are checked here
 //! first, each with an error that names the rule and how to fix it.
 
-use super::{RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, platform::PlatformShaderLanguage};
+use super::{
+	RAY_TRACING_STAGE_INTRINSICS, SUBGROUP_INTRINSICS, any_code_node, platform::PlatformShaderLanguage,
+	tile::TILE_ENTRY_DOCS_PATH,
+};
 use crate::shader::generator::Stages;
 
 const RAY_TRACING_ENTRY_DOCS_PATH: &str = "reference/besl/interface#ray-tracing-entry-points";
@@ -114,16 +117,37 @@ fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -
 fn code_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, node: &besl::NodeReference) -> Option<String> {
 	let stage_name = stage_name(stage);
 	let ray_tracing_docs = || crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH);
+	let tile_docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
 	match node.borrow().node() {
-		besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
+		besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic, arguments, ..
+		}) => {
 			let intrinsic = intrinsic.borrow();
 			let call = intrinsic.get_name()?;
+			if call == "write" && writes_output_overload(&intrinsic) {
+				return output_write_violation(stage, name, arguments.first()?);
+			}
 			call_violation(language, stage, name, call)
 		}
+		besl::Nodes::Expression(besl::Expressions::Discard) if matches!(stage, Stages::Tile { .. }) => Some(format!(
+			"Tile shader `{name}` uses `discard`. The most likely cause is fragment code moved into a tile shader, which has no fragment to discard. Remove `discard`, and skip the `write` instead. See {}.",
+			tile_docs()
+		)),
 		besl::Nodes::Expression(besl::Expressions::Discard) if stage.is_ray_tracing() => Some(format!(
 			"{stage_name} shader `{name}` uses `discard`. The most likely cause is fragment code moved into a ray tracing shader, which has no fragment to discard. Remove `discard`, and report the case in the payload instead. See {}.",
 			ray_tracing_docs()
 		)),
+		besl::Nodes::Workgroup {
+			name: storage, format, ..
+		} if matches!(stage, Stages::Tile { .. })
+			&& super::tile::workgroup_bytes(format.borrow().get_name().unwrap_or_default()).is_none() =>
+		{
+			Some(format!(
+				"Tile shader `{name}` declares workgroup storage `{storage}` of type `{format}`. The most likely cause is a struct or matrix shared through workgroup storage, whose size a Metal render pass can't reserve for its tile function. Share scalars or vectors, one `workgroup` declaration per field. See {}.",
+				tile_docs(),
+				format = format.borrow().get_name().unwrap_or("unnamed"),
+			))
+		}
 		besl::Nodes::Workgroup { name: storage, .. } if stage.is_ray_tracing() => Some(format!(
 			"{stage_name} shader `{name}` uses workgroup storage `{storage}`. The most likely cause is compute code moved into a ray tracing shader, whose invocations share no workgroup. Use a local variable or a buffer instead. See {}.",
 			ray_tracing_docs()
@@ -132,9 +156,51 @@ fn code_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, n
 	}
 }
 
+/// Reports whether `intrinsic` is the `write` overload that takes a tile shader's output instead of a storage image.
+fn writes_output_overload(intrinsic: &besl::Node) -> bool {
+	let besl::Nodes::Intrinsic { elements, .. } = intrinsic.node() else {
+		return false;
+	};
+	elements
+		.first()
+		.is_some_and(|parameter| parameter.borrow().get_name() == Some("output"))
+}
+
+/// Returns the error for a `write` of a `vec4f` value as a tile output, unless a tile shader writes one of its outputs.
+fn output_write_violation(stage: Stages, name: &str, target: &besl::NodeReference) -> Option<String> {
+	let docs = crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
+	if besl::referenced_output(target).is_none() {
+		return Some(format!(
+			"Shader `{name}` calls `write` with a value as its first argument. The most likely cause is a local variable passed where a storage image or tile output belongs. Pass a `StorageImage` descriptor, or in a tile shader one of its `output` declarations. See {docs}."
+		));
+	}
+	if matches!(stage, Stages::Tile { .. }) {
+		None
+	} else {
+		Some(format!(
+			"{stage} shader `{name}` writes an `output` with `write`. The most likely cause is tile code in another stage: only tile shaders write outputs at a pixel. Set `stage` to `Tile` in the shader's `.besl.bead` file, or write a `StorageImage` descriptor instead. See {docs}.",
+			stage = stage_name(stage)
+		))
+	}
+}
+
 /// Returns the error for a call to the intrinsic named `call` that `stage` or `language` doesn't allow, or `None`.
 fn call_violation(language: PlatformShaderLanguage, stage: Stages, name: &str, call: &str) -> Option<String> {
 	let stage_name = stage_name(stage);
+	let is_tile = matches!(stage, Stages::Tile { .. });
+	let tile_docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
+	if call == "output_extent" && !is_tile {
+		return Some(format!(
+			"{stage_name} shader `{name}` reads `{call}`. The most likely cause is tile code in another stage: only tile shaders have an output extent. Set `stage` to `Tile` in the shader's `.besl.bead` file, or pass the value in a push constant. See {}.",
+			tile_docs()
+		));
+	}
+	if is_tile && (SUBGROUP_INTRINSICS.contains(&call) || matches!(call, "fwidth" | "sample")) {
+		return Some(format!(
+			"Tile shader `{name}` calls `{call}`. The most likely cause is compute or fragment code moved into a tile shader: a tile shader's lanes don't follow the same order on every platform, and it has no derivatives. Share values through `workgroup` storage instead of subgroups, and sample with `texture_lod`. See {}.",
+			tile_docs()
+		));
+	}
 	let traces_rays = matches!(call, "intersect" | "trace_occlusion" | "invoke");
 	if traces_rays && !language.is_msl() {
 		return Some(format!(
@@ -185,6 +251,7 @@ fn stage_name(stage: Stages) -> &'static str {
 		Stages::Vertex => "Vertex",
 		Stages::Fragment => "Fragment",
 		Stages::Compute { .. } => "Compute",
+		Stages::Tile { .. } => "Tile",
 		Stages::Task { .. } => "Task",
 		Stages::Mesh { .. } => "Mesh",
 		Stages::RayGeneration => "RayGeneration",

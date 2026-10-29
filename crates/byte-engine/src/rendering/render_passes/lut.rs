@@ -52,7 +52,7 @@ impl LutWorkflow {
 /// Install it through [`crate::application::graphics::setup_lut_render_pass`] or a color-grading setup function.
 pub struct LutPass {
 	workflow: LutWorkflow,
-	pass: simple_compute::Pass,
+	pass: simple_tile::Pass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
 	/// The prepared texels, dropped once the first frame uploads them into `lut_image`.
@@ -93,13 +93,13 @@ impl LutPass {
 			LutWorkflow::Creative => render_pass_builder.format_of("main"),
 			LutWorkflow::Aces | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
 		};
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(output_format, ghi::Uses::Storage | ghi::Uses::Image).name(workflow.output_name()),
-		);
+		// The grade's tile output, which the builder gives the uses that needs.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(output_format, ghi::Uses::Image).name(workflow.output_name()));
 
-		let pipeline = simple_compute::Pipeline::compile(
+		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(workflow.label(), workflow.pipeline_id()),
+			simple_tile::Descriptor::new(workflow.label(), workflow.pipeline_id(), &[output.format()]),
 		);
 
 		let context = render_pass_builder.context();
@@ -123,11 +123,11 @@ impl LutPass {
 		let pass = pipeline.bind(
 			workflow.label(),
 			&[
-				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result_texture", output),
-				simple_compute::Resource::buffer("parameters", parameters),
+				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("parameters", parameters),
 			],
+			&[simple_tile::Output::new("result_texture", output)],
 		);
 
 		Self {
@@ -293,12 +293,12 @@ impl PreparedLut {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value, output_slot};
 	use resource_management::resources::lut::{Lut, LutKind};
 
 	use super::lut_shader_parameters;
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d};
 
 	static LUT_SHADER: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("lut/apply.besl"));
@@ -336,9 +336,9 @@ mod tests {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
 		descriptors.bind_texture(ResourceSlot::new(1), &mut lut);
-		descriptors.bind_image(ResourceSlot::new(2), &mut result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut descriptors, [0, 0]);
+		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
 	}
@@ -414,9 +414,9 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
 			descriptors.bind_texture(ResourceSlot::new(1), &mut identity_lut);
-			descriptors.bind_image(ResourceSlot::new(2), &mut result);
+			descriptors.bind_image(output_slot(0), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			run_at(&program, &mut descriptors, [x, 0]);
+			run_pixel(&program, &mut descriptors, [x, 0], PIXEL_TILE, [3, 1]);
 		}
 
 		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.5, 0.4], 1e-6);
@@ -473,6 +473,6 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 	},
 };

@@ -90,6 +90,13 @@ pub enum Stages {
 		local_size: Extent,
 	},
 	Fragment,
+	/// A compute-like stage for screen passes whose results are color attachments. It runs once per `tile` x `tile`
+	/// pixel tile of its outputs, with `local_size` threads per tile. Metal runs it as a tile function inside a render
+	/// pass, so its outputs never need shader-write usage; other platforms run it as a compute shader.
+	Tile {
+		tile: u32,
+		local_size: Extent,
+	},
 	/// The shader a ray tracing pipeline launches once for each point of a grid. It finds hits with `intersect` and
 	/// shades them with `invoke`.
 	RayGeneration,
@@ -101,9 +108,10 @@ impl Stages {
 	/// Returns the workgroup size of a compute, task, or mesh stage, or `None` for raster stages.
 	pub(crate) fn local_size(self) -> Option<Extent> {
 		match self {
-			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
-				Some(local_size)
-			}
+			Stages::Compute { local_size }
+			| Stages::Task { local_size, .. }
+			| Stages::Mesh { local_size, .. }
+			| Stages::Tile { local_size, .. } => Some(local_size),
 			Stages::Vertex | Stages::Fragment | Stages::RayGeneration | Stages::ClosestHit => None,
 		}
 	}
@@ -255,7 +263,7 @@ pub(crate) fn validate_no_ray_tracing(stage: &Stages, order: &[besl::NodeReferen
 
 /// Rejects shared storage in stages that do not have workgroup execution semantics.
 pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
-	if matches!(stage, Stages::Compute { .. } | Stages::Task { .. })
+	if matches!(stage, Stages::Compute { .. } | Stages::Task { .. } | Stages::Tile { .. })
 		|| !order
 			.iter()
 			.any(|node| matches!(node.borrow().node(), besl::Nodes::Workgroup { .. }))
@@ -515,6 +523,17 @@ impl Settings {
 	pub fn compute(extent: Extent) -> Settings {
 		Self::from_stage(Stages::Compute {
 			local_size: Self::normalize_local_size(extent),
+		})
+	}
+
+	/// Returns the settings of a tile shader that runs on `tile` x `tile` pixel tiles with `local_size` threads each.
+	///
+	/// Each thread writes a block of `tile / local_size` pixels along each axis. `.besl.bead` parsing checks the tile
+	/// and the workgroup against the stage's rules before calling this.
+	pub fn tile(tile: u32, local_size: Extent) -> Settings {
+		Self::from_stage(Stages::Tile {
+			tile,
+			local_size: Self::normalize_local_size(local_size),
 		})
 	}
 

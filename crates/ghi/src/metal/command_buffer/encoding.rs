@@ -138,6 +138,7 @@ impl CommandBufferRecording<'_> {
 					(crate::Stages::MESH, ArgumentTableStage::Mesh),
 					(crate::Stages::VERTEX, ArgumentTableStage::Vertex),
 					(crate::Stages::FRAGMENT, ArgumentTableStage::Fragment),
+					(crate::Stages::TILE, ArgumentTableStage::Tile),
 				] {
 					if stages.intersects(stage) {
 						self.set_stage_buffer_address(table_stage, binding, address);
@@ -318,8 +319,12 @@ impl CommandBufferRecording<'_> {
 				encoder.setDepthStencilState(raster.depth_stencil_state.as_deref());
 				encoder.setRenderPipelineState(&raster.state);
 			}
-			(ActiveEncoder::Compute(_), PipelineState::Raster(_)) => panic!(
-				"Cannot dispatch a raster Metal pipeline. The most likely cause is that a raster pipeline handle was passed to bind_compute_pipeline."
+			(ActiveEncoder::Render(encoder), PipelineState::Tile(tile)) => {
+				command_buffer.retain_allocation(&*tile.state);
+				encoder.setRenderPipelineState(&tile.state);
+			}
+			(ActiveEncoder::Compute(_), PipelineState::Raster(_) | PipelineState::Tile(_)) => panic!(
+				"Cannot dispatch a raster or tile Metal pipeline on a compute encoder. The most likely cause is that its handle was passed to bind_compute_pipeline. Record a tile pipeline with start_tile_pass."
 			),
 			(ActiveEncoder::Render(_), PipelineState::Compute { .. } | PipelineState::RayTracing { .. }) => panic!(
 				"Cannot draw with a non-raster Metal pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
@@ -362,6 +367,42 @@ impl CommandBufferRecording<'_> {
 	pub(super) fn prepare_dispatch(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
 		self.ensure_compute_encoder();
 		self.prepare_command(additional_uses);
+	}
+
+	/// Records that the render pass just begun writes `attachments`, each an attachment and the image it targets, at
+	/// `stages` over `extent`.
+	///
+	/// It waits for the attachments' earlier accesses, marks the image-group members the pass clears or discards as
+	/// holding new contents, and keeps the writes that every command of the pass records.
+	pub(super) fn track_render_attachments<'a>(
+		&mut self,
+		attachments: impl IntoIterator<Item = (&'a graphics_hardware_interface::AttachmentInformation, ImageHandle)>,
+		stages: mtl::MTLStages,
+		extent: Extent,
+	) {
+		let mut initial_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
+		let mut final_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
+		for (attachment, image) in attachments {
+			let resource_use =
+				|access| synchronization::MetalResourceUse::image(image, Some(0), attachment.layer, stages, access);
+			let initial_access = crate::AccessPolicies::WRITE
+				| if attachment.loads() {
+					crate::AccessPolicies::READ
+				} else {
+					crate::AccessPolicies::NONE
+				};
+			initial_uses.push(resource_use(initial_access));
+			final_uses.push(resource_use(crate::AccessPolicies::WRITE).in_group_memory(self.device.images));
+			// A pass that clears or discards an attachment gives an image-group member new contents.
+			if let (ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
+				self.commit.image_groups.initialize(image);
+			}
+		}
+		self.consume_resources(initial_uses);
+		// Every command records the same attachment writes, so they are consolidated once for the whole pass.
+		synchronization::MetalResourceTracker::consolidate_in_place(&mut final_uses);
+		self.active_render_attachment_uses = final_uses;
+		self.active_render_extent = extent;
 	}
 
 	/// Prepares the next draw in the open render pass; `operation` names the draw call if no pass is open.

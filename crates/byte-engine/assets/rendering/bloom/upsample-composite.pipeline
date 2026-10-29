@@ -1,1 +1,1 @@
-{"name":"Bloom Upsample Composite","kind":{"type":"compute","shader":"byte-engine/rendering/bloom/upsample-composite.besl"}}
+{"name":"Bloom Upsample Composite","kind":{"type":"tile","shader":"byte-engine/rendering/bloom/upsample-composite.besl"}}

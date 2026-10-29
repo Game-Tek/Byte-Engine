@@ -3,6 +3,7 @@ use super::*;
 mod compute;
 mod raster;
 mod ray_tracing;
+mod tile;
 mod transfer;
 
 /// Consumes a whole buffer, which has no layout to transition.

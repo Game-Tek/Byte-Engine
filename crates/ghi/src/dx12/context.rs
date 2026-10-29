@@ -1149,6 +1149,11 @@ impl crate::context::Context for Device {
 		false
 	}
 
+	/// Presentation creates UNORM back buffers, as `presentation.rs` builds them.
+	fn swapchain_format(&self) -> Formats {
+		Formats::BGRAu8
+	}
+
 	fn bottom_level_acceleration_structure_size(&self, _: BottomLevelAccelerationStructureHandle) -> usize {
 		crate::rt::unsupported("DX12")
 	}

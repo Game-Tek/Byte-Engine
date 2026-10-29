@@ -5,7 +5,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 	},
 };
 
@@ -72,16 +72,19 @@ pub(crate) struct BloomShaderData {
 /// The pass prefilters the HDR `main` target into a half-resolution pyramid with Jimenez's 13-tap filter, using a
 /// luma-weighted average on the first level so single bright texels do not flicker, then climbs back up with a
 /// tent blur per level. The last climb and the addition onto the scene share one dispatch, so the top level never
-/// reaches memory. Install it after the passes that write scene light and before tone mapping. Toggle it at runtime
-/// with the `render.pass.bloom` parameter.
+/// reaches memory. The prefilter and the composite, the two steps at the sink's half and full resolution, are tile
+/// shaders, so where the platform runs tile functions their targets stay losslessly compressed. The smaller levels run
+/// as compute dispatches in one encoder: each tile pass is a render pass of its own, which costs more than a small level
+/// saves. Install it after the passes that write scene light and before tone mapping. Toggle it at runtime with the
+/// `render.pass.bloom` parameter.
 pub struct BloomPass {
 	settings: BloomPassSettings,
 	parameters: ghi::DynamicBufferHandle<BloomShaderData>,
-	extract_pass: simple_compute::Pass,
+	extract_pass: simple_tile::Pass,
 	downsample_passes: Vec<simple_compute::Pass>,
 	upsample_passes: Vec<simple_compute::Pass>,
 	/// Builds the top level from the one below it and adds it onto the scene.
-	composite_pass: simple_compute::Pass,
+	composite_pass: simple_tile::Pass,
 	/// The number of pyramid levels, each a render target the renderer sizes with the sink.
 	level_count: usize,
 }
@@ -100,17 +103,19 @@ impl BloomPass {
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: BloomPassSettings) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Bloom Output"),
-		);
+		// The builder gives the replacement for `main` the uses a tile pass writes it with.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Bloom Output"));
 
 		let level_count = settings.resolved_level_count();
+		// The prefilter writes the first level as a tile output and compute dispatches write the rest.
+		let output_uses = simple_tile::output_uses(render_pass_builder.context());
 		// Each pyramid level halves the previous one, starting at half the sink resolution.
 		let mut pyramid_target = |name, level: usize| -> ghi::BaseImageHandle {
+			let write_uses = if level == 0 { output_uses } else { ghi::Uses::Storage };
 			render_pass_builder
 				.create_scaled_render_target(
-					ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
-						.name(name),
+					ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | write_uses).name(name),
 					level_divisor(level),
 				)
 				.into()
@@ -152,9 +157,14 @@ impl BloomPass {
 		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
-		let extract_pipeline = simple_compute::Pipeline::compile(
+		let pyramid_formats = [crate::rendering::SCENE_COLOR_FORMAT];
+		let extract_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bloom Extract", "byte-engine/rendering/bloom/extract.pipeline"),
+			simple_tile::Descriptor::new(
+				"Bloom Extract",
+				"byte-engine/rendering/bloom/extract.pipeline",
+				&pyramid_formats,
+			),
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
@@ -164,21 +174,22 @@ impl BloomPass {
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
 		);
-		let composite_pipeline = simple_compute::Pipeline::compile(
+		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
+			simple_tile::Descriptor::new(
 				"Bloom Upsample Composite",
 				"byte-engine/rendering/bloom/upsample-composite.pipeline",
+				&[output.format()],
 			),
 		);
 
 		let extract_pass = extract_pipeline.bind(
 			"Bloom Extract Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result_texture", downsample_images[0]),
-				simple_compute::Resource::buffer("bloom_parameters", parameters),
+				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("bloom_parameters", parameters),
 			],
+			&[simple_tile::Output::new("result", downsample_images[0])],
 		);
 
 		let downsample_passes = (1..level_count)
@@ -228,22 +239,17 @@ impl BloomPass {
 		let composite_pass = composite_pipeline.bind(
 			"Bloom Upsample Composite Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler(
-					"low_resolution_texture",
-					below_top,
-					sampler,
-					ghi::Layouts::Read,
-				),
-				simple_compute::Resource::combined_image_sampler(
+				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("low_resolution_texture", below_top, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler(
 					"high_resolution_texture",
 					downsample_images[0],
 					sampler,
 					ghi::Layouts::Read,
 				),
-				simple_compute::Resource::image("result_texture", output),
-				simple_compute::Resource::buffer("bloom_parameters", parameters),
+				simple_tile::Resource::buffer("bloom_parameters", parameters),
 			],
+			&[simple_tile::Output::new("result", output)],
 		);
 
 		Self {
@@ -299,7 +305,8 @@ impl RenderPass for BloomPass {
 				command_buffer.region(
 					|label| label.write_str("Bloom"),
 					|command_buffer| {
-						extract_pass.record(command_buffer, block_lanes(bloom_extent(extent, 0)));
+						// The tile passes run over their output's extent, and the compute dispatches over one lane per texel.
+						extract_pass.record(command_buffer, bloom_extent(extent, 0));
 
 						for (index, pass) in downsample_passes.iter().enumerate() {
 							pass.record(command_buffer, bloom_extent(extent, index + 1));
@@ -309,7 +316,7 @@ impl RenderPass for BloomPass {
 							pass.record(command_buffer, bloom_extent(extent, level));
 						}
 
-						composite_pass.record(command_buffer, block_lanes(extent));
+						composite_pass.record(command_buffer, extent);
 					},
 				);
 			},
@@ -340,26 +347,14 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	extent.scaled_down(level_divisor(level))
 }
 
-/// Texels each lane of the extract and the upsample composite writes along each axis, matching `BLOOM_LANE_WIDTH` in
-/// `bloom/extract.besl` and `bloom/upsample-composite.besl`.
-const BLOCK_LANE_WIDTH: u32 = 2;
-
-/// Returns the lanes that dispatch a shader whose lanes each write a 2x2 block of a destination `extent` texels across:
-/// the extract and the upsample composite. Every pass that records one of them, such as
-/// [`crate::rendering::render_passes::lens_flare::LensFlarePass`] with the extract, sizes its dispatch with this.
-pub(crate) fn block_lanes(extent: Extent) -> Extent {
-	Extent::rectangle(
-		extent.width().div_ceil(BLOCK_LANE_WIDTH),
-		extent.height().div_ceil(BLOCK_LANE_WIDTH),
-	)
-}
-
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, WorkgroupState};
+	use besl::vm::{DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, WorkgroupState, output_slot};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, lane_config, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, texture_2d, tile_lanes, tiles,
+	};
 
 	static BLOOM_EXTRACT_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract.besl"));
@@ -374,19 +369,23 @@ mod tests {
 	/// A prefilter ceiling above any test input, so it does not take part.
 	const NO_CEILING: f32 = 65504.0;
 
-	/// Runs the `width` by `height` workgroup whose first lane is at `origin`.
-	fn run_workgroup(
+	/// The tile and lanes per tile side of the extract, as `bloom/extract.besl.bead` declares them.
+	const EXTRACT_TILE: (u32, u32) = (16, 8);
+	/// The tile and lanes per tile side of the upsample composite, as `bloom/upsample-composite.besl.bead` declares
+	/// them.
+	const UPSAMPLE_COMPOSITE_TILE: (u32, u32) = (32, 16);
+
+	/// Runs the lanes of tile `position`, `tile` pixels wide with `width` lanes along each side, over outputs of
+	/// `extent`.
+	fn run_tile(
 		program: &ExecutableProgram,
 		descriptors: &mut DescriptorBindings<'_>,
-		origin: [u32; 2],
-		width: u32,
-		height: u32,
+		position: [u32; 2],
+		(tile, width): (u32, u32),
+		extent: [u32; 2],
 	) {
-		let configs = (0..width * height)
-			.map(|lane| lane_config(lane).with_thread_id([origin[0] + lane % width, origin[1] + lane / width]))
-			.collect::<Vec<_>>();
-		program.run_workgroup(descriptors, &configs).expect(
-			"Failed to execute a bloom workgroup with the BESL VM. The most likely cause is missing runtime support or invalid workgroup memory synchronization.",
+		program.run_workgroup(descriptors, &tile_lanes(position, tile, width, extent)).expect(
+			"Failed to execute a bloom tile with the BESL VM. The most likely cause is missing runtime support or invalid workgroup memory synchronization.",
 		);
 	}
 
@@ -403,16 +402,16 @@ mod tests {
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		descriptors.bind_workgroup_state(&mut workgroup);
-		run_workgroup(&program, &mut descriptors, [0, 0], 8, 8);
+		run_tile(&program, &mut descriptors, [0, 0], EXTRACT_TILE, [1, 1]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
 	}
 
-	/// Runs the prefilter over a whole `size` by `size` source, every workgroup of it, without threshold or ceiling.
-	/// Each lane filters a 2x2 block of destination texels, so an 8x8 workgroup covers a 16x16 tile.
+	/// Runs the prefilter over a whole `size` by `size` source, every tile of it, without threshold or ceiling. Each
+	/// lane filters a 2x2 block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
 	fn extract_image(size: u32, source_texels: &[[f32; 4]]) -> Texture {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_BESL));
 		let parameter_slot = ResourceSlot::new(2);
@@ -422,17 +421,15 @@ mod tests {
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		let mut source = texture_2d(size, size, source_texels);
 		let mut result = empty_image(size / 2, size / 2);
-		let lanes = block_lanes(Extent::square(size / 2));
-		for y in (0..lanes.height()).step_by(8) {
-			for x in (0..lanes.width()).step_by(8) {
-				let mut workgroup = WorkgroupState::new();
-				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-				descriptors.bind_image(ResourceSlot::new(1), &mut result);
-				descriptors.bind_buffer(parameter_slot, &mut parameters);
-				descriptors.bind_workgroup_state(&mut workgroup);
-				run_workgroup(&program, &mut descriptors, [x, y], 8, 8);
-			}
+		let extent = [size / 2, size / 2];
+		for position in tiles(EXTRACT_TILE.0, extent) {
+			let mut workgroup = WorkgroupState::new();
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(output_slot(0), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			run_tile(&program, &mut descriptors, position, EXTRACT_TILE, extent);
 		}
 		result
 	}
@@ -442,7 +439,7 @@ mod tests {
 	/// the filter's footprint stays inside one lane's 2x2 texels, spans several lanes, or straddles the next workgroup's
 	/// tile.
 	#[test]
-	fn bloom_extract_besl_vm_filters_alike_across_workgroups() {
+	fn bloom_extract_besl_vm_filters_alike_across_tiles() {
 		const SIZE: u32 = 48;
 		// Glow sampled from two destination texels before the block to two after, in both axes.
 		let glow_around = |block: u32| -> Vec<[f32; 4]> {
@@ -472,7 +469,7 @@ mod tests {
 			}
 		}
 
-		// Each lane filters two destination texels along each axis, and texel 16 starts the second workgroup's tile, so
+		// Each lane filters two destination texels along each axis, and texel 16 starts the second tile, so
 		// these blocks put the footprint on either side of a lane's first texel and of the tile edge.
 		for block in [6, 7, 14, 15, 16, 17] {
 			for (actual, expected) in glow_around(block).into_iter().zip(&reference) {
@@ -689,9 +686,9 @@ mod tests {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
 		descriptors.bind_texture(ResourceSlot::new(1), &mut bloom);
-		descriptors.bind_image(ResourceSlot::new(2), &mut result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut descriptors, [0, 0]);
+		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
 	}
@@ -715,8 +712,8 @@ mod tests {
 		assert_rgba_close(result, [65504.0, 101.0, 101.0, 1.0], 1e-2);
 	}
 
-	/// Runs the fused top-level upsample and composite over a `size` by `size` scene, one 16x16 workgroup at a time.
-	/// Each lane writes a 2x2 block of pixels, so a workgroup covers 32x32 of them. The top level is half the scene's
+	/// Runs the fused top-level upsample and composite over a `size` by `size` scene, one tile at a time. Each of a
+	/// tile's 16x16 lanes writes a 2x2 block of pixels, so a tile covers 32x32 of them. The top level is half the scene's
 	/// size and the level below it a quarter, both rounded down.
 	fn upsample_composite(
 		size: u32,
@@ -740,19 +737,16 @@ mod tests {
 		let mut low = texture_2d(size / 4, size / 4, low_texels);
 		let mut high = texture_2d(size / 2, size / 2, high_texels);
 		let mut result = empty_image(size, size);
-		let lanes = block_lanes(Extent::square(size));
-		for y in (0..lanes.height()).step_by(16) {
-			for x in (0..lanes.width()).step_by(16) {
-				let mut workgroup = WorkgroupState::new();
-				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_texture(ResourceSlot::new(0), &mut low);
-				descriptors.bind_texture(ResourceSlot::new(1), &mut high);
-				descriptors.bind_texture(ResourceSlot::new(2), &mut scene);
-				descriptors.bind_image(ResourceSlot::new(3), &mut result);
-				descriptors.bind_buffer(parameter_slot, &mut parameters);
-				descriptors.bind_workgroup_state(&mut workgroup);
-				run_workgroup(&program, &mut descriptors, [x, y], 16, 16);
-			}
+		for position in tiles(UPSAMPLE_COMPOSITE_TILE.0, [size, size]) {
+			let mut workgroup = WorkgroupState::new();
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(0), &mut low);
+			descriptors.bind_texture(ResourceSlot::new(1), &mut high);
+			descriptors.bind_texture(ResourceSlot::new(2), &mut scene);
+			descriptors.bind_image(output_slot(0), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			run_tile(&program, &mut descriptors, position, UPSAMPLE_COMPOSITE_TILE, [size, size]);
 		}
 		result
 	}
@@ -773,9 +767,9 @@ mod tests {
 	}
 
 	/// Verifies that the fused pass adds exactly what the upsample pass followed by the plain composite adds: the top
-	/// level built from both levels, filtered bilinearly to the scene's resolution, across workgroup boundaries. The odd
-	/// size leaves a partial workgroup and 2x2 blocks that straddle the image's edge, and halves to a top level that is
-	/// not exactly half the scene.
+	/// level built from both levels, filtered bilinearly to the scene's resolution, across tile boundaries. The odd size
+	/// leaves a partial tile and 2x2 blocks that straddle the image's edge, and halves to a top level that is not
+	/// exactly half the scene.
 	#[test]
 	fn bloom_upsample_composite_besl_vm_matches_separate_upsample_and_composite() {
 		for size in [64, 39] {
@@ -824,9 +818,15 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(ResourceSlot::new(0), &mut scene_texture);
 			descriptors.bind_texture(ResourceSlot::new(1), &mut top_level);
-			descriptors.bind_image(ResourceSlot::new(2), &mut separate);
+			descriptors.bind_image(output_slot(0), &mut separate);
 			descriptors.bind_buffer(composite_parameter_slot, &mut composite_parameters);
-			run_at(&composite_program, &mut descriptors, [texel % size, texel / size]);
+			run_pixel(
+				&composite_program,
+				&mut descriptors,
+				[texel % size, texel / size],
+				PIXEL_TILE,
+				[size, size],
+			);
 		}
 
 		for texel in 0..size * size {
@@ -871,17 +871,26 @@ mod tests {
 		use resource_management::shader::ShaderGenerationSettings;
 		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
-		for (name, source) in [
-			("bloom_extract", *BLOOM_EXTRACT_BESL),
-			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL),
-			("bloom_upsample", *BLOOM_UPSAMPLE_BESL),
-			("bloom_composite", *BLOOM_COMPOSITE_BESL),
-			("bloom_upsample_composite", *BLOOM_UPSAMPLE_COMPOSITE_BESL),
+		// The downsample and upsample run as compute; the others are tile shaders.
+		for (name, source, tile) in [
+			("bloom_extract", *BLOOM_EXTRACT_BESL, Some(EXTRACT_TILE)),
+			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL, None),
+			("bloom_upsample", *BLOOM_UPSAMPLE_BESL, None),
+			("bloom_composite", *BLOOM_COMPOSITE_BESL, Some((PIXEL_TILE, PIXEL_TILE))),
+			(
+				"bloom_upsample_composite",
+				*BLOOM_UPSAMPLE_COMPOSITE_BESL,
+				Some(UPSAMPLE_COMPOSITE_TILE),
+			),
 		] {
 			let mut root = besl::parse(source).expect("bloom shader should parse");
 			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 			let root = besl::lex(root).expect("bloom shader should link");
-			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
+			let settings = match tile {
+				Some((tile, width)) => ShaderGenerationSettings::tile(tile, Extent::square(width)),
+				None => ShaderGenerationSettings::compute(Extent::rectangle(8, 8)),
+			}
+			.name(name.to_string());
 
 			PlatformShaderCompiler::new()
 				.generate(&settings, &root)

@@ -819,6 +819,7 @@ pub mod tests {
 								vec![Binding::new(0, BindingKind::StorageBuffer, 1, Some(4), true, false)],
 							)],
 							ray_payload: None,
+							tile: None,
 						},
 						artifact: ShaderArtifact::Msl {
 							entry_point: MSL_ENTRY_POINT.to_string(),

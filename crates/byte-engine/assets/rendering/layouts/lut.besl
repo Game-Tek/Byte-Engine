@@ -1,5 +1,5 @@
-// The pipeline layout of a pass that maps an image through a 3D lookup table: its source, table, result, and the
-// table's domain, with the helper that samples the table.
+// The pipeline layout of a pass that maps an image through a 3D lookup table: its source, table, and the table's
+// domain, with the helper that samples the table. Each pass writes its result as its own tile output.
 
 LutParameters: struct {
 	domain_min: vec4f,
@@ -9,7 +9,6 @@ LutParameters: struct {
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
-result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
 
 // Maps a color through the table. The domain controls coordinates, not output clipping.

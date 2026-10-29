@@ -214,6 +214,15 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSett
 		"RayGeneration" => ShaderGenerationSettings::ray_generation(),
 		"ClosestHit" => ShaderGenerationSettings::closest_hit(),
 		"Compute" => ShaderGenerationSettings::compute(workgroup()?),
+		"Tile" => {
+			let tile = parse_positive_u32_setting(spec, "tile", "tile size")?;
+			// One thread per pixel unless the shader asks for fewer.
+			let local_size = spec
+				.get("workgroup")
+				.map_or(Ok(Extent::new(tile, tile, 1)), parse_workgroup_size)?;
+			validate_tile_shape(tile, local_size)?;
+			ShaderGenerationSettings::tile(tile, local_size)
+		}
 		"Task" => ShaderGenerationSettings::task(
 			workgroup()?,
 			parse_positive_u32_setting(spec, "maximum_mesh_threadgroups", "task mesh-threadgroup limit")?,
@@ -230,7 +239,7 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSett
 		}
 		stage => {
 			return Err(format!(
-				"Unsupported BESL shader stage '{stage}'. The most likely cause is a misspelled stage name. Set `stage` to `Vertex`, `Fragment`, `Compute`, `Task`, `Mesh`, `RayGeneration`, or `ClosestHit`."
+				"Unsupported BESL shader stage '{stage}'. The most likely cause is a misspelled stage name. Set `stage` to `Vertex`, `Fragment`, `Compute`, `Tile`, `Task`, `Mesh`, `RayGeneration`, or `ClosestHit`."
 			));
 		}
 	})
@@ -357,14 +366,15 @@ fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 	})
 }
 
-/// Links a parsed shader and reflects its resource interface before platform lowering starts.
+/// Links a parsed shader and reflects its resource interface before platform lowering starts, and returns the stage the
+/// platform runs it as, which differs from `stage` only for a `Tile` shader on a platform without tile functions.
 ///
 /// `name` names the layout of the descriptors the shader declares itself; layout layers name their own.
 fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
 	name: &str,
-	workgroup_size: Option<(u32, u32, u32)>,
-) -> Result<(besl::NodeReference, ShaderInterface), String> {
+	stage: Stages,
+) -> Result<(besl::NodeReference, ShaderInterface, Stages), String> {
 	let program = besl::lex(parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
@@ -372,6 +382,14 @@ fn prepare_shader(
 	program.get_main().ok_or_else(|| {
 		"Missing BESL main function. The most likely cause is that the shader does not declare `main`.".to_string()
 	})?;
+
+	// A tile shader's outputs are reflected first. Platforms without tile functions then turn them into storage images,
+	// which the set evaluation below reflects as one more set.
+	let tile = match stage {
+		Stages::Tile { tile, .. } => Some(tile::reflect(tile, name, &program)?),
+		_ => None,
+	};
+	let stage = tile::lower_for(PlatformShaderLanguage::current_platform(), stage, name, &program)?;
 
 	let evaluation = ProgramEvaluation::from_program(&program)?;
 	let ray_payload = evaluation.ray_payload().cloned();
@@ -384,10 +402,12 @@ fn prepare_shader(
 	Ok((
 		program,
 		ShaderInterface {
-			workgroup_size,
+			workgroup_size: stage.local_size().map(|local_size| local_size.as_tuple()),
 			sets,
 			ray_payload,
+			tile,
 		},
+		stage,
 	))
 }
 
@@ -408,12 +428,18 @@ pub(crate) fn prepare_besl_shader(
 	parsed: besl::parser::Node<'_>,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let workgroup_size = settings.stage.local_size().map(|local_size| local_size.as_tuple());
-	let (program, interface) = prepare_shader(parsed, &settings.name, workgroup_size)?;
-	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
+	let (program, mut interface, stage) = prepare_shader(parsed, &settings.name, settings.stage)?;
+	let settings = ShaderGenerationSettings {
+		stage,
+		name: settings.name.clone(),
+	};
+	let mut lowered = PlatformShaderCompiler::new().lower(&settings, &program)?;
+	if let Some(tile) = &mut interface.tile {
+		tile.threadgroup_memory = std::mem::take(&mut lowered.threadgroup_memory);
+	}
 
 	Ok(PreparedBeslShader {
-		stage: settings.stage.into(),
+		stage: stage.into(),
 		interface,
 		lowered,
 	})
@@ -487,8 +513,8 @@ impl PreparedBeslShader {
 			);
 		}
 
-		let (artifact, bytes) =
-			finalize_platform_shader_artifact(PlatformShaderLanguage::current_platform(), self.stage, id, compiled.binary)?;
+		let platform = PlatformShaderLanguage::current_platform();
+		let (artifact, bytes) = finalize_platform_shader_artifact(platform, self.stage, id, compiled.binary)?;
 
 		Ok((
 			Shader {
@@ -500,6 +526,31 @@ impl PreparedBeslShader {
 			bytes,
 		))
 	}
+}
+
+/// Checks that a tile shader's `tile` and `workgroup` follow the stage's rules.
+///
+/// Tiles are square, 16 or 32 pixels, because those are the tile sizes Metal render passes take. The workgroup is one
+/// square of threads per tile that divides it by 1, 2, or 4, so every thread writes the same square block of pixels,
+/// and it holds at most 256 threads, so the compute form on other platforms stays within common workgroup limits.
+fn validate_tile_shape(tile: u32, local_size: Extent) -> Result<(), String> {
+	let docs = || online_docs_url("reference/besl/interface#standalone-stage-metadata");
+	if !matches!(tile, 16 | 32) {
+		return Err(format!(
+			"Unsupported tile size {tile}. The most likely cause is a tile size copied from a compute workgroup. Set `tile` to 16 or 32. See {}.",
+			docs()
+		));
+	}
+	let (width, height, depth) = local_size.as_tuple();
+	let block = tile / width.max(1);
+	if width != height || depth != 1 || block * width != tile || !matches!(block, 1 | 2 | 4) || width * height > 256 {
+		return Err(format!(
+			"Invalid tile shader workgroup {width}x{height}x{depth} for {tile}x{tile} tiles. The most likely cause is a workgroup copied from a compute shader. Use a square workgroup whose side is the tile size divided by 1, 2, or 4, with at most 256 threads, such as [{half}, {half}] for one thread per 2x2 pixels. See {}.",
+			docs(),
+			half = tile / 2,
+		));
+	}
+	Ok(())
 }
 
 const BESL_DOCS_PATH: &str = "reference/besl";
@@ -547,9 +598,10 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 #[cfg(test)]
 mod tests {
 	use super::{
-		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, ProgramTransform, ShaderCompiler,
-		WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader,
-		shader_compilation_docs_path, shader_compilation_error_message, stack_layout_layers,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, PlatformShaderCompilerAdapter, PlatformShaderLanguage,
+		ProgramTransform, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_standalone_program,
+		parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
+		shader_compilation_error_message, stack_layout_layers, tile,
 	};
 	use crate::{
 		asset::{
@@ -601,7 +653,7 @@ mod tests {
 				));
 
 				// Linking checks the program has a `main` and resolves everything its layers and transform added.
-				prepare_shader(program, &settings.name, Some((8, 8, 1)))?;
+				prepare_shader(program, &settings.name, settings.stage)?;
 
 				Ok((
 					Shader {
@@ -614,6 +666,7 @@ mod tests {
 								vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
 							)],
 							ray_payload: None,
+							tile: None,
 						},
 						artifact: ShaderArtifact::Spirv,
 					},
@@ -801,6 +854,82 @@ mod tests {
 		);
 	}
 
+	/// Verifies a tile shader that builds on a layout layer bakes through the platform compiler with its outputs
+	/// reflected, and records the stage it runs as: a tile function with its threadgroup memory on Metal, and elsewhere
+	/// a compute shader with an outputs set.
+	#[r#async::test]
+	async fn tile_shader_bakes_with_its_outputs_and_the_stage_it_runs_as() {
+		let layer = "Parameters: struct { scale: vec4f[1] }\nparameters: descriptor<{ type: Parameters, binding: 0, access: read, memory: constant }>;";
+		let source = r#"
+			glow: output<vec4f, 1>;
+			color: output<vec4f, 0>;
+			shared_values: workgroup<vec4f, 64>;
+
+			main: fn (input: StageInput) -> void {
+				shared_values[input.thread_idx] = parameters.scale[0];
+				workgroup_barrier();
+				let pixel: vec2u = input.thread_id * vec2u(2, 2);
+				let extent: vec2u = input.extent;
+				if (pixel.x >= extent.x || pixel.y >= extent.y) {
+					return;
+				}
+				write(color, pixel, shared_values[63 - input.thread_idx]);
+				write(glow, pixel, vec4f(1.0, 0.0, 0.0, 1.0));
+			}
+		"#;
+		let layers = [("passes/layouts/parameters.besl".to_string(), layer.to_string())];
+		let program = parse_standalone_program(source, &layers, None).expect("the tile shader should parse");
+		let settings = parse_shader_settings(Some(
+			&crate::asset::parse_json(r#"{ "stage": "Tile", "tile": 16, "workgroup": [8, 8, 1] }"#).unwrap(),
+		))
+		.expect("the tile sidecar should parse")
+		.name("passes/tile.besl".to_string());
+
+		let (shader, _) = PlatformShaderCompilerAdapter
+			.compile(program, settings)
+			.await
+			.unwrap_or_else(|error| panic!("the tile shader should bake: {error}"));
+
+		assert_eq!(shader.interface.workgroup_size, Some((8, 8, 1)));
+		let tile = shader
+			.interface
+			.tile
+			.as_ref()
+			.expect("a tile shader reflects its tile interface");
+		assert_eq!(tile.size, 16);
+		assert_eq!(
+			tile.outputs
+				.iter()
+				.map(|output| (output.name.as_str(), output.location))
+				.collect::<Vec<_>>(),
+			[("color", 0), ("glow", 1)]
+		);
+		if PlatformShaderLanguage::current_platform().is_msl() {
+			assert_eq!(shader.stage, ShaderTypes::Tile);
+			assert_eq!(tile.threadgroup_memory, [64 * 16]);
+		} else {
+			assert_eq!(shader.stage, ShaderTypes::Compute);
+			assert!(tile.threadgroup_memory.is_empty());
+			assert!(
+				shader
+					.interface
+					.sets
+					.iter()
+					.any(|set| set.layout == tile::TILE_OUTPUTS_LAYOUT)
+			);
+		}
+	}
+
+	/// Verifies a tile sidecar without a workgroup runs one thread per pixel.
+	#[test]
+	fn tile_settings_default_to_one_thread_per_pixel() {
+		let spec = crate::asset::parse_json(r#"{ "stage": "Tile", "tile": 16 }"#).unwrap();
+
+		let settings = parse_shader_settings(Some(&spec)).expect("a tile sidecar without a workgroup should parse");
+
+		assert_eq!(settings.stage.local_size(), Some(utils::Extent::new(16, 16, 1)));
+	}
+
 	#[test]
 	fn shader_settings_default_workgroups_and_require_stage_specific_mesh_limits() {
 		for (stage, expected) in [
@@ -951,7 +1080,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", None).expect(
+		let (_, interface, _) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", Stages::Fragment).expect(
 			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
 		);
 
@@ -991,9 +1120,14 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface) = prepare_shader(besl::parse(source).unwrap(), "atomics.besl", Some((32, 32, 1))).expect(
-			"Failed to prepare atomic descriptor reflection. The most likely cause is invalid visibility fixture syntax.",
-		);
+		let (_, interface, _) = prepare_shader(
+			besl::parse(source).unwrap(),
+			"atomics.besl",
+			Stages::Compute {
+				local_size: utils::Extent::new(32, 32, 1),
+			},
+		)
+		.expect("Failed to prepare atomic descriptor reflection. The most likely cause is invalid visibility fixture syntax.");
 
 		assert_eq!(interface.workgroup_size, Some((32, 32, 1)));
 		let [interface] = interface.sets.as_slice() else {
@@ -1038,7 +1172,7 @@ mod tests {
 		"#;
 
 		let parsed = stack_layout_layers(besl::parse(source).unwrap(), &layers).expect("Expected the layers to stack");
-		let (_, interface) = prepare_shader(parsed, "passes/resolve.besl", None)
+		let (_, interface, _) = prepare_shader(parsed, "passes/resolve.besl", Stages::Fragment)
 			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
 
 		let sets = interface
@@ -1071,7 +1205,8 @@ mod tests {
 		};
 		let identity = |layers: &[(String, String)], source: &str| {
 			let parsed = stack_layout_layers(besl::parse(source).unwrap(), layers).expect("Expected the layer to stack");
-			let (_, interface) = prepare_shader(parsed, "shader.besl", None).expect("Expected the shader to link");
+			let (_, interface, _) =
+				prepare_shader(parsed, "shader.besl", Stages::Fragment).expect("Expected the shader to link");
 			interface.sets[0].identity()
 		};
 
@@ -1109,7 +1244,10 @@ use crate::{
 	shader::{
 		artifact::finalize_platform_shader_artifact,
 		besl::{
-			backends::platform::{LoweredPlatformShader, PlatformShaderCompiler, PlatformShaderLanguage},
+			backends::{
+				platform::{LoweredPlatformShader, PlatformShaderCompiler, PlatformShaderLanguage},
+				tile,
+			},
 			evaluation::ProgramEvaluation,
 		},
 		generator::{ShaderGenerationSettings, Stages},

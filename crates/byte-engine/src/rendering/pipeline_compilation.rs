@@ -62,6 +62,27 @@ impl RayTracingPipelineRequest {
 	}
 }
 
+/// The `TilePipelineRequest` struct describes a tile pipeline by everything it compiles from: its pipeline resource,
+/// whose shader is a `Tile` stage shader, and the formats of the outputs the pass binds, in location order.
+///
+/// Pass it to [`PipelineManagerClient::request_tile_pipeline`]. Passes that bind outputs of the same formats share one
+/// pipeline.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct TilePipelineRequest {
+	pipeline_id: String,
+	outputs: Vec<ghi::Formats>,
+}
+
+impl TilePipelineRequest {
+	/// Creates a request from the tile pipeline resource ID and the formats of the outputs a pass binds.
+	pub(crate) fn new(pipeline_id: impl Into<String>, outputs: Vec<ghi::Formats>) -> Self {
+		Self {
+			pipeline_id: pipeline_id.into(),
+			outputs,
+		}
+	}
+}
+
 /// The `HitGroupShader` struct names one hit group of a ray tracing pipeline: a closest-hit shader and the constants that
 /// specialize it.
 ///
@@ -93,6 +114,28 @@ pub(crate) struct ComputePipeline {
 	pub(crate) sets: Arc<[SetLayout]>,
 }
 
+/// The `TilePipeline` struct provides a published tile pipeline, the outputs its shader writes, and how a pass records
+/// it on this platform.
+pub(crate) struct TilePipeline {
+	pub(crate) handle: ghi::PipelineHandle,
+	/// The descriptor set layouts the pipeline's shader declares, in the order it declares them. On platforms that run
+	/// the shader as compute, they include the set that holds the outputs.
+	pub(crate) sets: Arc<[SetLayout]>,
+	/// The shader's tile and outputs, in location order.
+	pub(crate) interface: resource_management::resources::material::TileInterface,
+	pub(crate) native: NativeTile,
+}
+
+/// The `NativeTile` enum records how a published tile pipeline runs on the platform it was compiled for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NativeTile {
+	/// A tile function that a tile pass dispatches over the outputs, which are the pass's color attachments.
+	TileFunction,
+	/// A compute shader whose outputs are storage images in its sets. Each workgroup of `workgroup` threads covers one
+	/// tile.
+	Compute { workgroup: utils::Extent },
+}
+
 /// The `ComputePipelines` struct lends published pipeline entries under one read lock, so descriptor adoption reads
 /// reflected layouts without copying them and pollers check many pipeline states with one lock.
 pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineRef, PipelineEntry>>);
@@ -101,6 +144,11 @@ impl ComputePipelines<'_> {
 	/// Returns a published compute pipeline, or `None` while it is unavailable.
 	pub(crate) fn get(&self, pipeline: PipelineRef) -> Option<&ComputePipeline> {
 		self.0.get(&pipeline).and_then(|entry| entry.compute.as_ref())
+	}
+
+	/// Returns a published tile pipeline, or `None` while it is unavailable.
+	pub(crate) fn tile(&self, pipeline: PipelineRef) -> Option<&TilePipeline> {
+		self.0.get(&pipeline).and_then(|entry| entry.tile.as_ref())
 	}
 
 	/// Returns the state published for a pipeline, so a caller that polls many pipelines takes the lock once.
@@ -138,6 +186,14 @@ impl PipelineManagerClient {
 	/// Equal requests return the same [`PipelineRef`] and compile once.
 	pub(crate) fn request_ray_tracing_pipeline(&self, request: RayTracingPipelineRequest) -> PipelineRef {
 		self.request(PipelineRequestKind::RayTracing(request))
+	}
+
+	/// Requests a tile pipeline without waiting for shader loading or compilation.
+	///
+	/// Equal requests return the same [`PipelineRef`] and compile once. Next, read the published pipeline with
+	/// [`ComputePipelines::tile`].
+	pub(crate) fn request_tile_pipeline(&self, request: TilePipelineRequest) -> PipelineRef {
+		self.request(PipelineRequestKind::Tile(request))
 	}
 
 	/// Returns the state published for a pipeline without draining worker results.
@@ -233,6 +289,7 @@ impl PipelineManagerClient {
 					published_revision: 0,
 					kind: kind.clone(),
 					compute: None,
+					tile: None,
 					sets: None,
 				},
 			);
@@ -276,6 +333,7 @@ impl PipelineManagerServer {
 					self.compile_specialized_compute_pipeline(&resources, request).await
 				}
 				PipelineRequestKind::RayTracing(request) => self.compile_ray_tracing_pipeline(&resources, request).await,
+				PipelineRequestKind::Tile(request) => self.compile_tile_pipeline(&resources, request).await,
 			};
 			if self.completions.send(PipelineCompletion { key, revision, result }).is_err() {
 				break;
@@ -299,12 +357,17 @@ impl PipelineManagerServer {
 				)
 			})?;
 		let pipeline = pipeline.resource();
-		let (PipelineKind::Compute { push_constants, .. } | PipelineKind::Raster { push_constants, .. }) = &pipeline.kind;
+		let (PipelineKind::Compute { push_constants, .. }
+		| PipelineKind::Raster { push_constants, .. }
+		| PipelineKind::Tile { push_constants, .. }) = &pipeline.kind;
 		let ranges = push_constants
 			.iter()
 			.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
 			.collect::<Vec<_>>();
 		match &pipeline.kind {
+			PipelineKind::Tile { .. } => Err(format!(
+				"Tile pipeline '{id}' was requested without its outputs' formats. The most likely cause is a tile pipeline passed to a compute or raster pass. Record it with a `simple_tile` pass, which requests it for the formats of the images it binds."
+			)),
 			PipelineKind::Compute { shader, .. } => {
 				let prepared = shared_shader(&self.shared, resources, shader).await?;
 				self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
@@ -454,6 +517,81 @@ impl PipelineManagerServer {
 		})
 	}
 
+	/// Compiles a tile pipeline as its shader was baked for this platform: a tile function for the requested output
+	/// formats, or the compute shader that stands in for it.
+	async fn compile_tile_pipeline(
+		&mut self,
+		resources: &resource_management::ResourceManager,
+		request: TilePipelineRequest,
+	) -> Result<DetachedPipeline, String> {
+		use ghi::Device as _;
+		use resource_management::resources::pipeline::PipelineKind;
+
+		let TilePipelineRequest {
+			pipeline_id: id,
+			outputs,
+		} = request;
+		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
+			resources.request(&id).await.map_err(|_| {
+				format!(
+					"Pipeline resource '{id}' could not be loaded. The most likely cause is that the pipeline asset was not baked."
+				)
+			})?;
+		let pipeline = pipeline.resource();
+		let PipelineKind::Tile { shader, push_constants } = &pipeline.kind else {
+			return Err(format!(
+				"Pipeline '{id}' is not a tile pipeline. The most likely cause is a compute pipeline asset passed to a `simple_tile` pass. Set the pipeline's `type` to `tile` and its shader's `stage` to `Tile`."
+			));
+		};
+		let ranges = push_constants
+			.iter()
+			.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
+			.collect::<Vec<_>>();
+		let prepared = shared_shader(&self.shared, resources, shader).await?;
+		let interface = prepared.tile.clone().ok_or_else(|| {
+			format!(
+				"Tile pipeline '{id}' runs shader '{shader}', which is not a `Tile` stage shader. The most likely cause is a compute shader left at `\"stage\": \"Compute\"` in its `.besl.bead` file. Set its stage to `Tile` and declare its results as `output` declarations."
+			)
+		})?;
+		if interface.outputs.len() != outputs.len() {
+			return Err(format!(
+				"Tile pipeline '{id}' was requested for {} outputs, and its shader writes {}. The most likely cause is a pass that binds too few or too many outputs. Bind one image to each `output` the shader declares.",
+				outputs.len(),
+				interface.outputs.len(),
+			));
+		}
+
+		// A tile shader runs as a tile function where it was baked as one, and as the compute shader it was baked as
+		// on platforms without tile functions.
+		if matches!(prepared.stage, ghi::ShaderTypes::Tile) {
+			let (handle, _) = self.adopt_shader(&prepared)?;
+			let builder = ghi::pipelines::tile::Builder::new(&ranges, prepared.parameter(&handle), &outputs, interface.size)
+				.threadgroup_memory(&interface.threadgroup_memory)
+				.name(&pipeline.name);
+			return Ok(DetachedPipeline::Tile {
+				pipeline: self.factory.create_tile_pipeline(builder),
+				sets: prepared.sets.clone(),
+				interface,
+			});
+		}
+		let DetachedPipeline::Compute {
+			pipeline: compute,
+			workgroup,
+			sets,
+		} = self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
+			format!("Tile pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata.")
+		})?
+		else {
+			unreachable!("compile_compute returns a compute pipeline.");
+		};
+		Ok(DetachedPipeline::TileCompute {
+			pipeline: compute,
+			workgroup,
+			sets,
+			interface,
+		})
+	}
+
 	/// Creates a detached compute pipeline from a prepared shader, failing with `missing_workgroup` when the shader
 	/// has no workgroup size.
 	fn compile_compute(
@@ -563,6 +701,8 @@ struct PreparedShader {
 	hash: u64,
 	/// The payload the shader passes through ray tracing, or `None` for a shader outside ray tracing pipelines.
 	ray_payload: Option<RayPayload>,
+	/// The tile and outputs of a `Tile` stage shader, `None` for every other stage.
+	tile: Option<resource_management::resources::material::TileInterface>,
 }
 
 impl PreparedShader {
@@ -630,6 +770,7 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 		resource_management::types::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
 		resource_management::types::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
 		resource_management::types::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
+		resource_management::types::ShaderTypes::Tile => ghi::ShaderTypes::Tile,
 	}
 }
 
@@ -675,6 +816,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.map_err(|error| format!("Could not load shader '{id}'. {error}"))?;
 	let resource = shader.resource();
 	let stage = shader_type_to_ghi(resource.stage);
+	let tile = resource.interface.tile.clone();
 	let artifact = resource.artifact.clone();
 	let workgroup = resource
 		.interface
@@ -697,6 +839,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		backing,
 		hash,
 		ray_payload,
+		tile,
 	})
 }
 
@@ -986,6 +1129,39 @@ impl PipelineManager {
 					entry.state = PipelineState::Ready(handle);
 					entry.published_revision = completion.revision;
 				}
+				Ok(DetachedPipeline::Tile {
+					pipeline,
+					sets,
+					interface,
+				}) => {
+					let handle = frame.intern_raster_pipeline(pipeline);
+					entry.sets = Some(sets.clone());
+					entry.tile = Some(TilePipeline {
+						handle,
+						sets,
+						interface,
+						native: NativeTile::TileFunction,
+					});
+					entry.state = PipelineState::Ready(handle);
+					entry.published_revision = completion.revision;
+				}
+				Ok(DetachedPipeline::TileCompute {
+					pipeline,
+					workgroup,
+					sets,
+					interface,
+				}) => {
+					let handle = frame.intern_compute_pipeline(pipeline);
+					entry.sets = Some(sets.clone());
+					entry.tile = Some(TilePipeline {
+						handle,
+						sets,
+						interface,
+						native: NativeTile::Compute { workgroup },
+					});
+					entry.state = PipelineState::Ready(handle);
+					entry.published_revision = completion.revision;
+				}
 				Ok(DetachedPipeline::Raster { pipeline, sets }) => {
 					entry.compute = None;
 					entry.sets = Some(sets);
@@ -1024,6 +1200,8 @@ struct PipelineEntry {
 	kind: PipelineRequestKind,
 	/// The dispatch contract of the latest compute pipeline; `None` until one publishes or for raster pipelines.
 	compute: Option<ComputePipeline>,
+	/// The latest tile pipeline and how to record it; `None` until one publishes or for other pipelines.
+	tile: Option<TilePipeline>,
 	/// The descriptor set layouts of the latest published pipeline; `None` until one publishes.
 	sets: Option<Arc<[SetLayout]>>,
 }
@@ -1039,6 +1217,7 @@ enum PipelineRequestKind {
 	Resource { id: String },
 	SpecializedCompute(SpecializedComputePipelineRequest),
 	RayTracing(RayTracingPipelineRequest),
+	Tile(TilePipelineRequest),
 }
 
 impl PipelineRequestKind {
@@ -1051,6 +1230,7 @@ impl PipelineRequestKind {
 			Self::RayTracing(request) => {
 				request.ray_generation == id || request.hit_groups.iter().any(|group| group.shader_id == id)
 			}
+			Self::Tile(request) => request.pipeline_id == id,
 		}
 	}
 }
@@ -1075,6 +1255,19 @@ enum DetachedPipeline {
 		pipeline: ghi::factory::RayTracingPipeline,
 		/// The ray generation shader's sets, which every closest hit's sets are a prefix of.
 		sets: Arc<[SetLayout]>,
+	},
+	/// A tile function, which frames intern as a raster pipeline.
+	Tile {
+		pipeline: ghi::factory::RasterPipeline,
+		sets: Arc<[SetLayout]>,
+		interface: resource_management::resources::material::TileInterface,
+	},
+	/// The compute shader that stands in for a tile function on platforms without them.
+	TileCompute {
+		pipeline: ghi::factory::ComputePipeline,
+		workgroup: utils::Extent,
+		sets: Arc<[SetLayout]>,
+		interface: resource_management::resources::material::TileInterface,
 	},
 }
 

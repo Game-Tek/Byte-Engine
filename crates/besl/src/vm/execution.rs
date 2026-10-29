@@ -578,7 +578,9 @@ impl ExecutableProgram {
 			}
 			Instruction::Buffer(instruction) => Self::execute_buffer_instruction(instruction, registers, descriptors)?,
 			Instruction::Texture(instruction) => Self::execute_texture_instruction(instruction, registers, descriptors)?,
-			Instruction::Image(instruction) => return Self::execute_image_instruction(instruction, registers, descriptors),
+			Instruction::Image(instruction) => {
+				return Self::execute_image_instruction(instruction, registers, descriptors, state.config);
+			}
 			Instruction::Control(instruction) => {
 				return self.execute_control_instruction(instruction, registers, descriptors, state, collective_behavior);
 			}
@@ -1369,6 +1371,7 @@ impl ExecutableProgram {
 		instruction: &ImageInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
+		config: &ExecutionConfig,
 	) -> Result<InstructionProgress, VmError> {
 		match instruction {
 			ImageInstruction::ImageSize { register, slot } => {
@@ -1422,6 +1425,30 @@ impl ExecutableProgram {
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				descriptors.image_mut(slot)?.write(coord, value)?;
+			}
+			ImageInstruction::WriteTileOutput { slot, coord, value } => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
+				let tile = config.tile().ok_or(VmError::TileInputUnavailable { name: "write" })?;
+				// A tile function holds only its own tile, so a write anywhere else is a shader bug, not a no-op.
+				let origin = [tile.position[0] * tile.size, tile.position[1] * tile.size];
+				if (0..2).any(|axis| coord[axis] < origin[axis] || coord[axis] - origin[axis] >= tile.size) {
+					return Err(VmError::TileWriteOutsideTile {
+						pixel: coord,
+						tile: tile.position,
+						size: tile.size,
+					});
+				}
+				// Pixels of an edge tile past the outputs' extent are not stored.
+				if coord[0] >= tile.extent[0] || coord[1] >= tile.extent[1] {
+					return Ok(InstructionProgress::Advance);
+				}
+				let &Value::Vec4F(value) = register_ref(registers, *value)? else {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::Vec4F.name().to_string(),
+						found: register_ref(registers, *value)?.value_type().name().to_string(),
+					});
+				};
+				descriptors.image_mut(*slot)?.write(coord, value)?;
 			}
 		}
 		Ok(InstructionProgress::Advance)
@@ -1581,12 +1608,14 @@ impl InvocationBuiltin {
 		let unavailable = || VmError::RayTracingInputUnavailable { name: self.name() };
 		let launch = || state.trace.filter(|_| state.hit.is_none()).ok_or_else(unavailable);
 		let hit = || state.hit.ok_or_else(unavailable);
+		let tile_unavailable = || VmError::TileInputUnavailable { name: self.name() };
 		Ok(match self {
 			InvocationBuiltin::ThreadIdx => Value::U32(config.thread_idx()),
 			InvocationBuiltin::ThreadPosition => Value::U32(config.thread_position()),
 			InvocationBuiltin::ThreadId => Value::Vec2U(config.thread_id()),
 			InvocationBuiltin::ThreadgroupPosition => Value::U32(config.threadgroup_position()),
 			InvocationBuiltin::SubgroupLaneIndex => Value::U32(config.thread_idx() % config.subgroup_size()),
+			InvocationBuiltin::OutputExtent => Value::Vec2U(config.tile().ok_or_else(tile_unavailable)?.extent),
 			InvocationBuiltin::LaunchIndex => Value::Vec3U(launch()?.launch_index),
 			InvocationBuiltin::LaunchSize => Value::Vec3U(launch()?.launch_size),
 			InvocationBuiltin::HitDistance => Value::F32(hit()?.distance),

@@ -578,13 +578,30 @@ impl<'a> Compiler<'a> {
 				self.emit(MeshOutputInstruction::PrimitiveRenderTargetArrayIndex { index, array_index });
 				Ok(())
 			}
+			// A tile stage writes an `output` at a pixel; the output is bound as an image at its output slot.
 			"write" => {
 				require_argument_count(arguments, 3)?;
 
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?;
+				// A tile shader writes one of its outputs where other stages write a storage image.
+				let output_location = crate::referenced_output(&arguments[0]).and_then(|output| match output.borrow().node() {
+					Nodes::Output { location, .. } => Some(*location),
+					_ => None,
+				});
+				let slot = match output_location {
+					Some(location) => {
+						let slot = output_slot(location);
+						self.claim_descriptor_layout(slot, DescriptorLayout::Image, "tile output")?;
+						slot
+					}
+					None => self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?,
+				};
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F)?;
-				self.emit(ImageInstruction::WriteImage { slot, coord, value });
+				self.emit(if output_location.is_some() {
+					ImageInstruction::WriteTileOutput { slot, coord, value }
+				} else {
+					ImageInstruction::WriteImage { slot, coord, value }
+				});
 				Ok(())
 			}
 			"guard_image_bounds" => {

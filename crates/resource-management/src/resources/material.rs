@@ -467,6 +467,44 @@ pub struct ShaderInterface {
 	/// generation shader's `invoke` calls pass. `None` for every other shader. Ray tracing pipeline assembly requires
 	/// every shader of a pipeline to pass the same payload.
 	pub ray_payload: Option<crate::shader::besl::evaluation::RayPayload>,
+	/// The tile and the outputs of a `Tile` shader; `None` for every other stage.
+	pub tile: Option<TileInterface>,
+}
+
+/// The `TileInterface` struct records what a render pass needs to run a `Tile` shader: the tile it runs on and the
+/// outputs it writes.
+///
+/// A pass binds every output to an image of the outputs' extent. Where [`Shader::stage`] is `Tile`, the shader is a
+/// Metal tile function whose outputs are the pass's color attachments, in location order, so their images need
+/// render-target usage and never shader-write usage. Where it's `Compute`, the platform has no tile functions, and the
+/// outputs are write-only storage images that bind by name.
+#[derive(
+	Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub struct TileInterface {
+	/// Pixels along each edge of a tile.
+	pub size: u32,
+	/// The outputs in location order.
+	pub outputs: Vec<TileOutput>,
+	/// The bytes a render pass reserves for each threadgroup argument of the Metal tile function, a multiple of 16
+	/// each, in argument order. Empty where the shader runs as compute, whose workgroup storage needs no reservation.
+	pub threadgroup_memory: Vec<u32>,
+}
+
+impl TileInterface {
+	/// The most outputs a tile shader can write, the color attachments one Metal render pass has.
+	pub const MAX_OUTPUTS: usize = 8;
+}
+
+/// The `TileOutput` struct names one `output` declaration of a `Tile` shader, so a pass can bind an image to it by name.
+#[derive(
+	Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub struct TileOutput {
+	/// The output's BESL name.
+	pub name: String,
+	/// The output's location, which is its color attachment index on Metal.
+	pub location: u32,
 }
 
 impl ShaderInterface {
@@ -488,6 +526,8 @@ pub enum ShaderArtifact {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Shader {
 	pub id: String,
+	/// The stage the platform artifact runs as. It's the stage the source declares in its `.besl.bead` file, except that
+	/// a `Tile` shader runs as `Compute` on platforms without tile functions; [`ShaderInterface::tile`] is set either way.
 	pub stage: ShaderTypes,
 	pub interface: ShaderInterface,
 	pub artifact: ShaderArtifact,

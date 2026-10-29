@@ -30,6 +30,7 @@ pub mod msl;
 pub mod platform;
 pub mod spirv;
 mod stage_rules;
+pub mod tile;
 
 pub(crate) use stage_rules::validate_stage;
 

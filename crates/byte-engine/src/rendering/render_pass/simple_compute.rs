@@ -3,7 +3,7 @@
 use ghi::command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _};
 use utils::Extent;
 
-use super::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
+use super::{Adoption, RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::Sink;
 #[cfg(test)]
 use crate::rendering::common_shader_generator::common_shader_scope;
@@ -73,9 +73,7 @@ impl Pipeline {
 			pipeline_manager: self.pipeline_manager.clone(),
 			descriptor_set_name,
 			resources: resources.to_vec(),
-			ready: None,
-			revision: 0,
-			failed: false,
+			adoption: Adoption::default(),
 			label: self.label,
 		}
 	}
@@ -88,62 +86,26 @@ pub struct Pass {
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	descriptor_set_name: &'static str,
 	resources: Vec<Resource>,
-	ready: Option<ReadyPass>,
-	revision: u64,
-	failed: bool,
+	adoption: Adoption<ReadyPass>,
 	label: &'static str,
 }
 
 impl Pass {
 	/// Adopts a published pipeline and creates this sink's descriptor sets once, one per layout the shader uses.
 	pub fn ready(&mut self, frame: &mut ghi::implementation::Frame) -> Option<ReadyPass> {
-		let revision = self.pipeline_manager.revision(self.pipeline);
-		if self.revision == revision
-			&& let Some(ready) = self.ready
-		{
-			return Some(ready);
-		}
-		if self.revision != revision {
-			self.ready = None;
-			self.failed = false;
-		}
-		if self.failed {
-			return None;
-		}
-		match self.pipeline_manager.get(self.pipeline) {
-			crate::rendering::PipelineState::Pending => return None,
-			crate::rendering::PipelineState::Failed => {
-				log::error!(
-					"Simple compute pipeline is unavailable. The most likely cause is that its pipeline asset or shader dependency failed to bake or compile."
-				);
-				self.failed = true;
-				return None;
-			}
-			crate::rendering::PipelineState::Ready(_) => {}
-		}
-		// Borrow the reflected layouts under one read view instead of copying them.
-		let pipelines = self.pipeline_manager.compute_pipelines();
-		let compiled = pipelines.get(self.pipeline).expect(
-			"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
-		);
-		let descriptor_sets = match create_sets(frame, self.descriptor_set_name, &compiled.sets, &self.resources) {
-			Ok(descriptor_sets) => descriptor_sets,
-			Err(error) => {
-				log::error!("Simple compute pipeline adoption failed: {error}");
-				self.failed = true;
-				return None;
-			}
-		};
-		let ready = ReadyPass {
-			pipeline: compiled.handle,
-			descriptor_sets,
-			label: self.label,
-			workgroup: compiled.workgroup,
-		};
-		drop(pipelines);
-		self.ready = Some(ready);
-		self.revision = revision;
-		Some(ready)
+		self.adoption.get(&self.pipeline_manager, self.pipeline, self.label, || {
+			// Borrow the reflected layouts under one read view instead of copying them.
+			let pipelines = self.pipeline_manager.compute_pipelines();
+			let compiled = pipelines.get(self.pipeline).expect(
+				"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
+			);
+			Ok(ReadyPass {
+				pipeline: compiled.handle,
+				descriptor_sets: create_sets(frame, self.descriptor_set_name, &compiled.sets, &self.resources)?,
+				label: self.label,
+				workgroup: compiled.workgroup,
+			})
+		})
 	}
 
 	/// Allocates a frame command that records this compute pass for the sink extent.

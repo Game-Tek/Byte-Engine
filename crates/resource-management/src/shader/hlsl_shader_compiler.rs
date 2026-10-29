@@ -186,7 +186,8 @@ fn dxil_target_profile(stage: ShaderTypes) -> Result<&'static str, String> {
 	match stage {
 		ShaderTypes::Vertex => Ok("vs_6_9"),
 		ShaderTypes::Fragment => Ok("ps_6_9"),
-		ShaderTypes::Compute => Ok("cs_6_9"),
+		// A tile shader is baked as a compute shader outside Metal.
+		ShaderTypes::Compute | ShaderTypes::Tile => Ok("cs_6_9"),
 		ShaderTypes::Task => Ok("as_6_9"),
 		ShaderTypes::Mesh => Ok("ms_6_9"),
 		_ => Err(

@@ -32,6 +32,13 @@ pub enum PipelineKind {
 		#[serde(default = "default_depth_write")]
 		depth_write: bool,
 	},
+	/// A screen pass whose shader is a `Tile` stage shader. The pass that runs it supplies its outputs' formats, which
+	/// the pipeline is compiled for on platforms that run the shader as a tile function.
+	Tile {
+		shader: String,
+		#[serde(default)]
+		push_constants: Vec<PushConstantRange>,
+	},
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -128,7 +135,7 @@ super::impl_direct_resource!(Pipeline, "Pipeline", references = pipeline_referen
 /// Lists the shaders the pipeline runs, by ID.
 fn pipeline_references(pipeline: &Pipeline) -> Vec<&str> {
 	match &pipeline.kind {
-		PipelineKind::Compute { shader, .. } => vec![shader.as_str()],
+		PipelineKind::Compute { shader, .. } | PipelineKind::Tile { shader, .. } => vec![shader.as_str()],
 		PipelineKind::Raster { shaders, .. } => shaders.iter().map(String::as_str).collect(),
 	}
 }

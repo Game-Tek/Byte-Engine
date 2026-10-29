@@ -627,6 +627,7 @@ impl Device {
 			ShaderTypes::Task => "as_6_9",
 			ShaderTypes::Mesh => "ms_6_9",
 			ShaderTypes::RayGen | ShaderTypes::ClosestHit => "lib_6_9",
+			ShaderTypes::Tile => crate::pipelines::tile::unsupported("DX12"),
 		}
 	}
 

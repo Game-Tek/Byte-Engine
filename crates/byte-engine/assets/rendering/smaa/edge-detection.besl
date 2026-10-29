@@ -1,24 +1,25 @@
 // Spatial SMAA 1x luma edge detection ported from the reference implementation.
 // See LICENSE.txt beside this shader for the original authors and license.
 source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-edges: descriptor<{ type: StorageImage<r8>, binding: 1, access: write }>;
+// A tile output on an R8 target, which needs no shader-write usage and stays losslessly compressed.
+edges: output<vec4f, 0>;
 
 // These values match the official SMAA 1x Ultra preset.
 SMAA_EDGE_THRESHOLD: const f32 = 0.05;
 SMAA_LOCAL_CONTRAST_FACTOR: const f32 = 2.0;
 SMAA_PACKED_EDGE_MAX: const f32 = 3.0;
 
-// A 16x8 tile needs two texels of left/top halo and one texel of right/bottom halo.
-// Sharing luma reduces seven source samples per output pixel to 209 loads per 128-pixel tile.
+// A 16x16 tile, one lane per pixel, needs two texels of left/top halo and one texel of right/bottom halo.
+// Sharing luma reduces seven source samples per output pixel to 361 loads per 256-pixel tile.
 SMAA_EDGE_WORKGROUP_WIDTH: const u32 = 16;
-SMAA_EDGE_WORKGROUP_HEIGHT: const u32 = 8;
-SMAA_EDGE_WORKGROUP_THREADS: const u32 = 128;
+SMAA_EDGE_WORKGROUP_HEIGHT: const u32 = 16;
+SMAA_EDGE_WORKGROUP_THREADS: const u32 = 256;
 SMAA_EDGE_HALO_LEFT_TOP: const u32 = 2;
 SMAA_EDGE_TILE_WIDTH: const u32 = 19;
-SMAA_EDGE_TILE_HEIGHT: const u32 = 11;
-SMAA_EDGE_TILE_SIZE: const u32 = 209;
+SMAA_EDGE_TILE_HEIGHT: const u32 = 19;
+SMAA_EDGE_TILE_SIZE: const u32 = 361;
 
-cached_luma: workgroup<f32, 209>;
+cached_luma: workgroup<f32, 361>;
 
 clamp_subtract: fn(value: u32, offset: u32) -> u32 {
 	if (value < offset) {
@@ -54,14 +55,14 @@ cached_luma_at: fn(coordinate: vec2u) -> f32 {
 
 main: fn(input: StageInput) -> void {
 	let coordinate: vec2u = input.thread_id;
-	let extent: vec2u = texture_size(source);
+	let extent: vec2u = input.extent;
 	let workgroup_origin: vec2u = vec2u(
 		coordinate.x - coordinate.x % SMAA_EDGE_WORKGROUP_WIDTH,
 		coordinate.y - coordinate.y % SMAA_EDGE_WORKGROUP_HEIGHT
 	);
 	let lane: u32 = input.thread_idx;
 
-	// Every lane participates before the barrier, including lanes outside a partial edge workgroup.
+	// Every lane participates before the barrier, including lanes outside a partial edge tile.
 	for (let index: u32 = lane; index < SMAA_EDGE_TILE_SIZE; index = index + SMAA_EDGE_WORKGROUP_THREADS) {
 		let local: vec2u = vec2u(index % SMAA_EDGE_TILE_WIDTH, index / SMAA_EDGE_TILE_WIDTH);
 		let source_coordinate: vec2u = vec2u(
@@ -72,7 +73,9 @@ main: fn(input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	guard_image_bounds(edges, coordinate);
+	if (coordinate.x >= extent.x || coordinate.y >= extent.y) {
+		return;
+	}
 	let local: vec2u = coordinate - workgroup_origin + vec2u(SMAA_EDGE_HALO_LEFT_TOP, SMAA_EDGE_HALO_LEFT_TOP);
 	let center_luma: f32 = cached_luma_at(local);
 	let left_luma: f32 = cached_luma_at(local - vec2u(1, 0));

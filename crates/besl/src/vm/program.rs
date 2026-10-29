@@ -40,6 +40,20 @@ pub struct ExecutionConfig {
 	thread_position: u32,
 	threadgroup_position: u32,
 	subgroup_size: u32,
+	/// The invocation's tile, when it runs a tile stage; see [`ExecutionConfig::with_tile`].
+	tile: Option<TileInvocation>,
+}
+
+/// The `TileInvocation` struct places a tile-stage invocation in its tile, so the VM can check that the invocation
+/// writes its outputs only inside that tile, as a Metal tile function must.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileInvocation {
+	/// Pixels along each edge of a tile.
+	pub size: u32,
+	/// The tile's position in the grid of tiles.
+	pub position: [u32; 2],
+	/// The size of the stage's outputs. Writes past it are dropped.
+	pub extent: [u32; 2],
 }
 
 impl Default for ExecutionConfig {
@@ -55,6 +69,7 @@ impl Default for ExecutionConfig {
 			thread_position: 0,
 			threadgroup_position: 0,
 			subgroup_size: 32,
+			tile: None,
 		}
 	}
 }
@@ -118,6 +133,11 @@ impl ExecutionConfig {
 		self.subgroup_size
 	}
 
+	/// Returns the tile a tile-stage invocation runs in, or `None` for every other stage.
+	pub const fn tile(&self) -> Option<TileInvocation> {
+		self.tile
+	}
+
 	/// Selects an explicit nested function-call limit for this invocation.
 	pub fn with_call_depth_limit(mut self, limit: usize) -> Self {
 		self.call_depth_limit = limit;
@@ -169,6 +189,15 @@ impl ExecutionConfig {
 	/// Selects the subgroup width used by VM collective execution.
 	pub fn with_subgroup_size(mut self, subgroup_size: u32) -> Self {
 		self.subgroup_size = subgroup_size;
+		self
+	}
+
+	/// Runs the invocation as part of a tile stage, in `tile`.
+	///
+	/// `output_extent()` reads the tile's outputs' extent, and a `write` to an output fails outside the tile. Set
+	/// `thread_id` and `thread_idx` to the invocation's place in the tile as well.
+	pub fn with_tile(mut self, tile: TileInvocation) -> Self {
+		self.tile = Some(tile);
 		self
 	}
 }

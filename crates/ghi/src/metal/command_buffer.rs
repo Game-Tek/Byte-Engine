@@ -12,7 +12,8 @@ use crate::{
 	ImageOrSwapchain, ResourceCollection,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
-		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
+		BoundTilePipelineMode, CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode,
+		RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
 };
@@ -24,6 +25,9 @@ pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 /// The buffer index of the visible function table a ray generation kernel calls closest hits through: the records of
 /// the shader binding table its trace names. Only compute encoders bind it, so it doesn't collide with vertex buffers.
 pub(super) const SHADER_BINDING_TABLE_BINDING_INDEX: u32 = 14;
+/// The buffer index of the extent a tile function's outputs have, which the MSL generator in resource-management
+/// declares. Only the tile stage's table binds it, so it doesn't collide with vertex buffers.
+pub(super) const TILE_EXTENT_BINDING_INDEX: u32 = 13;
 /// Every buffer index Metal offers: vertex buffers, the push constants, and up to fifteen descriptor sets.
 const ARGUMENT_TABLE_BUFFER_COUNT: usize = 31;
 /// Upload ranges start at the texture copy alignment, so any range can be the source of a buffer-to-texture copy.
@@ -93,11 +97,12 @@ struct EncoderState {
 	/// The stages whose shared argument table this encoder already holds, one bit per `ArgumentTableStage as usize`.
 	bound_argument_tables: u8,
 	push_constants_dirty: bool,
-	/// The counter slot of the last timestamp this encoder wrote, while no command followed it.
+	/// The counter slots of the timestamps this encoder wrote since its last command, in order.
 	///
-	/// Metal drops a precise timestamp that nothing in the encoder follows, so ending the encoder writes that slot
-	/// again from the command buffer, at the encoder boundary, where it belongs.
-	tail_timestamp: Option<u32>,
+	/// Metal drops a precise timestamp that no command in the encoder follows, even when another timestamp does, so
+	/// ending the encoder writes every one of these slots again from the command buffer, at the encoder boundary,
+	/// where they belong. Counters that end together, such as a stage's and its scene's, leave several.
+	tail_timestamps: SmallVec<[u32; 4]>,
 	/// Whether this encoder recorded bottom-level builds or compactions that no timestamp has waited for yet.
 	///
 	/// A compute encoder's timestamp doesn't wait for the acceleration structure stage, so the next timestamp ends the
@@ -260,6 +265,7 @@ pub(super) enum ArgumentTableStage {
 	Fragment,
 	Object,
 	Mesh,
+	Tile,
 }
 
 impl ArgumentTableStage {
@@ -272,6 +278,7 @@ impl ArgumentTableStage {
 			Self::Fragment => "Fragment Argument Table",
 			Self::Object => "Object Argument Table",
 			Self::Mesh => "Mesh Argument Table",
+			Self::Tile => "Tile Argument Table",
 		}
 	}
 
@@ -281,6 +288,7 @@ impl ArgumentTableStage {
 			Self::Fragment => mtl::MTLRenderStages::Fragment,
 			Self::Object => mtl::MTLRenderStages::Object,
 			Self::Mesh => mtl::MTLRenderStages::Mesh,
+			Self::Tile => mtl::MTLRenderStages::Tile,
 			Self::Compute => unreachable!(
 				"Invalid Metal render argument-table stage. The most likely cause is that the compute table was bound to a render encoder."
 			),
@@ -293,7 +301,7 @@ impl ArgumentTableStage {
 /// Draws and dispatches snapshot table contents when they are encoded, so one
 /// set of tables serves every recording; each command retains the tables it
 /// snapshots until completion.
-pub(crate) type CommandArgumentTables = [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5];
+pub(crate) type CommandArgumentTables = [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 6];
 
 /// The `UploadPage` struct keeps immutable upload snapshots in one shared Metal buffer.
 ///

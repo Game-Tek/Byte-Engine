@@ -5,7 +5,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 		render_passes::bloom::BloomShaderData,
 	},
 };
@@ -88,16 +88,19 @@ struct LensFlareShaderData {
 /// The pass works in screen space, so every bright source on screen flares and a source hidden behind geometry
 /// does not. It reuses the bloom prefilter and downsample shaders to find bright light at quarter resolution,
 /// gathers ghosts and a halo mirrored through the frame center, then tints the result and adds it onto the HDR
-/// scene. Install it after the passes that write scene light and before bloom and tone mapping, so the ghosts
-/// pick up a little glow. Toggle it at runtime with the `render.pass.lens-flare` parameter.
+/// scene. The prefilter and the composite, the stages at the sink's half and full resolution, are tile shaders, so
+/// where the platform runs tile functions their targets stay losslessly compressed; the quarter-resolution stages run
+/// as compute dispatches in one encoder, which costs less than a render pass each. Install it after the passes that
+/// write scene light and before bloom and tone mapping, so the ghosts pick up a little glow. Toggle it at runtime with
+/// the `render.pass.lens-flare` parameter.
 pub struct LensFlarePass {
 	settings: LensFlarePassSettings,
 	prefilter_parameters: ghi::DynamicBufferHandle<BloomShaderData>,
 	feature_parameters: ghi::DynamicBufferHandle<LensFlareShaderData>,
-	extract_pass: simple_compute::Pass,
+	extract_pass: simple_tile::Pass,
 	downsample_pass: simple_compute::Pass,
 	features_pass: simple_compute::Pass,
-	composite_pass: simple_compute::Pass,
+	composite_pass: simple_tile::Pass,
 }
 
 impl Entity for LensFlarePass {}
@@ -114,22 +117,26 @@ impl LensFlarePass {
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: LensFlarePassSettings) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Lens Flare Output"),
-		);
+		// The builder gives the replacement for `main` the uses a tile pass writes it with.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Lens Flare Output"));
 
 		// Render targets, so the renderer sizes them with the sink and each stage can be captured by name.
-		let flare_target = |name| {
-			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
+		// The prefilter writes the half-resolution image as a tile output and compute dispatches write the others.
+		let output_uses = simple_tile::output_uses(render_pass_builder.context());
+		let flare_target = |name, write_uses| {
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | write_uses)
 				.name(name)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 		};
-		let half_image =
-			render_pass_builder.create_scaled_render_target(flare_target("Lens Flare Half Resolution"), HALF_RESOLUTION);
-		let quarter_image =
-			render_pass_builder.create_scaled_render_target(flare_target("Lens Flare Quarter Resolution"), QUARTER_RESOLUTION);
-		let flare_image =
-			render_pass_builder.create_scaled_render_target(flare_target("Lens Flare Features"), QUARTER_RESOLUTION);
+		let half_image = render_pass_builder
+			.create_scaled_render_target(flare_target("Lens Flare Half Resolution", output_uses), HALF_RESOLUTION);
+		let quarter_image = render_pass_builder.create_scaled_render_target(
+			flare_target("Lens Flare Quarter Resolution", ghi::Uses::Storage),
+			QUARTER_RESOLUTION,
+		);
+		let flare_image = render_pass_builder
+			.create_scaled_render_target(flare_target("Lens Flare Features", ghi::Uses::Storage), QUARTER_RESOLUTION);
 
 		let context = render_pass_builder.context();
 		let prefilter_parameters = context.build_dynamic_buffer(
@@ -146,9 +153,13 @@ impl LensFlarePass {
 
 		// The bloom prefilter, downsample, and composite shaders do exactly what the flare needs around its own
 		// feature shader, so the flare binds them to its own images and parameters.
-		let extract_pipeline = simple_compute::Pipeline::compile(
+		let extract_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Extract", "byte-engine/rendering/bloom/extract.pipeline"),
+			simple_tile::Descriptor::new(
+				"Lens Flare Extract",
+				"byte-engine/rendering/bloom/extract.pipeline",
+				&[crate::rendering::SCENE_COLOR_FORMAT],
+			),
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
@@ -158,18 +169,22 @@ impl LensFlarePass {
 			render_pass_builder,
 			simple_compute::Descriptor::new("Lens Flare Features", "byte-engine/rendering/lens-flare/features.pipeline"),
 		);
-		let composite_pipeline = simple_compute::Pipeline::compile(
+		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Composite", "byte-engine/rendering/bloom/composite.pipeline"),
+			simple_tile::Descriptor::new(
+				"Lens Flare Composite",
+				"byte-engine/rendering/bloom/composite.pipeline",
+				&[output.format()],
+			),
 		);
 
 		let extract_pass = extract_pipeline.bind(
 			"Lens Flare Extract Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result_texture", half_image),
-				simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
+				simple_tile::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("bloom_parameters", prefilter_parameters),
 			],
+			&[simple_tile::Output::new("result", half_image)],
 		);
 		let downsample_pass = downsample_pipeline.bind(
 			"Lens Flare Downsample Descriptor Set",
@@ -189,11 +204,11 @@ impl LensFlarePass {
 		let composite_pass = composite_pipeline.bind(
 			"Lens Flare Composite Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::combined_image_sampler("bloom_texture", flare_image, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result_texture", output),
-				simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
+				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("bloom_texture", flare_image, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("bloom_parameters", prefilter_parameters),
 			],
+			&[simple_tile::Output::new("result", output)],
 		);
 
 		Self {
@@ -263,7 +278,8 @@ impl RenderPass for LensFlarePass {
 				command_buffer.region(
 					|label| label.write_str("Lens Flare"),
 					|command_buffer| {
-						extract_pass.record(command_buffer, super::bloom::block_lanes(half_extent));
+						// The tile passes run over their output's extent, and the compute dispatches over one lane per texel.
+						extract_pass.record(command_buffer, half_extent);
 						downsample_pass.record(command_buffer, quarter_extent);
 						features_pass.record(command_buffer, quarter_extent);
 						composite_pass.record(command_buffer, extent);

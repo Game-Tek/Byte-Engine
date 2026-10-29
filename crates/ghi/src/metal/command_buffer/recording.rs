@@ -389,7 +389,7 @@ impl<'a> CommandBufferRecording<'a> {
 			tables: SmallVec::new(),
 			bound_argument_tables: 0,
 			push_constants_dirty: !self.push_constant_data.is_empty(),
-			tail_timestamp: None,
+			tail_timestamps: SmallVec::new(),
 			unwaited_bottom_level_work: false,
 			#[cfg(debug_assertions)]
 			debug_region_depth,
@@ -409,7 +409,7 @@ impl<'a> CommandBufferRecording<'a> {
 			encoder.popDebugGroup();
 		}
 		encoder.endEncoding();
-		if let Some(slot) = state.tail_timestamp {
+		for slot in state.tail_timestamps {
 			self.write_command_buffer_timestamp(slot);
 		}
 		if let ActiveEncoder::Render(_) = state.encoder {
@@ -422,7 +422,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Marks that the active encoder, if any, recorded a command, so a timestamp before it is no longer its tail.
 	pub(super) fn note_command(&mut self) {
 		if let Some(state) = self.encoder.as_mut() {
-			state.tail_timestamp = None;
+			state.tail_timestamps.clear();
 		}
 	}
 
@@ -531,7 +531,7 @@ impl<'a> CommandBufferRecording<'a> {
 		let (sequence_index, index) = crate::counters::heap_entry(slot);
 		let heap = &*self.device.counter_heaps[sequence_index as usize];
 		let index = index as usize;
-		state.tail_timestamp = Some(slot);
+		state.tail_timestamps.push(slot);
 		// SAFETY: Every slot comes from the context's counters, whose entry index stays below the heap's count.
 		unsafe {
 			match &state.encoder {
@@ -877,10 +877,14 @@ impl<'a> CommandBufferRecording<'a> {
 		let pipeline_handle = self
 			.bound_pipeline
 			.expect("No pipeline bound. The most likely cause is that push constants were flushed before binding a pipeline.");
-		// Compute work reads one table. Draws read the fragment table and either the vertex table or the mesh tables.
+		// Compute work and tile passes read one table. Draws read the fragment table and either the vertex table or the
+		// mesh tables.
 		let mut stages = SmallVec::<[ArgumentTableStage; 3]>::new();
 		match state.encoder {
 			ActiveEncoder::Compute(_) => stages.push(ArgumentTableStage::Compute),
+			ActiveEncoder::Render(_) if self.device.pipelines[pipeline_handle.index() as usize].tile().is_some() => {
+				stages.push(ArgumentTableStage::Tile);
+			}
 			ActiveEncoder::Render(_) => {
 				let raster = self.device.pipelines[pipeline_handle.index() as usize].raster();
 				if raster.mesh_threadgroup_size.is_some() {

@@ -6,6 +6,7 @@
   "oneOf": [
     { "$ref": "#/$defs/raster" },
     { "$ref": "#/$defs/compute" },
+    { "$ref": "#/$defs/tile" },
     { "$ref": "#/$defs/task" },
     { "$ref": "#/$defs/mesh" },
     { "$ref": "#/$defs/rayTracing" }
@@ -56,6 +57,22 @@
       "type": "object",
       "properties": { "$schema": { "type": "string" }, "stage": { "const": "Compute" }, "layouts": { "$ref": "#/$defs/layouts" }, "workgroup": { "$ref": "#/$defs/workgroup" } },
       "required": ["stage"],
+      "additionalProperties": false
+    },
+    "tile": {
+      "description": "A compute-like screen-pass shader whose results are color attachments. Metal runs it as a tile function inside a render pass; other platforms run it as a compute shader.",
+      "type": "object",
+      "properties": {
+        "$schema": { "type": "string" },
+        "stage": { "const": "Tile" },
+        "layouts": { "$ref": "#/$defs/layouts" },
+        "tile": { "description": "Pixels along each edge of a square tile.", "enum": [16, 32] },
+        "workgroup": {
+          "description": "Threads per tile: a square that divides the tile by 1, 2, or 4, with at most 256 threads. Defaults to one thread per pixel.",
+          "$ref": "#/$defs/workgroup"
+        }
+      },
+      "required": ["stage", "tile"],
       "additionalProperties": false
     },
     "task": {

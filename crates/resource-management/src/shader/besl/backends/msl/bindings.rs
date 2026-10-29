@@ -269,6 +269,73 @@ impl Generator {
 		self.emit_block_end(string);
 	}
 
+	/// Emits a tile function's entry point.
+	///
+	/// Metal gives a tile function its thread's place in the tile and the tile's place in the grid. The entry point
+	/// rebuilds the compute values from them, `gid` as the tile's first thread plus the thread's position and
+	/// `thread_index` in row-major order, so the body and its helpers lower exactly like a compute kernel's.
+	pub(crate) fn emit_tile_entry_point(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		push_constant: Option<&besl::NodeReference>,
+		workgroups: &[&besl::NodeReference],
+	) {
+		let node = RefCell::borrow(main_function_node);
+		let besl::Nodes::Function { statements, .. } = node.node() else {
+			return;
+		};
+		let threads = self.tile_stage_context.as_ref().map_or(1, |tile| tile.threads);
+
+		let _ = write!(string, "kernel void {MSL_ENTRY_POINT}({TILE_BLOCK_TYPE} tile_block");
+		self.emit_separator(string);
+		string.push_str("ushort2 _besl_tile_thread [[thread_position_in_threadgroup]]");
+		self.emit_separator(string);
+		string.push_str("uint2 threadgroup_position [[threadgroup_position_in_grid]]");
+		self.emit_separator(string);
+		let _ = write!(
+			string,
+			"constant uint2& output_extent [[buffer({TILE_EXTENT_BINDING_INDEX})]]"
+		);
+		if push_constant.is_some() {
+			self.emit_separator(string);
+			self.emit_push_constant_parameter(string);
+		}
+		if self.has_argument_sets() {
+			self.emit_separator(string);
+			self.emit_argument_buffer_parameter(string);
+		}
+		// Tile functions can't declare threadgroup memory in their body, so workgroup storage arrives as arguments.
+		for (index, workgroup) in workgroups.iter().enumerate() {
+			let workgroup = workgroup.borrow();
+			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
+				continue;
+			};
+			self.emit_separator(string);
+			let _ = write!(
+				string,
+				"threadgroup {}{} {} [[threadgroup({index})]]",
+				Self::type_identifier(format.borrow().get_name().unwrap()),
+				if count.is_some() { "*" } else { "&" },
+				Self::identifier(name)
+			);
+		}
+		ShaderFormatting::new(self.minified).push_block_start(string);
+
+		self.emit_indentation(string, 1);
+		let _ = write!(string, "uint2 gid=threadgroup_position*{threads}u+uint2(_besl_tile_thread)");
+		self.emit_statement_end(string);
+		self.emit_indentation(string, 1);
+		let _ = write!(
+			string,
+			"uint thread_index=uint(_besl_tile_thread.y)*{threads}u+uint(_besl_tile_thread.x)"
+		);
+		self.emit_statement_end(string);
+		self.emit_statement_block(string, statements, 1);
+
+		self.emit_block_end(string);
+	}
+
 	/// Emits function-scope threadgroup variables shared by every invocation in one compute or object workgroup.
 	pub(crate) fn emit_compute_workgroup_declarations(&mut self, string: &mut String, workgroups: &[&besl::NodeReference]) {
 		for workgroup in workgroups {
@@ -621,7 +688,9 @@ impl Generator {
 			};
 			let context = self.hidden_context(function);
 			let uses_simd_lane_id = context.uses_simd_lane_id;
-			if !uses_simd_lane_id && !context.requires_resources {
+			// A tile helper that writes an output or reads a tile value needs the kernel's imageblock and tile too.
+			let uses_tile_context = self.tile_stage_context.is_some() && Self::uses_tile_context(function);
+			if !uses_simd_lane_id && !context.requires_resources && !uses_tile_context {
 				return;
 			}
 			push(string, format_args!("uint2 "), &"gid");
@@ -645,6 +714,10 @@ impl Generator {
 					format_args!("threadgroup {}{pointer} ", workgroup.msl_type),
 					&Self::identifier(&workgroup.name),
 				);
+			}
+			if self.tile_stage_context.is_some() {
+				push(string, format_args!("{TILE_BLOCK_TYPE} "), &"tile_block");
+				push(string, format_args!("uint2 "), &"output_extent");
 			}
 		} else if let Some(raster) = &self.raster_stage_context {
 			if !raster.has_hidden_inputs() && !self.hidden_context(function).requires_resources {

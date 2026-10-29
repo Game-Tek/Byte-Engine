@@ -471,6 +471,85 @@ impl Generator {
 		self.emit_block_end(string);
 	}
 
+	/// Emits a tile shader as a Metal tile function: a kernel that a render pass dispatches once per tile, which writes
+	/// its `output` declarations to the pass's color attachments through an implicit imageblock.
+	///
+	/// The body follows the compute lowering. The entry point derives the compute invocation values from the thread's
+	/// place in its tile, so helpers receive the same context as compute helpers, plus the imageblock and the extent.
+	pub(crate) fn generate_tile_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+		tile: u32,
+		threads: u32,
+	) {
+		let nodes = Self::classify_nodes(order);
+		self.emit_storage_declarations(string, &nodes.declarations, None);
+		self.emit_tile_outputs_struct(string, &nodes.outputs);
+		// Tile functions take their workgroup storage as threadgroup arguments, whose sizes the render pass reserves.
+		self.tile_threadgroup_memory = nodes
+			.workgroups
+			.iter()
+			.filter_map(|workgroup| match workgroup.borrow().node() {
+				besl::Nodes::Workgroup { format, count, .. } => {
+					// The stage rules allow only types with a known size, so the fallback never applies.
+					let bytes = super::super::tile::workgroup_bytes(format.borrow().get_name().unwrap_or_default())
+						.unwrap_or(16) * count.map_or(1, |count| count.get() as u32);
+					// Metal places threadgroup arguments at 16-byte offsets.
+					Some(bytes.next_multiple_of(16))
+				}
+				_ => None,
+			})
+			.collect();
+
+		if let Some(push_constant) = nodes.push_constant {
+			self.emit_push_constant_struct(string, push_constant);
+		}
+
+		let has_resources =
+			matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) && self.has_argument_sets();
+		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
+			has_resources,
+			has_push_constant: nodes.push_constant.is_some(),
+			workgroups: Self::stage_workgroups(&nodes.workgroups),
+		});
+		let previous_tile_stage_context = self.tile_stage_context.replace(TileStageContext {
+			tile,
+			threads,
+			output_count: nodes.outputs.len(),
+		});
+		let previous_in_compute_body = self.in_compute_body;
+		self.in_compute_body = true;
+
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
+		if has_resources {
+			self.emit_argument_buffer_structs(string);
+		}
+		self.emit_functions(string, &nodes.functions);
+		self.emit_tile_entry_point(string, main_function_node, nodes.push_constant, &nodes.workgroups);
+
+		self.in_compute_body = previous_in_compute_body;
+		self.tile_stage_context = previous_tile_stage_context;
+		self.compute_stage_context = previous_compute_stage_context;
+	}
+
+	/// Emits the struct that holds one pixel of every tile output, one `float4` member per output at its color index.
+	fn emit_tile_outputs_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_named_struct_start(string, TILE_OUTPUTS_STRUCT);
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output { name, location, .. } = output.node() else {
+				continue;
+			};
+			formatting.push_indentation(string, 1);
+			let _ = write!(string, "float4 {} [[color({location})]]", Self::identifier(name));
+			formatting.push_statement_end(string);
+		}
+		self.emit_struct_declaration_end(string);
+	}
+
 	pub(crate) fn generate_compute_shader(
 		&mut self,
 		string: &mut String,

@@ -37,6 +37,7 @@ impl Generator {
 		program: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let main = program.get_main().ok_or(())?;
+		self.tile_threadgroup_memory.clear();
 		let mut order = ordered_shader_nodes(&main, "MSL");
 		Self::append_declared_bindings(program, &mut order);
 		if matches!(shader_compilation_settings.stage, Stages::RayGeneration) {
@@ -204,6 +205,9 @@ impl Generator {
 				main_function_node,
 				intrinsic_requirements.uses_simd_lane_id,
 			),
+			Stages::Tile { tile, local_size } => {
+				self.generate_tile_shader(&mut string, order, main_function_node, tile, local_size.width())
+			}
 			Stages::Task {
 				maximum_mesh_threadgroups,
 				..

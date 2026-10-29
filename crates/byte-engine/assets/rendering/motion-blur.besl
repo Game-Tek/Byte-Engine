@@ -28,7 +28,8 @@ MotionBlurParameters: struct {
 }
 
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
 parameters: descriptor<{ type: MotionBlurParameters, binding: 2, access: read, memory: constant }>;
 // The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
 debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
@@ -41,7 +42,10 @@ MIN_PREVIOUS_W: const f32 = 0.000001;
 
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
-	guard_image_bounds(result, pixel);
+	let extent: vec2u = input.extent;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
 	// Fetched before the velocity arithmetic, which the load then overlaps; the pass-through and the alpha use it.
 	let scene: vec4f = fetch(scene_texture, pixel);
 	let coordinate: vec2f = vec2f(f32(pixel.x), f32(pixel.y));

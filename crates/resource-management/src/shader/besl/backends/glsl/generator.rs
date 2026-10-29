@@ -96,6 +96,11 @@ impl Generator {
 			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+			Stages::Tile { .. } => {
+				unreachable!(
+					"A tile shader reaches GLSL already rewritten into a compute shader by `backends::tile::lower_for`."
+				)
+			}
 			Stages::Task { .. } => panic!(
 				"GLSL task shader lowering is unsupported. The most likely cause is that a task BESL shader was sent to the deferred GLSL backend."
 			),

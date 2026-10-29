@@ -589,18 +589,7 @@ pub(super) fn resolve_image_array_access(
 pub(super) fn accessor_references_output(expression: &NodeReference) -> bool {
 	let borrowed = expression.borrow();
 	match borrowed.node() {
-		Nodes::Expression(Expressions::Accessor { left, .. }) => output_member_references_interface(left),
-		_ => false,
-	}
-}
-
-pub(super) fn output_member_references_interface(expression: &NodeReference) -> bool {
-	let borrowed = expression.borrow();
-	match borrowed.node() {
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-			output_member_references_interface(&elements[0])
-		}
-		Nodes::Expression(Expressions::Member { source, .. }) => matches!(source.borrow().node(), Nodes::Output { .. }),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => crate::referenced_output(left).is_some(),
 		_ => false,
 	}
 }

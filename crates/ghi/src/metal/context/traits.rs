@@ -18,6 +18,15 @@ impl crate::context::Context for Context {
 		self.settings.ray_tracing && self.device.supportsRaytracing()
 	}
 
+	/// Tile functions run on every Apple GPU since the A11, which is every GPU Metal 4 runs on.
+	fn supports_tile_functions(&self) -> bool {
+		self.device.supportsFamily(mtl::MTLGPUFamily::Apple4)
+	}
+
+	fn swapchain_format(&self) -> crate::Formats {
+		SWAPCHAIN_FORMAT
+	}
+
 	fn bottom_level_acceleration_structure_size(
 		&self,
 		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
@@ -444,6 +453,14 @@ impl crate::context::ContextCreate for Context {
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let pipeline = self.factory.create_compute_pipeline(builder);
+		self.intern_pipeline(pipeline)
+	}
+
+	fn create_tile_pipeline(
+		&mut self,
+		builder: crate::pipelines::tile::Builder,
+	) -> graphics_hardware_interface::PipelineHandle {
+		let pipeline = self.factory.create_tile_pipeline(builder);
 		self.intern_pipeline(pipeline)
 	}
 

@@ -427,6 +427,8 @@ fn contextual_access<'a>(
 			"thread_idx" => Ok(Some(parser::Node::call("thread_idx", Vec::new()))),
 			"threadgroup_position" => Ok(Some(parser::Node::call("threadgroup_position", Vec::new()))),
 			"subgroup_lane_index" => Ok(Some(parser::Node::call("subgroup_lane_index", Vec::new()))),
+			// The tile field: the size of the tile stage's outputs.
+			"extent" => Ok(Some(parser::Node::call("output_extent", Vec::new()))),
 			field => match RAY_TRACING_STAGE_INPUTS.iter().find(|input| **input == field) {
 				Some(input) => Ok(Some(parser::Node::call(input, Vec::new()))),
 				None => Err(entry_error(&format!("StageInput does not define `{field}`"))),

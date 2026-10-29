@@ -410,6 +410,12 @@ pub(super) enum ImageInstruction {
 		coord: usize,
 		value: usize,
 	},
+	/// Writes a tile stage's output, bound as an image at its output slot, at a pixel inside the invocation's tile.
+	WriteTileOutput {
+		slot: ResourceSlot,
+		coord: usize,
+		value: usize,
+	},
 }
 
 /// The `ControlInstruction` enum groups the instructions that move the frame's instruction pointer, call functions, or
@@ -488,6 +494,7 @@ pub(super) enum InvocationBuiltin {
 	ThreadId,
 	ThreadgroupPosition,
 	SubgroupLaneIndex,
+	OutputExtent,
 	LaunchIndex,
 	LaunchSize,
 	HitDistance,
@@ -508,6 +515,7 @@ impl InvocationBuiltin {
 			InvocationBuiltin::ThreadId => "thread_id",
 			InvocationBuiltin::ThreadgroupPosition => "threadgroup_position",
 			InvocationBuiltin::SubgroupLaneIndex => "subgroup_lane_index",
+			InvocationBuiltin::OutputExtent => "output_extent",
 			InvocationBuiltin::LaunchIndex => "launch_index",
 			InvocationBuiltin::LaunchSize => "launch_size",
 			InvocationBuiltin::HitDistance => "hit_distance",
@@ -522,12 +530,13 @@ impl InvocationBuiltin {
 
 	/// Returns the builtin that a zero-argument intrinsic call named `name` reads, if it reads one.
 	pub(super) fn from_name(name: &str) -> Option<Self> {
-		const ALL: [InvocationBuiltin; 14] = [
+		const ALL: [InvocationBuiltin; 15] = [
 			InvocationBuiltin::ThreadIdx,
 			InvocationBuiltin::ThreadPosition,
 			InvocationBuiltin::ThreadId,
 			InvocationBuiltin::ThreadgroupPosition,
 			InvocationBuiltin::SubgroupLaneIndex,
+			InvocationBuiltin::OutputExtent,
 			InvocationBuiltin::LaunchIndex,
 			InvocationBuiltin::LaunchSize,
 			InvocationBuiltin::HitDistance,

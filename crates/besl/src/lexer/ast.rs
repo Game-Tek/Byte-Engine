@@ -494,6 +494,18 @@ impl Node {
 				],
 				void.clone(),
 			),
+			// A tile stage writes its `vec4f` `output` declarations at a pixel. This comes after the storage-image
+			// form, which a resource argument of unknown type matches first.
+			builtin_intrinsic(
+				"write",
+				vec![
+					("output", vec4f32.clone()),
+					("pixel", vec2u32.clone()),
+					("value", vec4f32.clone()),
+				],
+				void.clone(),
+			),
+			builtin_intrinsic("output_extent", vec![], vec2u32.clone()),
 			builtin_intrinsic(
 				"image_atomic_or",
 				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],

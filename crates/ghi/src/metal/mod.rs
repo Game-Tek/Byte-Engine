@@ -1027,6 +1027,395 @@ mod flat_binding_tests {
 	}
 }
 
+#[cfg(test)]
+mod tile_tests {
+	use super::*;
+	use crate::{
+		AccessPolicies,
+		command_buffer::{BoundPipelineLayoutMode as _, BoundTilePipelineMode as _, CommandBufferRecording as _},
+		shader::{ResourceKind, ResourceSlot},
+	};
+
+	/// A tile function shaped like the ones BESL generates: 8 x 8 threads per 16 x 16 tile, each writing a 2 x 2
+	/// block, that shares a value through a threadgroup argument and reads a push constant and a descriptor set.
+	const SOURCE: &str = r#"
+		// besl-threadgroup-size: 8, 8, 1
+		#include <metal_stdlib>
+		using namespace metal;
+
+		struct Outputs { float4 color [[color(0)]]; };
+		struct PushConstant { float4 tint; };
+		struct Inputs { device const float* value [[id(0)]]; };
+
+		kernel void besl_main(
+			imageblock<Outputs, imageblock_layout_implicit> block,
+			ushort2 lane [[thread_position_in_threadgroup]],
+			uint2 tile [[threadgroup_position_in_grid]],
+			constant uint2& extent [[buffer(13)]],
+			constant PushConstant& push_constant [[buffer(15)]],
+			constant Inputs& inputs [[buffer(16)]],
+			threadgroup float4* shared [[threadgroup(0)]]) {
+			uint index = uint(lane.y) * 8u + uint(lane.x);
+			shared[index] = float4(inputs.value[0], push_constant.tint.b, 0.0, 0.0);
+			threadgroup_barrier(mem_flags::mem_threadgroup);
+			float4 other = shared[63u - index];
+			for (uint corner = 0; corner < 4; ++corner) {
+				uint2 offset = uint2(lane) * 2u + uint2(corner & 1u, corner >> 1u);
+				uint2 pixel = tile * 16u + offset;
+				if (pixel.x >= extent.x || pixel.y >= extent.y) { continue; }
+				Outputs outputs = block.read(ushort2(offset));
+				outputs.color = float4(float(pixel.x) / 255.0, float(pixel.y) / 255.0, other.y, other.x);
+				block.write(outputs, ushort2(offset));
+			}
+		}
+	"#;
+
+	/// Verifies a tile pass runs every tile of its extent, the partial ones at the edges too, with its push constant,
+	/// descriptor set, threadgroup memory, and extent, and that its output needs no shader-write usage.
+	#[test]
+	fn tile_pass_writes_every_pixel_of_a_render_target_only_image() {
+		use objc2_metal::MTLTexture as _;
+
+		const VALUE_SLOT: ResourceSlot = ResourceSlot::new(0);
+		// Three by two tiles, the last column and row partial.
+		let extent = Extent::rectangle(40, 24);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::RASTER);
+		assert!(context.supports_tile_functions());
+
+		let layout = crate::DescriptorSetLayout::new(
+			"Tile Inputs",
+			[crate::shader::ShaderResourceDescriptor::new(
+				VALUE_SLOT,
+				ResourceKind::StorageBuffer,
+				1,
+				AccessPolicies::READ,
+			)],
+		);
+		let shader = context
+			.create_shader(
+				Some("Tile Probe"),
+				crate::shader::Sources::MTL {
+					source: SOURCE,
+					entry_point: "besl_main",
+				},
+				crate::ShaderTypes::Tile,
+				[crate::ShaderDescriptorSet::new(layout.clone())],
+			)
+			.expect("Failed to create the tile probe. The most likely cause is invalid Metal test source.");
+		let push_constant_ranges = [crate::pipelines::PushConstantRange::new(0, 16)];
+		let pipeline = context.create_tile_pipeline(
+			crate::pipelines::tile::Builder::new(
+				&push_constant_ranges,
+				crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Tile),
+				&[crate::Formats::RGBA8UNORM],
+				16,
+			)
+			.threadgroup_memory(&[64 * 16])
+			.name("Tile Probe Pipeline"),
+		);
+
+		let value = context.build_buffer::<f32>(
+			crate::buffer::Builder::new(crate::Uses::Storage)
+				.name("Tile Probe Value")
+				.device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		*context.get_mut_buffer_slice(value) = 128.0 / 255.0;
+		let set = context.create_descriptor_set(Some("Tile Probe Inputs"), &layout);
+		context.write(&[crate::DescriptorWrite::buffer(set, VALUE_SLOT, value.into())]);
+		let image = context.build_image(
+			crate::image::Builder::new(
+				crate::Formats::RGBA8UNORM,
+				crate::Uses::RenderTarget | crate::Uses::TransferSource,
+			)
+			.name("Tile Probe Output")
+			.extent(extent),
+		);
+		let usage = context
+			.images
+			.resource(context.images.nth_handle(image.into(), 0).unwrap())
+			.texture
+			.usage();
+		assert!(
+			!usage.contains(mtl::MTLTextureUsage::ShaderWrite),
+			"The tile probe's output has shader-write usage. The most likely cause is that render-target uses map to shader write."
+		);
+
+		let synchronizer = context.create_synchronizer(None, false);
+		let command_buffer = context.create_command_buffer(None, queue_handle);
+		let mut recording = context.create_command_buffer_recording(command_buffer);
+		let outputs = [crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::new(0.0, 0.0, 0.0, 0.0))),
+			crate::StoreOp::Store,
+		)];
+		let pass = recording.start_tile_pass(pipeline, extent, &outputs);
+		pass.bind_descriptor_sets(&[set]);
+		pass.write_push_constant(0, [0.0f32, 0.0, 64.0 / 255.0, 0.0]);
+		pass.dispatch_tiles();
+		let readback = recording
+			.transfer_texture(image.into())
+			.expect("Tile probe readback failed. The most likely cause is that the test image lacks transfer-source support.");
+		recording.execute(synchronizer);
+		let mapped = context
+			.get_image_data(readback)
+			.expect("Tile probe mapping failed. The most likely cause is that the tile pass did not complete successfully.");
+
+		for y in 0..extent.height() as usize {
+			for x in 0..extent.width() as usize {
+				let offset = y * mapped.bytes_per_row as usize + x * 4;
+				assert_eq!(
+					&mapped.bytes[offset..offset + 4],
+					&[x as u8, y as u8, 64, 128],
+					"Tile probe pixel ({x}, {y}) is wrong. The most likely cause is a tile that didn't run, a partial tile cut short, or a push constant, descriptor set, or threadgroup argument the tile stage didn't receive.",
+				);
+			}
+		}
+	}
+
+	/// The same arithmetic per pixel for the tile and compute forms of the timing probe: long enough that a pass over
+	/// 2048 x 2048 pixels takes milliseconds.
+	const HEAVY_TILE_SOURCE: &str = r#"
+		// besl-threadgroup-size: 16, 16, 1
+		#include <metal_stdlib>
+		using namespace metal;
+
+		struct Outputs { float4 color [[color(0)]]; };
+
+		kernel void besl_main(
+			imageblock<Outputs, imageblock_layout_implicit> block,
+			ushort2 lane [[thread_position_in_threadgroup]],
+			uint2 tile [[threadgroup_position_in_grid]]) {
+			uint2 pixel = tile * 16u + uint2(lane);
+			float value = float(pixel.x ^ pixel.y);
+			for (uint step = 0; step < 512u; ++step) { value = fract(sin(value) * 43758.5453); }
+			Outputs outputs;
+			outputs.color = float4(value);
+			block.write(outputs, lane);
+		}
+	"#;
+	const HEAVY_COMPUTE_SOURCE: &str = r#"
+		// besl-threadgroup-size: 16, 16, 1
+		#include <metal_stdlib>
+		using namespace metal;
+
+		struct Resources { texture2d<float, access::write> image [[id(0)]]; };
+
+		kernel void besl_main(uint2 pixel [[thread_position_in_grid]], constant Resources& resources [[buffer(16)]]) {
+			float value = float(pixel.x ^ pixel.y);
+			for (uint step = 0; step < 512u; ++step) { value = fract(sin(value) * 43758.5453); }
+			resources.image.write(float4(value), pixel);
+		}
+	"#;
+
+	/// The pipelines the counter probes record: a heavy tile function and a compute kernel doing the same arithmetic,
+	/// and the one image both write.
+	struct CounterProbe {
+		tile_pipeline: crate::PipelineHandle,
+		compute_pipeline: crate::PipelineHandle,
+		set: crate::DescriptorSetHandle,
+		image: crate::ImageHandle,
+	}
+
+	/// Creates the counter probe's pipelines and an image of `extent` that both write.
+	fn counter_probe(context: &mut Context, extent: Extent) -> CounterProbe {
+		const IMAGE_SLOT: ResourceSlot = ResourceSlot::new(0);
+
+		let tile_shader = context
+			.create_shader(
+				Some("Heavy Tile Probe"),
+				crate::shader::Sources::MTL {
+					source: HEAVY_TILE_SOURCE,
+					entry_point: "besl_main",
+				},
+				crate::ShaderTypes::Tile,
+				[],
+			)
+			.expect("Failed to create the heavy tile probe. The most likely cause is invalid Metal test source.");
+		let tile_pipeline = context.create_tile_pipeline(crate::pipelines::tile::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&tile_shader, crate::ShaderTypes::Tile),
+			&[crate::Formats::RGBA8UNORM],
+			16,
+		));
+		let layout = crate::DescriptorSetLayout::new(
+			"Heavy Compute Probe",
+			[crate::shader::ShaderResourceDescriptor::new(
+				IMAGE_SLOT,
+				ResourceKind::StorageImage,
+				1,
+				AccessPolicies::WRITE,
+			)],
+		);
+		let compute_shader = context
+			.create_shader(
+				Some("Heavy Compute Probe"),
+				crate::shader::Sources::MTL {
+					source: HEAVY_COMPUTE_SOURCE,
+					entry_point: "besl_main",
+				},
+				crate::ShaderTypes::Compute,
+				[crate::ShaderDescriptorSet::new(layout.clone())],
+			)
+			.expect("Failed to create the heavy compute probe. The most likely cause is invalid Metal test source.");
+		let compute_pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&compute_shader, crate::ShaderTypes::Compute),
+		));
+		// Both passes write one image, so they run in order, as passes that feed each other do in a frame. Passes
+		// without a dependency may overlap, and then neither counter measures one pass alone.
+		let image = context.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::RenderTarget | crate::Uses::Storage)
+				.name("Heavy Probe Output")
+				.extent(extent),
+		);
+		let set = context.create_descriptor_set(Some("Heavy Compute Probe"), &layout);
+		context.write(&[crate::DescriptorWrite::image(set, IMAGE_SLOT, image, crate::Layouts::General)]);
+
+		CounterProbe {
+			tile_pipeline,
+			compute_pipeline,
+			set,
+			image,
+		}
+	}
+
+	/// Verifies a counter around a tile pass measures the pass's work: a tile pass takes about as long as a compute
+	/// dispatch doing the same arithmetic, so their counters must agree within a factor of two.
+	#[test]
+	fn tile_pass_counter_covers_its_work() {
+		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
+		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
+
+		let extent = Extent::square(2048);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE);
+		let CounterProbe {
+			tile_pipeline,
+			compute_pipeline,
+			set,
+			image,
+		} = counter_probe(&mut context, extent);
+
+		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Counter Probe"));
+		let synchronizer = context.create_synchronizer(Some("Counter Probe"), true);
+		let tile_counters = [context.create_counter(Some("Tile A")), context.create_counter(Some("Tile B"))];
+		let compute_counter = context.create_counter(Some("Compute"));
+		let outputs = [crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::LoadOp::Discard,
+			crate::StoreOp::Store,
+		)];
+		let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+		for frame_index in 0..frames {
+			context.queue(queue_handle).execute(
+				Some(FrameRequest::new(frame_index, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					execution.record(command_buffer, |recording| {
+						// The tile pass sits between compute work that writes the same image, as passes do in a frame.
+						recording.counter(compute_counter, |recording| {
+							recording
+								.bind_compute_pipeline(compute_pipeline)
+								.bind_descriptor_sets(&[set])
+								.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+						});
+						// Two tile passes in a row, as a chain of screen passes records them, so one pass's end and the
+						// next one's start fall between two render encoders.
+						for tile_counter in tile_counters {
+							recording.counter(tile_counter, |recording| {
+								recording.start_tile_pass(tile_pipeline, extent, &outputs).dispatch_tiles();
+							});
+						}
+						recording
+							.bind_compute_pipeline(compute_pipeline)
+							.bind_descriptor_sets(&[set])
+							.dispatch(crate::DispatchExtent::new(Extent::square(16), Extent::square(16)));
+					});
+					[]
+				},
+			);
+		}
+		context.wait();
+		let compute = context
+			.counter_duration(compute_counter)
+			.expect("The compute counter must resolve.");
+		for tile_counter in tile_counters {
+			let tile = context
+				.counter_duration(tile_counter)
+				.expect("The tile pass counter must resolve.");
+			eprintln!("tile pass {tile:?}, compute dispatch {compute:?}");
+			assert!(
+				tile * 2 > compute && tile < compute * 2,
+				"The tile pass counter reports {tile:?} for work a compute dispatch takes {compute:?} for. The most likely cause is a timestamp that doesn't wait for the render encoder's tile stage."
+			);
+		}
+	}
+
+	/// Verifies counters that end back to back at the tail of a compute encoder all resolve when a tile pass follows.
+	///
+	/// A scene's stage counter, the scene's own counter, and the next pass's start write three timestamps with no
+	/// command between them. Metal drops a precise timestamp that no command follows, so ending the encoder for the
+	/// tile pass must write every one of them, not only the last.
+	#[test]
+	fn trailing_counters_before_a_tile_pass_resolve() {
+		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
+		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
+
+		let extent = Extent::square(256);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE);
+		let CounterProbe {
+			tile_pipeline,
+			compute_pipeline,
+			set,
+			image,
+		} = counter_probe(&mut context, extent);
+		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Trailing Counters"));
+		let synchronizer = context.create_synchronizer(Some("Trailing Counters"), true);
+		let scene_counter = context.create_counter(Some("Scene"));
+		let stage_counter = context.create_counter(Some("Stage"));
+		let tile_counter = context.create_counter(Some("Tile"));
+		let outputs = [crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::LoadOp::Discard,
+			crate::StoreOp::Store,
+		)];
+		let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+		for frame_index in 0..frames {
+			context.queue(queue_handle).execute(
+				Some(FrameRequest::new(frame_index, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					execution.record(command_buffer, |recording| {
+						recording.counter(scene_counter, |recording| {
+							recording.counter(stage_counter, |recording| {
+								recording
+									.bind_compute_pipeline(compute_pipeline)
+									.bind_descriptor_sets(&[set])
+									.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+							});
+						});
+						recording.counter(tile_counter, |recording| {
+							recording.start_tile_pass(tile_pipeline, extent, &outputs).dispatch_tiles();
+						});
+					});
+					[]
+				},
+			);
+		}
+		context.wait();
+		for (name, counter) in [("stage", stage_counter), ("scene", scene_counter), ("tile", tile_counter)] {
+			assert!(
+				context.counter_duration(counter).is_some(),
+				"The {name} counter did not resolve. The most likely cause is that ending an encoder rewrote only the last of several trailing timestamps, so Metal dropped the others."
+			);
+		}
+	}
+}
+
 pub mod command_buffer;
 pub mod context;
 pub mod device;

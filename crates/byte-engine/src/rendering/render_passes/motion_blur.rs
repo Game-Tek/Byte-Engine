@@ -19,7 +19,7 @@ use crate::{
 	rendering::{
 		DebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::blit::ImageBypassPass,
 	},
 	time::MediaTime,
@@ -140,7 +140,7 @@ const MOTION_BLUR_DEBUG_VIEWS: [&str; 2] = ["velocity", "blur-length"];
 pub struct MotionBlurPass {
 	controls: Rc<MotionBlurControls>,
 	parameters: ghi::DynamicBufferHandle<MotionBlurShaderData>,
-	blur_pass: simple_compute::Pass,
+	blur_pass: simple_tile::Pass,
 	/// Which debug views to write this frame.
 	debug_views: DebugViews,
 	/// Forwards `main` unchanged while there is nothing to blur from or the blur shader is still compiling.
@@ -159,17 +159,21 @@ impl MotionBlurPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder, controls: Rc<MotionBlurControls>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Motion Blur"),
-		);
+		// The blur's tile output, which the builder gives the uses that needs.
+		let output = render_pass_builder
+			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Motion Blur"));
 		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
 		let main_copy = render_pass_builder.take_main_copy().expect(
 			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
 		);
 
-		let pipeline = simple_compute::Pipeline::compile(
+		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Motion Blur", "byte-engine/rendering/motion-blur.pipeline"),
+			simple_tile::Descriptor::new(
+				"Motion Blur",
+				"byte-engine/rendering/motion-blur.pipeline",
+				&[output.format()],
+			),
 		);
 		let debug_views = render_pass_builder.debug_views(&MOTION_BLUR_DEBUG_VIEWS);
 		let context = render_pass_builder.context();
@@ -184,11 +188,11 @@ impl MotionBlurPass {
 		let blur_pass = pipeline.bind(
 			"Motion Blur Descriptor Set",
 			&[
-				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-				simple_compute::Resource::image("result", output),
-				simple_compute::Resource::buffer("parameters", parameters),
-				simple_compute::Resource::image_array(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets()),
+				simple_tile::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::buffer("parameters", parameters),
+				simple_tile::Resource::image_array(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets()),
 			],
+			&[simple_tile::Output::new("result", output)],
 		);
 
 		Self {
@@ -324,11 +328,12 @@ fn pixel_to_previous_pixel(current: View, previous: View, extent: Extent, fracti
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value, output_slot};
 	use math::{Degrees, Point, UnitVector, Vector};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::render_pass::simple_compute;
+	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_pixel, texture_2d};
 
 	const MOTION_BLUR_BESL: &str = include_str!("../../../assets/rendering/motion-blur.besl");
 
@@ -489,9 +494,9 @@ mod tests {
 		let mut result = empty_image(width, 1);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
-		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut descriptors, [pixel, 0]);
+		run_pixel(&program, &mut descriptors, [pixel, 0], PIXEL_TILE, [width, 1]);
 		drop(descriptors);
 		rgba(&result, [pixel, 0])
 	}
@@ -541,7 +546,7 @@ mod tests {
 		let mut root = besl::parse(MOTION_BLUR_BESL).expect("motion blur shader should parse");
 		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 		let root = besl::lex(root).expect("motion blur shader should link");
-		let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name("motion_blur".to_string());
+		let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name("motion_blur".to_string());
 
 		PlatformShaderCompiler::new()
 			.generate(&settings, &root)

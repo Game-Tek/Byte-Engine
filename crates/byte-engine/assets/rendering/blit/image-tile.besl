@@ -1,0 +1,13 @@
+// Copies `source` into the tile pass's output pixel for pixel. The renderer forwards `main` past a bypassed pass with
+// it, so the pass's replacement for `main` needs no shader-write usage.
+source: descriptor<{ type: StorageImage, binding: 0, access: read }>;
+result: output<vec4f, 0>;
+
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (coord.x >= extent.x || coord.y >= extent.y) {
+		return;
+	}
+	write(result, coord, image_load(source, coord));
+}

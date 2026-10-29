@@ -1,6 +1,6 @@
 ---
 title: Interface
-description: The BESL interface, from stage values and descriptors to shared storage, layout layers, and stage metadata.
+description: The BESL interface, from stage values, tile outputs, and descriptors to shared storage, layout layers, and stage metadata.
 icon: Cable
 ---
 
@@ -130,6 +130,55 @@ The shaders of one pipeline follow these rules:
 How a pipeline maps records to hit groups, and how instances give hits their
 records, is in the [GHI reference](/docs/reference/ghi#ray-tracing).
 
+## Tile entry points
+
+A tile shader runs once for each tile of its outputs, a square of 16 × 16 or
+32 × 32 pixels set by `tile` in its
+[stage metadata](#standalone-stage-metadata). It declares each result as a
+top-level `output<vec4f, LOCATION>` and writes it at a pixel with
+[`write`](/docs/reference/besl/intrinsics#tile-stage):
+
+```rust
+source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result: output<vec4f, 0>;
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	write(result, pixel, fetch(source, pixel));
+}
+```
+
+A tile shader follows these rules:
+
+- It declares one to eight outputs. Each is a `vec4f` without an array count,
+  at its own location from `0` through `7`, which is its color attachment
+  index. An output can be written but not read.
+- Every output has the size `input.extent`. The tiles along the right and
+  bottom edges can reach past it, so an invocation skips the pixels outside
+  before it writes.
+- An invocation writes only pixels of its own tile. Tiles start at multiples
+  of `tile` in each dimension.
+- With the default workgroup, one invocation runs for each pixel of the tile,
+  and `input.thread_id` is that pixel. A smaller workgroup covers a block of
+  pixels with each invocation; see
+  [stage metadata](#standalone-stage-metadata).
+- It shares `workgroup` storage of scalars, vectors, and atomics: `f32`,
+  `u32`, `i32`, `f16`, `u16`, `vec2f`, `vec3f`, `vec4f`, `vec2u`, `vec3u`,
+  `vec4u`, `vec2i`, `vec2f16`, `vec3f16`, `vec4f16`, `vec2u16`, `vec3u16`,
+  `vec4u16`, `atomicu32`, and `atomici32`, in arrays or alone. Every
+  invocation of a tile reaches each `workgroup_barrier()`.
+- It doesn't call subgroup intrinsics, `sample`, or `fwidth`, and it doesn't
+  `discard`. Its invocations don't keep one lane order across platforms, and
+  it has no derivatives, so it samples with `texture_lod`.
+
+On Metal, a tile shader is a tile function whose outputs are the color
+attachments of the render pass that runs it. Elsewhere it's a compute shader
+whose outputs are write-only storage images, one set for all of them.
+
 ## Stage input values
 
 Add a `StageInput` parameter when a shader needs values supplied by its stage.
@@ -171,8 +220,12 @@ main: fn (input: StageInput) -> void {
 | `threadgroup_position` | `u32` | Workgroup position. |
 | `subgroup_lane_index` | `u32` | Lane index inside the current subgroup. |
 
-These values are available only in the compute stage. Pass a value to a helper
-function when code outside `main` needs it.
+These values are available only in the compute stage, except `thread_id` and
+`thread_idx`, which tile shaders read too. Pass a value to a helper function
+when code outside `main` needs it.
+
+Tile shaders also read `extent`, a `vec2u` that holds the width and height of
+every output in pixels. It's available only in the tile stage.
 
 Ray generation shaders read the point of the launch grid they run for, and
 closest-hit shaders read the hit they shade:
@@ -375,7 +428,7 @@ index_image: descriptor<{ type: StorageImage<r32ui>, binding: 6, access: read }>
 ## Standalone stage metadata
 
 Standalone `.besl` assets require an adjacent `.besl.bead` file. Set `stage` to
-`Vertex`, `Fragment`, `Compute`, `Task`, `Mesh`, `RayGeneration`, or
+`Vertex`, `Fragment`, `Compute`, `Tile`, `Task`, `Mesh`, `RayGeneration`, or
 `ClosestHit`.
 
 Compute, task, and mesh stages can set `workgroup` with up to three positive
@@ -404,8 +457,18 @@ Mesh stages require positive `maximum_vertices` and `maximum_primitives` values:
 { "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }
 ```
 
+Tile stages require `tile`, the pixels along each edge of a tile, `16` or `32`.
+Their `workgroup` is a square whose side is `tile` divided by 1, 2, or 4, with
+at most 256 invocations, so each invocation covers a 1 × 1, 2 × 2, or 4 × 4
+block of pixels. Omitting `workgroup` uses one invocation for each pixel,
+`[tile, tile, 1]`:
+
+```json
+{ "stage": "Tile", "tile": 32, "workgroup": [16, 16, 1] }
+```
+
 `Vertex`, `Fragment`, `RayGeneration`, and `ClosestHit` stages don't accept
-`workgroup` or mesh limits.
+`workgroup`, `tile`, or mesh limits.
 
 ## Layout layers
 
@@ -494,6 +557,7 @@ The normal generators support these stage and output-language combinations:
 | Vertex | Supported | Supported | Supported |
 | Fragment | Supported | Supported | Supported |
 | Compute | Supported | Supported | Supported |
+| Tile | Supported as a compute shader | Supported as a compute shader | Supported as a tile function |
 | Task | Not supported | Supported as an amplification shader | Supported as an object stage |
 | Mesh | Supported through `GL_EXT_mesh_shader` | Supported | Supported |
 | RayGeneration | Not supported | Not supported | Supported as a compute kernel |

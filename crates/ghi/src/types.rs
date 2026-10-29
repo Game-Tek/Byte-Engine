@@ -125,6 +125,8 @@ bitflags::bitflags! {
 		const RAYGEN = 1 << 11;
 		/// The closest hit stage.
 		const CLOSEST_HIT = 1 << 12;
+		/// The tile stage, which runs a tile function inside a render pass. See [`ShaderTypes::Tile`].
+		const TILE = 1 << 13;
 		/// The acceleration structure build stage.
 		const ACCELERATION_STRUCTURE_BUILD = 1 << 17;
 		/// The last or bottom stage.
@@ -132,7 +134,7 @@ bitflags::bitflags! {
 	}
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 /// A pixel format supported by GHI images.
 pub enum Formats {
 	/// 8 bit unsigned per component floating point R.
@@ -584,6 +586,9 @@ pub enum ShaderTypes {
 	RayGen,
 	/// The shader a ray tracing pipeline's hit group runs on a hit.
 	ClosestHit,
+	/// A tile function: a compute-like shader a render pass runs once per tile, which writes the pass's color
+	/// attachments. Only backends whose [`crate::context::Context::supports_tile_functions`] is `true` create them.
+	Tile,
 }
 
 impl From<ShaderTypes> for Stages {
@@ -596,6 +601,7 @@ impl From<ShaderTypes> for Stages {
 			ShaderTypes::Mesh => Self::MESH,
 			ShaderTypes::RayGen => Self::RAYGEN,
 			ShaderTypes::ClosestHit => Self::CLOSEST_HIT,
+			ShaderTypes::Tile => Self::TILE,
 		}
 	}
 }

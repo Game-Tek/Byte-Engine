@@ -406,7 +406,12 @@ fn setup_image_transform_render_pass(
 	application: &mut GraphicsApplication,
 	configuration: &'static rendering::render_passes::image_transform::Configuration,
 ) {
-	ImageTransformPass::request_pipelines(&application.renderer.pipeline_manager_client(), configuration);
+	let swapchain_format = ghi::context::Context::swapchain_format(application.renderer.context_mut());
+	ImageTransformPass::request_pipelines(
+		&application.renderer.pipeline_manager_client(),
+		configuration,
+		swapchain_format,
+	);
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {

@@ -444,35 +444,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			attachments.iter().map(|(_, surface, _)| surface.image),
 		);
 
-		let mut initial_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
-		let mut final_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
-		for (attachment, surface, _) in &attachments {
-			let resource_use = |access| {
-				synchronization::MetalResourceUse::image(
-					surface.image,
-					Some(0),
-					attachment.layer,
-					mtl::MTLStages::Fragment,
-					access,
-				)
-			};
-			let initial_access = crate::AccessPolicies::WRITE
-				| if attachment.loads() {
-					crate::AccessPolicies::READ
-				} else {
-					crate::AccessPolicies::NONE
-				};
-			initial_attachment_uses.push(resource_use(initial_access));
-			final_attachment_uses.push(resource_use(crate::AccessPolicies::WRITE).in_group_memory(self.device.images));
-			// A pass that clears or discards an attachment gives an image-group member new contents.
-			if let (ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
-				self.commit.image_groups.initialize(image);
-			}
-		}
-		self.consume_resources(initial_attachment_uses);
-		// Every draw records the same attachment writes, so they are consolidated once for the whole pass.
-		synchronization::MetalResourceTracker::consolidate_in_place(&mut final_attachment_uses);
-		self.active_render_attachment_uses = final_attachment_uses;
+		self.track_render_attachments(
+			attachments
+				.iter()
+				.map(|(attachment, surface, _)| (*attachment, surface.image)),
+			mtl::MTLStages::Fragment,
+			extent,
+		);
 
 		let rce = self.render_encoder("start_render_pass");
 		rce.setViewport(mtl::MTLViewport {
@@ -490,9 +468,82 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			height: extent.height() as _,
 		});
 
-		self.active_render_extent = extent;
-
 		self
+	}
+
+	/// Starts a render pass whose tile size is the pipeline's tile, with the pipeline's threadgroup memory reserved,
+	/// and binds the pipeline.
+	///
+	/// The pass draws nothing, so attachment accesses happen at the tile stage and its load and store actions.
+	fn start_tile_pass(
+		&mut self,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+		extent: Extent,
+		outputs: &[graphics_hardware_interface::AttachmentInformation],
+	) -> &mut impl BoundTilePipelineMode {
+		self.end_encoder();
+		// The pipelines outlive the recording, so the tile state does not borrow it.
+		let pipelines = self.device.pipelines;
+		let tile = pipelines[pipeline_handle.index() as usize].tile().unwrap_or_else(|| {
+			panic!(
+				"Metal start_tile_pass received pipeline {pipeline_handle:?}, which is not a tile pipeline. The most likely cause is that a compute or raster pipeline handle was passed. Create the pipeline with create_tile_pipeline."
+			)
+		});
+		assert!(
+			outputs.len() == tile.outputs.len(),
+			"Metal start_tile_pass received {} outputs for a tile pipeline that writes {}. The most likely cause is an output left out or added. Pass one attachment per pipeline output, in output order.",
+			outputs.len(),
+			tile.outputs.len(),
+		);
+
+		let surfaces = outputs
+			.iter()
+			.map(|output| self.surface(output.target, 0).expect(MISSING_SURFACE))
+			.collect::<SmallVec<[_; 8]>>();
+		let rpd = mtl::MTL4RenderPassDescriptor::new();
+		for (index, (output, surface)) in outputs.iter().zip(&surfaces).enumerate() {
+			assert!(
+				surface.format == tile.outputs[index],
+				"Metal start_tile_pass output {index} is {:?}, and the tile pipeline writes {:?} there. The most likely cause is an image of another format than the pipeline was created for. Create the pipeline for the outputs' formats.",
+				surface.format,
+				tile.outputs[index],
+			);
+			// SAFETY: Tile pipelines have at most eight outputs, the attachments Metal's array has.
+			let color = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(index) };
+			color.setClearColor(utils::clear_color(output.clear_value()));
+			color.setTexture(Some(&surface.texture));
+			color.setLoadAction(utils::load_action(output.load));
+			color.setStoreAction(utils::store_action(output.store));
+		}
+		rpd.setTileWidth(tile.tile as _);
+		rpd.setTileHeight(tile.tile as _);
+		let threadgroup_memory = tile.threadgroup_memory.iter().sum::<u32>();
+		rpd.setThreadgroupMemoryLength(threadgroup_memory as _);
+
+		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
+			"Metal 4 render command encoder creation failed. The most likely cause is that the command buffer could not start the tile pass.",
+		);
+		// Threadgroup arguments follow one another in the memory the pass reserves.
+		let mut offset = 0;
+		for (index, &length) in tile.threadgroup_memory.iter().enumerate() {
+			// SAFETY: Every length and so every offset is a multiple of 16, and they sum to the pass's reservation.
+			unsafe { encoder.setThreadgroupMemoryLength_offset_atIndex(length as _, offset as _, index as _) };
+			offset += length;
+		}
+		self.begin_encoder(
+			ActiveEncoder::Render(encoder),
+			"Tile",
+			surfaces.iter().map(|surface| surface.image),
+		);
+
+		// Tile functions reach the attachments at the tile stage, and the load and store actions at the fragment stage.
+		self.track_render_attachments(
+			outputs.iter().zip(&surfaces).map(|(output, surface)| (output, surface.image)),
+			mtl::MTLStages::Fragment | mtl::MTLStages::Tile,
+			extent,
+		);
+
+		self.bind_pipeline(pipeline_handle)
 	}
 
 	fn discard_images(&mut self, images: &[graphics_hardware_interface::BaseImageHandle]) {
@@ -1171,6 +1222,36 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 					utils::mtl_size(threadgroup_extent),
 				);
 		}
+	}
+}
+
+impl BoundTilePipelineMode for CommandBufferRecording<'_> {
+	/// Binds the outputs' extent for the tile function's edge checks, then dispatches its threads for every tile.
+	fn dispatch_tiles(&mut self) {
+		self.note_command();
+		self.prepare_draw("dispatch_tiles", []);
+		let pipeline_handle = self.bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that dispatch_tiles was called outside a tile pass started with start_tile_pass.",
+		);
+		let tile = self.device.pipelines[pipeline_handle.index() as usize].tile().expect(
+			"Metal dispatch_tiles found no tile pipeline bound. The most likely cause is that another pipeline was bound after start_tile_pass. Record each tile pass with the pipeline it started with.",
+		);
+		let threads = tile.threads;
+		let extent = [self.active_render_extent.width(), self.active_render_extent.height()];
+		let (page, offset) = self
+			.commit
+			.upload_arena
+			.upload(self.device.metal_device, bytemuck::bytes_of(&extent));
+		let address = page.gpu_address.checked_add(offset as u64).expect(
+			"Metal tile extent upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
+		);
+		self.command_buffer.retain_allocation(&*page.buffer);
+		self.set_stage_buffer_address(ArgumentTableStage::Tile, TILE_EXTENT_BINDING_INDEX, address);
+
+		self.render_encoder("dispatch_tiles")
+			.dispatchThreadsPerTile(utils::mtl_size(threads));
+		self.record_render_attachment_writes();
+		self.end_encoder();
 	}
 }
 

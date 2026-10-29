@@ -1,6 +1,8 @@
 //! Shared fixtures for executing production rendering shaders through the BESL VM.
 
-use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, ResourceSlot, Texture, Value};
+use besl::vm::{
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, ResourceSlot, Texture, TileInvocation, Value, output_slot,
+};
 
 const TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 const TEST_CALL_DEPTH_LIMIT: usize = 128;
@@ -224,6 +226,53 @@ pub(crate) fn lane_config(thread_idx: u32) -> ExecutionConfig {
 		.with_thread_idx(thread_idx)
 }
 
+/// The tile of the production tile shaders that run one lane per pixel, as their `.besl.bead` files declare it.
+pub(crate) const PIXEL_TILE: u32 = 16;
+
+/// Returns the configurations of the `width` x `width` lanes of tile shader tile `position`, `tile` pixels wide, over
+/// outputs of `extent`, in row-major lane order, for [`ExecutableProgram::run_workgroup`].
+///
+/// Bind each output image at [`besl::vm::output_slot`] of its location.
+pub(crate) fn tile_lanes(position: [u32; 2], tile: u32, width: u32, extent: [u32; 2]) -> Vec<ExecutionConfig> {
+	(0..width * width)
+		.map(|lane| {
+			lane_config(lane)
+				.with_thread_id([position[0] * width + lane % width, position[1] * width + lane / width])
+				.with_tile(TileInvocation {
+					size: tile,
+					position,
+					extent,
+				})
+		})
+		.collect()
+}
+
+/// Returns the position of every tile of a `tile`-pixel grid over outputs of `extent`, row by row.
+pub(crate) fn tiles(tile: u32, extent: [u32; 2]) -> impl Iterator<Item = [u32; 2]> {
+	(0..extent[1].div_ceil(tile)).flat_map(move |y| (0..extent[0].div_ceil(tile)).map(move |x| [x, y]))
+}
+
+/// Executes the invocation of a tile shader with one lane per pixel that writes `pixel`, over outputs of `extent` in
+/// `tile`-pixel tiles.
+pub(crate) fn run_pixel(
+	program: &ExecutableProgram,
+	descriptors: &mut DescriptorBindings<'_>,
+	pixel: [u32; 2],
+	tile: u32,
+	extent: [u32; 2],
+) {
+	let config = lane_config((pixel[1] % tile) * tile + pixel[0] % tile)
+		.with_thread_id(pixel)
+		.with_tile(TileInvocation {
+			size: tile,
+			position: [pixel[0] / tile, pixel[1] / tile],
+			extent,
+		});
+	program.run_main_with_config(descriptors, &config).expect(
+		"Failed to execute a production tile shader with the BESL VM. The most likely cause is missing runtime support or an invalid fixture binding.",
+	);
+}
+
 /// Executes one bounded shader invocation at the requested two-dimensional thread coordinate.
 pub(crate) fn run_at(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>, thread_id: [u32; 2]) {
 	program.run_main_with_config(descriptors, &lane_config(0).with_thread_id(thread_id)).expect(
@@ -252,17 +301,20 @@ pub(crate) fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4], tolerance:
 	}
 }
 
-/// Runs a one-texel image-to-image compute program and returns the written color.
+/// The tile of the image-transform shaders, as their `.besl.bead` files declare it.
+const IMAGE_TRANSFORM_TILE: u32 = 16;
+
+/// Runs a one-texel image-to-image tile program and returns the written color.
 ///
-/// Image-transform passes share this: each binds a 1x1 source at slot 0 and a 1x1 result at slot 1,
-/// then reads the single output texel back.
+/// Image-transform passes share this: each binds a 1x1 source at slot 0 and a 1x1 result to output 0, then reads
+/// the single output texel back.
 pub(crate) fn run_image_transform_vm(program: &ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
 	let mut source = texture_2d(1, 1, &[source_color]);
 	let mut result = empty_image(1, 1);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_image(ResourceSlot::new(0), &mut source);
-	descriptors.bind_image(ResourceSlot::new(1), &mut result);
-	run_at(program, &mut descriptors, [0, 0]);
+	descriptors.bind_image(output_slot(0), &mut result);
+	run_pixel(program, &mut descriptors, [0, 0], IMAGE_TRANSFORM_TILE, [1, 1]);
 	drop(descriptors);
 	rgba(&result, [0, 0])
 }

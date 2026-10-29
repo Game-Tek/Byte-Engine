@@ -98,6 +98,11 @@ impl Generator {
 		program: &besl::NodeReference,
 	) -> Result<LoweredPlatformShader, String> {
 		let source = self.lower_source(shader_generation_settings, program)?;
+		let threadgroup_memory = match PlatformShaderLanguage::current_platform() {
+			#[cfg(target_vendor = "apple")]
+			PlatformShaderLanguage::Msl => self.msl_transpiler.tile_threadgroup_memory().to_vec(),
+			_ => Vec::new(),
+		};
 		let extent = match shader_generation_settings.stage {
 			Stages::Compute { local_size } => Some(local_size),
 			// SPIR-V reflection reports a workgroup only for compute shaders.
@@ -113,6 +118,7 @@ impl Generator {
 				.map(CompiledShaderBinding::from)
 				.collect(),
 			extent,
+			threadgroup_memory,
 		})
 	}
 
@@ -197,6 +203,8 @@ pub struct LoweredPlatformShader {
 	pub name: String,
 	/// The GLSL, MSL, or HLSL text the platform compiler consumes.
 	pub source: String,
+	/// The bytes of each threadgroup argument of a Metal tile function, by index; empty for every other shader.
+	pub threadgroup_memory: Vec<u32>,
 	bindings: Vec<CompiledShaderBinding>,
 	extent: Option<utils::Extent>,
 }

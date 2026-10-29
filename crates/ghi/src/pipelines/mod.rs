@@ -4,6 +4,7 @@ pub mod compute;
 
 pub mod raster;
 pub mod ray_tracing;
+pub mod tile;
 
 /// The `CacheData` struct lends the bytes of a device's pipeline cache to the code that persists them, split so that
 /// saving writes only what is new.

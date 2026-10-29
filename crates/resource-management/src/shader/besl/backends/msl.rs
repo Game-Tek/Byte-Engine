@@ -1028,6 +1028,59 @@ mod tests {
 		compile_natively(&shader, "besl-compute-workgroup-fixture").await;
 	}
 
+	/// A tile shader that shares texels through workgroup storage and writes two outputs, one of them from a helper.
+	const TILE_FIXTURE_SOURCE: &str = r#"
+		source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+		color: output<vec4f, 0>;
+		glow: output<vec4f, 1>;
+		shared_texels: workgroup<vec4f, 64>;
+
+		write_glow: fn (pixel: vec2u, value: vec4f) -> void {
+			write(glow, pixel, value);
+		}
+
+		main: fn (input: StageInput) -> void {
+			let extent: vec2u = input.extent;
+			let uv: vec2f = vec2f(f32(input.thread_id.x), f32(input.thread_id.y)) / vec2f(f32(extent.x), f32(extent.y));
+			shared_texels[input.thread_idx] = texture_lod(source, uv);
+			workgroup_barrier();
+			let pixel: vec2u = input.thread_id * vec2u(2, 2);
+			write(color, pixel, shared_texels[input.thread_idx]);
+			write(color, pixel + vec2u(1, 1), shared_texels[63 - input.thread_idx]);
+			write_glow(pixel, vec4f(f32(input.thread_idx), 0.0, 0.0, 1.0));
+		}
+	"#;
+
+	/// Verifies a tile shader lowers to a Metal tile function: an implicit imageblock holding one `float4` per output
+	/// at its color index, compute values rebuilt from the thread's place in its tile, and output writes masked to the
+	/// tile and the extent, which keep the pixel's other outputs.
+	#[compio::test]
+	async fn generated_tile_stage_compiles_with_metal() {
+		let shader = lower_fixture(
+			TILE_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::tile(16, utils::Extent::square(8)),
+		);
+		assert_string_contains!(
+			shader,
+			"struct _besl_tile_outputs{float4 color [[color(0)]];float4 glow [[color(1)]];}"
+		);
+		assert_string_contains!(
+			shader,
+			"kernel void besl_main(imageblock<_besl_tile_outputs, imageblock_layout_implicit> tile_block"
+		);
+		assert_string_contains!(shader, "constant uint2& output_extent [[buffer(13)]]");
+		assert_string_contains!(shader, "uint2 gid=threadgroup_position*8u+uint2(_besl_tile_thread)");
+		assert_string_contains!(shader, "threadgroup float4* shared_texels [[threadgroup(0)]]");
+		assert_string_contains!(shader, "_besl_offset=_besl_pixel-threadgroup_position*16u");
+		assert_string_contains!(shader, "_besl_outputs=tile_block.read(ushort2(_besl_offset))");
+		assert_string_contains!(
+			shader,
+			"imageblock<_besl_tile_outputs, imageblock_layout_implicit> tile_block,uint2 output_extent)"
+		);
+
+		compile_natively(&shader, "besl-tile-fixture").await;
+	}
+
 	/// Verifies subgroup intrinsics map onto Metal SIMD-group operations with the lane type Metal expects.
 	#[compio::test]
 	async fn generated_compute_subgroup_stage_compiles_with_metal() {

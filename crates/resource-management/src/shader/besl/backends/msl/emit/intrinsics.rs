@@ -1,6 +1,32 @@
 use super::super::*;
 
 impl Generator {
+	/// Reports whether `function`, or a function it calls, writes a tile output or reads a tile value, all of which the
+	/// kernel holds and passes to its helpers.
+	pub(crate) fn uses_tile_context(function: &besl::NodeReference) -> bool {
+		any_code_node(function, true, &mut |node| match node.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+				intrinsic, arguments, ..
+			}) => match intrinsic.borrow().get_name() {
+				Some("output_extent") => true,
+				Some("write") => arguments.first().and_then(besl::referenced_output).is_some(),
+				_ => false,
+			},
+			_ => false,
+		})
+	}
+
+	/// Writes the member name of the tile output that `argument` names.
+	fn emit_output_name(&self, string: &mut String, argument: &besl::NodeReference) {
+		if let Some(output) = besl::referenced_output(argument)
+			&& let Some(name) = output.borrow().get_name()
+		{
+			Self::identifier(name).push_to(string);
+		}
+	}
+}
+
+impl Generator {
 	/// Emits a resource passed to an intrinsic using the active stage's resource context.
 	pub(crate) fn emit_intrinsic_resource_reference(&mut self, string: &mut String, resource: &besl::NodeReference) {
 		let resource_node = resource.borrow();
@@ -320,6 +346,28 @@ impl Generator {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".get_height())");
 			}
+			// A tile output lives in the tile's imageblock, which holds only this tile, so the write skips pixels outside
+			// the tile and past the outputs' extent. With one output the pixel's struct is the output; with several, the
+			// write keeps the pixel's other outputs.
+			"write" if self.tile_stage_context.is_some() && besl::referenced_output(&arguments[0]).is_some() => {
+				let tile = self.tile_stage_context.as_ref().map_or(1, |tile| tile.tile);
+				let keeps_others = self.tile_stage_context.as_ref().is_some_and(|tile| tile.output_count > 1);
+				string.push_str("{uint2 _besl_pixel=");
+				self.emit_node_string(string, &arguments[1]);
+				let _ = write!(
+					string,
+					";uint2 _besl_offset=_besl_pixel-threadgroup_position*{tile}u;if(all(_besl_offset<uint2({tile}u))&&all(_besl_pixel<output_extent)){{{TILE_OUTPUTS_STRUCT} _besl_outputs"
+				);
+				if keeps_others {
+					string.push_str("=tile_block.read(ushort2(_besl_offset))");
+				}
+				string.push_str(";_besl_outputs.");
+				self.emit_output_name(string, &arguments[0]);
+				string.push('=');
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(";tile_block.write(_besl_outputs,ushort2(_besl_offset));}}");
+			}
+			"output_extent" => string.push_str("output_extent"),
 			"write" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".write(");

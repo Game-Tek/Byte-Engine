@@ -529,6 +529,7 @@ impl Generator {
 			Stages::Vertex => msl_block.push_str("// #pragma shader_stage(vertex)\n"),
 			Stages::Fragment => msl_block.push_str("// #pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => msl_block.push_str("// #pragma shader_stage(compute)\n"),
+			Stages::Tile { .. } => msl_block.push_str("// #pragma shader_stage(tile)\n"),
 			Stages::Task { .. } => msl_block.push_str("// #pragma shader_stage(object)\n"),
 			Stages::Mesh { .. } => msl_block.push_str("// #pragma shader_stage(mesh)\n"),
 			Stages::RayGeneration => msl_block.push_str("// #pragma shader_stage(ray_generation)\n"),
@@ -543,7 +544,7 @@ impl Generator {
 				local_size.height(),
 				local_size.depth()
 			);
-			if matches!(compilation_settings.stage, Stages::Compute { .. }) {
+			if matches!(compilation_settings.stage, Stages::Compute { .. } | Stages::Tile { .. }) {
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}
 		}

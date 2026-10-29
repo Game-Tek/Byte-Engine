@@ -297,6 +297,7 @@ pub(crate) fn to_metal_stages(stages: crate::Stages) -> mtl::MTLStages {
 		(crate::Stages::TASK, mtl::MTLStages::Object),
 		(crate::Stages::MESH, mtl::MTLStages::Mesh),
 		(crate::Stages::FRAGMENT, mtl::MTLStages::Fragment),
+		(crate::Stages::TILE, mtl::MTLStages::Tile),
 		(DISPATCH_STAGES, mtl::MTLStages::Dispatch),
 		(crate::Stages::TRANSFER, mtl::MTLStages::Blit),
 		(

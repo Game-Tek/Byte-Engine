@@ -10,14 +10,15 @@
 // highlights, and a sampler blending an infinite texel with its neighbors yields NaN before the shader can
 // clamp it. NaN at any level smears into a black block the size of the pyramid's coarsest texel.
 //
-// Each lane filters a 2x2 block of destination texels, so an 8x8 workgroup covers a 16x16 tile. A wider tile shares
-// more of the blocks under its filters, and each lane keeps ten block reads in flight instead of three.
+// It is a tile shader: each of a tile's 8x8 lanes filters a 2x2 block of destination texels, so a tile is 16x16 of
+// them. A wider tile shares more of the blocks under its filters, and each lane keeps ten block reads in flight instead
+// of three.
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
+result: output<vec4f, 0>;
 
-// The 2x2 block averages under one workgroup's filters. Every tap of the 13-tap filter is one block, and neighboring
+// The 2x2 block averages under one tile's filters. Every tap of the 13-tap filter is one block, and neighboring
 // destination texels share most of them, so each block is averaged once and read from here. The even blocks start on
 // the destination grid, one under each destination texel of the 16x16 tile plus a ring of one around it; the odd
 // blocks start one scene texel later, on the corners between them.
@@ -211,17 +212,19 @@ main: fn(input: StageInput) -> void {
 	store_ring(lane, ring_first, ring_first_average);
 	workgroup_barrier();
 
-	// Partial edge workgroups must take part in the cooperative load before returning.
-	guard_image_bounds(result_texture, base);
-	let result_size: vec2u = image_size(result_texture);
-	write(result_texture, base, filtered(local, threshold, soft_knee));
+	// Partial edge tiles must take part in the cooperative load before skipping the texels past the edge.
+	let result_size: vec2u = input.extent;
+	if (base.x >= result_size.x || base.y >= result_size.y) {
+		return;
+	}
+	write(result, base, filtered(local, threshold, soft_knee));
 	if (base.x + 1 < result_size.x) {
-		write(result_texture, base + vec2u(1, 0), filtered(local + vec2u(1, 0), threshold, soft_knee));
+		write(result, base + vec2u(1, 0), filtered(local + vec2u(1, 0), threshold, soft_knee));
 	}
 	if (base.y + 1 < result_size.y) {
-		write(result_texture, base + vec2u(0, 1), filtered(local + vec2u(0, 1), threshold, soft_knee));
+		write(result, base + vec2u(0, 1), filtered(local + vec2u(0, 1), threshold, soft_knee));
 		if (base.x + 1 < result_size.x) {
-			write(result_texture, base + vec2u(1, 1), filtered(local + vec2u(1, 1), threshold, soft_knee));
+			write(result, base + vec2u(1, 1), filtered(local + vec2u(1, 1), threshold, soft_knee));
 		}
 	}
 }

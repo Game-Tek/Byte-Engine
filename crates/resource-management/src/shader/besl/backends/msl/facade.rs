@@ -25,6 +25,12 @@ pub struct Generator {
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
 	/// Set while emitting a ray generation or closest-hit shader.
 	pub(crate) ray_tracing_stage_context: Option<RayTracingStageContext>,
+	/// Set while emitting a tile shader, together with `compute_stage_context`: a tile function is a kernel whose
+	/// body follows the compute rules, plus the imageblock it writes its outputs to.
+	pub(crate) tile_stage_context: Option<TileStageContext>,
+	/// The bytes of each `[[threadgroup(n)]]` argument of the last tile function generated, by index. Empty for every
+	/// other stage. See [`Self::tile_threadgroup_memory`].
+	pub(crate) tile_threadgroup_memory: Vec<u32>,
 	/// Set while emitting a struct that a raster entry point returns. Metal rejects packed vectors in stage
 	/// interfaces, so its members keep native vector types.
 	pub(crate) in_stage_interface_struct: bool,
@@ -58,6 +64,17 @@ pub(crate) struct HiddenContext {
 pub(crate) const SHADER_BINDING_TABLE_BINDING_INDEX: u32 = 14;
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+
+/// The Metal buffer index of a tile function's output extent, a `uint2`, which a tile function has no builtin for.
+///
+/// The Metal GHI backend binds the render pass's extent at the same index when it dispatches a tile function.
+pub(crate) const TILE_EXTENT_BINDING_INDEX: u32 = 13;
+
+/// The struct that holds one pixel of every output of a tile function: its implicit imageblock layout.
+pub(crate) const TILE_OUTPUTS_STRUCT: &str = "_besl_tile_outputs";
+
+/// The type of the imageblock a tile function and its helpers write their outputs to.
+pub(crate) const TILE_BLOCK_TYPE: &str = "imageblock<_besl_tile_outputs, imageblock_layout_implicit>";
 
 /// The Metal buffer index of a shader's first descriptor set. Each further set takes the next index.
 ///
@@ -130,6 +147,18 @@ pub(crate) struct StageWorkgroup {
 	pub(crate) count: Option<usize>,
 }
 
+/// The `TileStageContext` struct carries what a tile function's writes need: its tile, and its outputs, whose count
+/// decides whether a write must keep the other outputs of the pixel.
+#[derive(Clone, Debug)]
+pub(crate) struct TileStageContext {
+	/// Pixels along each edge of a tile.
+	pub(crate) tile: u32,
+	/// Threads along each edge of a tile.
+	pub(crate) threads: u32,
+	/// How many outputs the shader writes.
+	pub(crate) output_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ComputeStageContext {
 	pub(crate) has_resources: bool,
@@ -178,6 +207,12 @@ pub(crate) struct ClassifiedNodes<'a> {
 }
 
 impl Generator {
+	/// Returns the bytes of each `[[threadgroup(n)]]` argument of the tile function generated last, by index, each a
+	/// multiple of 16. A render pass that dispatches it reserves them in order at 16-byte-aligned offsets.
+	pub fn tile_threadgroup_memory(&self) -> &[u32] {
+		&self.tile_threadgroup_memory
+	}
+
 	/// Creates an MSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
 		Generator {
@@ -189,6 +224,8 @@ impl Generator {
 			task_stage_context: None,
 			mesh_stage_context: None,
 			ray_tracing_stage_context: None,
+			tile_stage_context: None,
+			tile_threadgroup_memory: Vec::new(),
 			in_stage_interface_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,

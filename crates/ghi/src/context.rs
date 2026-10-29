@@ -326,6 +326,23 @@ pub trait Context: ContextCreate {
 	/// `false`. Next, create structures with [`ContextCreate::create_bottom_level_acceleration_structure`].
 	fn supports_ray_tracing(&self) -> bool;
 
+	/// Returns whether this context runs tile functions: compute-like shaders that a render pass runs once per tile,
+	/// writing its color attachments through tile memory.
+	///
+	/// Check it before you create a tile pipeline with [`ContextCreate::create_tile_pipeline`]. When it is `false`,
+	/// run the work as a compute shader that writes storage images instead.
+	fn supports_tile_functions(&self) -> bool {
+		false
+	}
+
+	/// Returns the format of the images a swapchain presents.
+	///
+	/// A pass that writes a swapchain image as a color attachment, such as a tile pass, declares this format in its
+	/// pipeline, since a pipeline's attachment formats must match the images it renders to.
+	fn swapchain_format(&self) -> crate::Formats {
+		crate::Formats::BGRAsRGB
+	}
+
 	/// Returns the bytes a bottom-level acceleration structure occupies.
 	///
 	/// The size drops to the structure's compacted size a few frames after its build completes.
@@ -536,6 +553,14 @@ pub trait ContextCreate {
 	/// Creates a compute pipeline.
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> PipelineHandle;
 
+	/// Creates a tile pipeline.
+	///
+	/// Check [`Context::supports_tile_functions`] first; backends without tile functions panic. Next, record it with
+	/// [`crate::command_buffer::CommandBufferRecording::start_tile_pass`].
+	fn create_tile_pipeline(&mut self, _builder: crate::pipelines::tile::Builder) -> PipelineHandle {
+		crate::pipelines::tile::unsupported(std::any::type_name::<Self>())
+	}
+
 	/// Creates a ray tracing pipeline.
 	///
 	/// Check [`Context::supports_ray_tracing`] first. Next, map hit records to the pipeline's hit groups with
@@ -714,6 +739,10 @@ macro_rules! delegate_context_create_to_device {
 
 		fn create_compute_pipeline(&mut self, builder: $crate::pipelines::compute::Builder) -> $crate::PipelineHandle {
 			self.device.create_compute_pipeline(builder)
+		}
+
+		fn create_tile_pipeline(&mut self, builder: $crate::pipelines::tile::Builder) -> $crate::PipelineHandle {
+			self.device.create_tile_pipeline(builder)
 		}
 
 		fn create_ray_tracing_pipeline(&mut self, builder: $crate::pipelines::ray_tracing::Builder) -> $crate::PipelineHandle {

@@ -31,7 +31,7 @@ impl AssetHandler for PipelineAssetHandler {
 		})?;
 
 		match &pipeline.kind {
-			PipelineKind::Compute { shader, .. } => {
+			PipelineKind::Compute { shader, .. } | PipelineKind::Tile { shader, .. } => {
 				context.bake_dependency::<Shader>(shader).await?;
 			}
 			PipelineKind::Raster { shaders, .. } => {

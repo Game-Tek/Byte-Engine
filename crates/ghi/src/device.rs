@@ -43,6 +43,14 @@ where
 	/// Creates a compute pipeline from a builder.
 	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline;
 
+	/// Creates a tile pipeline from a builder.
+	///
+	/// Check [`crate::context::Context::supports_tile_functions`] first; backends without tile functions panic. Next,
+	/// intern the pipeline in the frame that renders with it, as a raster pipeline.
+	fn create_tile_pipeline(&mut self, _builder: pipelines::tile::Builder) -> Self::RasterPipeline {
+		pipelines::tile::unsupported(std::any::type_name::<Self>())
+	}
+
 	/// Creates a ray tracing pipeline from a builder.
 	///
 	/// Check [`crate::context::Context::supports_ray_tracing`] first. A factory compiles each closest-hit shader once

@@ -90,6 +90,22 @@ pub fn is_position_output(name: &str) -> bool {
 	matches!(name, "position" | STRUCTURAL_POSITION_OUTPUT)
 }
 
+/// Returns the `output` declaration that `expression` names, looking through parentheses, or `None` when it names
+/// anything else.
+///
+/// A tile shader's `write` takes one of its outputs where other stages pass a storage image, so backends call this to
+/// tell the two apart.
+pub fn referenced_output(expression: &NodeReference) -> Option<NodeReference> {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => referenced_output(&elements[0]),
+		Nodes::Expression(Expressions::Member { source, .. }) if matches!(source.borrow().node(), Nodes::Output { .. }) => {
+			Some(source.clone())
+		}
+		_ => None,
+	}
+}
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

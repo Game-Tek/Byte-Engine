@@ -173,6 +173,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		crate::rt::unsupported("DX12")
 	}
 
+	#[allow(unreachable_code)]
+	fn start_tile_pass(
+		&mut self,
+		_: PipelineHandle,
+		_: Extent,
+		_: &[AttachmentInformation],
+	) -> &mut impl crate::command_buffer::BoundTilePipelineMode {
+		crate::pipelines::tile::unsupported("DX12");
+		self
+	}
+
 	fn start_render_pass(
 		&mut self,
 		extent: Extent,
@@ -494,5 +505,11 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, _: crate::ShaderBindingTableHandle, _: Extent) {
 		crate::rt::unsupported("DX12")
+	}
+}
+
+impl crate::command_buffer::BoundTilePipelineMode for CommandBufferRecording<'_> {
+	fn dispatch_tiles(&mut self) {
+		crate::pipelines::tile::unsupported("DX12")
 	}
 }

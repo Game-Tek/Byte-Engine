@@ -107,6 +107,21 @@ pub trait CommandBufferRecording: Sized {
 		attachments: &[AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode;
 
+	/// Starts a render pass that runs tile pipeline `pipeline` on `extent`, with `outputs` as its color attachments in
+	/// the order the pipeline's outputs take them.
+	///
+	/// The pipeline's tile function runs once for every tile of `extent`, including the partial tiles at its edges,
+	/// and writes the outputs through tile memory, so they need render-target usage and no shader-write usage. Next,
+	/// bind the descriptor sets the pipeline declares and call [`BoundTilePipelineMode::dispatch_tiles`], which ends
+	/// the pass. Check [`crate::context::Context::supports_tile_functions`] first; backends without tile functions
+	/// panic.
+	fn start_tile_pass(
+		&mut self,
+		pipeline: PipelineHandle,
+		extent: Extent,
+		outputs: &[AttachmentInformation],
+	) -> &mut impl BoundTilePipelineMode;
+
 	/// Clears the provided images to their requested values.
 	fn clear_images(&mut self, textures: &[(BaseImageHandle, ClearValue)]);
 
@@ -288,6 +303,15 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 
 	/// Dispatches compute workgroups using parameters stored in a buffer.
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: impl Into<IndirectDispatchBuffer<N>>, entry_index: usize);
+}
+
+/// The `BoundTilePipelineMode` trait runs the tile pipeline of a tile pass that
+/// [`CommandBufferRecording::start_tile_pass`] started.
+pub trait BoundTilePipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
+	/// Runs the pass's tile function once for every tile of the pass's extent, then ends the pass.
+	///
+	/// Later commands see everything the tile function wrote to the pass's outputs.
+	fn dispatch_tiles(&mut self);
 }
 
 /// The `BoundRayTracingPipelineMode` trait launches the ray generation shader of a bound ray tracing pipeline.

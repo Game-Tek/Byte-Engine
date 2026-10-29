@@ -9,6 +9,7 @@
 //! intermediate image or the swapchain without exposing graph position to the pass.
 
 pub mod simple_compute;
+pub mod simple_tile;
 
 use std::{
 	cell::{Cell, RefCell},
@@ -16,7 +17,7 @@ use std::{
 	sync::{Arc, atomic::AtomicU32},
 };
 
-use ghi::context::ContextCreate as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use smallvec::SmallVec;
 use utils::{Box, hash::HashMap};
 
@@ -38,6 +39,71 @@ pub fn allocate_render_command<'a>(
 	command: impl RenderPassFunction + Send + Sync + 'a,
 ) -> RenderPassReturn<'a> {
 	frame_allocator.alloc(command)
+}
+
+/// The `Adoption` struct holds what a simple pass builds from its published pipeline, such as its descriptor sets,
+/// and builds it again each time the pipeline is rebuilt.
+///
+/// A pass whose pipeline or adoption failed logs the failure once and stays idle until the pipeline is rebuilt.
+#[derive(Clone, Copy)]
+struct Adoption<T: Copy> {
+	/// The pipeline revision that `ready`, or the failure, belongs to.
+	revision: u64,
+	ready: Option<T>,
+	failed: bool,
+}
+
+impl<T: Copy> Default for Adoption<T> {
+	fn default() -> Self {
+		Self {
+			revision: 0,
+			ready: None,
+			failed: false,
+		}
+	}
+}
+
+impl<T: Copy> Adoption<T> {
+	/// Returns what `adopt` built from `pipeline`, calling it once the pipeline is published and again after each
+	/// rebuild. Returns `None` while the pipeline is pending, or when it or `adopt` failed. `label` names the pass in
+	/// the logged errors.
+	fn get(
+		&mut self,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
+		pipeline: crate::rendering::PipelineRef,
+		label: &str,
+		adopt: impl FnOnce() -> Result<T, String>,
+	) -> Option<T> {
+		let revision = pipeline_manager.revision(pipeline);
+		if self.revision != revision {
+			*self = Self {
+				revision,
+				..Self::default()
+			};
+		}
+		if self.ready.is_some() || self.failed {
+			return self.ready;
+		}
+		match pipeline_manager.get(pipeline) {
+			crate::rendering::PipelineState::Pending => return None,
+			crate::rendering::PipelineState::Failed => {
+				log::error!(
+					"The pipeline of pass `{label}` is unavailable. The most likely cause is that its pipeline asset or shader dependency failed to bake or compile."
+				);
+				self.failed = true;
+				return None;
+			}
+			crate::rendering::PipelineState::Ready(_) => {}
+		}
+		match adopt() {
+			Ok(ready) => self.ready = Some(ready),
+			Err(error) => {
+				log::error!("Pass `{label}` could not adopt its pipeline: {error}");
+				self.failed = true;
+			}
+		}
+		self.ready
+	}
 }
 
 /// The `RenderPass` trait defines a composable rendering step for a prepared sink.
@@ -487,13 +553,12 @@ impl<'a> RenderPassBuilder<'a> {
 
 	/// Creates a replacement for the color image named `main`.
 	///
-	/// The renderer supplies the sink swapchain when this pass is terminal. In
-	/// every other position, this creates and aliases the requested image. Bind
-	/// the returned target as a writable image without inspecting its variant.
-	/// Compute shaders must use a formatless storage-image output because the
-	/// swapchain format can differ from the intermediate format. Raster passes
-	/// should derive their attachment descriptor from the returned target. Next,
-	/// bind a compute output with [`simple_compute::Resource::image`].
+	/// The renderer supplies the sink swapchain when this pass is terminal. In every other position, this creates and
+	/// aliases the requested image, adding [`simple_tile::output_uses`] to the uses `builder` asks for. Bind the
+	/// returned target without inspecting its variant, and take its format from [`MainRenderTarget::format`], because
+	/// the swapchain format can differ from the intermediate format: request a tile pipeline for that format, write a
+	/// compute output as a formatless storage image, and derive a raster attachment from the target. Next, bind it with
+	/// [`simple_tile::Output::new`] or [`simple_compute::Resource::image`].
 	///
 	/// While the pass is bypassed, the renderer copies the incoming `main` into the replacement, so later passes read
 	/// the image this pass would have transformed.
@@ -510,17 +575,19 @@ impl<'a> RenderPassBuilder<'a> {
 			self.external_writable_targets.push(("main".to_string(), target));
 			MainRenderTarget {
 				target,
-				format: ghi::Formats::BGRAsRGB,
+				format: self.context.swapchain_format(),
 			}
 		} else {
-			let output = self.create_render_target(builder);
+			// The copy that forwards `main` while the pass is bypassed writes the replacement as a tile output.
+			let uses = simple_tile::output_uses(&*self.context);
+			let output = self.create_render_target(builder.additional_uses(uses));
 			self.alias(name, "main");
 			MainRenderTarget {
 				target: output.image.into(),
 				format: output.format,
 			}
 		};
-		self.main_copy = Some(ImageBypassPass::new(self, source, main));
+		self.main_copy = Some(ImageBypassPass::forwarding(self, source, main));
 		main
 	}
 
@@ -619,6 +686,13 @@ impl From<RenderToResult> for ghi::pipelines::raster::AttachmentDescriptor {
 pub struct MainRenderTarget {
 	target: ghi::ImageOrSwapchain,
 	format: ghi::Formats,
+}
+
+impl MainRenderTarget {
+	/// Returns the format of the image or swapchain behind the target.
+	pub fn format(&self) -> ghi::Formats {
+		self.format
+	}
 }
 
 impl From<MainRenderTarget> for ghi::ImageOrSwapchain {

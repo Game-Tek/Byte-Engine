@@ -5,6 +5,7 @@
 #[cfg(debug_assertions)]
 use resource_management::ResourceTraceLevel;
 use resource_management::resource::ResourcePayloadEncoding;
+use utils::Glob;
 
 use super::catalog::{Catalog, Field, FieldKind, Status, Value};
 
@@ -25,7 +26,7 @@ enum Test {
 	/// The ID contains the text, ignoring ASCII case.
 	Contains(String),
 	/// The whole ID matches a `*` and `?` pattern, ignoring ASCII case.
-	Glob(Vec<char>),
+	Glob(Glob),
 	Compare {
 		field: Field,
 		operator: Operator,
@@ -108,7 +109,7 @@ impl Test {
 		let entry = &catalog.rows[row];
 		match self {
 			Test::Contains(text) => contains_ignoring_case(&entry.id, text),
-			Test::Glob(pattern) => glob_matches(pattern, &entry.id),
+			Test::Glob(pattern) => pattern.matches(&entry.id),
 			Test::Compare {
 				field,
 				operator,
@@ -158,7 +159,7 @@ fn parse_term(term: &str, catalog: &Catalog) -> Result<Term, String> {
 			operand,
 		}
 	} else if body.contains(['*', '?']) {
-		Test::Glob(glob_pattern(body))
+		Test::Glob(Glob::new(body))
 	} else {
 		Test::Contains(body.to_string())
 	};
@@ -325,40 +326,4 @@ fn contains_ignoring_case(text: &str, needle: &str) -> bool {
 			.as_bytes()
 			.windows(needle.len())
 			.any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-/// Returns `text` as a pattern for [`glob_matches`], which ignores case.
-pub(super) fn glob_pattern(text: &str) -> Vec<char> {
-	text.chars().map(|character| character.to_ascii_lowercase()).collect()
-}
-
-/// Matches a whole ID against a lowercase pattern where `*` matches any run of characters and `?` one character.
-pub(super) fn glob_matches(pattern: &[char], id: &str) -> bool {
-	// Iterative wildcard matching over byte offsets: on a mismatch, retry from the last `*` with it covering one more
-	// character.
-	let (mut pattern_at, mut id_at) = (0, 0);
-	let mut retry: Option<(usize, usize)> = None;
-	while let Some(character) = id[id_at..].chars().next() {
-		match pattern.get(pattern_at) {
-			Some('*') => {
-				retry = Some((pattern_at, id_at));
-				pattern_at += 1;
-			}
-			Some(&expected) if expected == '?' || expected == character.to_ascii_lowercase() => {
-				pattern_at += 1;
-				id_at += character.len_utf8();
-			}
-			_ => match retry {
-				Some((star, covered)) => {
-					// `covered` is before the end of the ID, because the loop only records offsets it hasn't passed.
-					let covered = covered + id[covered..].chars().next().map_or(0, char::len_utf8);
-					pattern_at = star + 1;
-					id_at = covered;
-					retry = Some((star, covered));
-				}
-				None => return false,
-			},
-		}
-	}
-	pattern[pattern_at..].iter().all(|&character| character == '*')
 }

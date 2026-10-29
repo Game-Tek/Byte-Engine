@@ -114,6 +114,17 @@ pub fn setup_default_resource_and_asset_management(
 
 		asset_manager.set_image_processor(default_image_processor());
 
+		use crate::application::parameters::Parameters as _;
+
+		// The same patterns BELD reads, so a debug run never bakes what a release bake leaves out.
+		asset_manager.set_excluded_assets(
+			application
+				.parameters()
+				.get_elements("resources.exclude")
+				.map(|pattern| utils::Glob::new(pattern.value()))
+				.collect(),
+		);
+
 		let features = VisibilityFeatures::from_parameters(application.parameters().scope(RENDER_PARAMETERS));
 		register_default_asset_handlers(&mut asset_manager, generator, features);
 

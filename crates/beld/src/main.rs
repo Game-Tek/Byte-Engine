@@ -66,12 +66,14 @@ async fn run(cli: Cli) -> Result<(), i32> {
 		} => {
 			let configuration = read_configuration(&cli.config)?;
 			let features = VisibilityFeatures::from_parameters(configuration.as_slice().scope("render"));
+			let excluded = patterns(&configuration, "resources.exclude").map(Glob::new).collect();
 			if dry_run {
 				return beld::bake_dry_run(
 					cli.source,
 					ids,
 					bake_memory_budget(memory_budget),
 					features,
+					excluded,
 					format.unwrap_or(OutputFormat::Human),
 					payload.unwrap_or_default(),
 					&mut std::io::stdout().lock(),
@@ -87,6 +89,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				bake_memory_budget(memory_budget),
 				force,
 				features,
+				excluded,
 			)
 			.await
 		}
@@ -105,10 +108,12 @@ fn read_configuration(path: &str) -> Result<Vec<Parameter>, i32> {
 /// Returns the `resources.roots` glob patterns of the project configuration at `path`.
 fn read_roots(path: &str) -> Result<Vec<String>, i32> {
 	let configuration = read_configuration(path)?;
-	Ok(configuration[..]
-		.get_elements("resources.roots")
-		.map(|root| root.value().to_string())
-		.collect())
+	Ok(patterns(&configuration, "resources.roots").map(str::to_string).collect())
+}
+
+/// Returns the glob patterns of the array parameter `name`.
+fn patterns<'c>(configuration: &'c [Parameter], name: &'c str) -> impl Iterator<Item = &'c str> + 'c {
+	configuration.get_elements(name).map(Parameter::value)
 }
 
 /// Parses a positive MiB count and converts it to bytes without silently saturating.
@@ -326,3 +331,4 @@ use clap::{
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
 	builder::styling::{AnsiColor, Effects, Styles},
 };
+use utils::Glob;

@@ -20,6 +20,8 @@ pub(crate) struct AssetManagerState {
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
 	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
 	rebuild_cutoff: Option<u64>,
+	/// The patterns of asset IDs that are never baked, from the project's `resources.exclude`.
+	excluded: Vec<Glob>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	#[cfg(debug_assertions)]
 	pub(in crate::asset) resource_trace: ResourceTrace,
@@ -90,6 +92,7 @@ impl AssetManager {
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
 				bake_memory_budget: None,
 				rebuild_cutoff: None,
+				excluded: Vec::new(),
 				dispatcher,
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
@@ -125,6 +128,17 @@ impl AssetManager {
 		Arc::get_mut(&mut self.state)
 			.expect("The rebuild cutoff must be configured before the asset manager starts processing requests.")
 			.rebuild_cutoff = Some(cutoff);
+	}
+
+	/// Sets the patterns of asset IDs that are never baked, usually the project's `resources.exclude`.
+	///
+	/// [`Self::discover`] skips matching assets, and every bake request for a matching ID fails with
+	/// [`LoadMessages::Excluded`], including a dependency of another asset. Configure it before calling
+	/// [`Self::bake`] or sharing the manager.
+	pub fn set_excluded_assets(&mut self, patterns: Vec<Glob>) {
+		Arc::get_mut(&mut self.state)
+			.expect("The excluded assets must be configured before the asset manager starts processing requests.")
+			.excluded = patterns;
 	}
 
 	/// Registers a handler for one family of source assets.
@@ -196,7 +210,7 @@ impl AssetManager {
 			.discover()
 			.await?
 			.into_iter()
-			.filter(|source| self.should_discover(source.id(), source.has_sidecar()))
+			.filter(|source| self.should_discover(source.id(), source.has_sidecar()) && !self.state.is_excluded(source.id()))
 			.map(crate::asset::AssetSource::into_id)
 			.collect::<Vec<_>>();
 
@@ -352,6 +366,8 @@ pub enum LoadMessages {
 	NoAssetHandler,
 	/// The asset or one of its dependencies could not be baked or loaded.
 	FailedToBake { asset: String, error: LoadErrors },
+	/// The asset matches an excluded pattern, so it is never baked. See [`AssetManager::set_excluded_assets`].
+	Excluded { asset: String },
 	/// The asset could not be stored in the resource storage backend.
 	FailedToStore { asset: String, error: String },
 	/// No asset worker was available to execute the request.
@@ -481,6 +497,29 @@ impl AssetManagerState {
 		only_when_stale: bool,
 		origin: BakeOrigin,
 	) -> Result<(), LoadMessages> {
+		// An excluded asset fails before any freshness check, so even a stored resource is never rebaked or reused.
+		if self.is_excluded(id) {
+			let message = format!(
+				"Asset '{id}' is excluded from baking. The most likely cause is that a `resources.exclude` pattern matches it while an application or another asset still uses it. Stop using the asset, or remove its pattern from `resources.exclude`. See {}.",
+				online_docs_url(EXCLUDED_ASSETS_DOCS_PATH)
+			);
+
+			log::warn!("{message}");
+
+			#[cfg(debug_assertions)]
+			{
+				let id = ResourceId::new(id);
+
+				self.resource_trace.clear(id);
+
+				self.resource_trace.record(id, ResourceTraceLevel::Error, message);
+
+				self.persist_resource_trace(id);
+			}
+
+			return Err(LoadMessages::Excluded { asset: id.to_owned() });
+		}
+
 		// Bind the listener first so the registry lock is released before waiting on the leader.
 		let listener = self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener);
 
@@ -549,6 +588,11 @@ impl AssetManagerState {
 		if let Err(error) = self.resource_storage_backend.persist() {
 			log::warn!("{error}");
 		}
+	}
+
+	/// Returns whether an excluded pattern matches the asset ID.
+	pub(super) fn is_excluded(&self, id: &str) -> bool {
+		self.excluded.iter().any(|pattern| pattern.matches(id))
 	}
 
 	/// Registers one requested resource before it is submitted to a worker.
@@ -809,6 +853,7 @@ fn source_ids_from_path(root: &std::path::Path, path: &std::path::Path) -> Optio
 }
 
 const ASSETS_DOCS_PATH: &str = "reference/assets";
+const EXCLUDED_ASSETS_DOCS_PATH: &str = "reference/assets#excluded-assets";
 
 #[cfg(test)]
 pub mod tests {
@@ -1097,6 +1142,65 @@ pub mod tests {
 			asset_manager.discover().await.unwrap(),
 			["nested/a-first.test", "z-last.test"]
 		);
+	}
+
+	#[r#async::test]
+	async fn excluded_assets_are_not_discovered_and_never_bake() {
+		let storage_backend = TestStorageBackend::new();
+		storage_backend.add_file("kept.test", b"");
+		storage_backend.add_file("wip/draft.test", b"");
+
+		let (mut asset_manager, resource_storage) = test_asset_manager(storage_backend);
+		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*")]);
+
+		assert_eq!(asset_manager.discover().await.unwrap(), ["kept.test"]);
+		assert!(matches!(
+			asset_manager.bake("wip/draft.test").await,
+			Err(LoadMessages::Excluded { asset }) if asset == "wip/draft.test"
+		));
+		assert!(resource_storage.read(ResourceId::new("wip/draft.test")).await.is_none());
+	}
+
+	#[r#async::test]
+	async fn an_asset_that_needs_an_excluded_asset_fails_to_bake() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("parent.test", b"parent");
+		asset_storage.add_file("child.test", b"child");
+
+		let resource_storage = MemoryStorageBackend::new();
+		let (mut asset_manager, _) = versioned_asset_manager(asset_storage, resource_storage.clone());
+		asset_manager.set_excluded_assets(vec![Glob::new("child.*")]);
+
+		assert!(matches!(
+			asset_manager.bake("parent.test").await,
+			Err(LoadMessages::FailedToBake {
+				error: LoadErrors::DependencyExcluded,
+				..
+			})
+		));
+		assert!(resource_storage.read(ResourceId::new("child.test")).await.is_none());
+	}
+
+	#[r#async::test]
+	async fn excluding_an_asset_stops_reusing_its_stored_resource() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("kept.test", b"kept");
+
+		let resource_storage = MemoryStorageBackend::new();
+		let (asset_manager, _) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
+		asset_manager
+			.bake("kept.test")
+			.await
+			.expect("the asset should bake before it is excluded");
+
+		let (mut asset_manager, invocations) = versioned_asset_manager(asset_storage, resource_storage);
+		asset_manager.set_excluded_assets(vec![Glob::new("kept.test")]);
+
+		assert!(matches!(
+			asset_manager.bake_if_stale("kept.test").await,
+			Err(LoadMessages::Excluded { .. })
+		));
+		assert_eq!(invocations.load(Ordering::SeqCst), 0);
 	}
 
 	#[r#async::test]
@@ -1674,7 +1778,7 @@ use std::{
 };
 
 use announcement;
-use utils::{hash::HashMap, sync::Mutex};
+use utils::{Glob, hash::HashMap, sync::Mutex};
 
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};

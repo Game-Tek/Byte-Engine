@@ -17,7 +17,7 @@ page specifies its command line. To use it, follow
 | `-d`, `--destination <path>` | `resources` | The resource store directory. |
 | `--color auto`, `always`, or `never` | `auto` | Terminal color; see [Color](#color). |
 | `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
-| `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. `bake` reads the render feature flags from it, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
+| `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. `bake` reads the render feature flags and the [excluded assets](/docs/reference/assets#excluded-assets) from it, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
 | `-V`, `--version`; `-h`, `--help` | | |
 
 BELD reads the `RUST_LOG` environment variable for its log filter.
@@ -26,7 +26,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
+| `bake [ids...]` | `--force`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags and the excluded assets are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -37,7 +37,9 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 A bake discovers every supported file below the source directory, follows
 symbolic links with cycle detection, skips sidecars and unknown files, and
 leaves out the pipelines and shaders of render features the configuration
-turns off. Explicit IDs always bake. Up to 16 assets bake at once, and each
+turns off. Explicit IDs bake even when a render feature leaves them out. An
+[excluded asset](/docs/reference/assets#excluded-assets) never bakes: discovery
+skips it, and a bake of it or of an asset that needs it fails. Up to 16 assets bake at once, and each
 is skipped when its stored resource is current with every source file it was
 baked from.
 

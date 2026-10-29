@@ -48,6 +48,8 @@ pub enum LoadErrors {
 	FailedToStore,
 	PrimaryResourceIdMismatch,
 	PrimaryResourceNotStored,
+	/// A dependency matches an excluded pattern, so it is never baked.
+	DependencyExcluded,
 }
 
 impl LoadErrors {
@@ -61,6 +63,7 @@ impl LoadErrors {
 			Self::FailedToStore => "The baked resource could not be stored.",
 			Self::PrimaryResourceIdMismatch => "The asset handler stored the primary resource under a different ID.",
 			Self::PrimaryResourceNotStored => "The asset handler did not store the primary resource.",
+			Self::DependencyExcluded => "A dependency of the source asset matches `resources.exclude`, so it is never baked.",
 		}
 	}
 
@@ -77,6 +80,9 @@ impl LoadErrors {
 			Self::FailedToStore => "Check that the resource destination is writable, then retry.",
 			Self::PrimaryResourceIdMismatch => "Store the primary resource under the requested asset ID.",
 			Self::PrimaryResourceNotStored => "Make the asset handler store its primary resource before returning.",
+			Self::DependencyExcluded => {
+				"Stop using the excluded dependency, which the warning before this error names, or remove its pattern from `resources.exclude`."
+			}
 		}
 	}
 }
@@ -436,6 +442,7 @@ fn upsert_dependency(dependencies: &mut Vec<AssetDependency>, dependency: AssetD
 fn dependency_load_error(error: crate::asset::manager::LoadMessages) -> LoadErrors {
 	match error {
 		crate::asset::manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
+		crate::asset::manager::LoadMessages::Excluded { .. } => LoadErrors::DependencyExcluded,
 		_ => LoadErrors::FailedToProcess,
 	}
 }

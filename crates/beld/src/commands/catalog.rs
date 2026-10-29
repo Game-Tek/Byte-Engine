@@ -13,11 +13,9 @@ use resource_management::{
 	resource::{ReadStorageBackend as _, ResourceId as ResourceUid, StorageUsage},
 };
 use serde_json::Value as Json;
+use utils::Glob;
 
-use crate::commands::{
-	filter::{glob_matches, glob_pattern},
-	shared::open_read_only_storage,
-};
+use crate::commands::shared::open_read_only_storage;
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -288,7 +286,7 @@ impl Catalog {
 		let mut properties = BTreeSet::new();
 		let mut stored_total = 0;
 		// Root patterns match like filter globs: the whole ID, ignoring case.
-		let roots = roots.iter().map(|pattern| glob_pattern(pattern)).collect::<Vec<_>>();
+		let roots = roots.iter().map(|pattern| Glob::new(pattern)).collect::<Vec<_>>();
 
 		let mut rows = Vec::with_capacity(resources.len());
 		for resource in resources {
@@ -310,7 +308,7 @@ impl Catalog {
 				#[cfg(debug_assertions)]
 				trace: Vec::new(),
 				references: references.remove(&id).unwrap_or_default(),
-				root: roots.iter().any(|pattern| glob_matches(pattern, &id)),
+				root: roots.iter().any(|pattern| pattern.matches(&id)),
 				id,
 				resource: Some(resource),
 				status,

@@ -11,6 +11,7 @@ pub mod availability_graph;
 pub mod bit_array;
 pub mod byte_size;
 pub mod copy_fn;
+pub mod glob;
 pub mod hex;
 pub mod range_allocator;
 pub mod smoothed_value;
@@ -35,6 +36,7 @@ pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
 pub use availability_graph::{AvailabilityGraph, AvailabilityGraphError, AvailabilityHandle};
 pub use byte_size::ByteSize;
 pub use copy_fn::{InlineCopyFn, InlineCopyFnError};
+pub use glob::Glob;
 /// Fast in-memory hashing for engine collections.
 ///
 /// Use [`hash::HashMap`] or [`hash::HashSet`] for global allocations. For a custom

@@ -144,6 +144,28 @@ After you change a feature in `config.json`, run `beld bake --force`. Source
 file versions don't record the configuration, so a normal bake keeps the
 material shaders built with the old setting.
 
+## Keep assets out of the bake
+
+Use `resources.exclude` in your project's `config.json` to keep work-in-progress
+or source-only files out of every bake. List them as glob patterns, where `*`
+matches any run of characters, including `/`:
+
+```json
+{
+  "resources": {
+    "exclude": ["textures/wip/*", "*.blend1", "audio/raw/*"]
+  }
+}
+```
+
+BELD skips matching files when it bakes the whole source directory, and a
+development build of your application refuses to bake them on demand. If an
+asset you keep still uses an excluded one, its bake fails and the error names
+the excluded asset, so you find what still depends on it. Excluding an asset
+doesn't delete a resource you baked before; remove it with `beld delete`. The
+[Excluded assets reference](/docs/reference/assets#excluded-assets) specifies
+how patterns match.
+
 ## Check the baked output
 
 Inspect the output before you package the application:

@@ -7,7 +7,7 @@ icon: Settings
 An application starts with a list of named text parameters. This page
 specifies where they come from, how names and values are parsed, and every
 parameter the engine reads. The same project file feeds BELD, which reads the
-render feature flags and the resource roots from it; see
+render feature flags, the resource roots, and the excluded assets from it; see
 [Bake application resources](/docs/use/resources/bake#leave-render-features-out-of-the-bake)
 and [Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
 
@@ -45,6 +45,7 @@ A value is text that the reader converts:
 | `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
 | `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
 | `resources.roots` | Array of glob patterns | None | The resources the application loads by ID. Read by BELD only, to find resources nothing needs; see [Roots](/docs/api/beld#roots). |
+| `resources.exclude` | Array of glob patterns | None | The assets that are never baked, by BELD or by a debug build. See [Excluded assets](/docs/reference/assets#excluded-assets). |
 | `assets-path` | Path | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. |
 | `max-frame-rate` | Positive frames per second; invalid is ignored | None, uncapped | The minimum interval between presented frames. |
 | `simulation-rate` | Positive steps per second; invalid is ignored | None; the stepped loop uses 60 | The fixed simulation step. See [Time and ticks](/docs/reference/time). |

@@ -166,6 +166,12 @@ impl std::fmt::Display for RequestError {
 						error.as_str(),
 						"Verify that the resource destination is writable, then bake the application resources with BELD.",
 					),
+					LoadMessages::Excluded { asset } => (
+						"Could not bake asset.",
+						asset.as_str(),
+						"A `resources.exclude` pattern matches the asset, so it is never baked.",
+						"Stop requesting the asset, or remove its pattern from `resources.exclude` in config.json.",
+					),
 					LoadMessages::ExecutionUnavailable => (
 						"Could not bake asset.",
 						id.as_str(),

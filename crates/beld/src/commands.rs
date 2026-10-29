@@ -179,6 +179,7 @@ mod tests {
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
 				VisibilityFeatures::default(),
+				Vec::new(),
 			)),
 			Err(1)
 		);

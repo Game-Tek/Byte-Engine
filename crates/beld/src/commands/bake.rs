@@ -11,7 +11,7 @@ use resource_management::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use utils::r#async::StreamExt;
+use utils::{Glob, r#async::StreamExt};
 
 use crate::{
 	OutputFormat, Payload,
@@ -25,7 +25,8 @@ use crate::{
 /// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
 /// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
 /// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
-/// assets only left-out features use. On a terminal, a progress line shows on standard error; install the logger with
+/// assets only left-out features use. `excluded` are the project's `resources.exclude` patterns: discovery skips
+/// matching assets, and a bake of one, or of an asset that needs one, fails. On a terminal, a progress line shows on standard error; install the logger with
 /// [`crate::init_logging`] so log messages print above it.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
@@ -39,6 +40,7 @@ pub async fn bake(
 	memory_budget: NonZeroUsize,
 	force: bool,
 	features: VisibilityFeatures,
+	excluded: Vec<Glob>,
 ) -> Result<(), i32> {
 	let asset_storage_backend = open_asset_storage(source_path).await?;
 	let destination_path = std::path::PathBuf::from(destination_path);
@@ -59,6 +61,7 @@ pub async fn bake(
 	})?;
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, features);
+	asset_manager.set_excluded_assets(excluded);
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
 	if force {
@@ -92,13 +95,16 @@ pub async fn bake(
 /// `output`, leaving the destination directory untouched.
 ///
 /// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
-/// failed. Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. Without `ids` nothing
+/// failed. `excluded` are the project's `resources.exclude` patterns, as in [`bake`]. Pass `payload` to add the decoded
+/// stream bytes, which needs [`OutputFormat::JSON`]. Without `ids` nothing
 /// bakes, because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
+#[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
 	ids: Vec<String>,
 	memory_budget: NonZeroUsize,
 	features: VisibilityFeatures,
+	excluded: Vec<Glob>,
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
@@ -109,6 +115,7 @@ pub async fn bake_dry_run(
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
+	asset_manager.set_excluded_assets(excluded);
 	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 	drop(asset_manager);
 

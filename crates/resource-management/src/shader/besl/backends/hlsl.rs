@@ -981,6 +981,9 @@ mod tests {
 		let main = root.get_main().expect("Expected main function");
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main);
+		// A written image is a UAV, and one the shader only reads is an SRV, which binds as a sampled image.
+		assert_string_contains!(shader, "RWTexture2D<uint> image : register(u0, space0);");
+		assert_string_contains!(shader, "Texture2D<float4> color_image : register(t1, space0);");
 		assert_string_contains!(shader, "uint2 _besl_image_size;");
 		assert_string_contains!(shader, "image.GetDimensions(_besl_image_size.x, _besl_image_size.y);");
 		assert_string_contains!(shader, "if (any(coord >= _besl_image_size)) { return; }");

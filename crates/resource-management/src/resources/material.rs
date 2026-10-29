@@ -432,6 +432,7 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 			BindingKind::StorageBuffer => (0u8, 0u8),
 			BindingKind::StorageImage => (1, 0),
 			BindingKind::AccelerationStructure => (3, 0),
+			BindingKind::SampledImage => (4, 0),
 			BindingKind::CombinedImageSampler { view } => (
 				2,
 				match view {

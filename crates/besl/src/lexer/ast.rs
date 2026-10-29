@@ -1046,6 +1046,15 @@ pub struct FixedArray {
 }
 
 impl BindingTypes {
+	/// Reports whether a binding of this type with `read` and `write` access is a sampled image: an image the shader
+	/// reads and never writes.
+	///
+	/// Backends declare a sampled image as a read-only texture without a sampler, and reflection reports it as one, so
+	/// the image it binds needs no storage usage, which would keep Metal from compressing it.
+	pub fn is_sampled_image(&self, read: bool, write: bool) -> bool {
+		matches!(self, Self::Image { .. }) && read && !write
+	}
+
 	/// Lowers a buffer whose only member is a fixed array into [`BindingTypes::BufferArray`].
 	fn lowered_single_array(self) -> Self {
 		if let Self::Buffer { members } = &self

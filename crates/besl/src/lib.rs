@@ -106,6 +106,21 @@ pub fn referenced_output(expression: &NodeReference) -> Option<NodeReference> {
 	}
 }
 
+/// Returns the binding declaration that `expression` names, looking through parentheses, member access, and array
+/// indexing, or `None` when it names anything else.
+///
+/// Backends call this to find the declaration behind an intrinsic's resource argument, such as `images[index]`.
+pub fn referenced_binding(expression: &NodeReference) -> Option<NodeReference> {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Binding { .. } => Some(expression.clone()),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => referenced_binding(&elements[0]),
+		Nodes::Expression(Expressions::Member { source, .. }) => referenced_binding(source),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => referenced_binding(left),
+		_ => None,
+	}
+}
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

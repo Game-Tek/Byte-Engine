@@ -239,6 +239,7 @@ fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
 			})
 		}
 		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
+		BindingKind::SampledImage => descriptor(ghi::ResourceKind::SampledImage),
 		BindingKind::AccelerationStructure => descriptor(ghi::ResourceKind::AccelerationStructure),
 	}
 }
@@ -420,11 +421,11 @@ impl Resource {
 	/// arrayed storage image it fits in, and a single resource only to a binding of one element.
 	fn matches(&self, kind: BindingKind, count: u32) -> bool {
 		match (kind, self) {
-			(BindingKind::StorageImage, Self::ImageArray(_, images)) => {
+			(BindingKind::StorageImage | BindingKind::SampledImage, Self::ImageArray(_, images)) => {
 				count > 1 && images.iter().flatten().count() <= count as usize
 			}
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-			| (BindingKind::StorageImage, Self::Image(..))
+			| (BindingKind::StorageImage | BindingKind::SampledImage, Self::Image(..))
 			| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..)) => count == 1,
 			_ => false,
 		}
@@ -490,8 +491,8 @@ fn declared_bindings(sets: &[SetLayout]) -> impl Iterator<Item = &Binding> {
 
 fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 	for binding in used_bindings(sets) {
-		// Only storage images come arrayed, through [`Resource::image_array`].
-		if binding.count != 1 && binding.kind != BindingKind::StorageImage {
+		// Only images without a sampler come arrayed, through [`Resource::image_array`].
+		if binding.count != 1 && !matches!(binding.kind, BindingKind::StorageImage | BindingKind::SampledImage) {
 			return Err(
 				"Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.",
 			);

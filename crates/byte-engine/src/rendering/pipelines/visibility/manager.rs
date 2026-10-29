@@ -1695,10 +1695,10 @@ impl PipelineManager for VisibilityPipelineManager {
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 		let primitive_index = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"),
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("primitive index"),
 		);
 		let instance_id = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"),
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("instance_id"),
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");

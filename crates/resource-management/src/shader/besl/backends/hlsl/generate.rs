@@ -431,18 +431,20 @@ impl Generator {
 						);
 					}
 					besl::BindingTypes::Image { format } => {
-						// UAV (unordered access view) for images
-						let texture_type = match format.as_str() {
-							"r8ui" | "r16ui" | "r32ui" => "RWTexture2D<uint>",
-							"r16" => "RWTexture2D<unorm float4>",
-							_ => "RWTexture2D<float4>",
+						// A UAV (unordered access view) for images the shader writes, and an SRV (shader resource view) for
+						// images it only reads, which binds as a sampled image. Both read with `image[coord]`.
+						let texture_type = if read_only { "Texture2D" } else { "RWTexture2D" };
+						let element_type = match format.as_str() {
+							"r8ui" | "r16ui" | "r32ui" => "uint",
+							"r16" => "unorm float4",
+							_ => "float4",
 						};
 
-						let _ = write!(string, "{texture_type} {}", Self::identifier(name));
+						let _ = write!(string, "{texture_type}<{element_type}> {}", Self::identifier(name));
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
-						let _ = write!(string, " : register(u{register_index}, space0);{break_char}");
+						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
 					}
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D

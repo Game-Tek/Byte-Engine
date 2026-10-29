@@ -141,6 +141,37 @@ mod tests {
 		compile(&shader, "besl-unorm-storage-image");
 	}
 
+	/// Verifies an image the shader only reads becomes a texture without a sampler, and that its loads and size read it
+	/// as one, alone and in an array. A written image stays a storage image.
+	#[test]
+	fn read_only_storage_images_lower_to_sampled_textures_in_glsl() {
+		let source = r#"
+			ids: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read }>;
+			layers: descriptor<{ type: StorageImage, binding: 1, access: read, count: 2 }>;
+			result: descriptor<{ type: StorageImage, binding: 3, access: write }>;
+			main: fn () -> void {
+				let coord: vec2u = vec2u(1, 2);
+				guard_image_bounds(ids, coord);
+				let extent: vec2u = image_size(ids);
+				let id: u32 = image_load_u32(ids, coord);
+				let color: vec4f = image_load(layers[id % 2], coord);
+				write(result, coord, color * f32(extent.x));
+			}
+		"#;
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+
+		assert_string_contains!(shader, "layout(set=0,binding=0) uniform utexture2D ids;");
+		assert_string_contains!(shader, "layout(set=0,binding=1) uniform texture2D layers[2];");
+		assert_string_contains!(shader, "layout(set=0,binding=3) writeonly uniform image2D result;");
+		assert_string_contains!(shader, ".x>=uint(textureSize(ids,0).x)");
+		assert_string_contains!(shader, "uvec2(textureSize(ids,0))");
+		assert_string_contains!(shader, "texelFetch(ids,ivec2(coord),0).x");
+		assert_string_contains!(shader, "texelFetch(layers[");
+		assert_string_contains!(shader, "imageStore(result,");
+
+		compile(&shader, "besl-read-only-storage-image");
+	}
+
 	#[test]
 	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());

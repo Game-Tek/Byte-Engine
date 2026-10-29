@@ -286,12 +286,9 @@ impl UiRenderPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
+		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		let main_attachment = render_pass_builder.create_persistent_render_target(
-			ghi::image::Builder::new(
-				MAIN_ATTACHMENT_FORMAT,
-				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
-			)
-			.name("UI Layer"),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name("UI Layer"),
 		);
 		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("UI"),

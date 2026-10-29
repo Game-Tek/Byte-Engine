@@ -354,6 +354,11 @@ Set `access` to `read`, `write`, or `read_write`. The access must include every
 operation the shader performs on the resource. An `AccelerationStructure`
 descriptor takes only `read`.
 
+A storage image with `read` access is a sampled image: the shader reads it
+without a sampler, and the image bound to it needs sampled-image usage, not
+storage usage. A storage image with `write` or `read_write` access needs storage
+usage.
+
 For a buffer, set `memory` to `constant` for small, read-only values shared
 by a dispatch or draw. Use `device` for large buffers, data that varies between
 shader threads, and every writable buffer. If you omit the memory class, a buffer

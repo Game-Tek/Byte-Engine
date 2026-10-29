@@ -57,7 +57,11 @@ pub enum BindingKind {
 	CombinedImageSampler {
 		view: TextureView,
 	},
+	/// An image the shader writes, and may also read, without a sampler.
 	StorageImage,
+	/// An image the shader only reads, without a sampler. It binds without storage usage, so Metal can keep it
+	/// losslessly compressed.
+	SampledImage,
 	/// A top-level acceleration structure that ray queries test rays against. Shaders only read it.
 	AccelerationStructure,
 }
@@ -665,6 +669,7 @@ fn reflect_binding(node: &besl::NodeReference) -> Result<BindingUsage, String> {
 			},
 			None,
 		),
+		besl::BindingTypes::Image { .. } if r#type.is_sampled_image(*read, *write) => (BindingKind::SampledImage, None),
 		besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
 		besl::BindingTypes::AccelerationStructure => (BindingKind::AccelerationStructure, None),
 	};

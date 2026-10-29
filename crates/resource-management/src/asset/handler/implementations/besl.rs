@@ -1141,7 +1141,7 @@ mod tests {
 		assert!(interface.bindings[0].write);
 		assert_eq!(interface.bindings[1].name, "index_image");
 		assert_eq!(interface.bindings[1].slot, 1040);
-		assert_eq!(interface.bindings[1].kind, BindingKind::StorageImage);
+		assert_eq!(interface.bindings[1].kind, BindingKind::SampledImage);
 		assert!(interface.bindings[1].read);
 		assert!(!interface.bindings[1].write);
 	}

@@ -120,6 +120,8 @@ impl Generator {
 		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
 		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
+		// Read-only images are textures without a sampler, which `texelFetch` and `textureSize` read through this.
+		glsl_block.push_str("#extension GL_EXT_samplerless_texture_functions:enable\n");
 
 		match compilation_settings.stage {
 			Stages::Compute { .. } if uses_subgroup_intrinsics => {
@@ -190,6 +192,22 @@ impl Generator {
 		}
 		string.push(')');
 	}
+
+	/// Writes the extent of `image` as an `ivec2`: `textureSize` for a `sampled` texture and `imageSize` for a storage
+	/// image.
+	fn emit_image_size(&mut self, string: &mut String, image: &besl::NodeReference, sampled: bool) {
+		string.push_str(if sampled { "textureSize(" } else { "imageSize(" });
+		self.emit_node(string, image);
+		string.push_str(if sampled { ",0)" } else { ")" });
+	}
+}
+
+/// Reports whether `image`, an image intrinsic's argument, names a sampled image or one element of an array of them.
+/// GLSL declares those as textures without a sampler, which `texelFetch` and `textureSize` read.
+fn reads_sampled_image(image: &besl::NodeReference) -> bool {
+	besl::referenced_binding(image).is_some_and(|binding| {
+		matches!(binding.borrow().node(), besl::Nodes::Binding { r#type, read, write, .. } if r#type.is_sampled_image(*read, *write))
+	})
 }
 
 impl NodeEmitter for Generator {
@@ -351,7 +369,8 @@ impl NodeEmitter for Generator {
 					self.emit_node(string, element);
 				}
 			}
-			"fetch_u32" => {
+			// A sampled image is a texture without a sampler, which `texelFetch` reads like a fetch.
+			"fetch_u32" | "image_load_u32" if name == "fetch_u32" || reads_sampled_image(&arguments[0]) => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -359,7 +378,7 @@ impl NodeEmitter for Generator {
 				self.emit_node(string, &arguments[1]);
 				string.push_str("),0).x");
 			}
-			"fetch" => {
+			"fetch" | "image_load" if name == "fetch" || reads_sampled_image(&arguments[0]) => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -377,10 +396,11 @@ impl NodeEmitter for Generator {
 					string.push_str("),0)");
 				}
 			}
-			"texture_size" => {
-				string.push_str("uvec2(textureSize(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str(",0))");
+			"texture_size" | "image_size" => {
+				string.push_str("uvec2(");
+				let sampled = name == "texture_size" || reads_sampled_image(&arguments[0]);
+				self.emit_image_size(string, &arguments[0], sampled);
+				string.push(')');
 			}
 			"image_load" | "image_load_u32" => {
 				string.push_str("imageLoad(");
@@ -389,11 +409,6 @@ impl NodeEmitter for Generator {
 				string.push_str("ivec2(");
 				self.emit_node(string, &arguments[1]);
 				string.push_str(if name == "image_load_u32" { ")).x" } else { "))" });
-			}
-			"image_size" => {
-				string.push_str("uvec2(imageSize(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("))");
 			}
 			"write" | "image_atomic_or" => {
 				string.push_str(if name == "write" { "imageStore(" } else { "imageAtomicOr(" });
@@ -407,15 +422,16 @@ impl NodeEmitter for Generator {
 				string.push(')');
 			}
 			"guard_image_bounds" => {
+				let sampled = reads_sampled_image(&arguments[0]);
 				string.push_str("if(");
 				self.emit_node(string, &arguments[1]);
-				string.push_str(".x>=uint(imageSize(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str(").x)||");
+				string.push_str(".x>=uint(");
+				self.emit_image_size(string, &arguments[0], sampled);
+				string.push_str(".x)||");
 				self.emit_node(string, &arguments[1]);
-				string.push_str(".y>=uint(imageSize(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str(").y)){return;}");
+				string.push_str(".y>=uint(");
+				self.emit_image_size(string, &arguments[0], sampled);
+				string.push_str(".y)){return;}");
 			}
 			"pow" if arguments.len() == 2 && is_two(&arguments[0]) => {
 				string.push_str("exp2(");
@@ -742,12 +758,19 @@ impl NodeEmitter for Generator {
 				count,
 				..
 			} => {
+				// A sampled image is a texture without a sampler, which takes no format or access qualifier.
+				let sampled_image = r#type.is_sampled_image(*read, *write);
 				let binding_type = match r#type {
 					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => "buffer",
-					besl::BindingTypes::Image { format, .. } => match format.as_str() {
-						"r8ui" | "r16ui" | "r32ui" => "uniform uimage2D",
-						_ => "uniform image2D",
-					},
+					besl::BindingTypes::Image { format, .. } => {
+						let unsigned = matches!(format.as_str(), "r8ui" | "r16ui" | "r32ui");
+						match (sampled_image, unsigned) {
+							(true, true) => "uniform utexture2D",
+							(true, false) => "uniform texture2D",
+							(false, true) => "uniform uimage2D",
+							(false, false) => "uniform image2D",
+						}
+					}
 					besl::BindingTypes::CombinedImageSampler { format } => match format.as_str() {
 						"Texture3D" => "uniform sampler3D",
 						"TextureCube" => "uniform samplerCube",
@@ -764,7 +787,7 @@ impl NodeEmitter for Generator {
 				let _ = write!(string, "layout(set=0,binding={slot}");
 				match r#type {
 					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => string.push_str(",scalar"),
-					besl::BindingTypes::Image { format } if format != "unknown" => {
+					besl::BindingTypes::Image { format } if format != "unknown" && !sampled_image => {
 						string.push(',');
 						string.push_str(format);
 					}
@@ -773,6 +796,7 @@ impl NodeEmitter for Generator {
 				// Sampled images take no access qualifier.
 				let access = match r#type {
 					besl::BindingTypes::CombinedImageSampler { .. } => "",
+					_ if sampled_image => "",
 					_ if *read && !*write => "readonly ",
 					_ if *write && !*read => "writeonly ",
 					_ => "",

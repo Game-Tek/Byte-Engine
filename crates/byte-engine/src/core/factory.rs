@@ -122,6 +122,21 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 		self.channel.send(message);
 	}
 
+	/// Publishes each value under its handle, in order, as one batch.
+	///
+	/// Use it instead of calling [`Self::derive`] in a loop when one owner publishes many values at once, such as a
+	/// level spawning every component of a kind: the batch reserves message slots a chunk at a time instead of one
+	/// at a time.
+	pub fn derive_many(&self, values: impl ExactSizeIterator<Item = (Handle, T)>) {
+		let observation = &self.observation;
+		self.channel.send_many(values.map(|(handle, data)| {
+			if let Some((observer, observed)) = observation {
+				observer.observe_entity(handle, *observed);
+			}
+			CreateMessage::new(handle, data)
+		}));
+	}
+
 	/// Creates a consumer for creation messages, starting at the current tick's first one.
 	///
 	/// Next, call [`Self::create`] or [`Self::derive`] and drain the messages
@@ -193,6 +208,18 @@ impl Handle {
 		let id = std::num::NonZeroU32::new(COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
 			.unwrap_or_else(|| Self::exhausted());
 		Self(id)
+	}
+
+	/// Allocates `count` consecutive identities and returns the first, so each of the others is the first plus its
+	/// offset. `count` must be at least one.
+	pub(crate) fn run(count: u32) -> Self {
+		debug_assert!(count > 0, "A handle run must hold at least one handle.");
+		let previous = COUNTER.fetch_add(count, Ordering::Relaxed);
+		// The run's last identity, `previous + count`, must fit, or it would wrap onto identities already handed out.
+		if previous.checked_add(count).is_none() {
+			Self::exhausted();
+		}
+		Self::from_id(previous + 1)
 	}
 
 	/// Stops the process when no unique identity remains.

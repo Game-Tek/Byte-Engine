@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/level.schema.json",
+  "title": "Byte Engine level",
+  "description": "Entities placed in the world, each a set of components named by kind, consumed by the .level asset handler.",
+  "type": "object",
+  "required": ["entities"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "entities": {
+      "description": "The entities of the level, in any order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/entity" }
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "description": "A name, unique in the file, that other entities use to refer to this one.", "type": "string", "minLength": 1 },
+        "parent": { "description": "The id of the entity this one belongs to. Deleting the parent deletes it; it never moves it.", "type": "string", "minLength": 1 },
+        "components": {
+          "description": "The entity's components, from kind name to payload. Application kinds are accepted as any value.",
+          "type": "object",
+          "propertyNames": { "minLength": 1 },
+          "properties": {
+            "transform": { "$ref": "#/$defs/transform" },
+            "name": { "description": "A name for inspection and tooling.", "type": "string", "minLength": 1 },
+            "mesh": { "$ref": "#/$defs/mesh" },
+            "directional_light": { "$ref": "#/$defs/directional_light" },
+            "point_light": { "$ref": "#/$defs/point_light" },
+            "cone_light": { "$ref": "#/$defs/cone_light" },
+            "body": { "$ref": "#/$defs/body" },
+            "navigation_area": { "$ref": "#/$defs/navigation_area" },
+            "hinge": { "$ref": "#/$defs/hinge" }
+          }
+        }
+      }
+    },
+    "vector3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "extents3": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 3, "maxItems": 3 },
+    "extents2": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 2, "maxItems": 2 },
+    "length": { "type": "number", "exclusiveMinimum": 0 },
+    "entity_reference": {
+      "description": "Another entity of this level, by id.",
+      "type": "object",
+      "required": ["$entity"],
+      "additionalProperties": false,
+      "properties": { "$entity": { "type": "string", "minLength": 1 } }
+    },
+    "transform": {
+      "description": "A world transform. A missing field takes the identity's value.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "position": { "$ref": "#/$defs/vector3" },
+        "scale": { "$ref": "#/$defs/vector3" },
+        "orientation": { "description": "A quaternion in x, y, z, w order.", "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+      }
+    },
+    "mesh": {
+      "description": "A mesh resource or a generated shape.",
+      "oneOf": [
+        { "type": "object", "required": ["resource"], "additionalProperties": false, "properties": { "resource": { "description": "A mesh resource ID.", "type": "string", "minLength": 1 } } },
+        {
+          "type": "object", "required": ["box"], "additionalProperties": false,
+          "properties": {
+            "box": {
+              "type": "object", "required": ["half_extents"], "additionalProperties": false,
+              "properties": {
+                "half_extents": { "$ref": "#/$defs/extents3" },
+                "material": { "description": "A material resource ID.", "type": "string" },
+                "meter_uvs": { "description": "Tiles textures once per meter.", "type": "boolean" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "required": ["sphere"], "additionalProperties": false,
+          "properties": { "sphere": { "type": "object", "required": ["radius"], "additionalProperties": false, "properties": { "radius": { "$ref": "#/$defs/length" } } } }
+        },
+        {
+          "type": "object", "required": ["capsule"], "additionalProperties": false,
+          "properties": {
+            "capsule": {
+              "type": "object", "required": ["radius", "height"], "additionalProperties": false,
+              "properties": { "radius": { "$ref": "#/$defs/length" }, "height": { "$ref": "#/$defs/length" }, "material": { "type": "string" } }
+            }
+          }
+        }
+      ]
+    },
+    "color": {
+      "oneOf": [
+        { "type": "object", "required": ["kelvin"], "additionalProperties": false, "properties": { "kelvin": { "type": "number", "minimum": 1000, "maximum": 40000 } } },
+        { "type": "object", "required": ["linear_srgb"], "additionalProperties": false, "properties": { "linear_srgb": { "$ref": "#/$defs/vector3" } } }
+      ]
+    },
+    "intensity": {
+      "oneOf": [
+        { "type": "object", "required": ["illuminance"], "additionalProperties": false, "properties": { "illuminance": { "type": "object", "required": ["lux"], "additionalProperties": false, "properties": { "lux": { "type": "number" }, "measurement_distance_m": { "type": "number" } } } } },
+        { "type": "object", "required": ["luminous_intensity"], "additionalProperties": false, "properties": { "luminous_intensity": { "type": "object", "required": ["candela"], "additionalProperties": false, "properties": { "candela": { "type": "number" }, "reference_distance_m": { "type": "number" } } } } },
+        { "type": "object", "required": ["luminous_flux"], "additionalProperties": false, "properties": { "luminous_flux": { "type": "object", "required": ["lumens"], "additionalProperties": false, "properties": { "lumens": { "type": "number" }, "directional_beam_area_m2": { "type": "number" } } } } },
+        { "type": "object", "required": ["luminance"], "additionalProperties": false, "properties": { "luminance": { "type": "object", "required": ["nits"], "additionalProperties": false, "properties": { "nits": { "type": "number" }, "projected_area_m2": { "type": "number" }, "reference_distance_m": { "type": "number" } } } } }
+      ]
+    },
+    "local_intensity": {
+      "description": "A photometric intensity, or a baked IES profile.",
+      "oneOf": [
+        { "$ref": "#/$defs/intensity" },
+        {
+          "type": "object", "required": ["ies"], "additionalProperties": false,
+          "properties": {
+            "ies": {
+              "type": "object", "required": ["profile", "dimmer"], "additionalProperties": false,
+              "properties": {
+                "profile": { "description": "An IES resource ID.", "type": "string", "minLength": 1 },
+                "dimmer": { "description": "0 for off through 1 for the measured output.", "type": "number", "minimum": 0, "maximum": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "shadow_distance": { "description": "Meters. Replaces that end of the shadow range the renderer derives.", "type": "number", "exclusiveMinimum": 0 },
+    "directional_light": {
+      "type": "object", "required": ["color", "intensity"], "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "intensity": { "$ref": "#/$defs/intensity" },
+        "angular_radius": { "description": "In radians, below π/2.", "type": "number", "minimum": 0, "exclusiveMaximum": 1.5707963 }
+      }
+    },
+    "point_light": {
+      "type": "object", "required": ["color", "intensity"], "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "intensity": { "$ref": "#/$defs/local_intensity" },
+        "shadow_near": { "$ref": "#/$defs/shadow_distance" },
+        "shadow_far": { "$ref": "#/$defs/shadow_distance" }
+      }
+    },
+    "cone_light": {
+      "type": "object", "required": ["color", "intensity", "inner_angle", "outer_angle"], "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "intensity": { "$ref": "#/$defs/local_intensity" },
+        "inner_angle": { "description": "Half angle in radians from the transform's +Z, below the outer angle.", "type": "number", "minimum": 0 },
+        "outer_angle": { "description": "Half angle in radians from the transform's +Z, at most π.", "type": "number", "exclusiveMinimum": 0, "maximum": 3.1415927 },
+        "shadow_near": { "$ref": "#/$defs/shadow_distance" },
+        "shadow_far": { "$ref": "#/$defs/shadow_distance" }
+      }
+    },
+    "body": {
+      "type": "object", "required": ["type", "shape"], "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["static", "kinematic", "dynamic"] },
+        "shape": {
+          "oneOf": [
+            { "type": "object", "required": ["sphere"], "additionalProperties": false, "properties": { "sphere": { "type": "object", "required": ["radius"], "additionalProperties": false, "properties": { "radius": { "$ref": "#/$defs/length" } } } } },
+            { "type": "object", "required": ["cube"], "additionalProperties": false, "properties": { "cube": { "type": "object", "required": ["half_extents"], "additionalProperties": false, "properties": { "half_extents": { "$ref": "#/$defs/extents3" } } } } },
+            { "type": "object", "required": ["capsule"], "additionalProperties": false, "properties": { "capsule": { "type": "object", "required": ["radius", "height"], "additionalProperties": false, "properties": { "radius": { "$ref": "#/$defs/length" }, "height": { "$ref": "#/$defs/length" }, "center": { "$ref": "#/$defs/vector3" } } } } }
+          ]
+        },
+        "mass": { "description": "Kilograms. 1 by default.", "$ref": "#/$defs/length" },
+        "velocity": { "description": "Meters per second. Zero by default.", "$ref": "#/$defs/vector3" },
+        "elasticity": { "description": "0.1 by default.", "type": "number" },
+        "friction": { "description": "0.5 by default.", "type": "number" },
+        "rotates": { "description": "Whether collisions turn the body. True by default.", "type": "boolean" }
+      }
+    },
+    "navigation_area": {
+      "oneOf": [
+        { "type": "object", "required": ["walkable"], "additionalProperties": false, "properties": { "walkable": { "type": "object", "required": ["half_extents"], "additionalProperties": false, "properties": { "half_extents": { "$ref": "#/$defs/extents2" } } } } },
+        { "type": "object", "required": ["obstacle"], "additionalProperties": false, "properties": { "obstacle": { "type": "object", "required": ["half_extents"], "additionalProperties": false, "properties": { "half_extents": { "$ref": "#/$defs/extents2" } } } } }
+      ]
+    },
+    "hinge": {
+      "type": "object", "required": ["first", "second", "axis"], "additionalProperties": false,
+      "properties": {
+        "first": { "$ref": "#/$defs/entity_reference" },
+        "second": { "$ref": "#/$defs/entity_reference" },
+        "axis": { "description": "The pin's direction in the first body's space.", "$ref": "#/$defs/vector3" },
+        "limit": { "description": "How far the second body may turn, as [start, end] in radians between -π and π.", "type": "array", "items": { "type": "number", "minimum": -3.1415927, "maximum": 3.1415927 }, "minItems": 2, "maxItems": 2 }
+      }
+    }
+  }
+}

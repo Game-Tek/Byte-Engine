@@ -1,0 +1,131 @@
+---
+title: .level files
+description: Look up the fields of a .level file, the component kinds the engine registers, what spawning a level publishes, and the limits a level stays within.
+icon: Map
+---
+
+A `.level` file places entities in the world. Each entity is a set of
+components, and each component names its kind and holds that kind's payload.
+Baking checks the file's structure and stores it in the order spawning reads it.
+Spawning maps each kind to the value its registered type describes and
+publishes it on the world scope under the entity's handle. Handles, scenes, and
+deletion are specified in [World and messages](/docs/reference/world). To load
+a level, follow [Place entities with a level](/docs/use/levels).
+
+## File
+
+A `.level` file is JSON5. For editor completion, point `"$schema"` at the
+engine's `schemas/level.schema.json`, relative to your file.
+
+| Field | Meaning |
+| --- | --- |
+| `$schema` | Optional. Ignored by baking. |
+| `entities` | The entities of the level, in any order. |
+
+Baking rejects any other field.
+
+## Entities
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Optional. A non-empty name, unique in the file, that other entities use to refer to this one. |
+| `parent` | Optional. The `id` of the entity this one belongs to. Deleting the parent deletes it. Without a parent, it belongs to the level. |
+| `components` | Optional. An object from kind name to that kind's payload. A kind appears at most once per entity. |
+
+Baking rejects any other field. A parent only groups entities for deletion: it
+never moves its children, and every transform is a world transform.
+
+## Entity references
+
+A payload refers to another entity of the same file with an object that has one
+field, `$entity`, whose value is that entity's `id`. The spawned component holds
+the referenced entity's handle. Baking rejects a reference to an `id` the file
+doesn't define, and a `$entity` object with another field or a value that isn't
+a string.
+
+## Kinds
+
+A kind is a name that the application's spawner maps to one component type. An
+application registers its own kinds next to the engine's. The engine registers
+these:
+
+| Kind | Payload | Publishes |
+| --- | --- | --- |
+| `transform` | `position` as `[x, y, z]`, `scale` as `[x, y, z]`, `orientation` as `[x, y, z, w]`. | A [transform](/docs/reference/world#transforms). |
+| `name` | A non-empty string. | A [name](/docs/reference/world#names). |
+| `mesh` | One [mesh source](#mesh-sources). | A renderable mesh. |
+| `directional_light` | `color`, `intensity`, and optionally `angular_radius` in radians. | A directional light; see [lighting](/docs/reference/lighting). |
+| `point_light` | `color`, `intensity`, and optionally `shadow_near` and `shadow_far`. | A point light. |
+| `cone_light` | `color`, `intensity`, `inner_angle` and `outer_angle` as half angles in radians from the transform's +Z, and optionally `shadow_near` and `shadow_far`. | A cone light. |
+| `body` | `type`, `shape`, and optionally `mass`, `velocity`, `elasticity`, `friction`, and `rotates`. | A [physics body](/docs/reference/physics). |
+| `navigation_area` | `walkable` or `obstacle`, holding `half_extents` as `[x, z]` in meters. | A [navigation area](/docs/reference/navigation). |
+| `hinge` | `first` and `second` as entity references, `axis` as `[x, y, z]` in the first body's space, and optionally `limit` as `[start, end]` in radians. | A hinge constraint between two bodies. |
+
+A `transform` field that's missing takes the identity's value.
+
+### Mesh sources
+
+| Source | Fields |
+| --- | --- |
+| `resource` | A mesh resource ID. |
+| `box` | `half_extents` as `[x, y, z]`, and optionally `material`, a material resource ID, and `meter_uvs`, which tiles textures once per meter. |
+| `sphere` | `radius`. |
+| `capsule` | `radius`, `height` with the caps included, and optionally `material`. |
+
+### Lights
+
+| Field | Values |
+| --- | --- |
+| `color` | `kelvin` with a temperature from 1,000 K to 40,000 K, or `linear_srgb` as `[r, g, b]`. |
+| `intensity` | `illuminance` with `lux` and optionally `measurement_distance_m`; `luminous_intensity` with `candela` and optionally `reference_distance_m`; `luminous_flux` with `lumens` and optionally `directional_beam_area_m2`; or `luminance` with `nits` and optionally `projected_area_m2` and `reference_distance_m`. Each optional distance or area is 1. A point or cone light also takes `ies`, with `profile`, an IES resource ID, and `dimmer`, from 0 through 1; see [IES profiles](/docs/reference/lighting#ies-profiles). |
+| `shadow_near`, `shadow_far` | Meters, above zero. Each replaces that end of the shadow range the renderer derives; with both, `shadow_near` is below `shadow_far`. |
+
+### Bodies
+
+| Field | Values |
+| --- | --- |
+| `type` | `static`, `kinematic`, or `dynamic`. |
+| `shape` | `sphere` with `radius`; `cube` with `half_extents` as `[x, y, z]`; or `capsule` with `radius`, `height`, and optionally `center` as `[x, y, z]`. |
+| `mass` | Kilograms. 1 by default. |
+| `velocity` | `[x, y, z]` in meters per second. Zero by default. |
+| `elasticity` | 0.1 by default. |
+| `friction` | 0.5 by default. |
+| `rotates` | Whether collisions turn the body. `true` by default. |
+
+The engine's kinds reject fields they don't define. An application kind accepts what its type accepts.
+
+## Spawning
+
+| Step | Behavior |
+| --- | --- |
+| Kinds | Every kind the level names must be registered with the spawner, or nothing spawns. |
+| Handles | One run of consecutive handles: the level's root first, then each entity in baked order. |
+| Decode | Every payload is decoded and turned into its component before anything is published. A failure publishes nothing and names the entity, the kind, and the cause. |
+| Publish | The root's scene, then each entity's scene membership, parents before children, then each kind's components in entity order, one kind after another. |
+| Unload | Deleting the root deletes every entity of the level through the scene graph. |
+| Consumers | Only systems created before the spawn see its components. A kind that no system follows is published and never read. |
+| Ignored kinds | A kind the spawner ignores is skipped: its components are neither decoded nor published. A build without rendering ignores `mesh`, `directional_light`, `point_light`, and `cone_light`. |
+| Threads | Each kind's components decode in runs of up to 1,024. A level of more than one run decodes its runs on several threads at once, and a level of one run on the calling thread. Publishing happens on the calling thread, in the order above. |
+
+## Baking
+
+| Rule | Behavior |
+| --- | --- |
+| Class | `Level`. |
+| Order | Entities are stored parents first, otherwise in file order. |
+| Payloads | Stored parsed, so spawning reads no text. Baking doesn't know the application's kinds, so it doesn't check a payload against its kind: a payload that doesn't fit fails the spawn. |
+| Rejected | Unknown fields, empty or repeated `id`s, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
+| Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Components | At most one of each kind per entity. |
+| Hierarchy | None. Every transform is a world transform. |
+| Handles | A spawn uses one handle for the root and one for each entity. Handles are never reused. |
+| Messages | A spawn publishes one message for the root, one for each entity's scene membership, and one for each component. They must fit the message pool, set by `messages.capacity`, until every listener reads them. |
+
+## Rust API
+
+- [`gameplay::level` module](/docs/api/latest/byte_engine/gameplay/level)

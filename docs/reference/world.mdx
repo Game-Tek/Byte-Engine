@@ -91,7 +91,7 @@ A transform is a world location, scale, and orientation.
 | Rule | Value |
 | --- | --- |
 | Fields | Position, scale, orientation. The identity is the default. |
-| Serialized form | `position` and `scale` as three numbers, `orientation` as four in x, y, z, w order. Unknown fields, non-finite components, and invalid quaternions are rejected. |
+| Serialized form | `position` and `scale` as three numbers, `orientation` as four in x, y, z, w order. A missing field takes the identity's value. Unknown fields, non-finite components, and invalid quaternions are rejected. |
 | Matrix | Translation times rotation times scale: scale applies first. |
 | Interpolation | Position and scale interpolate linearly, orientation along the shorter arc. |
 | Update | A transformation update is a creation message carrying a transform under the entity's handle, on the world's transform route. Creation and replacement travel on that one route. |
@@ -108,7 +108,8 @@ inspector filters entities by exact name. Names aren't unique.
 
 A scene groups entities for deletion only. A scene node attaches an entity
 under a scene or another member for the entity's lifetime, and membership
-never affects transforms. The scene graph keeps the tree.
+never affects transforms. The scene graph keeps the tree. A [level](/docs/reference/levels) spawns its
+entities under one scene.
 
 ## Deletion
 

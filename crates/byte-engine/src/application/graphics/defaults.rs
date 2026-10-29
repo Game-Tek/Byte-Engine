@@ -160,6 +160,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(IESAssetHandler::new());
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
+	asset_manager.add_asset_handler(LevelAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -343,6 +344,7 @@ use resource_management::{
 			flipbook::FlipbookAssetHandler,
 			gltf::GLTFAssetHandler,
 			ies::IESAssetHandler,
+			level::LevelAssetHandler,
 			lut::LUTAssetHandler,
 			ogg::OGGAssetHandler,
 			particles::ParticleSystemAssetHandler,

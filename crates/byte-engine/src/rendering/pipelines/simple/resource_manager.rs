@@ -141,7 +141,7 @@ impl LoadPipeline for SimpleLoader {
 			MeshSource::Resource(id) => {
 				let resource = self
 					.resources
-					.request::<ResourceMesh>(id)
+					.request::<ResourceMesh>(&id)
 					.await
 					.map_err(|source| LoadError(SimpleMeshError::ResourceRequest { id, source }.to_string()))?;
 				prepare_resource_mesh(resource, staging).await
@@ -243,7 +243,7 @@ macro_rules! simple_mesh_errors {
 		/// Errors produced while preparing or storing one simple-pipeline mesh.
 		#[derive(Debug)]
 		pub(crate) enum SimpleMeshError {
-			ResourceRequest { id: &'static str, source: resource_management::RequestError },
+			ResourceRequest { id: Arc<str>, source: resource_management::RequestError },
 			$($variant),+
 		}
 

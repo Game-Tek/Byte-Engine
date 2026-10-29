@@ -1,0 +1,89 @@
+---
+title: Levels
+description: Learn how baking lays a level out for fast spawning, how the spawner decodes and publishes it, and what a change to either must keep true.
+icon: Map
+---
+
+A level is a list of entities, each a set of components named by kind. The
+`.level` format is specified in the [.level reference](/docs/reference/levels),
+and the spawning steps an application takes are in
+[Place entities with a level](/docs/use/levels). This note explains how the
+two halves are built, why, and the rules a change must keep.
+
+## Two halves
+
+The work splits on what each side knows.
+
+| Side | Knows | Does |
+| --- | --- | --- |
+| Baking (`asset/handler/implementations/level.rs` in resource-management) | The file, not the application's types | Parses JSON5, checks ids, parents, and references, orders entities parents first, groups payloads by kind as tokens |
+| Spawning (`gameplay/level.rs` in byte-engine) | The application's kinds | Decodes each kind's tokens into its type, converts them, publishes them |
+
+BELD runs no application code, so baking can't check a payload against its
+kind. Everything else moves to baking, so spawning does only the work that
+needs the types.
+
+## The baked layout
+
+`resources/level.rs` defines the model and the payload sections. The layout
+serves the spawner's inner loop:
+
+- **Entities in spawn order.** Parents come first, so scene membership
+  publishes in one pass, and the spawner never sorts.
+- **References as indices.** Baking resolves every `$entity` id to an entity
+  index. A spawn takes one run of consecutive handles with one atomic add, so
+  a reference becomes the first handle plus the index.
+- **Components by kind.** Each kind keeps its entity indices and its payloads
+  together, so a kind decodes in one pass and publishes as one batch through
+  `Factory::derive_many`, which reserves message slots a chunk at a time.
+- **Tokens, not text.** Payloads are tagged tokens: numbers are stored parsed,
+  and strings and keys are indices into the kind's string table. The spawner
+  checks each table's UTF-8 once, and repeated keys and IDs are stored once.
+- **Runs.** Every 1,024th payload's offset is recorded, so runs decode on
+  separate threads.
+
+## Decoding
+
+Each kind's payload type derives `serde::Deserialize`, and
+`gameplay/level/tokens.rs` implements a serde `Deserializer` over the tokens.
+Serde's derive compiles a decoder for each type, which is why spawning reads a
+payload in a few nanoseconds per token. A reflective decoder, such as
+facet-format's, takes a lock, an allocation, and a walk of the type's plan for
+every value, and measured about ten times slower here.
+
+The spawner decodes every run of every kind before publishing anything. Runs
+spread over the fast cores, `performance_parallelism`, through scoped threads
+that each take the next undecoded run. A level of one run decodes on the
+calling thread. The decoded components then publish on the calling thread, in
+kind order and then entity order.
+
+## Rules a change must keep
+
+- **All or nothing.** No message is published until every component of the
+  level decodes and converts. A spawn that fails leaves the world untouched.
+- **Parents before children.** Scene membership publishes in baked order, which
+  is parents first, because the scene graph attaches a member under a parent it
+  already knows.
+- **One handle run.** Entity `n` spawns with the root's handle plus `n + 1`.
+  References depend on it.
+- **Kind order, then entity order.** Each kind's components publish in the
+  order of its entities, so a listener reads them in spawn order.
+- **No dependency baking.** Resource IDs in payloads stay strings. Baking them
+  as dependencies would bake the level again whenever a referenced texture
+  changes.
+- **Converters are pure.** They run on several threads at once.
+
+Changing the token encoding or the sections changes resource-management's
+sources, so the store's version marker wipes stale bakes.
+
+## Tests and benchmarks
+
+- `asset/handler/implementations/level.rs` tests bake valid levels and reject
+  every malformed case the reference lists.
+- `gameplay/level/tests.rs` bakes text, spawns it into a standalone scope, and
+  checks what listeners receive: one handle per entity, membership order,
+  resolved references, nothing published on failure, consecutive handles across
+  runs, and every engine kind's payload shape.
+- `cargo bench -p byte-engine --bench level` spawns a level of 65,536 props and
+  compares it with creating the same props in code, and splits the cost by kind.
+  Run it before and after a change to the format or the spawner.

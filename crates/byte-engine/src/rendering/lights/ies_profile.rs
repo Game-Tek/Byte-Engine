@@ -1,3 +1,5 @@
+use super::PhotometricError;
+
 /// The `IesProfile` struct identifies a baked IES intensity map used by a local light.
 ///
 /// Use it through [`super::ConeLight::new_ies`] or [`super::PointLight::new_ies`]. The visibility
@@ -16,22 +18,23 @@ impl IesProfile {
 	///
 	/// `dimmer` is a linear fraction from `0.0` for off through `1.0` for the profile's measured output.
 	///
-	/// # Panics
+	/// # Errors
 	///
-	/// Panics when `resource_id` is empty or `dimmer` is outside `0.0..=1.0`. The most likely cause is
-	/// that the light was created without a baked `.ies` resource path or with an invalid dimmer.
-	pub fn new(resource_id: impl Into<String>, dimmer: f32) -> Self {
+	/// Returns [`PhotometricError`] when `resource_id` is empty or `dimmer` is outside `0.0..=1.0`.
+	pub fn new(resource_id: impl Into<String>, dimmer: f32) -> Result<Self, PhotometricError> {
 		let resource_id = resource_id.into();
 
-		assert!(
-			!resource_id.trim().is_empty(),
-			"Invalid IES profile resource ID. The most likely cause is that the light was created without a baked .ies resource path."
-		);
-		assert!(
-			dimmer.is_finite() && (0.0..=1.0).contains(&dimmer),
-			"Invalid IES dimmer. The most likely cause is that the dimmer is not a finite fraction from 0 through 1."
-		);
-		Self { resource_id, dimmer }
+		if resource_id.trim().is_empty() {
+			return Err(PhotometricError::new(
+				"that the IES profile's resource ID is empty. Name the baked .ies resource",
+			));
+		}
+		if !(dimmer.is_finite() && (0.0..=1.0).contains(&dimmer)) {
+			return Err(PhotometricError::new(
+				"that the IES dimmer isn't a fraction from 0 through 1. Give 0 for off through 1 for the measured output",
+			));
+		}
+		Ok(Self { resource_id, dimmer })
 	}
 
 	/// Returns the baked `Image` resource ID requested by the visibility pipeline.

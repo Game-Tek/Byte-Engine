@@ -128,6 +128,8 @@ mod tests {
 
 	use serde_json::json;
 
+	use math::Point;
+
 	use super::*;
 	use crate::{
 		configuration::Configuration,
@@ -139,7 +141,7 @@ mod tests {
 			message_bus::MessageBus,
 			message_observer::MessageObserver,
 		},
-		gameplay::TransformationUpdate,
+		gameplay::{Transform, TransformationUpdate},
 		input::{ActionEvent, SeatHandle, Value as InputValue},
 		inspector::DefaultInspector,
 		metrics::Metrics,
@@ -214,7 +216,7 @@ mod tests {
 		let target = Factory::new().create(());
 		for (payload, expected_error) in [
 			(
-				json!({ "position": [1.0, 2.0, 3.0] }),
+				json!({ "position": [1.0, 2.0, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0] }),
 				"payload does not match its reflected shape",
 			),
 			(
@@ -232,6 +234,19 @@ mod tests {
 			assert!(error.contains(expected_error));
 			assert!(transforms.read().is_none());
 		}
+	}
+
+	#[test]
+	fn transform_payloads_take_the_identity_for_missing_fields() {
+		let (inspector, mut transforms) = test_inspector();
+		let target = Factory::new().create(());
+
+		inspector
+			.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, target, r#"{ "position": [1.0, 2.0, 3.0] }"#)
+			.expect("accept a transform payload that names only its position");
+
+		let update = transforms.read().expect("the transform is published");
+		assert_eq!(update.data(), &Transform::from_position(Point::new(1.0, 2.0, 3.0)));
 	}
 
 	/// The `ReflectedPayload` struct provides an arbitrary reflected test payload.

@@ -91,6 +91,7 @@ pub mod animation;
 pub mod audio;
 pub mod flipbook;
 pub mod image;
+pub mod level;
 pub mod lut;
 pub mod material;
 pub mod mesh;

@@ -53,7 +53,11 @@ and the GPU, and cone angles are half angles measured from the light direction.
 Analytic lights don't retain the physical emitter shape after the conversion.
 
 Light constructors return `PhotometricError` when a color, magnitude, distance,
-or area is zero, negative, or not finite.
+or area is zero, negative, or not finite. They also return it for a cone whose
+half angles aren't finite, whose inner angle is negative or not below its outer
+angle, or whose outer angle exceeds π; for an IES profile with an empty resource
+ID or a dimmer outside 0 through 1; and for a directional light's angular radius
+outside 0 up to, but not including, π/2.
 
 ## IES profiles
 
@@ -82,7 +86,7 @@ perspective shadow map. A cone with an outer half angle of 90° or more remains
 a valid light but can't use one perspective shadow map.
 
 A local light's shadow reaches from 0.1 m to where its exposure-weighted peak
-illuminance falls below 0.125 lux.
+illuminance falls below 0.125 lux. A light can replace either end of that range.
 
 The visibility pipeline specifies which lights get shadow maps, how large they
 are, and how often they're drawn, under

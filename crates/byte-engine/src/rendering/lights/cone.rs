@@ -22,15 +22,15 @@ impl ConeLight {
 	///
 	/// # Errors
 	///
-	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	/// Invalid angles panic because they cannot form a valid cone view.
+	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value, or when the
+	/// angles can't form a cone: see [`Self::validate_angles`].
 	pub fn new(
 		color: LightColor,
 		intensity: PhotometricIntensity,
 		inner_angle: Radians,
 		outer_angle: Radians,
 	) -> Result<Self, PhotometricError> {
-		Self::validate_angles(inner_angle, outer_angle);
+		Self::validate_angles(inner_angle, outer_angle)?;
 		let chromaticity = color.resolve()?;
 		Ok(Self {
 			emission: LocalEmission::uniform(chromaticity, intensity.cone_candela(inner_angle, outer_angle)?),
@@ -54,13 +54,8 @@ impl ConeLight {
 	///
 	/// # Errors
 	///
-	/// Returns [`PhotometricError`] when `color` cannot resolve to a physical chromaticity.
-	///
-	/// # Panics
-	///
-	/// Panics when the cone angles are invalid, `dimmer` is outside `0.0..=1.0`, or
-	/// `ies_profile_resource_id` is empty. The most likely cause is an invalid cone shape, dimmer, or
-	/// missing baked `.ies` resource path.
+	/// Returns [`PhotometricError`] when `color` cannot resolve to a physical chromaticity, when the angles can't
+	/// form a cone, or when the profile is invalid: see [`super::IesProfile::new`].
 	pub fn new_ies(
 		color: LightColor,
 		dimmer: f32,
@@ -68,7 +63,7 @@ impl ConeLight {
 		inner_angle: Radians,
 		outer_angle: Radians,
 	) -> Result<Self, PhotometricError> {
-		Self::validate_angles(inner_angle, outer_angle);
+		Self::validate_angles(inner_angle, outer_angle)?;
 		Ok(Self {
 			emission: LocalEmission::ies(color, dimmer, ies_profile_resource_id)?,
 			inner_angle,
@@ -76,16 +71,21 @@ impl ConeLight {
 		})
 	}
 
-	/// Validates the angular range shared by uniform and IES-backed cone lights.
-	fn validate_angles(inner_angle: Radians, outer_angle: Radians) {
-		assert!(
-			inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= Radians::new(0.0) && inner_angle < outer_angle,
-			"Invalid cone light angles. The most likely cause is that the angles are not finite or the inner angle is not smaller than the outer angle."
-		);
-		assert!(
-			outer_angle <= Radians::new(std::f32::consts::PI),
-			"Invalid cone light outer angle. The most likely cause is that the supplied half angle exceeds pi radians."
-		);
+	/// Checks the angular range shared by uniform and IES-backed cone lights: finite half angles, the inner one from
+	/// zero up to the outer one, and the outer one at most π.
+	fn validate_angles(inner_angle: Radians, outer_angle: Radians) -> Result<(), PhotometricError> {
+		if !(inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= Radians::new(0.0) && inner_angle < outer_angle)
+		{
+			return Err(PhotometricError::new(
+				"that the cone's half angles aren't finite or its inner angle isn't below its outer angle. Give both in radians, the inner one from zero up to the outer one",
+			));
+		}
+		if outer_angle > Radians::new(std::f32::consts::PI) {
+			return Err(PhotometricError::new(
+				"that the cone's outer half angle exceeds π. Give it in radians, at most π",
+			));
+		}
+		Ok(())
 	}
 
 	/// Returns whether this light's cone fits in one perspective shadow view.

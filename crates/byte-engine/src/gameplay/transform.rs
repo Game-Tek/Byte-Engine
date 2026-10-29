@@ -2,8 +2,9 @@
 ///
 /// Use this type for gameplay entities that implement [`crate::space::Transformable`].
 /// Facet serializes it as `position: [x, y, z]`, `scale: [x, y, z]`, and
-/// `orientation: [x, y, z, w]`. Deserialization rejects unknown fields,
-/// non-finite components, and invalid orientations.
+/// `orientation: [x, y, z, w]`. Deserialization fills a missing field with the
+/// identity's value and rejects unknown fields, non-finite components, and
+/// invalid orientations.
 #[derive(Debug, Clone, PartialEq, facet::Facet)]
 #[facet(opaque, proxy = SerializableTransform)]
 pub struct Transform {
@@ -13,12 +14,30 @@ pub struct Transform {
 }
 
 /// The `SerializableTransform` struct defines the checked reflection boundary for engine transforms.
-#[derive(facet::Facet)]
+///
+/// A missing field takes the identity's value, so a payload names only what it changes. Facet reads it for the
+/// inspector, and serde for levels.
+#[derive(facet::Facet, serde::Deserialize)]
 #[facet(deny_unknown_fields)]
-struct SerializableTransform {
+#[serde(deny_unknown_fields)]
+pub(crate) struct SerializableTransform {
+	#[facet(default = [0.0f32; 3])]
+	#[serde(default)]
 	position: [f32; 3],
+	#[facet(default = [1.0f32; 3])]
+	#[serde(default = "identity_scale")]
 	scale: [f32; 3],
+	#[facet(default = [0.0f32, 0.0, 0.0, 1.0])]
+	#[serde(default = "identity_orientation")]
 	orientation: [f32; 4],
+}
+
+fn identity_scale() -> [f32; 3] {
+	[1.0; 3]
+}
+
+fn identity_orientation() -> [f32; 4] {
+	[0.0, 0.0, 0.0, 1.0]
 }
 
 impl TryFrom<SerializableTransform> for Transform {

@@ -285,8 +285,8 @@ A failed bake has only `id`, `source`, and `status`.
 
 Models with a JSON
 form are animation, audio, image, LUT, material, mesh, primitive, shader,
-skeleton, and variant; flipbooks, pipelines, and particle systems print an
-unsupported marker.
+skeleton, and variant; flipbooks, levels, pipelines, and particle systems print
+an unsupported marker.
 
 Logs go to standard error, so standard output carries only the command's
 output. Whether either stream is a terminal changes only how the output looks;
@@ -411,6 +411,7 @@ starts baking and when it's up to date, and shows no progress line.
 | `environment.bead` | Image with image-based lighting maps |
 | `pipeline` | Pipeline |
 | `flipbook` | Flipbook |
+| `level` | Level |
 | `particles` | Particle system and its pipelines and shaders |
 | `lut`, `cube` | LUT |
 | `wav`, `ogg` | Audio |

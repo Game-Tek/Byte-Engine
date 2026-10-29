@@ -436,6 +436,7 @@ impl SceneAccelerationStructures {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::rendering::renderable::mesh::resource_key;
 
 	fn primitive(material: u32, triangles: Range<u32>) -> PrimitiveGeometry {
 		PrimitiveGeometry {
@@ -448,7 +449,7 @@ mod tests {
 	fn traced(renderable: u32, mesh: &'static str, primitive: u32, record: u32) -> TracedPrimitive {
 		TracedPrimitive {
 			renderable: Handle::from_id(renderable),
-			mesh: MeshKey::Resource(mesh),
+			mesh: MeshKey::Resource(resource_key(mesh)),
 			primitive,
 			record,
 			model: Mat4x3f::from([
@@ -505,7 +506,7 @@ mod tests {
 
 	#[test]
 	fn uncommitted_builds_are_retried_next_frame() {
-		let [first, second, third] = ["first", "second", "third"].map(MeshKey::Resource);
+		let [first, second, third] = [1, 2, 3].map(MeshKey::Resource);
 		let mut queue = BuildQueue::default();
 		for mesh in [first, second, third] {
 			queue.push(mesh, 100);
@@ -525,8 +526,8 @@ mod tests {
 	#[test]
 	fn ray_traced_instances_leave_out_renderables_without_a_built_bottom_level() {
 		let bottom_levels = HashMap::from_iter([
-			(MeshKey::Resource("built"), bottom_level(7, vec![0], 0, true)),
-			(MeshKey::Resource("unbuilt"), bottom_level(8, vec![0], 1, false)),
+			(MeshKey::Resource(resource_key("built")), bottom_level(7, vec![0], 0, true)),
+			(MeshKey::Resource(resource_key("unbuilt")), bottom_level(8, vec![0], 1, false)),
 		]);
 		let mut primitives = [
 			traced(1, "built", 0, 10),
@@ -568,7 +569,7 @@ mod tests {
 	#[test]
 	fn geometry_table_maps_each_geometry_to_its_frame_record() {
 		// The mesh's middle primitive is masked, so its two geometries hold primitives 0 and 2.
-		let bottom_levels = HashMap::from_iter([(MeshKey::Resource("hall"), bottom_level(3, vec![0, 2], 5, true))]);
+		let bottom_levels = HashMap::from_iter([(MeshKey::Resource(resource_key("hall")), bottom_level(3, vec![0, 2], 5, true))]);
 		// The frame lists primitives in any order, and two renderables share the mesh.
 		let mut primitives = [
 			traced(2, "hall", 2, 21),

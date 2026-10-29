@@ -1,5 +1,7 @@
 //! Early resource-load requests for scene pipelines.
 
+use std::sync::Arc;
+
 pub use resource_management::resource::storage_backend::Query;
 
 /// The `Resource` enum asks scene pipelines to start loading resources before any entity uses them.
@@ -16,7 +18,7 @@ pub use resource_management::resource::storage_backend::Query;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
 	/// One resource by ID.
-	Id(&'static str),
+	Id(Arc<str>),
 	/// Every stored resource that matches an indexed metadata query.
 	///
 	/// The query runs on the pipeline's loader, so it never blocks the caller.
@@ -26,8 +28,8 @@ pub enum Resource {
 
 impl Resource {
 	/// Names one resource to load.
-	pub fn new(id: &'static str) -> Self {
-		Self::Id(id)
+	pub fn new(id: impl Into<Arc<str>>) -> Self {
+		Self::Id(id.into())
 	}
 
 	/// Loads every resource that matches `query`.
@@ -36,9 +38,9 @@ impl Resource {
 	}
 }
 
-impl From<&'static str> for Resource {
-	fn from(id: &'static str) -> Self {
-		Self::Id(id)
+impl From<&str> for Resource {
+	fn from(id: &str) -> Self {
+		Self::Id(id.into())
 	}
 }
 

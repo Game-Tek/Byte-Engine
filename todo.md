@@ -17,6 +17,8 @@
 - Make Linux audio pause return an error when the device does not support ALSA pause. `crates/ahi/src/os/linux.rs` uses `pcm.pause(true).unwrap()`, and `play` panics for a channel count other than 1 or 2. On Windows, reject a closest match the renderer cannot play, request 32-bit streams as float rather than integer PCM, and treat `CoInitializeEx` returning `S_FALSE` as already initialized. `play` panics outside 16- or 32-bit mono and stereo, and a 32-bit stream is requested as `KSDATAFORMAT_SUBTYPE_PCM` while samples are written as `f32`.
 - Give the Vulkan and DX12 GHI backends native per-layout descriptor sets, as Metal has. Both take `ghi::ShaderDescriptorSet` and `ghi::DescriptorSetLayout` now, but `create_shader` flattens the used resources into one flat-slot list (`shader::flatten_used_resources`), `create_descriptor_set` ignores its layout, and each pipeline still materializes its own native descriptors from retained flat-slot writes. Create one native set or descriptor table per `DescriptorSetLayout`, share it between pipelines, check writes against the layout, and match bound sets to a pipeline's layouts by `DescriptorSetLayout::identity` (`crates/ghi/src/metal/command_buffer/encoding.rs` is the reference). The GLSL and HLSL BESL backends still emit one flat set or space; they need a set or space per layout, in the order `evaluation::collect_set_nodes` returns, which is also the order of `ShaderInterface::sets`. Vulkan set numbers are shared by a pipeline's stages, so either number sets per pipeline and patch the SPIR-V decorations, or require stages to list their layers in one order. The signature changes in `crates/ghi/src/vulkan` and `crates/ghi/src/dx12` were written without building either backend; compile and run both first.
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
+- Stop the visibility pipeline from panicking past 1,024 resident primitives. `assert!(active_index < MAX_INSTANCES)` in `crates/byte-engine/src/rendering/pipelines/visibility/manager.rs` counts every resident primitive of every ready renderable before culling, so a level of a few hundred multi-primitive props crashes. Cap or grow the instance buffer and report what didn't fit, as lights do.
+- Build byte-engine without the `headed` feature again. `crates/byte-engine/src/gameplay/pathfinding/navigation.rs` imports `rendering::debug` unconditionally. Then check that a headless spawner ignores the rendering level kinds.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Give UI element paths an identity that cannot repeat between live scopes. `RetainedTree::begin_frame` clears `path_counts`, and `scope_path` assigns the ordinal from that per-frame counter (`crates/byte-engine/src/ui/layout/retained_tree.rs`). Two mounts with the same name under one parent started on different frames share a path, share element ids, and removing one removes the other's elements. Task ownership already uses `ScopeId` and is unaffected.
 - Upload only the bytes a frame wrote to a Vulkan dynamic buffer. `Frame::get_mut_dynamic_buffer_slice` in `crates/ghi/src/vulkan/frame.rs` queues a copy of the frame copy's whole staging buffer into its device buffer. The UI primitive, mask, curve, and band buffers are dynamic (`crates/byte-engine/src/ui/render_pass.rs`), so a frame that writes them uploads about 14.7 MB of primitives plus about 4 MB of masks, curves, and bands per sink. Map host-to-device dynamic copies directly so they need no staging copy, or give the UI a smaller per-frame footprint instead, such as a ring suballocation of one buffer that holds only the live primitive count, which also removes the extra 14.7 MB per sink that Metal keeps for the second frame's copy.
@@ -222,7 +224,20 @@
 - Keep tests in the new owning submodules instead of retaining large centralized test sections.
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
-- Build a level manager on top of `Scene`/`SceneNode` (`crates/byte-engine/src/gameplay/scene.rs`): active-scene switching, loading levels from assets, and optional re-parenting of scene members.
+
+## Levels (deferred)
+
+`.level` files and `gameplay::Spawner` (`crates/byte-engine/src/gameplay/level.rs`) place a flat list of entities. Left out of the first version:
+
+- Prefabs and nested levels: an entity that spawns another `.level` under its transform, with ids namespaced by the instance, then per-entity overrides. Every transform is a world transform today, so an instance's transform would have to be composed into its entities at spawn.
+- Respawn a level when its resource rebakes in debug builds. `ResourceManager::resource_updates` reports the level's ID; deleting the root and spawning again is correct but loses runtime state.
+- Spawn levels larger than the message pool across ticks. A spawn publishes one message per entity and per component in one call; past `messages.capacity` the publisher waits for listeners that run later on the same thread.
+- Warn when a spawned kind has no listener. A kind no system follows is published and dropped silently; channels can't report how many listeners they have.
+- Give level entities identities that survive across processes, from their file ids, so a server and its clients agree on placed entities without replicating handles.
+- Import a level from a glTF or FBX scene's nodes. The glTF handler flattens a whole scene into one mesh resource.
+- Let the inspector spawn kinds and list them with their payload shapes, as a base for an editor.
+- Add triangle-mesh and heightfield colliders, and convex hulls baked from mesh resources, so a `body` can collide as level geometry.
+- Share one `Arc<str>` per distinct mesh ID within a spawn. The `mesh` kind allocates its ID twice per entity, about 40 ns of the 47 ns a mesh costs to spawn.
 
 ## Ownership cleanup (deferred)
 

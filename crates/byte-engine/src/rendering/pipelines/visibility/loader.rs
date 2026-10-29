@@ -47,7 +47,7 @@ const VISIBILITY_RESULT_CAPACITY: usize = 64;
 /// The `VisibilityLoadKey` enum names every logical resource in the visibility pipeline's shared registry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum VisibilityLoadKey {
-	Resource(&'static str),
+	Resource(Arc<str>),
 	Query(Query),
 	Mesh(MeshKey),
 	Material(String),
@@ -71,7 +71,7 @@ impl std::fmt::Display for VisibilityLoadKey {
 /// The `VisibilityLoadRequest` enum carries owned work for every visibility resource family.
 pub(crate) enum VisibilityLoadRequest {
 	/// A resource of unknown class, routed to its family once its class is read.
-	Resource(&'static str),
+	Resource(Arc<str>),
 	/// Every resource that matches a query, each routed by the query's class.
 	Query(Query),
 	Mesh(MeshSource),
@@ -440,8 +440,8 @@ pub(crate) fn spawn(
 
 impl VisibilityLoader {
 	/// Reads the stored class of `id` and forwards it as the matching family request.
-	async fn load_resource(&self, id: &'static str, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
-		let class = self.resource_manager.class(id).await.map_err(|error| {
+	async fn load_resource(&self, id: Arc<str>, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
+		let class = self.resource_manager.class(&id).await.map_err(|error| {
 			LoadError(format!(
 				"Visibility resource request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded. Request error: {error}"
 			))
@@ -449,7 +449,7 @@ impl VisibilityLoader {
 		lane.request(if class == "Mesh" {
 			VisibilityLoadRequest::Mesh(MeshSource::Resource(id))
 		} else {
-			self.route(id.to_owned(), &class).await?
+			self.route(id.to_string(), &class).await?
 		});
 		Ok(VisibilityResident::Routed)
 	}
@@ -507,7 +507,7 @@ impl VisibilityLoader {
 		// Materials load while this mesh is read, converted, and uploaded.
 		let prepared = match source {
 			MeshSource::Resource(id) => {
-				let resource: Reference<Mesh> = self.resource_manager.request(id).await.map_err(|_| {
+				let resource: Reference<Mesh> = self.resource_manager.request(&id).await.map_err(|_| {
 					LoadError(format!(
 						"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
 					))
@@ -935,7 +935,7 @@ impl LoadPipeline for VisibilityLoader {
 
 	fn key(request: &Self::Request) -> Self::Key {
 		match request {
-			VisibilityLoadRequest::Resource(id) => VisibilityLoadKey::Resource(id),
+			VisibilityLoadRequest::Resource(id) => VisibilityLoadKey::Resource(id.clone()),
 			VisibilityLoadRequest::Query(query) => VisibilityLoadKey::Query(query.clone()),
 			VisibilityLoadRequest::Mesh(source) => VisibilityLoadKey::Mesh(source.key()),
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),

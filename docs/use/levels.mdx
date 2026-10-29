@@ -1,0 +1,141 @@
+---
+title: Place entities with a level
+description: Describe a level's meshes, lights, colliders, and your own components in a .level file, then spawn and unload it.
+icon: Map
+---
+
+Use a `.level` file to place the entities of a level as data instead of code: meshes, lights, physics bodies,
+navigation areas, and components your application defines. A `Spawner` knows every kind of component a level can
+name, and spawning a baked level publishes all of them at once.
+
+## Write a level
+
+Add a `.level` file to your assets. Each entity lists its components by kind. Give an entity an `id` when another
+entity refers to it or belongs to it:
+
+```json5
+{
+	"$schema": "byte-engine/schemas/level.schema.json",
+	entities: [
+		{
+			id: "frame",
+			components: {
+				transform: { position: [2, 0, 4] },
+				mesh: { resource: "props/door_frame.glb" },
+				body: { type: "static", shape: { cube: { half_extents: [0.1, 1, 0.5] } } },
+			},
+		},
+		{
+			id: "door",
+			parent: "frame",
+			components: {
+				transform: { position: [2, 0, 4.5] },
+				mesh: { resource: "props/door.glb" },
+				body: { type: "dynamic", shape: { cube: { half_extents: [0.05, 1, 0.45] } }, mass: 20 },
+			},
+		},
+		{
+			components: {
+				hinge: { first: { "$entity": "frame" }, second: { "$entity": "door" }, axis: [0, 1, 0] },
+			},
+		},
+		{
+			components: {
+				transform: { orientation: [0.3, 0, 0, 0.954] },
+				directional_light: { color: { kelvin: 5500 }, intensity: { illuminance: { lux: 100000 } } },
+			},
+		},
+	],
+}
+```
+
+A `parent` only groups entities: deleting the frame deletes the door, but moving the frame doesn't move the door.
+Every transform is a world transform. The [.level reference](/docs/reference/levels) lists every field and kind.
+
+## Spawn a level
+
+Create the systems that follow the level's components first, such as `Physics`, `Navigation`, and the renderer's
+pipeline, because they see only what's published after them. Then spawn the level by its asset ID:
+
+```rust
+let spawner = Spawner::with_engine_kinds();
+let level = build_single_threaded_async_runtime()
+	.block_on(spawner.spawn_resource(app.world(), app.resource_manager(), "levels/courtyard.level"))?;
+```
+
+`spawn_resource` waits for the baked level, then publishes every entity. A level that can't spawn, such as one that
+names a kind the spawner doesn't know, publishes nothing and returns a message that names the entity and kind.
+
+## Add your own kinds
+
+Register a component type under the kind name your levels use. The payload decodes with serde, so derive
+`Deserialize`, and deny unknown fields so a misspelled field fails the spawn:
+
+```rust
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlayerStart {
+	team: u32,
+}
+
+let mut spawner = Spawner::with_engine_kinds();
+spawner.register::<PlayerStart>("player_start")?;
+```
+
+Then follow the kind like any other component: take a listener before the spawn, and read each creation's handle
+and value.
+
+```rust
+let mut starts = app.world().factory::<PlayerStart>().listener();
+// After the spawn:
+while let Some(start) = starts.read() {
+	spawn_player(app, start.handle(), start.data().team);
+}
+```
+
+### Refer to other entities
+
+When a component needs another entity's handle, decode a payload type with an `EntityRef` field and turn it into
+your component with `register_with`:
+
+```rust
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FollowPayload {
+	target: EntityRef,
+}
+
+#[derive(Clone)]
+struct Follow(Handle);
+
+spawner.register_with("follow", |follow: FollowPayload| Ok(Follow(follow.target.handle())))?;
+```
+
+The level writes the reference as `follow: { target: { "$entity": "fox" } }`. Use `register_with` also to check a
+payload: return `Err` with the cause and the fix, and the spawn publishes nothing. Large levels convert on several
+threads at once, so keep the converter a pure function of its payload.
+
+### Skip a kind in some builds
+
+When a build doesn't follow a kind, such as a server that draws nothing, ignore it so the same level still spawns:
+
+```rust
+spawner.ignore("cosmetic_decal")?;
+```
+
+A build without rendering already ignores `mesh` and the lights.
+
+## Unload a level
+
+The handle that a spawn returns is the level's scene. Create a `SceneGraph` before the spawn and call its
+`cascade` each step, then delete the scene to delete every entity of the level:
+
+```rust
+app.world().channel::<DeleteMessage>().send(DeleteMessage::new(level));
+```
+
+## Rust API
+
+- [`gameplay::level` module](/docs/api/latest/byte_engine/gameplay/level)
+- [`Spawner`](/docs/api/latest/byte_engine/gameplay/level/Spawner)
+- [`EntityRef`](/docs/api/latest/byte_engine/gameplay/level/EntityRef)

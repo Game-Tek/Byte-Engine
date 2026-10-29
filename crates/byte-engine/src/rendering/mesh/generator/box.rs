@@ -1,6 +1,7 @@
 use std::{
 	borrow::Cow,
 	hash::{Hash as _, Hasher},
+	sync::Arc,
 };
 
 use maths_rs::Vec3f;
@@ -11,7 +12,7 @@ use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSou
 #[derive(Clone)]
 pub struct BoxMeshGenerator {
 	size: Vec3f,
-	material: Option<&'static str>,
+	material: Option<Arc<str>>,
 	meter_uvs: bool,
 }
 
@@ -31,8 +32,8 @@ impl BoxMeshGenerator {
 	}
 
 	/// Draws the box with the material resource `material` instead of the default generated-mesh material.
-	pub fn with_material(mut self, material: &'static str) -> Self {
-		self.material = Some(material);
+	pub fn with_material(mut self, material: impl Into<Arc<str>>) -> Self {
+		self.material = Some(material.into());
 		self
 	}
 
@@ -149,7 +150,7 @@ impl MeshGenerator for BoxMeshGenerator {
 	}
 
 	fn material(&self) -> Option<&str> {
-		self.material
+		self.material.as_deref()
 	}
 
 	fn hash(&self) -> u64 {

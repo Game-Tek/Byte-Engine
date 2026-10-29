@@ -46,12 +46,8 @@ impl PointLight {
 	///
 	/// # Errors
 	///
-	/// Returns [`PhotometricError`] when `color` cannot resolve to a physical chromaticity.
-	///
-	/// # Panics
-	///
-	/// Panics when `dimmer` is outside `0.0..=1.0` or `ies_profile_resource_id` is empty. The most likely
-	/// cause is an invalid dimmer or missing baked `.ies` resource path.
+	/// Returns [`PhotometricError`] when `color` cannot resolve to a physical chromaticity, or when the profile is
+	/// invalid: see [`super::IesProfile::new`].
 	pub fn new_ies(
 		color: LightColor,
 		dimmer: f32,

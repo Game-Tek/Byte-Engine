@@ -38,19 +38,20 @@ impl DirectionalLight {
 	/// shades. The atmosphere sky draws a larger, dimmer sun disk to match, because the same illuminance spreads over
 	/// more of the sky.
 	///
-	/// # Panics
+	/// # Errors
 	///
-	/// Panics when `angular_radius` is not finite or lies outside `0.0..π/2`. The most likely cause is passing
-	/// degrees or a full angle where a radius in radians is expected.
-	pub fn with_angular_radius(mut self, angular_radius: Radians) -> Self {
-		assert!(
-			angular_radius.is_finite()
-				&& angular_radius >= Radians::new(0.0)
-				&& angular_radius < Radians::new(std::f32::consts::FRAC_PI_2),
-			"Invalid directional light angular radius. The most likely cause is passing degrees or a full angle where a radius in radians is expected."
-		);
+	/// Returns [`PhotometricError`] when `angular_radius` is not finite or lies outside `0.0..π/2`.
+	pub fn with_angular_radius(mut self, angular_radius: Radians) -> Result<Self, PhotometricError> {
+		if !(angular_radius.is_finite()
+			&& angular_radius >= Radians::new(0.0)
+			&& angular_radius < Radians::new(std::f32::consts::FRAC_PI_2))
+		{
+			return Err(PhotometricError::new(
+				"that the angular radius isn't from 0 up to π/2, as when it's in degrees or a full angle. Give the disk's radius in radians",
+			));
+		}
 		self.angular_radius = angular_radius;
-		self
+		Ok(self)
 	}
 }
 

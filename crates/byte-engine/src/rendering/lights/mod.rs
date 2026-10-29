@@ -70,7 +70,7 @@ impl LocalEmission {
 	fn ies(color: LightColor, dimmer: f32, ies_profile_resource_id: impl Into<String>) -> Result<Self, PhotometricError> {
 		Ok(Self::with_profile(
 			color.resolve()?,
-			Some(IesProfile::new(ies_profile_resource_id, dimmer)),
+			Some(IesProfile::new(ies_profile_resource_id, dimmer)?),
 		))
 	}
 

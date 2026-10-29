@@ -112,6 +112,13 @@ impl PhotometricIntensity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhotometricError(&'static str);
 
+impl PhotometricError {
+	/// Creates an error whose `cause` completes "The most likely cause is", and ends with the fix.
+	pub(crate) const fn new(cause: &'static str) -> Self {
+		Self(cause)
+	}
+}
+
 impl fmt::Display for PhotometricError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(formatter, "Invalid photometric light. The most likely cause is {}.", self.0)
@@ -369,6 +376,37 @@ mod tests {
 		};
 
 		assert_near(intensity.cone_candela(inner, outer).expect("valid cone flux"), 250.0);
+	}
+
+	#[test]
+	fn lights_that_cannot_take_shape_return_errors() {
+		use math::Radians;
+
+		use crate::rendering::{ConeLight, DirectionalLight, PointLight};
+
+		let white = LightColor::kelvin(6_500.0);
+		let bright = PhotometricIntensity::luminous_intensity(100.0);
+		let cone = |inner: f32, outer: f32| ConeLight::new(white, bright, Radians::new(inner), Radians::new(outer));
+		for (problem, result) in [
+			("inner angle not below the outer one", cone(0.5, 0.5).err()),
+			("negative inner angle", cone(-0.1, 0.5).err()),
+			("outer angle past π", cone(0.5, 3.5).err()),
+			("non-finite angle", cone(0.5, f32::NAN).err()),
+			(
+				"IES dimmer above 1",
+				ConeLight::new_ies(white, 1.5, "lamp.ies", Radians::new(0.2), Radians::new(0.5)).err(),
+			),
+			("empty IES profile", PointLight::new_ies(white, 0.5, " ").err()),
+			(
+				"angular radius past π/2",
+				DirectionalLight::new(white, PhotometricIntensity::illuminance(1_000.0))
+					.unwrap()
+					.with_angular_radius(Radians::new(2.0))
+					.err(),
+			),
+		] {
+			assert!(result.is_some(), "a light with a {problem} should be an error");
+		}
 	}
 }
 

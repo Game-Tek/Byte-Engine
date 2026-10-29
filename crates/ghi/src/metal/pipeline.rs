@@ -154,8 +154,8 @@ pub(crate) fn build_sampler(
 	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
-	// A device that cannot execute sampler reductions falls back to standard sampling, without changing the
-	// cross-backend sampler contract.
+	// Shaders compiled for Metal reduce gathered texels in code, so a reduction sampler keeps its contract on devices
+	// that cannot execute sampler reductions and fall back to standard sampling here.
 	descriptor.setReductionMode(if device.supportsFamily(mtl::MTLGPUFamily::Apple10) {
 		utils::sampler_reduction_mode(builder.reduction_mode)
 	} else {

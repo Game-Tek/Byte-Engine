@@ -97,10 +97,12 @@ impl OcclusionCulling {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(OCCLUSION_PYRAMID_MIP_COUNT),
 		);
-		// Metal applies min/max reduction only when every sampler filter is linear, as the default ones are. Culling
-		// samples whole levels, so the linear mip filter never blends two of them.
+		// Culling reads the farthest depth in the 2x2 texel footprint around the rectangle's center, from the one
+		// level it picked.
 		let min_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(ghi::SamplingReductionModes::Min)
 				.max_lod((OCCLUSION_PYRAMID_MIP_COUNT - 1) as f32),
 		);

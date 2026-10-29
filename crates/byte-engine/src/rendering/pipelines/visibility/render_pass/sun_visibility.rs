@@ -20,7 +20,7 @@ use utils::Extent;
 use super::super::layout::MAX_DIRECTIONAL_SHADOW_COUNT;
 use super::super::shadow_selection::SunShadow;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps};
+use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -210,11 +210,12 @@ impl SunVisibilityPass {
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
 		// Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one sample, and
-		// the fully-shadowed probe the farthest.
+		// the fully-shadowed probe the farthest. Both read the 2x2 texel footprint around a corner of the base level.
 		let pyramid_sampler = |reduction_mode| {
 			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(reduction_mode)
-				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32)
 		};
 		let shadow_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Max));
 		let shadow_minimum_pyramid_sampler = context.build_sampler(pyramid_sampler(ghi::SamplingReductionModes::Min));

@@ -145,7 +145,7 @@ pub(crate) use self::occlusion::OcclusionPhase;
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
-pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork, SunCascades};
+pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
@@ -480,10 +480,12 @@ impl VisibilityRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
+		// Shadow lookups read the nearest occluder in the 2x2 texel footprint around a corner of the pyramid's base level.
 		let depth_pyramid_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.reduction_mode(ghi::SamplingReductionModes::Max)
-				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Closest)
+				.reduction_mode(ghi::SamplingReductionModes::Max),
 		);
 		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
 		let depth_pyramid = DepthPyramidPass::new(

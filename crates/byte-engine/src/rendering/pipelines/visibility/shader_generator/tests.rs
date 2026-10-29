@@ -644,6 +644,66 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 	);
 }
 
+/// Verifies an orthographic sun projection preserves a receiver's depth slope under translation, rotation, and winding.
+#[test]
+fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let scaled: mat4f = mat4f(
+				vec4f(2.0, 0.0, 0.0, 0.0),
+				vec4f(0.0, 3.0, 0.0, 0.0),
+				vec4f(0.0, 0.0, 0.5, 0.0),
+				vec4f(10.0, -7.0, 0.3, 1.0)
+			);
+			let rotated: mat4f = mat4f(
+				vec4f(0.0, -1.0, 0.25, 0.0),
+				vec4f(1.0, 0.0, 0.5, 0.0),
+				vec4f(0.0, 0.0, 0.125, 0.0),
+				vec4f(-3.0, 4.0, 0.2, 1.0)
+			);
+			let dx: vec3f = vec3f(1.0, 0.0, 0.2);
+			let dy: vec3f = vec3f(0.0, 1.0, -0.3);
+			results.scaled = directional_shadow_receiver_gradient(scaled, dx, dy);
+			results.rotated = directional_shadow_receiver_gradient(rotated, dx, dy);
+			results.reversed = directional_shadow_receiver_gradient(rotated, dy, dx);
+			results.degenerate = directional_shadow_receiver_gradient(rotated, dx, dx);
+			results.near_degenerate = directional_shadow_receiver_gradient(scaled, dx, vec3f(1.0, 0.00000000005, 0.2));
+			results.thin = directional_shadow_receiver_gradient(scaled, dx, vec3f(1.0, 0.0000000001, 0.2));
+		}
+		"#,
+		&mut [],
+		&[(
+			DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE,
+			"directional_shadow_receiver_gradient",
+		)],
+		["scaled", "rotated", "reversed", "degenerate", "near_degenerate", "thin"]
+			.map(|name| Node::member(name, "vec2f"))
+			.to_vec(),
+	);
+	for (name, expected) in [
+		("scaled", [0.1, 0.1]),
+		("rotated", [0.925, 0.55]),
+		("reversed", [0.925, 0.55]),
+		("degenerate", [0.0, 0.0]),
+		("near_degenerate", [0.0, 0.0]),
+		("thin", [0.1, 0.0]),
+	] {
+		let Value::Vec2F(actual) = results.read(name).expect("directional receiver gradient") else {
+			panic!(
+				"Unexpected directional receiver gradient type. The fixture expects a two-component slope. Check the helper's result type."
+			);
+		};
+		assert!(
+			actual
+				.into_iter()
+				.zip(expected)
+				.all(|(actual, expected)| (actual - expected).abs() < 0.00001),
+			"Directional receiver {name} has slope {actual:?}, expected {expected:?}. The projection may have changed the receiver plane. Check the shadow UV and stored-depth derivatives."
+		);
+	}
+}
+
 /// Verifies the directional probe skips PCF only when every fine cell touching the footprint is clear.
 #[test]
 fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {

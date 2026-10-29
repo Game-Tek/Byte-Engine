@@ -27,54 +27,6 @@ sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
 	return vec3f(ray.x * z, ray.y * z, z);
 }
 
-shadow_receiver_plane_depth_gradient: fn (
-	shadow_view_projection: mat4f,
-	surface_light_clip_position: vec4f,
-	surface_light_ndc_position: vec3f,
-	world_space_position_derivative_x: vec3f,
-	world_space_position_derivative_y: vec3f
-) -> vec2f {
-	let light_clip_derivative_x: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_x.x,
-		world_space_position_derivative_x.y,
-		world_space_position_derivative_x.z,
-		0.0
-	);
-	let light_clip_derivative_y: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_y.x,
-		world_space_position_derivative_y.y,
-		world_space_position_derivative_y.z,
-		0.0
-	);
-	let light_ndc_derivative_x: vec3f = (
-		vec3f(light_clip_derivative_x.x, light_clip_derivative_x.y, light_clip_derivative_x.z)
-		- surface_light_ndc_position * light_clip_derivative_x.w
-	) / surface_light_clip_position.w;
-	let light_ndc_derivative_y: vec3f = (
-		vec3f(light_clip_derivative_y.x, light_clip_derivative_y.y, light_clip_derivative_y.z)
-		- surface_light_ndc_position * light_clip_derivative_y.w
-	) / surface_light_clip_position.w;
-	let shadow_uv_derivative_x: vec2f = vec2f(
-		light_ndc_derivative_x.x * 0.5,
-		0.0 - light_ndc_derivative_x.y * 0.5
-	);
-	let shadow_uv_derivative_y: vec2f = vec2f(
-		light_ndc_derivative_y.x * 0.5,
-		0.0 - light_ndc_derivative_y.y * 0.5
-	);
-	let shadow_uv_determinant: f32 = shadow_uv_derivative_x.x * shadow_uv_derivative_y.y
-		- shadow_uv_derivative_y.x * shadow_uv_derivative_x.y;
-	if (abs(shadow_uv_determinant) <= 0.0000000001) {
-		return vec2f(0.0, 0.0);
-	}
-	return vec2f(
-		(light_ndc_derivative_x.z * shadow_uv_derivative_y.y
-			- light_ndc_derivative_y.z * shadow_uv_derivative_x.y) / shadow_uv_determinant,
-		(shadow_uv_derivative_x.x * light_ndc_derivative_y.z
-			- shadow_uv_derivative_y.x * light_ndc_derivative_x.z) / shadow_uv_determinant
-	);
-}
-
 sample_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_uv: vec2f,
@@ -582,24 +534,29 @@ directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u
 // the receiver's screen-space position derivatives.
 directional_shadow_receiver_gradient: fn (
 	shadow_view_projection: mat4f,
-	world_space_position: vec3f,
 	world_space_position_derivative_x: vec3f,
 	world_space_position_derivative_y: vec3f
 ) -> vec2f {
-	let clip_position: vec4f = shadow_view_projection * vec4f(
-		world_space_position.x,
-		world_space_position.y,
-		world_space_position.z,
-		1.0
+	// Directional cascades are orthographic, so their position derivatives need no perspective correction or receiver
+	// position. The projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
+	let dx: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_x.x,
+		world_space_position_derivative_x.y,
+		world_space_position_derivative_x.z,
+		0.0
 	);
-	let ndc_position: vec3f = vec3f(clip_position.x, clip_position.y, clip_position.z) / clip_position.w;
-	return shadow_receiver_plane_depth_gradient(
-		shadow_view_projection,
-		clip_position,
-		ndc_position,
-		world_space_position_derivative_x,
-		world_space_position_derivative_y
+	let dy: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_y.x,
+		world_space_position_derivative_y.y,
+		world_space_position_derivative_y.z,
+		0.0
 	);
+	let normal: vec3f = cross(vec3f(dx.x, dx.y, dx.z), vec3f(dy.x, dy.y, dy.z));
+	// The shadow-UV determinant is -normal.z / 4, so this preserves its 1e-10 degeneracy threshold.
+	if (abs(normal.z) <= 0.0000000004) {
+		return vec2f(0.0, 0.0);
+	}
+	return vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y) / normal.z;
 }
 
 // Searches one directional cascade for the occluders near a receiver its fully-lit probe did not clear. Returns how far
@@ -783,7 +740,6 @@ sample_directional_shadow: fn (
 	) == false) {
 		search_gradient = directional_shadow_receiver_gradient(
 			search_view_projection,
-			world_space_position,
 			world_space_position_derivative_x,
 			world_space_position_derivative_y
 		);
@@ -817,7 +773,6 @@ sample_directional_shadow: fn (
 		filter_receiver = directional_shadow_receiver(filter_view_projection, filter_cascade, world_space_position);
 		filter_gradient = directional_shadow_receiver_gradient(
 			filter_view_projection,
-			world_space_position,
 			world_space_position_derivative_x,
 			world_space_position_derivative_y
 		);
@@ -852,7 +807,6 @@ sample_directional_shadow: fn (
 		directional_shadow_receiver(finer_view_projection, finer_cascade, world_space_position),
 		directional_shadow_receiver_gradient(
 			finer_view_projection,
-			world_space_position,
 			world_space_position_derivative_x,
 			world_space_position_derivative_y
 		),

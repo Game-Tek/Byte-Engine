@@ -419,24 +419,29 @@ directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u
 pub(crate) const DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE: &str = r#"
 directional_shadow_receiver_gradient: fn (
 	shadow_view_projection: mat4f,
-	world_space_position: vec3f,
 	world_space_position_derivative_x: vec3f,
 	world_space_position_derivative_y: vec3f
 ) -> vec2f {
-	let clip_position: vec4f = shadow_view_projection * vec4f(
-		world_space_position.x,
-		world_space_position.y,
-		world_space_position.z,
-		1.0
+	// Directional cascades are orthographic, so their position derivatives need no perspective correction or receiver
+	// position. The projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
+	let dx: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_x.x,
+		world_space_position_derivative_x.y,
+		world_space_position_derivative_x.z,
+		0.0
 	);
-	let ndc_position: vec3f = vec3f(clip_position.x, clip_position.y, clip_position.z) / clip_position.w;
-	return shadow_receiver_plane_depth_gradient(
-		shadow_view_projection,
-		clip_position,
-		ndc_position,
-		world_space_position_derivative_x,
-		world_space_position_derivative_y
+	let dy: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_y.x,
+		world_space_position_derivative_y.y,
+		world_space_position_derivative_y.z,
+		0.0
 	);
+	let normal: vec3f = cross(vec3f(dx.x, dx.y, dx.z), vec3f(dy.x, dy.y, dy.z));
+	// The shadow-UV determinant is -normal.z / 4, so this preserves its 1e-10 degeneracy threshold.
+	if (abs(normal.z) <= 0.0000000004) {
+		return vec2f(0.0, 0.0);
+	}
+	return vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y) / normal.z;
 }
 "#;
 
@@ -461,7 +466,6 @@ directional_shadow_occluder_distance: fn (
 	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let depth_gradient: vec2f = directional_shadow_receiver_gradient(
 		shadow_view_projection,
-		world_space_position,
 		world_space_position_derivative_x,
 		world_space_position_derivative_y
 	);
@@ -507,7 +511,6 @@ sample_directional_shadow_cascade: fn (
 	}
 	let depth_gradient: vec2f = directional_shadow_receiver_gradient(
 		shadow_view_projection,
-		world_space_position,
 		world_space_position_derivative_x,
 		world_space_position_derivative_y
 	);

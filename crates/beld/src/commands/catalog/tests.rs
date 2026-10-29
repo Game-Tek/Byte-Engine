@@ -34,16 +34,6 @@ fn audio(id: &str, hash: u64, size: usize) -> SerializableResource {
 	ProcessedAsset::new(ResourceId::new(id), audio).into_serializable(hash, size, size, ResourcePayloadEncoding::Raw)
 }
 
-/// The usage of an empty files-mode store.
-pub(in crate::commands) fn files_usage() -> StorageUsage {
-	StorageUsage {
-		database_size: 0,
-		payload_files: Vec::new(),
-		staging_files: (0, 0),
-		pack: None,
-	}
-}
-
 /// Two hero images, a crate image with the same payload as the first hero image, and a sound.
 pub(in crate::commands) fn catalog(references: Vec<(String, Vec<String>)>) -> Catalog {
 	rooted_catalog(references, &[])
@@ -59,7 +49,7 @@ fn rooted_catalog(references: Vec<(String, Vec<String>)>, roots: &[&str]) -> Cat
 	];
 	let stale = Some(vec![Vec::new(); resources.len()]);
 	let roots = roots.iter().map(|root| utils::Glob::new(root)).collect::<Vec<_>>();
-	Catalog::new(resources, stale, references, &roots, files_usage(), 0)
+	Catalog::new(resources, stale, references, &roots, StorageUsage::default(), 0)
 }
 
 fn by_stored() -> Sort {
@@ -242,7 +232,7 @@ fn a_trace_without_a_resource_is_a_failed_row() {
 		Some(vec![Vec::new()]),
 		Vec::new(),
 		&[],
-		files_usage(),
+		StorageUsage::default(),
 		0,
 	)
 	.with_traces(vec![("broken.png".to_string(), trace)]);

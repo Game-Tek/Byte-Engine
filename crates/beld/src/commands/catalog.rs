@@ -543,13 +543,7 @@ pub(super) async fn unreachable_ids(destination_path: &str, roots: &[Glob]) -> R
 	drop(storage);
 
 	// Reachability needs only the resources and their references, so the usage scan is skipped.
-	let usage = StorageUsage {
-		database_size: 0,
-		payload_files: Vec::new(),
-		staging_files: (0, 0),
-		pack: None,
-	};
-	let catalog = Catalog::new(resources, None, references, roots, usage, 0);
+	let catalog = Catalog::new(resources, None, references, roots, StorageUsage::default(), 0);
 	Ok(catalog
 		.rows
 		.into_iter()

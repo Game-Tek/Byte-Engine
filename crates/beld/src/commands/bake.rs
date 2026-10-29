@@ -29,8 +29,10 @@ use crate::{
 /// matching assets, and a bake of one, or of an asset that needs one, fails. `roots` are its `resources.roots`
 /// patterns: when there are any, discovery keeps only matching assets, which bake with what they need. Roots don't
 /// apply to explicit `ids`. `prune` deletes every stored resource no root reaches once every asset baked; it needs
-/// roots, no `ids`, and a debug build, which records references. On a terminal, a progress line shows on standard error; install the logger with
-/// [`crate::init_logging`] so log messages print above it.
+/// roots, no `ids`, and a debug build, which records references.
+///
+/// On a terminal, a progress line shows on standard error; install the logger with [`crate::init_logging`] so log
+/// messages print above it.
 ///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]

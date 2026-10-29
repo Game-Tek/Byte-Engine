@@ -1086,8 +1086,8 @@ impl StorageBackend for ReDBStorageBackend {}
 /// The `StorageUsage` struct describes the disk space a resource store occupies, so tools can find space that no
 /// resource uses.
 ///
-/// Read it with [`ReDBStorageBackend::usage`].
-#[derive(Clone, Debug)]
+/// Read it with [`ReDBStorageBackend::usage`]. The default is the usage of an empty files-mode store.
+#[derive(Clone, Debug, Default)]
 pub struct StorageUsage {
 	/// The size of the resources database in bytes.
 	pub database_size: u64,

@@ -8,7 +8,7 @@ use resource_management::types::Formats;
 use super::ui::State;
 use crate::commands::catalog::{
 	Catalog,
-	tests::{catalog, files_usage, image},
+	tests::{catalog, image},
 };
 
 #[test]
@@ -80,7 +80,7 @@ fn the_view_still_draws_after_the_selected_line_is_filtered_away_or_reloaded_awa
 		None,
 		Vec::new(),
 		&[],
-		files_usage(),
+		resource_management::resource::StorageUsage::default(),
 		0,
 	);
 	state.reload(&mut catalog, smaller);

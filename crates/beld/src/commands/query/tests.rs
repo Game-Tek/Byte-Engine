@@ -6,7 +6,7 @@ use crate::{
 	OutputFormat,
 	commands::catalog::{
 		Catalog,
-		tests::{catalog, files_usage, image},
+		tests::{catalog, image},
 	},
 };
 
@@ -194,7 +194,7 @@ fn color_marks_the_header_and_stale_lines_and_no_color_writes_no_escape_codes() 
 			Some(vec![Vec::new(), vec!["old.png".to_string()]]),
 			Vec::new(),
 			&[],
-			files_usage(),
+			resource_management::resource::StorageUsage::default(),
 			0,
 		)
 	};

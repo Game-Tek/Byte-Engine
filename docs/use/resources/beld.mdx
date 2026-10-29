@@ -137,6 +137,7 @@ beld query class=Image name=textures/hero_albedo.png
 beld query --group source --limit 5
 beld query --format json --limit 20 -- class=Image 'stored>1MiB' -is:compressed
 beld query --format json is:stale
+beld query --group source --limit 0 is:unreachable
 beld inspect material.bema --format json
 ```
 
@@ -173,6 +174,8 @@ type a filter to narrow it, `g` to group it, and `s` to change the sort. Press
 | Large textures stored uncompressed | Filter `class=Image stored>1MiB -is:compressed`. |
 | Identical payloads stored more than once | Filter `is:duplicate`, then press `g` and pick `hash`. |
 | Resources the next bake processes again | Filter `is:stale`. |
+| Resources no part of your application uses, in development builds | Filter `is:unreachable`, then press `g` and pick `source`. See [Find resources nothing uses](#find-resources-nothing-uses). |
+| Resources that use an ID the store doesn't have, in development builds | Filter `is:dangling`. |
 | Bakes that failed or warned, in development builds | Filter `is:failed` or `has:warnings`. |
 | Images in one format | Filter `class=Image model.format=BC7`. |
 
@@ -194,6 +197,55 @@ filter, group, and sort stay. Press `q` to quit.
 The [Browse reference](/docs/api/beld#browse) lists every key, and
 [Filter, group, and sort](/docs/api/beld#filter-group-and-sort) lists every
 field and filter term.
+
+## Find resources nothing uses
+
+Use roots to find the resources that no part of your application needs, so you
+can remove their source assets. A root is a resource your application loads by
+ID, such as a scene or a sound it plays by name. Everything else is needed only
+when a root uses it, directly or through other resources.
+
+Use a development build of BELD to bake and to search. Only development builds
+record which resources use which, so a release build rejects `is:unreachable`
+and `is:dangling`.
+
+1. List the roots in your project's `config.json` as glob patterns. `*`
+   matches any run of characters, including `/`:
+
+   ```json
+   {
+     "resources": {
+       "roots": ["scenes/*", "audio/music/*", "ui/fonts/*.ttf"]
+     }
+   }
+   ```
+
+1. Open `beld browse` from a development build, press `/`, and filter
+   `is:root` to check that the patterns match the resources you expect.
+1. Filter `is:unreachable` to see every resource that no root uses. Press `g`
+   and pick `source` to see which source files they come from.
+1. Filter `is:dangling` to find resources that use an ID the store doesn't
+   have, such as a texture whose file you renamed.
+1. Print the list to cull, for a review or a script:
+
+   ```bash
+   beld query --group source --limit 0 is:unreachable
+   beld query --format json is:unreachable
+   ```
+
+   The first command prints one line per source file with the number and size
+   of its unreachable resources, which is the list of files to review. The
+   second prints every unreachable resource as JSON, for a script that checks
+   or removes them. Both read the store and the configuration, and neither
+   changes anything.
+
+1. Delete the source files of the assets you don't need, then remove their
+   resources with `beld delete`. If you delete only the resource, the next
+   bake of the whole source directory produces it again.
+
+BELD reads `config.json` from the working directory. Pass `--config <path>` to
+read another file. The
+[Roots reference](/docs/api/beld#roots) specifies how patterns match.
 
 ## Choose when to use BELD
 

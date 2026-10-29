@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use resource_management::{
 	ProcessedAsset, SerializableResource,
 	asset::ResourceId,
@@ -48,6 +46,11 @@ pub(in crate::commands) fn files_usage() -> StorageUsage {
 
 /// Two hero images, a crate image with the same payload as the first hero image, and a sound.
 pub(in crate::commands) fn catalog(references: Vec<(String, Vec<String>)>) -> Catalog {
+	rooted_catalog(references, &[])
+}
+
+/// The resources of [`catalog`], with `roots` as the configured root patterns.
+fn rooted_catalog(references: Vec<(String, Vec<String>)>, roots: &[&str]) -> Catalog {
 	let resources = vec![
 		image("hero.glb#images/0", Formats::RGBA8, 1, 4096, 4096),
 		image("hero.glb#images/1", Formats::BC7, 2, 4096, 1024),
@@ -55,7 +58,8 @@ pub(in crate::commands) fn catalog(references: Vec<(String, Vec<String>)>) -> Ca
 		audio("music.wav", 3, 8192),
 	];
 	let stale = Some(vec![Vec::new(); resources.len()]);
-	Catalog::new(resources, stale, references, files_usage(), 0)
+	let roots = roots.iter().map(|root| root.to_string()).collect::<Vec<_>>();
+	Catalog::new(resources, stale, references, &roots, files_usage(), 0)
 }
 
 fn by_stored() -> Sort {
@@ -67,7 +71,7 @@ fn by_stored() -> Sort {
 
 /// Returns the IDs a filter shows, sorted by stored size.
 fn ids(catalog: &mut Catalog, filter: &str) -> Vec<String> {
-	let filter = Filter::parse(filter, &catalog.properties).unwrap();
+	let filter = Filter::parse(filter, catalog).unwrap();
 	view(catalog, &filter, None, &by_stored())
 		.into_iter()
 		.flat_map(|group| group.rows)
@@ -77,7 +81,7 @@ fn ids(catalog: &mut Catalog, filter: &str) -> Vec<String> {
 
 #[test]
 fn filters_reject_unknown_fields_values_and_operators() {
-	let properties = BTreeSet::new();
+	let catalog = catalog(Vec::new());
 	for invalid in [
 		"bogus=1",
 		"stored>big",
@@ -87,7 +91,7 @@ fn filters_reject_unknown_fields_values_and_operators() {
 		"is:nothing",
 		"model..format=x",
 	] {
-		assert!(Filter::parse(invalid, &properties).is_err(), "'{invalid}' parsed");
+		assert!(Filter::parse(invalid, &catalog).is_err(), "'{invalid}' parsed");
 	}
 	for valid in [
 		"hero",
@@ -99,7 +103,7 @@ fn filters_reject_unknown_fields_values_and_operators() {
 		"model.format=BC7",
 		"is:stale",
 	] {
-		assert!(Filter::parse(valid, &properties).is_ok(), "'{valid}' failed");
+		assert!(Filter::parse(valid, &catalog).is_ok(), "'{valid}' failed");
 	}
 }
 
@@ -174,7 +178,57 @@ fn total_counts_a_resource_referenced_twice_once() {
 	assert_eq!(total(&catalog, "music.wav"), 8192 + 4096 + 1024);
 	assert_eq!(total(&catalog, "hero.glb#images/1"), 1024 + 4096);
 	assert_eq!(ids(&mut catalog, "used-by>=2"), ["hero.glb#images/0"]);
-	assert_eq!(ids(&mut catalog, "is:unreferenced"), ["music.wav", "crate.glb#images/0"]);
+	assert_eq!(ids(&mut catalog, "used-by=0"), ["music.wav", "crate.glb#images/0"]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn unreachable_resources_are_those_no_root_uses_directly_or_indirectly() {
+	// The sound is the only root. It uses the second hero image, which uses the first; the crate image is unused.
+	let references = vec![
+		("music.wav".to_string(), vec!["hero.glb#images/1".to_string()]),
+		("hero.glb#images/1".to_string(), vec!["hero.glb#images/0".to_string()]),
+	];
+	let mut catalog = rooted_catalog(references, &["MUSIC.*"]);
+
+	assert_eq!(ids(&mut catalog, "is:root"), ["music.wav"]);
+	assert_eq!(ids(&mut catalog, "is:unreachable"), ["crate.glb#images/0"]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_chain_that_no_root_uses_is_unreachable_as_a_whole() {
+	// The crate image uses both hero images, but nothing uses the crate image, and only the sound is a root.
+	let references = vec![(
+		"crate.glb#images/0".to_string(),
+		vec!["hero.glb#images/0".to_string(), "hero.glb#images/1".to_string()],
+	)];
+	let mut catalog = rooted_catalog(references, &["music.wav"]);
+
+	assert_eq!(
+		ids(&mut catalog, "is:unreachable"),
+		["crate.glb#images/0", "hero.glb#images/0", "hero.glb#images/1"]
+	);
+}
+
+#[test]
+fn unreachable_without_roots_is_an_error() {
+	let catalog = catalog(Vec::new());
+
+	let error = Filter::parse("is:unreachable", &catalog).unwrap_err();
+	assert!(error.contains("resources.roots"), "{error}");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn dangling_resources_reference_an_id_the_store_does_not_have() {
+	let references = vec![
+		("music.wav".to_string(), vec!["renamed.png".to_string()]),
+		("hero.glb#images/1".to_string(), vec!["hero.glb#images/0".to_string()]),
+	];
+	let mut catalog = catalog(references);
+
+	assert_eq!(ids(&mut catalog, "is:dangling"), ["music.wav"]);
 }
 
 #[cfg(debug_assertions)]
@@ -187,6 +241,7 @@ fn a_trace_without_a_resource_is_a_failed_row() {
 		vec![audio("music.wav", 3, 8192)],
 		Some(vec![Vec::new()]),
 		Vec::new(),
+		&[],
 		files_usage(),
 		0,
 	)

@@ -79,6 +79,7 @@ fn the_view_still_draws_after_the_selected_line_is_filtered_away_or_reloaded_awa
 		vec![image("hero.glb#images/0", Formats::RGBA8, 1, 4096, 4096)],
 		None,
 		Vec::new(),
+		&[],
 		files_usage(),
 		0,
 	);

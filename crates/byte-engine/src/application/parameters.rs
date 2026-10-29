@@ -10,6 +10,14 @@ pub trait Parameters {
 	/// Returns the parameter with the specified full name, if it exists.
 	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 
+	/// Returns the elements of the array parameter `name`, in order.
+	///
+	/// An array in `config.json` sets `name.0`, `name.1`, and so on, so this reads from index 0 and stops at the
+	/// first index without a value. A name that isn't set returns no elements.
+	fn get_elements<'s>(&'s self, name: &'s str) -> impl Iterator<Item = &'s Parameter> + 's {
+		(0..).map_while(move |index| self.get_parameter(&format!("{name}.{index}")))
+	}
+
 	/// Returns the parameters under `prefix`, looked up by the rest of their names.
 	///
 	/// `app.parameters().scope("physics").get_parameter("step-lanes")` reads `physics.step-lanes`. Scopes nest,
@@ -107,55 +115,58 @@ pub fn read_configuration_file(path: &std::path::Path) -> Result<Vec<Parameter>,
 /// Converts the contents of a project's `config.json` into parameters.
 ///
 /// Nested objects become dotted names, so `{"render": {"gtao": {"enabled": false}}}` and
-/// `{"render.gtao.enabled": false}` both set `render.gtao.enabled`. Strings, numbers, and Booleans become parameter
-/// values.
+/// `{"render.gtao.enabled": false}` both set `render.gtao.enabled`. Arrays set one name per element by index, so
+/// `{"roots": ["a", "b"]}` sets `roots.0` and `roots.1`; read them with [`Parameters::get_elements`]. Strings,
+/// numbers, and Booleans become parameter values.
 ///
 /// # Errors
 ///
-/// Returns a message when the file is not a JSON object or holds an array or `null`.
+/// Returns a message when the file is not a JSON object or holds `null`.
 pub fn parameters_from_json(source: &str) -> Result<Vec<Parameter>, String> {
-	/// Appends every value under `object`, prefixing its names with the path of enclosing keys.
-	fn flatten(
-		prefix: &str,
-		object: &serde_json::Map<String, serde_json::Value>,
-		parameters: &mut Vec<Parameter>,
-	) -> Result<(), String> {
-		for (key, value) in object {
-			let name = if prefix.is_empty() {
-				key.clone()
-			} else {
-				format!("{prefix}.{key}")
-			};
-			let value = match value {
-				serde_json::Value::Object(object) => {
-					flatten(&name, object, parameters)?;
-					continue;
+	/// Appends `value` under `name`, or every value inside it with `name` as the prefix of their names.
+	fn flatten(name: String, value: &serde_json::Value, parameters: &mut Vec<Parameter>) -> Result<(), String> {
+		let value = match value {
+			serde_json::Value::Object(object) => {
+				for (key, value) in object {
+					let name = if name.is_empty() {
+						key.clone()
+					} else {
+						format!("{name}.{key}")
+					};
+					flatten(name, value, parameters)?;
 				}
-				serde_json::Value::String(value) => value.clone(),
-				serde_json::Value::Bool(value) => value.to_string(),
-				serde_json::Value::Number(value) => value.to_string(),
-				serde_json::Value::Array(_) | serde_json::Value::Null => {
-					return Err(format!(
-						"Configuration value `{name}` is invalid. The most likely cause is that it is an array or `null` instead of a string, number, Boolean, or object."
-					));
+				return Ok(());
+			}
+			serde_json::Value::Array(elements) => {
+				for (index, value) in elements.iter().enumerate() {
+					flatten(format!("{name}.{index}"), value, parameters)?;
 				}
-			};
-			parameters.push(Parameter::new_string(name, value));
-		}
+				return Ok(());
+			}
+			serde_json::Value::String(value) => value.clone(),
+			serde_json::Value::Bool(value) => value.to_string(),
+			serde_json::Value::Number(value) => value.to_string(),
+			serde_json::Value::Null => {
+				return Err(format!(
+					"Configuration value `{name}` is invalid. The most likely cause is that it is `null` instead of a string, number, Boolean, array, or object. Remove the key or give it a value."
+				));
+			}
+		};
+		parameters.push(Parameter::new_string(name, value));
 		Ok(())
 	}
 
 	let root = serde_json::from_str::<serde_json::Value>(source).map_err(|error| {
 		format!("Configuration file could not be parsed. The most likely cause is invalid JSON syntax: {error}")
 	})?;
-	let serde_json::Value::Object(root) = root else {
+	if !root.is_object() {
 		return Err(
 			"Configuration file could not be read. The most likely cause is that its top-level value is not a JSON object."
 				.to_string(),
 		);
-	};
+	}
 	let mut parameters = Vec::new();
-	flatten("", &root, &mut parameters)?;
+	flatten(String::new(), &root, &mut parameters)?;
 	Ok(parameters)
 }
 
@@ -220,13 +231,26 @@ mod tests {
 	}
 
 	#[test]
+	fn configuration_file_arrays_become_indexed_elements() {
+		let parameters = parameters_from_json(r#"{ "resources": { "roots": ["scenes/*", "music.wav"], "empty": [] } }"#)
+			.expect("test configuration should parse");
+
+		let roots = parameters[..]
+			.get_elements("resources.roots")
+			.map(Parameter::value)
+			.collect::<Vec<_>>();
+		assert_eq!(roots, ["scenes/*", "music.wav"]);
+		assert_eq!(parameters[..].get_elements("resources.empty").count(), 0);
+		assert_eq!(
+			parameters.as_slice().scope("resources").get_elements("roots").count(),
+			2,
+			"a scope reads the same elements"
+		);
+	}
+
+	#[test]
 	fn configuration_file_rejects_values_without_a_parameter_form() {
-		for source in [
-			"[]",
-			"{ invalid",
-			r#"{ "render": { "passes": [] } }"#,
-			r#"{ "log.level": null }"#,
-		] {
+		for source in ["[]", "{ invalid", r#"{ "log.level": null }"#] {
 			assert!(parameters_from_json(source).is_err(), "source: {source}");
 		}
 	}

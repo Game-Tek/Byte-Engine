@@ -7,8 +7,9 @@ icon: Settings
 An application starts with a list of named text parameters. This page
 specifies where they come from, how names and values are parsed, and every
 parameter the engine reads. The same project file feeds BELD, which reads the
-render feature flags from it; see
-[Bake application resources](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
+render feature flags and the resource roots from it; see
+[Bake application resources](/docs/use/resources/bake#leave-render-features-out-of-the-bake)
+and [Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
 
 ## Sources
 
@@ -18,7 +19,7 @@ value with the same name:
 | Order | Source | Rule |
 | --- | --- | --- |
 | 1 | The parameters the application passes in code | Used as given. |
-| 2 | The project's `config.json` | Found under the Cargo package directory in a debug build, otherwise beside the executable, never in the working directory. Nested objects flatten into dotted names, so a nested `render`, `gtao`, `enabled` and a single `render.gtao.enabled` key set the same parameter. Strings pass through; booleans and numbers become their text. Arrays, null, and a top-level value that isn't an object are errors, and a file that exists but can't be read or parsed stops startup. A missing file sets nothing. |
+| 2 | The project's `config.json` | Found under the Cargo package directory in a debug build, otherwise beside the executable, never in the working directory. Nested objects flatten into dotted names, so a nested `render`, `gtao`, `enabled` and a single `render.gtao.enabled` key set the same parameter. Strings pass through; booleans and numbers become their text. An array sets one name per element, the array's name followed by `.` and the element's index from 0, so `"roots": ["a", "b"]` sets `roots.0` and `roots.1`; an element is read like any other value. A reader of an array takes elements from index 0 and stops at the first index without a value. Null and a top-level value that isn't an object are errors, and a file that exists but can't be read or parsed stops startup. A missing file sets nothing. |
 | 3 | Environment variables starting with `BE_` | The name drops `BE_`, replaces `__` with `.`, replaces `_` with `-`, and lowercases, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. The value is used as is. A name containing a literal underscore can't be set this way. |
 | 4 | Process arguments starting with `--` | The text after the dashes splits on `=`: the name is the first part and the value is the second part only, so `--a=b=c` sets `a` to `b`. Without `=` the value is empty. Every such argument becomes a parameter, and unknown names are accepted. |
 
@@ -43,6 +44,7 @@ A value is text that the reader converts:
 | `trace` | Presence only; the value is ignored | Absent | Prints every tracing span and event at debug level or above to standard output. |
 | `messages.capacity` | Bytes | 67,108,864 | The message bus storage. |
 | `resources.path` | Path, relative to the working directory | `resources` under the application directory | Where the resource store lives. |
+| `resources.roots` | Array of glob patterns | None | The resources the application loads by ID. Read by BELD only, to find resources nothing needs; see [Roots](/docs/api/beld#roots). |
 | `assets-path` | Path | `assets` under the application directory | The source asset directory for on-demand baking. Debug builds only. |
 | `max-frame-rate` | Positive frames per second; invalid is ignored | None, uncapped | The minimum interval between presented frames. |
 | `simulation-rate` | Positive steps per second; invalid is ignored | None; the stepped loop uses 60 | The fixed simulation step. See [Time and ticks](/docs/reference/time). |

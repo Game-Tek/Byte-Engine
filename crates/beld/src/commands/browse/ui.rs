@@ -156,7 +156,7 @@ impl State {
 		// Row indexes name different resources in the new catalog.
 		self.detail_for = None;
 		self.message = None;
-		match Filter::parse(&self.filter_text, &catalog.properties) {
+		match Filter::parse(&self.filter_text, catalog) {
 			Ok(filter) => self.filter = filter,
 			Err(error) => {
 				self.filter = Filter::default();
@@ -239,7 +239,7 @@ impl State {
 	fn edit_filter(&mut self, catalog: &mut Catalog, code: KeyCode) {
 		match code {
 			KeyCode::Enter => {
-				match Filter::parse(&self.filter_text, &catalog.properties) {
+				match Filter::parse(&self.filter_text, catalog) {
 					Ok(_) => self.editing = None,
 					Err(error) => self.message = Some(error),
 				}
@@ -255,7 +255,7 @@ impl State {
 			_ => return,
 		}
 
-		match Filter::parse(&self.filter_text, &catalog.properties) {
+		match Filter::parse(&self.filter_text, catalog) {
 			Ok(filter) => {
 				self.filter = filter;
 				self.refresh(catalog);
@@ -901,8 +901,16 @@ fn detail_lines(catalog: &Catalog, row: usize, width: usize) -> Vec<DetailLine> 
 			}
 		}
 
+		if entry.root {
+			lines.push(DetailLine::plain(Line::from("root: matches resources.roots")));
+		}
 		// Release builds read no references.
 		if cfg!(debug_assertions) {
+			if catalog.has_roots && !entry.reachable {
+				lines.push(DetailLine::plain(
+					Line::from("unreachable: no root uses this resource").fg(Color::Yellow),
+				));
+			}
 			section(&mut lines, format!("uses ({})", entry.references.len()));
 			for id in &entry.references {
 				lines.push(match catalog.row_of(id) {

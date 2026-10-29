@@ -244,6 +244,7 @@ mod tests {
 			executor.block_on(query(
 				assets_path.to_string_lossy().into_owned(),
 				resources_path.to_string_lossy().into_owned(),
+				Vec::new(),
 				terms.iter().map(|term| term.to_string()).collect(),
 				None,
 				None,

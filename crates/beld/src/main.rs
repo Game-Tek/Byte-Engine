@@ -46,23 +46,25 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			reverse,
 			limit,
 			format,
-		} => beld::query(cli.source, cli.destination, terms, group, sort, reverse, limit, format).await,
+		} => {
+			let roots = read_roots(&cli.config)?;
+			beld::query(cli.source, cli.destination, roots, terms, group, sort, reverse, limit, format).await
+		}
 		Commands::Inspect { id, format, payload } => beld::inspect(cli.destination, id, format, payload).await,
-		Commands::Browse {} => beld::browse(cli.source, cli.destination).await,
+		Commands::Browse {} => {
+			let roots = read_roots(&cli.config)?;
+			beld::browse(cli.source, cli.destination, roots).await
+		}
 		Commands::Bake {
 			ids,
 			memory_budget,
 			texture_compression,
 			force,
-			config,
 			dry_run,
 			format,
 			payload,
 		} => {
-			let configuration = read_configuration_file(std::path::Path::new(&config)).map_err(|error| {
-				log::error!("Failed to read the project configuration. {error}");
-				1
-			})?;
+			let configuration = read_configuration(&cli.config)?;
 			let features = VisibilityFeatures::from_parameters(configuration.as_slice().scope("render"));
 			if dry_run {
 				return beld::bake_dry_run(
@@ -90,6 +92,23 @@ async fn run(cli: Cli) -> Result<(), i32> {
 		}
 		Commands::Delete { ids } => beld::delete(cli.destination, ids).await,
 	}
+}
+
+/// Reads the project configuration at `path`, logging the failure and returning exit code 1 when it can't be read.
+fn read_configuration(path: &str) -> Result<Vec<Parameter>, i32> {
+	read_configuration_file(std::path::Path::new(path)).map_err(|error| {
+		log::error!("Failed to read the project configuration. {error}");
+		1
+	})
+}
+
+/// Returns the `resources.roots` glob patterns of the project configuration at `path`.
+fn read_roots(path: &str) -> Result<Vec<String>, i32> {
+	let configuration = read_configuration(path)?;
+	Ok(configuration[..]
+		.get_elements("resources.roots")
+		.map(|root| root.value().to_string())
+		.collect())
 }
 
 /// Parses a positive MiB count and converts it to bytes without silently saturating.
@@ -168,6 +187,13 @@ struct Cli {
 	#[arg(long, global = true, value_enum)]
 	storage_mode: Option<StorageMode>,
 
+	/// The project's configuration file, which the application also reads at startup.
+	/// `bake` reads the render feature flags, such as `render.gtao.enabled`, and `query` and `browse` read the
+	/// `resources.roots` glob patterns that `is:unreachable` starts from.
+	/// Example: `beld --config config.json browse`
+	#[arg(long, global = true, default_value = "config.json")]
+	config: String,
+
 	#[command(subcommand)]
 	command: Commands,
 }
@@ -244,11 +270,6 @@ enum Commands {
 		/// Example: `beld bake --force`
 		#[arg(long)]
 		force: bool,
-		/// The project's configuration file, which the application also reads at startup.
-		/// Its `render.gtao.enabled` decides whether GTAO is baked into material shaders.
-		/// Example: `beld bake --config config.json`
-		#[arg(long, default_value = "config.json")]
-		config: String,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]
@@ -296,7 +317,10 @@ impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
 use std::{num::NonZeroUsize, process::ExitCode};
 
 use beld::{OutputFormat, Payload};
-use byte_engine::application::parameters::{Parameters as _, read_configuration_file};
+use byte_engine::application::{
+	Parameter,
+	parameters::{Parameters as _, read_configuration_file},
+};
 use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
 use clap::{
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,

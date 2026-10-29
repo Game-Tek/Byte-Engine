@@ -23,8 +23,9 @@ use super::{
 /// Opens the browser on the resource store at `destination_path`, checking resources against the sources at
 /// `source_path`.
 ///
+/// `roots` are the project's `resources.roots` glob patterns, which decide what `is:unreachable` shows.
 /// The store is read once; `R` reads it again. The command never modifies the store.
-pub async fn browse(source_path: String, destination_path: String) -> Result<(), i32> {
+pub async fn browse(source_path: String, destination_path: String, roots: Vec<String>) -> Result<(), i32> {
 	if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
 		log::error!(
 			"`beld browse` needs an interactive terminal. The most likely cause is that its input or output is redirected to a pipe or a file. Run it directly in a terminal, or use `beld query --format json` in scripts."
@@ -32,14 +33,24 @@ pub async fn browse(source_path: String, destination_path: String) -> Result<(),
 		return Err(1);
 	}
 
-	let mut catalog = catalog::load(&source_path, &destination_path).await.map_err(log_failure)?;
+	let mut catalog = catalog::load(&source_path, &destination_path, &roots)
+		.await
+		.map_err(log_failure)?;
 	let mut state = State::new(&mut catalog);
 
 	// Log lines written while the browser owns the screen would break its layout.
 	let log_level = log::max_level();
 	log::set_max_level(log::LevelFilter::Off);
 	let mut terminal = ratatui::init();
-	let result = run(&mut terminal, &mut catalog, &mut state, &source_path, &destination_path).await;
+	let result = run(
+		&mut terminal,
+		&mut catalog,
+		&mut state,
+		&source_path,
+		&destination_path,
+		&roots,
+	)
+	.await;
 	ratatui::restore();
 	log::set_max_level(log_level);
 
@@ -58,6 +69,7 @@ async fn run(
 	state: &mut State,
 	source_path: &str,
 	destination_path: &str,
+	roots: &[String],
 ) -> std::io::Result<()> {
 	loop {
 		terminal.draw(|frame| state.draw(frame, catalog))?;
@@ -78,7 +90,7 @@ async fn run(
 			Some(Exit::Reload) => {
 				state.notify("Reading the resource store again…".to_string());
 				terminal.draw(|frame| state.draw(frame, catalog))?;
-				match catalog::load(source_path, destination_path).await {
+				match catalog::load(source_path, destination_path, roots).await {
 					Ok(reloaded) => state.reload(catalog, reloaded),
 					Err(error) => state.notify(error),
 				}

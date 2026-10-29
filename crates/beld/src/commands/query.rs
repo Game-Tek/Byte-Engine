@@ -26,12 +26,14 @@ use crate::{
 /// Prints the resources in the store at `destination_path` that match every term, grouped by `group` and ordered by
 /// `sort`, which defaults to `stored`.
 ///
-/// Statuses compare each resource with the sources at `source_path`. Pass a printed ID to [`crate::inspect`] to read
-/// that resource's model and streams.
+/// Statuses compare each resource with the sources at `source_path`, and `roots`, the project's `resources.roots`
+/// glob patterns, decide what `is:unreachable` matches. Pass a printed ID to [`crate::inspect`] to read that
+/// resource's model and streams.
 #[allow(clippy::too_many_arguments)]
 pub async fn query(
 	source_path: String,
 	destination_path: String,
+	roots: Vec<String>,
 	terms: Vec<String>,
 	group: Option<String>,
 	sort: Option<String>,
@@ -39,7 +41,9 @@ pub async fn query(
 	limit: Option<usize>,
 	format: OutputFormat,
 ) -> Result<(), i32> {
-	let mut catalog = catalog::load(&source_path, &destination_path).await.map_err(log_failure)?;
+	let mut catalog = catalog::load(&source_path, &destination_path, &roots)
+		.await
+		.map_err(log_failure)?;
 	let (filter, group, sort) =
 		parse_selection(&catalog, &terms, group.as_deref(), sort.as_deref(), reverse).map_err(|error| {
 			log::error!("{error}");
@@ -68,7 +72,7 @@ fn parse_selection(
 	sort: Option<&str>,
 	reverse: bool,
 ) -> Result<(Filter, Option<Field>, Sort), String> {
-	let filter = Filter::parse(&terms.join(" "), &catalog.properties)?;
+	let filter = Filter::parse(&terms.join(" "), catalog)?;
 	let group = group.map(|name| Field::parse(name, &catalog.properties)).transpose()?;
 	let field = sort.map_or(Ok(Field::Stored), |name| Field::parse(name, &catalog.properties))?;
 	Ok((
@@ -262,7 +266,11 @@ fn query_table(
 		table.push_str(indent);
 		let _ = write!(table, "{}", style.render());
 		for (column, cell) in cells.iter().enumerate() {
-			let cell = if column == 0 { shorten(cell, widths[0]) } else { Cow::Borrowed(cell.as_ref()) };
+			let cell = if column == 0 {
+				shorten(cell, widths[0])
+			} else {
+				Cow::Borrowed(cell.as_ref())
+			};
 			// Numbers line up on their last digit.
 			let numeric = matches!(
 				columns[column].kind(),

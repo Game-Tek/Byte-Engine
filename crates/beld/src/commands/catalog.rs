@@ -14,7 +14,10 @@ use resource_management::{
 };
 use serde_json::Value as Json;
 
-use crate::commands::shared::open_read_only_storage;
+use crate::commands::{
+	filter::{glob_matches, glob_pattern},
+	shared::open_read_only_storage,
+};
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -54,6 +57,10 @@ pub(super) struct Row {
 	pub(super) references: Vec<String>,
 	/// The rows whose resources reference this one.
 	pub(super) used_by: Vec<usize>,
+	/// Whether the ID matches a configured root pattern.
+	pub(super) root: bool,
+	/// Whether the row is a root or a reachable row references it.
+	pub(super) reachable: bool,
 	/// The stored size of this resource and of everything it references, each counted once.
 	pub(super) total: u64,
 	/// Whether another resource has the same non-empty payload.
@@ -257,18 +264,21 @@ pub(super) struct Catalog {
 	stored_total: u64,
 	/// Model values extracted on first use, one per row, by path.
 	model_columns: HashMap<String, Vec<Option<Value<'static>>>>,
+	/// Whether the configuration names any root pattern, so reachability means something.
+	pub(super) has_roots: bool,
 }
 
 impl Catalog {
 	/// Builds the rows and their cross-references from what was read from the store.
 	///
 	/// `stale` holds each resource's changed sources in the order of `resources`, or is `None` when the source
-	/// directory couldn't be read. `references` holds the debug records by ID; release builds pass none. In debug
-	/// builds, call [`Self::with_traces`] next.
+	/// directory couldn't be read. `references` holds the debug records by ID; release builds pass none. `roots` are
+	/// the configured `resources.roots` glob patterns. In debug builds, call [`Self::with_traces`] next.
 	pub(super) fn new(
 		resources: Vec<SerializableResource>,
 		stale: Option<Vec<Vec<String>>>,
 		references: Vec<(String, Vec<String>)>,
+		roots: &[String],
 		usage: StorageUsage,
 		read_at: u64,
 	) -> Catalog {
@@ -277,6 +287,8 @@ impl Catalog {
 		let mut references = references.into_iter().collect::<HashMap<_, _>>();
 		let mut properties = BTreeSet::new();
 		let mut stored_total = 0;
+		// Root patterns match like filter globs: the whole ID, ignoring case.
+		let roots = roots.iter().map(|pattern| glob_pattern(pattern)).collect::<Vec<_>>();
 
 		let mut rows = Vec::with_capacity(resources.len());
 		for resource in resources {
@@ -298,11 +310,13 @@ impl Catalog {
 				#[cfg(debug_assertions)]
 				trace: Vec::new(),
 				references: references.remove(&id).unwrap_or_default(),
+				root: roots.iter().any(|pattern| glob_matches(pattern, &id)),
 				id,
 				resource: Some(resource),
 				status,
 				stale_sources,
 				used_by: Vec::new(),
+				reachable: false,
 				total: 0,
 				duplicate: false,
 			});
@@ -312,7 +326,9 @@ impl Catalog {
 			.enumerate()
 			.map(|(row, entry)| (entry.id.clone(), row))
 			.collect::<HashMap<_, _>>();
-		link_references(&mut rows, &index);
+		let edges = reference_edges(&rows, &index);
+		link_references(&mut rows, &edges);
+		mark_reachable(&mut rows, &edges);
 		mark_duplicates(&mut rows);
 
 		Catalog {
@@ -324,6 +340,7 @@ impl Catalog {
 			read_at,
 			stored_total,
 			model_columns: HashMap::new(),
+			has_roots: !roots.is_empty(),
 		}
 	}
 
@@ -344,6 +361,8 @@ impl Catalog {
 						trace,
 						references: Vec::new(),
 						used_by: Vec::new(),
+						root: false,
+						reachable: false,
 						total: 0,
 						duplicate: false,
 					});
@@ -497,7 +516,9 @@ impl Catalog {
 /// Reads the store at `destination_path` and checks every resource against the sources at `source_path`.
 ///
 /// Returns the error message instead of logging it, so `browse` can show a failed reload in place.
-pub(super) async fn load(source_path: &str, destination_path: &str) -> Result<Catalog, String> {
+///
+/// `roots` are the configured `resources.roots` glob patterns, which decide what is reachable.
+pub(super) async fn load(source_path: &str, destination_path: &str, roots: &[String]) -> Result<Catalog, String> {
 	let storage = open_read_only_storage(destination_path.to_string(), "read").await?;
 	let resources = storage.list().await?;
 	let usage = storage.usage()?;
@@ -510,7 +531,7 @@ pub(super) async fn load(source_path: &str, destination_path: &str) -> Result<Ca
 	let read_at = resource_management::unix_time_nanos();
 	let stale = check_sources(source_path, &resources).await;
 
-	let catalog = Catalog::new(resources, stale, references, usage, read_at);
+	let catalog = Catalog::new(resources, stale, references, roots, usage, read_at);
 	#[cfg(debug_assertions)]
 	let catalog = catalog.with_traces(traces);
 	Ok(catalog)
@@ -540,17 +561,40 @@ async fn check_sources(source_path: &str, resources: &[SerializableResource]) ->
 	Some(utils::r#async::stream::iter(checks).buffered(16).collect().await)
 }
 
-/// Records which rows reference each row, and each row's total size through its references.
-fn link_references(rows: &mut [Row], index: &HashMap<String, usize>) {
-	let edges = rows
-		.iter()
+/// Returns the rows each row references, leaving out IDs the store doesn't have.
+fn reference_edges(rows: &[Row], index: &HashMap<String, usize>) -> Vec<Vec<usize>> {
+	rows.iter()
 		.map(|row| {
 			row.references
 				.iter()
 				.filter_map(|id| index.get(id).copied())
 				.collect::<Vec<_>>()
 		})
-		.collect::<Vec<_>>();
+		.collect()
+}
+
+/// Marks every root, and every row a marked row references, as reachable.
+fn mark_reachable(rows: &mut [Row], edges: &[Vec<usize>]) {
+	// One walk from every root at once: each row is pushed at most once, when it is first marked.
+	let mut pending = Vec::new();
+	for (row, entry) in rows.iter_mut().enumerate() {
+		if entry.root {
+			entry.reachable = true;
+			pending.push(row);
+		}
+	}
+	while let Some(row) = pending.pop() {
+		for &target in &edges[row] {
+			if !rows[target].reachable {
+				rows[target].reachable = true;
+				pending.push(target);
+			}
+		}
+	}
+}
+
+/// Records which rows reference each row, and each row's total size through its references.
+fn link_references(rows: &mut [Row], edges: &[Vec<usize>]) {
 	for (row, targets) in edges.iter().enumerate() {
 		for &target in targets {
 			rows[target].used_by.push(row);

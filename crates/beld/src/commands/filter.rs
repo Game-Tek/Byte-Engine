@@ -2,8 +2,6 @@
 //!
 //! The grammar and every rule are specified in the BELD command-line reference, under Filter, group, and sort.
 
-use std::collections::BTreeSet;
-
 #[cfg(debug_assertions)]
 use resource_management::ResourceTraceLevel;
 use resource_management::resource::ResourcePayloadEncoding;
@@ -73,18 +71,20 @@ enum Flag {
 	Stale,
 	Compressed,
 	Duplicate,
-	Unreferenced,
+	Root,
+	Unreachable,
+	Dangling,
 }
 
 impl Filter {
-	/// Parses filter text against the store's declared properties.
+	/// Parses filter text against the catalog's declared properties and configured roots.
 	///
 	/// Returns an error naming the first term that doesn't parse.
-	pub(super) fn parse(text: &str, properties: &BTreeSet<String>) -> Result<Filter, String> {
+	pub(super) fn parse(text: &str, catalog: &Catalog) -> Result<Filter, String> {
 		let terms = text
 			.split(' ')
 			.filter(|term| !term.is_empty())
-			.map(|term| parse_term(term, properties))
+			.map(|term| parse_term(term, catalog))
 			.collect::<Result<_, _>>()?;
 		Ok(Filter { terms })
 	}
@@ -122,7 +122,9 @@ impl Test {
 					.as_ref()
 					.is_some_and(|resource| resource.encoding() != ResourcePayloadEncoding::Raw),
 				Flag::Duplicate => entry.duplicate,
-				Flag::Unreferenced => entry.resource.is_some() && entry.used_by.is_empty(),
+				Flag::Root => entry.root,
+				Flag::Unreachable => entry.resource.is_some() && !entry.reachable,
+				Flag::Dangling => entry.references.iter().any(|id| catalog.row_of(id).is_none()),
 			},
 			#[cfg(debug_assertions)]
 			Test::Has(level) => entry.trace.iter().any(|item| item.level() == *level),
@@ -131,14 +133,14 @@ impl Test {
 }
 
 /// Parses one space-free term.
-fn parse_term(term: &str, properties: &BTreeSet<String>) -> Result<Term, String> {
+fn parse_term(term: &str, catalog: &Catalog) -> Result<Term, String> {
 	let (negated, body) = match term.strip_prefix('-') {
 		Some(body) if !body.is_empty() => (true, body),
 		_ => (false, term),
 	};
 
 	let test = if let Some(flag) = body.strip_prefix("is:") {
-		Test::Flag(parse_flag(flag)?)
+		Test::Flag(parse_flag(flag, catalog.has_roots)?)
 	} else if let Some(level) = body.strip_prefix("has:") {
 		parse_level(level)?
 	} else if let Some((position, symbol, operator)) = find_operator(body) {
@@ -148,7 +150,7 @@ fn parse_term(term: &str, properties: &BTreeSet<String>) -> Result<Term, String>
 				"Invalid filter term '{term}'. The most likely cause is a missing field name or value. Write it as `field{symbol}value`, such as `class=Image`."
 			));
 		}
-		let field = Field::parse(name, properties)?;
+		let field = Field::parse(name, &catalog.properties)?;
 		let operand = parse_operand(term, &field, operator, value)?;
 		Test::Compare {
 			field,
@@ -156,7 +158,7 @@ fn parse_term(term: &str, properties: &BTreeSet<String>) -> Result<Term, String>
 			operand,
 		}
 	} else if body.contains(['*', '?']) {
-		Test::Glob(body.chars().map(|character| character.to_ascii_lowercase()).collect())
+		Test::Glob(glob_pattern(body))
 	} else {
 		Test::Contains(body.to_string())
 	};
@@ -240,23 +242,32 @@ fn parse_age(value: &str) -> Option<f64> {
 	Some(number.parse::<f64>().ok()? * scale)
 }
 
-fn parse_flag(flag: &str) -> Result<Flag, String> {
+/// Parses the flag of an `is:` term; `has_roots` says whether the configuration names any root pattern.
+fn parse_flag(flag: &str, has_roots: bool) -> Result<Flag, String> {
 	let parsed = match flag {
 		"failed" => Flag::Failed,
 		"stale" => Flag::Stale,
 		"compressed" => Flag::Compressed,
 		"duplicate" => Flag::Duplicate,
-		"unreferenced" => Flag::Unreferenced,
+		"root" => Flag::Root,
+		"unreachable" => Flag::Unreachable,
+		"dangling" => Flag::Dangling,
 		_ => {
 			return Err(format!(
-				"Unknown flag 'is:{flag}'. The most likely cause is a misspelled flag. Use `is:failed`, `is:stale`, `is:compressed`, `is:duplicate`, or `is:unreferenced`."
+				"Unknown flag 'is:{flag}'. The most likely cause is a misspelled flag. Use `is:failed`, `is:stale`, `is:compressed`, `is:duplicate`, `is:root`, `is:unreachable`, or `is:dangling`."
 			));
 		}
 	};
-	if matches!(parsed, Flag::Failed | Flag::Unreferenced) && !cfg!(debug_assertions) {
+	if matches!(parsed, Flag::Failed | Flag::Unreachable | Flag::Dangling) && !cfg!(debug_assertions) {
 		return Err(format!(
 			"The flag 'is:{flag}' needs a debug build of BELD. The most likely cause is that this BELD is a release build, which reads no traces or references. Run a debug build of BELD to use it."
 		));
+	}
+	if parsed == Flag::Unreachable && !has_roots {
+		return Err(
+			"The flag 'is:unreachable' needs roots. The most likely cause is that the configuration has no `resources.roots` patterns, so no resource is reachable. Add the IDs your application loads to `resources.roots` in `config.json`, or pass another file with `--config`."
+				.to_string(),
+		);
 	}
 	Ok(parsed)
 }
@@ -316,8 +327,13 @@ fn contains_ignoring_case(text: &str, needle: &str) -> bool {
 			.any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+/// Returns `text` as a pattern for [`glob_matches`], which ignores case.
+pub(super) fn glob_pattern(text: &str) -> Vec<char> {
+	text.chars().map(|character| character.to_ascii_lowercase()).collect()
+}
+
 /// Matches a whole ID against a lowercase pattern where `*` matches any run of characters and `?` one character.
-fn glob_matches(pattern: &[char], id: &str) -> bool {
+pub(super) fn glob_matches(pattern: &[char], id: &str) -> bool {
 	// Iterative wildcard matching over byte offsets: on a mismatch, retry from the last `*` with it covering one more
 	// character.
 	let (mut pattern_at, mut id_at) = (0, 0);

@@ -17,6 +17,7 @@ page specifies its command line. To use it, follow
 | `-d`, `--destination <path>` | `resources` | The resource store directory. |
 | `--color auto`, `always`, or `never` | `auto` | Terminal color; see [Color](#color). |
 | `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
+| `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. `bake` reads the render feature flags from it, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
 | `-V`, `--version`; `-h`, `--help` | | |
 
 BELD reads the `RUST_LOG` environment variable for its log filter.
@@ -25,7 +26,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--config <path>`, default `config.json` in the working directory; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
+| `bake [ids...]` | `--force`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. Only the render feature flags are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -91,7 +92,7 @@ group, and sort as described in
 | Pane | Shows |
 | --- | --- |
 | Table | One row per resource: its ID, class, stored size, encoding, and ratio, and the sort field when it isn't one of those. When grouped, one row per group, collapsed at first, with its resource count, summed stored and decoded sizes, and share of the stored bytes of every resource in the store. |
-| Detail | The selected resource: the `inspect` output, its streams largest first, its source files and whether each is current, the resources it references and the resources that reference it, its `total`, and its bake trace. A failed bake shows its trace only. A selected group shows its resource count, summed decoded and stored sizes, ratio, and share of the store. |
+| Detail | The selected resource: the `inspect` output, its streams largest first, its source files and whether each is current, whether it's a root or unreachable, the resources it references and the resources that reference it, its `total`, and its bake trace. A failed bake shows its trace only. A selected group shows its resource count, summed decoded and stored sizes, ratio, and share of the store. |
 | Usage | The whole store, regardless of the filter; see [Usage](#usage). |
 
 ### Key bindings
@@ -133,6 +134,21 @@ each resource is current. They write to neither directory.
 | --- | --- |
 | Source directory | Read for source file versions. If it can't be read, every resource's status is `unknown`. |
 | Release builds | Read no traces or references. Failed bakes don't appear, and fields and flags marked debug are rejected. A store baked by a release build has no references. |
+| Configuration | Read from `--config` for the [roots](#roots). A file that exists but can't be read or parsed exits with code 1. |
+
+### Roots
+
+The roots are the resources an application loads by ID. Every other resource
+is needed only when a root references it, directly or through other
+resources.
+
+| Rule | Effect |
+| --- | --- |
+| `resources.roots` | An array of glob patterns in the configuration. Each pattern matches the whole ID the way a filter glob does: `*` matches any run of characters, including `/` and `#`, `?` matches one character, and case is ignored. |
+| Root | A resource whose ID matches at least one pattern. |
+| Reachable | A root, or a resource that a reachable resource references. |
+| No roots | Without `resources.roots`, or with an empty array, `is:unreachable` is an error. |
+| Patterns | A pattern that matches no resource has no effect. |
 
 ### Filter
 
@@ -198,7 +214,9 @@ A failed bake has only `id`, `source`, and `status`.
 | `is:stale` | The status is `stale`. |
 | `is:compressed` | The encoding isn't `raw`. |
 | `is:duplicate` | Another resource has the same hash, and neither payload is empty. |
-| `is:unreferenced` | No resource references the resource. Debug. |
+| `is:root` | The ID matches a [root](#roots) pattern. |
+| `is:unreachable` | The resource isn't [reachable](#roots) from a root. A failed bake isn't unreachable. Debug. |
+| `is:dangling` | The resource references an ID that has neither a resource nor a failed bake in the store. Debug. |
 
 ### Statuses
 
@@ -224,7 +242,7 @@ A failed bake has only `id`, `source`, and `status`.
 | --- | --- |
 | 0 | Success. |
 | 1 | The configuration couldn't be read, the store couldn't be opened or its mode didn't match, a command failed, at least one baked asset failed, at least one delete failed, or `browse` ran without an interactive terminal. |
-| 2 | Invalid arguments, including a `query` filter term or field that doesn't parse. |
+| 2 | Invalid arguments, including a `query` filter term or field that doesn't parse, and `is:unreachable` without roots. |
 
 ## Output formats
 

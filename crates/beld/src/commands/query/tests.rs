@@ -1,6 +1,5 @@
-use serde_json::{Value as Json, json};
-
 use resource_management::types::Formats;
+use serde_json::{Value as Json, json};
 
 use super::{parse_selection, write_query};
 use crate::{
@@ -17,7 +16,18 @@ fn run(terms: &[&str], group: Option<&str>, sort: Option<&str>, limit: Option<us
 	let terms = terms.iter().map(|term| term.to_string()).collect::<Vec<_>>();
 	let (filter, group, sort) = parse_selection(&catalog, &terms, group, sort, false).unwrap();
 	let mut output = Vec::new();
-	write_query(&mut output, &mut catalog, &filter, group.as_ref(), &sort, limit, format, false, None).unwrap();
+	write_query(
+		&mut output,
+		&mut catalog,
+		&filter,
+		group.as_ref(),
+		&sort,
+		limit,
+		format,
+		false,
+		None,
+	)
+	.unwrap();
 	String::from_utf8(output).unwrap()
 }
 
@@ -140,7 +150,11 @@ fn a_narrow_terminal_shortens_ids_in_the_middle_so_resource_lines_fit() {
 	let full = run_on_terminal(catalog(Vec::new()), false, None);
 	let full_lines = full.lines().collect::<Vec<_>>();
 	// Between the header and the totals line, every line is a resource line.
-	let widest = full_lines[1..full_lines.len() - 1].iter().map(|line| line.chars().count()).max().unwrap();
+	let widest = full_lines[1..full_lines.len() - 1]
+		.iter()
+		.map(|line| line.chars().count())
+		.max()
+		.unwrap();
 	let width = widest - 2;
 	let table = run_on_terminal(catalog(Vec::new()), false, Some(width));
 	let lines = table.lines().collect::<Vec<_>>();
@@ -179,6 +193,7 @@ fn color_marks_the_header_and_stale_lines_and_no_color_writes_no_escape_codes() 
 			],
 			Some(vec![Vec::new(), vec!["old.png".to_string()]]),
 			Vec::new(),
+			&[],
 			files_usage(),
 			0,
 		)

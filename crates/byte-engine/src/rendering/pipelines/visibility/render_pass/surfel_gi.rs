@@ -1,8 +1,9 @@
 //! Surfel global illumination: surfels on the surfaces the camera sees trace rays to gather bounce light, which opaque
 //! material evaluation reads in place of SSGI's on a device that traces rays.
 //!
-//! Turn it on with `render.surfel-gi.enabled`. The visibility pipeline manager picks which source lights each frame's
-//! indirect diffuse light; see [`super::IndirectDiffuseSource`]. One [`SurfelPool`] serves every sink: the first sink
+//! Build it in with `render.surfel-gi.enabled` and select it with `render.gi.technique` set to `surfels`. The
+//! visibility pipeline manager picks which source lights each frame's indirect diffuse light; see
+//! [`super::GiSettings`]. One [`SurfelPool`] serves every sink: the first sink
 //! records its frame-wide stages, which age, count, and list the surfels in a grid around its camera, trace and shade
 //! their rays, and fold the rays' light into each surfel's estimate. Each sink's [`SurfelResolvePass`] then lights its
 //! pixels from the grid and asks for the surfels its view misses. The Reference's surfel GI rules describe what the
@@ -703,24 +704,26 @@ pub(super) struct SurfelResolveStages {
 	pub(super) allocate: ComputeStage<2>,
 }
 
-/// The `SurfelGiSettings` struct holds the runtime surfel GI controls the visibility pipeline manager applies to every
-/// frame, with the startup sizes that runtime updates can't change.
+/// The `SurfelGiSettings` struct holds the startup surfel GI values that runtime updates can't change, so the
+/// visibility pipeline manager can accept them and reject any change.
+///
+/// [`super::GiSettings`] selects surfel GI at runtime.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SurfelGiSettings {
-	/// Whether surfel GI may light frames. It lights them only on a device that traces rays.
-	pub(crate) enabled: bool,
+	/// Whether the project built surfel GI into its shaders.
+	built_in: bool,
 	surfel_capacity: u32,
 	ray_budget: u32,
 }
 
 impl SurfelGiSettings {
-	/// Creates the controls of a renderer whose surfel buffers hold `surfel_capacity` surfels and `ray_budget` rays,
-	/// with surfel GI off until its `enabled` parameter turns it on.
+	/// Creates the controls of a renderer that built surfel GI in when `built_in`, and whose surfel buffers hold
+	/// `surfel_capacity` surfels and `ray_budget` rays.
 	///
-	/// Take both sizes from [`super::super::VisibilityPipelineSettings`], which validated them at startup.
-	pub(crate) fn new(surfel_capacity: u32, ray_budget: u32) -> Self {
+	/// Take all three from [`super::super::VisibilityPipelineSettings`], which validated them at startup.
+	pub(crate) fn new(built_in: bool, surfel_capacity: u32, ray_budget: u32) -> Self {
 		Self {
-			enabled: false,
+			built_in,
 			surfel_capacity,
 			ray_budget,
 		}
@@ -728,8 +731,8 @@ impl SurfelGiSettings {
 
 	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
 	///
-	/// The surfel capacity and ray budget size buffers once, at startup. Their startup values, which every port
-	/// receives, are accepted as they are; any other value is not set.
+	/// Whether surfel GI is built in, the surfel capacity, and the ray budget are decided once, at startup. Their
+	/// startup values, which every port receives, are accepted as they are; any other value is not set.
 	pub(crate) fn with_parameter(
 		self,
 		parameter: &str,
@@ -737,10 +740,13 @@ impl SurfelGiSettings {
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
 			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"Surfel GI enabled was not set. The most likely cause is that the value is neither `true` nor `false`. Set it to `true` or `false`.",
-				)?;
-				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
+				if value.to_bool() == Some(self.built_in) {
+					return Ok((self, ConfigurationValue::Bool(self.built_in)));
+				}
+				Err(format!(
+					"Surfel GI enabled was not changed from `{}`. The most likely cause is that it decides once, at startup, whether surfel GI is built into the shaders. Select a technique at runtime with `render.gi.technique` instead, or set `render.surfel-gi.enabled` in `config.json` and restart the application.",
+					self.built_in
+				))
 			}
 			"surfel-capacity" => self.with_startup_size(value, self.surfel_capacity, "Surfel capacity", parameter),
 			"ray-budget" => self.with_startup_size(value, self.ray_budget, "Surfel ray budget", parameter),
@@ -817,27 +823,8 @@ mod tests {
 	}
 
 	#[test]
-	fn enabled_accepts_booleans_and_startup_text() {
-		let settings = SurfelGiSettings::new(DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET);
-		assert!(!settings.enabled);
-
-		let (enabled, effective) = settings
-			.with_parameter("enabled", &ConfigurationValue::Text("true".to_string()))
-			.unwrap();
-		assert!(enabled.enabled);
-		assert_eq!(effective, ConfigurationValue::Bool(true));
-		let (disabled, _) = enabled.with_parameter("enabled", &ConfigurationValue::Bool(false)).unwrap();
-		assert!(!disabled.enabled);
-		assert!(
-			disabled
-				.with_parameter("enabled", &ConfigurationValue::Text("on".to_string()))
-				.is_err()
-		);
-	}
-
-	#[test]
 	fn startup_sizes_keep_their_startup_values() {
-		let settings = SurfelGiSettings::new(65_536, 8_192);
+		let settings = SurfelGiSettings::new(true, 65_536, 8_192);
 
 		// Startup parameters reach the port as text, and keep the settings as they are.
 		let (kept, effective) = settings
@@ -850,6 +837,12 @@ mod tests {
 				.with_parameter("ray-budget", &ConfigurationValue::Integer(8_192))
 				.is_ok()
 		);
+		assert!(
+			settings
+				.with_parameter("enabled", &ConfigurationValue::Text("true".to_string()))
+				.is_ok()
+		);
+		assert!(settings.with_parameter("enabled", &ConfigurationValue::Bool(false)).is_err());
 
 		for (parameter, value) in [("surfel-capacity", 32_768), ("ray-budget", 16_384)] {
 			let reason = settings

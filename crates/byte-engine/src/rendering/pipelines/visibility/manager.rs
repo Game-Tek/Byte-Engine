@@ -18,10 +18,7 @@ use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
-use super::features::{
-	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, SSGI_ENABLED_PARAMETER,
-	SURFEL_GI_ENABLED_PARAMETER, VisibilityFeatures,
-};
+use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, VisibilityFeatures};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
@@ -34,10 +31,10 @@ use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::ray_tracing::SurfelShading;
 use super::render_pass::{
-	ContactShadowSettings, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, FrameWork, GtaoSettings, IndirectDiffuseSource,
-	MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP, ShadowMaps, ShadowWork, SinkHistory, SinkTargets,
-	SsgiSettings, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing, VisibilityRenderPass,
-	create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
+	ContactShadowSettings, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, FrameWork, GiSettings, GtaoSettings,
+	IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP, ShadowMaps, ShadowWork,
+	SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing,
+	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -562,17 +559,18 @@ const SURFEL_DEBUG_VIEW_NAMES: [&str; super::shader_generator::MATERIAL_DEBUG_VI
 
 /// Chooses the source that lights this frame's indirect diffuse light, or `None` when the environment lights it alone.
 ///
-/// `ssgi` and `surfel_gi` tell whether each is built in and enabled. Surfel GI takes the place of SSGI on a device that
-/// traces rays, `ray_tracing`; elsewhere SSGI keeps lighting frames, so turning surfel GI on never takes away the light
-/// SSGI gives.
-fn indirect_diffuse_source(ssgi: bool, surfel_gi: bool, ray_tracing: bool) -> Option<IndirectDiffuseSource> {
-	if surfel_gi && ray_tracing {
-		Some(IndirectDiffuseSource::Surfels)
-	} else if ssgi {
-		Some(IndirectDiffuseSource::ScreenSpace)
-	} else {
-		None
+/// `gi` selects the technique, which lights the frame only when `features` built it in. Surfel GI needs a device that
+/// traces rays, `ray_tracing`; elsewhere SSGI lights frames in its place when it is built in, so selecting surfel GI
+/// never takes away the light SSGI gives.
+fn indirect_diffuse_source(gi: GiSettings, features: VisibilityFeatures, ray_tracing: bool) -> Option<IndirectDiffuseSource> {
+	if !gi.enabled {
+		return None;
 	}
+	let technique = match gi.technique {
+		IndirectDiffuseSource::Surfels if !ray_tracing => IndirectDiffuseSource::ScreenSpace,
+		technique => technique,
+	};
+	technique.built_in(features).then_some(technique)
 }
 
 /// The `VisibilityPipelineManager` struct provides the visibility-buffer implementation of the world render domain.
@@ -636,8 +634,8 @@ pub struct VisibilityPipelineManager {
 	shadow_states: ShadowMapStates,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
-	ssgi_configuration: crate::configuration::ConfigurationPort,
-	ssgi_settings: SsgiSettings,
+	gi_configuration: crate::configuration::ConfigurationPort,
+	gi_settings: GiSettings,
 	surfel_gi_configuration: crate::configuration::ConfigurationPort,
 	surfel_gi_settings: SurfelGiSettings,
 	/// Whether the device traces rays, which surfel GI needs to light a frame.
@@ -686,7 +684,7 @@ impl VisibilityPipelineManager {
 		loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
-		ssgi_configuration: crate::configuration::ConfigurationPort,
+		gi_configuration: crate::configuration::ConfigurationPort,
 		surfel_gi_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		lod_configuration: crate::configuration::ConfigurationPort,
@@ -792,10 +790,14 @@ impl VisibilityPipelineManager {
 			shadow_states: ShadowMapStates::default(),
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
-			ssgi_configuration,
-			ssgi_settings: SsgiSettings::default(),
+			gi_configuration,
+			gi_settings: GiSettings::new(settings.features),
 			surfel_gi_configuration,
-			surfel_gi_settings: SurfelGiSettings::new(settings.surfel_capacity, settings.surfel_ray_budget),
+			surfel_gi_settings: SurfelGiSettings::new(
+				settings.features.surfel_gi,
+				settings.surfel_capacity,
+				settings.surfel_ray_budget,
+			),
 			ray_tracing,
 			surfel_pool,
 			acceleration_structures,
@@ -1164,28 +1166,27 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO, SSGI, surfel GI, contact-shadow, and detail level controls before any sink records this
+	/// Applies queued GTAO, GI, surfel GI, contact-shadow, and detail level controls before any sink records this
 	/// frame's commands.
 	fn apply_runtime_settings(&mut self) {
 		self.lod_configuration
 			.drain(&mut self.lod_settings, LodSettings::with_parameter);
 		self.gtao_configuration
 			.drain(&mut self.gtao_settings, GtaoSettings::with_parameter);
-		self.ssgi_configuration
-			.drain(&mut self.ssgi_settings, SsgiSettings::with_parameter);
+		let features = self.settings.features;
+		// A technique left out of the shaders is not selected; the log says so, as for the features below.
+		self.gi_configuration
+			.drain(&mut self.gi_settings, |settings, parameter, value| {
+				settings
+					.with_parameter(parameter, value, features)
+					.inspect_err(|reason| log::warn!("{reason}"))
+			});
 		self.surfel_gi_configuration
 			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::with_parameter);
 		self.contact_shadow_configuration
 			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
-		let features = self.settings.features;
 		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
-		self.ssgi_settings.enabled = built_in_or_off(self.ssgi_settings.enabled, features.ssgi, SSGI_ENABLED_PARAMETER);
-		self.surfel_gi_settings.enabled = built_in_or_off(
-			self.surfel_gi_settings.enabled,
-			features.surfel_gi,
-			SURFEL_GI_ENABLED_PARAMETER,
-		);
 		self.contact_shadow_settings.enabled = built_in_or_off(
 			self.contact_shadow_settings.enabled,
 			features.contact_shadows,
@@ -1193,10 +1194,10 @@ impl VisibilityPipelineManager {
 		);
 		crate::rendering::warn_once(
 			&mut self.reported_surfel_gi_fallback,
-			self.surfel_gi_settings.enabled && !self.ray_tracing,
+			self.gi_settings.enabled && self.gi_settings.technique == IndirectDiffuseSource::Surfels && !self.ray_tracing,
 			|| {
 				format!(
-					"Surfel GI can't light frames on this device. The most likely cause is that the device doesn't trace rays: only the Metal backend does, and only when `{RENDER_PARAMETERS}.ghi.features.ray-tracing` is on. SSGI lights indirect diffuse light while it is enabled; run on a Mac with Apple silicon, or set `{RENDER_PARAMETERS}.ghi.features.ray-tracing` to `true` in `config.json` and restart. See {}.",
+					"Surfel GI can't light frames on this device. The most likely cause is that the device doesn't trace rays: only the Metal backend does, and only when `{RENDER_PARAMETERS}.ghi.features.ray-tracing` is on. SSGI lights indirect diffuse light in its place while it is built in; run on a Mac with Apple silicon, or set `{RENDER_PARAMETERS}.ghi.features.ray-tracing` to `true` in `config.json` and restart. See {}.",
 					crate::online_docs_url("reference/parameters#graphics-device")
 				)
 			},
@@ -1542,8 +1543,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			draws: shadow_draws,
 		};
 
-		let indirect_diffuse =
-			indirect_diffuse_source(self.ssgi_settings.enabled, self.surfel_gi_settings.enabled, self.ray_tracing);
+		let indirect_diffuse = indirect_diffuse_source(self.gi_settings, self.settings.features, self.ray_tracing);
 		let loaded_materials = &self.loaded_materials;
 		let alpha_mode = |material: u32| {
 			loaded_materials
@@ -1584,10 +1584,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			),
 			_ => None,
 		};
-		// Until its pipelines compile, surfel GI can't light a frame, and the frame is lit as if it were off.
+		// Until its pipelines compile, surfel GI can't light a frame, and SSGI lights it when the project built SSGI in.
 		let indirect_diffuse = match (indirect_diffuse, surfels) {
 			(Some(IndirectDiffuseSource::Surfels), None) => {
-				indirect_diffuse_source(self.ssgi_settings.enabled, false, self.ray_tracing)
+				self.settings.features.ssgi.then_some(IndirectDiffuseSource::ScreenSpace)
 			}
 			(source, _) => source,
 		};
@@ -1800,23 +1800,32 @@ mod tests {
 	}
 
 	#[test]
-	fn surfel_gi_takes_the_place_of_ssgi_only_on_a_device_that_traces_rays() {
+	fn gi_technique_lights_the_frame_when_built_in_and_enabled() {
 		use IndirectDiffuseSource::{ScreenSpace, Surfels};
 
-		// (SSGI, surfel GI, ray tracing) and the source that lights the frame.
+		let features = |ssgi, surfel_gi| VisibilityFeatures {
+			ssgi,
+			surfel_gi,
+			..VisibilityFeatures::default()
+		};
+		let gi = |enabled, technique| GiSettings { enabled, technique };
+		// (GI settings, built-in SSGI and surfel GI, ray tracing) and the source that lights the frame.
 		let cases = [
-			((true, true, true), Some(Surfels)),
-			((false, true, true), Some(Surfels)),
-			((true, true, false), Some(ScreenSpace)),
-			((true, false, true), Some(ScreenSpace)),
-			((false, true, false), None),
-			((false, false, true), None),
+			((gi(true, Surfels), (true, true), true), Some(Surfels)),
+			((gi(true, Surfels), (false, true), true), Some(Surfels)),
+			((gi(true, ScreenSpace), (true, true), true), Some(ScreenSpace)),
+			// Without ray tracing, SSGI lights frames in place of surfel GI when it is built in.
+			((gi(true, Surfels), (true, true), false), Some(ScreenSpace)),
+			((gi(true, Surfels), (false, true), false), None),
+			((gi(true, ScreenSpace), (false, true), true), None),
+			((gi(false, ScreenSpace), (true, true), true), None),
+			((gi(false, Surfels), (true, true), true), None),
 		];
-		for ((ssgi, surfel_gi, ray_tracing), source) in cases {
+		for ((settings, (ssgi, surfel_gi), ray_tracing), source) in cases {
 			assert_eq!(
-				indirect_diffuse_source(ssgi, surfel_gi, ray_tracing),
+				indirect_diffuse_source(settings, features(ssgi, surfel_gi), ray_tracing),
 				source,
-				"SSGI {ssgi}, surfel GI {surfel_gi}, ray tracing {ray_tracing}"
+				"{settings:?}, SSGI {ssgi}, surfel GI {surfel_gi}, ray tracing {ray_tracing}"
 			);
 		}
 	}

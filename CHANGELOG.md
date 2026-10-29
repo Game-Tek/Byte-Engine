@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `render.gi.technique` selects the global illumination technique, `ssgi` or `surfels`, and `render.gi.enabled` turns global illumination on and off; both are runtime settings. `render.ssgi.enabled` and `render.surfel-gi.enabled` now only decide at startup which techniques the shaders carry, and so which ones `render.gi.technique` can select: selecting a left-out one is rejected with a warning. The default technique is `ssgi`, or `surfels` when only surfel GI is built in. Surfels still fall back to SSGI on a device that doesn't trace rays and while their pipelines compile.
+  - Breaking: building in surfel GI no longer selects it; also set `render.gi.technique` to `surfels`. Turn global illumination off at runtime with `render.gi.enabled` instead of `render.ssgi.enabled`, and switch between the techniques with `render.gi.technique` instead of `render.surfel-gi.enabled`, whose runtime updates are now rejected.
+
 - GPU timing counters are off unless the device requests them with the new `Features::counters`. While they're off, counters are still created and recorded under the same rules, but they write no timestamps, allocate no timestamp heap or query pool, and report no duration. The engine reads `render.ghi.features.counters`, which defaults to on in debug builds and off in release builds, so release builds no longer report `frame`, `scene`, `pass`, or `stage` GPU metrics unless it's set.
   - Breaking: GHI clients that read `counter_duration` must create the device with `Features::counters(true)`. The Vulkan and Direct3D 12 paths weren't compiled.
 

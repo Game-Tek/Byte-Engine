@@ -90,8 +90,8 @@ asks.
 | Name | Default | Effect |
 | --- | --- | --- |
 | `render.gtao.enabled` | `true` | Ground-truth ambient occlusion in material shaders, its pipelines, and its pass. |
-| `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines. |
-| `render.surfel-gi.enabled` | `false` | Ray-traced surfel global illumination, its pipelines, and its ray tracing shaders. It takes the place of SSGI on a device that traces rays; see [indirect diffuse light](/docs/reference/rendering#indirect-diffuse-light). |
+| `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines, which makes `ssgi` a `render.gi.technique` value. |
+| `render.surfel-gi.enabled` | `false` | Ray-traced surfel global illumination, its pipelines, and its ray tracing shaders, which makes `surfels` a `render.gi.technique` value. See [indirect diffuse light](/docs/reference/rendering#indirect-diffuse-light). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
 
 ## Visibility pipeline
@@ -122,6 +122,8 @@ fatal, and the inspector can change them while the application runs.
 | Name | Accepts | Default | Effect |
 | --- | --- | --- | --- |
 | `render.pass.<name>` | `enabled` or `bypassed` | `enabled` | Switches a render pass between its prepare and bypass paths. An update for a pass not installed yet waits for it. |
+| `render.gi.enabled` | Strict boolean | `true` | Whether a global illumination technique lights indirect diffuse light. Off, the environment lights it alone. |
+| `render.gi.technique` | `ssgi` or `surfels`, in any letter case | `ssgi`, or `surfels` when only surfel GI is built in | The technique that lights indirect diffuse light. A technique left out of the bake is rejected. |
 | `render.gtao.radius` | Finite number, zero or more | 1 | The ambient occlusion search radius in world units. |
 | `render.gtao.samples-per-ray` | 1 through 32 | 4 | Samples along each ray. |
 | `render.gtao.radial-rays` | An even number from 2 through 32 | 6 | Ray directions. |
@@ -130,9 +132,10 @@ fatal, and the inspector can change them while the application runs.
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
 
-The `enabled` names of the four render features double as runtime settings
-with the same meaning. The surfel capacity and ray budget keep their startup
-values: a runtime update to another value is rejected. Pass names a default
+The `enabled` names of GTAO and contact shadows double as runtime settings
+with the same meaning. `render.ssgi.enabled`, `render.surfel-gi.enabled`, the
+surfel capacity, and the ray budget keep their startup values: a runtime update
+to another value is rejected. Pass names a default
 setup can install are `bloom`, `motion-blur`, `smaa`, `lens-flare`,
 `exponential-height-fog`, `atmosphere sky` (with a space), `ui`, and
 `debug-meshes`; a pass exists only when its setup function ran.

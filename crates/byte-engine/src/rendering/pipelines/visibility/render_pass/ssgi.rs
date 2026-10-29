@@ -9,9 +9,9 @@
 //!
 //! The result stores pre-exposed hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation
 //! lights the missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
-//! fraction is also the surface's ambient occlusion, which darkens environment specular light. Turn the pass off with
-//! `render.ssgi.enabled`. Surfel GI takes its place on a device that traces rays; see
-//! [`super::IndirectDiffuseSource`].
+//! fraction is also the surface's ambient occlusion, which darkens environment specular light. Select it with
+//! `render.gi.technique` set to `ssgi`, and leave it out of the shaders with `render.ssgi.enabled`; see
+//! [`super::GiSettings`].
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -20,47 +20,11 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
-use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
 pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
-
-/// The `SsgiSettings` struct holds the runtime SSGI controls the visibility pipeline manager applies to every sink.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SsgiSettings {
-	/// Whether SSGI may light frames. It doesn't light the frames surfel GI lights. Without either, indirect diffuse
-	/// light comes from the environment alone, and material evaluation takes occlusion from GTAO alone, or applies none.
-	pub(crate) enabled: bool,
-}
-
-impl Default for SsgiSettings {
-	fn default() -> Self {
-		Self { enabled: true }
-	}
-}
-
-impl SsgiSettings {
-	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
-	pub(crate) fn with_parameter(
-		self,
-		parameter: &str,
-		value: &ConfigurationValue,
-	) -> Result<(Self, ConfigurationValue), String> {
-		match parameter {
-			"enabled" => {
-				let enabled = value.to_bool().ok_or(
-					"SSGI enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
-				)?;
-				Ok((Self { enabled }, ConfigurationValue::Bool(enabled)))
-			}
-			_ => {
-				Err("SSGI parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
-			}
-		}
-	}
-}
 
 /// The render-graph name of the diffuse light leaving opaque surfaces, which rays sample one frame later.
 ///
@@ -296,22 +260,6 @@ mod tests {
 
 	fn view_at(position: Point) -> View {
 		View::new_perspective(Degrees::new(60.0), 16.0 / 9.0, 0.1, 100.0, position, UnitVector::z_axis())
-	}
-
-	#[test]
-	fn enabled_accepts_booleans_and_startup_text() {
-		let (disabled, effective) = SsgiSettings::default()
-			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
-			.unwrap();
-		assert!(!disabled.enabled);
-		assert_eq!(effective, ConfigurationValue::Bool(false));
-		let (enabled, _) = disabled.with_parameter("enabled", &ConfigurationValue::Bool(true)).unwrap();
-		assert!(enabled.enabled);
-		assert!(
-			enabled
-				.with_parameter("enabled", &ConfigurationValue::Text("off".to_string()))
-				.is_err()
-		);
 	}
 
 	#[test]

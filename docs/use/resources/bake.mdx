@@ -126,7 +126,8 @@ its code and skips its pipelines:
 | `render.contact-shadows.enabled` | The contact-shadow filter in `sun-visibility.besl` | `contact-shadows` |
 
 The application reads the same file at startup and doesn't create the left-out
-passes. Turning a left-out feature on at runtime logs a warning instead.
+passes. Turning a left-out feature on at runtime, or selecting a left-out
+`render.gi.technique`, logs a warning instead.
 
 Ray-traced surfel global illumination works the other way around: BELD leaves
 it out unless `config.json` sets `render.surfel-gi.enabled` to `true`. With it

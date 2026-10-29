@@ -148,7 +148,7 @@ use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
+pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
 pub(super) use self::sun_visibility::CONTACT_SHADOW_PIPELINES;
 use self::sun_visibility::SunVisibilityPass;
 pub(crate) use self::sun_visibility::{ContactShadowSettings, SunVisibilityTargets, create_sun_visibility_targets};
@@ -173,6 +173,7 @@ use super::scene::RenderInfo;
 use super::set_layouts;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
+use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -292,6 +293,93 @@ impl IndirectDiffuseSource {
 		match self {
 			Self::ScreenSpace => 1,
 			Self::Surfels => 2,
+		}
+	}
+
+	/// Returns the `gi.technique` value that selects this source, and the startup parameter that builds it in.
+	fn names(self) -> (&'static str, &'static str) {
+		match self {
+			Self::ScreenSpace => ("ssgi", super::features::SSGI_ENABLED_PARAMETER),
+			Self::Surfels => ("surfels", super::features::SURFEL_GI_ENABLED_PARAMETER),
+		}
+	}
+
+	/// Returns whether the project built this source into its shaders, so it can be selected.
+	pub(crate) fn built_in(self, features: VisibilityFeatures) -> bool {
+		match self {
+			Self::ScreenSpace => features.ssgi,
+			Self::Surfels => features.surfel_gi,
+		}
+	}
+}
+
+/// The `GiSettings` struct holds the runtime global illumination controls the visibility pipeline manager applies to
+/// every frame: whether indirect diffuse light comes from a technique at all, and which one.
+///
+/// `ssgi.enabled` and `surfel-gi.enabled` only decide, at startup, which techniques the shaders carry; these settings
+/// pick among those. Next, pass them to the manager's indirect diffuse source choice each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GiSettings {
+	/// Whether a technique lights indirect diffuse light. Off, the environment lights it alone.
+	pub(crate) enabled: bool,
+	/// The technique that lights indirect diffuse light while `enabled`.
+	pub(crate) technique: IndirectDiffuseSource,
+}
+
+impl GiSettings {
+	/// Creates the controls of a project built with `features`: on, with SSGI when it is built in and surfel GI
+	/// otherwise.
+	pub(crate) fn new(features: VisibilityFeatures) -> Self {
+		let technique = if !features.ssgi && features.surfel_gi {
+			IndirectDiffuseSource::Surfels
+		} else {
+			IndirectDiffuseSource::ScreenSpace
+		};
+		Self {
+			enabled: true,
+			technique,
+		}
+	}
+
+	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	///
+	/// A technique the project left out of its shaders, `features`, is not selected.
+	pub(crate) fn with_parameter(
+		self,
+		parameter: &str,
+		value: &ConfigurationValue,
+		features: VisibilityFeatures,
+	) -> Result<(Self, ConfigurationValue), String> {
+		match parameter {
+			"enabled" => {
+				let enabled = value.to_bool().ok_or(
+					"GI enabled was not set. The most likely cause is that the value is neither `true` nor `false`. Set it to `true` or `false`.",
+				)?;
+				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
+			}
+			"technique" => {
+				// Technique names match in any letter case, so `SSGI` selects SSGI too.
+				let technique = value
+					.as_text()
+					.and_then(|text| {
+						[IndirectDiffuseSource::ScreenSpace, IndirectDiffuseSource::Surfels]
+							.into_iter()
+							.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
+					})
+					.ok_or("GI technique was not set. The most likely cause is that the value is neither `ssgi` nor `surfels`. Set it to `ssgi` or `surfels`.")?;
+				let (name, feature) = technique.names();
+				if !technique.built_in(features) {
+					return Err(format!(
+						"GI technique `{name}` was not selected. The most likely cause is that `render.{feature}` was `false` at startup, so the technique was left out of the project's shaders. Set it to `true` in `config.json`, then rebake with `beld bake --force`. See {}.",
+						crate::online_docs_url("use/resources/bake#leave-render-features-out-of-the-bake")
+					));
+				}
+				Ok((Self { technique, ..self }, ConfigurationValue::Text(name.to_string())))
+			}
+			_ => Err(
+				"GI parameter was not set. The most likely cause is that the parameter name is unsupported. Use `enabled` or `technique`."
+					.to_string(),
+			),
 		}
 	}
 }
@@ -808,5 +896,71 @@ impl VisibilityRenderPass {
 			}
 			c.end_region();
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn text(value: &str) -> ConfigurationValue {
+		ConfigurationValue::Text(value.to_string())
+	}
+
+	#[test]
+	fn gi_defaults_to_the_technique_the_project_built_in() {
+		let features = |ssgi, surfel_gi| VisibilityFeatures {
+			ssgi,
+			surfel_gi,
+			..VisibilityFeatures::default()
+		};
+
+		assert_eq!(
+			GiSettings::new(features(true, true)).technique,
+			IndirectDiffuseSource::ScreenSpace
+		);
+		assert_eq!(
+			GiSettings::new(features(false, true)).technique,
+			IndirectDiffuseSource::Surfels
+		);
+		assert!(GiSettings::new(features(true, false)).enabled);
+	}
+
+	#[test]
+	fn gi_enabled_accepts_booleans_and_startup_text() {
+		let features = VisibilityFeatures::default();
+		let (disabled, effective) = GiSettings::new(features)
+			.with_parameter("enabled", &text("false"), features)
+			.unwrap();
+		assert!(!disabled.enabled);
+		assert_eq!(effective, ConfigurationValue::Bool(false));
+		let (enabled, _) = disabled
+			.with_parameter("enabled", &ConfigurationValue::Bool(true), features)
+			.unwrap();
+		assert!(enabled.enabled);
+		assert!(enabled.with_parameter("enabled", &text("off"), features).is_err());
+	}
+
+	#[test]
+	fn gi_technique_selects_only_a_built_in_technique() {
+		let both = VisibilityFeatures {
+			surfel_gi: true,
+			..VisibilityFeatures::default()
+		};
+		let settings = GiSettings::new(both);
+
+		let (surfels, effective) = settings.with_parameter("technique", &text("surfels"), both).unwrap();
+		assert_eq!(surfels.technique, IndirectDiffuseSource::Surfels);
+		assert_eq!(effective, text("surfels"));
+		let (ssgi, effective) = surfels.with_parameter("technique", &text("SSGI"), both).unwrap();
+		assert_eq!(ssgi.technique, IndirectDiffuseSource::ScreenSpace);
+		assert_eq!(effective, text("ssgi"));
+		assert!(settings.with_parameter("technique", &text("voxels"), both).is_err());
+
+		// A technique left out of the shaders can't be selected, and the reason names the parameter that builds it in.
+		let reason = settings
+			.with_parameter("technique", &text("surfels"), VisibilityFeatures::default())
+			.unwrap_err();
+		assert!(reason.contains("`render.surfel-gi.enabled`"), "{reason}");
 	}
 }

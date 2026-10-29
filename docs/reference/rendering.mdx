@@ -275,8 +275,8 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 
 | Source | Lights the frame when |
 | --- | --- |
-| Surfel GI | `render.surfel-gi.enabled` is `true` at startup and at runtime, the device traces rays, and the surfel GI pipelines have compiled, the one that shades its rays included. |
-| SSGI | Surfel GI doesn't light the frame, and `render.ssgi.enabled` is `true` at startup and at runtime. |
+| Surfel GI | `render.gi.enabled` is `true`, `render.gi.technique` is `surfels`, the device traces rays, and the surfel GI pipelines have compiled, the one that shades its rays included. |
+| SSGI | `render.gi.enabled` is `true`, `render.ssgi.enabled` was `true` at startup, and either `render.gi.technique` is `ssgi` or it's `surfels` and surfel GI doesn't light the frame. |
 | None | Neither does. The environment alone lights indirect diffuse light, darkened by GTAO when it runs. |
 
 | Rule | Value |

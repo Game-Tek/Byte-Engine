@@ -301,12 +301,14 @@ Surfel GI traces rays, so it lights the scene only on Metal, with a GPU that
 supports ray tracing. Elsewhere, and while its pipelines compile, SSGI lights
 the scene instead.
 
-1. Build surfel GI into the bake. Add it to the project's `config.json`:
+1. Build surfel GI into the bake and select it. Add both to the project's
+   `config.json`:
 
    ```json
    {
      "render": {
-       "surfel-gi": { "enabled": true }
+       "surfel-gi": { "enabled": true },
+       "gi": { "technique": "surfels" }
      }
    }
    ```
@@ -315,8 +317,8 @@ the scene instead.
    that rays run where they hit it. See
    [Leave render features out of the bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
 
-3. Start the application. It reads the same `config.json`, so surfel GI is on
-   from the first frame. To size it for your scene, set the most surfels and
+3. Start the application. It reads the same `config.json`, so surfel GI lights
+   the scene from the first frame. To size it for your scene, set the most surfels and
    rays at startup:
 
    ```bash
@@ -333,11 +335,12 @@ the scene instead.
    surfel and how well surfels cover the screen. See
    [Show a debug view](/docs/use/debug-views).
 
-To switch back to SSGI while the application runs, set
-`render.surfel-gi.enabled` to `false`:
+To switch back to SSGI while the application runs, set `render.gi.technique`
+to `ssgi`. To turn global illumination off, set `render.gi.enabled` to `false`:
 
 ```rust
-app.configuration().update("render.surfel-gi.enabled", "false");
+app.configuration().update("render.gi.technique", "ssgi");
+app.configuration().update("render.gi.enabled", "false");
 ```
 
 <Callout type="info" title="Surfel GI limits">

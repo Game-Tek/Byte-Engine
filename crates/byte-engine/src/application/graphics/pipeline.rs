@@ -99,13 +99,13 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	);
 	let [
 		gtao_configuration,
-		ssgi_configuration,
+		gi_configuration,
 		surfel_gi_configuration,
 		contact_shadow_configuration,
 		lod_configuration,
 	] = [
 		"render.gtao.",
-		"render.ssgi.",
+		"render.gi.",
 		"render.surfel-gi.",
 		"render.contact-shadows.",
 		"render.lod.",
@@ -142,7 +142,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		visibility_loader,
 		pipeline_manager,
 		gtao_configuration,
-		ssgi_configuration,
+		gi_configuration,
 		surfel_gi_configuration,
 		contact_shadow_configuration,
 		lod_configuration,

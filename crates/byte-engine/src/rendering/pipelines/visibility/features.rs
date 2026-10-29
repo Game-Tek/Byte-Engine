@@ -15,11 +15,11 @@ pub const RENDER_PARAMETERS: &str = "render";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds GTAO into the project. Its runtime value also
 /// turns the pass on and off.
 pub const GTAO_ENABLED_PARAMETER: &str = "gtao.enabled";
-/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds SSGI into the project. Its runtime value also
-/// turns the pass on and off.
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds SSGI into the project, so `gi.technique` can
+/// select it.
 pub const SSGI_ENABLED_PARAMETER: &str = "ssgi.enabled";
-/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds surfel GI into the project. Its runtime value also
-/// turns it on and off.
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds surfel GI into the project, so `gi.technique` can
+/// select it.
 pub const SURFEL_GI_ENABLED_PARAMETER: &str = "surfel-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
 /// value also turns them on and off.

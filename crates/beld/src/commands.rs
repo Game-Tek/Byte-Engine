@@ -22,12 +22,13 @@ mod tests {
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
+		asset::ResourceId,
 		resource::{ReadStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
 	};
 	use resource_management::{
-		asset::{FileStorageBackend, ResourceId},
+		asset::FileStorageBackend,
 		resource::{ReDBStorageBackend, storage_backend::QueryCursor},
 	};
 

@@ -11,7 +11,6 @@ impl crate::device::Device for Device {
 		&std::alloc::Global
 	}
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		self.inner.as_ref().is_some_and(InnerDevice::has_errors)
 	}
@@ -197,6 +196,7 @@ impl InnerDevice {
 	}
 
 	/// Assigns a Vulkan debug name when debug utilities are available.
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 	pub(crate) fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
 		#[cfg(debug_assertions)]
 		if let (Some(name), Some(debug_utils)) = (name, &self.debug_utils) {

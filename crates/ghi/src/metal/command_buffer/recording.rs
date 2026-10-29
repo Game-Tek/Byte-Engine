@@ -502,15 +502,6 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	/// Returns the frame sequence whose counter slots this recording writes.
-	pub(super) fn counter_sequence(&self) -> u8 {
-		self.frame_key
-			.expect(
-				"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
-			)
-			.sequence_index
-	}
-
 	/// Writes one GPU timestamp into pool `slot`, which selects the frame sequence's heap and the entry in it.
 	///
 	/// Metal 4 accepts command-buffer timestamps only while no encoder is open, so an open encoder writes the

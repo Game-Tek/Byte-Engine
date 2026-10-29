@@ -214,26 +214,6 @@ pub(super) fn is_literal_expression(expression: &NodeReference) -> bool {
 	}
 }
 
-/// Rejects backend-specific raw code anywhere in `node`, because the VM can only run portable BESL.
-///
-/// Raw nodes with empty sources stay valid. The walk skips inlined intrinsic bodies and macro bodies, whose raw code
-/// the VM replaces with its own lowering of the intrinsic.
-pub(super) fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError> {
-	let node = node.borrow();
-	match node.node() {
-		Nodes::Raw { glsl, hlsl, msl, .. } => {
-			let has_code = [glsl.as_deref(), hlsl.as_deref(), msl.as_deref()]
-				.into_iter()
-				.flatten()
-				.any(|code| !code.trim().is_empty());
-			if has_code { Err(VmError::UnsupportedRawCode) } else { Ok(()) }
-		}
-		Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => arguments.iter().try_for_each(reject_raw_code_nodes),
-		Nodes::Expression(Expressions::Macro { .. }) => Ok(()),
-		other => other.children().try_for_each(reject_raw_code_nodes),
-	}
-}
-
 pub(super) fn extract_function_signature(function: &NodeReference) -> Result<FunctionSignature, VmError> {
 	let function_ref = function.borrow();
 	let (params, return_type, statements) = match function_ref.node() {
@@ -776,7 +756,6 @@ pub(super) fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::ForLoop { .. } => "for loop",
 		Nodes::Specialization { .. } => "specialization",
 		Nodes::Expression(_) => "expression",
-		Nodes::Raw { .. } => "raw",
 		Nodes::Binding { .. } => "binding",
 		Nodes::PushConstant { .. } => "push constant",
 		Nodes::Intrinsic { .. } => "intrinsic",

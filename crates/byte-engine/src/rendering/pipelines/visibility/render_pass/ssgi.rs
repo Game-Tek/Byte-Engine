@@ -25,7 +25,7 @@ use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
-pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
+pub(in super::super) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
 
 /// The `SsgiSettings` struct holds the runtime SSGI controls the visibility pipeline manager applies to every sink.
 #[derive(Clone, Copy, Debug, PartialEq)]

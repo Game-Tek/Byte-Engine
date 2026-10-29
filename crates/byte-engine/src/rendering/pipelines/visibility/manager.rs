@@ -995,7 +995,10 @@ impl VisibilityPipelineManager {
 		// Nothing reads a range after its instance leaves the frame, except frames still in flight, and the backends
 		// order the next owner's writes after those reads.
 		self.scene.remove_renderable(handle, |range| {
-			vertex_ranges.lock().unwrap_or_else(|error| error.into_inner()).free(range);
+			vertex_ranges
+				.lock()
+				.unwrap_or_else(|error| error.into_inner())
+				.give_back(range.start as usize..range.end as usize);
 		});
 		self.availability.remove(&Availability::Renderable(handle)).expect(
 			"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",

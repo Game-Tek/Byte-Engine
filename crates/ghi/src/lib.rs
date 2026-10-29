@@ -4,7 +4,6 @@
 //! queues, then create context-owned resources through [`ContextCreate`]. Record
 //! work with [`command_buffer::CommandBufferRecording`] and submit it through [`Queue`].
 
-#![allow(dead_code)]
 #![allow(incomplete_features)]
 #![allow(private_interfaces)]
 // GHI mirrors backend API shapes closely; these lint classes are deferred until the graphics interfaces are redesigned intentionally.
@@ -26,7 +25,6 @@
 )]
 #![feature(allocator_api)]
 #![feature(f16)]
-#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to))]
 
 pub mod hid;
 pub mod window;
@@ -34,7 +32,6 @@ pub mod window;
 pub mod frame_resources;
 mod graphics_hardware_interface;
 pub mod io;
-pub mod render_debugger;
 
 pub mod debug;
 pub mod factory;
@@ -59,7 +56,7 @@ pub use crate::graphics_hardware_interface::{
 	PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderBindingTableHandle, ShaderHandle,
 	StoreOp, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes, TopLevelAccelerationStructureHandle,
 };
-pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle, Ranges};
+pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle};
 pub use crate::window::Window;
 
 pub mod implementation {
@@ -83,8 +80,6 @@ pub mod implementation {
 	const _: () = _moves_between_threads::<SharedBuffer<[u8]>>();
 }
 
-#[cfg(target_os = "windows")]
-pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
 pub mod context;
@@ -168,20 +163,17 @@ mod scissor_tests {
 	}
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) use implementation::Binding;
 // Metal chains these through `ResourceCollection`; the other backends link them with `Next`.
 #[cfg(not(target_os = "macos"))]
 pub(crate) use implementation::{DescriptorSet, Synchronizer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 pub(crate) enum PrivateHandles {
 	Image(image::ImageHandle),
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
 	Swapchain(swapchain::SwapchainHandle),
-	#[cfg(target_os = "linux")]
-	VkBuffer(ash::vk::Buffer),
 }
 
 pub(crate) trait HandleLike: Copy + PartialEq {

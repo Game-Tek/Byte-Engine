@@ -155,29 +155,12 @@ impl Device {
 		ImageHandle(handle)
 	}
 
-	pub(crate) fn image_resource_state(&self, image: ImageHandle) -> Option<(Extent, bool)> {
-		self.images
-			.get(image.0.0 as usize)
-			.map(|image| (image.extent, image.resource.is_some()))
-	}
-
 	#[cfg(test)]
 	pub(crate) fn image_native_dimension(&self, image: ImageHandle) -> Option<(i32, u16)> {
 		let resource = self.images.get(image.0.0 as usize)?.resource.as_ref()?;
 		// SAFETY: The image registry retains this COM resource for the duration of the query.
 		let descriptor = unsafe { resource.GetDesc() };
 		Some((descriptor.Dimension.0, descriptor.DepthOrArraySize))
-	}
-
-	pub(crate) fn image_frame_resource_state(&self, image: ImageHandle, sequence_index: u8) -> Option<bool> {
-		self.images.get(image.0.0 as usize).map(|image| {
-			image
-				.frame_resources
-				.as_ref()
-				.and_then(|resources| resources.get(sequence_index as usize))
-				.and_then(|resource| resource.as_ref())
-				.is_some()
-		})
 	}
 
 	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
@@ -269,21 +252,6 @@ impl Device {
 		resource
 	}
 
-	pub(crate) fn image_resource_for_sequence(
-		&self,
-		image_handle: crate::BaseImageHandle,
-		sequence_index: u8,
-	) -> Option<ID3D12Resource> {
-		let image = self.images.get(image_handle.0 as usize)?;
-		if let Some(resources) = image.frame_resources.as_ref() {
-			return resources
-				.get(sequence_index as usize)
-				.and_then(Clone::clone)
-				.or_else(|| resources.first().and_then(Clone::clone));
-		}
-		image.resource.clone()
-	}
-
 	#[cfg(test)]
 	pub(crate) fn render_target_view_count(&self) -> usize {
 		self.render_target_views.len()
@@ -324,18 +292,5 @@ impl Device {
 
 	pub(crate) fn texture_readback_resolve_count(&self) -> usize {
 		self.counters.texture_readback_resolve_count
-	}
-
-	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {
-		self.images
-			.get(image.0.0 as usize)
-			.and_then(|image_data| image_data.resource.as_ref())
-			.map(|resource| {
-				self.image_states
-					.get(&Self::native_resource_key(resource))
-					.copied()
-					.unwrap_or(TextureBarrierState::COMMON)
-					== TextureBarrierState::COMMON
-			})
 	}
 }

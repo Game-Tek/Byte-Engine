@@ -1,8 +1,8 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum WriteData {
+	/// A buffer descriptor always spans the whole buffer.
 	Buffer {
 		handle: BaseBufferHandle,
-		size: Ranges,
 	},
 	Image {
 		handle: BaseImageHandle,
@@ -13,23 +13,17 @@ pub(crate) enum WriteData {
 		image_handle: BaseImageHandle,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
-		layer: Option<u32>,
 	},
 	AccelerationStructure {
 		handle: TopLevelAccelerationStructureHandle,
 	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
-	StaticSamplers,
-	CombinedImageSamplerArray,
 }
 
 impl WriteData {
 	pub(crate) fn buffer(handle: BaseBufferHandle) -> Self {
-		Self::Buffer {
-			handle,
-			size: Ranges::Whole,
-		}
+		Self::Buffer { handle }
 	}
 
 	pub(crate) fn image(handle: impl Into<BaseImageHandle>, layout: Layouts) -> Self {
@@ -52,18 +46,36 @@ impl WriteData {
 		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
-		layer: Option<u32>,
 	) -> Self {
 		Self::CombinedImageSampler {
 			image_handle: image_handle.into(),
 			sampler_handle,
 			layout,
-			layer,
 		}
 	}
 
 	pub(crate) fn acceleration_structure(handle: TopLevelAccelerationStructureHandle) -> Self {
 		Self::AccelerationStructure { handle }
+	}
+
+	/// Returns whether this write can fill a slot that a layout declares as a resource of `kind`.
+	///
+	/// Backends check retained writes against the layout of the pipeline that binds them.
+	#[cfg_attr(
+		target_os = "macos",
+		allow(dead_code, reason = "Metal checks its resolved descriptors instead.")
+	)]
+	pub(crate) fn matches_kind(self, kind: ResourceKind) -> bool {
+		match self {
+			Self::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
+			Self::Image { .. } | Self::Swapchain(_) => matches!(
+				kind,
+				ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
+			),
+			Self::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
+			Self::Sampler(_) => kind == ResourceKind::Sampler,
+			Self::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
+		}
 	}
 }
 
@@ -145,7 +157,7 @@ impl DescriptorWrite {
 		Self::new(
 			descriptor_set,
 			slot,
-			WriteData::combined_image_sampler(image_handle, sampler_handle, layout, None),
+			WriteData::combined_image_sampler(image_handle, sampler_handle, layout),
 		)
 	}
 
@@ -163,21 +175,6 @@ impl DescriptorWrite {
 		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout).with_frame_offset(frame_offset)
 	}
 
-	pub fn combined_image_sampler_layer(
-		descriptor_set: PublicDescriptorSetHandle,
-		slot: ResourceSlot,
-		image_handle: impl Into<BaseImageHandle>,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-		layer: u32,
-	) -> Self {
-		Self::new(
-			descriptor_set,
-			slot,
-			WriteData::combined_image_sampler(image_handle, sampler_handle, layout, Some(layer)),
-		)
-	}
-
 	pub fn combined_image_sampler_array(
 		descriptor_set: PublicDescriptorSetHandle,
 		slot: ResourceSlot,
@@ -187,23 +184,6 @@ impl DescriptorWrite {
 		index: u32,
 	) -> Self {
 		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout).with_array_element(index)
-	}
-
-	/// Binds one array element to the sampled copy of a per-frame image that belongs to a relative frame.
-	///
-	/// Only a [`DynamicImageHandle`] has one copy per frame in flight; see [`Self::image_with_frame`].
-	pub fn combined_image_sampler_array_with_frame(
-		descriptor_set: PublicDescriptorSetHandle,
-		slot: ResourceSlot,
-		image_handle: DynamicImageHandle,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-		index: u32,
-		frame_offset: i32,
-	) -> Self {
-		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout)
-			.with_array_element(index)
-			.with_frame_offset(frame_offset)
 	}
 
 	pub fn acceleration_structure(
@@ -270,8 +250,9 @@ impl HandleLike for DescriptorSetHandle {
 }
 
 use crate::{
-	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle, Layouts, Ranges,
-	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle, shader::ResourceSlot,
+	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle, Layouts,
+	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	shader::{ResourceKind, ResourceSlot},
 };
 #[cfg(not(target_os = "macos"))]
 use crate::{DescriptorSet, HandleLike, Next};

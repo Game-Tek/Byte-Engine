@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use crate::{CounterHandle, MAX_FRAMES_IN_FLIGHT};
+use crate::{CounterHandle, FrameKey, MAX_FRAMES_IN_FLIGHT};
 
 /// The number of timestamp slots each frame sequence owns, so one frame records at most half as many counters.
 pub(crate) const COUNTER_SLOTS_PER_FRAME: u32 = 1024;
@@ -162,9 +162,23 @@ impl Counters {
 	}
 }
 
+/// Returns the frame sequence whose counter slots a recording of `frame_key` writes.
+///
+/// # Panics
+///
+/// Panics when the recording has no frame, because counter slots belong to frame sequences.
+pub(crate) fn frame_sequence(frame_key: Option<FrameKey>) -> u8 {
+	frame_key
+		.expect(
+			"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
+		)
+		.sequence_index
+}
+
 /// Splits a pool slot into the frame sequence that owns it and its entry index inside that sequence's range.
 ///
 /// Backends that keep one native pool per sequence, as Metal does, address their pools with this.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 pub(crate) fn heap_entry(slot: u32) -> (u8, u32) {
 	((slot / COUNTER_SLOTS_PER_FRAME) as u8, slot % COUNTER_SLOTS_PER_FRAME)
 }
@@ -182,6 +196,7 @@ pub(crate) fn elapsed_ticks(start: u64, end: u64, valid_bits: u32) -> u64 {
 }
 
 /// Converts GPU ticks to a duration when the GPU clock runs at `frequency` ticks per second, as DX12 and Metal report.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 pub(crate) fn duration_from_frequency(ticks: u64, frequency: u64) -> Duration {
 	if frequency == 0 {
 		return Duration::ZERO;

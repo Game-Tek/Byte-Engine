@@ -70,23 +70,14 @@ code. They aren't syntax you can write in a `.besl` file.
 
 | Generated feature | Rust entry point | Use |
 | --- | --- | --- |
-| Backend-specific code | `ParserNode::glsl`, `ParserNode::hlsl`, `ParserNode::msl`, or `ParserNode::raw_code` | Bridge a feature that portable BESL can't express. Declare every graph input and output. |
 | Specialization value | `ParserNode::specialization` | Add a host-selected typed value at a pipeline constant id. Vector components take consecutive ids, so give each specialization its own range. Pipelines receive values through `SpecializationMapEntry` at the same ids, and the VM receives them by name through `SpecializationValues`. See [Shader variants](/docs/develop/rendering/shader-variants) for when to use one. |
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
 | Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
 | Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
 | Layout layers | `stack_layers(module, layers)` | Link a parsed module against shared BESL declarations, such as a descriptor set that several shaders bind. Baking does this for the layers a `.besl.bead` file lists. |
 
-Raw nodes declare their dependencies explicitly. For example, renderer code can
-add one GLSL-only expression with named graph inputs and outputs:
-
-```rust
-let node = besl::ParserNode::glsl("native_expression", &["input"], &["output"]);
-```
-
-Keep raw nodes small. Reflection can follow their declared dependencies but
-can't inspect the backend source itself. The VM rejects reachable raw nodes with
-`UnsupportedRawCode`.
+A program has no backend-specific code. Add an intrinsic, and lower it in each
+backend, when portable BESL can't express a feature.
 
 ## Understand optimization
 
@@ -97,7 +88,7 @@ can't inspect the backend source itself. The VM rejects reachable raw nodes with
 - removes statements after a `return`, `continue`, or `break` in the same block; and
 - repeats until removing one local doesn't expose another dead local.
 
-Calls, atomics, image writes, barriers, raw nodes, and assignments outside a
+Calls, atomics, image writes, barriers, and assignments outside a
 local value remain intact. The pass is idempotent and reports how many dead
 locals and unreachable statements it removed.
 
@@ -129,8 +120,7 @@ input in declaration order, so that reordering a payload's members changes it.
 
 It rejects distinct bindings that alias one flat slot. Reflection also classifies
 the reachable output as `Opaque`, `NonOpaque`, or `Unknown` for material
-decisions. Raw backend code can make that classification unknown because its
-effects aren't visible to the semantic evaluator.
+decisions.
 
 Express resources and outputs in BESL whenever possible. Reachable declarations
 let Byte Engine validate, reflect, optimize, and test the program consistently.

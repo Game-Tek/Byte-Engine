@@ -350,12 +350,10 @@ use utils::Extent;
 
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
-#[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::VisibilityShaderGenerator;
-use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures};
+use crate::rendering::pipelines::visibility::VisibilityFeatures;
 use crate::{
 	animation::graph::AnimationPool,
-	application::{Events, parameters::Parameters as _, thread::Thread},
+	application::{Events, thread::Thread},
 	audio::graph::AudioGraphFactory,
 	audio::{
 		audio_system::DefaultAudioSystem,
@@ -364,4 +362,10 @@ use crate::{
 	core::{listener::Listener as _, message::DeleteMessage},
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
+};
+// Only debug builds bake assets, so only they read the render parameters.
+#[cfg(debug_assertions)]
+use crate::{
+	application::parameters::Parameters as _,
+	rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityShaderGenerator},
 };

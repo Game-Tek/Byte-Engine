@@ -77,4 +77,5 @@ impl Builder {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 pub(crate) struct SamplerHandle(pub(crate) u64);

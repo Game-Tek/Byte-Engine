@@ -82,7 +82,6 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 				| Expressions::Member { .. }
 				| Expressions::Literal { .. }
 				| Expressions::VariableDeclaration { .. }
-				| Expressions::RawCode { .. }
 				| Expressions::Continue
 				| Expressions::Break
 				| Expressions::Discard => {}
@@ -192,17 +191,12 @@ pub(crate) const MATERIAL_DEBUG_VIEWS: [(&str, &str); 6] = [
 	("metalness", "vec4f(f32(metalness), f32(metalness), f32(metalness), 1.0)"),
 	("occlusion", "vec4f(f32(occlusion), f32(occlusion), f32(occlusion), 1.0)"),
 	// The irradiance reaching the surface from every light and the environment, pre-exposed like the lit map and
-	// compressed with `x / (1 + x)` so daylight stays readable. The suffix sums it at this index; see
-	// `MATERIAL_IRRADIANCE_VIEW`.
+	// compressed with `x / (1 + x)` so daylight stays readable. The suffix sums it at this view's index.
 	(
 		"irradiance",
 		"vec4f(exposed_irradiance.x / (1.0 + exposed_irradiance.x), exposed_irradiance.y / (1.0 + exposed_irradiance.y), exposed_irradiance.z / (1.0 + exposed_irradiance.z), 1.0)",
 	),
 ];
-
-/// The index of the irradiance view in [`MATERIAL_DEBUG_VIEWS`], which the material evaluation suffix gates its
-/// irradiance sum on.
-pub(crate) const MATERIAL_IRRADIANCE_VIEW: usize = 5;
 
 /// The names of [`MATERIAL_DEBUG_VIEWS`], as the pipeline manager declares them.
 pub(crate) const MATERIAL_DEBUG_VIEW_NAMES: [&str; MATERIAL_DEBUG_VIEWS.len()] = {

@@ -7,7 +7,6 @@
 
 use std::num::NonZeroUsize;
 
-use byte_engine::application::parameters::Parameters as _;
 use byte_engine::{
 	MediaTime,
 	animation::graph::{
@@ -17,7 +16,7 @@ use byte_engine::{
 		Parameter,
 		graphics::{
 			GraphicsApplication, setup_animation_pool, setup_default_audio, setup_default_input,
-			setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
+			setup_pbr_visibility_shading_render_pipeline,
 		},
 	},
 	core::{Creator as _, channel::Channel as _},
@@ -79,6 +78,7 @@ fn main() {
 	// is the one to use when an app also owns animation-loading workers.
 	#[cfg(debug_assertions)]
 	{
+		use byte_engine::application::{graphics::setup_default_resource_and_asset_management, parameters::Parameters as _};
 		use byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator;
 
 		let generator = VisibilityShaderGenerator::new(app.parameters().scope("render"));

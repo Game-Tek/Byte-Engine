@@ -90,8 +90,6 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
-	device.start_frame_capture();
-
 	let texture_copy_handle = {
 		let mut recording = device.create_command_buffer_recording(command_buffer_handle);
 
@@ -118,8 +116,6 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 		recording.execute(signal);
 		texture_copy_handle
 	};
-
-	device.end_frame_capture();
 
 	device.wait();
 

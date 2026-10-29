@@ -189,6 +189,7 @@ pub struct TextureCopyHandle(pub(crate) u64);
 ///
 /// Only the Vulkan backend stores debug names this way, so the enum exists only on Linux.
 #[cfg(target_os = "linux")]
+#[cfg_attr(not(debug_assertions), allow(dead_code, reason = "Only debug builds keep debug names."))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handles {
 	Buffer(BaseBufferHandle),

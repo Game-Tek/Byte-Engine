@@ -1,15 +1,18 @@
 use resource_management::inspect::PayloadFormat;
 use resource_management::{
 	QueryableValue, SerializableResource,
-	asset::ResourceId,
 	resource::{
 		ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
 		resource_handler::MultiResourceReader, storage_backend::QueryCursor,
 	},
 };
+use serde_json::Value;
+// Resource traces exist only in debug builds.
 #[cfg(debug_assertions)]
-use resource_management::{ResourceTraceItem, ResourceTraceLevel};
-use serde_json::{Value, json};
+use {
+	resource_management::{ResourceTraceItem, ResourceTraceLevel, asset::ResourceId},
+	serde_json::json,
+};
 
 use crate::{OutputFormat, Payload};
 

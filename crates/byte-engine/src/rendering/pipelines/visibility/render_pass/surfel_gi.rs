@@ -39,7 +39,7 @@ pub(crate) const DEFAULT_SURFEL_RAY_BUDGET: u32 = 16_384;
 /// The surfel GI compute pipelines, named as [`Pipelines::request`] takes them: the frame-wide grid stages, the trace
 /// and the hit sort, and the estimate update, in recording order, then each sink's resolve and allocation. The shade
 /// pass's ray tracing pipeline comes from [`super::super::ray_tracing::SurfelShading`].
-pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 11] = [
+pub(in super::super) const SURFEL_GI_PIPELINES: [&str; 11] = [
 	"surfel-count",
 	"surfel-scan-groups",
 	"surfel-scan-partials",

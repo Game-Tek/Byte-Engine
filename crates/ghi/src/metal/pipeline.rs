@@ -658,7 +658,6 @@ impl crate::device::Device for Factory {
 		&std::alloc::Global
 	}
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		false
 	}

@@ -407,7 +407,6 @@ fn rewrite_expression<'a>(expression: &mut parser::Expressions<'a>, context: &En
 		parser::Expressions::Member { .. }
 		| parser::Expressions::Literal { .. }
 		| parser::Expressions::VariableDeclaration { .. }
-		| parser::Expressions::RawCode { .. }
 		| parser::Expressions::Return { value: None }
 		| parser::Expressions::Continue
 		| parser::Expressions::Break

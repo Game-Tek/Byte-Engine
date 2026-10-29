@@ -26,7 +26,6 @@ mod lod;
 mod manager;
 mod material_parameters;
 mod mesh_dispatch;
-mod ranges;
 mod ray_tracing;
 mod render_pass;
 mod scene;

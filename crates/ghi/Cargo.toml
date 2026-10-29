@@ -42,7 +42,6 @@ windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win
 
 [target.'cfg(target_os = "linux")'.dependencies]
 shaderc = "0.10.1"
-renderdoc = "0.12.1"
 xcb = { version = "1.5.0", features=['xtest'] }
 wayland-client = { version = "0.31.12", features = ["system"] }
 rustix = { version = "1.1.4", features = ["event", "fs"] }

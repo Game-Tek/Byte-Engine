@@ -18,9 +18,6 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 	let closest_hit_payload = closest_hit_payload(&extract_function_signature(&main)?)?;
 
 	let function_nodes = main.reachable_functions();
-	for function in &function_nodes {
-		reject_raw_code_nodes(function)?;
-	}
 	// NodeReference hashing is pointer-identity based, so function lookup remains stable for RefCell-backed nodes.
 	let mut function_ids = HashMap::new();
 	for (index, function) in function_nodes.iter().enumerate() {

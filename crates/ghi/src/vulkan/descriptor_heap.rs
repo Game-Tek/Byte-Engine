@@ -40,39 +40,12 @@ impl PipelineLayoutKey {
 	}
 }
 
-#[inline]
-pub(crate) fn align_up(value: u64, alignment: u64) -> u64 {
-	assert!(
-		alignment.is_power_of_two(),
-		"Invalid Vulkan descriptor alignment. The most likely cause is that the device reported a non-power-of-two descriptor-heap alignment.",
-	);
-	(value + alignment - 1) & !(alignment - 1)
-}
-
-pub(crate) fn resource_range_end(descriptor: ShaderResourceDescriptor) -> u32 {
-	descriptor.slot().index().checked_add(descriptor.count()).expect(
-		"Vulkan shader resource range overflowed. The most likely cause is an invalid flat resource slot or descriptor count.",
-	)
-}
-
-pub(crate) fn resource_ranges_overlap(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
-	left.slot().index() < resource_range_end(right) && right.slot().index() < resource_range_end(left)
-}
-
 pub(crate) fn resource_accepts_retained_slot_key(
 	descriptor: ShaderResourceDescriptor,
 	stored_slot: crate::shader::ResourceSlot,
 ) -> bool {
 	let stored = stored_slot.index();
-	stored <= descriptor.slot().index() || stored >= resource_range_end(descriptor)
-}
-
-/// Returns whether two declarations of one flat resource differ at most in their access policies.
-fn resource_representations_match(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
-	left == ShaderResourceDescriptor {
-		access: left.access,
-		..right
-	}
+	stored <= descriptor.slot().index() || stored >= descriptor.range_end()
 }
 
 /// Canonicalizes one shader stage so declaration order cannot change pipeline mappings.
@@ -90,14 +63,14 @@ fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> small
 		match kept.checked_sub(1).map(|last| &mut canonical[last]) {
 			Some(previous) if previous.slot() == descriptor.slot() => {
 				assert!(
-					resource_representations_match(*previous, descriptor),
+					previous.matches_representation(descriptor),
 					"Conflicting Vulkan shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
 				);
 				previous.access |= descriptor.access;
 			}
 			previous => {
 				assert!(
-					previous.is_none_or(|previous| !resource_ranges_overlap(*previous, descriptor)),
+					previous.is_none_or(|previous| !previous.overlaps(descriptor)),
 					"Overlapping Vulkan shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
 				);
 				canonical[kept] = descriptor;
@@ -134,7 +107,7 @@ fn reserve_descriptor_range(cursor: &mut u64, count: u32, representation: Option
 		size > 0,
 		"Invalid Vulkan descriptor size. The most likely cause is incomplete descriptor-heap properties."
 	);
-	*cursor = align_up(*cursor, alignment);
+	*cursor = cursor.next_multiple_of(alignment);
 	let offset = u32::try_from(*cursor).expect(
 		"Vulkan descriptor-heap offset exceeded 32 bits. The most likely cause is a pipeline resource layout larger than the extension mapping API supports.",
 	);
@@ -165,7 +138,7 @@ pub(crate) fn build_pipeline_layout(
 				merged.iter_mut().find(|(existing, _)| existing.slot() == descriptor.slot())
 			{
 				assert!(
-					resource_representations_match(*existing, descriptor),
+					existing.matches_representation(descriptor),
 					"Conflicting Vulkan pipeline resources. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",
 				);
 				*existing_stages |= *stage;
@@ -174,9 +147,7 @@ pub(crate) fn build_pipeline_layout(
 			}
 
 			assert!(
-				merged
-					.iter()
-					.all(|(existing, _)| !resource_ranges_overlap(*existing, descriptor)),
+				merged.iter().all(|(existing, _)| !existing.overlaps(descriptor)),
 				"Overlapping Vulkan pipeline resources. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
 			);
 			merged.push((descriptor, *stage));
@@ -217,7 +188,7 @@ pub(crate) fn build_pipeline_layout(
 		})
 		.max()
 		.unwrap_or(0);
-	let heap_push_data_offset = u32::try_from(align_up(push_constant_size as u64, 4)).unwrap();
+	let heap_push_data_offset = u32::try_from((push_constant_size as u64).next_multiple_of(4)).unwrap();
 
 	assert!(
 		heap_push_data_offset as u64 + 8 <= properties.max_push_data_size,

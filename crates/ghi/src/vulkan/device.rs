@@ -79,6 +79,7 @@ impl DebugDataRef {
 
 #[derive(Clone)]
 pub struct InnerDevice {
+	#[cfg_attr(not(debug_assertions), allow(dead_code, reason = "Only debug builds name Vulkan objects."))]
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
 
 	pub(super) debug_data: DebugDataRef,
@@ -108,7 +109,6 @@ pub struct InnerDevice {
 	/// The timestamp bits every used queue family writes; zero means the device cannot time counters.
 	pub(super) timestamp_valid_bits: u32,
 	pub(super) queues: Vec<StoredQueue>,
-	pub(super) settings: crate::device::Features,
 	pub(super) swapchain_native_supports_formatless_storage_write: bool,
 	pub(super) swapchain_proxy_supports_formatless_storage_write: bool,
 }

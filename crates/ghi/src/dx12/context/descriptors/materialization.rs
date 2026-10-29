@@ -180,10 +180,4 @@ impl Device {
 		self.render_target_views.retain(|key, _| !resources.contains(&key.resource));
 		self.depth_stencil_views.retain(|key, _| !resources.contains(&key.resource));
 	}
-
-	/// Drops every retained attachment view after swapchain-wide resource replacement.
-	pub(crate) fn invalidate_attachment_views(&mut self) {
-		self.render_target_views.clear();
-		self.depth_stencil_views.clear();
-	}
 }

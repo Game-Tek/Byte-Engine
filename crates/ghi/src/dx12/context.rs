@@ -16,7 +16,6 @@ pub struct Device {
 	info_queue: Option<ID3D12InfoQueue>,
 	debug_log_function: fn(&str),
 	debug_log_count: AtomicU64,
-	debugger: RenderDebugger,
 	pub(crate) frames: u8,
 
 	queues: Vec<StoredQueue>,
@@ -735,11 +734,6 @@ struct DescriptorMaterialization {
 	sampler_heap: Option<DescriptorHeap>,
 }
 
-/// The `Binding` struct preserves the private handle item required by shared legacy exports.
-pub(crate) struct Binding {
-	pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct RetainedDescriptor {
 	descriptor: WriteData,
@@ -976,7 +970,6 @@ impl crate::device::Device for Device {
 		&std::alloc::Global
 	}
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
 	}
@@ -1131,17 +1124,12 @@ impl crate::context::ContextCreate for Device {
 impl crate::context::Context for Device {
 	type Queue<'a> = super::queue::Queue<'a>;
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
 	}
 
 	fn counter_duration(&self, counter: crate::CounterHandle) -> Option<std::time::Duration> {
 		self.counters.duration(counter)
-	}
-
-	fn supports_bc_texture_compression(&self) -> bool {
-		true
 	}
 
 	fn supports_ray_tracing(&self) -> bool {
@@ -1251,14 +1239,6 @@ impl crate::context::Context for Device {
 
 	fn resize_buffer<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		Device::resize_buffer(self, buffer_handle, size);
-	}
-
-	fn start_frame_capture(&mut self) {
-		self.debugger.start_frame_capture();
-	}
-
-	fn end_frame_capture(&mut self) {
-		self.debugger.end_frame_capture();
 	}
 
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
@@ -1410,7 +1390,6 @@ use crate::{
 	device::Features,
 	image,
 	pipelines::{self, PushConstantRange, VertexElement},
-	render_debugger::RenderDebugger,
 	sampler,
 	shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor, Sources},
 	window,

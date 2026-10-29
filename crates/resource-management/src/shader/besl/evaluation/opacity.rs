@@ -10,7 +10,6 @@ pub enum OpacityEvaluation {
 
 /// Evaluates whether the main shader output is statically opaque.
 pub(super) fn evaluate_opacity(main_function_node: &besl::NodeReference) -> OpacityEvaluation {
-	let mut main_contains_raw_code = false;
 	let mut local_output_symbols = HashSet::new();
 
 	{
@@ -30,19 +29,9 @@ pub(super) fn evaluate_opacity(main_function_node: &besl::NodeReference) -> Opac
 			}
 
 			for statement in statements {
-				let statement_borrow = RefCell::borrow(statement);
-				match statement_borrow.node() {
-					besl::Nodes::Raw { .. } => {
-						main_contains_raw_code = true;
-					}
-					_ => collect_local_output_symbols(statement, &mut local_output_symbols),
-				}
+				collect_local_output_symbols(statement, &mut local_output_symbols);
 			}
 		}
-	}
-
-	if main_contains_raw_code {
-		return OpacityEvaluation::Unknown;
 	}
 
 	if writes_non_opaque_vec4f_to_non_local_output(main_function_node, &local_output_symbols) {
@@ -143,11 +132,6 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			| besl::Expressions::Break
 			| besl::Expressions::Discard => {}
 		},
-		besl::Nodes::Raw { input, output, .. } => {
-			for value in input.iter().chain(output.iter()) {
-				collect_local_output_symbols(value, local_output_symbols);
-			}
-		}
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
 				collect_local_output_symbols(element, local_output_symbols);
@@ -261,10 +245,6 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 			| besl::Expressions::Break
 			| besl::Expressions::Discard => false,
 		},
-		besl::Nodes::Raw { input, output, .. } => input
-			.iter()
-			.chain(output.iter())
-			.any(|reference| references_non_local_output(reference, local_output_symbols)),
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			elements
 				.iter()
@@ -378,10 +358,6 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			| besl::Expressions::Break
 			| besl::Expressions::Discard => false,
 		},
-		besl::Nodes::Raw { input, output, .. } => input
-			.iter()
-			.chain(output.iter())
-			.any(|reference| writes_non_opaque_vec4f_to_non_local_output(reference, local_output_symbols)),
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			elements
 				.iter()

@@ -174,10 +174,6 @@ impl DescriptorRequirementCollection {
 }
 
 impl Device {
-	pub(crate) fn bind_descriptor_heaps(&mut self, command_buffer_handle: CommandBufferHandle, sets: &[DescriptorSetHandle]) {
-		self.bind_descriptor_heaps_and_tables(command_buffer_handle, None, sets, 0);
-	}
-
 	/// Returns the native list only while its reusable command-buffer handle owns an open recording.
 	fn descriptor_command_list_for_recording(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
 		let command_buffer = self
@@ -327,22 +323,6 @@ impl Device {
 		barriers.submit(&command_list);
 	}
 
-	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
-		match descriptor {
-			WriteData::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
-			WriteData::Image { .. } | WriteData::Swapchain(_) => {
-				matches!(
-					kind,
-					ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
-				)
-			}
-			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
-			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
-			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
-		}
-	}
-
 	/// Normalizes a dynamic buffer alias to the frame resource selected by its descriptor offset.
 	fn descriptor_buffer_alias_key(&self, handle: BaseBufferHandle, sequence_index: u8) -> DescriptorAliasKey {
 		let (_, dynamic) = Self::buffer_index(handle);
@@ -465,7 +445,7 @@ impl Device {
 		sequence_index: u8,
 	) {
 		match retained.descriptor {
-			WriteData::Buffer { handle, size } if shader_resource.kind() == ResourceKind::UniformBuffer => {
+			WriteData::Buffer { handle } if shader_resource.kind() == ResourceKind::UniformBuffer => {
 				let buffer = self.buffer(handle).expect(
 					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
 				);
@@ -477,16 +457,8 @@ impl Device {
 					buffer.uses.intersects(Uses::Uniform),
 					"Invalid DX12 uniform-buffer descriptor. The most likely cause is that the buffer was not created with uniform usage."
 				);
-				let requested_size = match size {
-					crate::Ranges::Size(size) => size,
-					crate::Ranges::Whole => buffer.size,
-				};
 				assert!(
-					requested_size <= buffer.size,
-					"Invalid DX12 buffer descriptor range. The most likely cause is that the requested descriptor size exceeds the logical buffer allocation."
-				);
-				assert!(
-					requested_size != 0 && requested_size <= 64 * 1024,
+					buffer.size != 0 && buffer.size <= 64 * 1024,
 					"Invalid DX12 constant-buffer view size. The most likely cause is that the requested range is empty or exceeds the 64-KiB shader-visible constant-buffer limit. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/constants."
 				);
 			}
@@ -513,8 +485,8 @@ impl Device {
 			WriteData::Image { handle, mip_level, .. } => {
 				self.validate_image_descriptor_resource(shader_resource, handle, None, mip_level)
 			}
-			WriteData::CombinedImageSampler { image_handle, layer, .. } => {
-				self.validate_image_descriptor_resource(shader_resource, image_handle, layer, None)
+			WriteData::CombinedImageSampler { image_handle, .. } => {
+				self.validate_image_descriptor_resource(shader_resource, image_handle, None, None)
 			}
 			_ => {}
 		}
@@ -627,7 +599,7 @@ impl Device {
 				}
 				let is_array_interior = insertion_index.checked_sub(1).is_some_and(|previous_index| {
 					let descriptor = layout.resources[previous_index].descriptor;
-					descriptor.slot().index() < slot_index && slot_index < Self::resource_range_end(descriptor)
+					descriptor.slot().index() < slot_index && slot_index < descriptor.range_end()
 				});
 
 				assert!(
@@ -666,7 +638,7 @@ impl Device {
 						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
 					);
 					assert!(
-						Self::descriptor_matches_kind(retained.descriptor, resource.descriptor.kind()),
+						retained.descriptor.matches_kind(resource.descriptor.kind()),
 						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
 					);
 					self.validate_descriptor_resource(resource.descriptor, *retained, sequence_index);

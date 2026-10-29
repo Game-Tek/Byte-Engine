@@ -4,14 +4,8 @@ use crate::device::Device as _;
 impl crate::context::Context for Context {
 	type Queue<'a> = crate::metal::queue::Queue<'a>;
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		false
-	}
-
-	fn supports_bc_texture_compression(&self) -> bool {
-		// self.device.supportsBCTextureCompression()
-		true
 	}
 
 	fn supports_ray_tracing(&self) -> bool {
@@ -264,14 +258,6 @@ impl crate::context::Context for Context {
 			*self.buffers.resource_mut(handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(handle));
 		}
-	}
-
-	fn start_frame_capture(&mut self) {
-		// TODO: Hook into MTLCaptureManager when needed.
-	}
-
-	fn end_frame_capture(&mut self) {
-		// TODO: Hook into MTLCaptureManager when needed.
 	}
 
 	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {

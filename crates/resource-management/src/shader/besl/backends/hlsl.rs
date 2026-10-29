@@ -1264,20 +1264,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_multi_language_raw_code() {
-		let shader = generate(
-			&ShaderGenerationSettings::vertex(),
-			&generator::tests::multi_language_raw_code(),
-		);
-
-		// The HLSL transpiler should use the HLSL code.
-		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
-		assert_string_contains!(shader, "void besl_main(){output.position = float4(0, 0, 0, 1);}");
-		// Should NOT contain GLSL code
-		assert!(!shader.contains("gl_Position"), "HLSL shader should not contain GLSL code");
-	}
-
-	#[test]
 	fn test_const_variable() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::const_variable());
 		// The backend declares its own `PI`, so the user constant takes the escaped name.

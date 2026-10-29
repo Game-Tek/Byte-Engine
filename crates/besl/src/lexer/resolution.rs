@@ -237,41 +237,6 @@ pub(super) fn resolve_accessed_member(left: &NodeReference, name: &str) -> Resul
 	}
 }
 
-/// Resolves raw-code IO references and lowers them into a lexer node.
-pub(super) fn lex_raw_code(
-	chain: &[NodeReference],
-	glsl: Option<&str>,
-	hlsl: Option<&str>,
-	msl: Option<&str>,
-	input: &[&str],
-	output: &[&str],
-) -> Result<Node, LexError> {
-	let inputs = input
-		.iter()
-		.map(|name| resolve_member(chain, name))
-		.collect::<Result<Vec<_>, _>>()?;
-
-	let vec3f = resolve_member(chain, "vec3f")?;
-	let outputs = output
-		.iter()
-		.map(|name| {
-			Node::expression(Expressions::VariableDeclaration {
-				name: (*name).to_string(),
-				r#type: vec3f.clone(),
-			})
-			.into()
-		})
-		.collect();
-
-	Ok(Node::raw(
-		glsl.map(str::to_string),
-		hlsl.map(str::to_string),
-		msl.map(str::to_string),
-		inputs,
-		outputs,
-	))
-}
-
 pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
 	let prefer_descendants_before_self = mode == DescendantSearch::NonIntrinsic
 		&& matches!(
@@ -319,7 +284,6 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		// Control-flow statements own their block scopes, so later statements never see declarations inside them.
 		Nodes::Conditional { .. } | Nodes::Match { .. } | Nodes::ForLoop { .. } => None,
 		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
-		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
 		Nodes::Binding {
 			r#type: BindingTypes::Buffer { members },
 			..
@@ -392,7 +356,6 @@ pub(super) fn find_in_function_statement(
 ) -> Option<NodeReference> {
 	match statement.borrow().node() {
 		Nodes::Expression(expression) => find_in_function_expression(statement, expression, child_name, mode),
-		Nodes::Raw { output, .. } if mode == DescendantSearch::Any => find_in_descendants(output, child_name, mode),
 		_ => None,
 	}
 }
@@ -961,9 +924,8 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		// Raw backend source is opaque, so its declared textual names must remain unchanged. Functions and constants
-		// are declarations the body refers to, not part of it.
-		Nodes::Raw { .. } | Nodes::Function { .. } | Nodes::Const { .. } => {}
+		// Functions and constants are declarations the body refers to, not part of it.
+		Nodes::Function { .. } | Nodes::Const { .. } => {}
 		other => {
 			for child in other.children() {
 				collect_intrinsic_local_declarations(child, declarations);
@@ -1048,23 +1010,6 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			instantiate_intrinsic_node(condition, instantiation),
 			instantiate_intrinsic_node(update, instantiation),
 			instantiate_intrinsic_block(statements, instantiation),
-		)
-		.into(),
-		Nodes::Raw {
-			glsl,
-			hlsl,
-			msl,
-			input,
-			output,
-		} => Node::raw(
-			glsl.clone(),
-			hlsl.clone(),
-			msl.clone(),
-			input
-				.iter()
-				.map(|input| instantiate_intrinsic_node(input, instantiation))
-				.collect(),
-			output.clone(),
 		)
 		.into(),
 		// Definition nodes and outer-scope references remain shared. Only structured body nodes can contain

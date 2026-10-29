@@ -762,37 +762,6 @@ impl Node {
 		}
 	}
 
-	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Self::raw(Some(code), None, None, inputs, outputs)
-	}
-
-	pub fn hlsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Self::raw(None, Some(code), None, inputs, outputs)
-	}
-
-	pub fn msl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Self::raw(None, None, Some(code), inputs, outputs)
-	}
-
-	/// Builds linked raw code with explicit backend sources and interface nodes.
-	pub fn raw(
-		glsl: Option<String>,
-		hlsl: Option<String>,
-		msl: Option<String>,
-		inputs: Vec<NodeReference>,
-		outputs: Vec<NodeReference>,
-	) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl,
-				hlsl,
-				msl,
-				input: inputs,
-				output: outputs,
-			},
-		}
-	}
-
 	pub fn r#macro(name: &str, body: NodeReference) -> Node {
 		Node {
 			node: Nodes::Expression(Expressions::Macro {
@@ -1175,13 +1144,6 @@ pub enum Nodes {
 		id: u32,
 	},
 	Expression(Expressions),
-	Raw {
-		glsl: Option<String>,
-		hlsl: Option<String>,
-		msl: Option<String>,
-		input: Vec<NodeReference>,
-		output: Vec<NodeReference>,
-	},
 	Binding {
 		name: String,
 		slot: u32,
@@ -1329,7 +1291,6 @@ impl Nodes {
 				| Nodes::Intrinsic { .. }
 				| Nodes::Member { .. }
 				| Nodes::Expression(_)
-				| Nodes::Raw { .. }
 		)
 	}
 
@@ -1451,18 +1412,6 @@ impl std::fmt::Debug for Node {
 				)
 			}
 			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
-			Nodes::Raw {
-				glsl,
-				hlsl,
-				msl,
-				input,
-				output,
-			} => write!(
-				f,
-				"RawCode {{ glsl: {glsl:?}, hlsl: {hlsl:?}, msl: {msl:?}, input: {:?}, output: {:?} }}",
-				names(input),
-				names(output)
-			),
 			Nodes::Binding {
 				name,
 				slot,

@@ -105,6 +105,11 @@ required-features = ["headed"]
 name = "window"
 required-features = ["headed"]
 
+# `replication` runs headless, but it replicates entities over the in-process channel transport.
+[[example]]
+name = "replication"
+required-features = ["network"]
+
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }

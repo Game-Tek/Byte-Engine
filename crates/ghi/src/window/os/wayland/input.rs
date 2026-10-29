@@ -187,7 +187,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 
 				let state = xkb::State::new(&keymap);
 
-				this.keyboard_state = Some(KeyboardState { context, keymap, state });
+				this.keyboard_state = Some(KeyboardState { state });
 			}
 			wl_keyboard::Event::Enter { surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {

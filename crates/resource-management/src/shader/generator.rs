@@ -1677,32 +1677,6 @@ pub mod tests {
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
 	}
 
-	/// Builds a vertex `main` whose body is one raw statement with GLSL, HLSL, and MSL variants that reads a user struct.
-	pub fn multi_language_raw_code() -> besl::NodeReference {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		main: fn () -> void {}
-		"#;
-		let root = besl::compile_to_besl(script, None).unwrap();
-		let main = root.get_main().unwrap();
-		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
-		main.borrow_mut().add_child(
-			besl::Node::raw(
-				Some("gl_Position = vec4(0)".to_string()),
-				Some("output.position = float4(0, 0, 0, 1)".to_string()),
-				Some("out.position = float4(0, 0, 0, 1)".to_string()),
-				vec![vertex_struct],
-				vec![],
-			)
-			.into(),
-		);
-		main
-	}
-
 	/// Builds a compute `main` that reads one exact texel with `fetch`.
 	pub fn texel_fetch() -> besl::NodeReference {
 		let script = r#"

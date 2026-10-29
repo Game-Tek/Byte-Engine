@@ -95,6 +95,7 @@ impl std::error::Error for TextureTransferError {}
 /// The `TextureTransferLayout` struct provides the checked compact layout for one supported transfer source.
 pub(crate) struct TextureTransferLayout {
 	pub(crate) bytes_per_row: usize,
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) row_count: usize,
 	pub(crate) bytes_per_image: usize,
 	pub(crate) depth_slices: usize,
@@ -156,6 +157,7 @@ impl<T> TextureReadbackState<T> {
 		}
 	}
 
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the DX12 backend uses it."))]
 	fn value_mut(&mut self) -> Option<&mut T> {
 		match self {
 			Self::Recorded(value) | Self::Submitted(value, _) => Some(value),
@@ -220,10 +222,12 @@ impl<T> TextureReadbackRegistry<T> {
 		true
 	}
 
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn get(&self, handle: TextureCopyHandle) -> Option<&T> {
 		self.slot(handle)?.state.value()
 	}
 
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the DX12 backend uses it."))]
 	pub(crate) fn get_mut(&mut self, handle: TextureCopyHandle) -> Option<&mut T> {
 		self.slot_mut(handle)?.state.value_mut()
 	}
@@ -274,6 +278,7 @@ impl<T> TextureReadbackRegistry<T> {
 		self.slots.iter().filter_map(|slot| slot.state.value())
 	}
 
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the DX12 backend uses it."))]
 	pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
 		self.slots.iter_mut().filter_map(|slot| slot.state.value_mut())
 	}
@@ -311,13 +316,7 @@ pub trait Context: ContextCreate {
 		Self: 'a;
 
 	/// Returns whether the underlying API has encountered any errors.
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
-
-	/// Returns whether the GPU supports BC5 and BC7 block-compressed textures.
-	///
-	/// Check this value before you create BC-compressed images or samplers.
-	fn supports_bc_texture_compression(&self) -> bool;
 
 	/// Returns whether this context can build acceleration structures and trace rays through them.
 	///
@@ -456,12 +455,6 @@ pub trait Context: ContextCreate {
 
 	/// Resizes a dynamic buffer to the specified size.
 	fn resize_buffer<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
-
-	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
-	fn start_frame_capture(&mut self);
-
-	/// Ends capturing the underlying's API calls if the application is attached to a graphics debugger.
-	fn end_frame_capture(&mut self);
 
 	/// Waits for operations associated with one synchronizer to complete.
 	///

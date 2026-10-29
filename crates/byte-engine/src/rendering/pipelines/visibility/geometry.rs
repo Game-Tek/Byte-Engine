@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use ghi::context::ContextCreate as _;
 use resource_management::resources::skeleton::SkinBinding;
 use smallvec::SmallVec;
+use utils::RangeAllocator;
 
 pub(crate) use self::prepare::{GENERATED_MESH_MATERIAL, PreparedMesh, encode_octahedral_unit_vector};
 use super::layout::{
@@ -19,7 +20,6 @@ use super::layout::{
 	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
-use super::ranges::RangeAllocator;
 use crate::rendering::loading::{BufferRegion, Loader};
 
 /// Byte strides of the compact bind-pose streams consumed by GPU skinning.
@@ -129,7 +129,11 @@ impl GeometryCounts {
 
 /// Takes `length` vertices from `ranges`, logging the error for `element` when the vertex capacity can't hold them.
 pub(crate) fn allocate_vertices(ranges: &Mutex<RangeAllocator>, length: u32, element: &str) -> Option<std::ops::Range<u32>> {
-	let range = ranges.lock().unwrap_or_else(|error| error.into_inner()).allocate(length);
+	let range = ranges
+		.lock()
+		.unwrap_or_else(|error| error.into_inner())
+		.take(length as usize, 1)
+		.map(|range| range.start as u32..range.end as u32);
 	if range.is_none() {
 		log::error!(
 			"Visibility vertex buffer capacity exceeded. The most likely cause is that the resident meshes and posed skinned instances need more vertices than the geometry capacity holds, with {length} more for {element}; raise it with VisibilityPipelineSettings::with_geometry_capacity or render.geometry.vertex-capacity."
@@ -268,7 +272,7 @@ impl GeometryHandles {
 			skinning_rest_normals: context.build_buffer(build("Visibility Skinning Rest Normals", storage, skinning)),
 			skinning_joints: context.build_buffer(build("Visibility Skinning Joints", storage, skinning)),
 			skinning_weights: context.build_buffer(build("Visibility Skinning Weights", storage, skinning)),
-			vertex_ranges: Arc::new(Mutex::new(RangeAllocator::new(vertices))),
+			vertex_ranges: Arc::new(Mutex::new(RangeAllocator::new(vertices as usize, 1))),
 		}
 	}
 }

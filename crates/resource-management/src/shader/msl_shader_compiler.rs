@@ -8,53 +8,6 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
-use crate::shader::{
-	besl::{backends::msl::MSLTranspiler, evaluation::collect_bindings},
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings},
-};
-
-/// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
-pub struct Compiler {
-	msl_transpiler: MSLTranspiler,
-}
-
-impl Default for Compiler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl Compiler {
-	pub fn new() -> Self {
-		Self {
-			msl_transpiler: MSLTranspiler::new(),
-		}
-	}
-
-	pub async fn generate(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-	) -> Result<GeneratedShader, String> {
-		let msl_shader = self
-			.msl_transpiler
-			.generate_program(shader_compilation_settings, program)
-			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))?;
-
-		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
-
-		Ok(CompiledShader {
-			binary,
-			bindings: collect_bindings(program)?
-				.into_iter()
-				.map(CompiledShaderBinding::from)
-				.collect(),
-			extent: shader_compilation_settings.stage.local_size(),
-		})
-	}
-}
-
 struct TempShaderDir {
 	path: PathBuf,
 }
@@ -140,7 +93,7 @@ pub async fn metal_compiler_identity() -> Result<String, String> {
 /// type on an Apple M4 and dominates the compile time of every shader that reads a texture. The compiler also
 /// completes the `memory_coherence_device` form of every sampled texture a shader names, so the header lists both. A
 /// type this header leaves out still compiles; its shaders only pay for it again. Keep the list in step with the
-/// texture types [`MSLTranspiler`] writes.
+/// texture types [`MSLTranspiler`](crate::shader::besl::backends::msl::MSLTranspiler) writes.
 const PRELUDE_HEADER: &str = "\
 #include <metal_stdlib>
 using namespace metal;

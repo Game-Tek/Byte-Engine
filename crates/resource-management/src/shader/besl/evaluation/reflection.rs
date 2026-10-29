@@ -781,11 +781,6 @@ fn build_bindings(node: &besl::NodeReference, state: &mut BindingCollectionState
 				state.nodes.push(node.clone());
 			}
 		}
-		besl::Nodes::Raw { input, output, .. } => {
-			for reference in input.iter().chain(output.iter()) {
-				build_bindings(reference, state);
-			}
-		}
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
 				build_bindings(element, state);

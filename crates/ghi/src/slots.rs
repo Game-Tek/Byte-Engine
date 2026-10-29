@@ -86,6 +86,7 @@ impl<T> Slots<T> {
 	}
 
 	/// Returns the slot index of `handle`.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn index(handle: u64) -> u32 {
 		Self::parts(handle).0
 	}

@@ -41,13 +41,8 @@ impl crate::context::Context for Context {
 	where
 		Self: 'a;
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		self.device.has_errors()
-	}
-
-	fn supports_bc_texture_compression(&self) -> bool {
-		true
 	}
 
 	fn supports_ray_tracing(&self) -> bool {
@@ -202,13 +197,6 @@ impl crate::context::Context for Context {
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		let mut changed_sets = SmallVec::<[graphics_hardware_interface::DescriptorSetHandle; 8]>::new();
 		for &descriptor_write in descriptor_set_writes {
-			assert!(
-				!matches!(
-					descriptor_write.descriptor,
-					crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray
-				),
-				"Unsupported Vulkan descriptor write. The most likely cause is that a removed legacy descriptor constructor is still in use.",
-			);
 			let retained = crate::vulkan::descriptor_set::RetainedDescriptor {
 				descriptor: descriptor_write.descriptor,
 				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
@@ -476,10 +464,6 @@ impl crate::context::Context for Context {
 			self.bump_descriptor_sequence_epoch(sequence_index);
 		}
 	}
-
-	fn start_frame_capture(&mut self) {}
-
-	fn end_frame_capture(&mut self) {}
 
 	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		for handle in self.get_syncronizer_handles(synchronizer_handle) {

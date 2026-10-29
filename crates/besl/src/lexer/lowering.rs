@@ -538,14 +538,6 @@ impl Lexer {
 				)
 				.into()
 			}
-			parser::Nodes::RawCode {
-				glsl,
-				hlsl,
-				msl,
-				input,
-				output,
-				..
-			} => lex_raw_code(&self.scopes, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
 			parser::Nodes::Expression(expression) => {
 				let this = match expression {
 					parser::Expressions::Return { value } => {
@@ -725,13 +717,6 @@ impl Lexer {
 							r#type: resolve_type_name(&self.scopes, r#type)?,
 						})
 					}
-					parser::Expressions::RawCode {
-						glsl,
-						hlsl,
-						msl,
-						input,
-						output,
-					} => lex_raw_code(&self.scopes, *glsl, *hlsl, *msl, input, output)?,
 					parser::Expressions::Macro { name, body } => Node::r#macro(name, self.lex(body)?),
 				};
 

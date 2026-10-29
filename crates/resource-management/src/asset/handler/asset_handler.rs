@@ -50,6 +50,8 @@ pub enum LoadErrors {
 	PrimaryResourceNotStored,
 }
 
+// Only debug builds bake assets and record why a bake failed.
+#[cfg(debug_assertions)]
 impl LoadErrors {
 	/// Returns the developer-facing cause for this asset loading failure.
 	pub(crate) const fn message(&self) -> &'static str {

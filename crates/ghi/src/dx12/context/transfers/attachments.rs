@@ -97,17 +97,6 @@ impl Device {
 		}
 	}
 
-	/// Records a DX12 image clear without allocating a full-size upload buffer when the image supports UAV clears.
-	pub(crate) fn record_image_clear(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		image_handle: ImageHandle,
-		clear: crate::ClearValue,
-		sequence_index: u8,
-	) {
-		self.record_image_clear_with_final_state(command_buffer_handle, image_handle, clear, sequence_index, None, true);
-	}
-
 	/// Records one clear batch after staging all compatible UAV descriptors in contiguous runs.
 	pub(crate) fn clear_images(
 		&mut self,

@@ -80,6 +80,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	/// # Panics
 	///
 	/// Panics when `resources` is empty.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn add_chain(&mut self, resources: impl IntoIterator<Item = T>) -> MH {
 		let mut resources = resources.into_iter();
 		let first = resources.next().expect(
@@ -109,6 +110,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	///
 	/// Use this to hand a resource to another owner. The master handle stays reserved, so it can never name a
 	/// different resource later. Returns `None` in the same cases as [`Self::get_unique`].
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn take(&mut self, handle: MH) -> Option<T> {
 		self.resources
 			.get_mut(handle.index() as usize)
@@ -188,6 +190,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	}
 
 	/// Iterates mutably over all stored private resources in insertion order, skipping resources that were taken.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
 		self.resources.iter_mut().filter_map(|r| r.resource.as_mut())
 	}

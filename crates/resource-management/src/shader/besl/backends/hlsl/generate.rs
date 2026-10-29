@@ -280,12 +280,6 @@ impl Generator {
 					let _ = write!(string, "[{count}]");
 				}
 			}
-			// Use HLSL code if available, otherwise fall back to GLSL, which may need translation for HLSL.
-			besl::Nodes::Raw { glsl, hlsl, .. } => {
-				if let Some(code) = hlsl.as_ref().or(glsl.as_ref()) {
-					string.push_str(code);
-				}
-			}
 			besl::Nodes::Parameter { name, r#type } => {
 				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
 			}

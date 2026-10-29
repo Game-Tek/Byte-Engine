@@ -14,7 +14,7 @@ use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The evaluate, blur, and upscale pipelines, named as [`Pipelines::request`] takes them.
-pub(in crate::rendering::pipelines::visibility) const GTAO_PIPELINES: [&str; 3] = ["gtao", "gtao-blur-x", "gtao-upscale"];
+pub(in super::super) const GTAO_PIPELINES: [&str; 3] = ["gtao", "gtao-blur-x", "gtao-upscale"];
 const MIN_SAMPLES_PER_RAY: u32 = 1;
 const MAX_SAMPLES_PER_RAY: u32 = 32;
 const MIN_RADIAL_RAYS: u32 = 2;

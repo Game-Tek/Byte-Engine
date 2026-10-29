@@ -787,8 +787,6 @@ impl Renderer {
 			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
 			.collect::<Vec<_>>();
 
-		self.context.start_frame_capture();
-
 		{
 			let _span = debug_span!("Renderer::update_camera_transforms").entered();
 			while let Some(message) = transforms_listener.read() {

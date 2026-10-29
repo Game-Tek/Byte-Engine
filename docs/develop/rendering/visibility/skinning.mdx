@@ -70,5 +70,5 @@ reason: its first writes are ordered after every earlier read.
 
 The skinning layout tests and the skinning VM tests in
 `rendering/pipelines/visibility/skinning.rs` guard the shader's output
-encoding; the allocator tests in `rendering/pipelines/visibility/ranges.rs`
+encoding; the `RangeAllocator` tests in `crates/utils/src/range_allocator.rs`
 guard range reuse and running out.

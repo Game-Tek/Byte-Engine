@@ -233,7 +233,6 @@ impl Device {
 			info_queue,
 			debug_log_function,
 			debug_log_count: AtomicU64::new(0),
-			debugger: RenderDebugger::new(),
 			frames: 2,
 
 			queues,
@@ -280,7 +279,6 @@ impl Device {
 		}
 	}
 
-	#[cfg(any(debug_assertions, test))]
 	pub fn has_errors(&self) -> bool {
 		self.drain_debug_messages();
 		self.debug_log_count.load(Ordering::Relaxed) > 0

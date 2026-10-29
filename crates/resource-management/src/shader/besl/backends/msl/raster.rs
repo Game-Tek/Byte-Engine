@@ -493,9 +493,7 @@ impl Generator {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		// A kernel that takes bare resources has no argument buffers to forward to its helpers.
-		let has_resources =
-			matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) && self.has_argument_sets();
+		let has_resources = self.has_argument_sets();
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
@@ -514,7 +512,6 @@ impl Generator {
 		self.emit_compute_entry_point(
 			string,
 			main_function_node,
-			&nodes.bindings,
 			nodes.push_constant,
 			&nodes.workgroups,
 			uses_simd_lane_id,
@@ -614,9 +611,7 @@ impl Generator {
 		self.emit_argument_buffer_structs(string);
 		self.emit_object_payload_struct(string, &nodes.task_payloads);
 
-		if !Self::has_raw_mesh_output_structs(&nodes.declarations) {
-			self.emit_mesh_output_structs(string, &nodes.outputs);
-		}
+		self.emit_mesh_output_structs(string, &nodes.outputs);
 
 		self.emit_functions(string, &nodes.functions);
 		self.emit_mesh_entry_point_argument_buffers(
@@ -630,16 +625,6 @@ impl Generator {
 		);
 
 		self.mesh_stage_context = previous_mesh_stage_context;
-	}
-
-	pub(crate) fn has_raw_mesh_output_structs(nodes: &[&besl::NodeReference]) -> bool {
-		nodes.iter().any(|node| match node.borrow().node() {
-			besl::Nodes::Raw { msl, hlsl, .. } => msl
-				.as_ref()
-				.or(hlsl.as_ref())
-				.is_some_and(|source| source.contains("struct VertexOutput") || source.contains("struct PrimitiveOutput")),
-			_ => false,
-		})
 	}
 
 	pub(crate) fn mesh_output_field_name(name: &str) -> &str {

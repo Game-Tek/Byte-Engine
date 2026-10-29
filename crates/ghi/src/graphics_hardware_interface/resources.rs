@@ -52,12 +52,6 @@ pub enum TextureViewTypes {
 	Texture3D,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Ranges {
-	Size(usize),
-	Whole,
-}
-
 /// The `FrameKey` struct identifies a submitted frame while selecting its reusable GPU sequence.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FrameKey {
@@ -275,6 +269,7 @@ impl AttachmentInformation {
 
 	/// Returns the layers the attachment covers as its first layer and layer count: the selected layer, the layered
 	/// range, or the first layer.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the DX12 backend uses it."))]
 	pub(crate) fn layer_selection(&self) -> (u32, u32) {
 		match (self.layer, self.layer_count) {
 			(Some(layer), _) => (layer, 1),

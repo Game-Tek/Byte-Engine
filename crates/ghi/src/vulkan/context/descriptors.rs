@@ -1,5 +1,5 @@
 use super::*;
-use crate::{descriptors::WriteData, shader::ResourceKind};
+use crate::descriptors::WriteData;
 
 impl Context {
 	pub(crate) fn create_descriptor_heap_arena(
@@ -33,12 +33,12 @@ impl Context {
 			creation.dedicated_resource(),
 		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
-		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
+		let aligned_address = device_address.next_multiple_of(heap_alignment);
 		let base_offset = aligned_address - device_address;
 
 		assert!(base_offset + size <= buffer_size);
 
-		let application_offset = crate::vulkan::align_up(reserved_size, descriptor_alignment);
+		let application_offset = reserved_size.next_multiple_of(descriptor_alignment);
 
 		assert!(
 			application_offset < size,
@@ -50,10 +50,12 @@ impl Context {
 			device_address: aligned_address,
 			size,
 			reserved_size,
-			free_ranges: vec![crate::vulkan::DescriptorHeapRange {
-				offset: application_offset,
-				size: size - application_offset,
-			}],
+			free: {
+				let mut free = ::utils::RangeAllocator::new(size as usize, 1);
+				// The implementation owns the bytes before the first application offset, so they stay taken.
+				free.take(application_offset as usize, 1);
+				free
+			},
 		}
 	}
 
@@ -66,16 +68,16 @@ impl Context {
 		let resource_descriptor_alignment = properties
 			.buffer_descriptor_alignment
 			.max(properties.image_descriptor_alignment);
-		let resource_minimum =
-			crate::vulkan::align_up(properties.min_resource_heap_reserved_range, resource_descriptor_alignment)
-				.checked_add(properties.buffer_descriptor_size.max(properties.image_descriptor_size))
-				.unwrap();
-		let sampler_minimum = crate::vulkan::align_up(
-			properties.min_sampler_heap_reserved_range,
-			properties.sampler_descriptor_alignment,
-		)
-		.checked_add(properties.sampler_descriptor_size)
-		.unwrap();
+		let resource_minimum = properties
+			.min_resource_heap_reserved_range
+			.next_multiple_of(resource_descriptor_alignment)
+			.checked_add(properties.buffer_descriptor_size.max(properties.image_descriptor_size))
+			.unwrap();
+		let sampler_minimum = properties
+			.min_sampler_heap_reserved_range
+			.next_multiple_of(properties.sampler_descriptor_alignment)
+			.checked_add(properties.sampler_descriptor_size)
+			.unwrap();
 
 		assert!(
 			resource_minimum <= properties.max_resource_heap_size,
@@ -117,20 +119,6 @@ impl Context {
 	) -> Option<&'a HashMap<u32, crate::vulkan::descriptor_set::RetainedDescriptor>> {
 		sets.iter()
 			.find_map(|set| self.descriptor_sets[set.0 as usize].descriptors.get(&slot))
-	}
-
-	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
-		match descriptor {
-			WriteData::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
-			WriteData::Image { .. } | WriteData::Swapchain(_) => matches!(
-				kind,
-				ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
-			),
-			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
-			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
-			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
-		}
 	}
 
 	/// Returns the resource a materialized descriptor makes commands access, and the layout an image is accessed in.
@@ -206,7 +194,7 @@ impl Context {
 						"Vulkan descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
 					);
 					assert!(
-						Self::descriptor_matches_kind(retained.descriptor, descriptor.kind()),
+						retained.descriptor.matches_kind(descriptor.kind()),
 						"Vulkan descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
 					);
 				}
@@ -307,11 +295,10 @@ impl Context {
 			)
 		};
 		match retained.descriptor {
-			WriteData::Buffer { handle, size } => Descriptor::Buffer {
+			WriteData::Buffer { handle } => Descriptor::Buffer {
 				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
 					"Missing deferred Vulkan buffer. The most likely cause is that frame resource tasks were not processed before descriptor materialization.",
 				),
-				size,
 			},
 			WriteData::Image {
 				handle,
@@ -326,12 +313,10 @@ impl Context {
 				image_handle,
 				sampler_handle,
 				layout,
-				layer,
 			} => Descriptor::CombinedImageSampler {
 				image: image(image_handle),
 				sampler: sampler_handle,
 				layout,
-				layer,
 			},
 			WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
 			// Each frame traces the copy it builds.
@@ -347,9 +332,6 @@ impl Context {
 					mip_level: None,
 				}
 			}
-			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => unreachable!(
-				"Legacy Vulkan descriptor write reached materialization. The most likely cause is that write validation was bypassed."
-			),
 		}
 	}
 
@@ -357,7 +339,6 @@ impl Context {
 		&self,
 		image: &Image,
 		view_type: crate::TextureViewTypes,
-		layer: Option<u32>,
 		base_mip_level: u32,
 		level_count: u32,
 	) -> vk::ImageViewCreateInfo<'static> {
@@ -375,7 +356,7 @@ impl Context {
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
 			crate::TextureViewTypes::Texture2D => {
 				assert!(
-					layer.is_none() && image.layers.is_none() && image.extent.depth().max(1) == 1,
+					image.layers.is_none() && image.extent.depth().max(1) == 1,
 					"Vulkan 2D descriptor view mismatch. The most likely cause is that a layered or 3D image was written to a Texture2D shader resource."
 				);
 				(vk::ImageViewType::TYPE_2D, 0, 1)
@@ -384,35 +365,25 @@ impl Context {
 				let layers = image.layers.map(NonZeroU32::get).expect(
 					"Vulkan array descriptor view mismatch. The most likely cause is that a non-array image was written to a Texture2DArray shader resource.",
 				);
-				let base = layer.unwrap_or(0);
-
-				assert!(
-					base < layers,
-					"Vulkan image layer is out of range. The most likely cause is an invalid combined-image-sampler layer."
-				);
-				(
-					vk::ImageViewType::TYPE_2D_ARRAY,
-					base,
-					if layer.is_some() { 1 } else { layers },
-				)
+				(vk::ImageViewType::TYPE_2D_ARRAY, 0, layers)
 			}
 			crate::TextureViewTypes::TextureCube => {
 				assert!(
-					layer.is_none() && image.cube_compatible && array_layer_count == 6,
+					image.cube_compatible && array_layer_count == 6,
 					"Vulkan cubemap descriptor view mismatch. The most likely cause is that the image is not a six-layer cube-compatible image."
 				);
 				(vk::ImageViewType::CUBE, 0, 6)
 			}
 			crate::TextureViewTypes::TextureCubeArray => {
 				assert!(
-					layer.is_none() && image.cube_array_compatible && array_layer_count.is_multiple_of(6),
+					image.cube_array_compatible && array_layer_count.is_multiple_of(6),
 					"Vulkan cube-array descriptor view mismatch. The most likely cause is that the image is not a cube-array-compatible image."
 				);
 				(vk::ImageViewType::CUBE_ARRAY, 0, array_layer_count)
 			}
 			crate::TextureViewTypes::Texture3D => {
 				assert!(
-					layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
+					image.layers.is_none() && image.extent.depth() > 1,
 					"Vulkan 3D descriptor view mismatch. The most likely cause is that a 2D image was written to a Texture3D shader resource."
 				);
 				(vk::ImageViewType::TYPE_3D, 0, 1)
@@ -508,16 +479,13 @@ impl Context {
 				.sampler_heap_offset
 				.map(|offset| sampler_heap_offset + offset + array_element * resource.sampler_stride);
 			match descriptor {
-				Descriptor::Buffer { buffer, size } => {
+				Descriptor::Buffer { buffer } => {
 					let buffer = self.buffers.resource(buffer);
-					let size = match size {
-						graphics_hardware_interface::Ranges::Whole => buffer.size as u64,
-						graphics_hardware_interface::Ranges::Size(size) => size as u64,
-					};
+					let size = buffer.size as u64;
 
 					assert!(
-						size > 0 && size <= buffer.size as u64,
-						"Invalid Vulkan buffer descriptor range. The most likely cause is that a descriptor exceeds its backing buffer."
+						size > 0,
+						"Invalid Vulkan buffer descriptor. The most likely cause is that an empty buffer was written to a shader resource. Create the buffer with a non-zero size."
 					);
 					address_writes.push((
 						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
@@ -544,7 +512,6 @@ impl Context {
 						self.descriptor_image_view_create_info(
 							image,
 							resource.descriptor.texture_view(),
-							None,
 							base_mip_level,
 							level_count,
 						),
@@ -557,18 +524,11 @@ impl Context {
 					image,
 					sampler,
 					layout: image_layout,
-					layer,
 				} => {
 					let image = &self.images[image.0 as usize];
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view_create_info(
-							image,
-							resource.descriptor.texture_view(),
-							layer,
-							0,
-							image.mip_levels,
-						),
+						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), 0, image.mip_levels),
 						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						resource_offset.unwrap(),
 						resource.resource_stride as u64,
@@ -745,6 +705,7 @@ impl Context {
 	}
 
 	#[inline]
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 	pub(crate) fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
 		#[cfg(debug_assertions)]
 		if let Some(name) = name {
@@ -753,6 +714,7 @@ impl Context {
 	}
 
 	#[inline]
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 	pub(crate) fn get_object_debug_name(&self, handle: graphics_hardware_interface::Handles) -> Option<String> {
 		#[cfg(debug_assertions)]
 		let name = self.names.get(&handle).cloned();

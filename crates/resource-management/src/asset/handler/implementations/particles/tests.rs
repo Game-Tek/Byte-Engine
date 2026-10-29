@@ -351,7 +351,6 @@ fn spent_particles_are_dropped_and_survivors_packed() {
 }
 
 /// Verifies every generated stage of both shapes and every module compiles with the platform shader compiler.
-#[cfg(target_os = "macos")]
 #[r#async::test]
 async fn generated_programs_lower_to_the_platform_shader_language() {
 	let assets = AssetTestStorageBackend::new();

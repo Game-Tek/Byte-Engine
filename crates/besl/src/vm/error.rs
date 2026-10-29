@@ -5,7 +5,6 @@ use super::ResourceSlot;
 #[derive(Debug, PartialEq, Eq)]
 pub enum VmError {
 	MissingMainFunction,
-	UnsupportedRawCode,
 	UnsupportedMainSignature {
 		message: String,
 	},
@@ -226,10 +225,6 @@ impl std::fmt::Display for VmError {
 					"Missing main function. The most likely cause is that the lexed BESL program does not define `main`."
 				)
 			}
-			VmError::UnsupportedRawCode => write!(
-				f,
-				"Raw code blocks are not supported. The most likely cause is that a reachable BESL function contains non-empty platform shader code with no portable VM semantics."
-			),
 			VmError::UnsupportedMainSignature { message } => write!(
 				f,
 				"Unsupported main signature: {}. The most likely cause is that the VM accepts `main: fn () -> void`, and a closest hit's `main: fn (payload: P) -> P`, which runs only through `invoke`.",

@@ -63,16 +63,7 @@ impl ResourceIoContext for super::Context {
 		format: crate::Formats,
 		extent: utils::Extent,
 	) -> Result<ResourceIoImageSourceLayout, ResourceIoError> {
-		let (bytes_per_row, _, bytes_per_image) = format.copy_layout(extent).ok_or(ResourceIoError::InvalidImageLayout)?;
-		let total_bytes = bytes_per_image
-			.checked_mul(extent.depth().max(1) as usize)
-			.filter(|&total_bytes| total_bytes != 0)
-			.ok_or(ResourceIoError::InvalidImageLayout)?;
-		Ok(ResourceIoImageSourceLayout {
-			bytes_per_row,
-			bytes_per_image,
-			total_bytes,
-		})
+		ResourceIoImageSourceLayout::compact(format, extent)
 	}
 
 	fn create_resource_io_queue(

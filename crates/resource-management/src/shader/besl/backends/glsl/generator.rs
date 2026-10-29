@@ -771,11 +771,6 @@ impl NodeEmitter for Generator {
 					let _ = write!(string, "[{count}]");
 				}
 			}
-			besl::Nodes::Raw { glsl, .. } => {
-				if let Some(code) = glsl {
-					string.push_str(code);
-				}
-			}
 			besl::Nodes::Parameter { name, r#type } => {
 				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
 			}

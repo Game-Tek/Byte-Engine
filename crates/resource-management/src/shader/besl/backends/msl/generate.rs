@@ -167,11 +167,6 @@ impl Generator {
 			return Err(());
 		}
 		Self::validate_reachable_binding_layout(order)?;
-		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment)
-			&& let Some(source) = Self::find_full_source_passthrough(main_function_node)
-		{
-			return Ok(source);
-		}
 		self.collect_packed_mat4x3_members(order);
 		self.hidden_contexts = analyze_hidden_contexts(order);
 
@@ -445,26 +440,6 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn find_full_source_passthrough(main_function_node: &besl::NodeReference) -> Option<String> {
-		// Raster-stage MSL entrypoint lowering is not implemented yet, so callers can carry a full
-		// Metal source through a BESL raw node while the GLSL path keeps using normal BESL generation.
-		const MARKER: &str = "// besl-full-source";
-
-		let main_function_node = main_function_node.borrow();
-		let besl::Nodes::Function { statements, .. } = main_function_node.node() else {
-			return None;
-		};
-
-		statements.iter().find_map(|node| {
-			let node = node.borrow();
-			let besl::Nodes::Raw { msl: Some(source), .. } = node.node() else {
-				return None;
-			};
-
-			source.strip_prefix(MARKER).map(|source| source.trim_start().to_string())
-		})
-	}
-
 	pub(crate) fn has_raster_interface(order: &[besl::NodeReference]) -> bool {
 		order
 			.iter()
@@ -539,7 +514,6 @@ impl Generator {
 				besl::Nodes::Function { name, .. } if name == "main" => {}
 				besl::Nodes::Function { .. } => nodes.functions.push(node),
 				besl::Nodes::Struct { .. }
-				| besl::Nodes::Raw { .. }
 				| besl::Nodes::Intrinsic { .. }
 				| besl::Nodes::Const { .. }
 				| besl::Nodes::Specialization { .. } => nodes.declarations.push(node),

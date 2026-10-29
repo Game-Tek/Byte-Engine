@@ -184,7 +184,6 @@ fn collect_used_declarations(node: &NodeReference, used: &mut HashSet<usize>, vi
 		Nodes::Expression(Expressions::Member { source, .. }) => {
 			used.insert(source.identity());
 		}
-		Nodes::Raw { input, .. } => used.extend(input.iter().map(NodeReference::identity)),
 		// Constants are declarations read through members, not statements that run in the function.
 		Nodes::Const { .. } => {}
 		other => {
@@ -257,10 +256,9 @@ impl EffectAnalysis {
 		let node_ref = node.borrow();
 		match node_ref.node() {
 			Nodes::Function { .. } => self.is_pure_function(node),
-			// Raw code is opaque, a loop can change shader termination even when its body only contains arithmetic, and
-			// control transfers change which statements run.
-			Nodes::Raw { .. }
-			| Nodes::ForLoop { .. }
+			// A loop can change shader termination even when its body only contains arithmetic, and control transfers
+			// change which statements run.
+			Nodes::ForLoop { .. }
 			| Nodes::Intrinsic { .. }
 			| Nodes::Expression(Expressions::Continue | Expressions::Break | Expressions::Discard) => false,
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {

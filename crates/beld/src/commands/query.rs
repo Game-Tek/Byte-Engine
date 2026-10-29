@@ -75,7 +75,7 @@ pub(super) fn parse_query_property(property: &str) -> Result<(&str, &str), i32> 
 
 /// Prints query results in a compact human-readable form.
 async fn print_human_query_page(
-	storage_backend: &ReDBStorageBackend,
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))] storage_backend: &ReDBStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,
@@ -106,7 +106,7 @@ async fn print_human_query_page(
 
 /// Prints query results as JSON for scripts and editor integrations.
 async fn print_json_query_page(
-	storage_backend: &ReDBStorageBackend,
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))] storage_backend: &ReDBStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,
@@ -115,6 +115,8 @@ async fn print_json_query_page(
 ) -> Result<(), i32> {
 	let mut resources = Vec::with_capacity(items.len());
 	for (resource, _) in items {
+		// Only debug builds add the resource trace to the value.
+		#[cfg_attr(not(debug_assertions), allow(unused_mut))]
 		let mut value = serde_json::json!({
 			"id": resource.id(),
 			"uid": resource.uid(),

@@ -332,20 +332,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_multi_language_raw_code() {
-		let shader = generate(
-			&ShaderGenerationSettings::vertex(),
-			&generator::tests::multi_language_raw_code(),
-		);
-
-		// The GLSL transpiler should use the GLSL code.
-		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
-		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
-		// Should NOT contain HLSL code
-		assert!(!shader.contains("float4"), "GLSL shader should not contain HLSL code");
-	}
-
-	#[test]
 	fn test_const_variable() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::const_variable());
 		assert_string_contains!(shader, "const float besl_PI = 3.14;");

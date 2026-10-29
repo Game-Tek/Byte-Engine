@@ -251,6 +251,27 @@ impl ShaderResourceDescriptor {
 	pub const fn buffer_element_stride(self) -> u32 {
 		self.buffer_stride
 	}
+
+	/// Returns the flat slot right after the last one this resource's array covers.
+	pub(crate) fn range_end(self) -> u32 {
+		self.slot.index().checked_add(self.count).expect(
+			"Shader resource range overflowed. The most likely cause is an invalid flat resource slot or descriptor count. Lower the slot or the array length.",
+		)
+	}
+
+	/// Returns whether the flat slot ranges of two resources share a slot, which no two resources of one pipeline may.
+	pub(crate) fn overlaps(self, other: Self) -> bool {
+		self.slot.index() < other.range_end() && other.slot.index() < self.range_end()
+	}
+
+	/// Returns whether two declarations describe one resource and differ at most in their access policies, so the
+	/// stages that declare them can share its pipeline slot.
+	pub(crate) fn matches_representation(self, other: Self) -> bool {
+		self == Self {
+			access: self.access,
+			..other
+		}
+	}
 }
 
 /// The most resources one [`DescriptorSetLayout`] can declare, the width of [`ShaderDescriptorSet::used`].
@@ -365,11 +386,13 @@ impl DescriptorSetLayout {
 
 	/// Returns how many array elements the resources before `resource_index` hold, the position of that resource's
 	/// first element in a set's dense storage.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn element_base(&self, resource_index: usize) -> u32 {
 		self.inner.element_bases[resource_index]
 	}
 
 	/// Returns how many array elements the layout's resources hold in total.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) fn element_count(&self) -> u32 {
 		self.inner.element_count
 	}

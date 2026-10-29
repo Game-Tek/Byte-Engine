@@ -83,7 +83,6 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 			| besl::Nodes::Output { format: r#type, .. }
 			| besl::Nodes::TaskPayload { format: r#type, .. }
 			| besl::Nodes::Workgroup { format: r#type, .. } => visit(r#type),
-			besl::Nodes::Raw { input, output, .. } => input.iter().chain(output).for_each(&mut visit),
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
 					visit(left);

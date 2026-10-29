@@ -244,12 +244,8 @@ impl CommandBufferRecording<'_> {
 				.copied()
 			{
 				let resource_use = match descriptor {
-					Descriptor::Buffer { buffer, size } => {
-						let buffer_size = self.device.buffers.resource(buffer).size;
-						let size = match size {
-							crate::Ranges::Size(size) => size.min(buffer_size),
-							crate::Ranges::Whole => buffer_size,
-						};
+					Descriptor::Buffer { buffer } => {
+						let size = self.device.buffers.resource(buffer).size;
 						synchronization::MetalResourceUse::buffer(buffer, 0, size, stages, access)
 					}
 					Descriptor::Image { image, mip_level, .. } => {

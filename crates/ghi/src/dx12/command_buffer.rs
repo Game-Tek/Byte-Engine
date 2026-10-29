@@ -319,26 +319,15 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
-		let sequence_index = self.counter_sequence();
+		let sequence_index = crate::counters::frame_sequence(self.frame_key);
 		self.device
 			.record_counter_timestamp(self.command_buffer, sequence_index, counter, true);
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
-		let sequence_index = self.counter_sequence();
+		let sequence_index = crate::counters::frame_sequence(self.frame_key);
 		self.device
 			.record_counter_timestamp(self.command_buffer, sequence_index, counter, false);
-	}
-}
-
-impl CommandBufferRecording<'_> {
-	/// Returns the frame sequence whose counter slots this recording writes.
-	fn counter_sequence(&self) -> u8 {
-		self.frame_key
-			.expect(
-				"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
-			)
-			.sequence_index
 	}
 }
 

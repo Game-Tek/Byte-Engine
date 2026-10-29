@@ -27,26 +27,6 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn resource_range_end(descriptor: ShaderResourceDescriptor) -> u32 {
-		descriptor
-			.slot()
-			.index()
-			.checked_add(descriptor.count())
-			.expect("DX12 shader resource range overflowed. The most likely cause is an invalid flat slot or resource count.")
-	}
-
-	pub(crate) fn resource_representations_match(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
-		left.slot() == right.slot()
-			&& left.kind() == right.kind()
-			&& left.count() == right.count()
-			&& left.texture_view() == right.texture_view()
-			&& left.buffer_element_stride() == right.buffer_element_stride()
-	}
-
-	pub(crate) fn resource_ranges_overlap(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
-		left.slot().index() < Self::resource_range_end(right) && right.slot().index() < Self::resource_range_end(left)
-	}
-
 	/// Merges shader resource declarations and assigns dense native heap offsets.
 	pub(crate) fn build_pipeline_resources(&self, shaders: &[pipelines::ShaderParameter]) -> Vec<PipelineResource> {
 		let mut descriptors = shaders
@@ -60,7 +40,7 @@ impl Device {
 			if let Some(previous) = merged.last_mut() {
 				if previous.slot() == descriptor.slot() {
 					assert!(
-						Self::resource_representations_match(*previous, descriptor),
+						previous.matches_representation(descriptor),
 						"Conflicting DX12 shader resources. The most likely cause is that shader stages declared the same flat slot with incompatible representations.",
 					);
 					assert!(
@@ -79,7 +59,7 @@ impl Device {
 				}
 
 				assert!(
-					!Self::resource_ranges_overlap(*previous, descriptor),
+					!previous.overlaps(descriptor),
 					"Overlapping DX12 shader resources. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
 				);
 			}

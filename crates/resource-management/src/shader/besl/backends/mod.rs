@@ -571,7 +571,6 @@ pub(crate) struct IntrinsicRequirements {
 	pub(crate) uses_render_target_array_index: bool,
 	pub(crate) uses_intersect: bool,
 	pub(crate) uses_trace_occlusion: bool,
-	pub(crate) uses_invoke: bool,
 }
 
 /// Records the intrinsics that the code of every node in `order` calls, walking each body once.
@@ -601,7 +600,6 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
 					"intersect" => requirements.uses_intersect = true,
 					"trace_occlusion" => requirements.uses_trace_occlusion = true,
-					"invoke" => requirements.uses_invoke = true,
 					_ => {}
 				}
 			}

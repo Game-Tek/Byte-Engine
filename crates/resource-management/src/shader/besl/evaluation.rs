@@ -683,24 +683,6 @@ mod tests {
 	}
 
 	#[test]
-	fn opacity_is_unknown_when_main_contains_raw_code() {
-		let mut root_node = besl::Node::root();
-		let return_type = root_node.get_child("void").unwrap();
-		let main = besl::Node::function(
-			"main",
-			Vec::new(),
-			return_type,
-			vec![besl::Node::glsl("output = vec3f(1.0, 0.0, 0.0);".to_string(), Vec::new(), Vec::new()).into()],
-		);
-		root_node.add_child(main.into());
-
-		let program_node: besl::NodeReference = root_node.into();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
-
-		assert_eq!(evaluation.opacity(), OpacityEvaluation::Unknown);
-	}
-
-	#[test]
 	fn opacity_is_non_opaque_when_output_vec4f_w_is_not_one() {
 		let script = r#"
 		main: fn () -> void {

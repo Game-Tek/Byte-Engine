@@ -17,7 +17,6 @@ use super::{RAY_TRACING_STAGE_INTRINSICS, any_code_node};
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator {
 	pub(crate) minified: bool,
-	pub(crate) compute_binding_mode: ComputeBindingMode,
 	pub(crate) in_compute_body: bool,
 	pub(crate) compute_stage_context: Option<ComputeStageContext>,
 	pub(crate) raster_stage_context: Option<RasterStageContext>,
@@ -85,12 +84,6 @@ pub(crate) fn buffer_address_space(memory_class: besl::BufferMemoryClass, write:
 		(besl::BufferMemoryClass::Constant, false) => "constant",
 		(besl::BufferMemoryClass::Device, false) => "const device",
 	}
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ComputeBindingMode {
-	ArgumentBuffers,
-	BareResources,
 }
 
 /// The `MeshWrite` struct is one field write into a mesh vertex or primitive at `index`.
@@ -182,7 +175,6 @@ impl Generator {
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
-			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
 			compute_stage_context: None,
 			raster_stage_context: None,
@@ -200,11 +192,6 @@ impl Generator {
 
 	pub fn minified(mut self, minified: bool) -> Self {
 		self.minified = minified;
-		self
-	}
-
-	pub fn compute_binding_mode(mut self, compute_binding_mode: ComputeBindingMode) -> Self {
-		self.compute_binding_mode = compute_binding_mode;
 		self
 	}
 
@@ -276,7 +263,6 @@ fn analyze_hidden_context(
 				update,
 				statements,
 			} => visit(initializer) || visit(condition) || visit(update) || statements.iter().any(&mut visit),
-			besl::Nodes::Raw { input, output, .. } => input.iter().chain(output).any(&mut visit),
 			besl::Nodes::Parameter { r#type, .. }
 			| besl::Nodes::Member { r#type, .. }
 			| besl::Nodes::Specialization { r#type, .. }

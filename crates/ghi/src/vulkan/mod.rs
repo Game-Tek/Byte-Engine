@@ -53,11 +53,9 @@ pub(super) enum Descriptor {
 		image: ImageHandle,
 		sampler: graphics_hardware_interface::SamplerHandle,
 		layout: crate::Layouts,
-		layer: Option<u32>,
 	},
 	Buffer {
 		buffer: BufferHandle,
-		size: graphics_hardware_interface::Ranges,
 	},
 	Sampler {
 		sampler: graphics_hardware_interface::SamplerHandle,
@@ -281,14 +279,8 @@ pub(crate) struct DescriptorHeapArena {
 	device_address: vk::DeviceAddress,
 	size: u64,
 	reserved_size: u64,
-	free_ranges: Vec<DescriptorHeapRange>,
-}
-
-/// The `DescriptorHeapRange` struct identifies reusable application-owned bytes in a descriptor heap.
-#[derive(Clone, Copy)]
-struct DescriptorHeapRange {
-	offset: u64,
-	size: u64,
+	/// The bytes descriptor snapshots can take. The heap size fits in `usize` because the heap is mapped.
+	free: ::utils::RangeAllocator,
 }
 
 /// The `DescriptorHeaps` struct groups the one resource heap and one sampler heap bound by Vulkan command buffers.
@@ -300,64 +292,16 @@ pub(crate) struct DescriptorHeaps {
 impl DescriptorHeapArena {
 	/// Reserves immutable heap bytes so descriptors referenced by in-flight command buffers are never overwritten.
 	pub(crate) fn allocate(&mut self, size: u32, alignment: u64) -> u32 {
-		let size = size as u64;
-		for index in 0..self.free_ranges.len() {
-			let range = self.free_ranges[index];
-			let offset = descriptor_heap::align_up(range.offset, alignment);
-			let end = offset.checked_add(size).expect(
-				"Vulkan descriptor heap allocation overflowed. The most likely cause is an invalid materialization size.",
-			);
-			let range_end = range.offset + range.size;
-			if end > range_end {
-				continue;
-			}
-
-			// Keep the unused bytes on either side of the allocation, including alignment padding, reusable.
-			let prefix = DescriptorHeapRange {
-				offset: range.offset,
-				size: offset - range.offset,
-			};
-			let suffix = DescriptorHeapRange {
-				offset: end,
-				size: range_end - end,
-			};
-			self.free_ranges
-				.splice(index..=index, [prefix, suffix].into_iter().filter(|range| range.size > 0));
-			return u32::try_from(offset).expect(
-				"Vulkan descriptor heap offset exceeded 32 bits. The most likely cause is a heap larger than push-index mappings support.",
-			);
-		}
-
-		panic!(
-			"Vulkan descriptor heap is exhausted. The most likely cause is that live immutable descriptor snapshots exceed the long-lived heap capacity."
+		let range = self.free.take(size as usize, alignment as usize).expect(
+			"Vulkan descriptor heap is exhausted. The most likely cause is that live immutable descriptor snapshots exceed the long-lived heap capacity.",
 		);
+		// The heap is at most `u32::MAX` bytes, which `Context::create_descriptor_heap_arena` asserts.
+		range.start as u32
 	}
 
 	/// Returns a retired immutable snapshot range to the arena after its frame fence completes.
 	pub(crate) fn release(&mut self, offset: u32, size: u32) {
-		if size == 0 {
-			return;
-		}
-		let range = DescriptorHeapRange {
-			offset: offset as u64,
-			size: size as u64,
-		};
-		let index = self.free_ranges.partition_point(|free| free.offset < range.offset);
-		self.free_ranges.insert(index, range);
-
-		let mut index = index.saturating_sub(1);
-		while index + 1 < self.free_ranges.len() {
-			let left = self.free_ranges[index];
-			let right = self.free_ranges[index + 1];
-			let left_end = left.offset + left.size;
-			if left_end < right.offset {
-				index += 1;
-				continue;
-			}
-			let right_end = right.offset + right.size;
-			self.free_ranges[index].size = left_end.max(right_end) - left.offset;
-			self.free_ranges.remove(index + 1);
-		}
+		self.free.give_back(offset as usize..offset as usize + size as usize);
 	}
 
 	pub(crate) fn host_range(&self, offset: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
@@ -687,49 +631,5 @@ mod task_tests {
 		assert!(task.is_pending(Some(4)));
 		assert!(!task.is_pending(Some(5)));
 		assert!(!task.is_pending(Some(6)));
-	}
-}
-
-#[cfg(test)]
-mod descriptor_heap_arena_tests {
-	use super::*;
-
-	fn arena() -> DescriptorHeapArena {
-		DescriptorHeapArena {
-			buffer: vk::Buffer::null(),
-			pointer: crate::vulkan::MappedMemoryPointer(std::ptr::null_mut()),
-			device_address: 0,
-			size: 256,
-			reserved_size: 64,
-			free_ranges: vec![DescriptorHeapRange { offset: 64, size: 192 }],
-		}
-	}
-
-	#[test]
-	fn retired_ranges_are_coalesced_and_reused() {
-		let mut arena = arena();
-		let first = arena.allocate(32, 32);
-		let second = arena.allocate(64, 64);
-
-		assert_eq!((first, second), (64, 128));
-
-		arena.release(first, 32);
-		arena.release(second, 64);
-
-		assert_eq!(arena.allocate(128, 64), 64);
-	}
-
-	#[test]
-	fn alignment_padding_returns_to_the_free_list() {
-		let mut arena = arena();
-		let first = arena.allocate(16, 16);
-		let aligned = arena.allocate(32, 64);
-
-		assert_eq!((first, aligned), (64, 128));
-
-		arena.release(first, 16);
-		arena.release(aligned, 32);
-
-		assert_eq!(arena.allocate(96, 32), 64);
 	}
 }

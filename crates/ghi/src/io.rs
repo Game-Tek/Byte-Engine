@@ -204,6 +204,7 @@ impl Default for ResourceIoQueueDescriptor<'_> {
 /// The `ResourceIoFileDescriptor` struct identifies a raw or compressed file opened by a native storage API.
 #[derive(Clone, Copy, Debug)]
 pub struct ResourceIoFileDescriptor<'a> {
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) path: &'a Path,
 	pub(crate) compression: ResourceIoCompression,
 	pub(crate) name: Option<&'a str>,
@@ -356,6 +357,34 @@ pub struct ResourceIoImageSourceLayout {
 	/// An implementation can omit padding after the final row, so this value can
 	/// be smaller than `bytes_per_image` for a two-dimensional region.
 	pub total_bytes: usize,
+}
+
+impl ResourceIoImageSourceLayout {
+	/// Computes the tightly packed layout of `extent` texels of `format`, which backends that stage or copy image
+	/// sources row by row accept.
+	///
+	/// Returns [`ResourceIoError::InvalidImageLayout`] when the format has no copy layout or the region is empty.
+	#[cfg_attr(
+		target_os = "windows",
+		allow(dead_code, reason = "DX12 reads its copy footprint from the device.")
+	)]
+	pub(crate) fn compact(format: crate::Formats, extent: Extent) -> Result<Self, ResourceIoError> {
+		if extent.width() == 0 {
+			return Err(ResourceIoError::InvalidImageLayout);
+		}
+		let (bytes_per_row, _, bytes_per_image) = format.copy_layout(extent).ok_or(ResourceIoError::InvalidImageLayout)?;
+		let total_bytes = bytes_per_image
+			.checked_mul(extent.depth().max(1) as usize)
+			.ok_or(ResourceIoError::InvalidImageLayout)?;
+		if bytes_per_row == 0 || total_bytes == 0 {
+			return Err(ResourceIoError::InvalidImageLayout);
+		}
+		Ok(Self {
+			bytes_per_row,
+			bytes_per_image,
+			total_bytes,
+		})
+	}
 }
 
 /// Describes one independently schedulable file-to-resource operation.
@@ -527,6 +556,7 @@ pub trait ResourceIoContext {
 }
 
 /// Rejects physical range metadata that cannot describe a nonempty stored block.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 pub(crate) fn validate_source_range(request: usize, source: ResourceIoFileRegion) -> Result<(), ResourceIoError> {
 	if source.stored_range.is_some_and(|range| {
 		range.size == 0

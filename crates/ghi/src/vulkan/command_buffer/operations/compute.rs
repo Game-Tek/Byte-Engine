@@ -47,28 +47,25 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 	}
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
-		let slot = self.device.counters.start(self.counter_sequence(), counter);
+		let slot = self
+			.device
+			.counters
+			.start(crate::counters::frame_sequence(self.frame_key), counter);
 		// The start marks when the GPU reaches the command, before any later work has to complete.
 		self.write_timestamp(vk::PipelineStageFlags2::TOP_OF_PIPE, slot);
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
-		let slot = self.device.counters.end(self.counter_sequence(), counter);
+		let slot = self
+			.device
+			.counters
+			.end(crate::counters::frame_sequence(self.frame_key), counter);
 		// The end waits for every earlier command to finish, so the span covers the measured work's completion.
 		self.write_timestamp(vk::PipelineStageFlags2::BOTTOM_OF_PIPE, slot);
 	}
 }
 
 impl CommandBufferRecording<'_> {
-	/// Returns the frame sequence whose counter slots this recording writes.
-	fn counter_sequence(&self) -> u8 {
-		self.frame_key
-			.expect(
-				"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
-			)
-			.sequence_index
-	}
-
 	/// Writes one GPU timestamp into `slot` of the context's counter query pool once `stage` completes.
 	///
 	/// A device whose queues write no timestamp bits records nothing; its counters always read `None`.

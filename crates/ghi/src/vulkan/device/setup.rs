@@ -325,7 +325,6 @@ impl InnerDevice {
 			timestamp_period,
 			timestamp_valid_bits,
 			queues: stored_queues,
-			settings,
 			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
 			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
 			device,

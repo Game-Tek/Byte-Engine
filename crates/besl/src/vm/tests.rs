@@ -874,23 +874,6 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 }
 
 #[test]
-fn executable_program_compile_rejects_raw_code_blocks() {
-	let script = r#"
-	main: fn () -> void {}
-	"#;
-
-	let program = compile_to_besl(script, None).expect("Expected lexed program");
-	let main = program.get_descendant("main").expect("Expected main function");
-	main.borrow_mut()
-		.add_child(Node::raw(Some("gl_Position = vec4(0);".to_string()), None, None, vec![], vec![]).into());
-
-	match ExecutableProgram::compile(program) {
-		Err(error) => assert_eq!(error, super::VmError::UnsupportedRawCode),
-		Ok(_) => panic!("Expected raw code rejection"),
-	}
-}
-
-#[test]
 fn executable_program_requires_bound_push_constant() {
 	let script = r#"
 	main: fn () -> void {

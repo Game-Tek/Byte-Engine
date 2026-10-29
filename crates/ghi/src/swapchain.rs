@@ -24,6 +24,7 @@ pub(crate) fn pace_present(next_slot: &mut Option<Instant>, interval: Option<Dur
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 pub(crate) struct SwapchainHandle(pub(crate) u64);
 
 impl From<SwapchainHandle> for PrivateHandles {

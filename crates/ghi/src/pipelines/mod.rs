@@ -123,9 +123,4 @@ impl SpecializationMapEntry {
 			value: bytemuck::bytes_of(&value).into(),
 		}
 	}
-
-	/// Returns the byte size of the constant's value.
-	pub fn get_size(&self) -> usize {
-		self.value.len()
-	}
 }

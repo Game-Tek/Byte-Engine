@@ -231,6 +231,7 @@ impl PipelineManagerClient {
 					state: PipelineState::Pending,
 					requested_revision: 0,
 					published_revision: 0,
+					#[cfg(debug_assertions)]
 					kind: kind.clone(),
 					compute: None,
 					sets: None,
@@ -1021,6 +1022,8 @@ struct PipelineEntry {
 	state: PipelineState,
 	requested_revision: u64,
 	published_revision: u64,
+	/// What the pipeline was built from, so debug builds can rebuild it when one of its shader resources changes.
+	#[cfg(debug_assertions)]
 	kind: PipelineRequestKind,
 	/// The dispatch contract of the latest compute pipeline; `None` until one publishes or for raster pipelines.
 	compute: Option<ComputePipeline>,

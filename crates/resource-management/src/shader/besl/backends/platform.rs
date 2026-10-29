@@ -39,10 +39,6 @@ impl PlatformShaderLanguage {
 		matches!(self, Self::Glsl)
 	}
 
-	pub const fn is_msl(self) -> bool {
-		matches!(self, Self::Msl)
-	}
-
 	pub const fn is_hlsl(self) -> bool {
 		matches!(self, Self::Hlsl)
 	}

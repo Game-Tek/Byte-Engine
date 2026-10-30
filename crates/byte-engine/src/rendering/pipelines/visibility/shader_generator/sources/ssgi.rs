@@ -226,3 +226,23 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 	);
 }
 "#;
+
+// Keeps the current reconstruction when it has light or hit information. A smoothed vertex normal can differ from
+// the depth-derived triangle normal enough to reject every tap, even in the interior of a finely faceted ornament.
+// Ray-traced GI carries the environment too, so losing its hit information would expose unoccluded sky reflections.
+pub(crate) const SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE: &str = r#"
+sample_ray_traced_indirect_diffuse: fn (
+	pixel: vec2u,
+	extent: vec2u,
+	position: vec3f,
+	normal: vec3f,
+	geometric_normal: vec3f
+) -> vec4f {
+	let indirect: vec4f = sample_screen_space_indirect_diffuse(pixel, extent, position, normal);
+	if (dot(indirect, indirect) != 0.0) {
+		return indirect;
+	}
+	// Retain both the normal and tangent-plane tests on the retry: depth alone leaks across touching surfaces.
+	return sample_screen_space_indirect_diffuse(pixel, extent, position, geometric_normal);
+}
+"#;

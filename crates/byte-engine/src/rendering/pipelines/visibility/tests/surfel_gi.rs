@@ -108,6 +108,92 @@ const WALL_DEPTH: f32 = 1.0;
 const WALL_NORMAL: [f32; 3] = [0.0, 0.0, -1.0];
 const UP: [f32; 3] = [0.0, 1.0, 0.0];
 
+/// Runs the production material reconstruction against a covered planar face at half resolution.
+fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32; 4]) -> [f32; 4] {
+	use super::super::shader_generator::{
+		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE,
+		SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE, SSGI_SURFACE_WEIGHT_SOURCE,
+		WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+	};
+	const RESULT: ResourceSlot = ResourceSlot::new(0);
+	const VIEW: ResourceSlot = ResourceSlot::new(1048);
+	let (_, layout) = crate::rendering::set_layout::layer!("visibility/layouts/material-evaluation.besl");
+	let source = format!(
+		r#"
+		{layout}
+		{SSGI_STORED_NORMAL_SOURCE}
+		{SSGI_SURFACE_WEIGHT_SOURCE}
+		{INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE}
+		{WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE}
+		{SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE}
+		{SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE}
+		ReconstructionResult: struct {{ light: vec4f }}
+		results: descriptor<{{ type: ReconstructionResult, binding: 0, access: write, memory: device }}>;
+		main: fn () -> void {{
+			results.light = sample_ray_traced_indirect_diffuse(
+				vec2u(16, 16), vec2u(32, 32), vec3f(0.0, 0.0, 1.0),
+				vec3f({}, {}, {}), vec3f({}, {}, {})
+			);
+		}}
+		"#,
+		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
+	);
+	let program = compile(besl::lex(besl::parse(&source).expect("reconstruction fixture")).expect("reconstruction shader"));
+	let mut view = buffer(&program, VIEW);
+	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
+		.expect("view scale");
+	view.write("pixel_to_ray_add", Value::Vec2F([-0.075, 0.075]))
+		.expect("view offset");
+	let mut depth = texture_2d(16, 16, &[[1.0, 0.0, 0.0, 1.0]; 256]);
+	let mut normals = texture_2d(16, 16, &[stored; 256]);
+	let mut history = texture_2d(16, 16, &[[0.3125, 0.15625, 0.0625, 1.0]; 256]);
+	let mut result = buffer(&program, RESULT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEW, &mut view);
+	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
+	descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
+	descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
+	descriptors.bind_buffer(RESULT, &mut result);
+	crate::rendering::shader_vm_test::run_at(&program, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	match result.read("light").expect("reconstructed light") {
+		Value::Vec4F(value) => value,
+		value => panic!("Unexpected reconstructed light: {value:?}."),
+	}
+}
+
+/// A covered ornamental facet must retain its GI and occlusion even when its smoothed vertex normal differs from
+/// its triangle plane by more than the reconstruction's normal gate. The native lion census measured such faces.
+#[test]
+fn surfel_reconstruction_recovers_a_covered_facet_with_a_smoothed_normal() {
+	assert_rgba_close(
+		reconstruct_covered_face([0.9, 0.0, -0.4358899], WALL_NORMAL, SSGI_WALL_NORMAL),
+		[0.3125, 0.15625, 0.0625, 1.0],
+		0.001,
+	);
+}
+
+/// Retrying the face plane must not replace a reconstruction that already has valid light and hit information.
+#[test]
+fn surfel_reconstruction_preserves_an_already_reconstructed_surface() {
+	assert_rgba_close(
+		reconstruct_covered_face(WALL_NORMAL, UP, SSGI_WALL_NORMAL),
+		[0.3125, 0.15625, 0.0625, 1.0],
+		0.001,
+	);
+}
+
+/// The face-plane retry still rejects a differently facing surface at exactly the same depth, rather than falling
+/// back to a depth-only average that leaks a touching wall's light onto a floor.
+#[test]
+fn surfel_reconstruction_rejects_a_touching_surface_in_both_normal_bases() {
+	assert_rgba_close(
+		reconstruct_covered_face(WALL_NORMAL, WALL_NORMAL, [0.0, 1.0, 0.0, 0.0]),
+		[0.0; 4],
+		0.001,
+	);
+}
+
 /// The frame-wide surfel passes, in the order a frame records them.
 struct SurfelPasses {
 	count: ExecutableProgram,

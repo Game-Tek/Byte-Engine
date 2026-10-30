@@ -356,12 +356,19 @@ material_evaluation_suffix: fn () -> void {
 				f32(base_normal.z),
 				0.0
 			);
-			let screen_space_indirect: vec4f = sample_screen_space_indirect_diffuse(
-				pixel_coordinates,
-				image_extent,
-				view_space_surface_position,
-				view_space_normal
-			);
+			let screen_space_indirect: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+			if (push_constant.indirect_diffuse == 2) {
+				let view_space_geometric_normal: vec3f = views.views[0].view * vec4f(
+					geometric_normal.x, geometric_normal.y, geometric_normal.z, 0.0
+				);
+				screen_space_indirect = sample_ray_traced_indirect_diffuse(
+					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, view_space_geometric_normal
+				);
+			} else {
+				screen_space_indirect = sample_screen_space_indirect_diffuse(
+					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal
+				);
+			}
 			// Both sources carry pre-exposed light through half-float images. Undo that scale before combining it
 			// with physical lighting, so the final exposure below applies exactly once.
 			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)

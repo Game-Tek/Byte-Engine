@@ -11,7 +11,6 @@
 // compile and test them so the same graphs can be authored and posted there, but nothing plays them.
 #![cfg_attr(not(feature = "headed"), allow(dead_code, unused_imports))]
 
-#[doc(hidden)]
 // Playing graphs needs the audio hardware interface, which only headed builds have. Authoring and posting
 // them works everywhere, so servers can run the same gameplay code unheard.
 #[cfg(feature = "headed")]
@@ -20,7 +19,6 @@ pub mod audio_system;
 pub mod graph;
 pub(crate) mod sample_loader;
 
-#[doc(hidden)]
 pub mod generator;
 
 #[cfg(feature = "headed")]

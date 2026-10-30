@@ -1353,7 +1353,6 @@ use resource_management::{
 		skeleton::{LocalTransform, Skeleton},
 	},
 };
-#[doc(hidden)]
 pub use runtime::benchmarks;
 pub use runtime::{
 	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, AnimationLoadWorker, AnimationPool,

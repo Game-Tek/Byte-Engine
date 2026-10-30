@@ -13,31 +13,20 @@
 //! See [Build a user interface](/docs/use/gui)
 //! for component, layout, event, focus, and rendering guidance.
 
-#[doc(hidden)]
 pub mod animation;
-#[doc(hidden)]
 pub mod components;
-#[doc(hidden)]
 pub mod control_flow;
 mod drag;
 pub mod element;
-#[doc(hidden)]
 pub mod flow;
 pub(crate) mod font;
-#[doc(hidden)]
 pub mod intersection;
-#[doc(hidden)]
 pub mod layout;
 mod point;
-#[doc(hidden)]
 pub mod primitive;
-#[doc(hidden)]
 pub mod render_pass;
-#[doc(hidden)]
 pub mod style;
-#[doc(hidden)]
 pub mod timer;
-#[doc(hidden)]
 pub mod transform;
 pub mod watch;
 

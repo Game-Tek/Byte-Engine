@@ -8,21 +8,14 @@
 //! other. Create a [`RayQuery`] to learn which body a ray or a segment meets first, and
 //! read the answer from a [`RayQueryResponse`].
 
-#[doc(hidden)]
 pub mod body;
-#[doc(hidden)]
 pub mod collider;
-#[doc(hidden)]
 pub mod constraint;
 mod contact_patch;
-#[doc(hidden)]
 pub mod convex_hull;
-#[doc(hidden)]
 pub mod dynabit;
 mod epa;
-#[doc(hidden)]
 pub mod gjk;
-#[doc(hidden)]
 pub mod intersection;
 mod ray_query;
 mod system;

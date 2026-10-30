@@ -414,7 +414,6 @@ mod player;
 use binding::ClipBinding;
 pub(super) use binding::GraphBinding;
 
-#[doc(hidden)]
 pub mod benchmarks;
 
 pub use player::{

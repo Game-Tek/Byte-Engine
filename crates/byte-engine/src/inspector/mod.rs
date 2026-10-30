@@ -28,7 +28,6 @@ use crate::{
 };
 
 #[cfg(feature = "headed")]
-#[doc(hidden)]
 pub mod http;
 mod message;
 use message::SerializableMessage;

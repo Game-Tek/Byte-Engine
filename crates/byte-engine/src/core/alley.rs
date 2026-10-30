@@ -77,7 +77,6 @@ pub trait IntoLaneResources {
 	/// The wrappers shared with every lane during the blocking dispatch.
 	type Bound: Sync;
 
-	#[doc(hidden)]
 	fn bind(self, parallelism: usize, next_index: &mut usize, _token: lane_resources_private::BindToken) -> Self::Bound;
 }
 

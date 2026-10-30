@@ -8,16 +8,12 @@
 //! destroyed as a unit, which [`SceneGraph`] carries out. A [`Spawner`] spawns a
 //! baked level's entities under one scene.
 
-#[doc(hidden)]
 pub mod anchor;
-#[doc(hidden)]
 pub mod name;
 pub mod pathfinding;
-#[doc(hidden)]
 pub mod scene;
 pub mod level;
 pub mod tasks;
-#[doc(hidden)]
 pub mod transform;
 
 pub use anchor::{Anchor, Anchorage, Anchoring};

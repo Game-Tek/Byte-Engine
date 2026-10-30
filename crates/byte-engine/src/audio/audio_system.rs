@@ -558,7 +558,6 @@ fn f32_to_i16(sample: f32) -> i16 {
 }
 
 /// Callback-only fixtures used by the external audio graph benchmark target.
-#[doc(hidden)]
 pub mod benchmarks {
 	use super::AudioGraphPlayer;
 	use crate::{

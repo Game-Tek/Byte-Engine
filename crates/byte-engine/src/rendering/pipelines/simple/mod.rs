@@ -1,8 +1,6 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
-#[doc(hidden)]
 pub mod pipeline_manager;
-#[doc(hidden)]
 pub mod render_pass;
 pub(crate) mod resource_manager;
 

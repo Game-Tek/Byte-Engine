@@ -27,7 +27,6 @@ use crate::ui::{
 /// It lets [`Properties`] and the declaration futures reach the element of that kind inside the engine's tree. The
 /// engine implements it for every built-in element; you only use it as a type parameter.
 pub trait ElementKind: Sized {
-	#[doc(hidden)]
 	fn from_primitive(primitive: &mut Primitives) -> Option<&mut Self>;
 }
 

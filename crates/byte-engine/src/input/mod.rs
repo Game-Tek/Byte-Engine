@@ -39,14 +39,10 @@ mod registry;
 mod resolve;
 mod sink;
 
-#[doc(hidden)]
 pub mod action;
-#[doc(hidden)]
 pub mod device;
 mod seat;
-#[doc(hidden)]
 pub mod trigger;
-#[doc(hidden)]
 pub mod utils;
 
 pub use action::Action;

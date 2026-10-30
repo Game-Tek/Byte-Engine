@@ -434,7 +434,7 @@ impl GraphicsApplication {
 	/// Returns how far the frame about to be drawn lies between the two most recent simulation steps, from 0 to 1.
 	///
 	/// Renderers show an entity that publishes every step blended by this amount; see
-	/// [`ShownTransforms`](crate::rendering::ShownTransforms). Frame code that places anything over the scene, such
+	/// [`ShownTransforms`]. Frame code that places anything over the scene, such
 	/// as UI that follows such an entity, blends the same way to keep pace with what they draw.
 	pub fn simulation_alpha(&self) -> f32 {
 		self.simulation_alpha

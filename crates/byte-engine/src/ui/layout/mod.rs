@@ -1,7 +1,6 @@
 pub mod context;
 pub mod engine;
 mod retained_tree;
-#[doc(hidden)]
 pub mod snapshot;
 mod visual_transform;
 

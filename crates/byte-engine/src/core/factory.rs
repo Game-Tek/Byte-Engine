@@ -35,7 +35,6 @@ pub trait Creator<T> {
 	}
 
 	/// Publishes a value under `handle` in the owner's matching factory.
-	#[doc(hidden)]
 	fn publish(&self, handle: Handle, value: T);
 }
 

@@ -23,7 +23,7 @@ impl ConeLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value, or when the
-	/// angles can't form a cone: see [`Self::validate_angles`].
+	/// half angles aren't finite or don't satisfy `0 ≤ inner_angle < outer_angle ≤ π` radians.
 	pub fn new(
 		color: LightColor,
 		intensity: PhotometricIntensity,

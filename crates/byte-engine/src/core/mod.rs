@@ -7,27 +7,18 @@
 
 #[doc(hidden)]
 pub(crate) mod async_runtime;
-#[doc(hidden)]
 pub mod channel;
-#[doc(hidden)]
 pub mod entity;
-#[doc(hidden)]
 pub mod factory;
-#[doc(hidden)]
 pub mod listener;
-#[doc(hidden)]
 pub mod message;
 pub mod message_bus;
 pub mod message_observer;
-#[doc(hidden)]
 pub mod publisher;
-#[doc(hidden)]
 pub mod targeted_message;
 
-#[doc(hidden)]
 pub mod alley;
 pub mod machine;
-#[doc(hidden)]
 pub mod threadpool;
 
 pub use entity::Entity;

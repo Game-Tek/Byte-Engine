@@ -15,7 +15,6 @@
 use ::utils::Extent;
 use math::direction_from_orientation;
 
-#[doc(hidden)]
 pub mod common_shader_generator;
 
 mod environment;
@@ -25,36 +24,28 @@ mod fog;
 pub mod debug;
 pub mod device;
 
-#[doc(hidden)]
 pub mod lights;
 pub mod loading;
 pub mod particles;
-#[doc(hidden)]
 pub mod window;
 
 /// Camera state used to derive scene views.
 pub mod camera;
-#[doc(hidden)]
 pub mod mesh;
 
-#[doc(hidden)]
 pub mod renderable;
 
 mod material_parameter;
 mod pipeline_compilation;
-#[doc(hidden)]
 pub mod pipeline_manager;
 mod pose;
 mod resource;
 pub mod set_layout;
 
-#[doc(hidden)]
 pub mod renderer;
 
-#[doc(hidden)]
 pub mod debug_views;
 pub mod render_pass;
-#[doc(hidden)]
 pub mod render_passes;
 pub mod resource_loading;
 pub mod shown_transforms;
@@ -62,7 +53,6 @@ pub mod shown_transforms;
 #[cfg(test)]
 pub(crate) mod shader_vm_test;
 
-#[doc(hidden)]
 pub mod pipelines;
 
 /// Per-output render target state passed to render passes.
@@ -70,7 +60,6 @@ pub mod sink;
 /// Projection and view matrix construction for cameras and lights.
 pub mod view;
 
-#[doc(hidden)]
 pub mod csm;
 
 pub use camera::Camera;

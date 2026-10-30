@@ -5,7 +5,6 @@
 //! pipelines. Implement [`Replicable`] on application messages that need retry
 //! and importance semantics.
 
-#[doc(hidden)]
 pub mod client;
 /// In-memory transport endpoints for deterministic replication tests.
 pub mod channel {
@@ -73,9 +72,7 @@ pub mod channel {
 mod adverse_tests;
 /// Raw BETP datagram processing for transport adapters and defensive tests.
 pub mod datagram;
-#[doc(hidden)]
 pub mod replicable;
-#[doc(hidden)]
 pub mod server;
 
 /// Application data for one send, up to [`betp::packets::MAX_PAYLOAD_SIZE`] bytes.

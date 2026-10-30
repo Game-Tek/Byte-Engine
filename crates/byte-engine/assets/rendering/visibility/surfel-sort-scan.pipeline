@@ -1,1 +1,0 @@
-{"name":"Surfel Sort Scan","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/surfel-sort-scan.besl"}}

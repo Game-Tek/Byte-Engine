@@ -69,7 +69,13 @@ layout!(
 		"visibility/layouts/cascade-fit.besl"
 	]
 );
-layout!(LIGHT_CLUSTERS, ["visibility/layouts/light-clusters.besl"]);
+layout!(
+	LIGHT_CLUSTERS,
+	[
+		"visibility/layouts/light-table.besl",
+		"visibility/layouts/light-clusters.besl"
+	]
+);
 layout!(
 	SKINNING,
 	["visibility/layouts/scene-records.besl", "visibility/layouts/skinning.besl"]
@@ -110,6 +116,32 @@ layout!(
 	RAY_TRACED_SCENE,
 	["visibility/layouts/ray-traced-scene.besl"]
 );
+layout!(
+	/// The hits of the rays of whichever ray-traced technique lights the frame, and the sort that orders them by
+	/// material. See [`super::render_pass::RayHits`].
+	RAY_HITS,
+	["visibility/layouts/ray-hits.besl"]
+);
+layout!(
+	/// The probe volume as its readers see it: the cascades, the probe records and their seen marks, and the atlases
+	/// they sample.
+	PROBE_VOLUME,
+	["visibility/layouts/probe-volume.besl"]
+);
+layout!(
+	/// The frame-wide probe GI set the schedule, trace, shade, and update passes write.
+	PROBE_GI,
+	[
+		"visibility/layouts/probe-volume.besl",
+		"visibility/layouts/light-table.besl",
+		"visibility/layouts/probe-gi.besl"
+	]
+);
+layout!(
+	/// The per-sink set of the probe resolve: its settings and output images.
+	PROBE_RESOLVE,
+	["visibility/layouts/probe-resolve.besl"]
+);
 
 #[cfg(test)]
 mod tests {
@@ -138,6 +170,7 @@ mod tests {
 		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
 		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
 		assert_eq!(stride(&MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(&LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
 		assert_eq!(
 			stride(&MATERIAL_EVALUATION, "light_cluster_parameters"),
 			size_of::<LightClusterParameters>()
@@ -179,6 +212,10 @@ mod tests {
 			&SURFEL_GI,
 			&SURFEL_RESOLVE,
 			&RAY_TRACED_SCENE,
+			&RAY_HITS,
+			&PROBE_VOLUME,
+			&PROBE_GI,
+			&PROBE_RESOLVE,
 		] {
 			assert!(!layout.interface().bindings.is_empty());
 		}

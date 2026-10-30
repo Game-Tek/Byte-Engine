@@ -9,8 +9,8 @@
 // Decodes a normal the SSGI trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks
 // a texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
 // It decodes at half precision, which the normal agreement test tolerates, so the upsample keeps its four pairs in
-// half-width registers. `ssgi-temporal.besl` holds the same decoder at full precision; keep both in sync with
-// `encode_stored_normal` in `ssgi-trace.besl`.
+// half-width registers. `decode_stored_normal` in `layouts/screen-trace.besl` is the same decoder at full precision;
+// keep both in sync with `encode_stored_normal` there.
 pub(crate) const SSGI_STORED_NORMAL_SOURCE: &str = r#"
 ssgi_stored_normal: fn (stored: vec2f16) -> vec3f16 {
 	if (stored.x == 0.0 && stored.y == 0.0) {

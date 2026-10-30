@@ -32,15 +32,16 @@ lights then records its own two stages inside `screen-space`.
 | | `surfel-scan-groups`, `-partials`, `-add` | One exclusive scan over every cell count and every surfel's wanted rays, which also grants the frame's rays. |
 | | `surfel-scatter` | Lists each surfel in its cells, counting each cell's fill down to zero, and writes a record for each granted ray. |
 | `surfel-trace` | `surfel-trace` | Draws each granted ray's direction from its surfel's guide or the cosine-weighted distribution, and traces it with the inline intersector. A miss writes its result. A hit is kept, with its sort key. |
-| | `surfel-sort-scan`, `-scatter` | A counting sort that orders the hits by the material they hit. |
+| | `ray-hit-sort-scan`, `-scatter` | A counting sort, which probe GI shares, that orders the hits by the material they hit. |
 | | `surfel-shade` | A ray tracing pipeline: one invocation per sorted hit runs the hit's closest-hit shader with `invoke`, lights the surface it reports, and votes for the surfel whose light reaches it most. |
 | `surfel-integrate` | `surfel-integrate` | Folds each surfel's ray results into its estimate, its guide, and its radial depth, measures how far its radial depth is clear, and rewrites its record. |
 | `screen-space` | `surfel-resolve` | Lights each half-resolution pixel from the surfels of its cell that can see it, into the images SSGI writes, and votes on spawns and despawns. |
 | | `surfel-allocate` | Turns each tile's spawn request into a surfel. |
 
-`render_pass/surfel_gi.rs` creates the buffers and the stages, and
-`ray_tracing.rs` keeps the shade pass's pipeline and its shader binding table
-current.
+`render_pass/surfel_gi.rs` creates the buffers and the stages,
+`render_pass/ray_hits.rs` the hit buffers and the sort that probe GI shares,
+and `ray_tracing.rs` keeps the shade pass's pipeline and its shader binding
+table current.
 
 ## Rays take turns within a fixed budget
 
@@ -100,10 +101,10 @@ Each material whose bake built a closest-hit shader gets a hit group: the
 shader with the specialization constants of the material's variant. Materials
 with the same shader and constants share the group. Groups keep the number they
 first got, so a pipeline built again with more groups runs every older group as
-before, and group 0 runs `surfel-default-hit.besl`, a black occluder, for every
+before, and group 0 runs `default-hit.besl`, a black occluder, for every
 record whose material's group the published pipeline doesn't have yet.
 
-`SurfelShading` requests the pipeline again once the last request settled and
+`HitShading` requests the pipeline again once the last request settled and
 groups arrived since, so a burst of materials makes a few requests instead of
 one each. The published pipeline keeps shading until the next one publishes,
 and a request that fails leaves its new groups running the default shader. The
@@ -294,7 +295,8 @@ alive.
   `surfel-trace`, and `surfel-integrate` must agree on which ray is which.
 - **A sort key fits 32 bits.** The material slot sits above 20 bits of rank, so
   the material limit stays at most 4,096 and the ray budget at most 2<sup>20</sup>.
-  `SURFEL_HIT_KEYS` in `layouts/surfel-gi.besl` equals `MAX_MATERIALS`.
+  The material counts of `RayHitSort` in `layouts/ray-hits.besl` number
+  `MAX_MATERIALS`.
 - **Records reach the table before their instances.**
   `SceneAccelerationStructures::admit` gives the meshes a frame draws for the
   first time their records and returns the record list the shader binding
@@ -339,8 +341,11 @@ alive.
   `VisibilityFeatures::excludes` leaves out the stems in `SURFEL_GI_PIPELINES`
   and `SURFEL_SHADING_SHADERS`, so a new `surfel-*` pipeline goes in the first
   and a new shader the pipeline manager assembles a pipeline from goes in the
-  second. A stem left out of both is baked for every project, and a platform
-  whose shading language has no ray tracing rejects a ray tracing shader.
+  second. The hit sort and the default hit shader, which probe GI shares, stay
+  while either technique is built in: their stems are in `RAY_HIT_PIPELINES`
+  and `DEFAULT_HIT_SHADERS`. A stem left out of every list is baked for every
+  project, and a platform whose shading language has no ray tracing rejects a
+  ray tracing shader.
 - **Host records match their layers.** Every struct the host sizes buffers
   with has a stride test.
 
@@ -351,7 +356,7 @@ alive.
 | `surfel_grid_lists_every_cell_a_surfel_overlaps_and_leaves_counts_zero` | The grid lists every overlapped cell, never a free slot, and leaves the counts at zero. |
 | `surfel_grid_lists_each_surfel_in_at_most_32_cells` | A full pool of surfels that each overlap 40 to 76 cells takes exactly 32 entries a surfel, and every entry holds a surfel its cell's count promised. |
 | `surfel_scan_grants_rays_round_robin_within_the_budget` | The window of granted rays starts where the last one ended and wraps, and each ray record names its surfel and sample. |
-| `surfel_sort_orders_hits_by_hit_group` | Hits come out in material order and trace order within a material, misses stay out, and the counts end at zero. |
+| `ray_hit_sort_orders_hits_by_material` | Hits come out in material order and trace order within a material, misses stay out, and the counts end at zero. |
 | `surfel_integrate_estimates_bounce_and_occluded_fraction` | A first estimate is the pre-exposed average of the rays, with misses bringing the environment's light, and their hit fraction. |
 | `surfel_integrate_blends_young_surfels_by_count` | A young estimate averages its frames evenly. |
 | `surfel_integrate_clamps_fireflies` | A settled estimate clamps a bright sample near its short-window mean. |

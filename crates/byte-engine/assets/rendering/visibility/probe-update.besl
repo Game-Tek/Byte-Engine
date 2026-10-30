@@ -1,0 +1,272 @@
+// Blends one listed probe's rays into its atlas tiles, one workgroup per probe, then moves the probe out of walls and
+// sorts it into a state.
+//
+// Every irradiance texel averages the rays' light around its direction, weighed by the cosine, which estimates
+// irradiance over π; every distance texel averages the rays' distances and their squares, weighed by the cosine to the
+// power PROBE_DISTANCE_EXPONENT. Each texel keeps PROBE_HYSTERESIS of what it held, less while the probe is young, so
+// its first updates weigh evenly. A probe whose rays' mean light differs from its map's by PROBE_RESTART_RATIO starts
+// over, as a young probe. The border then repeats the edges of both maps across the octahedron's edges. Last, one
+// invocation relocates the probe and sorts it into a state.
+
+PROBE_UPDATE_WORKGROUP_SIZE: const u32 = 256;
+// The irradiance and distance texels of one probe: 6 × 6 and 14 × 14.
+PROBE_IRRADIANCE_TEXELS: const u32 = 36;
+PROBE_DISTANCE_TEXELS: const u32 = 196;
+
+// Each ray's light in RGB and distance in alpha, and its direction.
+rays_light: workgroup<vec4f, 128>;
+rays_direction: workgroup<vec3f, 128>;
+// The irradiance texels the atlas held, then the blended ones, which the border reads, and the blended distance texels.
+irradiance_texels: workgroup<vec4f, 36>;
+distance_texels: workgroup<vec2f, 196>;
+// One when the probe starts its average over this update.
+probe_restart: workgroup<u32, 1>;
+
+// Returns the luminance of linear RGB `light`.
+probe_luminance: fn (light: vec3f) -> f32 {
+	return light.x * 0.2126 + light.y * 0.7152 + light.z * 0.0722;
+}
+
+// Returns the hysteresis of a probe with `updates` updates: the share that weighs every update so far evenly, up to
+// PROBE_HYSTERESIS.
+probe_hysteresis: fn (updates: u32) -> f32 {
+	return min(PROBE_HYSTERESIS, f32(updates) / f32(updates + 1));
+}
+
+// Reports whether a probe with `updates` updates starts its average over, from the rays and the irradiance texels the
+// workgroup loaded. The mean of the irradiance map over every direction is the mean radiance around the probe, which
+// the mean of its rays estimates afresh; the probe restarts when the two differ by PROBE_RESTART_RATIO.
+probe_restarts: fn (updates: u32) -> bool {
+	if (updates == 0) {
+		return false;
+	}
+	let fresh_sum: f32 = 0.0;
+	for (let ray: u32 = 0; ray < PROBE_RAYS; ray = ray + 1) {
+		let light: vec4f = rays_light[ray];
+		fresh_sum = fresh_sum + probe_luminance(vec3f(light.x, light.y, light.z));
+	}
+	let held_sum: f32 = 0.0;
+	for (let texel: u32 = 0; texel < PROBE_IRRADIANCE_TEXELS; texel = texel + 1) {
+		let held: vec4f = irradiance_texels[texel];
+		held_sum = held_sum + probe_luminance(vec3f(held.x, held.y, held.z));
+	}
+	let fresh_mean: f32 = max(fresh_sum / f32(PROBE_RAYS), PROBE_RESTART_FLOOR);
+	let held_mean: f32 = max(held_sum / f32(PROBE_IRRADIANCE_TEXELS), PROBE_RESTART_FLOOR);
+	return fresh_mean > held_mean * PROBE_RESTART_RATIO || held_mean > fresh_mean * PROBE_RESTART_RATIO;
+}
+
+// Returns the record of the probe in `slot` after this update, from the rays the workgroup loaded. `record` is what it
+// held, `spacing` the spacing of its cascade, and `restarted` whether the update started its average over.
+//
+// Relocation moves the probe out through the nearest back face when its rays hit back faces too often, or away from a
+// front face that is too close. The probe is then buried when it still sees into geometry, active when a surface lies
+// in the cells around it or a pixel read it lately, and idle otherwise.
+probe_updated_record: fn (slot: u32, record: ProbeRecord, spacing: f32, restarted: bool) -> ProbeRecord {
+	let grid_position: vec3f = record.coordinate * spacing;
+	let position: vec3f = grid_position + record.offset;
+	let backfaces: u32 = 0;
+	let closest_backface: f32 = PROBE_MISS_DISTANCE;
+	let closest_backface_direction: vec3f = vec3f(0.0, 0.0, 0.0);
+	let closest_frontface: f32 = PROBE_MISS_DISTANCE;
+	let closest_frontface_direction: vec3f = vec3f(0.0, 0.0, 0.0);
+	let near_surface: bool = false;
+	for (let ray: u32 = 0; ray < PROBE_RAYS; ray = ray + 1) {
+		let distance: f32 = rays_light[ray].w;
+		let direction: vec3f = rays_direction[ray];
+		if (distance < 0.0) {
+			backfaces = backfaces + 1;
+			if (-distance < closest_backface) {
+				closest_backface = -distance;
+				closest_backface_direction = direction;
+			}
+		} else if (distance < PROBE_MISS_DISTANCE * 0.5) {
+			if (distance < closest_frontface) {
+				closest_frontface = distance;
+				closest_frontface_direction = direction;
+			}
+			// A front face inside the eight cells around the probe's grid position is a surface it lights.
+			let from_grid: vec3f = position + direction * distance - grid_position;
+			if (abs(from_grid.x) < spacing && abs(from_grid.y) < spacing && abs(from_grid.z) < spacing) {
+				near_surface = true;
+			}
+		}
+	}
+	let buried: bool = f32(backfaces) > PROBE_BURIED_SHARE * f32(PROBE_RAYS);
+	let clearance: f32 = PROBE_MIN_FRONTFACE_DISTANCE * spacing;
+	let moved: vec3f = record.offset;
+	if (buried) {
+		// Through the nearest back face, and on past it by half the clearance.
+		moved = record.offset + closest_backface_direction * (closest_backface + clearance * 0.5);
+	} else if (closest_frontface < clearance) {
+		moved = record.offset - closest_frontface_direction * (clearance - closest_frontface);
+	}
+	let reach: f32 = PROBE_MAX_OFFSET * spacing;
+	let offset: vec3f = record.offset;
+	// A probe that started over counts this update as its first.
+	let updates: u32 = min(record.updates + 1, 1000000);
+	if (restarted) {
+		updates = 1;
+	}
+	if (abs(moved.x) <= reach && abs(moved.y) <= reach && abs(moved.z) <= reach) {
+		// A probe that moved far sees a new neighborhood, so its blend starts over.
+		let shift: vec3f = moved - record.offset;
+		if (dot(shift, shift) > 0.01 * spacing * spacing) {
+			updates = 0;
+		}
+		offset = moved;
+	}
+	let state: u32 = PROBE_STATE_IDLE;
+	if (buried) {
+		state = PROBE_STATE_BURIED;
+	} else if (near_surface || probe_seen_lately(slot)) {
+		state = PROBE_STATE_ACTIVE;
+	}
+	return ProbeRecord(offset, state, record.coordinate, updates, probe_volume_parameters.frame_index, 0, 0, 0);
+}
+
+// Returns, for border texel `border` of a map of `side` × `side` texels inside a one texel border, the border texel's
+// position in the tile in xy and the map texel it repeats in zw. Crossing an edge of the octahedron's square comes back
+// in through the same edge, mirrored around its middle, and each corner repeats the opposite corner.
+probe_border_texel: fn (border: u32, side: u32) -> vec4u {
+	let last: u32 = side - 1;
+	if (border < side) {
+		return vec4u(1 + border, 0, last - border, 0);
+	}
+	if (border < 2 * side) {
+		let column: u32 = border - side;
+		return vec4u(1 + column, side + 1, last - column, last);
+	}
+	if (border < 3 * side) {
+		let row: u32 = border - 2 * side;
+		return vec4u(0, 1 + row, 0, last - row);
+	}
+	if (border < 4 * side) {
+		let row: u32 = border - 3 * side;
+		return vec4u(side + 1, 1 + row, last, last - row);
+	}
+	let corner: u32 = border - 4 * side;
+	if (corner == 0) {
+		return vec4u(0, 0, last, last);
+	}
+	if (corner == 1) {
+		return vec4u(side + 1, 0, 0, last);
+	}
+	if (corner == 2) {
+		return vec4u(0, side + 1, last, 0);
+	}
+	return vec4u(side + 1, side + 1, 0, 0);
+}
+
+main: fn (input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
+	let listed: u32 = input.thread_id.x / PROBE_UPDATE_WORKGROUP_SIZE;
+	// The whole workgroup leaves together, before any barrier.
+	if (listed >= probe_listed_count()) {
+		return;
+	}
+	let slot: u32 = probe_list[listed];
+	let cascade: u32 = probe_slot_cascade(slot);
+	let spacing: f32 = probe_volume_parameters.cascades[cascade].spacing;
+	let record: ProbeRecord = probe_records[slot];
+	if (lane < PROBE_RAYS) {
+		let result: ProbeRayResult = probe_ray_results[listed * PROBE_RAYS + lane];
+		rays_light[lane] = vec4f(result.radiance.x, result.radiance.y, result.radiance.z, result.distance);
+		rays_direction[lane] = probe_ray_direction(lane);
+	}
+	if (lane < PROBE_IRRADIANCE_TEXELS) {
+		let held: vec2u = probe_tile_origin(slot, PROBE_IRRADIANCE_TILE)
+			+ vec2u(lane % PROBE_IRRADIANCE_SIDE, lane / PROBE_IRRADIANCE_SIDE)
+			+ vec2u(1, 1);
+		irradiance_texels[lane] = image_load(probe_irradiance_atlas, held);
+	}
+	workgroup_barrier();
+
+	if (lane == PROBE_UPDATE_WORKGROUP_SIZE - 1) {
+		let restart: u32 = 0;
+		if (probe_restarts(record.updates)) {
+			restart = 1;
+		}
+		probe_restart[0] = restart;
+	}
+	workgroup_barrier();
+
+	let restarted: bool = probe_restart[0] != 0;
+	let hysteresis: f32 = 0.0;
+	if (!restarted) {
+		hysteresis = probe_hysteresis(record.updates);
+	}
+	if (lane < PROBE_IRRADIANCE_TEXELS) {
+		let texel: vec2u = vec2u(lane % PROBE_IRRADIANCE_SIDE, lane / PROBE_IRRADIANCE_SIDE);
+		let direction: vec3f = probe_texel_direction(texel, PROBE_IRRADIANCE_SIDE);
+		let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let total: f32 = 0.0;
+		for (let ray: u32 = 0; ray < PROBE_RAYS; ray = ray + 1) {
+			let weight: f32 = max(0.0, dot(direction, rays_direction[ray]));
+			let light: vec4f = rays_light[ray];
+			// A miss counts as open sky; a hit on either face counts as geometry.
+			let hit: f32 = 0.0;
+			if (light.w < PROBE_MISS_DISTANCE * 0.5) {
+				hit = 1.0;
+			}
+			sum = sum + vec4f(light.x, light.y, light.z, hit) * weight;
+			total = total + weight;
+		}
+		let fresh: vec4f = sum * (1.0 / max(total, 0.0001));
+		let atlas_texel: vec2u = probe_tile_origin(slot, PROBE_IRRADIANCE_TILE) + texel + vec2u(1, 1);
+		// A probe's first update replaces what the atlas held, which may not even be a number yet.
+		let blended: vec4f = fresh;
+		if (hysteresis > 0.0) {
+			blended = fresh * (1.0 - hysteresis) + irradiance_texels[lane] * hysteresis;
+		}
+		write(probe_irradiance_atlas, atlas_texel, blended);
+		irradiance_texels[lane] = blended;
+	} else if (lane < PROBE_IRRADIANCE_TEXELS + PROBE_DISTANCE_TEXELS) {
+		let index: u32 = lane - PROBE_IRRADIANCE_TEXELS;
+		let texel: vec2u = vec2u(index % PROBE_DISTANCE_SIDE, index / PROBE_DISTANCE_SIDE);
+		let direction: vec3f = probe_texel_direction(texel, PROBE_DISTANCE_SIDE);
+		let limit: f32 = PROBE_DISTANCE_LIMIT * spacing;
+		let sum: vec2f = vec2f(0.0, 0.0);
+		let total: f32 = 0.0;
+		for (let ray: u32 = 0; ray < PROBE_RAYS; ray = ray + 1) {
+			let weight: f32 = pow(max(0.0, dot(direction, rays_direction[ray])), PROBE_DISTANCE_EXPONENT);
+			let distance: f32 = rays_light[ray].w;
+			if (distance < 0.0) {
+				distance = -distance * PROBE_BACKFACE_DISTANCE;
+			}
+			distance = min(distance, limit);
+			sum = sum + vec2f(distance, distance * distance) * weight;
+			total = total + weight;
+		}
+		let atlas_texel: vec2u = probe_tile_origin(slot, PROBE_DISTANCE_TILE) + texel + vec2u(1, 1);
+		let previous: vec4f = image_load(probe_distance_atlas, atlas_texel);
+		// Without rays near its direction, a texel keeps what it held, or starts at the limit.
+		let blended: vec2f = vec2f(previous.x, previous.y);
+		if (hysteresis == 0.0) {
+			blended = vec2f(limit, limit * limit);
+		}
+		if (total > 0.000001) {
+			blended = sum * (1.0 / total) * (1.0 - hysteresis) + blended * hysteresis;
+		}
+		write(probe_distance_atlas, atlas_texel, vec4f(blended.x, blended.y, 0.0, 0.0));
+		distance_texels[index] = blended;
+	}
+	workgroup_barrier();
+
+	if (lane < 4 * PROBE_IRRADIANCE_SIDE + 4) {
+		let border: vec4u = probe_border_texel(lane, PROBE_IRRADIANCE_SIDE);
+		let origin: vec2u = probe_tile_origin(slot, PROBE_IRRADIANCE_TILE);
+		write(
+			probe_irradiance_atlas,
+			origin + vec2u(border.x, border.y),
+			irradiance_texels[border.w * PROBE_IRRADIANCE_SIDE + border.z]
+		);
+	} else if (lane < 4 * PROBE_IRRADIANCE_SIDE + 4 + 4 * PROBE_DISTANCE_SIDE + 4) {
+		let border: vec4u = probe_border_texel(lane - (4 * PROBE_IRRADIANCE_SIDE + 4), PROBE_DISTANCE_SIDE);
+		let origin: vec2u = probe_tile_origin(slot, PROBE_DISTANCE_TILE);
+		let moments: vec2f = distance_texels[border.w * PROBE_DISTANCE_SIDE + border.z];
+		write(probe_distance_atlas, origin + vec2u(border.x, border.y), vec4f(moments.x, moments.y, 0.0, 0.0));
+	} else if (lane == PROBE_UPDATE_WORKGROUP_SIZE - 1) {
+		// Relocation and classification read every ray, so one invocation runs them.
+		probe_records[slot] = probe_updated_record(slot, record, spacing, restarted);
+	}
+}

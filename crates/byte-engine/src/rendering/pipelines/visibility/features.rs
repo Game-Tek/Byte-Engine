@@ -21,6 +21,9 @@ pub const SSGI_ENABLED_PARAMETER: &str = "ssgi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds surfel GI into the project, so `gi.technique` can
 /// select it.
 pub const SURFEL_GI_ENABLED_PARAMETER: &str = "surfel-gi.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that builds probe GI into the project, so `gi.technique` can
+/// select it.
+pub const PROBE_GI_ENABLED_PARAMETER: &str = "probe-gi.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds contact shadows into the project. Its runtime
 /// value also turns them on and off.
 pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
@@ -76,8 +79,8 @@ pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
 /// Shaders mark a feature's code with a statement that reads a member named after it, such as
 /// `if (push_constant.ssgi != 0) { ... }` or `let slot: u32 = debug_view_slot(parameters.debug_views, 0u);`. The
 /// shader generators drop those statements for a left-out feature, so the bindings only they use are left out too.
-/// Code that serves either source of indirect diffuse light, SSGI or surfel GI, reads `indirect_diffuse` and stays
-/// while either is built in.
+/// Code that serves every source of indirect diffuse light, SSGI, surfel GI, or probe GI, reads `indirect_diffuse` and
+/// stays while any of them is built in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VisibilityFeatures {
 	/// Whether GTAO occlusion reaches material evaluation.
@@ -87,6 +90,9 @@ pub struct VisibilityFeatures {
 	/// Whether ray-traced surfel global illumination reaches material evaluation, in place of SSGI on a device that
 	/// traces rays.
 	pub surfel_gi: bool,
+	/// Whether ray-traced probe global illumination reaches material evaluation, in place of SSGI on a device that
+	/// traces rays.
+	pub probe_gi: bool,
 	/// Whether the sun visibility resolve multiplies in the contact-shadow trace.
 	pub contact_shadows: bool,
 	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
@@ -96,12 +102,13 @@ pub struct VisibilityFeatures {
 }
 
 impl Default for VisibilityFeatures {
-	/// Every rendering feature but surfel GI, and debug views in debug builds only.
+	/// Every rendering feature but the ray-traced GI techniques, and debug views in debug builds only.
 	fn default() -> Self {
 		Self {
 			gtao: true,
 			ssgi: true,
 			surfel_gi: false,
+			probe_gi: false,
 			contact_shadows: true,
 			debug_views: cfg!(debug_assertions),
 			material_evaluation: MaterialEvaluationMode::default(),
@@ -133,6 +140,7 @@ impl VisibilityFeatures {
 			gtao: built_in(GTAO_ENABLED_PARAMETER, defaults.gtao),
 			ssgi: built_in(SSGI_ENABLED_PARAMETER, defaults.ssgi),
 			surfel_gi: built_in(SURFEL_GI_ENABLED_PARAMETER, defaults.surfel_gi),
+			probe_gi: built_in(PROBE_GI_ENABLED_PARAMETER, defaults.probe_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
 			debug_views: built_in(DEBUG_VIEWS_ENABLED_PARAMETER, defaults.debug_views),
 			material_evaluation: parameters
@@ -143,21 +151,39 @@ impl VisibilityFeatures {
 		}
 	}
 
+	/// Returns whether a built-in technique traces rays, so materials need closest-hit shaders and the device needs ray
+	/// tracing.
+	pub fn traces_rays(&self) -> bool {
+		self.surfel_gi || self.probe_gi
+	}
+
 	/// Returns each feature's shader member name, the directory under `byte-engine/rendering/` and the stems of the
 	/// engine assets only it uses, and whether the project builds it in. Each stem names a pipeline and its shader, or a
 	/// shader the engine assembles a pipeline from, which takes a row of its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 8] {
-		use super::ray_tracing::SURFEL_SHADING_SHADERS;
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 12] {
+		use super::ray_tracing::{DEFAULT_HIT_SHADERS, PROBE_SHADING_SHADERS, SURFEL_SHADING_SHADERS};
 		use super::render_pass::{
-			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, SSGI_PIPELINES, SURFEL_GI_PIPELINES,
+			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, PROBE_GI_PIPELINES, RAY_HIT_PIPELINES,
+			SSGI_PIPELINES, SURFEL_GI_PIPELINES,
 		};
 		[
 			("gtao", "visibility/", &GTAO_PIPELINES, self.gtao),
 			("ssgi", "visibility/", &SSGI_PIPELINES, self.ssgi),
 			("surfel_gi", "visibility/", &SURFEL_GI_PIPELINES, self.surfel_gi),
 			("surfel_gi", "visibility/", &SURFEL_SHADING_SHADERS, self.surfel_gi),
+			("probe_gi", "visibility/", &PROBE_GI_PIPELINES, self.probe_gi),
+			("probe_gi", "visibility/", &PROBE_SHADING_SHADERS, self.probe_gi),
+			// Every ray tracing pipeline runs the default closest hit for the materials whose own hit group it lacks, and
+			// both techniques sort their hits with the same pipelines.
+			("traces_rays", "visibility/", &DEFAULT_HIT_SHADERS, self.traces_rays()),
+			("traces_rays", "visibility/", &RAY_HIT_PIPELINES, self.traces_rays()),
 			// Material evaluation reads indirect diffuse light from the same images whichever source wrote them.
-			("indirect_diffuse", "visibility/", &[], self.ssgi || self.surfel_gi),
+			(
+				"indirect_diffuse",
+				"visibility/",
+				&[],
+				self.ssgi || self.surfel_gi || self.probe_gi,
+			),
 			(
 				"contact_shadows",
 				"visibility/",
@@ -277,6 +303,50 @@ mod tests {
 	}
 
 	#[test]
+	fn probe_gi_parameter_leaves_out_every_probe_asset() {
+		let left_out = VisibilityFeatures::from_parameters(&[Parameter::new(PROBE_GI_ENABLED_PARAMETER, "false")][..]);
+		let built_in = VisibilityFeatures::from_parameters(&[Parameter::new(PROBE_GI_ENABLED_PARAMETER, "true")][..]);
+		let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
+		let assets: Vec<String> = std::fs::read_dir(directory)
+			.expect("the visibility assets")
+			.map(|entry| {
+				entry
+					.expect("a visibility asset")
+					.file_name()
+					.into_string()
+					.expect("a UTF-8 file name")
+			})
+			.filter(|name| name.starts_with("probe-") && (name.ends_with(".besl") || name.ends_with(".pipeline")))
+			.collect();
+
+		// The compute passes have pipeline assets, and the shade pass's ray tracing shader has only its shader.
+		assert!(assets.iter().any(|asset| asset == "probe-update.pipeline"), "{assets:?}");
+		assert!(assets.iter().any(|asset| asset == "probe-shade.besl"), "{assets:?}");
+		for asset in &assets {
+			let id = format!("byte-engine/rendering/visibility/{asset}");
+			assert!(left_out.excludes(&id), "a bake without probe GI should leave out {asset}");
+			assert!(!built_in.excludes(&id), "a bake with probe GI should keep {asset}");
+		}
+	}
+
+	#[test]
+	fn the_default_hit_stays_while_either_technique_traces_rays() {
+		let default_hit = "byte-engine/rendering/visibility/default-hit.besl";
+		let features = |surfel_gi, probe_gi| VisibilityFeatures {
+			surfel_gi,
+			probe_gi,
+			..VisibilityFeatures::default()
+		};
+
+		assert!(features(false, false).excludes(default_hit));
+		assert!(!features(true, false).excludes(default_hit));
+		assert!(!features(false, true).excludes(default_hit));
+		// Each technique keeps only its own shade pass.
+		assert!(features(false, true).excludes("byte-engine/rendering/visibility/surfel-shade.besl"));
+		assert!(features(true, false).excludes("byte-engine/rendering/visibility/probe-shade.besl"));
+	}
+
+	#[test]
 	fn debug_views_parameter_leaves_out_the_present_pass() {
 		let left_out = VisibilityFeatures::from_parameters(&[Parameter::new(DEBUG_VIEWS_ENABLED_PARAMETER, "false")][..]);
 		let built_in = VisibilityFeatures::from_parameters(&[Parameter::new(DEBUG_VIEWS_ENABLED_PARAMETER, "true")][..]);
@@ -308,6 +378,7 @@ mod tests {
 			gtao: false,
 			ssgi: false,
 			surfel_gi: false,
+			probe_gi: false,
 			contact_shadows: false,
 			debug_views: false,
 			material_evaluation: MaterialEvaluationMode::Pipelines,

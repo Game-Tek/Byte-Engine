@@ -354,7 +354,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		))
 	}
 
-	/// Builds the closest-hit shader that reports `graph`'s surface to the rays that hit it, when surfel GI is built in.
+	/// Builds the closest-hit shader that reports `graph`'s surface to the rays that hit it, when surfel GI or probe GI is
+	/// built in.
 	///
 	/// Its `main` takes the hit as its stage input and the `HitSurface` payload, and returns the payload with the
 	/// surface's diffuse albedo, emission, and normal. Static parameters are the same specialization constants as in
@@ -364,7 +365,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
 	) -> Result<Option<Node<'a>>, String> {
-		if !self.features.surfel_gi {
+		if !self.features.traces_rays() {
 			return Ok(None);
 		}
 		let (body, features) = material::material_hit_body(graph, parameters).map_err(|error| error.to_string())?;

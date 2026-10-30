@@ -21,8 +21,6 @@ SURFEL_RESOLVE_WORKGROUP_SIZE: const u32 = 64;
 SURFEL_RESOLVE_TILE_RADIUS: const u32 = 2;
 SURFEL_RESOLVE_TILE_WIDTH: const u32 = 12;
 SURFEL_RESOLVE_TILE_SIZE: const u32 = 144;
-// Matches the finite-difference degeneracy test of the SSGI trace and GTAO.
-SURFEL_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
 // A pixel spawns only while its coverage, its second-largest weight, and its cell's surfel count stay below these.
 SURFEL_SPAWN_COVERAGE: const f32 = 0.1;
 SURFEL_SPAWN_SECOND_WEIGHT: const f32 = 0.4;
@@ -35,41 +33,8 @@ SURFEL_PARENT_FACING: const f32 = 0.9;
 SURFELS_VIEW: const u32 = 6;
 SURFEL_COVERAGE_VIEW: const u32 = 7;
 
-// Reads the depth `offset` texels away from `pixel`, or zero when that texel is outside the image.
-// Keep in sync with `neighbor_depth` in `ssgi-trace.besl`.
-neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -> f32 {
-	let x: f32 = f32(pixel.x) + offset_x;
-	let y: f32 = f32(pixel.y) + offset_y;
-	if (x < 0.0 || y < 0.0 || x >= f32(extent.x) || y >= f32(extent.y)) {
-		return 0.0;
-	}
-	return fetch(depth_pyramid, vec2u(u32(x), u32(y))).x;
-}
-
-// Returns the view-space tangent along one screen axis from the side whose neighbors best extend the center's surface.
-// Keep in sync with `axis_tangent` in `ssgi-trace.besl`, which explains the choice.
-axis_tangent: fn (
-	pixel: vec2f,
-	axis: vec2f,
-	center_position: vec3f,
-	positive_z: f32,
-	negative_z: f32,
-	positive_far_z: f32,
-	negative_far_z: f32
-) -> vec3f {
-	let positive_error: f32 = side_error(center_position.z, positive_z, positive_far_z);
-	let negative_error: f32 = side_error(center_position.z, negative_z, negative_far_z);
-	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
-		return view_position(pixel + axis, positive_z) - center_position;
-	}
-	if (negative_z != 0.0) {
-		return center_position - view_position(pixel - axis, negative_z);
-	}
-	return vec3f(0.0, 0.0, 0.0);
-}
-
-// Returns `axis_tangent` with neighbor depths read from the workgroup's tile. Keep in sync with `tile_axis_tangent` in
-// `ssgi-trace.besl`.
+// Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
+// in the tile.
 tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
 	return axis_tangent(
 		pixel,
@@ -80,39 +45,6 @@ tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f
 		tile_depth[center_index + 2 * stride],
 		tile_depth[center_index - 2 * stride]
 	);
-}
-
-// Turns two screen-axis tangents into a camera-facing view-space normal, or zero when they are degenerate. Keep in
-// sync with `tangent_normal` in `ssgi-trace.besl`.
-tangent_normal: fn (dx: vec3f, dy: vec3f, center_position: vec3f) -> vec3f {
-	let unnormalized: vec3f = cross(dx, dy);
-	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
-	let tangent_product: f32 = dot(dx, dx) * dot(dy, dy);
-	if (tangent_product == 0.0 || normal_length_sq <= tangent_product * SURFEL_NORMAL_SIN_SQ_EPSILON) {
-		return vec3f(0.0, 0.0, 0.0);
-	}
-	let normal: vec3f = unnormalized * inversesqrt(normal_length_sq);
-	if (dot(normal, center_position) > 0.0) {
-		return vec3f(0.0, 0.0, 0.0) - normal;
-	}
-	return normal;
-}
-
-// Encodes a unit normal as an octahedral pair for the two-channel normal image, or zero for a zero normal. Keep in sync
-// with `encode_stored_normal` in `ssgi-trace.besl`, whose readers decode both.
-encode_stored_normal: fn (normal: vec3f) -> vec4f {
-	let length_l1: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
-	if (length_l1 == 0.0) {
-		return vec4f(0.0, 0.0, 0.0, 0.0);
-	}
-	let projected: vec2f = vec2f(normal.x, normal.y) * (1.0 / length_l1);
-	if (normal.z < 0.0) {
-		projected = vec2f(
-			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
-			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
-		);
-	}
-	return vec4f(projected.x, projected.y, 0.0, 0.0);
 }
 
 // Transforms a view-space point or direction (w = 0) of the sink's camera to world space.

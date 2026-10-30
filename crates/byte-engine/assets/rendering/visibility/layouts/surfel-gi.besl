@@ -46,12 +46,6 @@ SURFEL_RAY_SLOT_BITS: const u32 = 24;
 SURFEL_RAY_SLOT_MASK: const u32 = 16777215;
 // How far a surfel's ray reaches, in meters.
 SURFEL_RAY_LENGTH: const f32 = 10000.0;
-// The material slots hits sort by: the visibility pipeline's material limit.
-SURFEL_HIT_KEYS: const u32 = 1024;
-// A hit's sort key holds its rank among the hits on its material in the low SURFEL_HIT_RANK_BITS bits, which fit the
-// largest ray budget, and the material's slot above them.
-SURFEL_HIT_RANK_BITS: const u32 = 20;
-SURFEL_HIT_RANK_MASK: const u32 = 1048575;
 // Each surfel's guide splits its hemisphere into 8 × 8 cells of equal solid angle, each holding the light its rays
 // found there lately.
 SURFEL_GUIDE_SIDE: const u32 = 8;
@@ -157,30 +151,6 @@ SurfelRayResult: struct {
 	guided: u32,
 }
 
-// One ray's hit, as the shade pass rebuilds it for `invoke`.
-SurfelHit: struct {
-	origin: vec3f,
-	distance: f32,
-	barycentrics: vec2f,
-	// The ray's unit direction, in two octahedral 16-bit coordinates.
-	direction: u32,
-	record: u32,
-	custom_index: u32,
-	geometry_index: u32,
-	primitive_index: u32,
-	_padding: u32,
-}
-
-// The counting sort that orders the frame's hits by the material they hit.
-SurfelHitSort: struct {
-	// The hits on each material slot, counted while the trace runs.
-	counts: atomicu32[1024],
-	// Where each material's run of sorted hits starts.
-	offsets: u32[1024],
-	// The frame's hits, which the shade pass runs one invocation for each of.
-	hit_count: u32,
-}
-
 // The lifecycle of one pool slot.
 SurfelState: struct {
 	// Zero for a free slot. Otherwise one plus the surfel's age: frames it went without a keep-alive vote, plus rent.
@@ -240,13 +210,6 @@ surfel_irradiance: descriptor<{ type: SurfelIrradiance[], binding: 1130, access:
 // Each ray the budget granted this frame, as a ray record.
 surfel_rays: descriptor<{ type: u32[], binding: 1131, access: read_write }>;
 surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 1132, access: read_write }>;
-// Each ray's hit, at the ray's index. Only rays that hit write theirs.
-surfel_hits: descriptor<{ type: SurfelHit[], binding: 1133, access: read_write }>;
-// Each ray's sort key, or NO_SURFEL for a miss.
-surfel_hit_keys: descriptor<{ type: u32[], binding: 1134, access: read_write }>;
-surfel_hit_sort: descriptor<{ type: SurfelHitSort, binding: 1135, access: read_write }>;
-// The index of each ray that hit, in the order of the materials they hit.
-surfel_sorted_hits: descriptor<{ type: u32[], binding: 1136, access: read_write }>;
 // The environment's irradiance, which lights the pixels no surfel covers yet.
 surfel_environment_irradiance: descriptor<{ type: TextureCube, binding: 1137, access: read }>;
 // Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.

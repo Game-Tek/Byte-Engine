@@ -1,14 +1,14 @@
-//! The acceleration structures surfel GI traces rays through: one bottom level per mesh, over its opaque primitives at
-//! full detail, and a top level that places the frame's instances.
+//! The acceleration structures surfel GI and probe GI trace rays through: one bottom level per mesh, over its opaque
+//! primitives at full detail, and a top level that places the frame's instances.
 //!
 //! The scene's rays hit what the Reference's ray-traced scene rules describe. Bottom levels build on the render
 //! context, a frame's worth of triangles at a time, because the loader's copy queue can't build them; see the loading
 //! design note. Each mesh's geometries take a run of consecutive hit records, which ray tracing pipelines map to the
 //! hit shaders of the geometries' materials.
 //!
-//! Next, the surfel trace and shade passes bind [`SceneAccelerationStructures::descriptor_set`], which holds the top
-//! level and the geometry table that leads a hit to the frame's mesh record of the primitive it hit and to that
-//! primitive's triangles.
+//! Next, the trace and shade passes of surfel GI and probe GI bind [`SceneAccelerationStructures::descriptor_set`],
+//! which holds the top level and the geometry table that leads a hit to the frame's mesh record of the primitive it hit
+//! and to that primitive's triangles.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -219,7 +219,7 @@ pub(crate) fn instance_transform(model: Mat4x3f) -> [[f32; 4]; 3] {
 /// then the top level it places them in.
 ///
 /// [`SceneAccelerationStructures::prepare`] makes it; the sink that records the frame-wide work records it before the
-/// surfel grid.
+/// stages of the technique that traces the frame's rays.
 #[derive(Clone, Copy)]
 pub(crate) struct AccelerationStructureWork<'a> {
 	pub(crate) builds: &'a [ghi::BottomLevelAccelerationStructureHandle],
@@ -230,10 +230,10 @@ pub(crate) struct AccelerationStructureWork<'a> {
 /// The `SceneAccelerationStructures` struct keeps the bottom level of every mesh renderables use, and the top level
 /// that places the frame's instances.
 ///
-/// The visibility pipeline manager creates it when surfel GI is built in and the device traces rays. Register each
-/// mesh with [`Self::register_mesh`] as its first renderable arrives. Each frame, call [`Self::admit`] and write the
-/// shader binding table from the hit records it returns; then, when surfel GI lights the frame, call
-/// [`Self::prepare`], record its work with the frame-wide work, and call [`Self::commit`].
+/// The visibility pipeline manager creates it when surfel GI or probe GI is built in and the device traces rays.
+/// Register each mesh with [`Self::register_mesh`] as its first renderable arrives. Each frame, call [`Self::admit`]
+/// and write the shader binding table from the hit records it returns; then, when either technique lights the frame,
+/// call [`Self::prepare`], record its work with the frame-wide work, and call [`Self::commit`].
 pub(crate) struct SceneAccelerationStructures {
 	/// The ray-traced scene set, which binds the top level, the flat triangles, and the geometry records.
 	descriptor_set: ghi::DescriptorSetHandle,

@@ -1,8 +1,6 @@
 LIGHT_CLUSTER_COLUMNS: const u32 = 16;
 LIGHT_CLUSTER_ROWS: const u32 = 8;
 LIGHT_CLUSTER_MASK_WORDS: const u32 = 32;
-DIRECTIONAL_LIGHT: const u32 = 68;
-CONE_LIGHT: const u32 = 1;
 
 // Returns the squared distance from a point to an axis-aligned box, which is zero inside the box.
 squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {

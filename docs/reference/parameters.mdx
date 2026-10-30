@@ -77,7 +77,7 @@ Booleans here are lenient.
 | `render.debug.labels` | The value of `render.debug` | Object labels and command debug groups. |
 | `render.ghi.features.counters` | `true` on debug builds, `false` on release builds | GPU timing counters. While off, no `frame`, `scene`, `pass`, or `stage` GPU metric reports a time. |
 | `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
-| `render.ghi.features.ray-tracing` | The value of `render.surfel-gi.enabled` | Requests ray tracing from the device. Only the Metal backend traces rays; elsewhere the device reports none. |
+| `render.ghi.features.ray-tracing` | `true` when `render.surfel-gi.enabled` or `render.probe-gi.enabled` is | Requests ray tracing from the device. Only the Metal backend traces rays; elsewhere the device reports none. |
 | `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
 
 ## Renderer and loader
@@ -102,6 +102,7 @@ two names.
 | `render.gtao.enabled` | `true` | Ground-truth ambient occlusion in material shaders, its pipelines, and its pass. |
 | `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines, which makes `ssgi` a `render.gi.technique` value. |
 | `render.surfel-gi.enabled` | `false` | Ray-traced surfel global illumination, its pipelines, and its ray tracing shaders, which makes `surfels` a `render.gi.technique` value. See [indirect diffuse light](/docs/reference/rendering#indirect-diffuse-light). |
+| `render.probe-gi.enabled` | `false` | Ray-traced probe global illumination, its pipelines, and its ray tracing shaders, which makes `probes` a `render.gi.technique` value. See [probe GI](/docs/reference/rendering#probe-gi). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
 | `render.material-evaluation` | `pipelines` | How material evaluation runs: `pipelines` or `uber`. Any other value stops the application at startup. See [materials](/docs/reference/rendering#materials). |
 
@@ -124,6 +125,8 @@ Every value here is validated, and a bad one stops startup.
 | `render.directional-shadows.resolution` | A positive multiple of 16 | 2,048 | Cascade texels per side. |
 | `render.surfel-gi.surfel-capacity` | A power of two from 1,024 through 16,777,216 | 32,768 | The most surfels alive at once. |
 | `render.surfel-gi.ray-budget` | A multiple of 1,024 from 1,024 through 1,048,576 | 16,384 | The most rays surfels trace each frame. |
+| `render.probe-gi.ray-budget` | A multiple of 128 from 128 through 1,048,576 | 65,536 | The rays probes trace each frame, 128 for each probe updated. |
+| `render.probe-gi.spacing` | Meters from 0.05 through 100 | 1 | How far apart the probes of the finest cascade stand. Each coarser cascade doubles it. |
 
 ## Runtime settings
 
@@ -134,7 +137,7 @@ fatal, and the inspector can change them while the application runs.
 | --- | --- | --- | --- |
 | `render.pass.<name>` | `enabled` or `bypassed` | `enabled` | Switches a render pass between its prepare and bypass paths. An update for a pass not installed yet waits for it. |
 | `render.gi.enabled` | Strict boolean | `true` | Whether a global illumination technique lights indirect diffuse light. Off, the environment lights it alone. |
-| `render.gi.technique` | `ssgi` or `surfels`, in any letter case | `ssgi`, or `surfels` when only surfel GI is built in | The technique that lights indirect diffuse light. A technique left out of the bake is rejected. |
+| `render.gi.technique` | `ssgi`, `surfels`, or `probes`, in any letter case | The first built in of `ssgi`, `probes`, and `surfels` | The technique that lights indirect diffuse light. A technique left out of the bake is rejected. |
 | `render.gtao.radius` | Finite number, zero or more | 1 | The ambient occlusion search radius in world units. |
 | `render.gtao.samples-per-ray` | 1 through 32 | 4 | Samples along each ray. |
 | `render.gtao.radial-rays` | An even number from 2 through 32 | 6 | Ray directions. |
@@ -144,9 +147,10 @@ fatal, and the inspector can change them while the application runs.
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
 
 The `enabled` names of GTAO and contact shadows double as runtime settings
-with the same meaning. `render.ssgi.enabled`, `render.surfel-gi.enabled`, the
-surfel capacity, and the ray budget keep their startup values: a runtime update
-to another value is rejected. Pass names a default
+with the same meaning. `render.ssgi.enabled`, `render.surfel-gi.enabled`,
+`render.probe-gi.enabled`, the surfel capacity, the ray budgets, and the probe
+spacing keep their startup values: a runtime update to another value is
+rejected. Pass names a default
 setup can install are `bloom`, `motion-blur`, `smaa`, `lens-flare`,
 `exponential-height-fog`, `atmosphere sky` (with a space), `ui`, and
 `debug-meshes`; a pass exists only when its setup function ran.

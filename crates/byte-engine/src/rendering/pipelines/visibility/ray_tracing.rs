@@ -1,13 +1,14 @@
-//! The ray tracing pipeline that shades surfel hits, and the hit groups it runs for the scene's materials.
+//! The ray tracing pipelines that shade the hits of surfel GI's and probe GI's rays, and the hit groups they run for
+//! the scene's materials.
 //!
 //! Each material whose bake built a closest-hit shader runs a hit group: that shader with the constants that specialize
 //! it. Groups keep the number they got when a material first asked for them, so a pipeline built again with more groups
-//! runs every older group as before. Group 0 runs `surfel-default-hit.besl`, a black occluder, for every hit record
+//! runs every older group as before. Group 0 runs `default-hit.besl`, a black occluder, for every hit record
 //! whose material's group isn't in the published pipeline yet. The pipeline compiles on the pipeline compiler threads,
 //! and the published one keeps shading until the next one publishes.
 //!
-//! Next, [`super::render_pass::SurfelPool::prepare`] shades the frame's hits with the pipeline and the shader binding
-//! table [`SurfelShading::prepare`] returns.
+//! Next, [`super::render_pass::SurfelPool::prepare`] and [`super::render_pass::ProbeVolume::prepare`] shade the frame's
+//! hits with the pipeline and the shader binding table [`HitShading::prepare`] returns.
 
 use ghi::context::ContextCreate as _;
 use utils::hash::HashMap;
@@ -16,14 +17,21 @@ use crate::rendering::pipeline_compilation::{HitGroupShader, RayTracingPipelineR
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 
 /// The ray generation shader that shades surfel hits.
-const SURFEL_SHADE_SHADER: &str = "byte-engine/rendering/visibility/surfel-shade.besl";
+pub(super) const SURFEL_SHADE_SHADER: &str = "byte-engine/rendering/visibility/surfel-shade.besl";
+/// The ray generation shader that shades probe hits.
+pub(super) const PROBE_SHADE_SHADER: &str = "byte-engine/rendering/visibility/probe-shade.besl";
 /// The closest-hit shader of hit group 0.
-const DEFAULT_HIT_SHADER: &str = "byte-engine/rendering/visibility/surfel-default-hit.besl";
-/// The stems of [`SURFEL_SHADE_SHADER`] and [`DEFAULT_HIT_SHADER`], which a bake leaves out with the rest of surfel GI.
-/// They have no pipeline asset, because [`SurfelShading`] assembles the pipeline from them.
-pub(super) const SURFEL_SHADING_SHADERS: [&str; 2] = ["surfel-shade", "surfel-default-hit"];
+const DEFAULT_HIT_SHADER: &str = "byte-engine/rendering/visibility/default-hit.besl";
+/// The stem of [`SURFEL_SHADE_SHADER`], which a bake leaves out with the rest of surfel GI, and of
+/// [`PROBE_SHADE_SHADER`], which it leaves out with the rest of probe GI. They have no pipeline asset, because
+/// [`HitShading`] assembles the pipeline from them.
+pub(super) const SURFEL_SHADING_SHADERS: [&str; 1] = ["surfel-shade"];
+pub(super) const PROBE_SHADING_SHADERS: [&str; 1] = ["probe-shade"];
+/// The stem of [`DEFAULT_HIT_SHADER`], which every ray tracing pipeline runs, so a bake keeps it while either technique
+/// is built in.
+pub(super) const DEFAULT_HIT_SHADERS: [&str; 1] = ["default-hit"];
 
-/// The `HitGroups` struct numbers the hit groups of the surfel shading pipeline, so each closest-hit shader with its
+/// The `HitGroups` struct numbers the hit groups of a hit shading pipeline, so each closest-hit shader with its
 /// constants keeps one group for as long as the renderer runs.
 ///
 /// Materials that share a shader and its constants share its group. A pipeline request lists [`Self::shaders`], whose
@@ -74,13 +82,17 @@ pub(crate) fn record_hit_groups(record_materials: &[u32], material_groups: &[u32
 	}));
 }
 
-/// The `SurfelShading` struct keeps the ray tracing pipeline that shades surfel hits current with the materials the
+/// The `HitShading` struct keeps a ray tracing pipeline that shades one technique's hits current with the materials the
 /// scene loads, and the shader binding table that maps each hit record to its material's hit group.
 ///
-/// The visibility pipeline manager creates it with the surfel pool. Give it each material's hit group with
-/// [`Self::set_material`] as the material loads, and each frame surfel GI may light, call [`Self::prepare`] for the
-/// pipeline and table to shade with.
-pub(crate) struct SurfelShading {
+/// The visibility pipeline manager creates one with the surfel pool and one with the probe volume, each with its own
+/// ray generation shader. Give it each material's hit group with [`Self::set_material`] as the material loads, and
+/// each frame its technique may light, call [`Self::prepare`] for the pipeline and table to shade with.
+pub(crate) struct HitShading {
+	/// The ray generation shader that rebuilds and lights each sorted hit.
+	ray_generation: &'static str,
+	/// What the technique is called in logs.
+	technique: &'static str,
 	hit_groups: HitGroups,
 	/// Whether each group's shader failed to compile, so requests run the default shader in its place.
 	broken: Vec<bool>,
@@ -101,10 +113,17 @@ pub(crate) struct SurfelShading {
 	record_groups: Vec<u32>,
 }
 
-impl SurfelShading {
-	/// Creates the shader binding table and requests a first pipeline, with the default hit group only.
-	pub(crate) fn new(context: &mut ghi::implementation::Context) -> Self {
+impl HitShading {
+	/// Creates the shader binding table and requests a first pipeline that runs `ray_generation`, with the default hit
+	/// group only. `technique` names the technique in logs, such as `surfel GI`.
+	pub(crate) fn new(
+		context: &mut ghi::implementation::Context,
+		ray_generation: &'static str,
+		technique: &'static str,
+	) -> Self {
 		Self {
+			ray_generation,
+			technique,
 			hit_groups: HitGroups::new(HitGroupShader {
 				shader_id: DEFAULT_HIT_SHADER.to_owned(),
 				specialization: Vec::new(),
@@ -115,7 +134,7 @@ impl SurfelShading {
 			request_outdated: true,
 			pending: None,
 			published: None,
-			table: context.create_shader_binding_table(Some("Surfel Hit Records")),
+			table: context.create_shader_binding_table(Some(&format!("{technique} hit records"))),
 			written: None,
 			record_groups: Vec::new(),
 		}
@@ -179,7 +198,8 @@ impl SurfelShading {
 			PipelineState::Pending => {}
 			PipelineState::Ready(_) => {
 				log::debug!(
-					"The surfel GI shading pipeline published with {groups} hit groups, {:.1} ms after its request.",
+					"The {} shading pipeline published with {groups} hit groups, {:.1} ms after its request.",
+					self.technique,
 					requested.elapsed().as_secs_f64() * 1000.0
 				);
 				self.published = Some((pipeline, groups));
@@ -188,7 +208,8 @@ impl SurfelShading {
 			PipelineState::Failed => {
 				let published = self.published.map_or(0, |(_, groups)| groups);
 				log::warn!(
-					"The surfel GI shading pipeline with {groups} hit groups failed to compile. The most likely cause is that the closest-hit shader of a material that loaded since the last pipeline doesn't compile. Hits on the {} materials' hit groups added since then shade as black occluders; check the shader compilation errors logged before this warning, and rebake the materials.",
+					"The {} shading pipeline with {groups} hit groups failed to compile. The most likely cause is that the closest-hit shader of a material that loaded since the last pipeline doesn't compile. Hits on the {} materials' hit groups added since then shade as black occluders; check the shader compilation errors logged before this warning, and rebake the materials.",
+					self.technique,
 					groups - published
 				);
 				for broken in &mut self.broken[published as usize..groups as usize] {
@@ -212,7 +233,7 @@ impl SurfelShading {
 			.map(|(shader, &broken)| if broken { default.clone() } else { shader.clone() })
 			.collect::<Vec<_>>();
 		let groups = shaders.len() as u32;
-		let request = RayTracingPipelineRequest::new(SURFEL_SHADE_SHADER, shaders);
+		let request = RayTracingPipelineRequest::new(self.ray_generation, shaders);
 		self.pending = Some((
 			pipeline_manager.request_ray_tracing_pipeline(request),
 			groups,

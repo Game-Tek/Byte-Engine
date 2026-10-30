@@ -30,10 +30,11 @@ const RAY_WANTS_SLOT: ResourceSlot = ResourceSlot::new(1129);
 const IRRADIANCE_SLOT: ResourceSlot = ResourceSlot::new(1130);
 const RAYS_SLOT: ResourceSlot = ResourceSlot::new(1131);
 const RAY_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1132);
-const HITS_SLOT: ResourceSlot = ResourceSlot::new(1133);
-const HIT_KEYS_SLOT: ResourceSlot = ResourceSlot::new(1134);
-const HIT_SORT_SLOT: ResourceSlot = ResourceSlot::new(1135);
-const SORTED_HITS_SLOT: ResourceSlot = ResourceSlot::new(1136);
+// The ray hits set the trace and shade passes share with probe GI.
+const HITS_SLOT: ResourceSlot = ResourceSlot::new(1145);
+const HIT_KEYS_SLOT: ResourceSlot = ResourceSlot::new(1146);
+const HIT_SORT_SLOT: ResourceSlot = ResourceSlot::new(1147);
+const SORTED_HITS_SLOT: ResourceSlot = ResourceSlot::new(1148);
 const ENVIRONMENT_IRRADIANCE_SLOT: ResourceSlot = ResourceSlot::new(1137);
 const GUIDES_SLOT: ResourceSlot = ResourceSlot::new(1138);
 const DEPTHS_SLOT: ResourceSlot = ResourceSlot::new(1139);
@@ -98,8 +99,8 @@ impl SurfelPasses {
 			scan_partials: asset!("surfel-scan-partials.besl"),
 			scan_add: asset!("surfel-scan-add.besl"),
 			scatter: asset!("surfel-scatter.besl"),
-			sort_scan: asset!("surfel-sort-scan.besl"),
-			sort_scatter: asset!("surfel-sort-scatter.besl"),
+			sort_scan: asset!("ray-hit-sort-scan.besl"),
+			sort_scatter: asset!("ray-hit-sort-scatter.besl"),
 			integrate: asset!("surfel-integrate.besl"),
 		}
 	}
@@ -592,7 +593,7 @@ fn surfel_scan_grants_rays_round_robin_within_the_budget() {
 /// Verifies the hit sort lists every ray that hit in the order of the materials they hit, the rays on one material in
 /// the order the trace counted them, leaves misses out, and leaves the counts at zero for the next frame's trace.
 #[test]
-fn surfel_sort_orders_hits_by_hit_group() {
+fn ray_hit_sort_orders_hits_by_material() {
 	let passes = SurfelPasses::new();
 	let mut set = SurfelSet::new(&passes);
 	// The material slot each ray hit, or `None` for a miss. The trace counts each hit on its material, and the count
@@ -612,7 +613,7 @@ fn surfel_sort_orders_hits_by_hit_group() {
 			.write_indexed("counts", material, Value::U32(*count))
 			.expect("hit count");
 	}
-	set.set_pool_count("rays", hits.len() as u32);
+	set.hit_sort.write("rays", Value::U32(hits.len() as u32)).expect("ray count");
 
 	dispatch(&passes.sort_scan, &mut set, WORKGROUP_SIZE);
 	dispatch(&passes.sort_scatter, &mut set, hits.len() as u32);
@@ -1237,7 +1238,7 @@ fn surfel_shade_occlusion_hides_a_surfel_behind_a_wall() {
 	for (member, value) in [
 		("origin", Value::Vec3F([0.0; 3])),
 		("distance", Value::F32(WALL_DEPTH)),
-		("direction", Value::U32(encode_normal([0.0, 0.0, 1.0]))),
+		("direction", Value::Vec3F([0.0, 0.0, 1.0])),
 		("record", Value::U32(0)),
 	] {
 		hits.write_array_member(0, member, value).expect("surfel hit");

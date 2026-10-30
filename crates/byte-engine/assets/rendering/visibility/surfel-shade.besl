@@ -15,22 +15,11 @@ SURFEL_HIT_IMPORTANCE: const f32 = 50.0;
 
 main: fn (input: StageInput) -> void {
 	let index: u32 = input.launch_index.x;
-	if (index >= surfel_hit_sort.hit_count) {
+	if (index >= ray_hit_sort.hit_count) {
 		return;
 	}
-	let ray: u32 = surfel_sorted_hits[index];
-	let stored: SurfelHit = surfel_hits[ray];
-	let direction: vec3f = decode_surfel_normal(stored.direction);
-	let hit: Hit = Hit(
-		stored.record,
-		stored.distance,
-		stored.custom_index,
-		stored.geometry_index,
-		stored.primitive_index,
-		stored.barycentrics,
-		stored.origin,
-		direction
-	);
+	let ray: u32 = ray_sorted_hits[index];
+	let hit: Hit = kept_ray_hit(ray);
 	let surface: HitSurface = invoke(
 		hit,
 		HitSurface(vec3f16(0.0, 0.0, 0.0), 0, vec3f(0.0, 0.0, 0.0), vec3f16(0.0, 0.0, 1.0))
@@ -39,7 +28,7 @@ main: fn (input: StageInput) -> void {
 	let albedo: vec3f = vec3f(surface.albedo);
 	// The back of a single-sided surface and a black one reflect nothing, so they need no light.
 	if (surface.front_face != 0 && albedo.x + albedo.y + albedo.z > 0.0) {
-		let position: vec3f = stored.origin + direction * stored.distance;
+		let position: vec3f = hit.origin + hit.direction * hit.distance;
 		let normal: vec3f = normalize(vec3f(surface.normal));
 		let shadow_origin: vec3f = position + normal * SURFEL_HIT_OFFSET;
 		// The light reaching the hit as irradiance over π, which the albedo turns into reflected radiance.

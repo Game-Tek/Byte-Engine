@@ -292,16 +292,18 @@ One source lights the indirect diffuse light of a frame's opaque surfaces:
 | Source | Lights the frame when |
 | --- | --- |
 | Surfel GI | `render.gi.enabled` is `true`, `render.gi.technique` is `surfels`, the device traces rays, and the surfel GI pipelines have compiled, the one that shades its rays included. |
-| SSGI | `render.gi.enabled` is `true`, `render.ssgi.enabled` was `true` at startup, and either `render.gi.technique` is `ssgi` or it's `surfels` and surfel GI doesn't light the frame. |
-| None | Neither does. The environment alone lights indirect diffuse light, darkened by GTAO when it runs. |
+| Probe GI | `render.gi.enabled` is `true`, `render.gi.technique` is `probes`, the device traces rays, and the probe GI pipelines have compiled, the one that shades its rays included. |
+| SSGI | `render.gi.enabled` is `true`, `render.ssgi.enabled` was `true` at startup, and either `render.gi.technique` is `ssgi`, or it's `surfels` or `probes` and that technique doesn't light the frame. |
+| None | None of them does. The environment alone lights indirect diffuse light, darkened by GTAO when it runs. |
 
 | Rule | Value |
 | --- | --- |
 | Images | The source writes `SSGI History` and `SSGI Normals`, which material evaluation reads. Material evaluation writes `Diffuse Radiance History`, which SSGI rays read in the next frame, only in a frame that SSGI lights. |
 | SSGI history | SSGI reads its history only after a frame it lit at the same sink size. Its first frame after a frame it didn't light starts without history. |
-| Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI it adds none: the surfels' light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
+| Environment light | Material evaluation adds the environment's irradiance around each opaque pixel's normal, times the environment's intensity and the pixel's environment visibility: the smaller of one minus the source's hit fraction and GTAO's visibility, each when it ran. Under surfel GI or probe GI it adds none: their light holds the environment's light their rays reached. The environment visibility also dims the environment's reflections. |
 | Surfels | At most `render.surfel-gi.surfel-capacity` surfels live at once, and they trace at most `render.surfel-gi.ray-budget` rays a frame. |
-| Baked shaders | Material shaders keep the indirect diffuse read while either source is built in, and the diffuse radiance write while SSGI is. |
+| Probes | Probes trace at most `render.probe-gi.ray-budget` rays a frame, 128 for each probe they update. |
+| Baked shaders | Material shaders keep the indirect diffuse read while any source is built in, and the diffuse radiance write while SSGI is. |
 
 ### Surfel GI
 
@@ -342,17 +344,48 @@ The first sink records the frame-wide surfel stages, `surfel-grid`,
 draws the scene; every sink that surfel GI lights resolves and spawns its
 surfels inside its `screen-space` stage.
 
+### Probe GI
+
+Probe GI keeps a volume of irradiance probes around the first sink's camera,
+in the manner of dynamic diffuse global illumination. Each probe records
+the light that reaches it from every direction and how far its rays went, and
+every sink that probe GI lights reads the probes around each of its pixels.
+
+| Term | Definition |
+| --- | --- |
+| Cascade | One of 4 windows of 24 × 12 × 24 probes along x, y, and z. Cascade `c` places its probes `render.probe-gi.spacing` × 2<sup>c</sup> meters apart, on the grid points from the first sink's camera's grid point less 11, 5, and 11 probes. |
+| Probe | A grid point of a cascade, plus an offset of at most 0.45 times the cascade's spacing on each axis, held in one of 27,648 slots. Each cascade's grid point keeps the same slot while the window moves, wrapping around the window. |
+| Irradiance map | 6 × 6 texels of the probe's octahedral projection, inside a one-texel border that repeats the texels across the octahedron's edges. Each holds irradiance over π, in nits, in RGB and the hit fraction in alpha, in half floats. |
+| Distance map | 14 × 14 texels in the same projection and border, each holding the mean and mean square of the distance rays went near its direction, in half floats. |
+| State | Unset, until the probe's first update since its window reached it; buried, when more than 25% of its rays hit back faces; active, when a front face one of its rays hit lies within one spacing of its grid point on every axis, or a pixel read it in the last 8 frames; idle otherwise. |
+
+| Rule | Value |
+| --- | --- |
+| Schedule | Each frame updates the `render.probe-gi.ray-budget` / 128 probes of highest priority. Unset probes come first, those a pixel read in the last 8 frames ahead of the rest, then finer cascades first. Every other probe ranks by the frames since its last update times its importance, in steps of a quarter of a doubling: the importance is 8 when it's active and a pixel read it in the last 8 frames, 1 when it's active otherwise, and 0.125 when it's idle or buried. Probes of the same rank take turns in an order that changes every frame. |
+| Rays | Each update traces 128 rays from the probe, up to 10 kilometers, along a spherical Fibonacci pattern that a random rotation turns every frame. |
+| Hit surfaces | As for [surfel GI](#surfel-gi): a ray hits the [ray-traced scene](#ray-traced-scene), and the hit's material reports its albedo and emission. |
+| Ray light | A miss brings back the environment's light from its direction: the environment's specular level prefiltered for roughness 2/7, times the environment's intensity. A back-face hit brings back no light. A front-face hit brings back its emission, plus its albedo times what reaches it: each sun that it faces and that no geometry hides; each point and cone light it faces, within the light's reach, that no geometry hides, lit as material evaluation lights a surface but without the light's IES profile; and 0.95 times the probes' light at the hit as the last update left it. That light comes from the finest cascade whose window holds the hit, and the hit gets the scene's lights alone when no probe of it lights there. A ray's light is at most 30,000 nits in each channel. |
+| Blend | Each irradiance texel averages the rays' light, weighed by the cosine to its direction, and the share of them that hit. Each distance texel averages the rays' distances and their squares, weighed by that cosine to the power 50; a back-face hit counts a fifth of its distance, and every distance at most twice the spacing. A texel keeps 0.97 of what it held, and n / (n + 1) while its probe has n of its first 32 updates. A probe whose rays' mean luminance and whose irradiance map's mean luminance differ by ten times or more, each counted as at least 0.01 nits, starts over: the update replaces both maps and counts as its first. |
+| Relocation | A probe whose rays hit back faces more than 25% of the time moves through the nearest back face, past it by a tenth of the spacing. Otherwise, a probe nearer than a fifth of the spacing to a front face moves away from it to that distance. A move that would take the offset past 0.45 of the spacing on any axis doesn't happen, and a move longer than a tenth of the spacing starts the probe's averages over. |
+| Pixel light | Each half-resolution pixel rebuilds its surface from the linear depth pyramid. Its point moves off the surface by 0.225 times the spacing along 0.2 times its normal plus 0.8 times the direction toward the camera. Each active probe of the eight around it weighs the product of its trilinear share; ((c + 1) / 2)² + 0.2, where c is the cosine between the normal and the direction toward the probe; and the cube of Chebyshev's bound on the probe's distances toward the point, but at least 0.05. A weight under 0.2 is crushed to its cube over 0.04. The finest cascade whose window holds the point with one probe to spare lights it; within two probes of that margin, and for the trilinear share of unset probes, the next cascade lights the rest. A pixel no cascade lights takes the environment's irradiance around its normal, times the environment's intensity, and a hit fraction of zero. |
+| Marks | Every other pixel of every other row marks the eight probes around it in the cascade that lights it, and in the next one too where the two blend. |
+
+The first sink records the frame-wide probe stages, `probe-schedule`,
+`probe-trace`, and `probe-update`, after the surfel stages and before it draws
+the scene; every sink that probe GI lights reads the probes and marks them
+inside its `screen-space` stage.
+
 ### Ray-traced scene
 
-The rays surfel GI traces hit the scene as the first sink's frame places it,
-with these exceptions:
+The rays surfel GI and probe GI trace hit the scene as the first sink's frame
+places it, with these exceptions:
 
 | Rule | Value |
 | --- | --- |
 | Geometry | Each mesh's opaque, unskinned primitives at full detail. Masked and blended primitives are left out, so rays pass through foliage and glass, and so are skinned primitives, so rays pass through the shapes skinning deforms. A mesh without such primitives has no geometry. |
 | Instances | Every renderable the frame draws whose mesh has geometry, once that geometry is built. |
 | Builds | A mesh's geometry is built once, from the first frame that draws one of its renderables, in the order meshes arrive: at most 262,144 triangles of builds a frame, and at least one mesh a frame. A frame that doesn't record the frame-wide work builds nothing, and its meshes wait for the next frame. A mesh's geometry lasts as long as the mesh stays resident. |
-| Placement | Every frame that surfel GI lights places the instances at their transforms in that frame. |
+| Placement | Every frame that surfel GI or probe GI lights places the instances at their transforms in that frame. |
 
 The first sink records the builds and the placement in the
 `acceleration-structures` stage, before `surfel-grid`. The stage's time covers
@@ -364,11 +397,13 @@ in the first stage that traces rays.
 Each sink records these stages in order, and each reports a `stage.<name>`
 metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `light-clusters`, `acceleration-structures`, `surfel-grid`, `surfel-trace`,
-`surfel-integrate`, `visibility-early`, `occlusion-pyramid`, `visibility-late`,
+`surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
+`visibility-early`, `occlusion-pyramid`, `visibility-late`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
 `material-evaluation`, `background`, and `transparent`. Only the first sink
-records the ray tracing and surfel stages, and only in a frame that surfel GI
-lights. `material-prepasses` runs only when `render.material-evaluation` is
+records the ray tracing, surfel, and probe stages: the surfel stages in a frame
+that surfel GI lights, the probe stages in a frame that probe GI lights, and
+`acceleration-structures` in either. `material-prepasses` runs only when `render.material-evaluation` is
 `pipelines`.
 
 | Target | Content |

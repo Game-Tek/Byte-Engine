@@ -5,6 +5,7 @@
 		"layouts/scene-records.besl",
 		"layouts/scene.besl",
 		"layouts/ray-traced-scene.besl",
-		"layouts/surfel-gi.besl"
+		"layouts/surfel-gi.besl",
+		"layouts/ray-hits.besl"
 	]
 }

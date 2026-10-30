@@ -1,0 +1,90 @@
+// The ray hits set: what the trace of a ray-traced technique keeps of each ray that hit, and the counting sort that
+// orders the hits by the material they hit, so the shade pass runs each material's closest-hit shader for a run of hits
+// side by side. Surfel GI and probe GI share it, since only one of them lights a frame. A technique's trace and shade
+// passes list it after the technique's own layers; `render_pass/ray_hits.rs` fills it.
+//
+// A trace's first thread records how many rays it casts in `rays`, and each ray it casts keeps its hit with
+// `keep_ray_hit` or takes the key NO_HIT. Next, the sort's scan turns the counts into where each material's run of hits
+// starts, its scatter lists the rays in material order, and the shade pass rebuilds each listed hit with
+// `kept_ray_hit`.
+
+// A hit's sort key holds its rank among the hits on its material in the low HIT_RANK_BITS bits, which fit the largest
+// ray budget, and the material's slot above them.
+HIT_RANK_BITS: const u32 = 20;
+HIT_RANK_MASK: const u32 = 1048575;
+// The sort key of a ray that hit nothing.
+NO_HIT: const u32 = 4294967295;
+// The threads of the sort's scan: one workgroup, with four of the 1,024 material counts each.
+HIT_SORT_WORKGROUP_SIZE: const u32 = 256;
+
+// One ray's hit, as the trace keeps it.
+RayHit: struct {
+	origin: vec3f,
+	distance: f32,
+	// The ray's unit direction.
+	direction: vec3f,
+	record: u32,
+	barycentrics: vec2f,
+	custom_index: u32,
+	geometry_index: u32,
+	primitive_index: u32,
+	_padding0: u32,
+	_padding1: u32,
+	_padding2: u32,
+}
+
+// The counting sort that orders the frame's hits by the material they hit.
+RayHitSort: struct {
+	// The hits on each material slot, counted while the trace runs: one count for each material the visibility pipeline
+	// holds.
+	counts: atomicu32[1024],
+	// Where each material's run of sorted hits starts.
+	offsets: u32[1024],
+	// The frame's hits, which the shade pass runs one invocation for each of.
+	hit_count: u32,
+	// The rays the trace cast, the first of the technique's budget. The scatter skips the rest, whose keys are stale.
+	rays: u32,
+}
+
+// Each ray's hit, at the ray's index. Only rays that hit write theirs.
+ray_hits: descriptor<{ type: RayHit[], binding: 1145, access: read_write }>;
+// Each ray's sort key, or NO_HIT.
+ray_hit_keys: descriptor<{ type: u32[], binding: 1146, access: read_write }>;
+ray_hit_sort: descriptor<{ type: RayHitSort, binding: 1147, access: read_write }>;
+// The index of each ray that hit, in the order of the materials they hit.
+ray_sorted_hits: descriptor<{ type: u32[], binding: 1148, access: read_write }>;
+
+// Keeps `hit`, which ray `ray` found on the material in slot `material`, for the shade pass, and counts it among the hits
+// on that material.
+keep_ray_hit: fn (ray: u32, material: u32, hit: Hit) -> void {
+	let rank: u32 = atomic_add(ray_hit_sort.counts[material], 1);
+	ray_hit_keys[ray] = (material << HIT_RANK_BITS) | rank;
+	ray_hits[ray] = RayHit(
+		hit.origin,
+		hit.distance,
+		hit.direction,
+		hit.record,
+		hit.barycentrics,
+		hit.custom_index,
+		hit.geometry_index,
+		hit.primitive_index,
+		0,
+		0,
+		0
+	);
+}
+
+// Returns the hit that ray `ray` kept, rebuilt as `invoke` takes it.
+kept_ray_hit: fn (ray: u32) -> Hit {
+	let kept: RayHit = ray_hits[ray];
+	return Hit(
+		kept.record,
+		kept.distance,
+		kept.custom_index,
+		kept.geometry_index,
+		kept.primitive_index,
+		kept.barycentrics,
+		kept.origin,
+		kept.direction
+	);
+}

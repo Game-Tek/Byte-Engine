@@ -101,12 +101,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		gtao_configuration,
 		gi_configuration,
 		surfel_gi_configuration,
+		probe_gi_configuration,
 		contact_shadow_configuration,
 		lod_configuration,
 	] = [
 		"render.gtao.",
 		"render.gi.",
 		"render.surfel-gi.",
+		"render.probe-gi.",
 		"render.contact-shadows.",
 		"render.lod.",
 	]
@@ -116,8 +118,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
 
-	// Only surfel GI traces rays, and only a device that traces rays needs the flat triangle lists they read.
-	let ray_tracing = visibility_pipeline_settings.features().surfel_gi
+	// Only surfel GI and probe GI trace rays, and only a device that traces rays needs the flat triangle lists they read.
+	let ray_tracing = visibility_pipeline_settings.features().traces_rays()
 		&& ghi::context::Context::supports_ray_tracing(renderer.context_mut());
 	let geometry = rendering::pipelines::visibility::GeometryHandles::new(
 		renderer.context_mut(),
@@ -145,6 +147,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		gtao_configuration,
 		gi_configuration,
 		surfel_gi_configuration,
+		probe_gi_configuration,
 		contact_shadow_configuration,
 		lod_configuration,
 		visibility_pipeline_settings,

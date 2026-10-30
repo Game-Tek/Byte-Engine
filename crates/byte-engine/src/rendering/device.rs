@@ -34,8 +34,8 @@ impl GraphicsDevice {
 	/// - `ghi.features.counters`: Makes GPU timing counters write timestamps, which the renderer's frame and pass
 	///   metrics read. Defaults to true on debug builds and false on release builds.
 	/// - `ghi.features.mesh-shading`: Enables mesh shading features on the device. Defaults to true.
-	/// - `ghi.features.ray-tracing`: Requests ray tracing from the device, which surfel GI needs. Defaults to
-	///   `surfel-gi.enabled`.
+	/// - `ghi.features.ray-tracing`: Requests ray tracing from the device, which surfel GI and probe GI need. Defaults
+	///   to `true` when `surfel-gi.enabled` or `probe-gi.enabled` is.
 	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
 	pub fn new(parameters: impl Parameters) -> Self {
@@ -55,10 +55,12 @@ impl GraphicsDevice {
 			.geometry_shader(false)
 			.counters(flag("ghi.features.counters", cfg!(debug_assertions)))
 			.mesh_shading(flag("ghi.features.mesh-shading", true))
-			// Surfel GI is the only feature that traces rays, so a project without it doesn't ask the device for them.
+			// Surfel GI and probe GI are the only features that trace rays, so a project without them doesn't ask the
+			// device for them.
 			.ray_tracing(flag(
 				"ghi.features.ray-tracing",
-				flag(crate::rendering::pipelines::visibility::SURFEL_GI_ENABLED_PARAMETER, false),
+				flag(crate::rendering::pipelines::visibility::SURFEL_GI_ENABLED_PARAMETER, false)
+					|| flag(crate::rendering::pipelines::visibility::PROBE_GI_ENABLED_PARAMETER, false),
 			))
 			.pipeline_cache(parameters.get_parameter("pipeline-cache.path").is_some());
 

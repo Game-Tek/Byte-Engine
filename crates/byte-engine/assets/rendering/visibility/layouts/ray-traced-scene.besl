@@ -1,8 +1,8 @@
 // The ray-traced scene set: the top-level acceleration structure the frame's rays trace, the full-detail triangles of
 // the primitives they hit, and the table that leads a hit to the frame's records. The first sink's frame writes it in
-// a frame that surfel GI lights; `rendering/pipelines/visibility/acceleration_structures.rs` fills it. List it after
-// `scene.besl`: material closest-hit shaders list the three layers, and the surfel trace and shade passes list them
-// first.
+// a frame that surfel GI or probe GI lights; `rendering/pipelines/visibility/acceleration_structures.rs` fills it.
+// List it after `scene.besl`: material closest-hit shaders list the three layers, and the trace and shade passes of
+// surfel GI and probe GI list them first.
 
 // The spread angle, in radians, of the cone each traced ray stands for. A few rays sample each surfel's hemisphere a
 // frame, so each stands for a wide cone, and its hits read the coarse texture levels that cone covers.

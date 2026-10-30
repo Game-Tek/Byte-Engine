@@ -1,0 +1,1 @@
+{"name":"Probe Gather","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/probe-gather.besl"}}

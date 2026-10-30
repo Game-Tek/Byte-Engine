@@ -485,6 +485,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		gtao: true,
 		ssgi: true,
 		surfel_gi: true,
+		probe_gi: true,
 		contact_shadows: true,
 		debug_views: true,
 		material_evaluation: Default::default(),

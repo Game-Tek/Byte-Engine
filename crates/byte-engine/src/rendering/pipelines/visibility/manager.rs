@@ -33,11 +33,12 @@ use super::loader::{
 use super::lod::{LodSettings, LodView};
 use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
-use super::ray_tracing::SurfelShading;
+use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
 use super::render_pass::{
-	ContactShadowSettings, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, FrameWork, GiSettings, GtaoSettings,
-	IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP, ShadowMaps, ShadowWork,
-	SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing,
+	ContactShadowSettings, DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET,
+	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
+	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
+	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun,
 	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
@@ -96,6 +97,12 @@ pub const SURFEL_CAPACITY_PARAMETER: &str = "surfel-gi.surfel-capacity";
 /// The startup parameter, inside the `render` subtree, that sets how many rays surfels trace each frame. See
 /// [`VisibilityPipelineSettings::with_surfel_ray_budget`].
 pub const SURFEL_RAY_BUDGET_PARAMETER: &str = "surfel-gi.ray-budget";
+/// The startup parameter, inside the `render` subtree, that sets how many rays probes trace each frame. See
+/// [`VisibilityPipelineSettings::with_probe_ray_budget`].
+pub const PROBE_RAY_BUDGET_PARAMETER: &str = "probe-gi.ray-budget";
+/// The startup parameter, inside the `render` subtree, that sets how far apart the finest probe cascade's probes stand,
+/// in meters. See [`VisibilityPipelineSettings::with_probe_spacing`].
+pub const PROBE_SPACING_PARAMETER: &str = "probe-gi.spacing";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
@@ -109,6 +116,8 @@ pub struct VisibilityPipelineSettings {
 	directional_shadow_map_resolution: u32,
 	surfel_capacity: u32,
 	surfel_ray_budget: u32,
+	probe_ray_budget: u32,
+	probe_spacing: f32,
 	features: VisibilityFeatures,
 }
 
@@ -123,6 +132,8 @@ impl Default for VisibilityPipelineSettings {
 			directional_shadow_map_resolution: DEFAULT_SHADOW_MAP_RESOLUTION,
 			surfel_capacity: DEFAULT_SURFEL_CAPACITY,
 			surfel_ray_budget: DEFAULT_SURFEL_RAY_BUDGET,
+			probe_ray_budget: DEFAULT_PROBE_RAY_BUDGET,
+			probe_spacing: DEFAULT_PROBE_SPACING,
 			features: VisibilityFeatures::default(),
 		}
 	}
@@ -194,6 +205,16 @@ impl VisibilityPipelineSettings {
 		if let Some(rays) = parse(&parameters, SURFEL_RAY_BUDGET_PARAMETER) {
 			settings = settings
 				.with_surfel_ray_budget(rays)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		if let Some(rays) = parse(&parameters, PROBE_RAY_BUDGET_PARAMETER) {
+			settings = settings
+				.with_probe_ray_budget(rays)
+				.unwrap_or_else(|reason| panic!("{reason}"));
+		}
+		if let Some(spacing) = parse(&parameters, PROBE_SPACING_PARAMETER) {
+			settings = settings
+				.with_probe_spacing(spacing)
 				.unwrap_or_else(|reason| panic!("{reason}"));
 		}
 		settings.with_features(VisibilityFeatures::from_parameters(parameters))
@@ -340,6 +361,54 @@ impl VisibilityPipelineSettings {
 
 	pub fn surfel_ray_budget(&self) -> u32 {
 		self.surfel_ray_budget
+	}
+
+	/// Sets how many rays probes trace each frame. Each probe update traces 128 rays, so the budget sets how many
+	/// probes update a frame, and the probes that light what the camera sees take most of them.
+	///
+	/// A larger budget follows lighting changes faster, at the cost of more trace time.
+	///
+	/// # Errors
+	///
+	/// Returns an error unless `rays` is a multiple of 128 from 128 through 1,048,576.
+	pub fn with_probe_ray_budget(mut self, rays: u32) -> Result<Self, String> {
+		if !rays.is_multiple_of(PROBE_RAYS) || !PROBE_RAY_BUDGET_RANGE.contains(&rays) {
+			return Err(format!(
+				"Probe ray budget was not set. The most likely cause is that {rays} is not a multiple of {PROBE_RAYS} from {} through {}. Set `{RENDER_PARAMETERS}.{PROBE_RAY_BUDGET_PARAMETER}` to a multiple of {PROBE_RAYS} in that range, such as {DEFAULT_PROBE_RAY_BUDGET}.",
+				PROBE_RAY_BUDGET_RANGE.start(),
+				PROBE_RAY_BUDGET_RANGE.end(),
+			));
+		}
+		self.probe_ray_budget = rays;
+		Ok(self)
+	}
+
+	pub fn probe_ray_budget(&self) -> u32 {
+		self.probe_ray_budget
+	}
+
+	/// Sets how far apart the probes of the finest cascade stand, in meters. Each coarser cascade doubles it.
+	///
+	/// Closer probes resolve smaller rooms and keep light from leaking through thinner walls; the four cascades then
+	/// reach less far.
+	///
+	/// # Errors
+	///
+	/// Returns an error unless `spacing` is from 0.05 through 100 meters.
+	pub fn with_probe_spacing(mut self, spacing: f32) -> Result<Self, String> {
+		if !PROBE_SPACING_RANGE.contains(&spacing) {
+			return Err(format!(
+				"Probe spacing was not set. The most likely cause is that {spacing} meters is outside {} through {} meters. Set `{RENDER_PARAMETERS}.{PROBE_SPACING_PARAMETER}` to a distance in that range, such as {DEFAULT_PROBE_SPACING}.",
+				PROBE_SPACING_RANGE.start(),
+				PROBE_SPACING_RANGE.end(),
+			));
+		}
+		self.probe_spacing = spacing;
+		Ok(self)
+	}
+
+	pub fn probe_spacing(&self) -> f32 {
+		self.probe_spacing
 	}
 
 	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
@@ -556,12 +625,15 @@ fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	enabled && built_in
 }
 
-/// The frames between two logs of the surfel pool's counts.
-const SURFEL_LOG_INTERVAL: u64 = 256;
+/// The frames between two logs of the surfel pool's counts, and of the probe volume's.
+const GI_LOG_INTERVAL: u64 = 256;
 
-/// The debug views of a sink that surfel GI can light: material evaluation's, then the surfel resolve's, which the
-/// resolve numbers from 6.
-const SURFEL_DEBUG_VIEW_NAMES: [&str; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2] = {
+/// The debug views of a sink a resolve can light: material evaluation's, then the resolve's two, which the resolve
+/// numbers from 6.
+type ResolveDebugViewNames = [&'static str; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2];
+
+/// Returns material evaluation's debug view names followed by a resolve's `views`.
+const fn resolve_debug_view_names(views: [&'static str; 2]) -> ResolveDebugViewNames {
 	let material = super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES;
 	let mut names = [""; super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len() + 2];
 	let mut index = 0;
@@ -569,22 +641,27 @@ const SURFEL_DEBUG_VIEW_NAMES: [&str; super::shader_generator::MATERIAL_DEBUG_VI
 		names[index] = material[index];
 		index += 1;
 	}
-	names[index] = "surfels";
-	names[index + 1] = "surfel-coverage";
+	names[index] = views[0];
+	names[index + 1] = views[1];
 	names
-};
+}
+
+/// The debug views of a sink that surfel GI can light.
+const SURFEL_DEBUG_VIEW_NAMES: ResolveDebugViewNames = resolve_debug_view_names(["surfels", "surfel-coverage"]);
+/// The debug views of a sink that probe GI, and not surfel GI, can light.
+const PROBE_DEBUG_VIEW_NAMES: ResolveDebugViewNames = resolve_debug_view_names(["probes", "probe-light"]);
 
 /// Chooses the source that lights this frame's indirect diffuse light, or `None` when the environment lights it alone.
 ///
-/// `gi` selects the technique, which lights the frame only when `features` built it in. Surfel GI needs a device that
-/// traces rays, `ray_tracing`; elsewhere SSGI lights frames in its place when it is built in, so selecting surfel GI
-/// never takes away the light SSGI gives.
+/// `gi` selects the technique, which lights the frame only when `features` built it in. Surfel GI and probe GI need a
+/// device that traces rays, `ray_tracing`; elsewhere SSGI lights frames in their place when it is built in, so selecting
+/// either never takes away the light SSGI gives.
 fn indirect_diffuse_source(gi: GiSettings, features: VisibilityFeatures, ray_tracing: bool) -> Option<IndirectDiffuseSource> {
 	if !gi.enabled {
 		return None;
 	}
 	let technique = match gi.technique {
-		IndirectDiffuseSource::Surfels if !ray_tracing => IndirectDiffuseSource::ScreenSpace,
+		technique if technique.traces_rays() && !ray_tracing => IndirectDiffuseSource::ScreenSpace,
 		technique => technique,
 	};
 	technique.built_in(features).then_some(technique)
@@ -661,20 +738,32 @@ pub struct VisibilityPipelineManager {
 	gi_settings: GiSettings,
 	surfel_gi_configuration: crate::configuration::ConfigurationPort,
 	surfel_gi_settings: SurfelGiSettings,
-	/// Whether the device traces rays, which surfel GI needs to light a frame.
+	probe_gi_configuration: crate::configuration::ConfigurationPort,
+	probe_gi_settings: ProbeGiSettings,
+	/// Whether the device traces rays, which surfel GI and probe GI need to light a frame.
 	ray_tracing: bool,
 	/// The surfels that surfel GI lights every sink from. Absent when the project left surfel GI out of its shaders or
 	/// the device doesn't trace rays.
 	surfel_pool: Option<SurfelPool>,
-	/// The acceleration structures surfel GI traces rays through. Absent without a surfel pool.
+	/// The probes that probe GI lights every sink from. Absent when the project left probe GI out of its shaders or
+	/// the device doesn't trace rays.
+	probe_volume: Option<ProbeVolume>,
+	/// The acceleration structures surfel GI and probe GI trace rays through. Absent without a surfel pool or a probe
+	/// volume.
 	acceleration_structures: Option<SceneAccelerationStructures>,
+	/// The hits of the rays of whichever of surfel GI and probe GI lights the frame. Absent without a surfel pool or a
+	/// probe volume.
+	ray_hits: Option<RayHits>,
 	/// The ray tracing pipeline that shades surfel hits with each material's closest-hit shader. Absent without
-	/// acceleration structures.
-	surfel_shading: Option<SurfelShading>,
+	/// acceleration structures or a surfel pool.
+	surfel_shading: Option<HitShading>,
+	/// The ray tracing pipeline that shades probe hits. Absent without acceleration structures or a probe volume.
+	probe_shading: Option<HitShading>,
 	/// The primitives the frame draws, as the acceleration structures place them. Kept across frames for its
 	/// allocation.
 	traced_primitives: Vec<TracedPrimitive>,
-	/// Whether the warning that surfel GI can't light frames on this device was reported while it stays enabled.
+	/// Whether the warning that a ray-traced GI technique can't light frames on this device was reported while one stays
+	/// selected.
 	reported_surfel_gi_fallback: bool,
 	contact_shadow_configuration: crate::configuration::ConfigurationPort,
 	contact_shadow_settings: ContactShadowSettings,
@@ -709,6 +798,7 @@ impl VisibilityPipelineManager {
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		gi_configuration: crate::configuration::ConfigurationPort,
 		surfel_gi_configuration: crate::configuration::ConfigurationPort,
+		probe_gi_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		lod_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
@@ -752,10 +842,36 @@ impl VisibilityPipelineManager {
 				environment,
 			)
 		});
-		let acceleration_structures = surfel_pool
+		let probe_volume = (settings.features.probe_gi && ray_tracing).then(|| {
+			ProbeVolume::new(
+				context,
+				&pipeline_manager,
+				settings.probe_ray_budget,
+				settings.probe_spacing,
+				environment,
+				lighting_buffer,
+			)
+		});
+		let acceleration_structures = (surfel_pool.is_some() || probe_volume.is_some())
+			.then(|| SceneAccelerationStructures::new(context, &geometry))
+			.flatten();
+		// Only one technique lights a frame, so they share room for the hits of the larger ray budget.
+		let ray_hits = [
+			surfel_pool.as_ref().map(|_| settings.surfel_ray_budget),
+			probe_volume.as_ref().map(|_| settings.probe_ray_budget),
+		]
+		.into_iter()
+		.flatten()
+		.max()
+		.map(|ray_budget| RayHits::new(context, &pipeline_manager, ray_budget));
+		let surfel_shading = acceleration_structures
 			.as_ref()
-			.and_then(|_| SceneAccelerationStructures::new(context, &geometry));
-		let surfel_shading = acceleration_structures.as_ref().map(|_| SurfelShading::new(context));
+			.filter(|_| surfel_pool.is_some())
+			.map(|_| HitShading::new(context, SURFEL_SHADE_SHADER, "surfel GI"));
+		let probe_shading = acceleration_structures
+			.as_ref()
+			.filter(|_| probe_volume.is_some())
+			.map(|_| HitShading::new(context, PROBE_SHADE_SHADER, "probe GI"));
 		let scene = set_layouts::SCENE.binder(descriptor_set);
 		context.write(&[
 			scene.buffer("views", views_buffer),
@@ -826,10 +942,19 @@ impl VisibilityPipelineManager {
 				settings.surfel_capacity,
 				settings.surfel_ray_budget,
 			),
+			probe_gi_configuration,
+			probe_gi_settings: ProbeGiSettings::new(
+				settings.features.probe_gi,
+				settings.probe_ray_budget,
+				settings.probe_spacing,
+			),
 			ray_tracing,
 			surfel_pool,
+			probe_volume,
 			acceleration_structures,
+			ray_hits,
 			surfel_shading,
+			probe_shading,
 			traced_primitives: Vec::new(),
 			reported_surfel_gi_fallback: false,
 			contact_shadow_configuration,
@@ -994,9 +1119,12 @@ impl VisibilityPipelineManager {
 						.descriptor_writes(sink_state.render_pass.material_evaluation_descriptor_set()),
 				);
 			}
-			// Surfel rays that miss see the same environment.
+			// Surfel and probe rays that miss see the same environment.
 			if let Some(pool) = &self.surfel_pool {
 				frame.write(&pool.environment_writes(self.environment.bound));
+			}
+			if let Some(volume) = &self.probe_volume {
+				frame.write(&volume.environment_writes(self.environment.bound));
 			}
 		}
 	}
@@ -1061,7 +1189,7 @@ impl VisibilityPipelineManager {
 			hit_group,
 			..
 		} = material;
-		if let Some(shading) = &mut self.surfel_shading {
+		for shading in [&mut self.surfel_shading, &mut self.probe_shading].into_iter().flatten() {
 			shading.set_material(index, hit_group.as_ref());
 		}
 		let material_data = &mut self.materials[index as usize];
@@ -1308,8 +1436,8 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO, GI, surfel GI, contact-shadow, and detail level controls before any sink records this
-	/// frame's commands.
+	/// Applies queued GTAO, GI, surfel GI, probe GI, contact-shadow, and detail level controls before any sink records
+	/// this frame's commands.
 	fn apply_runtime_settings(&mut self) {
 		self.lod_configuration
 			.drain(&mut self.lod_settings, LodSettings::with_parameter);
@@ -1325,6 +1453,8 @@ impl VisibilityPipelineManager {
 			});
 		self.surfel_gi_configuration
 			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::with_parameter);
+		self.probe_gi_configuration
+			.drain(&mut self.probe_gi_settings, ProbeGiSettings::with_parameter);
 		self.contact_shadow_configuration
 			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::with_parameter);
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
@@ -1336,10 +1466,14 @@ impl VisibilityPipelineManager {
 		);
 		crate::rendering::warn_once(
 			&mut self.reported_surfel_gi_fallback,
-			self.gi_settings.enabled && self.gi_settings.technique == IndirectDiffuseSource::Surfels && !self.ray_tracing,
+			self.gi_settings.enabled && self.gi_settings.technique.traces_rays() && !self.ray_tracing,
 			|| {
+				let technique = match self.gi_settings.technique {
+					IndirectDiffuseSource::Probes => "Probe GI",
+					_ => "Surfel GI",
+				};
 				format!(
-					"Surfel GI can't light frames on this device. The most likely cause is that the device doesn't trace rays: only the Metal backend does, and only when `{RENDER_PARAMETERS}.ghi.features.ray-tracing` is on. SSGI lights indirect diffuse light in its place while it is built in; run on a Mac with Apple silicon, or set `{RENDER_PARAMETERS}.ghi.features.ray-tracing` to `true` in `config.json` and restart. See {}.",
+					"{technique} can't light frames on this device. The most likely cause is that the device doesn't trace rays: only the Metal backend does, and only when `{RENDER_PARAMETERS}.ghi.features.ray-tracing` is on. SSGI lights indirect diffuse light in its place while it is built in; run on a Mac with Apple silicon, or set `{RENDER_PARAMETERS}.ghi.features.ray-tracing` to `true` in `config.json` and restart. See {}.",
 					crate::online_docs_url("reference/parameters#graphics-device")
 				)
 			},
@@ -1697,15 +1831,20 @@ impl PipelineManager for VisibilityPipelineManager {
 				.and_then(Option::as_ref)
 				.map_or(&AlphaMode::Blend, |material| &material.alpha_mode)
 		};
-		// Surfel rays trace once the shading pipeline published, with the material hit groups it has. The meshes the
-		// frame draws for the first time get their hit records before the table is written from them, so it holds
-		// every record an instance of the frame reports.
-		let surfel_tracing = match (indirect_diffuse, &mut self.acceleration_structures, &mut self.surfel_shading) {
-			(Some(IndirectDiffuseSource::Surfels), Some(structures), Some(shading)) => {
+		// Surfel and probe rays trace once their shading pipeline published, with the material hit groups it has. The
+		// meshes the frame draws for the first time get their hit records before the table is written from them, so it
+		// holds every record an instance of the frame reports.
+		let shading = match indirect_diffuse {
+			Some(IndirectDiffuseSource::Surfels) => self.surfel_shading.as_mut(),
+			Some(IndirectDiffuseSource::Probes) => self.probe_shading.as_mut(),
+			_ => None,
+		};
+		let tracing = match (&mut self.acceleration_structures, shading) {
+			(Some(structures), Some(shading)) => {
 				let record_materials = structures.admit(frame, &self.traced_primitives, alpha_mode);
 				shading
 					.prepare(frame, &self.pipeline_manager, record_materials)
-					.map(|(pipeline, table)| SurfelTracing {
+					.map(|(pipeline, table)| RayTracing {
 						scene: self.scene.descriptor_set,
 						ray_traced_scene: structures.descriptor_set(),
 						pipeline,
@@ -1715,8 +1854,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			_ => None,
 		};
 		let suns = self.scene.surfel_suns().collect::<SmallVec<[SurfelSun; 4]>>();
-		let surfels = match (indirect_diffuse, &self.surfel_pool, sinks.first(), surfel_tracing) {
-			(Some(IndirectDiffuseSource::Surfels), Some(pool), Some(sink), Some(tracing)) => pool.prepare(
+		let surfels = match (indirect_diffuse, &self.surfel_pool, sinks.first(), tracing, &self.ray_hits) {
+			(Some(IndirectDiffuseSource::Surfels), Some(pool), Some(sink), Some(tracing), Some(hits)) => pool.prepare(
 				frame,
 				&self.pipeline_manager,
 				sink,
@@ -1727,18 +1866,31 @@ impl PipelineManager for VisibilityPipelineManager {
 					suns: &suns,
 				},
 				tracing,
+				hits,
 			),
 			_ => None,
 		};
-		// Until its pipelines compile, surfel GI can't light a frame, and SSGI lights it when the project built SSGI in.
-		let indirect_diffuse = match (indirect_diffuse, surfels) {
-			(Some(IndirectDiffuseSource::Surfels), None) => {
+		let probes = match (indirect_diffuse, &self.probe_volume, sinks.first(), tracing, &self.ray_hits) {
+			(Some(IndirectDiffuseSource::Probes), Some(volume), Some(sink), Some(tracing), Some(hits)) => volume.prepare(
+				frame,
+				&self.pipeline_manager,
+				sink,
+				self.environment.intensity(),
+				tracing,
+				hits,
+			),
+			_ => None,
+		};
+		// Until its pipelines compile, surfel GI or probe GI can't light a frame, and SSGI lights it when the project
+		// built SSGI in.
+		let indirect_diffuse = match (indirect_diffuse, surfels, probes) {
+			(Some(IndirectDiffuseSource::Surfels), None, _) | (Some(IndirectDiffuseSource::Probes), _, None) => {
 				self.settings.features.ssgi.then_some(IndirectDiffuseSource::ScreenSpace)
 			}
-			(source, _) => source,
+			(source, ..) => source,
 		};
 		if let Some(pool) = self.surfel_pool.as_ref().filter(|_| surfels.is_some())
-			&& frame.key().frame_index().is_multiple_of(SURFEL_LOG_INTERVAL)
+			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
 		{
 			let counts = pool.counts(frame);
 			log::debug!(
@@ -1751,9 +1903,23 @@ impl PipelineManager for VisibilityPipelineManager {
 				counts.rays,
 			);
 		}
-		// The acceleration structures build with the surfel grid, so only a frame that surfel GI lights builds them.
-		let acceleration_structures = match (surfels, &mut self.acceleration_structures) {
-			(Some(_), Some(structures)) => Some(structures.prepare(frame, &mut self.traced_primitives, frame_allocator)),
+		if let Some(volume) = self.probe_volume.as_ref().filter(|_| probes.is_some())
+			&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+		{
+			let schedule = volume.schedule(frame);
+			log::debug!(
+				"Probe GI holds {} active, {} idle, {} buried, and {} unset probes; the frame before updated {}.",
+				schedule.last_active,
+				schedule.last_idle,
+				schedule.last_buried,
+				schedule.last_unset,
+				schedule.last_count,
+			);
+		}
+		// The acceleration structures build with the surfel grid or the probe updates, so only a frame that surfel GI or
+		// probe GI lights builds them.
+		let acceleration_structures = match (surfels.is_some() || probes.is_some(), &mut self.acceleration_structures) {
+			(true, Some(structures)) => Some(structures.prepare(frame, &mut self.traced_primitives, frame_allocator)),
 			_ => None,
 		};
 		let frame_work = FrameWork {
@@ -1798,6 +1964,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					exposure,
 					indirect_diffuse,
 					surfels,
+					probes,
 					self.gtao_settings,
 					self.contact_shadow_settings,
 					background,
@@ -1857,8 +2024,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		let radiance_history = create_radiance_history_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
+		let probe_gi = self.probe_volume.is_some();
+		// A pass declares at most eight views, so the two after material evaluation's are surfel GI's when it is built
+		// in, and probe GI's otherwise.
 		let debug_views = render_pass_builder.debug_views(if surfel_gi {
 			&SURFEL_DEBUG_VIEW_NAMES
+		} else if probe_gi {
+			&PROBE_DEBUG_VIEW_NAMES
 		} else {
 			&super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES
 		});
@@ -1883,6 +2055,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			stage_counters,
 			self.settings.features,
 			surfel_gi,
+			probe_gi,
 			debug_views,
 		);
 		context.write(
@@ -1947,31 +2120,39 @@ mod tests {
 
 	#[test]
 	fn gi_technique_lights_the_frame_when_built_in_and_enabled() {
-		use IndirectDiffuseSource::{ScreenSpace, Surfels};
+		use IndirectDiffuseSource::{Probes, ScreenSpace, Surfels};
 
-		let features = |ssgi, surfel_gi| VisibilityFeatures {
+		let features = |ssgi, surfel_gi, probe_gi| VisibilityFeatures {
 			ssgi,
 			surfel_gi,
+			probe_gi,
 			..VisibilityFeatures::default()
 		};
 		let gi = |enabled, technique| GiSettings { enabled, technique };
-		// (GI settings, built-in SSGI and surfel GI, ray tracing) and the source that lights the frame.
+		// (GI settings, built-in SSGI, surfel GI, and probe GI, ray tracing) and the source that lights the frame.
 		let cases = [
-			((gi(true, Surfels), (true, true), true), Some(Surfels)),
-			((gi(true, Surfels), (false, true), true), Some(Surfels)),
-			((gi(true, ScreenSpace), (true, true), true), Some(ScreenSpace)),
-			// Without ray tracing, SSGI lights frames in place of surfel GI when it is built in.
-			((gi(true, Surfels), (true, true), false), Some(ScreenSpace)),
-			((gi(true, Surfels), (false, true), false), None),
-			((gi(true, ScreenSpace), (false, true), true), None),
-			((gi(false, ScreenSpace), (true, true), true), None),
-			((gi(false, Surfels), (true, true), true), None),
+			((gi(true, Surfels), (true, true, false), true), Some(Surfels)),
+			((gi(true, Surfels), (false, true, false), true), Some(Surfels)),
+			((gi(true, ScreenSpace), (true, true, false), true), Some(ScreenSpace)),
+			((gi(true, Probes), (false, false, true), true), Some(Probes)),
+			((gi(true, Probes), (true, true, true), true), Some(Probes)),
+			// Without ray tracing, SSGI lights frames in place of surfel GI or probe GI when it is built in.
+			((gi(true, Surfels), (true, true, false), false), Some(ScreenSpace)),
+			((gi(true, Probes), (true, false, true), false), Some(ScreenSpace)),
+			((gi(true, Surfels), (false, true, false), false), None),
+			((gi(true, Probes), (false, false, true), false), None),
+			// A technique left out of the shaders lights nothing.
+			((gi(true, ScreenSpace), (false, true, false), true), None),
+			((gi(true, Probes), (true, true, false), true), None),
+			((gi(false, ScreenSpace), (true, true, false), true), None),
+			((gi(false, Surfels), (true, true, false), true), None),
+			((gi(false, Probes), (false, false, true), true), None),
 		];
-		for ((settings, (ssgi, surfel_gi), ray_tracing), source) in cases {
+		for ((settings, (ssgi, surfel_gi, probe_gi), ray_tracing), source) in cases {
 			assert_eq!(
-				indirect_diffuse_source(settings, features(ssgi, surfel_gi), ray_tracing),
+				indirect_diffuse_source(settings, features(ssgi, surfel_gi, probe_gi), ray_tracing),
 				source,
-				"{settings:?}, SSGI {ssgi}, surfel GI {surfel_gi}, ray tracing {ray_tracing}"
+				"{settings:?}, SSGI {ssgi}, surfel GI {surfel_gi}, probe GI {probe_gi}, ray tracing {ray_tracing}"
 			);
 		}
 	}
@@ -2015,5 +2196,46 @@ mod tests {
 
 		assert_eq!(settings.surfel_capacity(), 131_072);
 		assert_eq!(settings.surfel_ray_budget(), 32_768);
+	}
+
+	#[test]
+	fn probe_ray_budget_is_a_multiple_of_the_rays_per_probe_in_range() {
+		let settings = VisibilityPipelineSettings::default();
+		assert_eq!(settings.probe_ray_budget(), 65_536);
+
+		for rays in [128, 24_576, 1_048_576] {
+			assert_eq!(settings.with_probe_ray_budget(rays).unwrap().probe_ray_budget(), rays);
+		}
+		for rays in [0, 100, 65_537, 1_048_704] {
+			let reason = settings.with_probe_ray_budget(rays).unwrap_err();
+			assert!(reason.contains(&format!("{rays} is not a multiple of 128")), "{reason}");
+		}
+	}
+
+	#[test]
+	fn probe_spacing_is_a_distance_in_range() {
+		let settings = VisibilityPipelineSettings::default();
+		assert_eq!(settings.probe_spacing(), 1.0);
+
+		for spacing in [0.05, 0.5, 100.0] {
+			assert_eq!(settings.with_probe_spacing(spacing).unwrap().probe_spacing(), spacing);
+		}
+		for spacing in [0.0, 0.01, -1.0, 101.0, f32::NAN] {
+			let reason = settings.with_probe_spacing(spacing).unwrap_err();
+			assert!(reason.contains("is outside 0.05 through 100 meters"), "{reason}");
+		}
+	}
+
+	#[test]
+	fn probe_sizes_are_read_from_the_render_parameters() {
+		let settings = VisibilityPipelineSettings::from_parameters(
+			&[
+				crate::application::Parameter::new(PROBE_RAY_BUDGET_PARAMETER, "32768"),
+				crate::application::Parameter::new(PROBE_SPACING_PARAMETER, "2.5"),
+			][..],
+		);
+
+		assert_eq!(settings.probe_ray_budget(), 32_768);
+		assert_eq!(settings.probe_spacing(), 2.5);
 	}
 }

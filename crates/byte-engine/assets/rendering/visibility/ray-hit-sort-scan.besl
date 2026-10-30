@@ -8,20 +8,20 @@ thread_totals: workgroup<u32, 256>;
 
 main: fn (input: StageInput) -> void {
 	let thread: u32 = input.thread_idx;
-	// SURFEL_HIT_KEYS counts, four per thread.
+	// 1,024 counts, four per thread.
 	let first: u32 = thread * 4;
 	let values: vec4u = vec4u(
-		atomic_exchange(surfel_hit_sort.counts[first], 0),
-		atomic_exchange(surfel_hit_sort.counts[first + 1], 0),
-		atomic_exchange(surfel_hit_sort.counts[first + 2], 0),
-		atomic_exchange(surfel_hit_sort.counts[first + 3], 0)
+		atomic_exchange(ray_hit_sort.counts[first], 0),
+		atomic_exchange(ray_hit_sort.counts[first + 1], 0),
+		atomic_exchange(ray_hit_sort.counts[first + 2], 0),
+		atomic_exchange(ray_hit_sort.counts[first + 3], 0)
 	);
 	let thread_total: u32 = values.x + values.y + values.z + values.w;
 	thread_totals[thread] = thread_total;
 	workgroup_barrier();
 
-	// An inclusive scan of the thread totals, as in the surfel scan's group pass.
-	for (let distance: u32 = 1; distance < SURFEL_SCAN_WORKGROUP_SIZE; distance = distance * 2) {
+	// An inclusive scan of the thread totals.
+	for (let distance: u32 = 1; distance < HIT_SORT_WORKGROUP_SIZE; distance = distance * 2) {
 		let earlier: u32 = 0;
 		if (thread >= distance) {
 			earlier = thread_totals[thread - distance];
@@ -32,11 +32,11 @@ main: fn (input: StageInput) -> void {
 	}
 
 	let offset: u32 = thread_totals[thread] - thread_total;
-	surfel_hit_sort.offsets[first] = offset;
-	surfel_hit_sort.offsets[first + 1] = offset + values.x;
-	surfel_hit_sort.offsets[first + 2] = offset + values.x + values.y;
-	surfel_hit_sort.offsets[first + 3] = offset + values.x + values.y + values.z;
-	if (thread == SURFEL_SCAN_WORKGROUP_SIZE - 1) {
-		surfel_hit_sort.hit_count = thread_totals[thread];
+	ray_hit_sort.offsets[first] = offset;
+	ray_hit_sort.offsets[first + 1] = offset + values.x;
+	ray_hit_sort.offsets[first + 2] = offset + values.x + values.y;
+	ray_hit_sort.offsets[first + 3] = offset + values.x + values.y + values.z;
+	if (thread == HIT_SORT_WORKGROUP_SIZE - 1) {
+		ray_hit_sort.hit_count = thread_totals[thread];
 	}
 }

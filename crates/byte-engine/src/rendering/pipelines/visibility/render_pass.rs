@@ -1,7 +1,7 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel resolve, and material evaluation,
-//! which also traces screen-space reflections. GTAO runs only while its settings enable it, and SSGI and surfel GI only
-//! in frames they light; see [`IndirectDiffuseSource`].
+//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel or probe resolve, and material
+//! evaluation, which also traces screen-space reflections. GTAO runs only while its settings enable it, and SSGI, surfel
+//! GI, and probe GI only in frames they light; see [`IndirectDiffuseSource`].
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording, timing each stage
@@ -12,6 +12,8 @@ mod gtao;
 mod light_clusters;
 mod materials;
 mod occlusion;
+mod probe_gi;
+mod ray_hits;
 mod reflections;
 mod shadows;
 mod ssgi;
@@ -143,6 +145,14 @@ pub(super) use self::materials::MATERIAL_PREPASS_PIPELINES;
 use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
+pub(super) use self::probe_gi::PROBE_GI_PIPELINES;
+use self::probe_gi::ProbeResolvePass;
+pub(crate) use self::probe_gi::{
+	DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS, PROBE_SPACING_RANGE, ProbeFrame,
+	ProbeGiSettings, ProbeVolume,
+};
+pub(super) use self::ray_hits::RAY_HIT_PIPELINES;
+pub(crate) use self::ray_hits::{RayHits, RayTracing};
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
@@ -157,7 +167,7 @@ pub(super) use self::surfel_gi::SURFEL_GI_PIPELINES;
 use self::surfel_gi::SurfelResolvePass;
 pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun, SurfelTracing,
+	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun,
 };
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
@@ -187,7 +197,7 @@ pub(crate) struct FrameWork<'a> {
 	pub(crate) skinning: &'a SkinningPass,
 	/// Draws the shadow maps every sink samples.
 	pub(crate) shadows: &'a ShadowMaps,
-	/// Builds the acceleration structures surfel GI traces, in frames it lights.
+	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
 }
 
@@ -219,7 +229,13 @@ pub(crate) struct StageCounters {
 	surfel_trace: ghi::CounterHandle,
 	/// The update of every live surfel's estimate and record.
 	surfel_integrate: ghi::CounterHandle,
-	/// The sun visibility, GTAO, and SSGI or surfel resolve dispatches, recorded interleaved so the GPU can overlap
+	/// The probe schedule's ranking, cut, and list.
+	probe_schedule: ghi::CounterHandle,
+	/// The probe rays' trace, the hit sort, and the shade pass.
+	probe_trace: ghi::CounterHandle,
+	/// The blend of the listed probes' rays into their maps, and their relocation and classification.
+	probe_update: ghi::CounterHandle,
+	/// The sun visibility, GTAO, and SSGI, surfel, or probe resolve dispatches, recorded interleaved so the GPU can overlap
 	/// them. One counter covers them all, because a precise timestamp between stages would serialize them again.
 	screen_space: ghi::CounterHandle,
 	/// Opaque material evaluation.
@@ -247,6 +263,9 @@ impl StageCounters {
 			surfel_grid: builder.create_gpu_counter("surfel-grid"),
 			surfel_trace: builder.create_gpu_counter("surfel-trace"),
 			surfel_integrate: builder.create_gpu_counter("surfel-integrate"),
+			probe_schedule: builder.create_gpu_counter("probe-schedule"),
+			probe_trace: builder.create_gpu_counter("probe-trace"),
+			probe_update: builder.create_gpu_counter("probe-update"),
 			screen_space: builder.create_gpu_counter("screen-space"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			background: builder.create_gpu_counter("background"),
@@ -273,7 +292,7 @@ pub(crate) struct SinkTargets {
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
 /// that pass and the next frame knows which history it left.
 ///
-/// Both write the images opaque material evaluation reads indirect diffuse light from. The visibility pipeline manager
+/// Each writes the images opaque material evaluation reads indirect diffuse light from. The visibility pipeline manager
 /// picks one each frame, or none, and the environment alone lights indirect diffuse light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IndirectDiffuseSource {
@@ -282,6 +301,8 @@ pub(crate) enum IndirectDiffuseSource {
 	ScreenSpace,
 	/// Surfel GI gathers ray-traced bounce light into surfels on the surfaces the camera sees.
 	Surfels,
+	/// Probe GI gathers ray-traced bounce light into cascades of irradiance probes around the camera.
+	Probes,
 }
 
 impl IndirectDiffuseSource {
@@ -289,11 +310,11 @@ impl IndirectDiffuseSource {
 	/// frame, which is never zero.
 	///
 	/// Material evaluation adds the environment's diffuse light itself under SSGI, whose light holds only what its rays
-	/// hit, and not under surfel GI, whose light holds the environment's light its rays reached.
+	/// hit, and not under surfel GI or probe GI, whose light holds the environment's light their rays reached.
 	pub(crate) fn push_constant(self) -> u32 {
 		match self {
 			Self::ScreenSpace => 1,
-			Self::Surfels => 2,
+			Self::Surfels | Self::Probes => 2,
 		}
 	}
 
@@ -302,7 +323,13 @@ impl IndirectDiffuseSource {
 		match self {
 			Self::ScreenSpace => ("ssgi", super::features::SSGI_ENABLED_PARAMETER),
 			Self::Surfels => ("surfels", super::features::SURFEL_GI_ENABLED_PARAMETER),
+			Self::Probes => ("probes", super::features::PROBE_GI_ENABLED_PARAMETER),
 		}
+	}
+
+	/// Returns whether the source traces rays, so it lights frames only on a device that does.
+	pub(crate) fn traces_rays(self) -> bool {
+		matches!(self, Self::Surfels | Self::Probes)
 	}
 
 	/// Returns whether the project built this source into its shaders, so it can be selected.
@@ -310,6 +337,7 @@ impl IndirectDiffuseSource {
 		match self {
 			Self::ScreenSpace => features.ssgi,
 			Self::Surfels => features.surfel_gi,
+			Self::Probes => features.probe_gi,
 		}
 	}
 }
@@ -317,8 +345,8 @@ impl IndirectDiffuseSource {
 /// The `GiSettings` struct holds the runtime global illumination controls the visibility pipeline manager applies to
 /// every frame: whether indirect diffuse light comes from a technique at all, and which one.
 ///
-/// `ssgi.enabled` and `surfel-gi.enabled` only decide, at startup, which techniques the shaders carry; these settings
-/// pick among those. Next, pass them to the manager's indirect diffuse source choice each frame.
+/// `ssgi.enabled`, `surfel-gi.enabled`, and `probe-gi.enabled` only decide, at startup, which techniques the shaders
+/// carry; these settings pick among those. Next, pass them to the manager's indirect diffuse source choice each frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GiSettings {
 	/// Whether a technique lights indirect diffuse light. Off, the environment lights it alone.
@@ -328,10 +356,14 @@ pub(crate) struct GiSettings {
 }
 
 impl GiSettings {
-	/// Creates the controls of a project built with `features`: on, with SSGI when it is built in and surfel GI
-	/// otherwise.
+	/// Creates the controls of a project built with `features`: on, with SSGI when it is built in, then probe GI, then
+	/// surfel GI.
 	pub(crate) fn new(features: VisibilityFeatures) -> Self {
-		let technique = if !features.ssgi && features.surfel_gi {
+		let technique = if features.ssgi {
+			IndirectDiffuseSource::ScreenSpace
+		} else if features.probe_gi {
+			IndirectDiffuseSource::Probes
+		} else if features.surfel_gi {
 			IndirectDiffuseSource::Surfels
 		} else {
 			IndirectDiffuseSource::ScreenSpace
@@ -363,11 +395,15 @@ impl GiSettings {
 				let technique = value
 					.as_text()
 					.and_then(|text| {
-						[IndirectDiffuseSource::ScreenSpace, IndirectDiffuseSource::Surfels]
-							.into_iter()
-							.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
+						[
+							IndirectDiffuseSource::ScreenSpace,
+							IndirectDiffuseSource::Surfels,
+							IndirectDiffuseSource::Probes,
+						]
+						.into_iter()
+						.find(|technique| text.eq_ignore_ascii_case(technique.names().0))
 					})
-					.ok_or("GI technique was not set. The most likely cause is that the value is neither `ssgi` nor `surfels`. Set it to `ssgi` or `surfels`.")?;
+					.ok_or("GI technique was not set. The most likely cause is that the value is not `ssgi`, `surfels`, or `probes`. Set it to one of the three.")?;
 				let (name, feature) = technique.names();
 				if !technique.built_in(features) {
 					return Err(format!(
@@ -416,6 +452,8 @@ pub(crate) struct VisibilityRenderPass {
 	ssgi: Option<SsgiPass>,
 	/// Absent when the frame has no surfel pool to light this sink from.
 	surfel_resolve: Option<SurfelResolvePass>,
+	/// Absent when the frame has no probe volume to light this sink from.
+	probe_resolve: Option<ProbeResolvePass>,
 	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
 	stage_counters: StageCounters,
@@ -430,7 +468,8 @@ impl VisibilityRenderPass {
 	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
 	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
-	/// pipelines. `surfel_gi` tells whether the frame has a [`SurfelPool`] that surfel GI can light this sink from.
+	/// pipelines. `surfel_gi` and `probe_gi` tell whether the frame has a [`SurfelPool`] that surfel GI can light this
+	/// sink from, and a [`ProbeVolume`] that probe GI can.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -442,6 +481,7 @@ impl VisibilityRenderPass {
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
 		surfel_gi: bool,
+		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 	) -> Self {
 		let visibility_buffer_descriptor_set =
@@ -493,6 +533,15 @@ impl VisibilityRenderPass {
 		});
 		let surfel_resolve = surfel_gi.then(|| {
 			SurfelResolvePass::new(
+				context,
+				depth_pyramid.depth_pyramid,
+				depth_pyramid.view_data,
+				targets.ssgi,
+				&debug_views,
+			)
+		});
+		let probe_resolve = probe_gi.then(|| {
+			ProbeResolvePass::new(
 				context,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
@@ -589,6 +638,7 @@ impl VisibilityRenderPass {
 			depth_pyramid,
 			ssgi,
 			surfel_resolve,
+			probe_resolve,
 			reflections,
 			stage_counters,
 			pipeline_manager,
@@ -608,8 +658,9 @@ impl VisibilityRenderPass {
 	/// made for, so that sink also fits the cascades to its surfaces. `history` describes how this pass recorded the sink in the previous frame at the same
 	/// extent, or is `None` when the previous frame's images do not hold this sink's data. `exposure` is the shared
 	/// lighting exposure uploaded for every sink in this frame. `indirect_diffuse` is the source the visibility pipeline
-	/// manager picked to light this frame's indirect diffuse light, and `surfels` the frame's surfel work when it picked
-	/// surfel GI; the sink that records the frame-wide work also records the surfel grid. `gtao_settings` and
+	/// manager picked to light this frame's indirect diffuse light, and `surfels` or `probes` the frame's surfel or probe
+	/// work when it picked surfel GI or probe GI; the sink that records the frame-wide work also records the surfel grid
+	/// or the probe updates. `gtao_settings` and
 	/// `contact_shadow_settings` are the runtime controls the manager holds.
 	pub(crate) fn prepare<'a>(
 		&'a self,
@@ -623,6 +674,7 @@ impl VisibilityRenderPass {
 		exposure: f32,
 		indirect_diffuse: Option<IndirectDiffuseSource>,
 		surfels: Option<SurfelFrame>,
+		probes: Option<ProbeFrame>,
 		gtao_settings: GtaoSettings,
 		contact_shadow_settings: ContactShadowSettings,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
@@ -712,19 +764,32 @@ impl VisibilityRenderPass {
 		};
 		// The grid serves every sink, so the sink that records the frame-wide work builds it before any resolve.
 		let surfel_grid = surfels.filter(|_| frame_work.is_some() && surfel_resolve.is_some());
-		// The acceleration structures build with the grid, so the frame that builds them traces them too.
+		let lit_by_probes = indirect_diffuse == Some(IndirectDiffuseSource::Probes);
+		let probe_resolve = match (&self.probe_resolve, &probes) {
+			(Some(resolve), Some(probes)) if lit_by_probes => {
+				// The two views after material evaluation's are surfel GI's when it is built in.
+				let probe_views = if self.surfel_resolve.is_some() { 0 } else { debug_views };
+				Some(resolve.prepare(frame, sink, probes, exposure, probe_views))
+			}
+			_ => None,
+		};
+		// Like the grid, the probe updates serve every sink, so the sink that records the frame-wide work runs them.
+		let probe_updates = probes.filter(|_| frame_work.is_some() && probe_resolve.is_some());
+		// The acceleration structures build with the grid or the probe updates, so the frame that builds them traces
+		// them too.
 		let acceleration_structures = frame_work
 			.and_then(|work| work.acceleration_structures)
-			.filter(|_| surfel_grid.is_some());
+			.filter(|_| surfel_grid.is_some() || probe_updates.is_some());
 		self.reflections.prepare(frame, history);
 		let screen_space_lighting = ScreenSpaceLighting {
 			gtao: gtao.is_some(),
 			ssgi: ssgi.is_some(),
-			// SSGI and the surfel resolve write the same indirect diffuse images.
-			indirect_diffuse: match (&ssgi, &surfel_resolve) {
-				(Some(_), _) => Some(IndirectDiffuseSource::ScreenSpace),
-				(None, Some(_)) => Some(IndirectDiffuseSource::Surfels),
-				(None, None) => None,
+			// SSGI and the surfel and probe resolves write the same indirect diffuse images.
+			indirect_diffuse: match (&ssgi, &surfel_resolve, &probe_resolve) {
+				(Some(_), ..) => Some(IndirectDiffuseSource::ScreenSpace),
+				(None, Some(_), _) => Some(IndirectDiffuseSource::Surfels),
+				(None, None, Some(_)) => Some(IndirectDiffuseSource::Probes),
+				(None, None, None) => None,
 			},
 		};
 		let pixel_lists = self
@@ -793,10 +858,19 @@ impl VisibilityRenderPass {
 				c.counter(counters.surfel_grid, |c| {
 					record_compute_stages(c, Some("Surfel Grid"), &surfels.grid)
 				});
-				c.counter(counters.surfel_trace, |c| surfels.record_rays(c));
+				c.counter(counters.surfel_trace, |c| surfels.rays.record(c));
 				c.counter(counters.surfel_integrate, |c| {
 					record_compute_stages(c, None, &[surfels.integrate])
 				});
+			}
+			// The probe updates bring every probe the sinks' resolves read up to date. The trace reads the volume before
+			// the update rewrites it, so the hits bounce the light the probes held last frame.
+			if let Some(probes) = &probe_updates {
+				c.counter(counters.probe_schedule, |c| {
+					record_compute_stages(c, Some("Probe Schedule"), &probes.schedule)
+				});
+				c.counter(counters.probe_trace, |c| probes.rays.record(c));
+				c.counter(counters.probe_update, |c| record_compute_stages(c, None, &[probes.update]));
 			}
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
@@ -842,6 +916,9 @@ impl VisibilityRenderPass {
 				}
 				if let Some(surfels) = &surfel_resolve {
 					record_compute_stages(c, None, &[surfels.resolve]);
+				}
+				if let Some(resolve) = &probe_resolve {
+					record_compute_stages(c, None, &[*resolve]);
 				}
 				if let Some(sun_visibility) = &sun_visibility {
 					record_compute_stages(c, None, &[sun_visibility.resolve]);
@@ -891,21 +968,26 @@ mod tests {
 
 	#[test]
 	fn gi_defaults_to_the_technique_the_project_built_in() {
-		let features = |ssgi, surfel_gi| VisibilityFeatures {
+		let features = |ssgi, surfel_gi, probe_gi| VisibilityFeatures {
 			ssgi,
 			surfel_gi,
+			probe_gi,
 			..VisibilityFeatures::default()
 		};
 
 		assert_eq!(
-			GiSettings::new(features(true, true)).technique,
+			GiSettings::new(features(true, true, true)).technique,
 			IndirectDiffuseSource::ScreenSpace
 		);
 		assert_eq!(
-			GiSettings::new(features(false, true)).technique,
+			GiSettings::new(features(false, true, true)).technique,
+			IndirectDiffuseSource::Probes
+		);
+		assert_eq!(
+			GiSettings::new(features(false, true, false)).technique,
 			IndirectDiffuseSource::Surfels
 		);
-		assert!(GiSettings::new(features(true, false)).enabled);
+		assert!(GiSettings::new(features(true, false, false)).enabled);
 	}
 
 	#[test]
@@ -944,5 +1026,14 @@ mod tests {
 			.with_parameter("technique", &text("surfels"), VisibilityFeatures::default())
 			.unwrap_err();
 		assert!(reason.contains("`render.surfel-gi.enabled`"), "{reason}");
+		let reason = settings.with_parameter("technique", &text("probes"), both).unwrap_err();
+		assert!(reason.contains("`render.probe-gi.enabled`"), "{reason}");
+
+		let probes_built_in = VisibilityFeatures { probe_gi: true, ..both };
+		let (probes, effective) = settings
+			.with_parameter("technique", &text("Probes"), probes_built_in)
+			.unwrap();
+		assert_eq!(probes.technique, IndirectDiffuseSource::Probes);
+		assert_eq!(effective, text("probes"));
 	}
 }

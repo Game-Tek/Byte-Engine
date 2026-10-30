@@ -1,0 +1,36 @@
+// Traces one of the frame's probe rays against the scene's top level: ray `ray % PROBE_RAYS` of the probe the schedule
+// listed at `ray / PROBE_RAYS`.
+//
+// A miss writes its result at once: the environment's light from its direction. A hit keeps what the shade pass needs
+// to rebuild it, and its sort key, which counts it among the hits on its material; the shade pass writes its result.
+// Next, the sort orders the hits by material, so the shade pass runs each material's closest-hit shader for a run of
+// hits side by side.
+
+main: fn (input: StageInput) -> void {
+	let ray: u32 = input.thread_id.x;
+	let rays: u32 = probe_listed_count() * PROBE_RAYS;
+	if (ray == 0) {
+		ray_hit_sort.rays = rays;
+	}
+	if (ray >= rays) {
+		return;
+	}
+	let slot: u32 = probe_list[ray / PROBE_RAYS];
+	let origin: vec3f = probe_world_position(probe_records[slot], probe_slot_cascade(slot));
+	let direction: vec3f = probe_ray_direction(ray % PROBE_RAYS);
+	let hit: Hit = intersect(scene_structure, 255, origin, direction, 0.0, PROBE_RAY_LENGTH);
+	if (hit.distance < 0.0) {
+		let sky: vec4f = texture_lod(probe_environment_radiance, direction, PROBE_SKY_LEVEL);
+		let radiance: vec3f = clamp(
+			vec3f(sky.x, sky.y, sky.z) * probe_volume_parameters.environment_intensity,
+			vec3f(0.0, 0.0, 0.0),
+			vec3f(PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE, PROBE_MAX_RADIANCE)
+		);
+		probe_ray_results[ray] = ProbeRayResult(radiance, PROBE_MISS_DISTANCE);
+		ray_hit_keys[ray] = NO_HIT;
+		return;
+	}
+	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.
+	let geometry: vec2u = ray_tracing_geometries.geometries[hit.custom_index + hit.geometry_index];
+	keep_ray_hit(ray, meshes.meshes[geometry.x].material_index, hit);
+}

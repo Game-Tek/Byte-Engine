@@ -1,0 +1,1 @@
+{"name":"Probe Resolve","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/probe-resolve.besl"}}

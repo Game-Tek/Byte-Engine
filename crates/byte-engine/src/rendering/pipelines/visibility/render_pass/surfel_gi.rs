@@ -20,6 +20,7 @@ use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SsgiTargets};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -37,18 +38,16 @@ pub(crate) const MAX_SURFEL_RAY_BUDGET: u32 = 1 << 20;
 /// The ray budget of a renderer that doesn't set one.
 pub(crate) const DEFAULT_SURFEL_RAY_BUDGET: u32 = 16_384;
 
-/// The surfel GI compute pipelines, named as [`Pipelines::request`] takes them: the frame-wide grid stages, the trace
-/// and the hit sort, and the estimate update, in recording order, then each sink's resolve and allocation. The shade
-/// pass's ray tracing pipeline comes from [`super::super::ray_tracing::SurfelShading`].
-pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 11] = [
+/// The surfel GI compute pipelines, named as [`Pipelines::request`] takes them: the frame-wide grid stages, the trace,
+/// and the estimate update, in recording order, then each sink's resolve and allocation. The hit sort comes from
+/// [`RayHits`], and the shade pass's ray tracing pipeline from [`super::super::ray_tracing::HitShading`].
+pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 9] = [
 	"surfel-count",
 	"surfel-scan-groups",
 	"surfel-scan-partials",
 	"surfel-scan-add",
 	"surfel-scatter",
 	"surfel-trace",
-	"surfel-sort-scan",
-	"surfel-sort-scatter",
 	"surfel-integrate",
 	"surfel-resolve",
 	"surfel-allocate",
@@ -137,19 +136,6 @@ pub(crate) struct SurfelLight<'a> {
 	pub(crate) suns: &'a [SurfelSun],
 }
 
-/// The `SurfelTracing` struct names what the frame's surfel rays trace and shade with: the scene sets they read, and
-/// the ray tracing pipeline and shader binding table that run each hit's closest-hit shader.
-///
-/// The visibility pipeline manager assembles it from the scene, [`super::super::acceleration_structures`], and
-/// [`super::super::ray_tracing::SurfelShading::prepare`], and hands it to [`SurfelPool::prepare`].
-#[derive(Clone, Copy)]
-pub(crate) struct SurfelTracing {
-	pub(crate) scene: ghi::DescriptorSetHandle,
-	pub(crate) ray_traced_scene: ghi::DescriptorSetHandle,
-	pub(crate) pipeline: ghi::PipelineHandle,
-	pub(crate) table: ghi::ShaderBindingTableHandle,
-}
-
 /// The `SurfelIrradiance` struct is one surfel's light estimate. It matches `SurfelIrradiance` in
 /// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
 #[repr(C)]
@@ -174,36 +160,6 @@ struct SurfelRayResult {
 	direction: u32,
 	weight: f32,
 	guided: u32,
-}
-
-/// The `SurfelHit` struct is one ray's hit, kept for the shade pass. It matches `SurfelHit` in
-/// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-struct SurfelHit {
-	origin: ghi::pod::Vec3f,
-	distance: f32,
-	barycentrics: [f32; 2],
-	direction: u32,
-	record: u32,
-	custom_index: u32,
-	geometry_index: u32,
-	primitive_index: u32,
-	_padding: u32,
-}
-
-/// The material slots the hit sort orders hits by, which `SurfelHitSort` in `layouts/surfel-gi.besl` sizes its tables
-/// for.
-const SURFEL_HIT_KEYS: usize = super::super::layout::MAX_MATERIALS;
-
-/// The `SurfelHitSort` struct is the counting sort of a frame's hits. It matches `SurfelHitSort` in
-/// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-struct SurfelHitSort {
-	counts: [u32; SURFEL_HIT_KEYS],
-	offsets: [u32; SURFEL_HIT_KEYS],
-	hit_count: u32,
 }
 
 /// The `SurfelRecord` struct is one surfel as lookups read it. It matches `SurfelRecord` in `layouts/surfel-gi.besl`;
@@ -302,7 +258,7 @@ fn snapped_grid_origin(position: [f32; 3]) -> [f32; 3] {
 pub(crate) struct SurfelPool {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// Every surfel GI compute pipeline, in the order of [`SURFEL_GI_PIPELINES`].
-	pipelines: Pipelines<11>,
+	pipelines: Pipelines<9>,
 	parameters: ghi::DynamicBufferHandle<SurfelGiParameters>,
 	/// The allocator and counts, in memory the host can read.
 	counts: ghi::BufferHandle<SurfelPoolCounts>,
@@ -364,14 +320,6 @@ impl SurfelPool {
 		let rays: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Rays", ray_budget));
 		let ray_results: ghi::BufferHandle<[SurfelRayResult]> =
 			context.build_buffer(device_buffer("Surfel Ray Results", ray_budget));
-		let hits: ghi::BufferHandle<[SurfelHit]> = context.build_buffer(device_buffer("Surfel Hits", ray_budget));
-		let hit_keys: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Hit Keys", ray_budget));
-		let hit_sort: ghi::BufferHandle<SurfelHitSort> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Surfel Hit Sort")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
-		let sorted_hits: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Sorted Hits", ray_budget));
 		// Every guide cell is a half float, which the host sizes as a 16-bit element.
 		let guides: ghi::BufferHandle<[u16]> =
 			context.build_buffer(device_buffer("Surfel Guides", capacity * SURFEL_GUIDE_CELLS));
@@ -403,10 +351,6 @@ impl SurfelPool {
 			set.buffer("surfel_irradiance", irradiance),
 			set.buffer("surfel_rays", rays),
 			set.buffer("surfel_ray_results", ray_results),
-			set.buffer("surfel_hits", hits),
-			set.buffer("surfel_hit_keys", hit_keys),
-			set.buffer("surfel_hit_sort", hit_sort),
-			set.buffer("surfel_sorted_hits", sorted_hits),
 			set.buffer("surfel_guides", guides),
 			set.buffer("surfel_depths", depths),
 			set.buffer("surfel_clearances", clearances),
@@ -433,15 +377,16 @@ impl SurfelPool {
 	/// Uploads this frame's surfel settings and returns the frame's surfel work, or `None` while a surfel GI pipeline
 	/// is still compiling, in which case surfel GI can't light the frame.
 	///
-	/// `sink` is the first sink, whose camera the grid follows. `light` carries the frame's suns and exposures, and
-	/// `tracing` the sets and the pipeline the rays trace and shade with.
+	/// `sink` is the first sink, whose camera the grid follows. `light` carries the frame's suns and exposures,
+	/// `tracing` the sets and the pipeline the rays trace and shade with, and `hits` where the trace keeps their hits.
 	pub(crate) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		pipeline_manager: &PipelineManagerClient,
 		sink: &Sink,
 		light: SurfelLight,
-		tracing: SurfelTracing,
+		tracing: RayTracing,
+		hits: &RayHits,
 	) -> Option<SurfelFrame> {
 		let [
 			count,
@@ -450,12 +395,11 @@ impl SurfelPool {
 			scan_add,
 			scatter,
 			trace,
-			sort_scan,
-			sort_scatter,
 			integrate,
 			resolve,
 			allocate,
 		] = self.pipelines.resolve(pipeline_manager)?;
+		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
 		let camera = camera_position(sink.view());
 		let mut suns = [SurfelSun::default(); MAX_SURFEL_SUNS];
 		let sun_count = light.suns.len().min(MAX_SURFEL_SUNS);
@@ -485,7 +429,12 @@ impl SurfelPool {
 		};
 		// The trace and shade passes read the scene and its acceleration structures before the surfel set, as every
 		// closest-hit shader's sets must be the first of the shade pass's.
-		let traced_sets = [tracing.scene, tracing.ray_traced_scene, self.descriptor_set];
+		let traced_sets = [
+			tracing.scene,
+			tracing.ray_traced_scene,
+			self.descriptor_set,
+			hits.descriptor_set(),
+		];
 		Some(SurfelFrame {
 			grid: [
 				stage("Surfel Count", count, self.capacity),
@@ -494,22 +443,22 @@ impl SurfelPool {
 				stage("Surfel Scan Add", scan_add, scan_threads),
 				stage("Surfel Scatter", scatter, self.capacity),
 			],
-			trace: ComputeStage {
-				label: "Surfel Trace",
-				pipeline: trace,
-				descriptor_sets: traced_sets,
-				extent: Extent::line(self.ray_budget),
-				workgroup: Extent::line(SURFEL_TRACE_WORKGROUP_SIZE),
-			},
-			sort: [
-				stage("Surfel Sort Scan", sort_scan, SURFEL_SCAN_WORKGROUP_SIZE),
-				stage("Surfel Sort Scatter", sort_scatter, self.ray_budget),
-			],
-			shade: ShadeStage {
-				pipeline: tracing.pipeline,
-				table: tracing.table,
-				descriptor_sets: traced_sets,
-				rays: self.ray_budget,
+			rays: RayStages {
+				label: "Surfel Rays",
+				trace: ComputeStage {
+					label: "Surfel Trace",
+					pipeline: trace,
+					descriptor_sets: traced_sets,
+					extent: Extent::line(self.ray_budget),
+					workgroup: Extent::line(SURFEL_TRACE_WORKGROUP_SIZE),
+				},
+				sort,
+				shade: ShadeStage {
+					label: "Surfel Shade",
+					tracing,
+					descriptor_sets: traced_sets,
+					rays: self.ray_budget,
+				},
 			},
 			integrate: stage("Surfel Integrate", integrate, self.capacity),
 			descriptor_set: self.descriptor_set,
@@ -530,55 +479,13 @@ impl SurfelPool {
 pub(crate) struct SurfelFrame {
 	/// The economy and cell count, the three scan passes, and the scatter, in recording order.
 	pub(super) grid: [ComputeStage; 5],
-	/// Traces the granted rays, writing misses and keeping hits for the sort.
-	pub(super) trace: ComputeStage<3>,
-	/// Orders the hits by the material they hit.
-	pub(super) sort: [ComputeStage; 2],
-	/// Runs each sorted hit's closest-hit shader and lights the surface it reports.
-	pub(super) shade: ShadeStage,
+	/// Traces the granted rays, sorts their hits, and lights what they hit.
+	pub(super) rays: RayStages<4>,
 	/// Folds the rays into every live surfel's estimate and record, which the resolve reads.
 	pub(super) integrate: ComputeStage,
 	descriptor_set: ghi::DescriptorSetHandle,
 	resolve: ghi::PipelineHandle,
 	allocate: ghi::PipelineHandle,
-}
-
-impl SurfelFrame {
-	/// Records the trace, the hit sort, and the shade pass, in that order.
-	pub(super) fn record_rays(&self, c: &mut ghi::implementation::CommandBufferRecording) {
-		use ghi::command_buffer::CommonCommandBufferMode as _;
-
-		c.start_region(|label| label.write_str("Surfel Rays"));
-		super::record_compute_stages(c, None, &[self.trace]);
-		super::record_compute_stages(c, None, &self.sort);
-		self.shade.record(c);
-		c.end_region();
-	}
-}
-
-/// The `ShadeStage` struct is the frame's shade pass: one ray generation invocation per granted ray, of which those
-/// past the frame's hit count return at once.
-#[derive(Clone, Copy)]
-pub(super) struct ShadeStage {
-	pipeline: ghi::PipelineHandle,
-	table: ghi::ShaderBindingTableHandle,
-	descriptor_sets: [ghi::DescriptorSetHandle; 3],
-	/// The frame's ray budget, which bounds its hits.
-	rays: u32,
-}
-
-impl ShadeStage {
-	fn record(&self, c: &mut ghi::implementation::CommandBufferRecording) {
-		use ghi::command_buffer::{
-			BoundPipelineLayoutMode as _, BoundRayTracingPipelineMode as _, CommonCommandBufferMode as _,
-		};
-
-		c.start_region(|label| label.write_str("Surfel Shade"));
-		let c = c.bind_ray_tracing_pipeline(self.pipeline);
-		c.bind_descriptor_sets(&self.descriptor_sets);
-		c.trace_rays(self.table, Extent::line(self.rays));
-		c.end_region();
-	}
 }
 
 /// The `SurfelResolvePass` struct lights one sink's opaque pixels from the surfel pool, and asks for the surfels its
@@ -804,8 +711,6 @@ mod tests {
 			stride(&set_layouts::SURFEL_GI, "surfel_ray_results"),
 			size_of::<SurfelRayResult>()
 		);
-		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_hits"), size_of::<SurfelHit>());
-		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_hit_sort"), size_of::<SurfelHitSort>());
 		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_states"), size_of::<SurfelState>());
 		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_pool"), size_of::<SurfelPoolCounts>());
 		assert_eq!(

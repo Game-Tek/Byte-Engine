@@ -351,6 +351,60 @@ app.configuration().update("render.gi.enabled", "false");
 	normal maps don't shape the light that comes from the sky.
 </Callout>
 
+### Light with probes instead
+
+Probe global illumination (probe GI) is the other ray-traced technique. Instead
+of surfels on the surfaces the camera sees, it keeps a grid of irradiance probes
+around the camera, in four cascades that each double the spacing of the one
+inside them. Light from surfaces off the screen, or behind the camera, is there
+from the first frames, and the cost doesn't grow with what the screen shows.
+Probes resolve light only as finely as they're spaced, so thin walls and small
+rooms need closer probes.
+
+1. Build probe GI into the bake and select it in the project's `config.json`:
+
+   ```json
+   {
+     "render": {
+       "probe-gi": { "enabled": true },
+       "gi": { "technique": "probes" }
+     }
+   }
+   ```
+
+2. Bake again with `beld bake --force`.
+
+3. To fit the probes to your scene, set their spacing and the rays they trace a
+   frame at startup:
+
+   ```bash
+   cargo run -- --render.probe-gi.spacing=0.5 --render.probe-gi.ray-budget=131072
+   ```
+
+   Closer probes keep light from leaking through thinner walls, but the four
+   cascades then reach less far: each holds 24 × 12 × 24 probes. More rays a
+   frame update more probes, so the light settles sooner after it changes, at a
+   higher GPU cost.
+
+4. Check the result with the `VisibilityPipelineManager.probes` debug view,
+   which draws the probes of the finest cascade as spheres that show their
+   light, with idle probes blue, probes inside geometry red, and probes not
+   traced yet magenta. `VisibilityPipelineManager.probe-light` shows the light
+   the probes give each pixel. Both show light on a logarithmic scale, so light
+   in shade still reads. When surfel GI is built in too, the surfel views take
+   their place.
+
+Unlike surfel GI, probe GI bounces the light of point and cone lights too, so
+it also lights night scenes and interiors without a sun.
+
+<Callout type="info" title="Probe GI limits">
+	As with surfel GI, rays pass through foliage, glass, and skinned meshes. Point
+	and cone lights bounce without their IES profiles, at their peak intensity in
+	every direction. A probe updates every few frames and blends each update into
+	what it held, so indirect light follows a change over a few seconds, unless a
+	probe's light changes tenfold, which it takes at once.
+</Callout>
+
 ## Add height fog
 
 Height fog fills the scene with mist that's thickest near the ground and thins out with altitude,

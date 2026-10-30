@@ -2981,10 +2981,10 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			asset_source!("surfel-trace.besl"),
 			Settings::compute(Extent::line(64)),
 		),
-		("surfel_sort_scan", asset_source!("surfel-sort-scan.besl"), surfel_slots()),
+		("ray_hit_sort_scan", asset_source!("ray-hit-sort-scan.besl"), surfel_slots()),
 		(
-			"surfel_sort_scatter",
-			asset_source!("surfel-sort-scatter.besl"),
+			"ray_hit_sort_scatter",
+			asset_source!("ray-hit-sort-scatter.besl"),
 			surfel_slots(),
 		),
 		("surfel_integrate", asset_source!("surfel-integrate.besl"), surfel_slots()),
@@ -2994,6 +2994,28 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			asset_source!("surfel-allocate.besl"),
 			Settings::compute(Extent::line(64)),
 		),
+		(
+			"probe_schedule",
+			asset_source!("probe-schedule.besl"),
+			Settings::compute(Extent::line(64)),
+		),
+		(
+			"probe_select",
+			asset_source!("probe-select.besl"),
+			Settings::compute(Extent::line(1)),
+		),
+		(
+			"probe_gather",
+			asset_source!("probe-gather.besl"),
+			Settings::compute(Extent::line(64)),
+		),
+		(
+			"probe_trace",
+			asset_source!("probe-trace.besl"),
+			Settings::compute(Extent::line(64)),
+		),
+		("probe_update", asset_source!("probe-update.besl"), surfel_slots()),
+		("probe_resolve", asset_source!("probe-resolve.besl"), tile()),
 	] {
 		let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
 		// Baking gives every standalone shader the common helpers, such as `debug_view_slot`.
@@ -3006,21 +3028,18 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 	}
 }
 
-/// Verifies the surfel shade pass and the default hit lower to the running platform's shader language with each layer
-/// in its own set, as the bake stacks them, so the closest hit's sets are the first of the shade pass's.
+/// Verifies the surfel and probe shade passes and the default hit lower to the running platform's shader language with
+/// each layer in its own set, as the bake stacks them, so the closest hit's sets are the first of each shade pass's.
 #[cfg(target_os = "macos")]
 #[compio::test]
-async fn surfel_ray_tracing_shaders_lower_to_the_platform_shader_language() {
+async fn ray_tracing_shaders_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings as Settings;
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	for (name, asset, settings) in [
 		("surfel_shade", "visibility/surfel-shade.besl", Settings::ray_generation()),
-		(
-			"surfel_default_hit",
-			"visibility/surfel-default-hit.besl",
-			Settings::closest_hit(),
-		),
+		("probe_shade", "visibility/probe-shade.besl", Settings::ray_generation()),
+		("default_hit", "visibility/default-hit.besl", Settings::closest_hit()),
 	] {
 		let root = besl::lex(crate::rendering::shader_vm_test::stacked_asset(asset))
 			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));

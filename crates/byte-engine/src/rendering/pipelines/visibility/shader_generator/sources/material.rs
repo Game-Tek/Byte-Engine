@@ -20,8 +20,10 @@ decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
 }
 "#;
 
-pub(crate) const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
-material_evaluation_prefix: fn (input: StageInput) -> void {
+/// Picks the pixel a thread of a per-material evaluation pipeline shades from its slot's pixel list, and the instance
+/// that covers it. The surface prefix follows.
+pub(crate) const MATERIAL_EVALUATION_PIXEL_LIST_SOURCE: &str = r#"
+material_evaluation_pixel_list: fn (input: StageInput) -> void {
 	let invocation: vec2u = input.thread_id;
 	// One dispatch shades the pixel list of an evaluation slot, which holds the pixels of every material that compiled to
 	// this pipeline. Each pixel reads its own material below.
@@ -43,13 +45,75 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	if (pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) {
 		return;
 	}
-
-	let triangle_meshlet_indices: u32 = image_load_u32(triangle_index, pixel_coordinates);
 	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel_coordinates);
+	let mesh: Mesh = meshes.meshes[instance_index];
+}
+"#;
+
+/// Fills the opaque uber shader's workgroup window of indirect diffuse texels, then waits for every thread of the tile.
+///
+/// Each 8 x 8 tile's pixels read their indirect diffuse taps from one window of at most 6 x 6 half-resolution texels,
+/// so 36 threads fetch the window once instead of every pixel fetching its four taps. The window starts at the first
+/// texel the tile's first pixel reads, as `indirect_diffuse_window_origin` finds it, and holds texels clamped to the
+/// image the same way the taps clamp them, so every tap of the tile lands inside it. The fill reads
+/// `push_constant.indirect_diffuse`, so a project without an indirect diffuse source drops it. Every thread reaches
+/// the barrier, those past the image's edge too.
+pub(crate) const MATERIAL_EVALUATION_TILE_WINDOW_SOURCE: &str = r#"
+material_evaluation_tile_window: fn (input: StageInput) -> void {
+	if (push_constant.indirect_diffuse != 0) {
+		if (input.thread_idx < 36) {
+			let window_extent: vec2u = texture_size(ssgi_history);
+			let window_origin: vec2u = indirect_diffuse_window_origin(input.thread_id, image_size(lit_map), window_extent);
+			let window_texel: vec2u = vec2u(
+				min(window_origin.x + input.thread_idx % 6, window_extent.x - 1),
+				min(window_origin.y + input.thread_idx / 6, window_extent.y - 1)
+			);
+			// The same three images, at the same precision, as the taps of `sample_screen_space_indirect_diffuse`.
+			tile_indirect_depths[input.thread_idx] = fetch(depth_pyramid, window_texel).x;
+			let window_normal: vec4f = fetch(ssgi_normals, window_texel);
+			tile_indirect_normals[input.thread_idx] = vec2f(window_normal.x, window_normal.y);
+			tile_indirect_lights[input.thread_idx] = fetch(ssgi_history, window_texel);
+		}
+	}
+	workgroup_barrier();
+}
+"#;
+
+/// Picks the pixel a thread of an uber evaluation shader shades: its own pixel of the 8 x 8 tile its workgroup
+/// covers. A pixel no surface covers returns; in the opaque phase it first writes the zeros the per-material mode's
+/// pixel mapping writes, so the background and the next frame's rays never read light of an older frame there. The
+/// surface prefix follows.
+pub(crate) const MATERIAL_EVALUATION_TILE_SOURCE: &str = r#"
+material_evaluation_tile: fn (input: StageInput) -> void {
+	let pixel_coordinates: vec2u = input.thread_id;
+	let image_extent: vec2u = image_size(triangle_index);
+	if (pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) {
+		return;
+	}
+	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel_coordinates);
+	if (instance_index >= 1024) {
+		if (!transparent) {
+			let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+			write(lit_map, pixel_coordinates, zero);
+			write(diffuse_radiance_map, pixel_coordinates, zero);
+		}
+		return;
+	}
+	let mesh: Mesh = meshes.meshes[instance_index];
+	// The arm key of the pixel's material, which selects its surface code below.
+	let material_arm: u32 = material_evaluations.evaluation_indices[mesh.material_index];
+}
+"#;
+
+/// Rebuilds the pixel's surface from the visibility buffer: its triangle, perspective-correct barycentrics and their
+/// one-pixel differences, position, normal, and view vector. A pixel source declares `pixel_coordinates`,
+/// `image_extent`, `instance_index`, and `mesh` first.
+pub(crate) const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
+material_evaluation_prefix: fn (input: StageInput) -> void {
+	let triangle_meshlet_indices: u32 = image_load_u32(triangle_index, pixel_coordinates);
 	let meshlet_triangle_index: u32 = triangle_meshlet_indices & 255;
 	let meshlet_index: u32 = triangle_meshlet_indices >> 8;
 	let meshlet: Meshlet = meshlets[meshlet_index];
-	let mesh: Mesh = meshes.meshes[instance_index];
 	// Materials of one slot run the same program and differ only in the textures they bind, so the texture slots come
 	// from the pixel's own material. Pixel mapping groups pixels by tile, so neighboring lanes usually share it.
 	let material: Material = materials.materials[mesh.material_index];

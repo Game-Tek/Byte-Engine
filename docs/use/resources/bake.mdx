@@ -144,6 +144,27 @@ After you change a feature in `config.json`, run `beld bake --force`. Source
 file versions don't record the configuration, so a normal bake keeps the
 material shaders built with the old setting.
 
+## Choose how materials are evaluated
+
+Set `render.material-evaluation` in `config.json` to choose how the visibility
+pipeline shades materials. The default, `pipelines`, gives every material
+program its own pipeline. `uber` bakes one shader for each of the opaque and
+transparent phases, holding every material in the bake:
+
+```json
+{
+  "render": {
+    "material-evaluation": "uber"
+  }
+}
+```
+
+The two shaders have no asset of their own: BELD bakes them last on every run,
+from every material in the resource store. After you change the mode, run
+`beld bake --force`.
+A material baked in one mode doesn't carry what the other mode needs. See
+[materials](/docs/reference/rendering#materials) for what each mode does.
+
 ## Bake only what your application uses
 
 Use `resources.roots` in your project's `config.json` to bake only the assets

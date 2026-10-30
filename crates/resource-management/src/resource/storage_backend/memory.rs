@@ -149,11 +149,46 @@ impl ReadStorageBackend for MemoryStorageBackend {
 		})
 	}
 
+	/// Scans every resource in ID order, because a memory store holds only what one bake or test produced. The cursor
+	/// is the last ID a page returned.
 	fn query(
 		&self,
-		_: Query,
+		query: Query,
 	) -> impl std::future::Future<Output = Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
-		crate::r#async::future(async { Err(QueryError::StorageFailure) })
+		crate::r#async::future(async move {
+			let mut ids = {
+				let after = query.cursor.as_ref().map(|cursor| cursor.token.as_slice());
+				let mut aligned = rkyv::util::AlignedVec::<16>::new();
+				let resources = self.resources.lock();
+				let mut ids = Vec::new();
+				for (id, (metadata, _)) in resources.iter() {
+					if after.is_some_and(|after| id.as_bytes() <= after) {
+						continue;
+					}
+					// Archived metadata must be aligned, which the boxed bytes do not promise.
+					aligned.clear();
+					aligned.extend_from_slice(metadata);
+					let archived =
+						crate::archived_from_slice::<SerializableResource>(&aligned).map_err(|_| QueryError::StorageFailure)?;
+					if query.matches_archived(archived) {
+						ids.push(id.clone());
+					}
+				}
+				ids
+			};
+			ids.sort_unstable();
+			let cursor = (ids.len() > query.limit).then(|| QueryCursor::new(ids[query.limit - 1].clone().into_bytes()));
+			ids.truncate(query.limit);
+
+			let mut items = Vec::with_capacity(ids.len());
+			for id in &ids {
+				// A resource deleted since the scan is simply left out.
+				if let Some(item) = ReadStorageBackend::read(self, ResourceId::new(id)).await {
+					items.push(item);
+				}
+			}
+			Ok(QueryPage { items, cursor })
+		})
 	}
 
 	#[cfg(debug_assertions)]

@@ -239,8 +239,9 @@ loses every map it holds.
 
 The pipeline accepts a material whose render model is `Visibility` with the
 `MaterialEvaluation` pass, which is what every `.bema` file and imported model
-bakes to, and whose first shader is its evaluation shader. The evaluation shader
-is generated from the material's [BEMX graph](/docs/reference/bemx).
+bakes to. Its surface code is generated from the material's
+[BEMX graph](/docs/reference/bemx): into the material's own evaluation shader
+in `pipelines` mode, and into the shader of its phase in `uber` mode.
 
 | Rule | Value |
 | --- | --- |
@@ -248,6 +249,21 @@ is generated from the material's [BEMX graph](/docs/reference/bemx).
 | Double-sided | Draws without back-face culling. |
 | Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |
 | Layout layers | Every material builds on the scene records, scene, visibility buffer, and material evaluation layers. |
+
+`render.material-evaluation` chooses how material evaluation runs. Both modes
+shade every pixel with the same surface and lighting:
+
+| Mode | Shaders | Work per phase |
+| --- | --- | --- |
+| `pipelines` | One evaluation shader per material program, specialized per set of static values | The material prepasses list each pipeline's pixels, then each pipeline shades its list. |
+| `uber` | One shader per phase that holds every material variant in the bake as one arm | One pass over the sink in 8 × 8-pixel tiles, without material prepasses. |
+
+| Uber rule | Value |
+| --- | --- |
+| Arms | One per distinct program, set of static values, and phase. Variants that differ only in textures or dynamic values share an arm. |
+| Coverage | A material is drawn once the published shader of its phase holds its arm. A development build rebakes the shader when a material baked after it arrives; a release build logs one error for each material missing from the bake and doesn't draw it. |
+| Background | The opaque pass writes zero to `Lit` and `Diffuse Radiance History` at every pixel no opaque surface covers. |
+| Baked shaders | Material resources keep their graph instead of an evaluation shader. Every bake assembles both phases' shaders last, from every material variant in the store; they have no asset of their own. Changing the mode needs a forced rebake. |
 
 The evaluation shader writes the graph's surface into these properties. A surface
 input the graph leaves out takes its [BEMX default](/docs/reference/bemx#surface),
@@ -352,7 +368,8 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `material-prepasses`, `depth-pyramid`, `cascade-fit`, `screen-space`,
 `material-evaluation`, `background`, and `transparent`. Only the first sink
 records the ray tracing and surfel stages, and only in a frame that surfel GI
-lights.
+lights. `material-prepasses` runs only when `render.material-evaluation` is
+`pipelines`.
 
 | Target | Content |
 | --- | --- |

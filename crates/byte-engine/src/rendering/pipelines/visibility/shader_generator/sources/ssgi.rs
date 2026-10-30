@@ -59,23 +59,87 @@ ssgi_surface_weight: fn (
 }
 "#;
 
+// Returns the half-resolution texel position a full-resolution `pixel` of an `extent` image reads its indirect
+// diffuse taps around, in a history of `source_extent`: odd full extents do not divide exactly by two, so texel
+// centers are matched by normalized screen position. Its floor is the first of the four taps.
+pub(crate) const INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE: &str = r#"
+indirect_diffuse_source_position: fn (pixel: vec2u, extent: vec2u, source_extent: vec2u) -> vec2f {
+	return vec2f(
+		clamp((f32(pixel.x) + 0.5) * f32(source_extent.x) / f32(extent.x) - 0.5, 0.0, f32(source_extent.x - 1)),
+		clamp((f32(pixel.y) + 0.5) * f32(source_extent.y) / f32(extent.y) - 0.5, 0.0, f32(source_extent.y - 1))
+	);
+}
+"#;
+
+// Weighs the four history texels around a pixel, which the caller read into `depths`, `stored_normals`, and `lights`
+// in the order x then y from `base`, into the pixel's pre-exposed indirect diffuse light: bilinearly, and by how well
+// each lies on the pixel's surface, so light does not bleed across edges. RGB is the light of rays that hit on-screen
+// geometry and alpha the fraction of rays that hit. Without a matching texel, every ray counts as missed, so the
+// environment lights the pixel instead of a neighbor.
+//
+// `position` and `normal` are the pixel's view-space surface position and geometric normal, in the space the SSGI
+// images use.
+pub(crate) const WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
+weigh_screen_space_indirect_diffuse: fn (
+	base: vec2f,
+	fraction: vec2f,
+	source_extent: vec2u,
+	depths: f32[4],
+	stored_normals: vec2f16[4],
+	lights: vec4f16[4],
+	position: vec3f,
+	normal: vec3f
+) -> vec4f {
+	// The pixel's terms of the plane test, computed once for the four taps.
+	let inverse_depth: f32 = 1.0 / position.z;
+	let scaled_normal: vec3f = normal * inverse_depth;
+	let plane_offset: f32 = dot(normal, position) * inverse_depth;
+	let normal16: vec3f16 = vec3f16(normal);
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total_weight: f32 = 0.0;
+	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+		let z: f32 = depths[tap];
+		// The texel again, in float so it is rebuilt from `base` here rather than kept from the reads.
+		let tap_texel: vec2f = vec2f(
+			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
+			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
+		);
+		let ray: vec2f = tap_texel * ssgi_view.pixel_to_ray_mul + ssgi_view.pixel_to_ray_add;
+		let tap_normal: vec3f16 = ssgi_stored_normal(stored_normals[tap]);
+		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
+		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible. A texel
+		// without a surface has zero depth and gets no weight; a factor instead of a branch keeps the four taps in one
+		// straight run of code that the compiler can interleave with the reads.
+		let weight: f32 = step(0.000001, z) * max(bilinear, 0.001) * ssgi_surface_weight(
+			normal16,
+			scaled_normal,
+			plane_offset,
+			inverse_depth,
+			tap_normal,
+			vec3f(ray.x * z, ray.y * z, z)
+		);
+		// The light is weighted at the half precision its image holds and summed at full precision, so a bright sum
+		// does not overflow.
+		sum = sum + vec4f(lights[tap] * f16(weight));
+		total_weight = total_weight + weight;
+	}
+	if (total_weight > 0.00001) {
+		return sum * (1.0 / total_weight);
+	}
+	return vec4f(0.0, 0.0, 0.0, 0.0);
+}
+"#;
+
 // Reconstructs a pixel's pre-exposed indirect diffuse light from the half-resolution SSGI history: the four history
-// texels around the pixel, weighted bilinearly and by how well each lies on the pixel's surface, so light does not
-// bleed across edges. RGB is the light of rays that hit on-screen geometry and alpha the fraction of rays that hit.
-// Without a matching texel, every ray counts as missed, so the environment lights the pixel instead of a neighbor.
+// texels around the pixel, weighed by `weigh_screen_space_indirect_diffuse`.
 //
 // `pixel` is the full-resolution pixel of an `extent` image. `position` and `normal` are its view-space surface
 // position and geometric normal, in the space the SSGI images use.
 pub(crate) const SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position: vec3f, normal: vec3f) -> vec4f {
 	let source_extent: vec2u = texture_size(ssgi_history);
-	// Odd full extents do not divide exactly by two. Match texel centers by normalized screen position.
-	let source_position: vec2f = vec2f(
-		clamp((f32(pixel.x) + 0.5) * f32(source_extent.x) / f32(extent.x) - 0.5, 0.0, f32(source_extent.x - 1)),
-		clamp((f32(pixel.y) + 0.5) * f32(source_extent.y) / f32(extent.y) - 0.5, 0.0, f32(source_extent.y - 1))
-	);
+	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
-	let fraction: vec2f = source_position - base;
 	// Every texel is read before any weight is computed, so the twelve fetches overlap instead of waiting on each
 	// other: the material shader's register footprint leaves few other threads to hide their latency. Each tap keeps
 	// only what its fetches returned, the depth at full precision and the stored normal pair and light at the half
@@ -99,42 +163,66 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 		stored_normals[tap] = vec2f16(vec2f(stored.x, stored.y));
 		lights[tap] = vec4f16(fetch(ssgi_history, texel));
 	}
-	// The pixel's terms of the plane test, computed once for the four taps.
-	let inverse_depth: f32 = 1.0 / position.z;
-	let scaled_normal: vec3f = normal * inverse_depth;
-	let plane_offset: f32 = dot(normal, position) * inverse_depth;
-	let normal16: vec3f16 = vec3f16(normal);
-	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let total_weight: f32 = 0.0;
+	return weigh_screen_space_indirect_diffuse(
+		base,
+		source_position - base,
+		source_extent,
+		depths,
+		stored_normals,
+		lights,
+		position,
+		normal
+	);
+}
+"#;
+
+// Returns the first half-resolution texel the indirect diffuse taps of `pixel`'s 8 x 8 tile read: the first tap of
+// the tile's first pixel. Uber material evaluation's tiles start at multiples of eight, so the tile's first pixel is
+// `pixel` rounded down to one. The tile's other taps lie at most five texels further on along each axis, because
+// the history has half the resolution, rounded up.
+pub(crate) const INDIRECT_DIFFUSE_WINDOW_ORIGIN_SOURCE: &str = r#"
+indirect_diffuse_window_origin: fn (pixel: vec2u, extent: vec2u, source_extent: vec2u) -> vec2u {
+	let tile_origin: vec2u = vec2u(pixel.x - pixel.x % 8, pixel.y - pixel.y % 8);
+	let source_position: vec2f = indirect_diffuse_source_position(tile_origin, extent, source_extent);
+	return vec2u(u32(source_position.x), u32(source_position.y));
+}
+"#;
+
+// The uber shaders' `sample_screen_space_indirect_diffuse`, in place of `SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE`.
+// It reconstructs a pixel's pre-exposed indirect diffuse light from the window of history texels its uber material
+// evaluation tile loaded into workgroup memory instead of from the images. The window holds the texels at the same
+// clamped positions the images give the taps, so the result is the same.
+pub(crate) const SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
+sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position: vec3f, normal: vec3f) -> vec4f {
+	let source_extent: vec2u = texture_size(ssgi_history);
+	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
+	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
+	let window_origin: vec2u = indirect_diffuse_window_origin(pixel, extent, source_extent);
+	let depths: f32[4] = f32[4](0.0, 0.0, 0.0, 0.0);
+	let zero_pair: vec2f16 = vec2f16(0.0, 0.0);
+	let stored_normals: vec2f16[4] = vec2f16[4](zero_pair, zero_pair, zero_pair, zero_pair);
+	let zero_light: vec4f16 = vec4f16(0.0, 0.0, 0.0, 0.0);
+	let lights: vec4f16[4] = vec4f16[4](zero_light, zero_light, zero_light, zero_light);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
-		let z: f32 = depths[tap];
-		// The texel again, in float so it is rebuilt from `base` here rather than kept from the fetch loop.
-		let tap_texel: vec2f = vec2f(
-			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
-			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
+		// The clamp keeps a tap that rounding moved one texel off the window inside the array.
+		let window_texel: vec2u = vec2u(
+			min(min(u32(base.x) + tap % 2, source_extent.x - 1) - window_origin.x, 5),
+			min(min(u32(base.y) + tap / 2, source_extent.y - 1) - window_origin.y, 5)
 		);
-		let ray: vec2f = tap_texel * ssgi_view.pixel_to_ray_mul + ssgi_view.pixel_to_ray_add;
-		let tap_normal: vec3f16 = ssgi_stored_normal(stored_normals[tap]);
-		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
-		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible. A texel
-		// without a surface has zero depth and gets no weight; a factor instead of a branch keeps the four taps in one
-		// straight run of code that the compiler can interleave with the fetches.
-		let weight: f32 = step(0.000001, z) * max(bilinear, 0.001) * ssgi_surface_weight(
-			normal16,
-			scaled_normal,
-			plane_offset,
-			inverse_depth,
-			tap_normal,
-			vec3f(ray.x * z, ray.y * z, z)
-		);
-		// The light is weighted at the half precision its image holds and summed at full precision, so a bright sum
-		// does not overflow.
-		sum = sum + vec4f(lights[tap] * f16(weight));
-		total_weight = total_weight + weight;
+		let window_index: u32 = window_texel.y * 6 + window_texel.x;
+		depths[tap] = tile_indirect_depths[window_index];
+		stored_normals[tap] = vec2f16(tile_indirect_normals[window_index]);
+		lights[tap] = vec4f16(tile_indirect_lights[window_index]);
 	}
-	if (total_weight > 0.00001) {
-		return sum * (1.0 / total_weight);
-	}
-	return vec4f(0.0, 0.0, 0.0, 0.0);
+	return weigh_screen_space_indirect_diffuse(
+		base,
+		source_position - base,
+		source_extent,
+		depths,
+		stored_normals,
+		lights,
+		position,
+		normal
+	);
 }
 "#;

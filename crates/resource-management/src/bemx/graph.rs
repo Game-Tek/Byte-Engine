@@ -9,7 +9,7 @@ use crate::online_docs_url;
 ///
 /// MaterialX separates colours from vectors only to pick node overloads; BEMX folds them together because a colour
 /// and a vector of the same width are evaluated the same way.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Type {
 	Float,
 	Vector2,
@@ -62,7 +62,7 @@ impl Type {
 }
 
 /// The `Value` enum holds a constant a graph computes with, such as a colour factor or a roughness.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
 	Float(f32),
 	Vector2([f32; 2]),
@@ -131,7 +131,7 @@ impl Value {
 ///
 /// A node can only read nodes added before it, so the order of identifiers is also an order in which the graph can
 /// be evaluated.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct NodeId(u32);
 
 impl NodeId {
@@ -147,7 +147,7 @@ impl NodeId {
 }
 
 /// The `UnaryOperator` enum names the functions a [`Node::Unary`] applies to every component of its input.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum UnaryOperator {
 	/// MaterialX `absval`.
 	Absolute,
@@ -197,7 +197,7 @@ impl UnaryOperator {
 }
 
 /// The `BinaryOperator` enum names the functions a [`Node::Binary`] applies component by component to two inputs.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BinaryOperator {
 	Add,
 	Subtract,
@@ -245,7 +245,7 @@ impl BinaryOperator {
 }
 
 /// The `Comparison` enum names the test a [`Node::Compare`] picks between its two values with.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Comparison {
 	/// MaterialX `ifgreater`.
 	Greater,
@@ -271,7 +271,7 @@ impl Comparison {
 }
 
 /// The `Channel` enum names what one lane of a [`Node::Swizzle`] result reads.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Channel {
 	X,
 	Y,
@@ -313,7 +313,7 @@ impl Channel {
 ///
 /// Every BEMX graph ends in one. An input left as `None` takes the default the field documents, so a graph only
 /// spells out what differs from a plain dielectric.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Surface {
 	/// The colour the surface reflects, a `vector3`. Defaults to [`Surface::DEFAULT_BASE_COLOR`].
 	pub base_color: Option<NodeId>,
@@ -360,7 +360,7 @@ impl Surface {
 ///
 /// The set follows the MaterialX standard library, with one node per operation instead of one per overload: a node
 /// whose inputs may be floats or vectors takes its type from them. Geometric values are in world space.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Node {
 	/// A constant value.
 	Constant(Value),
@@ -547,7 +547,8 @@ impl Node {
 /// Next, give the graph to a renderer's
 /// [`ProgramGenerator`](crate::asset::handler::implementations::bema::ProgramGenerator), or lower it yourself
 /// with [`super::besl::Lowering`].
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "SerializedGraph")]
 pub struct Graph {
 	nodes: Vec<Node>,
 	/// The type each node produces, or `None` for the surface. Derived from `nodes`, so it is not serialized.
@@ -608,6 +609,28 @@ impl Graph {
 		}
 
 		Ok(())
+	}
+}
+
+/// The `SerializedGraph` struct is the stored form of a [`Graph`]: its nodes and its surface, without the types they
+/// derive.
+///
+/// Reading a graph back adds every node through [`GraphBuilder`] again, so a stored graph is checked like a built one.
+#[derive(serde::Deserialize)]
+struct SerializedGraph {
+	nodes: Vec<Node>,
+	surface: NodeId,
+}
+
+impl TryFrom<SerializedGraph> for Graph {
+	type Error = GraphError;
+
+	fn try_from(SerializedGraph { nodes, surface }: SerializedGraph) -> Result<Self, Self::Error> {
+		let mut builder = GraphBuilder::new();
+		for node in nodes {
+			builder.add(node)?;
+		}
+		builder.finish(surface)
 	}
 }
 

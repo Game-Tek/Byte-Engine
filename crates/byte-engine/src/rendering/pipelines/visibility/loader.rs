@@ -15,7 +15,7 @@ use resource_management::bemx;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::{Image as ResourceImage, ImagePhotometry},
-	material::{MaterialCoverage, Value, Variant as ResourceVariant},
+	material::{AssembledShader, MaterialCoverage, Value, Variant as ResourceVariant},
 	mesh::Mesh,
 };
 use resource_management::types::AlphaMode;
@@ -23,8 +23,10 @@ use smallvec::SmallVec;
 use utils::Extent;
 use utils::hash::HashMap;
 
+use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::geometry::{GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
 use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS, TRANSPARENT_SPECIALIZATION_ID, material_variable_specialization_id};
+use super::shader_generator::uber_arm_key;
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
@@ -53,6 +55,8 @@ pub(crate) enum VisibilityLoadKey {
 	Material(String),
 	Texture(String),
 	Environment(String),
+	/// The uber material evaluation shader of the transparent phase when `true`, of the opaque phase otherwise.
+	UberShader(bool),
 }
 
 impl std::fmt::Display for VisibilityLoadKey {
@@ -64,6 +68,9 @@ impl std::fmt::Display for VisibilityLoadKey {
 			Self::Material(id) => write!(formatter, "material {id}"),
 			Self::Texture(id) => write!(formatter, "texture {id}"),
 			Self::Environment(id) => write!(formatter, "environment {id}"),
+			Self::UberShader(transparent) => {
+				write!(formatter, "uber shader {}", UBER_MATERIAL_SHADERS[usize::from(*transparent)])
+			}
 		}
 	}
 }
@@ -78,18 +85,34 @@ pub(crate) enum VisibilityLoadRequest {
 	Material(String),
 	Texture(String),
 	Environment(String),
+	/// The uber material evaluation shader of one phase, the transparent one when `transparent` is set. `rebake` bakes
+	/// it again first, from every material the store now holds; only development builds can.
+	UberShader {
+		transparent: bool,
+		rebake: bool,
+	},
+}
+
+/// The `MaterialEvaluator` enum names what evaluates a material, by the mode the project chose. The loader holds a
+/// pipeline as its request, `PipelineRef`, and the renderer as the compiled `ghi::PipelineHandle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MaterialEvaluator<P> {
+	/// The material's own specialized evaluation pipeline.
+	Pipeline(P),
+	/// The material's arm key in the uber shader of its phase; see [`super::shader_generator::uber_arm_key`].
+	Arm(u32),
 }
 
 /// The `ResidentMaterial` struct carries one loaded material's table data from a loader lane to renderer-owned draw
 /// state.
 ///
 /// The loader keeps it until its specialized pipeline compiles, then publishes it with that compiled pipeline in
-/// [`VisibilityLoaderEvent::MaterialReady`].
+/// [`VisibilityLoaderEvent::MaterialReady`]. A material the uber shaders evaluate is published as soon as it loads.
 #[derive(Clone)]
 pub(crate) struct ResidentMaterial {
 	pub(crate) id: String,
 	pub(crate) index: u32,
-	pub(crate) pipeline: PipelineRef,
+	pub(crate) evaluation: MaterialEvaluator<PipelineRef>,
 	pub(crate) alpha_mode: AlphaMode,
 	pub(crate) double_sided: bool,
 	pub(crate) coverage: MaterialCoverage,
@@ -149,16 +172,47 @@ pub(crate) enum VisibilityResident {
 		specular_image: ghi::implementation::DetachedImage,
 		upward_illuminance: f32,
 	},
+	/// A phase's uber shader, whose pipeline may still be compiling, and the arm keys it holds.
+	UberShader {
+		transparent: bool,
+		keys: Arc<[u32]>,
+		pipeline: PipelineRef,
+	},
 }
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
 pub(crate) enum VisibilityLoaderEvent {
-	MeshReady { key: MeshKey, mesh: Arc<MeshData> },
-	MaterialReady(ResidentMaterial, ghi::PipelineHandle),
-	MaterialUnavailable { index: u32 },
+	MeshReady {
+		key: MeshKey,
+		mesh: Arc<MeshData>,
+	},
+	/// A material that can be drawn, with what evaluates it: its compiled pipeline or its uber shader arm.
+	MaterialReady(ResidentMaterial, MaterialEvaluator<ghi::PipelineHandle>),
+	/// A phase's uber shader compiled: the transparent phase's when `transparent` is set. It holds the arms of `keys`,
+	/// in ascending order.
+	UberShaderReady {
+		transparent: bool,
+		keys: Arc<[u32]>,
+		pipeline: ghi::PipelineHandle,
+	},
+	/// A phase's uber shader failed to load or compile; the transparent phase's when `transparent` is set. The phase
+	/// keeps the shader it had.
+	UberShaderUnavailable {
+		transparent: bool,
+		error: LoadError,
+	},
+	MaterialUnavailable {
+		index: u32,
+	},
 	TextureReady(ResidentTexture),
-	EnvironmentReady { id: String, environment: ResidentEnvironment },
-	Unavailable { resource: String, error: LoadError },
+	EnvironmentReady {
+		id: String,
+		environment: ResidentEnvironment,
+	},
+	Unavailable {
+		resource: String,
+		error: LoadError,
+	},
 }
 
 /// The `VisibilityLoader` struct owns all resource loading and GPU placement for the visibility pipeline.
@@ -173,6 +227,8 @@ pub(crate) struct VisibilityLoader {
 	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
 	texture_slots: Mutex<HashMap<String, u32>>,
+	/// How the project evaluates materials, which decides what a material load requests.
+	material_evaluation: MaterialEvaluationMode,
 }
 
 /// The `VisibilityLoaderClient` struct hides the generic loading protocol from the visibility renderer.
@@ -183,6 +239,8 @@ pub(crate) struct VisibilityLoaderClient {
 	meshes: HashMap<MeshKey, Arc<MeshData>>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
+	/// Each phase's latest uber shader, opaque then transparent, until its pipeline compiles.
+	uber_shaders: [Option<UberShaderPublication>; 2],
 	/// Reports rebaked material variants, so their materials load again.
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::ResourceUpdateListener,
@@ -198,6 +256,12 @@ pub(crate) struct VisibilityLoaderClient {
 struct MaterialPublication {
 	material: ResidentMaterial,
 	published: Option<PipelineState>,
+}
+
+/// The `UberShaderPublication` struct holds a phase's uber shader until its pipeline compiles.
+struct UberShaderPublication {
+	keys: Arc<[u32]>,
+	pipeline: PipelineRef,
 }
 
 /// Returns or assigns a stable shader-table slot for `id`, failing once `limit` slots exist.
@@ -258,6 +322,27 @@ impl VisibilityLoaderClient {
 		self.client.request(VisibilityLoadRequest::Texture(id));
 	}
 
+	/// Requests the uber material evaluation shader of each phase. Each reaches the renderer as
+	/// [`VisibilityLoaderEvent::UberShaderReady`] once its pipeline compiles.
+	pub(crate) fn request_uber_shaders(&mut self) {
+		for transparent in [false, true] {
+			self.client.request(VisibilityLoadRequest::UberShader {
+				transparent,
+				rebake: false,
+			});
+		}
+	}
+
+	/// Bakes the uber material evaluation shader of one phase again, from every material the store now holds, and
+	/// loads it. Development builds call it when a material the published shader lacks is ready.
+	#[cfg(debug_assertions)]
+	pub(crate) fn rebake_uber_shader(&mut self, transparent: bool) {
+		self.client.reload(VisibilityLoadRequest::UberShader {
+			transparent,
+			rebake: true,
+		});
+	}
+
 	/// Requests one environment and reports whether it was already resident.
 	pub(crate) fn request_environment(&mut self, id: String) -> Option<ResidentEnvironment> {
 		let resident = self.environments.get(&id).copied();
@@ -291,6 +376,15 @@ impl VisibilityLoaderClient {
 					resident: VisibilityResident::Material(material),
 					..
 				} => {
+					// A material an uber shader evaluates has no pipeline of its own to wait for. It stays listed, so a
+					// rebake of its variant loads it again.
+					let ready = match material.evaluation {
+						MaterialEvaluator::Arm(key) => Some(VisibilityLoaderEvent::MaterialReady(
+							material.clone(),
+							MaterialEvaluator::Arm(key),
+						)),
+						MaterialEvaluator::Pipeline(_) => None,
+					};
 					self.materials.insert(
 						material.index,
 						MaterialPublication {
@@ -298,6 +392,20 @@ impl VisibilityLoaderClient {
 							published: None,
 						},
 					);
+					match ready {
+						Some(ready) => ready,
+						None => continue,
+					}
+				}
+				LoaderEvent::Ready {
+					resident: VisibilityResident::UberShader {
+						transparent,
+						keys,
+						pipeline,
+					},
+					..
+				} => {
+					self.uber_shaders[usize::from(transparent)] = Some(UberShaderPublication { keys, pipeline });
 					continue;
 				}
 				LoaderEvent::Ready {
@@ -341,6 +449,10 @@ impl VisibilityLoaderClient {
 						environment: resident,
 					}
 				}
+				LoaderEvent::Failed {
+					key: VisibilityLoadKey::UberShader(transparent),
+					error,
+				} => VisibilityLoaderEvent::UberShaderUnavailable { transparent, error },
 				LoaderEvent::Failed { key, error } => VisibilityLoaderEvent::Unavailable {
 					resource: key.to_string(),
 					error,
@@ -351,8 +463,36 @@ impl VisibilityLoaderClient {
 		// Visit each material once, even when many compilation results arrive together. A reloaded material replaced
 		// its publication, so it reports its new state here too. One read lock covers every material's poll.
 		let pipelines = self.pipeline_manager.compute_pipelines();
+		for (transparent, slot) in [false, true].into_iter().zip(&mut self.uber_shaders) {
+			let Some(publication) = slot else {
+				continue;
+			};
+			match pipelines.state(publication.pipeline) {
+				PipelineState::Pending => {}
+				PipelineState::Ready(pipeline) => {
+					events.push(VisibilityLoaderEvent::UberShaderReady {
+						transparent,
+						keys: publication.keys.clone(),
+						pipeline,
+					});
+					*slot = None;
+				}
+				PipelineState::Failed => {
+					events.push(VisibilityLoaderEvent::UberShaderUnavailable {
+						transparent,
+						error: LoadError(
+							"Its pipeline failed to compile. The most likely cause is a material whose surface code the platform compiler rejects. Check the shader compilation errors logged above, fix that material, and bake again.".to_string(),
+						),
+					});
+					*slot = None;
+				}
+			}
+		}
 		for publication in self.materials.values_mut() {
-			let state = pipelines.state(publication.material.pipeline);
+			let MaterialEvaluator::Pipeline(pipeline) = publication.material.evaluation else {
+				continue;
+			};
+			let state = pipelines.state(pipeline);
 			if publication.published == Some(state) {
 				continue;
 			}
@@ -360,9 +500,10 @@ impl VisibilityLoaderClient {
 			publication.published = Some(state);
 			match state {
 				PipelineState::Pending if !was_ready => {}
-				PipelineState::Ready(pipeline) => {
-					events.push(VisibilityLoaderEvent::MaterialReady(publication.material.clone(), pipeline))
-				}
+				PipelineState::Ready(pipeline) => events.push(VisibilityLoaderEvent::MaterialReady(
+					publication.material.clone(),
+					MaterialEvaluator::Pipeline(pipeline),
+				)),
 				PipelineState::Pending | PipelineState::Failed => events.push(VisibilityLoaderEvent::MaterialUnavailable {
 					index: publication.material.index,
 				}),
@@ -394,14 +535,15 @@ impl VisibilityLoaderClient {
 /// Creates the visibility pipeline's single loader client and lane pool.
 ///
 /// `render` is the context that created `geometry` and renders the loaded resources. The loader imports the
-/// geometry streams so lanes append to them. `pipeline_manager` compiles each material's evaluation pipeline. Run
-/// every returned lane on the loading thread.
+/// geometry streams so lanes append to them. `pipeline_manager` compiles each material's evaluation pipeline, or the
+/// uber shaders when `material_evaluation` selects them. Run every returned lane on the loading thread.
 pub(crate) fn spawn(
 	loader: &mut Loader,
 	render: &mut ghi::implementation::Context,
 	resource_manager: EntityHandle<ResourceManager>,
 	geometry: &GeometryHandles,
 	pipeline_manager: PipelineManagerClient,
+	material_evaluation: MaterialEvaluationMode,
 ) -> (VisibilityLoaderClient, Vec<LoaderLane<VisibilityLoader>>) {
 	use ghi::context::ContextCreate as _;
 
@@ -415,6 +557,7 @@ pub(crate) fn spawn(
 		reported_missing_hit_shader: std::sync::atomic::AtomicBool::new(false),
 		material_slots: Mutex::new(HashMap::default()),
 		texture_slots: Mutex::new(HashMap::default()),
+		material_evaluation,
 	};
 	let (client, lanes) = spawn_lanes(loader, visibility_loader, VISIBILITY_LANE_COUNT, VISIBILITY_RESULT_CAPACITY);
 	(
@@ -424,6 +567,7 @@ pub(crate) fn spawn(
 			meshes: HashMap::default(),
 			environments: HashMap::default(),
 			materials: HashMap::default(),
+			uber_shaders: [None, None],
 			#[cfg(debug_assertions)]
 			resource_updates,
 			repeat_sampler: render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD)),
@@ -601,10 +745,9 @@ impl VisibilityLoader {
 				_ => None,
 			})
 			.collect();
-		let specialization = specialization_entries(alpha_mode, &variant.variables);
 		let variable_specialization = variable_specialization_entries(&variant.variables).collect::<Vec<_>>();
 		let parameters = dynamic_parameters(&variant.variables);
-		let material = variant.material.resource_mut();
+		let material = variant.material.resource();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			return Err(LoadError(format!(
 				"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
@@ -618,10 +761,38 @@ impl VisibilityLoader {
 				.find(|shader| shader.resource().stage == stage)
 				.map(|shader| shader.id().to_string())
 		};
-		let Some(shader_id) = shader_of(resource_management::types::ShaderTypes::Compute) else {
-			return Err(LoadError(format!(
-				"Visibility material shader is missing for {id}. The most likely cause is that the material was baked without a compute shader."
-			)));
+		// The pipelines mode compiles the material's own evaluation shader. The uber mode keys the material into the
+		// uber shader of its phase, which the bake built from the same program and static values.
+		let evaluation = match self.material_evaluation {
+			MaterialEvaluationMode::Pipelines => {
+				let Some(shader_id) = shader_of(resource_management::types::ShaderTypes::Compute) else {
+					return Err(LoadError(format!(
+						"Visibility material shader is missing for {id}. The most likely cause is that the material was baked with `render.material-evaluation` set to `uber`. Bake it again with `beld bake --force`."
+					)));
+				};
+				// Material evaluation pushes five u32s: the evaluation index, the GTAO, SSGI, and indirect diffuse flags,
+				// and the debug views.
+				MaterialEvaluator::Pipeline(self.pipeline_manager.request_specialized_compute_pipeline(
+					SpecializedComputePipelineRequest::new(
+						shader_id,
+						specialization_entries(alpha_mode, &variant.variables),
+						vec![ghi::pipelines::PushConstantRange::new(0, 20)],
+					),
+				))
+			}
+			MaterialEvaluationMode::Uber => {
+				let Some(program) = &material.program else {
+					return Err(LoadError(format!(
+						"Visibility material {id} has no program for the uber shaders. The most likely cause is that the material was baked with `render.material-evaluation` set to `pipelines`. Bake it again with `beld bake --force`."
+					)));
+				};
+				// The bake keys the material by the stored variant's static values, which solving keeps.
+				MaterialEvaluator::Arm(uber_arm_key(
+					program.identity,
+					variant.static_values().flatten().copied(),
+					matches!(alpha_mode, AlphaMode::Blend),
+				))
+			}
 		};
 		let hit_group = shader_of(resource_management::types::ShaderTypes::ClosestHit).map(|shader_id| HitGroupShader {
 			shader_id,
@@ -646,19 +817,10 @@ impl VisibilityLoader {
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
 			))
 		})?;
-		// Material evaluation pushes five u32s: the evaluation index, the GTAO, SSGI, and indirect diffuse flags, and the
-		// debug views.
-		let pipeline = self
-			.pipeline_manager
-			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-				shader_id,
-				specialization,
-				vec![ghi::pipelines::PushConstantRange::new(0, 20)],
-			));
 		Ok(VisibilityResident::Material(ResidentMaterial {
 			id,
 			index,
-			pipeline,
+			evaluation,
 			alpha_mode,
 			double_sided: material.double_sided(),
 			coverage: material.coverage,
@@ -666,6 +828,40 @@ impl VisibilityLoader {
 			parameters,
 			hit_group,
 		}))
+	}
+
+	/// Loads the uber material evaluation shader of one phase, after baking it again when `rebake` is set, and requests
+	/// its pipeline.
+	async fn load_uber_shader(&self, transparent: bool, rebake: bool) -> Result<VisibilityResident, LoadError> {
+		let id = UBER_MATERIAL_SHADERS[usize::from(transparent)];
+		#[cfg(debug_assertions)]
+		if rebake {
+			self.resource_manager
+				.rebake(id)
+				.await
+				.map_err(|error| LoadError(format!("Visibility could not bake {id} again. {error}")))?;
+		}
+		#[cfg(not(debug_assertions))]
+		let _ = rebake;
+		let reference: Reference<AssembledShader> = self.resource_manager.request(id).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility could not load {id}. The most likely cause is resources baked with `render.material-evaluation` set to `pipelines`. Bake them again with `beld bake --force`. Request error: {error}"
+			))
+		})?;
+		let assembled = reference.resource();
+		// The uber shaders push the same five u32s as a material's own pipeline; the evaluation index goes unread.
+		let pipeline = self
+			.pipeline_manager
+			.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+				assembled.shader.clone(),
+				Vec::new(),
+				vec![ghi::pipelines::PushConstantRange::new(0, 20)],
+			));
+		Ok(VisibilityResident::UberShader {
+			transparent,
+			keys: assembled.keys.as_slice().into(),
+			pipeline,
+		})
 	}
 
 	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
@@ -941,6 +1137,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),
 			VisibilityLoadRequest::Texture(id) => VisibilityLoadKey::Texture(id.clone()),
 			VisibilityLoadRequest::Environment(id) => VisibilityLoadKey::Environment(id.clone()),
+			VisibilityLoadRequest::UberShader { transparent, .. } => VisibilityLoadKey::UberShader(*transparent),
 		}
 	}
 
@@ -953,6 +1150,7 @@ impl LoadPipeline for VisibilityLoader {
 			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
 			VisibilityLoadRequest::Texture(id) => self.load_texture(id, lane).await,
 			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
+			VisibilityLoadRequest::UberShader { transparent, rebake } => self.load_uber_shader(transparent, rebake).await,
 		}
 	}
 }

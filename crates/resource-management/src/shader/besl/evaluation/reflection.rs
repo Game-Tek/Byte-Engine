@@ -86,10 +86,10 @@ pub struct RayPayload {
 }
 
 /// The FNV-1a offset basis, which starts a hash of no bytes.
-pub(crate) const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// Folds `bytes` into an FNV-1a `hash`. The result is stable across processes and builds, so baked assets can store it.
-pub(crate) fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
+pub fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
 	const PRIME: u64 = 0x0000_0100_0000_01b3;
 	bytes
 		.iter()

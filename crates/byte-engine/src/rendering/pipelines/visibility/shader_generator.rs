@@ -12,14 +12,19 @@ mod sources;
 #[cfg(test)]
 mod tests;
 
-use besl::parser::Node;
-use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind, ProgramGenerator};
+use besl::parser::{MatchArm, MatchPattern, Node};
+use resource_management::asset::handler::implementations::bema::{
+	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
+};
 use resource_management::bemx;
+use resource_management::shader::generator::ShaderGenerationSettings;
+use resource_management::types::AlphaMode;
 
 use self::ast::*;
 pub(crate) use self::ast::{MATERIAL_DEBUG_VIEW_NAMES, remove_statements_reading};
 use self::sources::*;
 use super::VisibilityFeatures;
+use super::features::{MaterialEvaluationMode, UBER_MATERIAL_SHADERS};
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES,
 	LOCAL_SHADOW_SIZE_CLASS_COUNT, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS,
@@ -80,6 +85,8 @@ pub(super) const MATERIAL_HIT_LAYERS: [(&str, &str); 3] = [
 pub struct VisibilityShaderGenerator {
 	// Parsed once at construction so each material build only clones it.
 	common: Node<'static>,
+	/// The scope of the evaluation shaders the project's material evaluation mode builds. An uber shader's also
+	/// declares the tile's workgroup window and reads indirect diffuse light from it.
 	scope: Node<'static>,
 	hit_scope: Node<'static>,
 	features: VisibilityFeatures,
@@ -99,15 +106,179 @@ impl VisibilityShaderGenerator {
 	pub fn with_features(features: VisibilityFeatures) -> Self {
 		Self {
 			common: common_shader_scope(),
-			scope: visibility_shader_scope(),
+			scope: visibility_shader_scope(features.material_evaluation == MaterialEvaluationMode::Uber),
 			hit_scope: material_hit_scope(),
 			features,
 		}
 	}
+
+	/// Builds the uber material evaluation shader of one phase: one compute program that shades every pixel of the
+	/// phase whose material has one of `arms`, in 8 x 8-pixel tiles.
+	///
+	/// Each thread reconstructs its pixel's surface once, runs the arm of its material's key, and lights the result
+	/// with the same suffix as a per-material shader. A material's static values are literals in its arm, so the arm
+	/// computes what that material's specialized pipeline computes. The opaque phase's tiles share the indirect
+	/// diffuse history texels they read through workgroup memory.
+	///
+	/// Call it on a generator built for [`MaterialEvaluationMode::Uber`], whose scope declares the tile window. Compile it
+	/// with 8 × 8-thread workgroups; the bake does so through [`ProgramGenerator::generate_assembled`].
+	pub fn uber_program<'a>(&self, transparent: bool, arms: &'a [AssembledArm<'a>]) -> Result<Node<'a>, String> {
+		let bodies = arms
+			.iter()
+			.map(|arm| {
+				let (body, features) =
+					material::material_body(arm.material.graph, arm.material.parameters).map_err(|error| error.to_string())?;
+				Ok((arm, body, features))
+			})
+			.collect::<Result<Vec<_>, String>>()?;
+		let features = MaterialReconstructionFeatures::union(bodies.iter().map(|(_, _, features)| *features));
+		let arm_patterns = || {
+			arms.iter()
+				.map(|arm| MatchPattern::Literal {
+					value: arm.key,
+					negative: false,
+				})
+				.collect::<Vec<_>>()
+		};
+
+		// The phase is a literal, so each phase's shader compiles only its own path of the shared sources.
+		let mut statements = vec![Node::let_assignment(
+			"transparent",
+			"bool",
+			Node::literal_expression(if transparent { "true" } else { "false" }),
+		)];
+		statements.extend(material_evaluation_tile_statements(transparent));
+		if transparent {
+			// The instance target still holds the opaque layer where no blend surface was drawn. Those pixels return before
+			// reconstructing a surface the transparent phase does not shade.
+			let mut membership = Vec::new();
+			if !arms.is_empty() {
+				membership.push(MatchArm {
+					patterns: arm_patterns(),
+					statements: Vec::new(),
+				});
+			}
+			membership.push(MatchArm {
+				patterns: vec![MatchPattern::Wildcard],
+				statements: vec![Node::return_void()],
+			});
+			statements.push(Node::r#match(Node::member_expression("material_arm"), membership));
+		}
+		// Texture coordinates and the tangent frame are reconstructed once, before the arms, for every arm that reads them.
+		statements.extend(material_surface_statements(features));
+
+		let mut material_arms = Vec::with_capacity(bodies.len() + 1);
+		for (arm, body, features) in bodies {
+			let mut arm_statements = static_value_declarations(arm)?;
+			arm_statements.extend(body);
+			arm_statements.extend(material_normal_statements(features));
+			material_arms.push(MatchArm {
+				patterns: vec![MatchPattern::Literal {
+					value: arm.key,
+					negative: false,
+				}],
+				statements: arm_statements,
+			});
+		}
+		// The runtime draws a material only once the published shader holds its arm, so no pixel reaches this one.
+		material_arms.push(MatchArm {
+			patterns: vec![MatchPattern::Wildcard],
+			statements: vec![Node::return_void()],
+		});
+		statements.push(Node::r#match(Node::member_expression("material_arm"), material_arms));
+		statements.extend(material_lighting_statements(self.features));
+
+		let main = Node::function("main", vec![Node::parameter("input", "StageInput")], "void", statements);
+		let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS)
+			.map_err(|error| {
+				format!(
+					"Failed to stack the uber material evaluation shader on the visibility layout layers ({error:?}). The most likely cause is a material parameter named like a declaration of the layers."
+				)
+			})?;
+		root.add(vec![self.common.clone(), self.scope.clone()]);
+
+		Ok(root)
+	}
+}
+
+/// The workgroup of uber material evaluation shaders: one 8 x 8-pixel tile of the sink.
+pub(crate) const UBER_WORKGROUP: utils::Extent = utils::Extent::square(8);
+
+/// Returns whether `id` names the transparent phase's uber shader rather than the opaque phase's; see
+/// [`UBER_MATERIAL_SHADERS`].
+fn uber_phase_is_transparent(id: &str) -> Result<bool, String> {
+	match UBER_MATERIAL_SHADERS.iter().position(|shader| *shader == id) {
+		Some(phase) => Ok(phase == 1),
+		None => Err(format!(
+			"'{id}' names no uber material evaluation shader. The most likely cause is a bake request for a `.uber` resource the visibility renderer does not use. Bake {UBER_MATERIAL_SHADERS:?} instead."
+		)),
+	}
+}
+
+/// Returns the uber shader arm key of a material: the hash of its program's `identity`, the components of its static
+/// values, and its phase.
+///
+/// Materials with equal keys run the same code, so they share an arm. The bake writes the key into the uber shader,
+/// and the runtime into the material's entry of the evaluation table, so both must call this function. The key is
+/// never `u32::MAX`, which marks a material no evaluation shades.
+pub fn uber_arm_key(identity: u64, static_values: impl IntoIterator<Item = f32>, transparent: bool) -> u32 {
+	use resource_management::shader::besl::evaluation::{FNV1A_OFFSET_BASIS, fnv1a};
+
+	// FNV-1a gives the same key on every platform and in every build.
+	let hash = static_values
+		.into_iter()
+		.fold(fnv1a(FNV1A_OFFSET_BASIS, &identity.to_le_bytes()), |hash, value| {
+			fnv1a(hash, &value.to_bits().to_le_bytes())
+		});
+	let hash = fnv1a(hash, &[u8::from(transparent)]);
+	let key = (hash ^ (hash >> 32)) as u32;
+	key.min(u32::MAX - 1)
+}
+
+/// Returns the `let` statements that give an uber arm's static parameters the values of its materials.
+fn static_value_declarations<'a>(arm: &AssembledArm<'a>) -> Result<Vec<Node<'a>>, String> {
+	let mismatch = || {
+		format!(
+			"Uber arm {} has {} static values for its program's static parameters. The most likely cause is a material variant baked against another version of its material. Bake the materials again with `beld bake --force`.",
+			arm.key,
+			arm.material.static_values.len()
+		)
+	};
+	let mut values = arm.material.static_values.iter();
+	let mut declarations = Vec::new();
+	for parameter in arm.material.parameters {
+		let ParameterKind::Value(r#type) = parameter.kind else {
+			continue;
+		};
+		let components = values.next().ok_or_else(mismatch)?;
+		if components.len() != r#type.width() {
+			return Err(mismatch());
+		}
+		// A literal folds a value that isn't finite to zero, where a specialization constant would keep it.
+		if let Some(value) = components.iter().find(|value| !value.is_finite()) {
+			return Err(format!(
+				"A material's static value is {value}. The most likely cause is a variable value divided by zero. Give the variable a finite value."
+			));
+		}
+		let value = bemx::besl::construct(components.iter().map(|value| bemx::besl::literal(*value)).collect());
+		declarations.push(Node::let_assignment(
+			parameter.name.clone(),
+			bemx::besl::type_name(r#type),
+			value,
+		));
+	}
+	if values.next().is_some() {
+		return Err(mismatch());
+	}
+	Ok(declarations)
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn generate<'a>(&self, graph: &'a bemx::Graph, parameters: &'a [MaterialParameter]) -> Result<Node<'a>, String> {
+	fn generate<'a>(&self, graph: &'a bemx::Graph, parameters: &'a [MaterialParameter]) -> Result<Option<Node<'a>>, String> {
+		// The uber mode bakes no shader per material; the bake keeps the material's program for the uber shaders.
+		if self.features.material_evaluation == MaterialEvaluationMode::Uber {
+			return Ok(None);
+		}
 		let (body, features) = material::material_body(graph, parameters).map_err(|error| error.to_string())?;
 
 		let mut statements = material_evaluation_prefix_statements(features);
@@ -145,7 +316,42 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		root.add(declarations);
 		root.add(vec![self.common.clone(), self.scope.clone()]);
 
-		Ok(root)
+		Ok(Some(root))
+	}
+
+	/// Keeps a material in the uber shader of its phase, under the key `uber_arm_key` gives it.
+	fn assembled_key(&self, id: &str, material: &AssembledMaterial<'_>) -> Result<Option<u32>, String> {
+		let transparent = uber_phase_is_transparent(id)?;
+		// Each phase's shader evaluates the material evaluation pass's materials of its own alpha mode.
+		if material.model.name != "Visibility"
+			|| material.model.pass != "MaterialEvaluation"
+			|| transparent != matches!(material.alpha_mode, AlphaMode::Blend)
+		{
+			return Ok(None);
+		}
+		Ok(Some(uber_arm_key(
+			material.identity,
+			material.static_values.iter().flatten().copied(),
+			transparent,
+		)))
+	}
+
+	/// Builds the uber material evaluation shader of the asset's phase; see [`VisibilityShaderGenerator::uber_program`].
+	fn generate_assembled<'a>(
+		&self,
+		id: &str,
+		arms: &'a [AssembledArm<'a>],
+	) -> Result<(Node<'a>, ShaderGenerationSettings), String> {
+		let transparent = uber_phase_is_transparent(id)?;
+		let name = if transparent {
+			"transparent_uber_material_evaluation"
+		} else {
+			"opaque_uber_material_evaluation"
+		};
+		Ok((
+			self.uber_program(transparent, arms)?,
+			ShaderGenerationSettings::compute(UBER_WORKGROUP).name(name.to_string()),
+		))
 	}
 
 	/// Builds the closest-hit shader that reports `graph`'s surface to the rays that hit it, when surfel GI is built in.
@@ -233,8 +439,9 @@ fn material_hit_scope<'a>() -> Node<'a> {
 /// Builds the scope that gives material programs the helpers of the visibility lighting contract.
 ///
 /// The descriptors and records the helpers read come from [`MATERIAL_EVALUATION_LAYERS`], which
-/// [`VisibilityShaderGenerator`] stacks under every material.
-pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
+/// [`VisibilityShaderGenerator`] stacks under every material. An uber shader's scope, `tile`, also declares the
+/// tile's workgroup window of indirect diffuse texels and the helpers that read it.
+pub(super) fn visibility_shader_scope<'a>(tile: bool) -> Node<'a> {
 	let structs = vec![
 		Node::r#struct(
 			"TriangleInterpolation",
@@ -330,7 +537,7 @@ pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 
 	let mut children = structs;
 	children.extend(screen_space_reflection_scope());
-	children.extend(screen_space_indirect_diffuse_scope());
+	children.extend(screen_space_indirect_diffuse_scope(tile));
 	children.push(sample_texture);
 	children.extend(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)));
 	Node::scope("Visibility", children)
@@ -341,21 +548,45 @@ pub(super) fn visibility_shader_scope<'a>() -> Node<'a> {
 /// Opaque material evaluation reconstructs each pixel's indirect diffuse light from the half-resolution SSGI history
 /// with them, so SSGI writes no full-resolution image. They read `ssgi_normals`, `ssgi_view`, `ssgi_history`, and
 /// `depth_pyramid` of the material evaluation set.
-fn screen_space_indirect_diffuse_scope() -> Vec<Node<'static>> {
-	let mut nodes = Vec::new();
-	// Helpers follow the bindings they read, in dependency order.
-	nodes.extend(
+///
+/// An uber shader's scope, `tile`, declares the tile's workgroup window of history texels instead, and a
+/// `sample_screen_space_indirect_diffuse` that reads its taps from the window, so the lighting suffix is the same.
+fn screen_space_indirect_diffuse_scope(tile: bool) -> Vec<Node<'static>> {
+	// The tile's 6 x 6 window of history texels, at the precision the taps read them.
+	let window = std::num::NonZeroUsize::new(36);
+	let window = tile.then(|| {
 		[
-			(SSGI_STORED_NORMAL_SOURCE, "ssgi_stored_normal"),
-			(SSGI_SURFACE_WEIGHT_SOURCE, "ssgi_surface_weight"),
-			(
-				SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
-				"sample_screen_space_indirect_diffuse",
-			),
+			Node::workgroup("tile_indirect_depths", "f32", window),
+			Node::workgroup("tile_indirect_normals", "vec2f", window),
+			Node::workgroup("tile_indirect_lights", "vec4f", window),
 		]
-		.map(|(source, name)| parse_besl_function(source, name)),
-	);
-	nodes
+	});
+	// Helpers follow the bindings they read, in dependency order.
+	let mut helpers = vec![
+		(SSGI_STORED_NORMAL_SOURCE, "ssgi_stored_normal"),
+		(SSGI_SURFACE_WEIGHT_SOURCE, "ssgi_surface_weight"),
+		(INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, "indirect_diffuse_source_position"),
+		(
+			WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+			"weigh_screen_space_indirect_diffuse",
+		),
+	];
+	if tile {
+		helpers.extend([
+			(INDIRECT_DIFFUSE_WINDOW_ORIGIN_SOURCE, "indirect_diffuse_window_origin"),
+			(SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE, "sample_screen_space_indirect_diffuse"),
+		]);
+	} else {
+		helpers.push((
+			SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
+			"sample_screen_space_indirect_diffuse",
+		));
+	}
+	window
+		.into_iter()
+		.flatten()
+		.chain(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)))
+		.collect()
 }
 
 /// Declares the screen-space reflection helpers from [`sources`], with the ray struct they share.

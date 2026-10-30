@@ -18,14 +18,18 @@ use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
-use super::features::{CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, RENDER_PARAMETERS, VisibilityFeatures};
+use super::features::{
+	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, VisibilityFeatures,
+};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, MAX_BINDLESS_TEXTURES,
 	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
-use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
+use super::loader::{
+	MaterialEvaluator, ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent,
+};
 use super::lod::{LodSettings, LodView};
 use super::material_parameters::MaterialParameters;
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
@@ -63,8 +67,7 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{
-	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink, UpdatePose,
-	View,
+	Environment, PipelineManagerClient, RenderableMesh, Resource, SetMaterialParameter, ShownTransforms, Sink, UpdatePose, View,
 };
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -377,15 +380,29 @@ struct PendingRenderable {
 	mesh_key: MeshKey,
 }
 
+/// The evaluation slot of each phase's uber shader, which is the only evaluation of its phase in the uber material
+/// evaluation mode.
+const UBER_EVALUATION_INDEX: u32 = 0;
+
 /// One material's render-thread pipeline and authored alpha and sidedness contract.
 struct LoadedMaterial {
 	index: u32,
-	pipeline: ghi::PipelineHandle,
+	evaluation: MaterialEvaluator<ghi::PipelineHandle>,
 	/// Shared with the material lists, so rebuilding them does not copy names.
 	name: Arc<str>,
 	alpha_mode: AlphaMode,
 	double_sided: bool,
 	texture_indices: Vec<u32>,
+}
+
+/// The `UberShader` struct is one phase's compiled uber material evaluation shader, which evaluates the materials whose
+/// arm keys it holds.
+struct UberShader {
+	/// The keys of its arms, in ascending order.
+	keys: Arc<[u32]>,
+	pipeline: ghi::PipelineHandle,
+	/// The name of its dispatch in the material lists, made once so rebuilding the lists does not allocate it.
+	name: Arc<str>,
 }
 
 impl ResidentEnvironment {
@@ -617,6 +634,12 @@ pub struct VisibilityPipelineManager {
 	pending_renderables: Vec<PendingRenderable>,
 	/// Adopted materials indexed by material table slot.
 	loaded_materials: Vec<Option<LoadedMaterial>>,
+	/// The uber material evaluation shader of each phase, opaque then transparent, once one compiled. Only the uber
+	/// material evaluation mode loads them.
+	uber_shaders: [Option<UberShader>; 2],
+	/// The phases whose uber shader is loading, or baking again, so materials it lacks wait for it instead of starting
+	/// another bake.
+	uber_shaders_loading: [bool; 2],
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
@@ -681,7 +704,7 @@ impl VisibilityPipelineManager {
 		context: &mut ghi::implementation::Context,
 		world: &MessageScope,
 		geometry: GeometryHandles,
-		loader: VisibilityLoaderClient,
+		mut loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		gi_configuration: crate::configuration::ConfigurationPort,
@@ -691,6 +714,9 @@ impl VisibilityPipelineManager {
 		settings: VisibilityPipelineSettings,
 	) -> Self {
 		let environment = create_fallback_environment(context, loader.environment_sampler);
+		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
+			loader.request_uber_shaders();
+		}
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
 		let host_buffer = |name, uses| {
 			ghi::buffer::Builder::new(uses)
@@ -772,6 +798,8 @@ impl VisibilityPipelineManager {
 			posed_uv_copies_recorded: false,
 			pending_renderables: Vec::new(),
 			loaded_materials: Vec::new(),
+			uber_shaders: [None, None],
+			uber_shaders_loading: [settings.features.material_evaluation == MaterialEvaluationMode::Uber; 2],
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
 				MAX_INSTANCES + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
@@ -911,9 +939,31 @@ impl VisibilityPipelineManager {
 		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh, transforms),
-				VisibilityLoaderEvent::MaterialReady(material, pipeline) => {
-					self.adopt_material(material, pipeline);
+				VisibilityLoaderEvent::MaterialReady(material, evaluation) => {
+					self.adopt_material(material, evaluation);
 					materials_changed = true;
+				}
+				VisibilityLoaderEvent::UberShaderReady {
+					transparent,
+					keys,
+					pipeline,
+				} => {
+					self.adopt_uber_shader(
+						transparent,
+						UberShader {
+							keys,
+							pipeline,
+							name: "Uber Shader".into(),
+						},
+					);
+					materials_changed = true;
+				}
+				VisibilityLoaderEvent::UberShaderUnavailable { transparent, error } => {
+					self.uber_shaders_loading[usize::from(transparent)] = false;
+					error!(
+						"The {} uber material evaluation shader is unavailable: {error}",
+						if transparent { "transparent" } else { "opaque" }
+					);
 				}
 				VisibilityLoaderEvent::MaterialUnavailable { index } => {
 					self.availability.set_key_available(&Availability::Material(index), false);
@@ -995,10 +1045,11 @@ impl VisibilityPipelineManager {
 			.any(|material| material.texture_indices.contains(&index))
 	}
 
-	/// Adopts material metadata and its compiled `pipeline` into the canonical table and wires its texture dependencies.
+	/// Adopts material metadata and its `evaluation` into the canonical table and wires its texture dependencies. A
+	/// material the uber shaders evaluate becomes available once its phase's uber shader holds its arm.
 	///
 	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
-	fn adopt_material(&mut self, material: ResidentMaterial, pipeline: ghi::PipelineHandle) {
+	fn adopt_material(&mut self, material: ResidentMaterial, evaluation: MaterialEvaluator<ghi::PipelineHandle>) {
 		let ResidentMaterial {
 			id,
 			index,
@@ -1026,6 +1077,7 @@ impl VisibilityPipelineManager {
 			AlphaMode::Opaque | AlphaMode::Blend => 0.0,
 		};
 
+		let covered = self.covers(evaluation, alpha_mode);
 		let texture_indices = textures.into_iter().flatten().collect::<Vec<_>>();
 		let material = self.availability.get_or_insert(Availability::Material(index), false);
 		// Keep the material unavailable while replacing its dependency set so renderables cannot observe a
@@ -1040,22 +1092,83 @@ impl VisibilityPipelineManager {
 				"Visibility material dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.",
 			);
 		}
-		self.availability.set_available(material, true);
+		self.availability.set_available(material, covered);
 		let slot = index as usize;
 		if slot >= self.loaded_materials.len() {
 			self.loaded_materials.resize_with(slot + 1, || None);
 		}
 		let name: Arc<str> = id.into();
+		if !covered {
+			self.uncovered(matches!(alpha_mode, AlphaMode::Blend), &name);
+		}
 		self.material_parameters.adopt_material(index, name.clone(), parameters);
 		self.loaded_materials[slot] = Some(LoadedMaterial {
 			index,
-			pipeline,
+			evaluation,
 			name,
 			alpha_mode,
 			double_sided,
 			texture_indices,
 		});
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
+	}
+
+	/// Returns whether `evaluation` can shade a material of `alpha_mode` now: always for its own pipeline, and for an arm
+	/// once its phase's uber shader holds it.
+	fn covers(&self, evaluation: MaterialEvaluator<ghi::PipelineHandle>, alpha_mode: AlphaMode) -> bool {
+		match evaluation {
+			MaterialEvaluator::Pipeline(_) => true,
+			MaterialEvaluator::Arm(key) => self.uber_shaders[usize::from(matches!(alpha_mode, AlphaMode::Blend))]
+				.as_ref()
+				.is_some_and(|shader| shader.keys.binary_search(&key).is_ok()),
+		}
+	}
+
+	/// Publishes a phase's newly compiled uber `shader`, and makes every material of the phase available exactly when
+	/// the shader holds its arm.
+	///
+	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
+	fn adopt_uber_shader(&mut self, transparent: bool, shader: UberShader) {
+		let phase = usize::from(transparent);
+		self.uber_shaders[phase] = Some(shader);
+		self.uber_shaders_loading[phase] = false;
+		for slot in 0..self.loaded_materials.len() {
+			let Some(material) = &self.loaded_materials[slot] else {
+				continue;
+			};
+			if matches!(material.alpha_mode, AlphaMode::Blend) != transparent {
+				continue;
+			}
+			let covered = self.covers(material.evaluation, material.alpha_mode);
+			let (index, name) = (material.index, material.name.clone());
+			self.availability.set_key_available(&Availability::Material(index), covered);
+			if !covered {
+				self.uncovered(transparent, &name);
+			}
+		}
+	}
+
+	/// Handles a material of one phase whose arm the phase's uber shader lacks. Development builds bake the shader
+	/// again from every material the store holds; release builds can't, so they report the material.
+	///
+	/// While the phase's shader is loading, or baking again for another material, its arrival checks the materials
+	/// again instead.
+	fn uncovered(&mut self, transparent: bool, material: &str) {
+		let phase = usize::from(transparent);
+		if self.uber_shaders_loading[phase] {
+			return;
+		}
+		#[cfg(debug_assertions)]
+		{
+			let _ = material;
+			self.uber_shaders_loading[phase] = true;
+			self.loader.rebake_uber_shader(transparent);
+		}
+		#[cfg(not(debug_assertions))]
+		error!(
+			"Visibility material {material} is not drawn. The most likely cause is that the uber material evaluation shaders were baked before this material. Bake the resources again with `beld bake`. See {}.",
+			crate::online_docs_url("use/resources/bake#choose-how-materials-are-evaluated")
+		);
 	}
 
 	/// Rebuilds the opaque and transparent material evaluation lists and gives every ready material its evaluation slot.
@@ -1065,26 +1178,56 @@ impl VisibilityPipelineManager {
 	/// group gets one slot in the list of its phase, and each phase records one dispatch per slot it draws instead of
 	/// one per material. A
 	/// material that isn't ready keeps [`NO_EVALUATION`]; no admitted instance uses it.
+	///
+	/// In the uber mode, each phase's list holds its uber shader alone, and a ready material's table entry holds its arm
+	/// key, which the shader matches.
 	fn rebuild_material_lists(&mut self) {
 		let render_info = &mut self.scene.render_info;
 		render_info.opaque_evaluations.clear();
 		render_info.transparent_evaluations.clear();
 		self.material_evaluations.fill(NO_EVALUATION);
+		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
+		if self.settings.features.material_evaluation == MaterialEvaluationMode::Uber {
+			for (evaluations, shader) in [&mut render_info.opaque_evaluations, &mut render_info.transparent_evaluations]
+				.into_iter()
+				.zip(&self.uber_shaders)
+			{
+				if let Some(shader) = shader {
+					evaluations.push(MaterialEvaluation {
+						name: shader.name.clone(),
+						index: UBER_EVALUATION_INDEX,
+						pipeline: shader.pipeline,
+					});
+				}
+			}
+			for material in self.loaded_materials.iter().flatten() {
+				if let MaterialEvaluator::Arm(key) = material.evaluation
+					&& self.availability.is_key_ready(&Availability::Material(material.index))
+				{
+					self.material_evaluations[material.index as usize] = key;
+				}
+			}
+			return;
+		}
 		// The availability graph combines pipeline and texture readiness before a material reaches an evaluation.
 		let mut ready = self
 			.loaded_materials
 			.iter()
 			.flatten()
 			.filter(|material| self.availability.is_key_ready(&Availability::Material(material.index)))
+			.filter_map(|material| match material.evaluation {
+				MaterialEvaluator::Pipeline(pipeline) => Some((pipeline, material)),
+				MaterialEvaluator::Arm(_) => None,
+			})
 			.collect::<Vec<_>>();
-		ready.sort_unstable_by_key(|material| (material.pipeline, material.index));
-		for (evaluation_index, materials) in ready.chunk_by(|left, right| left.pipeline == right.pipeline).enumerate() {
+		ready.sort_unstable_by_key(|(pipeline, material)| (*pipeline, material.index));
+		for (evaluation_index, materials) in ready.chunk_by(|(left, _), (right, _)| left == right).enumerate() {
 			let evaluation_index = evaluation_index as u32;
-			for material in materials {
+			for (_, material) in materials {
 				self.material_evaluations[material.index as usize] = evaluation_index;
 			}
 			// The loader specializes every pipeline for its material's phase, so a slot belongs to one phase.
-			let first = &materials[0];
+			let (pipeline, first) = materials[0];
 			let evaluations = if matches!(first.alpha_mode, AlphaMode::Blend) {
 				&mut render_info.transparent_evaluations
 			} else {
@@ -1096,10 +1239,9 @@ impl VisibilityPipelineManager {
 					count => format!("{} and {} more", first.name, count - 1).into(),
 				},
 				index: evaluation_index,
-				pipeline: first.pipeline,
+				pipeline,
 			});
 		}
-		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 	}
 
 	/// Creates scene instances for every pending renderable whose mesh is now resident.
@@ -1304,7 +1446,11 @@ impl VisibilityPipelineManager {
 					shader_mesh_index: active_index as u32,
 					meshlet_count: shader_mesh.meshlet_count,
 				},
-				self.material_evaluations[shader_mesh.material_index as usize],
+				match material.evaluation {
+					MaterialEvaluator::Pipeline(_) => self.material_evaluations[shader_mesh.material_index as usize],
+					// Each phase's uber shader is the only evaluation of its phase.
+					MaterialEvaluator::Arm(_) => UBER_EVALUATION_INDEX,
+				},
 				&material.alpha_mode,
 				material.double_sided,
 			);

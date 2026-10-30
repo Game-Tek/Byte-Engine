@@ -106,7 +106,8 @@ pub async fn bake(
 		return Ok(());
 	}
 
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	failures.extend(bake_assembled(&asset_manager, &features).await);
 
 	if !failures.is_empty() {
 		if prune {
@@ -193,8 +194,9 @@ fn select_discovered(
 ///
 /// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
 /// failed. `excluded` are the project's `resources.exclude` patterns, as in [`bake`]. Pass `payload` to add the decoded
-/// stream bytes, which needs [`OutputFormat::JSON`]. Without `ids` nothing
-/// bakes, because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
+/// stream bytes, which needs [`OutputFormat::JSON`]. The resources `features` assembles from every material bake after
+/// `ids`, from the materials `ids` reach. Without `ids` nothing bakes, because a dry run doesn't discover assets. Run
+/// [`bake`] next to write the same resources to a store.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
@@ -213,7 +215,11 @@ pub async fn bake_dry_run(
 	let resource_storage_backend = MemoryStorageBackend::new();
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
 	asset_manager.set_excluded_assets(excluded);
-	let failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	let bakes_anything = !ids.is_empty();
+	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
+	if bakes_anything {
+		failures.extend(bake_assembled(&asset_manager, &features).await);
+	}
 	drop(asset_manager);
 
 	let mut resource_ids = resource_storage_backend
@@ -304,6 +310,27 @@ async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i
 		);
 		1
 	})
+}
+
+/// Bakes the resources `features` assembles from every baked material, such as the uber material evaluation shaders,
+/// and returns the ones that failed with their errors.
+///
+/// Call it after every other bake. It bakes each resource every time, because the set of materials it gathers is not
+/// one of its sources, so a freshness check cannot see it change. The resources gather independently, so they bake
+/// together.
+async fn bake_assembled(asset_manager: &AssetManager, features: &VisibilityFeatures) -> Vec<(String, LoadMessages)> {
+	let resources = features.assembled_resources();
+	utils::r#async::stream::iter(resources)
+		.map(|id| async move {
+			log::info!("Baking resource '{id}' from every baked material");
+			let error = asset_manager.bake(id).await.err()?;
+			log::error!("Failed to bake '{id}'. Error: {error:#?}");
+			Some((id.to_string(), error))
+		})
+		.buffer_unordered(resources.len().max(1))
+		.filter_map(async |failure| failure)
+		.collect()
+		.await
 }
 
 /// Bakes every ID that is stale, up to 16 at once within `memory_budget`, reports progress, and returns the IDs that

@@ -27,6 +27,46 @@ pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds debug views into the project. Absent, debug
 /// builds have them and release builds do not. See [`crate::rendering::DebugViews`].
 pub const DEBUG_VIEWS_ENABLED_PARAMETER: &str = "debug-views.enabled";
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that chooses how material evaluation runs: `pipelines` or
+/// `uber`. See [`MaterialEvaluationMode`].
+pub const MATERIAL_EVALUATION_PARAMETER: &str = "material-evaluation";
+
+/// The `MaterialEvaluationMode` enum chooses how the visibility pipeline shades the materials the visibility buffer
+/// recorded. The bake and the runtime must agree on it, so it is part of [`VisibilityFeatures`].
+///
+/// Set it with [`MATERIAL_EVALUATION_PARAMETER`] in `config.json`, then rebake every material.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MaterialEvaluationMode {
+	/// Each material program bakes its own evaluation shader. Three prepasses list each pipeline's pixels, and each
+	/// pipeline shades its own list.
+	#[default]
+	Pipelines,
+	/// The bake joins every material variant into one shader per phase, which one pass of screen tiles runs without
+	/// prepasses. See [`super::VisibilityShaderGenerator::uber_program`].
+	Uber,
+}
+
+impl std::str::FromStr for MaterialEvaluationMode {
+	type Err = String;
+
+	fn from_str(name: &str) -> Result<Self, Self::Err> {
+		match name {
+			"pipelines" => Ok(Self::Pipelines),
+			"uber" => Ok(Self::Uber),
+			_ => Err(format!(
+				"Parameter `{RENDER_PARAMETERS}.{MATERIAL_EVALUATION_PARAMETER}` is invalid. The most likely cause is that `{name}` is neither `pipelines` nor `uber`. Set it to one of the two in `config.json`."
+			)),
+		}
+	}
+}
+
+/// The IDs of the uber material evaluation shaders, opaque then transparent, which only
+/// [`MaterialEvaluationMode::Uber`] uses. They are resources with no asset behind them: the bake assembles each from
+/// every material variant the store holds.
+pub(crate) const UBER_MATERIAL_SHADERS: [&str; 2] = [
+	"byte-engine/rendering/visibility/material-evaluation-opaque.uber",
+	"byte-engine/rendering/visibility/material-evaluation-transparent.uber",
+];
 
 /// The `VisibilityFeatures` struct records which optional visibility features a project builds into its shaders.
 ///
@@ -51,6 +91,8 @@ pub struct VisibilityFeatures {
 	pub contact_shadows: bool,
 	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
 	pub debug_views: bool,
+	/// How material evaluation runs, which decides what material bakes store.
+	pub material_evaluation: MaterialEvaluationMode,
 }
 
 impl Default for VisibilityFeatures {
@@ -62,6 +104,7 @@ impl Default for VisibilityFeatures {
 			surfel_gi: false,
 			contact_shadows: true,
 			debug_views: cfg!(debug_assertions),
+			material_evaluation: MaterialEvaluationMode::default(),
 		}
 	}
 }
@@ -72,7 +115,8 @@ impl VisibilityFeatures {
 	///
 	/// # Panics
 	///
-	/// Panics when a feature parameter is neither `true` nor `false`.
+	/// Panics when a feature parameter is neither `true` nor `false`, or the material evaluation mode is neither
+	/// `pipelines` nor `uber`.
 	pub fn from_parameters(parameters: impl Parameters) -> Self {
 		let defaults = Self::default();
 		let built_in = |name: &str, default: bool| {
@@ -91,15 +135,22 @@ impl VisibilityFeatures {
 			surfel_gi: built_in(SURFEL_GI_ENABLED_PARAMETER, defaults.surfel_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
 			debug_views: built_in(DEBUG_VIEWS_ENABLED_PARAMETER, defaults.debug_views),
+			material_evaluation: parameters
+				.get_parameter(MATERIAL_EVALUATION_PARAMETER)
+				.map_or(defaults.material_evaluation, |parameter| {
+					parameter.value().parse().unwrap_or_else(|error: String| panic!("{error}"))
+				}),
 		}
 	}
 
 	/// Returns each feature's shader member name, the directory under `byte-engine/rendering/` and the stems of the
 	/// engine assets only it uses, and whether the project builds it in. Each stem names a pipeline and its shader, or a
 	/// shader the engine assembles a pipeline from, which takes a row of its own.
-	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 7] {
+	fn table(&self) -> [(&'static str, &'static str, &'static [&'static str], bool); 8] {
 		use super::ray_tracing::SURFEL_SHADING_SHADERS;
-		use super::render_pass::{CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, SSGI_PIPELINES, SURFEL_GI_PIPELINES};
+		use super::render_pass::{
+			CONTACT_SHADOW_PIPELINES, GTAO_PIPELINES, MATERIAL_PREPASS_PIPELINES, SSGI_PIPELINES, SURFEL_GI_PIPELINES,
+		};
 		[
 			("gtao", "visibility/", &GTAO_PIPELINES, self.gtao),
 			("ssgi", "visibility/", &SSGI_PIPELINES, self.ssgi),
@@ -114,6 +165,13 @@ impl VisibilityFeatures {
 				self.contact_shadows,
 			),
 			("debug_views", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
+			// Only per-material evaluation shaders read the pixel lists the prepasses write.
+			(
+				"pixel_mapping",
+				"visibility/",
+				&MATERIAL_PREPASS_PIPELINES,
+				self.material_evaluation == MaterialEvaluationMode::Pipelines,
+			),
 		]
 	}
 
@@ -130,6 +188,15 @@ impl VisibilityFeatures {
 			&& self.table().iter().any(|(_, directory, pipelines, built_in)| {
 				!built_in && path.strip_prefix(directory).is_some_and(|stem| pipelines.contains(&stem))
 			})
+	}
+
+	/// Returns the IDs of the resources a bake assembles from every material variant the store holds, which it must
+	/// bake after every material, and every time, because a freshness check cannot see the set of materials change.
+	pub fn assembled_resources(&self) -> &'static [&'static str] {
+		match self.material_evaluation {
+			MaterialEvaluationMode::Pipelines => &[],
+			MaterialEvaluationMode::Uber => &UBER_MATERIAL_SHADERS,
+		}
 	}
 
 	/// Removes the code of every left-out feature from `statements`, so a shader carries none of it.
@@ -243,6 +310,7 @@ mod tests {
 			surfel_gi: false,
 			contact_shadows: false,
 			debug_views: false,
+			material_evaluation: MaterialEvaluationMode::Pipelines,
 		};
 
 		// The depth pyramid and the sun visibility resolve also serve passes that always run.
@@ -252,6 +320,28 @@ mod tests {
 				"asset: {asset}"
 			);
 		}
+	}
+
+	#[test]
+	fn material_evaluation_mode_keeps_its_own_assets() {
+		let mode = |value| VisibilityFeatures::from_parameters(&[Parameter::new(MATERIAL_EVALUATION_PARAMETER, value)][..]);
+		let (pipelines, uber) = (mode("pipelines"), mode("uber"));
+
+		assert_eq!(pipelines.material_evaluation, MaterialEvaluationMode::Pipelines);
+		assert_eq!(uber.material_evaluation, MaterialEvaluationMode::Uber);
+		for asset in ["pixel-mapping.pipeline", "material-count.besl", "material-offset.pipeline"] {
+			let id = format!("byte-engine/rendering/visibility/{asset}");
+			assert!(!pipelines.excludes(&id), "asset: {asset}");
+			assert!(uber.excludes(&id), "asset: {asset}");
+		}
+		assert!(pipelines.assembled_resources().is_empty());
+		assert_eq!(uber.assembled_resources(), UBER_MATERIAL_SHADERS);
+	}
+
+	#[test]
+	#[should_panic(expected = "neither `pipelines` nor `uber`")]
+	fn material_evaluation_mode_rejects_other_names() {
+		VisibilityFeatures::from_parameters(&[Parameter::new(MATERIAL_EVALUATION_PARAMETER, "ubershader")][..]);
 	}
 
 	#[test]

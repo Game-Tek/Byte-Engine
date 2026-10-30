@@ -85,10 +85,10 @@ Booleans here are lenient.
 
 ## Render features
 
-These are strict booleans, read at startup and by BELD from `config.json`.
-They decide what the bake builds into the shaders and what the runtime
-creates; a feature left out of the bake stays off whatever a runtime setting
-asks.
+These are read at startup and by BELD from `config.json`. They decide what the
+bake builds into the shaders and what the runtime creates; a feature left out
+of the bake stays off whatever a runtime setting asks. Every one is a strict
+boolean except `render.material-evaluation`, which takes one of two names.
 
 | Name | Default | Effect |
 | --- | --- | --- |
@@ -96,6 +96,7 @@ asks.
 | `render.ssgi.enabled` | `true` | Screen-space global illumination and its pipelines, which makes `ssgi` a `render.gi.technique` value. |
 | `render.surfel-gi.enabled` | `false` | Ray-traced surfel global illumination, its pipelines, and its ray tracing shaders, which makes `surfels` a `render.gi.technique` value. See [indirect diffuse light](/docs/reference/rendering#indirect-diffuse-light). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
+| `render.material-evaluation` | `pipelines` | How material evaluation runs: `pipelines` or `uber`. Any other value stops the application at startup. See [materials](/docs/reference/rendering#materials). |
 
 ## Visibility pipeline
 

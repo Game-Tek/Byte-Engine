@@ -19,6 +19,10 @@ pub struct Material {
 	pub model: RenderModel,
 
 	pub parameters: Vec<Parameter>,
+
+	/// The program the material's surface code is generated from, kept when the renderer joins every material into
+	/// shaders it bakes at the end of a bake instead of compiling an evaluation shader per material.
+	pub program: Option<MaterialProgram>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -33,6 +37,35 @@ pub struct MaterialModel {
 	pub model: RenderModel,
 
 	pub parameters: Vec<ParameterModel>,
+
+	/// See [`Material::program`].
+	pub program: Option<MaterialProgram>,
+}
+
+/// The `MaterialProgram` struct keeps what a material's surface code is generated from: its BEMX graph and the
+/// parameters the code binds.
+///
+/// A renderer that evaluates every material in shaders it assembles once all materials are baked, such as the
+/// visibility pipeline's uber material evaluation, reads it back with [`MaterialProgram::graph`] and
+/// [`MaterialProgram::parameters`] instead of loading a compiled shader.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MaterialProgram {
+	/// The graph, as JSON of [`crate::bemx::Graph`].
+	pub(crate) graph: String,
+	/// The parameters the generated code binds, in the order the renderer binds them.
+	pub(crate) parameters: Vec<ProgramParameter>,
+	/// A hash of the graph and the parameters. Materials with equal identities generate the same code for equal static
+	/// values, so a renderer can share one copy of it.
+	pub identity: u64,
+}
+
+/// The `ProgramParameter` struct declares one parameter of a [`MaterialProgram`], as a `.bema` variable declares it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub(crate) struct ProgramParameter {
+	pub(crate) name: String,
+	/// `float`, `vec3f`, `vec4f`, or `Texture2D`.
+	pub(crate) data_type: String,
+	pub(crate) dynamic: bool,
 }
 
 impl Material {
@@ -99,6 +132,7 @@ impl crate::StoredModel for MaterialModel {
 				shaders,
 				model,
 				parameters,
+				program,
 			} = crate::from_slice(&gr.resource).map_err(|e| SolveError::DeserializationFailed(e.to_string()))?;
 
 			let resolved_shaders = super::solve_all(shaders, storage_backend).await?;
@@ -113,6 +147,7 @@ impl crate::StoredModel for MaterialModel {
 					shaders: resolved_shaders,
 					model,
 					parameters: resolved_parameters,
+					program,
 				},
 				reader,
 			))
@@ -203,6 +238,39 @@ pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
 	pub alpha_mode: AlphaMode,
+}
+
+impl Variant {
+	/// Returns the components of each static value the variant gives its material, in declaration order. They are the
+	/// values a renderer that assembles its evaluation shaders keys the variant's code by, and they equal
+	/// [`VariantModel::static_values`] of the stored variant.
+	pub fn static_values(&self) -> impl Iterator<Item = &[f32]> {
+		self.variables
+			.iter()
+			.filter(|variable| !variable.dynamic)
+			.filter_map(|variable| match &variable.value {
+				Value::Scalar(value) => Some(std::slice::from_ref(value)),
+				Value::Vector3(value) => Some(value.as_slice()),
+				Value::Vector4(value) => Some(value.as_slice()),
+				Value::Image(_) => None,
+			})
+	}
+}
+
+impl VariantModel {
+	/// Returns the components of each static value the stored variant gives its material, in declaration order; see
+	/// [`Variant::static_values`].
+	pub fn static_values(&self) -> impl Iterator<Item = &[f32]> {
+		self.variables
+			.iter()
+			.filter(|variable| !variable.dynamic)
+			.filter_map(|variable| match &variable.value {
+				ValueModel::Scalar(value) => Some(std::slice::from_ref(value)),
+				ValueModel::Vector3(value) => Some(value.as_slice()),
+				ValueModel::Vector4(value) => Some(value.as_slice()),
+				ValueModel::Image(_) => None,
+			})
+	}
 }
 
 impl crate::Resource for Variant {
@@ -552,6 +620,27 @@ impl Shader {
 }
 
 super::impl_direct_resource!(Shader, "Shader");
+
+/// The `AssembledShader` struct is an evaluation shader a bake assembles from every material the store holds, with
+/// the keys of the materials it evaluates.
+///
+/// A renderer that evaluates materials this way, such as the visibility pipeline's uber material evaluation,
+/// requests it by the ID of its asset, compiles [`Self::shader`], and draws a material only once [`Self::keys`] holds
+/// the key its program generator gives that material.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct AssembledShader {
+	/// The ID of the compiled shader.
+	pub shader: String,
+	/// The keys of the shader's arms, in ascending order.
+	pub keys: Vec<u32>,
+}
+
+super::impl_direct_resource!(AssembledShader, "AssembledShader", references = assembled_shader_references);
+
+/// Lists the compiled shader an assembled shader names.
+fn assembled_shader_references(shader: &AssembledShader) -> Vec<&str> {
+	vec![shader.shader.as_str()]
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RenderModel {

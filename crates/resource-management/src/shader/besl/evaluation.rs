@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 pub use opacity::OpacityEvaluation;
 pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, SetUsage, TextureView};
-pub(crate) use reflection::{FNV1A_OFFSET_BASIS, collect_bindings, collect_set_nodes, fnv1a};
+pub use reflection::{FNV1A_OFFSET_BASIS, fnv1a};
+pub(crate) use reflection::{collect_bindings, collect_set_nodes};
 
 /// Reflects the descriptor set layouts that layout layers declare, without a shader that lists them.
 ///

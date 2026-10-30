@@ -139,6 +139,7 @@ pub(super) use self::gtao::GTAO_PIPELINES;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
+pub(super) use self::materials::MATERIAL_PREPASS_PIPELINES;
 use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
@@ -166,8 +167,8 @@ pub(crate) use self::{
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
 use super::acceleration_structures::AccelerationStructureWork;
-use super::features::VisibilityFeatures;
-use super::layout::{MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES, MAX_TASK_VIEWS};
+use super::features::{MaterialEvaluationMode, VisibilityFeatures};
+use super::layout::MAX_TASK_VIEWS;
 use super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::set_layouts;
@@ -405,7 +406,8 @@ pub(crate) struct VisibilityRenderPass {
 	light_clusters: LightClusterPass,
 	visibility: VisibilityPass,
 	occlusion: OcclusionCulling,
-	material_prepasses: MaterialPrepasses,
+	/// Absent in the uber material evaluation mode, whose uber shaders find each pixel's material themselves.
+	material_prepasses: Option<MaterialPrepasses>,
 	depth_pyramid: DepthPyramidPass,
 	sun_visibility: SunVisibilityPass,
 	/// Absent when the project left GTAO out of its shaders.
@@ -442,29 +444,20 @@ impl VisibilityRenderPass {
 		surfel_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 	) -> Self {
-		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
-		// another, so evaluation is not an access that the next dispatch has to wait for.
-		let material_dispatch_descriptor_set =
-			set_layouts::MATERIAL_DISPATCH.create_set(context, "Material Dispatch Descriptor Set");
 		let visibility_buffer_descriptor_set =
 			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
 		let material_evaluation_descriptor_set =
 			set_layouts::MATERIAL_EVALUATION.create_set(context, "Material Evaluation Descriptor Set");
-		// The material prepasses write these buffers, and material evaluation reads them.
-		let material_buffer = |name, extra_uses| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses)
-				.name(name)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-		};
-		let material_count = context.build_buffer(material_buffer("Material Count", ghi::Uses::empty()));
-		let material_offset: ghi::BufferHandle<[u32; MAX_MATERIALS]> =
-			context.build_buffer(material_buffer("Material Offset", ghi::Uses::empty()));
-		let material_offset_scratch: ghi::BufferHandle<[u32; MAX_MATERIALS]> =
-			context.build_buffer(material_buffer("Material Offset Scratch", ghi::Uses::empty()));
-		let evaluation_dispatches =
-			context.build_buffer(material_buffer("Material Evaluation Dispatches", ghi::Uses::Indirect));
-		let pixel_mapping: ghi::BufferHandle<[[u16; 2]; MAX_PIXEL_MAPPING_ENTRIES]> =
-			context.build_buffer(material_buffer("Material XY", ghi::Uses::empty()));
+		let material_prepasses = (features.material_evaluation == MaterialEvaluationMode::Pipelines).then(|| {
+			MaterialPrepasses::new(
+				context,
+				&pipeline_manager,
+				base_descriptor_set,
+				visibility_buffer_descriptor_set,
+				material_evaluation_descriptor_set,
+				targets.instance_id,
+			)
+		});
 		let ao_map = context.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::R8UNORM,
@@ -519,7 +512,6 @@ impl VisibilityRenderPass {
 			depth_pyramid.depth_pyramid,
 			targets.radiance_history,
 		);
-		let dispatch = set_layouts::MATERIAL_DISPATCH.binder(material_dispatch_descriptor_set);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
@@ -544,15 +536,6 @@ impl VisibilityRenderPass {
 			evaluation.sampled("depth_shadow_map", shadow_maps.directional, depth_sampler),
 			// The layer fixes the pyramid's maximum sampler.
 			evaluation.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
-			dispatch.buffer("material_count_buffer", material_count),
-			dispatch.buffer("material_offset_buffer", material_offset),
-			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),
-			dispatch.buffer("material_evaluation_dispatches", evaluation_dispatches),
-			dispatch.buffer("pixel_mapping_buffer", pixel_mapping),
-			dispatch.image("instance_index_render_target", targets.instance_id),
-			visibility.buffer("material_count", material_count),
-			visibility.buffer("material_offset", material_offset),
-			visibility.buffer("pixel_mapping", pixel_mapping),
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 		]);
@@ -576,15 +559,12 @@ impl VisibilityRenderPass {
 				depth: targets.depth,
 			},
 			occlusion,
-			material_prepasses: MaterialPrepasses {
-				descriptor_sets: [
-					base_descriptor_set,
-					material_dispatch_descriptor_set,
-					material_evaluation_descriptor_set,
-				],
-				count_buffer: material_count,
-				pipelines: Pipelines::request(&pipeline_manager, ["material-count", "material-offset", "pixel-mapping"]),
+			material_evaluation: MaterialEvaluationPass {
+				base_descriptor_set,
+				visibility_descriptor_set: visibility_buffer_descriptor_set,
+				descriptor_set: material_evaluation_descriptor_set,
 			},
+			material_prepasses,
 			gtao: features.gtao.then(|| {
 				GtaoPass::new(
 					context,
@@ -610,12 +590,6 @@ impl VisibilityRenderPass {
 			ssgi,
 			surfel_resolve,
 			reflections,
-			material_evaluation: MaterialEvaluationPass {
-				base_descriptor_set,
-				visibility_descriptor_set: visibility_buffer_descriptor_set,
-				descriptor_set: material_evaluation_descriptor_set,
-				evaluation_dispatches,
-			},
 			stage_counters,
 			pipeline_manager,
 			debug_views,
@@ -680,7 +654,13 @@ impl VisibilityRenderPass {
 			None => (None, None),
 		};
 		let visibility_pipelines = self.visibility.pipelines.resolve(pipeline_manager)?;
-		let prepass_pipelines = self.material_prepasses.pipelines.resolve(pipeline_manager)?;
+		let material_prepasses = match &self.material_prepasses {
+			Some(prepasses) => Some((prepasses, prepasses.pipelines.resolve(pipeline_manager)?)),
+			// Without prepasses, the opaque uber shader writes the background's zeros, so the frame waits for it as it
+			// waits for pixel mapping.
+			None if render_info.opaque_evaluations.is_empty() => return None,
+			None => None,
+		};
 		let cascade_masks = [shadow_work.updated_cascades(), shadow_work.drawn_cascades];
 		let cascade_fit = self.cascade_fit.prepare(
 			frame,
@@ -747,10 +727,16 @@ impl VisibilityRenderPass {
 				(None, None) => None,
 			},
 		};
+		let pixel_lists = self
+			.material_prepasses
+			.as_ref()
+			.map(|prepasses| prepasses.evaluation_dispatches);
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_evaluations,
 			&render_info.opaque_evaluation_mask,
 			VisibilityPhase::Opaque,
+			pixel_lists,
+			sink.extent(),
 			screen_space_lighting,
 			debug_views,
 		);
@@ -758,6 +744,8 @@ impl VisibilityRenderPass {
 			&render_info.transparent_evaluations,
 			&render_info.transparent_evaluation_mask,
 			VisibilityPhase::Transparent,
+			pixel_lists,
+			sink.extent(),
 			screen_space_lighting,
 			debug_views,
 		);
@@ -824,10 +812,11 @@ impl VisibilityRenderPass {
 			c.counter(counters.visibility_late, |c| {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
 			});
-			c.counter(counters.material_prepasses, |c| {
-				self.material_prepasses
-					.record(c, extent, prepass_pipelines, VisibilityPhase::Opaque)
-			});
+			if let Some((prepasses, pipelines)) = material_prepasses {
+				c.counter(counters.material_prepasses, |c| {
+					prepasses.record(c, extent, pipelines, VisibilityPhase::Opaque)
+				});
+			}
 			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
 			c.counter(counters.depth_pyramid, &depth_pyramid);
 			if fits_receivers {
@@ -881,8 +870,9 @@ impl VisibilityRenderPass {
 			if !dispatches.transparent.is_empty() {
 				c.counter(counters.transparent, |c| {
 					draw(c, VisibilityPhase::Transparent, OcclusionPhase::Test);
-					self.material_prepasses
-						.record(c, extent, prepass_pipelines, VisibilityPhase::Transparent);
+					if let Some((prepasses, pipelines)) = material_prepasses {
+						prepasses.record(c, extent, pipelines, VisibilityPhase::Transparent);
+					}
 					transparent_materials(c);
 				});
 			}

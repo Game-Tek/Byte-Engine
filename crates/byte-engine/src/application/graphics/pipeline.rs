@@ -131,6 +131,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		application_resource_manager,
 		&geometry,
 		pipeline_manager.clone(),
+		visibility_pipeline_settings.features().material_evaluation,
 	);
 
 	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));

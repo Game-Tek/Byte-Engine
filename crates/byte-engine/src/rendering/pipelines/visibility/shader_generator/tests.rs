@@ -1,5 +1,7 @@
 use besl::vm::{DescriptorBindings, ResourceSlot, Sampler, Texture, Value};
-use resource_management::asset::handler::implementations::bema::{MaterialParameter, ParameterKind, ProgramGenerator};
+use resource_management::asset::handler::implementations::bema::{
+	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
+};
 use resource_management::bemx;
 
 use super::super::tests::{
@@ -84,6 +86,31 @@ fn material_generator_with(features: VisibilityFeatures) -> VisibilityShaderGene
 /// VM.
 fn compile_with(source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
 	let mut root = besl::parse(source).expect("Failed to parse a VM test. The most likely cause is invalid BESL test syntax.");
+	root.add(nodes);
+	compile(
+		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
+	)
+}
+
+/// Like [`compile_with`], with `prologue` spliced in before the statements of `source`'s `main`, as the generator
+/// splices its sources into a material shader's `main`.
+fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
+	let mut root = besl::parse(source).expect("Failed to parse a VM test. The most likely cause is invalid BESL test syntax.");
+	let besl::parser::Nodes::Scope { children, .. } = root.node_mut() else {
+		unreachable!("A parsed program is a scope.");
+	};
+	let main = children
+		.iter_mut()
+		.find_map(|child| match child.node_mut() {
+			besl::parser::Nodes::Function {
+				name: "main",
+				statements,
+				..
+			} => Some(statements),
+			_ => None,
+		})
+		.expect("The VM test declares `main`.");
+	main.splice(0..0, prologue);
 	root.add(nodes);
 	compile(
 		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
@@ -290,7 +317,8 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 
 	let shader = material_generator()
 		.generate(&graph, &parameters)
-		.expect("a graph reading declared parameters should generate");
+		.expect("a graph reading declared parameters should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
@@ -316,7 +344,8 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 
 	let shader = material_generator()
 		.generate(&graph, &parameters)
-		.expect("a graph reading dynamic parameters should generate");
+		.expect("a graph reading dynamic parameters should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
@@ -361,7 +390,8 @@ fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
 	let parameters = textured_parameters();
 	let shader = material_generator()
 		.generate(&graph, &parameters)
-		.expect("textured graph should generate");
+		.expect("textured graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 	besl::lex(shader).expect("generated normal-mapped program should link");
 }
 
@@ -375,7 +405,10 @@ fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
 			{ name: "surface", node: "surface", normal: "bent", emission: [0.5, 0.25, 0.0], occlusion: 0.5 },
 		] }"#,
 	);
-	let shader = material_generator().generate(&graph, &[]).expect("graph should generate");
+	let shader = material_generator()
+		.generate(&graph, &[])
+		.expect("graph should generate")
+		.expect("the pipelines mode builds an evaluation shader");
 	besl::lex(shader).expect("generated world-normal program should link");
 }
 
@@ -410,7 +443,8 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 	let reaches = |features, binding: &str| {
 		let shader = material_generator_with(features)
 			.generate(&graph, &[])
-			.expect("constant graph should generate");
+			.expect("constant graph should generate")
+			.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&main)
@@ -453,6 +487,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		surfel_gi: true,
 		contact_shadows: true,
 		debug_views: true,
+		material_evaluation: Default::default(),
 	};
 
 	for (features, binding) in cases {
@@ -499,7 +534,8 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 		let graph = graph(source);
 		let shader = material_generator()
 			.generate(&graph, &parameters)
-			.expect("test graph should generate");
+			.expect("test graph should generate")
+			.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
@@ -509,6 +545,111 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 			.await
 			.expect("generated material evaluation program should compile for the platform shader language");
 	}
+}
+
+/// Builds an uber generator's arms for the textured graph at two static tints, which declare the same static parameter
+/// in two arms, and the dynamic graph, and runs `check` on each phase's program.
+fn with_uber_programs(check: impl Fn(bool, Node<'_>)) {
+	let generator = material_generator_with(VisibilityFeatures {
+		material_evaluation: MaterialEvaluationMode::Uber,
+		..Default::default()
+	});
+	let (textured, dynamic) = (graph(TEXTURED_GRAPH), graph(DYNAMIC_GRAPH));
+	let (textured_parameters, dynamic_parameters) = (textured_parameters(), dynamic_parameters());
+	let tints = [vec![vec![1.0, 0.5, 0.25, 1.0]], vec![vec![-0.5, 0.0, 2.0, 0.5]]];
+	let roughness = [vec![0.75]];
+	let keys = [
+		uber_arm_key(1, tints[0].concat(), false).to_string(),
+		uber_arm_key(1, tints[1].concat(), false).to_string(),
+		uber_arm_key(2, roughness.concat(), false).to_string(),
+	];
+	let model = resource_management::resources::material::RenderModel {
+		name: "Visibility".to_string(),
+		pass: "MaterialEvaluation".to_string(),
+	};
+	let material = |graph, parameters, static_values| AssembledMaterial {
+		model: &model,
+		graph,
+		parameters,
+		identity: 0,
+		static_values,
+		alpha_mode: resource_management::types::AlphaMode::Opaque,
+	};
+	let materials = [
+		material(&textured, &textured_parameters, &tints[0]),
+		material(&textured, &textured_parameters, &tints[1]),
+		material(&dynamic, &dynamic_parameters, &roughness),
+	];
+	let arms = [
+		AssembledArm {
+			key: &keys[0],
+			material: &materials[0],
+		},
+		AssembledArm {
+			key: &keys[1],
+			material: &materials[1],
+		},
+		AssembledArm {
+			key: &keys[2],
+			material: &materials[2],
+		},
+	];
+	// A fresh development store holds no material yet, so its first bake assembles shaders without arms.
+	for arms in [&arms[..], &[]] {
+		for transparent in [false, true] {
+			check(
+				transparent,
+				generator
+					.uber_program(transparent, arms)
+					.expect("the test arms should generate an uber program"),
+			);
+		}
+	}
+}
+
+/// Verifies an uber material evaluation program links in both phases, with arms that declare the same static parameter.
+#[test]
+fn uber_material_evaluation_produces_valid_besl() {
+	with_uber_programs(|transparent, program| {
+		besl::lex(program)
+			.unwrap_or_else(|error| panic!("the uber program should link (transparent: {transparent}): {error:?}"));
+	});
+}
+
+/// Verifies an uber material evaluation program lowers to the running platform's shader language and compiles there.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	let programs = std::cell::RefCell::new(Vec::new());
+	with_uber_programs(|transparent, program| {
+		programs
+			.borrow_mut()
+			.push((transparent, besl::lex(program).expect("the uber program should link")));
+	});
+	for (transparent, root) in programs.into_inner() {
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8)).name("uber_material_evaluation".to_string());
+		PlatformShaderCompiler::new()
+			.generate(&settings, &root)
+			.await
+			.unwrap_or_else(|error| {
+				panic!("the uber program should compile for the platform shader language (transparent: {transparent}): {error}")
+			});
+	}
+}
+
+/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase.
+#[test]
+fn uber_arm_keys_follow_program_values_and_phase() {
+	let key = uber_arm_key(7, [0.5, 1.0], false);
+
+	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], false));
+	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], false));
+	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], false));
+	assert_ne!(key, uber_arm_key(7, [0.5, 1.0], true));
+	assert_ne!(key, u32::MAX);
 }
 
 /// Builds the baking generator for a project that builds surfel GI in, which generates hit shaders.
@@ -1219,7 +1360,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	let mut root = besl::stack_layers(Node::root_with_children(vec![main]), MATERIAL_EVALUATION_LAYERS).unwrap();
 	root.add(vec![
 		common_shader_scope(),
-		visibility_shader_scope(),
+		visibility_shader_scope(false),
 		results_binding(
 			vec![
 				Node::member("surface", "vec3f"),
@@ -1855,7 +1996,7 @@ fn sample_indirect_diffuse(
 		"#,
 		{
 			let mut bindings = material_evaluation_declarations();
-			bindings.extend(screen_space_indirect_diffuse_scope());
+			bindings.extend(screen_space_indirect_diffuse_scope(false));
 			bindings.push(Node::binding(
 				"inputs",
 				Node::buffer(vec![
@@ -1918,6 +2059,129 @@ fn sample_indirect_diffuse(
 	match results.read("indirect_diffuse").expect("indirect diffuse result") {
 		Value::Vec4F(value) => value,
 		value => panic!("Unexpected indirect diffuse result type: {value:?}."),
+	}
+}
+
+/// Verifies that an uber shader's `sample_screen_space_indirect_diffuse`, which reads its tile's workgroup window,
+/// gives every pixel the indirect diffuse light the per-material one reads from the SSGI images, at an even and an odd
+/// extent, in tiles that cross the image's edge.
+#[test]
+fn tile_indirect_diffuse_reads_what_the_images_hold() {
+	const RESULTS_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const LIT_SLOT: ResourceSlot = ResourceSlot::new(1041);
+	let tile = UBER_WORKGROUP.width();
+	for full in [16u32, 21] {
+		let low = full.div_ceil(2);
+		let texels = (low * low) as usize;
+		// Depth steps from a near to a far wall, normals alternate, and every texel holds its own light, so a tap read
+		// from the wrong texel changes the result.
+		let depth: Vec<[f32; 4]> = (0..texels)
+			.map(|index| {
+				[
+					if index as u32 % low < low / 2 {
+						2.0
+					} else {
+						6.0 + index as f32 * 0.01
+					},
+					0.0,
+					0.0,
+					1.0,
+				]
+			})
+			.collect();
+		let normals: Vec<[f32; 4]> = (0..texels)
+			.map(|index| {
+				if index % 3 == 0 {
+					[0.0, 0.0, 0.0, 0.0]
+				} else {
+					[0.1, -0.2, 0.0, 0.0]
+				}
+			})
+			.collect();
+		let history: Vec<[f32; 4]> = (0..texels)
+			.map(|index| [index as f32, (index % 7) as f32, 1.0, 0.25 + (index % 4) as f32 * 0.25])
+			.collect();
+
+		// Runs every tile of the image with the helpers of one scope, and returns each pixel's light.
+		let light = |uber: bool| {
+			// The window loads as the uber shader loads it: spliced into `main` ahead of the pixel's own work.
+			let executable = compile_with_prologue(
+				if uber {
+					material_evaluation_tile_window_statements()
+				} else {
+					Vec::new()
+				},
+				&format!(
+					r#"
+					main: fn (input: StageInput) -> void {{
+						let pixel: vec2u = input.thread_id;
+						let extent: vec2u = image_size(lit_map);
+						if (pixel.x < extent.x && pixel.y < extent.y) {{
+							let position: vec3f = vec3f(f32(pixel.x) * 0.05 - 0.5, 0.25 - f32(pixel.y) * 0.05, 2.0 + f32(pixel.x % 3));
+							let normal: vec3f = normalize(vec3f(0.1, 0.2, -1.0));
+							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal);
+						}}
+					}}
+					"#
+				),
+				{
+					let mut nodes = material_evaluation_declarations();
+					nodes.push(Node::push_constant(vec![Node::member("indirect_diffuse", "u32")]));
+					nodes.extend(screen_space_indirect_diffuse_scope(uber));
+					nodes.push(results_binding(
+						vec![Node::member("indirect", &format!("vec4f[{}]", full * full))],
+						RESULTS_SLOT,
+					));
+					nodes
+				},
+			);
+
+			// Only the window fill reads the push constant, so the per-material helpers' program has none.
+			let mut push_constant = uber.then(|| {
+				let mut push_constant = crate::rendering::shader_vm_test::push_constant_buffer(&executable);
+				push_constant
+					.write("indirect_diffuse", Value::U32(1))
+					.expect("indirect diffuse source");
+				push_constant
+			});
+			let mut view = buffer(&executable, SSGI_VIEW_SLOT);
+			view.write("pixel_to_ray_mul", Value::Vec2F([0.1, -0.1])).expect("SSGI view");
+			view.write("pixel_to_ray_add", Value::Vec2F([-0.4, 0.4])).expect("SSGI view");
+			let mut lit = crate::rendering::shader_vm_test::empty_image(full, full);
+			let mut depth = texture_2d(low, low, &depth);
+			let mut normals = texture_2d(low, low, &normals);
+			let mut history = texture_2d(low, low, &history);
+			let mut results = buffer(&executable, RESULTS_SLOT);
+			for position in crate::rendering::shader_vm_test::tiles(tile, [full, full]) {
+				let lanes = crate::rendering::shader_vm_test::tile_lanes(position, tile, tile, [full, full]);
+				let mut workgroup = besl::vm::WorkgroupState::new();
+				let mut descriptors = DescriptorBindings::new();
+				if let Some(push_constant) = &mut push_constant {
+					descriptors.bind_push_constant(push_constant);
+				}
+				descriptors.bind_buffer(SSGI_VIEW_SLOT, &mut view);
+				descriptors.bind_image(LIT_SLOT, &mut lit);
+				descriptors.bind_texture(ResourceSlot::new(1060), &mut depth);
+				descriptors.bind_texture(ResourceSlot::new(1047), &mut normals);
+				descriptors.bind_texture(ResourceSlot::new(1056), &mut history);
+				descriptors.bind_buffer(RESULTS_SLOT, &mut results);
+				descriptors.bind_workgroup_state(&mut workgroup);
+				executable
+					.run_workgroup(&mut descriptors, &lanes)
+					.expect("The indirect diffuse helpers should run in the VM.");
+			}
+			(0..(full * full) as usize)
+				.map(|index| match results.read_array_element(index) {
+					Ok(Value::Vec4F(value)) => value,
+					value => panic!("Unexpected indirect diffuse result: {value:?}."),
+				})
+				.collect::<Vec<_>>()
+		};
+
+		let (tiles, images) = (light(true), light(false));
+		for (index, (tile, image)) in tiles.iter().zip(&images).enumerate() {
+			assert_eq!(tile, image, "pixel {index} of a {full}-pixel image");
+		}
 	}
 }
 

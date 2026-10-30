@@ -2452,6 +2452,7 @@ mod tests {
 				pass: "MaterialEvaluation".to_string(),
 			},
 			parameters: Vec::new(),
+			program: None,
 		};
 		VariantModel {
 			material: crate::ReferenceModel::new("materials/shared.material", 0, 0, &material, None),

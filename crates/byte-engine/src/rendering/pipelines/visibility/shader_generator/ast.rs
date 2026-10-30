@@ -116,8 +116,48 @@ impl MaterialReconstructionFeatures {
 	}
 }
 
-/// Statements that reconstruct the pixel's surface before the material body runs.
+impl MaterialReconstructionFeatures {
+	/// Returns what any of `features` needs, so one reconstruction serves every material of an uber shader.
+	pub(super) fn union(features: impl IntoIterator<Item = Self>) -> Self {
+		features.into_iter().fold(Self::default(), |all, features| Self {
+			reads_uv: all.reads_uv || features.reads_uv,
+			reads_tangent_frame: all.reads_tangent_frame || features.reads_tangent_frame,
+			writes_normal: all.writes_normal || features.writes_normal,
+		})
+	}
+}
+
+/// Statements that pick a per-material pipeline's pixel from its slot's list and reconstruct the pixel's surface
+/// before the material body runs.
 pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PIXEL_LIST_SOURCE, "material_evaluation_pixel_list");
+	statements.extend(material_surface_statements(features));
+	statements
+}
+
+/// Statements that start an uber evaluation shader's thread: the opaque phase's workgroup window of indirect diffuse
+/// texels, then the thread's own pixel of its tile and the arm key of its material, `material_arm`.
+pub(super) fn material_evaluation_tile_statements(transparent: bool) -> Vec<Node<'static>> {
+	let mut statements = Vec::new();
+	// Only opaque surfaces read indirect diffuse light, so only the opaque shader loads the window and waits for it.
+	if !transparent {
+		statements.extend(material_evaluation_tile_window_statements());
+	}
+	statements.extend(parse_besl_statements(
+		MATERIAL_EVALUATION_TILE_SOURCE,
+		"material_evaluation_tile",
+	));
+	statements
+}
+
+/// Statements that load an opaque uber shader tile's workgroup window of indirect diffuse texels and wait for it.
+pub(super) fn material_evaluation_tile_window_statements() -> Vec<Node<'static>> {
+	parse_besl_statements(MATERIAL_EVALUATION_TILE_WINDOW_SOURCE, "material_evaluation_tile_window")
+}
+
+/// Statements that reconstruct the pixel's surface from the visibility buffer, the attributes `features` asks for,
+/// and the material outputs' defaults. A pixel source runs first.
+pub(super) fn material_surface_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix");
 	if features.needs_uv() {
 		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_UV_SOURCE, "material_evaluation_uv"));
@@ -163,19 +203,31 @@ pub(super) fn material_evaluation_suffix_statements(
 	features: MaterialReconstructionFeatures,
 	visibility_features: VisibilityFeatures,
 ) -> Vec<Node<'static>> {
+	let mut statements = material_normal_statements(features);
+	statements.extend(material_lighting_statements(visibility_features));
+	statements
+}
+
+/// Statements that turn the normal a material body wrote out of the tangent frame, or keep the geometric normal for
+/// a material that wrote none.
+pub(super) fn material_normal_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let normal_source = if features.writes_normal {
 		MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE
 	} else {
 		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE
 	};
-	let mut statements = parse_besl_statements(normal_source, "material_evaluation_normal");
-	let mut suffix = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
-	suffix.extend(parse_besl_statements(
+	parse_besl_statements(normal_source, "material_evaluation_normal")
+}
+
+/// Statements that light the material outputs and write the shown debug views, without the code of every feature
+/// `visibility_features` leaves out. An uber shader's scope reads the indirect diffuse taps from its tile window.
+pub(super) fn material_lighting_statements(visibility_features: VisibilityFeatures) -> Vec<Node<'static>> {
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
+	statements.extend(parse_besl_statements(
 		material_debug_view_source(),
 		"material_evaluation_debug_views",
 	));
-	visibility_features.remove_left_out_code(&mut suffix);
-	statements.extend(suffix);
+	visibility_features.remove_left_out_code(&mut statements);
 	statements
 }
 

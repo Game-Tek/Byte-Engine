@@ -5,7 +5,8 @@
 /// Generators write node values with [`bemx::besl::Lowering`].
 pub trait ProgramGenerator: Send + Sync {
 	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
-	/// the renderer binds them.
+	/// the renderer binds them, or `None` when the renderer evaluates its materials in shaders it assembles after the
+	/// bake instead. The bake then stores the material's [`MaterialProgram`] in place of a compiled shader.
 	///
 	/// Returns the error text to report when the graph needs something the renderer cannot supply, such as a
 	/// parameter `parameters` does not declare.
@@ -13,7 +14,7 @@ pub trait ProgramGenerator: Send + Sync {
 		&self,
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
-	) -> Result<besl::parser::Node<'a>, String>;
+	) -> Result<Option<besl::parser::Node<'a>>, String>;
 
 	/// Builds the closest-hit BESL program that reports `graph`'s surface to the rays that hit it, or `None` when the
 	/// renderer traces no rays.
@@ -28,6 +29,57 @@ pub trait ProgramGenerator: Send + Sync {
 		let _ = (graph, parameters);
 		Ok(None)
 	}
+
+	/// Returns the key of the arm that evaluates `material` in the assembled shader `id`, a `.uber` resource ID the
+	/// renderer names, or `None` when that shader leaves the material out.
+	///
+	/// Materials with equal keys must generate equal code, because the shader holds one arm per key. The renderer
+	/// computes the same key for a material at runtime to find out whether a baked shader evaluates it.
+	fn assembled_key(&self, id: &str, material: &AssembledMaterial<'_>) -> Result<Option<u32>, String> {
+		let _ = (id, material);
+		Err(NO_ASSEMBLED_SHADERS.to_string())
+	}
+
+	/// Builds the assembled shader `id`, with one arm for each of `arms`, and the settings to compile it with.
+	///
+	/// The bake calls it once all materials are baked, with every material [`Self::assembled_key`] keeps.
+	fn generate_assembled<'a>(
+		&self,
+		id: &str,
+		arms: &'a [AssembledArm<'a>],
+	) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
+		let _ = (id, arms);
+		Err(NO_ASSEMBLED_SHADERS.to_string())
+	}
+}
+
+/// The error [`ProgramGenerator`]'s assembled-shader methods report for a renderer that assembles no shaders.
+const NO_ASSEMBLED_SHADERS: &str = "This renderer assembles no evaluation shaders. The most likely cause is a bake of a `.uber` resource in a project whose renderer evaluates each material with its own shader. Bake only the resources the renderer's material evaluation mode names.";
+
+/// The `AssembledMaterial` struct is one material variant an assembled evaluation shader can evaluate: its program
+/// and the values that specialize it.
+///
+/// The bake reads one for every variant in the store and passes them to [`ProgramGenerator::assembled_key`].
+pub struct AssembledMaterial<'a> {
+	/// The render model and pass the material targets.
+	pub model: &'a RenderModel,
+	pub graph: &'a bemx::Graph,
+	/// The parameters the program binds, in binding order.
+	pub parameters: &'a [MaterialParameter],
+	/// See [`MaterialProgram::identity`].
+	pub identity: u64,
+	/// The components of every static value parameter of [`Self::parameters`], in their order.
+	pub static_values: &'a [Vec<f32>],
+	pub alpha_mode: AlphaMode,
+}
+
+/// The `AssembledArm` struct is one arm of an assembled evaluation shader: the code that evaluates the materials
+/// whose key is `key`. Pass every arm to [`ProgramGenerator::generate_assembled`].
+pub struct AssembledArm<'a> {
+	/// The key, as the decimal literal the shader matches.
+	pub key: &'a str,
+	/// One of the materials the arm evaluates; all of them generate the same code.
+	pub material: &'a AssembledMaterial<'a>,
 }
 
 /// The `MaterialParameter` struct declares one value or texture a material supplies, so a generated program can bind
@@ -48,6 +100,83 @@ pub enum ParameterKind {
 	Dynamic(bemx::Type),
 	/// A texture, which [`bemx::Node::Image`] samples.
 	Texture,
+}
+
+impl ParameterKind {
+	/// Returns the kind of a `.bema` variable of `data_type` (`float`, `vec3f`, `vec4f`, or `Texture2D`), or `None`
+	/// for a data type no variable can have. A texture is never dynamic.
+	fn from_data_type(data_type: &str, dynamic: bool) -> Option<Self> {
+		let r#type = match data_type {
+			"float" => bemx::Type::Float,
+			"vec3f" => bemx::Type::Vector3,
+			"vec4f" => bemx::Type::Vector4,
+			"Texture2D" if !dynamic => return Some(Self::Texture),
+			_ => return None,
+		};
+		Some(if dynamic { Self::Dynamic(r#type) } else { Self::Value(r#type) })
+	}
+
+	/// Returns the `.bema` data type of this kind, which [`Self::from_data_type`] reads back.
+	fn data_type(self) -> &'static str {
+		match self {
+			Self::Value(r#type) | Self::Dynamic(r#type) => match r#type {
+				bemx::Type::Float => "float",
+				bemx::Type::Vector3 => "vec3f",
+				_ => "vec4f",
+			},
+			Self::Texture => "Texture2D",
+		}
+	}
+}
+
+impl MaterialProgram {
+	/// Keeps `graph` and `parameters` so a renderer can generate the material's surface code after the bake.
+	pub(crate) fn new(graph: &bemx::Graph, parameters: &[MaterialParameter]) -> Result<Self, String> {
+		let graph = serde_json::to_string(graph).map_err(|error| {
+			format!("Failed to store the material graph: {error}. The most likely cause is a non-finite constant in it.")
+		})?;
+		let parameters = parameters
+			.iter()
+			.map(|parameter| ProgramParameter {
+				name: parameter.name.clone(),
+				data_type: parameter.kind.data_type().to_string(),
+				dynamic: matches!(parameter.kind, ParameterKind::Dynamic(_)),
+			})
+			.collect::<Vec<_>>();
+		let mut identity = graph.clone().into_bytes();
+		for parameter in &parameters {
+			identity.extend_from_slice(parameter.name.as_bytes());
+			identity.push(0);
+			identity.extend_from_slice(parameter.data_type.as_bytes());
+			identity.push(u8::from(parameter.dynamic));
+		}
+		Ok(Self {
+			identity: crate::resource::compression::payload_hash(&identity),
+			graph,
+			parameters,
+		})
+	}
+
+	/// Reads the graph back, checking it as [`bemx::GraphBuilder`] checks a new one.
+	pub fn graph(&self) -> Result<bemx::Graph, String> {
+		serde_json::from_str(&self.graph).map_err(|error| {
+			format!(
+				"Failed to read a stored material graph: {error}. The most likely cause is a material baked by another engine version. Bake it again with `beld bake --force`."
+			)
+		})
+	}
+
+	/// Returns the parameters the program binds, in the order the renderer binds them.
+	pub fn parameters(&self) -> Vec<MaterialParameter> {
+		self.parameters
+			.iter()
+			.map(|parameter| MaterialParameter {
+				name: parameter.name.clone(),
+				kind: ParameterKind::from_data_type(&parameter.data_type, parameter.dynamic)
+					.expect("A stored program parameter was written from a valid kind."),
+			})
+			.collect()
+	}
 }
 
 pub struct BEMAAssetHandler {
@@ -104,7 +233,7 @@ impl BEMAAssetHandler {
 			.map(|&(data_type, value)| async move { resolve_value(context, data_type, value, invalid).await });
 
 		// The shader and the parameter values do not depend on each other, so they bake together.
-		let (shader, values) = std::future::join!(
+		let (program, values) = std::future::join!(
 			self.compile_graph(context, url, generator, ResourceId::new(graph), &parameters),
 			buffered_in_order(value_requests, 8),
 		)
@@ -121,6 +250,7 @@ impl BEMAAssetHandler {
 				value,
 			})
 			.collect();
+		let (shaders, program) = program?;
 
 		let resource = MaterialModel {
 			double_sided: false,
@@ -130,8 +260,9 @@ impl BEMAAssetHandler {
 				name: "Visibility".to_string(),
 				pass: "MaterialEvaluation".to_string(),
 			},
-			shaders: shader?,
+			shaders,
 			parameters,
+			program,
 		};
 
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
@@ -189,8 +320,102 @@ impl BEMAAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
 
+	/// Bakes the assembled evaluation shader `url`, a `.uber` resource with no asset behind it, from every material
+	/// variant the store holds.
+	///
+	/// The generator decides from `url` and each material which variants the shader evaluates. Variants are baked as
+	/// dependencies, so editing one of their sources makes the shader stale. The compiled shader is stored under an ID
+	/// derived from its platform source, so an unchanged material set reuses it.
+	async fn bake_assembled<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		let fail = |error: String| {
+			context.error(shader_compilation_error_message(url.as_ref(), &error));
+			LoadErrors::FailedToProcess
+		};
+		let generator = self.generator.as_deref().ok_or_else(|| {
+			fail("No shader generator is installed. The most likely cause is an asset manager built without the renderer's asset handlers.".to_string())
+		})?;
+		let mut ids = context
+			.query_resources(crate::resource::storage_backend::Query::new("Variant"))
+			.await?;
+		ids.sort_unstable();
+		let variants = context.bake_dependencies::<VariantModel>(&ids, 8).await?;
+
+		// Each variant's program, parameters, and static values, owned here so the materials below can borrow them.
+		let mut programs = Vec::with_capacity(variants.len());
+		for (id, variant) in ids.iter().zip(&variants) {
+			let read_error = |error: crate::ResourceArchiveError| {
+				fail(format!(
+					"Failed to read variant '{id}': {error}. The most likely cause is a resource baked by another engine version. Bake again with `beld bake --force`."
+				))
+			};
+			let variant: VariantModel = crate::from_slice(&variant.resource).map_err(read_error)?;
+			let material: MaterialModel = crate::from_slice(&variant.material.resource).map_err(read_error)?;
+			let Some(program) = material.program else {
+				context.warn(format_args!(
+					"Variant '{id}' is left out of '{}'. The most likely cause is that its material was baked for a renderer that compiles a shader per material. Bake it again with `beld bake --force`.",
+					url.as_ref()
+				));
+				continue;
+			};
+			let static_values = variant.static_values().map(<[f32]>::to_vec).collect::<Vec<_>>();
+			programs.push((
+				material.model,
+				program.graph().map_err(fail)?,
+				program.parameters(),
+				program.identity,
+				static_values,
+				variant.alpha_mode,
+			));
+		}
+		let materials = programs
+			.iter()
+			.map(
+				|(model, graph, parameters, identity, static_values, alpha_mode)| AssembledMaterial {
+					model,
+					graph,
+					parameters,
+					identity: *identity,
+					static_values,
+					alpha_mode: *alpha_mode,
+				},
+			)
+			.collect::<Vec<_>>();
+
+		// One arm per key, in key order, so the same materials always assemble the same program. Two materials share a
+		// key when they share a program and static values; any other pair that does is a hash collision.
+		let mut by_key = std::collections::BTreeMap::<u32, &AssembledMaterial>::new();
+		for material in &materials {
+			let Some(key) = generator.assembled_key(url.as_ref(), material).map_err(fail)? else {
+				continue;
+			};
+			let arm = by_key.entry(key).or_insert(material);
+			if arm.identity != material.identity || arm.static_values != material.static_values {
+				return Err(fail(format!(
+					"Two different materials hash to arm key {key}. The most likely cause is a rare collision of the 32-bit key. Change one of the two materials' static values or graphs slightly, then bake again."
+				)));
+			}
+		}
+		let keys = by_key.keys().copied().collect::<Vec<_>>();
+		let key_literals = keys.iter().map(u32::to_string).collect::<Vec<_>>();
+		let arms = key_literals
+			.iter()
+			.zip(by_key.values())
+			.map(|(key, material)| AssembledArm { key, material })
+			.collect::<Vec<_>>();
+
+		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms).map_err(fail)?;
+		let prepared = prepare_besl_shader(program, &settings).map_err(fail)?;
+		let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(fail)?;
+		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(compiler_identity));
+		store_generated_shader(context, &shader_id, prepared).await?;
+
+		let resource = AssembledShader { shader: shader_id, keys };
+		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
+	}
+
 	/// Reads the material's BEMX graph, generates its programs, and compiles and stores their shaders: the material's
-	/// shader, then its closest-hit shader when the generator builds one.
+	/// shader, then its closest-hit shader when the generator builds one. When the generator builds no evaluation
+	/// shader, it returns the material's [`MaterialProgram`] in its place.
 	///
 	/// The shaders are stored under the material's own ID with `#shader` and `#hit-shader` fragments, because the
 	/// programs depend on the material's parameters as well as on the graph, so two materials sharing a graph may still
@@ -202,7 +427,7 @@ impl BEMAAssetHandler {
 		generator: &dyn ProgramGenerator,
 		path: ResourceId<'_>,
 		parameters: &[MaterialParameter],
-	) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
+	) -> Result<(Vec<ReferenceModel<Shader>>, Option<MaterialProgram>), LoadErrors> {
 		let (source, format) = context.resolve(path).await?;
 
 		if format != "bemx" {
@@ -236,14 +461,23 @@ impl BEMAAssetHandler {
 			context.error(shader_compilation_error_message(&hit_shader_id, &error));
 			LoadErrors::FailedToProcess
 		};
+		// A renderer that assembles its evaluation shaders after the bake reads the program instead of a shader.
+		let material_program = program
+			.is_none()
+			.then(|| MaterialProgram::new(&graph, parameters))
+			.transpose()
+			.map_err(compile_error)?;
 		// The two programs don't depend on each other, so they compile together.
 		let shader = async {
+			let Some(program) = program else {
+				return Ok(None);
+			};
 			let (shader, bytes) = self
 				.compiler
 				.compile(program, compute_material_stage(&shader_id))
 				.await
 				.map_err(compile_error)?;
-			store_model_owned(context, &shader_id, shader, bytes).await
+			store_model_owned(context, &shader_id, shader, bytes).await.map(Some)
 		};
 		let hit_shader = async {
 			let Some(program) = hit_program else {
@@ -258,7 +492,7 @@ impl BEMAAssetHandler {
 		};
 		let (shader, hit_shader) = std::future::join!(shader, hit_shader).await;
 
-		Ok(std::iter::once(shader?).chain(hit_shader?).collect())
+		Ok((shader?.into_iter().chain(hit_shader?).collect(), material_program))
 	}
 }
 
@@ -281,24 +515,14 @@ fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &Val
 		}
 	};
 
-	let value_kind = |r#type| {
-		if dynamic {
-			ParameterKind::Dynamic(r#type)
-		} else {
-			ParameterKind::Value(r#type)
-		}
-	};
-	let kind = match data_type {
-		"float" => value_kind(bemx::Type::Float),
-		"vec3f" => value_kind(bemx::Type::Vector3),
-		"vec4f" => value_kind(bemx::Type::Vector4),
-		"Texture2D" if dynamic => {
+	let kind = match ParameterKind::from_data_type(data_type, dynamic) {
+		Some(kind) => kind,
+		None if data_type == "Texture2D" => {
 			return Err(format!(
 				"texture variable '{name}' is `Dynamic`. The most likely cause is a `type` copied from a value variable; only `float`, `vec3f`, and `vec4f` variables can change at runtime."
 			));
 		}
-		"Texture2D" => ParameterKind::Texture,
-		data_type => {
+		None => {
 			return Err(format!(
 				"variable '{name}' has the unsupported data type '{data_type}'. The most likely cause is a type other than `float`, `vec3f`, `vec4f`, or `Texture2D`."
 			));
@@ -338,10 +562,15 @@ async fn buffered_in_order<T, E>(
 
 impl AssetHandler for BEMAAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "bema"
+		matches!(r#type, "bema" | "uber")
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		// An assembled shader has no asset: the renderer names it, and the bake gathers it from the stored materials.
+		if url.get_asset_type() == "uber" {
+			return self.bake_assembled(context, url).await;
+		}
+
 		let (data, at) = context.resolve(url).await?;
 
 		if at != "bema" {
@@ -496,7 +725,7 @@ async fn store_generated_materials(
 
 	let mut variants = Vec::with_capacity(materials.len());
 
-	for (generated, shaders) in materials.into_iter().zip(shaders) {
+	for (generated, (shaders, program)) in materials.into_iter().zip(shaders) {
 		let variables = generated
 			.material
 			.images
@@ -518,17 +747,19 @@ async fn store_generated_materials(
 			})
 			.collect();
 
-		variants.push(store_generated_variant(context, generated, shaders, variables).await?);
+		variants.push(store_generated_variant(context, generated, shaders, program, variables).await?);
 	}
 
 	Ok(variants)
 }
 
-/// Stores one generated material, which evaluates with `shaders`, and its variant.
+/// Stores one generated material, which evaluates with `shaders` or, without an evaluation shader, from `program`, and
+/// its variant.
 async fn store_generated_variant(
 	context: BakeContext<'_>,
 	GeneratedMaterial { base_id, material }: GeneratedMaterial,
 	shaders: Vec<ReferenceModel<Shader>>,
+	program: Option<MaterialProgram>,
 	variables: Vec<VariantVariableModel>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let alpha_mode = material.alpha_mode;
@@ -543,6 +774,7 @@ async fn store_generated_variant(
 		},
 		shaders,
 		parameters: Vec::new(),
+		program,
 	};
 
 	let model = store_model::<MaterialModel>(context, &format!("{base_id}.material"), model, &[]).await?;
@@ -608,6 +840,8 @@ fn generated_material_parameters(material: &ImportedMaterial) -> Vec<MaterialPar
 /// closest-hit shader beside it when the generator builds one.
 ///
 /// Returns the shader references of each entry in `materials`, in order: its shader, then its hit shader, if any.
+/// When the generator builds no evaluation shader, the entry has no shader of its own and carries its
+/// [`MaterialProgram`] instead.
 ///
 /// The ID hashes the lowered platform source and the compiler identity, so a later bake of the same container reuses
 /// the stored binary while a change to the graph, program generator, BESL backend, settings, or toolchain compiles
@@ -617,7 +851,7 @@ async fn store_generated_shaders(
 	generator: &dyn ProgramGenerator,
 	container_id: ResourceId<'_>,
 	materials: &[&ImportedMaterial],
-) -> Result<Vec<Vec<ReferenceModel<Shader>>>, LoadErrors> {
+) -> Result<Vec<(Vec<ReferenceModel<Shader>>, Option<MaterialProgram>)>, LoadErrors> {
 	// Every generated shader of a container shares one compiler name, so the name never depends on the key it feeds.
 	let compiler_name = format!("{}#shaders", container_id.as_ref());
 
@@ -648,19 +882,32 @@ async fn store_generated_shaders(
 			Entry::Occupied(entry) => *entry.get(),
 			Entry::Vacant(entry) => {
 				let parameters = generated_material_parameters(material);
-				let program = generator.generate(&material.graph, &parameters).map_err(compile_error)?;
-				let prepared = prepare_besl_shader(program, &settings).map_err(compile_error)?;
-				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too.
+				// Without an evaluation shader, the material records its program for a renderer that assembles its shaders
+				// after the bake, and equal programs are what make two materials share an entry.
+				let (prepared, material_program, key) =
+					match generator.generate(&material.graph, &parameters).map_err(compile_error)? {
+						Some(program) => {
+							let prepared = prepare_besl_shader(program, &settings).map_err(compile_error)?;
+							let key = prepared.cache_key(compiler_identity);
+							(Some(prepared), None, key)
+						}
+						None => {
+							let program = MaterialProgram::new(&material.graph, &parameters).map_err(compile_error)?;
+							let key = program.identity;
+							(None, Some(program), key)
+						}
+					};
+				// Graphs that lower to the same evaluation source compute the same surface, so their hit shaders match too;
+				// the hit shader is generated from the same graph and parameters.
 				let hit = generator
 					.generate_hit(&material.graph, &parameters)
 					.map_err(compile_error)?
 					.map(|program| prepare_besl_shader(program, &hit_settings))
 					.transpose()
 					.map_err(compile_error)?;
-				let key = prepared.cache_key(compiler_identity);
 
 				*entry.insert(*unique_by_key.entry(key).or_insert_with(|| {
-					unique.push((key, prepared, hit));
+					unique.push((key, prepared, hit, material_program));
 					unique.len() - 1
 				}))
 			}
@@ -669,15 +916,18 @@ async fn store_generated_shaders(
 		unique_index_per_material.push(index);
 	}
 
-	let requests = unique.into_iter().map(|(key, prepared, hit)| async move {
-		let shader_id = format!("{}#shaders/{key:016x}", container_id.as_ref());
-		let mut shaders = vec![store_generated_shader(context, &shader_id, prepared).await?];
+	let requests = unique.into_iter().map(|(key, prepared, hit, program)| async move {
+		let mut shaders = Vec::with_capacity(2);
+		if let Some(prepared) = prepared {
+			let shader_id = format!("{}#shaders/{key:016x}", container_id.as_ref());
+			shaders.push(store_generated_shader(context, &shader_id, prepared).await?);
+		}
 		if let Some(hit) = hit {
 			let hit_key = hit.cache_key(compiler_identity);
 			let hit_shader_id = format!("{}#hit-shaders/{hit_key:016x}", container_id.as_ref());
 			shaders.push(store_generated_shader(context, &hit_shader_id, hit).await?);
 		}
-		Ok(shaders)
+		Ok((shaders, program))
 	});
 
 	// Ordered buffering keeps the stored shader order deterministic while platform compiler processes overlap.
@@ -835,10 +1085,14 @@ pub mod tests {
 	pub struct MinimalTestShaderGenerator;
 
 	impl ProgramGenerator for MinimalTestShaderGenerator {
-		fn generate<'a>(&self, _: &'a bemx::Graph, _: &'a [MaterialParameter]) -> Result<besl::parser::Node<'a>, String> {
-			Ok(besl::parser::Node::root_with_children(vec![
+		fn generate<'a>(
+			&self,
+			_: &'a bemx::Graph,
+			_: &'a [MaterialParameter],
+		) -> Result<Option<besl::parser::Node<'a>>, String> {
+			Ok(Some(besl::parser::Node::root_with_children(vec![
 				besl::parser::Node::main_function(Vec::new()),
-			]))
+			])))
 		}
 	}
 
@@ -1032,7 +1286,7 @@ pub mod tests {
 			&self,
 			graph: &'a bemx::Graph,
 			parameters: &'a [MaterialParameter],
-		) -> Result<besl::parser::Node<'a>, String> {
+		) -> Result<Option<besl::parser::Node<'a>>, String> {
 			MinimalTestShaderGenerator.generate(graph, parameters)
 		}
 
@@ -1041,7 +1295,7 @@ pub mod tests {
 			graph: &'a bemx::Graph,
 			parameters: &'a [MaterialParameter],
 		) -> Result<Option<besl::parser::Node<'a>>, String> {
-			self.generate(graph, parameters).map(Some)
+			self.generate(graph, parameters)
 		}
 	}
 
@@ -1113,6 +1367,209 @@ pub mod tests {
 
 		assert!(baked.is_err(), "A dynamic texture variable should fail the bake.");
 	}
+
+	/// The `AssemblingTestGenerator` struct assembles one shader from every material in the store, keyed by each
+	/// material's program and static values, or by one key for all of them when `colliding` is set.
+	struct AssemblingTestGenerator {
+		colliding: bool,
+	}
+
+	impl ProgramGenerator for AssemblingTestGenerator {
+		fn generate<'a>(
+			&self,
+			_: &'a bemx::Graph,
+			_: &'a [MaterialParameter],
+		) -> Result<Option<besl::parser::Node<'a>>, String> {
+			Ok(None)
+		}
+
+		fn assembled_key(&self, _: &str, material: &super::AssembledMaterial<'_>) -> Result<Option<u32>, String> {
+			if self.colliding {
+				return Ok(Some(7));
+			}
+			let statics = material.static_values.iter().flatten();
+			Ok(Some(statics.fold(material.identity as u32, |key, value| {
+				key.rotate_left(5) ^ value.to_bits()
+			})))
+		}
+
+		fn generate_assembled<'a>(
+			&self,
+			_: &str,
+			_: &'a [super::AssembledArm<'a>],
+		) -> Result<(besl::parser::Node<'a>, ShaderGenerationSettings), String> {
+			Ok((
+				besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())]),
+				ShaderGenerationSettings::compute(utils::Extent::square(8)).name("assembled".to_string()),
+			))
+		}
+	}
+
+	/// Returns an asset manager over a material with one static color, and a variant of it per entry of `colors`,
+	/// stored as `variant_<index>.bema`.
+	fn assembling_asset_manager(colors: &[&str], colliding: bool) -> (AssetManager, MemoryStorageBackend) {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"assembled_material.bema",
+			r#"{
+				"domain": "World",
+				"graph": "assembled.bemx",
+				"variables": [{ "name": "color", "data_type": "vec4f", "type": "Static", "value": "White" }]
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"assembled.bemx",
+			r#"{
+				nodes: [
+					{ name: "color", node: "parameter", parameter: "color", type: "vector4" },
+					{ name: "rgb", node: "swizzle", in: "color", channels: "rgb" },
+					{ name: "surface", node: "surface", base_color: "rgb" },
+				],
+			}"#
+			.as_bytes(),
+		);
+		for (index, color) in colors.iter().enumerate() {
+			// The test storage keeps file names for as long as the test runs.
+			asset_storage_backend.add_file(
+				format!("variant_{index}.bema").leak(),
+				format!(r#"{{ "parent": "assembled_material.bema", "variables": [{{ "name": "color", "value": {color} }}] }}"#)
+					.as_bytes(),
+			);
+		}
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		asset_manager.add_asset_handler(BEMAAssetHandler {
+			generator: Some(Box::new(AssemblingTestGenerator { colliding })),
+			compiler: Box::new(TestShaderCompiler),
+		});
+		(asset_manager, resource_storage_backend)
+	}
+
+	/// Bakes the variants `asset_manager` holds, from `variant_0.bema` to `variant_<count - 1>.bema`.
+	async fn bake_variants(asset_manager: &AssetManager, count: usize) {
+		for index in 0..count {
+			let _: ReferenceModel<VariantModel> = asset_manager
+				.bake_if_not_exists(&format!("variant_{index}.bema"))
+				.await
+				.expect("Failed to bake a variant of the assembled material");
+		}
+	}
+
+	/// Returns the arm keys of the assembled shader `shaders.uber` in `resource_storage_backend`.
+	fn assembled_keys(resource_storage_backend: &MemoryStorageBackend) -> Vec<u32> {
+		let assembled = resource_storage_backend
+			.get_resource(ResourceId::new("shaders.uber"))
+			.expect("Expected the assembled shader");
+		assert_eq!(assembled.class, "AssembledShader");
+		crate::from_slice::<super::AssembledShader>(&assembled.resource)
+			.expect("Expected an assembled shader model")
+			.keys
+	}
+
+	/// An assembled shader holds one arm for every distinct material in the store, with no asset behind it, and a
+	/// material baked later joins it on the next bake.
+	#[r#async::test]
+	async fn assembled_shaders_hold_one_arm_per_distinct_material() {
+		let colors = ["\"White\"", "[0.5, 0.25, 1.0, 1.0]", "\"White\"", "[0.0, 1.0, 0.0, 1.0]"];
+		let (asset_manager, resource_storage_backend) = assembling_asset_manager(&colors, false);
+
+		bake_variants(&asset_manager, 3).await;
+		asset_manager
+			.bake("shaders.uber")
+			.await
+			.expect("Failed to bake the assembled shader");
+		let keys = assembled_keys(&resource_storage_backend);
+		assert_eq!(
+			keys.len(),
+			2,
+			"two variants share their static values, so they share an arm: {keys:?}"
+		);
+		assert!(keys.is_sorted(), "keys: {keys:?}");
+
+		bake_variants(&asset_manager, 4).await;
+		asset_manager
+			.bake("shaders.uber")
+			.await
+			.expect("Failed to bake the assembled shader again");
+		let grown = assembled_keys(&resource_storage_backend);
+		assert_eq!(grown.len(), 3, "keys: {grown:?}");
+		assert!(keys.iter().all(|key| grown.contains(key)), "keys: {keys:?}, grown: {grown:?}");
+	}
+
+	/// A renderer that assembles its evaluation shaders keys their arms by the stored variant's static values, and finds
+	/// a loaded material's arm by the solved variant's, so both list the same values in the same order.
+	#[r#async::test]
+	async fn solved_variants_keep_their_static_values() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"statics_material.bema",
+			r#"{
+				"domain": "World",
+				"graph": "statics.bemx",
+				"variables": [
+					{ "name": "tint", "data_type": "vec4f", "type": "Dynamic", "value": [0.5, 0.25, 1.0, 1.0] },
+					{ "name": "roughness", "data_type": "float", "type": "Static", "value": 0.75 },
+					{ "name": "color", "data_type": "vec4f", "type": "Static", "value": "White" }
+				]
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"statics.bemx",
+			r#"{
+				nodes: [
+					{ name: "color", node: "parameter", parameter: "color", type: "vector4" },
+					{ name: "rgb", node: "swizzle", in: "color", channels: "rgb" },
+					{ name: "surface", node: "surface", base_color: "rgb" },
+				],
+			}"#
+			.as_bytes(),
+		);
+		asset_storage_backend.add_file(
+			"statics_variant.bema",
+			r#"{
+				"parent": "statics_material.bema",
+				"variables": [{ "name": "roughness", "value": 0.25 }, { "name": "color", "value": [0.0, 0.5, 1.0, 1.0] }]
+			}"#
+			.as_bytes(),
+		);
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		asset_manager.add_asset_handler(BEMAAssetHandler {
+			generator: Some(Box::new(AssemblingTestGenerator { colliding: false })),
+			compiler: Box::new(TestShaderCompiler),
+		});
+		let _: ReferenceModel<VariantModel> = asset_manager
+			.bake_if_not_exists("statics_variant.bema")
+			.await
+			.expect("Failed to bake the variant");
+
+		let stored = resource_storage_backend
+			.get_resource(ResourceId::new("statics_variant.bema"))
+			.expect("Expected the variant");
+		let stored: VariantModel = crate::from_slice(&stored.resource).expect("Expected a variant model");
+		let solved: crate::Reference<crate::resources::material::Variant> =
+			crate::resource::resource_manager::ResourceManager::new(resource_storage_backend)
+				.request("statics_variant.bema")
+				.await
+				.expect("Failed to request the variant");
+
+		let stored = stored.static_values().collect::<Vec<_>>();
+		assert_eq!(stored, [&[0.25][..], &[0.0, 0.5, 1.0, 1.0][..]]);
+		assert_eq!(solved.resource().static_values().collect::<Vec<_>>(), stored);
+	}
+
+	/// Two different materials that hash to one key would run each other's code, so the bake fails instead.
+	#[r#async::test]
+	async fn assembled_shaders_reject_colliding_keys() {
+		let colors = ["\"White\"", "[0.5, 0.25, 1.0, 1.0]"];
+		let (asset_manager, _) = assembling_asset_manager(&colors, true);
+
+		bake_variants(&asset_manager, colors.len()).await;
+
+		assert!(asset_manager.bake("shaders.uber").await.is_err());
+	}
 }
 
 use std::collections::hash_map::Entry;
@@ -1137,7 +1594,8 @@ use crate::{
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel,
+		AssembledShader, MaterialCoverage, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel,
+		Shader, ValueModel, VariantModel, VariantVariableModel,
 	},
 	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
 	types::AlphaMode,

@@ -219,6 +219,20 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
+	/// Returns the IDs of every stored resource `query` matches, as the resource store holds them now.
+	///
+	/// The bake records no dependency on what it finds, so a resource built from a query is stale only when it is baked
+	/// again on purpose: BELD bakes such assets after every other one, and development builds rebake them on request.
+	pub async fn query_resources(&self, query: crate::resource::storage_backend::Query) -> Result<Vec<String>, LoadErrors> {
+		let page = self
+			.asset_manager
+			.resource_storage_backend
+			.query(query)
+			.await
+			.map_err(|_| LoadErrors::FailedToProcess)?;
+		Ok(page.items.into_iter().map(|(stored, _)| stored.id().to_owned()).collect())
+	}
+
 	/// Bakes a referenced source asset on the shared worker pool when necessary and returns its stored model.
 	///
 	/// Concurrent calls from one handler bake on separate workers, each in its own arena.

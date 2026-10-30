@@ -207,11 +207,13 @@ impl MaterialData {
 pub(crate) struct ReflectionShaderParameters {
 	/// Maps a world-space position to the previous frame's clip space, to find where the previous camera saw a hit.
 	pub(crate) world_to_previous_clip: Mat4f,
-	/// The exposure the previous frame's radiance history was multiplied by.
+	/// The exposure the previous frame's lit image was multiplied by.
 	pub(crate) previous_exposure: f32,
-	/// Nonzero when the previous frame's radiance history holds this sink's light.
+	/// Nonzero when the previous frame's lit image and depth hold this sink's light.
 	pub(crate) history_valid: u32,
-	pub(crate) _padding: [u32; 2],
+	/// Turns the previous frame's device depth `d` into view depth as `numerator / (d + denominator_offset)`.
+	pub(crate) previous_depth_unproject_numerator: f32,
+	pub(crate) previous_depth_unproject_denominator_offset: f32,
 }
 
 /// The shader-facing structs must keep the exact layouts their GPU buffers are read with.
@@ -263,6 +265,8 @@ const _: () = assert!(std::mem::offset_of!(LightClusterParameters, depth_slice_s
 const _: () = assert!(std::mem::size_of::<ReflectionShaderParameters>() == 80);
 const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, previous_exposure) == 64);
 const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, history_valid) == 68);
+const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, previous_depth_unproject_numerator) == 72);
+const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, previous_depth_unproject_denominator_offset) == 76);
 
 #[cfg(test)]
 mod tests {

@@ -25,10 +25,18 @@ use crate::rendering::{
 	Sink,
 	debug_views::{DebugViewSettings, DebugViews, MAX_VIEWS_PER_PASS},
 	render_passes::blit::ImageBypassPass,
-	renderer::RenderTargets,
+	renderer::{Placement, RenderTargets},
 };
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording);
+
+/// Returns the name and format a render target registers under, which its image builder carries.
+fn target_identity<'a>(builder: &ghi::image::Builder<'a>) -> (&'a str, ghi::Formats) {
+	let name = builder.get_name().expect(
+		"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
+	);
+	(name, builder.get_format())
+}
 
 /// A frame-allocated command that records one render pass.
 pub type RenderPassReturn<'a> = &'a (dyn RenderPassFunction + Send + Sync + 'a);
@@ -481,11 +489,13 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn create_scaled_render_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> RenderToResult {
 		let group = self.images.group(self.sink_id, self.context);
 		// The renderer clears a target whose first pass records nothing, so it never reads another target's memory.
-		self.insert_render_target(
-			builder.group(group).additional_uses(ghi::Uses::Clear),
-			resolution_divisor,
-			true,
-		)
+		let (name, format) = target_identity(&builder);
+		let image = self.context.build_image(
+			builder
+				.group(group)
+				.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource),
+		);
+		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::Member)
 	}
 
 	/// Creates a full-resolution render target whose contents stay valid across frames.
@@ -493,61 +503,48 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Use it for images a pass updates incrementally, such as a layer that only redraws damaged regions. Unlike
 	/// [`Self::create_render_target`], the target never shares memory with other targets.
 	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
-		self.insert_render_target(builder, 1, false)
+		let (name, format) = target_identity(&builder);
+		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
+		self.register_render_target(name, format, image.into(), 1, Placement::Persistent)
 	}
 
-	/// Builds a transferable render target and registers it as written by this pass.
-	fn insert_render_target(
+	/// Registers `image` as a render target named `name` that this pass writes.
+	fn register_render_target(
 		&mut self,
-		builder: ghi::image::Builder<'a>,
+		name: &str,
+		format: ghi::Formats,
+		image: ghi::BaseImageHandle,
 		resolution_divisor: u32,
-		member: bool,
+		placement: Placement,
 	) -> RenderToResult {
-		let name = builder.get_name().expect(
-			"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
-		);
-		let format = builder.get_format();
-
-		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
-
-		let image_index = self.images.insert(
-			name.to_string(),
-			self.sink_id,
-			image.into(),
-			format,
-			resolution_divisor,
-			member,
-		);
+		let image_index = self
+			.images
+			.insert(name.to_string(), self.sink_id, image, format, resolution_divisor, placement);
 		self.accesses.push((image_index, ghi::AccessPolicies::WRITE));
 
-		RenderToResult {
-			image: image.into(),
-			format,
-		}
+		RenderToResult { image, format }
 	}
 
-	/// Creates a sink-sized image that keeps one copy per frame in flight, so later frames can read it as history.
+	/// Creates a render target that keeps one copy per frame in flight, so the next frame can read what this frame
+	/// wrote.
 	///
-	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, but never binds it as an
-	/// attachment, so no pass clears it.
-	/// The creating pass writes this frame's copy. Any pass reads the previous frame's copy by binding the handle
-	/// with [`ghi::DescriptorWrite::combined_image_sampler_with_frame`] and an offset of `-1`.
+	/// The renderer sizes it to the sink extent divided by `resolution_divisor`. Later passes use it like a target from
+	/// [`Self::create_render_target`], and the renderer clears this frame's copy when its first pass records nothing.
+	/// Unlike such a target, it never shares memory with other targets. Read the previous frame's copy by binding the
+	/// returned handle with [`ghi::DescriptorWrite::combined_image_sampler_with_frame`] and an offset of `-1`.
 	///
-	/// A previous-frame copy holds no usable data on a sink's first frame or right after a resize, so the reading pass
-	/// must track whether it recorded the sink at the same extent in the previous frame.
+	/// The previous copy holds no usable data on a sink's first frame or right after a resize, so the reading pass must
+	/// track whether it recorded the sink at the same extent in the previous frame.
 	pub fn create_history_target(
 		&mut self,
 		builder: ghi::image::Builder<'a>,
 		resolution_divisor: u32,
 	) -> ghi::DynamicImageHandle {
-		let name = builder.get_name().expect(
-			"History target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
-		);
+		let (name, format) = target_identity(&builder);
 		let image = self
 			.context
-			.build_dynamic_image(builder.additional_uses(ghi::Uses::TransferSource));
-		self.images
-			.insert_history(name.to_string(), self.sink_id, image, resolution_divisor);
+			.build_dynamic_image(builder.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource));
+		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::PerFrame(image));
 		image
 	}
 

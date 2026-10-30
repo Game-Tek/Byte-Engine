@@ -43,23 +43,34 @@ pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
 	let height = extent.height() as f32;
 	let projection_x = projection[0];
 	let projection_y = projection[5];
-	let near = view.near();
-	let far = view.far();
-	let clip_range = far - near;
 	debug_assert!(
-		width > 0.0 && height > 0.0 && projection_x > 0.0 && projection_y > 0.0 && near > 0.0 && far > near,
+		width > 0.0 && height > 0.0 && projection_x > 0.0 && projection_y > 0.0,
 		"Screen-space camera constants are invalid. The most likely cause is an empty target or a non-perspective sink."
 	);
+	let (depth_unproject_numerator, depth_unproject_denominator_offset) = depth_unprojection(&view);
 	ScreenViewData {
 		pixel_to_ray_mul: [2.0 / (width * projection_x), -2.0 / (height * projection_y)],
 		pixel_to_ray_add: [(1.0 / width - 1.0) / projection_x, (1.0 - 1.0 / height) / projection_y],
 		projection_pixels_y: height * projection_y * 0.5,
 		// Byte Engine perspective views look down positive view-space Z.
 		view_z_sign: 1.0,
-		// projection_matrix() maps z to depth as a + b / z. These constants reconstruct positive z as b / (depth - a).
-		depth_unproject_numerator: near * far / clip_range,
-		depth_unproject_denominator_offset: near / clip_range,
+		depth_unproject_numerator,
+		depth_unproject_denominator_offset,
 	}
+}
+
+/// Returns the constants that turn `view`'s reversed device depth `d` into positive view depth, as
+/// `numerator / (d + denominator_offset)`, in that order.
+pub(crate) fn depth_unprojection(view: &crate::rendering::view::View) -> (f32, f32) {
+	let near = view.near();
+	let far = view.far();
+	debug_assert!(
+		near > 0.0 && far > near,
+		"Depth unprojection constants are invalid. The most likely cause is a non-perspective view."
+	);
+	let clip_range = far - near;
+	// projection_matrix() maps z to depth as a + b / z. These constants reconstruct positive z as b / (depth - a).
+	(near * far / clip_range, near / clip_range)
 }
 
 /// The `DepthPyramidPass` struct owns the linear depth pyramid that every half-resolution screen-space pass samples.

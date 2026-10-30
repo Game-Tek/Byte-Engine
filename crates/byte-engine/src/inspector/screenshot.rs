@@ -95,8 +95,8 @@ pub enum ScreenshotCapture {
 	/// The copy of a history target that the previous frame wrote, which is what this frame's passes read as history.
 	///
 	/// Only targets created with
-	/// [`create_history_target`](crate::rendering::render_pass::RenderPassBuilder::create_history_target) keep
-	/// one. The copy holds no usable data on a sink's first frame or right after a resize.
+	/// [`create_history_target`](crate::rendering::render_pass::RenderPassBuilder::create_history_target), such as
+	/// `Lit` and `Depth`, keep one. The copy holds no usable data on a sink's first frame or right after a resize.
 	PreviousSceneTarget {
 		target: String,
 	},

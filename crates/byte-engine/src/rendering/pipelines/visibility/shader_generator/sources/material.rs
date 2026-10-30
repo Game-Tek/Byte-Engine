@@ -680,12 +680,8 @@ material_evaluation_suffix: fn () -> void {
 			destination_color
 		);
 	}
+	// The next frame's reflection rays read this light, highlights included, at the pixels their hits land on.
 	write(lit_map, pixel_coordinates, output_color);
-	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
-	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
-	if (!transparent) {
-		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
-	}
 }
 "#;
 

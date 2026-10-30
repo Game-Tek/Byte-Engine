@@ -1033,7 +1033,6 @@ impl Renderer {
 					.get(target, sink)
 					.filter(|_| self.render_targets.holds_scene_output(target, sink))
 					.map(|(image, _)| image)
-					.or_else(|| self.render_targets.history(target, sink).map(Into::into))
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
 				return Ok(ResolvedScreenshotCapture::AfterScene { target: image.into() });
 			}

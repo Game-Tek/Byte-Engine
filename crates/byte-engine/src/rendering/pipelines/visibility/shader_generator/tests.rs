@@ -5,7 +5,8 @@ use resource_management::asset::handler::implementations::bema::{
 use resource_management::bemx;
 
 use super::super::tests::{
-	SSGI_CONTACT_WALL_Z, SSGI_WALL_NORMAL, ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
+	GTAO_DEPTH_NUMERATOR, GTAO_DEPTH_OFFSET, SSGI_CONTACT_WALL_Z, SSGI_WALL_NORMAL, gtao_fixture_device_depth,
+	ssgi_contact_images, ssgi_floor_depth, ssgi_projection, ssgi_ray_at,
 };
 use super::*;
 use crate::rendering::shader_vm_test::{buffer, column_major, compile, run_at, texture_2d};
@@ -1797,16 +1798,22 @@ fn reflection_depth_pyramid(scene: ReflectionScene) -> Texture {
 	texture_2d(half, half, &depth)
 }
 
-/// Renders `scene` into a full-resolution radiance history: light multiplied by `exposure` in RGB, depth in alpha.
-fn reflection_radiance_history(scene: ReflectionScene, exposure: f32) -> Texture {
+/// Renders `scene` into the previous frame's full-resolution images: the lit image, light multiplied by `exposure`, and
+/// reversed device depth, zero where nothing was drawn.
+fn reflection_previous_frame(scene: ReflectionScene, exposure: f32) -> (Texture, Texture) {
 	let extent = REFLECTION_EXTENT;
-	let texels: Vec<[f32; 4]> = (0..extent * extent)
-		.map(|index| {
-			let (z, [r, g, b]) = scene.surface(ssgi_ray_at(index % extent, index / extent, extent));
-			[r * exposure, g * exposure, b * exposure, z]
-		})
+	let surfaces: Vec<(f32, [f32; 3])> = (0..extent * extent)
+		.map(|index| scene.surface(ssgi_ray_at(index % extent, index / extent, extent)))
 		.collect();
-	texture_2d(extent, extent, &texels)
+	let lit: Vec<[f32; 4]> = surfaces
+		.iter()
+		.map(|&(_, [r, g, b])| [r * exposure, g * exposure, b * exposure, 1.0])
+		.collect();
+	let depth: Vec<[f32; 4]> = surfaces
+		.iter()
+		.map(|&(z, _)| [gtao_fixture_device_depth(z), 0.0, 0.0, 1.0])
+		.collect();
+	(texture_2d(extent, extent, &lit), texture_2d(extent, extent, &depth))
 }
 
 /// Returns the full-resolution floor pixel row in the center column whose floor point lies closest to `z`.
@@ -1879,18 +1886,21 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 		("world_to_previous_clip", Value::Mat4F(column_major(ssgi_projection()))),
 		("previous_exposure", Value::F32(PREVIOUS_EXPOSURE)),
 		("history_valid", Value::U32(previous_scene.is_some() as u32)),
+		("previous_depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
+		("previous_depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),
 	] {
 		parameters.write(member, value).expect("reflection parameters");
 	}
 	let mut depth_pyramid = reflection_depth_pyramid(scene);
-	let mut previous_radiance = reflection_radiance_history(previous_scene.unwrap_or(scene), PREVIOUS_EXPOSURE);
+	let (mut previous_lit, mut previous_depth) = reflection_previous_frame(previous_scene.unwrap_or(scene), PREVIOUS_EXPOSURE);
 	let mut results = buffer(&executable, REFLECTION_RESULTS_SLOT);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(REFLECTION_INPUTS_SLOT, &mut inputs);
 	descriptors.bind_buffer(REFLECTION_PARAMETERS_SLOT, &mut parameters);
 	// The engine binds the pyramid with a point sampler, which reflection steps read the texel under them with.
 	descriptors.bind_texture_with_sampler(ResourceSlot::new(1060), &mut depth_pyramid, Sampler::nearest());
-	descriptors.bind_texture(ResourceSlot::new(1061), &mut previous_radiance);
+	descriptors.bind_texture(ResourceSlot::new(1061), &mut previous_lit);
+	descriptors.bind_texture(ResourceSlot::new(1062), &mut previous_depth);
 	descriptors.bind_buffer(REFLECTION_RESULTS_SLOT, &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);

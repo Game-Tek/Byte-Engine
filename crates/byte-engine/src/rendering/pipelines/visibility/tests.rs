@@ -25,7 +25,6 @@ const PIXEL_MAPPING_SLOT: ResourceSlot = ResourceSlot::new(1037);
 const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
 const LIT_SLOT: ResourceSlot = ResourceSlot::new(1041);
 const DIFFUSE_RADIANCE_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1057);
-const RADIANCE_HISTORY_SLOT: ResourceSlot = ResourceSlot::new(1062);
 const MESH_DISPATCH_WORK_SLOT: ResourceSlot = ResourceSlot::new(1063);
 const OCCLUSION_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1069);
 const OCCLUSION_VISIBILITY_SLOT: ResourceSlot = ResourceSlot::new(1070);
@@ -1029,12 +1028,12 @@ fn run_material_count(
 	material_counts
 }
 
-/// The light an older frame left in the lit target and the histories before pixel mapping runs.
+/// The light an older frame left in the lit target and the diffuse radiance history before pixel mapping runs.
 const STALE_LIGHT: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 
 /// Runs one 16x16 pixel-mapping workgroup over the square instance-index image of `width` texels in visibility
-/// `phase`, zero for opaque and one for transparent. Returns the mapping and the lit target and both histories, which
-/// started full of [`STALE_LIGHT`] at the instance image's size.
+/// `phase`, zero for opaque and one for transparent. Returns the mapping, the lit target, and the diffuse radiance
+/// history, which started full of [`STALE_LIGHT`] at the instance image's size.
 fn run_pixel_mapping(
 	program: &ExecutableProgram,
 	tables: &mut PrepassTables,
@@ -1042,7 +1041,7 @@ fn run_pixel_mapping(
 	instance_indices: &mut Texture,
 	width: u32,
 	phase: u32,
-) -> (besl::vm::Buffer, [Texture; 3]) {
+) -> (besl::vm::Buffer, [Texture; 2]) {
 	let mut pixel_mapping = buffer(program, PIXEL_MAPPING_SLOT);
 	let mut push_constant = push_constant_buffer(program);
 	push_constant.write("phase", Value::U32(phase)).expect("pixel mapping phase");
@@ -1053,7 +1052,7 @@ fn run_pixel_mapping(
 		}
 		texture
 	});
-	let [lit, diffuse_radiance_history, radiance_history] = &mut images;
+	let [lit, diffuse_radiance_history] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(MESH_DATA_SLOT, &mut tables.meshes);
 	descriptors.bind_buffer(MATERIAL_EVALUATIONS_SLOT, &mut tables.evaluations);
@@ -1062,7 +1061,6 @@ fn run_pixel_mapping(
 	descriptors.bind_image(INSTANCE_INDEX_SLOT, instance_indices);
 	descriptors.bind_image(LIT_SLOT, lit);
 	descriptors.bind_image(DIFFUSE_RADIANCE_HISTORY_SLOT, diffuse_radiance_history);
-	descriptors.bind_image(RADIANCE_HISTORY_SLOT, radiance_history);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
 	(pixel_mapping, images)
@@ -1456,8 +1454,8 @@ const GTAO_NEAR: f32 = 0.1;
 const GTAO_FAR: f32 = 100.0;
 /// The fixture camera's reversed-depth terms: device depth is `GTAO_DEPTH_NUMERATOR / z - GTAO_DEPTH_OFFSET` for a
 /// surface `z` units in front of the camera.
-const GTAO_DEPTH_NUMERATOR: f32 = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR);
-const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
+pub(super) const GTAO_DEPTH_NUMERATOR: f32 = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR);
+pub(super) const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
 
 /// Creates compact camera data for one square GTAO shader fixture.
 fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
@@ -1502,7 +1500,7 @@ fn gtao_fixture_linear_depth(depth: f32) -> f32 {
 
 /// Encodes a positive fixture distance as the reversed device depth that [`gtao_fixture_linear_depth`] decodes. Zero,
 /// the sky, stays zero.
-fn gtao_fixture_device_depth(linear_depth: f32) -> f32 {
+pub(super) fn gtao_fixture_device_depth(linear_depth: f32) -> f32 {
 	if linear_depth == 0.0 {
 		return 0.0;
 	}

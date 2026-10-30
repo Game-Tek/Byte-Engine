@@ -138,13 +138,12 @@ main: fn (input: StageInput) -> void {
 		pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 	}
 
-	// A pixel no opaque surface covered belongs to no evaluation, so nothing later writes its color or histories. Zeroing
-	// them here, where the opaque phase visits every pixel, keeps the background and the next frame's rays from reading
-	// light of an older frame. The transparent phase leaves the opaque phase's and the background's results in place.
+	// A pixel no opaque surface covered belongs to no evaluation, so nothing later writes its color or diffuse radiance
+	// history. Zeroing them here, where the opaque phase visits every pixel, keeps the background and the next frame's
+	// rays from reading light of an older frame. The transparent phase leaves the opaque phase's and the background's results in place.
 	if (evaluation_index == INVALID_INDEX && push_constant.phase == 0 && coord.x < extent.x && coord.y < extent.y) {
 		let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		write(lit_map, coord, zero);
-		write(radiance_history_map, coord, zero);
 		write(diffuse_radiance_map, coord, zero);
 	}
 }

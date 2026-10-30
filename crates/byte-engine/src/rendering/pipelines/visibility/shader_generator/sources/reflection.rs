@@ -1,8 +1,8 @@
 // Screen-space reflection helpers. Material evaluation traces one mirror ray per pixel through this frame's linear
-// depth pyramid, and reads the light at the hit from last frame's radiance history.
+// depth pyramid, and reads the light at the hit from last frame's lit image.
 //
-// The helpers read the `reflection_parameters` and `previous_radiance` bindings that `screen_space_reflection_scope`
-// declares, and the shared `depth_pyramid` binding. Each helper only calls helpers declared above it.
+// The helpers read the `reflection_parameters`, `previous_lit`, and `previous_depth` bindings that
+// `screen_space_reflection_scope` declares, and the shared `depth_pyramid` binding. Each helper only calls helpers declared above it.
 
 // Returns whether the ray lies behind the depth buffer at `fraction` of its screen path. Screen position and 1/z are
 // both linear along the path, so the test compares inverse depths: the ray is behind a surface when its 1/z is the
@@ -28,12 +28,27 @@ reflection_world_fraction: fn (screen_fraction: f32, start_z: f32, end_z: f32) -
 }
 "#;
 
+// Returns how far a pixel of the previous frame lies from a hit at view depth `hit_depth`, as a fraction of that depth,
+// from the pixel's reversed device depth. The background, at zero, is never close.
+pub(crate) const REFLECTION_HISTORY_DEPTH_ERROR_SOURCE: &str = r#"
+reflection_history_depth_error: fn (device_depth: f32, hit_depth: f32) -> f32 {
+	if (device_depth == 0.0) {
+		return 1.0;
+	}
+	// The previous camera's clip w is its view depth, which the pixel's device depth unprojects to.
+	let pixel_depth: f32 = reflection_parameters.previous_depth_unproject_numerator
+		/ (device_depth + reflection_parameters.previous_depth_unproject_denominator_offset);
+	return abs(pixel_depth - hit_depth) / hit_depth;
+}
+"#;
+
 // Reads last frame's light where the previous camera saw `world_position`, converted back to unexposed radiance.
 // Returns zero alpha when the previous frame did not see that surface.
 //
-// The trace finds hits in half-resolution depth, which keeps the nearest of each 2x2 pixel block, while radiance is
+// The trace finds hits in half-resolution depth, which keeps the nearest of each 2x2 pixel block, while light is
 // stored per full-resolution pixel. Next to an object's edge, the pixel under the hit can belong to the background.
-// So the four pixels around the hit are read, and only the one whose stored depth matches the hit supplies light.
+// So the four pixels around the hit are read, and only the one whose previous depth matches the hit supplies light.
+// All eight reads are issued before any is compared, so they overlap.
 pub(crate) const REFLECTION_HISTORY_RADIANCE_SOURCE: &str = r#"
 reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 	let miss: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
@@ -50,31 +65,50 @@ reflection_history_radiance: fn (world_position: vec3f) -> vec4f {
 	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
 		return miss;
 	}
-	let radiance_extent: vec2u = texture_size(previous_radiance);
-	let texel_position: vec2f = vec2f(
-		uv.x * f32(radiance_extent.x) - 0.5,
-		uv.y * f32(radiance_extent.y) - 0.5
-	);
+	let lit_extent: vec2u = texture_size(previous_lit);
+	let base_x: f32 = floor(uv.x * f32(lit_extent.x) - 0.5);
+	let base_y: f32 = floor(uv.y * f32(lit_extent.y) - 0.5);
+	let x0: u32 = u32(clamp(base_x, 0.0, f32(lit_extent.x - 1)));
+	let x1: u32 = u32(clamp(base_x + 1.0, 0.0, f32(lit_extent.x - 1)));
+	let y0: u32 = u32(clamp(base_y, 0.0, f32(lit_extent.y - 1)));
+	let y1: u32 = u32(clamp(base_y + 1.0, 0.0, f32(lit_extent.y - 1)));
+	let depth_0: f32 = fetch(previous_depth, vec2u(x0, y0)).x;
+	let depth_1: f32 = fetch(previous_depth, vec2u(x1, y0)).x;
+	let depth_2: f32 = fetch(previous_depth, vec2u(x0, y1)).x;
+	let depth_3: f32 = fetch(previous_depth, vec2u(x1, y1)).x;
+	let color_0: vec4f = fetch(previous_lit, vec2u(x0, y0));
+	let color_1: vec4f = fetch(previous_lit, vec2u(x1, y0));
+	let color_2: vec4f = fetch(previous_lit, vec2u(x0, y1));
+	let color_3: vec4f = fetch(previous_lit, vec2u(x1, y1));
+	// A pixel belongs to the hit only when its view depth is within this fraction of the hit's depth. The first of
+	// equally close pixels wins, and an error still at the tolerance means none did.
+	let tolerance: f32 = 0.05;
+	let best_error: f32 = tolerance;
 	let color: vec4f = miss;
-	// A pixel belongs to the hit only when its stored depth is within this fraction of the hit's depth.
-	let best_error: f32 = 0.05;
-	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
-		let tap_texel: vec2u = vec2u(
-			u32(clamp(floor(texel_position.x) + f32(tap % 2), 0.0, f32(radiance_extent.x - 1))),
-			u32(clamp(floor(texel_position.y) + f32(tap / 2), 0.0, f32(radiance_extent.y - 1)))
-		);
-		let tap_color: vec4f = fetch(previous_radiance, tap_texel);
-		// The previous camera's clip w is its view depth, the same quantity each pixel stored in alpha.
-		let error: f32 = abs(tap_color.w - clip.w) / clip.w;
-		if (error < best_error) {
-			best_error = error;
-			color = tap_color;
-		}
+	let error_0: f32 = reflection_history_depth_error(depth_0, clip.w);
+	if (error_0 < best_error) {
+		best_error = error_0;
+		color = color_0;
 	}
-	if (color.w == 0.0) {
+	let error_1: f32 = reflection_history_depth_error(depth_1, clip.w);
+	if (error_1 < best_error) {
+		best_error = error_1;
+		color = color_1;
+	}
+	let error_2: f32 = reflection_history_depth_error(depth_2, clip.w);
+	if (error_2 < best_error) {
+		best_error = error_2;
+		color = color_2;
+	}
+	let error_3: f32 = reflection_history_depth_error(depth_3, clip.w);
+	if (error_3 < best_error) {
+		best_error = error_3;
+		color = color_3;
+	}
+	if (best_error >= tolerance) {
 		return miss;
 	}
-	// The history holds light already multiplied by last frame's exposure, which keeps highlights in half-float range.
+	// The lit image holds light already multiplied by last frame's exposure, which keeps highlights in range.
 	let radiance: vec3f = vec3f(color.x, color.y, color.z) / reflection_parameters.previous_exposure;
 	// One non-finite texel would otherwise spread through every later frame's reflections.
 	if (is_finite(radiance.x + radiance.y + radiance.z) == false) {

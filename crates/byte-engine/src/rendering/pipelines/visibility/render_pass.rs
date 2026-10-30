@@ -154,7 +154,6 @@ pub(crate) use self::probe_gi::{
 pub(super) use self::ray_hits::RAY_HIT_PIPELINES;
 pub(crate) use self::ray_hits::{RayHits, RayTracing};
 use self::reflections::ScreenSpaceReflections;
-pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
@@ -277,16 +276,17 @@ impl StageCounters {
 /// The `SinkTargets` struct names the render-graph images a sink gives the visibility pass.
 #[derive(Clone, Copy)]
 pub(crate) struct SinkTargets {
-	pub(crate) lit: ghi::BaseImageHandle,
-	pub(crate) depth: ghi::BaseImageHandle,
+	/// The scene's light, one copy per frame in flight. Reflection rays read the previous frame's copy.
+	pub(crate) lit: ghi::DynamicImageHandle,
+	/// The scene's reverse-Z depth, one copy per frame in flight. Reflection rays read the previous frame's copy to find
+	/// the pixel that saw their hit.
+	pub(crate) depth: ghi::DynamicImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
 	pub(crate) instance_id: ghi::BaseImageHandle,
 	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays.
 	pub(crate) ssgi: SsgiTargets,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
 	pub(crate) sun_visibility: SunVisibilityTargets,
-	/// The light opaque material evaluation writes for next frame's reflection rays.
-	pub(crate) radiance_history: ghi::DynamicImageHandle,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -513,15 +513,17 @@ impl VisibilityRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
+		// The passes of this frame bind its own copy of the depth; only reflections read the previous one.
+		let depth: ghi::BaseImageHandle = targets.depth.into();
 		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
 		let depth_pyramid = DepthPyramidPass::new(
 			context,
 			&pipeline_manager,
-			targets.depth,
+			depth,
 			cascade_fit.receiver_bounds(),
 			cascade_fit.receiver_fit_parameters(),
 		);
-		let occlusion = OcclusionCulling::new(context, &pipeline_manager, targets.depth);
+		let occlusion = OcclusionCulling::new(context, &pipeline_manager, depth);
 		let ssgi = features.ssgi.then(|| {
 			SsgiPass::new(
 				context,
@@ -559,7 +561,8 @@ impl VisibilityRenderPass {
 			context,
 			material_evaluation_descriptor_set,
 			depth_pyramid.depth_pyramid,
-			targets.radiance_history,
+			targets.lit,
+			targets.depth,
 		);
 		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
 		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
@@ -605,7 +608,7 @@ impl VisibilityRenderPass {
 				pipelines: Pipelines::phases(&pipeline_manager, "visibility"),
 				primitive_index: targets.primitive_index,
 				instance_id: targets.instance_id,
-				depth: targets.depth,
+				depth,
 			},
 			occlusion,
 			material_evaluation: MaterialEvaluationPass {
@@ -618,7 +621,7 @@ impl VisibilityRenderPass {
 				GtaoPass::new(
 					context,
 					&pipeline_manager,
-					targets.depth,
+					depth,
 					depth_pyramid.depth_pyramid,
 					depth_pyramid.view_descriptor_set,
 					ao_map.into(),
@@ -628,7 +631,7 @@ impl VisibilityRenderPass {
 				context,
 				&pipeline_manager,
 				base_descriptor_set,
-				targets.depth,
+				depth,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				shadow_maps,

@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 #[cfg(test)]
 use configuration::{apply_render_pass_configuration, set_render_pass_state};
 pub(crate) use targets::RenderNode;
-pub use targets::RenderTargets;
+pub use targets::{Placement, RenderTargets};
 
 #[cfg(test)]
 use crate::{
@@ -130,9 +130,9 @@ mod tests {
 		let second_image = image_handle(2);
 		let other_sink_image = image_handle(3);
 
-		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM, 1, false);
-		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM, 1, false);
-		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32, 1, false);
+		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM, 1, Placement::Persistent);
+		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM, 1, Placement::Persistent);
+		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32, 1, Placement::Persistent);
 		rt.alias(0, "first", "main");
 		rt.alias(0, "second", "main");
 

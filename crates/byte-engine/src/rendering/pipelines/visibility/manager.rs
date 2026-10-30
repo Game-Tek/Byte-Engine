@@ -39,7 +39,7 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun,
-	VisibilityRenderPass, create_radiance_history_target, create_ssgi_targets, create_sun_visibility_targets,
+	VisibilityRenderPass, create_ssgi_targets, create_sun_visibility_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -1995,17 +1995,20 @@ impl PipelineManager for VisibilityPipelineManager {
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let lit = render_pass_builder.create_render_target(
+		// Lit and depth keep a copy per frame in flight: reflection rays read the light and depth the previous frame left.
+		let lit = render_pass_builder.create_history_target(
 			ghi::image::Builder::new(
 				crate::rendering::SCENE_COLOR_FORMAT,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Lit"),
+			1,
 		);
-		let depth = render_pass_builder.create_render_target(
+		let depth = render_pass_builder.create_history_target(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Depth")
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
+			1,
 		);
 		let primitive_index = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("primitive index"),
@@ -2021,7 +2024,6 @@ impl PipelineManager for VisibilityPipelineManager {
 		});
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
-		let radiance_history = create_radiance_history_target(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let probe_gi = self.probe_volume.is_some();
@@ -2043,13 +2045,12 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.scene.views_buffer.into(),
 			self.scene.lighting_buffer,
 			SinkTargets {
-				lit: lit.into(),
-				depth: depth.into(),
+				lit,
+				depth,
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
 				ssgi,
 				sun_visibility,
-				radiance_history,
 			},
 			&self.shadow_maps,
 			stage_counters,

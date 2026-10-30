@@ -167,8 +167,8 @@ pub(super) struct ScreenSpaceLighting {
 /// The `MaterialEvaluationPass` struct shades every evaluation slot's pixel list into the lit target.
 ///
 /// The opaque phase also writes diffuse-only radiance into this frame's copy of the diffuse radiance history while SSGI
-/// lights the frame, and the lit color into this frame's copy of the radiance history. The next frame's SSGI and
-/// reflection rays read them.
+/// lights the frame. The next frame's SSGI rays read it, and its reflection rays read this frame's copy of the lit
+/// target.
 pub(super) struct MaterialEvaluationPass {
 	pub(super) base_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) visibility_descriptor_set: ghi::DescriptorSetHandle,

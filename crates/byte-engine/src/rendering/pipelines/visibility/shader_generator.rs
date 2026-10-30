@@ -592,9 +592,9 @@ fn screen_space_indirect_diffuse_scope(tile: bool) -> Vec<Node<'static>> {
 
 /// Declares the screen-space reflection helpers from [`sources`], with the ray struct they share.
 ///
-/// Material evaluation traces its reflection rays with them through `depth_pyramid`, and writes this frame's radiance
-/// history for the next frame's rays. They read `reflection_parameters` and `previous_radiance` of the material
-/// evaluation set.
+/// Material evaluation traces its reflection rays with them through `depth_pyramid`, and reads the light at their hits
+/// from the previous frame's lit image. They read `reflection_parameters`, `previous_lit`, and `previous_depth` of the
+/// material evaluation set.
 fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	let mut nodes = vec![
 		// One ray's screen-space path, in normalized image coordinates. Screen position and 1/z are both linear along a
@@ -614,6 +614,7 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 		[
 			(REFLECTION_RAY_IS_BEHIND_SOURCE, "reflection_ray_is_behind"),
 			(REFLECTION_WORLD_FRACTION_SOURCE, "reflection_world_fraction"),
+			(REFLECTION_HISTORY_DEPTH_ERROR_SOURCE, "reflection_history_depth_error"),
 			(REFLECTION_HISTORY_RADIANCE_SOURCE, "reflection_history_radiance"),
 			(TRACE_SCREEN_SPACE_REFLECTION_SOURCE, "trace_screen_space_reflection"),
 		]

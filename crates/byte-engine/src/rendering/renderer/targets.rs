@@ -41,6 +41,22 @@ pub(crate) struct SinkTargetPlan {
 	pub(crate) first_uses: SmallVec<[FirstUse; 32]>,
 }
 
+/// The `Placement` enum is how a render target gets its memory and its first contents each frame.
+///
+/// Pass it to [`RenderTargets::insert`] for the image a render pass builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+	/// The image belongs to its sink's image group and shares memory with targets whose uses do not overlap. Its first
+	/// node each frame writes it, or the renderer clears it when that node records nothing.
+	Member,
+	/// The image keeps its contents across frames, which its passes update themselves.
+	Persistent,
+	/// The image keeps one copy per frame in flight, so the next frame can read this frame's copy as history. Its first
+	/// node writes this frame's copy, or the renderer clears it when that node records nothing. It holds the image's
+	/// per-frame handle, which [`RenderTargets::history`] returns.
+	PerFrame(ghi::DynamicImageHandle),
+}
+
 /// The `Target` struct describes one render-target image a sink's graph created.
 struct Target {
 	image: ghi::BaseImageHandle,
@@ -48,8 +64,8 @@ struct Target {
 	sink: usize,
 	/// Divides the sink extent to size the image. One means full sink resolution.
 	resolution_divisor: u32,
-	/// Whether the image belongs to its sink's image group and so may share memory.
-	member: bool,
+	/// How the image gets its memory and its first contents each frame.
+	placement: Placement,
 	/// The debug target pool slot this image is, if it is one. A free slot is sized `1×1`; see [`RenderTargets::debug_pool`].
 	debug_slot: Option<u32>,
 }
@@ -67,10 +83,6 @@ pub struct RenderTargets {
 	node_accesses: Vec<(usize, RenderNode, SmallVec<[usize; 8]>)>,
 	/// Maps a sink-scoped name to an image index. Later entries for a name replace earlier ones.
 	pub(super) by_name: Vec<(usize, String, usize)>,
-	/// Maps a sink-scoped name to a per-frame image that later frames read as history.
-	///
-	/// History targets are never attachments, so no pass can clear them by accident.
-	histories: Vec<(usize, String, ghi::DynamicImageHandle, u32)>,
 	/// One bit per debug pool slot, set while a view holds it; those slots follow the sink extent, the others stay `1×1`.
 	debug_slots_taken: u32,
 }
@@ -88,7 +100,6 @@ impl RenderTargets {
 			groups: Vec::new(),
 			node_accesses: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
-			histories: Vec::with_capacity(8),
 			debug_slots_taken: 0,
 		}
 	}
@@ -115,7 +126,7 @@ impl RenderTargets {
 	/// Inserts a render-target image for a sink and returns its storage index.
 	///
 	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, rounded down and at least one.
-	/// A `member` image was built into the sink's image group, so the renderer places it with the group
+	/// A [`Placement::Member`] image was built into the sink's image group, so the renderer places it with the group
 	/// instead of resizing it alone.
 	pub fn insert(
 		&mut self,
@@ -124,7 +135,7 @@ impl RenderTargets {
 		image: ghi::BaseImageHandle,
 		format: ghi::Formats,
 		resolution_divisor: u32,
-		member: bool,
+		placement: Placement,
 	) -> usize {
 		assert!(
 			resolution_divisor > 0,
@@ -142,7 +153,7 @@ impl RenderTargets {
 			format,
 			sink: sink_id,
 			resolution_divisor,
-			member,
+			placement,
 			debug_slot: None,
 		});
 		self.by_name.push((sink_id, name, index));
@@ -182,7 +193,14 @@ impl RenderTargets {
 					)
 					.name(&name),
 				);
-				let index = self.insert(name, sink_id, image, crate::rendering::SCENE_COLOR_FORMAT, 1, false);
+				let index = self.insert(
+					name,
+					sink_id,
+					image,
+					crate::rendering::SCENE_COLOR_FORMAT,
+					1,
+					Placement::Persistent,
+				);
 				self.targets[index].debug_slot = Some(slot);
 				(index, image)
 			})
@@ -194,27 +212,12 @@ impl RenderTargets {
 		self.debug_slots_taken = taken;
 	}
 
-	/// Registers a per-frame history image for a sink, sized like [`Self::insert`] sizes images.
-	pub fn insert_history(&mut self, name: String, sink_id: usize, image: ghi::DynamicImageHandle, resolution_divisor: u32) {
-		assert!(
-			resolution_divisor > 0,
-			"History target '{name}' has a zero resolution divisor. The most likely cause is a divisor computed from an empty value."
-		);
-		if self.history(&name, sink_id).is_some() || self.get_image_index(&name, sink_id).is_some() {
-			panic!(
-				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
-			);
-		}
-
-		self.histories.push((sink_id, name, image, resolution_divisor));
-	}
-
-	/// Returns the per-frame history image registered under `name` for a sink.
+	/// Returns the per-frame image a sink's `name` resolves to, when it is a [`Placement::PerFrame`] target.
 	pub fn history(&self, name: &str, sink_id: usize) -> Option<ghi::DynamicImageHandle> {
-		self.histories
-			.iter()
-			.find(|(sink, history_name, ..)| *sink == sink_id && history_name == name)
-			.map(|(_, _, image, _)| *image)
+		match self.targets[self.get_image_index(name, sink_id)?].placement {
+			Placement::PerFrame(image) => Some(image),
+			Placement::Member | Placement::Persistent => None,
+		}
 	}
 
 	/// Returns the image and format a sink's `name` currently resolves to.
@@ -277,8 +280,8 @@ impl RenderTargets {
 		self.node_accesses.push((sink_id, node, accesses));
 	}
 
-	/// Plans one frame of a sink's shared-memory targets: each member's extent and lifetime, and the node that uses it
-	/// first. Returns `None` when the sink has no image group.
+	/// Plans one frame of a sink's shared-memory targets: each member's extent and lifetime, and the node that uses each
+	/// member or per-frame target first. Returns `None` when the sink has no image group.
 	pub(crate) fn plan(&self, sink_id: usize, sink_extent: Extent) -> Option<SinkTargetPlan> {
 		let (_, group) = *self.groups.iter().find(|(sink, _)| *sink == sink_id)?;
 		let mut nodes = self
@@ -294,18 +297,18 @@ impl RenderTargets {
 			members: SmallVec::new(),
 			first_uses: SmallVec::new(),
 		};
-		let sink_members = self
-			.targets
-			.iter()
-			.enumerate()
-			.filter(|(_, target)| target.sink == sink_id && target.member);
-		for (index, target) in sink_members {
+		for (index, target) in self.targets.iter().enumerate().filter(|(_, target)| target.sink == sink_id) {
 			let lifetime = lifetime(&nodes, index);
-			plan.members.push(ghi::ImageGroupMember {
-				image: target.image,
-				extent: sink_extent.scaled_down(target.resolution_divisor),
-				lifetime: lifetime.clone(),
-			});
+			match target.placement {
+				Placement::Member => plan.members.push(ghi::ImageGroupMember {
+					image: target.image,
+					extent: sink_extent.scaled_down(target.resolution_divisor),
+					lifetime: lifetime.clone(),
+				}),
+				// A persistent image keeps what its passes wrote, so it is neither placed nor initialized.
+				Placement::Persistent => continue,
+				Placement::PerFrame(_) => {}
+			}
 			if let Some((node, _)) = nodes.get(*lifetime.start() as usize) {
 				plan.first_uses.push(FirstUse {
 					node: *node,
@@ -325,7 +328,7 @@ impl RenderTargets {
 		let Some(index) = self.get_image_index(name, sink_id) else {
 			return false;
 		};
-		!self.targets[index].member
+		self.targets[index].placement != Placement::Member
 			|| self.node_accesses.iter().any(|(sink, node, accesses)| {
 				*sink == sink_id && matches!(node, RenderNode::Scene(_)) && accesses.contains(&index)
 			})
@@ -333,17 +336,16 @@ impl RenderTargets {
 
 	/// Returns every image that follows the sink's extent on its own, with the extent it needs.
 	///
-	/// These are history images and targets outside the sink's image group; [`Self::plan`] sizes group members.
+	/// These are the targets outside the sink's image group; [`Self::plan`] sizes group members.
 	pub(super) fn get_images_for_sink(
 		&self,
 		index: usize,
 		sink_extent: Extent,
 	) -> impl Iterator<Item = (ghi::BaseImageHandle, Extent)> {
 		let debug_slots_taken = self.debug_slots_taken;
-		let targets = self
-			.targets
+		self.targets
 			.iter()
-			.filter(move |target| target.sink == index && !target.member)
+			.filter(move |target| target.sink == index && target.placement != Placement::Member)
 			.map(move |target| {
 				let extent = match target.debug_slot {
 					// A debug slot no view holds keeps the smallest image, so an idle pool costs almost nothing.
@@ -351,13 +353,7 @@ impl RenderTargets {
 					_ => sink_extent.scaled_down(target.resolution_divisor),
 				};
 				(target.image, extent)
-			});
-		let histories = self
-			.histories
-			.iter()
-			.filter(move |(sink, ..)| *sink == index)
-			.map(move |(_, _, image, divisor)| ((*image).into(), sink_extent.scaled_down(*divisor)));
-		targets.chain(histories)
+			})
 	}
 }
 
@@ -387,7 +383,7 @@ fn clear_value(format: ghi::Formats) -> ghi::ClearValue {
 mod tests {
 	use utils::Extent;
 
-	use super::{RenderNode, RenderTargets};
+	use super::{Placement, RenderNode, RenderTargets};
 	use crate::rendering::renderer::tests::image_handle;
 
 	/// Registers three shared-memory targets for sink 0: the scene writes `a`, the first pass reads `a` and writes `b`,
@@ -397,7 +393,7 @@ mod tests {
 		targets.groups.push((0, ghi::debug::Device::new().create_image_group(None)));
 		let images = [1, 2, 3].map(image_handle);
 		let [a, b, c] = [("a", images[0]), ("b", images[1]), ("c", images[2])]
-			.map(|(name, image)| targets.insert(name.into(), 0, image, ghi::Formats::RGBA16F, 1, true));
+			.map(|(name, image)| targets.insert(name.into(), 0, image, ghi::Formats::RGBA16F, 1, Placement::Member));
 		targets.record_node(0, RenderNode::Pass(1), [b, c]);
 		targets.record_node(0, RenderNode::Scene(0), [a]);
 		targets.record_node(0, RenderNode::Pass(0), [a, b]);
@@ -431,7 +427,14 @@ mod tests {
 	fn persistent_targets_resize_alone_while_shared_targets_are_placed_with_their_group() {
 		let (mut targets, _) = chained_targets();
 		let persistent = image_handle(4);
-		targets.insert("persistent".into(), 0, persistent, ghi::Formats::RGBA16F, 2, false);
+		targets.insert(
+			"persistent".into(),
+			0,
+			persistent,
+			ghi::Formats::RGBA16F,
+			2,
+			Placement::Persistent,
+		);
 		let extent = Extent::rectangle(8, 4);
 
 		let plan = targets.plan(0, extent).unwrap();
@@ -446,7 +449,14 @@ mod tests {
 	#[test]
 	fn only_targets_the_scene_uses_hold_scene_output() {
 		let (mut targets, _) = chained_targets();
-		targets.insert("persistent".into(), 0, image_handle(4), ghi::Formats::RGBA16F, 1, false);
+		targets.insert(
+			"persistent".into(),
+			0,
+			image_handle(4),
+			ghi::Formats::RGBA16F,
+			1,
+			Placement::Persistent,
+		);
 
 		assert!(targets.holds_scene_output("a", 0));
 		assert!(!targets.holds_scene_output("c", 0));
@@ -460,7 +470,14 @@ mod tests {
 			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image).name("History"));
 		let mut targets = RenderTargets::new();
 
-		targets.insert_history("History".into(), 0, history, 2);
+		targets.insert(
+			"History".into(),
+			0,
+			history.into(),
+			ghi::Formats::RGBA16F,
+			2,
+			Placement::PerFrame(history),
+		);
 
 		assert_eq!(targets.history("History", 0), Some(history));
 		assert_eq!(targets.history("History", 1), None);

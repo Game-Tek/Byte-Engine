@@ -408,12 +408,11 @@ that surfel GI lights, the probe stages in a frame that probe GI lights, and
 
 | Target | Content |
 | --- | --- |
-| `Lit`, aliased `main` | Scene color, full size. |
-| `Depth`, aliased `depth` | Reversed depth, full size. |
+| `Lit`, aliased `main` | Scene color, full size. Reflections read the previous frame's copy. |
+| `Depth`, aliased `depth` | Reversed depth, full size. Reflections read the previous frame's copy. |
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
 | `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
 | `SSGI Raw`, `SSGI Normals`, `SSGI History`, `Diffuse Radiance History` | Half-size indirect lighting and its history. |
-| `Radiance History` | The previous frame's radiance, for reflections. |
 
 These names, with a pass's outputs, select a screenshot through the inspector;
 history targets can also be read from the previous frame.

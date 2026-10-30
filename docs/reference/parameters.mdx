@@ -6,8 +6,9 @@ icon: Settings
 
 An application starts with a list of named text parameters. This page
 specifies where they come from, how names and values are parsed, and every
-parameter the engine reads. The same project file feeds BELD, which reads the
-render feature flags, the resource roots, and the excluded assets from it; see
+parameter the engine reads. BELD resolves the same sources except process
+arguments and reads the render feature flags, the resource roots, and the
+excluded assets from the result; see
 [Bake application resources](/docs/use/resources/bake#leave-render-features-out-of-the-bake)
 and [Find resources nothing uses](/docs/use/resources/beld#find-resources-nothing-uses).
 
@@ -22,6 +23,11 @@ value with the same name:
 | 2 | The project's `config.json` | Found under the Cargo package directory in a debug build, otherwise beside the executable, never in the working directory. Nested objects flatten into dotted names, so a nested `render`, `gtao`, `enabled` and a single `render.gtao.enabled` key set the same parameter. Strings pass through; booleans and numbers become their text. An array sets one name per element, the array's name followed by `.` and the element's index from 0, so `"roots": ["a", "b"]` sets `roots.0` and `roots.1`; an element is read like any other value. A reader of an array takes elements from index 0 and stops at the first index without a value. Null and a top-level value that isn't an object are errors, and a file that exists but can't be read or parsed stops startup. A missing file sets nothing. |
 | 3 | Environment variables starting with `BE_` | The name drops `BE_`, replaces `__` with `.`, replaces `_` with `-`, and lowercases, so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`. The value is used as is. A name containing a literal underscore can't be set this way. |
 | 4 | Process arguments starting with `--` | The text after the dashes splits on `=`: the name is the first part and the value is the second part only, so `--a=b=c` sets `a` to `b`. Without `=` the value is empty. Every such argument becomes a parameter, and unknown names are accepted. |
+
+BELD resolves sources 1 to 3. Source 1 is the parameters its application
+passes it, or none for the standalone `beld`, and source 2 is the file its
+`--config` option names, `config.json` in the working directory by default.
+Its own arguments are commands, not parameters.
 
 The final list is logged at the info level, values included. Lookup is an
 exact, case-sensitive match on the full name.
@@ -85,10 +91,11 @@ Booleans here are lenient.
 
 ## Render features
 
-These are read at startup and by BELD from `config.json`. They decide what the
-bake builds into the shaders and what the runtime creates; a feature left out
-of the bake stays off whatever a runtime setting asks. Every one is a strict
-boolean except `render.material-evaluation`, which takes one of two names.
+These are read at startup and by BELD, from the same [sources](#sources). They
+decide what the bake builds into the shaders and what the runtime creates; a
+feature left out of the bake stays off whatever a runtime setting asks. Every
+one is a strict boolean except `render.material-evaluation`, which takes one of
+two names.
 
 | Name | Default | Effect |
 | --- | --- | --- |

@@ -1,14 +1,17 @@
-use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
+use byte_engine::application::{Parameter, parameters::Parameters as _};
 use resource_management::asset::{StorageBackend, manager::AssetManager};
+use utils::Glob;
 
-/// Creates the asset manager BELD bakes with, registering the same handlers as the engine's debug runtime.
+/// Creates the asset manager BELD bakes with, with the asset handlers `register` installs for the application's
+/// `parameters`.
 ///
-/// Material shaders are generated for the visibility renderer with the project's `features`. Tests bake with the CPU
-/// texture backends so they do not depend on a GPU.
+/// `register` is the function the application's debug runtime also registers its handlers with, so both bake the same
+/// resources. Tests bake with the CPU texture backends so they do not depend on a GPU.
 pub fn get_asset_manager<AS, RS>(
 	storage_backend: AS,
 	resource_storage_backend: RS,
-	features: VisibilityFeatures,
+	parameters: &[Parameter],
+	register: impl FnOnce(&mut AssetManager, &[Parameter]),
 ) -> AssetManager
 where
 	AS: StorageBackend + 'static,
@@ -20,13 +23,17 @@ where
 	#[cfg(not(test))]
 	asset_manager.set_image_processor(byte_engine::application::graphics::default_image_processor());
 
-	byte_engine::application::graphics::register_default_asset_handlers(
-		&mut asset_manager,
-		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::with_features(features),
-		features,
-	);
+	register(&mut asset_manager, parameters);
 
 	asset_manager
+}
+
+/// Returns the glob patterns of the array parameter `name`, such as `resources.roots`.
+pub fn globs(parameters: &[Parameter], name: &str) -> Vec<Glob> {
+	parameters
+		.get_elements(name)
+		.map(|pattern| Glob::new(pattern.value()))
+		.collect()
 }
 
 #[cfg(test)]
@@ -34,6 +41,7 @@ mod tests {
 
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use byte_engine::application::graphics::register_default_asset_handlers;
 	use resource_management::{
 		ReferenceModel,
 		asset::{ResourceId, storage_backend::FileStorageBackend},
@@ -42,7 +50,7 @@ mod tests {
 		resources::mesh::MeshModel,
 	};
 
-	use super::{VisibilityFeatures, get_asset_manager};
+	use super::get_asset_manager;
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
@@ -75,7 +83,8 @@ mod tests {
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),
 				ReDBStorageBackend::new(resources_path.clone()),
-				VisibilityFeatures::default(),
+				&[],
+				register_default_asset_handlers,
 			);
 
 			let mesh: ReferenceModel<MeshModel> = asset_manager.bake_if_not_exists("triangle_move.fbx").await.expect(

@@ -6,9 +6,11 @@ icon: TerminalSquare
 
 Use BELD to bake, inspect, query, browse, and delete Byte Engine resources.
 
-[Install BELD](/docs/use/resources/install-beld) before you
-run the commands on this page. Every flag, default, exit code, and output
-format is in the [BELD command line reference](/docs/api/beld).
+[Add BELD to your application](/docs/use/resources/add-beld) before you
+run the commands on this page. They write the command as `beld`; run your
+application's with `cargo run --release --bin beld --` followed by the same
+arguments. Every flag, default, exit code, and output format is in the
+[BELD command line reference](/docs/api/beld).
 
 It reads source assets from an assets directory and writes processed resources to a resources directory.
 By default those paths are `assets` and `resources`, but both are configurable.
@@ -246,8 +248,8 @@ and `is:dangling`.
    Delete their source files too, or add them to `resources.exclude`, if you
    don't need them anymore.
 
-BELD reads `config.json` from the working directory. Pass `--config <path>` to
-read another file. The
+BELD reads `config.json` from the working directory, over the parameters your
+application passes in code. Pass `--config <path>` to read another file. The
 [Roots reference](/docs/api/beld#roots) specifies how patterns match.
 
 ## Choose when to use BELD

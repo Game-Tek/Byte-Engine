@@ -112,6 +112,40 @@ pub fn read_configuration_file(path: &std::path::Path) -> Result<Vec<Parameter>,
 	}
 }
 
+/// Returns `defaults` overridden by `configuration` and then by the `BE_*` variables among `environment`.
+///
+/// The application and BELD both resolve their parameters this way, so a bake reads the settings the application
+/// starts with. Pass the application's own parameters as `defaults`, the result of [`read_configuration_file`] as
+/// `configuration`, and [`std::env::vars`] as `environment`. In a variable's name, `_` stands for `-` and `__` for `.`,
+/// so `BE_PHYSICS__STEP_LANES` sets `physics.step-lanes`.
+pub fn layer_parameters(
+	defaults: &[Parameter],
+	configuration: Vec<Parameter>,
+	environment: impl IntoIterator<Item = (String, String)>,
+) -> Vec<Parameter> {
+	let mut parameters = defaults.to_vec();
+	for parameter in configuration {
+		upsert_parameter(&mut parameters, parameter);
+	}
+	for (key, value) in environment {
+		let Some(name) = key.strip_prefix("BE_") else {
+			continue;
+		};
+		let name = name.replace("__", ".").replace('_', "-").to_lowercase();
+		upsert_parameter(&mut parameters, Parameter::new_string(name, value));
+	}
+	parameters
+}
+
+/// Replaces the parameter with the same name as `parameter`, or appends it when there is none.
+pub(crate) fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
+	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
+		*existing = parameter;
+	} else {
+		parameters.push(parameter);
+	}
+}
+
 /// Converts the contents of a project's `config.json` into parameters.
 ///
 /// Nested objects become dotted names, so `{"render": {"gtao": {"enabled": false}}}` and
@@ -246,6 +280,36 @@ mod tests {
 			2,
 			"a scope reads the same elements"
 		);
+	}
+
+	#[test]
+	fn configuration_overrides_defaults_and_environment_overrides_both() {
+		let parameters = layer_parameters(
+			&[
+				Parameter::new("render.gtao.enabled", "false"),
+				Parameter::new("physics.step-lanes", "2"),
+				Parameter::new("log.level", "info"),
+			],
+			parameters_from_json(r#"{ "render.gtao.enabled": true, "physics.step-lanes": 4 }"#)
+				.expect("test configuration should parse"),
+			[
+				("BE_PHYSICS__STEP_LANES".to_string(), "8".to_string()),
+				("PATH".to_string(), "/usr/bin".to_string()),
+			],
+		);
+
+		for (name, value) in [
+			("render.gtao.enabled", Some("true")),
+			("physics.step-lanes", Some("8")),
+			("log.level", Some("info")),
+			("path", None),
+		] {
+			assert_eq!(
+				parameters[..].get_parameter(name).map(Parameter::value),
+				value,
+				"name: {name}"
+			);
+		}
 	}
 
 	#[test]

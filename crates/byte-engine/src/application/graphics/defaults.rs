@@ -12,12 +12,7 @@
 /// [`GraphicsApplication::world`], then run the application with
 /// [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
-	#[cfg(debug_assertions)]
-	{
-		let generator = VisibilityShaderGenerator::new(application.parameters().scope(RENDER_PARAMETERS));
-
-		setup_default_resource_and_asset_management(application, generator);
-	}
+	setup_default_resource_and_asset_management(application, register_default_asset_handlers);
 
 	setup_default_input(application);
 
@@ -92,15 +87,16 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
-/// In debug builds, connects the asset directory and standard material, model,
-/// image, audio, and standalone-shader handlers to the resource manager.
+/// In debug builds, connects the asset directory to the resource manager, with the asset handlers `register` installs
+/// for the application's parameters.
 ///
-/// Release builds intentionally leave the manager without asset processors and
-/// must receive their complete resource store from BELD.
+/// Pass the function the application's own BELD passes to `beld::run`, such as [`register_default_asset_handlers`], so
+/// a debug run and a release bake produce the same resources. Release builds intentionally leave the manager without
+/// asset processors and must receive their complete resource store from BELD.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
-	generator: impl ProgramGenerator + Clone + 'static,
+	register: impl FnOnce(&mut AssetManager, &[Parameter]),
 ) {
 	#[cfg(debug_assertions)]
 	{
@@ -125,24 +121,25 @@ pub fn setup_default_resource_and_asset_management(
 				.collect(),
 		);
 
-		let features = VisibilityFeatures::from_parameters(application.parameters().scope(RENDER_PARAMETERS));
-		register_default_asset_handlers(&mut asset_manager, generator, features);
+		register(&mut asset_manager, application.parameters());
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }
 
-/// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`.
+/// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`, for the
+/// visibility renderer configured by the `render` scope of `parameters`.
 ///
-/// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
-/// assets. `generator` adapts generated material shaders to the renderer, and `features` removes left-out features from
-/// standalone shaders. Every handler that produces images bakes them through the manager's image processor; install
+/// Pass it to [`setup_default_resource_and_asset_management`] and to `beld::run`, so a debug run and a baked store
+/// produce the same resources from the same assets. An application with its own formats registers these, then adds
+/// its handlers with [`AssetManager::add_asset_handler`], in one function it passes to both. Generated material
+/// shaders target the visibility renderer, and standalone shaders leave out the features the parameters leave out.
+/// Every handler that produces images bakes them through the manager's image processor; install
 /// [`default_image_processor`] with [`AssetManager::set_image_processor`] to use the GPU backends.
-pub fn register_default_asset_handlers(
-	asset_manager: &mut AssetManager,
-	generator: impl ProgramGenerator + Clone + 'static,
-	features: VisibilityFeatures,
-) {
+pub fn register_default_asset_handlers(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
+	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
+	let generator = VisibilityShaderGenerator::with_features(features);
+
 	let mut material_asset_handler = BEMAAssetHandler::new();
 	material_asset_handler.set_shader_generator(generator.clone());
 	asset_manager.add_asset_handler(material_asset_handler);
@@ -355,22 +352,11 @@ use resource_management::asset::FileStorageBackend;
 use resource_management::{
 	asset::{
 		handler::implementations::{
-			audio_graph::AudioGraphAssetHandler,
-			bema::{BEMAAssetHandler, ProgramGenerator},
-			besl::BESLShaderAssetHandler,
-			environment::EnvironmentMapAssetHandler,
-			exr::EXRAssetHandler,
-			fbx::FBXAssetHandler,
-			flipbook::FlipbookAssetHandler,
-			gltf::GLTFAssetHandler,
-			ies::IESAssetHandler,
-			level::LevelAssetHandler,
-			lut::LUTAssetHandler,
-			ogg::OGGAssetHandler,
-			particles::ParticleSystemAssetHandler,
-			pipeline::PipelineAssetHandler,
-			png::PNGAssetHandler,
-			wav::WAVAssetHandler,
+			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
+			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
+			flipbook::FlipbookAssetHandler, gltf::GLTFAssetHandler, ies::IESAssetHandler, level::LevelAssetHandler,
+			lut::LUTAssetHandler, ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler,
+			png::PNGAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},
@@ -383,12 +369,10 @@ use utils::Extent;
 
 use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
-#[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::VisibilityShaderGenerator;
-use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures};
+use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::AnimationPool,
-	application::{Events, parameters::Parameters as _, thread::Thread},
+	application::{Events, Parameter, parameters::Parameters as _, thread::Thread},
 	audio::graph::{AudioGraphAsset, AudioGraphFactory},
 	audio::{
 		audio_system::DefaultAudioSystem,

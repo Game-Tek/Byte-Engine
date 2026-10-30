@@ -1,6 +1,9 @@
 use std::{cell::RefCell, num::NonZeroUsize, time::Instant};
 
-use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
+use byte_engine::{
+	application::{Parameter, parameters::Parameters as _},
+	rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures},
+};
 use resource_management::{
 	asset::{FileStorageBackend, ResourceId, manager::AssetManager, manager::LoadMessages},
 	inspect::{ResourceDocument, inspect_payload, inspect_resource},
@@ -17,19 +20,23 @@ use crate::{
 	OutputFormat, Payload,
 	commands::shared::{attach_trace, offload_file_operation, payload_format, plural, print_human, read_payload, write_json},
 	terminal,
-	utils::get_asset_manager,
+	utils::{get_asset_manager, globs},
 };
 
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
 ///
-/// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
-/// after changing an asset processor, `texture_compression`, or `features`, because source versions don't record those.
-/// `features` are the project's visibility features, usually read from its `config.json`; discovery skips the engine
-/// assets only left-out features use. `excluded` are the project's `resources.exclude` patterns: discovery skips
-/// matching assets, and a bake of one, or of an asset that needs one, fails. `roots` are its `resources.roots`
-/// patterns: when there are any, discovery keeps only matching assets, which bake with what they need. Roots don't
-/// apply to explicit `ids`. `prune` deletes every stored resource no root reaches once every asset baked; it needs
-/// roots, no `ids`, and a debug build, which records references.
+/// `parameters` are the application's, resolved with
+/// [`layer_parameters`](byte_engine::application::parameters::layer_parameters), and `register` installs the
+/// application's asset handlers for them, as its debug runtime does. Assets whose stored resource is current with its
+/// source files are skipped unless `force` is set. Force a bake after changing an asset processor,
+/// `texture_compression`, or a baked parameter, because source versions don't record those.
+///
+/// These parameters also select what bakes. The `render` scope selects the visibility features, and discovery skips
+/// the engine assets only left-out features use. Discovery skips assets that match a `resources.exclude` pattern, and a
+/// bake of one, or of an asset that needs one, fails. When there are `resources.roots` patterns, discovery keeps only
+/// matching assets, which bake with what they need. Roots don't apply to explicit `ids`. `prune` deletes every stored
+/// resource no root reaches once every asset baked; it needs roots, no `ids`, and a debug build, which records
+/// references.
 ///
 /// On a terminal, a progress line shows on standard error; install the logger with [`crate::init_logging`] so log
 /// messages print above it.
@@ -44,11 +51,12 @@ pub async fn bake(
 	texture_compression: Option<ResourceGpuCompressionPolicy>,
 	memory_budget: NonZeroUsize,
 	force: bool,
-	features: VisibilityFeatures,
-	excluded: Vec<Glob>,
-	roots: Vec<Glob>,
+	parameters: &[Parameter],
+	register: impl FnOnce(&mut AssetManager, &[Parameter]),
 	prune: bool,
 ) -> Result<(), i32> {
+	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
+	let roots = globs(parameters, "resources.roots");
 	if prune {
 		check_prune(&ids, &roots).map_err(|error| {
 			log::error!("{error}");
@@ -77,8 +85,8 @@ pub async fn bake(
 		1
 	})?;
 
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, features);
-	asset_manager.set_excluded_assets(excluded);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, register);
+	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
 
 	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
 	if force {
@@ -193,17 +201,17 @@ fn select_discovered(
 /// `output`, leaving the destination directory untouched.
 ///
 /// The document lists each stored resource in [`crate::inspect`]'s shape, ordered by ID, then each requested ID that
-/// failed. `excluded` are the project's `resources.exclude` patterns, as in [`bake`]. Pass `payload` to add the decoded
-/// stream bytes, which needs [`OutputFormat::JSON`]. The resources `features` assembles from every material bake after
-/// `ids`, from the materials `ids` reach. Without `ids` nothing bakes, because a dry run doesn't discover assets. Run
-/// [`bake`] next to write the same resources to a store.
+/// failed. `parameters` and `register` are the application's, as in [`bake`], which also apply `resources.exclude`.
+/// Pass `payload` to add the decoded stream bytes, which needs [`OutputFormat::JSON`]. The resources the visibility
+/// features assemble from every material bake after `ids`, from the materials `ids` reach. Without `ids` nothing bakes,
+/// because a dry run doesn't discover assets. Run [`bake`] next to write the same resources to a store.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
 	ids: Vec<String>,
 	memory_budget: NonZeroUsize,
-	features: VisibilityFeatures,
-	excluded: Vec<Glob>,
+	parameters: &[Parameter],
+	register: impl FnOnce(&mut AssetManager, &[Parameter]),
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
@@ -213,11 +221,12 @@ pub async fn bake_dry_run(
 	let asset_storage_backend = open_asset_storage(source_path).await?;
 	// The manager owns one clone; this one reads back what it baked once it is done.
 	let resource_storage_backend = MemoryStorageBackend::new();
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), features);
-	asset_manager.set_excluded_assets(excluded);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, register);
+	asset_manager.set_excluded_assets(globs(parameters, "resources.exclude"));
 	let bakes_anything = !ids.is_empty();
 	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget).await;
 	if bakes_anything {
+		let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 		failures.extend(bake_assembled(&asset_manager, &features).await);
 	}
 	drop(asset_manager);

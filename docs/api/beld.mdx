@@ -5,7 +5,11 @@ icon: TerminalSquare
 ---
 
 BELD bakes source assets into a resource store and inspects the result. This
-page specifies its command line. To use it, follow
+page specifies its command line. Every application's BELD binary has this
+command line; each starts from its application's own parameters and registers
+its application's asset handlers. The standalone `beld` binary starts from no
+parameters and registers the [default handlers](#handlers). To add one, follow
+[Add BELD to your application](/docs/use/resources/add-beld), and to use it,
 [Use BELD](/docs/use/resources/beld); the store it writes is specified in the
 [resource store](/docs/reference/resource-store) reference.
 
@@ -17,7 +21,7 @@ page specifies its command line. To use it, follow
 | `-d`, `--destination <path>` | `resources` | The resource store directory. |
 | `--color auto`, `always`, or `never` | `auto` | Terminal color; see [Color](#color). |
 | `--storage-mode files` or `packed` | A new store uses files; an existing store keeps its mode | The persistence mode. A value that differs from an existing store's mode is an error. |
-| `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. `bake` reads the render feature flags and the [excluded assets](/docs/reference/assets#excluded-assets) from it, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
+| `--config <path>` | `config.json` in the working directory | The project's [configuration file](/docs/reference/parameters#sources), which the application also reads. It overrides the application's own parameters, and `BE_` environment variables override it, as at startup. `bake` reads the render feature flags and the [excluded assets](/docs/reference/assets#excluded-assets) from the result, and `query` and `browse` read the [roots](#roots). A missing file sets nothing. |
 | `-V`, `--version`; `-h`, `--help` | | |
 
 BELD reads the `RUST_LOG` environment variable for its log filter.
@@ -26,7 +30,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Only the render feature flags and the excluded assets are read from the configuration. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
+| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Of the parameters, the asset handlers read what they need, and the bake reads the render feature flags and the excluded assets. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -399,6 +403,9 @@ When standard error isn't a terminal, `bake` logs a message when each asset
 starts baking and when it's up to date, and shows no progress line.
 
 ## Handlers
+
+The default handlers bake these extensions. An application's BELD bakes the
+extensions its application registers handlers for.
 
 | Extension | Resource |
 | --- | --- |

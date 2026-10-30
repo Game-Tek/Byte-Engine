@@ -1,0 +1,123 @@
+---
+title: Add BELD to your application
+description: Give your application its own BELD binary, so a release bake uses the parameters and asset handlers a debug run uses.
+icon: Hammer
+---
+
+Give your application its own BELD binary, so a release bake produces the
+resources a debug run does. It starts from your application's parameters,
+registers its asset handlers, and builds from its `Cargo.lock`.
+
+## Add the dependency
+
+Add `beld` from the same source as `byte-engine`. For a registry dependency,
+run:
+
+```bash
+cargo add beld
+```
+
+For a checkout, use `--path ../Byte-Engine/crates/beld` or the same `--git`
+URL as the engine.
+
+Your package now has two binaries, so name the one `cargo run` starts in
+`Cargo.toml`:
+
+```toml
+[package]
+name = "my-game"
+default-run = "my-game"
+```
+
+## Share your parameters
+
+Move the parameters your application passes in code into a function in
+`src/lib.rs`, so the application and its BELD start from the same list:
+
+```rust
+use byte_engine::application::Parameter;
+
+/// Returns the parameters the game starts with.
+pub fn parameters() -> Vec<Parameter> {
+	vec![
+		Parameter::new("render.gtao.enabled", "false"),
+		Parameter::new("defaults.window.cursor.show", "true"),
+	]
+}
+```
+
+In `src/main.rs`, create the application with it:
+
+```rust
+let mut app = GraphicsApplication::new("My Game", &my_game::parameters());
+```
+
+## Register the same asset handlers
+
+Pass the function that registers your asset handlers to
+`setup_default_resource_and_asset_management`. With only the engine's formats,
+pass `register_default_asset_handlers`:
+
+```rust
+use byte_engine::application::graphics::{
+	register_default_asset_handlers, setup_default_resource_and_asset_management,
+};
+
+setup_default_resource_and_asset_management(&mut app, register_default_asset_handlers);
+```
+
+To bake a format of your own, write one function in `src/lib.rs` that
+registers the engine's handlers and then yours, and pass it here instead:
+
+```rust
+use byte_engine::application::{Parameter, graphics::register_default_asset_handlers};
+use resource_management::asset::manager::AssetManager;
+
+/// Registers the asset handlers the game bakes with, in debug runs and in its BELD.
+pub fn register_asset_handlers(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
+	register_default_asset_handlers(asset_manager, parameters);
+	asset_manager.add_asset_handler(DialogueAssetHandler::new());
+}
+```
+
+## Add the binary
+
+Create `src/bin/beld.rs`, and pass `beld::run` your parameters and the same
+registration function:
+
+```rust
+use byte_engine::application::graphics::register_default_asset_handlers;
+
+fn main() -> std::process::ExitCode {
+	beld::run(&my_game::parameters(), register_default_asset_handlers)
+}
+```
+
+When several applications share one Cargo workspace, name each file after its
+application, such as `src/bin/my-game-beld.rs`, so their binaries don't
+overwrite each other in the shared `target/` directory.
+
+Run it from the application directory to confirm it builds:
+
+```bash
+cargo run --release --bin beld -- --help
+```
+
+The other BELD pages write the command as `beld`. Run your application's BELD
+with `cargo run --release --bin beld --` followed by the same arguments.
+
+An application that passes no parameters in code and bakes only the engine's
+formats can instead install the standalone BELD from a Byte Engine checkout,
+and reinstall it after each engine update:
+
+```bash
+cargo install --path crates/beld --locked
+```
+
+Next, [use BELD](/docs/use/resources/beld) to bake or inspect resources.
+
+## Rust API
+
+- [`register_default_asset_handlers`](/docs/api/latest/byte_engine/application/graphics#fn.register_default_asset_handlers)
+- [`setup_default_resource_and_asset_management`](/docs/api/latest/byte_engine/application/graphics#fn.setup_default_resource_and_asset_management)
+- [`layer_parameters`](/docs/api/latest/byte_engine/application/parameters#fn.layer_parameters)

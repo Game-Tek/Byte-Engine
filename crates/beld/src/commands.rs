@@ -19,7 +19,7 @@ pub use query::query;
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use byte_engine::rendering::pipelines::visibility::VisibilityFeatures;
+	use byte_engine::application::{Parameter, graphics::register_default_asset_handlers};
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
@@ -78,7 +78,8 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			VisibilityFeatures::default(),
+			&[],
+			register_default_asset_handlers,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -106,7 +107,8 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			VisibilityFeatures::default(),
+			&[],
+			register_default_asset_handlers,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -138,7 +140,8 @@ mod tests {
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
-			VisibilityFeatures::default(),
+			&[],
+			register_default_asset_handlers,
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
 		let ids = executor.block_on(asset_manager.discover()).unwrap();
@@ -192,7 +195,15 @@ mod tests {
 	/// and the stored IDs.
 	fn bake_project(root: &std::path::Path, roots: &[&str], excluded: &[&str], prune: bool) -> (Result<(), i32>, Vec<String>) {
 		let resources_path = root.join("resources");
-		let globs = |patterns: &[&str]| patterns.iter().map(|pattern| utils::Glob::new(pattern)).collect();
+		// The same parameters a `config.json` with `resources.roots` and `resources.exclude` arrays sets.
+		let elements = |name: &str, patterns: &[&str]| {
+			patterns
+				.iter()
+				.enumerate()
+				.map(|(index, pattern)| Parameter::new(&format!("{name}.{index}"), pattern))
+				.collect::<Vec<_>>()
+		};
+		let parameters = [elements("resources.roots", roots), elements("resources.exclude", excluded)].concat();
 		let executor = resource_management::r#async::Executor::new().unwrap();
 
 		let result = executor.block_on(super::bake(
@@ -203,9 +214,8 @@ mod tests {
 			None,
 			std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 			false,
-			VisibilityFeatures::default(),
-			globs(excluded),
-			globs(roots),
+			&parameters,
+			register_default_asset_handlers,
 			prune,
 		));
 		let mut ids = executor
@@ -297,9 +307,8 @@ mod tests {
 				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 				false,
-				VisibilityFeatures::default(),
-				Vec::new(),
-				Vec::new(),
+				&[],
+				register_default_asset_handlers,
 				false,
 			)),
 			Err(1)

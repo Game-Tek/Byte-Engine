@@ -29,25 +29,26 @@ cargo install cargo-bundle
 
 ### 2. Bake your application resources
 
-[Install BELD](/docs/use/resources/install-beld), then run
+[Add BELD to your application](/docs/use/resources/add-beld), then run
 it from the application directory:
 
 ```bash
-beld --source "$PWD/assets" --destination "$PWD/resources" \
-  bake
+cargo run --release --bin beld -- \
+  --source "$PWD/assets" --destination "$PWD/resources" bake
 ```
 
 The zero-ID form includes every recognized application asset and the engine
 shaders exposed through `assets/byte-engine`. Verify the resulting inventory:
 
 ```bash
-beld --destination "$PWD/resources" list
+cargo run --release --bin beld -- --destination "$PWD/resources" list
 ```
 
 A release build doesn't compile a missing shader on demand.
 
-If your project has a `config.json`, BELD reads it from the application
-directory to decide which [render features to bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
+BELD starts from the parameters your application passes in code and reads the
+project's `config.json` from the application directory over them, to decide
+which [render features to bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake).
 
 Keep `resources/` outside Cargo's `target/` directory. It's an application
 input to packaging. Cargo owns `target/` and might remove it when you run
@@ -187,12 +188,12 @@ directory contains the required DLLs.
 
 ### 1. Bake your application resources
 
-[Install BELD](/docs/use/resources/install-beld), then bake the
+[Add BELD to your application](/docs/use/resources/add-beld), then bake the
 resources for the Windows target from your application directory:
 
 ```powershell
-beld --source "$PWD\assets" --destination "$PWD\resources" bake
-beld --destination "$PWD\resources" list
+cargo run --release --bin beld -- --source "$PWD\assets" --destination "$PWD\resources" bake
+cargo run --release --bin beld -- --destination "$PWD\resources" list
 ```
 
 Keep `resources/` outside Cargo's `target/` directory. Cargo owns `target/` and

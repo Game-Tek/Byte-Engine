@@ -7,7 +7,6 @@
 
 use std::num::NonZeroUsize;
 
-use byte_engine::application::parameters::Parameters as _;
 use byte_engine::{
 	MediaTime,
 	animation::graph::{
@@ -16,8 +15,8 @@ use byte_engine::{
 	application::{
 		Parameter,
 		graphics::{
-			GraphicsApplication, setup_animation_pool, setup_default_audio, setup_default_input,
-			setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
+			GraphicsApplication, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
+			setup_default_input, setup_default_resource_and_asset_management, setup_pbr_visibility_shading_render_pipeline,
 		},
 	},
 	core::{Creator as _, channel::Channel as _},
@@ -77,13 +76,7 @@ fn main() {
 	// Register every resource worker before the loading thread starts.
 	// `default_setup` launches that thread internally, so this explicit setup form
 	// is the one to use when an app also owns animation-loading workers.
-	#[cfg(debug_assertions)]
-	{
-		use byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator;
-
-		let generator = VisibilityShaderGenerator::new(app.parameters().scope("render"));
-		setup_default_resource_and_asset_management(&mut app, generator);
-	}
+	setup_default_resource_and_asset_management(&mut app, register_default_asset_handlers);
 	setup_default_input(&mut app);
 	setup_default_audio(&mut app);
 	setup_pbr_visibility_shading_render_pipeline(&mut app);

@@ -54,27 +54,13 @@ impl BaseApplication {
 	///
 	/// With the `tracy` Cargo feature, spans and logs also stream to a connected Tracy profiler.
 	pub fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
-		let mut parameters = parameters.to_vec();
 		// A file that exists but cannot be read or parsed stops startup, so a typo does not silently drop settings.
 		let configuration = read_configuration_file(&resolve_application_path(None, CONFIGURATION_FILE_NAME))
 			.unwrap_or_else(|error| panic!("{error}"));
-		for parameter in configuration {
-			upsert_parameter(&mut parameters, parameter);
-		}
-		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {
-			upsert_parameter(
-				&mut parameters,
-				Parameter::new_string(
-					key.trim_start_matches("BE_")
-						.replace("__", ".")
-						.replace('_', "-")
-						.to_lowercase(),
-					value,
-				),
-			);
-		}
+		let mut parameters = layer_parameters(parameters, configuration, std::env::vars());
 
-		// Take all arguments that have the form `--name=value` and convert them to parameters.
+		// Take all arguments that have the form `--name=value` and convert them to parameters. BELD layers the same
+		// sources except these, because its own arguments are commands.
 		for argument in std::env::args().filter(|argument| argument.starts_with("--")) {
 			upsert_parameter(&mut parameters, parse_argument(&argument).unwrap());
 		}
@@ -275,16 +261,9 @@ pub(crate) fn resolve_application_path(parameter: Option<&Parameter>, default_pa
 	})
 }
 
-/// Replaces a previous parameter with the same name so later sources have deterministic precedence.
-fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
-	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
-		*existing = parameter;
-	} else {
-		parameters.push(parameter);
-	}
-}
-
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{CONFIGURATION_FILE_NAME, Parameters, parse_argument, read_configuration_file};
+use crate::application::parameters::{
+	CONFIGURATION_FILE_NAME, Parameters, layer_parameters, parse_argument, read_configuration_file, upsert_parameter,
+};

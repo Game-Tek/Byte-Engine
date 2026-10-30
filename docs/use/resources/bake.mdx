@@ -34,12 +34,10 @@ ln -s ../vendor/byte-engine/assets assets/byte-engine
 ```
 
 Commit both the vendor directory and symlink, or recreate them in the same
-bootstrap step in every developer and CI checkout. Install the matching BELD
-release so its handlers and resource formats stay aligned with the engine:
-
-```bash
-cargo install beld --version 0.2.0 --locked
-```
+bootstrap step in every developer and CI checkout. Your
+[application's BELD](/docs/use/resources/add-beld) builds from the same
+`Cargo.lock` as the application, so its handlers and resource formats match the
+engine you link.
 
 On Windows, the checkout must preserve directory symlinks. [Enable Developer Mode](https://learn.microsoft.com/en-us/windows/advanced-settings/developer-mode)
 or otherwise grant link creation permission, and make sure Git doesn't
@@ -108,8 +106,9 @@ application directory, next to `assets/` and `resources/`:
 }
 ```
 
-BELD reads `config.json` from the current directory, so run it from the
-application directory or pass `--config`:
+BELD reads `config.json` from the current directory, over the parameters your
+application passes in code, so run it from the application directory or pass
+`--config`:
 
 ```bash
 beld --source "$PWD/assets" --destination "$PWD/resources" bake \
@@ -135,14 +134,16 @@ in, BELD also bakes a closest-hit shader for every material, which surfel rays
 run where they hit the material, and the `surfel-*` pipelines and shaders. See
 [Light with ray-traced global illumination](/docs/use/lighting#light-with-ray-traced-global-illumination).
 
-A missing file keeps every feature. The application also loads every other value
-in `config.json` as a startup parameter, so `{"render": {"debug": true}}` sets
-`render.debug`. Environment variables and command-line arguments still override
-the file.
+A missing file keeps the features your application's parameters set. The
+application also loads every other value in `config.json` as a startup
+parameter, so `{"render": {"debug": true}}` sets `render.debug`. Environment
+variables override the file for both the application and BELD, and
+command-line arguments override it for the application.
 
-After you change a feature in `config.json`, run `beld bake --force`. Source
-file versions don't record the configuration, so a normal bake keeps the
-material shaders built with the old setting.
+After you change a feature in `config.json` or in your application's
+parameters, run `beld bake --force`. Source file versions don't record the
+configuration, so a normal bake keeps the material shaders built with the old
+setting.
 
 ## Choose how materials are evaluated
 

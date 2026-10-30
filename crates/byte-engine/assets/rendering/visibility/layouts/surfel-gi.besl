@@ -1,9 +1,11 @@
 // The frame-wide surfel GI set: the pool of surfels, the grid that lists them per cell, and the settings every surfel
-// stage shares. The first sink's frame writes it; every sink that surfel GI lights reads it.
+// stage shares. The first sink's frame writes it; every sink that surfel GI lights reads it. List it after
+// `light-table.besl`, whose records its light table holds.
 //
 // Surfel GI follows webgiya by Jure Triglav (MIT License, Copyright (c) 2026 Jure Triglav), which builds on "Global
-// Illumination Based on Surfels" by Henrik Halén, Andreas Brinck, Kyle Hayward, and Xiangshun Bei (SIGGRAPH 2021).
-// See THIRD_PARTY_NOTICES.md.
+// Illumination Based on Surfels" by Henrik Halén, Andreas Brinck, Kyle Hayward, and Xiangshun Bei (SIGGRAPH 2021), and
+// on the cascaded grid of kajiya by Tomasz Stachowiak (MIT License, Copyright (c) 2019 Embark Studios), whose
+// reconstruction and hit spawning the per-pass shaders also adapt. See THIRD_PARTY_NOTICES.md.
 
 // The grid has SURFEL_CASCADES cascades of SURFEL_GRID_SIDE cells per side around the first sink's camera. A cell of
 // cascade c measures SURFEL_CELL_SIZE × 2^c meters, and a position falls in the finest cascade that covers it.
@@ -14,48 +16,78 @@ SURFEL_CELL_COUNT: const u32 = 262144;
 SURFEL_CELL_SIZE: const f32 = 0.2;
 // A surfel's radius close to the camera. Beyond half a cascade-zero grid, it grows with distance like the cells do.
 SURFEL_BASE_RADIUS: const f32 = 0.24;
-// Lookups weigh a surfel out to this multiple of its radius, so neighboring discs overlap smoothly.
+// Lookups weigh a surfel out to this multiple of its radius, so neighboring discs overlap smoothly. The grid lists a
+// surfel out to the same lookup radius, so every point a surfel weighs finds it in its cell.
 SURFEL_LOOKUP_SCALE: const f32 = 1.25;
 // Distance along a surfel's normal counts this much more, so a disc reaches only surfaces close to its own plane.
 SURFEL_NORMAL_SQUISH: const f32 = 2.0;
+// How far, as a continuous cascade, a point within a surfel's lookup radius can lie from the surfel's center:
+// log2(1 + SURFEL_LOOKUP_SCALE × SURFEL_BASE_RADIUS / (SURFEL_CELL_SIZE × SURFEL_GRID_SIDE / 2) × √3) is about 0.217,
+// and the grid lists each surfel in the cascades this far on either side of its own.
+SURFEL_CASCADE_MARGIN: const f32 = 0.25;
 // Frames a surfel lives without a keep-alive vote.
 SURFEL_TTL: const u32 = 500;
 // The vote that kills a surfel at once.
 SURFEL_KILL: const u32 = 255;
-// A cell that lists more surfels than this charges them rent, and stops keeping its own surfels alive.
-SURFEL_CROWDED_CELL: const u32 = 32;
-// The most surfels one pixel reads from its cell.
+// A cell that lists more surfels than this charges them rent, and stops keeping its own surfels alive. Cells list
+// surfels out to their lookup radius, about 1.5 times the area their own radius covers, so this is the 32 the economy
+// was tuned with at the surfels' own radius, scaled to match.
+SURFEL_CROWDED_CELL: const u32 = 48;
+// The most surfels one pixel reads from its cell: the first of its list, which starts with the surfels near the cell's
+// center.
 SURFEL_LOOKUP_LIMIT: const u32 = 64;
-// The most cells the grid lists one surfel in: the first it overlaps, those of the finer cascade first, then by z,
-// y, and x. The cell lists hold this many entries for each pool slot, so they never overflow.
+// A cell lists a surfel at the front of its list when the cell's center lies within this share of the surfel's lookup
+// radius, and at the back otherwise. So readers that take only a crowded list's first entries take the surfels that
+// weigh most around them, without a sort.
+SURFEL_NEAR_SHARE: const f32 = 0.5;
+// The most cells the grid lists one surfel in. The cell lists hold this many entries for each pool slot, so they
+// never overflow. A surfel that reaches more cells is listed in the nearest of them: the grid sorts the cells it
+// reaches into SURFEL_LISTING_BUCKETS shells by how near their nearest point lies, and lists the nearest shells that
+// fit, so the cells left out are those where the surfel weighs least, never the one that holds its center.
 SURFEL_LISTING_LIMIT: const u32 = 32;
+SURFEL_LISTING_BUCKETS: const u32 = 8;
+// The threads that walk one surfel's cells in the count pass and the scatter, each taking every SURFEL_GRID_LANES-th
+// row of cells. The GPU waits for a thread's atomics at each branch, so a surfel's walk takes about as long as one
+// thread's share of its atomics; the threads of one surfel sit on consecutive lanes aligned to their count.
+SURFEL_GRID_LANES: const u32 = 4;
 // Elements one workgroup of the scan covers: 256 threads with 4 elements each.
 SURFEL_SCAN_GROUP_ELEMENTS: const u32 = 1024;
 SURFEL_SCAN_WORKGROUP_SIZE: const u32 = 256;
 NO_SURFEL: const u32 = 4294967295;
-// The rays a settled surfel traces each frame, and a young one, for its first SURFEL_YOUNG_FRAMES frames.
+// A ray record names its surfel's slot in its low SURFEL_SLOT_BITS bits, and the ray's index among the surfel's rays
+// above them.
+SURFEL_SLOT_BITS: const u32 = 24;
+SURFEL_SLOT_MASK: const u32 = 16777215;
+// The rays a surfel asks for each frame: a settled one SURFEL_RAYS, a young one SURFEL_YOUNG_RAYS until its estimate
+// holds SURFEL_MATURE_RAYS rays, and one whose light keeps changing past SURFEL_UNSETTLED_INCONSISTENCY,
+// SURFEL_UNSETTLED_RAYS. Young and unsettled surfels ask in the priority class, whose rays the budget grants first.
 SURFEL_RAYS: const u32 = 4;
 SURFEL_YOUNG_RAYS: const u32 = 32;
-SURFEL_YOUNG_FRAMES: const u32 = 4;
-// A surfel whose light keeps changing past this inconsistency traces SURFEL_UNSETTLED_RAYS more.
+SURFEL_UNSETTLED_RAYS: const u32 = 16;
+SURFEL_MATURE_RAYS: const f32 = 128.0;
 SURFEL_UNSETTLED_INCONSISTENCY: const f32 = 0.3;
-SURFEL_UNSETTLED_RAYS: const u32 = 12;
-// A ray record names its surfel's slot in its low SURFEL_RAY_SLOT_BITS bits, and the ray's index among the surfel's rays
-// above them.
-SURFEL_RAY_SLOT_BITS: const u32 = 24;
-SURFEL_RAY_SLOT_MASK: const u32 = 16777215;
+// The share of the frame's ray budget the priority class may take while the regular class wants the rest.
+SURFEL_PRIORITY_SHARE: const f32 = 0.75;
+// A surfel's long mean forgets its rays with this time constant, in frames, whatever its update cadence, so a full
+// pool, which updates each surfel less often, still follows small changes of light within seconds.
+SURFEL_MEMORY_FRAMES: const f32 = 240.0;
+// How many rays' worth of trust a new surfel gets from the parent whose light it copies.
+SURFEL_PARENT_PRIOR_RAYS: const f32 = 32.0;
 // How far a surfel's ray reaches, in meters.
 SURFEL_RAY_LENGTH: const f32 = 10000.0;
+// The flags of a ray's result: the surfel's guide drew it, and it hit the back of a surface.
+SURFEL_RAY_GUIDED: const u32 = 1;
+SURFEL_RAY_BACK_FACE: const u32 = 2;
 // Each surfel's guide splits its hemisphere into 8 × 8 cells of equal solid angle, each holding the light its rays
 // found there lately.
 SURFEL_GUIDE_SIDE: const u32 = 8;
 SURFEL_GUIDE_CELLS: const u32 = 64;
-// The share of a surfel's rays its guide steers once the surfel is SURFEL_GUIDE_FRAMES frames old; the rest follow
-// the cosine-weighted distribution. Webgiya steers 0.9, but here every ray also counts toward the hit fraction, whose
+// The share of a surfel's rays its guide steers once the surfel received SURFEL_GUIDE_RAYS rays; the rest follow the
+// cosine-weighted distribution. Webgiya steers 0.9, but here every ray also counts toward the hit fraction, whose
 // misses and dark hits the guide samples least, and a share of 0.5 keeps each ray's weight at most 2, so those rays
 // can't make it spike.
 SURFEL_GUIDE_SHARE: const f32 = 0.5;
-SURFEL_GUIDE_FRAMES: const f32 = 16.0;
+SURFEL_GUIDE_RAYS: const f32 = 192.0;
 // How much of a guide cell each ray that passes it replaces.
 SURFEL_GUIDE_RATE: const f32 = 0.02;
 // Each surfel's radial depth splits its hemisphere into 4 × 4 cells of its octahedral projection, each holding the
@@ -76,14 +108,15 @@ SURFEL_OCCLUSION_SKIP: const f32 = 0.001;
 // The deviations below a cell's mean depth where that share holds by Cantelli's inequality: the square root of
 // (1 - SURFEL_OCCLUSION_SKIP) / SURFEL_OCCLUSION_SKIP.
 SURFEL_OCCLUSION_SKIP_DEVIATIONS: const f32 = 31.6070878;
-
-// One sun that lights what surfel rays hit.
-SurfelSun: struct {
-	// The unit direction toward the sun.
-	direction: vec3f,
-	// The illuminance the sun gives a surface that faces it, in lux.
-	illuminance: vec3f,
-}
+// The most spawn requests rays' hits make in a frame, which also bounds how far a frame's spawns can overshoot
+// SURFEL_BOUNCED_SHARE.
+SURFEL_MAX_HIT_SPAWNS: const u32 = 64;
+// Hits spawn surfels only while the pool holds fewer live surfels than this share of its slots, so they never take
+// the slots the surfaces the camera sees spawn into.
+SURFEL_HIT_SPAWN_SHARE: const f32 = 0.75;
+// Hits spawn surfels only while the surfels hits spawned make up less than this share of the live surfels, so they
+// stay in proportion to the surfaces the camera sees, whose cells they share and whose rays they take turns with.
+SURFEL_BOUNCED_SHARE: const f32 = 0.25;
 
 // The settings of one frame's surfel stages, uploaded by the CPU as `SurfelGiParameters`.
 SurfelGiParameters: struct {
@@ -99,19 +132,18 @@ SurfelGiParameters: struct {
 	exposure: f32,
 	previous_exposure: f32,
 	environment_intensity: f32,
-	// The suns that light what the rays hit, at most four.
-	sun_count: u32,
-	suns: SurfelSun[4],
 }
 
 // One surfel as lookups read it. A spawn writes its position and normal, and every frame rewrites the rest.
 SurfelRecord: struct {
 	position: vec3f,
-	// The radius the grid lists the surfel with; lookups weigh it out to SURFEL_LOOKUP_SCALE times this.
+	// The surfel's radius at this frame's camera, which the count pass writes; lookups weigh it out to
+	// SURFEL_LOOKUP_SCALE times this.
 	radius: f32,
 	// The normal, in two octahedral 16-bit coordinates.
 	normal: u32,
-	// How much a lookup trusts the surfel's light: zero when it spawns, growing with its age and sample count.
+	// How much a lookup trusts the surfel's light: zero when it spawns without a parent, growing with the rays its
+	// estimate holds, and one from SURFEL_MATURE_RAYS on. Lookups keep it apart from their interpolation weights.
 	weight: f32,
 	// Pre-exposed bounce light in RGB, as irradiance over π, and the fraction of rays that hit geometry in alpha.
 	irradiance: vec4f16,
@@ -130,10 +162,18 @@ SurfelIrradiance: struct {
 	blend: f32,
 	// How far the short mean strays from the long one, in deviations.
 	inconsistency: f32,
-	// The frames of rays the estimate holds, up to 200.
+	// The rays the long mean holds: each update adds its rays, and what it held fades with the frames since the last
+	// update, over SURFEL_MEMORY_FRAMES.
 	count: f32,
 	// The sum of the surfel's guide cells.
 	guide_mass: f32,
+	// The rays the surfel received since it spawned, plus its parent's prior, which make it mature and trusted.
+	rays: f32,
+	// The share of the surfel's rays that hit the back of a surface lately: high while the surfel lies inside geometry.
+	buried: f32,
+	// The frame index of the surfel's last update with rays.
+	updated: u32,
+	_padding: u32,
 }
 
 // What one of the frame's rays brings back to its surfel.
@@ -146,25 +186,31 @@ SurfelRayResult: struct {
 	direction: u32,
 	// The ray's weight in the surfel's average light: the cosine-weighted density over the density it was drawn from.
 	weight: f32,
-	// 1 when the surfel's guide drew the ray, 0 when the cosine-weighted distribution did. Only the latter count toward
-	// the hit fraction.
-	guided: u32,
+	// SURFEL_RAY_GUIDED when the surfel's guide drew the ray, which then doesn't count toward the hit fraction, and
+	// SURFEL_RAY_BACK_FACE when it hit the back of a surface.
+	flags: u32,
 }
 
 // The lifecycle of one pool slot.
 SurfelState: struct {
 	// Zero for a free slot. Otherwise one plus the surfel's age: frames it went without a keep-alive vote, plus rent.
 	life: u32,
-	// Frames since the surfel spawned.
-	frames: u32,
 	// The strongest vote cast since the grid last read it: keep-alive and importance up to 100, or SURFEL_KILL.
 	touched: atomicu32,
 	// The cell the surfel's center lay in when the grid last listed it, which its rent reads; NO_SURFEL before that.
 	cell: u32,
+	// The distance buckets of its cells the grid lists the surfel in this frame: the count pass picks them, and the
+	// scatter lists the same ones.
+	listing: u32,
+	// One once a support ray found the surface the surfel lies on. A supported surfel whose surface is gone dies.
+	supported: u32,
+	// How many bounces from the camera the surfel spawned: zero where a pixel saw its surface, one where a ray of such a
+	// surfel hit it. Only rays of surfels the camera saw spawn surfels where they hit.
+	bounce: u32,
 }
 
-// The pool's allocator and its counts. `alive`, `recycled`, and `spawned` count the frame in progress; the scan's
-// partial pass moves them into the `last_` totals, which the host reads back.
+// The pool's allocator and its counts. `alive`, `recycled`, `spawned`, and `lost` count the frame in progress; the
+// scan's partial pass moves them into the `last_` totals, which the host reads back.
 SurfelPool: struct {
 	// Slots on the free stack.
 	free_count: atomicu32,
@@ -173,21 +219,47 @@ SurfelPool: struct {
 	alive: atomicu32,
 	recycled: atomicu32,
 	spawned: atomicu32,
+	// Surfels voted out because their surface moved or they lie inside geometry.
+	lost: atomicu32,
 	last_alive: u32,
 	last_recycled: u32,
 	last_spawned: u32,
+	last_lost: u32,
 	// The entries the grid listed in its last frame.
 	cell_entries: u32,
-	// The rays surfels wanted in the last frame, and the first of them the ray budget granted.
-	rays_wanted: u32,
-	ray_cursor: u32,
-	rays: u32,
+	// The rays the priority class wanted in the last frame, where the window of them the budget granted starts, and
+	// how many it granted.
+	priority_wanted: u32,
+	priority_cursor: u32,
+	priority_rays: u32,
+	// The same for the regular class, whose rays the frame's rays list after the priority class's.
+	regular_wanted: u32,
+	regular_cursor: u32,
+	regular_rays: u32,
+	// The spawn requests rays' hits made this frame, which the scan resets.
+	hit_spawns: atomicu32,
+	// The requests of the frame before.
+	last_hit_spawns: u32,
+	// The live surfels that hits spawned, as the grid counts them, and the count of the last completed grid.
+	bounced: atomicu32,
+	last_bounced: u32,
 }
 
-// Each cell's surfel count while the grid counts them, and what remains of it while the scatter fills the cell's list.
+// Each cell's surfel count while the grid counts them; what remains of it while the scatter fills the cell's list from
+// its end, and how many entries the scatter listed from its front; and the last frame a ray's hit claimed the cell for
+// a spawn request.
 SurfelCells: struct {
 	counts: atomicu32[262144],
 	fill: atomicu32[262144],
+	front: atomicu32[262144],
+	claims: atomicu32[262144],
+}
+
+// One spawn request a ray's hit made where no surfel lies, so surfaces off the screen get surfels too.
+SurfelHitSpawn: struct {
+	position: vec3f,
+	// The normal, packed by `encode_surfel_normal`.
+	normal: u32,
 }
 
 surfel_parameters: descriptor<{ type: SurfelGiParameters, binding: 1120, access: read }>;
@@ -197,19 +269,26 @@ surfel_states: descriptor<{ type: SurfelState[], binding: 1122, access: read_wri
 surfel_free: descriptor<{ type: u32[], binding: 1123, access: read_write }>;
 surfel_pool: descriptor<{ type: SurfelPool, binding: 1124, access: read_write }>;
 surfel_cells: descriptor<{ type: SurfelCells, binding: 1125, access: read_write }>;
-// The exclusive scan of every cell's count, then of every slot's wanted rays, then the grand total: entry c is where
-// cell c's list starts, and entry SURFEL_CELL_COUNT + s where slot s's rays start after the cells' entries.
+// The exclusive scan of every cell's count, then of every slot's priority rays, then of every slot's regular rays,
+// then the grand total: entry c is where cell c's list starts, entry SURFEL_CELL_COUNT + s where slot s's priority
+// rays start after the cells' entries, and entry SURFEL_CELL_COUNT + capacity + s where its regular rays start.
 surfel_scan: descriptor<{ type: u32[], binding: 1126, access: read_write }>;
 // Each scan workgroup's total, which the partial pass turns into an exclusive scan.
 surfel_scan_partials: descriptor<{ type: u32[], binding: 1127, access: read_write }>;
-// The cell lists, each a run of slots, SURFEL_LISTING_LIMIT entries for each pool slot.
+// The cell lists, each a run of cell entries, SURFEL_LISTING_LIMIT entries for each pool slot. Each list starts with
+// the surfels near its cell's center.
 surfel_cell_entries: descriptor<{ type: u32[], binding: 1128, access: read_write }>;
-// The rays each slot wants this frame.
+// The rays each slot wants this frame: the priority class's for every slot, then the regular class's. A slot asks in
+// one class.
 surfel_ray_wants: descriptor<{ type: u32[], binding: 1129, access: read_write }>;
 surfel_irradiance: descriptor<{ type: SurfelIrradiance[], binding: 1130, access: read_write }>;
 // Each ray the budget granted this frame, as a ray record.
 surfel_rays: descriptor<{ type: u32[], binding: 1131, access: read_write }>;
 surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 1132, access: read_write }>;
+// The scene's lights, which light what the rays hit.
+surfel_scene_lights: descriptor<{ type: LightingBuffer, binding: 1133, access: read, memory: device }>;
+// The frame's spawn requests from rays' hits, the first `hit_spawns` of them.
+surfel_hit_spawns: descriptor<{ type: SurfelHitSpawn[], binding: 1134, access: read_write }>;
 // The environment's irradiance, which lights the pixels no surfel covers yet.
 surfel_environment_irradiance: descriptor<{ type: TextureCube, binding: 1137, access: read }>;
 // Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.
@@ -285,21 +364,45 @@ surfel_distance: fn (offset: vec3f, normal: vec3f) -> f32 {
 	return length(offset) * (1.0 + abs(dot(offset, normal)) * SURFEL_NORMAL_SQUISH);
 }
 
-// Reports whether a surfel's disc reaches the cell at `cell` inside `cascade`: the cell's nearest point must lie within
-// `radius`.
-surfel_reaches_cell: fn (position: vec3f, normal: vec3f, radius: f32, cell: vec3f, cascade: u32) -> bool {
+// Returns the world-space center of the cell at `cell` inside `cascade`.
+surfel_cell_center: fn (cell: vec3f, cascade: u32) -> vec3f {
 	let scale: f32 = f32(1 << cascade);
 	let half_side: f32 = f32(SURFEL_GRID_SIDE) * 0.5;
-	let half_extent: f32 = SURFEL_CELL_SIZE * 0.5 * scale;
-	let center: vec3f = surfel_parameters.grid_origin
+	return surfel_parameters.grid_origin
 		+ vec3f(cell.x + 0.5 - half_side, cell.y + 0.5 - half_side, cell.z + 0.5 - half_side) * (SURFEL_CELL_SIZE * scale);
-	let local: vec3f = position - center;
+}
+
+// Returns at most the disc distance from a surfel at `position`, facing `normal`, to any point of the cell at `cell`
+// inside `cascade`: the length to the cell's nearest point, which is exact, stretched by the least any of the cell's
+// points lies along the normal, which bounds that part from below. A lookup anywhere in the cell weighs the surfel no
+// more than this distance allows, so a surfel whose lookup radius stops short of it can't light the cell.
+surfel_cell_reach: fn (position: vec3f, normal: vec3f, cell: vec3f, cascade: u32) -> f32 {
+	let half_extent: f32 = SURFEL_CELL_SIZE * 0.5 * f32(1 << cascade);
+	let local: vec3f = position - surfel_cell_center(cell, cascade);
 	let outside: vec3f = vec3f(
-		local.x - clamp(local.x, 0.0 - half_extent, half_extent),
-		local.y - clamp(local.y, 0.0 - half_extent, half_extent),
-		local.z - clamp(local.z, 0.0 - half_extent, half_extent)
+		local.x - clamp(local.x, -half_extent, half_extent),
+		local.y - clamp(local.y, -half_extent, half_extent),
+		local.z - clamp(local.z, -half_extent, half_extent)
 	);
-	return surfel_distance(outside, normal) < radius;
+	// The cell's points lie along the normal within its half extent times the normal's L1 length of its center's offset.
+	let along: f32 = max(0.0, abs(dot(local, normal)) - half_extent * (abs(normal.x) + abs(normal.y) + abs(normal.z)));
+	return length(outside) * (1.0 + along * SURFEL_NORMAL_SQUISH);
+}
+
+// Returns the listing bucket of a cell whose reach is `reach` from a surfel whose lookup radius is `lookup_radius`:
+// the shell of the lookup radius it starts in, nearest first, or SURFEL_LISTING_BUCKETS when the surfel doesn't reach
+// it.
+surfel_listing_bucket: fn (reach: f32, lookup_radius: f32) -> u32 {
+	if (reach >= lookup_radius) {
+		return SURFEL_LISTING_BUCKETS;
+	}
+	return min(u32(reach / lookup_radius * f32(SURFEL_LISTING_BUCKETS)), SURFEL_LISTING_BUCKETS - 1);
+}
+
+// Returns whether the cell at `cell` inside `cascade` lists the surfel at `position`, facing `normal`, near the front of
+// its list: whether the cell's center lies within SURFEL_NEAR_SHARE of the surfel's lookup radius.
+surfel_cell_is_near: fn (position: vec3f, normal: vec3f, lookup_radius: f32, cell: vec3f, cascade: u32) -> bool {
+	return surfel_distance(surfel_cell_center(cell, cascade) - position, normal) < lookup_radius * SURFEL_NEAR_SHARE;
 }
 
 // The cells of one cascade that a surfel's bounding cube covers, from `first` through `last` on each axis.
@@ -318,11 +421,74 @@ surfel_cell_range: fn (position: vec3f, radius: f32, cascade: u32) -> SurfelCell
 	);
 }
 
-// Returns the one or two cascades a surfel at `position` is listed in: the cascade of its center, and the next or
-// previous one when it lies within a fifth of a cascade of the boundary. The second is the first when there is one.
+// Returns the one or two cascades a surfel at `position` is listed in: the cascades SURFEL_CASCADE_MARGIN on either
+// side of its center's, which are the same away from a boundary, so every point within its lookup radius finds it.
 surfel_cascades: fn (position: vec3f) -> vec2u {
 	let level: f32 = surfel_cascade_level(surfel_cascade_zero_cell(position - surfel_parameters.grid_origin));
-	return vec2u(surfel_cascade(level - 0.2), surfel_cascade(level + 0.2));
+	return vec2u(surfel_cascade(level - SURFEL_CASCADE_MARGIN), surfel_cascade(level + SURFEL_CASCADE_MARGIN));
+}
+
+// Returns how many rays the surfel in `slot` asked for this frame, in whichever class it asked in.
+surfel_wanted_rays: fn (slot: u32) -> u32 {
+	return surfel_ray_wants[slot] + surfel_ray_wants[surfel_parameters.surfel_capacity + slot];
+}
+
+// Returns the place of a class's wanted ray `index` in the class's window: `granted` rays from `cursor`, wrapping around
+// the class's `wanted` rays. Returns NO_SURFEL when the window leaves the ray out.
+surfel_window_ray: fn (index: u32, wanted: u32, cursor: u32, granted: u32) -> u32 {
+	let ray: u32 = (index + wanted - cursor) % wanted;
+	if (ray < granted) {
+		return ray;
+	}
+	return NO_SURFEL;
+}
+
+// Returns where a class's next window starts: after the `granted` rays of the window at `cursor`, wrapped around the
+// class's `wanted` rays, or zero when the class wants none.
+surfel_next_cursor: fn (cursor: u32, granted: u32, wanted: u32) -> u32 {
+	if (wanted == 0) {
+		return 0;
+	}
+	return (cursor + granted) % wanted;
+}
+
+// Returns the frame's ray the budget granted to ray `sample` of the surfel in `slot`, or NO_SURFEL when the budget
+// left it out this frame. Each class grants a window of its wanted rays that starts where its last window ended and
+// wraps around them; the frame's rays list the priority window first, then the regular one. The scatter, the trace, and
+// the integrate pass all find a ray's place with this.
+surfel_granted_ray: fn (slot: u32, sample: u32) -> u32 {
+	if (surfel_ray_wants[slot] != 0) {
+		return surfel_window_ray(
+			surfel_scan[SURFEL_CELL_COUNT + slot] - surfel_pool.cell_entries + sample,
+			surfel_pool.priority_wanted,
+			surfel_pool.priority_cursor,
+			surfel_pool.priority_rays
+		);
+	}
+	let regular_ray: u32 = surfel_window_ray(
+		surfel_scan[SURFEL_CELL_COUNT + surfel_parameters.surfel_capacity + slot]
+			- surfel_pool.cell_entries
+			- surfel_pool.priority_wanted
+			+ sample,
+		surfel_pool.regular_wanted,
+		surfel_pool.regular_cursor,
+		surfel_pool.regular_rays
+	);
+	if (regular_ray == NO_SURFEL) {
+		return NO_SURFEL;
+	}
+	return surfel_pool.priority_rays + regular_ray;
+}
+
+// Votes the surfel in `slot` out because its surface is gone or geometry buries it, and counts it in the pool's `lost`.
+surfel_lose: fn (slot: u32) -> void {
+	atomic_max(surfel_states[slot].touched, SURFEL_KILL);
+	atomic_add(surfel_pool.lost, 1);
+}
+
+// Returns how much lookups trust a surfel whose estimate holds `rays` rays: from zero, fully at SURFEL_MATURE_RAYS.
+surfel_trust: fn (rays: f32) -> f32 {
+	return clamp(rays / SURFEL_MATURE_RAYS, 0.0, 1.0);
 }
 
 // Packs a unit normal into two octahedral 16-bit coordinates.
@@ -385,9 +551,9 @@ surfel_to_local: fn (basis: SurfelBasis, normal: vec3f, direction: vec3f) -> vec
 	return vec3f(dot(direction, basis.tangent), dot(direction, basis.bitangent), dot(direction, normal));
 }
 
-// Maps a point of the unit square to a direction of the hemisphere around z, so equal areas map to equal solid angles:
-// Shirley and Chiu's concentric map onto the unit disk, then the disk's equal-area lift onto the hemisphere.
-surfel_square_to_hemisphere: fn (point: vec2f) -> vec3f {
+// Maps a point of the unit square to a point of the unit disk, so equal areas map to equal areas: Shirley and Chiu's
+// concentric map, which keeps neighboring points of the square neighbors on the disk.
+surfel_square_to_disk: fn (point: vec2f) -> vec2f {
 	let a: f32 = point.x * 2.0 - 1.0;
 	let b: f32 = point.y * 2.0 - 1.0;
 	let radius: f32 = 0.0;
@@ -399,9 +565,24 @@ surfel_square_to_hemisphere: fn (point: vec2f) -> vec3f {
 		radius = b;
 		angle = 1.57079632679 - 0.785398163397 * (a / b);
 	}
-	let squared: f32 = radius * radius;
-	let lift: f32 = radius * sqrt(max(0.0, 2.0 - squared));
-	return vec3f(lift * cos(angle), lift * sin(angle), 1.0 - squared);
+	return vec2f(radius * cos(angle), radius * sin(angle));
+}
+
+// Maps a point of the unit square to a direction of the hemisphere around z, so equal areas map to equal solid angles:
+// the concentric map onto the unit disk, then the disk's equal-area lift onto the hemisphere.
+surfel_square_to_hemisphere: fn (point: vec2f) -> vec3f {
+	let disk: vec2f = surfel_square_to_disk(point);
+	let squared: f32 = dot(disk, disk);
+	let lift: f32 = sqrt(max(0.0, 2.0 - squared));
+	return vec3f(disk.x * lift, disk.y * lift, 1.0 - squared);
+}
+
+// Maps a point of the unit square to a direction of the hemisphere around z with the cosine-weighted density: the
+// concentric map onto the unit disk, projected up onto the hemisphere (Malley's method). A low-discrepancy set of points
+// stays well spread over the hemisphere.
+surfel_square_to_cosine: fn (point: vec2f) -> vec3f {
+	let disk: vec2f = surfel_square_to_disk(point);
+	return vec3f(disk.x, disk.y, sqrt(max(0.0, 1.0 - dot(disk, disk))));
 }
 
 // Returns the point of the unit square that `surfel_square_to_hemisphere` maps to `direction`, a unit vector with z at
@@ -656,4 +837,67 @@ surfel_hash_combine: fn (x: u32, y: u32) -> u32 {
 // Maps a hash to a uniform number in [0, 1).
 surfel_unit: fn (hash: u32) -> f32 {
 	return f32(hash >> 8) / 16777216.0;
+}
+
+// Returns point `index` of the R2 low-discrepancy sequence ("The Unreasonable Effectiveness of Quasirandom Sequences",
+// Martin Roberts, 2018), shifted by a rotation that `seed` picks, so each surfel walks its own sequence. Consecutive
+// points spread evenly over the unit square however many a surfel takes. The steps are 1/g and 1/g² for the plastic
+// number g, as fractions of 2^32, so the sequence stays exact at any index.
+surfel_r2: fn (index: u32, seed: u32) -> vec2f {
+	return vec2f(surfel_unit(index * 3242174889 + seed), surfel_unit(index * 2447445413 + surfel_hash(seed)));
+}
+
+// Takes a free slot for a new surfel: one from the free stack while it holds any, then one no surfel has used yet.
+// Returns NO_SURFEL when the pool is full.
+surfel_take_slot: fn () -> u32 {
+	let capacity: u32 = surfel_parameters.surfel_capacity;
+	let top: u32 = atomic_sub(surfel_pool.free_count, 1);
+	if (top != 0 && top <= capacity) {
+		return surfel_free[top - 1];
+	}
+	// The stack was empty: undo the take, and use a slot no surfel has used yet.
+	atomic_add(surfel_pool.free_count, 1);
+	let unused: u32 = atomic_add(surfel_pool.high_water, 1);
+	if (unused >= capacity) {
+		atomic_sub(surfel_pool.high_water, 1);
+		return NO_SURFEL;
+	}
+	return unused;
+}
+
+// Starts a surfel in `slot` at `position`, facing the packed `normal`, `bounce` bounces from the camera.
+//
+// Its estimate starts from `light`, worth `prior` rays: a parent's light, which the surfel's own rays then outweigh as
+// they arrive, or nothing, worth no rays. Lookups trust it as much as those rays allow. The guide and the radial depth
+// start empty, so the first rays follow the cosine-weighted distribution and nothing hides the new surfel's light. The
+// next frame's grid lists it.
+surfel_start: fn (slot: u32, position: vec3f, normal: u32, light: vec4f, prior: f32, bounce: u32) -> void {
+	surfel_records[slot] = SurfelRecord(position, surfel_radius(position), normal, surfel_trust(prior), vec4f16(light));
+	surfel_irradiance[slot] = SurfelIrradiance(
+		light,
+		light,
+		vec4f(0.0, 0.0, 0.0, 0.0),
+		1.0,
+		1.0,
+		prior,
+		0.0,
+		prior,
+		0.0,
+		surfel_parameters.frame_index,
+		0
+	);
+	for (let cell: u32 = 0; cell < SURFEL_GUIDE_CELLS; cell = cell + 1) {
+		surfel_guides[slot * SURFEL_GUIDE_CELLS + cell] = f16(0.0);
+	}
+	for (let cell: u32 = 0; cell < SURFEL_DEPTH_CELLS; cell = cell + 1) {
+		surfel_depths[slot * SURFEL_DEPTH_CELLS + cell] = vec4f(0.0, 0.0, 0.0, 0.0);
+	}
+	surfel_clearances[slot] = 0.0;
+	surfel_states[slot].life = 1;
+	atomic_store(surfel_states[slot].touched, 0);
+	surfel_states[slot].cell = NO_SURFEL;
+	surfel_states[slot].listing = SURFEL_LISTING_BUCKETS;
+	surfel_states[slot].supported = 0;
+	surfel_states[slot].bounce = bounce;
+	atomic_add(surfel_pool.spawned, 1);
 }

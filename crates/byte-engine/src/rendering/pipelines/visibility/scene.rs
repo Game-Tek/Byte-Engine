@@ -243,21 +243,6 @@ impl VisibilityScene {
 		}
 	}
 
-	/// Returns the scene's suns as surfel rays' hits see them: the direction each sun's light travels, and the
-	/// illuminance it gives a surface that faces it.
-	pub(crate) fn surfel_suns(&self) -> impl Iterator<Item = super::render_pass::SurfelSun> + '_ {
-		self.lights.iter().filter_map(|(_, light, transform)| match light {
-			Lights::Direction(light) => {
-				let direction = math::direction_from_orientation(transform.orientation()).into_maths();
-				Some(super::render_pass::SurfelSun::new(
-					[direction.x, direction.y, direction.z],
-					[light.color.x, light.color.y, light.color.z],
-				))
-			}
-			Lights::Cone(_) | Lights::Point(_) => None,
-		})
-	}
-
 	/// Uploads the current scene lights and the frame's lighting scales to the GPU buffer used by material evaluation.
 	///
 	/// `exposure` is the camera's linear exposure and `environment_intensity` calibrates the environment map; see

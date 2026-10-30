@@ -23,28 +23,11 @@ SSGI_FILTER_WEIGHTS: const f32[5] = f32[5](0.0544886845, 0.2442013420, 0.4026199
 SSGI_FILTER_INVERSE_DEPTH_VARIANCE: const f32 = 200.0;
 // A 1% sigma, relative to the center's depth, for a neighbor's distance from the center's tangent plane.
 SSGI_FILTER_INVERSE_PLANE_VARIANCE: const f32 = 10000.0;
-// Neighbors whose normal differs from the center's by more than about 45 degrees lie on another surface. Up to about
-// 25 degrees, as across a curved limb, they count fully.
-SSGI_FILTER_NORMAL_REJECT_COSINE: const f32 = 0.7;
-SSGI_FILTER_NORMAL_ACCEPT_COSINE: const f32 = 0.9;
 // The share of the new value is 1 - SSGI_HISTORY_WEIGHT, so history converges over about ten frames.
 SSGI_HISTORY_WEIGHT: const f32 = 0.9;
 // A history texel is reused only when last frame's depth there is within this relative distance of the reprojected
 // point's depth.
 SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
-
-// Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing
-// normal agrees with any other, so depth decides alone.
-normal_agreement: fn (a: vec3f, b: vec3f) -> f32 {
-	if (dot(a, a) == 0.0 || dot(b, b) == 0.0) {
-		return 1.0;
-	}
-	return clamp(
-		(dot(a, b) - SSGI_FILTER_NORMAL_REJECT_COSINE) / (SSGI_FILTER_NORMAL_ACCEPT_COSINE - SSGI_FILTER_NORMAL_REJECT_COSINE),
-		0.0,
-		1.0
-	);
-}
 
 // Returns how much a neighbor belongs to the center's surface: one on the center's tangent plane with a similar
 // normal, falling to zero for another surface. Depth alone cannot separate surfaces that touch: where a boot stands

@@ -1,0 +1,213 @@
+// The temporal accumulation of surfel GI, which the resolve runs for each half-resolution pixel: the previous frame's
+// history, its weights, depth, and normals, the history and weights each pixel writes, and the blend between them. List
+// it after `surfel-resolve.besl`, whose parameters it reads.
+//
+// The history is the previous frame's `Surfel History`, reprojected to where the previous camera saw this pixel's
+// surface: from the four texels around that point, each counting only where the previous frame's depth and normal show
+// the same surface, as SSGI's temporal pass checks. Each history texel also holds the confidence it accumulated, which
+// a texel the previous frame didn't see this surface in lacks. The pixel then blends its estimate in with the weight of
+// its confidence, so a surfel that fades in, a surfel that dies, and a pixel no surfel covers for a moment change the
+// light gradually instead of at once. The history keeps at most SURFEL_HISTORY_LIMIT frames' worth of confidence.
+//
+// The history also keeps how much its luminance varies from frame to frame. An estimate many deviations away from it
+// means the light changed, as when a lamp turns off or a surfel's estimate catches up after a change, and the history
+// gives up most of its confidence, so the light follows within a frame or two instead of over the whole window.
+// Next, the spatial pass filters the history for material evaluation and fills what it doesn't cover.
+//
+// It runs inside the resolve rather than as a pass of its own, so the estimate, its confidence, and the pixel's surface
+// stay in registers instead of a round trip through images, which saved a dispatch and four fetches per pixel.
+//
+// It adapts the temporal filter of the ray-traced diffuse GI in kajiya by Tomasz Stachowiak (MIT License, Copyright (c)
+// 2019 Embark Studios), which counts its history's samples up to a limit and cuts the limit back when the light changes
+// past its variance. See THIRD_PARTY_NOTICES.md.
+
+// The most confidence a pixel's history holds: about this many frames of fully trusted estimates.
+SURFEL_HISTORY_LIMIT: const f32 = 16.0;
+// A history texel counts only where the previous frame's depth there lies within this relative distance of the
+// reprojected point's depth.
+SURFEL_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
+// The deviation a change is measured in: the history's own, plus a share of its luminance and a little pre-exposed
+// light, so the first frames, whose deviation isn't known yet, and dark pixels don't read noise as change.
+SURFEL_CHANGE_RELATIVE_FLOOR: const f32 = 0.05;
+SURFEL_CHANGE_ABSOLUTE_FLOOR: const f32 = 0.001;
+// An estimate this many deviations from the history starts to replace it, and at SURFEL_CHANGE_FULL deviations the
+// history keeps at most one frame's worth of confidence.
+SURFEL_CHANGE_START: const f32 = 3.0;
+SURFEL_CHANGE_FULL: const f32 = 8.0;
+// The deviation a pixel's first estimate starts with, as a share of its luminance: a wide guess, which the next
+// frames' estimates narrow.
+SURFEL_FIRST_DEVIATION: const f32 = 0.25;
+
+// Returns the luminance of the light channels of `value`.
+surfel_temporal_luma: fn (value: vec4f) -> f32 {
+	return value.x * 0.2126 + value.y * 0.7152 + value.z * 0.0722;
+}
+
+// The previous frame's `Surfel History` and `Surfel History Weights`.
+surfel_previous_history: descriptor<{ type: Texture2D, binding: 1222, access: read }>;
+surfel_previous_weights: descriptor<{ type: Texture2D, binding: 1223, access: read }>;
+// The previous frame's linear depth pyramid, whose mip zero matches the history's texels.
+surfel_previous_depth: descriptor<{ type: Texture2D, binding: 1224, access: read }>;
+// The previous frame's `SSGI Normals`.
+surfel_previous_normals: descriptor<{ type: Texture2D, binding: 1226, access: read }>;
+// This frame's `Surfel History`: pre-exposed light in RGB and the hit fraction in alpha.
+surfel_history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1227, access: write }>;
+// This frame's `Surfel History Weights`: the confidence the history holds in R, and the variance of its light's
+// luminance in G.
+surfel_weights_output: descriptor<{ type: StorageImage<rg16f>, binding: 1228, access: write }>;
+
+// The previous frame's history at one texel, as the reprojection reads it.
+SurfelHistoryTexel: struct {
+	light: vec4f,
+	weights: vec4f,
+	depth: f32,
+	normal: vec4f,
+}
+
+// Reads the previous frame's history at `coordinate`: its light, its weights, and the depth and normal it was stored
+// for, in one batch of independent fetches.
+surfel_history_texel: fn (coordinate: vec2u) -> SurfelHistoryTexel {
+	return SurfelHistoryTexel(
+		fetch(surfel_previous_history, coordinate),
+		fetch(surfel_previous_weights, coordinate),
+		fetch(surfel_previous_depth, coordinate).x,
+		fetch(surfel_previous_normals, coordinate)
+	);
+}
+
+// Returns how much a history texel counts toward the reprojected history: its bilinear share where the previous frame
+// saw this pixel's surface there, a depth within SURFEL_DISOCCLUSION_TOLERANCE of the reprojected point's `depth` and
+// a normal that agrees with `normal`, and zero elsewhere, which includes a texel left unread with no depth.
+surfel_history_weight: fn (texel: SurfelHistoryTexel, bilinear: f32, depth: f32, normal: vec3f) -> f32 {
+	if (texel.depth == 0.0 || abs(texel.depth - depth) > depth * SURFEL_DISOCCLUSION_TOLERANCE) {
+		return 0.0;
+	}
+	return bilinear * normal_agreement(normal, decode_stored_normal(texel.normal));
+}
+
+// Returns `value` weighed by a history texel's `weight`, or nothing for a texel that doesn't count. The test, rather
+// than a product with zero, keeps out a NaN that an unwritten texel may hold.
+surfel_history_share: fn (value: vec4f, weight: f32) -> vec4f {
+	if (weight > 0.0) {
+		return value * weight;
+	}
+	return vec4f(0.0, 0.0, 0.0, 0.0);
+}
+
+// Blends `estimate`, the light of the surfels around the half-resolution `pixel`, held with `confidence` from zero to
+// one, into the history the previous frame kept where it saw the pixel's surface, and writes the pixel's history and
+// weights. `position` and `normal` are the surface's view-space position and normal; a zero normal agrees with any
+// history normal, so depth decides alone.
+surfel_temporal_accumulate: fn (pixel: vec2u, position: vec3f, normal: vec3f, estimate: vec4f, confidence: f32) -> void {
+	let extent: vec2u = image_size(surfel_history_output);
+
+	// The history where the previous frame saw this surface, and the confidence and variance it held there.
+	let history: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let history_confidence: f32 = 0.0;
+	let history_variance: f32 = 0.0;
+	let clip: vec4f = surfel_resolve_parameters.current_view_to_previous_clip
+		* vec4f(position.x, position.y, position.z, 1.0);
+	// History is selected with a branch, not weighted by zero, because an unwritten history texel may hold NaN.
+	if (surfel_resolve_parameters.history_valid != 0 && clip.w > 0.0) {
+		// Both normals must use the previous camera's axes; w = 0 leaves out the camera's translation.
+		let previous_normal_4: vec4f = surfel_resolve_parameters.current_view_to_previous_view
+			* vec4f(normal.x, normal.y, normal.z, 0.0);
+		let previous_normal: vec3f = vec3f(previous_normal_4.x, previous_normal_4.y, previous_normal_4.z);
+		let uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
+		let history_position: vec2f = vec2f(uv.x * f32(extent.x) - 0.5, uv.y * f32(extent.y) - 0.5);
+		let base_x: f32 = floor(history_position.x);
+		let base_y: f32 = floor(history_position.y);
+		let fraction_x: f32 = history_position.x - base_x;
+		let fraction_y: f32 = history_position.y - base_y;
+		// Each tap's bilinear share, zero for a tap outside the image. A tap the reprojected point doesn't lean toward
+		// needs no fetches, which for a still camera is three of the four.
+		let left: f32 = if (base_x >= 0.0 && base_x < f32(extent.x)) { 1.0 - fraction_x } else { 0.0 };
+		let right: f32 = if (base_x + 1.0 >= 0.0 && base_x + 1.0 < f32(extent.x)) { fraction_x } else { 0.0 };
+		let top: f32 = if (base_y >= 0.0 && base_y < f32(extent.y)) { 1.0 - fraction_y } else { 0.0 };
+		let bottom: f32 = if (base_y + 1.0 >= 0.0 && base_y + 1.0 < f32(extent.y)) { fraction_y } else { 0.0 };
+		let bilinear: vec4f = vec4f(left * top, right * top, left * bottom, right * bottom);
+		// Every tap's fetches issue before any of them is read, so the taps' reads overlap instead of waiting on each
+		// other's depth and normal tests.
+		let x_0: u32 = u32(max(base_x, 0.0));
+		let x_1: u32 = u32(max(base_x + 1.0, 0.0));
+		let y_0: u32 = u32(max(base_y, 0.0));
+		let y_1: u32 = u32(max(base_y + 1.0, 0.0));
+		let empty: SurfelHistoryTexel = SurfelHistoryTexel(
+			vec4f(0.0, 0.0, 0.0, 0.0),
+			vec4f(0.0, 0.0, 0.0, 0.0),
+			0.0,
+			vec4f(0.0, 0.0, 0.0, 0.0)
+		);
+		let texel_0: SurfelHistoryTexel = empty;
+		let texel_1: SurfelHistoryTexel = empty;
+		let texel_2: SurfelHistoryTexel = empty;
+		let texel_3: SurfelHistoryTexel = empty;
+		if (bilinear.x >= 0.001) {
+			texel_0 = surfel_history_texel(vec2u(x_0, y_0));
+		}
+		if (bilinear.y >= 0.001) {
+			texel_1 = surfel_history_texel(vec2u(x_1, y_0));
+		}
+		if (bilinear.z >= 0.001) {
+			texel_2 = surfel_history_texel(vec2u(x_0, y_1));
+		}
+		if (bilinear.w >= 0.001) {
+			texel_3 = surfel_history_texel(vec2u(x_1, y_1));
+		}
+		let weight_0: f32 = surfel_history_weight(texel_0, bilinear.x, clip.w, previous_normal);
+		let weight_1: f32 = surfel_history_weight(texel_1, bilinear.y, clip.w, previous_normal);
+		let weight_2: f32 = surfel_history_weight(texel_2, bilinear.z, clip.w, previous_normal);
+		let weight_3: f32 = surfel_history_weight(texel_3, bilinear.w, clip.w, previous_normal);
+		let light_sum: vec4f = surfel_history_share(texel_0.light, weight_0)
+			+ surfel_history_share(texel_1.light, weight_1)
+			+ surfel_history_share(texel_2.light, weight_2)
+			+ surfel_history_share(texel_3.light, weight_3);
+		// The weights' confidence and variance.
+		let weights_sum: vec4f = surfel_history_share(texel_0.weights, weight_0)
+			+ surfel_history_share(texel_1.weights, weight_1)
+			+ surfel_history_share(texel_2.weights, weight_2)
+			+ surfel_history_share(texel_3.weights, weight_3);
+		let total: f32 = weight_0 + weight_1 + weight_2 + weight_3;
+		if (total > 0.001) {
+			// Both the light and its variance move to this frame's exposure. Alpha stays the hit fraction.
+			let ratio: f32 = surfel_resolve_parameters.history_exposure_ratio;
+			let light: vec4f = light_sum * (1.0 / total);
+			history = vec4f(light.x * ratio, light.y * ratio, light.z * ratio, light.w);
+			history_variance = weights_sum.y / total * ratio * ratio;
+			// Texels that saw another surface carry no confidence, so a partly valid history counts for less.
+			history_confidence = weights_sum.x;
+		}
+	}
+
+	let estimate_luma: f32 = surfel_temporal_luma(estimate);
+	let history_luma: f32 = surfel_temporal_luma(history);
+	if (history_confidence > 0.0 && confidence > 0.0) {
+		let deviation: f32 = sqrt(max(history_variance, 0.0))
+			+ SURFEL_CHANGE_RELATIVE_FLOOR * history_luma
+			+ SURFEL_CHANGE_ABSOLUTE_FLOOR;
+		let change: f32 = smoothstep(
+			SURFEL_CHANGE_START,
+			SURFEL_CHANGE_FULL,
+			abs(estimate_luma - history_luma) / deviation
+		);
+		history_confidence = mix(history_confidence, min(history_confidence, 1.0), change * confidence);
+	}
+	history_confidence = min(history_confidence, SURFEL_HISTORY_LIMIT);
+
+	let accumulated: f32 = history_confidence + confidence;
+	if (accumulated < 0.0001) {
+		// Neither this frame nor the history knows the pixel's light; the spatial pass fills it.
+		write(surfel_history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		write(surfel_weights_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		return;
+	}
+	let blended: vec4f = (history * history_confidence + estimate * confidence) * (1.0 / accumulated);
+	// The luminance's variance around the blend: Welford's update, each frame weighed by its confidence.
+	let variance: f32 = (history_variance * history_confidence
+		+ confidence * (estimate_luma - history_luma) * (estimate_luma - surfel_temporal_luma(blended))) / accumulated;
+	if (history_confidence == 0.0) {
+		variance = SURFEL_FIRST_DEVIATION * SURFEL_FIRST_DEVIATION * estimate_luma * estimate_luma;
+	}
+	write(surfel_history_output, pixel, blended);
+	write(surfel_weights_output, pixel, vec4f(accumulated, max(variance, 0.0), 0.0, 0.0));
+}

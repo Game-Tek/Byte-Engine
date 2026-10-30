@@ -1,10 +1,13 @@
 // Traces one of the frame's surfel rays against the scene's top level.
 //
-// A surfel's guide steers most of its rays once it is a few frames old: a ray picks one of the guide's equal-area
-// cells in proportion to the light the cell held lately, then a uniform direction inside it. The rest follow the
-// cosine-weighted distribution, so every direction keeps being sampled. Each ray carries the weight that turns the
-// mixture back into a cosine-weighted average of its light, and says which of the two drew it, because only the
-// cosine-weighted rays count toward the hit fraction.
+// A surfel's guide steers a share of its rays that grows with the rays the surfel received, up to half of them from
+// SURFEL_GUIDE_RAYS on: a ray picks one of the guide's equal-area cells in proportion to the light the cell held
+// lately, then a uniform direction inside it. The rest follow the cosine-weighted distribution, so every direction
+// keeps being sampled. Those rays walk the surfel's own R2 sequence ("The Unreasonable Effectiveness of Quasirandom
+// Sequences" by Martin Roberts), which continues from update to update, so even a surfel that gets four rays at a time
+// covers its hemisphere evenly instead of in random clumps. Each ray carries the weight that turns the mixture back
+// into a cosine-weighted average of its light, and says which of the two drew it, because only the cosine-weighted rays
+// count toward the hit fraction.
 //
 // A miss writes its result at once, without light: the integrate pass brings back the environment's light from its
 // direction. A hit keeps what the shade pass needs to rebuild it, and its sort key, which counts it among the hits on
@@ -14,15 +17,17 @@
 
 main: fn (input: StageInput) -> void {
 	let ray: u32 = input.thread_id.x;
+	// The frame's rays: the priority window's, then the regular one's.
+	let rays: u32 = surfel_pool.priority_rays + surfel_pool.regular_rays;
 	if (ray == 0) {
-		ray_hit_sort.rays = surfel_pool.rays;
+		ray_hit_sort.rays = rays;
 	}
-	if (ray >= surfel_pool.rays) {
+	if (ray >= rays) {
 		return;
 	}
 	let ray_record: u32 = surfel_rays[ray];
-	let slot: u32 = ray_record & SURFEL_RAY_SLOT_MASK;
-	let sample: u32 = ray_record >> SURFEL_RAY_SLOT_BITS;
+	let slot: u32 = ray_record & SURFEL_SLOT_MASK;
+	let sample: u32 = ray_record >> SURFEL_SLOT_BITS;
 	let surfel: SurfelRecord = surfel_records[slot];
 	let normal: vec3f = decode_surfel_normal(surfel.normal);
 	let seed: u32 = surfel_hash_combine(surfel_hash_combine(slot, surfel_parameters.frame_index), sample);
@@ -31,15 +36,17 @@ main: fn (input: StageInput) -> void {
 
 	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
 	let mass: f32 = surfel_irradiance[slot].guide_mass;
+	// The rays the surfel received before this frame, which also number its rays along its R2 sequence.
+	let received: f32 = surfel_irradiance[slot].rays;
 	let share: f32 = 0.0;
 	if (mass > 0.000001) {
-		share = SURFEL_GUIDE_SHARE * clamp(f32(surfel_states[slot].frames) / SURFEL_GUIDE_FRAMES, 0.0, 1.0);
+		share = SURFEL_GUIDE_SHARE * clamp(received / SURFEL_GUIDE_RAYS, 0.0, 1.0);
 	}
 	let point: vec2f = vec2f(0.0, 0.0);
 	let local: vec3f = vec3f(0.0, 0.0, 1.0);
 	let guided: u32 = 0;
 	if (surfel_unit(seed) < share) {
-		guided = 1;
+		guided = SURFEL_RAY_GUIDED;
 		// The cell whose run of the guide's cumulative weights holds the target.
 		let target: f32 = surfel_unit(surfel_hash(surfel_hash(jitter_seed))) * mass;
 		let cell: u32 = SURFEL_GUIDE_CELLS - 1;
@@ -57,9 +64,7 @@ main: fn (input: StageInput) -> void {
 		);
 		local = surfel_square_to_hemisphere(point);
 	} else {
-		let radius: f32 = sqrt(jitter.x);
-		let angle: f32 = 6.28318530718 * jitter.y;
-		local = vec3f(radius * cos(angle), radius * sin(angle), sqrt(max(0.0, 1.0 - jitter.x)));
+		local = surfel_square_to_cosine(surfel_r2(u32(received) + sample, surfel_hash(slot)));
 		point = surfel_hemisphere_to_square(local);
 	}
 	// Each guide cell spans 2π / 64 steradians, so a direction in a cell has the cell's share of the guide over that.
@@ -84,7 +89,7 @@ main: fn (input: StageInput) -> void {
 		ray_hit_keys[ray] = NO_HIT;
 		return;
 	}
-	// The shade pass fills in the light; the rest of the result is known now.
+	// The shade pass fills in the light and whether the ray hit a back face; the rest of the result is known now.
 	surfel_ray_results[ray] = SurfelRayResult(vec3f(0.0, 0.0, 0.0), hit.distance, packed_point, weight, guided);
 
 	// The geometry table leads the hit to the frame's record of the primitive it hit, which names its material.

@@ -1,12 +1,18 @@
 // Gathers the light of the surfels around each half-resolution pixel, and lets each 8x8 tile vote on which surfels
 // to spawn, keep, and kill.
 //
-// Each pixel rebuilds its surface from the linear depth pyramid, reads up to SURFEL_LOOKUP_LIMIT surfels of its grid
-// cell, and blends their light by how close they lie, how well they face it, and how far they faded in. It writes the
-// blend to `SSGI History` and its normal to `SSGI Normals`, the images SSGI writes, so material evaluation reads either
-// source the same way. While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most
-// one spawn, at its least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the
-// allocate pass turns the spawn requests into surfels.
+// Each pixel rebuilds its surface from the linear depth pyramid and reads the first SURFEL_LOOKUP_LIMIT surfels of its
+// grid cell's list, which starts with the surfels near the cell's center. It keeps two things apart. Its estimate
+// blends the light of the surfels that can see it by how close they lie and how well they face it, normalized over how
+// much lookups trust each one. Its confidence is how much of its coverage those trusted surfels make up: a lone new
+// surfel's light shows at once in the estimate, but with only the confidence its rays earned. It blends the estimate
+// into the pixel's validated history by that confidence, with `surfel_temporal_accumulate`, and writes its normal to
+// `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every surfel that would light it
+// takes no light, with the confidence of the surfels that hide it.
+//
+// While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most one spawn, at its
+// least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the allocate pass turns
+// the spawn requests into surfels.
 
 // Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
@@ -26,8 +32,7 @@ SURFEL_SPAWN_COVERAGE: const f32 = 0.1;
 SURFEL_SPAWN_SECOND_WEIGHT: const f32 = 0.4;
 // A surfel keeps a same-cell pixel's surfels alive while they face it this much, as a cosine.
 SURFEL_KEEP_ALIVE_FACING: const f32 = 0.8;
-// A spawn copies the light of a surfel at least this old that faces its pixel this much.
-SURFEL_PARENT_FRAMES: const u32 = 8;
+// A spawn copies the light of a surfel lookups fully trust that faces its pixel this much.
 SURFEL_PARENT_FACING: const f32 = 0.9;
 // The debug views after the six of material evaluation, in the pipeline manager's declaration.
 SURFELS_VIEW: const u32 = 6;
@@ -45,12 +50,6 @@ tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f
 		tile_depth[center_index + 2 * stride],
 		tile_depth[center_index - 2 * stride]
 	);
-}
-
-// Transforms a view-space point or direction (w = 0) of the sink's camera to world space.
-to_world: fn (view: vec3f, w: f32) -> vec3f {
-	let world: vec4f = surfel_resolve_parameters.view_to_world * vec4f(view.x, view.y, view.z, w);
-	return vec3f(world.x, world.y, world.z);
 }
 
 // Returns a color that tells neighboring surfels apart in the surfels debug view.
@@ -72,7 +71,7 @@ write_debug_view: fn (slot: u32, pixel: vec2u, color: vec4f) -> void {
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
-	let extent: vec2u = image_size(history_output);
+	let extent: vec2u = image_size(normal_output);
 	let local: vec2u = vec2u(lane % SURFEL_RESOLVE_WORKGROUP_WIDTH, lane / SURFEL_RESOLVE_WORKGROUP_WIDTH);
 	let workgroup_origin: vec2u = pixel - local;
 	if (lane == 0) {
@@ -99,9 +98,10 @@ main: fn (input: StageInput) -> void {
 	let center_z: f32 = tile_depth[center_index];
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let view_normal: vec3f = vec3f(0.0, 0.0, 0.0);
+	let center_position: vec3f = vec3f(0.0, 0.0, 0.0);
 	let world_position: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (center_z != 0.0) {
-		let center_position: vec3f = view_position(pixel_f, center_z);
+		center_position = view_position(pixel_f, center_z);
 		view_normal = tangent_normal(
 			tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
 			tile_axis_tangent(center_index, SURFEL_RESOLVE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
@@ -112,10 +112,13 @@ main: fn (input: StageInput) -> void {
 	let surface: bool = in_image && dot(view_normal, view_normal) != 0.0;
 	let normal: vec3f = to_world(view_normal, 0.0);
 
-	// The blend of the surfels' light, and their trust in it. The trust of the surfels the pixel lies hidden from, by
-	// their radial depth, adds up apart.
+	// The trusted light of the surfels that see the pixel and its trusted weight, and their coverage: their weights by
+	// distance, facing, and visibility alone. The surfels the pixel lies hidden from, by their radial depth, add up
+	// apart, the same two ways.
 	let light: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	let light_weight: f32 = 0.0;
+	let trusted_weight: f32 = 0.0;
+	let visible_weight: f32 = 0.0;
+	let hidden_trusted: f32 = 0.0;
 	let hidden_weight: f32 = 0.0;
 	// The pixel's coverage with the lookup radius and with the surfels' own radius, and its two largest weights.
 	let coverage: f32 = 0.0;
@@ -135,11 +138,19 @@ main: fn (input: StageInput) -> void {
 		let end: u32 = start + min(cell_count, SURFEL_LOOKUP_LIMIT);
 		for (let entry: u32 = start; entry < end; entry = entry + 1) {
 			let surfel: u32 = surfel_cell_entries[entry];
+			// A cell lists surfels that reach any of its points, and most of them reach only part of it. The squished
+			// distance is never shorter than the straight one, so a surfel this far away weighs nothing here, and the
+			// rest of its record needn't be read.
+			let surfel_offset: vec3f = world_position - surfel_records[surfel].position;
+			let reach: f32 = surfel_records[surfel].radius * SURFEL_LOOKUP_SCALE;
+			if (dot(surfel_offset, surfel_offset) >= reach * reach) {
+				continue;
+			}
 			let record: SurfelRecord = surfel_records[surfel];
 			let surfel_normal: vec3f = decode_surfel_normal(record.normal);
-			let distance: f32 = surfel_distance(world_position - record.position, surfel_normal);
+			let distance: f32 = surfel_distance(surfel_offset, surfel_normal);
 			let facing: f32 = max(0.0, dot(surfel_normal, normal));
-			let weight: f32 = (1.0 - smoothstep(0.0, record.radius * SURFEL_LOOKUP_SCALE, distance)) * facing;
+			let weight: f32 = (1.0 - smoothstep(0.0, reach, distance)) * facing;
 			coverage = coverage + weight;
 			scoring_coverage = scoring_coverage + (1.0 - smoothstep(0.0, record.radius, distance)) * facing;
 			if (weight > largest) {
@@ -149,16 +160,19 @@ main: fn (input: StageInput) -> void {
 			} else if (weight > second) {
 				second = weight;
 			}
-			let trusted: f32 = weight * record.weight;
-			let visible: f32 = trusted;
-			if (trusted > 0.0) {
-				visible = trusted * surfel_occlusion(surfel, record, surfel_normal, world_position);
+			let visibility: f32 = 1.0;
+			if (weight > 0.0) {
+				visibility = surfel_occlusion(surfel, record, surfel_normal, world_position);
 			}
-			light = light + vec4f(record.irradiance) * visible;
-			light_weight = light_weight + visible;
-			hidden_weight = hidden_weight + trusted - visible;
-			if (visible > best_light_weight) {
-				best_light_weight = visible;
+			let visible: f32 = weight * visibility;
+			let trusted: f32 = visible * record.weight;
+			light = light + vec4f(record.irradiance) * trusted;
+			trusted_weight = trusted_weight + trusted;
+			visible_weight = visible_weight + visible;
+			hidden_trusted = hidden_trusted + (weight - visible) * record.weight;
+			hidden_weight = hidden_weight + weight - visible;
+			if (trusted > best_light_weight) {
+				best_light_weight = trusted;
 				best_surfel = surfel;
 			}
 			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. Votes only grow during the
@@ -172,12 +186,7 @@ main: fn (input: StageInput) -> void {
 			) {
 				atomic_max(surfel_states[surfel].touched, 5);
 			}
-			// The state read comes last, so the surfels that don't reach the pixel skip it.
-			if (
-				weight > parent_weight
-				&& facing > SURFEL_PARENT_FACING
-				&& surfel_states[surfel].frames >= SURFEL_PARENT_FRAMES
-			) {
+			if (weight > parent_weight && facing > SURFEL_PARENT_FACING && record.weight >= 1.0) {
 				parent = surfel;
 				parent_weight = weight;
 			}
@@ -185,7 +194,7 @@ main: fn (input: StageInput) -> void {
 		// The surfel that dominates a pixel earns importance, and any surfel that contributes stays alive. The higher of
 		// the two votes is the one that counts, and, as above, a vote already cast as high is skipped.
 		if (best_surfel != NO_SURFEL) {
-			let dominance: f32 = best_light_weight / (light_weight + 0.00001);
+			let dominance: f32 = best_light_weight / (trusted_weight + 0.00001);
 			let vote: u32 = 0;
 			if (dominance > 0.5) {
 				vote = u32(50.0 + 50.0 * dominance);
@@ -217,21 +226,26 @@ main: fn (input: StageInput) -> void {
 	}
 
 	if (in_image) {
-		let history: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-		if (light_weight > 0.00001) {
-			history = light * (1.0 / light_weight);
-		} else if (hidden_weight > 0.00001) {
+		// The estimate is normalized over the trusted surfels, and the confidence is their share of the coverage, or of
+		// a full coverage of one where the surfels cover less. A pixel no surfel covers yet has neither, and the
+		// reconstruction passes give it what its history or its neighbors know.
+		let estimate: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let confidence: f32 = 0.0;
+		if (trusted_weight > 0.00001) {
+			estimate = light * (1.0 / trusted_weight);
+			confidence = trusted_weight / max(visible_weight, 1.0);
+		} else if (hidden_trusted > 0.00001) {
 			// Every surfel that would light the pixel lies behind something, so none of their light, sky included,
 			// reaches it.
-			history = vec4f(0.0, 0.0, 0.0, 1.0);
-		} else if (surface) {
-			// No surfel covers the pixel yet. Until one spawns, it takes the environment's light as if nothing hid the
-			// sky, as material evaluation would light it without surfel GI.
-			let sky: vec4f = texture_lod(surfel_environment_irradiance, normal, 0.0);
-			let scale: f32 = surfel_parameters.environment_intensity * surfel_parameters.exposure;
-			history = vec4f(sky.x * scale, sky.y * scale, sky.z * scale, 0.0);
+			estimate = vec4f(0.0, 0.0, 0.0, 1.0);
+			confidence = hidden_trusted / max(hidden_weight, 1.0);
 		}
-		write(history_output, pixel, history);
+		if (center_z == 0.0) {
+			write(surfel_history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+			write(surfel_weights_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		} else {
+			surfel_temporal_accumulate(pixel, center_position, view_normal, estimate, confidence);
+		}
 		write(normal_output, pixel, encode_stored_normal(view_normal));
 		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFELS_VIEW) != 0) {
 			let color: vec3f = vec3f(0.0, 0.0, 0.0);
@@ -245,11 +259,11 @@ main: fn (input: StageInput) -> void {
 			);
 		}
 		if (debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW) != 0) {
-			// Green up to full coverage, then red as more surfels overlap.
+			// Green up to full coverage, then red as more surfels overlap, and blue for the confidence.
 			write_debug_view(
 				debug_view_slot(surfel_resolve_parameters.debug_views, SURFEL_COVERAGE_VIEW),
 				pixel,
-				vec4f(clamp((coverage - 1.0) / 3.0, 0.0, 1.0), clamp(coverage, 0.0, 1.0), 0.0, 1.0)
+				vec4f(clamp((coverage - 1.0) / 3.0, 0.0, 1.0), clamp(coverage, 0.0, 1.0), confidence, 1.0)
 			);
 		}
 	}

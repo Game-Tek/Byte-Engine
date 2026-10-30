@@ -4,6 +4,10 @@
 // Two tangents whose cross product is shorter than this share of their lengths' product are parallel, so they rebuild
 // no normal. GTAO's normal reconstruction tests the same.
 NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
+// Neighbors whose normal differs from a pixel's by more than about 45 degrees lie on another surface. Up to about
+// 25 degrees, as across a curved limb, they count fully.
+NORMAL_REJECT_COSINE: const f32 = 0.7;
+NORMAL_ACCEPT_COSINE: const f32 = 0.9;
 
 // The screen view constants describe the trace image, mip zero of the linear depth pyramid.
 screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
@@ -123,4 +127,13 @@ decode_stored_normal: fn (stored: vec4f) -> vec3f {
 		z
 	);
 	return normal * inversesqrt(dot(normal, normal));
+}
+
+// Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing
+// normal agrees with any other, so depth decides alone.
+normal_agreement: fn (a: vec3f, b: vec3f) -> f32 {
+	if (dot(a, a) == 0.0 || dot(b, b) == 0.0) {
+		return 1.0;
+	}
+	return clamp((dot(a, b) - NORMAL_REJECT_COSINE) / (NORMAL_ACCEPT_COSINE - NORMAL_REJECT_COSINE), 0.0, 1.0);
 }

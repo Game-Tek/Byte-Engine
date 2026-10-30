@@ -1,0 +1,32 @@
+// Turns one of the frame's spawn requests from rays' hits into a surfel, one bounce from the camera.
+//
+// Hits spawn only while the surfels hits spawned stay below SURFEL_BOUNCED_SHARE of the live surfels, as this frame's
+// grid counted them, and the pool's slots in use below SURFEL_HIT_SPAWN_SHARE, so the surfaces the camera sees, whose
+// tiles spawn after this pass, always find room. A hit-spawned surfel starts without light and fades in as its rays
+// arrive; hits that it lights keep it alive. The next frame's grid lists it.
+//
+// It follows the irradiance cache of kajiya by Tomasz Stachowiak (MIT License, Copyright (c) 2019 Embark Studios),
+// which allocates entries where rays look them up. See THIRD_PARTY_NOTICES.md.
+
+main: fn (input: StageInput) -> void {
+	let request: u32 = input.thread_id.x;
+	if (request >= min(atomic_load(surfel_pool.hit_spawns), SURFEL_MAX_HIT_SPAWNS)) {
+		return;
+	}
+	// Before the camera's surfels exist, no hit spawns: the share of none is none.
+	if (f32(surfel_pool.last_bounced) >= f32(surfel_pool.last_alive) * SURFEL_BOUNCED_SHARE) {
+		return;
+	}
+	// The slots in use: those ever used, less the free ones. Requests race on both counts, so each share can overshoot
+	// by at most one frame's requests.
+	let used: u32 = atomic_load(surfel_pool.high_water) - atomic_load(surfel_pool.free_count);
+	if (f32(used) >= f32(surfel_parameters.surfel_capacity) * SURFEL_HIT_SPAWN_SHARE) {
+		return;
+	}
+	let slot: u32 = surfel_take_slot();
+	if (slot == NO_SURFEL) {
+		return;
+	}
+	let spawn: SurfelHitSpawn = surfel_hit_spawns[request];
+	surfel_start(slot, spawn.position, spawn.normal, vec4f(0.0, 0.0, 0.0, 0.0), 0.0, 1);
+}

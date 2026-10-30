@@ -1,5 +1,5 @@
 // Folds one live surfel's rays of this frame into its light estimate, its guide, and its radial depth, and rewrites
-// its record for this frame's lookups: its light, its radius at the camera's distance, and how much lookups trust it.
+// its record for this frame's lookups: its light, and how much lookups trust it.
 //
 // Each ray's guide cells learn the pre-exposed light it found there, times its cosine, and its radial depth cell learns
 // how far it went, up to twice the surfel's radius, which the resolve reads to keep a surfel's light from reaching
@@ -8,20 +8,26 @@
 // openings the sky shines through.
 //
 // The estimate is the multiscale mean estimator (MSME) of "Hybrid Rendering for Real-Time Ray Tracing" by Colin
-// Barré-Brisebois et al. (Ray Tracing Gems, 2019), run as webgiya runs it: each frame's average is one sample, a young
-// surfel averages its first samples evenly, and fireflies are clamped near the short-window mean. Unlike webgiya's, its
-// long mean never moves slower than an even average of the frames it holds. Its light is pre-exposed, so it follows the
-// exposure the way the lit image does. Its fourth channel, the hit fraction, which webgiya doesn't keep, counts only the
-// rays the cosine-weighted distribution drew, each once: the weights that undo the guide for the light would scatter it
-// around its value even where every ray hits, and reflections it dims would leak into enclosed rooms.
+// Barré-Brisebois et al. (Ray Tracing Gems, 2019), run as webgiya runs it: each update's average is one sample, a young
+// surfel averages its first rays evenly, and fireflies are clamped near the short-window mean. Unlike webgiya's, its
+// long mean never moves slower than an even average of the rays it holds, and those rays fade with the frames between
+// updates, so its response is set in frames whatever cadence the ray budget gives the surfel. A surfel matures, and
+// lookups trust it, by the rays it received rather than its age, so a surfel the budget starves stays young. Its light
+// is pre-exposed, so it follows the exposure the way the lit image does.
+//
+// A surfel whose rays mostly hit the backs of surfaces lies inside geometry, such as under a box that now covers it,
+// and its light and radial depth would darken what lies around it, so it votes itself out. Its fourth channel, the hit
+// fraction, which webgiya doesn't keep, counts only the rays the cosine-weighted distribution drew, each once: the
+// weights that undo the guide for the light would scatter it around its value even where every ray hits, and
+// reflections it dims would leak into enclosed rooms.
 
-// Frames over which a new surfel fades in.
-SURFEL_FADE_FRAMES: const f32 = 4.0;
-// Lookups trust a surfel fully once its estimate holds this many frames of rays, and until then it averages them
-// evenly.
-SURFEL_SETTLED_COUNT: const f32 = 32.0;
-// The most frames of rays an estimate counts.
-SURFEL_MAX_COUNT: const f32 = 200.0;
+// The most rays a surfel's `rays` counts, well within a float's whole numbers.
+SURFEL_MAX_RAYS: const f32 = 1000000.0;
+// A surfel that received this many rays, and whose rays lately hit back faces more than SURFEL_BURIED_SHARE of the
+// time, lies inside geometry. Its share follows its rays over about SURFEL_BURIED_RAYS rays.
+SURFEL_BURIED_MIN_RAYS: const f32 = 32.0;
+SURFEL_BURIED_SHARE: const f32 = 0.5;
+SURFEL_BURIED_RAYS: const f32 = 16.0;
 // The smallest variance the estimator divides by.
 SURFEL_VARIANCE_FLOOR: const f32 = 0.00001;
 // The specular level of the environment a miss brings light back from, the one prefiltered for roughness 2/7. Its blur
@@ -87,8 +93,9 @@ surfel_depth_learn: fn (depth: u32, direction: vec3f, distance: f32) -> void {
 	surfel_depths[index] = next;
 }
 
-// Returns `estimate` after one MSME step with `sample`. `short_blend` is the short window's blend factor.
-surfel_msme: fn (estimate: SurfelIrradiance, sample: vec4f, short_blend: f32) -> SurfelIrradiance {
+// Returns `estimate` after one MSME step with `sample`. `short_blend` is the short window's blend factor, and
+// `even_blend` the share of the rays the estimate holds that the sample brings, below which the long mean never blends.
+surfel_msme: fn (estimate: SurfelIrradiance, sample: vec4f, short_blend: f32, even_blend: f32) -> SurfelIrradiance {
 	let result: SurfelIrradiance = estimate;
 	// A sample counts only up to eight deviations above the short mean, which keeps a rare bright hit from flashing.
 	let clamped: vec4f = vec4f(
@@ -134,11 +141,10 @@ surfel_msme: fn (estimate: SurfelIrradiance, sample: vec4f, short_blend: f32) ->
 		1.0
 	) * estimate.blend;
 	result.blend = mix(estimate.blend, variance_blend, 0.1);
-	// The long mean moves at least as fast as an even average of the frames the estimate holds. On its own the catch-up
-	// falls to 1/8192 a frame while the light looks steady, which kept each surfel's error from its first 32 frames for
+	// The long mean moves at least as fast as an even average of the rays the estimate holds. On its own the catch-up
+	// falls to 1/8192 an update while the light looks steady, which kept each surfel's error from its young rays for
 	// thousands of frames: a few percent of the sky, enough to set neighbors visibly apart in a dim room.
-	let even: f32 = 1.0 / (1.0 + estimate.count);
-	result.mean = estimate.mean + (clamped - estimate.mean) * max(clamp(catch_up, 0.0, 1.0), even);
+	result.mean = estimate.mean + (clamped - estimate.mean) * max(clamp(catch_up, 0.0, 1.0), even_blend);
 	return result;
 }
 
@@ -158,9 +164,8 @@ main: fn (input: StageInput) -> void {
 	estimate.short_mean = estimate.short_mean * light_scale;
 	estimate.variance = estimate.variance * light_scale * light_scale;
 
-	// The rays the budget granted this surfel lie in the frame's window of wanted rays, from its first wanted ray on.
-	let wanted: u32 = surfel_ray_wants[slot];
-	let first_ray: u32 = surfel_scan[SURFEL_CELL_COUNT + slot] - surfel_pool.cell_entries;
+	// The rays the budget granted this surfel lie in its class's window of wanted rays.
+	let wanted: u32 = surfel_wanted_rays(slot);
 	let guide: u32 = slot * SURFEL_GUIDE_CELLS;
 	let depth: u32 = slot * SURFEL_DEPTH_CELLS;
 	let reach: f32 = 2.0 * surfel_records[slot].radius;
@@ -171,10 +176,11 @@ main: fn (input: StageInput) -> void {
 	// The rays the cosine-weighted distribution drew, and how many of them hit.
 	let cosine_rays: f32 = 0.0;
 	let cosine_hits: f32 = 0.0;
+	let back_faces: f32 = 0.0;
 	let mass: f32 = estimate.guide_mass;
 	for (let sample: u32 = 0; sample < wanted; sample = sample + 1) {
-		let ray: u32 = (first_ray + sample + surfel_pool.rays_wanted - surfel_pool.ray_cursor) % surfel_pool.rays_wanted;
-		if (ray < surfel_pool.rays) {
+		let ray: u32 = surfel_granted_ray(slot, sample);
+		if (ray != NO_SURFEL) {
 			let result: SurfelRayResult = surfel_ray_results[ray];
 			let hit: f32 = step(0.0, result.distance);
 			let point: vec2f = surfel_unpack_square(result.direction);
@@ -193,9 +199,12 @@ main: fn (input: StageInput) -> void {
 			// plain average estimates irradiance over π.
 			sum = sum + found * result.weight;
 			samples = samples + 1.0;
-			if (result.guided == 0) {
+			if ((result.flags & SURFEL_RAY_GUIDED) == 0) {
 				cosine_rays = cosine_rays + 1.0;
 				cosine_hits = cosine_hits + hit;
+			}
+			if ((result.flags & SURFEL_RAY_BACK_FACE) != 0) {
+				back_faces = back_faces + 1.0;
 			}
 			let luminance: f32 = found.x * 0.2126 + found.y * 0.7152 + found.z * 0.0722;
 			mass = mass + surfel_guide_learn(guide, point, luminance * surfel_parameters.exposure * local.z);
@@ -223,9 +232,15 @@ main: fn (input: StageInput) -> void {
 		}
 		let frame_sample: vec4f = vec4f(sum.x * light, sum.y * light, sum.z * light, hit_fraction);
 		let previous: SurfelIrradiance = estimate;
-		if (estimate.count < SURFEL_SETTLED_COUNT) {
-			// The first frames average evenly, so a young surfel's estimate settles without lag.
-			let blend: f32 = 1.0 / (1.0 + estimate.count);
+		// The rays the long mean held fade with the frames since its last update, so whatever the cadence, rays older
+		// than about SURFEL_MEMORY_FRAMES frames weigh little.
+		let elapsed: u32 = surfel_parameters.frame_index - estimate.updated;
+		let held: f32 = estimate.count * exp(-f32(elapsed) / SURFEL_MEMORY_FRAMES);
+		let total: f32 = held + samples;
+		if (estimate.rays < SURFEL_MATURE_RAYS) {
+			// A young surfel averages its rays evenly, its parent's prior included, so its estimate settles without lag
+			// and its own rays outweigh what it copied as they arrive.
+			let blend: f32 = samples / total;
 			estimate.mean = estimate.mean + (frame_sample - estimate.mean) * blend;
 			estimate.short_mean = estimate.short_mean + (frame_sample - estimate.short_mean) * blend;
 			estimate.variance = estimate.variance + (vec4f(1.0, 1.0, 1.0, 1.0) - estimate.variance) * blend;
@@ -233,7 +248,12 @@ main: fn (input: StageInput) -> void {
 			estimate.inconsistency = max(estimate.inconsistency, 1.0);
 		} else {
 			// More rays this frame make its average a steadier sample, so the short window follows it faster.
-			estimate = surfel_msme(estimate, frame_sample, clamp(1.0 - exp(0.0 - samples / 12.5), 0.01, 0.1));
+			estimate = surfel_msme(
+				estimate,
+				frame_sample,
+				clamp(1.0 - exp(-samples / 12.5), 0.01, 0.1),
+				samples / total
+			);
 		}
 		if (cosine_rays == 0.0) {
 			// A frame whose rays all came from the guide leaves the hit fraction's estimate as it was. Which rays the
@@ -247,13 +267,16 @@ main: fn (input: StageInput) -> void {
 			);
 			estimate.variance = vec4f(estimate.variance.x, estimate.variance.y, estimate.variance.z, previous.variance.w);
 		}
-		estimate.count = min(estimate.count + 1.0, SURFEL_MAX_COUNT);
+		estimate.count = total;
+		estimate.rays = min(estimate.rays + samples, SURFEL_MAX_RAYS);
+		estimate.updated = surfel_parameters.frame_index;
+		estimate.buried = mix(estimate.buried, back_faces / samples, samples / (samples + SURFEL_BURIED_RAYS));
+		if (estimate.rays >= SURFEL_BURIED_MIN_RAYS && estimate.buried > SURFEL_BURIED_SHARE) {
+			surfel_lose(slot);
+		}
 	}
 	surfel_irradiance[slot] = estimate;
 
-	let position: vec3f = surfel_records[slot].position;
-	surfel_records[slot].radius = surfel_radius(position);
-	surfel_records[slot].weight = clamp(f32(surfel_states[slot].frames) / SURFEL_FADE_FRAMES, 0.0, 1.0)
-		* clamp(estimate.count / SURFEL_SETTLED_COUNT, 0.0, 1.0);
+	surfel_records[slot].weight = surfel_trust(estimate.rays);
 	surfel_records[slot].irradiance = vec4f16(estimate.mean);
 }

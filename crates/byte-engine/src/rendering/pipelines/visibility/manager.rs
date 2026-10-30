@@ -38,8 +38,8 @@ use super::render_pass::{
 	ContactShadowSettings, DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET,
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun,
-	VisibilityRenderPass, create_ssgi_targets, create_sun_visibility_targets,
+	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
+	VisibilityRenderPass, create_ssgi_targets, create_sun_visibility_targets, create_surfel_targets,
 };
 use super::scene::{Instance, MaterialEvaluation, PosedVertices, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::set_layouts;
@@ -840,6 +840,7 @@ impl VisibilityPipelineManager {
 				settings.surfel_capacity,
 				settings.surfel_ray_budget,
 				environment,
+				lighting_buffer,
 			)
 		});
 		let probe_volume = (settings.features.probe_gi && ray_tracing).then(|| {
@@ -1853,7 +1854,6 @@ impl PipelineManager for VisibilityPipelineManager {
 			}
 			_ => None,
 		};
-		let suns = self.scene.surfel_suns().collect::<SmallVec<[SurfelSun; 4]>>();
 		let surfels = match (indirect_diffuse, &self.surfel_pool, sinks.first(), tracing, &self.ray_hits) {
 			(Some(IndirectDiffuseSource::Surfels), Some(pool), Some(sink), Some(tracing), Some(hits)) => pool.prepare(
 				frame,
@@ -1863,7 +1863,6 @@ impl PipelineManager for VisibilityPipelineManager {
 					exposure,
 					previous_exposure: self.surfel_exposure,
 					environment_intensity: self.environment.intensity(),
-					suns: &suns,
 				},
 				tracing,
 				hits,
@@ -1894,13 +1893,18 @@ impl PipelineManager for VisibilityPipelineManager {
 		{
 			let counts = pool.counts(frame);
 			log::debug!(
-				"Surfel GI keeps {} surfels alive in {} cell entries; the last grid recycled {} and the frame before it spawned {}. They wanted {} rays and traced {}.",
+				"Surfel GI keeps {} surfels alive, {} of them spawned by rays' hits, in {} cell entries; the last grid recycled {}, and the frame before it spawned {} and lost {} while its rays' hits asked for {}. Young and changing surfels wanted {} rays and traced {}; settled ones wanted {} and traced {}.",
 				counts.last_alive,
+				counts.last_bounced,
 				counts.cell_entries,
 				counts.last_recycled,
 				counts.last_spawned,
-				counts.rays_wanted,
-				counts.rays,
+				counts.last_lost,
+				counts.last_hit_spawns,
+				counts.priority_wanted,
+				counts.priority_rays,
+				counts.regular_wanted,
+				counts.regular_rays,
 			);
 		}
 		if let Some(volume) = self.probe_volume.as_ref().filter(|_| probes.is_some())
@@ -2026,6 +2030,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
+		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
 		let probe_gi = self.probe_volume.is_some();
 		// A pass declares at most eight views, so the two after material evaluation's are surfel GI's when it is built
 		// in, and probe GI's otherwise.
@@ -2050,12 +2055,12 @@ impl PipelineManager for VisibilityPipelineManager {
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
 				ssgi,
+				surfels,
 				sun_visibility,
 			},
 			&self.shadow_maps,
 			stage_counters,
 			self.settings.features,
-			surfel_gi,
 			probe_gi,
 			debug_views,
 		);

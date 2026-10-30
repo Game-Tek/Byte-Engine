@@ -2974,6 +2974,7 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		),
 		("surfel_scan_add", asset_source!("surfel-scan-add.besl"), surfel_slots()),
 		("surfel_scatter", asset_source!("surfel-scatter.besl"), surfel_slots()),
+		("surfel_validate", asset_source!("surfel-validate.besl"), surfel_slots()),
 		(
 			"surfel_trace",
 			asset_source!("surfel-trace.besl"),
@@ -2986,12 +2987,18 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			surfel_slots(),
 		),
 		("surfel_integrate", asset_source!("surfel-integrate.besl"), surfel_slots()),
+		(
+			"surfel_allocate_hits",
+			asset_source!("surfel-allocate-hits.besl"),
+			Settings::compute(Extent::line(64)),
+		),
 		("surfel_resolve", asset_source!("surfel-resolve.besl"), tile()),
 		(
 			"surfel_allocate",
 			asset_source!("surfel-allocate.besl"),
 			Settings::compute(Extent::line(64)),
 		),
+		("surfel_spatial", asset_source!("surfel-spatial.besl"), tile()),
 		(
 			"probe_schedule",
 			asset_source!("probe-schedule.besl"),

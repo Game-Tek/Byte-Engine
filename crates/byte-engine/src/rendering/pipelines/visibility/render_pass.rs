@@ -166,7 +166,7 @@ pub(super) use self::surfel_gi::SURFEL_GI_PIPELINES;
 use self::surfel_gi::SurfelResolvePass;
 pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelSun,
+	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelTargets, create_surfel_targets,
 };
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
@@ -224,9 +224,11 @@ pub(crate) struct StageCounters {
 	acceleration_structures: ghi::CounterHandle,
 	/// The surfel economy, count, scan, and scatter that list the frame's surfels in the grid.
 	surfel_grid: ghi::CounterHandle,
+	/// The support rays that check a share of the surfels still lie on a surface.
+	surfel_validate: ghi::CounterHandle,
 	/// The surfel rays' trace, the hit sort, and the shade pass.
 	surfel_trace: ghi::CounterHandle,
-	/// The update of every live surfel's estimate and record.
+	/// The update of every live surfel's estimate and record, and the allocation of the rays' hits' spawns.
 	surfel_integrate: ghi::CounterHandle,
 	/// The probe schedule's ranking, cut, and list.
 	probe_schedule: ghi::CounterHandle,
@@ -260,6 +262,7 @@ impl StageCounters {
 			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
 			acceleration_structures: builder.create_gpu_counter("acceleration-structures"),
 			surfel_grid: builder.create_gpu_counter("surfel-grid"),
+			surfel_validate: builder.create_gpu_counter("surfel-validate"),
 			surfel_trace: builder.create_gpu_counter("surfel-trace"),
 			surfel_integrate: builder.create_gpu_counter("surfel-integrate"),
 			probe_schedule: builder.create_gpu_counter("probe-schedule"),
@@ -283,8 +286,11 @@ pub(crate) struct SinkTargets {
 	pub(crate) depth: ghi::DynamicImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
 	pub(crate) instance_id: ghi::BaseImageHandle,
-	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays.
+	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays. Surfel
+	/// GI and probe GI write the same images in SSGI's place.
 	pub(crate) ssgi: SsgiTargets,
+	/// Surfel GI's own images, present when the frame has a [`SurfelPool`] that surfel GI can light this sink from.
+	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
 	pub(crate) sun_visibility: SunVisibilityTargets,
 }
@@ -435,6 +441,20 @@ pub(crate) struct SinkHistory {
 	pub(crate) indirect_diffuse: Option<IndirectDiffuseSource>,
 }
 
+impl SinkHistory {
+	/// Returns what a temporal pass reprojects into this history with: the transform from `current`'s view space to the
+	/// history camera's clip space, the one that rotates `current`'s view-space normals into the history camera's axes,
+	/// and the ratio that brings the history's pre-exposed light to `exposure`.
+	pub(crate) fn reprojection(&self, current: View, exposure: f32) -> (math::Matrix, math::Matrix, f32) {
+		let previous_view = self.view.view() * math::inverse(current.view());
+		(
+			self.view.projection() * previous_view,
+			previous_view,
+			exposure / self.exposure,
+		)
+	}
+}
+
 /// The `VisibilityRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
 pub(crate) struct VisibilityRenderPass {
 	pipeline_manager: PipelineManagerClient,
@@ -468,8 +488,8 @@ impl VisibilityRenderPass {
 	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
 	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
-	/// pipelines. `surfel_gi` and `probe_gi` tell whether the frame has a [`SurfelPool`] that surfel GI can light this
-	/// sink from, and a [`ProbeVolume`] that probe GI can.
+	/// pipelines. Surfel GI lights the sink when `targets` holds surfel images, and `probe_gi` tells whether the frame
+	/// has a [`ProbeVolume`] that probe GI can light this sink from.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -480,7 +500,6 @@ impl VisibilityRenderPass {
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
 		features: VisibilityFeatures,
-		surfel_gi: bool,
 		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 	) -> Self {
@@ -533,12 +552,13 @@ impl VisibilityRenderPass {
 				targets.ssgi,
 			)
 		});
-		let surfel_resolve = surfel_gi.then(|| {
+		let surfel_resolve = targets.surfels.map(|surfels| {
 			SurfelResolvePass::new(
 				context,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				targets.ssgi,
+				surfels,
 				&debug_views,
 			)
 		});
@@ -761,8 +781,12 @@ impl VisibilityRenderPass {
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
 		let debug_views = self.debug_views.shown();
 		let lit_by_surfels = indirect_diffuse == Some(IndirectDiffuseSource::Surfels);
+		// Surfel history likewise exists only if surfel GI lit last frame.
+		let surfel_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::Surfels));
 		let surfel_resolve = match (&self.surfel_resolve, &surfels) {
-			(Some(resolve), Some(surfels)) if lit_by_surfels => Some(resolve.prepare(frame, sink, surfels, debug_views)),
+			(Some(resolve), Some(surfels)) if lit_by_surfels => {
+				Some(resolve.prepare(frame, sink, surfels, surfel_history, exposure, debug_views))
+			}
 			_ => None,
 		};
 		// The grid serves every sink, so the sink that records the frame-wide work builds it before any resolve.
@@ -855,16 +879,19 @@ impl VisibilityRenderPass {
 					c.build_top_level_acceleration_structure(work.top_level, work.instances);
 				});
 			}
-			// The surfel grid serves every sink's resolve and the rays' hits, which read the cells around them. The
-			// estimate update folds the rays into the records the resolves read.
+			// The surfel grid serves every sink's resolve and the rays' hits, which read the cells around them. The support
+			// rays read the radius the grid wrote; they record after the trace, so their counter doesn't take in the wait
+			// for the acceleration structures. The estimate update folds the rays into the records the resolves read, and
+			// the hits' spawns join the pool after it, so the next frame's grid lists them.
 			if let Some(surfels) = &surfel_grid {
 				c.counter(counters.surfel_grid, |c| {
 					record_compute_stages(c, Some("Surfel Grid"), &surfels.grid)
 				});
 				c.counter(counters.surfel_trace, |c| surfels.rays.record(c));
-				c.counter(counters.surfel_integrate, |c| {
-					record_compute_stages(c, None, &[surfels.integrate])
+				c.counter(counters.surfel_validate, |c| {
+					record_compute_stages(c, None, &[surfels.validate])
 				});
+				c.counter(counters.surfel_integrate, |c| record_compute_stages(c, None, &surfels.update));
 			}
 			// The probe updates bring every probe the sinks' resolves read up to date. The trace reads the volume before
 			// the update rewrites it, so the hits bounce the light the probes held last frame.
@@ -932,8 +959,10 @@ impl VisibilityRenderPass {
 				if let Some(ssgi) = &ssgi {
 					record_compute_stages(c, None, &[ssgi.temporal]);
 				}
+				// The surfel spatial pass reads the history the resolve accumulated, so it records with the second stages.
 				if let Some(surfels) = &surfel_resolve {
 					record_compute_stages(c, None, &[surfels.allocate]);
+					record_compute_stages(c, None, &[surfels.spatial]);
 				}
 				if let Some(gtao) = &gtao {
 					record_compute_stages(c, None, &[gtao.upscale]);

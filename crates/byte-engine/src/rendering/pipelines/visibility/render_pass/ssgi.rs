@@ -15,13 +15,12 @@
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
-use math::Matrix;
 use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
 pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
@@ -107,11 +106,6 @@ struct SsgiShaderParameters {
 	/// Converts the previous frame's pre-exposed radiance to this frame's exposure.
 	history_exposure_ratio: f32,
 	_padding: u32,
-}
-
-/// Maps current view-space positions and normals into the previous camera's axes.
-fn current_view_to_previous_view(current: View, previous: View) -> Matrix {
-	previous.view() * math::inverse(current.view())
 }
 
 /// The `SsgiPass` struct adds bounce light from visible geometry to the diffuse ambient term of opaque surfaces.
@@ -209,20 +203,16 @@ impl SsgiPass {
 		[trace, temporal]: [ghi::PipelineHandle; 2],
 	) -> SsgiStages {
 		let half_extent = sink.extent().scaled_down(SSGI_RESOLUTION_DIVISOR);
-		// Reprojection and normal comparison share the same camera transform and inverse.
-		let (previous_clip, previous_view) = history
-			.map(|previous| {
-				let view = current_view_to_previous_view(sink.view(), previous.view);
-				(previous.view.projection() * view, view)
-			})
-			.unwrap_or_default();
+		let (previous_clip, previous_view, history_exposure_ratio) = history
+			.map(|previous| previous.reprojection(sink.view(), exposure))
+			.unwrap_or((Default::default(), Default::default(), 1.0));
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
 			// Only the low bits animate the noise, so wrapping the frame index is harmless.
 			frame_index: frame.key().frame_index() as u32,
 			history_valid: history.is_some() as u32,
-			history_exposure_ratio: history.map_or(1.0, |previous| exposure / previous.exposure),
+			history_exposure_ratio,
 			_padding: 0,
 		};
 		frame.sync_buffer(self.parameters);
@@ -257,6 +247,7 @@ mod tests {
 	use maths_rs::Vec4f;
 
 	use super::*;
+	use crate::rendering::View;
 
 	fn view_at(position: Point) -> View {
 		View::new_perspective(Degrees::new(60.0), 16.0 / 9.0, 0.1, 100.0, position, UnitVector::z_axis())
@@ -269,7 +260,13 @@ mod tests {
 		let current = view_at(Point::new(1.0, 0.5, 2.0));
 		let current_view_point = current.view() * world_point;
 
-		let reprojected = previous.projection() * current_view_to_previous_view(current, previous) * current_view_point;
+		let history = SinkHistory {
+			view: previous,
+			exposure: 1.0,
+			indirect_diffuse: None,
+		};
+		let (previous_clip, ..) = history.reprojection(current, 1.0);
+		let reprojected = previous_clip * current_view_point;
 		let expected = previous.view_projection() * world_point;
 
 		for (reprojected, expected) in [

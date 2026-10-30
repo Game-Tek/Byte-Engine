@@ -4,13 +4,17 @@
 //! Build it in with `render.surfel-gi.enabled` and select it with `render.gi.technique` set to `surfels`. The
 //! visibility pipeline manager picks which source lights each frame's indirect diffuse light; see
 //! [`super::GiSettings`]. One [`SurfelPool`] serves every sink: the first sink
-//! records its frame-wide stages, which age, count, and list the surfels in a grid around its camera, trace and shade
-//! their rays, and fold the rays' light into each surfel's estimate. Each sink's [`SurfelResolvePass`] then lights its
-//! pixels from the grid and asks for the surfels its view misses. The Reference's surfel GI rules describe what the
-//! stages do.
+//! records its frame-wide stages, which age, count, and list the surfels in a grid around its camera, check that a share
+//! of them still lie on a surface, trace and shade their rays, fold the rays' light into each surfel's estimate, and spawn
+//! surfels where rays hit surfaces no surfel covers. Each sink's [`SurfelResolvePass`] then estimates its pixels' light
+//! from the grid and asks for the surfels its view misses, blends that estimate into the pixels' history by how much
+//! its surfels are trusted, and filters the result for material evaluation. The Reference's surfel GI rules describe
+//! what the stages do.
 //!
 //! Surfel GI follows webgiya by Jure Triglav, which builds on "Global Illumination Based on Surfels" by Henrik Halén,
-//! Andreas Brinck, Kyle Hayward, and Xiangshun Bei. See `THIRD_PARTY_NOTICES.md`.
+//! Andreas Brinck, Kyle Hayward, and Xiangshun Bei. Its temporal and spatial reconstruction, and the surfels its rays'
+//! hits spawn, follow kajiya by Tomasz Stachowiak and Embark Studios, which is also the reference its quality and cost
+//! are measured against. See `THIRD_PARTY_NOTICES.md`.
 
 use std::ops::RangeInclusive;
 
@@ -19,9 +23,10 @@ use ghi::frame::Frame as _;
 use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
+use super::super::shader_data::LightingData;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
-use super::{ComputeStage, Pipelines, SsgiTargets};
+use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -39,18 +44,22 @@ pub(crate) const MAX_SURFEL_RAY_BUDGET: u32 = 1 << 20;
 pub(crate) const DEFAULT_SURFEL_RAY_BUDGET: u32 = 16_384;
 
 /// The surfel GI compute pipelines, named as [`Pipelines::request`] takes them: the frame-wide grid stages, the trace,
-/// and the estimate update, in recording order, then each sink's resolve and allocation. The hit sort comes from
-/// [`RayHits`], and the shade pass's ray tracing pipeline from [`super::super::ray_tracing::HitShading`].
-pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 9] = [
+/// the support check, the estimate update, and the allocation of the hits' spawns, in recording order, then each sink's
+/// resolve, which also accumulates the pixels' history, allocation, and spatial pass. The hit sort comes from [`RayHits`], and the shade pass's ray
+/// tracing pipeline from [`super::super::ray_tracing::HitShading`].
+pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 12] = [
 	"surfel-count",
 	"surfel-scan-groups",
 	"surfel-scan-partials",
 	"surfel-scan-add",
 	"surfel-scatter",
 	"surfel-trace",
+	"surfel-validate",
 	"surfel-integrate",
+	"surfel-allocate-hits",
 	"surfel-resolve",
 	"surfel-allocate",
+	"surfel-spatial",
 ];
 /// The cells of the grid: 8 cascades of 32 × 32 × 32.
 const SURFEL_CELL_COUNT: u32 = 262_144;
@@ -59,17 +68,24 @@ const SURFEL_CELL_SIZE: f32 = 0.2;
 /// The most cells the grid lists one surfel in, so the cell lists keep this many entries for each pool slot. Matches
 /// `SURFEL_LISTING_LIMIT` in `layouts/surfel-gi.besl`.
 const SURFEL_LISTING_LIMIT: u32 = 32;
+/// The threads that walk one surfel's cells in the count pass and the scatter. Matches `SURFEL_GRID_LANES` in
+/// `layouts/surfel-gi.besl`.
+const SURFEL_GRID_LANES: u32 = 4;
 /// The elements one workgroup of the scan covers, and its threads.
 const SURFEL_SCAN_GROUP_ELEMENTS: u32 = 1_024;
 const SURFEL_SCAN_WORKGROUP_SIZE: u32 = 256;
 /// The threads of one trace workgroup.
 const SURFEL_TRACE_WORKGROUP_SIZE: u32 = 64;
-/// The most suns that light what surfel rays hit.
-const MAX_SURFEL_SUNS: usize = 4;
+/// The most spawn requests rays' hits make in a frame. Matches `SURFEL_MAX_HIT_SPAWNS` in `layouts/surfel-gi.besl`.
+const SURFEL_MAX_HIT_SPAWNS: u32 = 64;
+/// The frames between two support checks of one surfel, and so the pool slots one thread of the check covers. Matches
+/// `SURFEL_VALIDATE_PERIOD` in `surfel-validate.besl`.
+const SURFEL_VALIDATE_PERIOD: u32 = 8;
 /// Each surfel's guide cells, half floats, and its radial depth cells, four moments each.
 const SURFEL_GUIDE_CELLS: u32 = 64;
 const SURFEL_DEPTH_CELLS: u32 = 16;
-/// The resolve runs at half the sink resolution, in 8 × 8 workgroups that each make one spawn tile.
+/// The resolve and the reconstruction run at half the sink resolution, in 8 × 8 workgroups; each resolve workgroup makes
+/// one spawn tile.
 const SURFEL_RESOLVE_DIVISOR: u32 = 2;
 const SURFEL_RESOLVE_WORKGROUP_WIDTH: u32 = 8;
 /// The spawn tiles one sink's request buffer holds: one per 16 × 16 pixels of an 8K (7680 × 4320) sink. A larger sink
@@ -78,6 +94,49 @@ const MAX_SPAWN_TILES: u32 = (7_680 / 16) * (4_320 / 16);
 /// The chance that one resolve pixel one meter away asks for a surfel in a frame, times the resolve's pixel count.
 /// The chance grows with depth, so distant surfaces, which take fewer pixels, still fill in (webgiya's 5000 / 64).
 const SPAWN_RATE: f32 = 78.125;
+
+/// The render-graph name of the half-resolution light the resolve accumulates from its estimates: pre-exposed light in
+/// RGB and the hit fraction in alpha. The next frame's resolve reprojects it, and the spatial pass filters it into
+/// `SSGI History`.
+pub(crate) const SURFEL_HISTORY_TARGET: &str = "Surfel History";
+/// The render-graph name of what each `Surfel History` texel holds besides its light: the confidence it accumulated
+/// in R, and the variance of its light's luminance in G.
+pub(crate) const SURFEL_HISTORY_WEIGHTS_TARGET: &str = "Surfel History Weights";
+
+/// The `SurfelTargets` struct names the render-graph images surfel GI keeps for one sink besides SSGI's, which it
+/// writes in SSGI's place.
+///
+/// They are render targets so the renderer sizes them with the sink and they can be captured by name for debugging.
+/// Create them with [`create_surfel_targets`] for a sink that surfel GI can light.
+#[derive(Clone, Copy)]
+pub(crate) struct SurfelTargets {
+	/// Named [`SURFEL_HISTORY_TARGET`].
+	pub(crate) history: ghi::DynamicImageHandle,
+	/// Named [`SURFEL_HISTORY_WEIGHTS_TARGET`].
+	pub(crate) weights: ghi::DynamicImageHandle,
+}
+
+/// Creates the surfel GI render-graph targets for the sink that `render_pass_builder` sets up.
+///
+/// Next, pass them to the visibility render pass in [`super::SinkTargets`], which hands them to the sink's
+/// [`SurfelResolvePass`].
+pub(crate) fn create_surfel_targets(
+	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
+) -> SurfelTargets {
+	let image = |name, format| {
+		ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
+			.name(name)
+			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+	};
+	SurfelTargets {
+		history: render_pass_builder
+			.create_history_target(image(SURFEL_HISTORY_TARGET, ghi::Formats::RGBA16F), SURFEL_RESOLVE_DIVISOR),
+		weights: render_pass_builder.create_history_target(
+			image(SURFEL_HISTORY_WEIGHTS_TARGET, ghi::Formats::RG16F),
+			SURFEL_RESOLVE_DIVISOR,
+		),
+	}
+}
 
 /// The `SurfelGiParameters` struct carries one frame's settings of every surfel stage. It matches the struct of the
 /// same name in `layouts/surfel-gi.besl`.
@@ -93,47 +152,21 @@ struct SurfelGiParameters {
 	exposure: f32,
 	previous_exposure: f32,
 	environment_intensity: f32,
-	sun_count: u32,
-	suns: [SurfelSun; MAX_SURFEL_SUNS],
 }
 
-/// The `SurfelSun` struct is one sun that lights what surfel rays hit. It matches the struct of the same name in
-/// `layouts/surfel-gi.besl`.
-///
-/// The visibility pipeline manager makes one for each sun of the scene and hands them to [`SurfelPool::prepare`] in a
-/// [`SurfelLight`].
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct SurfelSun {
-	direction: ghi::pod::Vec3f,
-	illuminance: ghi::pod::Vec3f,
-}
-
-impl SurfelSun {
-	/// Describes a sun whose light travels along `light_direction`, a unit vector, and gives a surface that faces it
-	/// `illuminance` lux in each channel.
-	pub(crate) fn new(light_direction: [f32; 3], illuminance: [f32; 3]) -> Self {
-		Self {
-			direction: light_direction.map(|component| -component).into(),
-			illuminance: illuminance.into(),
-		}
-	}
-}
-
-/// The `SurfelLight` struct carries what lights one frame's surfel rays, and the exposures their light is stored at.
+/// The `SurfelLight` struct carries the exposures one frame's surfel light is stored at, and the environment's scale.
+/// The scene's lights reach the rays' hits through the light table [`SurfelPool::new`] binds.
 ///
 /// The visibility pipeline manager fills it from the first sink and the scene each frame surfel GI lights, and hands it
 /// to [`SurfelPool::prepare`].
 #[derive(Clone, Copy)]
-pub(crate) struct SurfelLight<'a> {
+pub(crate) struct SurfelLight {
 	/// Multiplies this frame's stored light, as the lit image's exposure does.
 	pub(crate) exposure: f32,
 	/// The exposure the light the pool gathered last frame was stored at.
 	pub(crate) previous_exposure: f32,
 	/// Scales the environment's light, as it does for material evaluation.
 	pub(crate) environment_intensity: f32,
-	/// The scene's suns, of which the first four light what rays hit.
-	pub(crate) suns: &'a [SurfelSun],
 }
 
 /// The `SurfelIrradiance` struct is one surfel's light estimate. It matches `SurfelIrradiance` in
@@ -148,6 +181,10 @@ struct SurfelIrradiance {
 	inconsistency: f32,
 	count: f32,
 	guide_mass: f32,
+	rays: f32,
+	buried: f32,
+	updated: u32,
+	_padding: u32,
 }
 
 /// The `SurfelRayResult` struct is what one ray brings back. It matches `SurfelRayResult` in `layouts/surfel-gi.besl`;
@@ -159,7 +196,7 @@ struct SurfelRayResult {
 	distance: f32,
 	direction: u32,
 	weight: f32,
-	guided: u32,
+	flags: u32,
 }
 
 /// The `SurfelRecord` struct is one surfel as lookups read it. It matches `SurfelRecord` in `layouts/surfel-gi.besl`;
@@ -180,9 +217,20 @@ struct SurfelRecord {
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelState {
 	life: u32,
-	frames: u32,
 	touched: u32,
 	cell: u32,
+	listing: u32,
+	supported: u32,
+	bounce: u32,
+}
+
+/// The `SurfelHitSpawn` struct is one spawn request a ray's hit made. It matches `SurfelHitSpawn` in
+/// `layouts/surfel-gi.besl`; only the GPU reads and writes it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct SurfelHitSpawn {
+	position: ghi::pod::Vec3f,
+	normal: u32,
 }
 
 /// The `SurfelPoolCounts` struct is the pool's allocator and its counts, which the host reads back for logging. It
@@ -195,17 +243,30 @@ pub(crate) struct SurfelPoolCounts {
 	alive: u32,
 	recycled: u32,
 	spawned: u32,
+	lost: u32,
 	/// The live surfels the last completed grid counted.
 	pub(crate) last_alive: u32,
 	/// The surfels that grid recycled, and the surfels the frame before it spawned.
 	pub(crate) last_recycled: u32,
 	pub(crate) last_spawned: u32,
-	/// The cell entries that grid listed, before the limit of 8 per pool slot.
+	/// The surfels the frame before voted out because their surface moved or they lay inside geometry.
+	pub(crate) last_lost: u32,
+	/// The cell entries that grid listed.
 	pub(crate) cell_entries: u32,
-	/// The rays the surfels wanted in that frame, and how many of them the budget granted.
-	pub(crate) rays_wanted: u32,
-	ray_cursor: u32,
-	pub(crate) rays: u32,
+	/// The rays the priority class wanted in that frame, where its window started, and how many the budget granted.
+	pub(crate) priority_wanted: u32,
+	priority_cursor: u32,
+	pub(crate) priority_rays: u32,
+	/// The same for the regular class.
+	pub(crate) regular_wanted: u32,
+	regular_cursor: u32,
+	pub(crate) regular_rays: u32,
+	hit_spawns: u32,
+	/// The spawn requests the frame before made from rays' hits.
+	pub(crate) last_hit_spawns: u32,
+	bounced: u32,
+	/// The live surfels hits spawned, as the last completed grid counted them.
+	pub(crate) last_bounced: u32,
 }
 
 /// The `SurfelResolveParameters` struct carries one sink's resolve settings for a frame. It matches the struct of the
@@ -214,10 +275,15 @@ pub(crate) struct SurfelPoolCounts {
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SurfelResolveParameters {
 	view_to_world: ghi::pod::Mat4f,
+	current_view_to_previous_clip: ghi::pod::Mat4f,
+	current_view_to_previous_view: ghi::pod::Mat4f,
 	debug_views: u32,
 	spawn_tiles_per_row: u32,
 	spawn_tile_count: u32,
 	spawn_probability: f32,
+	history_valid: u32,
+	history_exposure_ratio: f32,
+	_padding: [u32; 2],
 }
 
 /// The `SurfelSpawn` struct is one tile's spawn request. It matches `SurfelSpawn` in `layouts/surfel-resolve.besl`;
@@ -231,10 +297,10 @@ struct SurfelSpawn {
 	requested: u32,
 }
 
-/// Returns the scan's workgroups for a pool of `capacity` slots: every cell, every slot's wanted rays, and the grand
-/// total, 1,024 elements per workgroup.
+/// Returns the scan's workgroups for a pool of `capacity` slots: every cell, every slot's wanted priority and regular
+/// rays, and the grand total, 1,024 elements per workgroup.
 fn scan_group_count(capacity: u32) -> u32 {
-	(SURFEL_CELL_COUNT + capacity + 1).div_ceil(SURFEL_SCAN_GROUP_ELEMENTS)
+	(SURFEL_CELL_COUNT + capacity * 2 + 1).div_ceil(SURFEL_SCAN_GROUP_ELEMENTS)
 }
 
 /// Returns the camera position of `view`: the translation of its inverse.
@@ -258,7 +324,7 @@ fn snapped_grid_origin(position: [f32; 3]) -> [f32; 3] {
 pub(crate) struct SurfelPool {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// Every surfel GI compute pipeline, in the order of [`SURFEL_GI_PIPELINES`].
-	pipelines: Pipelines<9>,
+	pipelines: Pipelines<12>,
 	parameters: ghi::DynamicBufferHandle<SurfelGiParameters>,
 	/// The allocator and counts, in memory the host can read.
 	counts: ghi::BufferHandle<SurfelPoolCounts>,
@@ -286,13 +352,15 @@ impl SurfelPool {
 	/// pipelines.
 	///
 	/// Take both sizes from [`super::super::VisibilityPipelineSettings`], which validated them at startup.
-	/// `environment` is the bound environment; bind the next one with [`Self::environment_writes`].
+	/// `environment` is the bound environment; bind the next one with [`Self::environment_writes`]. `lighting_buffer` is
+	/// the scene's light table, whose lights light what the rays hit.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		capacity: u32,
 		ray_budget: u32,
 		environment: ResidentEnvironment,
+		lighting_buffer: ghi::DynamicBufferHandle<LightingData>,
 	) -> Self {
 		let descriptor_set = set_layouts::SURFEL_GI.create_set(context, "Surfel GI Descriptor Set");
 		// Every buffer starts zeroed, which is an empty pool: no live slot, an empty free stack, and zero cell counts.
@@ -305,8 +373,8 @@ impl SurfelPool {
 		let records: ghi::BufferHandle<[SurfelRecord]> = context.build_buffer(device_buffer("Surfel Records", capacity));
 		let states: ghi::BufferHandle<[SurfelState]> = context.build_buffer(device_buffer("Surfel States", capacity));
 		let free: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Free Stack", capacity));
-		// Each cell's count and fill, as `SurfelCells` lays them out.
-		let cells: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Cells", SURFEL_CELL_COUNT * 2));
+		// Each cell's count, fill from the end, fill from the front, and spawn claim, as `SurfelCells` lays them out.
+		let cells: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Cells", SURFEL_CELL_COUNT * 4));
 		let scan_groups = scan_group_count(capacity);
 		// The group pass writes whole groups, so the scan holds every element of its last group.
 		let scan: ghi::BufferHandle<[u32]> =
@@ -314,7 +382,8 @@ impl SurfelPool {
 		let partials: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Scan Partials", scan_groups));
 		let entries: ghi::BufferHandle<[u32]> =
 			context.build_buffer(device_buffer("Surfel Cell Entries", capacity * SURFEL_LISTING_LIMIT));
-		let ray_wants: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Ray Wants", capacity));
+		// Each slot's wanted rays in the priority class, then in the regular class.
+		let ray_wants: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Ray Wants", capacity * 2));
 		let irradiance: ghi::BufferHandle<[SurfelIrradiance]> =
 			context.build_buffer(device_buffer("Surfel Irradiance", capacity));
 		let rays: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Rays", ray_budget));
@@ -326,6 +395,8 @@ impl SurfelPool {
 		let depths: ghi::BufferHandle<[[f32; 4]]> =
 			context.build_buffer(device_buffer("Surfel Radial Depths", capacity * SURFEL_DEPTH_CELLS));
 		let clearances: ghi::BufferHandle<[f32]> = context.build_buffer(device_buffer("Surfel Clearances", capacity));
+		let hit_spawns: ghi::BufferHandle<[SurfelHitSpawn]> =
+			context.build_buffer(device_buffer("Surfel Hit Spawns", SURFEL_MAX_HIT_SPAWNS));
 		let counts = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Pool")
@@ -354,6 +425,8 @@ impl SurfelPool {
 			set.buffer("surfel_guides", guides),
 			set.buffer("surfel_depths", depths),
 			set.buffer("surfel_clearances", clearances),
+			set.buffer("surfel_scene_lights", lighting_buffer),
+			set.buffer("surfel_hit_spawns", hit_spawns),
 		]);
 		context.write(&environment_writes(descriptor_set, environment));
 		Self {
@@ -377,8 +450,8 @@ impl SurfelPool {
 	/// Uploads this frame's surfel settings and returns the frame's surfel work, or `None` while a surfel GI pipeline
 	/// is still compiling, in which case surfel GI can't light the frame.
 	///
-	/// `sink` is the first sink, whose camera the grid follows. `light` carries the frame's suns and exposures,
-	/// `tracing` the sets and the pipeline the rays trace and shade with, and `hits` where the trace keeps their hits.
+	/// `sink` is the first sink, whose camera the grid follows. `light` carries the frame's exposures, `tracing` the
+	/// sets and the pipeline the rays trace and shade with, and `hits` where the trace keeps their hits.
 	pub(crate) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -395,15 +468,15 @@ impl SurfelPool {
 			scan_add,
 			scatter,
 			trace,
+			validate,
 			integrate,
+			allocate_hits,
 			resolve,
 			allocate,
+			spatial,
 		] = self.pipelines.resolve(pipeline_manager)?;
 		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
 		let camera = camera_position(sink.view());
-		let mut suns = [SurfelSun::default(); MAX_SURFEL_SUNS];
-		let sun_count = light.suns.len().min(MAX_SURFEL_SUNS);
-		suns[..sun_count].copy_from_slice(&light.suns[..sun_count]);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SurfelGiParameters {
 			grid_origin: snapped_grid_origin(camera).into(),
 			surfel_capacity: self.capacity,
@@ -414,8 +487,6 @@ impl SurfelPool {
 			exposure: light.exposure,
 			previous_exposure: light.previous_exposure,
 			environment_intensity: light.environment_intensity,
-			sun_count: sun_count as u32,
-			suns,
 		};
 		frame.sync_buffer(self.parameters);
 
@@ -437,12 +508,20 @@ impl SurfelPool {
 		];
 		Some(SurfelFrame {
 			grid: [
-				stage("Surfel Count", count, self.capacity),
+				stage("Surfel Count", count, self.capacity * SURFEL_GRID_LANES),
 				stage("Surfel Scan Groups", scan_groups, scan_threads),
 				stage("Surfel Scan Partials", scan_partials, SURFEL_SCAN_WORKGROUP_SIZE),
 				stage("Surfel Scan Add", scan_add, scan_threads),
-				stage("Surfel Scatter", scatter, self.capacity),
+				stage("Surfel Scatter", scatter, self.capacity * SURFEL_GRID_LANES),
 			],
+			validate: ComputeStage {
+				label: "Surfel Validate",
+				pipeline: validate,
+				descriptor_sets: [tracing.scene, tracing.ray_traced_scene, self.descriptor_set],
+				// The capacity is a power of two of at least 1,024, so the period divides it.
+				extent: Extent::line(self.capacity / SURFEL_VALIDATE_PERIOD),
+				workgroup: Extent::line(SURFEL_SCAN_WORKGROUP_SIZE),
+			},
 			rays: RayStages {
 				label: "Surfel Rays",
 				trace: ComputeStage {
@@ -460,10 +539,14 @@ impl SurfelPool {
 					rays: self.ray_budget,
 				},
 			},
-			integrate: stage("Surfel Integrate", integrate, self.capacity),
+			update: [
+				stage("Surfel Integrate", integrate, self.capacity),
+				stage("Surfel Allocate Hits", allocate_hits, SURFEL_MAX_HIT_SPAWNS),
+			],
 			descriptor_set: self.descriptor_set,
 			resolve,
 			allocate,
+			spatial,
 		})
 	}
 
@@ -481,41 +564,54 @@ pub(crate) struct SurfelFrame {
 	pub(super) grid: [ComputeStage; 5],
 	/// Traces the granted rays, sorts their hits, and lights what they hit.
 	pub(super) rays: RayStages<4>,
-	/// Folds the rays into every live surfel's estimate and record, which the resolve reads.
-	pub(super) integrate: ComputeStage,
+	/// Checks that a share of the surfels still lie on a surface. It reads the acceleration structures and the radius
+	/// the grid wrote.
+	pub(super) validate: ComputeStage<3>,
+	/// Folds the rays into every live surfel's estimate and record, which the resolve reads, then turns the spawn
+	/// requests of the rays' hits into surfels.
+	pub(super) update: [ComputeStage; 2],
 	descriptor_set: ghi::DescriptorSetHandle,
 	resolve: ghi::PipelineHandle,
 	allocate: ghi::PipelineHandle,
+	spatial: ghi::PipelineHandle,
 }
 
 /// The `SurfelResolvePass` struct lights one sink's opaque pixels from the surfel pool, and asks for the surfels its
 /// view misses.
 ///
 /// It writes the images SSGI writes, so material evaluation reads either source the same way. It runs inside the
-/// screen-space stages, in SSGI's two slots, after the first sink recorded the frame's grid.
+/// screen-space stages, in SSGI's slots, after the first sink recorded the frame's grid.
 pub(super) struct SurfelResolvePass {
-	/// The screen view constants and the depth pyramid the resolve rebuilds surfaces from.
+	/// The screen view constants and the depth pyramid the stages rebuild surfaces from.
 	screen_trace_descriptor_set: ghi::DescriptorSetHandle,
-	/// The sink's own settings, spawn requests, and output images.
+	/// The sink's own settings, spawn requests, and the resolve's images.
 	descriptor_set: ghi::DescriptorSetHandle,
+	/// The history the resolve reprojects and the history it writes.
+	temporal_descriptor_set: ghi::DescriptorSetHandle,
+	/// The images the spatial pass reads and writes.
+	spatial_descriptor_set: ghi::DescriptorSetHandle,
 	parameters: ghi::DynamicBufferHandle<SurfelResolveParameters>,
 }
 
 impl SurfelResolvePass {
-	/// Wires the resolve and allocation descriptor sets of one sink.
+	/// Wires the resolve, allocation, temporal accumulation, and spatial descriptor sets of one sink.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. `targets` are the sink's
-	/// SSGI images, which the resolve writes in SSGI's place, and `debug_views` its debug target pool.
+	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. `ssgi` are the sink's
+	/// SSGI images, which the stages write in SSGI's place, `surfels` its images from [`create_surfel_targets`], and
+	/// `debug_views` its debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
-		targets: SsgiTargets,
+		ssgi: SsgiTargets,
+		surfels: SurfelTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
 		let screen_trace_descriptor_set =
 			set_layouts::SCREEN_TRACE.create_set(context, "Surfel Resolve Screen Trace Descriptor Set");
 		let descriptor_set = set_layouts::SURFEL_RESOLVE.create_set(context, "Surfel Resolve Descriptor Set");
+		let temporal_descriptor_set = set_layouts::SURFEL_TEMPORAL.create_set(context, "Surfel Temporal Descriptor Set");
+		let spatial_descriptor_set = set_layouts::SURFEL_SPATIAL.create_set(context, "Surfel Spatial Descriptor Set");
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Resolve Parameters")
@@ -535,6 +631,8 @@ impl SurfelResolvePass {
 		);
 		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
 		let resolve = set_layouts::SURFEL_RESOLVE.binder(descriptor_set);
+		let temporal = set_layouts::SURFEL_TEMPORAL.binder(temporal_descriptor_set);
+		let spatial = set_layouts::SURFEL_SPATIAL.binder(spatial_descriptor_set);
 		let mut writes = debug_views
 			.targets()
 			.iter()
@@ -548,48 +646,80 @@ impl SurfelResolvePass {
 			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
 			resolve.buffer("surfel_resolve_parameters", parameters),
 			resolve.buffer("surfel_spawns", spawns),
-			resolve.image("history_output", targets.history),
-			resolve.image("normal_output", targets.normals),
+			resolve.image("normal_output", ssgi.normals),
+			temporal.sampled_with_frame("surfel_previous_history", surfels.history, point_sampler, -1),
+			temporal.sampled_with_frame("surfel_previous_weights", surfels.weights, point_sampler, -1),
+			temporal.sampled_with_frame("surfel_previous_depth", depth_pyramid, point_sampler, -1),
+			temporal.sampled_with_frame("surfel_previous_normals", ssgi.normals, point_sampler, -1),
+			temporal.image("surfel_history_output", surfels.history),
+			temporal.image("surfel_weights_output", surfels.weights),
+			spatial.sampled("surfel_temporal_history", surfels.history, point_sampler),
+			spatial.sampled("surfel_temporal_weights", surfels.weights, point_sampler),
+			spatial.sampled("surfel_spatial_normals", ssgi.normals, point_sampler),
+			spatial.image("surfel_output", ssgi.history),
 		]);
 		context.write(&writes);
 		Self {
 			screen_trace_descriptor_set,
 			descriptor_set,
+			temporal_descriptor_set,
+			spatial_descriptor_set,
 			parameters,
 		}
 	}
 
-	/// Uploads this frame's resolve settings and returns the resolve and the allocation, which reads the resolve's
-	/// requests.
+	/// Uploads this frame's resolve settings and returns the sink's three surfel dispatches.
 	///
-	/// `surfels` is the frame's surfel work from [`SurfelPool::prepare`], and `debug_views` the shown views, packed as
-	/// [`crate::rendering::DebugViews::shown`] packs them.
+	/// `surfels` is the frame's surfel work from [`SurfelPool::prepare`]. `history` describes the previous frame's view
+	/// and exposure, or is `None` when its images don't hold this sink's data; only a frame that surfel GI lit leaves
+	/// surfel history. `exposure` is the shared lighting exposure uploaded for every sink in this frame, and
+	/// `debug_views` the shown views, packed as [`crate::rendering::DebugViews::shown`] packs them.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		surfels: &SurfelFrame,
+		history: Option<SinkHistory>,
+		exposure: f32,
 		debug_views: u32,
 	) -> SurfelResolveStages {
 		let extent = sink.extent().scaled_down(SURFEL_RESOLVE_DIVISOR);
 		let tiles_per_row = extent.width().div_ceil(SURFEL_RESOLVE_WORKGROUP_WIDTH);
 		let tile_count = (tiles_per_row * extent.height().div_ceil(SURFEL_RESOLVE_WORKGROUP_WIDTH)).min(MAX_SPAWN_TILES);
+		let (previous_clip, previous_view, history_exposure_ratio) = history
+			.map(|previous| previous.reprojection(sink.view(), exposure))
+			.unwrap_or((Default::default(), Default::default(), 1.0));
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SurfelResolveParameters {
 			view_to_world: math::inverse(sink.view().view()).into(),
+			current_view_to_previous_clip: previous_clip.into(),
+			current_view_to_previous_view: previous_view.into(),
 			debug_views,
 			spawn_tiles_per_row: tiles_per_row,
 			spawn_tile_count: tile_count,
 			spawn_probability: SPAWN_RATE / (extent.width() * extent.height()) as f32,
+			history_valid: history.is_some() as u32,
+			history_exposure_ratio,
+			_padding: [0; 2],
 		};
 		frame.sync_buffer(self.parameters);
+		let screen_stage = |label, pipeline, descriptor_sets| ComputeStage {
+			label,
+			pipeline,
+			descriptor_sets,
+			extent,
+			workgroup: Extent::square(SURFEL_RESOLVE_WORKGROUP_WIDTH),
+		};
 		SurfelResolveStages {
-			resolve: ComputeStage {
-				label: "Surfel Resolve",
-				pipeline: surfels.resolve,
-				descriptor_sets: [self.screen_trace_descriptor_set, surfels.descriptor_set, self.descriptor_set],
-				extent,
-				workgroup: Extent::square(SURFEL_RESOLVE_WORKGROUP_WIDTH),
-			},
+			resolve: screen_stage(
+				"Surfel Resolve",
+				surfels.resolve,
+				[
+					self.screen_trace_descriptor_set,
+					surfels.descriptor_set,
+					self.descriptor_set,
+					self.temporal_descriptor_set,
+				],
+			),
 			allocate: ComputeStage {
 				label: "Surfel Allocate",
 				pipeline: surfels.allocate,
@@ -597,18 +727,31 @@ impl SurfelResolvePass {
 				extent: Extent::line(tile_count),
 				workgroup: Extent::line(64),
 			},
+			spatial: screen_stage(
+				"Surfel Spatial",
+				surfels.spatial,
+				[
+					self.screen_trace_descriptor_set,
+					surfels.descriptor_set,
+					self.descriptor_set,
+					self.spatial_descriptor_set,
+				],
+			),
 		}
 	}
 }
 
-/// The `SurfelResolveStages` struct holds one sink's two surfel dispatches, so the visibility pass can record the
-/// resolve alongside the other screen-space passes' first stages and the allocation alongside their second stages.
+/// The `SurfelResolveStages` struct holds one sink's surfel dispatches, so the visibility pass can record each among the
+/// other screen-space passes' stages of the same rank.
 #[derive(Clone, Copy)]
 pub(super) struct SurfelResolveStages {
-	/// Lights the sink's pixels from the grid and elects each tile's spawn and despawn.
-	pub(super) resolve: ComputeStage<3>,
+	/// Estimates the sink's pixels' light from the grid, blends it into their reprojected history by its confidence,
+	/// and elects each tile's spawn and despawn.
+	pub(super) resolve: ComputeStage<4>,
 	/// Turns the spawn requests into surfels.
 	pub(super) allocate: ComputeStage<2>,
+	/// Filters the history into the image material evaluation reads, and fills what the history lacks.
+	pub(super) spatial: ComputeStage<4>,
 }
 
 /// The `SurfelGiSettings` struct holds the startup surfel GI values that runtime updates can't change, so the
@@ -715,7 +858,15 @@ mod tests {
 		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_pool"), size_of::<SurfelPoolCounts>());
 		assert_eq!(
 			stride(&set_layouts::SURFEL_GI, "surfel_cells"),
-			SURFEL_CELL_COUNT as usize * 2 * size_of::<u32>()
+			SURFEL_CELL_COUNT as usize * 4 * size_of::<u32>()
+		);
+		assert_eq!(
+			stride(&set_layouts::SURFEL_GI, "surfel_hit_spawns"),
+			size_of::<SurfelHitSpawn>()
+		);
+		assert_eq!(
+			stride(&set_layouts::SURFEL_GI, "surfel_scene_lights"),
+			size_of::<LightingData>()
 		);
 		assert_eq!(
 			stride(&set_layouts::SURFEL_RESOLVE, "surfel_resolve_parameters"),

@@ -1,16 +1,19 @@
 // The second pass of the surfel scan: one workgroup turns the group totals into an exclusive scan.
 //
 // It also closes the frame's surfel counts: it moves the counts of the frame's economy and of the previous frame's
-// spawns into the totals the host reads back, records the grid's entry and ray totals, and resets the counts. Last, it
-// grants the frame's rays: the budget covers a window of the wanted rays that starts where last frame's window ended,
-// so every surfel's rays take turns when they want more than the budget.
+// spawns and losses into the totals the host reads back, records the grid's entry and ray totals, and resets the
+// counts. Last, it grants the frame's rays. The priority class goes first: its window of wanted rays starts where last
+// frame's ended, and takes up to SURFEL_PRIORITY_SHARE of the budget, or more while the regular class wants less than
+// the rest. The regular class's window, which also starts where its last one ended, takes what remains. So young and
+// changing surfels get their rays within a frame or two, and every settled surfel's rays still take their turn.
 
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
 
 main: fn (input: StageInput) -> void {
 	let thread: u32 = input.thread_idx;
-	let element_count: u32 = SURFEL_CELL_COUNT + surfel_parameters.surfel_capacity + 1;
+	let capacity: u32 = surfel_parameters.surfel_capacity;
+	let element_count: u32 = SURFEL_CELL_COUNT + capacity * 2 + 1;
 	let group_count: u32 = (element_count + SURFEL_SCAN_GROUP_ELEMENTS - 1) / SURFEL_SCAN_GROUP_ELEMENTS;
 	// Each thread scans a run of consecutive group totals by itself.
 	let run: u32 = (group_count + SURFEL_SCAN_WORKGROUP_SIZE - 1) / SURFEL_SCAN_WORKGROUP_SIZE;
@@ -45,22 +48,39 @@ main: fn (input: StageInput) -> void {
 	if (thread == 0) {
 		// The group pass left each element's offset inside its group; adding its group's offset finishes it.
 		let cells_end: u32 = SURFEL_CELL_COUNT;
-		let rays_end: u32 = SURFEL_CELL_COUNT + surfel_parameters.surfel_capacity;
+		let priority_end: u32 = SURFEL_CELL_COUNT + capacity;
+		let regular_end: u32 = SURFEL_CELL_COUNT + capacity * 2;
 		let cell_entries: u32 = surfel_scan[cells_end] + surfel_scan_partials[cells_end / SURFEL_SCAN_GROUP_ELEMENTS];
-		let rays_wanted: u32 = surfel_scan[rays_end] + surfel_scan_partials[rays_end / SURFEL_SCAN_GROUP_ELEMENTS]
-			- cell_entries;
+		let priority_total: u32 = surfel_scan[priority_end]
+			+ surfel_scan_partials[priority_end / SURFEL_SCAN_GROUP_ELEMENTS];
+		let regular_total: u32 = surfel_scan[regular_end]
+			+ surfel_scan_partials[regular_end / SURFEL_SCAN_GROUP_ELEMENTS];
+		let priority_wanted: u32 = priority_total - cell_entries;
+		let regular_wanted: u32 = regular_total - priority_total;
 		surfel_pool.cell_entries = cell_entries;
-		// Last frame's window ended at its cursor plus its rays. Surfels come and go between frames, so the window
+
+		// Each class's last window ended at its cursor plus its rays. Surfels come and go between frames, so a window
 		// lands near the rays that waited longest rather than exactly on them.
-		let cursor: u32 = surfel_pool.ray_cursor + surfel_pool.rays;
-		surfel_pool.rays_wanted = rays_wanted;
-		surfel_pool.rays = min(rays_wanted, surfel_parameters.ray_budget);
-		surfel_pool.ray_cursor = 0;
-		if (rays_wanted != 0) {
-			surfel_pool.ray_cursor = cursor % rays_wanted;
-		}
+		let budget: u32 = surfel_parameters.ray_budget;
+		let priority_share: u32 = u32(f32(budget) * SURFEL_PRIORITY_SHARE);
+		let priority_rays: u32 = min(priority_wanted, max(priority_share, budget - min(budget, regular_wanted)));
+		let regular_rays: u32 = min(regular_wanted, budget - priority_rays);
+		surfel_pool.priority_cursor = surfel_next_cursor(
+			surfel_pool.priority_cursor,
+			surfel_pool.priority_rays,
+			priority_wanted
+		);
+		surfel_pool.regular_cursor = surfel_next_cursor(surfel_pool.regular_cursor, surfel_pool.regular_rays, regular_wanted);
+		surfel_pool.priority_wanted = priority_wanted;
+		surfel_pool.priority_rays = priority_rays;
+		surfel_pool.regular_wanted = regular_wanted;
+		surfel_pool.regular_rays = regular_rays;
+
 		surfel_pool.last_alive = atomic_exchange(surfel_pool.alive, 0);
 		surfel_pool.last_recycled = atomic_exchange(surfel_pool.recycled, 0);
 		surfel_pool.last_spawned = atomic_exchange(surfel_pool.spawned, 0);
+		surfel_pool.last_lost = atomic_exchange(surfel_pool.lost, 0);
+		surfel_pool.last_hit_spawns = atomic_exchange(surfel_pool.hit_spawns, 0);
+		surfel_pool.last_bounced = atomic_exchange(surfel_pool.bounced, 0);
 	}
 }

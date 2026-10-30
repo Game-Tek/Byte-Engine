@@ -98,9 +98,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Surfel global illumination
 
-The surfel GI shaders, `crates/byte-engine/assets/rendering/visibility/surfel-*.besl`,
-and their layout layers, `crates/byte-engine/assets/rendering/visibility/layouts/surfel-gi.besl`
-and `crates/byte-engine/assets/rendering/visibility/layouts/surfel-resolve.besl`,
+The surfel GI shaders, `crates/byte-engine/assets/rendering/visibility/surfel-*.besl`
+other than the temporal and spatial passes, and their layout layers,
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel-gi.besl` and
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel-resolve.besl`,
 adapt the surfel lifecycle, grid, resolve, ray tracing, ray guiding, radial
 depth occlusion, and multiscale mean estimator of
 [webgiya by Jure Triglav](https://github.com/jure/webgiya). The
@@ -109,6 +110,47 @@ copyright line is also retained in `layouts/surfel-gi.besl`.
 MIT License
 
 Copyright (c) 2026 Jure Triglav
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Surfel GI reconstruction and hit spawning
+
+The surfel GI history blend and spatial pass,
+`crates/byte-engine/assets/rendering/visibility/layouts/surfel-temporal.besl` and
+`crates/byte-engine/assets/rendering/visibility/surfel-spatial.besl`, adapt the
+temporal and spatial filters of the ray-traced diffuse GI in
+[kajiya by Tomasz Stachowiak and Embark Studios](https://github.com/EmbarkStudios/kajiya):
+a history that counts its samples up to a limit and gives most of them up when
+the light changes past its variance, and an edge-aware spiral filter whose
+radius shrinks as the history grows confident, which averages light through a
+reversible tone map and feeds nothing back. The surfels that the shade pass,
+`crates/byte-engine/assets/rendering/visibility/surfel-shade.besl`, and the hit
+allocation, `crates/byte-engine/assets/rendering/visibility/surfel-allocate-hits.besl`,
+spawn where rays hit surfaces no surfel covers follow kajiya's irradiance cache,
+which allocates entries where rays look them up, limited by the lookup's
+bounce. Embark Studios dual-licenses kajiya under the MIT license and the
+Apache License, Version 2.0; the adaptation uses the MIT license option. The copyright line is
+also retained in these shaders.
+
+MIT License
+
+Copyright (c) 2019 Embark Studios
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

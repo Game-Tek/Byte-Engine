@@ -1,0 +1,42 @@
+// Checks that one live surfel still lies on a surface, a share of the pool each frame: each thread checks every
+// SURFEL_VALIDATE_PERIOD-th slot whose turn it is.
+//
+// A surfel keeps the world position it spawned at, while the scene's instances move with their transforms. So every
+// SURFEL_VALIDATE_PERIOD frames, each surfel traces a short support ray that crosses its plane: from a little above it
+// down along its normal, as far below. A hit means a surface still lies there, within SURFEL_SUPPORT_REACH of its
+// radius, and marks the surfel supported. A surfel that was supported and finds no surface votes itself out, so the
+// pixels it covered spawn new surfels where the surface went, instead of reading light gathered in empty space. A
+// surfel never supported, such as one on a masked or skinned surface the rays don't hit, keeps living as before.
+// Surfels that a surface now covers instead are caught by the integrate pass, from their rays that hit back faces.
+
+// The frames between two checks of one surfel. The host dispatches one thread per this many pool slots.
+SURFEL_VALIDATE_PERIOD: const u32 = 8;
+// How far a surface may move along a surfel's normal and still support it, as a share of the surfel's radius.
+SURFEL_SUPPORT_REACH: const f32 = 0.25;
+
+main: fn (input: StageInput) -> void {
+	// The slots whose turn it is are those where the slot plus the frame index is a multiple of the period.
+	let phase: u32 = (SURFEL_VALIDATE_PERIOD - surfel_parameters.frame_index % SURFEL_VALIDATE_PERIOD)
+		% SURFEL_VALIDATE_PERIOD;
+	let slot: u32 = input.thread_id.x * SURFEL_VALIDATE_PERIOD + phase;
+	if (slot >= surfel_parameters.surfel_capacity || surfel_states[slot].life == 0) {
+		return;
+	}
+	let record: SurfelRecord = surfel_records[slot];
+	let normal: vec3f = decode_surfel_normal(record.normal);
+	let reach: f32 = surfel_ray_offset(record.radius) + record.radius * SURFEL_SUPPORT_REACH;
+	// Any surface across the plane supports the surfel, so the ray stops at the first one it finds.
+	let supported: bool = trace_occlusion(
+		scene_structure,
+		255,
+		record.position + normal * reach,
+		vec3f(0.0, 0.0, 0.0) - normal,
+		0.0,
+		2.0 * reach
+	);
+	if (supported) {
+		surfel_states[slot].supported = 1;
+	} else if (surfel_states[slot].supported != 0) {
+		surfel_lose(slot);
+	}
+}

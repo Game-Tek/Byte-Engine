@@ -113,6 +113,16 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 	source
 }
 
+/// Parses `shader`, a test's stand-in for the checked-in shader `asset`, and stacks it on the layout layers the sidecar
+/// of `asset` lists, as baking stacks `asset` itself.
+///
+/// Tests use it to run a layer's helper through a smaller `main` than the shader's own, with fixture inputs where the
+/// shader computes them. Next, pass the result to [`besl::lex`].
+pub(crate) fn stacked_on_layers_of(asset: &str, shader: &'static str) -> besl::parser::Node<'static> {
+	let (layers, _) = asset_parts(asset);
+	stack_on_layers(asset, layers, shader)
+}
+
 /// Parses one checked-in rendering shader and stacks it on the layout layers its sidecar lists, as baking does.
 ///
 /// Unlike [`asset_source`], the result keeps each layer's descriptors in the layer's own set, which ray tracing
@@ -120,12 +130,19 @@ pub(crate) fn asset_source(asset: &str) -> &'static str {
 /// pass the result to [`besl::lex`]. The sources are kept for the rest of the test run.
 pub(crate) fn stacked_asset(asset: &str) -> besl::parser::Node<'static> {
 	let (layers, shader) = asset_parts(asset);
+	stack_on_layers(asset, layers, shader.leak())
+}
+
+/// Parses `shader`, `asset` or a test's stand-in for it, and stacks it on `layers`, the layout layers `asset`'s
+/// sidecar lists. The sources are kept for the rest of the test run.
+fn stack_on_layers(asset: &str, layers: Vec<(String, String)>, shader: &'static str) -> besl::parser::Node<'static> {
 	let layers: Vec<(&'static str, &'static str)> = layers
 		.into_iter()
 		.map(|(layer, source)| (&*layer.leak(), &*source.leak()))
 		.collect();
-	let module = besl::parse(shader.leak())
-		.unwrap_or_else(|error| panic!("Failed to parse {asset}: {error:?}. The most likely cause is invalid BESL syntax."));
+	let module = besl::parse(shader).unwrap_or_else(|error| {
+		panic!("Failed to parse {asset} or its stand-in: {error:?}. The most likely cause is invalid BESL syntax.")
+	});
 	besl::stack_layers(module, layers).unwrap_or_else(|error| panic!("Failed to stack {asset} on its layout layers: {error:?}"))
 }
 

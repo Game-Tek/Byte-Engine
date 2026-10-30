@@ -1,0 +1,148 @@
+// Filters the surfel history at half resolution for material evaluation, and fills the pixels whose history holds
+// little confidence from their neighbors on the same surface.
+//
+// Each pixel averages its own history with neighbors on a fixed spiral, weighed by how surely they lie on its surface,
+// as SSGI's filter judges it from depth and normals, and by the confidence their histories hold. A confident pixel
+// reads one near neighbor, which smooths the seams between surfels at little cost; a less confident one reads more
+// neighbors, up to SURFEL_SPATIAL_TAPS - 1, farther out, so a surfel's light spreads over a new pixel of its surface in
+// the frame the pixel appears.
+// What the pixel's surface still lacks comes from a fallback: the light of its neighbors on any surface at a similar
+// depth, which knows whether the area is lit or enclosed, and the environment's light only where no neighbor knows
+// anything, as material evaluation lights a surface without surfel GI.
+//
+// The output feeds nothing but this frame's material evaluation, never a surfel, a ray, or a history, so the filter can
+// trade a little energy for less noise without that error compounding. It tones each light down before averaging and
+// back up after ("Optimized Reversible Tonemapper for Resolve" by Timothy Lottes, AMD GPUOpen), which keeps a lone
+// bright texel from spreading.
+//
+// The pass adapts the spatial filter of the ray-traced diffuse GI in kajiya by Tomasz Stachowiak (MIT License,
+// Copyright (c) 2019 Embark Studios): its spiral of up to eight taps, which shrinks from 16 texels to 2 and from eight
+// taps to two as the center grows confident, and its reversible tone map. See THIRD_PARTY_NOTICES.md.
+
+// The most taps a pixel reads, its own included, and the fewest.
+SURFEL_SPATIAL_TAPS: const u32 = 8;
+SURFEL_SPATIAL_MIN_TAPS: const u32 = 2;
+// The spiral's radius for a pixel whose history holds no confidence, and for a fully confident one, in texels.
+SURFEL_SPATIAL_FAR_RADIUS: const f32 = 16.0;
+SURFEL_SPATIAL_NEAR_RADIUS: const f32 = 2.0;
+// The confidence at which a pixel's surface needs no fallback.
+SURFEL_SPATIAL_FULL_CONFIDENCE: const f32 = 1.0;
+// A 1% sigma, relative to the center's depth, for a neighbor's distance from the center's tangent plane, as in SSGI's
+// filter.
+SURFEL_SPATIAL_INVERSE_PLANE_VARIANCE: const f32 = 10000.0;
+// A 20% sigma, relative to the center's depth, for a neighbor on any surface to inform the fallback.
+SURFEL_SPATIAL_INVERSE_DEPTH_VARIANCE: const f32 = 25.0;
+
+// Tones `value` down so a bright texel weighs about as much as a lit one in an average, reversibly.
+surfel_crunch: fn (value: vec4f) -> vec4f {
+	let scale: f32 = 1.0 / (max(value.x, max(value.y, value.z)) + 1.0);
+	return vec4f(value.x * scale, value.y * scale, value.z * scale, value.w);
+}
+
+// Undoes `surfel_crunch`.
+surfel_uncrunch: fn (value: vec4f) -> vec4f {
+	let scale: f32 = 1.0 / max(1.0 - max(value.x, max(value.y, value.z)), 0.0001);
+	return vec4f(value.x * scale, value.y * scale, value.z * scale, value.w);
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = image_size(surfel_output);
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	// The GPU waits for a thread's reads at every branch, so each of the pixel's and its taps' reads issue together,
+	// before any test of them.
+	let z: f32 = fetch(depth_pyramid, pixel).x;
+	let stored_normal: vec4f = fetch(surfel_spatial_normals, pixel);
+	let center: vec4f = fetch(surfel_temporal_history, pixel);
+	let center_confidence: f32 = fetch(surfel_temporal_weights, pixel).x;
+	if (z == 0.0) {
+		write(surfel_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		return;
+	}
+	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+	let position: vec3f = view_position(pixel_f, z);
+	let normal: vec3f = decode_stored_normal(stored_normal);
+	// As in kajiya, the spiral's area shrinks with the center's confidence, and its taps with the square of what the
+	// confidence lacks: half a full confidence already reads only the fewest taps.
+	let confident: f32 = clamp(center_confidence / SURFEL_SPATIAL_FULL_CONFIDENCE, 0.0, 1.0);
+	let radius: f32 = sqrt(mix(
+		SURFEL_SPATIAL_FAR_RADIUS * SURFEL_SPATIAL_FAR_RADIUS,
+		SURFEL_SPATIAL_NEAR_RADIUS * SURFEL_SPATIAL_NEAR_RADIUS,
+		confident
+	));
+	// 2^(4 (1 - c)²), as e^(4 ln 2 (1 - c)²).
+	let taps: u32 = clamp(
+		u32(exp(2.77258872 * (1.0 - confident) * (1.0 - confident))),
+		SURFEL_SPATIAL_MIN_TAPS,
+		SURFEL_SPATIAL_TAPS
+	);
+
+	// The average on the pixel's surface, toned down, and its weight, which is also the confidence behind it.
+	let filtered: vec4f = surfel_crunch(center) * center_confidence;
+	let filtered_weight: f32 = center_confidence;
+	// The average of the neighbors on any surface at a similar depth, for the fallback.
+	let around: vec4f = center * center_confidence;
+	let around_weight: f32 = center_confidence;
+	for (let tap: u32 = 1; tap < taps; tap = tap + 1) {
+		// A golden-angle spiral covers the disk evenly: tap i at the radius of the share (i + 0.5) / taps of its area.
+		let share: f32 = (f32(tap) + 0.5) / f32(SURFEL_SPATIAL_TAPS);
+		let angle: f32 = f32(tap) * 2.39996323;
+		let tap_position_in_texels: vec2f = pixel_f + vec2f(cos(angle), sin(angle)) * (sqrt(share) * radius);
+		let tap_x: f32 = floor(tap_position_in_texels.x + 0.5);
+		let tap_y: f32 = floor(tap_position_in_texels.y + 0.5);
+		let inside: bool = tap_x >= 0.0 && tap_y >= 0.0 && tap_x < f32(extent.x) && tap_y < f32(extent.y);
+		// A tap outside the image reads the nearest texel inside it, and then counts for nothing.
+		let coordinate: vec2u = vec2u(
+			u32(clamp(tap_x, 0.0, f32(extent.x - 1))),
+			u32(clamp(tap_y, 0.0, f32(extent.y - 1)))
+		);
+		let tap_z: f32 = fetch(depth_pyramid, coordinate).x;
+		let tap_confidence: f32 = fetch(surfel_temporal_weights, coordinate).x;
+		let tap_light: vec4f = fetch(surfel_temporal_history, coordinate);
+		let tap_stored_normal: vec4f = fetch(surfel_spatial_normals, coordinate);
+		if (!inside || tap_z == 0.0 || tap_confidence <= 0.0) {
+			continue;
+		}
+		let tap_position: vec3f = view_position(vec2f(tap_x, tap_y), tap_z);
+		let tap_normal: vec3f = decode_stored_normal(tap_stored_normal);
+		// Taps farther out on the spiral weigh less.
+		let falloff: f32 = exp(-2.0 * share);
+		let relative_depth: f32 = (tap_z - z) / z;
+		let depth_weight: f32 = exp(-relative_depth * relative_depth * SURFEL_SPATIAL_INVERSE_DEPTH_VARIANCE);
+		around = around + tap_light * (depth_weight * falloff * tap_confidence);
+		around_weight = around_weight + depth_weight * falloff * tap_confidence;
+		// A neighbor on the pixel's surface lies on its tangent plane and faces the same way. Without a normal, depth
+		// decides alone.
+		let surface: f32 = depth_weight;
+		if (dot(normal, normal) != 0.0) {
+			let plane_distance: f32 = dot(normal, tap_position - position) / z;
+			surface = normal_agreement(normal, tap_normal)
+				* exp(-plane_distance * plane_distance * SURFEL_SPATIAL_INVERSE_PLANE_VARIANCE);
+		}
+		let weight: f32 = surface * falloff * tap_confidence;
+		filtered = filtered + surfel_crunch(tap_light) * weight;
+		filtered_weight = filtered_weight + weight;
+	}
+
+	let light: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (filtered_weight > 0.0001) {
+		light = surfel_uncrunch(filtered * (1.0 / filtered_weight));
+	}
+	let fallback: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (around_weight > 0.0001) {
+		fallback = around * (1.0 / around_weight);
+	} else {
+		// Nothing around knows the light yet. The environment lights the pixel as if nothing hid the sky, as material
+		// evaluation lights it without surfel GI, until a surfel covers it.
+		let sky: vec4f = texture_lod(surfel_environment_irradiance, to_world(normal, 0.0), 0.0);
+		let scale: f32 = surfel_parameters.environment_intensity * surfel_parameters.exposure;
+		fallback = vec4f(sky.x * scale, sky.y * scale, sky.z * scale, 0.0);
+	}
+	write(
+		surfel_output,
+		pixel,
+		mix(fallback, light, clamp(filtered_weight / SURFEL_SPATIAL_FULL_CONFIDENCE, 0.0, 1.0))
+	);
+}

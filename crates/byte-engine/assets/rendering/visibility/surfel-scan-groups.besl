@@ -1,8 +1,10 @@
 // The first pass of the surfel scan: each workgroup scans 1024 consecutive elements and records their total.
 //
-// The elements are every cell's surfel count, then every slot's wanted rays, then a zero that becomes the grand total.
-// Reading a cell's count also resets it for the next frame's count pass and hands it to the scatter as the cell's
-// fill. Next, the partial pass scans the group totals, and the add pass offsets each group by the totals before it.
+// The elements are every cell's surfel count, then every slot's wanted priority rays, then every slot's wanted regular
+// rays, then a zero that becomes the grand total.
+// Reading a cell's count also resets it for the next frame's count pass and hands it to the scatter as the cell's fill,
+// whose front starts empty. Next, the partial pass scans the group totals, and the add pass offsets each group by the
+// totals before it.
 
 // Each thread's running total while the workgroup scans them.
 thread_totals: workgroup<u32, 256>;
@@ -12,11 +14,13 @@ scan_element: fn (index: u32) -> u32 {
 	if (index < SURFEL_CELL_COUNT) {
 		let count: u32 = atomic_exchange(surfel_cells.counts[index], 0);
 		atomic_store(surfel_cells.fill[index], count);
+		atomic_store(surfel_cells.front[index], 0);
 		return count;
 	}
-	let slot: u32 = index - SURFEL_CELL_COUNT;
-	if (slot < surfel_parameters.surfel_capacity) {
-		return surfel_ray_wants[slot];
+	// The wanted rays list the priority class's for every slot, then the regular class's, in scan order.
+	let want: u32 = index - SURFEL_CELL_COUNT;
+	if (want < surfel_parameters.surfel_capacity * 2) {
+		return surfel_ray_wants[want];
 	}
 	return 0;
 }

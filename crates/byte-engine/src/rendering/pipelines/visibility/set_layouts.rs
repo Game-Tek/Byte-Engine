@@ -101,14 +101,32 @@ layout!(
 	]
 );
 layout!(
-	/// The frame-wide surfel GI set: the surfel pool, its grid, and the settings every surfel stage shares.
+	/// The frame-wide surfel GI set: the surfel pool, its grid, the scene's light table, and the settings every surfel
+	/// stage shares.
 	SURFEL_GI,
-	["visibility/layouts/surfel-gi.besl"]
+	["visibility/layouts/light-table.besl", "visibility/layouts/surfel-gi.besl"]
 );
 layout!(
-	/// The per-sink set of the surfel resolve and allocation: their settings, spawn requests, and output images.
+	/// The per-sink set of the surfel resolve, allocation, and reconstruction: their settings, spawn requests, and the
+	/// resolve's images.
 	SURFEL_RESOLVE,
 	["visibility/layouts/surfel-resolve.besl"]
+);
+layout!(
+	/// The per-sink history the surfel resolve reprojects and the history it accumulates. Its helper reads the screen
+	/// trace's normal decoding and the resolve's settings, so those layers come first.
+	SURFEL_TEMPORAL,
+	[
+		"visibility/layouts/screen-view.besl",
+		"visibility/layouts/screen-trace.besl",
+		"visibility/layouts/surfel-resolve.besl",
+		"visibility/layouts/surfel-temporal.besl"
+	]
+);
+layout!(
+	/// The per-sink images the surfel spatial pass reads and writes.
+	SURFEL_SPATIAL,
+	["visibility/layouts/surfel-spatial.besl"]
 );
 layout!(
 	/// The set the frame's rays trace the scene through: the top-level acceleration structure, the flat triangles, and
@@ -211,6 +229,8 @@ mod tests {
 			&SUN_VISIBILITY,
 			&SURFEL_GI,
 			&SURFEL_RESOLVE,
+			&SURFEL_TEMPORAL,
+			&SURFEL_SPATIAL,
 			&RAY_TRACED_SCENE,
 			&RAY_HITS,
 			&PROBE_VOLUME,

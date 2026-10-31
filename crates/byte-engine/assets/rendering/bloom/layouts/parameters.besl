@@ -4,4 +4,10 @@
 BloomParameters: struct {
 	prefilter: vec4f[1],
 	filter: vec4f[1],
+	// A climb's per-channel weights: the same-resolution level's in `same_weight`, the blurred level below's in
+	// `low_weight`.
+	same_weight: vec4f[1],
+	low_weight: vec4f[1],
+	// The share of each channel's light the composite moves into the glow, the sum of every level's weight.
+	scatter: vec4f[1],
 }

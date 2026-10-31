@@ -1,11 +1,11 @@
 // Climbs the bloom pyramid's last level and blends it into the HDR scene in one dispatch. Each lane writes a 2x2 block of
 // pixels, so a tile's 16x16 lanes cover 32x32 of them. The tile first builds the 18x18 top-level texels its pixels
 // read into workgroup memory with the same climb the upsample pass makes: the level below blurred with a 3x3 tent,
-// spread `filter.x` lower-level texels wide and weighted by `filter.y`, plus the same-resolution level from the
-// downsample chain. Its pixels then filter that block bilinearly into the glow's tail, scaled by `filter.z` so the
-// levels' weights sum to one, and move the scatter `prefilter.z` of the scene's light into it:
-// `(1 - scatter) * scene + scatter * tail`. The blend adds no light, so a uniform field passes through unchanged and a
-// highlight spreads over darker neighbors instead of growing brighter. The top level never touches memory, and the
+// spread `filter.x` lower-level texels wide, plus the same-resolution level from the downsample chain, each weighted
+// per channel. Every level's weight is already its share of the glow, so its pixels filter that block bilinearly and
+// add it to the scene less the light that moved into it: `(1 - scatter) * scene + glow`, where `scatter` is the sum of
+// the weights. The blend adds no light, so a uniform field passes through unchanged and a highlight spreads over
+// darker neighbors instead of growing brighter. The top level never touches memory, and the
 // pyramid saves a dispatch and the barrier in front of it. The scene passes through untouched at zero scatter, and the
 // result stays scene-linear for the tone mapper that follows. The result is held to the half-float range, so a scene
 // texel that overflowed to infinity stores finite. The climb lives in `layouts/climb.besl`, which binds both levels.
@@ -45,13 +45,16 @@ climb: fn (region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
 		region_coordinate(region_origin.y, cell.y, top_size.y)
 	);
 	let uv: vec2f = level_uv(texel, top_size);
-	let climbed: vec3f = same_level(uv) + folded_tent(uv, bloom_parameters.filter[0].x) * bloom_parameters.filter[0].y;
+	let same_weight: vec4f = bloom_parameters.same_weight[0];
+	let low_weight: vec4f = bloom_parameters.low_weight[0];
+	let climbed: vec3f = same_level(uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
+		+ folded_tent(uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
 	return vec4f(climbed.x, climbed.y, climbed.z, 0.0);
 }
 
-// Filters the region bilinearly under pixel `pixel` into the tail, scaled by `normalization`, and moves `scatter` of
-// the pixel's scene color into it.
-composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: vec2f, region_origin: vec2u, scatter: f32, normalization: f32) -> vec4f {
+// Filters the region bilinearly under pixel `pixel` into the glow and moves `scatter` of each channel of the pixel's
+// scene color into it.
+composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: vec2f, region_origin: vec2u, scatter: vec3f) -> vec4f {
 	// The pixel's center in top-level texels, measured from the region's first texel center, as a sampler would place
 	// it before filtering.
 	let position: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / result_size * top_size
@@ -66,8 +69,8 @@ composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: v
 	let bottom: vec4f = shared_top_level[index + BLOOM_REGION_WIDTH] * (1.0 - fraction_x)
 		+ shared_top_level[index + BLOOM_REGION_WIDTH + 1] * fraction_x;
 	let bloom: vec4f = top * (1.0 - fraction_y) + bottom * fraction_y;
-	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) * (1.0 - scatter)
-		+ vec3f(bloom.x, bloom.y, bloom.z) * (scatter * normalization);
+	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) * (vec3f(1.0, 1.0, 1.0) - scatter)
+		+ vec3f(bloom.x, bloom.y, bloom.z);
 	return vec4f(
 		min(final_color.x, HALF_FLOAT_MAX),
 		min(final_color.y, HALF_FLOAT_MAX),
@@ -97,9 +100,9 @@ main: fn(input: StageInput) -> void {
 	// The block's second column and row, held inside the image so reads past an odd edge stay in bounds.
 	let right: u32 = min(base.x + 1, result_size.x - 1);
 	let below: u32 = min(base.y + 1, result_size.y - 1);
-	let scatter: f32 = bloom_parameters.prefilter[0].z;
-	let normalization: f32 = bloom_parameters.filter[0].z;
-	if (scatter <= 0.0) {
+	let shares: vec4f = bloom_parameters.scatter[0];
+	let scatter: vec3f = vec3f(shares.x, shares.y, shares.z);
+	if (max(max(scatter.x, scatter.y), scatter.z) <= 0.0) {
 		if (base.x >= result_size.x || base.y >= result_size.y) {
 			return;
 		}
@@ -149,9 +152,9 @@ main: fn(input: StageInput) -> void {
 	write_block(
 		base,
 		result_size,
-		composite_pixel(base, top_left, result_extent, top_extent, region_origin, scatter, normalization),
-		composite_pixel(vec2u(right, base.y), top_right, result_extent, top_extent, region_origin, scatter, normalization),
-		composite_pixel(vec2u(base.x, below), bottom_left, result_extent, top_extent, region_origin, scatter, normalization),
-		composite_pixel(vec2u(right, below), bottom_right, result_extent, top_extent, region_origin, scatter, normalization)
+		composite_pixel(base, top_left, result_extent, top_extent, region_origin, scatter),
+		composite_pixel(vec2u(right, base.y), top_right, result_extent, top_extent, region_origin, scatter),
+		composite_pixel(vec2u(base.x, below), bottom_left, result_extent, top_extent, region_origin, scatter),
+		composite_pixel(vec2u(right, below), bottom_right, result_extent, top_extent, region_origin, scatter)
 	);
 }

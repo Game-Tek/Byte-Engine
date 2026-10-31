@@ -1,7 +1,8 @@
 // Climbs one level of the bloom pyramid: the lower level is blurred with a 3x3 tent filter, spread `filter.x`
-// lower-level texels wide, weighted by `filter.y`, and added to the same-resolution level from the downsample chain.
-// Every climb applies the same weight, so level `k` ends up weighted by `filter.y` to the power `k`, which shapes how
-// fast the glow's tail falls off. The climb itself lives in `layouts/climb.besl`, which binds both levels.
+// lower-level texels wide, and added to the same-resolution level from the downsample chain, each weighted per
+// channel. Each climb has its own weights: `same_weight` is this level's share of the glow and `low_weight` scales the
+// levels already climbed, which the deepest climb uses for the coarsest level's share. The climb itself lives in
+// `layouts/climb.besl`, which binds both levels.
 
 result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
@@ -10,6 +11,9 @@ main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let uv: vec2f = level_uv(coord, image_size(result_texture));
-	let combined: vec3f = same_level(uv) + folded_tent(uv, bloom_parameters.filter[0].x) * bloom_parameters.filter[0].y;
+	let same_weight: vec4f = bloom_parameters.same_weight[0];
+	let low_weight: vec4f = bloom_parameters.low_weight[0];
+	let combined: vec3f = same_level(uv) * vec3f(same_weight.x, same_weight.y, same_weight.z)
+		+ folded_tent(uv, bloom_parameters.filter[0].x) * vec3f(low_weight.x, low_weight.y, low_weight.z);
 	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
 }

@@ -109,7 +109,7 @@ scene reaches the swapchain through the copy.
 
 | Pass | Settings and defaults |
 | --- | --- |
-| Bloom | Scatter 0.06, tail exponent 2, maximum brightness 4,096, radius 1, 6 levels of 1 to 6. |
+| Bloom | Scatter 0.06, tail exponent 2, halation 0 in every channel, halation radius 0.005 of the sink's height in every channel, maximum brightness 4,096, radius 1, 6 levels of 1 to 6. |
 | Motion blur | Shutter 8,333 µs, maximum blur radius 32 pixels, 8 taps of 1 to 32. It blurs camera turns and zooms only, by the shutter's share of the frame interval. |
 | Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
@@ -119,19 +119,22 @@ scene reaches the swapchain through the copy.
 
 ### Bloom
 
-Bloom moves a share of every pixel's light into a faint, wide tail around it.
-It adds no light: a field of one brightness leaves bloom unchanged, and a
-highlight keeps the light it doesn't spread. There's no threshold, so every
-pixel spreads light, and the tail shows only where it's brighter than the
-pixels it falls on.
+Bloom moves a share of every pixel's light into a faint, wide tail around it,
+and halation moves a share of each channel into a halo of a set radius. Neither
+adds light: a field of one brightness leaves bloom unchanged, and a highlight
+keeps the light it doesn't spread. There's no threshold, so every pixel spreads
+light, and the tail and halo show only where they're brighter than the pixels
+they fall on. Each channel's tail and halo come from that channel's light alone.
 
 | Term | Definition |
 | --- | --- |
-| Result | (1 − s) × scene + s × tail, per channel, in scene-linear light after exposure, held to 65,504. A scatter of 0 passes the scene through unchanged. |
-| Scatter `s` | The share of each pixel's light that moves into the tail, from 0 to 1. |
-| Levels | Level 0 is half the sink's resolution, and each later level is half the one before. Level k is the source blurred by a kernel of total weight 1 that reaches twice as far as level k − 1's. |
-| Tail | The sum of the levels, level k weighted by r<sup>k</sup> over the sum of r<sup>j</sup> for every level j, so the weights sum to 1. |
+| Result | For each channel c, (1 − S<sub>c</sub>) × scene + the sum over levels k of w<sub>k,c</sub> × level k, in scene-linear light after exposure, held to 65,504. S<sub>c</sub> = s + h<sub>c</sub> is the sum of the channel's weights. Where every S<sub>c</sub> is 0, the scene passes through unchanged. |
+| Scatter `s` | The share of each pixel's light that moves into the tail, from 0 to 1, the same for every channel. |
+| Halation `h` | The share of each channel's light that moves into its halo, per red, green, and blue channel, from 0 to 1 − s. |
+| Levels | Level 0 is half the sink's resolution, and each later level is half the one before. Level k is the source blurred by a kernel of total weight 1 that reaches twice as far as level k − 1's, and one of its texels spans 2<sup>k + 1</sup> pixels. |
+| Level weight w<sub>k,c</sub> | s × r<sup>k</sup> / the sum of r<sup>j</sup> over every level j, plus h<sub>c</sub> × g<sub>k,c</sub> / the sum of g<sub>j,c</sub> over every level j. The tail's and the halo's weights each sum to 1 before their share scales them. |
 | Tail exponent `p` | Sets r = 2<sup>2 − p</sup>, so the tail falls off as about 1 / distance<sup>p</sup>. At 2, every level carries the same share; at 3, each level carries half the share of the one before. |
+| Halation radius | The halo's radius, per channel, as a share of the sink's height. It sets g<sub>k,c</sub> = e<sup>−2 (k − m)²</sup>, where m = log<sub>2</sub>(radius in pixels / 2), held between 0 and the last level: the halo centers on the level whose texels span its radius and reaches about half a level to either side. |
 | Source | The scene with every channel held between 0 and the maximum brightness. Level 0 averages 2 × 2 blocks of pixels in groups of four. Within a block, each pixel weighs 1 / (1 + M) against the others, and within a group each block weighs 1 / (1 + M) by its average, where M is the largest channel. A single bright pixel therefore can't flicker the tail, and where every pixel is alike the weights cancel. |
 
 Rendering on demand, set by the `render-on-demand` parameter, renders a frame

@@ -11,6 +11,7 @@ pub(crate) mod debug_view;
 pub mod aces;
 pub mod agx;
 pub mod bloom;
+pub mod hable;
 pub mod height_fog;
 pub mod lens_flare;
 pub mod lut;

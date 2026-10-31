@@ -1,0 +1,70 @@
+// John Hable's filmic tone curve from Uncharted 2, as published in "Filmic Tonemapping Operators" (2010):
+// http://filmicworlds.com/blog/filmic-tonemapping-operators/
+// and presented in the GDC 2010 talk "Uncharted 2: HDR Lighting":
+// https://gdcvault.com/play/1012459/Uncharted-2-HDR
+// This is an independent implementation of the published formula. It keeps the post's curve and exposure bias, leaves
+// exposure to the passes before it in place of the post's hard-coded `* 16`, and encodes with the exact sRGB transfer
+// function in place of the post's 2.2 power.
+
+source: descriptor<{ type: StorageImage, binding: 0, access: read }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
+
+// The curve's constants, as the blog post publishes them. The post notes that they differ slightly from the talk's.
+// A, the shoulder strength: how sharply highlights roll off toward white.
+HABLE_SHOULDER_STRENGTH: const f32 = 0.15;
+// B, the linear strength: how strongly the curve's middle section stays linear.
+HABLE_LINEAR_STRENGTH: const f32 = 0.50;
+// C, the linear angle: the angle of the curve's middle section.
+HABLE_LINEAR_ANGLE: const f32 = 0.10;
+// D, the toe strength: how strongly shadows are pressed toward black.
+HABLE_TOE_STRENGTH: const f32 = 0.20;
+// E and F, the toe numerator and denominator. E / F sets the toe's angle, and subtracting it maps black to black.
+HABLE_TOE_NUMERATOR: const f32 = 0.02;
+HABLE_TOE_DENOMINATOR: const f32 = 0.30;
+// W, the linear white: the biased scene value that shows as display white.
+HABLE_LINEAR_WHITE: const f32 = 11.2;
+// The exposure bias the post applies before the curve. With W at 11.2, scene values from 5.6 up show as white.
+HABLE_EXPOSURE_BIAS: const f32 = 2.0;
+
+// The curve is a ratio of two quadratics, so an infinite input, which a floating-point scene holds where a highlight
+// overflowed, would give infinity over infinity, NaN, and show as black. Holding the input to the half-float range
+// keeps the curve finite near its limit of 1 - E / F, about 0.933, which the white scale and clamp map to white.
+HALF_FLOAT_MAX: const f32 = 65504.0;
+
+// Hable's `Uncharted2Tonemap` for one channel: 0 at 0, rising toward 1 - E / F as the channel grows.
+hable_curve: fn(x: f32) -> f32 {
+	let shoulder: f32 = HABLE_SHOULDER_STRENGTH * x;
+	let numerator: f32 = x * (shoulder + HABLE_LINEAR_ANGLE * HABLE_LINEAR_STRENGTH) + HABLE_TOE_STRENGTH * HABLE_TOE_NUMERATOR;
+	let denominator: f32 = x * (shoulder + HABLE_LINEAR_STRENGTH) + HABLE_TOE_STRENGTH * HABLE_TOE_DENOMINATOR;
+	return numerator / denominator - HABLE_TOE_NUMERATOR / HABLE_TOE_DENOMINATOR;
+}
+
+// Maps scene-linear sRGB to display-linear sRGB in [0, 1], one channel at a time. Dividing by the curve at the linear
+// white shows W as white, and the clamp holds brighter values there.
+hable_filmic: fn(input_color: vec3f) -> vec3f {
+	let color: vec3f = clamp(input_color, splat3(0.0), splat3(HALF_FLOAT_MAX));
+	let white: f32 = hable_curve(HABLE_LINEAR_WHITE);
+	let mapped: vec3f = vec3f(
+		hable_curve(HABLE_EXPOSURE_BIAS * color.x) / white,
+		hable_curve(HABLE_EXPOSURE_BIAS * color.y) / white,
+		hable_curve(HABLE_EXPOSURE_BIAS * color.z) / white
+	);
+	return clamp(mapped, splat3(0.0), splat3(1.0));
+}
+
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let result_color: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	let extent: vec2u = input.extent;
+	if (coord.x >= extent.x || coord.y >= extent.y) {
+		return;
+	}
+	source_color = image_load(source, coord);
+	result_color = hable_filmic(vec3f(source_color.x, source_color.y, source_color.z));
+	// The swapchain uses a non-sRGB UNORM format, so encode linear output before storing it.
+	result_color = linear_srgb_to_srgb(result_color);
+	write(result, coord, vec4f(result_color.x, result_color.y, result_color.z, 1.0));
+}

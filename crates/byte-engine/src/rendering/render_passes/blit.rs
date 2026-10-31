@@ -228,7 +228,11 @@ mod tests {
 			),
 			(
 				"aces_tone_mapping",
-				include_str!("../../../assets/rendering/aces/tone-mapping.besl"),
+				crate::rendering::shader_vm_test::asset_source("aces/tone-mapping.besl"),
+			),
+			(
+				"hable_tone_mapping",
+				crate::rendering::shader_vm_test::asset_source("hable/tone-mapping.besl"),
 			),
 			("height_fog", include_str!("../../../assets/rendering/height-fog.besl")),
 			("lut_apply", crate::rendering::shader_vm_test::asset_source("lut/apply.besl")),

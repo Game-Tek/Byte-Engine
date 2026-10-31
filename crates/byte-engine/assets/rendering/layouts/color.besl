@@ -46,3 +46,56 @@ agx_outset: fn(color: vec3f) -> vec3f {
 	let z: f32 = 0.0 - 0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z;
 	return vec3f(x, y, z);
 }
+
+// Stephen Hill's fit of the ACES v1 reference rendering transform (RRT) and sRGB output display transform (ODT),
+// from MJP and David Neubelt's Baking Lab:
+// https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl
+// The fit approximates the reference transforms. It does not claim ACES compliance.
+//
+// MIT License
+//
+// Copyright (c) 2016 MJP
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// Hill's `ACESInputMat`: linear sRGB to AP1 through XYZ and a D65 to D60 adaptation, then the RRT's saturation.
+// Each row sums to 1, so neutral colors stay neutral.
+aces_fitted_input: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.59719 * color.x + 0.35458 * color.y + 0.04823 * color.z;
+	let y: f32 = 0.07600 * color.x + 0.90834 * color.y + 0.01566 * color.z;
+	let z: f32 = 0.02840 * color.x + 0.13383 * color.y + 0.83777 * color.z;
+	return vec3f(x, y, z);
+}
+
+// Hill's `RRTAndODTFit`: one ratio of two quadratics per channel that fits the RRT and ODT curves on RRT-saturated
+// AP1 color. It approaches 1 / 0.983729, about 1.0165, as a channel grows, so `aces_fitted_output` and a clamp map
+// large finite values to white.
+aces_fitted_rrt_odt: fn(color: vec3f) -> vec3f {
+	let numerator: vec3f = color * (color + splat3(0.0245786)) - splat3(0.000090537);
+	let denominator: vec3f = color * (0.983729 * color + splat3(0.4329510)) + splat3(0.238081);
+	return numerator / denominator;
+}
+
+// Hill's `ACESOutputMat`: the ODT's desaturation, then AP1 to linear sRGB through XYZ and a D60 to D65 adaptation.
+aces_fitted_output: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.60475 * color.x - 0.53108 * color.y - 0.07367 * color.z;
+	let y: f32 = 0.0 - 0.10208 * color.x + 1.10813 * color.y - 0.00605 * color.z;
+	let z: f32 = 0.0 - 0.00327 * color.x - 0.07276 * color.y + 1.07602 * color.z;
+	return vec3f(x, y, z);
+}

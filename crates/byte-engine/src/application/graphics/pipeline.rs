@@ -398,11 +398,24 @@ pub fn setup_srgb_display_render_pass(application: &mut GraphicsApplication) {
 	setup_image_transform_render_pass(application, &rendering::render_passes::srgb_display::ENCODING);
 }
 
-/// Installs the ACES v1 tonemapping pass for post-scene color mapping.
+/// Installs an ACES tonemapping pass for post-scene color mapping.
 ///
-/// Register it before creating a window; use `render.pass.aces` to enable or bypass it at runtime.
+/// The pass applies Stephen Hill's fitted approximation of the ACES v1 reference rendering and sRGB output
+/// transforms, not the reference transforms themselves, and encodes the result for an sRGB display. It reads
+/// scene-linear floating-point `main`, so use it in place of another tone mapper, after the passes that write scene
+/// light. Register it before creating a window; use `render.pass.aces` to enable or bypass it at runtime.
 pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
 	setup_image_transform_render_pass(application, &rendering::render_passes::aces::TONE_MAPPING);
+}
+
+/// Installs John Hable's filmic tonemapping pass from Uncharted 2 for post-scene color mapping.
+///
+/// The pass applies Hable's published curve to each channel, with the published exposure bias of 2 and linear white of
+/// 11.2, so scene values from 5.6 up show as white, and encodes the result for an sRGB display. It reads scene-linear
+/// floating-point `main`, so use it in place of another tone mapper, after the passes that write scene light. Register
+/// it before creating a window; use `render.pass.hable` to enable or bypass it at runtime.
+pub fn setup_hable_tonemap_render_pass(application: &mut GraphicsApplication) {
+	setup_image_transform_render_pass(application, &rendering::render_passes::hable::TONE_MAPPING);
 }
 
 /// Starts one image transform's shaders and installs the transform for every render sink.

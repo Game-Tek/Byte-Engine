@@ -114,7 +114,8 @@ scene reaches the swapchain through the copy.
 | Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux. |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, ozone strength 1, ground albedo 0.3, the sun disk capped at 32,768 per channel; not settable through the setup function. |
-| Antialiasing, tone mapping, UI, debug meshes | No settings. |
+| Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Tone mapping, UI, debug meshes | No settings. |
 
 Rendering on demand, set by the `render-on-demand` parameter, renders a frame
 only when a window, camera, or pass state changed, a pass asked for one, or a

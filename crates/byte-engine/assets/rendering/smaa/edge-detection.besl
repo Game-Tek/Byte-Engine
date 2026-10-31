@@ -36,9 +36,12 @@ clamp_add: fn(value: u32, offset: u32, extent: u32) -> u32 {
 	return value + offset;
 }
 
+// Perceptual luma: Reinhard bounds HDR highlights and the square root approximates display gamma, so the
+// reference threshold, tuned for display values, also fits scene-linear input.
 source_luma: fn(coordinate: vec2u) -> f32 {
 	let color: vec4f = fetch(source, coordinate);
-	return color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
+	let linear_luma: f32 = max(color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722, 0.0);
+	return sqrt(linear_luma / (1.0 + linear_luma));
 }
 
 // Maps a shared-tile coordinate to the clamped source coordinate it caches.

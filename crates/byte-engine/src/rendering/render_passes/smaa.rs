@@ -285,6 +285,15 @@ mod tests {
 		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
 		assert_rgba_close(rgba(&edges, [2, 0]), [1.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
 
+		// Steps are judged as a tone mapper shows them: a dim shadow step is an edge, a wide highlight step is not.
+		for (dark, bright, expected) in [(0.01, 0.04, 1.0 / 3.0), (8.0, 10.0, 0.0)] {
+			let step = [dark, dark, bright, bright, bright].map(|value| [value, value, value, 1.0]);
+			let mut source = texture_2d(5, 1, &step);
+			let mut edges = empty_image(5, 1);
+			run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
+			assert_rgba_close(rgba(&edges, [2, 0]), [expected, 0.0, 0.0, 0.0], 0.0);
+		}
+
 		let north_only = [
 			[0.0, 0.0, 0.0, 1.0],
 			[0.0, 0.0, 0.0, 1.0],

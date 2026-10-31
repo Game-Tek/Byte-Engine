@@ -425,8 +425,8 @@ fn setup_image_transform_render_pass(
 
 /// Installs an HDR bloom pass for every current and future render sink.
 ///
-/// The pass glows scene-linear light above `settings.threshold` and adds it back onto
-/// `main`, so call it after the passes that write scene light, such as the visibility
+/// The pass moves `settings.scatter` of every pixel's scene-linear light into a faint tail
+/// around it within `main`, adding no light, so call it after the passes that write scene light, such as the visibility
 /// pipeline and the atmosphere sky, and before tone mapping. Later passes consume its
 /// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {

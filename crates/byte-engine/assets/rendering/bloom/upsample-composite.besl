@@ -1,12 +1,14 @@
-// Climbs the bloom pyramid's last level and adds it onto the HDR scene in one dispatch. Each lane writes a 2x2 block of
+// Climbs the bloom pyramid's last level and blends it into the HDR scene in one dispatch. Each lane writes a 2x2 block of
 // pixels, so a tile's 16x16 lanes cover 32x32 of them. The tile first builds the 18x18 top-level texels its pixels
 // read into workgroup memory with the same climb the upsample pass makes: the level below blurred with a 3x3 tent,
 // spread `filter.x` lower-level texels wide and weighted by `filter.y`, plus the same-resolution level from the
-// downsample chain. Its pixels then filter that block bilinearly, scale it by `prefilter.z`, and add it to the scene.
-// The top level never touches memory, and the pyramid saves a dispatch and the barrier in front of it. The scene passes
-// through untouched at zero intensity, and the result stays scene-linear for the tone mapper that follows. The sum is
-// held to the half-float range: a scene texel already near it would otherwise overflow to infinity on store. The climb
-// lives in `layouts/climb.besl`, which binds both levels.
+// downsample chain. Its pixels then filter that block bilinearly into the glow's tail, scaled by `filter.z` so the
+// levels' weights sum to one, and move the scatter `prefilter.z` of the scene's light into it:
+// `(1 - scatter) * scene + scatter * tail`. The blend adds no light, so a uniform field passes through unchanged and a
+// highlight spreads over darker neighbors instead of growing brighter. The top level never touches memory, and the
+// pyramid saves a dispatch and the barrier in front of it. The scene passes through untouched at zero scatter, and the
+// result stays scene-linear for the tone mapper that follows. The result is held to the half-float range, so a scene
+// texel that overflowed to infinity stores finite. The climb lives in `layouts/climb.besl`, which binds both levels.
 
 scene_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 4, access: read, memory: constant }>;
@@ -47,8 +49,9 @@ climb: fn (region_origin: vec2u, cell: vec2u, top_size: vec2u) -> vec4f {
 	return vec4f(climbed.x, climbed.y, climbed.z, 0.0);
 }
 
-// Filters the region bilinearly under pixel `pixel` and adds the glow, scaled by `intensity`, onto its scene color.
-composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: vec2f, region_origin: vec2u, intensity: f32) -> vec4f {
+// Filters the region bilinearly under pixel `pixel` into the tail, scaled by `normalization`, and moves `scatter` of
+// the pixel's scene color into it.
+composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: vec2f, region_origin: vec2u, scatter: f32, normalization: f32) -> vec4f {
 	// The pixel's center in top-level texels, measured from the region's first texel center, as a sampler would place
 	// it before filtering.
 	let position: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / result_size * top_size
@@ -63,7 +66,8 @@ composite_pixel: fn (pixel: vec2u, scene: vec4f, result_size: vec2f, top_size: v
 	let bottom: vec4f = shared_top_level[index + BLOOM_REGION_WIDTH] * (1.0 - fraction_x)
 		+ shared_top_level[index + BLOOM_REGION_WIDTH + 1] * fraction_x;
 	let bloom: vec4f = top * (1.0 - fraction_y) + bottom * fraction_y;
-	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) + vec3f(bloom.x, bloom.y, bloom.z) * intensity;
+	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) * (1.0 - scatter)
+		+ vec3f(bloom.x, bloom.y, bloom.z) * (scatter * normalization);
 	return vec4f(
 		min(final_color.x, HALF_FLOAT_MAX),
 		min(final_color.y, HALF_FLOAT_MAX),
@@ -93,8 +97,9 @@ main: fn(input: StageInput) -> void {
 	// The block's second column and row, held inside the image so reads past an odd edge stay in bounds.
 	let right: u32 = min(base.x + 1, result_size.x - 1);
 	let below: u32 = min(base.y + 1, result_size.y - 1);
-	let intensity: f32 = bloom_parameters.prefilter[0].z;
-	if (intensity <= 0.0) {
+	let scatter: f32 = bloom_parameters.prefilter[0].z;
+	let normalization: f32 = bloom_parameters.filter[0].z;
+	if (scatter <= 0.0) {
 		if (base.x >= result_size.x || base.y >= result_size.y) {
 			return;
 		}
@@ -144,9 +149,9 @@ main: fn(input: StageInput) -> void {
 	write_block(
 		base,
 		result_size,
-		composite_pixel(base, top_left, result_extent, top_extent, region_origin, intensity),
-		composite_pixel(vec2u(right, base.y), top_right, result_extent, top_extent, region_origin, intensity),
-		composite_pixel(vec2u(base.x, below), bottom_left, result_extent, top_extent, region_origin, intensity),
-		composite_pixel(vec2u(right, below), bottom_right, result_extent, top_extent, region_origin, intensity)
+		composite_pixel(base, top_left, result_extent, top_extent, region_origin, scatter, normalization),
+		composite_pixel(vec2u(right, base.y), top_right, result_extent, top_extent, region_origin, scatter, normalization),
+		composite_pixel(vec2u(base.x, below), bottom_left, result_extent, top_extent, region_origin, scatter, normalization),
+		composite_pixel(vec2u(right, below), bottom_right, result_extent, top_extent, region_origin, scatter, normalization)
 	);
 }

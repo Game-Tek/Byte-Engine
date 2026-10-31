@@ -1,7 +1,7 @@
 // Climbs one level of the bloom pyramid: the lower level is blurred with a 3x3 tent filter, spread `filter.x`
-// lower-level texels wide, and added to the same-resolution level from the downsample chain. Adding instead of
-// blending means every level contributes, so the glow falls off smoothly over the whole pyramid. The climb itself lives
-// in `layouts/climb.besl`, which binds both levels.
+// lower-level texels wide, weighted by `filter.y`, and added to the same-resolution level from the downsample chain.
+// Every climb applies the same weight, so level `k` ends up weighted by `filter.y` to the power `k`, which shapes how
+// fast the glow's tail falls off. The climb itself lives in `layouts/climb.besl`, which binds both levels.
 
 result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
@@ -10,6 +10,6 @@ main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let uv: vec2f = level_uv(coord, image_size(result_texture));
-	let combined: vec3f = same_level(uv) + folded_tent(uv, bloom_parameters.filter[0].x);
+	let combined: vec3f = same_level(uv) + folded_tent(uv, bloom_parameters.filter[0].x) * bloom_parameters.filter[0].y;
 	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
 }

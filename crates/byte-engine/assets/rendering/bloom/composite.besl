@@ -1,4 +1,5 @@
-// Adds the finished, half-resolution bloom pyramid onto the HDR scene, scaled by `prefilter.z`. The scene passes
+// Adds a half-resolution glow onto the HDR scene, scaled by `prefilter.z`. The lens flare adds its ghosts and halo
+// with it; bloom blends instead, in `upsample-composite.besl`. The scene passes
 // through untouched at zero intensity, and the result stays scene-linear for the tone mapper that follows. The sum
 // is held to the half-float range: a scene texel already near it would otherwise overflow to infinity on store.
 

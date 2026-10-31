@@ -16,16 +16,15 @@ const MAX_BLOOM_LEVELS: u32 = 6;
 /// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`BloomPass::with_settings`].
 #[derive(Clone, Copy, Debug)]
 pub struct BloomPassSettings {
-	/// Scene-linear brightness, after exposure, above which light starts to glow. `1.0` glows only what the
-	/// display cannot show.
-	pub threshold: f32,
-	/// Fraction of the threshold over which the glow fades in, from `0.0` for a hard cut to `1.0`.
-	pub soft_knee: f32,
-	/// Scale of the glow added onto the scene. `0.0` passes the scene through.
-	pub intensity: f32,
-	/// Scene-linear brightness, after exposure, that a texel is held to before it glows. Without it, a mirror
-	/// reflection of the sun, at the half-float limit, blooms across the whole frame. `64.0` is six stops above
-	/// display white.
+	/// Share of each pixel's light that moves into the glow's tail, from `0.0`, which passes the scene through, to
+	/// `1.0`. The glow adds no light: what the tail gains, the pixel it came from loses.
+	pub scatter: f32,
+	/// How fast the tail falls off with distance, as the power `p` of about `1 / distance^p`. `2.0` reaches furthest,
+	/// with every pyramid level carrying the same share; `3.0` keeps the glow close to its source.
+	pub tail_exponent: f32,
+	/// Scene-linear brightness, after exposure, that a texel is held to before it spreads. A highlight's tail is as
+	/// bright as the highlight, so a low ceiling starves it. `4096.0` is twelve stops above display white and keeps a
+	/// mirror reflection of the sun, at the half-float limit, from hazing the whole frame.
 	pub max_brightness: f32,
 	/// Width of each upsample blur in texels of the level being blurred. Larger values spread the glow further.
 	pub radius: f32,
@@ -36,12 +35,11 @@ pub struct BloomPassSettings {
 impl Default for BloomPassSettings {
 	fn default() -> Self {
 		Self {
-			threshold: 1.0,
-			soft_knee: 0.5,
-			intensity: 0.08,
-			max_brightness: 64.0,
+			scatter: 0.06,
+			tail_exponent: 2.0,
+			max_brightness: 4096.0,
 			radius: 1.0,
-			levels: 5,
+			levels: 6,
 		}
 	}
 }
@@ -60,18 +58,45 @@ impl BloomPassSettings {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct BloomShaderData {
-	/// Threshold, soft knee, composite intensity, and brightness ceiling.
+	/// Threshold, soft knee, composite strength, and brightness ceiling. Bloom thresholds nothing and composites with
+	/// its scatter; the lens flare thresholds its highlights and adds itself with its intensity.
 	pub(crate) prefilter: [f32; 4],
-	/// Upsample radius in `x`, and in `y` the weight of the level below the top, zero when the pyramid has one level;
-	/// the other lanes are unused.
+	/// Upsample radius in `x`, the weight each climb gives the level below it in `y`, and in `z` the factor that makes
+	/// the climbed levels' weights sum to one; `w` is unused.
 	pub(crate) filter: [f32; 4],
+}
+
+impl BloomShaderData {
+	/// Returns the bloom pass's shader data for `settings` over a pyramid of `level_count` levels. Each climb adds the
+	/// level below it weighted by `r = 2^(2 - p)`, so level `k` ends up weighted by `r^k`; the composite scales the sum
+	/// by one over the sum of those weights, so a uniform field keeps its brightness.
+	fn bloom(settings: BloomPassSettings, level_count: usize) -> Self {
+		// A one-level pyramid has nothing below its top, and the composite reads a stand-in there.
+		let ratio = if level_count > 1 {
+			2f32.powf(2.0 - settings.tail_exponent)
+		} else {
+			0.0
+		};
+		let weight_sum: f32 = (0..level_count).map(|level| ratio.powi(level as i32)).sum();
+		Self {
+			prefilter: [
+				0.0,
+				0.0,
+				settings.scatter.clamp(0.0, 1.0),
+				settings.max_brightness.max(0.0),
+			],
+			filter: [settings.radius.max(0.0), ratio, 1.0 / weight_sum, 0.0],
+		}
+	}
 }
 
 /// The `BloomPass` struct creates a reusable pre-tonemap glow stage that can feed later post-processing.
 ///
-/// The pass prefilters the HDR `main` target into a half-resolution pyramid with Jimenez's 13-tap filter, using a
-/// luma-weighted average on the first level so single bright texels do not flicker, then climbs back up with a
-/// tent blur per level. The last climb and the addition onto the scene share one dispatch, so the top level never
+/// It models the lens's point spread function: it moves a share of every pixel's light into a long, faint tail and
+/// adds none, so highlights glow over darker neighbors instead of growing brighter. The pass prefilters the HDR `main`
+/// target into a half-resolution pyramid with Jimenez's 13-tap filter, using a brightness-weighted average on the
+/// first level so single bright texels do not flicker, then climbs back up with a tent blur per level, weighting each
+/// level by the tail's falloff. The last climb and the blend into the scene share one dispatch, so the top level never
 /// reaches memory. The prefilter and the composite, the two steps at the sink's half and full resolution, are tile
 /// shaders, so where the platform runs tile functions their targets stay losslessly compressed. The smaller levels run
 /// as compute dispatches in one encoder: each tile pass is a render pass of its own, which costs more than a small level
@@ -265,16 +290,7 @@ impl BloomPass {
 
 	/// Writes the static bloom controls into the per-frame parameter buffer before dispatch.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame) {
-		let parameters = frame.get_mut_dynamic_buffer_slice(self.parameters);
-
-		parameters.prefilter = [
-			self.settings.threshold.max(0.0),
-			self.settings.soft_knee.clamp(0.0, 1.0),
-			self.settings.intensity.max(0.0),
-			self.settings.max_brightness.max(0.0),
-		];
-		let below_top_weight = if self.level_count > 1 { 1.0 } else { 0.0 };
-		parameters.filter = [self.settings.radius.max(0.0), below_top_weight, 0.0, 0.0];
+		*frame.get_mut_dynamic_buffer_slice(self.parameters) = BloomShaderData::bloom(self.settings, self.level_count);
 	}
 }
 
@@ -512,23 +528,28 @@ mod tests {
 		}
 	}
 
-	/// Verifies that the prefilter holds back a single bright texel below the block's plain average.
+	/// Verifies that the prefilter holds a single bright texel, a firefly, under one half whatever its brightness, a
+	/// saturated one as hard as a white one, while a uniform block keeps all its light. The clamp-addressed 2x2 source
+	/// repeats the firefly in the filter's edge blocks, so it lands above the third a truly lone texel would.
 	#[test]
 	fn bloom_extract_besl_vm_suppresses_fireflies() {
-		let firefly = [
-			[4.0, 4.0, 4.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-		];
+		// One texel lit in a block of four.
+		let lone = |color: [f32; 3]| {
+			[
+				[color[0], color[1], color[2], 1.0],
+				[0.0, 0.0, 0.0, 1.0],
+				[0.0, 0.0, 0.0, 1.0],
+				[0.0, 0.0, 0.0, 1.0],
+			]
+		};
 		let uniform = [[1.0, 1.0, 1.0, 1.0]; 4];
 
-		let firefly_result = extract(&firefly, 0.0, 0.0, NO_CEILING);
-		let uniform_result = extract(&uniform, 0.0, 0.0, NO_CEILING);
+		let white = extract(&lone([1024.0, 1024.0, 1024.0]), 0.0, 0.0, NO_CEILING);
+		let blue = extract(&lone([0.0, 0.0, 1024.0]), 0.0, 0.0, NO_CEILING);
 
-		assert_rgba_close(uniform_result, [1.0, 1.0, 1.0, 1.0], 1e-5);
-		// Both blocks average to one, so the luma weighting is what pulls the firefly down.
-		assert!(firefly_result[0] > 0.0 && firefly_result[0] < 0.75, "{firefly_result:?}");
+		assert_rgba_close(extract(&uniform, 0.0, 0.0, NO_CEILING), [1.0, 1.0, 1.0, 1.0], 1e-5);
+		assert!(white[0] > 0.0 && white[0] < 0.5, "{white:?}");
+		assert!((blue[2] - white[2]).abs() < 1e-4, "{blue:?} {white:?}");
 	}
 
 	/// Runs the pyramid downsample over a 2x2 source into one texel.
@@ -559,20 +580,21 @@ mod tests {
 		assert_rgba_close(downsample(&firefly), [1.0, 1.0, 1.0, 1.0], 1e-5);
 	}
 
-	/// Runs one upsample step from a `low_size` level onto a `high_size` level with the given radius, returning every
-	/// result texel in row-major order.
+	/// Runs one upsample step from a `low_size` level onto a `high_size` level with the given radius and weight for the
+	/// lower level, returning every result texel in row-major order.
 	fn upsample(
 		low_size: u32,
 		low_texels: &[[f32; 4]],
 		high_size: u32,
 		high_texels: &[[f32; 4]],
 		radius: f32,
+		ratio: f32,
 	) -> Vec<[f32; 4]> {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
 		let parameter_slot = ResourceSlot::new(3);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
-			.write_indexed("filter", 0, Value::Vec4F([radius, 0.0, 0.0, 0.0]))
+			.write_indexed("filter", 0, Value::Vec4F([radius, ratio, 0.0, 0.0]))
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		let mut low = texture_2d(low_size, low_size, low_texels);
 		let mut high = texture_2d(high_size, high_size, high_texels);
@@ -621,7 +643,7 @@ mod tests {
 		let high = varied_texels(HIGH_SIZE * HIGH_SIZE, 2.0);
 
 		for radius in [0.0, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0] {
-			let climbed = upsample(LOW_SIZE, &low, HIGH_SIZE, &high, radius);
+			let climbed = upsample(LOW_SIZE, &low, HIGH_SIZE, &high, radius, 1.0);
 			for (index, actual) in climbed.into_iter().enumerate() {
 				let (x, y) = ((index as u32 % HIGH_SIZE) as f32, (index as u32 / HIGH_SIZE) as f32);
 				let scale = LOW_SIZE as f32 / HIGH_SIZE as f32;
@@ -645,12 +667,15 @@ mod tests {
 		}
 	}
 
-	/// Verifies that upsampling adds the blurred lower level onto the same-resolution level.
+	/// Verifies that upsampling adds the blurred lower level, weighted by the climb's ratio, onto the same-resolution
+	/// level.
 	#[test]
 	fn bloom_upsample_besl_vm_combines_both_levels() {
-		let result = upsample(1, &[[0.1, 0.2, 0.3, 0.0]], 1, &[[0.4, 0.5, 0.6, 0.0]], 1.0);
+		let full = upsample(1, &[[0.1, 0.2, 0.3, 0.0]], 1, &[[0.4, 0.5, 0.6, 0.0]], 1.0, 1.0);
+		let half = upsample(1, &[[0.1, 0.2, 0.3, 0.0]], 1, &[[0.4, 0.5, 0.6, 0.0]], 1.0, 0.5);
 
-		assert_rgba_close(result[0], [0.5, 0.7, 0.9, 1.0], 1e-6);
+		assert_rgba_close(full[0], [0.5, 0.7, 0.9, 1.0], 1e-6);
+		assert_rgba_close(half[0], [0.45, 0.6, 0.75, 1.0], 1e-6);
 	}
 
 	/// Verifies that the tent blur spreads a lower-level texel to its neighbors, and that a zero radius does not.
@@ -664,8 +689,8 @@ mod tests {
 		];
 		let high = [[0.0, 0.0, 0.0, 1.0]; 4];
 
-		let spread = upsample(2, &low, 2, &high, 1.0);
-		let sharp = upsample(2, &low, 2, &high, 0.0);
+		let spread = upsample(2, &low, 2, &high, 1.0, 1.0);
+		let sharp = upsample(2, &low, 2, &high, 0.0, 1.0);
 
 		assert!(spread[3][0] > 0.0, "{spread:?}");
 		assert!(spread[3][0] < spread[0][0], "{spread:?}");
@@ -712,26 +737,25 @@ mod tests {
 		assert_rgba_close(result, [65504.0, 101.0, 101.0, 1.0], 1e-2);
 	}
 
-	/// Runs the fused top-level upsample and composite over a `size` by `size` scene, one tile at a time. Each of a
-	/// tile's 16x16 lanes writes a 2x2 block of pixels, so a tile covers 32x32 of them. The top level is half the scene's
-	/// size and the level below it a quarter, both rounded down.
+	/// Runs the fused top-level upsample and composite over a `size` by `size` scene, one tile at a time, with the
+	/// bloom pass's shader data. Each of a tile's 16x16 lanes writes a 2x2 block of pixels, so a tile covers 32x32 of
+	/// them. The top level is half the scene's size and the level below it a quarter, both rounded down.
 	fn upsample_composite(
 		size: u32,
 		scene_texels: &[[f32; 4]],
 		low_texels: &[[f32; 4]],
 		high_texels: &[[f32; 4]],
-		below_top_weight: f32,
-		intensity: f32,
+		data: BloomShaderData,
 	) -> Texture {
 		let program =
 			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_COMPOSITE_BESL));
 		let parameter_slot = ResourceSlot::new(4);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
-			.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
+			.write_indexed("prefilter", 0, Value::Vec4F(data.prefilter))
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		parameters
-			.write_indexed("filter", 0, Value::Vec4F([1.0, below_top_weight, 0.0, 0.0]))
+			.write_indexed("filter", 0, Value::Vec4F(data.filter))
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		let mut scene = texture_2d(size, size, scene_texels);
 		let mut low = texture_2d(size / 4, size / 4, low_texels);
@@ -751,6 +775,17 @@ mod tests {
 		result
 	}
 
+	/// Returns the bloom pass's shader data with `scatter` and `tail_exponent` over `levels` levels.
+	fn shader_data(scatter: f32, tail_exponent: f32, levels: usize) -> BloomShaderData {
+		let settings = BloomPassSettings {
+			scatter,
+			tail_exponent,
+			max_brightness: NO_CEILING,
+			..BloomPassSettings::default()
+		};
+		BloomShaderData::bloom(settings, levels)
+	}
+
 	/// Returns `count` distinct, smoothly varying texels, so a misplaced tap or weight changes the result.
 	fn varied_texels(count: u32, seed: f32) -> Vec<[f32; 4]> {
 		(0..count)
@@ -766,100 +801,169 @@ mod tests {
 			.collect()
 	}
 
-	/// Verifies that the fused pass adds exactly what the upsample pass followed by the plain composite adds: the top
-	/// level built from both levels, filtered bilinearly to the scene's resolution, across tile boundaries. The odd size
-	/// leaves a partial tile and 2x2 blocks that straddle the image's edge, and halves to a top level that is not
-	/// exactly half the scene.
+	/// Verifies that the fused pass blends exactly what the upsample pass followed by a bilinear blend would: the top
+	/// level built from both levels, filtered bilinearly to the scene's resolution and normalized, across tile
+	/// boundaries. The odd size leaves a partial tile and 2x2 blocks that straddle the image's edge, and halves to a top
+	/// level that is not exactly half the scene.
 	#[test]
-	fn bloom_upsample_composite_besl_vm_matches_separate_upsample_and_composite() {
+	fn bloom_upsample_composite_besl_vm_matches_separate_upsample_and_blend() {
 		for size in [64, 39] {
 			assert_upsample_composite_matches_separate_passes(size);
 		}
 	}
 
-	/// Compares the fused pass with the upsample pass followed by the plain composite over a `size` by `size` scene.
+	/// Compares the fused pass with the upsample pass followed by a bilinear blend over a `size` by `size` scene.
 	fn assert_upsample_composite_matches_separate_passes(size: u32) {
 		let scene = varied_texels(size * size, 0.0);
 		let low = varied_texels((size / 4) * (size / 4), 1.0);
 		let high = varied_texels((size / 2) * (size / 2), 2.0);
-		let intensity = 0.5;
+		let data = shader_data(0.25, 2.5, 3);
+		let [_, ratio, normalization, _] = data.filter;
+		let scatter = data.prefilter[2];
 
-		let fused = upsample_composite(size, &scene, &low, &high, 1.0, intensity);
+		let fused = upsample_composite(size, &scene, &low, &high, data);
 
-		// The separate passes: climb into a top-level image, then sample it from the scene's texels.
-		let upsample_program =
-			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
-		let upsample_parameter_slot = ResourceSlot::new(3);
-		let mut upsample_parameters = buffer(&upsample_program, upsample_parameter_slot);
-		upsample_parameters
-			.write_indexed("filter", 0, Value::Vec4F([1.0, 0.0, 0.0, 0.0]))
-			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
-		let mut low_texture = texture_2d(size / 4, size / 4, &low);
-		let mut high_texture = texture_2d(size / 2, size / 2, &high);
-		let mut top_level = empty_image(size / 2, size / 2);
-		for texel in 0..(size / 2) * (size / 2) {
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut low_texture);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut high_texture);
-			descriptors.bind_image(ResourceSlot::new(2), &mut top_level);
-			descriptors.bind_buffer(upsample_parameter_slot, &mut upsample_parameters);
-			run_at(&upsample_program, &mut descriptors, [texel % (size / 2), texel / (size / 2)]);
-		}
-		let composite_program =
-			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
-		let composite_parameter_slot = ResourceSlot::new(3);
-		let mut composite_parameters = buffer(&composite_program, composite_parameter_slot);
-		composite_parameters
-			.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
-			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
-		let mut scene_texture = texture_2d(size, size, &scene);
-		let mut separate = empty_image(size, size);
-		for texel in 0..size * size {
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut scene_texture);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut top_level);
-			descriptors.bind_image(output_slot(0), &mut separate);
-			descriptors.bind_buffer(composite_parameter_slot, &mut composite_parameters);
-			run_pixel(
-				&composite_program,
-				&mut descriptors,
-				[texel % size, texel / size],
-				PIXEL_TILE,
-				[size, size],
-			);
-		}
-
+		// The separate passes: climb into a top-level image, then sample it from the scene's texels and blend.
+		let top_size = size / 2;
+		let top_level = upsample(size / 4, &low, top_size, &high, 1.0, ratio);
+		let scale = top_size as f32 / size as f32;
 		for texel in 0..size * size {
 			let coordinate = [texel % size, texel / size];
-			assert_rgba_close(rgba(&fused, coordinate), rgba(&separate, coordinate), 1e-4);
+			let (x, y) = (coordinate[0] as f32, coordinate[1] as f32);
+			let tail = bilinear(&top_level, top_size, (x + 0.5) * scale - 0.5, (y + 0.5) * scale - 0.5);
+			let original = scene[texel as usize];
+			let expected: [f32; 4] = std::array::from_fn(|channel| {
+				if channel == 3 {
+					1.0
+				} else {
+					original[channel] * (1.0 - scatter) + tail[channel] * normalization * scatter
+				}
+			});
+			assert_rgba_close(rgba(&fused, coordinate), expected, 1e-4);
 		}
 	}
 
-	/// Verifies that a one-level pyramid adds its only level and nothing from the level bound below it, and that zero
-	/// intensity passes the scene through.
+	/// Verifies that a one-level pyramid blends its only level and nothing from the level bound below it, and that
+	/// zero scatter passes the scene through.
 	#[test]
 	fn bloom_upsample_composite_besl_vm_weights_the_level_below_and_passes_through_at_zero() {
 		let scene = [[0.2, 0.3, 0.4, 0.6]; 16 * 16];
 		let low = [[9.0, 9.0, 9.0, 1.0]; 4 * 4];
 		let high = [[0.5, 0.25, 0.125, 1.0]; 8 * 8];
 
-		let one_level = upsample_composite(16, &scene, &low, &high, 0.0, 2.0);
-		let passthrough = upsample_composite(16, &scene, &low, &high, 1.0, 0.0);
+		let one_level = upsample_composite(16, &scene, &low, &high, shader_data(0.5, 2.5, 1));
+		let passthrough = upsample_composite(16, &scene, &low, &high, shader_data(0.0, 2.5, 3));
 
-		assert_rgba_close(rgba(&one_level, [7, 9]), [1.2, 0.8, 0.65, 1.0], 1e-6);
+		assert_rgba_close(rgba(&one_level, [7, 9]), [0.35, 0.275, 0.2625, 1.0], 1e-6);
 		assert_rgba_close(rgba(&passthrough, [7, 9]), [0.2, 0.3, 0.4, 0.6], 1e-6);
 	}
 
-	/// Verifies that the fused pass holds a scene texel at the half-float limit finite when the glow is added.
+	/// Verifies that the fused pass stores a scene texel that overflowed to infinity as the largest finite half float.
 	#[test]
-	fn bloom_upsample_composite_besl_vm_holds_the_sum_to_the_half_float_range() {
-		let scene = [[65504.0, 1.0, 1.0, 1.0]; 16 * 16];
+	fn bloom_upsample_composite_besl_vm_holds_the_result_to_the_half_float_range() {
+		let scene = [[f32::INFINITY, 1.0, 1.0, 1.0]; 16 * 16];
 		let low = [[0.0, 0.0, 0.0, 1.0]; 4 * 4];
 		let high = [[100.0, 100.0, 100.0, 1.0]; 8 * 8];
 
-		let result = upsample_composite(16, &scene, &low, &high, 1.0, 1.0);
+		let result = upsample_composite(16, &scene, &low, &high, shader_data(0.5, 2.5, 1));
 
-		assert_rgba_close(rgba(&result, [3, 12]), [65504.0, 101.0, 101.0, 1.0], 1e-2);
+		assert_rgba_close(rgba(&result, [3, 12]), [65504.0, 50.5, 50.5, 1.0], 1e-2);
+	}
+
+	/// Runs the pass's whole chain over a `size` by `size` scene, as `BloomPass` records it: the prefilter, the
+	/// downsamples, the climbs, and the fused composite over `levels` levels.
+	fn bloom(size: u32, scene: &[[f32; 4]], scatter: f32, tail_exponent: f32, levels: usize) -> Texture {
+		let data = shader_data(scatter, tail_exponent, levels);
+		let texels = |image: &Texture, size: u32| -> Vec<[f32; 4]> {
+			(0..size * size).map(|index| rgba(image, [index % size, index / size])).collect()
+		};
+		let level_size = |level: usize| size / level_divisor(level);
+
+		let mut downsampled = vec![texels(&extract_image(size, scene), level_size(0))];
+		for level in 1..levels {
+			downsampled.push(downsample_image(level_size(level - 1), &downsampled[level - 1]));
+		}
+		// Climb from the smallest level up to the one below the top, which the fused pass climbs itself.
+		let mut finished = downsampled[levels - 1].clone();
+		for level in (1..levels.saturating_sub(1)).rev() {
+			finished = upsample(level_size(level + 1), &finished, level_size(level), &downsampled[level], 1.0, data.filter[1]);
+		}
+		let below_top = if levels == 1 { downsampled[0].clone() } else { finished };
+		upsample_composite(size, scene, &below_top, &downsampled[0], data)
+	}
+
+	/// Runs the pyramid downsample over a whole `size` by `size` level into one half its size.
+	fn downsample_image(size: u32, texels: &[[f32; 4]]) -> Vec<[f32; 4]> {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
+		let mut source = texture_2d(size, size, texels);
+		let half = size / 2;
+		let mut result = empty_image(half, half);
+		for index in 0..half * half {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1), &mut result);
+			run_at(&program, &mut descriptors, [index % half, index / half]);
+		}
+		(0..half * half).map(|index| rgba(&result, [index % half, index / half])).collect()
+	}
+
+	/// Returns a `size` by `size` scene of `background` with an 8x8 block of `highlight` at its center.
+	fn highlight_scene(size: u32, background: f32, highlight: f32) -> Vec<[f32; 4]> {
+		let block = size / 2 - 4..size / 2 + 4;
+		(0..size * size)
+			.map(|index| {
+				let value = if block.contains(&(index % size)) && block.contains(&(index / size)) {
+					highlight
+				} else {
+					background
+				};
+				[value, value, value, 1.0]
+			})
+			.collect()
+	}
+
+	/// Verifies that bloom adds no light: a field of one brightness passes through unchanged at any scatter and tail.
+	#[test]
+	fn bloom_besl_vm_passes_a_uniform_field_through() {
+		const SIZE: u32 = 64;
+		let scene = vec![[0.5, 2.0, 30.0, 1.0]; (SIZE * SIZE) as usize];
+
+		for (scatter, tail_exponent) in [(0.04, 2.5), (1.0, 2.0), (0.5, 3.0)] {
+			let result = bloom(SIZE, &scene, scatter, tail_exponent, 4);
+			for coordinate in [[0, 0], [17, 40], [63, 63]] {
+				assert_rgba_close(rgba(&result, coordinate), [0.5, 2.0, 30.0, 1.0], 1e-3);
+			}
+		}
+	}
+
+	/// Verifies that a highlight gives its scatter to darker neighbors as a tail that fades with distance, and grows no
+	/// brighter.
+	#[test]
+	fn bloom_besl_vm_spreads_a_highlight_into_a_falling_tail() {
+		const SIZE: u32 = 64;
+		let scene = highlight_scene(SIZE, 0.01, 8.0);
+
+		let result = bloom(SIZE, &scene, 0.1, 2.5, 4);
+
+		assert!(rgba(&result, [32, 32])[0] < 8.0, "the highlight grew: {:?}", rgba(&result, [32, 32]));
+		// Texels right of the block, two to twenty texels past its edge.
+		let tail = [38, 42, 48, 56].map(|x| rgba(&result, [x, 32])[0]);
+		assert!(tail[0] > 0.01, "no tail: {tail:?}");
+		assert!(tail.windows(2).all(|pair| pair[0] > pair[1] && pair[1] > 0.01 * 0.9), "{tail:?}");
+	}
+
+	/// Verifies that a larger tail exponent keeps the glow closer to its source: brighter beside it, dimmer far away.
+	#[test]
+	fn bloom_besl_vm_tail_exponent_sets_the_reach() {
+		const SIZE: u32 = 64;
+		let scene = highlight_scene(SIZE, 0.0, 8.0);
+
+		let wide = bloom(SIZE, &scene, 0.1, 2.0, 4);
+		let tight = bloom(SIZE, &scene, 0.1, 3.0, 4);
+
+		let (near, far) = ([36, 32], [60, 32]);
+		assert!(rgba(&tight, near)[0] > rgba(&wide, near)[0], "{:?} {:?}", rgba(&tight, near), rgba(&wide, near));
+		assert!(rgba(&tight, far)[0] < rgba(&wide, far)[0], "{:?} {:?}", rgba(&tight, far), rgba(&wide, far));
 	}
 
 	/// Lowers every bloom program through the platform shader compiler. The VM tests above prove the programs

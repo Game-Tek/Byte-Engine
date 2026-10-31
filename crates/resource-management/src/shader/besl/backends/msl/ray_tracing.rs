@@ -45,14 +45,7 @@ impl Generator {
 		order: &[besl::NodeReference],
 		requirements: &IntrinsicRequirements,
 	) -> bool {
-		let declares_ray_tracing = |node: &besl::NodeReference| match node.borrow().node() {
-			besl::Nodes::Struct { name, .. } => name == besl::HIT_STRUCT,
-			besl::Nodes::Binding {
-				r#type: besl::BindingTypes::AccelerationStructure,
-				..
-			} => true,
-			_ => false,
-		};
+		let declares_ray_tracing = super::super::declares_ray_tracing;
 		stage.is_ray_tracing()
 			|| requirements.uses_intersect
 			|| requirements.uses_trace_occlusion
@@ -334,16 +327,7 @@ impl Generator {
 
 	/// Writes the value of a closest hit's stage value `name`, such as `hit_distance`: a member of the hit it shades.
 	pub(crate) fn emit_hit_value(&self, string: &mut String, name: &str) {
-		let member = match name {
-			"hit_distance" => "distance",
-			"hit_custom_index" => "custom_index",
-			"hit_geometry_index" => "geometry_index",
-			"hit_primitive_index" => "primitive_index",
-			"hit_barycentrics" => "barycentrics",
-			"ray_origin" => "origin",
-			"ray_direction" => "direction",
-			_ => unreachable!("`{name}` isn't a hit value. Add it to `emit_hit_value` with the `Hit` member it reads."),
-		};
+		let member = super::super::hit_member(name);
 		// A hit's vectors are packed, and a stage value is a native vector, as its `StageInput` field is.
 		let unpack = match name {
 			"hit_barycentrics" => Some("float2"),
@@ -356,26 +340,4 @@ impl Generator {
 			let _ = write!(string, "{HIT_ARGUMENT}.{}", Self::identifier(member));
 		}
 	}
-}
-
-/// Returns the payload type that the `invoke` calls in `order` pass, or `None` when no code calls `invoke`.
-///
-/// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
-fn invoke_payload(order: &[besl::NodeReference]) -> Option<besl::NodeReference> {
-	let mut payload = None;
-	for node in order {
-		any_code_node(node, false, &mut |node| {
-			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
-				&& let besl::Nodes::Intrinsic { name, r#return, .. } = intrinsic.borrow().node()
-				&& name == "invoke"
-			{
-				payload = Some(r#return.clone());
-			}
-			payload.is_some()
-		});
-		if payload.is_some() {
-			break;
-		}
-	}
-	payload
 }

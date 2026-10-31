@@ -13,11 +13,11 @@ use std::sync::Arc;
 use log::warn;
 use resource_management::bemx;
 use smallvec::SmallVec;
+use utils::RangeAllocator;
 use utils::hash::{FxHasher, HashMap, HashSet};
 
 use super::layout::MAX_MATERIAL_PARAMETERS;
 use super::loader::DynamicParameter;
-use super::ranges::RangeAllocator;
 use crate::core::factory::Handle;
 use crate::rendering::{MaterialParameterTarget, SetMaterialParameter};
 
@@ -75,7 +75,7 @@ impl MaterialParameters {
 				values: vec![[0.0; 4]; MAX_MATERIAL_PARAMETERS].into_boxed_slice(),
 				dirty: std::array::from_fn(|_| 0..0),
 			},
-			ranges: RangeAllocator::new(MAX_MATERIAL_PARAMETERS as u32),
+			ranges: RangeAllocator::new(MAX_MATERIAL_PARAMETERS, 1),
 			materials: Vec::new(),
 			by_id: HashMap::default(),
 			entities: HashMap::default(),
@@ -91,9 +91,9 @@ impl MaterialParameters {
 			self.materials.resize_with(index + 1, || None);
 		}
 		if let Some(previous) = self.materials[index].take() {
-			self.ranges.free(previous.range);
+			self.ranges.give_back(widen(previous.range));
 		}
-		let range = self.ranges.allocate(parameters.len() as u32).unwrap_or_else(|| {
+		let range = self.ranges.take(parameters.len(), 1).map(narrow).unwrap_or_else(|| {
 			report(&mut self.reported, Warning::NoRoom);
 			0..0
 		});
@@ -178,8 +178,8 @@ impl MaterialParameters {
 		}
 		// A reloaded material can change its parameter count, which needs a block of the new length.
 		if block.range.len() != length {
-			self.ranges.free(std::mem::replace(&mut block.range, 0..0));
-			let Some(range) = self.ranges.allocate(length as u32) else {
+			self.ranges.give_back(widen(std::mem::replace(&mut block.range, 0..0)));
+			let Some(range) = self.ranges.take(length, 1).map(narrow) else {
 				report(&mut self.reported, Warning::NoRoom);
 				entity.blocks.swap_remove(index);
 				return shared;
@@ -214,7 +214,7 @@ impl MaterialParameters {
 	pub(crate) fn release_entity(&mut self, handle: Handle) {
 		if let Some(entity) = self.entities.get_mut(&handle) {
 			for block in entity.blocks.drain(..) {
-				self.ranges.free(block.range);
+				self.ranges.give_back(widen(block.range));
 			}
 		}
 	}
@@ -354,6 +354,17 @@ enum Warning<'a> {
 		declared: bemx::Type,
 		set: bemx::Type,
 	},
+}
+
+/// Converts a block of entries to the arena range [`RangeAllocator`] tracks.
+fn widen(range: Range<u32>) -> Range<usize> {
+	range.start as usize..range.end as usize
+}
+
+/// Converts an arena range back to entries. Ranges fit in `u32` because the arena holds
+/// [`MAX_MATERIAL_PARAMETERS`] entries.
+fn narrow(range: Range<usize>) -> Range<u32> {
+	range.start as u32..range.end as u32
 }
 
 /// Logs `warning` the first time it happens.

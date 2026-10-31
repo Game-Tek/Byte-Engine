@@ -41,25 +41,19 @@ impl crate::context::Context for Context {
 	where
 		Self: 'a;
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		self.device.has_errors()
 	}
 
-	fn supports_bc_texture_compression(&self) -> bool {
-		true
-	}
-
 	fn supports_ray_tracing(&self) -> bool {
-		// The Vulkan backend has no port of the acceleration structure API yet.
-		false
+		self.device.ray_tracing.is_some()
 	}
 
 	fn bottom_level_acceleration_structure_size(
 		&self,
-		_: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) -> usize {
-		crate::rt::unsupported("Vulkan")
+		self.acceleration_structures.bottom_level(handle).storage.size as usize
 	}
 
 	fn load_pipeline_cache(&self, data: Vec<u8>) {
@@ -473,10 +467,6 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn start_frame_capture(&mut self) {}
-
-	fn end_frame_capture(&mut self) {}
-
 	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		for handle in self.get_syncronizer_handles(synchronizer_handle) {
 			self.wait_for_private_synchronizer(handle);
@@ -485,14 +475,10 @@ impl crate::context::Context for Context {
 
 	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
 	fn poll_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) -> bool {
-		self.get_syncronizer_handles(synchronizer).into_iter().all(|handle| {
-			let synchronizer = &self.synchronizers[handle.index() as usize];
-			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
-			!synchronizer.armed
-				|| unsafe { self.device.get_fence_status(synchronizer.fence) }.expect(
-					"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
-				)
-		})
+		// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
+		self.get_syncronizer_handles(synchronizer)
+			.into_iter()
+			.all(|handle| self.private_synchronizer_signaled(handle))
 	}
 
 	fn wait(&mut self) {
@@ -555,8 +541,7 @@ impl crate::context::ContextCreate for Context {
 		let shader = Shader::new(
 			shader_source_type,
 			stage,
-			// This backend still derives its native layouts from flat slots.
-			crate::shader::flatten_used_resources(descriptor_sets),
+			descriptor_sets,
 			self.device.pipeline_binaries.as_deref(),
 		)?;
 		self.shaders.push(shader);
@@ -613,22 +598,22 @@ impl crate::context::ContextCreate for Context {
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
-		_: crate::pipelines::ray_tracing::Builder,
+		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		crate::rt::unsupported("Vulkan")
+		self.create_ray_tracing_pipeline_internal(builder)
 	}
 
-	fn create_shader_binding_table(&mut self, _: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
-		crate::rt::unsupported("Vulkan")
+	fn create_shader_binding_table(&mut self, name: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
+		self.create_shader_binding_table_internal(name)
 	}
 
 	fn write_shader_binding_table(
 		&mut self,
-		_: graphics_hardware_interface::ShaderBindingTableHandle,
-		_: graphics_hardware_interface::PipelineHandle,
-		_: &[u32],
+		table: graphics_hardware_interface::ShaderBindingTableHandle,
+		pipeline: graphics_hardware_interface::PipelineHandle,
+		hit_groups: &[u32],
 	) {
-		crate::rt::unsupported("Vulkan")
+		self.write_shader_binding_table_internal(table, pipeline, hit_groups);
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
@@ -680,32 +665,32 @@ impl crate::context::ContextCreate for Context {
 
 	fn create_bottom_level_acceleration_structure(
 		&mut self,
-		_: Option<&str>,
-		_: &[crate::rt::TriangleGeometry],
+		name: Option<&str>,
+		geometries: &[crate::rt::TriangleGeometry],
 	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		crate::rt::unsupported("Vulkan")
+		self.create_bottom_level(name, geometries)
 	}
 
 	fn create_top_level_acceleration_structure(
 		&mut self,
-		_: Option<&str>,
-		_: u32,
+		name: Option<&str>,
+		max_instance_count: u32,
 	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
-		crate::rt::unsupported("Vulkan")
+		self.create_top_level(name, max_instance_count)
 	}
 
 	fn destroy_bottom_level_acceleration_structure(
 		&mut self,
-		_: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) {
-		crate::rt::unsupported("Vulkan")
+		self.destroy_bottom_level(handle);
 	}
 
 	fn destroy_top_level_acceleration_structure(
 		&mut self,
-		_: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
+		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
 	) {
-		crate::rt::unsupported("Vulkan")
+		self.destroy_top_level(handle);
 	}
 
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(

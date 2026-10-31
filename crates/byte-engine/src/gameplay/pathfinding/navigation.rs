@@ -131,11 +131,15 @@ pub struct Navigation {
 	areas_by_id: BTreeMap<u32, (NavigationArea, Option<Transform>)>,
 	agents_by_id: BTreeMap<u32, PlacedAgent>,
 	mesh: NavigationMesh,
+	#[cfg(feature = "headed")]
 	drawing: Option<Drawing>,
 }
 
 /// The `Drawing` struct keeps the debug meshes that show the mesh's boundary, the agents' radii, and their paths, so
 /// each redraw replaces them under the same handles instead of piling up.
+///
+/// Only a headed build renders debug meshes, so only it draws.
+#[cfg(feature = "headed")]
 struct Drawing {
 	meshes: Factory<DebugMesh>,
 	deletions: DefaultChannel<DeleteMessage>,
@@ -144,6 +148,7 @@ struct Drawing {
 	paths: BTreeMap<u32, Vec<Handle>>,
 }
 
+#[cfg(feature = "headed")]
 impl Drawing {
 	/// Shows `meshes` under `handles`, reusing them, creating the handles it lacks, and deleting the ones it no
 	/// longer needs.
@@ -177,6 +182,7 @@ impl Drawing {
 }
 
 /// Returns a debug line from `start` to `end` in `color`, just above the surface so the floor doesn't hide it.
+#[cfg(feature = "headed")]
 fn line(start: Point, end: Point, color: RGBA) -> DebugMesh {
 	let lift = Vector::new(0.0, LINE_HEIGHT, 0.0);
 	DebugMesh::new(
@@ -191,7 +197,9 @@ fn line(start: Point, end: Point, color: RGBA) -> DebugMesh {
 impl Navigation {
 	/// Creates a system that builds from the navigation areas published in `world` from now on, set up from
 	/// `parameters`, the navigation subtree of the application's.
+	#[cfg_attr(not(feature = "headed"), allow(unused_variables))]
 	pub fn new(world: &MessageScope, parameters: impl Parameters) -> Self {
+		#[cfg(feature = "headed")]
 		let debug = parameters
 			.get_parameter("debug")
 			.is_some_and(|parameter| parameter.as_bool_simple());
@@ -203,6 +211,7 @@ impl Navigation {
 			areas_by_id: BTreeMap::new(),
 			agents_by_id: BTreeMap::new(),
 			mesh: NavigationMesh::new(Vec::new(), Vec::new()).expect("an empty mesh is valid"),
+			#[cfg(feature = "headed")]
 			drawing: debug.then(|| Drawing {
 				meshes: world.factory(),
 				deletions: world.channel(),
@@ -259,10 +268,14 @@ impl Navigation {
 		// into the last quarter of a second's instead of taking it alone.
 		if seconds > 0.0 {
 			let follow = 1.0 - (-seconds / VELOCITY_AVERAGE_SECONDS).exp();
+			#[cfg(feature = "headed")]
 			let drawing = &mut self.drawing;
 			for (&id, agent) in &mut self.agents_by_id {
 				agent.velocity += (agent.displacement / seconds - agent.velocity) * follow;
+				#[cfg(not(feature = "headed"))]
+				let _ = id;
 				// An agent's radius is drawn where it stands, and again wherever it moves.
+				#[cfg(feature = "headed")]
 				if let (Some(drawing), Some(position)) = (drawing.as_mut(), agent.position)
 					&& (agent.displacement.length() > 0.0 || !drawing.radii.contains_key(&id))
 				{
@@ -280,16 +293,19 @@ impl Navigation {
 		while let Some(message) = self.deletions.read() {
 			let id = message.handle().id();
 			changed |= self.areas_by_id.remove(&id).is_some();
-			if self.agents_by_id.remove(&id).is_some()
-				&& let Some(drawing) = &mut self.drawing
-			{
+			let agent_removed = self.agents_by_id.remove(&id).is_some();
+			#[cfg(feature = "headed")]
+			if agent_removed && let Some(drawing) = &mut self.drawing {
 				drawing.show_for(|drawing| &mut drawing.radii, id, std::iter::empty());
 				drawing.show_for(|drawing| &mut drawing.paths, id, std::iter::empty());
 			}
+			#[cfg(not(feature = "headed"))]
+			let _ = agent_removed;
 		}
 
 		if changed {
 			self.mesh = self.build()?;
+			#[cfg(feature = "headed")]
 			if let Some(drawing) = &mut self.drawing {
 				let mut lines = std::mem::take(&mut drawing.boundary);
 				let edges = self.mesh.boundary().map(|(from, to)| line(from, to, BOUNDARY_COLOR));
@@ -321,6 +337,7 @@ impl Navigation {
 			.closest_point(target)
 			.ok_or(NavigationPathError::TargetOutsideMesh)?;
 		self.mesh.find_path_into(start, target, path)?;
+		#[cfg(feature = "headed")]
 		if let Some(drawing) = &mut self.drawing {
 			let legs = path.windows(2).map(|pair| line(pair[0], pair[1], PATH_COLOR));
 			drawing.show_for(|drawing| &mut drawing.paths, id, legs);
@@ -398,15 +415,19 @@ impl Navigation {
 const VELOCITY_AVERAGE_SECONDS: f32 = 0.25;
 
 /// How far above the surface, in meters, debug lines are drawn.
+#[cfg(feature = "headed")]
 const LINE_HEIGHT: f32 = 0.05;
 
+#[cfg(feature = "headed")]
 const BOUNDARY_COLOR: RGBA = RGBA::new(0.2, 0.9, 1.0, 1.0);
+#[cfg(feature = "headed")]
 const RADIUS_COLOR: RGBA = RGBA::new(0.7, 0.3, 1.0, 1.0);
+#[cfg(feature = "headed")]
 const PATH_COLOR: RGBA = RGBA::new(1.0, 0.8, 0.1, 1.0);
 
 #[cfg(test)]
 mod tests {
-	use math::{Orientation, Scale};
+	use math::{Orientation, Scale, distance_xz};
 
 	use super::*;
 	use crate::core::{
@@ -800,6 +821,7 @@ mod tests {
 		assert!(navigation.steer(late, still).velocity.x() > 0.0, "the late one steps away");
 	}
 
+	#[cfg(feature = "headed")]
 	#[test]
 	fn an_agent_finds_its_path_from_where_it_stands_and_shows_it_when_drawing() {
 		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
@@ -842,20 +864,29 @@ mod tests {
 
 use std::collections::BTreeMap;
 
-use math::{Point, UnitVector, Vector, distance_xz};
-use utils::RGBA;
+use math::{Point, Vector};
 
 use super::{NavigationMesh, NavigationMeshBuildError, NavigationPathError, steering};
 use crate::{
 	MediaTime,
 	application::parameters::Parameters,
 	core::{
-		channel::{Channel as _, DefaultChannel},
-		factory::{CreateMessage, Factory, Handle},
+		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener as _},
 		message::DeleteMessage,
 		message_bus::MessageScope,
 	},
 	gameplay::{Transform, TransformationUpdate},
-	rendering::debug::{DebugMesh, DebugShape},
+};
+#[cfg(feature = "headed")]
+use {
+	crate::{
+		core::{
+			channel::{Channel as _, DefaultChannel},
+			factory::Factory,
+		},
+		rendering::debug::{DebugMesh, DebugShape},
+	},
+	math::UnitVector,
+	utils::RGBA,
 };

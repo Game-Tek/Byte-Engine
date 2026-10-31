@@ -789,10 +789,6 @@ fn polygon_bounds_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVert
 	)
 }
 
-fn orientation_tolerance(value: f32) -> f32 {
-	f32::EPSILON * 16.0 * value.abs().max(1.0)
-}
-
 fn same_xz<Space>(first: Point<Space>, second: Point<Space>) -> bool {
 	let x = second.x() - first.x();
 	let z = second.z() - first.z();

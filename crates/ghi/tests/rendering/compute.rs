@@ -86,7 +86,7 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 	));
 	let extent = Extent::rectangle(4, 2);
 	let image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource | Uses::Clear)
 			.name("Unordered Dispatch Target")
 			.extent(extent)
 			.device_accesses(DeviceAccesses::DeviceToHost),

@@ -92,6 +92,7 @@ pub(super) fn members_keep_their_contents_until_another_member_reuses_them(
 }
 
 /// Reads the first member after the second member reused its memory, which debug builds reject.
+#[cfg(debug_assertions)]
 pub(super) fn reading_a_member_after_another_reused_its_memory_fails(
 	device: &mut impl ghi::context::Context,
 	queue_handle: QueueHandle,

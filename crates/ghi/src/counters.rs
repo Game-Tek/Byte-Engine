@@ -18,12 +18,13 @@
 
 use std::time::Duration;
 
-use crate::{CounterHandle, MAX_FRAMES_IN_FLIGHT};
+use crate::{CounterHandle, FrameKey, MAX_FRAMES_IN_FLIGHT};
 
 /// The number of timestamp slots each frame sequence owns, so one frame records at most half as many counters.
 pub(crate) const COUNTER_SLOTS_PER_FRAME: u32 = 1024;
 
 /// The number of timestamp slots a backend's native pool holds for every frame sequence of a context.
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
 pub(crate) const COUNTER_SLOT_COUNT: u32 = COUNTER_SLOTS_PER_FRAME * MAX_FRAMES_IN_FLIGHT as u32;
 
 /// The `Span` struct records the slots one counter wrote in one frame sequence.
@@ -183,9 +184,23 @@ impl Counters {
 	}
 }
 
+/// Returns the frame sequence whose counter slots a recording of `frame_key` writes.
+///
+/// # Panics
+///
+/// Panics when the recording has no frame, because counter slots belong to frame sequences.
+pub(crate) fn frame_sequence(frame_key: Option<FrameKey>) -> u8 {
+	frame_key
+		.expect(
+			"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
+		)
+		.sequence_index
+}
+
 /// Splits a pool slot into the frame sequence that owns it and its entry index inside that sequence's range.
 ///
 /// Backends that keep one native pool per sequence, as Metal does, address their pools with this.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 pub(crate) fn heap_entry(slot: u32) -> (u8, u32) {
 	((slot / COUNTER_SLOTS_PER_FRAME) as u8, slot % COUNTER_SLOTS_PER_FRAME)
 }
@@ -203,6 +218,7 @@ pub(crate) fn elapsed_ticks(start: u64, end: u64, valid_bits: u32) -> u64 {
 }
 
 /// Converts GPU ticks to a duration when the GPU clock runs at `frequency` ticks per second, as DX12 and Metal report.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 pub(crate) fn duration_from_frequency(ticks: u64, frequency: u64) -> Duration {
 	if frequency == 0 {
 		return Duration::ZERO;
@@ -211,6 +227,7 @@ pub(crate) fn duration_from_frequency(ticks: u64, frequency: u64) -> Duration {
 }
 
 /// Converts GPU ticks to a duration when each tick lasts `period_nanoseconds`, as Vulkan reports.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "Only the Vulkan backend uses it."))]
 pub(crate) fn duration_from_period(ticks: u64, period_nanoseconds: f32) -> Duration {
 	Duration::from_secs_f64(ticks as f64 * f64::from(period_nanoseconds) * 1e-9)
 }

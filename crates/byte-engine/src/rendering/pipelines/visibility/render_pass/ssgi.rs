@@ -23,7 +23,7 @@ use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The trace and temporal pipelines, named as [`Pipelines::request`] takes them.
-pub(in crate::rendering::pipelines::visibility) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
+pub(in super::super) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temporal"];
 
 /// The render-graph name of the diffuse light leaving opaque surfaces, which rays sample one frame later.
 ///

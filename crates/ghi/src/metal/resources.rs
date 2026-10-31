@@ -40,7 +40,6 @@ pub(crate) enum Descriptor {
 	},
 	Buffer {
 		buffer: BufferHandle,
-		size: graphics_hardware_interface::Ranges,
 	},
 	Sampler {
 		sampler: SamplerHandle,

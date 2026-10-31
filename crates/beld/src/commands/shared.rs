@@ -6,9 +6,10 @@ use resource_management::{
 		resource_handler::MultiResourceReader,
 	},
 };
+use serde_json::Value;
+// Resource traces exist only in debug builds.
 #[cfg(debug_assertions)]
 use resource_management::{ResourceTraceItem, asset::ResourceId};
-use serde_json::Value;
 #[cfg(debug_assertions)]
 use serde_json::json;
 

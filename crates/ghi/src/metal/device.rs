@@ -55,7 +55,6 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 		&self.allocator
 	}
 
-	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		false
 	}

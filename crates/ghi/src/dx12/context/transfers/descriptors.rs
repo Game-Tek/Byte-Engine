@@ -197,21 +197,15 @@ impl Device {
 		}
 
 		match retained.descriptor {
-			WriteData::Buffer { handle, size } => {
-				self.write_native_buffer_descriptor(resource.descriptor, handle, size, resource_sequence, heap, slot)
+			WriteData::Buffer { handle } => {
+				self.write_native_buffer_descriptor(resource.descriptor, handle, resource_sequence, heap, slot)
 			}
 			WriteData::Image { handle, mip_level, .. } => {
 				self.write_native_image_descriptor(resource.descriptor, handle, resource_sequence, None, mip_level, heap, slot)
 			}
-			WriteData::CombinedImageSampler { image_handle, layer, .. } => self.write_native_image_descriptor(
-				resource.descriptor,
-				image_handle,
-				resource_sequence,
-				layer,
-				None,
-				heap,
-				slot,
-			),
+			WriteData::CombinedImageSampler { image_handle, .. } => {
+				self.write_native_image_descriptor(resource.descriptor, image_handle, resource_sequence, None, None, heap, slot)
+			}
 			WriteData::Swapchain(handle) => {
 				let uses = Self::descriptor_image_use(resource.descriptor);
 				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
@@ -234,7 +228,6 @@ impl Device {
 		&mut self,
 		descriptor: ShaderResourceDescriptor,
 		handle: BaseBufferHandle,
-		size: crate::Ranges,
 		sequence_index: u8,
 		heap: &DescriptorHeap,
 		slot: u32,
@@ -246,16 +239,7 @@ impl Device {
 		let Some(buffer) = self.buffer(handle) else {
 			return;
 		};
-		let buffer_size = match size {
-			crate::Ranges::Size(size) => {
-				assert!(
-					size <= buffer.size,
-					"Invalid DX12 buffer descriptor range. The most likely cause is that the requested descriptor size exceeds the logical buffer allocation."
-				);
-				size
-			}
-			crate::Ranges::Whole => buffer.size,
-		};
+		let buffer_size = buffer.size;
 		let heap_kind = self
 			.buffer_heap_kind_for_sequence(handle, sequence_index)
 			.unwrap_or(buffer.memory.heap_kind);

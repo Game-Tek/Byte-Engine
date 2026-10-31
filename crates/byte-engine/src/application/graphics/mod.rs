@@ -228,7 +228,7 @@ impl GraphicsApplication {
 							ReDBStorageBackend::new_writable_with_settings(
 								resources_path.clone(),
 								ResourceStorageSettings::new(ResourceStorageMode::Files)
-									.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+									.image_compression(ResourceGpuCompressionPolicy::native()),
 							)
 							.unwrap(),
 						);

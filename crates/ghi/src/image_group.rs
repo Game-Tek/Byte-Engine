@@ -190,6 +190,7 @@ impl ImageGroups {
 	}
 
 	/// Rejects a per-frame image that names a group. Backends call this from `build_dynamic_image`.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn reject_dynamic_member(builder: &crate::image::Builder) {
 		assert!(
 			builder.group.is_none(),

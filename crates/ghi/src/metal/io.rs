@@ -301,22 +301,7 @@ impl ResourceIoContext for context::Context {
 		format: crate::Formats,
 		extent: utils::Extent,
 	) -> Result<ResourceIoImageSourceLayout, ResourceIoError> {
-		let depth = extent.depth().max(1);
-		if extent.width() == 0 {
-			return Err(ResourceIoError::InvalidImageLayout);
-		}
-		let (bytes_per_row, _, bytes_per_image) = format.copy_layout(extent).ok_or(ResourceIoError::InvalidImageLayout)?;
-		let total_bytes = bytes_per_image
-			.checked_mul(depth as usize)
-			.ok_or(ResourceIoError::InvalidImageLayout)?;
-		if bytes_per_row == 0 || bytes_per_image == 0 || total_bytes == 0 {
-			return Err(ResourceIoError::InvalidImageLayout);
-		}
-		Ok(ResourceIoImageSourceLayout {
-			bytes_per_row,
-			bytes_per_image,
-			total_bytes,
-		})
+		ResourceIoImageSourceLayout::compact(format, extent)
 	}
 
 	fn create_resource_io_queue(

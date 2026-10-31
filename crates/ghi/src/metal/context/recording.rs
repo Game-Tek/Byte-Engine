@@ -315,9 +315,9 @@ impl Context {
 			crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize);
 
 		match descriptor {
-			crate::descriptors::WriteData::Buffer { handle, size } => {
+			crate::descriptors::WriteData::Buffer { handle } => {
 				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Buffer { buffer: handle, size })
+				Some(Descriptor::Buffer { buffer: handle })
 			}
 			crate::descriptors::WriteData::Image {
 				handle,
@@ -335,7 +335,6 @@ impl Context {
 				image_handle,
 				sampler_handle,
 				layout,
-				..
 			} => {
 				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
 				Some(Descriptor::CombinedImageSampler {

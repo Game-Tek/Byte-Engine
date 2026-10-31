@@ -404,10 +404,6 @@ impl Device {
 		self.image_states.insert(key, after);
 	}
 
-	pub(crate) fn align_up(value: usize, alignment: usize) -> usize {
-		value.div_ceil(alignment) * alignment
-	}
-
 	/// Resolves a validated range in stable CPU-side buffer storage without copying its bytes.
 	pub(crate) fn buffer_range_parts_for_sequence(
 		&self,

@@ -428,13 +428,14 @@ fn a_graph_reading_an_undeclared_parameter_is_reported() {
 /// The suffix sums irradiance behind the view index the table gives the irradiance view.
 #[test]
 fn irradiance_view_is_summed_at_its_table_index() {
-	use super::ast::{MATERIAL_DEBUG_VIEWS, MATERIAL_IRRADIANCE_VIEW};
+	use super::ast::MATERIAL_DEBUG_VIEWS;
 	use super::sources::MATERIAL_EVALUATION_SUFFIX_SOURCE;
 
-	assert_eq!(MATERIAL_DEBUG_VIEWS[MATERIAL_IRRADIANCE_VIEW].0, "irradiance");
-	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains(&format!(
-		"debug_view_slot(push_constant.debug_views, {MATERIAL_IRRADIANCE_VIEW})"
-	)));
+	let irradiance = MATERIAL_DEBUG_VIEWS
+		.iter()
+		.position(|(name, _)| *name == "irradiance")
+		.expect("The material debug views include irradiance");
+	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains(&format!("debug_view_slot(push_constant.debug_views, {irradiance})")));
 }
 
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
@@ -524,7 +525,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 /// Linking only proves the BESL is well formed. The generated program reaches the GPU through a platform
 /// backend, and defects that BESL accepts — an array local the backend must place in C position, or a local
 /// that shadows a binding of the same name — surface only when the platform compiler runs.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_evaluation_lowers_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
@@ -701,7 +702,7 @@ fn materials_get_hit_shaders_only_with_surfel_gi() {
 }
 
 /// Verifies a material's hit shader lowers to a closest hit in the running platform's shader language.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_hit_shaders_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;

@@ -781,8 +781,6 @@ impl Renderer {
 			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
 			.collect::<Vec<_>>();
 
-		self.context.start_frame_capture();
-
 		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame =
 			ghi::queue::FrameRequest::new_in(self.started_frame_count, self.render_finished_synchronizer, &frame_allocator);

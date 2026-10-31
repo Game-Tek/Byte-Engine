@@ -1,9 +1,9 @@
 use super::*;
 
 /// The `KeyboardState` struct provides XKB keycode translation for a Wayland window.
+///
+/// The XKB state holds references to its keymap and context, so it keeps them alive on its own.
 pub(super) struct KeyboardState {
-	pub(super) context: xkb::Context,
-	pub(super) keymap: xkb::Keymap,
 	pub(super) state: xkb::State,
 }
 

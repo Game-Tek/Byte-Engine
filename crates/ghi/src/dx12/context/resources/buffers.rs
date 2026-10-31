@@ -37,12 +37,6 @@ impl Device {
 			.unwrap_or(0)
 	}
 
-	pub(crate) fn buffer_address_for_sequence(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) -> u64 {
-		self.buffer_resource_for_sequence(buffer_handle, sequence_index)
-			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
-			.unwrap_or(0)
-	}
-
 	pub fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		let buffer = self
 			.buffer(buffer_handle.into())

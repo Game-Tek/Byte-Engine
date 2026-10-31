@@ -92,6 +92,8 @@ impl std::fmt::Display for RecordRole {
 pub struct TypeField<'a> {
 	pub name: &'a str,
 	pub type_name: TypeName<'a>,
+	/// Whether the field was written `primitive<T>`: a fragment input its mesh stage writes once per primitive.
+	pub per_primitive: bool,
 }
 
 /// The `RecordField` struct pairs a record-literal field name with its value expression.
@@ -120,7 +122,11 @@ impl std::fmt::Display for TypeName<'_> {
 					} else {
 						f.write_str(", ")?;
 					}
-					write!(f, "{}: {}", field.name, field.type_name)?;
+					if field.per_primitive {
+						write!(f, "{}: primitive<{}>", field.name, field.type_name)?;
+					} else {
+						write!(f, "{}: {}", field.name, field.type_name)?;
+					}
 				}
 				f.write_str(if fields.is_empty() { "}" } else { " }" })
 			}
@@ -499,37 +505,6 @@ impl<'a> Node<'a> {
 		Self::assignment(Self::member_expression(name), value)
 	}
 
-	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		Self::raw_code(Some(code.into()), None, None, input, output)
-	}
-
-	pub fn hlsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		Self::raw_code(None, Some(code.into()), None, input, output)
-	}
-
-	pub fn msl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		Self::raw_code(None, None, Some(code.into()), input, output)
-	}
-
-	/// Builds parser raw code with explicit backend sources and interface names.
-	pub fn raw_code(
-		glsl: Option<Cow<'a, str>>,
-		hlsl: Option<Cow<'a, str>>,
-		msl: Option<Cow<'a, str>>,
-		input: &'a [&'a str],
-		output: &'a [&'a str],
-	) -> Node<'a> {
-		Node {
-			node: Nodes::RawCode {
-				glsl,
-				hlsl,
-				msl,
-				input,
-				output,
-			},
-		}
-	}
-
 	pub fn input(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
 		Node {
 			node: Nodes::Input { name, format, location },
@@ -623,7 +598,6 @@ impl<'a> Node<'a> {
 			Nodes::Sampler { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Expression(_) => None,
-			Nodes::RawCode { .. } => None,
 			Nodes::Intrinsic { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => Some("push_constant"),
@@ -782,13 +756,6 @@ pub enum Nodes<'a> {
 		members: Vec<Node<'a>>,
 	},
 	Expression(Expressions<'a>),
-	RawCode {
-		glsl: Option<Cow<'a, str>>,
-		hlsl: Option<Cow<'a, str>>,
-		msl: Option<Cow<'a, str>>,
-		input: &'a [&'a str],
-		output: &'a [&'a str],
-	},
 	Intrinsic {
 		name: &'a str,
 		elements: Vec<Node<'a>>,
@@ -871,13 +838,6 @@ pub enum Expressions<'a> {
 	VariableDeclaration {
 		name: Cow<'a, str>,
 		r#type: TypeName<'a>,
-	},
-	RawCode {
-		glsl: Option<&'a str>,
-		hlsl: Option<&'a str>,
-		msl: Option<&'a str>,
-		input: &'a [&'a str],
-		output: &'a [&'a str],
 	},
 	Macro {
 		name: &'a str,

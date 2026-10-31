@@ -7,6 +7,7 @@ use crate::{PrivateHandle, PrivateHandles};
 /// Backends without a timed present call this before acquisition so the frame cannot start earlier than the
 /// interval allows; the following FIFO present then lands on the next refresh. A missed slot restarts from now
 /// instead of catching up. Without an interval the slot is cleared and the call returns immediately.
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
 pub(crate) fn pace_present(next_slot: &mut Option<Instant>, interval: Option<Duration>) {
 	let Some(interval) = interval else {
 		*next_slot = None;

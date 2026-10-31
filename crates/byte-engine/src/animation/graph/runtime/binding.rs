@@ -6,7 +6,7 @@ use super::*;
 
 /// The `ClipBinding` struct keeps what playing one clip of a state needs once the clip is resident: how its tracks
 /// map onto the canonical skeleton, how long it lasts, and the frame rate its frame points count in.
-pub(in crate::animation::graph) struct ClipBinding {
+pub(in super::super) struct ClipBinding {
 	pub(super) resource_id: Arc<str>,
 	pub(super) targets: TrackTargets,
 	pub(super) duration: f32,
@@ -21,7 +21,7 @@ pub(in crate::animation::graph) struct ClipBinding {
 /// bind the first time any player enters the state. Each slot is written once and only read afterwards, so players
 /// on several threads can share it. A binding outlives the pool's copy of its clip, so it assumes a resource ID
 /// names the same clip for as long as the graph lives: a clip that reloads with other tracks needs a new graph.
-pub(in crate::animation::graph) struct GraphBinding {
+pub(in super::super) struct GraphBinding {
 	skeleton: OnceLock<Arc<Skeleton>>,
 	/// One slot per graph state, holding its clips' bindings in [`StateMotion::clips`] order.
 	states: Box<[OnceLock<Box<[ClipBinding]>>]>,
@@ -29,7 +29,7 @@ pub(in crate::animation::graph) struct GraphBinding {
 
 impl GraphBinding {
 	/// Creates an empty binding for a graph of `state_count` states.
-	pub(in crate::animation::graph) fn new(state_count: usize) -> Self {
+	pub(in super::super) fn new(state_count: usize) -> Self {
 		Self {
 			skeleton: OnceLock::new(),
 			states: (0..state_count).map(|_| OnceLock::new()).collect(),

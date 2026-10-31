@@ -556,7 +556,7 @@ pub(super) mod tests {
 	use crate::core::alley::{Alley, ConcreteLane, Lane as _, LanePhased};
 
 	/// Returns what a panic said.
-	pub(in crate::core::alley) fn message(panic: Box<dyn std::any::Any + Send>) -> String {
+	pub(in super::super) fn message(panic: Box<dyn std::any::Any + Send>) -> String {
 		match panic.downcast::<String>() {
 			Ok(message) => *message,
 			Err(panic) => panic

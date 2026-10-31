@@ -20,7 +20,7 @@ pub const INSTANCE_INDEX_LIMIT: u32 = 1 << 24;
 ///
 /// [`crate::context::Context::supports_ray_tracing`] is always `false` on such a backend, so reaching this means the
 /// application skipped that check.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 pub(crate) fn unsupported(backend: &str) -> ! {
 	panic!(
 		"{backend} cannot build acceleration structures or trace rays. The most likely cause is that the application did not check Context::supports_ray_tracing, which is always false on {backend}. Check Context::supports_ray_tracing, and use a technique without rays when it is false."

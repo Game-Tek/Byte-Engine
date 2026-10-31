@@ -201,10 +201,10 @@ impl Device {
 	/// Rounds native allocations to the full range exposed by DX12 buffer descriptors.
 	pub(crate) fn buffer_resource_size(size: usize, uses: Uses) -> usize {
 		if uses.intersects(Uses::Uniform) {
-			Self::align_up(size.max(1), 256)
+			size.max(1).next_multiple_of(256)
 		} else if uses.intersects(Uses::Storage) {
 			// HLSL packs flat u8 and u16 storage arrays into 32-bit words, so the final partial word needs backing memory.
-			Self::align_up(size.max(1), std::mem::size_of::<u32>())
+			size.max(1).next_multiple_of(std::mem::size_of::<u32>())
 		} else {
 			size
 		}

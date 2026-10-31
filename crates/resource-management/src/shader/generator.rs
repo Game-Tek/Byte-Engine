@@ -725,6 +725,28 @@ pub(crate) trait NodeEmitter {
 		string.push_str(ShaderFormatting::new(self.minified()).break_str());
 	}
 
+	/// Writes the struct `name` that task and mesh stages share as their one payload, with a member for each
+	/// `task_payload` array of `payloads`, in order, so both stages agree on its layout.
+	fn emit_task_payload_struct<'a>(
+		&self,
+		string: &mut String,
+		name: &str,
+		payloads: impl IntoIterator<Item = &'a besl::NodeReference>,
+	) {
+		self.emit_named_struct_start(string, name);
+		for payload in payloads {
+			let payload = payload.borrow();
+			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
+				continue;
+			};
+			self.emit_indentation(string, 1);
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
+			let _ = write!(string, " {}[{count}]", Self::identifier(name));
+			self.emit_statement_end(string);
+		}
+		self.emit_struct_declaration_end(string);
+	}
+
 	fn emit_block_end(&self, string: &mut String) {
 		string.push('}');
 		string.push_str(ShaderFormatting::new(self.minified()).break_str());
@@ -1585,9 +1607,7 @@ pub mod tests {
 
 			main: fn () -> void {
 				let lane: u32 = thread_idx();
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
+				set_mesh_output_counts(3, 1);
 				if (lane < 3) {
 					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
 					out_uv[lane] = vec2f(f32(lane), 1.0);
@@ -1680,32 +1700,6 @@ pub mod tests {
 		root_node.add_children(specializations.into());
 
 		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
-	}
-
-	/// Builds a vertex `main` whose body is one raw statement with GLSL, HLSL, and MSL variants that reads a user struct.
-	pub fn multi_language_raw_code() -> besl::NodeReference {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		main: fn () -> void {}
-		"#;
-		let root = besl::compile_to_besl(script, None).unwrap();
-		let main = root.get_main().unwrap();
-		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
-		main.borrow_mut().add_child(
-			besl::Node::raw(
-				Some("gl_Position = vec4(0)".to_string()),
-				Some("output.position = float4(0, 0, 0, 1)".to_string()),
-				Some("out.position = float4(0, 0, 0, 1)".to_string()),
-				vec![vertex_struct],
-				vec![],
-			)
-			.into(),
-		);
-		main
 	}
 
 	/// Builds a compute `main` that reads one exact texel with `fetch`.

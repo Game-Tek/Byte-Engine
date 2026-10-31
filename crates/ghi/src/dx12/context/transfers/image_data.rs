@@ -16,10 +16,6 @@ impl Device {
 			.ok_or(crate::TextureTransferError::UnsupportedFormat(image.format))
 	}
 
-	pub(crate) fn record_image_readback(&mut self, command_buffer_handle: CommandBufferHandle, image_handle: ImageHandle) {
-		let _ = self.record_image_readback_internal(command_buffer_handle, image_handle, false, 0);
-	}
-
 	pub(crate) fn record_image_readback_for_copy(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -259,10 +255,6 @@ impl Device {
 		let bytes = bytemuck::cast_slice(data);
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
-	}
-
-	pub(crate) fn clear_image(&mut self, image_handle: crate::BaseImageHandle, clear: crate::ClearValue) {
-		self.clear_image_for_sequence(image_handle, clear, 0);
 	}
 
 	/// Updates CPU-side image data for a frame sequence so readback-oriented images preserve clear values.

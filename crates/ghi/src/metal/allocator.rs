@@ -5,8 +5,8 @@
 //! resources share a heap, so they share pages and creating one does not reach the kernel. A large resource gets a
 //! heap to itself.
 //!
-//! [`ranges`] decides where a resource goes inside a shared heap. This module owns those heaps, creates the
-//! resources, and finds out when a resource's memory can be used again.
+//! [`::utils::RangeAllocator`] decides where a resource goes inside a shared heap. This module owns those heaps,
+//! creates the resources, and finds out when a resource's memory can be used again.
 
 use objc2::Message;
 use objc2::rc::Weak;
@@ -14,8 +14,6 @@ use objc2::runtime::ImplementedBy;
 use objc2_metal::MTLHeap as _;
 
 use super::*;
-
-mod ranges;
 
 /// The largest resource that shares a heap. A larger one gets a heap of exactly its size.
 ///
@@ -62,7 +60,8 @@ pub(crate) struct Allocator {
 struct Heap {
 	heap: Retained<ProtocolObject<dyn mtl::MTLHeap>>,
 	storage: mtl::MTLStorageMode,
-	free: ranges::FreeRanges,
+	/// The free bytes of the heap. The heap's size fits in `usize` because Metal sizes heaps with `NSUInteger`.
+	free: ::utils::RangeAllocator,
 	occupants: Vec<Occupant>,
 }
 
@@ -171,7 +170,10 @@ impl Allocator {
 				.iter_mut()
 				.enumerate()
 				.filter(|(_, heap)| heap.storage == storage)
-				.find_map(|(index, heap)| Some((index, heap.free.allocate(size, alignment)?)))
+				.find_map(|(index, heap)| {
+					let range = heap.free.take(size as usize, alignment.max(1) as usize)?;
+					Some((index, range.start as u64))
+				})
 		};
 		let mut placement = place(&mut self.heaps);
 		if placement.is_none() {
@@ -185,7 +187,7 @@ impl Allocator {
 			self.heaps.push(Heap {
 				heap: self.create_heap(storage, heap_size),
 				storage,
-				free: ranges::FreeRanges::new(heap_size),
+				free: ::utils::RangeAllocator::new(heap_size as usize, 1),
 				occupants: Vec::new(),
 			});
 			place(&mut self.heaps).unwrap_or_else(|| {
@@ -247,7 +249,8 @@ impl Allocator {
 
 			// Another occupant takes this one's place in the list, so the cursor stays where it is.
 			let occupant = heap.occupants.swap_remove(occupant_index);
-			heap.free.free(occupant.offset, occupant.size);
+			heap.free
+				.give_back(occupant.offset as usize..(occupant.offset + occupant.size) as usize);
 			self.occupants -= 1;
 			if heap.occupants.is_empty() {
 				// Another heap takes this one's place in the list.

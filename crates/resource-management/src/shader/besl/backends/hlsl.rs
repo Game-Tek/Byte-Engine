@@ -847,9 +847,7 @@ mod tests {
 			main: fn () -> void {
 				let lane: u32 = thread_idx();
 				let meshlet_index: u32 = meshlet_indices[threadgroup_position()];
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
+				set_mesh_output_counts(3, 1);
 				if (lane < 3) {
 					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
 				}
@@ -1269,20 +1267,6 @@ mod tests {
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space0);");
 		assert_string_does_not_contain!(shader, "vk::push_constant");
-	}
-
-	#[test]
-	fn test_multi_language_raw_code() {
-		let shader = generate(
-			&ShaderGenerationSettings::vertex(),
-			&generator::tests::multi_language_raw_code(),
-		);
-
-		// The HLSL transpiler should use the HLSL code.
-		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
-		assert_string_contains!(shader, "void besl_main(){output.position = float4(0, 0, 0, 1);}");
-		// Should NOT contain GLSL code
-		assert!(!shader.contains("gl_Position"), "HLSL shader should not contain GLSL code");
 	}
 
 	#[test]

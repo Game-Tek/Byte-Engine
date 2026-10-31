@@ -1,59 +1,6 @@
-pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
-
 #[cfg(target_os = "linux")]
 mod compilation {
-	use crate::shader::{
-		besl::{backends::glsl::GLSLTranspiler, evaluation::collect_bindings},
-		generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings},
-		glsl_compile,
-	};
-
-	/// The `Generator` struct exists to compile Byte Engine Shader Language programs into SPIR-V.
-	/// > [!IMPORTANT]
-	/// > Creating a compiler is expensive. Reuse each instance when possible.
-	pub struct Generator {
-		glsl_transpiler: GLSLTranspiler,
-	}
-
-	impl Default for Generator {
-		fn default() -> Self {
-			Self::new()
-		}
-	}
-
-	impl Generator {
-		pub fn new() -> Self {
-			Self {
-				glsl_transpiler: GLSLTranspiler::new(),
-			}
-		}
-
-		pub fn generate(
-			&mut self,
-			shader_compilation_settings: &ShaderGenerationSettings,
-			main_function_node: &besl::NodeReference,
-		) -> Result<CompiledShader, String> {
-			let glsl_shader = self
-				.glsl_transpiler
-				.generate(shader_compilation_settings, main_function_node)
-				.map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
-
-			let binary = compile_glsl_to_spirv(&glsl_shader, &shader_compilation_settings.name)?;
-
-			Ok(CompiledShader {
-				binary,
-				bindings: collect_bindings(main_function_node)?
-					.into_iter()
-					.map(CompiledShaderBinding::from)
-					.collect(),
-				// SPIR-V reflection reports a workgroup only for compute shaders.
-				extent: match shader_compilation_settings.stage {
-					crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
-					_ => None,
-				},
-			})
-		}
-	}
+	use crate::shader::glsl_compile;
 
 	/// Describes the linked shaderc build and the options [`compile_glsl_to_spirv`] passes.
 	///
@@ -131,8 +78,7 @@ void main() {
 
 	#[cfg(test)]
 	mod tests {
-		use super::{Generator, spirv_compiler_identity};
-		use crate::shader::{generator, generator::ShaderGenerationSettings};
+		use super::spirv_compiler_identity;
 
 		#[test]
 		fn compiler_identity_records_the_glslang_generator_version() {
@@ -142,41 +88,8 @@ void main() {
 			assert!(identity.contains("generator=0x000d"), "unexpected identity: {identity}");
 			assert_eq!(spirv_compiler_identity().as_deref(), Ok(identity.as_str()));
 		}
-
-		#[test]
-		fn bindings() {
-			let main = generator::tests::bindings();
-
-			let shader = Generator::new()
-				.generate(&ShaderGenerationSettings::vertex(), &main)
-				.expect("Failed to generate shader");
-
-			let bindings = &shader.bindings;
-
-			assert_eq!(bindings.len(), 3);
-
-			let buffer_binding = &bindings[0];
-
-			assert_eq!(buffer_binding.slot, 0);
-			assert_eq!(buffer_binding.read, true);
-			assert_eq!(buffer_binding.write, true);
-
-			let image_binding = &bindings[1];
-
-			assert_eq!(image_binding.slot, 1);
-			assert_eq!(image_binding.read, false);
-			assert_eq!(image_binding.write, true);
-
-			let texture_binding = &bindings[2];
-
-			assert_eq!(texture_binding.slot, 2);
-			assert_eq!(texture_binding.read, true);
-			assert_eq!(texture_binding.write, false);
-		}
 	}
 }
 
-#[cfg(target_os = "linux")]
-pub use compilation::Generator as SPIRVCompiler;
 #[cfg(target_os = "linux")]
 pub(crate) use compilation::{compile_glsl_to_spirv, spirv_compiler_identity};

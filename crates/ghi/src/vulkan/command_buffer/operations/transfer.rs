@@ -132,14 +132,14 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_top_level_acceleration_structure(
 		&mut self,
-		_: crate::TopLevelAccelerationStructureHandle,
-		_: &[crate::rt::Instance],
+		structure: crate::TopLevelAccelerationStructureHandle,
+		instances: &[crate::rt::Instance],
 	) {
-		crate::rt::unsupported("Vulkan")
+		self.record_top_level_build(structure, instances);
 	}
 
-	fn build_bottom_level_acceleration_structures(&mut self, _: &[crate::BottomLevelAccelerationStructureHandle]) {
-		crate::rt::unsupported("Vulkan")
+	fn build_bottom_level_acceleration_structures(&mut self, structures: &[crate::BottomLevelAccelerationStructureHandle]) {
+		self.record_bottom_level_builds(structures);
 	}
 
 	fn blit_image(
@@ -469,6 +469,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
 		self.device.synchronizers[synchronizer_handle.index() as usize].armed = true;
+		if let Some(builds) = self.builds.take() {
+			self.device.submit_recorded_builds(
+				builds,
+				crate::vulkan::acceleration_structures::Completion::Synchronizer(synchronizer_handle),
+			);
+		}
 
 		for handle in &self.texture_readbacks {
 			self.device

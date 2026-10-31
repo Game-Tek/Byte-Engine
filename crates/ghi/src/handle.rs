@@ -7,6 +7,7 @@ macro_rules! index_handle {
 		#[repr(transparent)]
 		$visibility struct $name(std::num::NonZeroU64);
 
+		#[allow(dead_code, reason = "Not every backend creates or reads every handle by index.")]
 		impl $name {
 			/// Encodes a storage index as a nonzero identity.
 			pub(crate) const fn from_index(index: u64) -> Self {

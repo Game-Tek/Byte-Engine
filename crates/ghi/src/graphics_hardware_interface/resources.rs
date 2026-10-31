@@ -52,12 +52,6 @@ pub enum TextureViewTypes {
 	Texture3D,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Ranges {
-	Size(usize),
-	Whole,
-}
-
 /// The `FrameKey` struct identifies a submitted frame while selecting its reusable GPU sequence.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FrameKey {
@@ -192,6 +186,7 @@ pub struct AttachmentInformation {
 	/// The attachment format, or `None` to use the target image's format.
 	pub(crate) format: Option<Formats>,
 	/// The layout of the attachment.
+	#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "Only the Vulkan backend uses it."))]
 	pub(crate) layout: Layouts,
 	/// What the render pass does with the attachment's existing contents.
 	pub(crate) load: LoadOp,
@@ -275,6 +270,7 @@ impl AttachmentInformation {
 
 	/// Returns the layers the attachment covers as its first layer and layer count: the selected layer, the layered
 	/// range, or the first layer.
+	#[cfg_attr(not(target_os = "windows"), allow(dead_code, reason = "Only the DX12 backend uses it."))]
 	pub(crate) fn layer_selection(&self) -> (u32, u32) {
 		match (self.layer, self.layer_count) {
 			(Some(layer), _) => (layer, 1),

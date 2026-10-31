@@ -909,13 +909,13 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
-		if let Some(slot) = self.commit.counters.start(self.counter_sequence(), counter) {
+		if let Some(slot) = self.commit.counters.start(crate::counters::frame_sequence(self.frame_key), counter) {
 			self.write_timestamp(slot);
 		}
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
-		if let Some(slot) = self.commit.counters.end(self.counter_sequence(), counter) {
+		if let Some(slot) = self.commit.counters.end(crate::counters::frame_sequence(self.frame_key), counter) {
 			self.write_timestamp(slot);
 		}
 	}

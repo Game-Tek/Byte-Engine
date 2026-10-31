@@ -42,13 +42,14 @@ impl RangeAllocator {
 	/// Leases the lowest free range of `length` units whose start is a multiple of `alignment`.
 	///
 	/// `alignment` must be non-zero. Returns `None` when no free range is large enough; the owner can then
-	/// evict leases and return their ranges with [`Self::give_back`].
+	/// evict leases and return their ranges with [`Self::give_back`]. A zero `length` takes nothing and returns an
+	/// empty range, even when the arena is full.
 	pub fn take(&mut self, length: usize, alignment: usize) -> Option<Range<usize>> {
+		if length == 0 {
+			return Some(0..0);
+		}
 		let (index, start) = self.first_fit(length, alignment)?;
 		let taken = start..start + length;
-		if taken.is_empty() {
-			return Some(taken);
-		}
 		// Replace the free range with its unused prefix and suffix in place, so the list stays sorted.
 		let free = self.free[index].clone();
 		match (free.start < taken.start, taken.end < free.end) {
@@ -136,6 +137,17 @@ mod tests {
 		allocator.give_back(0..2);
 
 		assert_eq!(allocator.take(8, 1), Some(0..8));
+	}
+
+	#[test]
+	fn empty_takes_succeed_in_a_full_arena() {
+		let mut allocator = RangeAllocator::new(4, 1);
+		assert_eq!(allocator.take(4, 1), Some(0..4));
+
+		assert_eq!(allocator.take(0, 1), Some(0..0));
+		// Returning the empty range leaves the arena as full as it was.
+		allocator.give_back(0..0);
+		assert!(!allocator.fits(1, 1));
 	}
 
 	#[test]

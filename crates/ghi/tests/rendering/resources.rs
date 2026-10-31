@@ -57,8 +57,6 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 			device.set_frames_in_flight(3); // Change from default 2 to 3
 		}
 
-		device.start_frame_capture();
-
 		let texture_copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut texture_copy_handles = Vec::new();
@@ -92,8 +90,6 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 			);
 			texture_copy_handles
 		};
-
-		device.end_frame_capture();
 
 		device.wait();
 
@@ -159,8 +155,6 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 	let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		device.start_frame_capture();
-
 		let texture_copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut texture_copy_handles = Vec::new();
@@ -202,8 +196,6 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 			);
 			texture_copy_handles
 		};
-
-		device.end_frame_capture();
 
 		device.wait();
 
@@ -517,8 +509,6 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 	let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		device.start_frame_capture();
-
 		let copy_texture_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut copy_texture_handles = Vec::new();
@@ -574,8 +564,6 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 			);
 			copy_texture_handles
 		};
-
-		device.end_frame_capture();
 
 		device.wait();
 

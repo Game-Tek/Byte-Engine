@@ -1,8 +1,9 @@
 main: fn (
 	input: StageInput,
+	// The mesh stage writes the instance and primitive once per primitive, and the UV per vertex.
 	pipeline_input: interface {
-		instance_index: u32,
-		primitive_index: u32,
+		instance_index: primitive<u32>,
+		primitive_index: primitive<u32>,
 		uv: vec2f16,
 	},
 ) -> void {

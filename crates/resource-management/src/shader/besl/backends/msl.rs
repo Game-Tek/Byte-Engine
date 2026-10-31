@@ -4,7 +4,7 @@ pub use Generator as MSLTranspiler;
 
 use super::{
 	IntrinsicRequirements, RAY_TRACING_STAGE_INTRINSICS, ResourceAccessorKind, any_code_node, intrinsic_requirements,
-	resource_accessor, runtime_buffer_element,
+	invoke_payload, resource_accessor, runtime_buffer_element,
 };
 
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
@@ -26,8 +26,8 @@ mod reserved;
 
 pub(crate) use bindings::*;
 pub(crate) use emit::*;
+pub use facade::Generator;
 pub(crate) use facade::*;
-pub use facade::{ComputeBindingMode, Generator};
 pub(crate) use generate::*;
 pub(crate) use raster::*;
 pub(crate) use ray_tracing::*;
@@ -723,36 +723,7 @@ mod tests {
 		assert_string_contains!(argument_buffer_shader, "const device uint* vertices [[id(1)]];");
 		assert_string_contains!(argument_buffer_shader, "device uint* counters [[id(2)]];");
 
-		let bare_resource_shader = Generator::new()
-			.minified(true)
-			.compute_binding_mode(ComputeBindingMode::BareResources)
-			.generate(&settings, &main)
-			.expect("Expected memory-class source to lower through bare Metal resources");
-		assert_string_contains!(
-			bare_resource_shader,
-			"constant _dispatch_values* dispatch_values [[buffer(0)]]"
-		);
-		assert_string_contains!(bare_resource_shader, "const device uint* vertices [[buffer(1)]]");
-		assert_string_contains!(bare_resource_shader, "device uint* counters [[buffer(2)]]");
-
 		compile_natively(&argument_buffer_shader, "besl-buffer-memory-classes").await;
-	}
-
-	#[test]
-	fn compute_bindings_can_use_bare_resources() {
-		let main = generator::tests::bindings();
-
-		let shader = Generator::new()
-			.minified(true)
-			.compute_binding_mode(ComputeBindingMode::BareResources)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "kernel void besl_main(uint2 gid [[thread_position_in_grid]],");
-		assert_string_contains!(shader, "device _buff* buff [[buffer(0)]]");
-		assert_string_contains!(shader, "texture2d<float, access::write> image [[texture(1)]]");
-		assert_string_contains!(shader, "texture2d<float> texture [[texture(2)]]");
-		assert_string_contains!(shader, "sampler texture_sampler [[sampler(2)]]");
-		assert_string_contains!(shader, "buff;image;texture;");
 	}
 
 	#[compio::test]
@@ -792,39 +763,6 @@ mod tests {
 		compile_natively(&shader, "besl-local-array").await;
 	}
 
-	const TASK_PAYLOAD_FIXTURE_SOURCE: &str = r#"
-		Meshlets: struct {
-			values: u32[32],
-		}
-		meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
-		visible_meshlets: task_payload<u32, 32>;
-		visible_count: workgroup<atomicu32>;
-		push_constant: push_constant {
-			base_meshlet: u32,
-		}
-
-		dispatch_visible_meshlets: fn () -> void {
-			let position: u32 = thread_position();
-			let lane: u32 = thread_idx();
-			if (lane == 0) {
-				atomic_store(visible_count, 0);
-			}
-			workgroup_barrier();
-			if (position < 32) {
-				let payload_index: u32 = atomic_add(visible_count, 1);
-				visible_meshlets[payload_index] = meshlets.values[push_constant.base_meshlet + position];
-			}
-			workgroup_barrier();
-			if (lane == 0) {
-				set_task_mesh_output_count(atomic_load(visible_count));
-			}
-		}
-
-		main: fn () -> void {
-			dispatch_visible_meshlets();
-		}
-	"#;
-
 	const COMPUTE_WORKGROUP_FIXTURE_SOURCE: &str = r#"
 		scratch: workgroup<f32, 64>;
 
@@ -837,27 +775,6 @@ mod tests {
 			store_scratch(f32(thread_idx()));
 			let value: f32 = scratch[thread_idx()];
 			value;
-		}
-	"#;
-
-	const MESH_PAYLOAD_FIXTURE_SOURCE: &str = r#"
-		visible_meshlets: task_payload<u32, 32>;
-		out_instance_index: output<u32, 0, 126>;
-		out_primitive_index: output<u32, 1, 126>;
-
-		main: fn () -> void {
-			let lane: u32 = thread_idx();
-			let meshlet_index: u32 = visible_meshlets[threadgroup_position()];
-			set_mesh_output_counts(3, 1);
-			if (lane < 3) {
-				set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
-			}
-			if (lane < 1) {
-				set_mesh_triangle(0, vec3u(0, 1, 2));
-				out_primitive_index[0] = meshlet_index;
-				set_mesh_primitive_render_target_array_index(0, 2);
-				out_instance_index[0] = meshlet_index;
-			}
 		}
 	"#;
 
@@ -930,7 +847,7 @@ mod tests {
 	#[test]
 	fn mesh_stage_consumes_the_same_authored_task_payload() {
 		let shader = lower_fixture(
-			MESH_PAYLOAD_FIXTURE_SOURCE,
+			super::super::MESH_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
 		);
 		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
@@ -996,11 +913,11 @@ mod tests {
 	#[compio::test]
 	async fn generated_task_and_mesh_payload_stages_compile_with_metal() {
 		let task = lower_fixture(
-			TASK_PAYLOAD_FIXTURE_SOURCE,
+			super::super::TASK_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
 		);
 		let mesh = lower_fixture(
-			MESH_PAYLOAD_FIXTURE_SOURCE,
+			super::super::MESH_PAYLOAD_FIXTURE,
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
 		);
 		// The runtime reads the threadgroup size from this marker when it builds the pipeline.
@@ -1182,53 +1099,18 @@ mod tests {
 
 	#[test]
 	fn mesh_stage_uses_mesh_entry_point_and_mesh_push_constants() {
-		let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-		let mesh_output_types = besl::parser::Node::raw_code(
-			Some("".into()),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint primitive_index [[flat]] [[user(locn0)]];
-};
-"#
-				.into(),
-			),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint primitive_index [[flat]] [[user(locn0)]];
-};
-"#
-				.into(),
-			),
-			&[],
-			&["VertexOutput", "PrimitiveOutput"],
-		);
-		let main = besl::parser::Node::function(
-			"main",
-			Vec::new(),
-			"void",
-			vec![besl::parser::Node::raw_code(
-				Some("".into()),
-				Some("push_constant;threadgroup_position;thread_index;out_mesh;".into()),
-				Some("push_constant;threadgroup_position;thread_index;out_mesh;".into()),
-				&["push_constant", "VertexOutput", "PrimitiveOutput"],
-				&[],
-			)],
-		);
-		let shader = besl::parser::Node::scope("Shader", vec![push_constant, mesh_output_types, main]);
-		let mut root = besl::parser::Node::root();
-		root.add(vec![shader]);
-
-		let root_node = besl::lex(root).unwrap();
+		let script = r#"
+		push_constant: push_constant {
+			instance_index: u32,
+		}
+		main: fn () -> void {
+			set_mesh_output_counts(3, 1);
+			set_mesh_vertex_position(0, vec4f(f32(push_constant.instance_index), 0.0, 0.0, 1.0));
+			set_mesh_triangle(0, vec3u(0, 1, 2));
+		}
+		"#;
+		let root_node = besl::lex(besl::parse(script).expect("Expected mesh shader source to parse"))
+			.expect("Expected mesh shader source to lex");
 		let main_node = root_node.get_main().unwrap();
 
 		let shader = generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main_node);
@@ -1340,55 +1222,24 @@ struct PrimitiveOutput {
 	}
 
 	#[test]
-	fn raster_full_source_passthrough_uses_raw_msl_source() {
-		let source = "// besl-full-source\n#include <metal_stdlib>\nvertex void besl_main() {}";
-		let mut root = besl::parser::Node::root();
-		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
-			Some("".into()),
-			None,
-			Some(source.into()),
-			&[],
-			&[],
-		)]);
-		root.add(vec![besl::parser::Node::scope("Shader", vec![main])]);
-
-		let main = besl::lex(root).unwrap().get_main().unwrap();
-		let shader = Generator::new()
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_eq!(shader, "#include <metal_stdlib>\nvertex void besl_main() {}");
-	}
-
-	#[test]
 	fn vertex_shader_generates_msl_entry_point() {
-		let mut root = besl::parser::Node::root();
-		let camera = besl::parser::Node::r#struct("Camera", vec![besl::parser::Node::member("view_projection", "mat4f")]);
-		let cameras = besl::parser::Node::constant_buffer_binding(
-			"cameras",
-			besl::parser::Node::buffer(vec![besl::parser::Node::member("cameras", "Camera[8]")]),
-			0,
-			true,
-			false,
-		);
-		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
-			Some("".into()),
+		let root = besl::compile_to_besl(
+			r#"
+			Camera: struct { view_projection: mat4f, }
+			Cameras: struct { cameras: Camera[8], }
+			cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
+			in_position: input<vec3f, 0>;
+			position: output<vec4f, 255>;
+			out_instance_index: output<u32, 0>;
+			main: fn () -> void {
+				position = cameras.cameras[0].view_projection * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+				out_instance_index = 0;
+			}
+			"#,
 			None,
-			Some("position = set0.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;".into()),
-			&["cameras", "in_position", "out_instance_index"],
-			&[],
-		)]);
-		root.add(vec![besl::parser::Node::scope(
-			"Shader",
-			vec![
-				camera,
-				cameras,
-				besl::parser::Node::input("in_position", "vec3f", 0),
-				besl::parser::Node::output("out_instance_index", "u32", 0),
-				main,
-			],
-		)]);
-
-		let main = besl::lex(root).unwrap().get_main().unwrap();
+		)
+		.expect("Expected the vertex shader to lex");
+		let main = root.get_main().unwrap();
 		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
 		assert_string_contains!(shader, "struct _set0{constant Camera* cameras [[id(0)]];};");
 		assert_string_contains!(shader, "struct VertexInput{float3 in_position [[attribute(0)]];};");
@@ -1400,7 +1251,10 @@ struct PrimitiveOutput {
 			shader,
 			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _set0& set0 [[buffer(16)]])"
 		);
-		assert_string_contains!(shader, "position = set0.cameras[0].view_projection");
+		assert_string_contains!(
+			shader,
+			"position=(set0.cameras[0].view_projection*float4(in_position.x,in_position.y,in_position.z,1.0))"
+		);
 		assert_string_contains!(shader, "return out;");
 	}
 
@@ -1479,20 +1333,6 @@ struct PrimitiveOutput {
 	}
 
 	#[test]
-	fn test_multi_language_raw_code() {
-		let shader = generate(
-			&ShaderGenerationSettings::vertex(),
-			&generator::tests::multi_language_raw_code(),
-		);
-
-		// The MSL transpiler should use the explicit MSL code.
-		assert_string_contains!(shader, "struct Vertex{packed_float3 position;packed_float3 normal;};");
-		assert_string_contains!(shader, "void main(){out.position = float4(0, 0, 0, 1);}");
-		// Should NOT contain GLSL code
-		assert!(!shader.contains("gl_Position"), "MSL shader should not contain GLSL code");
-	}
-
-	#[test]
 	fn test_const_variable() {
 		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::const_variable());
 		// The backend declares its own `PI`, so a BESL constant with that name must be prefixed.
@@ -1502,37 +1342,6 @@ struct PrimitiveOutput {
 
 	#[test]
 	fn mesh_intrinsics_emit_msl_mesh_commands() {
-		let mesh_output_types = besl::parser::Node::raw_code(
-			Some("".into()),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			&[],
-			&["VertexOutput", "PrimitiveOutput"],
-		);
 		let script = r#"
 		main: fn () -> void {
 			set_mesh_output_counts(4, 2);
@@ -1541,8 +1350,7 @@ struct PrimitiveOutput {
 		}
 		"#;
 
-		let mut root = besl::parse(script).expect("Expected mesh shader source to parse");
-		root.add(vec![mesh_output_types]);
+		let root = besl::parse(script).expect("Expected mesh shader source to parse");
 		let root = besl::lex(root).expect("Expected mesh shader source to lex");
 		let main = root.get_main().expect("Expected main function");
 
@@ -1846,64 +1654,9 @@ struct PrimitiveOutput {
 		compile_natively(&shader, "besl-sample-intrinsic").await;
 	}
 
-	/// The layout layers that the ray tracing fixtures list, in the order every shader of their pipeline lists them:
-	/// the payload, the scene and the results the ray generation shader writes, the albedos that only closest hits
-	/// read, and the push constant.
-	const RAY_TRACING_LAYERS: [(&str, &str); 4] = [
-		("surface", "SurfaceHit: struct { albedo: vec3f, distance: f32, }"),
-		(
-			"scene",
-			"scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>; surfaces: descriptor<{ type: SurfaceHit[], binding: 1, access: write }>;",
-		),
-		(
-			"materials",
-			"albedos: descriptor<{ type: vec4f[], binding: 2, access: read }>;",
-		),
-		("constants", "push_constant: push_constant { scale: f32, }"),
-	];
-
-	/// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
-	const RAY_GENERATION_FIXTURE: &str = r#"
-		shade: fn (hit: Hit) -> SurfaceHit {
-			return invoke(hit, SurfaceHit(vec3f(0.0, 0.0, 0.0), -1.0));
-		}
-
-		main: fn (input: StageInput) -> void {
-			let origin: vec3f = vec3f(f32(input.launch_index.x) * push_constant.scale, 0.0, 0.0);
-			let hit: Hit = intersect(scene, 255, origin, vec3f(0.0, 0.0, 2.0), 0.0, 100.0);
-			let surface: SurfaceHit = shade(hit);
-			if (trace_occlusion(scene, 255, origin, vec3f(0.0, 0.0, 1.0), 0.0, 100.0)) {
-				surface.distance = surface.distance + f32(input.launch_size.x);
-			}
-			surfaces[input.launch_index.x] = surface;
-		}
-	"#;
-
-	/// Reports a hit's albedo from a set the ray generation shader doesn't read, through a helper that reads the hit.
-	const CLOSEST_HIT_FIXTURE: &str = r#"
-		albedo_of: fn (geometry: u32) -> vec3f {
-			let albedo: vec4f = albedos[geometry];
-			return vec3f(albedo.x, albedo.y, albedo.z) * hit_distance();
-		}
-
-		main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit {
-			let surface: SurfaceHit = payload;
-			let weights: vec2f = input.hit_barycentrics;
-			surface.albedo = albedo_of(input.hit_geometry_index) + vec3f(weights.x, weights.y, f32(input.hit_primitive_index));
-			surface.distance = input.hit_distance * push_constant.scale + input.ray_direction.z;
-			return surface;
-		}
-	"#;
-
-	/// Runs baked ray tracing shaders on the GPU and in the VM. It needs GHI, which the `gpu-processing` feature brings.
-	#[cfg(all(feature = "gpu-processing", target_os = "macos"))]
-	mod gpu_ray_tracing;
-
-	/// Stacks [`RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
+	/// Stacks [`super::super::RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let module = besl::parse(source).expect("Expected the ray tracing fixture to parse");
-		let program = besl::lex(besl::stack_layers(module, RAY_TRACING_LAYERS).expect("Expected the layers to stack"))
-			.expect("Expected the ray tracing fixture to link");
+		let program = super::super::link_ray_tracing_fixture(source);
 		Generator::new()
 			.minified(true)
 			.generate_program(settings, &program)
@@ -1914,7 +1667,10 @@ struct PrimitiveOutput {
 	/// passes them every set and the push constant its layers declare, and that the kernel compiles.
 	#[compio::test]
 	async fn generated_ray_generation_stage_compiles_with_metal() {
-		let shader = lower_ray_tracing_fixture(RAY_GENERATION_FIXTURE, &ShaderGenerationSettings::ray_generation());
+		let shader = lower_ray_tracing_fixture(
+			super::super::RAY_GENERATION_FIXTURE,
+			&ShaderGenerationSettings::ray_generation(),
+		);
 
 		assert_string_contains!(shader, "#include <metal_raytracing>");
 		// The kernel takes the materials set though it reads none of it, because closest hits read it.
@@ -1941,7 +1697,7 @@ struct PrimitiveOutput {
 	/// the kernel passes, forwards the hit to its helpers, and compiles.
 	#[compio::test]
 	async fn generated_closest_hit_stage_compiles_with_metal() {
-		let shader = lower_ray_tracing_fixture(CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
+		let shader = lower_ray_tracing_fixture(super::super::CLOSEST_HIT_FIXTURE, &ShaderGenerationSettings::closest_hit());
 
 		assert_string_contains!(
 			shader,

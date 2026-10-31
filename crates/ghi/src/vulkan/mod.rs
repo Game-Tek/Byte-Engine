@@ -2,13 +2,13 @@ use std::borrow::Cow;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::Extent;
-use ::utils::hash::HashMap;
 use ash::vk;
 
 use crate::buffer::BufferHandle;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 
+pub(crate) mod acceleration_structures;
 pub mod buffer;
 pub mod command_buffer;
 pub mod context;
@@ -22,6 +22,7 @@ pub mod instance;
 pub mod io;
 pub(crate) mod pipeline_binaries;
 pub mod queue;
+pub(crate) mod ray_tracing;
 pub mod swapchain;
 pub mod synchronizer;
 
@@ -52,14 +53,17 @@ pub(super) enum Descriptor {
 		image: ImageHandle,
 		sampler: graphics_hardware_interface::SamplerHandle,
 		layout: crate::Layouts,
-		layer: Option<u32>,
 	},
 	Buffer {
 		buffer: BufferHandle,
-		size: graphics_hardware_interface::Ranges,
 	},
 	Sampler {
 		sampler: graphics_hardware_interface::SamplerHandle,
+	},
+	/// The copy of a top-level acceleration structure that frame sequence `copy` builds and traces.
+	AccelerationStructure {
+		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
+		copy: u8,
 	},
 }
 
@@ -68,6 +72,31 @@ pub(super) enum Handles {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
 	VkBuffer(vk::Buffer),
+	/// Acceleration structure memory, whose accesses Vulkan names apart from shader reads and which global memory
+	/// barriers order.
+	AccelerationStructure(AccelerationStructureMemory),
+}
+
+/// The `AccelerationStructureMemory` struct names the acceleration structure memory that the resource tracker follows.
+///
+/// It packs what it names into one word, like the payload of every other [`Handles`] variant. Every draw hashes and
+/// compares handles, and those stay branch-free only while all variants share one shape.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct AccelerationStructureMemory(u64);
+
+impl AccelerationStructureMemory {
+	/// Every bottom-level acceleration structure at once: builds and compactions write it, and top-level builds read it.
+	///
+	/// A top-level build reads the bottom levels its instances name by address, which the tracker cannot see, so the
+	/// structures share one state. Their barriers are global memory barriers, which cost the same for one structure as
+	/// for all of them.
+	pub(super) const BOTTOM_LEVELS: Self = Self(u64::MAX);
+
+	/// Names the copy of the top-level acceleration structure `handle` that frame sequence `copy` builds and traces.
+	pub(super) fn top_level(handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle, copy: u8) -> Self {
+		debug_assert!((copy as usize) < MAX_FRAMES_IN_FLIGHT);
+		Self(handle.bits() * MAX_FRAMES_IN_FLIGHT as u64 + copy as u64)
+	}
 }
 
 #[derive(Clone, PartialEq)]
@@ -136,7 +165,11 @@ pub(crate) struct Shader {
 	/// `None` without a pipeline cache or without `VK_EXT_shader_module_identifier`.
 	identifier: Option<pipeline_binaries::Key>,
 	stage: crate::Stages,
+	/// The resources the shader uses, across its sets, as one list ordered by slot.
 	shader_resource_descriptors: Vec<crate::shader::ShaderResourceDescriptor>,
+	/// The sets the shader declares, in the order its source declares them. Ray tracing pipelines reserve every
+	/// resource of the ray generation shader's sets, and check that each closest hit declares a prefix of them.
+	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
 }
 
 /// The `ShaderCode` enum is SPIR-V a shader keeps, in whichever buffer avoided a copy.
@@ -181,9 +214,10 @@ impl Shader {
 	pub(crate) fn new(
 		source: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 		pipeline_binaries: Option<&pipeline_binaries::PipelineBinaries>,
 	) -> Result<Self, ()> {
+		let descriptor_sets = descriptor_sets.into_iter().collect::<Box<[_]>>();
 		let (code, identifier) = match source {
 			crate::shader::Sources::SPIRV(bytes) => {
 				let code = match bytes {
@@ -212,15 +246,18 @@ impl Shader {
 			code,
 			identifier,
 			stage: stage.into(),
-			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
+			// This backend still derives its native layouts from flat slots.
+			shader_resource_descriptors: crate::shader::flatten_used_resources(descriptor_sets.iter().cloned()),
+			descriptor_sets,
 		})
 	}
 }
 
-#[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
+	/// What traces need of a ray tracing pipeline, and `None` for other pipelines.
+	ray_tracing: Option<Box<ray_tracing::RayTracingPipelineState>>,
 }
 
 /// The `MappedMemoryPointer` struct lets context-owned Vulkan mappings move with their context.
@@ -242,14 +279,8 @@ pub(crate) struct DescriptorHeapArena {
 	device_address: vk::DeviceAddress,
 	size: u64,
 	reserved_size: u64,
-	free_ranges: Vec<DescriptorHeapRange>,
-}
-
-/// The `DescriptorHeapRange` struct identifies reusable application-owned bytes in a descriptor heap.
-#[derive(Clone, Copy)]
-struct DescriptorHeapRange {
-	offset: u64,
-	size: u64,
+	/// The bytes descriptor snapshots can take. The heap size fits in `usize` because the heap is mapped.
+	free: ::utils::RangeAllocator,
 }
 
 /// The `DescriptorHeaps` struct groups the one resource heap and one sampler heap bound by Vulkan command buffers.
@@ -261,64 +292,16 @@ pub(crate) struct DescriptorHeaps {
 impl DescriptorHeapArena {
 	/// Reserves immutable heap bytes so descriptors referenced by in-flight command buffers are never overwritten.
 	pub(crate) fn allocate(&mut self, size: u32, alignment: u64) -> u32 {
-		let size = size as u64;
-		for index in 0..self.free_ranges.len() {
-			let range = self.free_ranges[index];
-			let offset = descriptor_heap::align_up(range.offset, alignment);
-			let end = offset.checked_add(size).expect(
-				"Vulkan descriptor heap allocation overflowed. The most likely cause is an invalid materialization size.",
-			);
-			let range_end = range.offset + range.size;
-			if end > range_end {
-				continue;
-			}
-
-			// Keep the unused bytes on either side of the allocation, including alignment padding, reusable.
-			let prefix = DescriptorHeapRange {
-				offset: range.offset,
-				size: offset - range.offset,
-			};
-			let suffix = DescriptorHeapRange {
-				offset: end,
-				size: range_end - end,
-			};
-			self.free_ranges
-				.splice(index..=index, [prefix, suffix].into_iter().filter(|range| range.size > 0));
-			return u32::try_from(offset).expect(
-				"Vulkan descriptor heap offset exceeded 32 bits. The most likely cause is a heap larger than push-index mappings support.",
-			);
-		}
-
-		panic!(
-			"Vulkan descriptor heap is exhausted. The most likely cause is that live immutable descriptor snapshots exceed the long-lived heap capacity."
+		let range = self.free.take(size as usize, alignment as usize).expect(
+			"Vulkan descriptor heap is exhausted. The most likely cause is that live immutable descriptor snapshots exceed the long-lived heap capacity.",
 		);
+		// The heap is at most `u32::MAX` bytes, which `Context::create_descriptor_heap_arena` asserts.
+		range.start as u32
 	}
 
 	/// Returns a retired immutable snapshot range to the arena after its frame fence completes.
 	pub(crate) fn release(&mut self, offset: u32, size: u32) {
-		if size == 0 {
-			return;
-		}
-		let range = DescriptorHeapRange {
-			offset: offset as u64,
-			size: size as u64,
-		};
-		let index = self.free_ranges.partition_point(|free| free.offset < range.offset);
-		self.free_ranges.insert(index, range);
-
-		let mut index = index.saturating_sub(1);
-		while index + 1 < self.free_ranges.len() {
-			let left = self.free_ranges[index];
-			let right = self.free_ranges[index + 1];
-			let left_end = left.offset + left.size;
-			if left_end < right.offset {
-				index += 1;
-				continue;
-			}
-			let right_end = right.offset + right.size;
-			self.free_ranges[index].size = left_end.max(right_end) - left.offset;
-			self.free_ranges.remove(index + 1);
-		}
+		self.free.give_back(offset as usize..offset as usize + size as usize);
 	}
 
 	pub(crate) fn host_range(&self, offset: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
@@ -358,10 +341,13 @@ pub(crate) struct MaterializationKey {
 	swapchain_images: smallvec::SmallVec<[(graphics_hardware_interface::SwapchainHandle, u8); 4]>,
 }
 
-/// The `ResolvedPipelineDescriptor` struct retains the concrete resource used by one immutable descriptor snapshot.
+/// The `ResolvedPipelineDescriptor` struct retains a resource that one immutable descriptor snapshot makes commands
+/// access, decoded once, so every draw that binds the snapshot consumes it as it is.
 #[derive(Clone, Copy)]
 pub(crate) struct ResolvedPipelineDescriptor {
-	descriptor: Descriptor,
+	handle: Handles,
+	/// The layout an image is accessed in, and [`crate::Layouts::General`] for other resources.
+	layout: crate::Layouts,
 	stages: crate::Stages,
 	access: crate::AccessPolicies,
 }
@@ -584,6 +570,12 @@ pub(crate) enum Tasks {
 	DeleteVulkanBuffer { handle: vk::Buffer },
 	/// Frees device memory once the frame recorded in [`Task`] has completed.
 	FreeAllocation { handle: crate::AllocationHandle },
+	/// Destroys an acceleration structure and returns its storage to the heap once the frame recorded in [`Task`] has
+	/// completed.
+	DeleteAccelerationStructure {
+		handle: vk::AccelerationStructureKHR,
+		storage: acceleration_structures::StorageRange,
+	},
 	/// Resize an image.
 	ResizeImage {
 		handle: ImageHandle,
@@ -656,49 +648,5 @@ mod task_tests {
 		assert!(task.is_pending(Some(4)));
 		assert!(!task.is_pending(Some(5)));
 		assert!(!task.is_pending(Some(6)));
-	}
-}
-
-#[cfg(test)]
-mod descriptor_heap_arena_tests {
-	use super::*;
-
-	fn arena() -> DescriptorHeapArena {
-		DescriptorHeapArena {
-			buffer: vk::Buffer::null(),
-			pointer: crate::vulkan::MappedMemoryPointer(std::ptr::null_mut()),
-			device_address: 0,
-			size: 256,
-			reserved_size: 64,
-			free_ranges: vec![DescriptorHeapRange { offset: 64, size: 192 }],
-		}
-	}
-
-	#[test]
-	fn retired_ranges_are_coalesced_and_reused() {
-		let mut arena = arena();
-		let first = arena.allocate(32, 32);
-		let second = arena.allocate(64, 64);
-
-		assert_eq!((first, second), (64, 128));
-
-		arena.release(first, 32);
-		arena.release(second, 64);
-
-		assert_eq!(arena.allocate(128, 64), 64);
-	}
-
-	#[test]
-	fn alignment_padding_returns_to_the_free_list() {
-		let mut arena = arena();
-		let first = arena.allocate(16, 16);
-		let aligned = arena.allocate(32, 64);
-
-		assert_eq!((first, aligned), (64, 128));
-
-		arena.release(first, 16);
-		arena.release(aligned, 32);
-
-		assert_eq!(arena.allocate(96, 32), 64);
 	}
 }

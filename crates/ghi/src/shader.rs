@@ -270,6 +270,30 @@ impl ShaderResourceDescriptor {
 	pub const fn sampler(self) -> Option<crate::sampler::StaticSampler> {
 		self.sampler
 	}
+
+	/// Returns the flat slot right after the last one this resource's array covers.
+	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
+	pub(crate) fn range_end(self) -> u32 {
+		self.slot.index().checked_add(self.count).expect(
+			"Shader resource range overflowed. The most likely cause is an invalid flat resource slot or descriptor count. Lower the slot or the array length.",
+		)
+	}
+
+	/// Returns whether the flat slot ranges of two resources share a slot, which no two resources of one pipeline may.
+	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
+	pub(crate) fn overlaps(self, other: Self) -> bool {
+		self.slot.index() < other.range_end() && other.slot.index() < self.range_end()
+	}
+
+	/// Returns whether two declarations describe one resource and differ at most in their access policies, so the
+	/// stages that declare them can share its pipeline slot.
+	#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
+	pub(crate) fn matches_representation(self, other: Self) -> bool {
+		self == Self {
+			access: self.access,
+			..other
+		}
+	}
 }
 
 /// The most resources one [`DescriptorSetLayout`] can declare, the width of [`ShaderDescriptorSet::used`].
@@ -384,11 +408,13 @@ impl DescriptorSetLayout {
 
 	/// Returns how many array elements the resources before `resource_index` hold, the position of that resource's
 	/// first element in a set's dense storage.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) fn element_base(&self, resource_index: usize) -> u32 {
 		self.inner.element_bases[resource_index]
 	}
 
 	/// Returns how many array elements the layout's resources hold in total.
+	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
 	pub(crate) fn element_count(&self) -> u32 {
 		self.inner.element_count
 	}
@@ -477,6 +503,17 @@ impl ShaderDescriptorSet {
 /// The Vulkan and DX12 backends derive their native layouts from this flat interface, and treat descriptor sets as
 /// groups of flat slots. Slots are unique across the sets a pipeline declares, so the list names each resource once.
 #[cfg(not(target_os = "macos"))]
+/// Returns every resource that `descriptor_sets` declare, used or not, ordered by slot.
+pub(crate) fn flatten_declared_resources(descriptor_sets: &[ShaderDescriptorSet]) -> Vec<ShaderResourceDescriptor> {
+	let mut resources = descriptor_sets
+		.iter()
+		.flat_map(|set| set.layout().resources().iter().copied())
+		.collect::<Vec<_>>();
+	resources.sort_by_key(|resource| resource.slot());
+	resources
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
 pub(crate) fn flatten_used_resources(
 	descriptor_sets: impl IntoIterator<Item = ShaderDescriptorSet>,
 ) -> Vec<ShaderResourceDescriptor> {

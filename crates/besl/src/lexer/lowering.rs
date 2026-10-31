@@ -558,14 +558,6 @@ impl Lexer {
 					"Sampler `{name}` is declared inside a scope. The most likely cause is a sampler declared in a function or block. Declare it at the top level of the shader or layer."
 				)));
 			}
-			parser::Nodes::RawCode {
-				glsl,
-				hlsl,
-				msl,
-				input,
-				output,
-				..
-			} => lex_raw_code(&self.scopes, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
 			parser::Nodes::Expression(expression) => {
 				let this = match expression {
 					parser::Expressions::Return { value } => {
@@ -753,13 +745,6 @@ impl Lexer {
 							r#type: resolve_type_name(&self.scopes, r#type)?,
 						})
 					}
-					parser::Expressions::RawCode {
-						glsl,
-						hlsl,
-						msl,
-						input,
-						output,
-					} => lex_raw_code(&self.scopes, *glsl, *hlsl, *msl, input, output)?,
 					parser::Expressions::Macro { name, body } => Node::r#macro(name, self.lex(body)?),
 				};
 

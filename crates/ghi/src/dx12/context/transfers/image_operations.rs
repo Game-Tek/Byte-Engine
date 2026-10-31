@@ -1,10 +1,6 @@
 use super::*;
 
 impl Device {
-	pub(crate) fn copy_image(&mut self, source_image: crate::BaseImageHandle, destination_image: crate::BaseImageHandle) {
-		self.copy_image_for_sequences(source_image, destination_image, 0, 0);
-	}
-
 	pub(crate) fn copy_image_for_sequences(
 		&mut self,
 		source_image: crate::BaseImageHandle,

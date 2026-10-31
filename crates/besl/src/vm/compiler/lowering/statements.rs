@@ -109,7 +109,6 @@ impl<'a> Compiler<'a> {
 				self.define_local(statement.clone(), statement.clone(), &name, value_type);
 				Ok(())
 			}
-			Nodes::Raw { .. } => Ok(()),
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedStatement {
 				message: format!("Unsupported statement expression: {:?}", other),

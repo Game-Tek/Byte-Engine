@@ -38,23 +38,9 @@ impl Generator {
 	}
 
 	pub(crate) fn emit_object_payload_struct(&mut self, string: &mut String, payloads: &[&besl::NodeReference]) {
-		if payloads.is_empty() {
-			return;
+		if !payloads.is_empty() {
+			self.emit_task_payload_struct(string, "ObjectPayload", payloads.iter().copied());
 		}
-
-		self.emit_named_struct_start(string, "ObjectPayload");
-		for payload in payloads {
-			let payload = payload.borrow();
-			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
-				continue;
-			};
-
-			self.emit_indentation(string, 1);
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
-			let _ = write!(string, " {}[{count}]", Self::identifier(name));
-			self.emit_statement_end(string);
-		}
-		self.emit_struct_declaration_end(string);
 	}
 
 	/// Emits one argument-buffer struct per descriptor set, named `_set<n>`.
@@ -208,7 +194,6 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		bindings: &[&besl::NodeReference],
 		push_constant: Option<&besl::NodeReference>,
 		workgroups: &[&besl::NodeReference],
 		uses_simd_lane_id: bool,
@@ -251,17 +236,9 @@ impl Generator {
 			self.emit_push_constant_parameter(string);
 		}
 
-		match self.compute_binding_mode {
-			ComputeBindingMode::ArgumentBuffers if self.has_argument_sets() => {
-				self.emit_separator(string);
-				self.emit_argument_buffer_parameter(string);
-			}
-			ComputeBindingMode::BareResources => {
-				for binding in bindings {
-					self.emit_compute_binding_parameter(string, binding);
-				}
-			}
-			ComputeBindingMode::ArgumentBuffers => {}
+		if self.has_argument_sets() {
+			self.emit_separator(string);
+			self.emit_argument_buffer_parameter(string);
 		}
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
@@ -495,78 +472,6 @@ impl Generator {
 		);
 	}
 
-	pub(crate) fn emit_compute_binding_parameter(&self, string: &mut String, binding_node: &besl::NodeReference) {
-		let node = binding_node.borrow();
-		let besl::Nodes::Binding {
-			name,
-			slot,
-			read,
-			write,
-			memory_class,
-			r#type,
-			..
-		} = node.node()
-		else {
-			return;
-		};
-
-		let index = *slot;
-
-		match r#type {
-			besl::BindingTypes::Buffer { .. } => {
-				let address_space = buffer_address_space(*memory_class, *write);
-				self.emit_separator(string);
-				string.push_str(address_space);
-				string.push(' ');
-				let _ = write!(string, "_{name}* {} [[buffer({index})]]", Self::identifier(name));
-			}
-			besl::BindingTypes::BufferArray { element, .. } => {
-				let address_space = buffer_address_space(*memory_class, *write);
-				self.emit_separator(string);
-				string.push_str(address_space);
-				string.push(' ');
-				Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
-				string.push_str("* ");
-				let _ = write!(string, "{} [[buffer({index})]]", Self::identifier(name));
-			}
-			besl::BindingTypes::Image { format } => {
-				let (element_type, access) = storage_image_type(format, *read, *write);
-				self.emit_separator(string);
-				let _ = write!(
-					string,
-					"texture2d<{element_type}, {access}> {} [[texture({index})]]",
-					Self::identifier(name)
-				);
-			}
-			besl::BindingTypes::CombinedImageSampler { format, sampler } => {
-				let texture_type = match format.as_str() {
-					"Texture3D" => "texture3d<float>",
-					"TextureCube" => "texturecube<float>",
-					"TextureCubeArray" => "texturecube_array<float>",
-					"ArrayTexture2D" => "texture2d_array<float>",
-					_ => "texture2d<float>",
-				};
-
-				self.emit_separator(string);
-				let name = Self::identifier(name);
-				let _ = write!(string, "{texture_type} {name} [[texture({index})]]");
-				// A sampler the shader fixes is a program-scope `constexpr sampler`, not a kernel parameter.
-				if sampler.is_none() {
-					self.emit_separator(string);
-					let _ = write!(string, "sampler {name}_sampler [[sampler({index})]]");
-				}
-			}
-			besl::BindingTypes::AccelerationStructure => {
-				self.emit_separator(string);
-				let _ = write!(
-					string,
-					"{ACCELERATION_STRUCTURE_TYPE} {} [[buffer({index})]]",
-					Self::identifier(name)
-				);
-			}
-		}
-	}
-
 	/// Declares, at program scope, the `constexpr sampler` of every texture in `order` whose sampler the shader fixes.
 	///
 	/// Metal compiles the sampler into the shader, so neither the argument buffer nor the kernel takes one. It reads
@@ -614,12 +519,9 @@ impl Generator {
 		string.push_str("_sampler");
 	}
 
-	/// Qualifies a resource through the argument buffer of its descriptor set, or names it directly in a compute or
-	/// object kernel that takes bare resources.
+	/// Qualifies a resource through the argument buffer of its descriptor set.
 	pub(crate) fn emit_binding_reference(&self, string: &mut String, name: &str) {
-		if !(self.in_compute_body && self.compute_binding_mode == ComputeBindingMode::BareResources)
-			&& let Some(set) = self.binding_sets.get(name)
-		{
+		if let Some(set) = self.binding_sets.get(name) {
 			let _ = write!(string, "{}.", SetArgument(*set));
 		}
 		Self::identifier(name).push_to(string);

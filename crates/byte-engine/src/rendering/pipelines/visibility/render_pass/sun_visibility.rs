@@ -89,7 +89,7 @@ pub(crate) const CONTACT_SHADOW_TRACE_TARGET: &str = "Contact Shadow Trace";
 const CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR: u32 = 2;
 
 /// The trace pipeline, named as [`Pipelines::request`] takes it. Only contact shadows use it.
-pub(in crate::rendering::pipelines::visibility) const CONTACT_SHADOW_PIPELINES: [&str; 1] = ["contact-shadows"];
+pub(in super::super) const CONTACT_SHADOW_PIPELINES: [&str; 1] = ["contact-shadows"];
 
 /// The `SunVisibilityTargets` struct holds the image the contact-shadow trace writes and the image the resolve writes,
 /// so the visibility pass can hand them to [`SunVisibilityPass::new`] and bind the result in material evaluation.

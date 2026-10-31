@@ -77,7 +77,7 @@ Booleans here are lenient.
 | `render.debug.labels` | The value of `render.debug` | Object labels and command debug groups. |
 | `render.ghi.features.counters` | `true` on debug builds, `false` on release builds | GPU timing counters. While off, no `frame`, `scene`, `pass`, or `stage` GPU metric reports a time. |
 | `render.ghi.features.mesh-shading` | `true` | Requests mesh shading from the device. |
-| `render.ghi.features.ray-tracing` | `true` when `render.surfel-gi.enabled` or `render.probe-gi.enabled` is | Requests ray tracing from the device. Only the Metal backend traces rays; elsewhere the device reports none. |
+| `render.ghi.features.ray-tracing` | `true` when `render.surfel-gi.enabled` or `render.probe-gi.enabled` is | Requests ray tracing from the device. The Metal and Vulkan backends trace rays on a GPU that supports it; elsewhere the device reports none. |
 | `render.pipeline-cache.path` | None, so the driver manages its cache | A pipeline cache file. A missing file is fine; pipelines compiled during the run are appended when the renderer closes. |
 
 ## Renderer and loader

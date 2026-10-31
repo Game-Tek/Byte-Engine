@@ -61,6 +61,9 @@ fn is_keyword(name: &str) -> bool {
 			| "u64vec2" | "u64vec3" | "u64vec4" | "f16vec2" | "f16vec3" | "f16vec4" | "f32vec2" | "f32vec3"
 			| "f32vec4" | "f64vec2" | "f64vec3" | "f64vec4" | "f16mat2" | "f16mat3" | "f16mat4" | "f32mat2"
 			| "f32mat3" | "f32mat4" | "perprimitiveEXT" | "perviewEXT" | "taskPayloadSharedEXT" | "nonuniformEXT"
+			// Ray tracing and ray query types and storage qualifiers.
+			| "accelerationStructureEXT" | "rayQueryEXT" | "callableDataEXT" | "callableDataInEXT" | "rayPayloadEXT"
+			| "rayPayloadInEXT" | "hitAttributeEXT" | "shaderRecordEXT"
 	)
 }
 
@@ -130,5 +133,21 @@ fn is_builtin_function(name: &str) -> bool {
 /// `main` and `push_constant` are absent on purpose: BESL names the entry point and the push-constant block
 /// that way itself, and the backend emits them unchanged.
 fn is_backend_name(name: &str) -> bool {
-	matches!(name, "PI" | "PushConstant" | "_besl_is_finite" | "_besl_is_normal")
+	use super::generator::{mesh_shading, ray_tracing};
+	matches!(
+		name,
+		"PI" | "PushConstant"
+			| "_besl_is_finite"
+			| "_besl_is_normal"
+			| "_besl_intersect"
+			| "_besl_trace_occlusion"
+			| "_besl_invoke"
+			| ray_tracing::CALL_STRUCT
+			| ray_tracing::CALL_DATA
+			| ray_tracing::CLOSEST_HIT_MAIN
+			| mesh_shading::TASK_MAIN
+			| mesh_shading::TASK_MESH_COUNT
+			| mesh_shading::TASK_PAYLOAD
+			| mesh_shading::TASK_PAYLOAD_TYPE
+	)
 }

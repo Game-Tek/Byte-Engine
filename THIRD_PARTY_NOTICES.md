@@ -64,6 +64,48 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Fitted ACES transforms
+
+The `aces_fitted_*` functions in
+`crates/byte-engine/assets/rendering/layouts/color.besl`, which the ACES tone
+mapper and the ACES color-grading pass use, adapt Stephen Hill's fit of the ACES
+reference rendering and sRGB output transforms from
+[Baking Lab's ACES.hlsl](https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl).
+This notice is also retained in the layout source.
+
+MIT License
+
+Copyright (c) 2016 MJP
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Hable filmic tone curve
+
+The tone curve in `crates/byte-engine/assets/rendering/hable/tone-mapping.besl`,
+which the Hable tone mapper uses, is an independent implementation of the
+formula and constants John Hable published in
+[Filmic Tonemapping Operators](http://filmicworlds.com/blog/filmic-tonemapping-operators/)
+and presented in the GDC 2010 talk
+[Uncharted 2: HDR Lighting](https://gdcvault.com/play/1012459/Uncharted-2-HDR).
+It is written from the published formula, not adapted from source code. This
+credit is also retained in the shader source.
+
 ## SMAA shaders and lookup textures
 
 The shaders and lookup textures in

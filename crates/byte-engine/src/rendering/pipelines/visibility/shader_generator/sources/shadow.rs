@@ -414,34 +414,42 @@ directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u
 }
 "#;
 
-// Returns how stored depth changes across a receiver's plane per unit of shadow-map uv in one directional cascade, from
-// the receiver's screen-space position derivatives.
+// Returns how stored depth changes across a receiver's plane per unit of shadow-map uv in one directional cascade.
+// `surface_vector0` and `surface_vector1` are any two world-space vectors along the plane that are not parallel, such
+// as the edges of the receiver's triangle or its screen-space position derivatives.
 pub(crate) const DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE: &str = r#"
 directional_shadow_receiver_gradient: fn (
 	shadow_view_projection: mat4f,
-	world_space_position_derivative_x: vec3f,
-	world_space_position_derivative_y: vec3f
+	surface_vector0: vec3f,
+	surface_vector1: vec3f
 ) -> vec2f {
-	// Directional cascades are orthographic, so their position derivatives need no perspective correction or receiver
-	// position. The projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
-	let dx: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_x.x,
-		world_space_position_derivative_x.y,
-		world_space_position_derivative_x.z,
-		0.0
-	);
-	let dy: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_y.x,
-		world_space_position_derivative_y.y,
-		world_space_position_derivative_y.z,
-		0.0
-	);
-	let normal: vec3f = cross(vec3f(dx.x, dx.y, dx.z), vec3f(dy.x, dy.y, dy.z));
-	// The shadow-UV determinant is -normal.z / 4, so this preserves its 1e-10 degeneracy threshold.
-	if (abs(normal.z) <= 0.0000000004) {
+	// Directional cascades are orthographic, so the vectors need no perspective correction or receiver position. The
+	// projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
+	let projected0: vec4f = shadow_view_projection * vec4f(surface_vector0.x, surface_vector0.y, surface_vector0.z, 0.0);
+	let projected1: vec4f = shadow_view_projection * vec4f(surface_vector1.x, surface_vector1.y, surface_vector1.z, 0.0);
+	let normal: vec3f = cross(vec3f(projected0.x, projected0.y, projected0.z), vec3f(projected1.x, projected1.y, projected1.z));
+	// The gradient is (-2 x, 2 y) / z of that normal, which grows without bound as the light turns parallel to the plane.
+	// Taps up to eight texels away would then compare depths far off any real surface, and the plane would jump to
+	// flat where z rounds to zero. So the plane's slope is capped at 20 meters of depth along the light per meter
+	// across the map, a plane the light meets about 3 degrees from edge-on, keeping its direction. Shading gives such a
+	// receiver almost no light, so the cap hides nothing visible. One unit of uv spans two normalized device units, so
+	// in uv the cap is 40 times the stored depth per meter over the normalized device x per meter: the lengths of the
+	// projection's third and first rows.
+	let world_x: vec4f = shadow_view_projection * vec4f(1.0, 0.0, 0.0, 0.0);
+	let world_y: vec4f = shadow_view_projection * vec4f(0.0, 1.0, 0.0, 0.0);
+	let world_z: vec4f = shadow_view_projection * vec4f(0.0, 0.0, 1.0, 0.0);
+	let maximum_gradient: f32 = 40.0 * length(vec3f(world_x.z, world_y.z, world_z.z))
+		/ length(vec3f(world_x.x, world_y.x, world_z.x));
+	let rise: vec2f = vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y);
+	let denominator: f32 = max(abs(normal.z), length(rise) / maximum_gradient);
+	// A triangle without area has no plane.
+	if (denominator <= 0.0) {
 		return vec2f(0.0, 0.0);
 	}
-	return vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y) / normal.z;
+	if (normal.z < 0.0) {
+		denominator = 0.0 - denominator;
+	}
+	return rise / denominator;
 }
 "#;
 
@@ -1058,6 +1066,8 @@ sample_point_shadow: fn (
 // `shadow_view3`. Directional view `v` is drawn into shadow-map layer `v - 1`, so cascade `c` lies in layer
 // `shadow_view0 - 1 + c`. `view_depth` is the receiver's depth along the camera's view axis, which picks its cascade; the
 // material shader passes the clip w it already keeps, so no view-space position stays live through its light loop.
+// `normal_offset` is how far the receiver moves off its surface, in texels, as the sun visibility resolve moves it:
+// each cascade moves it by `normal_offset` over its texels per meter.
 pub(crate) const DIRECTIONAL_SHADOW_SOURCE: &str = r#"
 sample_directional_shadow: fn (
 	shadow_map: ArrayTexture2D,
@@ -1069,7 +1079,8 @@ sample_directional_shadow: fn (
 	world_space_position: vec3f,
 	view_depth: f32,
 	world_space_position_derivative_x: vec3f,
-	world_space_position_derivative_y: vec3f
+	world_space_position_derivative_y: vec3f,
+	normal_offset: vec3f
 ) -> f32 {
 	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
 	if (view_depth >= views.views[shadow_view3].far) {
@@ -1126,7 +1137,7 @@ sample_directional_shadow: fn (
 	let occluder_distance: f32 = directional_shadow_occluder_distance(
 		views.views[search_view].view_projection,
 		first_layer + search_cascade,
-		world_space_position,
+		world_space_position + normal_offset / directional_shadow_cascade_scale(search_cascade, texels_per_meter),
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,
 		shadow_map_extent
@@ -1145,7 +1156,7 @@ sample_directional_shadow: fn (
 		shadow_map,
 		views.views[filter_view].view_projection,
 		first_layer + filter_cascade,
-		world_space_position,
+		world_space_position + normal_offset / directional_shadow_cascade_scale(filter_cascade, texels_per_meter),
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,
 		shadow_map_extent,
@@ -1170,7 +1181,7 @@ sample_directional_shadow: fn (
 		shadow_map,
 		views.views[finer_view].view_projection,
 		first_layer + finer_cascade,
-		world_space_position,
+		world_space_position + normal_offset / directional_shadow_cascade_scale(finer_cascade, texels_per_meter),
 		world_space_position_derivative_x,
 		world_space_position_derivative_y,
 		shadow_map_extent,

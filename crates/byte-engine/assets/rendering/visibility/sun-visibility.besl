@@ -12,8 +12,8 @@
 //
 // Each pixel first resolves every sun's shadow map: its cascade, probes of the cascade's max-depth and min-depth pyramids
 // that prove most lit and most shadowed pixels at once, a blocker search that sizes the penumbra, and a tent filter
-// over the map. The receiver's plane comes from the depth buffer, as the contact shadows' does. A pixel every map
-// shadows is done. Otherwise the
+// over the map. The receiver's plane and normal come from the pixel's triangle in the visibility buffer, and the receiver
+// moves off that triangle along its normal. A pixel every map shadows is done. Otherwise the
 // contact-shadow trace, which runs at half resolution and dithers each texel's ray start, is smoothed into a
 // full-resolution value by the Gaussian average of the 5x5 trace texels around the pixel that lie on its surface,
 // which turns the dither into a smooth ramp. A texel on another surface, such as a foot in front of the floor, does
@@ -530,33 +530,41 @@ directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u
 	return vec4f(ndc_position.x * 0.5 + 0.5, 0.5 - ndc_position.y * 0.5, surface_depth, inside);
 }
 
-// Returns how stored depth changes across a receiver's plane per unit of shadow-map uv in one directional cascade, from
-// the receiver's screen-space position derivatives.
+// Returns how stored depth changes across a receiver's plane per unit of shadow-map uv in one directional cascade.
+// `surface_vector0` and `surface_vector1` are any two world-space vectors along the plane that are not parallel, such
+// as the edges of the receiver's triangle or its screen-space position derivatives.
 directional_shadow_receiver_gradient: fn (
 	shadow_view_projection: mat4f,
-	world_space_position_derivative_x: vec3f,
-	world_space_position_derivative_y: vec3f
+	surface_vector0: vec3f,
+	surface_vector1: vec3f
 ) -> vec2f {
-	// Directional cascades are orthographic, so their position derivatives need no perspective correction or receiver
-	// position. The projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
-	let dx: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_x.x,
-		world_space_position_derivative_x.y,
-		world_space_position_derivative_x.z,
-		0.0
-	);
-	let dy: vec4f = shadow_view_projection * vec4f(
-		world_space_position_derivative_y.x,
-		world_space_position_derivative_y.y,
-		world_space_position_derivative_y.z,
-		0.0
-	);
-	let normal: vec3f = cross(vec3f(dx.x, dx.y, dx.z), vec3f(dy.x, dy.y, dy.z));
-	// The shadow-UV determinant is -normal.z / 4, so this preserves its 1e-10 degeneracy threshold.
-	if (abs(normal.z) <= 0.0000000004) {
+	// Directional cascades are orthographic, so the vectors need no perspective correction or receiver position. The
+	// projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
+	let projected0: vec4f = shadow_view_projection * vec4f(surface_vector0.x, surface_vector0.y, surface_vector0.z, 0.0);
+	let projected1: vec4f = shadow_view_projection * vec4f(surface_vector1.x, surface_vector1.y, surface_vector1.z, 0.0);
+	let normal: vec3f = cross(vec3f(projected0.x, projected0.y, projected0.z), vec3f(projected1.x, projected1.y, projected1.z));
+	// The gradient is (-2 x, 2 y) / z of that normal, which grows without bound as the light turns parallel to the plane.
+	// Taps up to eight texels away would then compare depths far off any real surface, and the plane would jump to
+	// flat where z rounds to zero. So the plane's slope is capped at 20 meters of depth along the light per meter
+	// across the map, a plane the light meets about 3 degrees from edge-on, keeping its direction. Shading gives such a
+	// receiver almost no light, so the cap hides nothing visible. One unit of uv spans two normalized device units, so
+	// in uv the cap is 40 times the stored depth per meter over the normalized device x per meter: the lengths of the
+	// projection's third and first rows.
+	let world_x: vec4f = shadow_view_projection * vec4f(1.0, 0.0, 0.0, 0.0);
+	let world_y: vec4f = shadow_view_projection * vec4f(0.0, 1.0, 0.0, 0.0);
+	let world_z: vec4f = shadow_view_projection * vec4f(0.0, 0.0, 1.0, 0.0);
+	let maximum_gradient: f32 = 40.0 * length(vec3f(world_x.z, world_y.z, world_z.z))
+		/ length(vec3f(world_x.x, world_y.x, world_z.x));
+	let rise: vec2f = vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y);
+	let denominator: f32 = max(abs(normal.z), length(rise) / maximum_gradient);
+	// A triangle without area has no plane.
+	if (denominator <= 0.0) {
 		return vec2f(0.0, 0.0);
 	}
-	return vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y) / normal.z;
+	if (normal.z < 0.0) {
+		denominator = 0.0 - denominator;
+	}
+	return rise / denominator;
 }
 
 // Searches one directional cascade for the occluders near a receiver its fully-lit probe did not clear. Returns how far
@@ -667,7 +675,9 @@ sample_directional_shadow_cascade: fn (
 // Resolves a sun's shadow at a world-space receiver from the four cascades in views `shadow_view0` through
 // `shadow_view3`. Directional view `v` is drawn into shadow-map layer `v - 1`, so cascade `c` lies in layer
 // `shadow_view0 - 1 + c`. `texels_per_meter` and `depth_per_meter` hold each cascade's scale, cascade zero in x through
-// cascade three in w, computed once per workgroup.
+// cascade three in w, computed once per workgroup. `surface_vector0` and `surface_vector1` lie along the receiver's
+// triangle, and `normal_offset` is how far the receiver moves off it, in texels: each cascade moves it by
+// `normal_offset` over its texels per meter.
 sample_directional_shadow: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_view0: u32,
@@ -679,8 +689,9 @@ sample_directional_shadow: fn (
 	angular_radius_tangent: f32,
 	world_space_position: vec3f,
 	view_space_position: vec3f,
-	world_space_position_derivative_x: vec3f,
-	world_space_position_derivative_y: vec3f
+	surface_vector0: vec3f,
+	surface_vector1: vec3f,
+	normal_offset: vec3f
 ) -> f32 {
 	let depth_value: f32 = abs(view_space_position.z);
 	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
@@ -732,17 +743,16 @@ sample_directional_shadow: fn (
 	// The receiver in the search cascade, projected once for its probes, its search, and its filter when that stays
 	// in the same cascade. -1 proves it fully lit there; the plane gradient is only needed past that probe.
 	let search_view_projection: mat4f = views.views[search_view].view_projection;
-	let search_receiver: vec4f = directional_shadow_receiver(search_view_projection, search_cascade, world_space_position);
+	let search_texels_per_meter: f32 = directional_shadow_cascade_scale(search_cascade, texels_per_meter);
+	let search_receiver: vec4f = directional_shadow_receiver(
+		search_view_projection, search_cascade, world_space_position + normal_offset / search_texels_per_meter
+	);
 	let search_gradient: vec2f = vec2f(0.0, 0.0);
 	let occluder_distance: f32 = 0.0 - 1.0;
 	if (search_receiver.w != 0.0 && directional_shadow_area_is_fully_lit(
 		vec2f(search_receiver.x, search_receiver.y), search_receiver.z, first_layer + search_cascade, shadow_map_extent
 	) == false) {
-		search_gradient = directional_shadow_receiver_gradient(
-			search_view_projection,
-			world_space_position_derivative_x,
-			world_space_position_derivative_y
-		);
+		search_gradient = directional_shadow_receiver_gradient(search_view_projection, surface_vector0, surface_vector1);
 		occluder_distance = directional_shadow_occluder_distance(
 			search_receiver,
 			search_gradient,
@@ -770,12 +780,12 @@ sample_directional_shadow: fn (
 	if (filter_cascade != search_cascade) {
 		let filter_view: u32 = directional_shadow_cascade_view(filter_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 		let filter_view_projection: mat4f = views.views[filter_view].view_projection;
-		filter_receiver = directional_shadow_receiver(filter_view_projection, filter_cascade, world_space_position);
-		filter_gradient = directional_shadow_receiver_gradient(
+		filter_receiver = directional_shadow_receiver(
 			filter_view_projection,
-			world_space_position_derivative_x,
-			world_space_position_derivative_y
+			filter_cascade,
+			world_space_position + normal_offset / directional_shadow_cascade_scale(filter_cascade, texels_per_meter)
 		);
+		filter_gradient = directional_shadow_receiver_gradient(filter_view_projection, surface_vector0, surface_vector1);
 	}
 	let lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
@@ -794,7 +804,8 @@ sample_directional_shadow: fn (
 	// can disagree. Up to twelve of the finer cascade's texels, where its filter stays capped at eight, the result fades
 	// from the finer cascade to this one, so the change of cascade leaves no seam.
 	let finer_cascade: u32 = filter_cascade - 1;
-	let finer_radius: f32 = penumbra_meters * directional_shadow_cascade_scale(finer_cascade, texels_per_meter);
+	let finer_texels_per_meter: f32 = directional_shadow_cascade_scale(finer_cascade, texels_per_meter);
+	let finer_radius: f32 = penumbra_meters * finer_texels_per_meter;
 	let coarse_share: f32 = clamp((finer_radius - 8.0) / 4.0, 0.0, 1.0);
 	if (coarse_share >= 1.0) {
 		return lit;
@@ -804,12 +815,10 @@ sample_directional_shadow: fn (
 	let finer_lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
 		first_layer + finer_cascade,
-		directional_shadow_receiver(finer_view_projection, finer_cascade, world_space_position),
-		directional_shadow_receiver_gradient(
-			finer_view_projection,
-			world_space_position_derivative_x,
-			world_space_position_derivative_y
+		directional_shadow_receiver(
+			finer_view_projection, finer_cascade, world_space_position + normal_offset / finer_texels_per_meter
 		),
+		directional_shadow_receiver_gradient(finer_view_projection, surface_vector0, surface_vector1),
 		shadow_map_extent,
 		finer_radius,
 		false
@@ -875,14 +884,27 @@ trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
 	return (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) * full_to_trace_scale - vec2f(0.5, 0.5);
 }
 
-// Resolves one sun's shadow map at the pixel's receiver, from its four cascades after the camera's view.
+// Resolves one sun's shadow map at the pixel's receiver, from its four cascades after the camera's view. `edge0` and
+// `edge1` are the receiver's world-space triangle edges, and `normal` and `view_normal` its unit triangle normal on the
+// camera's side, in world and view space.
 resolve_sun_shadow: fn (
 	sun: u32,
 	world_position: vec3f,
 	view_position: vec3f,
-	world_derivative_x: vec3f,
-	world_derivative_y: vec3f
+	edge0: vec3f,
+	edge1: vec3f,
+	normal: vec3f,
+	view_normal: vec3f
 ) -> f32 {
+	// Normal offset: the receiver moves off its triangle along the normal by sin(theta) texels, where theta is the angle
+	// between the normal and the direction toward the sun. Depth rounding and the triangle plane's own error then lie
+	// below the receiver instead of shadowing it. Seen along the light, a point that far off the plane lies tan(theta)
+	// texels of slope above it, so the margin grows where the light grazes the surface and errors grow with it, and
+	// vanishes where the sun shines straight on. The receiver moves by at most one texel, so shadows move by at most one.
+	let sun_cosine: f32 = dot(view_normal, vec3f(
+		sun_visibility_parameters.suns[sun].x, sun_visibility_parameters.suns[sun].y, sun_visibility_parameters.suns[sun].z
+	));
+	let normal_offset: vec3f = normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
 	let first_cascade: u32 = sun * 4;
 	return sample_directional_shadow(
 		depth_shadow_map,
@@ -905,8 +927,9 @@ resolve_sun_shadow: fn (
 		sun_visibility_parameters.suns[sun].w,
 		world_position,
 		view_position,
-		world_derivative_x,
-		world_derivative_y
+		edge0,
+		edge1,
+		normal_offset
 	);
 }
 
@@ -970,28 +993,47 @@ main: fn (input: StageInput) -> void {
 		inverse_depth_gradient(center_inverse_z, center_index, 1),
 		inverse_depth_gradient(center_inverse_z, center_index, CONTACT_SHADOW_FILTER_TILE_WIDTH)
 	);
-	// The receiver the shadow map sees: the pixel's view-space position from its depth, and how that position moves
-	// per screen pixel along its plane, from the tile's 1/z slope, which is exact on a plane at any resolution. The
-	// shadow helpers take world space, as the cascades are fitted there.
-	let pixel_gradient: vec2f = surface_gradient * full_to_trace_scale;
-	let z: f32 = 1.0 / center_inverse_z;
+	// The receiver the shadow map sees: the pixel's view-space position from its depth, on the plane of the triangle the
+	// visibility buffer holds for the pixel. The plane comes from the triangle itself, not from neighboring depths,
+	// so it does not jump where the pixel's neighbors lie on other triangles, at creases and silhouettes. The shadow
+	// helpers take world space, as the cascades are fitted there.
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let view_position: vec3f = sun_view_position(pixel_f, z);
-	let derivative_x: vec3f = sun_view_position(pixel_f + vec2f(1.0, 0.0), 1.0 / (center_inverse_z + pixel_gradient.x)) - view_position;
-	let derivative_y: vec3f = sun_view_position(pixel_f + vec2f(0.0, 1.0), 1.0 / (center_inverse_z + pixel_gradient.y)) - view_position;
+	let view_position: vec3f = sun_view_position(pixel_f, 1.0 / center_inverse_z);
 	let world_position: vec3f = views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
-	let world_derivative_x: vec3f = views.views[0].inverse_view * vec4f(derivative_x.x, derivative_x.y, derivative_x.z, 0.0);
-	let world_derivative_y: vec3f = views.views[0].inverse_view * vec4f(derivative_y.x, derivative_y.y, derivative_y.z, 0.0);
+	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel);
+	if (instance_index >= 1024) {
+		write(sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		return;
+	}
+	let mesh: Mesh = meshes.meshes[instance_index];
+	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
+	let triangle_meshlet_indices: u32 = image_load_u32(triangle_index, pixel);
+	let meshlet: Meshlet = meshlets[triangle_meshlet_indices >> 8];
+	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
+	let vertex_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
+	let position0: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base])])];
+	let position1: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base + 1])])];
+	let position2: vec3f = vertex_positions[mesh.base_vertex_index + u32(vertex_indices[vertex_index_base + u32(primitive_indices[primitive_index_base + 2])])];
+	let edge0: vec3f = mesh.model * vec4f(position1.x - position0.x, position1.y - position0.y, position1.z - position0.z, 0.0);
+	let edge1: vec3f = mesh.model * vec4f(position2.x - position0.x, position2.y - position0.y, position2.z - position0.z, 0.0);
+	// The triangle's normal, turned to the camera's side, which is the side the receiver's normal offset leaves on. The
+	// camera lies at the view-space origin, so the receiver's view-space position points away from it.
+	let normal: vec3f = normalize(cross(edge0, edge1));
+	let view_normal: vec3f = views.views[0].view * vec4f(normal.x, normal.y, normal.z, 0.0);
+	if (dot(view_normal, view_position) > 0.0) {
+		normal = normal * (0.0 - 1.0);
+		view_normal = view_normal * (0.0 - 1.0);
+	}
 	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
 	// it stays zero and leaves the fully-shadowed test below to the used ones.
 	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	suns.x = resolve_sun_shadow(0, world_position, view_position, world_derivative_x, world_derivative_y);
+	suns.x = resolve_sun_shadow(0, world_position, view_position, edge0, edge1, normal, view_normal);
 	if (sun_count > 1) {
-		suns.y = resolve_sun_shadow(1, world_position, view_position, world_derivative_x, world_derivative_y);
+		suns.y = resolve_sun_shadow(1, world_position, view_position, edge0, edge1, normal, view_normal);
 		if (sun_count > 2) {
-			suns.z = resolve_sun_shadow(2, world_position, view_position, world_derivative_x, world_derivative_y);
+			suns.z = resolve_sun_shadow(2, world_position, view_position, edge0, edge1, normal, view_normal);
 			if (sun_count > 3) {
-				suns.w = resolve_sun_shadow(3, world_position, view_position, world_derivative_x, world_derivative_y);
+				suns.w = resolve_sun_shadow(3, world_position, view_position, edge0, edge1, normal, view_normal);
 			}
 		}
 	}

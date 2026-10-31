@@ -495,6 +495,10 @@ material_evaluation_suffix: fn () -> void {
 						let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
 						let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
 						let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
+						// The same normal offset as the resolve's: sin(theta) texels along the triangle normal on the
+						// camera's side, where theta lies between that normal and the direction toward the sun.
+						let sun_cosine: f32 = dot(geometric_normal, L);
+						let normal_offset: vec3f = geometric_normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
 						occlusion_factor = f16(sample_directional_shadow(
 							depth_shadow_map,
 							shadow_view0,
@@ -505,7 +509,8 @@ material_evaluation_suffix: fn () -> void {
 							world_space_vertex_position,
 							perspective_w,
 							position_derivative_x,
-							position_derivative_y
+							position_derivative_y,
+							normal_offset
 						));
 					}
 					if (occlusion_factor == 0.0) {

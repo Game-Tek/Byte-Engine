@@ -175,13 +175,16 @@ impl SunVisibilityPass {
 	/// `base_descriptor_set` is the sink's base visibility set, whose views the resolve reads the cascades from.
 	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]: the trace marches mip
 	/// zero with the half-resolution camera constants, and the resolve reads the full-resolution `depth` with them.
-	/// `shadow_maps` holds the sun's cascades and their depth pyramid. Without `contact_shadows`, the trace pipeline is
-	/// not requested.
+	/// `primitive_index` and `instance_id` are the visibility buffer, from which the resolve takes each receiver's
+	/// triangle. `shadow_maps` holds the sun's cascades and their depth pyramid. Without `contact_shadows`, the trace
+	/// pipeline is not requested.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		depth: ghi::BaseImageHandle,
+		primitive_index: ghi::BaseImageHandle,
+		instance_id: ghi::BaseImageHandle,
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		shadow_maps: &ShadowMaps,
@@ -218,6 +221,8 @@ impl SunVisibilityPass {
 			trace.buffer("contact_shadow_parameters", parameters),
 			trace.image("contact_shadow_output", targets.trace),
 			resolve.sampled("visibility_depth", depth, point_sampler),
+			resolve.image("triangle_index", primitive_index),
+			resolve.image("instance_index_render_target", instance_id),
 			resolve.image("sun_visibility_output", targets.visibility),
 			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
 			resolve.sampled("depth_pyramid", depth_pyramid, point_sampler),

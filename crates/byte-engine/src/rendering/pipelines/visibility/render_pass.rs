@@ -652,6 +652,8 @@ impl VisibilityRenderPass {
 				&pipeline_manager,
 				base_descriptor_set,
 				depth,
+				targets.primitive_index,
+				targets.instance_id,
 				depth_pyramid.depth_pyramid,
 				depth_pyramid.view_data,
 				shadow_maps,

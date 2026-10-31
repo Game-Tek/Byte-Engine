@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Sun shadows no longer streak or trace a mesh's triangle outlines across surfaces the sun grazes, such as Sponza's drapes. The sun visibility resolve takes each receiver's plane from its own triangle in the visibility buffer, instead of rebuilding it from neighboring depths, which jumped at creases. It caps the plane's slope at 20, a plane the sun meets about 3° from edge-on, and moves the receiver sin θ texels off its triangle along the triangle's normal, where θ lies between that normal and the sun. Transparent surfaces get the same offset and cap. The hard triangle-shaped shadows that coarse cloth casts on itself remain. The resolve's added cost is not measured yet. Rebake generated material shaders.
+  - Breaking: the generated `sample_directional_shadow` BESL function takes a `normal_offset` argument, and `directional_shadow_receiver_gradient` caps the slope it returns.
+
 - SMAA finds edges on perceptual luma, √(L / (1 + L)), instead of linear luma L, so its display-tuned threshold fits scene-linear input. Before the tone mapper it missed dim shadow edges, such as 0.01 against 0.04, and marked highlight steps that show as one tone, such as 8 against 10. The rendering reference lists its settings.
 
 - Ray-traced indirect diffuse reconstruction keeps a result with light or hit information, and retries an empty result with the triangle-plane normal. Smoothed vertex normals could reject every half-resolution tap on a covered facet, losing its bounce light and occlusion and exposing the environment's reflection. Both normal and tangent-plane tests remain in place, and SSGI is unchanged. Rebake generated material shaders. On Sponza's close lion view at 1920 × 1080 on an Apple M4, material evaluation costs 6.36% more; frame time rises 0.84%, within the runs' spread. Reusing the retry's taps remains a performance follow-up, not a no-regression result.

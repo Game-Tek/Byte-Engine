@@ -158,6 +158,8 @@ error for it.
 | Fitting | With receivers fitting, each cascade shrinks to the surfaces the camera sees, after two small depth passes. With frustum fitting, it covers the whole slice without them. |
 | Stability | Each cascade is the smallest light-space square around its slice, padded by 17 texels, rounded in 8 steps per doubling, and snapped to a world-fixed texel grid. Casters start 100 m toward the light. |
 | Beyond the last cascade | No sun shadow. |
+| Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
+| Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
 
 ### Shadow maps
 

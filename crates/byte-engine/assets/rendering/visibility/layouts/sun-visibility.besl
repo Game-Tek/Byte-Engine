@@ -1,6 +1,7 @@
-// The descriptor set of the sun visibility resolve: the depths and contact-shadow trace it reads, its settings, the
-// directional shadow map with its depth pyramids, and the image it writes. The views that hold the camera and the
-// cascades come from `scene.besl`. List it after `screen-view.besl`.
+// The descriptor set of the sun visibility resolve: the depths and contact-shadow trace it reads, the visibility buffer
+// that names each pixel's triangle, its settings, the directional shadow map with its depth pyramids, and the image it
+// writes. The views that hold the camera and the cascades, and the geometry the triangles index, come from
+// `scene.besl`. List it after `screen-view.besl`.
 
 // Must match contact-shadows.besl.
 SunVisibilityParameters: struct {
@@ -36,3 +37,7 @@ directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 1040, a
 directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1041, access: read, sampler: farthest_occluder }>;
 // The maximum pyramid again, with a plain sampler: the blocker search gathers its cells four at a time.
 directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 1042, access: read }>;
+// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
+// instance. The resolve takes the receiver's plane and normal from that triangle.
+triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 1043, access: read }>;
+instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1044, access: read }>;

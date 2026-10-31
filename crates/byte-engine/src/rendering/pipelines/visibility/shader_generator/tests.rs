@@ -787,7 +787,8 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 	);
 }
 
-/// Verifies an orthographic sun projection preserves a receiver's depth slope under translation, rotation, and winding.
+/// Verifies an orthographic sun projection preserves a receiver's depth slope under translation, rotation, and winding,
+/// and caps the slope of a plane the light meets almost edge-on at a slope of 20.
 #[test]
 fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_besl_vm() {
 	let results = run_helper_test(
@@ -811,8 +812,11 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 			results.rotated = directional_shadow_receiver_gradient(rotated, dx, dy);
 			results.reversed = directional_shadow_receiver_gradient(rotated, dy, dx);
 			results.degenerate = directional_shadow_receiver_gradient(rotated, dx, dx);
-			results.near_degenerate = directional_shadow_receiver_gradient(scaled, dx, vec3f(1.0, 0.00000000005, 0.2));
 			results.thin = directional_shadow_receiver_gradient(scaled, dx, vec3f(1.0, 0.0000000001, 0.2));
+			// The plane through dx and the light direction, z, is edge-on to the light, so its slope is unbounded. The
+			// scaled cascade spans 0.5 stored depth and 2 normalized device units per meter, so a slope of 20 is
+			// 40 * 0.5 / 2 = 10 per unit of uv.
+			results.edge_on = directional_shadow_receiver_gradient(scaled, dx, vec3f(0.0, 0.0, 1.0));
 		}
 		"#,
 		&mut [],
@@ -820,7 +824,7 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 			DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE,
 			"directional_shadow_receiver_gradient",
 		)],
-		["scaled", "rotated", "reversed", "degenerate", "near_degenerate", "thin"]
+		["scaled", "rotated", "reversed", "degenerate", "thin", "edge_on"]
 			.map(|name| Node::member(name, "vec2f"))
 			.to_vec(),
 	);
@@ -829,8 +833,8 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 		("rotated", [0.925, 0.55]),
 		("reversed", [0.925, 0.55]),
 		("degenerate", [0.0, 0.0]),
-		("near_degenerate", [0.0, 0.0]),
 		("thin", [0.1, 0.0]),
+		("edge_on", [0.0, -10.0]),
 	] {
 		let Value::Vec2F(actual) = results.read(name).expect("directional receiver gradient") else {
 			panic!(

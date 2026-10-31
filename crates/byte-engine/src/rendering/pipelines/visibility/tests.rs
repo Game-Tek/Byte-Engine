@@ -2653,6 +2653,85 @@ fn sun_visibility_without_contact_shadows_reaches_no_trace() {
 	);
 }
 
+/// The `SunVisibilityGeometry` struct holds the visibility buffer and geometry of the floor scene with the low wall: one
+/// identity instance whose only meshlet holds a floor triangle and a wall triangle, and the triangle each pixel sees.
+/// The resolve takes each receiver's plane and normal from them.
+struct SunVisibilityGeometry {
+	meshes: besl::vm::Buffer,
+	meshlets: besl::vm::Buffer,
+	positions: besl::vm::Buffer,
+	vertex_indices: besl::vm::Buffer,
+	primitive_indices: besl::vm::Buffer,
+	triangle_indices: Texture,
+	instance_indices: Texture,
+}
+
+impl SunVisibilityGeometry {
+	/// Builds the floor scene's geometry for `program`. Triangle zero lies on the floor and triangle one on the wall.
+	fn new(program: &ExecutableProgram) -> Self {
+		let extent = CONTACT_SHADOW_EXTENT;
+		let mut meshes = buffer(program, MESH_DATA_SLOT);
+		meshes
+			.write_array_member(0, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
+			.expect("mesh model matrix");
+		let floor_y = -CONTACT_SHADOW_CAMERA_HEIGHT;
+		let vertices = [
+			[0.0, floor_y, 0.0],
+			[1.0, floor_y, 0.0],
+			[0.0, floor_y, 1.0],
+			[0.0, 0.0, CONTACT_SHADOW_WALL_Z],
+			[1.0, 0.0, CONTACT_SHADOW_WALL_Z],
+			[0.0, 1.0, CONTACT_SHADOW_WALL_Z],
+		];
+		let mut positions = array_buffer(program, VERTEX_POSITIONS_SLOT, vertices.len());
+		let mut vertex_indices = array_buffer(program, VERTEX_INDICES_SLOT, vertices.len());
+		let mut primitive_indices = array_buffer(program, PRIMITIVE_INDICES_SLOT, vertices.len());
+		for (index, vertex) in vertices.into_iter().enumerate() {
+			positions.write_array_element(index, Value::Vec3F(vertex)).expect("scene vertex");
+			vertex_indices
+				.write_array_element(index, Value::U16(index as u16))
+				.expect("vertex index");
+			primitive_indices
+				.write_array_element(index, Value::U8(index as u8))
+				.expect("triangle index");
+		}
+		let mut meshlets = array_buffer(program, MESHLETS_SLOT, 1);
+		for (field, value) in [("primitive_count", 6), ("triangle_count", 2)] {
+			meshlets.write_array_member(0, field, Value::U32(value)).expect("meshlet field");
+		}
+		let mut triangle_indices = Texture::new(extent, extent).expect("triangle index fixture");
+		let instance_indices = instance_texture(extent, |_| 0);
+		for y in 0..extent {
+			for x in 0..extent {
+				let wall = contact_shadow_scene_depth([x, y], true) == CONTACT_SHADOW_WALL_Z;
+				triangle_indices
+					.write_u32([x, y], u32::from(wall))
+					.expect("triangle index texel");
+			}
+		}
+		Self {
+			meshes,
+			meshlets,
+			positions,
+			vertex_indices,
+			primitive_indices,
+			triangle_indices,
+			instance_indices,
+		}
+	}
+
+	/// Binds the geometry and the visibility buffer to the resolve's slots.
+	fn bind<'a>(&'a mut self, descriptors: &mut DescriptorBindings<'a>) {
+		descriptors.bind_buffer(MESH_DATA_SLOT, &mut self.meshes);
+		descriptors.bind_buffer(MESHLETS_SLOT, &mut self.meshlets);
+		descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut self.positions);
+		descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut self.vertex_indices);
+		descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut self.primitive_indices);
+		descriptors.bind_image(ResourceSlot::new(1043), &mut self.triangle_indices);
+		descriptors.bind_image(ResourceSlot::new(1044), &mut self.instance_indices);
+	}
+}
+
 /// Runs the sun visibility resolve at one pixel of the floor scene with the low wall, over a half-resolution
 /// contact-shadow trace whose value at each texel is `trace(column, row, depth)`, where `depth` is the texel's linear
 /// depth as mip zero of the depth pyramid holds it, and returns the pixel's sun visibility. With `shadow_map`, the
@@ -2748,7 +2827,9 @@ fn run_sun_visibility_in_slot(
 	let mut trace = texture_2d(trace_extent, trace_extent, &trace);
 	let mut trace_depth = texture_2d(trace_extent, trace_extent, &trace_depth);
 	let mut output = empty_image(extent, extent);
+	let mut geometry = SunVisibilityGeometry::new(&program);
 	let mut descriptors = DescriptorBindings::new();
+	geometry.bind(&mut descriptors);
 	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
@@ -2856,7 +2937,10 @@ fn sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun() {
 	let clear = |_, _, _| 1.0;
 
 	assert_eq!(run_sun_visibility(clear, true, [column, shadowed_row]), 0.0);
-	assert_eq!(run_sun_visibility(clear, true, [column, lit_row]), 1.0);
+	// The tent's weights sum to one only up to rounding, so a filtered lit receiver may fall short of one by a unit in
+	// the last place.
+	let lit = run_sun_visibility(clear, true, [column, lit_row]);
+	assert!((lit - 1.0).abs() <= 0.000001, "Expected the floor away from the wall to be lit, got {lit}.");
 	assert_eq!(run_sun_visibility(|_, _, _| 0.0, false, [column, lit_row]), 0.0);
 }
 
@@ -2876,7 +2960,9 @@ fn sun_visibility_resolves_each_sun_from_its_own_cascades() {
 
 	let shadowed = run_sun_visibility_in_slot(clear, true, [column, shadowed_row], 1);
 	assert_eq!([shadowed[0], shadowed[1]], [1.0, 0.0]);
-	assert_eq!(run_sun_visibility_in_slot(clear, true, [column, lit_row], 1)[1], 1.0);
+	// As in `sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun`, a filtered lit receiver is one up to rounding.
+	let lit = run_sun_visibility_in_slot(clear, true, [column, lit_row], 1)[1];
+	assert!((lit - 1.0).abs() <= 0.000001, "Expected the second sun to light the floor away from the wall, got {lit}.");
 }
 
 /// Verifies the contact-shadow trace marches each sun's own ray: the floor in front of the low wall is shadowed for a

@@ -21,7 +21,7 @@ pub(super) fn parse_besl_function(source: &'static str, function_name: &str) -> 
 }
 
 /// Extracts the statements of one BESL helper function so they can be spliced into `main`.
-fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<Node<'static>> {
+pub(super) fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<Node<'static>> {
 	match parse_besl_function(source, function_name).node_mut() {
 		Nodes::Function { statements, .. } => std::mem::take(statements),
 		_ => panic!(

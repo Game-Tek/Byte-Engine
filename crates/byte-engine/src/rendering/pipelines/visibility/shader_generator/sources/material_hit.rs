@@ -85,12 +85,15 @@ material_hit_tangent: fn () -> void {
 	let tangent_direction: vec3f = tangent_sign * (uv_edge2.y * world_edge1 - uv_edge1.y * world_edge2);
 	let bitangent_direction: vec3f = tangent_sign * ((0.0 - uv_edge2.x) * world_edge1 + uv_edge1.x * world_edge2);
 	let length_squared_floor: f32 = 0.000000000000000000000000000001;
-	let T: vec3f16 = vec3f16(
-		tangent_direction * inversesqrt(max(dot(tangent_direction, tangent_direction), length_squared_floor))
-	);
-	let B: vec3f16 = vec3f16(
-		bitangent_direction * inversesqrt(max(dot(bitangent_direction, bitangent_direction), length_squared_floor))
-	);
+	// As in material evaluation, the tangent is projected onto the normal's plane and the bitangent is the normal
+	// crossed with it, turned away from the direction v increases in, as glTF normal maps expect.
+	let tangent_in_plane: vec3f = tangent_direction - N * dot(N, tangent_direction);
+	let tangent: vec3f = tangent_in_plane
+		* inversesqrt(max(dot(tangent_in_plane, tangent_in_plane), length_squared_floor));
+	let normal_cross_tangent: vec3f = cross(N, tangent);
+	let bitangent_sign: f32 = 1.0 - step(0.0, dot(normal_cross_tangent, bitangent_direction)) * 2.0;
+	let T: vec3f16 = vec3f16(tangent);
+	let B: vec3f16 = vec3f16(normal_cross_tangent * bitangent_sign);
 }
 "#;
 

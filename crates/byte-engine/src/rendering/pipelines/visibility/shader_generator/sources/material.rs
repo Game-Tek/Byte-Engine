@@ -253,13 +253,18 @@ material_evaluation_tangent: fn () -> void {
 	let bitangent_direction: vec3f = tangent_sign
 		* ((0.0 - uv_derivative_y.x) * position_derivative_x + uv_derivative_x.x * position_derivative_y);
 	let length_squared_floor: f32 = 0.000000000000000000000000000001;
+	// The UV directions lie in the triangle's plane, which tilts away from an interpolated normal on curved surfaces.
+	// Projecting the tangent onto the normal's plane keeps the frame orthonormal, as tangent-space normal maps assume.
+	let tangent_in_plane: vec3f = tangent_direction - N * dot(N, tangent_direction);
+	let tangent: vec3f = tangent_in_plane
+		* inversesqrt(max(dot(tangent_in_plane, tangent_in_plane), length_squared_floor));
+	// glTF and MikkTSpace bake normal maps with green pointing up the image, toward decreasing v, so the bitangent is
+	// the normal crossed with the tangent, turned away from the direction v increases in.
+	let normal_cross_tangent: vec3f = cross(N, tangent);
+	let bitangent_sign: f32 = 1.0 - step(0.0, dot(normal_cross_tangent, bitangent_direction)) * 2.0;
 	// The frame only rotates the half-precision material normal, so it is kept at half precision too.
-	let T: vec3f16 = vec3f16(
-		tangent_direction * inversesqrt(max(dot(tangent_direction, tangent_direction), length_squared_floor))
-	);
-	let B: vec3f16 = vec3f16(
-		bitangent_direction * inversesqrt(max(dot(bitangent_direction, bitangent_direction), length_squared_floor))
-	);
+	let T: vec3f16 = vec3f16(tangent);
+	let B: vec3f16 = vec3f16(normal_cross_tangent * bitangent_sign);
 }
 "#;
 

@@ -50,8 +50,8 @@ A graph that breaks a rule fails to load and names the node at fault.
 | `parameter` | `parameter`: the name of a material parameter. `type`: its type | `type` |
 | `position` | None | `vector3`: the position of the shaded point |
 | `normal` | None | `vector3`: the unit geometric normal |
-| `tangent` | None | `vector3`: the unit tangent, along increasing texture coordinate u |
-| `bitangent` | None | `vector3`: the unit bitangent, along increasing texture coordinate v |
+| `tangent` | None | `vector3`: the unit tangent, perpendicular to the normal, toward increasing texture coordinate u |
+| `bitangent` | None | `vector3`: the unit bitangent, the normal crossed with the tangent, negated when needed so it points toward decreasing texture coordinate v |
 | `viewdirection` | None | `vector3`: the unit direction from the viewer toward the shaded point |
 | `texcoord` | `index`: the coordinate set, default 0 | `vector2` |
 | `image` | `texture`: the name of a material texture parameter. `type`: how many channels to keep, default `vector4`. `texcoord`: a `vector2`, default coordinate set 0 | `type`: the first channels of the texel |
@@ -127,7 +127,9 @@ them is a `float`.
 Only the first two channels of the texel are read. Each maps from the 0 to 1
 range to the −1 to 1 range, the third component is rebuilt so the normal has
 unit length, and `scale` then scales the first two. A normal map stored with two
-channels decodes the same as one stored with three.
+channels decodes the same as one stored with three. The first channel runs
+along the `tangent` and the second along the `bitangent`, so green points up
+the image, the convention of glTF normal textures and MikkTSpace bakes.
 
 ## Surface
 

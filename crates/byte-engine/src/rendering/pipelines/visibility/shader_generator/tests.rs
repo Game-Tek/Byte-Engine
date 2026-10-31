@@ -1438,6 +1438,70 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	}
 }
 
+/// Verifies the tangent frame is orthonormal around a smoothed normal and follows glTF's normal map convention: the
+/// tangent toward increasing u, the bitangent toward decreasing v, also when the texture is mirrored.
+#[test]
+fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_the_besl_vm() {
+	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+	// A surface in the z = 0 plane under a normal tilted toward +x, with v running down the screen, toward -y, as an
+	// image's rows do. u runs along +x, or along -x when the texture is mirrored.
+	const SETUP: &str = r#"
+	setup: fn () -> void {
+		let N: vec3f = normalize(vec3f(0.3, 0.0, 1.0));
+		let position_derivative_x: vec3f = vec3f(1.0, 0.0, 0.0);
+		let position_derivative_y: vec3f = vec3f(0.0, 0.0 - 1.0, 0.0);
+		let uv_derivative_x: vec2f = vec2f(1.0, 0.0);
+		let uv_derivative_y: vec2f = vec2f(0.0, 1.0);
+	}
+	"#;
+	const MIRRORED_SETUP: &str = r#"
+	setup: fn () -> void {
+		let N: vec3f = normalize(vec3f(0.3, 0.0, 1.0));
+		let position_derivative_x: vec3f = vec3f(1.0, 0.0, 0.0);
+		let position_derivative_y: vec3f = vec3f(0.0, 0.0 - 1.0, 0.0);
+		let uv_derivative_x: vec2f = vec2f(0.0 - 1.0, 0.0);
+		let uv_derivative_y: vec2f = vec2f(0.0, 1.0);
+	}
+	"#;
+
+	for (setup, u_direction) in [(SETUP, 1.0f32), (MIRRORED_SETUP, -1.0)] {
+		let mut prologue = parse_besl_statements(setup, "setup");
+		prologue.extend(parse_besl_statements(MATERIAL_EVALUATION_TANGENT_SOURCE, "material_evaluation_tangent"));
+		let executable = compile_with_prologue(
+			prologue,
+			r#"
+			main: fn () -> void {
+				results.tangent = vec3f(T);
+				results.bitangent = vec3f(B);
+			}
+			"#,
+			vec![results_binding(members("vec3f", &["tangent", "bitangent"]), RESULT_SLOT)],
+		);
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+		drop(descriptors);
+
+		// The tangent is u's direction projected off the normal, and the bitangent, the normal crossed with it, stays on
+		// +y, up the image. T and B are half precision, so allow its rounding.
+		let tilt = 1.09f32.sqrt();
+		for (name, expected) in [
+			("tangent", [u_direction / tilt, 0.0, -0.3 * u_direction / tilt]),
+			("bitangent", [0.0, 1.0, 0.0]),
+		] {
+			let Value::Vec3F(actual) = results.read(name).expect("VM result") else {
+				panic!("Unexpected {name} type.");
+			};
+			assert!(
+				actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() <= 0.002),
+				"Unexpected {name} {actual:?}, expected {expected:?}, for u along {u_direction} x. The most likely cause \
+				 is a tangent not projected onto the normal's plane or a bitangent along increasing v."
+			);
+		}
+	}
+}
+
 /// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding.
 #[test]
 fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {

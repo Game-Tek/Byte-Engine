@@ -54,7 +54,7 @@ table current.
 
 Each surfel asks for its rays in `surfel-count`, in one of two classes. A
 surfel the camera saw asks in the priority class while it's young, for 32 rays
-a frame until it has received `SURFEL_MATURE_RAYS`, 128, and while its light
+a frame until it has received `SURFEL_WARM_UP_RAYS`, 512, and while its light
 changes faster than its estimate follows, for 16 rays while its inconsistency
 is above 0.3. Otherwise it asks for 4 in the regular class, and so does every
 surfel a ray's hit spawned, young or not: it lights only what other rays hit,
@@ -74,6 +74,20 @@ the window's start, wrapped around the class's wanted rays.
 It replaced one window over every surfel's wanted rays. A new surfel waited for
 that window like any other, and it matured, and lookups trusted it, by its age
 in frames, so a surfel the budget starved was trusted on a few rays.
+
+A young surfel keeps asking in the priority class well past the
+`SURFEL_MATURE_RAYS`, 128, at which lookups trust it fully. In a dim room, the
+light comes from rare rays that find a sunlit opening, and a surfel that found
+one in its first 128 rays shows as a bright spot until its regular four rays a
+frame dilute it. When the camera turns to reveal Sponza's gallery, the warm-up
+to 512 rays left 0.5% of the revealed pixels above four times their later light
+over frames 10 to 45 after the turn, against 0.9% with the warm-up ending at
+128, averaged over six turns each; pixels above twice their later light and the
+average error stayed within the runs' spread. The trace spends the whole budget
+either way, so its cost doesn't change, and the warm-up takes rays from settled
+surfels only while young ones want them. The integrate pass, which walks each
+surfel's wanted rays, rose from about 0.059 ms to 0.061 ms on Sponza at
+1024 × 1024 on an Apple M4, and the frame stayed within the runs' spread.
 
 The trace, the hit sort's scatter, and the shade pass dispatch one thread per
 ray of the budget, and threads past the frame's rays or hits return. A fixed
@@ -216,11 +230,12 @@ centered on the horizon. It also hung the whole sky on one number per surfel,
 and in a dim gallery that number's error set neighbors visibly apart.
 
 A pixel no surfel covers yet takes its light from the spatial pass: its
-neighbors' light, or the environment's irradiance where no neighbor knows any,
-as material evaluation lights it without surfel GI, until a surfel spawns
-there. A hit where no surfel lies yet, such as a surface off the screen, gets
-the scene's lights alone: the sky it would see is unknown, and counting all of
-it would leak light into closed rooms. It asks for a surfel there instead,
+neighbors' light, or the nearest light the screen knows, or none, until a
+surfel spawns there, as
+[pixels nothing knows take the nearest known light](#pixels-nothing-knows-take-the-nearest-known-light)
+explains. A hit where no surfel lies yet, such as a surface off the screen,
+gets the scene's lights alone: the sky it would see is unknown, and counting all
+of it would leak light into closed rooms. It asks for a surfel there instead,
 whose rays then gather that sky.
 
 ## The estimate keeps converging
@@ -463,6 +478,35 @@ knows anything, from the environment's irradiance. The output feeds nothing but
 material evaluation, never a surfel, a ray, or the history, so the filter's
 error never compounds.
 
+## Pixels nothing knows take the nearest known light
+
+When the camera turns, no surfel covers the strip it turns toward yet. The
+resolve spawns surfels there in the frame the strip appears, and their first
+rays arrive in the next frame, so for that frame the strip's pixels have neither
+an estimate nor a history. The spatial pass fills them: from the spiral's taps
+where any of them knows the light, and otherwise from rings of 8 taps that
+double in radius from 32 texels to 1,024, which reach across the image. The
+nearest ring that holds known light fills the pixel, its taps at a similar depth
+weighing most, but every tap with confidence counting a little, so a strip
+beside a nearer surface still takes that surface's light. Where nothing on the
+screen knows any light, as in the first frames, the pixel takes none, and a hit
+fraction of one that also hides the environment's reflections, as a hit no
+surfel covers gets no sky.
+
+The fallback was the environment's irradiance around the pixel's normal, the
+light material evaluation gives a surface without surfel GI: the light of a
+surface nothing hides from the sky. In an enclosed gallery that's thousands of
+times its bounce light. On Sponza at 1024 × 1024 on an Apple M4, a 60° turn
+from the gallery's arch left the two thirds of the image it revealed at about
+5,300 times their settled light in the frame of the turn, almost white; with the
+rings, about 1.6 times. The spiral reaches 16 texels, so a camera that turned
+faster than about 2° a frame at a 75° field of view, which reveals a strip
+wider than that, showed a white edge in every frame of the turn: in a pan at
+150° a second, about 4° a frame, the 24 texel columns at the leading edge read
+a median 440 times the light at the image's center, and with the rings 0.4
+times. A frame that finds every pixel known never enters the rings, and
+`screen-space` stayed within the runs' spread of its 1.9 ms.
+
 On Sponza at 1024 × 1024 on an Apple M4, in frames of one GPU clock state,
 surfel GI adds about 1.77 ms to a frame without indirect diffuse light, which
 takes 5.05 ms, against 1.33 ms before the kajiya comparison; `screen-space`
@@ -552,13 +596,14 @@ and 9%.
   `surfel-allocate-hits` checks both shares before it takes a slot. The
   frame-wide stages run before the screen-space passes, so a hit spawn that
   could take every free slot would starve the surfaces the camera sees.
-- **The sky reaches a pixel once.** Surfel light holds the environment's
-  light, so under surfel GI material evaluation adds none, which the
-  `indirect_diffuse` push constant tells it with the value
+- **The sky reaches a pixel once, through a surfel.** Surfel light holds the
+  environment's light, so under surfel GI material evaluation adds none, which
+  the `indirect_diffuse` push constant tells it with the value
   `IndirectDiffuseSource::push_constant` gives surfel GI, and the shade pass
-  adds none at hits. The spatial pass writes the environment's light only where
-  no pixel around knows any. A pass that adds the environment again counts the
-  sky twice.
+  adds none at hits. The spatial pass fills a pixel no surfel lights only with
+  light other pixels know, or with none. A pass that adds the environment again
+  counts the sky twice, and one that adds it where no surfel looked lights
+  enclosed rooms with sky that walls hide.
 - **The spatial pass feeds only material evaluation.** It reads the temporal
   history and writes `SSGI History`, which nothing in surfel GI reads. A pass
   that fed its output back into the history, a surfel, or a ray would compound
@@ -611,7 +656,7 @@ and 9%.
 | `surfel_temporal_blends_the_estimate_into_history_by_confidence` | A pixel blends its estimate into its history by their confidences, keeps their variance, and counts at most 16 frames of history. |
 | `surfel_temporal_follows_a_change_by_the_confidence_behind_it` | An estimate many deviations from the history replaces most of it, as far as its confidence allows. |
 | `surfel_temporal_rejects_history_of_another_surface` | A pixel takes no history from another surface, and a pixel nothing knows stays empty. |
-| `surfel_spatial_fills_an_unknown_pixel_from_its_surface_and_then_the_sky` | A pixel without confidence takes its surface's neighbors' light, and the environment's only where no neighbor knows any. |
+| `surfel_spatial_fills_an_unknown_pixel_from_the_nearest_known_light` | A pixel without confidence takes its surface's neighbors' light, a pixel past the spiral's reach takes the nearest ring's light even at another depth, and a pixel nothing on the screen knows takes no light and a hit fraction of one. |
 | `surfel_spatial_keeps_light_on_its_own_surface` | Next to a nearer wall's edge, pixels take their own wall's light. |
 | `hit_groups_keep_their_numbers_as_shaders_arrive`, `records_run_their_material_group_only_once_the_pipeline_has_it` | Hit groups keep their numbers, and a record runs the default group until the published pipeline has its material's. |
 | `surfel_gi_parameter_leaves_out_every_surfel_asset` | A bake without surfel GI leaves out every `surfel-*` pipeline and shader in the engine's assets, the shade pass's ray tracing shaders included, and a bake with it keeps them. |

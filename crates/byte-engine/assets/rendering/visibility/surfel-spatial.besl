@@ -7,8 +7,12 @@
 // neighbors, up to SURFEL_SPATIAL_TAPS - 1, farther out, so a surfel's light spreads over a new pixel of its surface in
 // the frame the pixel appears.
 // What the pixel's surface still lacks comes from a fallback: the light of its neighbors on any surface at a similar
-// depth, which knows whether the area is lit or enclosed, and the environment's light only where no neighbor knows
-// anything, as material evaluation lights a surface without surfel GI.
+// depth, which knows whether the area is lit or enclosed. Where no neighbor on the spiral knows anything, such as a
+// strip the camera just turned toward, the fallback searches rings that double in radius out to the whole image and
+// takes the nearest ring that holds known light, nearer depths first. Where nothing on the screen knows any light, the
+// pixel takes none, and a hit fraction of one that hides the environment's reflections: the sky it would see is
+// unknown, and a fallback to all of it lit enclosed rooms thousands of times brighter than their bounce light for the
+// frames before their first surfels' rays arrived.
 //
 // The output feeds nothing but this frame's material evaluation, never a surfel, a ray, or a history, so the filter can
 // trade a little energy for less noise without that error compounding. It tones each light down before averaging and
@@ -32,6 +36,14 @@ SURFEL_SPATIAL_FULL_CONFIDENCE: const f32 = 1.0;
 SURFEL_SPATIAL_INVERSE_PLANE_VARIANCE: const f32 = 10000.0;
 // A 20% sigma, relative to the center's depth, for a neighbor on any surface to inform the fallback.
 SURFEL_SPATIAL_INVERSE_DEPTH_VARIANCE: const f32 = 25.0;
+// The rings the fallback searches when the spiral finds nothing, each twice the radius of the last from twice the
+// spiral's, so the last, at 1024 texels, reaches across any half-resolution image up to 2048 × 2048 texels; and each
+// ring's taps.
+SURFEL_SPATIAL_FALLBACK_RINGS: const u32 = 6;
+SURFEL_SPATIAL_FALLBACK_TAPS: const u32 = 8;
+// What a ring's tap at a very different depth still weighs, relative to one at the pixel's depth, so a ring that holds
+// only other surfaces' light still fills the pixel.
+SURFEL_SPATIAL_FALLBACK_ANY_DEPTH: const f32 = 0.001;
 
 // Tones `value` down so a bright texel weighs about as much as a lit one in an average, reversibly.
 surfel_crunch: fn (value: vec4f) -> vec4f {
@@ -130,15 +142,47 @@ main: fn (input: StageInput) -> void {
 	if (filtered_weight > 0.0001) {
 		light = surfel_uncrunch(filtered * (1.0 / filtered_weight));
 	}
-	let fallback: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	// Nothing on the spiral knows the light, as across a strip the camera just turned toward, whose surfels spawn this
+	// frame and gather their first rays the next. The rings search farther out, with a tap at any depth counting a
+	// little, so the strip takes the light of the nearest surfaces the screen knows. A pixel that finds anything never
+	// runs this, so it costs only the frame's unknown pixels.
+	if (around_weight <= 0.0001) {
+		let ring_radius: f32 = SURFEL_SPATIAL_FAR_RADIUS * 2.0;
+		for (let ring: u32 = 0; ring < SURFEL_SPATIAL_FALLBACK_RINGS; ring = ring + 1) {
+			for (let tap: u32 = 0; tap < SURFEL_SPATIAL_FALLBACK_TAPS; tap = tap + 1) {
+				// Each ring turns half a tap from the last, so the rings' taps don't line up along the same rays.
+				let angle: f32 = (f32(tap) + 0.5 * f32(ring)) * (6.28318530718 / f32(SURFEL_SPATIAL_FALLBACK_TAPS));
+				let tap_x: f32 = floor(pixel_f.x + cos(angle) * ring_radius + 0.5);
+				let tap_y: f32 = floor(pixel_f.y + sin(angle) * ring_radius + 0.5);
+				let inside: bool = tap_x >= 0.0 && tap_y >= 0.0 && tap_x < f32(extent.x) && tap_y < f32(extent.y);
+				let coordinate: vec2u = vec2u(
+					u32(clamp(tap_x, 0.0, f32(extent.x - 1))),
+					u32(clamp(tap_y, 0.0, f32(extent.y - 1)))
+				);
+				let tap_z: f32 = fetch(depth_pyramid, coordinate).x;
+				let tap_confidence: f32 = fetch(surfel_temporal_weights, coordinate).x;
+				let tap_light: vec4f = fetch(surfel_temporal_history, coordinate);
+				if (!inside || tap_z == 0.0 || tap_confidence <= 0.0) {
+					continue;
+				}
+				let relative_depth: f32 = (tap_z - z) / z;
+				let depth_weight: f32 = exp(-relative_depth * relative_depth * SURFEL_SPATIAL_INVERSE_DEPTH_VARIANCE);
+				let weight: f32 = (depth_weight + SURFEL_SPATIAL_FALLBACK_ANY_DEPTH) * tap_confidence;
+				around = around + tap_light * weight;
+				around_weight = around_weight + weight;
+			}
+			if (around_weight > 0.0001) {
+				break;
+			}
+			ring_radius = ring_radius * 2.0;
+		}
+	}
+	// Where nothing on the screen knows any light, the pixel takes none, and a hit fraction of one that hides the
+	// environment's reflections, until its first surfel's rays arrive: the sky it would see is unknown, and walls may
+	// hide all of it, as the shade pass leaves a hit no surfel covers without sky.
+	let fallback: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 	if (around_weight > 0.0001) {
 		fallback = around * (1.0 / around_weight);
-	} else {
-		// Nothing around knows the light yet. The environment lights the pixel as if nothing hid the sky, as material
-		// evaluation lights it without surfel GI, until a surfel covers it.
-		let sky: vec4f = texture_lod(surfel_environment_irradiance, to_world(normal, 0.0), 0.0);
-		let scale: f32 = surfel_parameters.environment_intensity * surfel_parameters.exposure;
-		fallback = vec4f(sky.x * scale, sky.y * scale, sky.z * scale, 0.0);
 	}
 	write(
 		surfel_output,

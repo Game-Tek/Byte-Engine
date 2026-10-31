@@ -58,13 +58,15 @@ NO_SURFEL: const u32 = 4294967295;
 // above them.
 SURFEL_SLOT_BITS: const u32 = 24;
 SURFEL_SLOT_MASK: const u32 = 16777215;
-// The rays a surfel asks for each frame: a settled one SURFEL_RAYS, a young one SURFEL_YOUNG_RAYS until its estimate
-// holds SURFEL_MATURE_RAYS rays, and one whose light keeps changing past SURFEL_UNSETTLED_INCONSISTENCY,
+// The rays a surfel asks for each frame: a settled one SURFEL_RAYS, a young one SURFEL_YOUNG_RAYS until it received
+// SURFEL_WARM_UP_RAYS rays, and one whose light keeps changing past SURFEL_UNSETTLED_INCONSISTENCY,
 // SURFEL_UNSETTLED_RAYS. Young and unsettled surfels ask in the priority class, whose rays the budget grants first.
+// Lookups trust a surfel fully once it received SURFEL_MATURE_RAYS rays.
 SURFEL_RAYS: const u32 = 4;
 SURFEL_YOUNG_RAYS: const u32 = 32;
 SURFEL_UNSETTLED_RAYS: const u32 = 16;
 SURFEL_MATURE_RAYS: const f32 = 128.0;
+SURFEL_WARM_UP_RAYS: const f32 = 512.0;
 SURFEL_UNSETTLED_INCONSISTENCY: const f32 = 0.3;
 // The share of the frame's ray budget the priority class may take while the regular class wants the rest.
 SURFEL_PRIORITY_SHARE: const f32 = 0.75;
@@ -289,8 +291,6 @@ surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 1132, access:
 surfel_scene_lights: descriptor<{ type: LightingBuffer, binding: 1133, access: read, memory: device }>;
 // The frame's spawn requests from rays' hits, the first `hit_spawns` of them.
 surfel_hit_spawns: descriptor<{ type: SurfelHitSpawn[], binding: 1134, access: read_write }>;
-// The environment's irradiance, which lights the pixels no surfel covers yet.
-surfel_environment_irradiance: descriptor<{ type: TextureCube, binding: 1137, access: read }>;
 // Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.
 surfel_guides: descriptor<{ type: f16[], binding: 1138, access: read_write }>;
 // Each surfel's radial depth cells, SURFEL_DEPTH_CELLS per slot: the mean distance and its square, cube, and fourth

@@ -64,13 +64,15 @@ surfel_economy: fn (slot: u32) -> bool {
 		atomic_add(surfel_pool.bounced, 1);
 	}
 
-	// A young surfel traces many rays until its estimate holds enough of them, and a surfel whose light changes faster
-	// than its estimate follows traces more than a settled one. Both ask in the priority class, whose rays come first,
-	// when the camera saw their surface. A surfel a ray's hit spawned lights only what other rays hit, so its rays take
+	// A young surfel traces many rays until it received SURFEL_WARM_UP_RAYS, well past the SURFEL_MATURE_RAYS at which
+	// lookups trust it fully: in a dim room a rare ray that finds a sunlit opening sets a young surfel visibly apart from
+	// its neighbors, and a settled surfel's few rays a frame would take hundreds of frames to dilute it. A surfel whose
+	// light changes faster than its estimate follows traces more than a settled one. Both ask in the priority class,
+	// whose rays come first, when the camera saw their surface. A surfel a ray's hit spawned lights only what other rays hit, so its rays take
 	// their turns in the regular class, young or not, and never take rays from the surfaces the camera sees.
 	if (surfel_states[slot].bounce != 0) {
 		surfel_ray_wants[capacity + slot] = SURFEL_RAYS;
-	} else if (surfel_irradiance[slot].rays < SURFEL_MATURE_RAYS) {
+	} else if (surfel_irradiance[slot].rays < SURFEL_WARM_UP_RAYS) {
 		surfel_ray_wants[slot] = SURFEL_YOUNG_RAYS;
 	} else if (surfel_irradiance[slot].inconsistency > SURFEL_UNSETTLED_INCONSISTENCY) {
 		surfel_ray_wants[slot] = SURFEL_UNSETTLED_RAYS;

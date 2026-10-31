@@ -332,19 +332,13 @@ pub(crate) struct SurfelPool {
 	ray_budget: u32,
 }
 
-/// Returns the writes that bind `environment`'s specular levels and irradiance in the surfel set `descriptor_set`.
-fn environment_writes(descriptor_set: ghi::DescriptorSetHandle, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
+/// Returns the write that binds `environment`'s specular levels in the surfel set `descriptor_set`.
+fn environment_writes(descriptor_set: ghi::DescriptorSetHandle, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 1] {
 	let set = set_layouts::SURFEL_GI.binder(descriptor_set);
 	let ResidentEnvironment {
-		diffuse_image,
-		specular_image,
-		sampler,
-		..
+		specular_image, sampler, ..
 	} = environment;
-	[
-		set.sampled("surfel_environment_radiance", specular_image, sampler),
-		set.sampled("surfel_environment_irradiance", diffuse_image, sampler),
-	]
+	[set.sampled("surfel_environment_radiance", specular_image, sampler)]
 }
 
 impl SurfelPool {
@@ -439,11 +433,10 @@ impl SurfelPool {
 		}
 	}
 
-	/// Returns the writes that bind `environment`'s maps: the specular levels whose light rays that miss bring back, and
-	/// the irradiance that lights pixels no surfel covers yet.
+	/// Returns the write that binds `environment`'s specular levels, whose light rays that miss bring back.
 	///
-	/// The visibility pipeline manager writes them whenever it binds another environment.
-	pub(crate) fn environment_writes(&self, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
+	/// The visibility pipeline manager writes it whenever it binds another environment.
+	pub(crate) fn environment_writes(&self, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 1] {
 		environment_writes(self.descriptor_set, environment)
 	}
 

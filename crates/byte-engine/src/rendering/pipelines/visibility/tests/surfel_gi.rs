@@ -44,7 +44,6 @@ const HITS_SLOT: ResourceSlot = ResourceSlot::new(1145);
 const HIT_KEYS_SLOT: ResourceSlot = ResourceSlot::new(1146);
 const HIT_SORT_SLOT: ResourceSlot = ResourceSlot::new(1147);
 const SORTED_HITS_SLOT: ResourceSlot = ResourceSlot::new(1148);
-const ENVIRONMENT_IRRADIANCE_SLOT: ResourceSlot = ResourceSlot::new(1137);
 const GUIDES_SLOT: ResourceSlot = ResourceSlot::new(1138);
 const DEPTHS_SLOT: ResourceSlot = ResourceSlot::new(1139);
 const CLEARANCES_SLOT: ResourceSlot = ResourceSlot::new(1143);
@@ -85,9 +84,11 @@ const RAY_BUDGET: u32 = 1024;
 /// The rays a settled surfel traces each frame, and a young one.
 const SETTLED_RAYS: u32 = 4;
 const YOUNG_RAYS: u32 = 32;
-/// A surfel that received this many rays is mature: lookups fully trust it, and it traces [`SETTLED_RAYS`] a frame.
+/// A surfel that received this many rays is mature: lookups fully trust it.
 const MATURE_RAYS: f32 = 128.0;
-/// The rays the fixtures' settled surfels have received, well past [`MATURE_RAYS`].
+/// A surfel traces [`YOUNG_RAYS`] a frame until it received this many rays, and [`SETTLED_RAYS`] after.
+const WARM_UP_RAYS: f32 = 512.0;
+/// The rays the fixtures' settled surfels have received, well past [`WARM_UP_RAYS`].
 const SETTLED_RECEIVED: f32 = 1000.0;
 /// The threads that walk one surfel's cells in the count pass and the scatter. Matches `SURFEL_GRID_LANES` in
 /// `layouts/surfel-gi.besl`.
@@ -295,8 +296,6 @@ struct SurfelSet {
 	depths: Buffer,
 	clearances: Buffer,
 	hit_spawns: Buffer,
-	/// The environment's irradiance, the same in every direction.
-	environment_irradiance: Texture,
 	/// The environment's specular levels, the same in every direction.
 	environment_radiance: Texture,
 }
@@ -341,7 +340,6 @@ impl SurfelSet {
 			depths: array_buffer(&passes.integrate, DEPTHS_SLOT, capacity * DEPTH_CELLS),
 			clearances: array_buffer(&passes.integrate, CLEARANCES_SLOT, capacity),
 			hit_spawns: array_buffer(&passes.allocate_hits, HIT_SPAWNS_SLOT, MAX_HIT_SPAWNS),
-			environment_irradiance: texture_2d(1, 1, &[[0.0; 4]]),
 			environment_radiance: texture_2d(1, 1, &[[0.0; 4]]),
 		}
 	}
@@ -367,7 +365,6 @@ impl SurfelSet {
 		descriptors.bind_buffer(DEPTHS_SLOT, &mut self.depths);
 		descriptors.bind_buffer(CLEARANCES_SLOT, &mut self.clearances);
 		descriptors.bind_buffer(HIT_SPAWNS_SLOT, &mut self.hit_spawns);
-		descriptors.bind_texture(ENVIRONMENT_IRRADIANCE_SLOT, &mut self.environment_irradiance);
 		descriptors.bind_texture(ENVIRONMENT_RADIANCE_SLOT, &mut self.environment_radiance);
 	}
 
@@ -795,9 +792,9 @@ fn surfel_scan_grants_rays_round_robin_within_the_budget() {
 	assert_eq!(set.granted_rays(), rays(2, 16..32).chain(rays(0, 0..24)).collect::<Vec<_>>());
 }
 
-/// Verifies young surfels and surfels whose light keeps changing get their rays first, up to three quarters of the
-/// budget while settled surfels want the rest, and that each class's window of rays starts where its last one ended,
-/// so the settled surfels' rays still take their turns.
+/// Verifies young surfels, including one lookups already trust fully, and surfels whose light keeps changing get their
+/// rays first, up to three quarters of the budget while settled surfels want the rest, and that each class's window of
+/// rays starts where its last one ended, so the settled surfels' rays still take their turns.
 #[test]
 fn surfel_scan_grants_young_and_changing_surfels_first_and_keeps_settled_turns() {
 	const BUDGET: u32 = 40;
@@ -813,6 +810,8 @@ fn surfel_scan_grants_young_and_changing_surfels_first_and_keeps_settled_turns()
 		}
 	}
 	set.set_estimate(2, "inconsistency", Value::F32(0.5));
+	// Lookups trust the second young surfel fully, but it is still warming up.
+	set.set_estimate(1, "rays", Value::F32(MATURE_RAYS));
 	let rays = |slot: u32, samples: std::ops::Range<u32>| samples.map(move |sample| (slot, sample));
 
 	passes.run_grid(&mut set);
@@ -947,7 +946,7 @@ fn settle_surfel(passes: &SurfelPasses, set: &mut SurfelSet, count: f32, receive
 	}
 	passes.run_grid(set);
 	let granted = set.granted_rays();
-	let expected = if received < MATURE_RAYS { YOUNG_RAYS } else { SETTLED_RAYS };
+	let expected = if received < WARM_UP_RAYS { YOUNG_RAYS } else { SETTLED_RAYS };
 	assert_eq!(granted.len(), expected as usize);
 	granted
 		.into_iter()
@@ -1430,7 +1429,6 @@ fn surfel_resolve_blends_the_light_of_the_surfels_around_each_pixel() {
 	let near = [0.5, 0.25, 0.125, 0.75];
 	let far = [0.25, 0.5, 1.0, 0.25];
 	let young = [1.0, 2.0, 3.0, 0.5];
-	set.environment_irradiance = texture_2d(1, 1, &[[0.25, 0.5, 0.75, 1.0]]);
 	for (slot, pixel, light, weight) in [
 		(0, [1, 1], near, 1.0),
 		(1, [5, 1], far, 1.0),
@@ -1475,8 +1473,6 @@ fn surfel_resolve_occlusion_hides_a_surfel_behind_a_wall() {
 	let mut sink = WallSink::new();
 	let clear = [0.5, 0.25, 0.125, 0.75];
 	let walled = [8.0, 8.0, 8.0, 0.25];
-	// Pixels no surfel covers would take this light, which a hidden pixel must not.
-	set.environment_irradiance = texture_2d(1, 1, &[[1.0; 4]]);
 	for (slot, pixel, light) in [(0, [2, 2], clear), (1, [4, 2], walled), (2, [6, 6], walled)] {
 		set.place(slot, WallSink::wall_point(pixel), WALL_NORMAL);
 		set.set_record(slot, "irradiance", Value::Vec4F16(light.map(f16::from_f32)));
@@ -1996,8 +1992,9 @@ fn surfel_allocate_spawns_from_the_free_stack_until_it_is_empty() {
 
 /// The temporal fixtures' half-resolution image: one 8 × 8 workgroup.
 const TEMPORAL_EXTENT: u32 = 8;
-/// The spatial fixtures' half-resolution image, wide enough for the farthest taps around its center.
-const SPATIAL_EXTENT: u32 = 32;
+/// The spatial fixtures' half-resolution image, wide enough for the farthest spiral taps around its center and for a
+/// first fallback ring.
+const SPATIAL_EXTENT: u32 = 64;
 /// The depth of the camera-facing wall the temporal and spatial fixtures see.
 const RECONSTRUCTION_DEPTH: f32 = 5.0;
 
@@ -2149,7 +2146,7 @@ fn surfel_temporal_rejects_history_of_another_surface() {
 
 /// Runs the spatial pass over the workgroup holding `pixel` of a [`SPATIAL_EXTENT`] square image of camera-facing walls,
 /// where `texel` gives each pixel's depth, history light, and confidence, and returns the pixel's output.
-fn run_spatial(set: &mut SurfelSet, texel: impl Fn([u32; 2]) -> (f32, [f32; 4], f32), pixel: [u32; 2]) -> [f32; 4] {
+fn run_spatial(texel: impl Fn([u32; 2]) -> (f32, [f32; 4], f32), pixel: [u32; 2]) -> [f32; 4] {
 	let program = asset!("surfel-spatial.besl");
 	let extent = SPATIAL_EXTENT;
 	let image = |value: &dyn Fn((f32, [f32; 4], f32)) -> [f32; 4]| {
@@ -2159,19 +2156,13 @@ fn run_spatial(set: &mut SurfelSet, texel: impl Fn([u32; 2]) -> (f32, [f32; 4], 
 		texture_2d(extent, extent, &texels)
 	};
 	let mut view = screen_view_buffer(&program, VIEWS_SLOT, extent, extent);
-	let mut parameters = buffer(&program, RESOLVE_PARAMETERS_SLOT);
-	parameters
-		.write("view_to_world", Value::Mat4F(IDENTITY_MATRIX))
-		.expect("surfel resolve parameters");
 	let mut depth = image(&|(depth, ..)| [depth, 0.0, 0.0, 1.0]);
 	let mut history = image(&|(_, light, _)| light);
 	let mut weights = image(&|(.., confidence)| [confidence, 0.0, 0.0, 0.0]);
 	let mut normals = image(&|_| SSGI_WALL_NORMAL);
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
-	set.bind(&mut descriptors);
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_buffer(RESOLVE_PARAMETERS_SLOT, &mut parameters);
 	descriptors.bind_texture(DEPTH_PYRAMID_SLOT, &mut depth);
 	descriptors.bind_texture(SPATIAL_HISTORY_SLOT, &mut history);
 	descriptors.bind_texture(SPATIAL_WEIGHTS_SLOT, &mut weights);
@@ -2181,19 +2172,16 @@ fn run_spatial(set: &mut SurfelSet, texel: impl Fn([u32; 2]) -> (f32, [f32; 4], 
 	rgba(&output, pixel)
 }
 
-/// Verifies a pixel whose history holds no confidence takes the light of its neighbors on its surface, and the
-/// environment's light only where no neighbor knows anything.
+/// Verifies a pixel whose history holds no confidence takes the light of its neighbors on its surface; that a pixel deep
+/// in a strip no surfel lights yet, as the camera turns toward it, takes the light of the nearest surface the screen
+/// knows, even at another depth; and that where nothing on the screen knows any light, a pixel takes none, with a hit
+/// fraction of one, rather than the sky that walls may hide.
 #[test]
-fn surfel_spatial_fills_an_unknown_pixel_from_its_surface_and_then_the_sky() {
-	let passes = SurfelPasses::new();
-	let mut set = SurfelSet::new(&passes);
-	let sky = [0.25, 0.5, 0.75, 1.0];
-	set.environment_irradiance = texture_2d(1, 1, &[sky]);
+fn surfel_spatial_fills_an_unknown_pixel_from_the_nearest_known_light() {
 	let lit = [0.5, 0.25, 0.125, 0.75];
 	let hole = [16, 16];
 
 	let filled = run_spatial(
-		&mut set,
 		|texel| {
 			let confidence = if texel == hole { 0.0 } else { 1.0 };
 			(RECONSTRUCTION_DEPTH, lit, confidence)
@@ -2202,16 +2190,26 @@ fn surfel_spatial_fills_an_unknown_pixel_from_its_surface_and_then_the_sky() {
 	);
 	assert_rgba_close(filled, lit, 0.0001);
 
-	let unknown = run_spatial(&mut set, |_| (RECONSTRUCTION_DEPTH, [0.0; 4], 0.0), hole);
-	assert_rgba_close(unknown, [sky[0], sky[1], sky[2], 0.0], 0.0001);
+	// Only a band along the left edge knows its light, nearer than the strip and about 30 texels from the pixel: past
+	// the reach of the spiral, within the first ring.
+	let strip = [40, 32];
+	let band = |texel: [u32; 2]| {
+		if texel[0] < 12 {
+			(RECONSTRUCTION_DEPTH * 0.5, lit, 1.0)
+		} else {
+			(RECONSTRUCTION_DEPTH, [0.0; 4], 0.0)
+		}
+	};
+	assert_rgba_close(run_spatial(band, strip), lit, 0.0001);
+
+	let unknown = run_spatial(|_| (RECONSTRUCTION_DEPTH, [0.0; 4], 0.0), hole);
+	assert_rgba_close(unknown, [0.0, 0.0, 0.0, 1.0], 0.0001);
 }
 
 /// Verifies the filter keeps each surface's light apart: next to a nearer wall's edge, a confident pixel and an unknown
 /// one both take their own wall's light, not the nearer wall's.
 #[test]
 fn surfel_spatial_keeps_light_on_its_own_surface() {
-	let passes = SurfelPasses::new();
-	let mut set = SurfelSet::new(&passes);
 	let far = [0.5, 0.25, 0.125, 0.75];
 	let near = [4.0, 4.0, 4.0, 1.0];
 	let hole = [15, 16];
@@ -2222,6 +2220,6 @@ fn surfel_spatial_keeps_light_on_its_own_surface() {
 			(RECONSTRUCTION_DEPTH, far, if texel == hole { 0.0 } else { 1.0 })
 		}
 	};
-	assert_rgba_close(run_spatial(&mut set, texel, [14, 16]), far, 0.0001);
-	assert_rgba_close(run_spatial(&mut set, texel, hole), far, 0.01);
+	assert_rgba_close(run_spatial(texel, [14, 16]), far, 0.0001);
+	assert_rgba_close(run_spatial(texel, hole), far, 0.01);
 }

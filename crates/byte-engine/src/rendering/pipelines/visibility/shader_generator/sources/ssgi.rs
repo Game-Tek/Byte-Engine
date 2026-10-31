@@ -75,7 +75,10 @@ indirect_diffuse_source_position: fn (pixel: vec2u, extent: vec2u, source_extent
 // in the order x then y from `base`, into the pixel's pre-exposed indirect diffuse light: bilinearly, and by how well
 // each lies on the pixel's surface, so light does not bleed across edges. RGB is the light of rays that hit on-screen
 // geometry and alpha the fraction of rays that hit. Without a matching texel, every ray counts as missed, so the
-// environment lights the pixel instead of a neighbor.
+// environment lights the pixel instead of a neighbor, unless `nearest_fallback` is set: then the pixel takes the light
+// and hit fraction of the tap nearest to it in depth, the usual nearest-depth upsample. A surface thinner than a
+// history texel, such as a rod or a bevel, has no texel of its own, and its neighbors' light stands in for it better
+// than none.
 //
 // `position` and `normal` are the pixel's view-space surface position and geometric normal, in the space the SSGI
 // images use.
@@ -88,7 +91,8 @@ weigh_screen_space_indirect_diffuse: fn (
 	stored_normals: vec2f16[4],
 	lights: vec4f16[4],
 	position: vec3f,
-	normal: vec3f
+	normal: vec3f,
+	nearest_fallback: bool
 ) -> vec4f {
 	// The pixel's terms of the plane test, computed once for the four taps.
 	let inverse_depth: f32 = 1.0 / position.z;
@@ -126,7 +130,22 @@ weigh_screen_space_indirect_diffuse: fn (
 	if (total_weight > 0.00001) {
 		return sum * (1.0 / total_weight);
 	}
-	return vec4f(0.0, 0.0, 0.0, 0.0);
+	let nearest: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (nearest_fallback) {
+		// The relative depth difference of the nearest tap so far. A texel without a surface has zero depth and is
+		// never chosen.
+		let nearest_delta: f32 = 0.0;
+		let found: bool = false;
+		for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+			let delta: f32 = abs(depths[tap] * inverse_depth - 1.0);
+			if (depths[tap] > 0.0 && (!found || delta < nearest_delta)) {
+				nearest = vec4f(lights[tap]);
+				nearest_delta = delta;
+				found = true;
+			}
+		}
+	}
+	return nearest;
 }
 "#;
 
@@ -134,9 +153,16 @@ weigh_screen_space_indirect_diffuse: fn (
 // texels around the pixel, weighed by `weigh_screen_space_indirect_diffuse`.
 //
 // `pixel` is the full-resolution pixel of an `extent` image. `position` and `normal` are its view-space surface
-// position and geometric normal, in the space the SSGI images use.
+// position and geometric normal, in the space the SSGI images use. `nearest_fallback` picks what a pixel without a
+// matching texel takes, as `weigh_screen_space_indirect_diffuse` describes.
 pub(crate) const SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
-sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position: vec3f, normal: vec3f) -> vec4f {
+sample_screen_space_indirect_diffuse: fn (
+	pixel: vec2u,
+	extent: vec2u,
+	position: vec3f,
+	normal: vec3f,
+	nearest_fallback: bool
+) -> vec4f {
 	let source_extent: vec2u = texture_size(ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
@@ -171,7 +197,8 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 		stored_normals,
 		lights,
 		position,
-		normal
+		normal,
+		nearest_fallback
 	);
 }
 "#;
@@ -193,7 +220,13 @@ indirect_diffuse_window_origin: fn (pixel: vec2u, extent: vec2u, source_extent: 
 // evaluation tile loaded into workgroup memory instead of from the images. The window holds the texels at the same
 // clamped positions the images give the taps, so the result is the same.
 pub(crate) const SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE: &str = r#"
-sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position: vec3f, normal: vec3f) -> vec4f {
+sample_screen_space_indirect_diffuse: fn (
+	pixel: vec2u,
+	extent: vec2u,
+	position: vec3f,
+	normal: vec3f,
+	nearest_fallback: bool
+) -> vec4f {
 	let source_extent: vec2u = texture_size(ssgi_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
@@ -222,14 +255,17 @@ sample_screen_space_indirect_diffuse: fn (pixel: vec2u, extent: vec2u, position:
 		stored_normals,
 		lights,
 		position,
-		normal
+		normal,
+		nearest_fallback
 	);
 }
 "#;
 
 // Keeps the current reconstruction when it has light or hit information. A smoothed vertex normal can differ from
 // the depth-derived triangle normal enough to reject every tap, even in the interior of a finely faceted ornament.
-// Ray-traced GI carries the environment too, so losing its hit information would expose unoccluded sky reflections.
+// Ray-traced GI carries the environment too, so losing its hit information would expose unoccluded sky reflections:
+// a surface no history texel matches in either normal, such as a curtain rod or a ledge's bevel, would show as a thin
+// white line. So the retry falls back to the tap nearest in depth.
 pub(crate) const SAMPLE_RAY_TRACED_INDIRECT_DIFFUSE_SOURCE: &str = r#"
 sample_ray_traced_indirect_diffuse: fn (
 	pixel: vec2u,
@@ -238,11 +274,11 @@ sample_ray_traced_indirect_diffuse: fn (
 	normal: vec3f,
 	geometric_normal: vec3f
 ) -> vec4f {
-	let indirect: vec4f = sample_screen_space_indirect_diffuse(pixel, extent, position, normal);
+	let indirect: vec4f = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, false);
 	if (dot(indirect, indirect) != 0.0) {
 		return indirect;
 	}
-	// Retain both the normal and tangent-plane tests on the retry: depth alone leaks across touching surfaces.
-	return sample_screen_space_indirect_diffuse(pixel, extent, position, geometric_normal);
+	// Retain both the normal and tangent-plane tests on the retry, so a matching texel wins over the nearest one.
+	return sample_screen_space_indirect_diffuse(pixel, extent, position, geometric_normal, true);
 }
 "#;

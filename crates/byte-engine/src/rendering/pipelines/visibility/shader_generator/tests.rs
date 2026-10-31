@@ -2069,7 +2069,8 @@ fn sample_indirect_diffuse(
 				inputs.pixel,
 				inputs.extent,
 				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
-				vec3f(inputs.normal.x, inputs.normal.y, inputs.normal.z)
+				vec3f(inputs.normal.x, inputs.normal.y, inputs.normal.z),
+				false
 			);
 		}
 		"#,
@@ -2198,7 +2199,7 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 						if (pixel.x < extent.x && pixel.y < extent.y) {{
 							let position: vec3f = vec3f(f32(pixel.x) * 0.05 - 0.5, 0.25 - f32(pixel.y) * 0.05, 2.0 + f32(pixel.x % 3));
 							let normal: vec3f = normalize(vec3f(0.1, 0.2, -1.0));
-							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal);
+							results.indirect[pixel.y * {full} + pixel.x] = sample_screen_space_indirect_diffuse(pixel, extent, position, normal, false);
 						}}
 					}}
 					"#

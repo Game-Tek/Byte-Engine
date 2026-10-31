@@ -183,13 +183,14 @@ fn surfel_reconstruction_preserves_an_already_reconstructed_surface() {
 	);
 }
 
-/// The face-plane retry still rejects a differently facing surface at exactly the same depth, rather than falling
-/// back to a depth-only average that leaks a touching wall's light onto a floor.
+/// A surface that no history texel matches in either normal, such as a rod or a bevel thinner than a texel, takes
+/// the light and hit fraction of the nearest tap. An empty result would count every ray as missed and show the
+/// unoccluded sky's reflection as a thin white line.
 #[test]
-fn surfel_reconstruction_rejects_a_touching_surface_in_both_normal_bases() {
+fn surfel_reconstruction_takes_the_nearest_tap_for_an_unmatched_surface() {
 	assert_rgba_close(
 		reconstruct_covered_face(WALL_NORMAL, WALL_NORMAL, [0.0, 1.0, 0.0, 0.0]),
-		[0.0; 4],
+		[0.3125, 0.15625, 0.0625, 1.0],
 		0.001,
 	);
 }

@@ -371,7 +371,7 @@ material_evaluation_suffix: fn () -> void {
 				);
 			} else {
 				screen_space_indirect = sample_screen_space_indirect_diffuse(
-					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal
+					pixel_coordinates, image_extent, view_space_surface_position, view_space_normal, false
 				);
 			}
 			// Both sources carry pre-exposed light through half-float images. Undo that scale before combining it

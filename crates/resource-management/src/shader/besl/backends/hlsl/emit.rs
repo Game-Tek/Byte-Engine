@@ -435,7 +435,7 @@ impl Generator {
 					"fma" => "mad",
 					"set_mesh_output_counts" => "SetMeshOutputCounts",
 					"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin"
-					| "atan2" | "floor" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
+					| "atan2" | "floor" | "ceil" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
 					| "normalize" | "reflect" | "length" => name,
 					// Intrinsics without an HLSL call emit their elements.
 					_ => {

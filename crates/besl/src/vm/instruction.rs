@@ -620,6 +620,7 @@ pub(super) enum ScalarUnaryOperator {
 	Tan,
 	Asin,
 	Floor,
+	Ceil,
 	Round,
 	Fract,
 	Radians,

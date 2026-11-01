@@ -529,7 +529,7 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "floor" | "round" | "fract" | "radians"
+			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "floor" | "ceil" | "round" | "fract" | "radians"
 			| "inversesqrt" | "log2" | "fwidth" => {
 				require_argument_count(arguments, 1)?;
 
@@ -546,6 +546,7 @@ impl<'a> Compiler<'a> {
 						"tan" => ScalarUnaryOperator::Tan,
 						"asin" => ScalarUnaryOperator::Asin,
 						"floor" => ScalarUnaryOperator::Floor,
+						"ceil" => ScalarUnaryOperator::Ceil,
 						"round" => ScalarUnaryOperator::Round,
 						"fract" => ScalarUnaryOperator::Fract,
 						"radians" => ScalarUnaryOperator::Radians,

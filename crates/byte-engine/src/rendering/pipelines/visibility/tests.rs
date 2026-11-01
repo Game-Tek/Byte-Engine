@@ -2564,13 +2564,13 @@ fn sun_cascade_view() -> crate::rendering::View {
 
 /// Renders the floor scene with the low wall into the test sun's shadow map: each texel stores the depth of the
 /// surface the light meets first along its ray, the wall where the ray crosses it above the floor, else the floor, or
-/// zero where the ray meets nothing. Returns the map with four cascade layers for each of `suns` sun slots, cascade
-/// zero of the last slot drawn, and the layers' max-depth and min-depth cell pyramids as the directional shadow
-/// pyramid pass builds them.
+/// zero where the ray meets nothing. Returns the map with four cascade layers for each of `suns` sun slots, the last
+/// slot's cascades drawn, and the layers' max-depth and min-depth cell pyramids as the directional shadow pyramid pass
+/// builds them.
 fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 	let extent = SUN_SHADOW_MAP_EXTENT;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32 * suns;
-	let drawn_layer = cascades - super::layout::SHADOW_CASCADE_COUNT as u32;
+	let first_drawn_layer = cascades - super::layout::SHADOW_CASCADE_COUNT as u32;
 	let view_projection = sun_cascade_view().view_projection();
 	let inverse_view_projection = math::inverse(view_projection);
 	let direction = sun_direction().into_maths();
@@ -2601,19 +2601,22 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 	let cells = extent / 8;
 	let mut pyramid = vec![[0.0f32, 0.0, 0.0, 1.0]; (cells * cells * cascades) as usize];
 	let mut minimum_pyramid = pyramid.clone();
-	for y in 0..extent {
-		for x in 0..extent {
-			let depth = depth_at(x, y);
-			shadow_map
-				.write_3d([x, y, drawn_layer], [depth, 0.0, 0.0, 1.0])
-				.expect("shadow map fixture");
-			let cell = ((drawn_layer * cells + y / 8) * cells + x / 8) as usize;
-			pyramid[cell][0] = pyramid[cell][0].max(depth);
-			minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
-				depth
-			} else {
-				minimum_pyramid[cell][0].min(depth)
-			};
+	// Every cascade shares the one view, so each is drawn with the same depths.
+	for drawn_layer in first_drawn_layer..cascades {
+		for y in 0..extent {
+			for x in 0..extent {
+				let depth = depth_at(x, y);
+				shadow_map
+					.write_3d([x, y, drawn_layer], [depth, 0.0, 0.0, 1.0])
+					.expect("shadow map fixture");
+				let cell = ((drawn_layer * cells + y / 8) * cells + x / 8) as usize;
+				pyramid[cell][0] = pyramid[cell][0].max(depth);
+				minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
+					depth
+				} else {
+					minimum_pyramid[cell][0].min(depth)
+				};
+			}
 		}
 	}
 	(

@@ -771,12 +771,7 @@ fn scalar_function<'a>(operator: UnaryOperator, value: &Node<'a>) -> Node<'a> {
 	match operator {
 		UnaryOperator::Absolute => Node::call("abs", vec![value.clone()]),
 		UnaryOperator::Floor => Node::call("floor", vec![value.clone()]),
-		// BESL has no ceiling, and flooring the negated value rounds the other way.
-		UnaryOperator::Ceil => Node::operator(
-			"-",
-			zero(),
-			Node::call("floor", vec![Node::operator("-", zero(), value.clone())]),
-		),
+		UnaryOperator::Ceil => Node::call("ceil", vec![value.clone()]),
 		// BESL rounds only some types, so round through the floor instead.
 		UnaryOperator::Round => Node::call("floor", vec![Node::operator("+", value.clone(), literal(0.5))]),
 		// A step either side of zero gives 1, -1 and 0 without a comparison.

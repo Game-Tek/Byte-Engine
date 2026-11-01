@@ -180,6 +180,10 @@ error for it.
 | Beyond the last cascade | No sun shadow. |
 | Receiver | The surface point, moved off its triangle along the triangle's normal on the camera's side by sin θ texels of the cascade it's tested in, where θ is the angle between that normal and the direction toward the sun. |
 | Receiver plane | Each filter tap compares the stored depth with the depth of the receiver's triangle plane at the tap's texel center, moved toward the sun by 1.5 depth steps of 1/65535 per cascade, from cascade 0 at 1.5 to cascade 3 at 6. Where the sun is within about 3° of the plane, the plane's depth changes across the map as it would at that angle, a slope of 20. |
+| Penumbra width | On each side of an occluder's edge, the occluder's distance above the receiver along the light times the tangent of the light's angular radius. |
+| Penumbra cascade | Among the cascades from the receiver's own up to the one after the cascade its occluders are searched in that hold the receiver, the one where the penumbra's width w, in its texels, makes the larger of 2 / w and w / 6 least; the lower-numbered one where two tie. A penumbra of no width counts as 0.1 millimeters. |
+| Penumbra filter | A tent over every texel whose center lies within the radius of the receiver on both axes. The radius is the penumbra's width in the penumbra cascade's texels, at least 2 and at most 8. Each texel weighs the radius less its center's distance from the receiver, on each axis, and the weights are normalized to sum to 1. |
+| Cascade fade | Where the next best of those cascades has less than 1.5 times the penumbra cascade's larger of 2 / w and w / 6, the result mixes the two cascades' results. The penumbra cascade's share is that ratio less 0.5: half where the two are equal, all of it at 1.5. |
 
 ### Shadow maps
 

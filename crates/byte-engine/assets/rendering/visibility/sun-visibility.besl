@@ -4,7 +4,7 @@
 // with the other screen-space passes. Transparent surfaces lie in front of this depth, so the material shader still
 // resolves the map for them with the same helpers, which it holds in `shader_generator/sources/shadow.rs`: keep the
 // two copies in sync. This copy adds the fully-shadowed probe, which transparent surfaces do without, and gathers the
-// spacing-one tent and the blocker search's cells, which the material shader does not: its code is live in every
+// penumbra filter's texels and the blocker search's cells, which the material shader fetches one by one: its code is live in every
 // material, since `blend` is a push constant, and the extra registers cost opaque material evaluation more than the
 // fetches cost a transparent pixel. It also takes each cascade's texels and depth per meter from workgroup memory,
 // where one lane per cascade computes them once, and projects a receiver into a cascade once for its probes, search, and
@@ -27,194 +27,101 @@ sun_view_position: fn (pixel: vec2f, z: f32) -> vec3f {
 	return vec3f(ray.x * z, ray.y * z, z);
 }
 
-sample_shadow_tap: fn (
-	shadow_map: ArrayTexture2D,
-	shadow_uv: vec2f,
-	surface_depth: f32,
-	receiver_plane_depth_gradient: vec2f,
-	offset: vec2f,
-	shadow_layer: u32,
-	shadow_map_extent: vec2u
-) -> f32 {
-	let offset_shadow_uv: vec2f = shadow_uv + offset;
-	if (offset_shadow_uv.x < 0.0 || offset_shadow_uv.x > 1.0 || offset_shadow_uv.y < 0.0 || offset_shadow_uv.y > 1.0) {
-		return 1.0;
-	}
-	if (surface_depth < 0.0 || surface_depth > 1.0) {
-		return 1.0;
-	}
-
-	let maximum_texel: vec2u = shadow_map_extent - vec2u(1, 1);
-	let shadow_texel: vec2u = vec2u(
-		u32(clamp(offset_shadow_uv.x * f32(shadow_map_extent.x), 0.0, f32(maximum_texel.x))),
-		u32(clamp(offset_shadow_uv.y * f32(shadow_map_extent.y), 0.0, f32(maximum_texel.y)))
-	);
-	let texel_center_uv: vec2f = (vec2f(f32(shadow_texel.x), f32(shadow_texel.y)) + vec2f(0.5, 0.5))
-		/ vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	let tap_surface_depth: f32 = surface_depth + dot(receiver_plane_depth_gradient, texel_center_uv - shadow_uv);
-	if (tap_surface_depth < 0.0 || tap_surface_depth > 1.0) {
-		return 1.0;
-	}
-	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-	return step(closest_depth, tap_surface_depth);
-}
-
-// Filters shadow maps with a tent over a 4x4 grid of taps spaced `texel_spacing` texels apart, so it reaches two
-// spacings to each side of the receiver. The grid is anchored to the shadow map, not to the receiver, and each tap reads
-// the one texel at its grid point. Each tap's weight changes smoothly as the receiver moves, so penumbrae are smooth
-// ramps with no noise, and they stay still from frame to frame because cascades are snapped to the texel grid. On each
-// axis the four weights are 1 - f, 2 - f, 1 + f, and f, where f is the receiver's position within its grid cell. They
-// always sum to four, so the filter never needs renormalizing.
+// Filters a directional receiver's shadow with a penumbra `penumbra_radius` texels wide on each side of an occluder
+// edge: a tent of that radius, from two to eight texels, over every texel whose center lies within it on both axes. Each
+// texel weighs the radius less its center's distance from the receiver on each axis, so the penumbra widens smoothly
+// with the radius and changes smoothly as the receiver moves. Reading every texel under the tent, instead of spreading
+// a few taps apart, keeps each step of the map's outline a small ripple inside the ramp: a sparse tent draws the outline
+// on a grid as coarse as its spacing.
 //
-// A spacing of one filters every texel under a two-texel tent. Wider spacings give wider penumbrae at the same cost,
-// and resolve occluder outlines at the spacing, which the wider tent smooths the same way.
-//
-// This version checks every tap against the map's edges and treats taps outside the map as lit. Cone shadows and
-// directional receivers near a cascade's edge use it.
-sample_shadow_tent: fn (
+// It reads blocks of 4x4 texels, four gathers each, from one block at a radius of two to 4x4 blocks at eight, so its
+// cost grows with the penumbra: callers keep the radius at four or less where a coarser cascade holds the receiver. Each
+// block issues its four gathers before comparing any, so they are in flight together. Each gather returns the quad
+// around one texel corner: x and y hold the left and right texels of the quad's second row, z and w the right and left
+// texels of its first row. The whole area must lie inside the map: callers filter only in a cascade that holds the
+// receiver, ten texels inside its edge.
+sample_directional_shadow_penumbra: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_uv: vec2f,
 	surface_depth: f32,
 	receiver_plane_depth_gradient: vec2f,
 	shadow_layer: u32,
 	shadow_map_extent: vec2u,
-	texel_spacing: f32
+	penumbra_radius: f32
 ) -> f32 {
-	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	let shadow_texel_position: vec2f = shadow_uv * shadow_map_extent_f;
-	let grid_position: vec2f = shadow_texel_position / texel_spacing;
-	// Grid coordinates can be negative here, so they stay in floats until `sample_shadow_tap` bounds them.
-	let first_cell: vec2f = vec2f(floor(grid_position.x - 1.5), floor(grid_position.y - 1.5));
-	let lit: f32 = 0.0;
-	for (let row: u32 = 0; row < 4; row = row + 1) {
-		let cell_center_y: f32 = first_cell.y + f32(row) + 0.5;
-		let weight_y: f32 = 2.0 - abs(cell_center_y - grid_position.y);
-		for (let column: u32 = 0; column < 4; column = column + 1) {
-			let cell_center: vec2f = vec2f(first_cell.x + f32(column) + 0.5, cell_center_y);
-			let weight: f32 = (2.0 - abs(cell_center.x - grid_position.x)) * weight_y;
-			let texel_center: vec2f = vec2f(
-				floor(cell_center.x * texel_spacing),
-				floor(cell_center.y * texel_spacing)
-			) + vec2f(0.5, 0.5);
-			lit = lit + weight * sample_shadow_tap(
-				shadow_map,
-				shadow_uv,
-				surface_depth,
-				receiver_plane_depth_gradient,
-				(texel_center - shadow_texel_position) / shadow_map_extent_f,
-				shadow_layer,
-				shadow_map_extent
-			);
-		}
-	}
-	return lit / 16.0;
-}
-
-// The spacing-one case of `sample_directional_shadow_tent`: a two-texel tent over the 4x4 block of adjacent texels
-// around the receiver, which four gathers read instead of sixteen fetches. Each gather returns the quad around one
-// texel corner: x and y hold the left and right texels of the quad's second row, z and w the right and left texels of
-// its first row. The whole block must lie inside the map. `shadow_texel_position` is the receiver in texels and
-// `depth_gradient_per_texel` the change of its plane's depth per texel.
-sample_directional_shadow_texel_tent: fn (
-	shadow_map: ArrayTexture2D,
-	shadow_texel_position: vec2f,
-	surface_depth: f32,
-	depth_gradient_per_texel: vec2f,
-	shadow_layer: u32,
-	shadow_map_extent_f: vec2f
-) -> f32 {
-	let first_texel: vec2f = vec2f(floor(shadow_texel_position.x - 1.5), floor(shadow_texel_position.y - 1.5));
-	// The first texel's center lies between two and one texels before the receiver on each axis, so the four tent
-	// weights per axis, 2 - |offset|, sum to four.
+	let texel_uv: vec2f = vec2f(1.0 / f32(shadow_map_extent.x), 1.0 / f32(shadow_map_extent.y));
+	let shadow_texel_position: vec2f = vec2f(
+		shadow_uv.x * f32(shadow_map_extent.x),
+		shadow_uv.y * f32(shadow_map_extent.y)
+	);
+	let radius: f32 = clamp(penumbra_radius, 2.0, 8.0);
+	// Blocks per axis: b of them cover the 4b texels whose centers lie within 2b texels of the receiver.
+	let blocks: u32 = u32(ceil(radius * 0.5));
+	let reach: f32 = f32(blocks * 2);
+	let first_texel: vec2f = vec2f(
+		floor(shadow_texel_position.x - reach + 0.5),
+		floor(shadow_texel_position.y - reach + 0.5)
+	);
+	// The first texel's center lies between 2b and 2b - 1 texels before the receiver on each axis.
 	let first_offset: vec2f = first_texel + vec2f(0.5, 0.5) - shadow_texel_position;
-	let weight_x: f32[4] = f32[4](
-		2.0 - abs(first_offset.x),
-		2.0 - abs(first_offset.x + 1.0),
-		2.0 - abs(first_offset.x + 2.0),
-		2.0 - abs(first_offset.x + 3.0)
-	);
-	let weight_y: f32[4] = f32[4](
-		2.0 - abs(first_offset.y),
-		2.0 - abs(first_offset.y + 1.0),
-		2.0 - abs(first_offset.y + 2.0),
-		2.0 - abs(first_offset.y + 3.0)
-	);
 	// The map holds each texel's depth at its center, so the receiver plane is compared there: at the first texel's
 	// center, then one gradient step per texel to the right or down.
-	let first_depth: f32 = surface_depth + dot(depth_gradient_per_texel, first_offset);
+	let step_x: f32 = receiver_plane_depth_gradient.x * texel_uv.x;
+	let step_y: f32 = receiver_plane_depth_gradient.y * texel_uv.y;
+	let first_depth: f32 = surface_depth + step_x * first_offset.x + step_y * first_offset.y;
+	// Each block's first quad shares the corner after its first texel; the others lie two texels right, down, or both.
+	let first_corner_uv: vec2f = vec2f((first_texel.x + 1.0) * texel_uv.x, (first_texel.y + 1.0) * texel_uv.y);
+	let quad_right: vec2f = vec2f(2.0 * texel_uv.x, 0.0);
+	let quad_down: vec2f = vec2f(0.0, 2.0 * texel_uv.y);
 	let lit: f32 = 0.0;
-	for (let quad_row: u32 = 0; quad_row < 2; quad_row = quad_row + 1) {
-		for (let quad_column: u32 = 0; quad_column < 2; quad_column = quad_column + 1) {
-			let column: u32 = quad_column * 2;
-			let row: u32 = quad_row * 2;
-			let next_column: u32 = column + 1;
-			let next_row: u32 = row + 1;
-			// The corner the quad's four texels share.
-			let corner_uv: vec2f = (first_texel + vec2f(f32(next_column), f32(next_row))) / shadow_map_extent_f;
-			let quad: vec4f = gather(shadow_map, corner_uv, shadow_layer);
-			let depth: f32 = first_depth
-				+ depth_gradient_per_texel.x * f32(column)
-				+ depth_gradient_per_texel.y * f32(row);
+	// The weights sum to a constant only at whole radii, so the result divides by their sum on each axis. Every block
+	// row adds the same column weights, so each row starts the column sum over and the last row's is kept.
+	let column_weight_sum: f32 = 0.0;
+	let row_weight_sum: f32 = 0.0;
+	for (let block_row: u32 = 0; block_row < blocks; block_row = block_row + 1) {
+		let row: f32 = f32(block_row * 4);
+		let row_offset: f32 = first_offset.y + row;
+		let weight_y0: f32 = max(radius - abs(row_offset), 0.0);
+		let weight_y1: f32 = max(radius - abs(row_offset + 1.0), 0.0);
+		let weight_y2: f32 = max(radius - abs(row_offset + 2.0), 0.0);
+		let weight_y3: f32 = max(radius - abs(row_offset + 3.0), 0.0);
+		row_weight_sum = row_weight_sum + weight_y0 + weight_y1 + weight_y2 + weight_y3;
+		column_weight_sum = 0.0;
+		let row_depth: f32 = first_depth + step_y * row;
+		for (let block_column: u32 = 0; block_column < blocks; block_column = block_column + 1) {
+			let column: f32 = f32(block_column * 4);
+			let corner_uv: vec2f = first_corner_uv + vec2f(column * texel_uv.x, row * texel_uv.y);
+			let top_left: vec4f = gather(shadow_map, corner_uv, shadow_layer);
+			let top_right: vec4f = gather(shadow_map, corner_uv + quad_right, shadow_layer);
+			let bottom_left: vec4f = gather(shadow_map, corner_uv + quad_down, shadow_layer);
+			let bottom_right: vec4f = gather(shadow_map, corner_uv + quad_right + quad_down, shadow_layer);
+			let column_offset: f32 = first_offset.x + column;
+			let weight_x0: f32 = max(radius - abs(column_offset), 0.0);
+			let weight_x1: f32 = max(radius - abs(column_offset + 1.0), 0.0);
+			let weight_x2: f32 = max(radius - abs(column_offset + 2.0), 0.0);
+			let weight_x3: f32 = max(radius - abs(column_offset + 3.0), 0.0);
+			column_weight_sum = column_weight_sum + weight_x0 + weight_x1 + weight_x2 + weight_x3;
+			// The block's first texel's plane depth, then one step per texel right or down.
+			let depth0: f32 = row_depth + step_x * column;
+			let depth1: f32 = depth0 + step_x;
+			let depth2: f32 = depth1 + step_x;
+			let depth3: f32 = depth2 + step_x;
 			lit = lit
-				+ weight_x[column] * weight_y[row] * step(quad.w, depth)
-				+ weight_x[next_column] * weight_y[row] * step(quad.z, depth + depth_gradient_per_texel.x)
-				+ weight_x[column] * weight_y[next_row] * step(quad.x, depth + depth_gradient_per_texel.y)
-				+ weight_x[next_column] * weight_y[next_row]
-					* step(quad.y, depth + depth_gradient_per_texel.x + depth_gradient_per_texel.y);
+				+ weight_y0 * (weight_x0 * step(top_left.w, depth0) + weight_x1 * step(top_left.z, depth1)
+					+ weight_x2 * step(top_right.w, depth2) + weight_x3 * step(top_right.z, depth3))
+				+ weight_y1 * (weight_x0 * step(top_left.x, depth0 + step_y) + weight_x1 * step(top_left.y, depth1 + step_y)
+					+ weight_x2 * step(top_right.x, depth2 + step_y) + weight_x3 * step(top_right.y, depth3 + step_y))
+				+ weight_y2 * (weight_x0 * step(bottom_left.w, depth0 + 2.0 * step_y)
+					+ weight_x1 * step(bottom_left.z, depth1 + 2.0 * step_y)
+					+ weight_x2 * step(bottom_right.w, depth2 + 2.0 * step_y)
+					+ weight_x3 * step(bottom_right.z, depth3 + 2.0 * step_y))
+				+ weight_y3 * (weight_x0 * step(bottom_left.x, depth0 + 3.0 * step_y)
+					+ weight_x1 * step(bottom_left.y, depth1 + 3.0 * step_y)
+					+ weight_x2 * step(bottom_right.x, depth2 + 3.0 * step_y)
+					+ weight_x3 * step(bottom_right.y, depth3 + 3.0 * step_y));
 		}
 	}
-	return lit / 16.0;
-}
-
-// The same tent filter as `sample_shadow_tent`, for directional receivers. When the whole footprint, which reaches
-// `2 * texel_spacing` texels from the receiver on each axis, lies inside the map, it skips the per-tap bounds checks
-// and works in texel space with the receiver plane expressed per texel; at a spacing of one, where the taps are
-// adjacent texels, `sample_directional_shadow_texel_tent` gathers them. Otherwise it falls back to `sample_shadow_tent`.
-sample_directional_shadow_tent: fn (
-	shadow_map: ArrayTexture2D,
-	shadow_uv: vec2f,
-	surface_depth: f32,
-	receiver_plane_depth_gradient: vec2f,
-	shadow_layer: u32,
-	shadow_map_extent: vec2u,
-	texel_spacing: f32
-) -> f32 {
-	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	let shadow_texel_position: vec2f = shadow_uv * shadow_map_extent_f;
-	let reach: f32 = 2.0 * texel_spacing;
-	if (shadow_texel_position.x < reach
-		|| shadow_texel_position.y < reach
-		|| shadow_texel_position.x > shadow_map_extent_f.x - 1.0 - reach
-		|| shadow_texel_position.y > shadow_map_extent_f.y - 1.0 - reach) {
-		return sample_shadow_tent(
-			shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, shadow_layer, shadow_map_extent, texel_spacing
-		);
-	}
-	let depth_gradient_per_texel: vec2f = receiver_plane_depth_gradient / shadow_map_extent_f;
-	if (texel_spacing == 1.0) {
-		return sample_directional_shadow_texel_tent(
-			shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, shadow_layer, shadow_map_extent_f
-		);
-	}
-	let grid_position: vec2f = shadow_texel_position / texel_spacing;
-	let first_cell: vec2f = vec2f(floor(grid_position.x - 1.5), floor(grid_position.y - 1.5));
-	let lit: f32 = 0.0;
-	for (let row: u32 = 0; row < 4; row = row + 1) {
-		let cell_center_y: f32 = first_cell.y + f32(row) + 0.5;
-		let weight_y: f32 = 2.0 - abs(cell_center_y - grid_position.y);
-		for (let column: u32 = 0; column < 4; column = column + 1) {
-			let cell_center_x: f32 = first_cell.x + f32(column) + 0.5;
-			let weight: f32 = (2.0 - abs(cell_center_x - grid_position.x)) * weight_y;
-			let shadow_texel: vec2u = vec2u(u32(cell_center_x * texel_spacing), u32(cell_center_y * texel_spacing));
-			let texel_center: vec2f = vec2f(f32(shadow_texel.x), f32(shadow_texel.y)) + vec2f(0.5, 0.5);
-			let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-			// The map holds each texel's depth at its center, so the receiver is compared at that same point on its
-			// plane.
-			let tap_surface_depth: f32 = surface_depth + dot(depth_gradient_per_texel, texel_center - shadow_texel_position);
-			lit = lit + weight * step(closest_depth, tap_surface_depth);
-		}
-	}
-	return lit / 16.0;
+	return lit / (column_weight_sum * row_weight_sum);
 }
 
 // Proves every texel the directional blocker search and penumbra filter can read is no closer to the light than the
@@ -264,7 +171,7 @@ directional_shadow_area_is_fully_lit: fn (
 // Proves every texel the penumbra filter can read is closer to the light than the receiver's plane, so the receiver is
 // fully shadowed. It covers the same 4x4 block of eight-texel cells as the fully-lit probe, with four
 // minimum-reduction samples of the cascades' minimum-depth pyramid, and lifts the receiver's plane by the most it can
-// rise over the filter's reach of eight texels, so a sloped receiver counts only when every tap lies behind the map.
+// rise over the filter's reach of four texels, so a sloped receiver counts only when every tap lies behind the map.
 directional_shadow_area_is_fully_shadowed: fn (
 	shadow_uv: vec2f,
 	surface_depth: f32,
@@ -300,7 +207,7 @@ directional_shadow_area_is_fully_shadowed: fn (
 			));
 		}
 	}
-	let plane_rise: f32 = 8.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
+	let plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
 	return block_minimum > surface_depth + plane_rise;
 }
 
@@ -476,7 +383,7 @@ directional_shadow_cascade_scale: fn (cascade: u32, texels_per_meter: vec4f) -> 
 // Returns the first cascade from `first_cascade` through `last_cascade` in which a distance of `reach_meters` spans at
 // most `limit_texels` texels, or `last_cascade` when none does. `texels_per_meter` holds each cascade's scale, from
 // cascade zero in x to cascade three in w. Directional shadows use it to search for occluders in a cascade whose search
-// window is wide enough, and to filter a penumbra in the finest cascade that can hold it.
+// window is wide enough.
 directional_shadow_fitting_cascade: fn (
 	first_cascade: u32,
 	last_cascade: u32,
@@ -492,8 +399,8 @@ directional_shadow_fitting_cascade: fn (
 	return last_cascade;
 }
 
-// Returns whether a world-space receiver lies inside a directional cascade's square, at least eight texels, the filter's
-// reach, from its edge. Cascades fitted to the camera's opaque surfaces hold every one of them, but not a surface drawn
+// Returns whether a world-space receiver lies inside a directional cascade's square, at least ten texels from its
+// edge, so the penumbra filter's reach of eight texels stays inside the map when the receiver moves off its surface. Cascades fitted to the camera's opaque surfaces hold every one of them, but not a surface drawn
 // later, such as a transparent one.
 directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space_position: vec3f, shadow_map_width: f32) -> bool {
 	let clip_position: vec4f = shadow_view_projection * vec4f(
@@ -503,7 +410,7 @@ directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space
 		1.0
 	);
 	// A texel spans two over the width in normalized device units.
-	let limit: f32 = 1.0 - 16.0 / shadow_map_width;
+	let limit: f32 = 1.0 - 20.0 / shadow_map_width;
 	return abs(clip_position.x) <= limit && abs(clip_position.y) <= limit;
 }
 
@@ -597,39 +504,6 @@ directional_shadow_occluder_distance: fn (
 		return 0.0;
 	}
 	return max(blocker_depth - receiver.z, 0.0) / depth_per_meter;
-}
-
-// Filters a directional receiver's shadow with a penumbra `penumbra_radius` texels wide on each side, from a sharp
-// two-texel tent up to an eight-texel one. Between the tent spacings of one, two, and four texels it blends the two
-// nearest, so the penumbra widens smoothly with the radius.
-sample_directional_shadow_penumbra: fn (
-	shadow_map: ArrayTexture2D,
-	shadow_uv: vec2f,
-	surface_depth: f32,
-	receiver_plane_depth_gradient: vec2f,
-	shadow_layer: u32,
-	shadow_map_extent: vec2u,
-	penumbra_radius: f32
-) -> f32 {
-	// A tent with spacing s reaches 2s texels, so the spacing that matches the radius is radius / 2.
-	let level: f32 = clamp(log2(max(penumbra_radius, 2.0) * 0.5), 0.0, 2.0);
-	let fine_spacing: f32 = 1.0;
-	if (level >= 2.0) {
-		fine_spacing = 4.0;
-	} else if (level >= 1.0) {
-		fine_spacing = 2.0;
-	}
-	let coarse_blend: f32 = level - floor(level);
-	let lit: f32 = sample_directional_shadow_tent(
-		shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, shadow_layer, shadow_map_extent, fine_spacing
-	);
-	if (coarse_blend <= 0.0) {
-		return lit;
-	}
-	let coarse_lit: f32 = sample_directional_shadow_tent(
-		shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, shadow_layer, shadow_map_extent, fine_spacing * 2.0
-	);
-	return mix(lit, coarse_lit, coarse_blend);
 }
 
 // Filters a directional receiver's shadow in one cascade with a penumbra `penumbra_radius` texels wide on each side of
@@ -770,11 +644,40 @@ sample_directional_shadow: fn (
 		}
 	}
 
-	// The filter reaches at most eight texels, so the penumbra is filtered in the finest cascade that holds it.
+	// The filter's tent spans 2 to 8 texels: a narrower one leaves the map's texel steps in the edge, and a wider one
+	// costs too many reads. A penumbra clamped to that span comes out wider or narrower in meters than it is, so it is
+	// filtered in the cascade where the clamp changes it least: where its width w in texels makes the larger of 2 / w,
+	// the widening, and w / 6, which weighs the reads, least. A coarse cascade whose texels are far larger then leaves
+	// the penumbra to a finer one instead of blurring it many times over. The candidates run from the surface's own
+	// cascade to one past the search cascade, since the search finds penumbrae up to about eight of its own texels wide,
+	// and must hold the receiver, so the filter stays inside the map: the surface's own cascade and the search cascade
+	// do, but another fitted to its own surfaces often doesn't. A penumbra of no width counts as a tenth of a
+	// millimeter, so the finest candidate filters it.
 	let penumbra_meters: f32 = max(occluder_distance, 0.0) * angular_radius_tangent;
-	let filter_cascade: u32 = directional_shadow_fitting_cascade(
-		depth_cascade, search_cascade, penumbra_meters, texels_per_meter, 8.0
-	);
+	let fitted_penumbra_meters: f32 = max(penumbra_meters, 0.0001);
+	let last_filter_cascade: u32 = min(search_cascade + 1, 3);
+	let filter_cascade: u32 = 4;
+	let filter_misfit: f32 = 100000000.0;
+	let runner_up_cascade: u32 = 4;
+	let runner_up_misfit: f32 = 100000000.0;
+	for (let cascade: u32 = depth_cascade; cascade <= last_filter_cascade; cascade = cascade + 1) {
+		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+		if (cascade == depth_cascade
+			|| cascade == search_cascade
+			|| directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
+			let misfit: f32 = max(2.0 / width, width / 6.0);
+			if (misfit < filter_misfit) {
+				runner_up_cascade = filter_cascade;
+				runner_up_misfit = filter_misfit;
+				filter_cascade = cascade;
+				filter_misfit = misfit;
+			} else if (misfit < runner_up_misfit) {
+				runner_up_cascade = cascade;
+				runner_up_misfit = misfit;
+			}
+		}
+	}
 	let filter_receiver: vec4f = search_receiver;
 	let filter_gradient: vec2f = search_gradient;
 	if (filter_cascade != search_cascade) {
@@ -796,34 +699,40 @@ sample_directional_shadow: fn (
 		penumbra_meters * directional_shadow_cascade_scale(filter_cascade, texels_per_meter),
 		occluder_distance <= 0.0 && filter_cascade != search_cascade
 	);
-	if (filter_cascade == depth_cascade) {
-		return lit;
-	}
 
-	// The two cascades sample the scene at different resolutions, so where a penumbra outgrows the finer cascade they
-	// can disagree. Up to twelve of the finer cascade's texels, where its filter stays capped at eight, the result fades
-	// from the finer cascade to this one, so the change of cascade leaves no seam.
-	let finer_cascade: u32 = filter_cascade - 1;
-	let finer_texels_per_meter: f32 = directional_shadow_cascade_scale(finer_cascade, texels_per_meter);
-	let finer_radius: f32 = penumbra_meters * finer_texels_per_meter;
-	let coarse_share: f32 = clamp((finer_radius - 8.0) / 4.0, 0.0, 1.0);
-	if (coarse_share >= 1.0) {
+	// Two cascades sample the scene at different resolutions, so where the choice between them flips they can disagree.
+	// Where the runner-up's misfit is less than 1.5 times the chosen one's, the result mixes the two: half and half where
+	// they fit equally well, so the flip leaves no seam, and all the chosen cascade's at 1.5 times.
+	let filter_share: f32 = min(runner_up_misfit / filter_misfit - 0.5, 1.0);
+	if (runner_up_cascade == 4 || filter_share >= 1.0) {
 		return lit;
 	}
-	let finer_view: u32 = directional_shadow_cascade_view(finer_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
-	let finer_view_projection: mat4f = views.views[finer_view].view_projection;
-	let finer_lit: f32 = sample_directional_shadow_cascade(
+	let runner_up_receiver: vec4f = search_receiver;
+	let runner_up_gradient: vec2f = search_gradient;
+	if (runner_up_cascade != search_cascade) {
+		let runner_up_view: u32 = directional_shadow_cascade_view(
+			runner_up_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3
+		);
+		let runner_up_view_projection: mat4f = views.views[runner_up_view].view_projection;
+		runner_up_receiver = directional_shadow_receiver(
+			runner_up_view_projection,
+			runner_up_cascade,
+			world_space_position + normal_offset / directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter)
+		);
+		runner_up_gradient = directional_shadow_receiver_gradient(
+			runner_up_view_projection, surface_vector0, surface_vector1
+		);
+	}
+	let runner_up_lit: f32 = sample_directional_shadow_cascade(
 		shadow_map,
-		first_layer + finer_cascade,
-		directional_shadow_receiver(
-			finer_view_projection, finer_cascade, world_space_position + normal_offset / finer_texels_per_meter
-		),
-		directional_shadow_receiver_gradient(finer_view_projection, surface_vector0, surface_vector1),
+		first_layer + runner_up_cascade,
+		runner_up_receiver,
+		runner_up_gradient,
 		shadow_map_extent,
-		finer_radius,
-		false
+		penumbra_meters * directional_shadow_cascade_scale(runner_up_cascade, texels_per_meter),
+		occluder_distance <= 0.0 && runner_up_cascade != search_cascade
 	);
-	return mix(finer_lit, lit, coarse_share);
+	return mix(runner_up_lit, lit, filter_share);
 }
 
 // Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and every

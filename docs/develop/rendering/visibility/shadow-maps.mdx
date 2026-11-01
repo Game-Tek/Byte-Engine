@@ -101,6 +101,80 @@ A change to the updates must keep:
   checks the shader's side, and the `shadow_updates` tests the scheduler and
   states.
 
+## Sun penumbrae read every texel under their filter
+
+A sun's penumbra is as wide as its occluder is far above the receiver, times
+the tangent of the sun's angular radius: about 55 millimeters on each side for
+Sponza's roof edge, 12 meters above the courtyard floor. The
+[penumbra rules](/docs/reference/rendering#the-visibility-pipeline) filter it
+with a tent that reads every texel within 2 to 8 texels of the receiver. The
+sun visibility resolve reads them in blocks of 4x4 texels, from one block at a
+radius of 2 to 4x4 blocks at 8, and issues each block's four gathers before it
+compares any texel, so they're in flight together. Each block's weights and
+plane depths step from its first texel, and the weight sums come out of the
+same loop. The material shader's copy, for transparent receivers, fetches the
+texels one by one, because gathers in that kernel slowed every opaque material.
+
+A penumbra outside the tent's 2 to 8 texels is clamped, so it comes out wider
+or narrower in meters than it is. The penumbra cascade is the one where the
+clamp changes it least, by the larger of 2 / w and w / 6, where w is the
+penumbra's width in that cascade's texels: 2 / w is how far a 2-texel tent
+widens a narrower penumbra, and w / 6 weighs the reads a wider one costs.
+Between cascades whose texels differ by a factor of 2, the coarser one takes
+over at 4.9 of the finer one's texels, and the fade mixes the two from 4 to 6
+of them. Receivers fitting doesn't keep the cascades in order of texel size: on
+Sponza, cascade 2 can have finer texels than cascade 1, and cascade 3 sixteen
+times coarser ones than cascade 2. With receivers fitting, a coarser cascade
+also often doesn't hold a nearby receiver, since it's fitted to farther
+surfaces; then a finer one filters the penumbra, up to 8 texels wide, 64
+gathers, a cost that falls only on the pixels of wide penumbrae.
+
+Two earlier filters show why. The first kept 16 taps and spread them up to 4
+texels apart, so it skipped up to 15 of every 16 texels and drew an occluder's
+edge on a grid 4 texels wide: near Sponza's courtyard floor, a staircase of
+soft blocks 20 to 30 pixels long that rearranged as the camera moved its
+cascade, spacing, and blend. The second read every texel but moved to the next
+cascade once the penumbra spanned 4 texels, wherever it landed there. Looking
+down Sponza's courtyard from the upper gallery, the roof's penumbra kept its
+55 millimeters in cascade 1, and past the boundary to cascade 2, which handed
+it to cascade 3, where it spanned two-thirds of a texel, the 2-texel tent
+blurred it to 167 millimeters. It now stays in cascade 2 at 41 millimeters,
+clamped to 8 texels.
+
+On Sponza at 1024 × 1024 on an Apple M4, with the camera 2 to 3.2 meters
+above the courtyard floor looking 35° down at the roof's shadow edge, moving
+the camera up in 10-centimeter steps changed the edge's sun visibility,
+compared on the floor plane, by 0.37 to 1.00 of 255 on average each step with
+the spaced taps, and by 0.04 to 0.08 with every texel read, the comparison's
+own noise. In that view, where most of the image is a wide penumbra, the
+`screen-space` stage, which holds the sun visibility resolve, took 1.88 ms with
+the spaced taps, 2.08 ms with every texel read in a loop that compared each
+quad as it arrived, 1.94 ms with each block's four gathers issued first, and
+1.99 ms with the cascade chosen by how little the clamp changes the penumbra,
+in frames where the shadow raster matched within 2 %. From the upper gallery,
+the cascade choice took the stage from 1.53 to 1.61 ms.
+
+A change to the penumbra filter must keep:
+
+- The penumbra cascade chosen by how much the 2-to-8-texel clamp changes the
+  penumbra's width in meters, not by a texel count alone, so the blur stays the
+  same width where the cascade changes. Cascades don't nest under receivers
+  fitting, so neither their order nor a fixed ratio between them may be assumed.
+- Every texel under the tent read. A filter that reaches further with the same
+  taps undersamples the map and brings the staircase back.
+- The filter's reach of 8 texels, plus the receiver's move off its surface,
+  inside the 10-texel margin that `directional_shadow_cascade_holds` keeps from
+  a cascade's edge, so the filter never reads past the map. The penumbra
+  cascade is chosen only among cascades that hold the receiver, and the margin
+  stays inside the 17 texels that pad every fitted cascade.
+- The two copies, in `sun-visibility.besl` and `shader_generator/sources/shadow.rs`,
+  in agreement. The VM tests
+  `directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm` and
+  `directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm` check the
+  material shader's copy, and
+  `sun_visibility_penumbra_filter_matches_the_material_shaders_in_the_besl_vm`
+  holds the resolve's copy to it.
+
 ## Rust API
 
 - [`rendering` module](/docs/api/latest/byte_engine/rendering)

@@ -1560,6 +1560,8 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 		buff.asin_value = asin(1.0);
 		buff.atan2_value = atan2(1.0, 0.0);
 		buff.floor_value = floor(1.75);
+		buff.ceil_value = ceil(1.25);
+		buff.negative_ceil_value = ceil(0.0 - 1.75);
 		buff.fract_value = fract(1.25);
 		buff.radians_value = radians(180.0);
 		buff.inverse_sqrt_value = inversesqrt(4.0);
@@ -1581,6 +1583,8 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 			("asin_value", "f32"),
 			("atan2_value", "f32"),
 			("floor_value", "f32"),
+			("ceil_value", "f32"),
+			("negative_ceil_value", "f32"),
 			("fract_value", "f32"),
 			("radians_value", "f32"),
 			("inverse_sqrt_value", "f32"),
@@ -1603,13 +1607,15 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 		(FRAC_PI_2, 1e-6),
 		(FRAC_PI_2, 1e-6),
 		(1.0, 1e-6),
+		(2.0, 1e-6),
+		(-1.0, 1e-6),
 		(0.25, 1e-6),
 		(PI, 1e-6),
 		(0.5, 1e-6),
 		(0.5, 1e-6),
 		(2.5, 1e-6),
 	];
-	for (index, (value, (expected, tolerance))) in read_f32s(&buffer, 14).into_iter().zip(expected).enumerate() {
+	for (index, (value, (expected, tolerance))) in read_f32s(&buffer, 16).into_iter().zip(expected).enumerate() {
 		assert!((value - expected).abs() < tolerance, "member {index}: {value} != {expected}");
 	}
 }

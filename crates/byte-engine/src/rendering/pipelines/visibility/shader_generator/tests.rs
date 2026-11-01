@@ -926,11 +926,11 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 	}
 }
 
-/// Verifies the tent shadow filter turns a hard shadow-map edge into a smooth ramp, keeps reverse-Z comparison, compares
-/// a sloped receiver on its own plane so it does not shadow itself, treats texels outside the map as lit, and reaches
-/// further from an edge when its taps are spaced wider.
+/// Verifies the directional penumbra filter at its sharpest, a two-texel tent, turns a hard shadow-map edge into a smooth
+/// ramp, keeps reverse-Z comparison, and compares a sloped receiver on its own plane so it does not shadow itself; and
+/// that at its widest, a four-texel tent, a receiver on the edge stays half lit.
 #[test]
-fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
+fn directional_shadow_penumbra_ramps_across_an_edge_in_the_besl_vm() {
 	// Texels from column four on hold a blocker at depth 0.9, closer to the light than a receiver at 0.8 under
 	// reverse-Z. The others hold 0.2, farther than it.
 	let mut shadow_map = column_shadow_map(8, |x| if x >= 4 { 0.9 } else { 0.2 });
@@ -941,30 +941,21 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
 			let extent: vec2u = vec2u(8, 8);
-			// Texels from column four on hold a blocker. The tent reaches two tap spacings to each side of the receiver.
-			results.clear = sample_directional_shadow_tent(shadow_map, vec2f(2.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
-			results.quarter_covered = sample_directional_shadow_tent(shadow_map, vec2f(3.5, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
-			results.on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
-			results.covered = sample_directional_shadow_tent(shadow_map, vec2f(6.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
-			results.wide_on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 2.0);
+			// Texels from column four on hold a blocker. A radius under two filters at two.
+			results.clear = sample_directional_shadow_penumbra(shadow_map, vec2f(2.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 0.0);
+			results.quarter_covered = sample_directional_shadow_penumbra(shadow_map, vec2f(3.5, 4.0) / 8.0, 0.8, flat, u32(0), extent, 2.0);
+			results.on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 2.0);
+			results.covered = sample_directional_shadow_penumbra(shadow_map, vec2f(6.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 2.0);
+			results.wide_on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 4.0);
 			// The receiver lies 0.0001 in front of the stored slope, which rises 0.01 per texel, 0.08 per unit of uv.
-			results.sloped_receiver = sample_directional_shadow_tent(sloped_map, vec2f(3.2, 3.5) / 8.0, 0.5321, vec2f(0.08, 0.0), u32(0), extent, 1.0);
-			results.bounded_on_edge = sample_shadow_tent(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 1.0);
-			// One quarter of this footprint's weight falls past the map's right edge.
-			results.bounded_past_border = sample_shadow_tent(shadow_map, vec2f(7.5 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 1.0);
-			// Two texels from the edge, a one-texel spacing stays clear, but a two-texel spacing reaches the blocker.
-			results.bounded_wide_reach = sample_shadow_tent(shadow_map, vec2f(2.0 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 2.0);
+			results.sloped_receiver = sample_directional_shadow_penumbra(sloped_map, vec2f(3.2, 3.5) / 8.0, 0.5321, vec2f(0.08, 0.0), u32(0), extent, 2.0);
 		}
 		"#,
 		&mut [
 			("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map),
 			("sloped_map", Node::combined_array_image_sampler(), &mut sloped_map),
 		],
-		&[
-			(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
-			(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
-			(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
-		],
+		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
 		members(
 			"f32",
 			&[
@@ -974,9 +965,6 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 				"covered",
 				"wide_on_edge",
 				"sloped_receiver",
-				"bounded_on_edge",
-				"bounded_past_border",
-				"bounded_wide_reach",
 			],
 		),
 	);
@@ -990,15 +978,12 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 			("covered", 0.0),
 			("wide_on_edge", 0.5),
 			("sloped_receiver", 1.0),
-			("bounded_on_edge", 0.5),
-			("bounded_past_border", 0.25),
-			("bounded_wide_reach", 0.875),
 		],
-		"The most likely cause is incorrect tent weights or tap addressing.",
+		"The most likely cause is incorrect tent weights or texel addressing.",
 	);
 }
 
-/// Verifies the cone tent filters like the spacing-one `sample_shadow_tent`: a hard shadow-map edge becomes a
+/// Verifies the cone tent filters with a two-texel tent: a hard shadow-map edge becomes a
 /// smooth ramp, a sloped receiver compares on its own plane so it does not shadow itself, texels off the map are lit, and
 /// so are texels where the receiver plane lies past the far plane.
 #[test]
@@ -1089,9 +1074,9 @@ fn assert_f32_results(results: &besl::vm::Buffer, expected: &[(&str, f32)], like
 	}
 }
 
-/// Verifies the directional penumbra widens with its radius and stays sharp at contact: a receiver four texels from a
-/// shadow edge is fully lit under the sharpest tent, partly shadowed under a wide one, and in between for a radius
-/// between tent spacings. A receiver on the edge stays half lit at any radius.
+/// Verifies the directional penumbra widens with its radius and stays sharp at contact: a receiver two texels from a
+/// shadow edge is fully lit under the sharpest tent, partly shadowed under wider ones, and most under the widest, which a
+/// larger radius doesn't pass. A receiver on the edge stays half lit at any radius.
 #[test]
 fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 	// Texels from column 16 on hold a blocker in front of a receiver at 0.8.
@@ -1100,35 +1085,155 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
-			let near_edge: vec2f = vec2f(12.0 / 32.0, 0.5);
+			let near_edge: vec2f = vec2f(14.0 / 32.0, 0.5);
 			let extent: vec2u = vec2u(32, 32);
 			results.contact = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 0.0);
-			results.between = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 6.0);
-			results.wide = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 8.0);
-			results.on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), extent, 8.0);
+			results.between = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 3.0);
+			results.wide = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 4.0);
+			results.widest = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 8.0);
+			results.past_reach = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 12.0);
+			results.on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), extent, 3.0);
 		}
 		"#,
 		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[
-			(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
-			(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
-			(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
-			(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
-		],
-		members("f32", &["contact", "between", "wide", "on_edge"]),
+		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
+		members("f32", &["contact", "between", "wide", "widest", "past_reach", "on_edge"]),
 	);
 
-	// A radius of six lies between the two- and four-texel spacings, which give 1.0 and 0.875 here.
-	let between_blend = 3.0_f32.log2() - 1.0;
+	// Columns 10 through 17 lie under the radii of three and four, their centers 3.5 to -3.5 texels from the receiver,
+	// and the blocked columns 16 and 17 lie 2.5 and 3.5 past it. A radius of three weighs the columns 0, 0.5, 1.5, 2.5,
+	// 2.5, 1.5, 0.5, and 0, and a radius of four one more each. A radius of eight reads columns 6 through 21, weighing
+	// them 0.5 to 7.5 and back, 64 in all, and the blocked columns 16 through 21 weigh 5.5 down to 0.5, 18 in all.
 	assert_f32_results(
 		&results,
 		&[
 			("contact", 1.0),
-			("between", 1.0 + (0.875 - 1.0) * between_blend),
-			("wide", 0.875),
+			("between", 1.0 - 0.5 / 9.0),
+			("wide", 1.0 - 2.0 / 16.0),
+			("widest", 1.0 - 18.0 / 64.0),
+			("past_reach", 1.0 - 18.0 / 64.0),
 			("on_edge", 0.5),
 		],
-		"The most likely cause is an incorrect penumbra level or blend between tent spacings.",
+		"The most likely cause is incorrect tent weights or their normalization.",
+	);
+}
+
+/// Verifies the widest directional penumbra follows a shallow occluder edge instead of the map's staircase of it: along
+/// a straight edge that climbs one texel every eight, which the map holds as steps eight texels long, the filtered
+/// shadow stays within 0.04 of half lit. A tent that reads one texel in every four or sixteen strays by about 0.2, and
+/// draws the edge as a staircase of soft blocks.
+#[test]
+fn directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm() {
+	const SIZE: u32 = 32;
+	// The edge's height at column center x is 12 + x / 8. A texel whose center lies below it holds a blocker.
+	let edge = |x: f32| 12.0 + x / 8.0;
+	let mut shadow_map = Texture::new_3d(SIZE, SIZE, 1).expect("shadow map fixture");
+	for y in 0..SIZE {
+		for x in 0..SIZE {
+			let depth = if (y as f32 + 0.5) < edge(x as f32 + 0.5) { 0.9 } else { 0.2 };
+			shadow_map
+				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
+				.expect("shadow map fixture");
+		}
+	}
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let flat: vec2f = vec2f(0.0, 0.0);
+			let extent: vec2u = vec2u(32, 32);
+			let deviation: f32 = 0.0;
+			// Receivers on the true edge, an eighth of a texel apart over twelve texels.
+			for (let step: u32 = 0; step < 96; step = step + 1) {
+				let x: f32 = 10.0 + f32(step) * 0.125;
+				let receiver: vec2f = vec2f(x, 12.0 + x / 8.0) / 32.0;
+				let lit: f32 = sample_directional_shadow_penumbra(shadow_map, receiver, 0.8, flat, u32(0), extent, 4.0);
+				deviation = max(deviation, abs(lit - 0.5));
+			}
+			results.deviation = deviation;
+		}
+		"#,
+		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
+		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
+		members("f32", &["deviation"]),
+	);
+
+	let deviation = read_f32(&results, "deviation");
+	assert!(
+		deviation <= 0.04,
+		"The penumbra strayed {deviation} from half lit along a straight edge. The most likely cause is a filter that skips texels under its tent."
+	);
+}
+
+/// Verifies the sun visibility resolve's copy of the directional penumbra filter, which gathers 4x4 blocks, gives what
+/// the material shader's copy gives, which fetches texel by texel: over a jagged occluder edge, a sloped receiver, and
+/// radii from two to past eight, at receivers between texel centers.
+#[test]
+fn sun_visibility_penumbra_filter_matches_the_material_shaders_in_the_besl_vm() {
+	const SIZE: u32 = 32;
+	// A jagged edge that climbs one texel in three, with a notch every five columns.
+	let mut shadow_map = Texture::new_3d(SIZE, SIZE, 1).expect("shadow map fixture");
+	for y in 0..SIZE {
+		for x in 0..SIZE {
+			let edge = 10.0 + x as f32 / 3.0 + if x % 5 == 0 { 2.0 } else { 0.0 };
+			let depth = if (y as f32 + 0.5) < edge { 0.9 } else { 0.2 + 0.01 * x as f32 };
+			shadow_map
+				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
+				.expect("shadow map fixture");
+		}
+	}
+	// The resolve's copy, renamed so both copies can be declared together.
+	let resolve_source = include_str!("../../../../../assets/rendering/visibility/sun-visibility.besl");
+	let start = resolve_source
+		.find("sample_directional_shadow_penumbra: fn (")
+		.expect("the resolve's penumbra filter");
+	let end = start
+		+ resolve_source[start..]
+			.find("\n}\n")
+			.expect("the end of the resolve's penumbra filter")
+		+ 3;
+	let resolve_filter: &'static str = Box::leak(
+		resolve_source[start..end]
+			.replace("sample_directional_shadow_penumbra", "resolve_shadow_penumbra")
+			.into_boxed_str(),
+	);
+	let results = run_helper_test(
+		r#"
+		main: fn () -> void {
+			let extent: vec2u = vec2u(32, 32);
+			// The receiver plane rises 0.002 per texel along x and falls 0.001 per texel along y.
+			let gradient: vec2f = vec2f(0.064, 0.0 - 0.032);
+			let difference: f32 = 0.0;
+			let shadowed: f32 = 0.0;
+			for (let step: u32 = 0; step < 40; step = step + 1) {
+				let receiver: vec2f = vec2f(12.3 + f32(step) * 0.17, 13.1 + f32(step) * 0.11) / 32.0;
+				let radius: f32 = 1.5 + f32(step % 8) * 1.1;
+				let material: f32 = sample_directional_shadow_penumbra(shadow_map, receiver, 0.5, gradient, u32(0), extent, radius);
+				let resolve: f32 = resolve_shadow_penumbra(shadow_map, receiver, 0.5, gradient, u32(0), extent, radius);
+				difference = max(difference, abs(material - resolve));
+				shadowed = shadowed + (1.0 - material);
+			}
+			results.difference = difference;
+			results.shadowed = shadowed;
+		}
+		"#,
+		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
+		&[
+			(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
+			(resolve_filter, "resolve_shadow_penumbra"),
+		],
+		members("f32", &["difference", "shadowed"]),
+	);
+
+	let difference = read_f32(&results, "difference");
+	let shadowed = read_f32(&results, "shadowed");
+	// The receivers straddle the edge, so the comparison covers partly shadowed results, not only clear ones.
+	assert!(
+		shadowed > 4.0 && shadowed < 36.0,
+		"The fixture's receivers were {shadowed} shadowed in all."
+	);
+	assert!(
+		difference <= 0.00001,
+		"The two penumbra filters differ by {difference}. The most likely cause is that one copy changed without the other."
 	);
 }
 

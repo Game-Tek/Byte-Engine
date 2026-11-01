@@ -596,6 +596,7 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			Unary::Tan => value.tan(),
 			Unary::Asin => value.asin(),
 			Unary::Floor => value.floor(),
+			Unary::Ceil => value.ceil(),
 			Unary::Round => value.round(),
 			Unary::Fract => value - value.floor(),
 			Unary::Radians => value.to_radians(),

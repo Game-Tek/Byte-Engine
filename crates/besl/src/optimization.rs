@@ -339,7 +339,7 @@ impl EffectAnalysis {
 				| "exp" | "sin"
 				| "cos" | "sincos"
 				| "tan" | "asin"
-				| "atan2" | "floor"
+				| "atan2" | "floor" | "ceil"
 				| "round" | "round_to_i32"
 				| "fma" | "fract"
 				| "fwidth" | "radians"

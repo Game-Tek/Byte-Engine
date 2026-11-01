@@ -581,6 +581,7 @@ impl Node {
 			"cos",
 			"asin",
 			"floor",
+			"ceil",
 			"tan",
 			"fract",
 			"fwidth",

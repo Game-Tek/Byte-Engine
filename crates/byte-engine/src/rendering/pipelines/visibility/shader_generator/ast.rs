@@ -179,9 +179,11 @@ pub(super) fn material_surface_statements(features: MaterialReconstructionFeatur
 /// Statements that rebuild a ray tracing hit's surface before a closest-hit shader's material body runs.
 ///
 /// Like [`material_evaluation_prefix_statements`], they interpolate texture coordinates and build the tangent frame
-/// only for a material that reads them.
+/// only for a material that reads them. The back of a single-sided surface returns its payload before either, so it
+/// samples no texture.
 pub(super) fn material_hit_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE, "material_hit_prefix");
+	statements.extend(parse_besl_statements(MATERIAL_HIT_BACKFACE_SOURCE, "material_hit_backface"));
 	if features.needs_uv() {
 		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE, "material_hit_uv"));
 	}

@@ -468,6 +468,7 @@ name: sampler<{
 	mip_filter: FILTER,
 	reduction: REDUCTION,
 	address: ADDRESS,
+	anisotropy: ANISOTROPY,
 }>;
 ```
 
@@ -480,6 +481,7 @@ can add a trailing comma.
 | `mip_filter` | `nearest`, `linear` | `linear` | The levels a read combines. `nearest` reads the level nearest the requested level of detail (LOD). `linear` blends the two levels around it. |
 | `reduction` | `average`, `min`, `max` | `average` | How a read combines the texels of its footprint. `average` weights each texel by its distance from the coordinate. `min` and `max` return the smallest or largest texel. |
 | `address` | `clamp`, `repeat`, `mirror` | `clamp` | What a coordinate outside `[0, 1]` reads on every axis. `clamp` reads the edge texel, `repeat` wraps around, and `mirror` wraps around with every other repetition reversed. |
+| `anisotropy` | An integer from `1` to `16` | `1` | The most texels a read combines along the direction the texture is stretched on screen. `1` turns anisotropic filtering off. |
 
 A sampler reads every level of the image bound with it. It doesn't clamp the
 LOD.
@@ -502,7 +504,7 @@ occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampl
 
 A sampler whose `reduction` is `min` or `max` has more rules:
 
-- It takes `mip_filter: nearest` and `address: clamp`.
+- It takes `mip_filter: nearest`, `address: clamp`, and `anisotropy: 1`.
 - Only `Texture2D` and `Texture2DArray` descriptors take it.
 - Its image has one channel. A read returns the reduced value in `x`, `0` in
   `y` and `z`, and `1` in `w`.

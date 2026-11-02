@@ -36,6 +36,13 @@ pub(super) enum Instruction {
 		value: usize,
 		mask: usize,
 	},
+	/// Gives every active subgroup lane the largest `value` among those lanes. `value_type` is the scalar type the
+	/// reduction accepts, `u32` or `f32`.
+	SubgroupMax {
+		register: usize,
+		value: usize,
+		value_type: ValueType,
+	},
 	WorkgroupBarrier,
 }
 

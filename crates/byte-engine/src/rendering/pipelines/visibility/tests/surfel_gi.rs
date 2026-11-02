@@ -1903,6 +1903,27 @@ fn surfel_resolve_kills_the_heaviest_surfel_of_an_overcrowded_pixel() {
 	);
 }
 
+/// Verifies the pixels of a surfel's own cell keep it alive while it faces them, even when it lights nothing, and that
+/// pixels it doesn't face don't. The kept surfel lies between the tile's two subgroups, so both vote for it.
+#[test]
+fn surfel_resolve_keeps_alive_the_surfels_its_cell_faces() {
+	let passes = SurfelPasses::new();
+	let mut set = SurfelSet::new(&passes);
+	let mut sink = WallSink::new();
+	let (facing, sideways) = (0, 1);
+	set.place(facing, WallSink::wall_point([3, 4]), WALL_NORMAL);
+	set.place(sideways, WallSink::wall_point([6, 1]), [1.0, 0.0, 0.0]);
+	// Without trust, neither surfel lights a pixel, so neither earns the dominance vote.
+	for slot in [facing, sideways] {
+		set.set_record(slot, "weight", Value::F32(0.0));
+	}
+	passes.run_grid(&mut set);
+	sink.resolve(&mut set);
+
+	assert_eq!(set.state(facing, "touched"), 5);
+	assert_eq!(set.state(sideways, "touched"), 0);
+}
+
 /// Verifies the allocator takes slots from the free stack while it holds any, then slots no surfel has used, and
 /// spawns nothing once both run out; a spawn starts with its parent's light, which lookups trust as much as 32 of its
 /// own rays.

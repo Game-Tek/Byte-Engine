@@ -231,6 +231,8 @@ impl Generator {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:require\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:require\n");
+				// glslang adds the GroupNonUniformArithmetic capability only to modules that call subgroupMax.
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic:require\n");
 			}
 			Stages::Mesh {
 				maximum_vertices,
@@ -689,6 +691,7 @@ impl NodeEmitter for Generator {
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "subgroupBroadcast",
 					"subgroup_shuffle_xor_f32" => "subgroupShuffleXor",
+					"subgroup_max_u32" | "subgroup_max_f32" => "subgroupMax",
 					"set_mesh_output_counts" => "SetMeshOutputsEXT",
 					name => name,
 				});

@@ -443,7 +443,7 @@ impl Generator {
 						}
 						let _ = write!(string, " : register({register_type}{register_index}, space0);{break_char}");
 					}
-					besl::BindingTypes::CombinedImageSampler { format, .. } => {
+					besl::BindingTypes::CombinedImageSampler { format, sampler } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
 						let texture_type = match format.as_str() {
 							"Texture3D" => "Texture3D",
@@ -463,12 +463,13 @@ impl Generator {
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
-						// Also declare a sampler with the same name + _sampler suffix
+						// Also declare a sampler with the same name + _sampler suffix. Every element of an array whose sampler
+						// the shader fixes reads through one static sampler, so only a bound sampler is an array.
 						let _ = write!(
 							string,
 							" : register(t{register_index}, space0);{break_char}SamplerState {name}_sampler"
 						);
-						if let Some(count) = count {
+						if let (Some(count), None) = (count, sampler) {
 							let _ = write!(string, "[{count}]");
 						}
 						let _ = write!(string, " : register(s{register_index}, space0);{break_char}");

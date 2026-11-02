@@ -804,6 +804,22 @@ impl<'a> Compiler<'a> {
 				self.emit(Instruction::SubgroupShuffleXor { register, value, mask });
 				Ok(register)
 			}
+			"subgroup_max_u32" | "subgroup_max_f32" => {
+				require_argument_count(arguments, 1)?;
+				let value_type = if name == "subgroup_max_u32" {
+					ValueType::U32
+				} else {
+					ValueType::F32
+				};
+				let value = self.compile_value_expression(&arguments[0], &value_type)?;
+				let register = self.allocate_register();
+				self.emit(Instruction::SubgroupMax {
+					register,
+					value,
+					value_type,
+				});
+				Ok(register)
+			}
 			_ => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported intrinsic `{}`", name),
 			}),

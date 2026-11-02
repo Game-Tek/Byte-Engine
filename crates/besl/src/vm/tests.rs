@@ -2287,6 +2287,48 @@ fn compute_subgroup_shuffle_xor_rejects_divergent_masks_and_inactive_sources() {
 	);
 }
 
+/// Verifies each lane receives the largest value among the active lanes of its own subgroup.
+#[test]
+fn compute_subgroup_max_reduces_the_active_lanes_of_each_subgroup() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			integers: u32[48],
+			floats: f32[48],
+		}
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			result.integers[lane] = subgroup_max_u32(lane);
+			result.floats[lane] = subgroup_max_f32(100.0 - f32(lane) * 0.5);
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(43));
+	// The second subgroup runs only lanes 32 to 47, so its maximum must ignore the lanes it does not run.
+	let configs = (0..48)
+		.map(|lane| ExecutionConfig::new(512).with_thread_idx(lane).with_subgroup_size(32))
+		.collect::<Vec<_>>();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(43), &mut result);
+		executable
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("Subgroup maximum execution failed. The most likely cause is broken per-subgroup collective scheduling.");
+	}
+
+	for lane in 0..32 {
+		assert_eq!(result.read_indexed("integers", lane), Ok(Value::U32(31)));
+		assert_eq!(result.read_indexed("floats", lane), Ok(Value::F32(100.0)));
+	}
+	for lane in 32..48 {
+		assert_eq!(result.read_indexed("integers", lane), Ok(Value::U32(47)));
+		assert_eq!(result.read_indexed("floats", lane), Ok(Value::F32(84.0)));
+	}
+}
+
 #[test]
 fn task_workgroup_reuse_clears_shared_storage() {
 	let executable = compile_test_program(

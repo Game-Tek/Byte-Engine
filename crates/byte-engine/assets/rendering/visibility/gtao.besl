@@ -38,7 +38,6 @@ GTAO_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
 
 WORKGROUP_X: const u32 = 16;
 WORKGROUP_Y: const u32 = 8;
-WORKGROUP_THREADS: const u32 = 128;
 
 // Each mip level caches the rectangle around the workgroup's footprint at that level, indexed by level. The halo is
 // how far the rectangle reaches past the footprint on each side. Complete cached rectangles are 30x22, 24x20, and
@@ -51,8 +50,7 @@ CACHE_BASES: const u32[3] = u32[3](0, 682, 1182);
 INVALID_SAMPLE_KEY: const u32 = 4294967295;
 
 cached_depth: workgroup<f32, 1560>;
-required_mips: workgroup<u32, 128>;
-group_required_mip: workgroup<u32, 1>;
+group_required_mip: workgroup<atomicu32>;
 
 // Jorge Jimenez's interleaved gradient noise:
 // https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
@@ -317,27 +315,26 @@ main: fn (input: StageInput) -> void {
 	cached_depth[center_shared_index] = center_linear_depth;
 
 	let active: bool = in_bounds && center_linear_depth != 0.0;
-	required_mips[lane] = 0;
+	let required_mip: u32 = 0;
 	if (active) {
 		// Encode active mip zero as one so zero remains the all-background sentinel.
-		required_mips[lane] = maximum_required_mip(center_linear_depth) + 1;
+		required_mip = maximum_required_mip(center_linear_depth) + 1;
 	}
-	workgroup_barrier();
-
-	// One lane reduces both workgroup predicates. This costs two barriers instead
-	// of a seven-stage tree and keeps the result uniform for later prefetch branches.
+	// Every lane reaches this reduction before any lane returns, so each subgroup covers all of its lanes.
+	let subgroup_required_mip: u32 = subgroup_max_u32(required_mip);
 	if (lane == 0) {
-		let encoded_maximum: u32 = 0;
-		for (let index: u32 = 0; index < WORKGROUP_THREADS; index = index + 1) {
-			if (required_mips[index] > encoded_maximum) {
-				encoded_maximum = required_mips[index];
-			}
-		}
-		group_required_mip[0] = encoded_maximum;
+		atomic_store(group_required_mip, 0);
 	}
 	workgroup_barrier();
 
-	let encoded_group_mip: u32 = group_required_mip[0];
+	// One atomic per subgroup combines the subgroup maxima. Maximum is order-independent, so the result matches a
+	// serial scan of every lane, and it stays uniform for the prefetch branches below.
+	if (input.subgroup_lane_index == 0) {
+		atomic_max(group_required_mip, subgroup_required_mip);
+	}
+	workgroup_barrier();
+
+	let encoded_group_mip: u32 = atomic_load(group_required_mip);
 	if (encoded_group_mip == 0) {
 		if (in_bounds) {
 			write(ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));

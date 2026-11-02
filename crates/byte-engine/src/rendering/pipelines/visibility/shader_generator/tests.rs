@@ -677,6 +677,35 @@ fn material_hit_shaders_produce_valid_besl() {
 	}
 }
 
+/// The back of a single-sided surface returns its black-occluder payload before a textured material samples anything,
+/// and the view direction and the ray cone read one ray length.
+#[test]
+fn material_hit_shaders_return_backfaces_before_sampling() {
+	let graph = graph(TEXTURED_GRAPH);
+	let parameters = textured_parameters();
+	let shader = hit_generator()
+		.generate_hit(&graph, &parameters)
+		.expect("test graph should generate a hit shader")
+		.expect("a project with surfel GI should build hit shaders");
+	let source = besl::write(&shader);
+
+	let backface_return = source
+		.find("return back_surface")
+		.expect("The hit shader should return a backface payload.");
+	let first_sample = source
+		.find("sample_texture_2d_array_grad(textures")
+		.expect("The textured hit shader should sample its textures.");
+	assert!(
+		backface_return < first_sample,
+		"The hit shader samples a texture before returning for a backface. The most likely cause is that the backface source was spliced after the material body."
+	);
+	assert_eq!(
+		source.matches("length(input.ray_direction)").count(),
+		1,
+		"The hit shader should compute the ray's length once."
+	);
+}
+
 /// A project that leaves surfel GI out traces no rays, so its materials get no hit shaders.
 #[test]
 fn materials_get_hit_shaders_only_with_surfel_gi() {
@@ -1441,7 +1470,13 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
 		members("u32", &["inside", "past_x", "past_y", "past_far_side", "past_near_side"]),
 	);
-	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0), ("past_far_side", 0), ("past_near_side", 0)] {
+	for (name, expected) in [
+		("inside", 1),
+		("past_x", 0),
+		("past_y", 0),
+		("past_far_side", 0),
+		("past_near_side", 0),
+	] {
 		assert_eq!(
 			results.read(name).expect("cascade holds result"),
 			Value::U32(expected),

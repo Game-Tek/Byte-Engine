@@ -10,9 +10,9 @@
 // `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every surfel that would light it
 // takes no light, with the confidence of the surfels that hide it.
 //
-// While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most one spawn, at its
-// least covered pixel, and one despawn, of the heaviest surfel at its most covered pixel. Next, the allocate pass turns
-// the spawn requests into surfels.
+// While it reads the cell, it marks the surfels that serve it, and each subgroup then votes once per marked surfel to
+// keep it alive. The tile then elects at most one spawn, at its least covered pixel, and one despawn, of the heaviest
+// surfel at its most covered pixel. Next, the allocate pass turns the spawn requests into surfels.
 
 // Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
 tile_depth: workgroup<f32, 144>;
@@ -128,9 +128,15 @@ main: fn (input: StageInput) -> void {
 	let parent: u32 = NO_SURFEL;
 	let parent_weight: f32 = 0.0;
 	let cell_count: u32 = 0;
+	let cell: u32 = 0;
+	let start: u32 = 0;
+	// The entries of the cell's list, counted from `start`, that this pixel keeps alive: the first 32 in the low
+	// word and the rest in the high one. Only an uncrowded cell keeps surfels alive, so 48 bits hold them all.
+	let keep_alive_low: u32 = 0;
+	let keep_alive_high: u32 = 0;
 	if (surface) {
-		let cell: u32 = surfel_cell_of(world_position);
-		let start: u32 = surfel_scan[cell];
+		cell = surfel_cell_of(world_position);
+		start = surfel_scan[cell];
 		cell_count = surfel_scan[cell + 1] - start;
 		let end: u32 = start + min(cell_count, SURFEL_LOOKUP_LIMIT);
 		for (let entry: u32 = start; entry < end; entry = entry + 1) {
@@ -172,16 +178,15 @@ main: fn (input: StageInput) -> void {
 				best_light_weight = trusted;
 				best_surfel = surfel;
 			}
-			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. Votes only grow during the
-			// resolve, so a pixel that finds the vote already cast skips the read-modify-write, which every pixel of
-			// the tile would otherwise queue on the same surfel.
-			if (
-				cell_count <= SURFEL_CROWDED_CELL
-				&& facing > SURFEL_KEEP_ALIVE_FACING
-				&& surfel_states[surfel].cell == cell
-				&& atomic_load(surfel_states[surfel].touched) < 5
-			) {
-				atomic_max(surfel_states[surfel].touched, 5);
+			// A pixel keeps the surfels of its own cell alive while the cell is not crowded. It only marks the entry
+			// here; the subgroup votes after the loop, and checks there that the surfel belongs to the cell.
+			if (cell_count <= SURFEL_CROWDED_CELL && facing > SURFEL_KEEP_ALIVE_FACING) {
+				let offset: u32 = entry - start;
+				if (offset < 32) {
+					keep_alive_low = keep_alive_low | (1 << offset);
+				} else {
+					keep_alive_high = keep_alive_high | (1 << (offset - 32));
+				}
 			}
 			if (weight > parent_weight && facing > SURFEL_PARENT_FACING && record.weight >= 1.0) {
 				parent = surfel;
@@ -220,6 +225,45 @@ main: fn (input: StageInput) -> void {
 		if (scoring_coverage > mix(3.5, 3.0, fullness) && second > mix(0.9, 0.8, fullness)) {
 			atomic_max(despawn_vote, (u32(min(scoring_coverage, 63.99) * 1048576.0) << 6) | lane);
 		}
+	}
+
+	// Each subgroup casts one keep-alive vote per marked entry instead of one per pixel. Pixels of one cell share its
+	// list, which starts at `start`, so the lanes that marked the same entry there mean the same surfel, and the lowest
+	// of them votes for all. Votes only take their maximum, so the same surfels survive as with a vote per pixel.
+	let keep_alive_pending: vec4u = subgroup_ballot(keep_alive_low != 0 || keep_alive_high != 0);
+	for (
+		let has_pending: bool = subgroup_ballot_any(keep_alive_pending);
+		has_pending;
+		has_pending = subgroup_ballot_any(keep_alive_pending)
+	) {
+		let leader_lane: u32 = subgroup_ballot_find_lsb(keep_alive_pending);
+		let lowest_offset: u32 = 0;
+		if (keep_alive_low != 0) {
+			lowest_offset = find_lsb(keep_alive_low);
+		} else if (keep_alive_high != 0) {
+			lowest_offset = 32 + find_lsb(keep_alive_high);
+		}
+		let voted_start: u32 = subgroup_broadcast_u32(start, leader_lane);
+		let voted_offset: u32 = subgroup_broadcast_u32(lowest_offset, leader_lane);
+		if (subgroup_lane_index() == leader_lane) {
+			// A cell lists the surfels that reach it, and only those whose own cell it is stay alive through it. Votes
+			// only grow during the resolve, so a vote already cast as high skips the read-modify-write.
+			let surfel: u32 = surfel_cell_entries[start + voted_offset];
+			if (surfel_states[surfel].cell == cell && atomic_load(surfel_states[surfel].touched) < 5) {
+				atomic_max(surfel_states[surfel].touched, 5);
+			}
+		}
+		// Every lane that marked the voted entry drops it.
+		if (start == voted_start) {
+			if (voted_offset < 32) {
+				if ((keep_alive_low & (1 << voted_offset)) != 0) {
+					keep_alive_low = keep_alive_low - (1 << voted_offset);
+				}
+			} else if ((keep_alive_high & (1 << (voted_offset - 32))) != 0) {
+				keep_alive_high = keep_alive_high - (1 << (voted_offset - 32));
+			}
+		}
+		keep_alive_pending = subgroup_ballot(keep_alive_low != 0 || keep_alive_high != 0);
 	}
 
 	if (in_image) {

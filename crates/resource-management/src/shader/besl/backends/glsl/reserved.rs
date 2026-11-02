@@ -124,6 +124,7 @@ fn is_builtin_function(name: &str) -> bool {
 			| "subgroupBallotBitCount"
 			| "subgroupBallotFindLSB"
 			| "subgroupBroadcast"
+			| "subgroupMax"
 			| "SetMeshOutputsEXT"
 	)
 }

@@ -260,7 +260,7 @@ mod tests {
 		let root = parse(&tokenize(
 			r#"
 				farthest_depth: sampler<{ reduction: min, mip_filter: nearest, }>;
-				tiled: sampler<{ filter: nearest, mip_filter: linear, reduction: average, address: repeat }>;
+				tiled: sampler<{ filter: nearest, mip_filter: linear, reduction: average, address: repeat, anisotropy: 16 }>;
 				defaults: sampler<{}>;
 				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
 			"#,
@@ -278,6 +278,7 @@ mod tests {
 				mip_filter: Filter::Nearest,
 				reduction: Reduction::Min,
 				address: Address::Clamp,
+				anisotropy: 1,
 			}
 		);
 		assert_eq!(
@@ -287,6 +288,7 @@ mod tests {
 				mip_filter: Filter::Linear,
 				reduction: Reduction::Average,
 				address: Address::Repeat,
+				anisotropy: 16,
 			}
 		);
 		assert_eq!(state("defaults"), SamplerState::default());
@@ -306,7 +308,10 @@ mod tests {
 			"pyramid: sampler<{ mip_filter: cubic }>;",
 			"pyramid: sampler<{ reduction: median }>;",
 			"pyramid: sampler<{ address: border }>;",
-			"pyramid: sampler<{ anisotropy: 16 }>;",
+			"pyramid: sampler<{ anisotropy: 0 }>;",
+			"pyramid: sampler<{ anisotropy: 32 }>;",
+			"pyramid: sampler<{ anisotropy: 2.0 }>;",
+			"pyramid: sampler<{ border: opaque }>;",
 			"pyramid: sampler<{ filter: linear, filter: nearest }>;",
 			"pyramid: sampler<{ filter: linear; reduction: min }>;",
 			"pyramid: sampler<{ filter: }>;",

@@ -377,7 +377,9 @@ impl InnerDevice {
 		let mut subgroup_properties = vk::PhysicalDeviceSubgroupProperties::default();
 		let mut subgroup_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut subgroup_properties);
 		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut subgroup_device_properties) };
-		let required_subgroup_operations = vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT;
+		// Arithmetic covers BESL's subgroup_max, which lowers to GLSL subgroupMax.
+		let required_subgroup_operations =
+			vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT | vk::SubgroupFeatureFlags::ARITHMETIC;
 		if !subgroup_properties.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
 			|| !subgroup_properties
 				.supported_operations
@@ -385,7 +387,7 @@ impl InnerDevice {
 			|| !(1..=128).contains(&subgroup_properties.subgroup_size)
 		{
 			return Err(
-				"Vulkan compute subgroups with ballot support are unavailable. The most likely cause is that the selected GPU or driver does not support the required Material Count subgroup operations.",
+				"Vulkan compute subgroups with ballot and arithmetic support are unavailable. The most likely cause is that the selected GPU or driver does not support the subgroup operations that Material Count and GTAO use. Update the GPU driver, or select a GPU that reports basic, ballot, and arithmetic subgroup operations for compute shaders.",
 			);
 		}
 

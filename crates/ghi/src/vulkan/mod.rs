@@ -384,7 +384,7 @@ impl Sampler {
 			mipmap_mode: utils::mipmap_mode(sampler.mip_map_mode),
 			address_mode: utils::address_mode(sampler.addressing_mode),
 			reduction_mode: utils::reduction_mode(sampler.reduction_mode),
-			anisotropy: None,
+			anisotropy: (sampler.max_anisotropy > 1).then(|| f32::from(sampler.max_anisotropy)),
 			min_lod: 0.0,
 			max_lod: vk::LOD_CLAMP_NONE,
 		}

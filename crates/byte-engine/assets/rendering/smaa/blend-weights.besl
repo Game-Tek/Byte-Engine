@@ -29,11 +29,13 @@ SMAA_RESOLVE_WORKGROUP_WIDTH: const u32 = 16;
 SMAA_RESOLVE_WORKGROUP_HEIGHT: const u32 = 16;
 SMAA_RESOLVE_WORKGROUP_THREADS: const u32 = 256;
 SMAA_WEIGHT_TILE_WIDTH: const u32 = 17;
-SMAA_WEIGHT_TILE_HEIGHT: const u32 = 17;
-SMAA_WEIGHT_TILE_SIZE: const u32 = 289;
+// Rows of 17 entries cover the core and its right look-ahead column; the last
+// row holds only the bottom look-ahead. Resolve never reads the corner entry
+// (16, 16), so the cache stops one entry short of 17x17.
+SMAA_WEIGHT_TILE_SIZE: const u32 = 288;
 
 // Each lane cooperatively supplies final packed RGBA8 weights for a small tile.
-cached_weights: workgroup<u32, 289>;
+cached_weights: workgroup<u32, 288>;
 
 // Decodes the west and north binary flags stored in the low two bits of R8UNORM.
 unpack_edge_flags: fn(value: f32) -> vec2f16 {
@@ -86,6 +88,22 @@ sample_edges_x_quarter_pixel: fn(position: vec2f, extent: vec2u) -> vec2f16 {
 	return lower_edge * (1.0 - fraction) + upper_edge * fraction;
 }
 
+// Interpolates the edge flags of texel `lower`, the texels after it on each
+// axis, and the diagonal texel, reading all four with one gather. The gather
+// corner `lower + 1` lies half a texel from every texel center, so the quad is
+// exactly these texels. Past the last row or column the Clamp sampler repeats
+// it, as `edge_next_coordinate` does. Gather order puts the second row in x
+// (left) and y (right), and the first row in z (right) and w (left). Each
+// texel is unpacked before blending, so the result matches four fetches.
+interpolate_edge_quad: fn(lower: vec2u, fraction: vec2f16, extent: vec2u) -> vec2f16 {
+	let quad: vec4f = gather(edges, vec2f(f32(lower.x + 1), f32(lower.y + 1)) / vec2f(f32(extent.x), f32(extent.y)));
+	let lower_row: vec2f16 = unpack_edge_flags(quad.w) * (1.0 - fraction.x)
+		+ unpack_edge_flags(quad.z) * fraction.x;
+	let upper_row: vec2f16 = unpack_edge_flags(quad.x) * (1.0 - fraction.x)
+		+ unpack_edge_flags(quad.y) * fraction.x;
+	return lower_row * (1.0 - fraction.y) + upper_row * fraction.y;
+}
+
 // Orthogonal searches use fixed subpixel phases. Keeping those phases explicit
 // removes normalized-coordinate setup and dynamic fractional interpolation from
 // their hot loops while preserving Clamp sampling at the image boundary.
@@ -99,15 +117,7 @@ sample_edges_fixed_pixel: fn(position: vec2f, fraction: vec2f16, extent: vec2u) 
 	if (position.y < 0.0 || position.y > f32(extent.y - 1)) {
 		fraction_y = 0.0;
 	}
-	let upper: vec2u = vec2u(
-		edge_next_coordinate(lower.x, extent.x),
-		edge_next_coordinate(lower.y, extent.y)
-	);
-	let lower_row: vec2f16 = edge_flags_at(lower) * (1.0 - fraction_x)
-		+ edge_flags_at(vec2u(upper.x, lower.y)) * fraction_x;
-	let upper_row: vec2f16 = edge_flags_at(vec2u(lower.x, upper.y)) * (1.0 - fraction_x)
-		+ edge_flags_at(upper) * fraction_x;
-	return lower_row * (1.0 - fraction_y) + upper_row * fraction_y;
+	return interpolate_edge_quad(lower, vec2f16(fraction_x, fraction_y), extent);
 }
 
 // Endpoint correction and corner tests have LUT-derived phases, so they retain
@@ -119,16 +129,8 @@ sample_edges_linear_pixel: fn(position: vec2f, extent: vec2u) -> vec2f16 {
 		clamp(position.y, 0.0, maximum.y)
 	);
 	let lower: vec2u = vec2u(u32(floor(clamped.x)), u32(floor(clamped.y)));
-	let upper: vec2u = vec2u(
-		edge_next_coordinate(lower.x, extent.x),
-		edge_next_coordinate(lower.y, extent.y)
-	);
 	let fraction: vec2f16 = vec2f16(f16(fract(clamped.x)), f16(fract(clamped.y)));
-	let lower_row: vec2f16 = edge_flags_at(lower) * (1.0 - fraction.x)
-		+ edge_flags_at(vec2u(upper.x, lower.y)) * fraction.x;
-	let upper_row: vec2f16 = edge_flags_at(vec2u(lower.x, upper.y)) * (1.0 - fraction.x)
-		+ edge_flags_at(upper) * fraction.x;
-	return lower_row * (1.0 - fraction.y) + upper_row * fraction.y;
+	return interpolate_edge_quad(lower, fraction, extent);
 }
 
 decode_diagonal: fn(value: vec2f16) -> vec2f16 {
@@ -346,7 +348,9 @@ vertical_corners: fn(value: vec2f16, top_coord: vec2f, bottom_coord: vec2f, dist
 }
 
 // Calculates the final reference weights before their former RGBA8 storage step.
-blend_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16) -> vec4f16 {
+// When `west_used` is false the west-edge weights in z and w stay zero; the
+// north weights in x and y never depend on them.
+blend_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16, west_used: bool) -> vec4f16 {
 	let pixel_position: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y));
 	let output: vec4f16 = vec4f16(0.0, 0.0, 0.0, 0.0);
 
@@ -374,7 +378,7 @@ blend_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16) -> vec4f16
 	}
 
 	// A detected diagonal owns this pixel, so west-edge processing is skipped.
-	if (edge.x > 0.0 && output.x + output.y <= 0.0) {
+	if (west_used && edge.x > 0.0 && output.x + output.y <= 0.0) {
 		let top_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 0.0 - 0.25);
 		let bottom_start: vec2f = pixel_position + vec2f(0.0 - 0.125, 1.25);
 		let top_end: f32 = top_start.y - 2.0 * f32(SMAA_MAX_SEARCH_STEPS);
@@ -441,7 +445,11 @@ main: fn(input: StageInput) -> void {
 			clamp_tile_add(workgroup_origin.x, local.x, extent.x),
 			clamp_tile_add(workgroup_origin.y, local.y, extent.y)
 		);
-		cached_weights[index] = pack_weights(blend_weights_at(weight_coordinate, extent, edge_flags_at(weight_coordinate)));
+		// Resolve reads only the north weights of the bottom look-ahead row, so
+		// that row skips the west-edge search.
+		let west_used: bool = local.y < SMAA_RESOLVE_WORKGROUP_HEIGHT;
+		let weights: vec4f16 = blend_weights_at(weight_coordinate, extent, edge_flags_at(weight_coordinate), west_used);
+		cached_weights[index] = pack_weights(weights);
 	}
 	workgroup_barrier();
 

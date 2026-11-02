@@ -261,7 +261,6 @@ fn render_with_multiframe_resources() {
 	run(resources::multiframe_resources);
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn round_trip_texture3d_lut() {
 	run(resources::texture3d_lut_round_trip);

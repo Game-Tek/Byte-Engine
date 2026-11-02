@@ -36,7 +36,7 @@ the pipeline's declared ranges.
 | --- | --- |
 | Static buffer | Zero-initialized, not resizable, one copy that every frame in flight reads; write only ranges no submitted frame reads. |
 | Dynamic buffer | One copy per frame in flight, each keeping what its last frame wrote; resizable. |
-| Image | Starts without valid contents. A dynamic image has one copy per frame; a grouped image may share memory with images whose lifetimes don't overlap. Region uploads cover uncompressed single-layer 2D color images at mip 0. |
+| Image | Starts without valid contents. A dynamic image has one copy per frame; a grouped image may share memory with images whose lifetimes don't overlap. An image deeper than 1 is a volume; uploads and transfers cover every depth slice. Region uploads cover uncompressed single-layer 2D color images at mip 0. |
 | Cube images | Six layers, or a multiple of six for an array. |
 | Sampler | Linear filtering, weighted-average reduction, linear mips, clamp addressing, no anisotropy, and a zero LOD range by default. Devices limit sampler counts. |
 | Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |

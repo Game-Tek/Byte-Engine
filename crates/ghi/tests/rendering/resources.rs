@@ -1087,7 +1087,6 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 }
 
 /// Uploads, reads, writes, and repacks a small 3D LUT through native Texture3D descriptors.
-#[cfg(target_os = "windows")]
 pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	let extent = Extent::new(3, 2, 2);
 	let mut expected = vec![0u8; (extent.width() * extent.height() * extent.depth() * 4) as usize];

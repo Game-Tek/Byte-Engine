@@ -50,8 +50,9 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Copies compact CPU texture data into an aligned upload range and records the blits into one frame-local image.
 	///
-	/// `bytes` holds every array layer of the image; `region`, when present, selects the rectangle of each layer to
-	/// copy. The upload range snapshots `bytes` now, and the tracked blits write the image in command order.
+	/// `bytes` holds every depth slice of every array layer of the image, slices within a layer; `region`, when present,
+	/// selects the rectangle of each slice to copy. The upload range snapshots `bytes` now, and the tracked blits write
+	/// the image in command order.
 	pub(super) fn upload_texture(&mut self, image_handle: ImageHandle, bytes: &[u8], region: Option<crate::image::Region>) {
 		let image = self.device.images.resource(image_handle);
 		let ImageDescription {
@@ -77,7 +78,12 @@ impl<'a> CommandBufferRecording<'a> {
 		let origin = region.map_or([0, 0], |region| region.offset);
 		let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
 		let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent);
-		let expected_size = source_image_pitch.checked_mul(array_layers as usize).expect(
+		// A 3D image stores its depth slices one after another, like the layers of an array image.
+		let depth = extent.depth().max(1) as usize;
+		let images = depth.checked_mul(array_layers as usize).expect(
+			"Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.",
+		);
+		let expected_size = source_image_pitch.checked_mul(images).expect(
 			"Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.",
 		);
 
@@ -96,41 +102,44 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 
 		let (aligned_bytes_per_row, aligned_bytes_per_image) = utils::texture_copy_pitches(bytes_per_row, row_count);
-		let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
+		let upload_size = aligned_bytes_per_image.checked_mul(images).expect(
 			"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
 		);
 		let (upload_page, upload_offset) = self.commit.upload_arena.allocate(self.device.metal_device, upload_size);
 		// SAFETY: The arena range starts at `upload_offset` and spans `upload_size` writable bytes.
 		let destination = unsafe { upload_page.contents.add(upload_offset) };
 		let mut source_size = utils::mtl_size(copy_extent);
-		source_size.depth = 1;
+		source_size.depth = depth as _;
 		let destination_origin = mtl::MTLOrigin {
 			x: origin[0] as _,
 			y: origin[1] as _,
 			z: 0,
 		};
 
-		// The CPU copies all land before the command is submitted, so each blit can follow its slice's copy.
+		// The CPU copies all land before the command is submitted, so each blit can follow its layer's copies.
 		for slice in 0..array_layers as usize {
-			let source_offset = slice * source_image_pitch;
-			let source_bytes = &bytes[source_offset..source_offset + source_image_pitch];
-			// SAFETY: The size checks above keep every source row of the region inside this slice, the upload allocation
-			// covers every padded row of every layer, and caller bytes never alias an upload page.
-			unsafe {
-				utils::copy_rows(
-					source_bytes.as_ptr().add(source_start),
-					source_row_pitch,
-					destination.add(slice * aligned_bytes_per_image),
-					aligned_bytes_per_row,
-					bytes_per_row,
-					row_count,
-				);
+			for z in 0..depth {
+				let image_index = slice * depth + z;
+				let source_offset = image_index * source_image_pitch;
+				let source_bytes = &bytes[source_offset..source_offset + source_image_pitch];
+				// SAFETY: The size checks above keep every source row of the region inside this image, the upload
+				// allocation covers every padded row of every image, and caller bytes never alias an upload page.
+				unsafe {
+					utils::copy_rows(
+						source_bytes.as_ptr().add(source_start),
+						source_row_pitch,
+						destination.add(image_index * aligned_bytes_per_image),
+						aligned_bytes_per_row,
+						bytes_per_row,
+						row_count,
+					);
+				}
 			}
 			// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 					&upload_page.buffer,
-					(upload_offset + slice * aligned_bytes_per_image) as _,
+					(upload_offset + slice * depth * aligned_bytes_per_image) as _,
 					aligned_bytes_per_row as _,
 					aligned_bytes_per_image as _,
 					source_size,

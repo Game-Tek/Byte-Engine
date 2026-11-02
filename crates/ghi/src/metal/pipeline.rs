@@ -122,6 +122,9 @@ pub(crate) fn build_texture_descriptor(
 
 	if extent.depth() > 1 {
 		descriptor.setTextureType(mtl::MTLTextureType::Type3D);
+		// The 2D descriptor starts one slice deep, so a volume must set its depth, or every read clamps to slice 0.
+		// SAFETY: The image builder validates the extent, and a 3D texture takes any nonzero depth.
+		unsafe { descriptor.setDepth(extent.depth() as _) };
 	} else if cube_array_compatible {
 		descriptor.setTextureType(mtl::MTLTextureType::TypeCubeArray);
 	} else if cube_compatible {
